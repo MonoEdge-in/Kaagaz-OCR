@@ -56,6 +56,8 @@ known-first-party = ["kaagaz_shared", "kaagaz_api", "kaagaz_worker"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+# Lets mypy see that pydantic-settings fills Settings fields from the environment.
+plugins = ["pydantic.mypy"]
 mypy_path = ["api", "shared"]
 # Day 1 adds shared/kaagaz_shared and worker/kaagaz_worker here and to mypy_path.
 files = ["api/kaagaz_api", "shared/kaagaz_shared", "tests", ".claude/hooks", ".github/scripts"]

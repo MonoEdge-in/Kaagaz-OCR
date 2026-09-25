@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_ONLY = {"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"}
 
 VALUES = {
-    "DATABASE_URL": "postgresql+asyncpg://user:db-password@db-host:5432/db",
+    "DATABASE_URL": "postgresql+asyncpg://user:db-password@localhost:5432/db",
     "S3_ENDPOINT_URL": "http://storage:8333",
     "S3_PUBLIC_ENDPOINT_URL": "http://localhost:8333",
     "S3_ACCESS_KEY": "access",
