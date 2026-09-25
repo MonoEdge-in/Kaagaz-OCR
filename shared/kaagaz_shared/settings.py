@@ -16,18 +16,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    # A real environment variable wins over the same name in `.env`. `extra="ignore"`
+    # skips names in `.env` that aren't fields here, such as the POSTGRES_* values only
+    # the postgres container reads.
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # Database
+    # Database. Secret because the URL carries the password.
     database_url: SecretStr
 
     # File storage (SeaweedFS on the laptop, Amazon S3 in AWS)
+    # Two addresses for one store: the API and worker reach it inside Docker by the
+    # first; the browser can't, so signed upload and download links use the second.
     s3_endpoint_url: str
     s3_public_endpoint_url: str
     s3_access_key: str
     s3_secret_key: SecretStr
     s3_region: str
     s3_bucket: str
+    # The web pages allowed to send files straight to storage. Written as a JSON list.
     cors_allowed_origins: list[str]
 
     # Workflow engine
@@ -46,5 +52,9 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """The settings, read once per process."""
+    """The settings, read once per process.
+
+    Call this rather than `Settings()`: every caller then shares one copy, and the
+    environment and `.env` aren't read again on each request.
+    """
     return Settings()

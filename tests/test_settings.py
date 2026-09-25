@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # Used only by the postgres container in docker-compose.yml, never by the app.
 COMPOSE_ONLY = {"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"}
 
+# Fake values, one per app setting. The host is localhost because CI refuses a database
+# password for any other host.
 VALUES = {
     "DATABASE_URL": "postgresql+asyncpg://user:db-password@localhost:5432/db",
     "S3_ENDPOINT_URL": "http://storage:8333",
