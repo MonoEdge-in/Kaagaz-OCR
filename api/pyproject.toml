@@ -1,0 +1,15 @@
+[project]
+name = "kaagaz-api"
+version = "0.1.0"
+description = "The FastAPI app and basic UI: uploads, file management and status."
+license = "Apache-2.0"
+requires-python = ">=3.12"
+# Day 1 adds kaagaz-shared and the libraries the PRD names (Temporal, SQLAlchemy, boto3...).
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

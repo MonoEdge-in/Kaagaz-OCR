@@ -1,0 +1,52 @@
+name: Bug
+description: Something doesn't work the way it should
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to reproduce it
+      description: Use a sample document, never a real one.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: How bad is it
+      options:
+        - "Blocking: the day's Done when check can't pass"
+        - "Serious: fix today"
+        - "Annoying: fix when there's room"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      description: Tick any that apply. Any tick makes this blocking, whatever the severity above says.
+      options:
+        - label: A real client document reached the repository or the laptop
+        - label: Document content was sent to a service outside our environment
+        - label: An extracted value was stored without its page and position
+        - label: A secret was exposed

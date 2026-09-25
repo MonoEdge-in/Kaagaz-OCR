@@ -1,0 +1,3 @@
+# Vrushit reviews everything: with "Require review from Code Owners" on in the main
+# ruleset, this makes him a required reviewer on every pull request.
+* @vrushitpatel

@@ -1,0 +1,55 @@
+# Settings with real values
+.env
+.env.*
+!.env.example
+
+# Keys, credentials and infrastructure state
+*.pem
+*.key
+*.p12
+*.pfx
+.aws/
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Sample documents stay on the laptop, never in git
+samples/*
+!samples/README.md
+scratch/
+
+# Local data and downloaded models
+data/
+models/
+*.gguf
+*.safetensors
+temporal.db*
+mlruns/
+
+# Claude Code: settings.json, hooks/ and skills/ are shared and committed.
+# Only personal overrides stay out.
+.claude/settings.local.json
+
+# Logs
+*.log
+
+# Editors and OS files
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+desktop.ini

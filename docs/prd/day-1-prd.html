@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Day 1 Skeleton PRD</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #F2F5F4;
+    --surface: #FFFFFF;
+    --surface-2: #E7EDEC;
+    --ink: #12202A;
+    --ink-2: #4B5A63;
+    --rule: #D0D9D9;
+    --accent: #0A7580;
+    --accent-soft: #D6ECEE;
+    --mark: #C08300;
+    --mark-soft: #FAEDC2;
+    --mark-ink: #6E4B00;
+    --font-display: "Bricolage Grotesque", "IBM Plex Sans", system-ui, sans-serif;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground: #0C1215;
+      --surface: #12191D;
+      --surface-2: #192328;
+      --ink: #E2E9EB;
+      --ink-2: #94A3A9;
+      --rule: #27333A;
+      --accent: #45B5BF;
+      --accent-soft: #0F3036;
+      --mark: #EDB02B;
+      --mark-soft: #382B0B;
+      --mark-ink: #F4C766;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground: #0C1215;
+    --surface: #12191D;
+    --surface-2: #192328;
+    --ink: #E2E9EB;
+    --ink-2: #94A3A9;
+    --rule: #27333A;
+    --accent: #45B5BF;
+    --accent-soft: #0F3036;
+    --mark: #EDB02B;
+    --mark-soft: #382B0B;
+    --mark-ink: #F4C766;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 920px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 48px 64px;
+    display: grid;
+    gap: 60px;
+  }
+  section { display: grid; gap: 18px; min-width: 0; scroll-margin-top: 16px; }
+  h1, h2, h3 { margin: 0; text-wrap: balance; }
+  h1 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: clamp(2.1rem, 1.5rem + 2.4vw, 3.1rem);
+    line-height: 1.05;
+    letter-spacing: -0.028em;
+    font-variation-settings: "opsz" 96;
+  }
+  h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    font-family: var(--font-display);
+    font-weight: 650;
+    font-size: clamp(1.4rem, 1.2rem + 0.8vw, 1.8rem);
+    line-height: 1.15;
+    letter-spacing: -0.012em;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .sec-no {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--accent);
+    min-width: 1.6em;
+  }
+  h3 { font-family: var(--font-display); font-weight: 600; font-size: 1.12rem; line-height: 1.3; margin-top: 8px; }
+  p { margin: 0; max-width: 70ch; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background: var(--surface-2);
+    border-radius: 4px;
+    padding: 0.05em 0.34em;
+    overflow-wrap: anywhere;
+  }
+  ul, ol { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: 72ch; }
+  li::marker { color: var(--accent); }
+  .muted { color: var(--ink-2); }
+
+  /* Masthead */
+  .masthead { display: grid; gap: 16px; }
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .lede { font-size: 1.14rem; color: var(--ink-2); max-width: 60ch; }
+  .meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    column-gap: 24px;
+    margin: 8px 0 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .meta div { padding-block: 12px; }
+  .meta dt {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+  .meta dd { margin: 4px 0 0; font-weight: 500; }
+
+  /* Contents */
+  .toc {
+    padding: 16px 20px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+  }
+  .toc h2 { border: 0; padding: 0; font-size: 1rem; font-family: var(--font-mono); font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); margin-bottom: 10px; }
+  .toc ol { columns: 2 220px; column-gap: 32px; display: block; max-width: none; }
+  .toc li { margin-bottom: 6px; break-inside: avoid; }
+
+  /* Callouts */
+  .goal-box, .done {
+    max-width: none;
+    padding: 16px 20px;
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    background: var(--accent-soft);
+  }
+  .goal-box p { font-size: 1.08rem; max-width: none; }
+  .done { display: grid; gap: 8px; }
+  .done-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .done ul { max-width: none; }
+  .note {
+    padding: 14px 18px;
+    border: 1px solid var(--mark);
+    border-radius: 12px;
+    background: var(--mark-soft);
+    color: var(--ink);
+    max-width: none;
+  }
+  .note strong { color: var(--mark-ink); }
+
+  /* Pipeline steps */
+  .steps {
+    list-style: none;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+    gap: 8px;
+    max-width: none;
+  }
+  .step {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 6px;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+  }
+  .step.now { border-color: var(--accent); background: var(--accent-soft); }
+  .s-name { font-weight: 600; }
+  .s-desc { font-size: 0.84rem; color: var(--ink-2); line-height: 1.45; }
+  .s-day { font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink-2); letter-spacing: 0.02em; }
+  .step.now .s-day { color: var(--accent); font-weight: 500; }
+
+  /* Tables */
+  .table-wrap {
+    overflow-x: auto;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+  }
+  table { width: 100%; min-width: 600px; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; vertical-align: top; padding: 11px 14px; border-bottom: 1px solid var(--rule); }
+  tbody tr:last-child td { border-bottom: 0; }
+  th {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 0.68rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    background: var(--surface-2);
+  }
+  td:first-child { font-weight: 500; }
+  td .cols { display: block; margin-top: 4px; font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-2); line-height: 1.55; }
+  .verb {
+    display: inline-block;
+    min-width: 3.4em;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: 6px;
+    border: 1px solid var(--rule);
+    color: var(--ink-2);
+  }
+  .verb.post { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .path { font-family: var(--font-mono); font-size: 0.84rem; white-space: nowrap; }
+
+  pre.tree {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    line-height: 1.7;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 16px 18px;
+    overflow-x: auto;
+  }
+  pre.tree .c { color: var(--ink-2); }
+
+  /* Sequence diagram */
+  figure { margin: 0; display: grid; gap: 12px; min-width: 0; }
+  figcaption { font-size: 0.9rem; color: var(--ink-2); max-width: 75ch; }
+  .diagram {
+    overflow-x: auto;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    padding: 12px;
+  }
+  .diagram svg { display: block; width: 100%; min-width: 820px; height: auto; }
+  .seq text { font-family: var(--font-body); fill: var(--ink); }
+  .seq .lane { fill: var(--surface-2); stroke: var(--rule); stroke-width: 1.25; }
+  .seq .ln-t { font-size: 14px; font-weight: 600; }
+  .seq .ln-s { font-family: var(--font-mono); font-size: 11px; fill: var(--ink-2); }
+  .seq .life { fill: none; stroke: var(--rule); stroke-width: 1.25; stroke-dasharray: 4 5; }
+  .seq .msg { fill: none; stroke: var(--ink-2); stroke-width: 1.4; }
+  .seq .msg-a { stroke: var(--accent); stroke-width: 2; }
+  .seq .ah { fill: var(--ink-2); }
+  .seq .ah-a { fill: var(--accent); }
+  .seq .m { font-family: var(--font-mono); font-size: 11.5px; }
+  .seq .m-a { fill: var(--accent); font-weight: 500; }
+  .flow-list { max-width: none; font-size: 0.93rem; }
+  .flow-list { columns: 2 320px; column-gap: 36px; display: block; }
+  .flow-list li { margin-bottom: 8px; break-inside: avoid; }
+
+  .related { display: grid; gap: 8px; font-size: 0.95rem; }
+
+  .foot {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.03em;
+    color: var(--ink-2);
+    border-top: 1px solid var(--rule);
+    padding-top: 16px;
+  }
+</style>
+
+<main class="page">
+  <header class="masthead">
+    <p class="kicker">PRD · Day 1 of 5 · Kaagaz-OCR</p>
+    <h1>Day 1: Pipeline Skeleton</h1>
+    <p class="lede">Stand up the local stack and the bare path of an upload, from the browser through storage, the database and Temporal, with placeholder processing steps. Later days fill those steps in.</p>
+    <dl class="meta">
+      <div><dt>Timebox</dt><dd>1 working day</dd></div>
+      <div><dt>Environment</dt><dd>Windows laptop, Docker, no GPU</dd></div>
+      <div><dt>Status</dt><dd>Ready to build</dd></div>
+      <div><dt>Date</dt><dd>24 September 2026</dd></div>
+    </dl>
+  </header>
+
+  <nav class="toc" aria-labelledby="toc-h">
+    <h2 id="toc-h">Contents</h2>
+    <ol>
+      <li><a href="#context">Project context</a></li>
+      <li><a href="#goal">Day 1 goal</a></li>
+      <li><a href="#tools">Install the tools</a></li>
+      <li><a href="#schema">Database schema with Alembic</a></li>
+      <li><a href="#api">FastAPI app</a></li>
+      <li><a href="#temporal">Temporal workflow</a></li>
+      <li><a href="#ui">Basic UI</a></li>
+      <li><a href="#scope">Not in Day 1</a></li>
+      <li><a href="#risks">Risks and fallbacks</a></li>
+      <li><a href="#handoff">End-of-day hand-off</a></li>
+    </ol>
+  </nav>
+
+  <section id="context" aria-labelledby="context-h">
+    <h2 id="context-h"><span class="sec-no">1</span>Project context</h2>
+
+    <h3>What we're building</h3>
+    <p>A document service that reads the company's English business documents (PDFs, Excel and CSV files, scans, photos and handwritten pages), turns them into clean rows in PostgreSQL plus searchable text, and manages the files. A colleague's NL-to-SQL agent, built with Hermes, then answers plain-English questions such as “How much did we pay Shinde Traders last quarter?” from those tables.</p>
+    <p>Reading the text isn't enough. NL-to-SQL needs typed tables such as <code>invoices.total</code> and <code>invoice_lines.quantity</code>, and every value must trace back to its page and position so answers can be checked.</p>
+
+    <h3>How a document moves through the system</h3>
+    <p>Every upload runs the same seven steps in a Temporal workflow. Today only Upload is real; the rest are placeholders that later days replace.</p>
+    <ol class="steps">
+      <li class="step now"><span class="s-name">Upload</span><span class="s-desc">The browser sends the file to storage and a workflow starts.</span><span class="s-day">Real today</span></li>
+      <li class="step"><span class="s-name">Register</span><span class="s-desc">Fingerprint the file, skip duplicates, file the original.</span><span class="s-day">Day 2</span></li>
+      <li class="step"><span class="s-name">Route</span><span class="s-desc">Decide per page: spreadsheet, text-layer PDF or scan.</span><span class="s-day">Day 2</span></li>
+      <li class="step"><span class="s-name">Parse</span><span class="s-desc">Turn pages into blocks with positions, using PaddleOCR for scans.</span><span class="s-day">Days 2–3</span></li>
+      <li class="step"><span class="s-name">Extract</span><span class="s-desc">Qwen3.5 fills a schema for each document type.</span><span class="s-day">Day 4</span></li>
+      <li class="step"><span class="s-name">Validate</span><span class="s-desc">Rules check the values; failures wait for a person.</span><span class="s-day">Day 4</span></li>
+      <li class="step"><span class="s-name">Index</span><span class="s-desc">Chunk and embed the text for search.</span><span class="s-day">Day 5</span></li>
+    </ol>
+
+    <h3>Decisions already made</h3>
+    <p>These are settled. Build on them rather than revisiting them on Day 1.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Area</th><th scope="col">Choice</th></tr></thead>
+        <tbody>
+          <tr><td>Workflow engine</td><td>Temporal with the Python SDK: the dev server on the laptop, Temporal Cloud when hosted.</td></tr>
+          <tr><td>API</td><td>FastAPI on Python 3.12.</td></tr>
+          <tr><td>Database</td><td>PostgreSQL 17 + pgvector, one database for tables, document text and search vectors. RDS when hosted.</td></tr>
+          <tr><td>File storage</td><td>The S3 API everywhere: SeaweedFS on the laptop, Amazon S3 when hosted.</td></tr>
+          <tr><td>Reading scans</td><td>PaddleOCR-VL-1.6 on a GPU when hosted; PaddleOCR PP-StructureV3 on the laptop's CPU. From Day 3.</td></tr>
+          <tr><td>Handwriting and fields</td><td>Qwen3.5: 2B or 4B through Ollama on the laptop, 9B through vLLM when hosted. From Day 3.</td></tr>
+          <tr><td>Search</td><td>Qwen3-Embedding-0.6B with pgvector and PostgreSQL full-text search. Day 5.</td></tr>
+          <tr><td>Sign-in</td><td>A dev login on the laptop; Amazon Cognito when hosted.</td></tr>
+          <tr><td>Infrastructure</td><td>Docker for every service. Terraform and GitHub Actions for AWS, after Day 5.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Ground rules</h3>
+    <ul>
+      <li>English documents only.</li>
+      <li>Everything runs on one laptop, with no GPU.</li>
+      <li>Sample documents only. No real client files on the laptop.</li>
+      <li>Every setting comes from environment variables in <code>.env</code>: no hard-coded hosts, keys or paths. Moving to AWS must be a settings change, not a code change.</li>
+      <li>Uploads add rows, never tables or databases.</li>
+      <li>Only IDs and small values pass through Temporal, never file contents.</li>
+    </ul>
+
+    <h3>The five-day plan</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Day</th><th scope="col">Theme</th><th scope="col">By the end of the day</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Pipeline skeleton (this document)</td><td>An upload travels from the UI to storage, the database and a Temporal run.</td></tr>
+          <tr><td>2</td><td>Files that need no model</td><td>Excel files and digital PDFs become blocks; file management endpoints work.</td></tr>
+          <tr><td>3</td><td>Scans and handwriting on CPU</td><td>Scanned pages and handwritten notes become blocks.</td></tr>
+          <tr><td>4</td><td>Fields, checks and review</td><td>Invoices land in typed tables, and wrong values wait for review.</td></tr>
+          <tr><td>5</td><td>Search and hand-off</td><td>SQL and search work for the NL-to-SQL agent.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted">Hosting in AWS starts after Day 5.</p>
+  </section>
+
+  <section id="goal" aria-labelledby="goal-h">
+    <h2 id="goal-h"><span class="sec-no">2</span>Day 1 goal</h2>
+    <div class="goal-box">
+      <p>By the end of Day 1, a person signs in to the basic UI, uploads a file, and watches it move from Uploading to Published while a Temporal run completes its placeholder steps.</p>
+    </div>
+
+    <h3>The upload flow built today</h3>
+    <figure>
+      <div class="diagram">
+        <svg class="seq" viewBox="0 0 1030 600" role="img" aria-label="Sequence of one upload. 1: the UI posts to /uploads. 2: the API inserts an uploads row in PostgreSQL. 3: the API returns a signed PUT link. 4: the browser puts the file straight into SeaweedFS. 5: the UI calls complete. 6: the API checks the object exists. 7: the API starts a Temporal workflow. 8: Temporal gives the worker a task for each step. 9: the worker writes rows to PostgreSQL. 10: the worker reports each step done. 11: the UI polls every 3 seconds. 12: the API reads the status from PostgreSQL.">
+          <defs>
+            <marker id="sq-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
+            <marker id="sq-ah-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-a" d="M0 0 L10 5 L0 10 z"/></marker>
+          </defs>
+
+          <rect class="lane" x="20" y="16" width="140" height="48" rx="10"/>
+          <text class="ln-t" x="90" y="37" text-anchor="middle">Basic UI</text>
+          <text class="ln-s" x="90" y="54" text-anchor="middle">browser</text>
+          <rect class="lane" x="190" y="16" width="140" height="48" rx="10"/>
+          <text class="ln-t" x="260" y="37" text-anchor="middle">FastAPI</text>
+          <text class="ln-s" x="260" y="54" text-anchor="middle">:8000</text>
+          <rect class="lane" x="360" y="16" width="140" height="48" rx="10"/>
+          <text class="ln-t" x="430" y="37" text-anchor="middle">SeaweedFS</text>
+          <text class="ln-s" x="430" y="54" text-anchor="middle">S3 API · :8333</text>
+          <rect class="lane" x="530" y="16" width="140" height="48" rx="10"/>
+          <text class="ln-t" x="600" y="37" text-anchor="middle">PostgreSQL</text>
+          <text class="ln-s" x="600" y="54" text-anchor="middle">pgvector · :5432</text>
+          <rect class="lane" x="700" y="16" width="140" height="48" rx="10"/>
+          <text class="ln-t" x="770" y="37" text-anchor="middle">Temporal</text>
+          <text class="ln-s" x="770" y="54" text-anchor="middle">dev server · :7233</text>
+          <rect class="lane" x="870" y="16" width="140" height="48" rx="10"/>
+          <text class="ln-t" x="940" y="37" text-anchor="middle">Worker</text>
+          <text class="ln-s" x="940" y="54" text-anchor="middle">cpu queue</text>
+
+          <path class="life" d="M90 64 V584 M260 64 V584 M430 64 V584 M600 64 V584 M770 64 V584 M940 64 V584"/>
+
+          <path class="msg" d="M90 104 H257" marker-end="url(#sq-ah)"/>
+          <text class="m" x="175" y="96" text-anchor="middle">1  POST /uploads</text>
+
+          <path class="msg" d="M260 144 H597" marker-end="url(#sq-ah)"/>
+          <text class="m" x="272" y="136">2  insert uploads row</text>
+
+          <path class="msg" d="M260 184 H93" marker-end="url(#sq-ah)"/>
+          <text class="m" x="175" y="176" text-anchor="middle">3  signed PUT link</text>
+
+          <path class="msg msg-a" d="M90 224 H427" marker-end="url(#sq-ah-a)"/>
+          <text class="m m-a" x="272" y="216">4  PUT the file</text>
+
+          <path class="msg" d="M90 264 H257" marker-end="url(#sq-ah)"/>
+          <text class="m" x="175" y="256" text-anchor="middle">5  POST …/complete</text>
+
+          <path class="msg" d="M260 304 H427" marker-end="url(#sq-ah)"/>
+          <text class="m" x="345" y="296" text-anchor="middle">6  check object</text>
+
+          <path class="msg" d="M260 344 H767" marker-end="url(#sq-ah)"/>
+          <text class="m" x="272" y="336">7  start workflow</text>
+
+          <path class="msg" d="M770 384 H937" marker-end="url(#sq-ah)"/>
+          <text class="m" x="855" y="376" text-anchor="middle">8  step tasks</text>
+
+          <path class="msg" d="M940 424 H603" marker-end="url(#sq-ah)"/>
+          <text class="m" x="685" y="416" text-anchor="middle">9  write rows</text>
+
+          <path class="msg" d="M940 464 H773" marker-end="url(#sq-ah)"/>
+          <text class="m" x="855" y="456" text-anchor="middle">10 step done</text>
+
+          <path class="msg" d="M90 504 H257" marker-end="url(#sq-ah)"/>
+          <text class="m" x="175" y="496" text-anchor="middle">11 poll every 3 s</text>
+
+          <path class="msg" d="M260 544 H597" marker-end="url(#sq-ah)"/>
+          <text class="m" x="272" y="536">12 read status</text>
+        </svg>
+      </div>
+      <figcaption>Twelve messages make one upload work. The file itself (step 4, in teal) never passes through the API. Steps 8 to 10 repeat for each of the seven activities, which are placeholders today.</figcaption>
+    </figure>
+    <ol class="flow-list">
+      <li>The UI asks the API for an upload, sending the file name, type and size.</li>
+      <li>The API validates them and inserts an <code>uploads</code> row with status pending.</li>
+      <li>The API returns the upload ID and a signed PUT link that expires in 15 minutes.</li>
+      <li>The browser sends the file straight to SeaweedFS under <code>incoming/{upload_id}/</code>.</li>
+      <li>The UI tells the API the upload finished.</li>
+      <li>The API checks the object exists with the stated size.</li>
+      <li>The API starts <code>ProcessDocument</code> with workflow ID <code>upload-{upload_id}</code>.</li>
+      <li>Temporal hands the worker one task per step.</li>
+      <li>The worker creates the <code>documents</code> row and updates its status and current step.</li>
+      <li>The worker reports each step done. Temporal records it, so a restarted worker resumes from there.</li>
+      <li>The UI polls every 3 seconds while anything is in progress.</li>
+      <li>The API reads each upload's status from PostgreSQL.</li>
+    </ol>
+
+    <div class="done">
+      <p class="done-label">Definition of done</p>
+      <ul>
+        <li><code>docker compose up</code> starts PostgreSQL, SeaweedFS, Temporal, the API and the worker with no errors.</li>
+        <li>Alembic creates every table in section 4 plus the pgvector extension, and <code>alembic downgrade base</code> removes them cleanly.</li>
+        <li><code>GET /health</code> reports the database, storage and Temporal as reachable.</li>
+        <li>Uploading a PDF, an Excel file and a photo at once through the UI puts all three in SeaweedFS under <code>incoming/</code>.</li>
+        <li>Each upload starts one Temporal run, visible at <code>localhost:8233</code>, and every placeholder step completes.</li>
+        <li>The UI shows each file reaching Published without a page reload.</li>
+        <li>Stopping the worker mid-run and starting it again lets the run finish from where it stopped.</li>
+        <li>The README explains how to run everything; <code>.env.example</code> is committed, and no secrets are.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="tools" aria-labelledby="tools-h">
+    <h2 id="tools-h"><span class="sec-no">3</span>Install the tools</h2>
+    <p>The laptop needs Windows 10 or 11 with WSL 2, 16 GB of RAM (8 GB works with smaller models later), about 30 GB of free disk, and no GPU.</p>
+
+    <h3>Tools</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Tool</th><th scope="col">Used for</th><th scope="col">Check it works</th></tr></thead>
+        <tbody>
+          <tr><td>WSL 2 with Ubuntu</td><td>The Linux environment for Docker and the code</td><td><code>wsl --status</code></td></tr>
+          <tr><td>Docker Desktop, WSL 2 backend</td><td>Running every service</td><td><code>docker compose version</code></td></tr>
+          <tr><td>Git</td><td>Version control</td><td><code>git --version</code></td></tr>
+          <tr><td>Python 3.12 and uv</td><td>App code and dependencies</td><td><code>uv --version</code></td></tr>
+          <tr><td>Temporal CLI</td><td>The dev server and inspecting runs</td><td><code>temporal --version</code></td></tr>
+          <tr><td>Ollama</td><td>Local models, used from Day 3</td><td><code>ollama --version</code></td></tr>
+          <tr><td>A database client, such as DBeaver or psql</td><td>Checking tables and rows</td><td>Connects to <code>localhost:5432</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note"><strong>Keep the repo inside WSL.</strong> Clone it into the Linux file system (for example <code>~/code/kaagaz-ocr</code>), not on a Windows drive such as <code>C:\</code>. Docker reads files much faster from there.</p>
+
+    <h3>Start these downloads today</h3>
+    <p>They're large and aren't needed until Day 3, so let them run in the background:</p>
+    <ul>
+      <li><code>ollama pull qwen3.5:4b</code>, or <code>qwen3.5:2b</code> if the laptop has 8 GB of RAM.</li>
+      <li>Qwen3-Embedding-0.6B from Hugging Face.</li>
+    </ul>
+
+    <h3>Local services in Docker Compose</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Service</th><th scope="col">What runs</th><th scope="col">Ports</th></tr></thead>
+        <tbody>
+          <tr><td>postgres</td><td>The <code>pgvector/pgvector:pg17</code> image</td><td>5432</td></tr>
+          <tr><td>seaweedfs</td><td>SeaweedFS with its S3 gateway (<code>weed server -s3</code>), with one access key configured</td><td>8333</td></tr>
+          <tr><td>temporal</td><td>The Temporal dev server (<code>temporal server start-dev</code>), keeping its state in a file so runs survive restarts</td><td>7233, UI on 8233</td></tr>
+          <tr><td>migrate</td><td>Runs <code>alembic upgrade head</code>, then exits</td><td>None</td></tr>
+          <tr><td>api</td><td>The FastAPI app and the basic UI</td><td>8000</td></tr>
+          <tr><td>worker</td><td>The Temporal worker on the <code>cpu</code> queue</td><td>None</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li>Named volumes for PostgreSQL, SeaweedFS and Temporal data, so nothing is lost on restart.</li>
+      <li>Health checks, so migrate, api and worker start only after the services they depend on are ready.</li>
+      <li>One <code>.env</code> file shared by api, worker and migrate.</li>
+    </ul>
+
+    <h3>Repo layout</h3>
+<pre class="tree">Kaagaz-OCR/
+├── docker-compose.yml
+├── .env.example
+├── README.md
+├── pyproject.toml          <span class="c">uv workspace root</span>
+├── uv.lock
+├── docker/                 <span class="c">Dockerfiles for the api and worker images</span>
+├── infra/seaweedfs/        <span class="c">local S3 credentials</span>
+├── shared/kaagaz_shared/   <span class="c">settings, database models, storage helper</span>
+├── migrations/             <span class="c">Alembic</span>
+├── api/kaagaz_api/         <span class="c">FastAPI app</span>
+│   └── static/             <span class="c">basic UI: index.html, app.js, app.css</span>
+├── worker/kaagaz_worker/   <span class="c">Temporal workflow and activities</span>
+├── tests/                  <span class="c">smoke tests</span>
+└── docs/                   <span class="c">architecture notes and PRDs</span></pre>
+
+    <h3>Settings in .env.example</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Setting</th><th scope="col">What it's for</th><th scope="col">Laptop value</th></tr></thead>
+        <tbody>
+          <tr><td><code>DATABASE_URL</code></td><td>PostgreSQL connection for the app and migrations</td><td><code>localhost:5432</code>; Compose uses <code>postgres</code></td></tr>
+          <tr><td><code>S3_ENDPOINT_URL</code></td><td>Storage address the app uses</td><td><code>http://localhost:8333</code>; Compose uses <code>seaweedfs</code></td></tr>
+          <tr><td><code>S3_PUBLIC_ENDPOINT_URL</code></td><td>Storage address inside signed links the browser opens</td><td><code>http://localhost:8333</code></td></tr>
+          <tr><td><code>S3_ACCESS_KEY</code>, <code>S3_SECRET_KEY</code></td><td>Storage credentials</td><td>the key configured in SeaweedFS</td></tr>
+          <tr><td><code>S3_BUCKET</code></td><td>The one bucket for every file</td><td><code>kaagaz-local</code></td></tr>
+          <tr><td><code>TEMPORAL_ADDRESS</code>, <code>TEMPORAL_NAMESPACE</code></td><td>Where the workflow engine is</td><td><code>localhost:7233</code>, <code>default</code>; Compose uses <code>temporal</code></td></tr>
+          <tr><td><code>TASK_QUEUE_CPU</code>, <code>TASK_QUEUE_GPU</code></td><td>Task queue names</td><td><code>cpu</code>, <code>gpu</code></td></tr>
+          <tr><td><code>DEV_AUTH_SECRET</code></td><td>Signs dev-login tokens</td><td>any long random string</td></tr>
+          <tr><td><code>MAX_UPLOAD_MB</code></td><td>Largest accepted file</td><td><code>50</code></td></tr>
+          <tr><td><code>PLACEHOLDER_STEP_SECONDS</code></td><td>How long each placeholder step waits, so a run can be interrupted in testing</td><td><code>3</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="done">
+      <p class="done-label">Done when</p>
+      <ul>
+        <li>Every check in the tools table prints a version.</li>
+        <li><code>docker compose up</code> brings every service to healthy.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="schema" aria-labelledby="schema-h">
+    <h2 id="schema-h"><span class="sec-no">4</span>Database schema with Alembic</h2>
+    <p>SQLAlchemy 2 models live in <code>shared/kaagaz_shared/models.py</code> and Alembic migrations in <code>migrations/</code>, connecting through <code>DATABASE_URL</code>. The first migration, <code>0001_initial</code>, enables the <code>vector</code> extension and creates every table below, including ones Day 1 doesn't write to yet, so later days add code rather than reshaping the schema.</p>
+
+    <h3>Conventions</h3>
+    <ul>
+      <li>UUID primary keys (<code>gen_random_uuid()</code>), and <code>created_at</code> and <code>updated_at</code> as <code>timestamptz</code> on every table.</li>
+      <li>snake_case names, with an index on every foreign key.</li>
+      <li>Status and type fields are text with a CHECK constraint, which is easier to extend than PostgreSQL enums.</li>
+      <li>Soft delete through <code>deleted_at</code> on documents and folders.</li>
+      <li>A position on a page is a <code>bbox</code> of <code>[x0, y0, x1, y1]</code> in pixels of the page image, always stored with its page.</li>
+      <li>Money is <code>numeric(14,2)</code>; quantities are <code>numeric(14,3)</code>.</li>
+    </ul>
+
+    <h3>Uploads and files</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Table</th><th scope="col">Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>uploads</code></td><td>One row per upload attempt.<span class="cols">id, original_filename, content_type, size_bytes, incoming_key, uploaded_by, status (pending, uploaded, registered, duplicate, failed), error, document_id, workflow_id, created_at, completed_at</span></td></tr>
+          <tr><td><code>documents</code></td><td>One row per unique file.<span class="cols">id, sha256 (unique when set), original_filename, content_type, size_bytes, storage_key, doc_type, status (processing, needs_review, published, failed), current_step, page_count, summary, folder_id, uploaded_by, created_at, updated_at, deleted_at</span></td></tr>
+          <tr><td><code>folders</code></td><td>Virtual folders; files aren't moved on disk.<span class="cols">id, name, parent_id, created_by, deleted_at</span></td></tr>
+          <tr><td><code>tags</code>, <code>document_tags</code></td><td>Tag names, and which documents carry them.<span class="cols">tags: id, name (unique) · document_tags: document_id, tag_id</span></td></tr>
+          <tr><td><code>document_versions</code></td><td>A corrected re-upload linked to the document it replaces.<span class="cols">id, document_id, supersedes_document_id, note, created_by</span></td></tr>
+          <tr><td><code>document_links</code></td><td>Related documents, such as invoice ↔ purchase order ↔ delivery note.<span class="cols">id, from_document_id, to_document_id, link_type</span></td></tr>
+          <tr><td><code>audit_log</code></td><td>Who did what, and when.<span class="cols">id, actor, action, entity_type, entity_id, details (JSONB), created_at</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Document content</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Table</th><th scope="col">Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>pages</code></td><td>One row per page. Unique on (document_id, page_no).<span class="cols">id, document_id, page_no, route (spreadsheet, text_layer, ocr, handwriting), image_key, width_px, height_px, status</span></td></tr>
+          <tr><td><code>blocks</code></td><td>Every piece of a page, in reading order.<span class="cols">id, document_id, page_id, block_no, block_type (heading, paragraph, table, table_cell, stamp, signature, handwriting, figure), text, bbox, confidence, source, parent_block_id, extraction_run_id</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Extraction and quality</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Table</th><th scope="col">Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>extraction_runs</code></td><td>Which pipeline and model versions processed a document.<span class="cols">id, document_id, pipeline_version, models (JSONB), status, started_at, finished_at, error</span></td></tr>
+          <tr><td><code>invoices</code></td><td>The first typed document table.<span class="cols">id, document_id, extraction_run_id, invoice_no, vendor_name, vendor_gstin, invoice_date, due_date, currency, subtotal, tax_total, total, received_on</span></td></tr>
+          <tr><td><code>invoice_lines</code></td><td>One row per invoice line.<span class="cols">id, invoice_id, line_no, description, hsn_code, quantity, unit_price, amount</span></td></tr>
+          <tr><td><code>extracted_fields</code></td><td>Fields for document types without their own tables yet.<span class="cols">id, document_id, extraction_run_id, doc_type, data (JSONB)</span></td></tr>
+          <tr><td><code>field_sources</code></td><td>Where each extracted value came from.<span class="cols">id, document_id, table_name, row_id, column_name, block_id, page_no, bbox, model, confidence, reviewed_by, reviewed_at</span></td></tr>
+          <tr><td><code>review_tasks</code></td><td>Values waiting for a person to check.<span class="cols">id, document_id, table_name, row_id, column_name, reason, current_value, corrected_value, status (open, resolved), resolved_by, resolved_at</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Search</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Table</th><th scope="col">Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>chunks</code></td><td>Searchable pieces of text. Indexes: HNSW on <code>embedding</code> (cosine) and GIN on <code>tsv</code>.<span class="cols">id, document_id, chunk_no, page_from, page_to, section_path, header, text, embedding vector(1024), tsv (generated full-text column)</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Steps</h3>
+    <ol>
+      <li>Initialise Alembic with its async template; <code>env.py</code> reads <code>DATABASE_URL</code>.</li>
+      <li>Write <code>0001_initial</code>, by hand or from autogenerate, then review it line by line. The <code>vector</code> extension and the HNSW index need adding by hand.</li>
+      <li>Run <code>alembic upgrade head</code> from the migrate service on every <code>docker compose up</code>.</li>
+      <li>Run <code>alembic downgrade base</code>, then upgrade again, to prove the migration reverses cleanly.</li>
+    </ol>
+    <div class="done">
+      <p class="done-label">Done when</p>
+      <ul>
+        <li>Every table above exists, and the <code>vector</code> extension is installed.</li>
+        <li>Downgrading to base and upgrading again runs without errors.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="api" aria-labelledby="api-h">
+    <h2 id="api-h"><span class="sec-no">5</span>FastAPI app</h2>
+    <p>The API is the front door: the UI talks only to it, and it's the only part that hands out access to storage. FastAPI's interactive docs at <code>/docs</code> double as the contract for the UI.</p>
+
+    <h3>Structure</h3>
+    <ul>
+      <li>An app factory in <code>api/kaagaz_api/main.py</code> with routers for health, auth, uploads and documents.</li>
+      <li>Settings loaded from <code>.env</code> with pydantic-settings.</li>
+      <li>Async SQLAlchemy sessions over asyncpg, using the models in <code>shared/</code>.</li>
+      <li>A Temporal client created once at startup.</li>
+      <li>The basic UI's static files mounted at <code>/</code>.</li>
+    </ul>
+
+    <h3>Storage helper</h3>
+    <p>In <code>shared/kaagaz_shared/storage.py</code>, used by the API today and by the worker from Day 2.</p>
+    <ul>
+      <li>Creates the bucket on startup if it's missing.</li>
+      <li>Key layout: <code>incoming/{upload_id}/{filename}</code> today; <code>originals/{sha256}.{ext}</code>, <code>pages/{doc_id}/{n}.png</code> and <code>parsed/{doc_id}/v{run}.json</code> from Day 2.</li>
+      <li>Functions for a signed upload link (PUT, 15 minutes, content type fixed), a signed download link, object info (exists and size), copy, and put and get of bytes.</li>
+      <li>Uses boto3 with path-style addressing and signature version 4, which S3-compatible stores like SeaweedFS need.</li>
+      <li>Signed links use <code>S3_PUBLIC_ENDPOINT_URL</code> so the browser can reach them; server-side calls use <code>S3_ENDPOINT_URL</code>.</li>
+    </ul>
+
+    <h3>Dev sign-in</h3>
+    <ul>
+      <li><code>POST /auth/dev-login</code> takes a display name and returns a signed token in an HttpOnly cookie (SameSite=Lax, valid 12 hours).</li>
+      <li>Every endpoint except <code>/health</code> and <code>/auth/dev-login</code> requires it. The name is written to <code>uploaded_by</code> and <code>audit_log.actor</code>.</li>
+      <li>Keep all of it behind one <code>current_user</code> dependency, so Cognito can replace it later without touching the routes.</li>
+    </ul>
+
+    <h3>Endpoints</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Method</th><th scope="col">Path</th><th scope="col">What it does</th></tr></thead>
+        <tbody>
+          <tr><td><span class="verb">GET</span></td><td class="path">/health</td><td>Checks the database, storage and Temporal, and returns each one's state.</td></tr>
+          <tr><td><span class="verb post">POST</span></td><td class="path">/auth/dev-login</td><td>Signs in with a display name.</td></tr>
+          <tr><td><span class="verb post">POST</span></td><td class="path">/auth/logout</td><td>Clears the sign-in cookie.</td></tr>
+          <tr><td><span class="verb">GET</span></td><td class="path">/auth/me</td><td>Returns the signed-in user.</td></tr>
+          <tr><td><span class="verb post">POST</span></td><td class="path">/uploads</td><td>Takes the file name, content type and size. Rejects unsupported types or files over <code>MAX_UPLOAD_MB</code>, creates an <code>uploads</code> row (pending), and returns the upload ID, the signed PUT link and its expiry.</td></tr>
+          <tr><td><span class="verb post">POST</span></td><td class="path">/uploads/{id}/complete</td><td>Confirms the object exists with the stated size, marks the upload uploaded, starts <code>ProcessDocument</code> with workflow ID <code>upload-{id}</code>, and returns the workflow ID. Calling it twice returns the same run.</td></tr>
+          <tr><td><span class="verb">GET</span></td><td class="path">/uploads</td><td>Recent uploads, newest first, each with one <code>display_status</code> (see 7) and its document ID once registered. Filters: status, and only mine.</td></tr>
+          <tr><td><span class="verb">GET</span></td><td class="path">/uploads/{id}</td><td>One upload with its document, current step and a link to its run in the Temporal UI.</td></tr>
+          <tr><td><span class="verb">GET</span></td><td class="path">/documents</td><td>Registered documents, paginated, with a file-name search.</td></tr>
+          <tr><td><span class="verb">GET</span></td><td class="path">/documents/{id}</td><td>One document's details.</td></tr>
+          <tr><td><span class="verb">GET</span></td><td class="path">/documents/{id}/download</td><td>A signed download link for the original file.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Rules</h3>
+    <ul>
+      <li>Accepted files: PDF, XLSX, XLS, CSV, PNG, JPG and TIFF. Check both the extension and the declared content type.</li>
+      <li>Errors share one JSON shape, <code>{"error": {"code": "…", "message": "…"}}</code>: 400 for bad input, 401 without sign-in, 404 for unknown IDs and 409 for conflicts.</li>
+      <li>Every state change writes an <code>audit_log</code> row.</li>
+      <li>Logs are structured JSON, with a request ID on every line.</li>
+    </ul>
+    <div class="done">
+      <p class="done-label">Done when</p>
+      <ul>
+        <li><code>/docs</code> lists every endpoint above, and <code>/health</code> is green.</li>
+        <li>An upload made with curl, or through the UI, starts a Temporal run.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="temporal" aria-labelledby="temporal-h">
+    <h2 id="temporal-h"><span class="sec-no">6</span>Temporal workflow</h2>
+    <p>Temporal runs each document's steps in order, retries failed steps, and remembers progress, so a crashed worker picks up where it stopped. The dev server runs with a database file so its state survives restarts, and its web UI at <code>localhost:8233</code> shows every run. Use the <code>default</code> namespace.</p>
+
+    <h3>ProcessDocument(upload_id)</h3>
+    <p>Runs these activities in order. Today each placeholder logs, waits <code>PLACEHOLDER_STEP_SECONDS</code>, and records its name in <code>documents.current_step</code>.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Activity</th><th scope="col">Day 1 behaviour</th><th scope="col">Becomes real on</th></tr></thead>
+        <tbody>
+          <tr><td><code>register_upload</code></td><td>Creates the <code>documents</code> row (status processing), links it to the upload, and marks the upload registered.</td><td>Day 2: fingerprint, duplicates, <code>originals/</code></td></tr>
+          <tr><td><code>route_pages</code></td><td>Placeholder</td><td>Day 2</td></tr>
+          <tr><td><code>parse_pages</code></td><td>Placeholder</td><td>Days 2–3</td></tr>
+          <tr><td><code>extract_fields</code></td><td>Placeholder</td><td>Day 4</td></tr>
+          <tr><td><code>validate_fields</code></td><td>Placeholder</td><td>Day 4</td></tr>
+          <tr><td><code>index_document</code></td><td>Placeholder</td><td>Day 5</td></tr>
+          <tr><td><code>publish_document</code></td><td>Sets the status to published.</td><td>Real today</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li>Define the <code>review_finished</code> signal now, even though it does nothing yet, so the API's contract is fixed.</li>
+      <li>If a step fails for good, a final step sets the status to failed and records the error.</li>
+    </ul>
+
+    <h3>Settings for every activity</h3>
+    <ul>
+      <li>A start-to-close timeout: 5 minutes for the placeholders.</li>
+      <li>Retries start after 2 seconds, double each time, and stop after 5 attempts. Bad input is marked non-retryable.</li>
+      <li>The workflow ID is <code>upload-{upload_id}</code>, so one upload can never start two runs.</li>
+      <li>Workflow code does no I/O. Database, storage and model calls happen only inside activities.</li>
+      <li>Activities take and return IDs and small values only, never file contents.</li>
+    </ul>
+
+    <h3>Worker</h3>
+    <p>A separate container that registers the workflow and activities on the <code>cpu</code> task queue and shuts down cleanly when stopped. The <code>gpu</code> queue name is already in settings; its worker arrives on Day 3.</p>
+    <div class="done">
+      <p class="done-label">Done when</p>
+      <ul>
+        <li>A completed upload starts a run, and the Temporal UI shows all seven activities completed.</li>
+        <li>Stopping the worker mid-run and starting it again lets the run finish without starting over.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="ui" aria-labelledby="ui-h">
+    <h2 id="ui-h"><span class="sec-no">7</span>Basic UI</h2>
+    <p>Lets anyone try the pipeline without curl. Plain HTML, CSS and a small JavaScript file served by FastAPI at <code>/</code>: no framework, no build step, no Node.</p>
+
+    <h3>Screens</h3>
+    <ul>
+      <li><strong>Sign-in.</strong> A name field and a Continue button, with a note that this dev login is replaced by Cognito later.</li>
+      <li><strong>Documents home.</strong> A header with the app name, the signed-in user and Sign out. An upload area that takes drag-and-drop or a file picker, accepts several files at once, and shows a progress bar for each. Below it, a Recent uploads table: file name, type, size, uploaded by, uploaded at, status, and actions to view the run in the Temporal UI or download the file once it's registered.</li>
+      <li><strong>Upload detail.</strong> Opens from a row: the file's details, current step, timestamps and workflow ID.</li>
+    </ul>
+
+    <h3>Statuses</h3>
+    <p>Shown as chips: Uploading (still in the browser), Waiting (pending or uploaded), Processing with the step name, Needs review (from Day 4), Published, Duplicate (from Day 2) and Failed with the reason. The API computes <code>display_status</code>, so the UI never works it out itself.</p>
+
+    <h3>Behaviour</h3>
+    <ul>
+      <li>Check the file type and size in the browser before uploading; the server checks again.</li>
+      <li>While any row is Uploading, Waiting or Processing, refresh the table every 3 seconds. Stop once everything has settled.</li>
+      <li>Empty state: “No documents yet. Drop a PDF, spreadsheet or image to start.”</li>
+      <li>Errors appear next to the file they belong to and say what to do next.</li>
+      <li>Works with a keyboard: the upload area has a real button, and focus is always visible.</li>
+    </ul>
+    <div class="done">
+      <p class="done-label">Done when</p>
+      <ul>
+        <li>A signed-in user uploads a PDF, an Excel file and a photo at once, and watches each reach Published without reloading the page.</li>
+        <li>Each row's View run link opens that run in the Temporal UI.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="scope" aria-labelledby="scope-h">
+    <h2 id="scope-h"><span class="sec-no">8</span>Not in Day 1</h2>
+    <ul>
+      <li>Fingerprinting, duplicate detection and moving files to <code>originals/</code> (Day 2).</li>
+      <li>Any real parsing, OCR or model calls (Days 2 to 4).</li>
+      <li>Folders, tags and versions in the API or UI (Day 2).</li>
+      <li>The review screen (Day 4) and search (Day 5).</li>
+      <li>AWS, Cognito, Terraform and CI (after Day 5).</li>
+    </ul>
+  </section>
+
+  <section id="risks" aria-labelledby="risks-h">
+    <h2 id="risks-h"><span class="sec-no">9</span>Risks and fallbacks</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">If this happens</th><th scope="col">Do this</th></tr></thead>
+        <tbody>
+          <tr><td>The browser can't upload straight to SeaweedFS because of CORS errors</td><td>Allow <code>http://localhost:8000</code> in SeaweedFS. If that isn't working within 30 minutes, send uploads through a laptop-only API endpoint behind the same client function, and note it for later.</td></tr>
+          <tr><td>Signed links fail with a signature error</td><td>Check path-style addressing and signature version 4, and that the host in the link matches <code>S3_PUBLIC_ENDPOINT_URL</code>.</td></tr>
+          <tr><td>Docker is slow on Windows</td><td>Keep the repo in the WSL file system, and give WSL enough memory in <code>.wslconfig</code>.</td></tr>
+          <tr><td>A task runs well past its estimate</td><td>Flag it early and move on. Placeholders are fine today.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="handoff" aria-labelledby="handoff-h">
+    <h2 id="handoff-h"><span class="sec-no">10</span>End-of-day hand-off</h2>
+    <ul>
+      <li>A pull request, or a pushed branch, with the work above.</li>
+      <li>A two-minute screen recording: sign in, upload three files, watch them publish, open a run in the Temporal UI, and restart the worker mid-run.</li>
+      <li>Notes on anything that took longer than expected, and any setting that differs from this document.</li>
+    </ul>
+    <div class="related">
+      <p class="muted">Related pages (ask for access if a link doesn't open):</p>
+      <p><a href="https://claude.ai/artifact/7ATLDAJRxG3Qaab16NhjN8" target="_blank" rel="noopener">Document-to-SQL Pipeline</a>: the full architecture.</p>
+      <p><a href="https://claude.ai/artifact/4TmQt2EUoM784YqgWeyQUo" target="_blank" rel="noopener">Five-Day Laptop Build</a>: the day-by-day checklist.</p>
+    </div>
+  </section>
+
+  <footer class="foot">Day 1 of 5 · Kaagaz-OCR · 24 September 2026</footer>
+</main>
+</html>

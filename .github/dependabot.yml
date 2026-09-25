@@ -1,0 +1,24 @@
+# Once a week, one grouped pull request each for the SHA-pinned actions in
+# .github/workflows and the pinned images in docker-compose.yml. They go through CI and
+# Vrushit's review like any other pull request. The prefix makes their titles pass CI.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(repo)
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(repo)
+    groups:
+      images:
+        patterns: ["*"]

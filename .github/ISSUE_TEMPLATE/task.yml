@@ -1,0 +1,70 @@
+name: Task
+description: One workstream from a day's PRD
+title: "[D?] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A task isn't ready to start until its acceptance criteria are filled in.
+
+  - type: dropdown
+    id: day
+    attributes:
+      label: Day
+      options:
+        - "Start now"
+        - "Day 1: setup and skeleton"
+        - "Day 2: files that need no model"
+        - "Day 3: scans and handwriting on CPU"
+        - "Day 4: fields, checks and review"
+        - "Day 5: search and hand-off"
+        - "After day 5: hosting in AWS"
+    validations:
+      required: true
+
+  - type: input
+    id: prd
+    attributes:
+      label: PRD section
+      description: Where this task is specified.
+      placeholder: "docs/prd/day-1-prd.html, section 5"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs to exist
+      description: Describe the outcome, not the implementation.
+      placeholder: Marking an upload complete starts one ProcessDocument run with workflow ID upload-{id}.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: The PRD's "Done when" items for this workstream. Each line must be checkable by someone else.
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes, constraints and decisions that apply
+      description: Link the decision in docs/architecture.md, or the earlier discussion, that applies.
+
+  - type: checkboxes
+    id: approval
+    attributes:
+      label: Does this need a plan approved before starting?
+      options:
+        - label: It changes the database schema
+        - label: It changes the workflow's steps
+        - label: It changes an API contract
+        - label: It adds a dependency
+        - label: None of these
