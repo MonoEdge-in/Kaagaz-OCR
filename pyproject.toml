@@ -6,17 +6,18 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 # Day 1 adds kaagaz-shared and kaagaz-worker here, to the members and to the sources.
-dependencies = ["kaagaz-api"]
+dependencies = ["kaagaz-api", "kaagaz-shared"]
 
 [tool.uv]
 # The root only ties the workspace together; it is not a package itself.
 package = false
 
 [tool.uv.workspace]
-members = ["api"]
+members = ["api", "shared"]
 
 [tool.uv.sources]
 kaagaz-api = { workspace = true }
+kaagaz-shared = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -55,9 +56,9 @@ known-first-party = ["kaagaz_shared", "kaagaz_api", "kaagaz_worker"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-mypy_path = ["api"]
+mypy_path = ["api", "shared"]
 # Day 1 adds shared/kaagaz_shared and worker/kaagaz_worker here and to mypy_path.
-files = ["api/kaagaz_api", "tests", ".claude/hooks", ".github/scripts"]
+files = ["api/kaagaz_api", "shared/kaagaz_shared", "tests", ".claude/hooks", ".github/scripts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
