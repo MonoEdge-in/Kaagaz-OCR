@@ -62,6 +62,12 @@ mypy_path = ["api", "shared"]
 # Day 1 adds shared/kaagaz_shared and worker/kaagaz_worker here and to mypy_path.
 files = ["api/kaagaz_api", "shared/kaagaz_shared", "tests", ".claude/hooks", ".github/scripts"]
 
+# boto3 ships no type information, so mypy can't read it. This only says so; our own code
+# is still checked in full. Drop it if typed stubs for boto3 are approved.
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
