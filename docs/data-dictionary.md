@@ -18,3 +18,65 @@ Every table and column in the Kaagaz-OCR database, in plain English. It is writt
 ## Tables
 
 The tables arrive with the migrations after `0001_initial`, each with its own section here.
+
+## Files and management
+
+### folders
+
+Virtual folders. Files never move in storage.
+
+| Column | Type | Meaning |
+|---|---|---|
+| name | text | Folder name. |
+| parent_id | uuid, null | The folder it sits in; null at the top. Joins `folders.id`. |
+| created_by | text | Display name. |
+| deleted_at | timestamptz, null | Soft delete. |
+
+### documents
+
+One row per unique file, recognised by its fingerprint.
+
+| Column | Type | Meaning |
+|---|---|---|
+| sha256 | text, null, unique | SHA-256 of the file, 64 lowercase hex characters. Null until registered. |
+| original_filename | text | Name of the first upload of this file. *Untrusted.* |
+| content_type | text | MIME type. |
+| size_bytes | bigint | File size in bytes. |
+| storage_key | text | Where the original is kept, `originals/{sha256}.{ext}`. |
+| doc_type | text, null | Set on Day 4; no allowed-value list yet. |
+| status | text | `processing`, `needs_review` (waiting for a person), `published`, `failed`. Default `processing`. |
+| current_step | text, null | The workflow step running now, e.g. `parse`. |
+| page_count | integer, null | Number of pages (sheets for a spreadsheet), 0 or more. |
+| summary | text, null | Short summary of the document. *Untrusted* if drawn from its text. |
+| folder_id | uuid, null | Joins `folders.id`. |
+| uploaded_by | text | Display name of the first uploader. |
+| deleted_at | timestamptz, null | Soft delete. |
+
+### uploads
+
+One row per upload attempt, duplicates and failures included.
+
+| Column | Type | Meaning |
+|---|---|---|
+| original_filename | text | The file's name as the user sent it. *Untrusted.* |
+| content_type | text | MIME type the browser declared, e.g. `application/pdf`. |
+| size_bytes | bigint | File size in bytes, more than 0. |
+| incoming_key | text | Storage key `incoming/{upload_id}/{filename}`. |
+| uploaded_by | text | Display name of the signed-in user. |
+| status | text | `pending` (row made, file not yet sent), `uploaded` (file in storage), `registered` (linked to a document), `duplicate` (same file as an existing document), `failed`. Default `pending`. |
+| error | text, null | Short reason when failed. Holds no document values. |
+| document_id | uuid, null | The document this upload became, or matched. Joins `documents.id`. |
+| workflow_id | text, null | Temporal workflow ID, `upload-{id}`. |
+| completed_at | timestamptz, null | When the browser reported the upload finished. |
+
+### audit_log
+
+Who did what, and when. Append-only.
+
+| Column | Type | Meaning |
+|---|---|---|
+| actor | text | Display name, or the worker. |
+| action | text | What happened, e.g. `upload.created`. |
+| entity_type | text | The kind of thing acted on, e.g. `upload`, `document`. |
+| entity_id | uuid, null | Its id. No foreign key: it points into several tables. |
+| details | jsonb | IDs and statuses only, never document values. Default `{}`. |
