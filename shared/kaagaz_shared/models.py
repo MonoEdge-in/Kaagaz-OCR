@@ -133,3 +133,51 @@ class AuditLog(IdMixin, Base):
     entity_type: Mapped[str]
     entity_id: Mapped[uuid.UUID | None]
     details: Mapped[dict[str, Any]] = mapped_column(server_default=sql_text("'{}'::jsonb"))
+
+
+# ---------------------------------------------------------------------------
+# Tags, versions and links between documents (migration 0003)
+# ---------------------------------------------------------------------------
+
+
+class Tag(TimestampsMixin, Base):
+    __tablename__ = "tags"
+
+    name: Mapped[str] = mapped_column(unique=True)
+
+
+class DocumentTag(Base):
+    """Which documents carry which tags. A pure link row: no id and no `updated_at`."""
+
+    __tablename__ = "document_tags"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class DocumentVersion(TimestampsMixin, Base):
+    """A corrected re-upload, linked to the document it replaces."""
+
+    __tablename__ = "document_versions"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id"), index=True)
+    supersedes_document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id"), index=True
+    )
+    note: Mapped[str | None]
+    created_by: Mapped[str]
+
+
+class DocumentLink(TimestampsMixin, Base):
+    """Related documents, such as an invoice and its purchase order."""
+
+    __tablename__ = "document_links"
+
+    from_document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id"), index=True)
+    to_document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id"), index=True)
+    link_type: Mapped[str]

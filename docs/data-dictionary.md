@@ -80,3 +80,17 @@ Who did what, and when. Append-only.
 | entity_type | text | The kind of thing acted on, e.g. `upload`, `document`. |
 | entity_id | uuid, null | Its id. No foreign key: it points into several tables. |
 | details | jsonb | IDs and statuses only, never document values. Default `{}`. |
+
+## Tags, versions and links
+
+### tags and document_tags
+
+`tags.name` (text, unique) is a tag. `document_tags` links a document to a tag: `document_id` and `tag_id` join `documents.id` and `tags.id`, `created_at` is when the tag was added. Deleting the document or the tag removes the link (CASCADE). It has no `id` and no `updated_at`: a link is only added or removed, never changed.
+
+### document_versions
+
+A corrected re-upload linked to the document it replaces. `document_id` is the new document, `supersedes_document_id` the old one (both join `documents.id`), `note` (text, null) says why, `created_by` who linked them. No CHECK yet against a document superseding itself: that rule is a Day 2 decision.
+
+### document_links
+
+Related documents, such as an invoice and its purchase order. `from_document_id` and `to_document_id` join `documents.id`; `link_type` (text) names the relation, free text for now. No CHECK yet against a document linking to itself: a Day 2 decision.

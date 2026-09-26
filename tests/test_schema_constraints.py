@@ -158,3 +158,70 @@ async def test_deleting_a_document_an_upload_points_at_fails(connection: AsyncCo
             await connection.execute(
                 sa.delete(TABLES["documents"]).where(TABLES["documents"].c.id == document_id)
             )
+
+
+async def test_a_document_can_carry_more_than_one_tag(connection: AsyncConnection) -> None:
+    document_id = await insert(connection, "documents", **document_values())
+    tag_id = await insert(connection, "tags", name="urgent")
+    await connection.execute(
+        sa.insert(TABLES["document_tags"]).values(document_id=document_id, tag_id=tag_id)
+    )
+
+
+async def test_a_tag_name_is_unique(connection: AsyncConnection) -> None:
+    await insert(connection, "tags", name="urgent")
+    await refused(connection, constraint("uq_tags_name"), "tags", name="urgent")
+
+
+async def test_a_document_and_its_tag_cannot_repeat(connection: AsyncConnection) -> None:
+    document_id = await insert(connection, "documents", **document_values())
+    tag_id = await insert(connection, "tags", name="urgent")
+    await connection.execute(
+        sa.insert(TABLES["document_tags"]).values(document_id=document_id, tag_id=tag_id)
+    )
+    with pytest.raises(IntegrityError, match=constraint("pk_document_tags")):
+        async with connection.begin_nested():
+            await connection.execute(
+                sa.insert(TABLES["document_tags"]).values(document_id=document_id, tag_id=tag_id)
+            )
+
+
+async def test_removing_a_document_drops_its_tags(connection: AsyncConnection) -> None:
+    document_id = await insert(connection, "documents", **document_values())
+    tag_id = await insert(connection, "tags", name="urgent")
+    await connection.execute(
+        sa.insert(TABLES["document_tags"]).values(document_id=document_id, tag_id=tag_id)
+    )
+    await connection.execute(
+        sa.delete(TABLES["documents"]).where(TABLES["documents"].c.id == document_id)
+    )
+    remaining = await connection.execute(
+        sa.select(sa.func.count()).select_from(TABLES["document_tags"])
+    )
+    assert remaining.scalar_one() == 0
+
+
+async def test_a_version_links_two_documents(connection: AsyncConnection) -> None:
+    old_id = await insert(connection, "documents", **document_values())
+    new_id = await insert(connection, "documents", **document_values())
+    version_id = await insert(
+        connection,
+        "document_versions",
+        document_id=new_id,
+        supersedes_document_id=old_id,
+        created_by="Tushar",
+    )
+    assert version_id
+
+
+async def test_a_link_names_two_documents(connection: AsyncConnection) -> None:
+    invoice_id = await insert(connection, "documents", **document_values())
+    po_id = await insert(connection, "documents", **document_values())
+    link_id = await insert(
+        connection,
+        "document_links",
+        from_document_id=invoice_id,
+        to_document_id=po_id,
+        link_type="purchase_order",
+    )
+    assert link_id

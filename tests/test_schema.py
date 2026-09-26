@@ -1,4 +1,5 @@
-"""The migrations build the schema: the vector extension, then files and management.
+"""The migrations build the schema: the vector extension, files and management, then
+tags, versions and links between documents.
 
 Tests marked `db` read the migrated database (CI runs `alembic upgrade head` first). More
 tables arrive in later PRs; this file only checks what exists so far.
@@ -12,7 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from kaagaz_shared.models import NAMING_CONVENTION, Base
 
-TABLES_SO_FAR = {"folders", "documents", "uploads", "audit_log"}
+TABLES_SO_FAR = {
+    "folders",
+    "documents",
+    "uploads",
+    "audit_log",
+    "tags",
+    "document_tags",
+    "document_versions",
+    "document_links",
+}
 
 
 def test_constraints_get_predictable_names() -> None:
