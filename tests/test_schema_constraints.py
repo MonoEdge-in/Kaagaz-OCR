@@ -5,11 +5,13 @@ because some other rule happened to fire. Every test needs the migrated database
 More tables arrive in later PRs, with their own constraint tests.
 """
 
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -59,6 +61,52 @@ def upload_values(**overrides: Any) -> dict[str, Any]:
         "uploaded_by": "Tushar",
     }
     return values | overrides
+
+
+@dataclass(frozen=True)
+class Tree:
+    """A document with one page and one run: what a block hangs from."""
+
+    document_id: UUID
+    page_id: UUID
+    run_id: UUID
+
+
+async def make_tree(connection: AsyncConnection) -> Tree:
+    document_id = await insert(connection, "documents", **document_values())
+    page_id = await insert(
+        connection, "pages", document_id=document_id, page_no=1, route="text_layer", status="done"
+    )
+    run_id = await insert(
+        connection,
+        "extraction_runs",
+        document_id=document_id,
+        pipeline_version="0.1.0",
+        status="running",
+    )
+    return Tree(document_id, page_id, run_id)
+
+
+def block_values(
+    document_id: UUID, page_id: UUID, run_id: UUID, **overrides: Any
+) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "document_id": document_id,
+        "page_id": page_id,
+        "extraction_run_id": run_id,
+        "block_no": 1,
+        "block_type": "paragraph",
+        "text": "Total 1,200.00",
+        "bbox": [10.0, 20.0, 110.0, 40.0],
+        "confidence": 0.9,
+        "source": "pdfplumber",
+    }
+    return values | overrides
+
+
+@pytest.fixture
+async def tree(connection: AsyncConnection) -> Tree:
+    return await make_tree(connection)
 
 
 async def test_every_table_accepts_a_valid_row(connection: AsyncConnection) -> None:
@@ -225,3 +273,181 @@ async def test_a_link_names_two_documents(connection: AsyncConnection) -> None:
         link_type="purchase_order",
     )
     assert link_id
+
+
+async def test_a_document_gets_pages_a_run_and_blocks(connection: AsyncConnection) -> None:
+    tree = await make_tree(connection)
+    block_id = await insert(
+        connection, "blocks", **block_values(tree.document_id, tree.page_id, tree.run_id)
+    )
+    assert block_id
+
+
+async def test_page_route_and_status_lists_are_enforced(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    await refused(
+        connection,
+        constraint("ck_pages_page_no_positive"),
+        "pages",
+        document_id=tree.document_id,
+        page_no=0,
+        status="done",
+    )
+    await refused(
+        connection,
+        constraint("ck_pages_route"),
+        "pages",
+        document_id=tree.document_id,
+        page_no=2,
+        route="scanned",
+        status="done",
+    )
+    await refused(
+        connection,
+        constraint("ck_pages_status"),
+        "pages",
+        document_id=tree.document_id,
+        page_no=2,
+        status="waiting",
+    )
+
+
+async def test_a_page_number_is_unique_per_document(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    await refused(
+        connection,
+        constraint("uq_pages_document_id_page_no"),
+        "pages",
+        document_id=tree.document_id,
+        page_no=1,
+        status="done",
+    )
+
+
+async def test_extraction_run_status_list_is_enforced(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    await refused(
+        connection,
+        constraint("ck_extraction_runs_status"),
+        "extraction_runs",
+        document_id=tree.document_id,
+        pipeline_version="0.1.0",
+        status="waiting",
+    )
+
+
+async def test_a_document_has_at_most_one_current_run(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    runs = TABLES["extraction_runs"]
+    await connection.execute(
+        sa.update(runs).where(runs.c.id == tree.run_id).values(status="succeeded")
+    )
+    # Any number of older runs may be superseded or failed.
+    await insert(
+        connection,
+        "extraction_runs",
+        document_id=tree.document_id,
+        pipeline_version="0.1.0",
+        status="superseded",
+    )
+    await refused(
+        connection,
+        constraint("uq_extraction_runs_current_run"),
+        "extraction_runs",
+        document_id=tree.document_id,
+        pipeline_version="0.1.0",
+        status="succeeded",
+    )
+
+
+async def test_block_type_and_confidence_are_enforced(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    await refused(
+        connection,
+        constraint("ck_blocks_block_type"),
+        "blocks",
+        **block_values(tree.document_id, tree.page_id, tree.run_id, block_type="footnote"),
+    )
+    await refused(
+        connection,
+        constraint("ck_blocks_confidence_range"),
+        "blocks",
+        **block_values(tree.document_id, tree.page_id, tree.run_id, confidence=1.5),
+    )
+
+
+def real_array(literal: str) -> sa.Cast[Any]:
+    """An array Postgres builds from its own text form, for shapes a Python list can't make."""
+    return sa.cast(sa.literal(literal), ARRAY(sa.REAL()))
+
+
+BAD_BBOXES = [
+    pytest.param([1.0, 2.0, 3.0], id="three numbers"),
+    pytest.param([1.0, 2.0, 3.0, 4.0, 5.0], id="five numbers"),
+    pytest.param([1.0, None, 3.0, 4.0], id="a missing number"),
+    pytest.param([-1.0, 2.0, 3.0, 4.0], id="negative x0"),
+    pytest.param([1.0, -2.0, 3.0, 4.0], id="negative y0"),
+    pytest.param([5.0, 2.0, 3.0, 4.0], id="x0 past x1"),
+    pytest.param([1.0, 6.0, 3.0, 4.0], id="y0 past y1"),
+    pytest.param([], id="empty"),
+    pytest.param([[1.0, 2.0], [3.0, 4.0]], id="two dimensions"),
+    pytest.param("[0:3]={1,2,3,4}", id="starts at index 0"),
+]
+
+
+@pytest.mark.parametrize("bbox", BAD_BBOXES)
+async def test_a_block_bbox_must_be_four_ordered_numbers(
+    connection: AsyncConnection, tree: Tree, bbox: Any
+) -> None:
+    value = real_array(bbox) if isinstance(bbox, str) else bbox
+    await refused(
+        connection,
+        constraint("ck_blocks_bbox_shape"),
+        "blocks",
+        **block_values(tree.document_id, tree.page_id, tree.run_id, block_no=2, bbox=value),
+    )
+
+
+async def test_a_single_spreadsheet_cell_is_a_valid_bbox(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    # B7 in cell-grid units: [col0, row0, col1, row1], 0-based, end excluded.
+    await insert(
+        connection,
+        "blocks",
+        **block_values(tree.document_id, tree.page_id, tree.run_id, bbox=[1.0, 6.0, 2.0, 7.0]),
+    )
+
+
+async def test_a_block_cannot_sit_on_another_documents_page(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    other = await make_tree(connection)
+    await refused(
+        connection,
+        constraint("fk_blocks_page_id_document_id_pages"),
+        "blocks",
+        **block_values(other.document_id, tree.page_id, other.run_id, block_no=2),
+    )
+
+
+async def test_deleting_a_document_removes_its_pages_runs_and_blocks(
+    connection: AsyncConnection,
+) -> None:
+    tree = await make_tree(connection)
+    await insert(connection, "blocks", **block_values(tree.document_id, tree.page_id, tree.run_id))
+    await connection.execute(
+        sa.delete(TABLES["documents"]).where(TABLES["documents"].c.id == tree.document_id)
+    )
+    for table in ("pages", "extraction_runs", "blocks"):
+        remaining = await connection.execute(
+            sa.select(sa.func.count())
+            .select_from(TABLES[table])
+            .where(TABLES[table].c.document_id == tree.document_id)
+        )
+        assert remaining.scalar_one() == 0

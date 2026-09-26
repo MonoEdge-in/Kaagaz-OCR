@@ -94,3 +94,53 @@ A corrected re-upload linked to the document it replaces. `document_id` is the n
 ### document_links
 
 Related documents, such as an invoice and its purchase order. `from_document_id` and `to_document_id` join `documents.id`; `link_type` (text) names the relation, free text for now. No CHECK yet against a document linking to itself: a Day 2 decision.
+
+## Document content
+
+- **The current run.** A document can be processed more than once. Each pass is a row in `extraction_runs`, and at most one per document has `status = 'succeeded'`: that is the current run. When a new run succeeds, the older one becomes `superseded`.
+- **bbox** is `real[]`, exactly `[x0, y0, x1, y1]`: four numbers, none missing, `x0` and `y0` at least 0, `x0 <= x1` and `y0 <= y1`. Its unit depends on the page's `route`:
+  - **Pixels** of the page image `pages/{document_id}/{page_no}.png` (size in `pages.width_px` and `height_px`) for `text_layer`, `ocr` and `handwriting` pages. `(0, 0)` is the top-left corner.
+  - **Cell-grid units** for `spreadsheet` pages: `[col0, row0, col1, row1]`, 0-based, end excluded. Cell B7 is `[1, 6, 2, 7]`.
+
+### pages
+
+One row per page, or one per sheet for a spreadsheet.
+
+| Column | Type | Meaning |
+|---|---|---|
+| document_id | uuid | Joins `documents.id`. Deleting the document deletes its pages. |
+| page_no | integer | 1-based. Unique per document. |
+| route | text, null | `spreadsheet`, `text_layer`, `ocr` or `handwriting`; decided on Day 2. |
+| image_key | text, null | Storage key `pages/{document_id}/{page_no}.png`. Null for spreadsheet pages. |
+| width_px, height_px | integer, null | Page image size in pixels. Null for spreadsheet pages. |
+| status | text | `pending`, `done`, `failed`. |
+
+### extraction_runs
+
+One pass of the pipeline over a document.
+
+| Column | Type | Meaning |
+|---|---|---|
+| document_id | uuid | Joins `documents.id`. |
+| pipeline_version | text | Which code version ran. |
+| models | jsonb | Which model or engine did each step. |
+| status | text | `running`, `succeeded`, `failed`, `superseded`. At most one `succeeded` row per document. |
+| started_at, finished_at | timestamptz, finished_at null | When the run started and ended. |
+| error | text, null | Short reason on failure. Holds no document values. |
+
+### blocks
+
+Every piece of a page, in reading order.
+
+| Column | Type | Meaning |
+|---|---|---|
+| document_id | uuid | Joins `documents.id`. |
+| page_id | uuid | Joins `pages.id`, always on the same document (a combined foreign key). |
+| block_no | integer | Order within the page. |
+| block_type | text | `heading`, `paragraph`, `table`, `table_cell`, `stamp`, `signature`, `handwriting`, `figure`. |
+| text | text, null | *Untrusted.* What the reader saw. Never overwritten by a later correction. |
+| bbox | real[] | Where the block sits on the page (see above). |
+| confidence | real, null | The reader's confidence, 0 to 1. |
+| source | text | Which engine produced this block, e.g. `pdfplumber`. |
+| parent_block_id | uuid, null | The block this one sits inside, e.g. a table cell's table. Joins `blocks.id`. |
+| extraction_run_id | uuid | Which run produced this block. Joins `extraction_runs.id`. |

@@ -22,6 +22,9 @@ TABLES_SO_FAR = {
     "document_tags",
     "document_versions",
     "document_links",
+    "pages",
+    "extraction_runs",
+    "blocks",
 }
 
 
