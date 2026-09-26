@@ -1,34 +1,23 @@
 name: Task
-description: One workstream from a day's PRD
-title: "[D?] "
-labels: ["enhancement"]
+description: A piece of work from the sprint plan
+title: "[S?] "
+labels: ["type:feat"]
 body:
   - type: markdown
     attributes:
       value: |
-        A task isn't ready to start until its acceptance criteria are filled in.
+        A task is not ready to start until the acceptance criteria are filled in.
 
   - type: dropdown
-    id: day
+    id: sprint
     attributes:
-      label: Day
+      label: Sprint
       options:
-        - "Start now"
-        - "Day 1: setup and skeleton"
-        - "Day 2: files that need no model"
-        - "Day 3: scans and handwriting on CPU"
-        - "Day 4: fields, checks and review"
-        - "Day 5: search and hand-off"
-        - "After day 5: hosting in AWS"
-    validations:
-      required: true
-
-  - type: input
-    id: prd
-    attributes:
-      label: PRD section
-      description: Where this task is specified.
-      placeholder: "docs/prd/day-1-prd.html, section 5"
+        - "Sprint 1 - Foundation"
+        - "Sprint 2 - The Answer (MVP)"
+        - "Sprint 3 - Trust"
+        - "Sprint 4 - Launch"
+        - "After launch"
     validations:
       required: true
 
@@ -37,7 +26,7 @@ body:
     attributes:
       label: What needs to exist
       description: Describe the outcome, not the implementation.
-      placeholder: Marking an upload complete starts one ProcessDocument run with workflow ID upload-{id}.
+      placeholder: A file uploaded through the API is stored, fingerprinted, and queued for processing.
     validations:
       required: true
 
@@ -45,8 +34,9 @@ body:
     id: acceptance
     attributes:
       label: Acceptance criteria
-      description: The PRD's "Done when" items for this workstream. Each line must be checkable by someone else.
+      description: How we will both know this is done. Each line must be checkable by someone else.
       value: |
+        - [ ]
         - [ ]
         - [ ]
     validations:
@@ -55,16 +45,15 @@ body:
   - type: textarea
     id: notes
     attributes:
-      label: Notes, constraints and decisions that apply
-      description: Link the decision in docs/architecture.md, or the earlier discussion, that applies.
+      label: Notes, constraints, and anything already decided
+      description: Link any decision record, design note, or earlier discussion.
 
   - type: checkboxes
-    id: approval
+    id: guards
     attributes:
-      label: Does this need a plan approved before starting?
+      label: Does this touch anything that needs a plan approved first?
       options:
-        - label: It changes the database schema
-        - label: It changes the workflow's steps
-        - label: It changes an API contract
-        - label: It adds a dependency
+        - label: The database schema
+        - label: Customer separation
+        - label: A new dependency
         - label: None of these

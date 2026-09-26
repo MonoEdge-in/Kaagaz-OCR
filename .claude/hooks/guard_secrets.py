@@ -1,55 +1,32 @@
 #!/usr/bin/env python3
-"""PreToolUse guard: keep secrets out of Claude's context and out of git.
+"""PreToolUse guard: keep secrets out of the model's context and out of git.
 
-- Read, Edit, Write, NotebookEdit and Grep: deny when the target is a secret file.
-- Bash and PowerShell: deny commands that name a secret file; ask before dumping
-  every environment variable into the transcript.
-- Templates (.env.example, .env.sample, .env.template) are allowed, and so is
-  passing a file to --env-file, which doesn't print its contents.
-
-Reads the pending tool call as JSON on stdin and prints a decision as JSON. Makes no
-network calls and touches no files. If the input can't be parsed, it allows the call.
+- Read/Edit/Write/NotebookEdit: deny when the target path is a secret file.
+- Bash/PowerShell: deny commands that reference secret files, ask before dumping env.
+- Allowed: .env.example / .env.sample / .env.template / .env.dist, and --env-file.
 """
-
 import json
 import re
 import shlex
 import sys
 
-TEMPLATE_SUFFIXES = (".example", ".sample", ".template")
-SECRET_NAMES = {
-    ".envrc",
-    ".netrc",
-    ".git-credentials",
-    ".pypirc",
-    "credentials",
-    "credentials.json",
-    "secrets.json",
-    "secrets.yaml",
-    "secrets.yml",
-    "secrets.toml",
+SAFE_ENV_SUFFIXES = (".example", ".sample", ".template", ".dist")
+SECRET_BASENAMES = {
+    ".envrc", ".netrc", ".git-credentials", ".pypirc", "credentials", "credentials.json",
+    "kubeconfig", "secrets.json", "secrets.yaml", "secrets.yml", "secrets.toml",
 }
-SECRET_SUFFIXES = (
-    ".pem",
-    ".key",
-    ".p12",
-    ".pfx",
-    ".jks",
-    ".keystore",
-    ".tfstate",
-    ".tfstate.backup",
-)
 KEY_PREFIXES = ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519")
-SECRET_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".azure", "secrets", ".secrets"}
-SERVICE_ACCOUNT = re.compile(r"^service[-_]?account.*\.json$|^serviceaccountkey.*\.json$", re.I)
-ENV_DUMP = re.compile(
-    r"^\s*(printenv|env|set|export\s+-p|get-childitem\s+env:|gci\s+env:|dir\s+env:|ls\s+env:)\s*$",
-    re.I,
-)
-ADVICE = (
-    "Secrets never enter Claude's context or git. If a value is needed, ask the person to set it. "
-    "To document a new setting, add a placeholder to .env.example."
-)
+SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
+                   ".tfstate", ".tfstate.backup")
+SECRET_NAME_RES = [
+    re.compile(r"^service[-_]?account.*\.json$", re.I),
+    re.compile(r"^serviceaccountkey.*\.json$", re.I),
+]
+SECRET_DIRS = {"secrets", ".secrets", ".ssh", ".aws", ".gnupg", ".kube", ".azure"}
+ENV_FILE_FLAGS = ("--env-file",)
+RAW_ENV_RE = re.compile(r"(?<![\w.-])\.env(?:\.(?!example\b|sample\b|template\b|dist\b)[\w-]+)?(?![\w-])")
+RAW_KEY_RE = re.compile(r"\bid_(?:rsa|dsa|ecdsa|ed25519)\b(?!\.pub)|\.ssh/|\.aws/credentials|\.git-credentials")
+ENV_DUMP_RE = re.compile(r"^\s*(printenv|env|set|export\s+-p|Get-ChildItem\s+env:|gci\s+env:|dir\s+env:)\s*$", re.I)
 
 
 def is_env_file(name: str) -> bool:
@@ -57,97 +34,97 @@ def is_env_file(name: str) -> bool:
     if lower == ".env":
         return True
     if lower.startswith(".env."):
-        return not lower.endswith(TEMPLATE_SUFFIXES)
-    return lower.endswith(".env")
+        return not lower.endswith(SAFE_ENV_SUFFIXES)
+    return lower.endswith(".env") and not lower.startswith(".")
 
 
-def secret_reason(path: str) -> str | None:
-    parts = [
-        part
-        for part in re.split(r"[\\/]", path.strip().strip("'\""))
-        if part not in ("", ".", "..")
-    ]
+def secret_reason(path: str):
+    if not path:
+        return None
+    norm = path.replace("\\", "/")
+    parts = [p for p in norm.split("/") if p not in ("", ".", "..")]
     if not parts:
         return None
     name = parts[-1]
     lower = name.lower()
     if is_env_file(name):
-        return f"'{name}' is an environment file that holds secrets"
-    if lower in SECRET_NAMES or (lower.startswith(KEY_PREFIXES) and not lower.endswith(".pub")):
-        return f"'{name}' is a credentials or key file"
+        return f"'{name}' is an environment/secrets file"
+    if lower in SECRET_BASENAMES or (lower.startswith(KEY_PREFIXES) and not lower.endswith(".pub")):
+        return f"'{name}' is a credentials/key file"
     if lower.endswith(SECRET_SUFFIXES):
-        return f"'{name}' looks like a private key, keystore or Terraform state"
-    if SERVICE_ACCOUNT.match(name):
+        return f"'{name}' looks like a private key, keystore, or Terraform state (contains secrets)"
+    if any(rx.match(name) for rx in SECRET_NAME_RES):
         return f"'{name}' looks like a cloud service-account key"
-    for folder in parts[:-1]:
-        if folder.lower() in SECRET_DIRS:
-            return f"'{path}' is inside a secrets folder ('{folder}')"
+    for d in parts[:-1]:
+        if d.lower() in SECRET_DIRS:
+            return f"'{norm}' is inside a secrets directory ('{d}/')"
     return None
 
 
-def check_command(command: str) -> tuple[str, str] | None:
-    if ENV_DUMP.match(command):
-        return (
-            "ask",
-            "dumps every environment variable into the transcript, which may expose secrets",
-        )
-    spaced = re.sub(r"(\|\||&&|[|;&<>()`])", r" \1 ", command)
+def scan_command(cmd: str):
+    spaced = re.sub(r"(\|\||&&|[|;&<>()`])", r" \1 ", cmd)
     try:
-        words = shlex.split(spaced, posix=True)
+        tokens = shlex.split(spaced, posix=True)
     except ValueError:
-        words = spaced.split()
+        tokens = spaced.split()
     skip_next = False
-    for word in words:
+    for raw in tokens:
         if skip_next:
             skip_next = False
             continue
-        if word == "--env-file":
+        tok = raw.strip("'\"")
+        if tok in ENV_FILE_FLAGS:
             skip_next = True
             continue
-        if word.startswith("--env-file="):
+        if tok.startswith("--env-file="):
             continue
-        # A path assigned to a variable or option, such as FILE=.env or --path=.env.
-        reason = secret_reason(word.rsplit("=", 1)[-1])
+        reason = secret_reason(tok)
         if reason:
-            return "deny", f"the command names a secret file: {reason}"
+            return "deny", reason
+    for m in RAW_ENV_RE.finditer(cmd):
+        if "--env-file" not in cmd[max(0, m.start() - 14):m.start()]:
+            return "deny", f"command references a secrets file ('{m.group(0)}')"
+    if RAW_KEY_RE.search(cmd):
+        return "deny", "command references SSH/cloud credential files"
+    if ENV_DUMP_RE.match(cmd):
+        return "ask", "dumps all environment variables into the transcript (may expose secrets)"
     return None
 
 
 def emit(decision: str, reason: str) -> None:
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": decision,
-                    "permissionDecisionReason": reason,
-                }
-            }
-        )
-    )
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        }
+    }))
 
 
 def main() -> int:
     try:
-        call = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
-        print("guard_secrets: couldn't read the hook input; allowing the call", file=sys.stderr)
+        data = json.load(sys.stdin)
+    except Exception:
+        print("guard_secrets: could not parse hook input; skipping", file=sys.stderr)
         return 0
-    tool = call.get("tool_name", "")
-    tool_input = call.get("tool_input") or {}
 
-    if tool in ("Read", "Edit", "Write", "NotebookEdit", "Grep"):
-        for key in ("file_path", "notebook_path", "path", "glob"):
-            reason = secret_reason(str(tool_input.get(key) or ""))
-            if reason:
-                emit("deny", f"Blocked by guard_secrets: {reason}. {ADVICE}")
-                return 0
+    tool = data.get("tool_name", "")
+    tin = data.get("tool_input") or {}
+    advice = (
+        "Secrets must never enter the model context or git. If you need a value, ask the user "
+        "to configure it. To document a new variable, add a placeholder to .env.example."
+    )
+
+    if tool in ("Read", "Edit", "Write", "NotebookEdit"):
+        reason = secret_reason(tin.get("file_path") or tin.get("notebook_path") or "")
+        if reason:
+            emit("deny", f"Blocked by guard_secrets: {reason}. {advice}")
     elif tool in ("Bash", "PowerShell"):
-        result = check_command(str(tool_input.get("command") or ""))
+        result = scan_command(tin.get("command") or "")
         if result:
             decision, reason = result
             prefix = "Blocked by guard_secrets" if decision == "deny" else "guard_secrets"
-            emit(decision, f"{prefix}: {reason}. {ADVICE}")
+            emit(decision, f"{prefix}: {reason}. {advice}")
     return 0
 
 

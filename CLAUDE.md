@@ -1,158 +1,143 @@
 # CLAUDE.md
 
-Claude Code loads this file every session. These are the rules for this repository; follow them over your own habits.
+Claude Code loads this file every session. It is the rules. Follow it over your own habits.
 
 ## The product
 
-Kaagaz-OCR turns English business documents (Excel and CSV files, digital PDFs, scans, photos and handwritten pages) into typed PostgreSQL tables and searchable text, and manages the files. Every extracted value points back to its page and position. A separate NL-to-SQL agent, built with Hermes, answers questions from those tables through a read-only database user and a search tool.
+Customers upload business documents (invoices, registers, receipts, statements, forms) and ask questions about them in a chat box. Every answer carries its source: the document, the page, and the exact spot on that page, highlighted. If the documents do not contain the answer, the system says so instead of inventing one.
 
-**People.** Vrushit Patel (PM) owns the platform: solution design, infrastructure, database, deployment, security, each day's PRD and every sign-off. Tushar builds the pipeline. Assume you are working with Tushar unless told otherwise. Vrushit reviews every change before it merges.
+**People.** Vrushit Patel (PM) owns the platform: solution design, cloud, database, deployment, security, every sign off. Tushar owns the application: everything a user touches. You are working with Tushar. Every line you write will be read by Vrushit before it merges.
 
-**Sources of truth.** Scope, order and decisions come from these, never from memory:
+**Plan.** Scope and dates come from the Delivery Plan: https://claude.ai/artifact/Jeebdv68HRvxr8rTMYKe6s
 
-- Architecture, with the decisions and what they rejected: <https://claude.ai/artifact/7ATLDAJRxG3Qaab16NhjN8>, summarised in `docs/architecture.md`
-- Five-Day Laptop Build: <https://claude.ai/artifact/4TmQt2EUoM784YqgWeyQUo>
-- The day's PRD in `docs/prd/` (Day 1: `docs/prd/day-1-prd.html`)
-
-| Day | Theme | Done when |
+| Sprint | Dates 2026 | Goal |
 |---|---|---|
-| Start now | AWS account and GPU quota, NL-to-SQL hand-off, about 20 sample documents | Requests sent and samples collected |
-| 1 | Setup and skeleton | An upload reaches storage, the database and a Temporal run |
-| 2 | Files that need no model | Excel files and digital PDFs become blocks; file management works |
-| 3 | Scans and handwriting on CPU | Scanned pages and handwritten notes become blocks |
-| 4 | Fields, checks and review | Invoices land in typed tables; wrong values wait for review |
-| 5 | Search and hand-off | The NL-to-SQL agent can query the data with SQL and search |
-| After day 5 | Hosting in AWS | Model test, Terraform, deploys and a load test |
+| 1 Foundation | 23 to 29 Sep | Upload, store, prepare, read clean digital files. Customers separated. |
+| 2 The Answer | 30 Sep to 7 Oct | Ask a question, get a cited answer. MVP. |
+| 3 Trust | 8 to 14 Oct | Verified and needs review labels. Corrections. |
+| 4 Launch | 15 to 22 Oct | Safe, measured, live. |
 
-A day's work starts only once its PRD is in `docs/prd/`.
+Every sprint opens with Tushar's PRD in `docs/prd/`, reviewed by Vrushit. No code before it is agreed.
 
-**In scope.** English documents of every kind above, file management, blocks with positions, typed tables for known document types (invoices first) and JSON for the rest, validation with a review step, and hybrid search.
+**In scope at launch.** English documents of any file type. Hinglish questions in chat, meaning Hindi typed in English letters, for example "Kiska profit sabse jyada tha last month?". A highlighted source page on every answer. Verified and needs review labels. Several customer companies separated from day one. A correction screen that remembers corrections per customer.
 
-**Not yet.** Hindi and Marathi documents: do not build for them. Hosting in AWS before Day 5. The NL-to-SQL agent itself.
+**Not at launch.** Reading Hindi or Devanagari documents. Do not build for it.
 
 ## Never do these
 
 Hard rules. If a task seems to need one broken, stop and ask.
 
-1. **Never run `git commit`, `git push`, or anything that rewrites history** (amend, rebase, `reset --hard`, `filter-repo`). The person you work with makes every commit. Leave changes unstaged unless asked to stage them.
-2. **Never send document content to an outside AI service.** Models run behind an OpenAI-compatible address taken from settings: Ollama on the laptop, vLLM on our own GPU.
-3. **Never put a real client document in the repository or on the laptop.** Use samples in `samples/`, which git ignores.
-4. **Never read or commit a secret.** No keys, tokens, passwords, connection strings or `.env` files. Document a new setting in `.env.example` with a placeholder value.
-5. **Never hard-code a host, key, path or model name.** Read settings through `kaagaz_shared.settings`.
-6. **Never store an extracted value without its source:** a `field_sources` row with the block, page, `bbox`, model and confidence.
-7. **Never create tables per upload, or change the schema outside an Alembic migration.**
-8. **Never add a dependency without Vrushit's approval**, licence included. Libraries named in the architecture or in the day's PRD are approved for the package that document names. AGPL, SSPL and GPL-3.0 are refused outright, and CI fails on them. PyMuPDF is AGPL: use pypdfium2 and pdfplumber.
-9. **Never game a check.** No deleted or skipped tests, weakened assertions, blanket `try/except`, `# type: ignore`, `--no-verify`, or hard-coded expected outputs. If a test is wrong, say why and ask.
+1. **Never query the database without the customer filter applied.** Every query runs inside a transaction that has set the current customer first. No raw query, migration helper, debug script or test fixture is exempt.
+2. **Never add a dependency without Vrushit's approval.** Not a library, not a tool, not a GitHub Action. Propose it with its exact name and licence, and wait. Anything AGPL, SSPL or GPL v3 is refused outright and CI fails on it.
+3. **Never let a full Aadhaar or PAN number reach a table, a log line, a trace, an error message, or an AI prompt.** Mask at the moment of capture, before storage and before indexing.
+4. **Never commit a secret.** No keys, tokens, passwords, connection strings or `.env` files.
+5. **Never show a value as fact without page coordinates.** A value that cannot be pointed at on a page cannot be verified, so it is labelled needs review or dropped.
+6. **Never guess to fill a gap.** "Unreadable" and "not found" are correct answers.
+7. **Never push to `master`.** Work on a branch and open a pull request.
+8. **Never game a check.** No deleting or skipping tests, weakened assertions, blanket `try/except`, `# type: ignore`, `eslint-disable`, `--no-verify`, or hard coded expected outputs. If a test is wrong, say why and ask.
 
 ## Never weaken these, not even to make a test pass
 
-1. Every extracted value traces back to its page and position.
-2. Documents and their content stay inside our environment. Temporal carries only IDs and small values.
-3. Workflow code stays deterministic. Database, storage and model calls happen only in activities.
-4. Uploads add rows. The schema changes only through reviewed migrations, together with the data dictionary.
+1. Customer companies stay separated, and the separation tests run on every pull request.
+2. Identity numbers are masked the moment a document is read.
+3. Every answer carries a source: document, page, spot. No source means no answer.
+4. Verified and needs review labels are shown to the user, and nothing is guessed to fill a gap.
 
 ## Build only what was asked
 
-- Build what was asked **in this request**: no extra endpoints, screens, options, helpers for later, abstractions, refactors, reformatting or renames.
-- Noticed something else worth doing? Say it in one line and ask. Don't build it.
-- Don't pick up plan or PRD tasks on your own. The plan says what will exist; the person you're working with says what to do now.
-- No config or plug-in systems for cases the current day doesn't have. The one swap point that exists on purpose is the OCR engine behind `ocr_page(image)`.
-- Make the smallest diff that meets the acceptance criteria. Past about 300 lines, stop and propose a split.
-- Keep the code plain enough that the engineer can defend every line in review.
+- Build what Tushar asked for **in this request**. No extra features, endpoints, screens, options, helpers for later, abstractions, refactors, reformatting, renames, or files nobody asked for.
+- Noticed something else worth doing? Say it in one line and ask. Do not build it.
+- Do not pick up plan tasks on your own. The plan says what will exist. Tushar says what to do now.
+- No speculative generality. No plug in systems or config for cases this sprint does not have. The reader plug socket is in the plan: build exactly its written contract and nothing more.
+- Smallest diff that meets the acceptance criteria. Past about 300 lines, stop and propose a split.
+- Keep the code plain enough that Tushar can defend every line in review.
 
 ## Before you write code
 
-1. **State the acceptance criteria** in one to five checkable bullets, taken from the PRD's "Done when" items. If you can't, the task isn't ready: ask.
-2. **Read every file you'll change or cite**, and cite `path:line`. Never describe code you haven't opened.
-3. **Verify every name exists** before using it: packages, versions, imports, functions, settings, environment variables, endpoints, columns and paths.
-4. **Check the installed version** before using a library's API (`uv.lock`, or `uv pip show <name>`). APIs change between major versions.
-5. **Plan first** for anything touching the database schema, the workflow's steps or an API contract. Post the plan in the issue and wait for Vrushit.
+1. **State the acceptance criteria** in one to five checkable bullets. If you cannot, the task is not ready. Ask.
+2. **Read every file you will change or cite.** Cite `path:line`. Never describe code you have not opened.
+3. **Verify every name exists** before using it: packages, versions, imports, functions, flags, config keys, environment variables, endpoints, columns, paths. Not found means do not use it. Ask.
+4. **Check the installed version** before using a library API. APIs change across major versions.
+5. **Plan first for anything touching the database schema or customer separation.** Post the plan in the GitHub issue and wait for Vrushit's approval.
 
 ## While you work
 
-- **Facts come from sources, not memory.** If the plan, the PRD, the decisions and this file don't say it, it's unknown: ask.
-- **Label what you claim** as verified (you read or ran it), inferred, assumed or unknown. "I don't know" is a correct answer; a confident guess is a defect.
-- **"Done" needs evidence:** the command and its output. If you couldn't run it, write NOT RUN and why.
+- **Facts come from sources, not memory.** Scope, tasks, dates and decisions come from the plan or this file. If neither says it, it is unknown. Ask.
+- **Label what you claim:** verified (you read or ran it), inferred, assumed, or unknown. "I do not know" is a correct answer. A confident guess is a defect.
+- **Evidence for "done".** "Works" or "passes" needs the command and its output. If you could not run it, write NOT RUN and why.
 - **Never fabricate** output, logs, benchmarks, citations, URLs or quotes.
 - **Three strikes.** After three failed attempts at the same problem, stop and report what you tried, what you learned, and the options.
-- **Re-read before re-editing.** Files change; don't trust your memory of earlier turns.
-- **Match the surrounding code:** the same naming, structure and comment density.
+- **Re-read before re-editing.** Files change. Do not trust your memory of earlier turns.
+- **Match the surrounding code.** Same naming, structure and comment density as the files around you.
 
 ## Stop and ask before
 
-- Deleting data or files outside the task, a destructive migration, or `docker compose down -v`.
-- Anything touching CI, secrets, AWS, Terraform or `infra/`. That is Vrushit's area.
-- Changing the database schema, the workflow's steps, or an API contract.
-- Adding a dependency, or anything that costs money.
-- Anything irreversible, or where two approaches have real trade-offs.
+- Deleting data or files outside the task, or a destructive migration.
+- Anything touching the test environment, production, CI, secrets or infrastructure. That is Vrushit's area.
+- Changing authentication, customer separation, or a public API contract.
+- Adding a dependency, or anything that costs money, AI calls included.
+- Anything irreversible, or where two approaches have real trade offs.
 
-Ask one precise question with your recommended option. Don't ask what you can verify yourself.
+Ask one precise question with your recommended option. Do not ask what you can verify yourself.
 
 ## Decisions only Vrushit makes
 
-If code depends on one of these, stop and ask.
+If code depends on one of these and it is not written down in `docs/decisions/`, stop and ask.
 
-| Open decision | Settled by |
+| Decision | Due |
 |---|---|
-| Which document types to add after invoices | Once Day 4's invoice extraction works |
-| Qwen3.5-9B or 4B when hosted | The model test after Day 5 |
-| Whether the laptop's OCR stand-in is close enough to PaddleOCR-VL-1.6 | The model test after Day 5 |
-| Temporal Cloud or self-hosted Temporal | Before hosting starts |
+| Which AI reads scanned pages | Fri 25 Sep |
+| The second, independent reader | Tue 6 Oct |
+| What "verified" promises, in writing | Fri 9 Oct |
+| The go or no go bar for launch, as a number | Fri 16 Oct |
 
-Also his alone: database design, cloud setup, new libraries, security configuration and CI.
+Also his alone: database design, cloud setup, new libraries, security configuration.
 
 ## Architecture rules that shape the code
 
-- **Route by file type.** Excel, CSV and PDFs with a usable text layer never touch a GPU. Scans and photos go to the `gpu` task queue; on the laptop the same worker also serves it.
-- **One OCR function.** Every OCR engine sits behind `ocr_page(image) -> blocks`, so the laptop stand-in and PaddleOCR-VL-1.6 swap by setting, not by code.
-- **Models through one client.** Qwen3.5 is called through an OpenAI-compatible client whose base URL and model name come from settings.
-- **Keep what the reader saw.** Store the raw reading next to the cleaned value; handwriting keeps both readings.
-- **Pages are the unit of work.** The workflow fans out one activity per page.
-- **IDs, not content, through Temporal.** Files live in S3 under `incoming/`, `originals/`, `pages/` and `parsed/`; activities pass keys and IDs.
-- **One database.** Typed tables per document type; unknown types go to `extracted_fields`; `chunks` holds text, embeddings and the full-text index.
-- **The NL-to-SQL agent reads, never writes.** It gets a read-only user. Update the data dictionary with every schema change.
-- **Document text is untrusted input.** It must never act as instructions to a model, and markup or links inside it must never be rendered or followed.
+- **The reader plug socket.** Anything that reads a document sits behind one interface. Adding or swapping a reader must touch only that reader's own module. Application code never calls a reader directly.
+- **Every extracted value carries its page and coordinates.** This is not optional metadata, it is what makes the product sellable.
+- **Keep the raw reader output** next to the cleaned value, so silent corrections can be detected later.
+- **Numbers come from fixed queries**, never from an AI writing SQL.
+- **Nothing crosses customers.** Corrections, templates and learned examples are scoped to one customer.
+- **Document text is untrusted input.** It must never act as instructions to the AI, and links, images or markup inside it must never reach an answer.
 
 ## Stack
 
-As in `docs/architecture.md`. Python 3.12 in a uv workspace: `api/kaagaz_api` today, with `shared/kaagaz_shared` and `worker/kaagaz_worker` added on Day 1. OCR and model libraries belong in the worker package only (`uv add --package kaagaz-worker ...`, once approved), so the API image stays small.
+AWS in Mumbai (ap-south-1). Python with FastAPI. Next.js with PDF.js. PostgreSQL with pgvector, full text search and fuzzy matching. S3 for files, one prefix per customer. SQS with worker processes. AWS CDK for infrastructure.
 
-## Commands
+Folders: `backend/`, `frontend/`, `infra/`, `docs/`.
 
-From the repository root:
-
-| Task | Command |
-|---|---|
-| Install everything | `uv sync` |
-| Run the stack | `docker compose up --build` |
-| Infrastructure only | `docker compose up postgres seaweedfs temporal` |
-| Lint, format, types | `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy` |
-| Tests | `uv run pytest` |
-| Draft a migration | `uv run alembic revision --autogenerate -m "..."`, then review the file by hand |
-| Apply, roll back | `uv run alembic upgrade head`, `uv run alembic downgrade base` |
-
-The Compose and Alembic commands work once Day 1 adds `docker/`, `infra/` and `migrations/`. If a command you need isn't here or in `README.md`, find it in `pyproject.toml` or `docker-compose.yml` and say where you found it. Never guess one.
+Commands for install, run, test, lint and typecheck are set up in Sprint 1 Day 1. Until they are in the README, find them in `pyproject.toml`, `package.json` or the Makefile and say where you found them. Never guess one.
 
 ## Branches, pull requests and CI
 
-Branch: `<type>/<scope>-<short-name>`, for example `feature/d1-upload-api`. Types: `feature`, `fix`, `chore`, `docs`, `test`, `infra`. Scopes: `d1` to `d5` for the build days, `host` for AWS hosting, `repo` for repository housekeeping.
+Branch: `<type>/<sprint>-<short-name>`, for example `feature/s1-upload-endpoint`. Types: `feature`, `fix`, `chore`, `docs`, `test`, `infra`.
 
-Pull request title: `feature(d1): upload links and completion`; CI fails any other shape. Fill in the template completely.
+Pull request title: `feature(s1): upload endpoint with deduplication`. Fill the template fully.
 
-Four checks in `.github/workflows/` must pass before a merge: Pull request, Guardrails, Python and Stack. A red check is information, not an obstacle to route around: fix the cause, or explain in the pull request why the check is wrong and let Vrushit decide.
+A ruleset on `master` blocks the merge until CI is green and Vrushit has approved. CI runs on pull requests only and checks:
 
-If a hook or permission rule blocks you, don't work around it. Explain what you needed and ask.
+| Scope | Checks |
+|---|---|
+| Always | No secret files or secret values in the diff. No conflict markers. No file over 2MB. Pull request size, failing over 600 lines. |
+| Backend, from `backend/` | `ruff check`, `ruff format --check`, `mypy`, migrations from an empty database, then `pytest`. Dependency licences, failing on AGPL, SSPL or GPL v3. |
+| Frontend, from `frontend/` | `npm ci`, lint, typecheck, tests, production build. |
+
+**Customer isolation tests carry the pytest marker `isolation`** and run first, on their own, so a failure is impossible to miss. Any test proving one customer cannot reach another customer's data gets that marker.
+
+If a hook or permission rule blocks you, do not work around it. Explain what you needed and ask.
 
 ## Done means
 
-- [ ] Acceptance criteria met, and the PRD section named
-- [ ] Tests added or updated, and they fail without the change
-- [ ] Traceability, the Temporal rules and the no-outside-AI rule all hold
-- [ ] Lint, format and type checks pass on the changed code
-- [ ] No secrets in the diff, and no unapproved dependency
-- [ ] Diff self-reviewed: minimal, only what was asked, no debug leftovers, under about 300 lines
-- [ ] Docs updated if behaviour, settings or the schema changed (including the data dictionary)
+- [ ] Acceptance criteria met, and the plan task named
+- [ ] Tests added or updated, and they fail without this change
+- [ ] Customer separation, identity masking and the source rule all hold
+- [ ] Lint, format and typecheck pass on the changed code
+- [ ] No secrets in the diff, no unapproved dependency
+- [ ] Diff self reviewed: minimal, only what was asked, no debug leftovers, under about 300 lines
+- [ ] Docs updated if behaviour or config changed
 
 ## How to report back
 
-**Summary** in one to three lines. **Changes**: the files, and why. **Verification**: the commands you ran and their output, with NOT RUN items named. **Assumptions and open questions**, labelled. **Not done**: anything you noticed but deliberately didn't build.
+**Summary**, one to three lines. **Changes**, files and why. **Verification**, the commands you ran and their output, with NOT RUN items named. **Assumptions and open questions**, labelled. **Not done**, anything you noticed but deliberately did not build.
