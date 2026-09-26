@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from kaagaz_shared.settings import Settings, get_settings
+from kaagaz_shared.settings import DatabaseSettings, Settings, get_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,6 +67,21 @@ def test_secrets_never_show_in_text() -> None:
     for secret in ("db-password", "storage-secret", "auth-secret"):
         assert secret not in shown
     assert settings.dev_auth_secret.get_secret_value() == "auth-secret"
+
+
+def test_database_settings_need_only_the_database_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Alembic and the database tests run in CI with DATABASE_URL and nothing else.
+    monkeypatch.chdir(tmp_path)
+    for name in VALUES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DATABASE_URL", VALUES["DATABASE_URL"])
+    settings = DatabaseSettings()
+    assert settings.database_url.get_secret_value() == VALUES["DATABASE_URL"]
+    assert "db-password" not in repr(settings)
+    with pytest.raises(ValidationError, match="s3_bucket"):
+        Settings()
 
 
 @pytest.mark.usefixtures("environment")

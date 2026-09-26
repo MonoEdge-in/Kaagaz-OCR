@@ -60,7 +60,7 @@ strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = ["api", "shared"]
 # Day 1 adds shared/kaagaz_shared and worker/kaagaz_worker here and to mypy_path.
-files = ["api/kaagaz_api", "shared/kaagaz_shared", "tests", ".claude/hooks", ".github/scripts"]
+files = ["api/kaagaz_api", "shared/kaagaz_shared", "migrations", "tests", ".claude/hooks", ".github/scripts"]
 
 # boto3 ships no type information, so mypy can't read it. This only says so; our own code
 # is still checked in full. Drop it if typed stubs for boto3 are approved.
@@ -72,6 +72,9 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = ["--strict-markers", "--strict-config", "-ra"]
+# Tests marked db need PostgreSQL with the migrations applied. Without Docker, run
+# `uv run pytest -m "not db"`. CI runs them all.
+markers = ["db: needs PostgreSQL"]
 # A warning is a failure, so deprecations get fixed while they're cheap.
 filterwarnings = ["error"]
 xfail_strict = true

@@ -15,11 +15,19 @@ from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
+class DatabaseSettings(BaseSettings):
+    """Only the database address, for Alembic and the database tests.
+
+    They need nothing else, so CI can run them with just DATABASE_URL set.
+    """
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # Database
     database_url: SecretStr
+
+
+class Settings(DatabaseSettings):
+    """Every setting the API and the worker read, the database address included."""
 
     # File storage (SeaweedFS on the laptop, Amazon S3 in AWS)
     s3_endpoint_url: str

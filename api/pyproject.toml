@@ -4,12 +4,17 @@ version = "0.1.0"
 description = "The FastAPI app and basic UI: uploads, file management and status."
 license = "Apache-2.0"
 requires-python = ">=3.12"
-# Day 1 adds kaagaz-shared and the libraries the PRD names (Temporal, SQLAlchemy, boto3...).
+# Day 1 adds the other libraries the PRD names (Temporal, boto3...).
 dependencies = [
+    "alembic>=1.16",
     "fastapi>=0.115",
+    "kaagaz-shared",
     "uvicorn[standard]>=0.30",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+kaagaz-shared = { workspace = true }
