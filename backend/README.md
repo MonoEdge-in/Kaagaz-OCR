@@ -1,0 +1,61 @@
+# Kaagaz backend (local build)
+
+> **LOCAL ONLY.** Written before the Sprint 1 PRD was approved. It must not
+> become a pull request until the PRD is approved and each issue's plan is
+> agreed (CONTRIBUTING.md stages 3 and 4). Python standard library only.
+
+## What is here
+
+| Folder | Issue | What it does |
+|---|---|---|
+| `kaagaz/ingestion/` | #14 | Upload: read once (SHA-256, size limit), type from first bytes, per-customer duplicates, store, record, queue, undo on failure |
+| `kaagaz/jobs/` | #16 | Worker: one job at a time, retries through leases, failure bin, heartbeat for long jobs |
+| `kaagaz/scanning/` | #15 | Virus gate: only an explicit CLEAN goes on; REJECTED is final |
+| `kaagaz/reading/` | #19, #21 | Reader plug socket, the CSV reader and the Excel (.xlsx) reader; every value keeps its sheet, row and column |
+| `kaagaz/masking/` | never-do 3 | Masks full Aadhaar and PAN numbers before anything is kept (PROVISIONAL rule) |
+| `kaagaz/chunking/` | #20 | One text piece per row, each tracing back to its cells |
+| `kaagaz/pipeline.py` | glue | The job handler: record, scan, fingerprint check, read, mask, pieces, status |
+| `tests/` | #23, #25, #26 | Tests, in-memory fakes, the lease queue, an .xlsx builder |
+| `scripts/run_fifty_files.py` | #24 | Fifty made-up files through the whole pipeline, with outcomes and timings |
+
+Outside systems (database, file storage, queue, scanner) are small
+interfaces ("ports") in the code. Only test fakes implement them today; the
+real ones come after Vrushit's designs: #1 and #2 (database), #9 (local
+setup), #11 (storage naming) and the scanner choice. The masker has one real,
+PROVISIONAL implementation (`kaagaz/masking/identity.py`) until Vrushit writes
+the masking rule (PRD question 1).
+
+## Run the fifty-file check
+
+From `backend/`:
+
+```
+python -m scripts.run_fifty_files
+```
+
+## Run the tests
+
+From this folder (`backend/`):
+
+```
+python -X dev -m unittest discover -s tests -t .
+python -X dev -m unittest discover -s tests -t . -p "test_isolation_*.py"
+```
+
+With pytest installed, `python -m pytest tests` runs the same tests, and
+`python -m pytest tests -m isolation` runs the customer isolation tests only
+(`tests/conftest.py` adds the marker).
+
+Not set up yet (Vrushit's #9 and #10): `pyproject.toml`, ruff, mypy.
+
+## Rules the code keeps
+
+* Every lookup takes the customer first. Nothing lists across customers.
+* No file name is taken, stored or logged. Errors carry short codes only.
+* Nothing opens a file before the virus gate says CLEAN.
+* Application code reads documents only through `ReaderSocket`
+  (a test fails otherwise).
+* No business limits, retry counts or lease times have defaults: they are
+  settings. (Only read buffer sizes in `spool.py` have defaults.)
+* Anything waiting for a Vrushit decision is marked **PROVISIONAL** in its
+  docstring.

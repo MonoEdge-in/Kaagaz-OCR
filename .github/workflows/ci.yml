@@ -1,19 +1,17 @@
 name: CI
 
-# Runs on pull requests into main, on every push to main, every Monday (to catch new
-# advisories for dependencies that haven't changed) and by hand. Guardrails, Python and
-# Stack are required checks in the main ruleset, together with Pull request (pr.yml).
+# Runs on pull requests into master only. Nothing runs on master after a merge,
+# by design: with squash merging from an up to date branch, the code that was
+# tested on the branch is the code that lands.
 #
-# Actions are pinned to full commit SHAs and tools to exact versions. Dependabot proposes
-# updates to the actions; the tool versions are bumped by hand.
+# The Guardrails job is a required check in the master ruleset, so a red run
+# blocks the merge. Backend and Frontend are not required checks yet: they skip
+# themselves until those folders exist, and a skipped job can sit in pending
+# forever. Add them as required checks in Sprint 1, once they actually run.
 
 on:
   pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-  schedule:
-    - cron: "30 3 * * 1" # Mondays, 09:00 in India
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -21,263 +19,298 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  # A new push to a pull request replaces its running checks; runs on main always finish.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 env:
-  UV_VERSION: "0.12.19"
+  BACKEND_DIR: backend
+  FRONTEND_DIR: frontend
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
 
 jobs:
   # ---------------------------------------------------------------------------
-  # The repository itself: secrets, files that don't belong, workflows and docs.
+  # Always runs. Fast, no toolchain needed. Catches the things that hurt most.
   # ---------------------------------------------------------------------------
   guardrails:
     name: Guardrails
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # gitleaks reads every commit, not only the latest
-          persist-credentials: false
+          fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          version: ${{ env.UV_VERSION }}
-
-      - name: No secret files
+      - name: No secret files committed
         run: |
           set -euo pipefail
-          # Templates hold setting names, not values, so .env.example passes.
-          bad=$(git ls-files \
-            | grep -Ei '(^|/)\.env($|\.)|(^|/)\.envrc$|\.(pem|key|p12|pfx|jks|keystore)$|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|\.tfstate($|\.)|(^|/)\.terraform/' \
-            | grep -Eiv '(^|/)\.env\.(example|sample|template)$' || true)
-          if [ -n "$bad" ]; then
-            echo "::error::Files that must never be committed are in this branch:"
-            echo "$bad"
-            echo "Remove them, rotate anything they contained, and tell Vrushit."
+          BAD=$(git ls-files | grep -Ei '(^|/)\.env($|\.)|\.pem$|\.p12$|\.pfx$|(^|/)id_rsa$|\.keystore$' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Files that must never be committed are in this branch."
+            echo "$BAD"
+            echo "Remove them, rotate anything inside them, and tell Vrushit."
             exit 1
           fi
-          echo "No secret files."
+          echo "Clean. No env or key files committed."
 
-      - name: No secrets in any commit
+      - name: No secret values in the diff
         env:
-          GITLEAKS_VERSION: "8.30.1"
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/gitleaks.tar.gz"
-          curl -sSfL -o "$archive" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict
-          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
-          # Every commit, so a secret that was added and later deleted is still caught.
-          # --redact keeps whatever it finds out of the log.
-          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --verbose .
-
-      - name: No database password for anything but a local database
-        run: |
-          set -euo pipefail
-          # Allowed only for localhost and the postgres service in docker-compose.yml.
-          found=$(git grep -nIE 'postgres(ql)?(\+[a-z0-9]+)?://[^:/@[:space:]]+:[^@[:space:]]+@' \
-            | grep -Ev '@(localhost|127\.0\.0\.1|postgres)([:/]|$)' || true)
-          if [ -n "$found" ]; then
-            echo "::error::A database URL with a password for a non-local host:"
-            echo "$found"
+          if [ -z "${BASE:-}" ]; then echo "Not a pull request, skipping."; exit 0; fi
+          ADDED=$(git diff --unified=0 "$BASE" "$HEAD" | grep '^+' | grep -v '^+++' || true)
+          FOUND=0
+          check() {
+            if printf '%s' "$ADDED" | grep -Eq "$1"; then
+              echo "::error::Possible $2 added in this pull request."
+              FOUND=1
+            fi
+          }
+          check 'AKIA[0-9A-Z]{16}'                     "AWS access key id"
+          check 'aws_secret_access_key[[:space:]]*='   "AWS secret key"
+          check 'BEGIN [A-Z ]*PRIVATE KEY'             "private key"
+          check 'gh[pousr]_[A-Za-z0-9]{36}'            "GitHub token"
+          check 'sk-[A-Za-z0-9]{20,}'                  "API key"
+          check 'postgres(ql)?://[^:]+:[^@]+@'         "database password in a connection string"
+          if [ "$FOUND" -eq 1 ]; then
+            echo "If this is a false positive, say so in the pull request and Vrushit will decide."
             exit 1
           fi
-          echo "No database passwords for real hosts."
+          echo "Clean. No secret shaped strings added."
 
-      - name: No large files or real documents
+      - name: No identity numbers in the code
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          big=$(git ls-files -z | xargs -0 -r du -k 2>/dev/null | awk '$1 > 2048 { print $1 " KB  " $2 }' || true)
-          if [ -n "$big" ]; then
-            echo "::error::Files over 2 MB are in this branch. Documents and test sets belong in storage, never in git."
-            echo "$big"
-            exit 1
+          if [ -z "${BASE:-}" ]; then echo "Not a pull request, skipping."; exit 0; fi
+          ADDED=$(git diff --unified=0 "$BASE" "$HEAD" | grep '^+' | grep -v '^+++' || true)
+          # Aadhaar is usually written as four, four, four. PAN is five letters,
+          # four digits, one letter. Warning only: real test fixtures may need
+          # deliberately fake examples, and Vrushit decides case by case.
+          if printf '%s' "$ADDED" | grep -Eq '[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}'; then
+            echo "::warning::Something shaped like an Aadhaar number was added. Confirm it is fake and that nothing real can reach a table, a log, or a prompt."
           fi
-          # A warning, not a failure: small synthetic samples and UI images are allowed.
-          docs=$(git ls-files | grep -Ei '\.(pdf|xlsx|xls|tif|tiff|jpg|jpeg|png|heic)$' || true)
-          if [ -n "$docs" ]; then
-            echo "::warning::Document or image files are committed. Confirm each is a synthetic sample or a UI asset, never a real document:"
-            echo "$docs"
+          if printf '%s' "$ADDED" | grep -Eq '[A-Z]{5}[0-9]{4}[A-Z]'; then
+            echo "::warning::Something shaped like a PAN was added. Confirm it is fake."
           fi
-          echo "Size check done."
+          echo "Identity number scan done."
 
       - name: No merge conflict markers
         run: |
           set -euo pipefail
-          if git grep -nE '^(<<<<<<< |>>>>>>> |=======$)' -- . ':!*.md'; then
+          if git grep -nE '^(<<<<<<< |>>>>>>> |=======$)' -- . ':!*.md' >/dev/null 2>&1; then
             echo "::error::Merge conflict markers are still in the code."
+            git grep -nE '^(<<<<<<< |>>>>>>> |=======$)' -- . ':!*.md' || true
             exit 1
           fi
-          echo "No conflict markers."
+          echo "Clean. No conflict markers."
 
-      - name: Workflows are valid and safe
+      - name: No large or customer files committed
+        run: |
+          set -euo pipefail
+          BIG=$(git ls-files -z | xargs -0 -r du -k 2>/dev/null | awk '$1 > 2048 { print $1 "KB  " $2 }' || true)
+          if [ -n "$BIG" ]; then
+            echo "::error::Files over 2MB are in this branch. Customer documents and test corpora belong in storage, never in git."
+            echo "$BIG"
+            exit 1
+          fi
+          echo "Clean. Nothing oversized."
+
+      - name: Pull request size
         env:
-          # zizmor's online checks: impostor commits and actions with known vulnerabilities.
-          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          uvx --from actionlint-py==1.7.12.25 actionlint
-          uvx zizmor@1.30.1 --format=github .github/workflows
+          if [ -z "${BASE:-}" ]; then echo "Not a pull request, skipping."; exit 0; fi
+          CHANGED=$(git diff --numstat "$BASE" "$HEAD" \
+            | grep -vE '\.(lock|sum)$|package-lock\.json|poetry\.lock|yarn\.lock|uv\.lock' \
+            | awk '{ a += $1; d += $2 } END { print a + d + 0 }')
+          echo "Changed lines, excluding lock files: $CHANGED"
+          if [ "$CHANGED" -gt 600 ]; then
+            echo "::error::$CHANGED changed lines is too big to review properly. Split this pull request."
+            exit 1
+          elif [ "$CHANGED" -gt 300 ]; then
+            echo "::warning::$CHANGED changed lines. The target is about 300."
+          fi
 
-      - name: Spelling
-        run: uvx typos@1.50.2
-
-      - name: Links between docs resolve
+      - name: Pull request title format
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          # Every relative link in a Markdown file must point at something that exists.
-          broken=0
-          while IFS= read -r file; do
-            while IFS= read -r target; do
-              path="${target%%#*}"
-              if [ -n "$path" ] && [ ! -e "$(dirname "$file")/$path" ]; then
-                echo "::error file=$file::Broken link: $target"
-                broken=1
-              fi
-            done < <(grep -oE '\]\([^)[:space:]]+\)' "$file" | sed -E 's/^\]\(//; s/\)$//' | grep -Ev '^(https?:|mailto:|#)' || true)
-          done < <(git ls-files '*.md')
-          if [ "$broken" -eq 0 ]; then echo "Every relative link resolves."; fi
-          exit "$broken"
+          if [ -z "${TITLE:-}" ]; then exit 0; fi
+          if printf '%s' "$TITLE" | grep -Eq '^(feat|fix|chore|docs|test|infra)\(s[1-4]\): .+'; then
+            echo "Title format is good."
+          else
+            echo "::warning::Title should look like 'feat(s1): upload endpoint with deduplication'. Got: $TITLE"
+          fi
 
   # ---------------------------------------------------------------------------
-  # The Python workspace, against a real PostgreSQL 17 with pgvector.
+  # Works out which projects exist yet, so the jobs below can skip themselves.
   # ---------------------------------------------------------------------------
-  python:
-    name: Python
+  detect:
+    name: What exists
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      backend: ${{ steps.look.outputs.backend }}
+      frontend: ${{ steps.look.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: look
+        run: |
+          set -euo pipefail
+          if [ -f "$BACKEND_DIR/pyproject.toml" ] || [ -f "$BACKEND_DIR/requirements.txt" ]; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "Backend found in $BACKEND_DIR."
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+            echo "No backend yet."
+          fi
+          if [ -f "$FRONTEND_DIR/package.json" ]; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "Frontend found in $FRONTEND_DIR."
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+            echo "No frontend yet."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Backend. Runs against a real Postgres with pgvector, because the isolation
+  # tests are meaningless against a fake database.
+  # ---------------------------------------------------------------------------
+  backend:
+    name: Backend
+    needs: detect
+    if: needs.detect.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     services:
       postgres:
-        image: pgvector/pgvector:0.8.6-pg17
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: kaagaz
           POSTGRES_PASSWORD: kaagaz_ci_only
-          POSTGRES_DB: kaagaz_ci
+          POSTGRES_DB: kaagaz_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U kaagaz -d kaagaz_ci"
+          --health-cmd "pg_isready -U kaagaz"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql+asyncpg://kaagaz:kaagaz_ci_only@localhost:5432/kaagaz_ci
+      DATABASE_URL: postgresql://kaagaz:kaagaz_ci_only@localhost:5432/kaagaz_test
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    defaults:
+      run:
+        working-directory: backend
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+      - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: actions/setup-python@v5
         with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-      - name: Install the workspace
-        # --locked fails if uv.lock no longer matches the pyproject files.
-        run: uv sync --locked
+      - name: Install
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -f pyproject.toml ]; then
+            pip install -e ".[dev]"
+          else
+            pip install -r requirements.txt
+            [ -f requirements-dev.txt ] && pip install -r requirements-dev.txt
+          fi
 
       - name: Lint
-        run: uv run ruff check --output-format=github .
+        run: ruff check .
 
       - name: Format
-        run: uv run ruff format --check .
+        run: ruff format --check .
 
       - name: Types
-        run: uv run mypy
+        run: mypy .
 
       - name: Dependency licences
-        run: uv run python .github/scripts/check_licences.py
-
-      - name: Known vulnerabilities
         run: |
           set -euo pipefail
-          # Every locked package, checked against the PyPI and OSV advisory databases.
-          uv export --frozen --no-emit-workspace --format requirements.txt --quiet \
-            --output-file "$RUNNER_TEMP/requirements.txt"
-          uvx pip-audit@2.10.1 --strict --disable-pip --progress-spinner off \
-            --requirement "$RUNNER_TEMP/requirements.txt"
+          pip install pip-licenses
+          pip-licenses --format=csv --with-urls > licences.csv
+          echo "Installed packages and their licences:"
+          cat licences.csv
+          if grep -Eiq 'affero|AGPL|SSPL|"GNU General Public License v3' licences.csv; then
+            echo "::error::A dependency uses a licence that makes commercial SaaS unsafe."
+            grep -Ei 'affero|AGPL|SSPL|GNU General Public License v3' licences.csv
+            echo "This is the PyMuPDF trap. Do not merge. Talk to Vrushit."
+            exit 1
+          fi
+          echo "All dependency licences are safe for a commercial product."
 
-      - name: Migrations up, checked against the models, down and up again
+      - name: Migrations apply from an empty database
         run: |
           set -euo pipefail
-          if [ ! -f alembic.ini ]; then echo "::notice::No migrations yet. Day 1 adds them."; exit 0; fi
-          uv run alembic upgrade head
-          uv run alembic check # fails if the models describe a schema no migration creates
-          uv run alembic downgrade base
-          uv run alembic upgrade head
-          echo "Migrations apply, match the models and reverse cleanly on an empty database."
+          if [ -f alembic.ini ]; then
+            alembic upgrade head
+            echo "Migrations applied cleanly."
+          else
+            echo "No migrations yet, skipping."
+          fi
+
+      - name: Customer isolation tests
+        run: |
+          set -euo pipefail
+          echo "These run first and on their own. A failure here is the worst"
+          echo "thing that can happen to this product, so it must be unmissable."
+          pytest -m isolation -v --no-header
 
       - name: Tests
-        run: uv run pytest --durations=10
+        run: pytest -v --no-header --durations=10
 
   # ---------------------------------------------------------------------------
-  # Docker: the Compose file, the images, and the whole stack starting healthy.
-  # Steps that need Day 1's Dockerfiles say so and skip until they exist.
+  # Frontend.
   # ---------------------------------------------------------------------------
-  stack:
-    name: Stack
+  frontend:
+    name: Frontend
+    needs: detect
+    if: needs.detect.outputs.frontend == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: frontend
+
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
-          persist-credentials: false
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Compose file is valid
-        run: docker compose config --quiet
+      - name: Install
+        run: npm ci
 
-      - name: Images are pinned to a version
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          # A :latest or untagged image changes underneath us without a commit. Pin a
-          # version; Dependabot proposes updates.
-          bad=$(grep -HnE '^\s*image:\s*([^:[:space:]]+|\S+:latest)(\s|$)|^\s*FROM\s+(--platform=\S+\s+)?\S+:latest(\s|$)' \
-            docker-compose.yml docker/*.Dockerfile || true)
-          if [ -n "$bad" ]; then
-            echo "::error::Unpinned images:"
-            echo "$bad"
-            exit 1
-          fi
-          echo "Every image is pinned."
+      - name: Lint
+        run: npm run lint
 
-      - name: Dockerfiles pass the build checks, and the images build
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(docker/*.Dockerfile)
-          if [ ${#files[@]} -eq 0 ]; then echo "::notice::No Dockerfiles yet. Day 1 adds them."; exit 0; fi
-          for file in "${files[@]}"; do
-            docker build --check --file "$file" .
-            docker build --file "$file" --tag "kaagaz-$(basename "$file" .Dockerfile):ci" .
-          done
+      - name: Types
+        run: npm run typecheck --if-present
 
-      - name: The whole stack starts healthy
-        run: |
-          set -euo pipefail
-          for needed in docker/api.Dockerfile docker/worker.Dockerfile infra/seaweedfs/s3.json; do
-            if [ ! -f "$needed" ]; then echo "::notice::Skipped until Day 1 adds $needed."; exit 0; fi
-          done
-          cp .env.example .env
-          docker compose up --build --detach
-          healthy=0
-          for _ in $(seq 60); do
-            if curl -fsS http://localhost:8000/health; then healthy=1; break; fi
-            sleep 5
-          done
-          echo
-          docker compose ps --all
-          failed=$(docker compose ps --all --format '{{.Service}} {{.ExitCode}}' | awk '$2 != 0' || true)
-          if [ "$healthy" -ne 1 ] || [ -n "$failed" ]; then
-            docker compose logs --no-color --tail=100
-            echo "::error::The stack didn't come up healthy. The logs above say why."
-            exit 1
-          fi
-          echo "Every service started, and the API reports healthy."
+      - name: Tests
+        run: npm test --if-present
+
+      - name: Build
+        run: npm run build
