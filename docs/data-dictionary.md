@@ -144,3 +144,59 @@ Every piece of a page, in reading order.
 | source | text | Which engine produced this block, e.g. `pdfplumber`. |
 | parent_block_id | uuid, null | The block this one sits inside, e.g. a table cell's table. Joins `blocks.id`. |
 | extraction_run_id | uuid | Which run produced this block. Joins `extraction_runs.id`. |
+
+## Extraction and quality
+
+### invoices
+
+The first typed document table. Every extracted column is nullable: a misread value is still stored and sent to review rather than dropped.
+
+| Column | Type | Meaning |
+|---|---|---|
+| document_id | uuid | Joins `documents.id`. |
+| extraction_run_id | uuid | Which run produced this row. Joins `extraction_runs.id`. |
+| invoice_no, vendor_name, vendor_gstin, currency | text, null | *Untrusted* where read from the document. |
+| invoice_date, due_date, received_on | date, null | |
+| subtotal, tax_total, total | numeric(14,2), null | Money, in `currency`. |
+
+No unique constraint: one document can hold several invoices.
+
+### invoice_lines
+
+One row per invoice line.
+
+| Column | Type | Meaning |
+|---|---|---|
+| invoice_id | uuid | Joins `invoices.id`. Deleting the invoice deletes its lines. |
+| line_no | integer | Order on the invoice. Unique per invoice. |
+| description, hsn_code | text, null | *Untrusted.* |
+| quantity | numeric(14,3), null | |
+| unit_price | numeric(14,4), null | Four decimals, so `quantity x unit_price` checks don't fail on rounding. |
+| amount | numeric(14,2), null | |
+
+### extracted_fields
+
+Fields for a document type that has no table of its own yet.
+
+| Column | Type | Meaning |
+|---|---|---|
+| document_id, extraction_run_id | uuid | Same as invoices. |
+| doc_type | text | The classified type, e.g. `unknown`. |
+| data | jsonb | Key and value pairs. *Untrusted.* |
+
+### field_sources
+
+Where one extracted value came from. Required on every value stored as fact: no field_sources row means the value isn't traceable, so it stays out of the typed tables or goes to review instead.
+
+| Column | Type | Meaning |
+|---|---|---|
+| document_id | uuid | Joins `documents.id`. |
+| table_name | text | `invoices`, `invoice_lines` or `extracted_fields`: which table the value lives in. |
+| row_id | uuid | The row in that table. No foreign key: it points into more than one table. |
+| column_name | text | Which column. |
+| block_id | uuid | The block the value was read from. Joins `blocks.id`. Never null. |
+| page_no | integer | Must be a real page of the same document (a combined foreign key with `document_id`). |
+| bbox | real[] | Where on the page (see "Document content" above). Never null. |
+| model | text | Which model or engine read it, e.g. `qwen3.5:4b`. |
+| confidence | real | 0 to 1. Never null. |
+| reviewed_by, reviewed_at | text, timestamptz, both null | Set once a person confirms or corrects the value. |

@@ -25,6 +25,10 @@ TABLES_SO_FAR = {
     "pages",
     "extraction_runs",
     "blocks",
+    "invoices",
+    "invoice_lines",
+    "extracted_fields",
+    "field_sources",
 }
 
 

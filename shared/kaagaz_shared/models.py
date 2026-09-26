@@ -12,7 +12,8 @@ Conventions (docs/prd/day-1-prd.html section 4, and the approved schema plan):
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, ClassVar
 
 from sqlalchemy import (
@@ -24,6 +25,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     MetaData,
+    Numeric,
     Text,
     UniqueConstraint,
     func,
@@ -42,6 +44,9 @@ NAMING_CONVENTION = {
     "fk": "fk_%(table_name)s_%(column_0_N_name)s_%(referred_table_name)s",
     "pk": "pk_%(table_name)s",
 }
+
+# The tables a field_sources (or, later, review_tasks) row can point into.
+SOURCE_TABLES = "table_name IN ('invoices', 'invoice_lines', 'extracted_fields')"
 
 
 def bbox_check(column: str) -> str:
@@ -296,3 +301,87 @@ class Block(TimestampsMixin, Base):
     extraction_run_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("extraction_runs.id"), index=True
     )
+
+
+# ---------------------------------------------------------------------------
+# Extraction and quality (migration 0005)
+# ---------------------------------------------------------------------------
+
+
+class Invoice(TimestampsMixin, Base):
+    """The first typed document table. Every extracted value may be missing."""
+
+    __tablename__ = "invoices"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    extraction_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("extraction_runs.id"), index=True
+    )
+    invoice_no: Mapped[str | None]
+    vendor_name: Mapped[str | None]
+    vendor_gstin: Mapped[str | None]
+    invoice_date: Mapped[date | None]
+    due_date: Mapped[date | None]
+    currency: Mapped[str | None]
+    subtotal: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    tax_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    received_on: Mapped[date | None]
+
+
+class InvoiceLine(TimestampsMixin, Base):
+    __tablename__ = "invoice_lines"
+    __table_args__ = (UniqueConstraint("invoice_id", "line_no"),)
+
+    # Indexed by the unique (invoice_id, line_no), which leads with it.
+    invoice_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("invoices.id", ondelete="CASCADE"))
+    line_no: Mapped[int]
+    description: Mapped[str | None]
+    hsn_code: Mapped[str | None]
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+
+
+class ExtractedField(TimestampsMixin, Base):
+    """Fields of a document type that has no table of its own yet."""
+
+    __tablename__ = "extracted_fields"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    extraction_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("extraction_runs.id"), index=True
+    )
+    doc_type: Mapped[str]
+    data: Mapped[dict[str, Any]]
+
+
+class FieldSource(TimestampsMixin, Base):
+    """Where one extracted value came from: block, page, bbox, model and confidence."""
+
+    __tablename__ = "field_sources"
+    __table_args__ = (
+        ForeignKeyConstraint(["document_id", "page_no"], ["pages.document_id", "pages.page_no"]),
+        # Also serves the plain document_id foreign key, which it leads with.
+        Index("ix_field_sources_document_id_page_no", "document_id", "page_no"),
+        CheckConstraint(SOURCE_TABLES, name="table_name"),
+        CheckConstraint(bbox_check("bbox"), name="bbox_shape"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence_range"),
+    )
+
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    table_name: Mapped[str]
+    # The row in table_name. It points into three tables, so it can't be a foreign key.
+    row_id: Mapped[uuid.UUID]
+    column_name: Mapped[str]
+    block_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("blocks.id"), index=True)
+    page_no: Mapped[int]
+    bbox: Mapped[list[float]]
+    model: Mapped[str]
+    confidence: Mapped[float] = mapped_column(REAL)
+    reviewed_by: Mapped[str | None]
+    reviewed_at: Mapped[datetime | None]

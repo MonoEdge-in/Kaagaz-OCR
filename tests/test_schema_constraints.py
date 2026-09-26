@@ -41,6 +41,10 @@ def constraint(name: str) -> str:
     return f'constraint "{name}"'
 
 
+def not_null(column: str) -> str:
+    return f'null value in column "{column}"'
+
+
 def document_values(**overrides: Any) -> dict[str, Any]:
     values: dict[str, Any] = {
         "original_filename": "invoice.pdf",
@@ -65,11 +69,12 @@ def upload_values(**overrides: Any) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class Tree:
-    """A document with one page and one run: what a block hangs from."""
+    """A document with one page, one run and one block: what most rows hang from."""
 
     document_id: UUID
     page_id: UUID
     run_id: UUID
+    block_id: UUID
 
 
 async def make_tree(connection: AsyncConnection) -> Tree:
@@ -84,7 +89,8 @@ async def make_tree(connection: AsyncConnection) -> Tree:
         pipeline_version="0.1.0",
         status="running",
     )
-    return Tree(document_id, page_id, run_id)
+    block_id = await insert(connection, "blocks", **block_values(document_id, page_id, run_id))
+    return Tree(document_id, page_id, run_id, block_id)
 
 
 def block_values(
@@ -100,6 +106,21 @@ def block_values(
         "bbox": [10.0, 20.0, 110.0, 40.0],
         "confidence": 0.9,
         "source": "pdfplumber",
+    }
+    return values | overrides
+
+
+def source_values(tree: Tree, **overrides: Any) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "document_id": tree.document_id,
+        "table_name": "invoices",
+        "row_id": tree.document_id,
+        "column_name": "total",
+        "block_id": tree.block_id,
+        "page_no": 1,
+        "bbox": [10.0, 20.0, 110.0, 40.0],
+        "model": "qwen3.5:4b",
+        "confidence": 0.8,
     }
     return values | overrides
 
@@ -450,4 +471,159 @@ async def test_deleting_a_document_removes_its_pages_runs_and_blocks(
             .select_from(TABLES[table])
             .where(TABLES[table].c.document_id == tree.document_id)
         )
+        assert remaining.scalar_one() == 0
+
+
+# ---------------------------------------------------------------------------
+# Extraction: invoices, invoice lines, extracted fields, field sources
+# ---------------------------------------------------------------------------
+
+
+async def test_an_invoice_gets_lines_and_a_field_source(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    invoice_id = await insert(
+        connection, "invoices", document_id=tree.document_id, extraction_run_id=tree.run_id
+    )
+    await insert(connection, "invoice_lines", invoice_id=invoice_id, line_no=1)
+    source_id = await insert(connection, "field_sources", **source_values(tree, row_id=invoice_id))
+    assert invoice_id and source_id
+
+
+async def test_extracted_fields_holds_json_for_an_unknown_document_type(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    field_id = await insert(
+        connection,
+        "extracted_fields",
+        document_id=tree.document_id,
+        extraction_run_id=tree.run_id,
+        doc_type="unknown",
+        data={"vendor": "Shinde Traders"},
+    )
+    assert field_id
+
+
+async def test_invoice_line_numbers_are_unique_per_invoice(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    invoice_id = await insert(
+        connection, "invoices", document_id=tree.document_id, extraction_run_id=tree.run_id
+    )
+    await insert(connection, "invoice_lines", invoice_id=invoice_id, line_no=1)
+    await refused(
+        connection,
+        constraint("uq_invoice_lines_invoice_id_line_no"),
+        "invoice_lines",
+        invoice_id=invoice_id,
+        line_no=1,
+    )
+
+
+async def test_deleting_an_invoice_removes_its_lines(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    invoice_id = await insert(
+        connection, "invoices", document_id=tree.document_id, extraction_run_id=tree.run_id
+    )
+    await insert(connection, "invoice_lines", invoice_id=invoice_id, line_no=1)
+    await connection.execute(
+        sa.delete(TABLES["invoices"]).where(TABLES["invoices"].c.id == invoice_id)
+    )
+    remaining = await connection.execute(
+        sa.select(sa.func.count())
+        .select_from(TABLES["invoice_lines"])
+        .where(TABLES["invoice_lines"].c.invoice_id == invoice_id)
+    )
+    assert remaining.scalar_one() == 0
+
+
+async def test_field_sources_table_name_list_is_enforced(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    await refused(
+        connection,
+        constraint("ck_field_sources_table_name"),
+        "field_sources",
+        **source_values(tree, table_name="documents"),
+    )
+
+
+async def test_field_source_confidence_range_is_enforced(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    await refused(
+        connection,
+        constraint("ck_field_sources_confidence_range"),
+        "field_sources",
+        **source_values(tree, confidence=-0.1),
+    )
+
+
+@pytest.mark.parametrize("bbox", BAD_BBOXES)
+async def test_a_field_source_bbox_must_be_four_ordered_numbers(
+    connection: AsyncConnection, tree: Tree, bbox: Any
+) -> None:
+    value = real_array(bbox) if isinstance(bbox, str) else bbox
+    await refused(
+        connection,
+        constraint("ck_field_sources_bbox_shape"),
+        "field_sources",
+        **source_values(tree, bbox=value),
+    )
+
+
+@pytest.mark.parametrize("column", ["block_id", "page_no", "bbox", "model", "confidence"])
+async def test_a_field_source_needs_its_block_page_bbox_model_and_confidence(
+    connection: AsyncConnection, tree: Tree, column: str
+) -> None:
+    values = source_values(tree)
+    del values[column]
+    await refused(connection, not_null(column), "field_sources", **values)
+
+
+async def test_a_field_source_must_name_a_page_of_its_own_document(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    await refused(
+        connection,
+        constraint("fk_field_sources_document_id_page_no_pages"),
+        "field_sources",
+        **source_values(tree, page_no=2),
+    )
+
+
+async def test_deleting_a_block_a_field_source_points_at_fails(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    await insert(connection, "field_sources", **source_values(tree))
+    with pytest.raises(IntegrityError, match=constraint("fk_field_sources_block_id_blocks")):
+        async with connection.begin_nested():
+            await connection.execute(
+                sa.delete(TABLES["blocks"]).where(TABLES["blocks"].c.id == tree.block_id)
+            )
+
+
+async def test_deleting_a_document_removes_its_extraction_rows(
+    connection: AsyncConnection,
+) -> None:
+    tree = await make_tree(connection)
+    invoice_id = await insert(
+        connection, "invoices", document_id=tree.document_id, extraction_run_id=tree.run_id
+    )
+    await insert(connection, "invoice_lines", invoice_id=invoice_id, line_no=1)
+    await insert(
+        connection,
+        "extracted_fields",
+        document_id=tree.document_id,
+        extraction_run_id=tree.run_id,
+        doc_type="unknown",
+        data={},
+    )
+    await insert(connection, "field_sources", **source_values(tree, row_id=invoice_id))
+    await connection.execute(
+        sa.delete(TABLES["documents"]).where(TABLES["documents"].c.id == tree.document_id)
+    )
+    for table in ("invoices", "invoice_lines", "extracted_fields", "field_sources"):
+        remaining = await connection.execute(sa.select(sa.func.count()).select_from(TABLES[table]))
         assert remaining.scalar_one() == 0
