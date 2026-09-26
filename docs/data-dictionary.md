@@ -200,3 +200,35 @@ Where one extracted value came from. Required on every value stored as fact: no 
 | model | text | Which model or engine read it, e.g. `qwen3.5:4b`. |
 | confidence | real | 0 to 1. Never null. |
 | reviewed_by, reviewed_at | text, timestamptz, both null | Set once a person confirms or corrects the value. |
+
+## Review and search
+
+### review_tasks
+
+A value waiting for a person to check it, opened when extraction can't map a value to its source or a validation rule fails.
+
+| Column | Type | Meaning |
+|---|---|---|
+| document_id | uuid | Joins `documents.id`. |
+| table_name | text | `invoices`, `invoice_lines` or `extracted_fields`, same list as field_sources. |
+| row_id | uuid | The row in that table. No foreign key. |
+| column_name | text | Which column. |
+| reason | text | Why review is needed, e.g. `no_source`. |
+| current_value, corrected_value | text, both null | The value as read, and the person's correction once resolved. |
+| status | text | `open`, `resolved`. Default `open`. |
+| resolved_by, resolved_at | text, timestamptz, both null | Set once resolved. |
+
+### chunks
+
+Searchable pieces of a document's text, for hybrid search.
+
+| Column | Type | Meaning |
+|---|---|---|
+| document_id | uuid | Joins `documents.id`. |
+| chunk_no | integer | Order within the document. Unique per document. |
+| page_from, page_to | integer | The page range this chunk covers. `page_to >= page_from`. |
+| section_path | text, null | Which heading this chunk sits under. |
+| header | text, null | A short context header shown with search results. |
+| text | text | *Untrusted.* The chunk's content. |
+| embedding | vector(1024), null | Filled on Day 5 by Qwen3-Embedding-0.6B. A `HNSW` index (cosine distance) ranks by meaning. |
+| tsv | tsvector, generated | Built from `header` and `text` in English. A `GIN` index supports full-text search. |

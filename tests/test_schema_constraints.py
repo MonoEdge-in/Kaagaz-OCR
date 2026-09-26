@@ -2,7 +2,7 @@
 
 A refused insert is matched by the name of the constraint it broke, so a test can't pass
 because some other rule happened to fire. Every test needs the migrated database (`db`).
-More tables arrive in later PRs, with their own constraint tests.
+This covers every table in the approved schema plan (PRs 1 to 6).
 """
 
 from dataclasses import dataclass
@@ -12,7 +12,7 @@ from uuid import UUID
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import ARRAY
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from kaagaz_shared.models import Base
@@ -121,6 +121,17 @@ def source_values(tree: Tree, **overrides: Any) -> dict[str, Any]:
         "bbox": [10.0, 20.0, 110.0, 40.0],
         "model": "qwen3.5:4b",
         "confidence": 0.8,
+    }
+    return values | overrides
+
+
+def chunk_values(document_id: UUID, **overrides: Any) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "document_id": document_id,
+        "chunk_no": 1,
+        "page_from": 1,
+        "page_to": 1,
+        "text": "Invoice total",
     }
     return values | overrides
 
@@ -627,3 +638,129 @@ async def test_deleting_a_document_removes_its_extraction_rows(
     for table in ("invoices", "invoice_lines", "extracted_fields", "field_sources"):
         remaining = await connection.execute(sa.select(sa.func.count()).select_from(TABLES[table]))
         assert remaining.scalar_one() == 0
+
+
+# ---------------------------------------------------------------------------
+# Review and search: review_tasks, chunks
+# ---------------------------------------------------------------------------
+
+
+async def test_a_review_task_gets_opened_and_resolved(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    task_id = await insert(
+        connection,
+        "review_tasks",
+        document_id=tree.document_id,
+        table_name="invoices",
+        row_id=tree.document_id,
+        column_name="total",
+        reason="no_source",
+    )
+    row = (
+        await connection.execute(
+            sa.select(TABLES["review_tasks"]).where(TABLES["review_tasks"].c.id == task_id)
+        )
+    ).one()
+    assert row.status == "open"
+    assert row.resolved_at is None
+
+
+async def test_review_task_table_name_and_status_lists_are_enforced(
+    connection: AsyncConnection, tree: Tree
+) -> None:
+    await refused(
+        connection,
+        constraint("ck_review_tasks_table_name"),
+        "review_tasks",
+        document_id=tree.document_id,
+        table_name="documents",
+        row_id=tree.document_id,
+        column_name="total",
+        reason="no_source",
+    )
+    await refused(
+        connection,
+        constraint("ck_review_tasks_status"),
+        "review_tasks",
+        document_id=tree.document_id,
+        table_name="invoices",
+        row_id=tree.document_id,
+        column_name="total",
+        reason="no_source",
+        status="waiting",
+    )
+
+
+async def test_deleting_a_document_removes_its_review_tasks(connection: AsyncConnection) -> None:
+    tree = await make_tree(connection)
+    await insert(
+        connection,
+        "review_tasks",
+        document_id=tree.document_id,
+        table_name="invoices",
+        row_id=tree.document_id,
+        column_name="total",
+        reason="no_source",
+    )
+    await connection.execute(
+        sa.delete(TABLES["documents"]).where(TABLES["documents"].c.id == tree.document_id)
+    )
+    remaining = await connection.execute(
+        sa.select(sa.func.count()).select_from(TABLES["review_tasks"])
+    )
+    assert remaining.scalar_one() == 0
+
+
+async def test_a_chunk_holds_searchable_text(connection: AsyncConnection) -> None:
+    document_id = await insert(connection, "documents", **document_values())
+    chunk_id = await insert(connection, "chunks", **chunk_values(document_id))
+    assert chunk_id
+
+
+async def test_chunk_numbers_are_unique_per_document(connection: AsyncConnection) -> None:
+    document_id = await insert(connection, "documents", **document_values())
+    await insert(connection, "chunks", **chunk_values(document_id))
+    await refused(
+        connection,
+        constraint("uq_chunks_document_id_chunk_no"),
+        "chunks",
+        **chunk_values(document_id),
+    )
+
+
+async def test_chunk_page_range_is_enforced(connection: AsyncConnection) -> None:
+    document_id = await insert(connection, "documents", **document_values())
+    await refused(
+        connection,
+        constraint("ck_chunks_page_from_positive"),
+        "chunks",
+        **chunk_values(document_id, page_from=0, page_to=1),
+    )
+    await refused(
+        connection,
+        constraint("ck_chunks_page_range"),
+        "chunks",
+        **chunk_values(document_id, page_from=3, page_to=2),
+    )
+
+
+async def test_an_embedding_of_the_wrong_size_is_refused(connection: AsyncConnection) -> None:
+    document_id = await insert(connection, "documents", **document_values())
+    with pytest.raises(DBAPIError, match="expected 1024 dimensions"):
+        async with connection.begin_nested():
+            await connection.execute(
+                sa.insert(TABLES["chunks"]).values(
+                    **chunk_values(document_id, embedding=[0.1] * 1023)
+                )
+            )
+
+
+async def test_deleting_a_document_removes_its_chunks(connection: AsyncConnection) -> None:
+    document_id = await insert(connection, "documents", **document_values())
+    await insert(connection, "chunks", **chunk_values(document_id))
+    await connection.execute(
+        sa.delete(TABLES["documents"]).where(TABLES["documents"].c.id == document_id)
+    )
+    remaining = await connection.execute(sa.select(sa.func.count()).select_from(TABLES["chunks"]))
+    assert remaining.scalar_one() == 0

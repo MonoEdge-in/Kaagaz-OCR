@@ -10,6 +10,8 @@ included, and fails CI if they differ.
 import asyncio
 from logging.config import fileConfig
 
+# Registers the "vector" type, so `alembic check` can read chunks.embedding back.
+import pgvector.sqlalchemy  # noqa: F401 - imported for that side effect only
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection

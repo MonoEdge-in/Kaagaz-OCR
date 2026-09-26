@@ -1,17 +1,17 @@
-"""The migrations build the schema: the vector extension, files and management, then
-tags, versions and links between documents.
+"""The migrations build the schema: the vector extension, then every table in the approved
+schema plan (PRs 1 to 6).
 
-Tests marked `db` read the migrated database (CI runs `alembic upgrade head` first). More
-tables arrive in later PRs; this file only checks what exists so far.
+Tests marked `db` read the migrated database (CI runs `alembic upgrade head` first).
 """
 
 from typing import Any
 
 import pytest
 import sqlalchemy as sa
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from kaagaz_shared.models import NAMING_CONVENTION, Base
+from kaagaz_shared.models import EMBEDDING_DIM, NAMING_CONVENTION, Base
 
 TABLES_SO_FAR = {
     "folders",
@@ -29,7 +29,12 @@ TABLES_SO_FAR = {
     "invoice_lines",
     "extracted_fields",
     "field_sources",
+    "review_tasks",
+    "chunks",
 }
+
+
+TABLES = Base.metadata.tables
 
 
 def test_constraints_get_predictable_names() -> None:
@@ -37,8 +42,8 @@ def test_constraints_get_predictable_names() -> None:
     assert Base.metadata.naming_convention == NAMING_CONVENTION
 
 
-def test_models_describe_the_tables_built_so_far() -> None:
-    assert set(Base.metadata.tables) == TABLES_SO_FAR
+def test_models_describe_every_table_in_the_approved_plan() -> None:
+    assert set(TABLES) == TABLES_SO_FAR
 
 
 def covered(fk_columns: list[str], index_columns: list[list[str]]) -> bool:
@@ -121,3 +126,70 @@ async def test_every_foreign_key_in_the_database_has_an_index(
         if not covered(list(columns), by_table.get(table, []))
     ]
     assert missing == []
+
+
+def test_the_embedding_column_has_the_model_size() -> None:
+    column_type = TABLES["chunks"].c.embedding.type
+    assert isinstance(column_type, Vector)
+    assert column_type.dim == EMBEDDING_DIM == 1024
+
+
+@pytest.mark.db
+async def test_search_indexes_exist(connection: AsyncConnection) -> None:
+    # alembic check can't compare postgresql_using/ops/where, so this reads pg_catalog
+    # directly. Declaring them in models.py too keeps a future migration from drifting.
+    pg_indexes = sa.table(
+        "pg_indexes",
+        sa.column("schemaname"),
+        sa.column("indexname"),
+        sa.column("indexdef"),
+        schema="pg_catalog",
+    )
+    result = await connection.execute(
+        sa.select(pg_indexes.c.indexname, pg_indexes.c.indexdef).where(
+            pg_indexes.c.schemaname == "public"
+        )
+    )
+    definitions: dict[str, str] = {row.indexname: row.indexdef for row in result}
+    assert "USING hnsw (embedding vector_cosine_ops)" in definitions["ix_chunks_embedding"]
+    assert "USING gin (tsv)" in definitions["ix_chunks_tsv"]
+
+
+@pytest.mark.db
+async def test_chunk_text_is_searchable_in_english(connection: AsyncConnection) -> None:
+    documents, chunks = TABLES["documents"], TABLES["chunks"]
+    document_id = (
+        await connection.execute(
+            sa.insert(documents)
+            .values(
+                original_filename="invoice.pdf",
+                content_type="application/pdf",
+                size_bytes=10,
+                storage_key="originals/x.pdf",
+                uploaded_by="Tushar",
+            )
+            .returning(documents.c.id)
+        )
+    ).scalar_one()
+    await connection.execute(
+        sa.insert(chunks).values(
+            document_id=document_id,
+            chunk_no=1,
+            page_from=1,
+            page_to=1,
+            header="Shinde Traders",
+            text="Invoice total for October",
+        )
+    )
+
+    async def matches(query: sa.ColumnElement[Any]) -> bool:
+        found = await connection.execute(
+            sa.select(sa.func.count()).where(chunks.c.tsv.bool_op("@@")(query))
+        )
+        return bool(found.scalar_one())
+
+    # English stemming: "invoices" finds "Invoice".
+    assert await matches(sa.func.plainto_tsquery("english", "invoices"))
+    # The header text is searchable too.
+    assert await matches(sa.func.plainto_tsquery("english", "shinde"))
+    assert not await matches(sa.func.plainto_tsquery("english", "purchase order"))

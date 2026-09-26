@@ -16,10 +16,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     REAL,
     BigInteger,
     CheckConstraint,
+    Computed,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -31,7 +33,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy import text as sql_text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeEngine
 
@@ -45,8 +47,11 @@ NAMING_CONVENTION = {
     "pk": "pk_%(table_name)s",
 }
 
-# The tables a field_sources (or, later, review_tasks) row can point into.
+# The tables a field_sources or review_tasks row can point into.
 SOURCE_TABLES = "table_name IN ('invoices', 'invoice_lines', 'extracted_fields')"
+
+# The size of a Qwen3-Embedding-0.6B vector. Settings.embedding_dim must match it.
+EMBEDDING_DIM = 1024
 
 
 def bbox_check(column: str) -> str:
@@ -385,3 +390,64 @@ class FieldSource(TimestampsMixin, Base):
     confidence: Mapped[float] = mapped_column(REAL)
     reviewed_by: Mapped[str | None]
     reviewed_at: Mapped[datetime | None]
+
+
+# ---------------------------------------------------------------------------
+# Review and search (migration 0006)
+# ---------------------------------------------------------------------------
+
+
+class ReviewTask(TimestampsMixin, Base):
+    """A value waiting for a person to check it."""
+
+    __tablename__ = "review_tasks"
+    __table_args__ = (
+        CheckConstraint(SOURCE_TABLES, name="table_name"),
+        CheckConstraint("status IN ('open', 'resolved')", name="status"),
+    )
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    table_name: Mapped[str]
+    row_id: Mapped[uuid.UUID]
+    column_name: Mapped[str]
+    reason: Mapped[str]
+    current_value: Mapped[str | None]
+    corrected_value: Mapped[str | None]
+    status: Mapped[str] = mapped_column(server_default="open")
+    resolved_by: Mapped[str | None]
+    resolved_at: Mapped[datetime | None]
+
+
+class Chunk(TimestampsMixin, Base):
+    """A searchable piece of a document, with its embedding and full-text index."""
+
+    __tablename__ = "chunks"
+    __table_args__ = (
+        UniqueConstraint("document_id", "chunk_no"),
+        CheckConstraint("page_from >= 1", name="page_from_positive"),
+        CheckConstraint("page_to >= page_from", name="page_range"),
+        Index(
+            "ix_chunks_embedding",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        Index("ix_chunks_tsv", "tsv", postgresql_using="gin"),
+    )
+
+    # Indexed by the unique (document_id, chunk_no), which leads with it.
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    chunk_no: Mapped[int]
+    page_from: Mapped[int]
+    page_to: Mapped[int]
+    section_path: Mapped[str | None]
+    header: Mapped[str | None]
+    text: Mapped[str]
+    # Filled on Day 5. pgvector doesn't index NULL vectors, so an empty column costs nothing.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
+    tsv: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('english', coalesce(header, '') || ' ' || text)", persisted=True),
+    )
