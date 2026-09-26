@@ -8,7 +8,12 @@ never see each other's rows and leave the database as they found it.
 from collections.abc import AsyncIterator
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.pool import NullPool
 
 from kaagaz_shared.settings import DatabaseSettings
@@ -30,3 +35,15 @@ async def connection() -> AsyncIterator[AsyncConnection]:
                 await transaction.rollback()
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+def sessions(connection: AsyncConnection) -> async_sessionmaker[AsyncSession]:
+    """A session factory joined to `connection`'s transaction, for code that takes one.
+
+    `session.commit()` inside the code under test only releases a savepoint: the outer
+    transaction from `connection` is what actually gets rolled back, at the end of the test.
+    """
+    return async_sessionmaker(
+        bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )

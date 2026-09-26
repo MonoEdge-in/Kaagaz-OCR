@@ -5,19 +5,19 @@ description = "Turns English business documents into SQL tables and searchable t
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
-# Day 1 adds kaagaz-shared and kaagaz-worker here, to the members and to the sources.
-dependencies = ["kaagaz-api", "kaagaz-shared"]
+dependencies = ["kaagaz-api", "kaagaz-shared", "kaagaz-worker"]
 
 [tool.uv]
 # The root only ties the workspace together; it is not a package itself.
 package = false
 
 [tool.uv.workspace]
-members = ["api", "shared"]
+members = ["api", "shared", "worker"]
 
 [tool.uv.sources]
 kaagaz-api = { workspace = true }
 kaagaz-shared = { workspace = true }
+kaagaz-worker = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -58,9 +58,8 @@ python_version = "3.12"
 strict = true
 # Lets mypy see that pydantic-settings fills Settings fields from the environment.
 plugins = ["pydantic.mypy"]
-mypy_path = ["api", "shared"]
-# Day 1 adds shared/kaagaz_shared and worker/kaagaz_worker here and to mypy_path.
-files = ["api/kaagaz_api", "shared/kaagaz_shared", "migrations", "tests", ".claude/hooks", ".github/scripts"]
+mypy_path = ["api", "shared", "worker"]
+files = ["api/kaagaz_api", "shared/kaagaz_shared", "worker/kaagaz_worker", "migrations", "tests", ".claude/hooks", ".github/scripts"]
 
 # boto3 ships no type information, so mypy can't read it. This only says so; our own code
 # is still checked in full. Drop it if typed stubs for boto3 are approved.

@@ -1,0 +1,17 @@
+[project]
+name = "kaagaz-worker"
+version = "0.1.0"
+description = "The Temporal worker: the ProcessDocument workflow and its activities."
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "kaagaz-shared",
+    "temporalio>=1.9",
+]
+
+[tool.uv.sources]
+kaagaz-shared = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
