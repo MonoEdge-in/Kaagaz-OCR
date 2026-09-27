@@ -3,7 +3,7 @@ import unittest
 
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound, Job
-from kaagaz.jobs.worker import JobFailed, Worker
+from kaagaz.jobs.worker import Heartbeat, JobFailed, Worker
 from kaagaz.scanning.gate import (
     CUSTOMER_MESSAGES,
     DocumentStatus,
@@ -125,7 +125,11 @@ class GateInWorkerTest(unittest.TestCase):
         queue = LeaseQueue(clock, lease_seconds=30, max_attempts=3)
         queue.enqueue(JOB)
         gate, _, _ = make_gate(FakeScanner(Verdict.INFECTED))
-        worker = Worker(queue, lambda job, beat: gate.check(job))
+
+        def handler(job: Job, beat: Heartbeat) -> None:
+            gate.check(job)
+
+        worker = Worker(queue, handler)
 
         worker.run_once()
         clock.advance(300)

@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "kaagaz-laptop-only",
+      "credentials": [
+        {
+          "accessKey": "kaagaz-local",
+          "secretKey": "kaagaz-local-secret-laptop-only"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

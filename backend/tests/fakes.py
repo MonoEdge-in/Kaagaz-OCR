@@ -2,16 +2,24 @@
 
 Test-only. They follow the port contracts in kaagaz.ingestion.ports,
 kaagaz.scanning.gate (status store, scanner, quarantine) and kaagaz.pipeline
-(piece store, masker), keyed by customer first, so a cross-customer test can
+(documents, pipeline store, page pictures, preparer, socket, masker, models),
+keyed by customer first, so a cross-customer test can
 actually fail. They are never used by product code.
 """
 
 import threading
-from typing import Any, BinaryIO
+from collections.abc import Collection
+from dataclasses import dataclass
+from typing import IO, Any
 
-from kaagaz.chunking.rows import Piece
+from kaagaz.chunking.piece import Piece
+from kaagaz.extraction.learned import LearnedCorrection
+from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job
+from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
+from kaagaz.reading.socket import NoReader
+from kaagaz.reading.spans import CellLocation, PageInfo, ReadError, Span
 from kaagaz.scanning.gate import DocumentStatus, ScannerError
 
 
@@ -74,9 +82,9 @@ class MemoryStorage:
         self._lock = threading.Lock()
         self.fail_put = False
         self.fail_delete = False
-        self.last_put_stream: BinaryIO | None = None
+        self.last_put_stream: IO[bytes] | None = None
 
-    def put(self, customer_id: str, document_id: str, data: BinaryIO) -> None:
+    def put(self, customer_id: str, document_id: str, data: IO[bytes]) -> None:
         self.last_put_stream = data
         if self.fail_put:
             raise BackendUnavailable("storage down")
@@ -157,18 +165,180 @@ class MemoryQueue:
         self.jobs.append(job)
 
 
-class MemoryPieces:
-    """Pieces keyed by (customer_id, document_id). replace() swaps the whole
-    list, so running a job twice never duplicates pieces."""
+class MemoryDocuments(MemoryRepository):
+    """MemoryRepository plus the pipeline's two writes (kaagaz.pipeline.DocumentStore),
+    like kaagaz.db.documents.PgDocuments: ``set_failed`` marks the status failed
+    in ``statuses`` (which never leaves REJECTED) and keeps the code. Both do
+    nothing for a document this customer does not have, like an UPDATE whose
+    WHERE matches no row."""
+
+    def __init__(self, statuses: MemoryStatuses) -> None:
+        super().__init__()
+        self._statuses = statuses
+        self.failure_codes: dict[tuple[str, str], str] = {}
+        self.page_counts: dict[tuple[str, str], int] = {}
+
+    def set_failed(self, customer_id: str, document_id: str, code: str) -> None:
+        if self.get(customer_id, document_id) is None:
+            return
+        self._statuses.set_status(customer_id, document_id, DocumentStatus.FAILED)
+        self.failure_codes[(customer_id, document_id)] = code
+
+    def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
+        if self.get(customer_id, document_id) is not None:
+            self.page_counts[(customer_id, document_id)] = page_count
+
+
+class MemoryPipelineStore:
+    """What the pipeline saves, keyed by (customer_id, document_id). save() swaps
+    the whole content, so running a job twice never duplicates anything
+    (kaagaz.pipeline.PipelineStore)."""
 
     def __init__(self) -> None:
-        self._pieces: dict[tuple[str, str], list[Piece]] = {}
+        self._content: dict[tuple[str, str], DocumentContent] = {}
+        self.learned: dict[str, list[LearnedCorrection]] = {}  # customer -> corrections
+        self.saves = 0
 
-    def replace(self, customer_id: str, document_id: str, pieces: list[Piece]) -> None:
-        self._pieces[(customer_id, document_id)] = list(pieces)
+    def save(self, content: DocumentContent) -> None:
+        self.saves += 1
+        self._content[(content.customer_id, content.document_id)] = content
+
+    def clear(self, customer_id: str, document_id: str) -> None:
+        self._content.pop((customer_id, document_id), None)
+
+    def load_learned(self, customer_id: str, fields: Collection[str]) -> list[LearnedCorrection]:
+        return [item for item in self.learned.get(customer_id, []) if item.field in fields]
+
+    def content(self, customer_id: str, document_id: str) -> DocumentContent | None:
+        return self._content.get((customer_id, document_id))
 
     def for_document(self, customer_id: str, document_id: str) -> list[Piece]:
-        return list(self._pieces.get((customer_id, document_id), []))
+        content = self.content(customer_id, document_id)
+        return [] if content is None else list(content.pieces)
+
+    def values_for(self, customer_id: str, document_id: str) -> list[ExtractedValue]:
+        content = self.content(customer_id, document_id)
+        return [] if content is None else list(content.values)
+
+    def outputs_for(self, customer_id: str, document_id: str) -> list[ReaderOutput]:
+        content = self.content(customer_id, document_id)
+        return [] if content is None else list(content.outputs)
+
+    def pages_for(self, customer_id: str, document_id: str) -> list[PageRecord]:
+        content = self.content(customer_id, document_id)
+        return [] if content is None else list(content.pages)
+
+
+class MemoryPageImages:
+    """Page pictures keyed by (customer_id, document_id, page_no)."""
+
+    def __init__(self) -> None:
+        self.images: dict[tuple[str, str, int], bytes] = {}
+
+    def put_page_image(self, customer_id: str, document_id: str, page_no: int, png: bytes) -> None:
+        self.images[(customer_id, document_id, page_no)] = png
+
+
+@dataclass(frozen=True, slots=True)
+class FakePrepared:
+    pages: list[PageInfo]
+    images: dict[int, bytes]
+
+
+class FakePreparer:
+    """Gives preset pages per file type, and none for any other type (like
+    kaagaz.preparing.pages.prepare_pages does for spreadsheets). ``error`` makes
+    it raise ReadError with that code instead."""
+
+    def __init__(self, by_type: dict[str, FakePrepared] | None = None, *, error: str | None = None) -> None:
+        self._by_type = dict(by_type or {})
+        self._error = error
+
+    def prepare(self, detected_type: str, data: bytes) -> FakePrepared:
+        if self._error is not None:
+            raise ReadError(self._error)
+        return self._by_type.get(detected_type, FakePrepared([], {}))
+
+
+def fake_sheet_pages(spans: list[Span]) -> list[PageInfo]:
+    """One page per sheet: width = last column, height = last row (the same rule
+    as kaagaz.preparing.pages.sheet_pages, written out here for the tests)."""
+    extent: dict[int, tuple[int, int]] = {}
+    for span in spans:
+        if isinstance(span.location, CellLocation):
+            cell = span.location
+            columns, rows = extent.get(cell.sheet, (0, 0))
+            extent[cell.sheet] = (max(columns, cell.column), max(rows, cell.row))
+    return [PageInfo(sheet, float(c), float(r), "cells") for sheet, (c, r) in sorted(extent.items())]
+
+
+class PresetSocket:
+    """A reader socket that gives preset spans per file type
+    (kaagaz.pipeline.ReadingSocket). A type with no preset has no reader.
+    A preset that is a ReadError is raised instead."""
+
+    def __init__(
+        self,
+        first: dict[str, list[Span] | ReadError],
+        second: dict[str, list[Span] | ReadError] | None = None,
+    ) -> None:
+        self._first = first
+        self._second = second or {}
+
+    def read(self, detected_type: str, data: bytes) -> list[Span]:
+        if detected_type not in self._first:
+            raise NoReader(detected_type)
+        return self._give(self._first[detected_type])
+
+    def read_second(self, detected_type: str, data: bytes) -> list[Span] | None:
+        if detected_type not in self._second:
+            return None
+        return self._give(self._second[detected_type])
+
+    def reader_id(self, detected_type: str, second: bool = False) -> tuple[str, str]:
+        return ("preset-second" if second else "preset-first", "1")
+
+    @staticmethod
+    def _give(preset: list[Span] | ReadError) -> list[Span]:
+        if isinstance(preset, ReadError):
+            raise preset
+        return list(preset)
+
+
+class ModelDown(Exception):
+    """Stands in for kaagaz.ai.client.ModelUnavailable in the pipeline tests."""
+
+    code = "model_down"
+
+
+class FakeVision:
+    """A vision model: gives preset text for every picture, or raises ModelDown.
+    Records each picture it was sent."""
+
+    def __init__(self, text: str = "", *, down: bool = False) -> None:
+        self.text = text
+        self.down = down
+        self.pictures: list[bytes] = []
+
+    def read_image(self, *, png: bytes, instruction: str) -> str:
+        self.pictures.append(png)
+        if self.down:
+            raise ModelDown
+        return self.text
+
+
+class FakeEmbedder:
+    """Records (customer_id, document_id) for each call; raises ModelDown if down."""
+
+    def __init__(self, *, down: bool = False) -> None:
+        self.down = down
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, customer_id: str, document_id: str) -> int:
+        self.calls.append((customer_id, document_id))
+        if self.down:
+            raise ModelDown
+        return 0
 
 
 class FakeMasker:

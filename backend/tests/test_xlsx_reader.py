@@ -4,19 +4,30 @@ import warnings
 import zipfile
 
 from kaagaz.reading.socket import NoReader
-from kaagaz.reading.spans import ReadError, Span
+from kaagaz.reading.spans import CellLocation, ReadError, Span
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
 from tests.xlsx_builder import make_xlsx, make_zip, sheet_xml
 
-LIMITS = XlsxLimits(max_entries=50, max_member_bytes=200_000, max_total_bytes=1_000_000, max_cells=10_000, max_text_chars=10_000_000)
+LIMITS = XlsxLimits(
+    max_entries=50,
+    max_member_bytes=200_000,
+    max_total_bytes=1_000_000,
+    max_cells=10_000,
+    max_text_chars=10_000_000,
+)
 
 
 def read(data: bytes, limits: XlsxLimits = LIMITS) -> list[Span]:
     return list(XlsxReader(limits).read(data))
 
 
+def cell_of(span: Span) -> CellLocation:
+    assert isinstance(span.location, CellLocation)  # this reader only gives cells
+    return span.location
+
+
 def cells(data: bytes) -> dict[tuple[int, int, int], str]:
-    return {(s.location.sheet, s.location.row, s.location.column): s.text for s in read(data)}
+    return {(cell_of(s).sheet, cell_of(s).row, cell_of(s).column): s.text for s in read(data)}
 
 
 def one_sheet(cells_xml: str, shared: list[str] | None = None) -> bytes:
@@ -37,10 +48,15 @@ class CellValuesTest(unittest.TestCase):
             '<row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>100</v></c></row>',
             shared=["invoice", "amount", "INV-1"],
         )
-        self.assertEqual(cells(data), {
-            (1, 1, 1): "invoice", (1, 1, 2): "amount",
-            (1, 2, 1): "INV-1", (1, 2, 2): "100",
-        })
+        self.assertEqual(
+            cells(data),
+            {
+                (1, 1, 1): "invoice",
+                (1, 1, 2): "amount",
+                (1, 2, 1): "INV-1",
+                (1, 2, 2): "100",
+            },
+        )
 
     def test_numbers_stay_exactly_as_stored(self) -> None:
         data = one_sheet('<row r="1"><c r="A1"><v>1.10</v></c><c r="B1"><v>1E-3</v></c></row>')
@@ -49,7 +65,8 @@ class CellValuesTest(unittest.TestCase):
     def test_inline_string_and_rich_text_runs(self) -> None:
         data = one_sheet(
             '<row r="1"><c r="A1" t="inlineStr"><is><t>inline</t></is></c>'
-            '<c r="B1" t="inlineStr"><is><r><t>Rich </t></r><r><t>text</t></r><rPh><t>skip</t></rPh></is></c></row>'
+            '<c r="B1" t="inlineStr"><is><r><t>Rich </t></r><r><t>text</t></r>'
+            "<rPh><t>skip</t></rPh></is></c></row>"
         )
         self.assertEqual(cells(data), {(1, 1, 1): "inline", (1, 1, 2): "Rich text"})
 
@@ -68,29 +85,39 @@ class CellValuesTest(unittest.TestCase):
         self.assertEqual(cells(data), {(1, 1, 1): "2", (1, 1, 3): "ab"})
 
     def test_raw_value_is_kept_next_to_the_cleaned_text(self) -> None:
-        (span,) = read(one_sheet('<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">  x  </t></is></c></row>'))
+        (span,) = read(
+            one_sheet(
+                '<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">  x  </t></is></c></row>'
+            )
+        )
         self.assertEqual((span.text, span.raw), ("x", "  x  "))
 
 
 class PositionsTest(unittest.TestCase):
     def test_sparse_columns_and_letters_past_z(self) -> None:
-        data = one_sheet('<row r="3"><c r="A3"><v>1</v></c><c r="C3"><v>3</v></c><c r="AA3"><v>27</v></c></row>')
+        data = one_sheet(
+            '<row r="3"><c r="A3"><v>1</v></c><c r="C3"><v>3</v></c><c r="AA3"><v>27</v></c></row>'
+        )
         self.assertEqual(set(cells(data)), {(1, 3, 1), (1, 3, 3), (1, 3, 27)})
 
     def test_cells_and_rows_without_references_follow_on(self) -> None:
-        data = one_sheet('<row><c><v>a</v></c><c><v>b</v></c></row><row><c><v>c</v></c></row>')
+        data = one_sheet("<row><c><v>a</v></c><c><v>b</v></c></row><row><c><v>c</v></c></row>")
         self.assertEqual(set(cells(data)), {(1, 1, 1), (1, 1, 2), (1, 2, 1)})
 
     def test_sheets_come_in_workbook_order_not_part_name_order(self) -> None:
-        data = make_xlsx([
-            ("First", sheet_xml('<row r="1"><c r="A1"><v>1</v></c></row>')),
-            ("Second", sheet_xml('<row r="1"><c r="A1"><v>2</v></c></row>')),
-        ])
+        data = make_xlsx(
+            [
+                ("First", sheet_xml('<row r="1"><c r="A1"><v>1</v></c></row>')),
+                ("Second", sheet_xml('<row r="1"><c r="A1"><v>2</v></c></row>')),
+            ]
+        )
         self.assertEqual(cells(data), {(1, 1, 1): "1", (2, 1, 1): "2"})
 
     def test_absolute_relationship_targets_work(self) -> None:
-        data = make_xlsx([("S", sheet_xml('<row r="1"><c r="A1"><v>1</v></c></row>'))],
-                         rels_target_prefix="/xl/worksheets/")
+        data = make_xlsx(
+            [("S", sheet_xml('<row r="1"><c r="A1"><v>1</v></c></row>'))],
+            rels_target_prefix="/xl/worksheets/",
+        )
         self.assertEqual(cells(data), {(1, 1, 1): "1"})
 
     def test_no_shared_strings_part_is_fine(self) -> None:
@@ -103,7 +130,9 @@ class PositionsTest(unittest.TestCase):
 
 class DamagedFileTest(unittest.TestCase):
     def test_shared_string_index_out_of_range(self) -> None:
-        refused_with(self, one_sheet('<row r="1"><c r="A1" t="s"><v>5</v></c></row>', shared=["only"]), "corrupt_file")
+        refused_with(
+            self, one_sheet('<row r="1"><c r="A1" t="s"><v>5</v></c></row>', shared=["only"]), "corrupt_file"
+        )
 
     def test_invalid_cell_references(self) -> None:
         for ref in ("A0", "1A", "XFE1", "a1"):
@@ -134,12 +163,24 @@ class HostileFileTest(unittest.TestCase):
 
     def test_part_bigger_than_its_limit_is_refused(self) -> None:
         big = sheet_xml('<row r="1"><c r="A1" t="inlineStr"><is><t>' + "x" * 5000 + "</t></is></c></row>")
-        small = XlsxLimits(max_entries=50, max_member_bytes=2000, max_total_bytes=1_000_000, max_cells=100, max_text_chars=10_000_000)
+        small = XlsxLimits(
+            max_entries=50,
+            max_member_bytes=2000,
+            max_total_bytes=1_000_000,
+            max_cells=100,
+            max_text_chars=10_000_000,
+        )
         refused_with(self, make_xlsx([("S", big)]), "too_large_inside", small)
 
     def test_all_parts_together_over_the_limit_are_refused(self) -> None:
         sheets = [(f"S{i}", sheet_xml('<row r="1"><c r="A1"><v>1</v></c></row>')) for i in range(5)]
-        small_total = XlsxLimits(max_entries=50, max_member_bytes=10_000, max_total_bytes=600, max_cells=100, max_text_chars=10_000_000)
+        small_total = XlsxLimits(
+            max_entries=50,
+            max_member_bytes=10_000,
+            max_total_bytes=600,
+            max_cells=100,
+            max_text_chars=10_000_000,
+        )
         refused_with(self, make_xlsx(sheets), "too_large_inside", small_total)
 
     def test_too_many_parts(self) -> None:
@@ -188,7 +229,13 @@ class HostileFileTest(unittest.TestCase):
 
     def test_too_many_cells(self) -> None:
         row = "".join(f'<c r="{letter}1"><v>1</v></c>' for letter in "ABCDEF")
-        few = XlsxLimits(max_entries=50, max_member_bytes=10_000, max_total_bytes=100_000, max_cells=5, max_text_chars=10_000_000)
+        few = XlsxLimits(
+            max_entries=50,
+            max_member_bytes=10_000,
+            max_total_bytes=100_000,
+            max_cells=5,
+            max_text_chars=10_000_000,
+        )
         refused_with(self, one_sheet(f'<row r="1">{row}</row>'), "too_many_cells", few)
 
 
@@ -198,8 +245,13 @@ class CouncilFindingsTest(unittest.TestCase):
     def test_one_long_shared_string_repeated_in_many_cells_is_capped(self) -> None:
         cells_xml = "".join(f'<c r="{col}1" t="s"><v>0</v></c>' for col in ("A", "B", "C", "D", "E"))
         data = one_sheet(f'<row r="1">{cells_xml}</row>', shared=["x" * 1000])
-        capped = XlsxLimits(max_entries=50, max_member_bytes=200_000, max_total_bytes=1_000_000,
-                            max_cells=10_000, max_text_chars=3000)
+        capped = XlsxLimits(
+            max_entries=50,
+            max_member_bytes=200_000,
+            max_total_bytes=1_000_000,
+            max_cells=10_000,
+            max_text_chars=3000,
+        )
         refused_with(self, data, "too_much_text", capped)
 
     def test_impossible_zip_header_values_are_corrupt_not_a_crash(self) -> None:
@@ -213,12 +265,15 @@ class CouncilFindingsTest(unittest.TestCase):
                 refused_with(self, bytes(data), "corrupt_file")
 
     def test_huge_digit_strings_are_corrupt_before_int_is_called(self) -> None:
-        refused_with(self, one_sheet(f'<row r="1"><c r="A1" t="s"><v>{"9" * 5000}</v></c></row>', ["x"]),
-                     "corrupt_file")
+        refused_with(
+            self,
+            one_sheet(f'<row r="1"><c r="A1" t="s"><v>{"9" * 5000}</v></c></row>', ["x"]),
+            "corrupt_file",
+        )
         refused_with(self, one_sheet(f'<row r="{"1" * 5000}"><c><v>1</v></c></row>'), "corrupt_file")
 
     def test_bad_row_numbers(self) -> None:
-        for row in ("0", "1048577", "abc", "١"):  # last one is an Arabic-Indic digit
+        for row in ("0", "1048577", "abc", chr(0x0661)):  # last one is an Arabic-Indic digit
             with self.subTest(row=row):
                 refused_with(self, one_sheet(f'<row r="{row}"><c><v>1</v></c></row>'), "corrupt_file")
 
@@ -230,18 +285,22 @@ class CouncilFindingsTest(unittest.TestCase):
         refused_with(self, data, "corrupt_file")
 
     def test_damaged_deflate_data_is_corrupt(self) -> None:
-        data = bytearray(one_sheet('<row r="1"><c r="A1" t="inlineStr"><is><t>' + "abc" * 300 + "</t></is></c></row>"))
+        data = bytearray(
+            one_sheet('<row r="1"><c r="A1" t="inlineStr"><is><t>' + "abc" * 300 + "</t></is></c></row>")
+        )
         start = data.find(b"PK\x03\x04") + 60  # inside the first part's compressed bytes
         for i in range(start, start + 8):
             data[i] ^= 0xFF
         refused_with(self, bytes(data), "corrupt_file")
 
     def test_header_that_lies_about_size_is_corrupt(self) -> None:
-        data = bytearray(one_sheet('<row r="1"><c r="A1" t="inlineStr"><is><t>' + "y" * 3000 + "</t></is></c></row>"))
+        data = bytearray(
+            one_sheet('<row r="1"><c r="A1" t="inlineStr"><is><t>' + "y" * 3000 + "</t></is></c></row>")
+        )
         for signature, size_offset in ((b"PK\x01\x02", 24), (b"PK\x03\x04", 22)):
             start = 0
             while (start := data.find(signature, start)) != -1:
-                data[start + size_offset:start + size_offset + 4] = (100).to_bytes(4, "little")
+                data[start + size_offset : start + size_offset + 4] = (100).to_bytes(4, "little")
                 start += 4
         refused_with(self, bytes(data), "corrupt_file")
 
@@ -258,15 +317,22 @@ class CouncilFindingsTest(unittest.TestCase):
         cases = {
             "upper case name": make_xlsx(base, extra_parts={"xl/VBAPROJECT.BIN": b"m"}),
             "old macro sheets": make_xlsx(base, extra_parts={"xl/macrosheets/sheet1.xml": b"<m/>"}),
-            "content type": make_xlsx(base, extra_parts={"[Content_Types].xml": (
-                b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                b'<Override PartName="/xl/workbook.xml" '
-                b'ContentType="application/vnd.ms-excel.sheet.macroEnabled.main+xml"/></Types>')}),
+            "content type": make_xlsx(
+                base,
+                extra_parts={
+                    "[Content_Types].xml": (
+                        b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                        b'<Override PartName="/xl/workbook.xml" '
+                        b'ContentType="application/vnd.ms-excel.sheet.macroEnabled.main+xml"/></Types>'
+                    )
+                },
+            ),
         }
         rels = _parts(make_xlsx(base))
         rels["xl/_rels/workbook.xml.rels"] = rels["xl/_rels/workbook.xml.rels"].replace(
             b"</Relationships>",
-            b'<Relationship Id="rId9" Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" '
+            b'<Relationship Id="rId9" '
+            b'Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" '
             b'Target="macros.bin"/></Relationships>',
         )
         cases["relationship type"] = make_zip(rels)
@@ -281,7 +347,9 @@ class CouncilFindingsTest(unittest.TestCase):
     def test_repeated_or_backwards_cells_are_corrupt(self) -> None:
         cases = {
             "same cell twice": '<row r="1"><c r="A1"><v>1</v></c><c r="A1"><v>2</v></c></row>',
-            "rows backwards": '<row r="5"><c r="A5"><v>1</v></c></row><row r="2"><c r="A2"><v>2</v></c></row>',
+            "rows backwards": (
+                '<row r="5"><c r="A5"><v>1</v></c></row><row r="2"><c r="A2"><v>2</v></c></row>'
+            ),
             "cell outside its row": '<row r="1"><c r="A7"><v>1</v></c></row>',
             "columns backwards": '<row r="1"><c r="C1"><v>1</v></c><c r="A1"><v>2</v></c></row>',
         }
@@ -315,7 +383,9 @@ class NotASpreadsheetTest(unittest.TestCase):
 
     def test_limits_must_be_positive(self) -> None:
         with self.assertRaises(ValueError):
-            XlsxLimits(max_entries=0, max_member_bytes=1, max_total_bytes=1, max_cells=1, max_text_chars=10_000_000)
+            XlsxLimits(
+                max_entries=0, max_member_bytes=1, max_total_bytes=1, max_cells=1, max_text_chars=10_000_000
+            )
 
 
 def _parts(data: bytes) -> dict[str, bytes]:

@@ -8,8 +8,13 @@ def read(data: bytes, max_cells: int = 1000) -> list[Span]:
     return list(CsvReader(max_cells=max_cells).read(data))
 
 
+def cell_of(span: Span) -> CellLocation:
+    assert isinstance(span.location, CellLocation)  # this reader only gives cells
+    return span.location
+
+
 def cells(data: bytes) -> dict[tuple[int, int], str]:
-    return {(s.location.row, s.location.column): s.text for s in read(data)}
+    return {(cell_of(s).row, cell_of(s).column): s.text for s in read(data)}
 
 
 class CsvReaderTest(unittest.TestCase):
@@ -17,9 +22,12 @@ class CsvReaderTest(unittest.TestCase):
         self.assertEqual(
             cells(b"invoice,amount\nINV-1,100\nINV-2,250\n"),
             {
-                (1, 1): "invoice", (1, 2): "amount",
-                (2, 1): "INV-1", (2, 2): "100",
-                (3, 1): "INV-2", (3, 2): "250",
+                (1, 1): "invoice",
+                (1, 2): "amount",
+                (2, 1): "INV-1",
+                (2, 2): "100",
+                (3, 1): "INV-2",
+                (3, 2): "250",
             },
         )
 

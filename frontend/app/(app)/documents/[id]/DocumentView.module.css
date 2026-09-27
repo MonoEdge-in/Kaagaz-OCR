@@ -1,0 +1,28 @@
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--gap);
+  align-items: start;
+}
+
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+.viewer, .values { min-width: 0; }
+
+.tableWrap { max-height: 80vh; overflow: auto; }
+
+.valueButton {
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+  word-break: break-word;
+}
+
+.activeRow td { background: var(--highlight); }

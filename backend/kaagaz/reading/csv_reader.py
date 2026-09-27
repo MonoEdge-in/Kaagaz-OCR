@@ -30,6 +30,11 @@ from kaagaz.reading.spans import CellLocation, ReadError, Span
 
 
 class CsvReader:
+    # Stored with the output (reader_outputs). This reader uses only the standard
+    # library, so the version is this module's own: raise it when what it reads changes.
+    name = "csv"
+    version = "1"
+
     def __init__(self, *, max_cells: int) -> None:
         # No default: limits are Vrushit's decision (PRD section 6).
         if max_cells < 1:

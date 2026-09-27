@@ -1,0 +1,92 @@
+[project]
+name = "kaagaz-backend"
+version = "0.1.0"
+description = "Kaagaz backend: upload, virus gate, readers, pieces, search, cited answers, corrections."
+license = "Apache-2.0"
+requires-python = ">=3.12"
+# Every library here needs Vrushit's approval (CLAUDE.md never-do 2). The list, with
+# licences, is in the pull request description. None is AGPL, SSPL or GPL v3.
+dependencies = [
+    "fastapi>=0.141",          # MIT, locked stack (API)
+    "uvicorn>=0.54",           # BSD-3-Clause, runs the API
+    "python-multipart>=0.0.32",  # Apache-2.0, FastAPI needs it for file uploads
+    "sqlalchemy>=2.1",         # MIT, database access and Alembic's base
+    "psycopg[binary]>=3.3",    # LGPL-3.0 (lesser GPL, passes the licence rule), PostgreSQL driver
+    "alembic>=1.20",           # MIT, migrations
+    "pgvector>=0.5",           # MIT, vector column type for SQLAlchemy
+    "boto3>=1.43",             # Apache-2.0, S3 and SQS
+    "pdfplumber>=0.11.10",     # MIT, PDF text with positions (first reader)
+    "pypdfium2>=5.13",         # Apache-2.0 / BSD-3-Clause, PDF page images and second reader
+    "pillow>=12.3",            # MIT-CMU, page images
+]
+
+[project.optional-dependencies]
+# The scan reader engine. Optional: without it, scans are marked needs_reader.
+# PROVISIONAL: which AI reads scanned pages is Vrushit's decision (CLAUDE.md).
+ocr = [
+    "rapidocr>=3.9",           # Apache-2.0
+    "onnxruntime>=1.30",       # MIT
+]
+dev = [
+    "pytest>=9.1",             # MIT
+    "httpx2>=2.13",            # BSD-3-Clause, FastAPI's TestClient needs it (as in the root pyproject)
+    "mypy>=2.3",               # MIT
+    "ruff>=0.16",              # MIT
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kaagaz"]
+
+[tool.ruff]
+# 110 fits the existing Sprint 1 code without reformatting it.
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "UP", "B", "SIM", "C4", "PIE", "RET", "RUF",
+    "S", "BLE", "T10", "T20", "ERA", "PGH", "DTZ",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, use made-up passwords and bind local test servers.
+"tests/**" = ["S101", "S105", "S106", "S104"]
+# Migrations are fixed SQL; the f-strings only insert module constants (table and role names).
+"migrations/**" = ["E501", "S608"]
+# The masker lists look-alike spaces and dashes on purpose: that is what it matches.
+"kaagaz/masking/identity.py" = ["RUF001"]
+# The xlsx reader refuses any DOCTYPE before parsing, which blocks the entity attacks
+# defusedxml exists for, and caps sizes first (kaagaz/reading/xlsx_reader.py).
+"kaagaz/reading/xlsx_reader.py" = ["S314"]
+# read_limited hands the open spool to its caller, who closes it with "with".
+"kaagaz/ingestion/spool.py" = ["SIM115"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["kaagaz"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+exclude = ["^build/"]
+
+[[tool.mypy.overrides]]
+# These libraries ship no type information.
+module = [
+    "boto3", "boto3.*", "botocore", "botocore.*",
+    "pdfplumber", "pdfplumber.*", "pypdfium2", "pypdfium2.*",
+    "pgvector", "pgvector.*", "rapidocr", "rapidocr.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "-ra"]
+markers = [
+    "db: needs a real PostgreSQL (DATABASE_URL); CI provides one",
+]
+filterwarnings = ["error"]
+xfail_strict = true

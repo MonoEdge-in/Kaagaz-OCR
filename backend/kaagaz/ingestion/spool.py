@@ -20,13 +20,20 @@ import hashlib
 import tempfile
 from dataclasses import dataclass
 from types import TracebackType
-from typing import IO, BinaryIO
+from typing import IO, Protocol
 
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 
 # The first bytes of the file, kept for type detection. 4 KiB covers every
 # magic number in sniff.py and gives the text check a fair sample.
 HEAD_SIZE = 4096
+
+
+class ByteSource(Protocol):
+    """Anything with ``read(n)``: a file, an upload stream or a raw socket stream.
+    A raw non-blocking stream may return None, which is refused below."""
+
+    def read(self, size: int, /) -> bytes | None: ...
 
 
 @dataclass(slots=True)
@@ -54,7 +61,7 @@ class Spooled:
 
 
 def read_limited(
-    stream: BinaryIO,
+    stream: ByteSource,
     max_bytes: int,
     *,
     chunk_size: int = 64 * 1024,

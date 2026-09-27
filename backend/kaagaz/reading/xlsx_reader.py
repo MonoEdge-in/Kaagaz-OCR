@@ -112,8 +112,13 @@ class XlsxLimits:
     max_text_chars: int
 
     def __post_init__(self) -> None:
-        values = (self.max_entries, self.max_member_bytes, self.max_total_bytes,
-                  self.max_cells, self.max_text_chars)
+        values = (
+            self.max_entries,
+            self.max_member_bytes,
+            self.max_total_bytes,
+            self.max_cells,
+            self.max_text_chars,
+        )
         if min(values) < 1:
             raise ValueError("every limit must be at least 1")
 
@@ -127,6 +132,11 @@ class _Refused(Exception):
 
 
 class XlsxReader:
+    # Stored with the output (reader_outputs). This reader uses only the standard
+    # library, so the version is this module's own: raise it when what it reads changes.
+    name = "xlsx"
+    version = "1"
+
     def __init__(self, limits: XlsxLimits) -> None:
         self._limits = limits
 
@@ -177,7 +187,7 @@ class _Workbook:
 
         spans: list[Span] = []
         for sheet_number, sheet in enumerate(sheets.findall(f"{_MAIN}sheet"), start=1):
-            part = targets.get(sheet.get(f"{_DOC_REL}id"))
+            part = targets.get(sheet.get(f"{_DOC_REL}id", ""))  # no id: no part, so corrupt
             if part is None:
                 raise _Refused("corrupt_file")
             self._read_sheet(sheet_number, self._xml(part), shared, spans)
@@ -318,7 +328,7 @@ def _rich_text(item: ET.Element) -> str:
 
 
 def _parse_ref(ref: str) -> tuple[int, int]:
-    """"B7" -> (column 2, row 7). O(len(ref))."""
+    """ "B7" -> (column 2, row 7). O(len(ref))."""
     match = _CELL_REF.fullmatch(ref)
     if match is None:
         raise _Refused("corrupt_file")

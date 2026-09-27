@@ -1,0 +1,88 @@
+.layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+.conversations { position: sticky; top: var(--gap); max-height: 85vh; overflow: auto; }
+
+.conversationItems { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+
+.conversation {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.conversation:hover { background: var(--bg); }
+.conversationActive { border-color: var(--accent); background: var(--bg); }
+.conversationTitle { font-weight: 600; word-break: break-word; }
+
+.thread { min-width: 0; }
+
+.question {
+  align-self: flex-end;
+  max-width: 80%;
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+}
+
+.answer { min-width: 0; }
+
+.plain { margin: 0; white-space: pre-wrap; word-break: break-word; }
+
+.cite {
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1;
+  margin-left: 2px;
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.source:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
+.sourceTitle { margin: 0; font-size: 1rem; word-break: break-word; }
+.sourceNumber {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.6em;
+  height: 1.6em;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.snippet {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reasonForm { max-width: 480px; }
+
+.questionBox { position: sticky; bottom: 0; background: var(--bg); padding-top: 8px; }

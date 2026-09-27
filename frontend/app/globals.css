@@ -1,0 +1,106 @@
+/* Shared look. Components add their own CSS modules; these classes are the
+   common pieces: buttons, inputs, cards, tables, labels and status chips. */
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --text: #1c2330;
+  --muted: #5b6677;
+  --border: #d9dee6;
+  --accent: #1f5fbf;
+  --accent-text: #ffffff;
+  --focus: #f0a500;
+  --verified-bg: #e3f4e8;
+  --verified-text: #16623a;
+  --review-bg: #fff3d6;
+  --review-text: #7a4b00;
+  --danger-bg: #fde7e7;
+  --danger-text: #9b1c1c;
+  --highlight: rgba(240, 165, 0, 0.35);
+  --highlight-border: #d98c00;
+  --radius: 8px;
+  --gap: 16px;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+a { color: var(--accent); }
+
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+h1, h2, h3 { line-height: 1.25; margin: 0 0 8px; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.2rem; }
+h3 { font-size: 1.05rem; }
+
+.muted { color: var(--muted); }
+.stack { display: flex; flex-direction: column; gap: var(--gap); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--gap);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn-danger { background: var(--danger-bg); border-color: var(--danger-text); color: var(--danger-text); }
+
+.input, select.input, textarea.input {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: inherit;
+  background: var(--surface);
+  color: var(--text);
+  width: 100%;
+}
+
+.table { width: 100%; border-collapse: collapse; background: var(--surface); }
+.table th, .table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.table th { font-weight: 600; color: var(--muted); font-size: 0.85rem; }
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge-verified { background: var(--verified-bg); color: var(--verified-text); }
+.badge-review { background: var(--review-bg); color: var(--review-text); }
+.badge-danger { background: var(--danger-bg); color: var(--danger-text); }
+.badge-neutral { background: #eceff3; color: var(--muted); }
+
+.error-text { color: var(--danger-text); }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}

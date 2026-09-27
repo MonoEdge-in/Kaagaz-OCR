@@ -113,9 +113,16 @@ of `.github/workflows/ci.yml` at the same time.
 
 ## Getting started
 
-Local setup lands on Sprint 1, Day 1. Until then there is nothing to run.
+Full steps, ports and the no-Docker path: [docs/running-locally.md](docs/running-locally.md).
 
-Once it exists, this section holds the single command that starts everything.
+```
+cp .env.example .env        # then set SESSION_SECRET to 32+ random characters
+docker compose up --build   # open http://localhost:3000
+docker compose exec api python -m kaagaz.cli seed-demo   # demo customers and users
+```
+
+Tests: `pytest -m isolation` then `pytest` from `backend/` (they need `DATABASE_URL`
+for the `db` tests), and `npm test` from `frontend/`.
 
 ---
 
