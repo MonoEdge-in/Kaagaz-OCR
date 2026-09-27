@@ -1,88 +1,703 @@
-.layout {
+/* The chat screen. It fills the height below the top bar (0 once the sidebar
+   shows) and has one scroll area, the thread; the composer is pinned to its
+   foot. Colours are tokens from app/globals.css only. */
+
+/* --- Frame ------------------------------------------------------------------ */
+
+.screen {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
-  gap: var(--gap);
-  align-items: start;
+  grid-template-areas:
+    "subbar"
+    "thread";
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  height: calc(100dvh - var(--topbar-space));
+  min-height: 0;
 }
 
-@media (max-width: 800px) {
-  .layout { grid-template-columns: minmax(0, 1fr); }
+.pane {
+  grid-area: pane;
+  display: none;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-4) var(--space-3);
+  background: var(--surface);
+  border-inline-end: 1px solid var(--border);
 }
 
-.conversations { position: sticky; top: var(--gap); max-height: 85vh; overflow: auto; }
+.subbar {
+  grid-area: subbar;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-block: var(--space-2);
+  padding-inline: max(var(--space-4), env(safe-area-inset-left))
+    max(var(--space-4), env(safe-area-inset-right));
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
 
-.conversationItems { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+@media (min-width: 1024px) {
+  .screen {
+    grid-template-areas: "pane thread";
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
 
-.conversation {
+  .pane {
+    display: block;
+  }
+
+  .subbar {
+    display: none;
+  }
+}
+
+/* --- Conversation list (the pane on wide screens, the drawer below) ------------ */
+
+/* The pane pads the list; inside the drawer, the drawer's own padding does. */
+.conversations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.groupTitle {
+  margin: 0;
+  padding-inline: var(--space-3);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.item {
+  position: relative;
   width: 100%;
+  min-height: var(--control-h);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
-  text-align: left;
-  font: inherit;
-  color: var(--text);
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 6px 8px;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg);
+  text-align: start;
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease);
 }
-.conversation:hover { background: var(--bg); }
-.conversationActive { border-color: var(--accent); background: var(--bg); }
-.conversationTitle { font-weight: 600; word-break: break-word; }
 
-.thread { min-width: 0; }
+.item:hover:not(:disabled) {
+  background: var(--surface-2);
+}
 
+.item[aria-current="true"] {
+  background: var(--accent-soft);
+}
+
+.item[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  inset-block: var(--space-2);
+  inset-inline-start: 0;
+  width: 3px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+
+.item:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.itemTitle {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.itemTime {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.listNote {
+  margin: 0;
+  padding-inline: var(--space-3);
+  color: var(--fg-muted);
+}
+
+.listError {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding-inline: var(--space-3);
+}
+
+.listError p {
+  margin: 0;
+}
+
+.listSkeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-inline: var(--space-3);
+}
+
+.listSkeletonItem {
+  height: 2.5rem;
+}
+
+/* --- Thread ---------------------------------------------------------------- */
+
+.thread {
+  grid-area: thread;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-bottom: var(--composer-h, 0px);
+}
+
+.threadInner {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100%;
+  max-width: 46rem;
+  margin-inline: auto;
+  padding-top: var(--space-5);
+  padding-inline: max(var(--space-4), env(safe-area-inset-left))
+    max(var(--space-4), env(safe-area-inset-right));
+}
+
+@media (min-width: 640px) {
+  .threadInner {
+    padding-top: var(--space-6);
+    padding-inline: var(--space-6);
+  }
+}
+
+.threadBody {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding-bottom: var(--space-5);
+}
+
+.empty {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.log {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+.threadStatus {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--fg-muted);
+}
+
+.threadError {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.threadError p {
+  margin: 0;
+}
+
+/* The question: right aligned, in the accent's soft tint. */
 .question {
   align-self: flex-end;
   max-width: 80%;
-  background: var(--accent);
-  color: var(--accent-text);
-  border-radius: var(--radius);
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--r-md);
+  border-end-end-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--fg);
 }
 
-.answer { min-width: 0; }
+.plain {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
-.plain { margin: 0; white-space: pre-wrap; word-break: break-word; }
+/* --- Answer card ------------------------------------------------------------ */
 
-.cite {
-  font: inherit;
-  font-size: 0.75rem;
-  line-height: 1;
-  margin-left: 2px;
-  padding: 1px 4px;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
+.answerCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-4);
   background: var(--surface);
-  color: var(--accent);
-  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
 }
 
-.source:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
-.sourceTitle { margin: 0; font-size: 1rem; word-break: break-word; }
-.sourceNumber {
+@media (min-width: 640px) {
+  .answerCard {
+    padding: var(--space-5);
+  }
+}
+
+/* The margin rule: solid for Verified, hatched for Needs review. */
+.answerCard[data-label] {
+  padding-inline-start: calc(var(--space-4) + 4px);
+}
+
+@media (min-width: 640px) {
+  .answerCard[data-label] {
+    padding-inline-start: calc(var(--space-5) + 4px);
+  }
+}
+
+.answerCard[data-label]::before {
+  content: "";
+  position: absolute;
+  inset-block: -1px;
+  inset-inline-start: -1px;
+  width: 4px;
+  border-start-start-radius: var(--r-md);
+  border-end-start-radius: var(--r-md);
+  background: var(--verified-solid);
+}
+
+.answerCard[data-label="needs_review"]::before {
+  background: repeating-linear-gradient(45deg, var(--review-solid) 0 4px, transparent 4px 8px);
+}
+
+.labelLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.labelExplanation {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.understood {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.answerText {
+  margin: 0;
+  max-width: 68ch;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A citation chip in a sentence and the number badge on its source card look the same. */
+.numberMark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.6em;
-  height: 1.6em;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-text);
-  font-size: 0.8rem;
+  flex: none;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 var(--space-1);
+  border: 1.5px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.cite {
+  margin-inline-start: var(--space-1);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease);
+}
+
+.cite:hover {
+  background: var(--accent-soft);
+}
+
+.subheading {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-base);
   font-weight: 600;
+}
+
+.sources {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
+  gap: var(--space-3);
+}
+
+.answerFooter {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+/* Not found: a neutral card, no margin rule. */
+.notFound {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.notFoundIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  color: var(--fg-muted);
+}
+
+.docChips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.docChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-height: 32px;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.docChip:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.docChip svg {
+  flex: none;
+}
+
+.docChipName {
+  overflow-wrap: anywhere;
+}
+
+/* Pending: a skeleton card while the answer is worked out. */
+.pendingText {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--fg-muted);
+}
+
+.skeletonLines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.skeletonLine {
+  height: 0.9em;
+  width: 92%;
+}
+
+.skeletonLine:nth-child(2) {
+  width: 78%;
+}
+
+.skeletonLine:nth-child(3) {
+  width: 55%;
+}
+
+/* --- Source card ------------------------------------------------------------ */
+
+.source {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+/* Reached from a citation chip: a short pulse of the focus ring, static under reduced motion. */
+.source:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  animation: pulse 1s var(--ease);
+}
+
+@keyframes pulse {
+  from {
+    outline-offset: 10px;
+    outline-color: transparent;
+  }
+  40% {
+    outline-color: var(--focus);
+  }
+  to {
+    outline-offset: 2px;
+  }
+}
+
+.sourceHeader {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+}
+
+.sourceHeading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.sourceTitle {
+  margin: 0;
+  font-size: var(--fs-base);
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.sourceMeta {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.reviewLink {
+  display: inline-flex;
+  border-radius: var(--r-sm);
+  text-decoration: none;
+}
+
+.reviewLink:hover {
+  filter: brightness(0.97);
+}
+
+.preview {
+  min-width: 0;
+}
+
+.previewSkeleton {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 11rem;
+}
+
+.previewNote {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
 }
 
 .snippet {
   margin: 0;
-  padding: 6px 10px;
-  border-left: 3px solid var(--border);
+  padding: var(--space-1) 0 var(--space-1) var(--space-3);
+  border-inline-start: 2px solid var(--border-strong);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
-.reasonForm { max-width: 480px; }
+.sourceAction {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
 
-.questionBox { position: sticky; bottom: 0; background: var(--bg); padding-top: 8px; }
+.sourceReason {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.openLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 24px;
+  font-weight: 600;
+}
+
+.openLink svg,
+.checkLink svg {
+  flex: none;
+}
+
+/* --- Feedback ---------------------------------------------------------------- */
+
+.feedback {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.feedbackRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.feedbackQuestion {
+  margin-inline-end: var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.vote[aria-pressed="true"],
+.vote[aria-pressed="true"]:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.reasonForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 30rem;
+}
+
+/* --- Composer ------------------------------------------------------------------ */
+
+.composer {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  padding-top: var(--space-2);
+  padding-bottom: max(var(--space-3), env(safe-area-inset-bottom));
+  background: var(--bg);
+}
+
+.composerForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.composerBox {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--e-1);
+}
+
+.composerInput {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  max-height: min(40dvh, calc(6 * 1.55em + var(--space-4) + 2px));
+  overflow-y: auto;
+  resize: none;
+  line-height: 1.55;
+}
+
+.send {
+  flex: none;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  padding: 0;
+}
+
+.composerNote {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.sendError {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--danger-fg);
+  border-radius: var(--r-sm);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.sendErrorText {
+  margin: 0;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+}
+
+.sendErrorText svg {
+  flex: none;
+  margin-top: 0.15em;
+}

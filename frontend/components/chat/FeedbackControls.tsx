@@ -1,9 +1,11 @@
 "use client";
 
-// Thumbs up or down on one answer. A down vote can carry a short reason; it is
-// optional. The server keeps one rating per person per answer.
+// "Was this helpful?" on one answer: Yes or No, with thumbs icons and the words.
+// A No can carry a short reason; it is optional. The server keeps one rating
+// per person per answer; the pressed button shows the saved one.
 
 import { useState } from "react";
+import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, sendFeedback } from "@/lib/api";
 import { cleanReason, MAX_REASON_LENGTH } from "./answer";
 import styles from "./Chat.module.css";
@@ -34,50 +36,53 @@ export function FeedbackControls({
       setAskingReason(false);
       setStatus("Thank you. Your feedback was saved.");
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Could not save your feedback.");
+      setError(
+        caught instanceof ApiError && caught.status !== 0
+          ? "Could not save your feedback. Try again in a minute."
+          : "Could not save your feedback. Check your internet connection, then try again.",
+      );
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="stack" role="group" aria-label="Was this answer helpful?">
-      <div className="row">
-        <span className="muted">Was this helpful?</span>
-        <button
-          type="button"
-          className="btn"
+    <div className={styles.feedback} role="group" aria-label="Was this answer helpful?">
+      <div className={styles.feedbackRow}>
+        <span className={styles.feedbackQuestion}>Was this helpful?</span>
+        <IconButton
+          icon="thumbs-up"
+          label="Yes"
+          showLabel
+          className={styles.vote}
           aria-pressed={rating === "up"}
           disabled={busy}
-          onClick={() => send("up")}
-        >
-          <span aria-hidden="true">&#128077;</span> Yes
-        </button>
-        <button
-          type="button"
-          className="btn"
+          onClick={() => void send("up")}
+        />
+        <IconButton
+          icon="thumbs-down"
+          label="No"
+          showLabel
+          className={styles.vote}
           aria-pressed={rating === "down"}
           aria-expanded={askingReason}
           aria-controls={askingReason ? reasonId : undefined}
           disabled={busy}
           onClick={() => setAskingReason(true)}
-        >
-          <span aria-hidden="true">&#128078;</span> No
-        </button>
-        {rating ? (
-          <span className="muted">You said: {rating === "up" ? "helpful" : "not helpful"}</span>
-        ) : null}
+        />
       </div>
       {askingReason ? (
         <form
           id={reasonId}
-          className={`stack ${styles.reasonForm}`}
+          className={styles.reasonForm}
           onSubmit={(event) => {
             event.preventDefault();
             void send("down", cleanReason(reason));
           }}
         >
-          <label htmlFor={`${reasonId}-text`}>What was wrong? (optional)</label>
+          <label className="label" htmlFor={`${reasonId}-text`}>
+            What was wrong? (optional)
+          </label>
           <textarea
             id={`${reasonId}-text`}
             className="input"
@@ -88,15 +93,19 @@ export function FeedbackControls({
           />
           <div className="row">
             <button type="submit" className="btn btn-primary" disabled={busy}>
-              Send
+              Send feedback
             </button>
-            <button type="button" className="btn" disabled={busy} onClick={() => setAskingReason(false)}>
+            <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => setAskingReason(false)}>
               Cancel
             </button>
           </div>
         </form>
       ) : null}
-      {error ? <p className="error-text">{error}</p> : null}
+      {error ? (
+        <p className="error-text" role="alert">
+          {error}
+        </p>
+      ) : null}
       <p className="visually-hidden" aria-live="polite">
         {status}
       </p>

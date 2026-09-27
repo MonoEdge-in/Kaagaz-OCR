@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { fieldText, labelText, reasonText } from "@/components/viewer/labels";
+import { fieldText, labelBadgeClass, labelIcon, labelText, reasonText } from "@/components/viewer/labels";
 import { initialSelection, sameRegion, selectValue } from "@/components/viewer/selection";
 import {
   buildGrid,
   cropRowWindow,
+  fitPageSize,
   pageMode,
   sheetRowWindow,
   stepZoom,
@@ -28,6 +29,22 @@ describe("stepZoom", () => {
   it("snaps a value between steps to the nearest step that way", () => {
     expect(stepZoom(1.1, "in")).toBe(1.25);
     expect(stepZoom(1.1, "out")).toBe(1);
+  });
+});
+
+describe("fitPageSize", () => {
+  it("fits the container's width at zoom 1", () => {
+    expect(fitPageSize(600, 0.5, 1)).toEqual({ width: 600, height: 1200 });
+  });
+
+  it("scales from the fitted width, in whole pixels", () => {
+    expect(fitPageSize(601, 1, 1.25).width).toBe(751);
+    expect(fitPageSize(600, 2, 0.5)).toEqual({ width: 300, height: 150 });
+  });
+
+  it("falls back safely for a missing size or aspect", () => {
+    expect(fitPageSize(0, 1, 1).width).toBe(1);
+    expect(fitPageSize(400, 0, 1).height).toBeCloseTo(400 * Math.SQRT2);
   });
 });
 
@@ -83,6 +100,13 @@ describe("labels in words", () => {
     expect(labelText("needs_review")).toBe("Needs review");
     expect(reasonText("readers_disagree")).toMatch(/different/);
     expect(fieldText("invoice_number")).toBe("Invoice number");
+  });
+
+  it("gives each label its own shape and icon", () => {
+    expect(labelBadgeClass("verified")).toBe("badge badge-verified");
+    expect(labelBadgeClass("needs_review")).toBe("badge badge-review");
+    expect(labelIcon("verified")).toBe("check-seal");
+    expect(labelIcon("needs_review")).toBe("eye-alert");
   });
 });
 

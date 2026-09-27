@@ -5,6 +5,7 @@ import {
   columnName,
   cropRect,
   cropView,
+  fitCropView,
   decodeRegion,
   encodeRegion,
   highlightedCells,
@@ -99,6 +100,46 @@ describe("cropView", () => {
   it("shows the whole page for an empty crop", () => {
     const view = cropView({ x0: 0.5, y0: 0.5, x1: 0.5, y1: 0.5 }, 2, 400, 2000);
     expect(view).toMatchObject({ pageWidth: 400, pageHeight: 200, offsetX: 0, offsetY: 0 });
+  });
+});
+
+describe("fitCropView", () => {
+  it("fills the width when the crop is wide", () => {
+    // A strip twice as wide as tall, in a 400 x 225 box.
+    const view = fitCropView({ x0: 0, y0: 0, x1: 0.5, y1: 0.25 }, 1, 400, 225, 5000);
+    expect(view.frameWidth).toBeCloseTo(400);
+    expect(view.frameHeight).toBeCloseTo(200);
+  });
+
+  it("fits the height when the crop is tall, so nothing is clipped", () => {
+    const view = fitCropView({ x0: 0.4, y0: 0, x1: 0.5, y1: 0.5 }, 1, 400, 176, 5000);
+    expect(view.frameHeight).toBeCloseTo(176);
+    expect(view.frameWidth).toBeLessThanOrEqual(400);
+    expect(view.frameWidth).toBeCloseTo(35.2);
+  });
+
+  it("stays inside the box on a portrait page", () => {
+    const a4Aspect = 595 / 842;
+    const view = fitCropView({ x0: 0.1, y0: 0.1, x1: 0.6, y1: 0.4 }, a4Aspect, 320, 176, 2400);
+    expect(view.frameWidth).toBeLessThanOrEqual(320 + 1e-9);
+    expect(view.frameHeight).toBeLessThanOrEqual(176 + 1e-9);
+  });
+
+  it("keeps the page size limit", () => {
+    const view = fitCropView({ x0: 0.5, y0: 0.5, x1: 0.501, y1: 0.501 }, 1, 400, 400, 2000);
+    expect(view.pageWidth).toBe(2000);
+  });
+
+  it("matches cropView when the height does not limit it", () => {
+    const crop = { x0: 0.25, y0: 0.5, x1: 0.75, y1: 0.75 };
+    expect(fitCropView(crop, 1, 400, 1000, 5000)).toEqual(cropView(crop, 1, 400, 5000));
+  });
+
+  it("shows the whole page for an empty crop, within the box", () => {
+    const view = fitCropView({ x0: 0.5, y0: 0.5, x1: 0.5, y1: 0.5 }, 2, 400, 100, 2000);
+    expect(view).toMatchObject({ offsetX: 0, offsetY: 0 });
+    expect(view.frameHeight).toBeCloseTo(100);
+    expect(view.frameWidth).toBeCloseTo(200);
   });
 });
 

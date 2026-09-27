@@ -108,8 +108,17 @@ export function citationLink(citation: Citation): string {
   return pageLink(citation.document_id, citation.page_no, citationRegion(citation));
 }
 
-/** Enter sends; Shift+Enter makes a new line; typing with an input method never sends. */
-export function sendsOnKey(event: { key: string; shiftKey: boolean; isComposing: boolean }): boolean {
+/**
+ * With a mouse or trackpad (a fine pointer), Enter sends and Shift+Enter makes
+ * a new line. On a touch screen (`coarse`), Enter always makes a new line and
+ * the Send button sends, as phone keyboards expect. Typing with an input
+ * method never sends.
+ */
+export function sendsOnKey(
+  event: { key: string; shiftKey: boolean; isComposing: boolean },
+  coarse = false,
+): boolean {
+  if (coarse) return false;
   return event.key === "Enter" && !event.shiftKey && !event.isComposing;
 }
 

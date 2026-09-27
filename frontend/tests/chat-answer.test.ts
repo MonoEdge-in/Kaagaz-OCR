@@ -139,6 +139,12 @@ describe("question box", () => {
     expect(sendsOnKey({ key: "a", shiftKey: false, isComposing: false })).toBe(false);
   });
 
+  it("never sends on a key with a touch screen: Enter is a new line, the button sends", () => {
+    expect(sendsOnKey({ key: "Enter", shiftKey: false, isComposing: false }, true)).toBe(false);
+    expect(sendsOnKey({ key: "Enter", shiftKey: true, isComposing: false }, true)).toBe(false);
+    expect(sendsOnKey({ key: "Enter", shiftKey: false, isComposing: false }, false)).toBe(true);
+  });
+
   it("sends nothing blank and at most 1000 characters", () => {
     expect(cleanQuestion("   \n ")).toBeNull();
     expect(cleanQuestion("  total?  ")).toBe("total?");

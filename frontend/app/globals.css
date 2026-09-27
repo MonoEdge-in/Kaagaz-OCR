@@ -1,106 +1,699 @@
-/* Shared look. Components add their own CSS modules; these classes are the
-   common pieces: buttons, inputs, cards, tables, labels and status chips. */
+/* Kaagaz look: ledger paper. Warm paper, ink-indigo actions, and one
+   distinctive element, the red margin rule of a bahi-khata page.
+
+   Every colour is a token. Light is the default; dark comes from the system
+   (prefers-color-scheme) unless the person picked Light or Dark, which the
+   server writes as data-theme on <html> (lib/theme.ts). Contrast pairs are
+   measured for WCAG 2.2 AA in both themes (council 2026-09-27, ui-redesign).
+   Components use these tokens only; tests/guards.test.ts fails on any hex
+   colour outside this file. */
 
 :root {
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --text: #1c2330;
-  --muted: #5b6677;
-  --border: #d9dee6;
-  --accent: #1f5fbf;
-  --accent-text: #ffffff;
-  --focus: #f0a500;
-  --verified-bg: #e3f4e8;
-  --verified-text: #16623a;
-  --review-bg: #fff3d6;
-  --review-text: #7a4b00;
-  --danger-bg: #fde7e7;
-  --danger-text: #9b1c1c;
-  --highlight: rgba(240, 165, 0, 0.35);
-  --highlight-border: #d98c00;
-  --radius: 8px;
-  --gap: 16px;
+  /* Surfaces and text */
+  --bg: #f6f2e9;
+  --surface: #fffdf8;
+  --surface-2: #ece6d9;
+  --fg: #1b1f2a;
+  --fg-muted: #595c66;
+  --border: #ddd5c6; /* decorative hairline only */
+  --border-strong: #8a8272; /* inputs and control edges, 3:1 or more */
+
+  /* Actions */
+  --accent: #233f8c;
+  --accent-fg: #ffffff;
+  --accent-hover: #1b3272;
+  --accent-soft: #e4e9f6;
+
+  /* Labels (value and answer labels only, never document status) */
+  --verified-bg: #e2f0e4;
+  --verified-fg: #1a5c31;
+  --verified-solid: #2f7a47;
+  --review-bg: #fbebcb;
+  --review-fg: #774300;
+  --review-solid: #a86200;
+  --danger-bg: #fae3df;
+  --danger-fg: #9e2219;
+
+  --focus: #233f8c;
+  --brand-lal: #9e2a2b; /* the wordmark and margin rule only, never buttons */
+
+  /* The page itself stays white paper in both themes */
+  --paper: #ffffff;
+  --paper-frame: #ece6d9;
+  --hl-fill: rgba(255, 176, 0, 0.3);
+  --hl-border: #b86e00;
+  --hl-halo: transparent;
+
+  /* Type: rem plus vw, so text still grows at 200% zoom */
+  --font-sans: system-ui, "Segoe UI Variable Text", "Segoe UI", -apple-system, Roboto, "Noto Sans",
+    "Nirmala UI", "Noto Sans Devanagari", sans-serif;
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+  --fs-sm: clamp(0.875rem, 0.85rem + 0.1vw, 0.9375rem);
+  --fs-base: clamp(1rem, 0.96rem + 0.2vw, 1.0625rem);
+  --fs-lg: clamp(1.125rem, 1.06rem + 0.3vw, 1.25rem);
+  --fs-xl: clamp(1.25rem, 1.15rem + 0.5vw, 1.5625rem);
+  --fs-2xl: clamp(1.5rem, 1.3rem + 1vw, 1.9375rem);
+  --fs-3xl: clamp(1.875rem, 1.5rem + 1.8vw, 2.4375rem);
+
+  /* Spacing (4/8 scale), sizes, radius, elevation, motion, layers */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --control-h: 40px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-full: 999px;
+  --e-1: 0 1px 2px rgb(0 0 0 / 0.06);
+  --e-2: 0 8px 24px rgb(0 0 0 / 0.18);
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 120ms;
+  --t-med: 160ms;
+  --z-sticky: 10;
+  --z-header: 20;
+  --z-backdrop: 30;
+  --z-drawer: 40;
+  --z-toast: 50;
+  --z-skip: 60;
+  --sidebar-w: 240px;
+  --content-max: 1120px;
+  --topbar-h: 56px; /* the phone and tablet top bar; 0 once the sidebar shows */
+  /* The space the top bar really takes, the phone notch included. Use this for
+     sticky offsets and full-height screens. */
+  --topbar-space: calc(var(--topbar-h) + env(safe-area-inset-top));
+  --backdrop: rgb(0 0 0 / 0.45);
+
+  /* Old names, kept so every existing module still works */
+  --text: var(--fg);
+  --muted: var(--fg-muted);
+  --accent-text: var(--accent-fg);
+  --verified-text: var(--verified-fg);
+  --review-text: var(--review-fg);
+  --danger-text: var(--danger-fg);
+  --highlight: var(--hl-fill);
+  --highlight-border: var(--hl-border);
+  --radius: var(--r-md);
+  --gap: var(--space-4);
+
   color-scheme: light;
 }
 
-* { box-sizing: border-box; }
-
-html, body { margin: 0; padding: 0; }
-
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
-  font-size: 15px;
-  line-height: 1.5;
+/* Dark: "ink at night". Warm near-black, paper-toned text; not an inversion. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14161b;
+    --surface: #1c1f26;
+    --surface-2: #262a33;
+    --fg: #ece6da;
+    --fg-muted: #a7a69e;
+    --border: #30343e;
+    --border-strong: #6e7482;
+    --accent: #a3b6f0;
+    --accent-fg: #101a33;
+    --accent-hover: #bccbf5;
+    --accent-soft: #1f2a47;
+    --verified-bg: #15301e;
+    --verified-fg: #8fd3a3;
+    --verified-solid: #4fae6f;
+    --review-bg: #3a2a0d;
+    --review-fg: #f3c46a;
+    --review-solid: #dc9c2e;
+    --danger-bg: #3c1814;
+    --danger-fg: #ff9e92;
+    --focus: #a3b6f0;
+    --brand-lal: #e57a6e;
+    --paper-frame: #0f1115;
+    --hl-halo: #1c1f26;
+    --e-1: 0 0 0 1px #30343e;
+    --e-2: 0 8px 28px rgb(0 0 0 / 0.55);
+    color-scheme: dark;
+  }
 }
 
-a { color: var(--accent); }
+:root[data-theme="dark"] {
+  --bg: #14161b;
+  --surface: #1c1f26;
+  --surface-2: #262a33;
+  --fg: #ece6da;
+  --fg-muted: #a7a69e;
+  --border: #30343e;
+  --border-strong: #6e7482;
+  --accent: #a3b6f0;
+  --accent-fg: #101a33;
+  --accent-hover: #bccbf5;
+  --accent-soft: #1f2a47;
+  --verified-bg: #15301e;
+  --verified-fg: #8fd3a3;
+  --verified-solid: #4fae6f;
+  --review-bg: #3a2a0d;
+  --review-fg: #f3c46a;
+  --review-solid: #dc9c2e;
+  --danger-bg: #3c1814;
+  --danger-fg: #ff9e92;
+  --focus: #a3b6f0;
+  --brand-lal: #e57a6e;
+  --paper-frame: #0f1115;
+  --hl-halo: #1c1f26;
+  --e-1: 0 0 0 1px #30343e;
+  --e-2: 0 8px 28px rgb(0 0 0 / 0.55);
+  color-scheme: dark;
+}
 
-:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+@media (pointer: coarse) {
+  :root {
+    --control-h: 44px;
+  }
+}
 
-h1, h2, h3 { line-height: 1.25; margin: 0 0 8px; }
-h1 { font-size: 1.5rem; }
-h2 { font-size: 1.2rem; }
-h3 { font-size: 1.05rem; }
+@media (min-width: 1024px) {
+  :root {
+    --topbar-h: 0px;
+    --topbar-space: 0px;
+  }
+}
 
-.muted { color: var(--muted); }
-.stack { display: flex; flex-direction: column; gap: var(--gap); }
-.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* --- Base ------------------------------------------------------------------ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  color: var(--accent-hover);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--bg);
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+::placeholder {
+  color: var(--fg-muted);
+  opacity: 1;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.2;
+  margin: 0 0 var(--space-2);
+  color: var(--fg);
+}
+
+h1 {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+}
+
+h3 {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+p {
+  margin: 0 0 var(--space-3);
+}
+
+img,
+svg,
+canvas {
+  max-width: 100%;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+  width: 18px;
+  height: 18px;
+}
+
+/* Browser autofill must not turn fields bright yellow or white in dark mode. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--fg);
+  box-shadow: 0 0 0 1000px var(--surface) inset;
+  transition: background-color 600000s 0s;
+}
+
+.muted {
+  color: var(--fg-muted);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Page layout --------------------------------------------------------------
+   AppShell's <main> has no padding. A normal screen wraps its content in .page;
+   the chat screen fills the space itself (full height, its own panes). */
+
+.page {
+  width: 100%;
+  max-width: var(--content-max);
+  margin-inline: auto;
+  padding: var(--space-5) var(--space-4) var(--space-7);
+  padding-inline: max(var(--space-4), env(safe-area-inset-left));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+@media (min-width: 640px) {
+  .page {
+    padding: var(--space-6) var(--space-6) var(--space-8);
+  }
+}
+
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.page-header h1 {
+  margin: 0;
+}
+
+.page-header p {
+  margin: var(--space-1) 0 0;
+  color: var(--fg-muted);
+}
+
+/* --- Surfaces -------------------------------------------------------------- */
 
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--gap);
+  border-radius: var(--r-md);
+  padding: var(--space-4);
 }
+
+@media (min-width: 640px) {
+  .card {
+    padding: var(--space-5);
+  }
+}
+
+/* --- Buttons --------------------------------------------------------------- */
 
 .btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  border: 1px solid var(--border);
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
   background: var(--surface);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 6px 12px;
-  font: inherit;
+  color: var(--fg);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  line-height: 1.2;
   cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background-color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
 }
-.btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-.btn-danger { background: var(--danger-bg); border-color: var(--danger-text); color: var(--danger-text); }
 
-.input, select.input, textarea.input {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font: inherit;
-  background: var(--surface);
-  color: var(--text);
+.btn:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--accent-fg);
+}
+
+.btn-danger {
+  background: var(--danger-bg);
+  border-color: var(--danger-fg);
+  color: var(--danger-fg);
+}
+
+.btn-danger:hover {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  filter: brightness(0.97);
+}
+
+.btn-quiet {
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn-quiet:hover {
+  background: var(--surface-2);
+}
+
+.btn-block {
   width: 100%;
 }
 
-.table { width: 100%; border-collapse: collapse; background: var(--surface); }
-.table th, .table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
-.table th { font-weight: 600; color: var(--muted); font-size: 0.85rem; }
+/* --- Form fields ----------------------------------------------------------- */
+
+.input,
+select.input,
+textarea.input {
+  width: 100%;
+  min-height: var(--control-h);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--fs-base);
+  transition:
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
+}
+
+.input:hover {
+  border-color: var(--fg-muted);
+}
+
+.input:focus-visible {
+  border-color: var(--focus);
+}
+
+.input[aria-invalid="true"] {
+  border-color: var(--danger-fg);
+}
+
+select.input {
+  appearance: none;
+  padding-inline-end: var(--space-7);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
+    linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 20px) 50%,
+    calc(100% - 14px) 50%;
+  background-size: 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field > label,
+.label {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+
+.hint {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.error-text {
+  color: var(--danger-fg);
+  font-size: var(--fs-sm);
+}
+
+/* --- Tables ---------------------------------------------------------------- */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+}
+
+.table th,
+.table td {
+  text-align: start;
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.table th {
+  font-weight: 600;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  background: var(--surface);
+}
+
+/* --- Labels: Verified and Needs review --------------------------------------
+   These two differ by shape, border style, icon and word, not colour alone:
+   Verified is a rounded pill with a solid edge, Needs review a squarer chip
+   with a dashed edge. Document status uses .status-chip, never these. */
 
 .badge {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  font-size: var(--fs-sm);
   font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.badge svg {
+  flex: none;
+}
+
+.badge-verified {
+  background: var(--verified-bg);
+  color: var(--verified-fg);
+  border: 1px solid var(--verified-solid);
+  border-radius: var(--r-full);
+}
+
+.badge-review {
+  background: var(--review-bg);
+  color: var(--review-fg);
+  border: 2px dashed var(--review-solid);
+  border-radius: 4px;
+  padding: 1px 9px;
+}
+
+.badge-danger {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  border-radius: var(--r-sm);
+}
+
+.badge-neutral {
+  background: var(--surface-2);
+  color: var(--fg-muted);
+  border-radius: var(--r-sm);
+}
+
+/* Document status: square corners, outlined, a dot, ink or neutral colours. */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--surface);
   white-space: nowrap;
 }
-.badge-verified { background: var(--verified-bg); color: var(--verified-text); }
-.badge-review { background: var(--review-bg); color: var(--review-text); }
-.badge-danger { background: var(--danger-bg); color: var(--danger-text); }
-.badge-neutral { background: #eceff3; color: var(--muted); }
 
-.error-text { color: var(--danger-text); }
+.status-chip::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  flex: none;
+}
+
+.status-chip[data-tone="ready"]::before {
+  background: var(--accent);
+}
+
+.status-chip[data-tone="working"]::before {
+  background: transparent;
+  border: 2px solid var(--accent);
+  border-right-color: transparent;
+  animation: spin 900ms linear infinite;
+}
+
+.status-chip[data-tone="danger"] {
+  border-color: var(--danger-fg);
+  color: var(--danger-fg);
+}
+
+.status-chip[data-tone="danger"]::before {
+  background: var(--danger-fg);
+}
+
+/* --- Loading ----------------------------------------------------------------- */
+
+.spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+  flex: none;
+}
+
+.skeleton {
+  display: block;
+  border-radius: var(--r-sm);
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  min-height: 1em;
+}
+
+/* Shown only after a short wait, so a quick load never flickers. */
+.delayed {
+  animation: appear 0s linear 300ms both;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes appear {
+  from {
+    visibility: hidden;
+  }
+  to {
+    visibility: visible;
+  }
+}
+
+/* --- Accessibility helpers -------------------------------------------------- */
 
 .visually-hidden {
-  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

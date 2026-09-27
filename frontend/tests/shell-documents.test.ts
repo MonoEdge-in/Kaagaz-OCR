@@ -3,6 +3,8 @@ import {
   ACCEPT_ATTRIBUTE,
   MAX_UPLOAD_BYTES,
   canDelete,
+  deletedMessage,
+  listView,
   offsetAfterDelete,
   pageInfo,
   shouldPoll,
@@ -119,5 +121,25 @@ describe("uploadStateText", () => {
       uploadStateText({ kind: "duplicate", documentId: "d", existingName: "x.pdf" }),
     ).toBe("Already uploaded");
     expect(uploadStateText({ kind: "error", message: "No." })).toBe("Not uploaded");
+  });
+});
+
+describe("listView", () => {
+  it("loads first, and shows the error only when nothing is loaded yet", () => {
+    expect(listView(null, false, "")).toBe("loading");
+    expect(listView(null, true, "")).toBe("error");
+    expect(listView(4, true, "")).toBe("list");
+  });
+
+  it("tells an empty account from a search with no match", () => {
+    expect(listView(0, false, "")).toBe("empty");
+    expect(listView(0, false, "gst")).toBe("no-match");
+    expect(listView(3, false, "gst")).toBe("list");
+  });
+});
+
+describe("deletedMessage", () => {
+  it("names the document, as plain text", () => {
+    expect(deletedMessage("Bill <1>.pdf")).toBe("Deleted Bill <1>.pdf.");
   });
 });

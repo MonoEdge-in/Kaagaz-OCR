@@ -1,11 +1,13 @@
 "use client";
 
-// The admin screen: four tabs (Users, Settings, Activity, Numbers). Only the
+// The admin screen: four tabs (Users, Settings, Activity, Numbers) as a
+// segmented control that scrolls sideways on its own at small widths. Only the
 // open tab is mounted, so each one loads its data when it is opened. The link is
 // shown to admins only, and the server refuses the data to anyone else.
 
 import { useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { useSession } from "@/lib/session";
 import { ActivityPanel } from "./ActivityPanel";
 import { TABS, tabAfterKey } from "./logic";
@@ -22,9 +24,11 @@ export function AdminView() {
 
   if (me.user.role !== "admin") {
     return (
-      <div className="stack">
+      <div className="page">
         <h1>Admin</h1>
-        <p className="card">Only an admin can use this page.</p>
+        <EmptyState icon="admin" title="Admin is for admins">
+          Only an admin can use this page. Ask your account admin if you need something changed.
+        </EmptyState>
       </div>
     );
   }
@@ -39,7 +43,7 @@ export function AdminView() {
   }
 
   return (
-    <div className="stack">
+    <div className="page">
       <h1>Admin</h1>
       <div role="tablist" aria-label="Admin sections" className={styles.tabs}>
         {TABS.map((tab, index) => {
@@ -56,7 +60,7 @@ export function AdminView() {
               aria-selected={selected}
               aria-controls={`admin-panel-${tab.id}`}
               tabIndex={selected ? 0 : -1}
-              className={selected ? `${styles.tab} ${styles.tabActive}` : styles.tab}
+              className={styles.tab}
               onClick={() => setActive(tab.id)}
               onKeyDown={(event) => onKeyDown(event, index)}
             >

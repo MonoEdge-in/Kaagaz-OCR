@@ -1,30 +1,35 @@
 "use client";
 
-// Drop files here or pick them with the button. Each file is checked first
-// (kind and size), then sent one after another with its own progress bar. The
-// outcome, including "already uploaded" and any error, stays next to its file.
+// Uploading. Files come from the "Upload files" button (the hidden file input
+// the documents screen owns) or are dropped on the dropzone. Each file is
+// checked first (kind and size), then sent one after another with its own
+// progress bar. The outcome, including "already uploaded" and any error, stays
+// next to its file.
 
 import Link from "next/link";
 import { useRef, useState } from "react";
-import type { ChangeEvent, DragEvent } from "react";
+import type { DragEvent, ReactNode } from "react";
+import { Icon } from "@/components/ui/Icon";
 import { ApiError, uploadDocument } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { ACCEPT_ATTRIBUTE, uploadStateText, validateUpload } from "./logic";
+import { uploadStateText, validateUpload } from "./logic";
 import type { UploadState } from "./logic";
 import styles from "./Documents.module.css";
 
-interface Entry {
+export interface UploadEntry {
   key: string;
   name: string;
   size: number;
   state: UploadState;
 }
 
-export function UploadArea({ onUploaded }: { onUploaded: () => void }) {
-  const inputRef = useRef<HTMLInputElement>(null);
+const isBusy = (entry: UploadEntry) =>
+  entry.state.kind === "waiting" || entry.state.kind === "uploading";
+
+/** The upload queue: add files, watch them go, clear the finished ones. */
+export function useUploads(onUploaded: () => void) {
   const nextKey = useRef(0);
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [dragging, setDragging] = useState(false);
+  const [entries, setEntries] = useState<UploadEntry[]>([]);
 
   function update(key: string, state: UploadState) {
     setEntries((current) =>
@@ -50,7 +55,10 @@ export function UploadArea({ onUploaded }: { onUploaded: () => void }) {
       );
       onUploaded();
     } catch (caught) {
-      const message = caught instanceof ApiError ? caught.message : "Upload failed.";
+      const message =
+        caught instanceof ApiError
+          ? caught.message
+          : "Upload failed. Check your connection, then try again.";
       update(key, { kind: "error", message });
     }
   }
@@ -59,7 +67,7 @@ export function UploadArea({ onUploaded }: { onUploaded: () => void }) {
     const added = files.map((file) => {
       nextKey.current += 1;
       const problem = validateUpload(file);
-      const entry: Entry = {
+      const entry: UploadEntry = {
         key: `upload-${nextKey.current}`,
         name: file.name,
         size: file.size,
@@ -74,122 +82,154 @@ export function UploadArea({ onUploaded }: { onUploaded: () => void }) {
     }
   }
 
-  function onChoose(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = ""; // so choosing the same file again still fires
-    if (files.length > 0) void addFiles(files);
+  function clearFinished() {
+    setEntries((current) => current.filter(isBusy));
   }
+
+  return { entries, addFiles, clearFinished };
+}
+
+const KINDS_HINT = "PDF, PNG, JPG, TIFF, CSV or XLSX, up to 50 MB each.";
+
+/**
+ * Where files can be dropped. With no documents yet it is a full dashed card
+ * holding the empty state; once there are documents it is a slim strip.
+ */
+export function Dropzone({
+  variant,
+  onFiles,
+  onChoose,
+  children,
+}: {
+  variant: "full" | "slim";
+  onFiles: (files: File[]) => void;
+  onChoose: () => void;
+  children?: ReactNode;
+}) {
+  const [dragging, setDragging] = useState(false);
 
   function onDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setDragging(false);
     const files = Array.from(event.dataTransfer.files);
-    if (files.length > 0) void addFiles(files);
+    if (files.length > 0) onFiles(files);
   }
 
-  const settled = entries.some(
-    (entry) => entry.state.kind !== "waiting" && entry.state.kind !== "uploading",
-  );
+  const classes = [
+    styles.drop,
+    variant === "slim" ? styles.dropSlim : styles.dropFull,
+    dragging ? styles.dropActive : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
-    <section className="card stack" aria-labelledby="upload-heading">
-      <h2 id="upload-heading">Upload</h2>
-      <div
-        className={dragging ? `${styles.drop} ${styles.dropActive}` : styles.drop}
-        onDragOver={(event) => {
-          event.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={onDrop}
-      >
-        <p>Drag files here, or</p>
-        <button type="button" className="btn btn-primary" onClick={() => inputRef.current?.click()}>
-          Choose files
-        </button>
-        <label htmlFor="upload-input" className="visually-hidden">
-          Files to upload
-        </label>
-        <input
-          ref={inputRef}
-          id="upload-input"
-          className="visually-hidden"
-          type="file"
-          multiple
-          accept={ACCEPT_ATTRIBUTE}
-          tabIndex={-1}
-          onChange={onChoose}
-        />
-        <p className="muted">PDF, PNG, JPG, TIFF, CSV or XLSX, up to 50 MB each.</p>
-      </div>
-
-      {entries.length > 0 && (
+    <div
+      className={classes}
+      onDragOver={(event) => {
+        event.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={(event) => {
+        // Moving onto a child element also fires dragleave; ignore that.
+        const next = event.relatedTarget;
+        if (next instanceof Node && event.currentTarget.contains(next)) return;
+        setDragging(false);
+      }}
+      onDrop={onDrop}
+    >
+      {variant === "full" ? (
         <>
-          <ul className={styles.uploads} aria-live="polite" aria-label="Uploads">
-            {entries.map((entry) => (
-              <UploadRow key={entry.key} entry={entry} />
-            ))}
-          </ul>
-          {settled && (
-            <div>
-              <button
-                type="button"
-                className="btn"
-                onClick={() =>
-                  setEntries((current) =>
-                    current.filter(
-                      (entry) =>
-                        entry.state.kind === "waiting" || entry.state.kind === "uploading",
-                    ),
-                  )
-                }
-              >
-                Clear finished
-              </button>
-            </div>
-          )}
+          {children}
+          <p className={styles.dropHint}>Or drag files here. {KINDS_HINT}</p>
+        </>
+      ) : (
+        <>
+          <Icon name="upload" className={styles.dropIcon} />
+          <p className={styles.dropText}>
+            {dragging ? "Drop the files to upload them." : "Drag files here to upload, or"}
+          </p>
+          <button type="button" className="btn" onClick={onChoose}>
+            Choose files
+          </button>
+          <p className={styles.dropHint}>{KINDS_HINT}</p>
         </>
       )}
+    </div>
+  );
+}
+
+export function UploadList({
+  entries,
+  onClearFinished,
+}: {
+  entries: UploadEntry[];
+  onClearFinished: () => void;
+}) {
+  if (entries.length === 0) return null;
+  const settled = entries.some((entry) => !isBusy(entry));
+  return (
+    <section className={styles.uploadsSection} aria-labelledby="uploads-heading">
+      <div className={styles.uploadsHead}>
+        <h2 id="uploads-heading" className={styles.smallHeading}>
+          Uploads
+        </h2>
+        {settled && (
+          <button type="button" className="btn btn-quiet" onClick={onClearFinished}>
+            Clear finished
+          </button>
+        )}
+      </div>
+      <ul className={styles.uploads} aria-live="polite">
+        {entries.map((entry) => (
+          <UploadRow key={entry.key} entry={entry} />
+        ))}
+      </ul>
     </section>
   );
 }
 
-function UploadRow({ entry }: { entry: Entry }) {
+function UploadRow({ entry }: { entry: UploadEntry }) {
   const { state } = entry;
+  const failed = state.kind === "error";
   return (
-    <li className={styles.upload}>
-      <div className={styles.uploadHead}>
-        <span className={styles.fileName}>{entry.name}</span>
-        <span className="muted">{formatBytes(entry.size)}</span>
-        <span className={state.kind === "error" ? "error-text" : "muted"}>
-          {uploadStateText(state)}
-        </span>
-      </div>
-      {state.kind === "uploading" && (
-        <div className={styles.progressRow}>
-          <progress
-            className={styles.progress}
-            value={state.fraction}
-            max={1}
-            aria-label={`Upload progress for ${entry.name}`}
-          />
-          <span className="muted" aria-hidden="true">
-            {Math.round(state.fraction * 100)}%
+    <li className={styles.upload} data-state={state.kind}>
+      <Icon name={failed ? "alert" : "file"} className={styles.uploadIcon} />
+      <div className={styles.uploadBody}>
+        <div className={styles.uploadHead}>
+          <span className={styles.fileName}>{entry.name}</span>
+          <span className={`muted tabular ${styles.small}`}>{formatBytes(entry.size)}</span>
+          <span className={failed ? `error-text ${styles.small}` : `muted ${styles.small}`}>
+            {uploadStateText(state)}
           </span>
         </div>
-      )}
-      {state.kind === "done" && (
-        <span>
-          <Link href={`/documents/${state.documentId}`}>Open</Link>
-        </span>
-      )}
-      {state.kind === "duplicate" && (
-        <span>
-          This file was uploaded before, as “{state.existingName}”. Nothing new was stored.{" "}
-          <Link href={`/documents/${state.documentId}`}>Open it</Link>
-        </span>
-      )}
-      {state.kind === "error" && <span className="error-text">{state.message}</span>}
+        {state.kind === "uploading" && (
+          <div className={styles.progressRow}>
+            <progress
+              className={styles.progress}
+              value={state.fraction}
+              max={1}
+              aria-label={`Upload progress for ${entry.name}`}
+            />
+            <span className={`muted tabular ${styles.small}`} aria-hidden="true">
+              {Math.round(state.fraction * 100)}%
+            </span>
+          </div>
+        )}
+        {state.kind === "done" && (
+          <Link href={`/documents/${state.documentId}`} className={styles.small}>
+            Open
+            <span className="visually-hidden">{` ${entry.name}`}</span>
+          </Link>
+        )}
+        {state.kind === "duplicate" && (
+          <p className={styles.small}>
+            This file was uploaded before, as “{state.existingName}”. Nothing new was stored.{" "}
+            <Link href={`/documents/${state.documentId}`}>Open it</Link>
+          </p>
+        )}
+        {failed && <p className={`error-text ${styles.small}`}>{state.message}</p>}
+      </div>
     </li>
   );
 }

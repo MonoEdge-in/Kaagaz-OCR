@@ -1,95 +1,296 @@
+/* The admin screen. Tokens only (app/globals.css). Tables use the shared
+   reflow in components/documents/Table.module.css. */
+
+/* --- Tabs: a segmented control that scrolls sideways on its own ------------- */
+
 .tabs {
   display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
+  gap: var(--space-1);
+  width: fit-content;
+  max-width: 100%;
+  padding: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
+  flex: none;
+  min-height: calc(var(--control-h) - 8px);
+  padding: 0 var(--space-4);
   border: 1px solid transparent;
-  border-bottom: none;
+  border-radius: var(--r-sm);
   background: transparent;
-  color: var(--text);
+  color: var(--fg-muted);
   font: inherit;
-  padding: 8px 14px;
-  border-radius: 6px 6px 0 0;
-  cursor: pointer;
-  margin-bottom: -1px;
-}
-
-.tabActive {
-  background: var(--surface);
-  border-color: var(--border);
+  font-size: var(--fs-sm);
   font-weight: 600;
-  text-decoration: underline;
-  text-underline-offset: 4px;
+  white-space: nowrap;
+  cursor: pointer;
+  scroll-snap-align: start;
+  transition:
+    background-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
 }
 
-.panel { outline-offset: 4px; }
+@media (pointer: coarse) {
+  .tab {
+    min-height: 44px;
+  }
+}
 
-.tableWrap { overflow-x: auto; }
+.tab:hover {
+  color: var(--fg);
+}
 
-.wrap { overflow-wrap: anywhere; }
+.tab[aria-selected="true"] {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--fg);
+  box-shadow: var(--e-1);
+}
 
-.nowrap { white-space: nowrap; }
+.tab:focus-visible {
+  outline-offset: -2px;
+  box-shadow: none;
+}
+
+.panel {
+  outline-offset: 4px;
+}
+
+/* --- Sections ---------------------------------------------------------------- */
+
+.panelStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.sectionHeading {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.emptyLine {
+  margin: 0;
+  padding: var(--space-5) var(--space-4);
+  text-align: center;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.customer {
+  margin: 0;
+}
+
+.saved {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+/* --- Table cells ---------------------------------------------------------------- */
+
+.wrap {
+  overflow-wrap: anywhere;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.strong {
+  font-weight: 600;
+}
+
+.id {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+.details {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.nameCell {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.roleSelect {
+  width: auto;
+  min-width: 9rem;
+}
 
 .actions {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   align-items: flex-start;
 }
 
+@media (min-width: 768px) {
+  .actionsColumn,
+  .actionsCell {
+    width: 9rem;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 767.98px) {
+  .nameCell {
+    font-size: var(--fs-lg);
+  }
+
+  .roleSelect {
+    width: 100%;
+  }
+
+  .actionsCell {
+    margin-top: var(--space-2);
+  }
+
+  .actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* --- Add a user ---------------------------------------------------------------- */
+
 .form {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: var(--gap);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: var(--space-4);
   align-items: start;
 }
 
 .formEnd {
   grid-column: 1 / -1;
   display: flex;
-  gap: 8px;
+  gap: var(--space-2) var(--space-3);
   align-items: center;
   flex-wrap: wrap;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.narrow {
+  max-width: 10rem;
 }
 
-.narrow { max-width: 160px; }
-
-.pager {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-end;
-}
+/* --- Numbers ---------------------------------------------------------------- */
 
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: var(--gap);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr));
+  gap: var(--space-3);
   margin: 0;
 }
 
 .tile {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px;
   display: flex;
   flex-direction: column-reverse;
-  gap: 4px;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  min-width: 0;
 }
 
-.tile dt { font-size: 0.9rem; }
+.tileLabel {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
 
 .tileValue {
   margin: 0;
-  font-size: 1.6rem;
+  font-size: var(--fs-2xl);
   font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* --- Loading and errors ------------------------------------------------------- */
+
+.skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.skeletonRow {
+  height: 104px;
+  border-radius: var(--r-md);
+}
+
+@media (min-width: 768px) {
+  .skeletonRow {
+    height: 48px;
+    border-radius: var(--r-sm);
+  }
+}
+
+.skeletonTile {
+  height: 5.5rem;
+  border-radius: var(--r-md);
+}
+
+.errorBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--danger-fg);
+  border-radius: var(--r-md);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.errorIcon {
+  flex: none;
+  margin-top: 3px;
+}
+
+.errorBody {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.errorBody p {
+  margin: 0;
+}
+
+.errorTitle {
+  font-weight: 600;
 }

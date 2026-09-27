@@ -89,15 +89,17 @@ describe("statusChip", () => {
     for (const status of all) expect(statusChip(status).text.length).toBeGreaterThan(0);
   });
 
-  it("maps statuses to the shared badge classes", () => {
-    expect(statusChip("ready")).toEqual({
-      text: "Ready",
-      tone: "verified",
-      className: "badge badge-verified",
+  it("uses the status chip with a tone, never the label badge classes", () => {
+    expect(statusChip("ready")).toEqual({ text: "Ready", tone: "ready", className: "status-chip" });
+    expect(statusChip("received")).toEqual({
+      text: "Checking",
+      tone: "working",
+      className: "status-chip",
     });
-    expect(statusChip("failed").className).toBe("badge badge-danger");
-    expect(statusChip("rejected").className).toBe("badge badge-danger");
-    expect(statusChip("needs_reader").className).toBe("badge badge-review");
-    expect(statusChip("received").className).toBe("badge badge-neutral");
+    expect(statusChip("clean")).toEqual({ text: "Reading", tone: "working", className: "status-chip" });
+    expect(statusChip("needs_reader").tone).toBe("neutral");
+    expect(statusChip("rejected").tone).toBe("danger");
+    expect(statusChip("failed").tone).toBe("danger");
+    for (const status of all) expect(statusChip(status).className).not.toMatch(/badge/);
   });
 });

@@ -55,6 +55,19 @@ export function validateNewUser(input: NewUserInput): NewUserErrors {
   return errors;
 }
 
+/** The new-user fields in screen order, and the id of each one's input. */
+export const NEW_USER_FIELD_IDS = {
+  email: "new-user-email",
+  display_name: "new-user-name",
+  password: "new-user-password",
+} as const;
+
+/** The first field (in screen order) with a problem, for focus; null if none. */
+export function firstInvalidField(errors: NewUserErrors): keyof NewUserErrors | null {
+  const order: (keyof NewUserErrors)[] = ["email", "display_name", "password"];
+  return order.find((key) => errors[key] !== undefined) ?? null;
+}
+
 export type UploadLimit = { ok: true; value: number | null } | { ok: false; message: string };
 
 /**

@@ -18,6 +18,21 @@ export function stepZoom(current: number, direction: "in" | "out"): number {
   return ZOOM_STEPS[clamped] ?? 1;
 }
 
+/**
+ * The size a page is drawn at: zoom 1 fits the container's width exactly,
+ * other zoom steps scale from there. Whole pixels, and never below 1.
+ */
+export function fitPageSize(
+  containerWidth: number,
+  aspect: number,
+  zoom: number,
+): { width: number; height: number } {
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1 / Math.SQRT2;
+  const base = Number.isFinite(containerWidth) && containerWidth > 0 ? containerWidth : 1;
+  const width = Math.max(1, Math.floor(base * zoom));
+  return { width, height: width / safeAspect };
+}
+
 export type PageMode = "pdf" | "image" | "sheet" | "none";
 
 /** How a page can be drawn: PDF.js for PDFs, the stored image, a cell grid, or nothing. */

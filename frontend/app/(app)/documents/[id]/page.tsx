@@ -23,7 +23,15 @@ function DocumentRoute() {
 
 export default function DocumentPage() {
   return (
-    <Suspense fallback={<p className="muted">Loading…</p>}>
+    <Suspense
+      fallback={
+        <div className="page">
+          <p className="muted" role="status">
+            Loading the document…
+          </p>
+        </div>
+      }
+    >
       <DocumentRoute />
     </Suspense>
   );

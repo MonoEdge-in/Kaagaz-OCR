@@ -68,7 +68,15 @@ export function SheetGrid({ documentId, page, highlights, crop }: SheetGridProps
     frame.scrollLeft += c.left - f.left - f.width / 2 + c.width / 2;
   }, [current, focusKey]);
 
-  if (!current) return <p className="muted" aria-live="polite">Loading the sheet…</p>;
+  if (!current) {
+    return crop ? (
+      <span className={`skeleton ${styles.sheetSkeleton}`} role="status" aria-label="Loading the sheet" />
+    ) : (
+      <p className="muted" aria-live="polite">
+        Loading the sheet…
+      </p>
+    );
+  }
   if (current.error || !current.sheet) {
     return <p className="error-text">{current.error ?? "Could not load this sheet."}</p>;
   }
@@ -81,9 +89,9 @@ export function SheetGrid({ documentId, page, highlights, crop }: SheetGridProps
   const move = (value: number) => setRowFrom({ base, value: Math.max(1, value) });
 
   return (
-    <div className="stack">
+    <div className={styles.sheetStack}>
       {focus ? (
-        <p className="muted">
+        <p className={`muted ${styles.note}`}>
           Highlighted cell: {cellName(focus)}
           {marked.size > 1 ? ` and ${marked.size - 1} more` : ""}
         </p>
@@ -149,7 +157,7 @@ export function SheetGrid({ documentId, page, highlights, crop }: SheetGridProps
           >
             Later rows
           </button>
-          <span className="muted">
+          <span className={`muted tabular ${styles.note}`}>
             Rows {from} to {Math.min(to, sheet.total_rows)} of {sheet.total_rows}
           </span>
         </div>

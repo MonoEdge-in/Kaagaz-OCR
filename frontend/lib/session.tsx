@@ -36,9 +36,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return { kind: "signed_in", me: await fetchMe() };
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) return { kind: "signed_out" };
-      const message =
-        error instanceof ApiError ? error.message : "Could not reach the server.";
-      return { kind: "error", message };
+      return { kind: "error", message: sessionErrorMessage(error) };
     }
   }, []);
 
@@ -72,7 +70,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   if (state.kind === "error") {
     return (
       <main className={styles.centered}>
-        <div className="card stack">
+        <div className={`card stack ${styles.centeredBox}`}>
           <p className="error-text" role="alert">
             {state.message}
           </p>
@@ -95,11 +93,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   return (
     <main className={styles.centered}>
-      <p className="muted" role="status" aria-live="polite">
+      <p className={`delayed ${styles.loading}`} role="status" aria-live="polite">
+        <span className="spinner" aria-hidden="true" />
         {state.kind === "signed_out" ? "Taking you to sign in…" : "Loading…"}
       </p>
     </main>
   );
+}
+
+/** What to say when the app cannot ask the server who is signed in. */
+export function sessionErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status !== 0) {
+    return "Kaagaz is not answering right now. Try again in a minute.";
+  }
+  return "Could not reach Kaagaz. Check your internet connection and try again.";
 }
 
 /** The signed-in person. Only usable inside the app layout (under SessionProvider). */

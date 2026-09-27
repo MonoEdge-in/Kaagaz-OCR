@@ -7,17 +7,29 @@
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { roleName } from "@/components/shell/nav";
+import { Icon } from "@/components/ui/Icon";
+import { PasswordField } from "@/components/ui/PasswordField";
 import { ApiError, createUser, listUsers, updateUser } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { AdminUser, Role } from "@/lib/types";
-import { roleName } from "@/components/shell/nav";
-import { ROLES, validateNewUser } from "./logic";
+import table from "@/components/documents/Table.module.css";
+import {
+  MIN_PASSWORD_LENGTH,
+  NEW_USER_FIELD_IDS,
+  ROLES,
+  firstInvalidField,
+  validateNewUser,
+} from "./logic";
 import type { NewUserErrors, NewUserInput } from "./logic";
 import styles from "./Admin.module.css";
 
+const SKELETON_ROWS = [0, 1, 2];
+
 export function UsersPanel({ currentUserId }: { currentUserId: string }) {
+  const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -27,14 +39,22 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
       },
       (caught: unknown) => {
         if (!cancelled) {
-          setError(caught instanceof ApiError ? caught.message : "Could not load users.");
+          setError({
+            attempt,
+            message:
+              caught instanceof ApiError
+                ? caught.message
+                : "Check your internet connection, then try again.",
+          });
         }
       },
     );
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
+
+  const failed = error !== null && error.attempt === attempt ? error.message : null;
 
   function replace(user: AdminUser) {
     setUsers((current) =>
@@ -43,47 +63,72 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
   }
 
   return (
-    <div className="stack">
-      <section className="card stack" aria-labelledby="users-heading">
-        <h2 id="users-heading">Users</h2>
-        {error && (
-          <p className="error-text" role="alert">
-            {error}
-          </p>
+    <div className={styles.panelStack}>
+      <section className={styles.section} aria-labelledby="users-heading">
+        <h2 id="users-heading" className={styles.sectionHeading}>
+          Users
+        </h2>
+        {failed && !users && (
+          <div className={styles.errorBanner} role="alert">
+            <Icon name="alert" className={styles.errorIcon} />
+            <div className={styles.errorBody}>
+              <p className={styles.errorTitle}>Could not load the users.</p>
+              <p>{failed}</p>
+            </div>
+            <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
+              <Icon name="refresh" />
+              Try again
+            </button>
+          </div>
         )}
-        {!users && !error && (
-          <p className="muted" role="status">
-            Loading…
-          </p>
+        {!users && !failed && (
+          <>
+            <p className="visually-hidden" role="status">
+              Loading the users…
+            </p>
+            <div className={`delayed ${styles.skeletons}`} aria-hidden="true">
+              {SKELETON_ROWS.map((row) => (
+                <span key={row} className={`skeleton ${styles.skeletonRow}`} />
+              ))}
+            </div>
+          </>
         )}
         {users && (
-          <div className={styles.tableWrap}>
-            <table className="table">
-              <caption className="visually-hidden">Users of this customer</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Name</th>
-                  <th scope="col">E-mail</th>
-                  <th scope="col">Role</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Added</th>
-                  <th scope="col">
-                    <span className="visually-hidden">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((user) => (
-                  <UserRow
-                    key={user.id}
-                    user={user}
-                    isSelf={user.id === currentUserId}
-                    onChanged={replace}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <table className={`table ${table.reflow}`} role="table">
+            <caption className="visually-hidden">Users of this customer</caption>
+            <thead role="rowgroup">
+              <tr role="row">
+                <th scope="col" role="columnheader">
+                  Name
+                </th>
+                <th scope="col" role="columnheader">
+                  E-mail
+                </th>
+                <th scope="col" role="columnheader">
+                  Role
+                </th>
+                <th scope="col" role="columnheader">
+                  Status
+                </th>
+                <th scope="col" role="columnheader">
+                  Added
+                </th>
+                <th scope="col" role="columnheader" className={styles.actionsColumn}>
+                  <span className="visually-hidden">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup">
+              {users.map((user) => (
+                <UserRow
+                  key={user.id}
+                  user={user}
+                  isSelf={user.id === currentUserId}
+                  onChanged={replace}
+                />
+              ))}
+            </tbody>
+          </table>
         )}
       </section>
       <AddUserForm
@@ -114,7 +159,11 @@ function UserRow({
       onChanged(await updateUser(user.id, changes));
       setSaved(done);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Could not save the change.");
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Could not save the change. Check your connection, then try again.",
+      );
     } finally {
       setBusy(false);
     }
@@ -122,19 +171,21 @@ function UserRow({
 
   const selectId = `role-${user.id}`;
   return (
-    <tr>
-      <td className={styles.wrap}>
+    <tr role="row">
+      <td role="cell" className={styles.nameCell}>
         {user.display_name}
         {isSelf && <span className="muted"> (you)</span>}
       </td>
-      <td className={styles.wrap}>{user.email}</td>
-      <td>
+      <td role="cell" data-label="E-mail" className={styles.wrap}>
+        {user.email}
+      </td>
+      <td role="cell" data-label="Role">
         <label htmlFor={selectId} className="visually-hidden">
           Role for {user.display_name}
         </label>
         <select
           id={selectId}
-          className="input"
+          className={`input ${styles.roleSelect}`}
           value={user.role}
           disabled={busy || isSelf}
           onChange={(event) => {
@@ -149,15 +200,15 @@ function UserRow({
           ))}
         </select>
       </td>
-      <td>
-        {user.disabled ? (
-          <span className="badge badge-danger">Disabled</span>
-        ) : (
-          <span className="badge badge-verified">Active</span>
-        )}
+      <td role="cell" data-label="Status">
+        <span className="status-chip" data-tone={user.disabled ? "danger" : "ready"}>
+          {user.disabled ? "Disabled" : "Active"}
+        </span>
       </td>
-      <td className={styles.nowrap}>{formatDate(user.created_at)}</td>
-      <td>
+      <td role="cell" data-label="Added" className={`${styles.nowrap} tabular`}>
+        {formatDate(user.created_at)}
+      </td>
+      <td role="cell" className={styles.actionsCell}>
         <div className={styles.actions}>
           {!isSelf && (
             <button
@@ -175,7 +226,7 @@ function UserRow({
               {user.disabled ? "Enable" : "Disable"}
             </button>
           )}
-          <span aria-live="polite" className="muted">
+          <span aria-live="polite" className={styles.saved}>
             {saved ?? ""}
           </span>
           {error && (
@@ -197,14 +248,20 @@ function AddUserForm({ onAdded }: { onAdded: (user: AdminUser) => void }) {
   const [serverError, setServerError] = useState<string | null>(null);
   const [added, setAdded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [masked, setMasked] = useState(true);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setMasked(true); // never leave a password showing once it is sent
     setAdded(null);
     setServerError(null);
     const found = validateNewUser(input);
     setErrors(found);
-    if (Object.keys(found).length > 0) return;
+    const first = firstInvalidField(found);
+    if (first) {
+      document.getElementById(NEW_USER_FIELD_IDS[first])?.focus();
+      return;
+    }
     setBusy(true);
     try {
       const user = await createUser({
@@ -216,7 +273,10 @@ function AddUserForm({ onAdded }: { onAdded: (user: AdminUser) => void }) {
       setInput(EMPTY_USER);
       setAdded(`Added ${user.display_name}.`);
     } catch (caught) {
-      const message = caught instanceof ApiError ? caught.message : "Could not add the user.";
+      const message =
+        caught instanceof ApiError
+          ? caught.message
+          : "Could not add the user. Check your connection, then try again.";
       if (caught instanceof ApiError && caught.code === "conflict") {
         setErrors({ email: message });
       } else {
@@ -229,27 +289,27 @@ function AddUserForm({ onAdded }: { onAdded: (user: AdminUser) => void }) {
 
   return (
     <section className="card stack" aria-labelledby="add-user-heading">
-      <h2 id="add-user-heading">Add a user</h2>
+      <h2 id="add-user-heading" className={styles.sectionHeading}>
+        Add a user
+      </h2>
       <form className={styles.form} onSubmit={submit} noValidate>
         <Field
-          id="new-user-email"
+          id={NEW_USER_FIELD_IDS.email}
           label="E-mail"
           error={errors.email}
           type="email"
-          autoComplete="off"
           value={input.email}
           onChange={(email) => setInput({ ...input, email })}
         />
         <Field
-          id="new-user-name"
+          id={NEW_USER_FIELD_IDS.display_name}
           label="Name"
           error={errors.display_name}
           type="text"
-          autoComplete="off"
           value={input.display_name}
           onChange={(display_name) => setInput({ ...input, display_name })}
         />
-        <div className={styles.field}>
+        <div className="field">
           <label htmlFor="new-user-role">Role</label>
           <select
             id="new-user-role"
@@ -267,20 +327,29 @@ function AddUserForm({ onAdded }: { onAdded: (user: AdminUser) => void }) {
             ))}
           </select>
         </div>
-        <Field
-          id="new-user-password"
-          label="Password (at least 12 characters)"
-          error={errors.password}
-          type="password"
+        <PasswordField
+          id={NEW_USER_FIELD_IDS.password}
+          label="Password"
           autoComplete="new-password"
+          hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}
           value={input.password}
           onChange={(password) => setInput({ ...input, password })}
+          error={errors.password ?? null}
+          masked={masked}
+          onMaskedChange={setMasked}
         />
         <div className={styles.formEnd}>
           <button type="submit" className="btn btn-primary" disabled={busy}>
-            {busy ? "Adding…" : "Add user"}
+            {busy ? (
+              <>
+                <span className="spinner" aria-hidden="true" />
+                Adding…
+              </>
+            ) : (
+              "Add user"
+            )}
           </button>
-          <span aria-live="polite" className="muted">
+          <span aria-live="polite" className={styles.saved}>
             {added ?? ""}
           </span>
           {serverError && (
@@ -299,27 +368,28 @@ function Field({
   label,
   error,
   type,
-  autoComplete,
   value,
   onChange,
 }: {
   id: string;
   label: string;
   error: string | undefined;
-  type: "email" | "text" | "password";
-  autoComplete: string;
+  type: "email" | "text";
   value: string;
   onChange: (value: string) => void;
 }) {
   const errorId = `${id}-error`;
   return (
-    <div className={styles.field}>
+    <div className="field">
       <label htmlFor={id}>{label}</label>
       <input
         id={id}
         className="input"
         type={type}
-        autoComplete={autoComplete}
+        autoComplete="off"
+        spellCheck={false}
+        autoCapitalize={type === "email" ? "none" : "words"}
+        inputMode={type === "email" ? "email" : undefined}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         aria-invalid={error ? true : undefined}

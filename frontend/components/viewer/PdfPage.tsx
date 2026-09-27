@@ -2,7 +2,8 @@
 
 // One PDF page drawn by PDF.js on a canvas, at the size the viewer asks for.
 // Any failure (the file, the worker, a broken page) calls onFailed, and the
-// viewer falls back to the stored page image.
+// viewer falls back to the stored page image. onRendered says the page is
+// drawn, so the viewer can take its loading skeleton away.
 
 import { useEffect, useRef } from "react";
 import type { RenderTask } from "pdfjs-dist";
@@ -19,9 +20,18 @@ export interface PdfPageProps {
   height: number;
   label: string;
   onFailed: () => void;
+  onRendered?: () => void;
 }
 
-export default function PdfPage({ documentId, pageNo, width, height, label, onFailed }: PdfPageProps) {
+export default function PdfPage({
+  documentId,
+  pageNo,
+  width,
+  height,
+  label,
+  onFailed,
+  onRendered,
+}: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -40,6 +50,7 @@ export default function PdfPage({ documentId, pageNo, width, height, label, onFa
       canvas.height = Math.floor(viewport.height);
       task = page.render({ canvas, viewport });
       await task.promise;
+      if (!cancelled) onRendered?.();
     };
     draw().catch((error: unknown) => {
       const name = error instanceof Error ? error.name : "";
@@ -49,7 +60,7 @@ export default function PdfPage({ documentId, pageNo, width, height, label, onFa
       cancelled = true;
       task?.cancel();
     };
-  }, [documentId, pageNo, width, onFailed]);
+  }, [documentId, pageNo, width, onFailed, onRendered]);
 
   return (
     <canvas

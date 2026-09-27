@@ -6,6 +6,8 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { Icon } from "@/components/ui/Icon";
+import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import { fieldText, reasonText } from "@/components/viewer/labels";
 import { ApiError, resolveReview } from "@/lib/api";
@@ -27,6 +29,8 @@ export function ReviewCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const idBase = `review-${value.id}`;
+  const errorId = `${idBase}-error`;
+  const link = pageLink(item.document_id, value.region.page, value.region);
 
   const resolve = async (choice: ReviewChoice) => {
     const check = checkChoice(choice, typed, value.second_reading);
@@ -40,86 +44,113 @@ export function ReviewCard({
       const after = await resolveReview(value.id, check.choice, remember, check.value);
       onResolved(item, after);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Could not save this correction.");
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Could not save this correction. Check your connection, then try again.",
+      );
       setBusy(false);
     }
   };
 
   return (
-    <article className={`card stack ${styles.item}`} aria-labelledby={`${idBase}-title`}>
-      <header className="stack">
-        <h2 id={`${idBase}-title`}>{fieldText(value.field)}</h2>
-        <p className="row muted">
-          <span>{item.document_name}</span>
-          <span>Page {value.region.page}</span>
-          <span className="badge badge-review">Needs review</span>
-          <span>{reasonText(value.label_reason)}</span>
+    <article className={`card ${styles.item}`} aria-labelledby={`${idBase}-title`}>
+      <header className={styles.head}>
+        <div className={styles.titleRow}>
+          <h2 id={`${idBase}-title`} className={styles.title}>
+            {fieldText(value.field)}
+          </h2>
+          <LabelBadge label="needs_review" />
+        </div>
+        <p className={styles.meta}>
+          <Link href={link} className={styles.docLink}>
+            {item.document_name}
+            <span className="visually-hidden">{`, open page ${value.region.page}`}</span>
+          </Link>
+          <span aria-hidden="true">·</span>
+          <span className="tabular">Page {value.region.page}</span>
         </p>
+        <p className={styles.reason}>{reasonText(value.label_reason)}</p>
       </header>
 
       <PageViewer
-        document={{ id: item.document_id, display_name: item.document_name, detected_type: item.detected_type }}
+        document={{
+          id: item.document_id,
+          display_name: item.document_name,
+          detected_type: item.detected_type,
+        }}
         page={item.page}
         highlights={[value.region]}
         crop={value.region}
       />
-      <p>
-        <Link href={pageLink(item.document_id, value.region.page, value.region)}>
-          Open the full page
-        </Link>
-      </p>
 
       <div className={styles.readings}>
-        <section className={`stack ${styles.reading}`} aria-labelledby={`${idBase}-first`}>
-          <h3 id={`${idBase}-first`}>First reading</h3>
+        <section className={styles.reading} aria-labelledby={`${idBase}-first`}>
+          <h3 id={`${idBase}-first`} className={styles.readingHeading}>
+            First reading
+          </h3>
           <p className={styles.readingText}>{value.raw}</p>
-          <div>
-            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => resolve("first")}>
-              Use first reading
-            </button>
-          </div>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => void resolve("first")}
+          >
+            Use first reading
+          </button>
         </section>
-        <section className={`stack ${styles.reading}`} aria-labelledby={`${idBase}-second`}>
-          <h3 id={`${idBase}-second`}>Second reading</h3>
+        <section className={styles.reading} aria-labelledby={`${idBase}-second`}>
+          <h3 id={`${idBase}-second`} className={styles.readingHeading}>
+            Second reading
+          </h3>
           {value.second_reading !== null ? (
             <>
               <p className={styles.readingText}>{value.second_reading}</p>
-              <div>
-                <button type="button" className="btn btn-primary" disabled={busy} onClick={() => resolve("second")}>
-                  Use second reading
-                </button>
-              </div>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy}
+                onClick={() => void resolve("second")}
+              >
+                Use second reading
+              </button>
             </>
           ) : (
-            <p className="muted">No second reading for this value.</p>
+            <p className={styles.noReading}>No second reading for this value.</p>
           )}
         </section>
       </div>
 
       <form
-        className="stack"
+        className={styles.typedForm}
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
           void resolve("typed");
         }}
       >
-        <label htmlFor={`${idBase}-typed`}>Type the correct value</label>
-        <div className="row">
+        <label htmlFor={`${idBase}-typed`} className="label">
+          Type the correct value
+        </label>
+        <div className={styles.typedRow}>
           <input
             id={`${idBase}-typed`}
             className={`input ${styles.typed}`}
             type="text"
+            autoComplete="off"
+            spellCheck={false}
             maxLength={MAX_TYPED_LENGTH}
             value={typed}
             onChange={(event) => setTyped(event.target.value)}
+            aria-describedby={error ? errorId : undefined}
           />
-          <button type="submit" className="btn" disabled={busy}>
-            Use typed value
+          <button type="submit" className="btn btn-primary" disabled={busy}>
+            Save
           </button>
         </div>
       </form>
 
-      <div className="row">
+      <div className={styles.remember}>
         <input
           id={`${idBase}-remember`}
           type="checkbox"
@@ -129,9 +160,15 @@ export function ReviewCard({
         <label htmlFor={`${idBase}-remember`}>Remember this correction for future documents</label>
       </div>
 
-      {busy ? <p className="muted">Saving…</p> : null}
+      {busy ? (
+        <p className={styles.saving} role="status">
+          <span className="spinner" aria-hidden="true" />
+          Saving…
+        </p>
+      ) : null}
       {error ? (
-        <p className="error-text" role="alert">
+        <p id={errorId} className={`error-text ${styles.error}`} role="alert">
+          <Icon name="alert" size={16} />
           {error}
         </p>
       ) : null}

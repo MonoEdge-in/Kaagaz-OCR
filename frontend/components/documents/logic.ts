@@ -32,7 +32,7 @@ function extension(name: string): string {
 }
 
 /**
- * Why a file will not be sent, in plain English, or null when it may be sent.
+ * Why a file will not be sent, in plain language, or null when it may be sent.
  * Checked before uploading so people get the answer at once.
  */
 export function validateUpload(
@@ -112,4 +112,18 @@ export function uploadStateText(state: UploadState): string {
     case "error":
       return "Not uploaded";
   }
+}
+
+/** What the list area shows. A failed refresh keeps the list it already has. */
+export type ListView = "loading" | "error" | "empty" | "no-match" | "list";
+
+export function listView(total: number | null, failed: boolean, q: string): ListView {
+  if (total === null) return failed ? "error" : "loading";
+  if (total === 0) return q === "" ? "empty" : "no-match";
+  return "list";
+}
+
+/** The polite announcement once a document is gone from the list. */
+export function deletedMessage(name: string): string {
+  return `Deleted ${name}.`;
 }

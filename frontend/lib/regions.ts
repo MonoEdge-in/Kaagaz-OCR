@@ -112,6 +112,30 @@ export function cropView(
   };
 }
 
+/**
+ * Like cropView, but the whole crop fits inside a box of boxWidth x boxHeight
+ * pixels, so the highlighted spot is never clipped: a wide crop fills the
+ * width, a tall one fills the height. Previews measure their box and pass it in.
+ */
+export function fitCropView(
+  crop: FractionRect,
+  aspect: number,
+  boxWidth: number,
+  boxHeight: number,
+  maxPageWidth: number,
+): CropView {
+  const spanX = crop.x1 - crop.x0;
+  const spanY = crop.y1 - crop.y0;
+  const usable = spanX > 0 && spanY > 0;
+  const sx = usable ? spanX : 1;
+  const sy = usable ? spanY : 1;
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1 / Math.SQRT2;
+  const width = Math.max(0, boxWidth);
+  // The crop's height is frameWidth * sy / (sx * aspect); keep it within boxHeight.
+  const byHeight = boxHeight > 0 ? (boxHeight * sx * safeAspect) / sy : width;
+  return cropView(crop, safeAspect, Math.min(width, byHeight), maxPageWidth);
+}
+
 /** The regions that belong on one page (or sheet). */
 export function regionsOnPage(regions: readonly Region[], pageNo: number): Region[] {
   return regions.filter((region) => region.page === pageNo);

@@ -1,27 +1,38 @@
 "use client";
 
-// The frame around every signed-in screen: the product name, the links this
-// person's role can use, who is signed in and for which customer, and Sign out.
+// The frame around every signed-in screen. From 1024 px up: a sticky sidebar
+// with the wordmark and ShellMenu. Below that: a sticky top bar (menu button,
+// wordmark, the current page's name) and a Drawer with the same ShellMenu.
+// Both get their links from the one navLinks list for the whole shell.
+// <main id="main"> has no padding; screens use .page (the chat fills it).
 
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import type { ReactNode } from "react";
+import { Drawer } from "@/components/ui/Drawer";
+import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, logout } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { isCurrent, navLinks, roleName } from "./nav";
+import { currentPageName, navLinks } from "./nav";
+import { ShellMenu } from "./ShellMenu";
+import { Wordmark } from "./Wordmark";
 import styles from "./Shell.module.css";
+
+const MENU_ID = "app-menu";
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { me } = useSession();
   const pathname = usePathname();
   const router = useRouter();
+  const [menuOpen, setMenuOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const links = navLinks(me.user.role);
+  const pageName = currentPageName(links, pathname);
 
   async function signOut() {
     setSigningOut(true);
-    setError(null);
+    setSignOutError(null);
     try {
       await logout();
       router.replace("/login");
@@ -31,61 +42,67 @@ export function AppShell({ children }: { children: ReactNode }) {
         router.replace("/login");
         return;
       }
-      setError(caught instanceof ApiError ? caught.message : "Could not sign out.");
+      setSignOutError(
+        caught instanceof ApiError && caught.status !== 0
+          ? "Could not sign out. Try again in a minute."
+          : "Could not reach Kaagaz to sign out. Check your internet connection and try again.",
+      );
       setSigningOut(false);
     }
   }
+
+  const menu = (
+    <ShellMenu
+      links={links}
+      pathname={pathname}
+      me={me}
+      signingOut={signingOut}
+      signOutError={signOutError}
+      onSignOut={signOut}
+      onLinkClick={() => setMenuOpen(false)}
+    />
+  );
 
   return (
     <>
       <a className={styles.skip} href="#main">
         Skip to content
       </a>
-      <header className={styles.header}>
-        <div className={styles.bar}>
-          <Link href="/documents" className={styles.brand}>
-            Kaagaz
-          </Link>
-          <nav aria-label="Main">
-            <ul className={styles.links}>
-              {navLinks(me.user.role).map((link) => {
-                const current = isCurrent(link.href, pathname);
-                return (
-                  <li key={link.href}>
-                    <Link
-                      href={link.href}
-                      className={current ? `${styles.link} ${styles.current}` : styles.link}
-                      aria-current={current ? "page" : undefined}
-                    >
-                      {link.label}
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          </nav>
-          <div className={styles.who}>
-            <div className={styles.whoText}>
-              <span>
-                {me.user.display_name}{" "}
-                <span className="muted">({roleName(me.user.role)})</span>
-              </span>
-              <span className="muted">{me.customer.name}</span>
-            </div>
-            <button type="button" className="btn" onClick={signOut} disabled={signingOut}>
-              {signingOut ? "Signing out…" : "Sign out"}
-            </button>
-            {error && (
-              <span className="error-text" role="alert">
-                {error}
-              </span>
-            )}
+      <div className={styles.frame}>
+        <header className={styles.topbar}>
+          <IconButton
+            icon="menu"
+            label="Open menu"
+            className="btn-quiet"
+            aria-haspopup="dialog"
+            aria-controls={MENU_ID}
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen(true)}
+          />
+          <Wordmark href="/documents" />
+          {pageName && (
+            <span className={styles.pageName}>
+              <span className="visually-hidden">, </span>
+              {pageName}
+            </span>
+          )}
+        </header>
+
+        <div className={styles.sidebar}>
+          <div className={styles.sidebarBrand}>
+            <Wordmark href="/documents" />
           </div>
+          {menu}
         </div>
-      </header>
-      <main id="main" className={styles.main}>
-        {children}
-      </main>
+
+        <main id="main" className={styles.main}>
+          {children}
+        </main>
+      </div>
+
+      <Drawer id={MENU_ID} title="Menu" open={menuOpen} onClose={() => setMenuOpen(false)}>
+        {menu}
+      </Drawer>
     </>
   );
 }

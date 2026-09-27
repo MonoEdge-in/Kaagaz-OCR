@@ -3,6 +3,7 @@ import {
   TABS,
   describeAction,
   describeDetails,
+  firstInvalidField,
   parseUploadLimit,
   statTiles,
   tabAfterKey,
@@ -49,6 +50,15 @@ describe("validateNewUser", () => {
   it("needs a password of at least 12 characters", () => {
     expect(validateNewUser({ ...good, password: "elevenchars" }).password).toBeDefined();
     expect(validateNewUser({ ...good, password: "twelvechars!" }).password).toBeUndefined();
+  });
+});
+
+describe("firstInvalidField", () => {
+  it("picks the first problem in screen order, for focus", () => {
+    expect(firstInvalidField({ password: "x", email: "y" })).toBe("email");
+    expect(firstInvalidField({ password: "x", display_name: "y" })).toBe("display_name");
+    expect(firstInvalidField({ password: "x" })).toBe("password");
+    expect(firstInvalidField({})).toBeNull();
   });
 });
 

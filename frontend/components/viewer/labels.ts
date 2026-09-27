@@ -12,6 +12,11 @@ export function labelBadgeClass(label: Label): string {
   return label === "verified" ? "badge badge-verified" : "badge badge-review";
 }
 
+/** The icon beside each label: a check seal for Verified, an eye for Needs review. */
+export function labelIcon(label: Label): "check-seal" | "eye-alert" {
+  return label === "verified" ? "check-seal" : "eye-alert";
+}
+
 const REASONS: Record<LabelReason, string> = {
   direct_cell: "Read straight from a spreadsheet cell.",
   readers_agree: "Two separate readers read the same value.",

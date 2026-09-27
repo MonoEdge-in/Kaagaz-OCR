@@ -1,5 +1,5 @@
-// Small display helpers shared by every screen: sizes, dates and times in Indian
-// English, and the words and colour for each document status. Pure functions, so
+// Small display helpers shared by every screen: sizes, dates and times for India,
+// and the words and tone for each document status. Pure functions, so
 // they are unit tested in node (tests/format.test.ts).
 
 import type { DetectedType, DocumentStatus } from "./types";
@@ -95,25 +95,28 @@ export function typeLabel(type: DetectedType): string {
   return TYPE_LABELS[type];
 }
 
-export type ChipTone = "verified" | "review" | "danger" | "neutral";
+/**
+ * Document status tones for `.status-chip` in globals.css. These are not the
+ * Verified / Needs review label styles: those belong to values and answers only.
+ */
+export type StatusTone = "ready" | "working" | "neutral" | "danger";
 
 export interface StatusChip {
   text: string; // always shown, so colour is never the only signal
-  tone: ChipTone;
-  className: string; // the shared badge classes from globals.css
+  tone: StatusTone; // rendered as data-tone
+  className: "status-chip";
 }
 
-const STATUS_CHIPS: Record<DocumentStatus, { text: string; tone: ChipTone }> = {
-  received: { text: "Checking", tone: "neutral" },
-  clean: { text: "Reading", tone: "neutral" },
-  ready: { text: "Ready", tone: "verified" },
-  needs_reader: { text: "Stored", tone: "review" },
+const STATUS_CHIPS: Record<DocumentStatus, { text: string; tone: StatusTone }> = {
+  received: { text: "Checking", tone: "working" },
+  clean: { text: "Reading", tone: "working" },
+  ready: { text: "Ready", tone: "ready" },
+  needs_reader: { text: "Stored", tone: "neutral" },
   rejected: { text: "Rejected", tone: "danger" },
   failed: { text: "Failed", tone: "danger" },
 };
 
-/** The words and badge classes for a document status. */
+/** The words, tone and class for a document status chip. */
 export function statusChip(status: DocumentStatus): StatusChip {
-  const chip = STATUS_CHIPS[status];
-  return { ...chip, className: `badge badge-${chip.tone}` };
+  return { ...STATUS_CHIPS[status], className: "status-chip" };
 }
