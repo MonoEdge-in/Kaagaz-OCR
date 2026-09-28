@@ -15,7 +15,7 @@ whether the sentences came from the model or were quoted; fixed-route
 sentences come from templates filled only from query results.
 
 Known gap: a number written in words ("one lakh") is not a digit and is not
-checked. PROVISIONAL: the answer rules are Vrushit's (docs/system-design/03).
+checked. PROVISIONAL: the answer rules are Vrushit's (docs/architecture.md).
 
 Time is O(s + e) in the characters of the sentences and their evidence.
 """

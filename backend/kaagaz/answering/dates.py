@@ -19,7 +19,7 @@ service then does not use a fixed query (``mentions_date`` tells it the
 question spoke about a date it could not pin down).
 
 PROVISIONAL: calendar years, not financial years (April to March); the answer
-rules are Vrushit's (docs/system-design/03).
+rules are Vrushit's (docs/architecture.md).
 
 Time is O(n) in the number of words.
 """

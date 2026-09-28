@@ -1,6 +1,6 @@
 """Search one customer's pieces three ways, then merge the three rankings.
 
-The three searches (docs/system-design/03, "Search, in simple terms"):
+The three searches (docs/architecture.md, "Search, in simple terms"):
 
 1. **Exact words:** ``websearch_to_tsquery('english', q)`` against the piece's
    ``tsv`` column, ranked by ``ts_rank_cd``. This parser never raises a syntax
@@ -20,7 +20,7 @@ The three searches (docs/system-design/03, "Search, in simple terms"):
    ``MATERIALIZED`` step keeps the planner from choosing the index.
 
 Every query filters on ``p.customer_id = :c`` itself, on top of row level
-security (two locks, docs/system-design/04), and sees only pieces of documents
+security (two locks, docs/architecture.md), and sees only pieces of documents
 whose status is ``ready``. Each list keeps at most ``CANDIDATES`` pieces.
 
 The lists are merged with reciprocal rank fusion (``fuse``): a piece scores the

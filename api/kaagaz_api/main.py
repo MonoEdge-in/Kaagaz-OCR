@@ -1,7 +1,7 @@
 """Kaagaz-OCR API: the front door the UI talks to.
 
 Day 1 adds the auth, uploads and documents routers and the storage and Temporal
-clients (section 5 of docs/prd/day-1-prd.html).
+clients.
 """
 
 from pathlib import Path

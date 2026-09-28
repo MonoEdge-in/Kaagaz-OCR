@@ -8,7 +8,7 @@ rows as they were. ``clear`` deletes them (a file rejected on a later scan).
 ``load_learned`` reads this customer's remembered corrections for some fields.
 
 Every statement names the customer as well (row level security is the second
-lock, docs/system-design/04). A row for another customer's document cannot be
+lock, docs/architecture.md). A row for another customer's document cannot be
 written: the (customer_id, document_id) foreign key refuses it.
 
 A reader output is stored as a JSON array of masked spans, each

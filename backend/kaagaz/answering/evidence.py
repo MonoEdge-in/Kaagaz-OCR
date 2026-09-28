@@ -5,7 +5,7 @@
 the search module is imported there only, so everything else here is plain
 Python.
 
-The evidence gate (not found is a valid answer, docs/system-design/03): the
+The evidence gate (not found is a valid answer, docs/architecture.md): the
 evidence is enough only if the best hit's meaning score or fuzzy score
 reaches ``answer_min_evidence_score``, or at least half of the question's
 keywords appear in the evidence text (ignoring case). Otherwise the answer is

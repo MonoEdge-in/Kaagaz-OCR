@@ -3,7 +3,7 @@
 Why these are separate from the API: the SQL stays in one place, plain and
 reviewable. Every function except the two named below takes a connection from
 ``Database.customer(customer_id)`` and also filters on ``customer_id`` (two
-locks, docs/system-design/04).
+locks, docs/architecture.md).
 
 The exceptions use ``Database.system()``, because there is no customer yet:
 

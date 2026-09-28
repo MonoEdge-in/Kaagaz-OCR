@@ -24,9 +24,10 @@ A ruleset on `master` enforces rules 1 to 3: pushes are rejected, a pull request
 |---|---|
 | What the sprint delivers, and when | The [delivery plan](https://claude.ai/artifact/Jeebdv68HRvxr8rTMYKe6s) |
 | The individual tasks | GitHub **Issues**, grouped by **Milestone**, one per sprint |
-| The sprint brief | `docs/prd/sprint-N.md`, from `docs/prd/TEMPLATE.md` |
+| The sprint brief | The sprint PRD issue (never stored in the repository) |
 | Rules for the AI assistant | [CLAUDE.md](CLAUDE.md), loaded automatically every session |
-| Decisions already made | `docs/decisions/` |
+| System design and decisions | [docs/architecture.md](docs/architecture.md), the one file for both |
+| Running and checking it locally | [docs/running-locally.md](docs/running-locally.md) |
 | Questions and discussion | The issue itself, not chat, so the answer is findable later |
 
 ---
@@ -44,10 +45,10 @@ It repeats every sprint.
 
 ## Stage 2. Write the sprint PRD · T
 
-5. Copy `docs/prd/TEMPLATE.md` to `docs/prd/sprint-N.md`, or run `/sprint-prd` in Claude Code to get a draft.
+5. Write the PRD on the sprint PRD issue. PRDs are never stored in the repository.
 6. **Rewrite every section in your own words.** The point is not the document, it is finding out what you do not yet understand. A draft you did not rewrite hides exactly the gaps this is meant to expose.
 7. Fill the questions section honestly. There is no such thing as too many questions here.
-8. Open a pull request with the PRD, or post it on the sprint PRD issue.
+8. Post it on the sprint PRD issue.
 
 ## Stage 3. PRD review · V then T
 
@@ -143,7 +144,7 @@ Not style preferences. Breaking one is a blocking review comment every time.
 
 ## Decisions
 
-When we choose between real options, write it down in `docs/decisions/` as a short file: what we chose, what we rejected, and why. One page is plenty. Future us will not remember, and neither will the AI assistant.
+When we choose between real options, add it to the Decisions section of [docs/architecture.md](docs/architecture.md): what we chose, what we rejected, and why. Update that file; never start a new one. Future us will not remember, and neither will the AI assistant.
 
 ---
 

@@ -7,5 +7,5 @@
 # explicit here so the ownership survives any future change to the line above.
 /.claude/        @vrushitpatel
 /.github/        @vrushitpatel
-/docs/decisions/ @vrushitpatel
+/docs/architecture.md @vrushitpatel
 CLAUDE.md        @vrushitpatel

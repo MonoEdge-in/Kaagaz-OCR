@@ -24,7 +24,7 @@ Anything else takes the search route, which says "not found" when the
 documents do not answer. Never a guessed field (CLAUDE.md never-do 6).
 
 PROVISIONAL: the synonym table and the router rules are Vrushit's
-(docs/system-design/03). ``expense`` and the date fields are additions to the
+(docs/architecture.md). ``expense`` and the date fields are additions to the
 spec's table; say so in the pull request.
 
 Time is O(w + f): one pass over the w words, set lookups against f fields.

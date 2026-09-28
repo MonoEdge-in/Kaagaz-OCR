@@ -3,7 +3,7 @@ values and spreadsheet cells, and deleting a document.
 
 Why here: the API only shapes JSON; the SQL lives in one reviewable place.
 Every function takes a connection from ``Database.customer(customer_id)`` and
-filters on ``customer_id`` as well (two locks, docs/system-design/04).
+filters on ``customer_id`` as well (two locks, docs/architecture.md).
 
 The ``q`` search matches ``display_name`` with ILIKE. The user's text is a bound
 parameter, and ``%``, ``_`` and ``\\`` in it are escaped, so it is matched

@@ -4,7 +4,7 @@ The API calls ``AnswerService.answer(customer_id, question)`` with the
 question already masked, and stores ``Answer.to_json()`` (the ``Answer`` type
 in frontend/lib/types.ts, field for field).
 
-The steps (docs/system-design/03-answering.md):
+The steps (docs/architecture.md):
 
 1. ``hinglish.normalise``: the question in plain English words and keywords.
 2. ``dates.date_range``: the date range it names, from today in

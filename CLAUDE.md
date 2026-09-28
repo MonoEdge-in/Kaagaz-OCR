@@ -17,7 +17,7 @@ Customers upload business documents (invoices, registers, receipts, statements, 
 | 3 Trust | 8 to 14 Oct | Verified and needs review labels. Corrections. |
 | 4 Launch | 15 to 22 Oct | Safe, measured, live. |
 
-Every sprint opens with Tushar's PRD in `docs/prd/`, reviewed by Vrushit. No code before it is agreed.
+Every sprint opens with Tushar's PRD on the sprint PRD issue, reviewed by Vrushit. No code before it is agreed. PRDs are never stored in the repository.
 
 **In scope at launch.** English documents of any file type. Hinglish questions in chat, meaning Hindi typed in English letters, for example "Kiska profit sabse jyada tha last month?". A highlighted source page on every answer. Verified and needs review labels. Several customer companies separated from day one. A correction screen that remembers corrections per customer.
 
@@ -35,6 +35,7 @@ Hard rules. If a task seems to need one broken, stop and ask.
 6. **Never guess to fill a gap.** "Unreadable" and "not found" are correct answers.
 7. **Never push to `master`.** Work on a branch and open a pull request.
 8. **Never game a check.** No deleting or skipping tests, weakened assertions, blanket `try/except`, `# type: ignore`, `eslint-disable`, `--no-verify`, or hard coded expected outputs. If a test is wrong, say why and ask.
+9. **Never create a new Markdown file unless the user asks for that file by name.** No summaries, plans, notes, reports, checklists, guides or READMEs of your own. Report back in the chat or the pull request description. If a doc truly needs to change, edit the existing file that covers it, in as few lines as possible, and only when the task changed behaviour, settings or the schema. `docs/` holds two files: `docs/architecture.md` is the one file for the system design and every decision, and `docs/running-locally.md` covers running and checking the product. PRDs are never stored in the repository.
 
 ## Never weaken these, not even to make a test pass
 
@@ -82,7 +83,7 @@ Ask one precise question with your recommended option. Do not ask what you can v
 
 ## Decisions only Vrushit makes
 
-If code depends on one of these and it is not written down in `docs/decisions/`, stop and ask.
+If code depends on one of these and it is not written down in the Decisions section of `docs/architecture.md`, stop and ask.
 
 | Decision | Due |
 |---|---|

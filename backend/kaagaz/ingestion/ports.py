@@ -27,7 +27,7 @@ class DocumentRecord:
     size: int
     detected_type: str
     # What the file list and source cards show: the uploaded name with identity
-    # numbers masked (PROVISIONAL, docs/system-design/04 "the file name").
+    # numbers masked (PROVISIONAL, docs/architecture.md "the file name").
     # The upload service never reads it; the API sets it.
     display_name: str = "document"
     uploaded_by: str | None = None  # the signed-in user's id

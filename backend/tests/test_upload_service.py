@@ -35,7 +35,7 @@ class AcceptTest(unittest.TestCase):
 
     def test_record_has_no_raw_file_name_field(self) -> None:
         # Only a display name the API has already masked is kept (PROVISIONAL,
-        # docs/system-design/04 "the file name"); the raw name never is.
+        # docs/architecture.md "the file name"); the raw name never is.
         names = {f.name for f in dataclasses.fields(DocumentRecord)}
         self.assertEqual(
             names,
