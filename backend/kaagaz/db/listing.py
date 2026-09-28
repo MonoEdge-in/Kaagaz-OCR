@@ -155,10 +155,9 @@ def sheet_cells(
     )
 
 
-def delete_document(conn: Connection, customer_id: str, document_id: str) -> bool:
+def delete_document(conn: Connection, customer_id: str, document_id: str) -> None:
     """Delete the document; pages, pieces, values and the rest go with it (cascade)."""
-    deleted = conn.execute(
-        text("DELETE FROM documents WHERE customer_id = :c AND id = :d RETURNING id"),
+    conn.execute(
+        text("DELETE FROM documents WHERE customer_id = :c AND id = :d"),
         {"c": customer_id, "d": document_id},
-    ).first()
-    return deleted is not None
+    )

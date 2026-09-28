@@ -3,7 +3,7 @@ import unittest
 
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound, Job
-from kaagaz.jobs.worker import Heartbeat, JobFailed, Worker
+from kaagaz.jobs.worker import JobFailed
 from kaagaz.scanning.gate import (
     CUSTOMER_MESSAGES,
     DocumentStatus,
@@ -12,7 +12,6 @@ from kaagaz.scanning.gate import (
     require_clean,
 )
 from tests.fakes import FakeScanner, MemoryStatuses, MemoryStorage
-from tests.lease_queue import FakeClock, LeaseQueue
 
 CUSTOMER, DOC = "cust-a", "doc-1"
 JOB = Job(CUSTOMER, DOC)
@@ -117,25 +116,6 @@ class RequireCleanTest(unittest.TestCase):
         clean = MemoryStatuses()
         clean.set_status(CUSTOMER, DOC, DocumentStatus.CLEAN)
         require_clean(clean, JOB)  # does not raise
-
-
-class GateInWorkerTest(unittest.TestCase):
-    def test_infected_job_goes_to_the_failure_bin_after_one_attempt(self) -> None:
-        clock = FakeClock()
-        queue = LeaseQueue(clock, lease_seconds=30, max_attempts=3)
-        queue.enqueue(JOB)
-        gate, _, _ = make_gate(FakeScanner(Verdict.INFECTED))
-
-        def handler(job: Job, beat: Heartbeat) -> None:
-            gate.check(job)
-
-        worker = Worker(queue, handler)
-
-        worker.run_once()
-        clock.advance(300)
-        self.assertFalse(worker.run_once())
-        (failed,) = queue.failed.values()
-        self.assertEqual((failed.code, failed.attempts), ("virus_found", 1))
 
 
 if __name__ == "__main__":

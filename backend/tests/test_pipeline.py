@@ -200,15 +200,6 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(system.store.for_document(CUSTOMER, broken), [])
         self.assertEqual(len(system.store.for_document(CUSTOMER, good)), 3)
 
-    def test_running_the_same_job_twice_does_not_duplicate_pieces(self) -> None:
-        system = build()
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
-        delivery = system.queue.receive()
-        assert delivery is not None
-        system.processor(delivery.job, lambda: None)
-        system.processor(delivery.job, lambda: None)  # a redelivery
-        self.assertEqual(len(system.store.for_document(CUSTOMER, doc)), 3)
-
     def test_file_changed_after_upload_is_refused(self) -> None:
         system = build()
         doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id

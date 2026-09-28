@@ -42,8 +42,7 @@ class Verdict(Enum):
 class DocumentStatus(Enum):
     """PROVISIONAL: the stored status model is database design (#1)."""
 
-    # Not scanned yet. Upload does not write statuses yet, so a new document
-    # has none (None), which the gate treats the same. Ask Vrushit (#1).
+    # Not scanned yet: every new document starts here (the column's default).
     RECEIVED = "received"
     CLEAN = "clean"  # passed the scan
     REJECTED = "rejected"  # failed the scan, quarantined
@@ -77,7 +76,6 @@ class StatusStore(Protocol):
 REJECTION_CODES = frozenset({"virus_found", "unscannable", "rejected"})
 
 # What the customer sees for each rejection. No scanner names or details.
-# Read by the file list screen (#22) once it exists.
 CUSTOMER_MESSAGES = {
     "virus_found": "This file failed the virus check and was not processed.",
     "unscannable": "This file could not be checked for viruses, so it was not processed.",

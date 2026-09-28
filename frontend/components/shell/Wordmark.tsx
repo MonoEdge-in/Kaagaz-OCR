@@ -7,18 +7,12 @@ import styles from "./Wordmark.module.css";
 
 export function Wordmark({
   href,
-  size = "normal",
-  rule = true,
   reader = true,
 }: {
   href?: string;
-  size?: "normal" | "large";
-  rule?: boolean;
   reader?: boolean;
 }) {
-  const className = [styles.wordmark, size === "large" && styles.large, rule && styles.rule]
-    .filter(Boolean)
-    .join(" ");
+  const className = `${styles.wordmark} ${styles.rule}`;
   const content = (
     <>
       Kaagaz

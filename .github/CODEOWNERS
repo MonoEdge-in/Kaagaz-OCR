@@ -1,8 +1,8 @@
 # Vrushit reviews everything. With "require review from Code Owners" on in the
-# master ruleset, this makes him a required reviewer on every pull request.
+# main ruleset, this makes him a required reviewer on every pull request.
 *                @vrushitpatel
 
-# These run on a maintainer's machine, or decide what reaches master. The
+# These run on a maintainer's machine, or decide what reaches main. The
 # repository is public, so anyone can propose a change to them. Keep them
 # explicit here so the ownership survives any future change to the line above.
 /.claude/        @vrushitpatel

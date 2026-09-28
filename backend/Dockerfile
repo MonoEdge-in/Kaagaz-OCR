@@ -2,7 +2,7 @@
 # from it; docker-compose.yml picks the command. It includes the `ocr` extra
 # (RapidOCR on onnxruntime), so the worker can read scans.
 #
-# Versions are pinned; CI fails on :latest. PROVISIONAL: the backend has no
+# Versions are pinned. PROVISIONAL: the backend has no
 # lock file yet, so `pip install` takes the newest versions pyproject.toml
 # allows at build time. A lock (and hash checking) is Vrushit's call.
 
