@@ -35,6 +35,7 @@ import logging
 import socket
 import struct
 
+from kaagaz.scanning.content import Finding, inspect
 from kaagaz.scanning.gate import Scanner, ScannerError, Verdict
 from kaagaz.settings import Settings, SettingsError
 
@@ -128,15 +129,41 @@ class EicarDevScanner:
         return Verdict.INFECTED if EICAR in data else Verdict.CLEAN
 
 
+class LayeredScanner:
+    """Two layers, both deny by default: our content check, then the virus scanner.
+
+    The content check (kaagaz/scanning/content.py) refuses scripts, macros,
+    hidden programs and other active content that no signature may cover yet.
+    Only a file both layers pass is CLEAN. The content check runs first: it is
+    local and cheap, and a file it refuses never needs the scanner at all.
+    """
+
+    def __init__(self, scanner: Scanner) -> None:
+        self.scanner = scanner
+
+    def scan(self, data: bytes) -> Verdict:
+        finding = inspect(data)
+        if finding is Finding.BLOCKED:
+            return Verdict.BLOCKED
+        if finding is Finding.UNSCANNABLE:
+            return Verdict.UNSCANNABLE
+        return self.scanner.scan(data)
+
+
 def build_scanner(settings: Settings) -> Scanner:
-    """The scanner the settings name. There is no default and no "off"."""
+    """The scanner the settings name, always behind the content check.
+
+    There is no default and no "off".
+    """
     if settings.scanner == "clamav":
         if settings.clamav_host is None:
             raise SettingsError("CLAMAV_HOST is not set")
         if settings.clamav_port is None:
             raise SettingsError("CLAMAV_PORT is not set")
-        return ClamdScanner(settings.clamav_host, settings.clamav_port, settings.scanner_timeout_seconds)
+        return LayeredScanner(
+            ClamdScanner(settings.clamav_host, settings.clamav_port, settings.scanner_timeout_seconds)
+        )
     if settings.scanner == "eicar_dev":
         logger.warning("SCANNER=eicar_dev: laptop only, files are not virus checked")
-        return EicarDevScanner()
+        return LayeredScanner(EicarDevScanner())
     raise SettingsError("SCANNER must be one of ['clamav', 'eicar_dev']")
