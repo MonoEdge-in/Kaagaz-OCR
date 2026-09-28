@@ -15,7 +15,6 @@ from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import JobFailed
-from kaagaz.masking.identity import IndianIdMasker
 from kaagaz.pipeline import DocumentProcessor
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from tests.db_support import new_customer
@@ -44,7 +43,6 @@ def setup(
         statuses=documents,
         documents=documents,
         socket=real_socket(),
-        masker=IndianIdMasker(),
         prepare=FakePreparer().prepare,
         sheet_pages=fake_sheet_pages,
         page_images=MemoryPageImages(),
@@ -58,7 +56,7 @@ def one(db: Database, customer: str, sql: str, doc: str) -> tuple[object, ...]:
         return tuple(conn.execute(text(sql), {"c": customer, "d": doc}).one())
 
 
-def test_a_csv_becomes_ready_with_pages_pieces_and_masked_values(db: Database) -> None:
+def test_a_csv_becomes_ready_with_pages_pieces_and_values_as_read(db: Database) -> None:
     customer, _ = new_customer(db)
     upload, processor, _ = setup(db)
     doc = upload.accept(customer, io.BytesIO(CSV)).document_id
@@ -78,7 +76,7 @@ def test_a_csv_becomes_ready_with_pages_pieces_and_masked_values(db: Database) -
         "SELECT value_text FROM extracted_values WHERE document_id = :d AND field = 'pan'"
         " AND record_key = 'sheet:1:row:2'",
         doc,
-    ) == ("XXXXXX234F",)
+    ) == ("ABCDE1234F",)
     assert one(
         db,
         customer,
@@ -94,7 +92,7 @@ def test_a_csv_becomes_ready_with_pages_pieces_and_masked_values(db: Database) -
             {"d": doc},
         ).all()
     joined = " ".join(str(row[0]) for row in stored)
-    assert "ABCDE1234F" not in joined and "PQRST6789K" not in joined
+    assert "ABCDE1234F" in joined and "PQRST6789K" in joined
 
 
 def test_a_broken_file_is_marked_failed_with_its_code(db: Database) -> None:

@@ -119,7 +119,7 @@ def test_use_second_reading_writes_a_correction_and_remembers_it(db: Database) -
 
 
 @pytest.mark.db
-def test_typed_value_is_masked_parsed_and_a_second_remember_updates(db: Database) -> None:
+def test_typed_value_is_kept_as_typed_parsed_and_a_second_remember_updates(db: Database) -> None:
     api, reviewer, document_id, value_id = _setup(db)
     reviewer.client.post(
         f"/api/review/{value_id}", json={"choice": "typed", "value": "1,300", "remember": True}, headers=CSRF
@@ -132,13 +132,13 @@ def test_typed_value_is_masked_parsed_and_a_second_remember_updates(db: Database
     )
     assert reply.status_code == 200
     stored = _stored(db, reviewer.customer_id, other)
-    assert PAN not in stored[0]
+    assert PAN in stored[0]
     with db.customer(reviewer.customer_id) as conn:
         learned: Sequence[str] = (
             conn.execute(text("SELECT corrected_value FROM learned_corrections")).scalars().all()
         )
     assert len(learned) == 1  # the same (field, raw value): replaced, not added
-    assert PAN not in learned[0]
+    assert PAN in learned[0]
 
 
 @pytest.mark.db

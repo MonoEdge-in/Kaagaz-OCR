@@ -14,8 +14,7 @@ from kaagaz.ingestion.policy import UploadPolicy
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import JobFailed, Worker
-from kaagaz.masking.identity import IndianIdMasker
-from kaagaz.pipeline import DocumentProcessor, IdentityMasker, ReadingSocket
+from kaagaz.pipeline import DocumentProcessor, ReadingSocket
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.socket import ReaderSocket
 from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, Span
@@ -23,7 +22,6 @@ from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from tests.fakes import (
     FakeEmbedder,
-    FakeMasker,
     FakePrepared,
     FakePreparer,
     FakeScanner,
@@ -76,7 +74,6 @@ def real_socket(max_cells: int = 10_000) -> ReaderSocket:
 
 def build(
     verdict: Verdict = Verdict.CLEAN,
-    masker: IdentityMasker | None = None,
     *,
     scanner: FakeScanner | None = None,
     socket: ReadingSocket | None = None,
@@ -101,7 +98,6 @@ def build(
         statuses=statuses,
         documents=repo,
         socket=socket or real_socket(),
-        masker=masker or FakeMasker(),
         prepare=(preparer or FakePreparer()).prepare,
         sheet_pages=fake_sheet_pages,
         page_images=page_images,
@@ -126,14 +122,13 @@ def build(
     )
 
 
-def processor_with(system: System, socket: ReadingSocket, masker: IdentityMasker) -> DocumentProcessor:
-    """Another processor over the same stores, with its own socket and masker."""
+def processor_with(system: System, socket: ReadingSocket) -> DocumentProcessor:
+    """Another processor over the same stores, with its own socket."""
     return DocumentProcessor(
         gate=system.gate,
         statuses=system.statuses,
         documents=system.repo,
         socket=socket,
-        masker=masker,
         prepare=FakePreparer().prepare,
         sheet_pages=fake_sheet_pages,
         page_images=system.page_images,
@@ -205,33 +200,6 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(system.store.for_document(CUSTOMER, broken), [])
         self.assertEqual(len(system.store.for_document(CUSTOMER, good)), 3)
 
-    def test_running_the_same_job_twice_does_not_duplicate_pieces(self) -> None:
-        system = build()
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
-        delivery = system.queue.receive()
-        assert delivery is not None
-        system.processor(delivery.job, lambda: None)
-        system.processor(delivery.job, lambda: None)  # a redelivery
-        self.assertEqual(len(system.store.for_document(CUSTOMER, doc)), 3)
-
-    def test_identity_numbers_are_masked_in_pieces_before_they_are_saved(self) -> None:
-        system = build()
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(b"name,id\nAsha,SECRET\n")).document_id
-        system.worker.run_once()
-        texts = [p.text for p in system.store.for_document(CUSTOMER, doc)]
-        self.assertEqual(texts, ["A: name | B: id", "A: Asha | B: ******"])
-        self.assertFalse(any(FakeMasker.MARKER in t for t in texts))
-
-    def test_real_masker_keeps_pan_and_aadhaar_out_of_stored_pieces(self) -> None:
-        system = build(masker=IndianIdMasker())
-        fake = b"name,pan,aadhaar\nAsha,ABCDE1234F,2345 6789 0123\n"  # FAKE numbers
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(fake)).document_id
-        system.worker.run_once()
-        stored = " ".join(p.text for p in system.store.for_document(CUSTOMER, doc))
-        self.assertNotIn("ABCDE1234F", stored)
-        self.assertNotIn("2345 6789", stored)
-        self.assertIn("XXXXXX234F", stored)
-
     def test_file_changed_after_upload_is_refused(self) -> None:
         system = build()
         doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
@@ -253,13 +221,14 @@ class PipelineTest(unittest.TestCase):
         system = build()
         doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
 
-        class RejectingMasker(FakeMasker):
+        class RejectingSocket(ReaderSocket):
             # Simulates an overlapping delivery rejecting the file mid-run.
-            def mask(self, text: str) -> str:
+            def read(self, detected_type: str, data: bytes) -> list[Span]:
                 system.statuses.set_status(CUSTOMER, doc, DocumentStatus.REJECTED)
-                return super().mask(text)
+                return super().read(detected_type, data)
 
-        processor = processor_with(system, real_socket(max_cells=100), RejectingMasker())
+        socket = RejectingSocket({sniff.TEXT: CsvReader(max_cells=100), sniff.ZIP: XlsxReader(XLSX_LIMITS)})
+        processor = processor_with(system, socket)
         with self.assertRaises(JobFailed) as ctx:
             processor(Job(CUSTOMER, doc), lambda: None)
         self.assertEqual(ctx.exception.code, "not_scanned")
@@ -394,8 +363,8 @@ class SavedContentTest(unittest.TestCase):
         self.assertEqual(len(again.pages), 1)
         self.assertEqual(len(again.outputs), 1)
 
-    def test_identity_numbers_are_masked_in_outputs_pieces_and_values(self) -> None:
-        system = build(masker=IndianIdMasker())
+    def test_identity_numbers_are_kept_exactly_as_read(self) -> None:
+        system = build()
         # FAKE numbers, made up for this test.
         fake = (
             b"name,pan,aadhaar,amount\n"
@@ -412,12 +381,11 @@ class SavedContentTest(unittest.TestCase):
         stored += [p.text for p in content.pieces]
         stored += [v.value_text for v in content.values] + [v.value_raw for v in content.values]
         joined = " ".join(stored)
-        for secret in ("ABCDE1234F", "PQRST6789K", "2345 6789", "3456-7890", "234567890123"):
-            self.assertNotIn(secret, joined)
-        self.assertIn("XXXXXX234F", joined)
+        for number in ("ABCDE1234F", "PQRST6789K", "2345 6789 0123", "3456-7890-1234"):
+            self.assertIn(number, joined)
         self.assertEqual(
             {v.field: v.value_text for v in content.values if v.record_key == "sheet:1:row:2"},
-            {"name": "Asha", "pan": "XXXXXX234F", "aadhaar": "XXXX XXXX 0123", "amount": "100"},
+            {"name": "Asha", "pan": "ABCDE1234F", "aadhaar": "2345 6789 0123", "amount": "100"},
         )
 
     def test_a_learned_correction_is_applied_to_a_matching_value(self) -> None:

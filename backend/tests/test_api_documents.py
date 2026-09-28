@@ -15,7 +15,6 @@ from kaagaz.api.routers.documents import display_name
 from kaagaz.api.views import status_message
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import span_to_json
-from kaagaz.masking.identity import IndianIdMasker
 from kaagaz.reading.spans import CellLocation, Span
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 from tests.settings_factory import make_settings
@@ -38,15 +37,13 @@ from tests.test_api_support import CSRF, PDF_BYTES, Api, TestClient
     ],
 )
 def test_display_name_strips_the_path_and_control_characters(given: str | None, expected: str) -> None:
-    assert display_name(given, IndianIdMasker()) == expected
+    assert display_name(given) == expected
 
 
-def test_display_name_masks_identity_numbers_and_is_cut_to_255() -> None:
-    name = display_name("PAN ABCDE1234F aadhaar 2345 6789 0123.pdf", IndianIdMasker())
-    assert "ABCDE1234F" not in name
-    assert "2345 6789" not in name
-    assert name.endswith("0123.pdf")
-    assert len(display_name("a" * 400 + ".pdf", IndianIdMasker())) == 255
+def test_display_name_keeps_identity_numbers_and_is_cut_to_255() -> None:
+    name = "PAN ABCDE1234F aadhaar 2345 6789 0123.pdf"
+    assert display_name(name) == name
+    assert len(display_name("a" * 400 + ".pdf")) == 255
 
 
 def test_status_messages() -> None:
@@ -92,7 +89,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "created_at",
         "uploaded_by_name",
     }
-    assert document["display_name"] == "PAN XXXXXX234F.pdf"
+    assert document["display_name"] == "PAN ABCDE1234F.pdf"
     assert document["detected_type"] == "pdf"
     assert document["size_bytes"] == len(PDF_BYTES)
     assert document["status"] == "received"
@@ -105,7 +102,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
     assert api.audit_actions(signed.customer_id)[-1] == "document.upload"
     with db.customer(signed.customer_id) as conn:
         stored_names: Sequence[str] = conn.execute(text("SELECT display_name FROM documents")).scalars().all()
-    assert "ABCDE1234F" not in " ".join(stored_names)
+    assert "ABCDE1234F" in " ".join(stored_names)
 
 
 @pytest.mark.db

@@ -1,6 +1,6 @@
 """The audit log: one row for every change a person makes.
 
-Why: "who changed what, and when" must be answerable later (docs/system-design/05,
+Why: "who changed what, and when" must be answerable later (docs/architecture.md,
 repudiation). A row holds only ids, statuses and counts in ``details``, never
 document text, file names, questions or identity numbers, so the log is safe
 to show to the customer's admin.
