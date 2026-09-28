@@ -4,6 +4,9 @@ import {
   MAX_UPLOAD_BYTES,
   canDelete,
   deletedMessage,
+  estimateIngestSeconds,
+  formatEtaText,
+  formatProgressPercent,
   listView,
   offsetAfterDelete,
   pageInfo,
@@ -135,6 +138,30 @@ describe("listView", () => {
     expect(listView(0, false, "")).toBe("empty");
     expect(listView(0, false, "gst")).toBe("no-match");
     expect(listView(3, false, "gst")).toBe("list");
+  });
+});
+
+describe("estimateIngestSeconds", () => {
+  it("scales up for larger files and multiple files", () => {
+    expect(estimateIngestSeconds(1 * MB)).toBeGreaterThan(0);
+    expect(estimateIngestSeconds(5 * MB)).toBeGreaterThan(estimateIngestSeconds(1 * MB));
+    expect(estimateIngestSeconds(2 * MB, 3)).toBeGreaterThan(estimateIngestSeconds(2 * MB, 1));
+  });
+});
+
+describe("formatEtaText", () => {
+  it("reads in a short, plain-language format", () => {
+    expect(formatEtaText(0)).toBe("About 0 seconds");
+    expect(formatEtaText(5)).toBe("About 5 seconds");
+    expect(formatEtaText(90)).toBe("About 1 minute 30 seconds");
+  });
+});
+
+describe("formatProgressPercent", () => {
+  it("rounds to a clear whole percentage", () => {
+    expect(formatProgressPercent(1, 3)).toBe("33%");
+    expect(formatProgressPercent(2, 4)).toBe("50%");
+    expect(formatProgressPercent(0, 0)).toBe("0%");
   });
 });
 

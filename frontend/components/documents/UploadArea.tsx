@@ -12,7 +12,7 @@ import type { DragEvent, ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, uploadDocument } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { uploadStateText, validateUpload } from "./logic";
+import { estimateIngestSeconds, formatEtaText, uploadStateText, validateUpload } from "./logic";
 import type { UploadState } from "./logic";
 import styles from "./Documents.module.css";
 
@@ -192,6 +192,12 @@ export function UploadList({
 function UploadRow({ entry }: { entry: UploadEntry }) {
   const { state } = entry;
   const failed = state.kind === "error";
+  const estimateSeconds = estimateIngestSeconds(entry.size);
+  const etaText =
+    state.kind === "uploading"
+      ? formatEtaText(Math.max(0, estimateSeconds * (1 - state.fraction)))
+      : formatEtaText(estimateSeconds);
+
   return (
     <li className={styles.upload} data-state={state.kind}>
       <Icon name={failed ? "alert" : "file"} className={styles.uploadIcon} />
@@ -204,17 +210,20 @@ function UploadRow({ entry }: { entry: UploadEntry }) {
           </span>
         </div>
         {state.kind === "uploading" && (
-          <div className={styles.progressRow}>
-            <progress
-              className={styles.progress}
-              value={state.fraction}
-              max={1}
-              aria-label={`Upload progress for ${entry.name}`}
-            />
-            <span className={`muted tabular ${styles.small}`} aria-hidden="true">
-              {Math.round(state.fraction * 100)}%
-            </span>
-          </div>
+          <>
+            <div className={styles.progressRow}>
+              <progress
+                className={styles.progress}
+                value={state.fraction}
+                max={1}
+                aria-label={`Upload progress for ${entry.name}`}
+              />
+              <span className={`muted tabular ${styles.small}`} aria-hidden="true">
+                {Math.round(state.fraction * 100)}%
+              </span>
+            </div>
+            <p className={`muted ${styles.small}`}>ETA: {etaText}</p>
+          </>
         )}
         {state.kind === "done" && (
           <Link href={`/documents/${state.documentId}`} className={styles.small}>
