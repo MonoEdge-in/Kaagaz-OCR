@@ -168,12 +168,21 @@ export function UploadList({
 }) {
   if (entries.length === 0) return null;
   const settled = entries.some((entry) => !isBusy(entry));
+  const active = entries.filter(isBusy).length;
+  const done = entries.filter((entry) => entry.state.kind === "done").length;
+  const failed = entries.filter((entry) => entry.state.kind === "error").length;
+
   return (
     <section className={styles.uploadsSection} aria-labelledby="uploads-heading">
       <div className={styles.uploadsHead}>
-        <h2 id="uploads-heading" className={styles.smallHeading}>
-          Uploads
-        </h2>
+        <div className={styles.uploadsTitleWrap}>
+          <h2 id="uploads-heading" className={styles.smallHeading}>
+            Uploads
+          </h2>
+          <span className={styles.queueSummary} aria-live="polite">
+            {active} active · {done} done · {failed} failed
+          </span>
+        </div>
         {settled && (
           <button type="button" className="btn btn-quiet" onClick={onClearFinished}>
             Clear finished
@@ -200,24 +209,26 @@ function UploadRow({ entry }: { entry: UploadEntry }) {
 
   return (
     <li className={styles.upload} data-state={state.kind}>
-      <Icon name={failed ? "alert" : "file"} className={styles.uploadIcon} />
+      <div className={styles.uploadIconWrap}>
+        <Icon name={failed ? "alert" : "file"} className={styles.uploadIcon} />
+      </div>
       <div className={styles.uploadBody}>
         <div className={styles.uploadHead}>
           <span className={styles.fileName}>{entry.name}</span>
           <span className={`muted tabular ${styles.small}`}>{formatBytes(entry.size)}</span>
-          <span className={failed ? `error-text ${styles.small}` : `muted ${styles.small}`}>
+          <span className={failed ? `error-text ${styles.small} ${styles.badge}` : `muted ${styles.small} ${styles.badge}`}>
             {uploadStateText(state)}
           </span>
         </div>
         {state.kind === "uploading" && (
           <>
             <div className={styles.progressRow}>
-              <progress
-                className={styles.progress}
-                value={state.fraction}
-                max={1}
-                aria-label={`Upload progress for ${entry.name}`}
-              />
+              <div className={styles.progressTrack}>
+                <span
+                  className={styles.progressFill}
+                  style={{ width: `${Math.max(0, Math.min(100, state.fraction * 100))}%` }}
+                />
+              </div>
               <span className={`muted tabular ${styles.small}`} aria-hidden="true">
                 {Math.round(state.fraction * 100)}%
               </span>
@@ -226,7 +237,7 @@ function UploadRow({ entry }: { entry: UploadEntry }) {
           </>
         )}
         {state.kind === "done" && (
-          <Link href={`/documents/${state.documentId}`} className={styles.small}>
+          <Link href={`/documents/${state.documentId}`} className={styles.inlineAction}>
             Open
             <span className="visually-hidden">{` ${entry.name}`}</span>
           </Link>

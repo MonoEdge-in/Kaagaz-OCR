@@ -11,7 +11,7 @@ import { Icon } from "@/components/ui/Icon";
 import { ApiError, deleteDocument } from "@/lib/api";
 import { formatBytes, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me } from "@/lib/types";
-import { canDelete } from "./logic";
+import { canDelete, formatProgressPercent } from "./logic";
 import { StatusChip } from "./StatusChip";
 import styles from "./Documents.module.css";
 import table from "./Table.module.css";
@@ -28,6 +28,7 @@ export function DocumentsTable({ items, me, now, onDeleted }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [deleteProgress, setDeleteProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const visibleIds = useMemo(() => new Set(items.map((item) => item.id)), [items]);
   const visibleSelectedIds = useMemo(
@@ -60,11 +61,17 @@ export function DocumentsTable({ items, me, now, onDeleted }: Props) {
   }
 
   async function removeSelected() {
+    const ids = Array.from(visibleSelectedIds);
     setBusy(true);
+    setDeleteProgress({ done: 0, total: ids.length });
     setError(null);
     try {
-      for (const id of visibleSelectedIds) await deleteDocument(id);
-      const count = visibleSelectedIds.size;
+      for (const [index, id] of ids.entries()) {
+        setDeleteProgress({ done: index, total: ids.length });
+        await deleteDocument(id);
+        setDeleteProgress({ done: index + 1, total: ids.length });
+      }
+      const count = ids.length;
       setSelectedIds(new Set());
       setConfirming(false);
       onDeleted(`${count} documents`);
@@ -74,8 +81,10 @@ export function DocumentsTable({ items, me, now, onDeleted }: Props) {
           ? caught.message
           : "Could not delete all selected documents. Check your connection, then try again.",
       );
-      setBusy(false);
       setConfirming(false);
+    } finally {
+      setBusy(false);
+      setDeleteProgress(null);
     }
   }
 
@@ -124,6 +133,19 @@ export function DocumentsTable({ items, me, now, onDeleted }: Props) {
                 <Icon name="close" />
                 Cancel
               </button>
+            </div>
+          )}
+          {busy && deleteProgress && (
+            <div className={styles.progressRow} aria-live="polite">
+              <progress
+                className={styles.progress}
+                value={deleteProgress.done}
+                max={deleteProgress.total}
+                aria-label="Bulk delete progress"
+              />
+              <span className={`muted tabular ${styles.small}`} aria-hidden="true">
+                {formatProgressPercent(deleteProgress.done, deleteProgress.total)}
+              </span>
             </div>
           )}
           {error && <p className={`error-text ${styles.selectionError}`} role="alert">{error}</p>}
