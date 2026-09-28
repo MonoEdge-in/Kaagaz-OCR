@@ -86,6 +86,29 @@ services:
   # what the long start period allows for.
   clamav:
     image: clamav/clamav:1.5.4
+    # Strict scanning. The image writes each CLAMD_CONF_<Option> into clamd.conf
+    # at start-up. Deny by default: a file clamd cannot fully look inside (too
+    # big, too deep, encrypted) is reported, never passed as OK, and the scan
+    # gate treats those reports as unscannable (backend/kaagaz/adapters/scanner.py).
+    # PROVISIONAL: the scanner's configuration is Vrushit's decision.
+    environment:
+      CLAMD_CONF_StreamMaxLength: "60M" # above the 50 MB upload limit
+      CLAMD_CONF_MaxFileSize: "100M"
+      CLAMD_CONF_MaxScanSize: "400M"
+      CLAMD_CONF_MaxRecursion: "10"
+      CLAMD_CONF_MaxFiles: "10000"
+      CLAMD_CONF_AlertExceedsMax: "yes"
+      CLAMD_CONF_AlertEncrypted: "yes"
+      CLAMD_CONF_AlertEncryptedArchive: "yes"
+      CLAMD_CONF_AlertEncryptedDoc: "yes"
+      CLAMD_CONF_AlertOLE2Macros: "yes"
+      CLAMD_CONF_AlertBrokenExecutables: "yes"
+      CLAMD_CONF_AlertBrokenMedia: "yes"
+      CLAMD_CONF_AlertPhishingCloak: "yes"
+      CLAMD_CONF_AlertPartitionIntersection: "yes"
+      CLAMD_CONF_HeuristicAlerts: "yes"
+      CLAMD_CONF_HeuristicScanPrecedence: "yes"
+      CLAMD_CONF_DetectPUA: "yes"
     ports:
       - "3310:3310"
     volumes:
