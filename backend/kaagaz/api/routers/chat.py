@@ -1,10 +1,8 @@
 """POST /api/chat, GET /api/conversations, GET /api/conversations/{id} and
 POST /api/messages/{id}/feedback.
 
-Why the order in ``ask``: the question is masked first (IndianIdMasker), so
-the answer service, the stored message, the title and every log see only the
-masked text. The answer is worked out outside a transaction (it may wait on the
-model), then the conversation, both messages and the audit row are written in
+Why the order in ``ask``: the answer is worked out outside a transaction (it
+may wait on the model), then the conversation, both messages and the audit row are written in
 one transaction. The audit row holds only the ids and ``answer.status``.
 
 A conversation belongs to the user who started it; anyone else, in this
@@ -57,7 +55,7 @@ def answer_text(answer: dict[str, Any]) -> str:
 
 @router.post("/chat")
 def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
-    question = context.masker.mask(body.question.strip())
+    question = body.question.strip()
     if not question:
         raise ApiError(400, "bad_request", "Type a question first.")
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
@@ -134,7 +132,7 @@ def send_feedback(message_id: uuid.UUID, body: FeedbackBody, user: User, context
             str(message_id),
             user.user_id,
             rating=body.rating,
-            reason=context.masker.mask(reason) if reason else None,
+            reason=reason,
         )
     if not stored:
         raise ApiError(404, "not_found")

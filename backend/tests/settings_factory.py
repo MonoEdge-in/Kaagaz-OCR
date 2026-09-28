@@ -55,7 +55,6 @@ _BASE: dict[str, Any] = {
     "answer_min_evidence_score": 0.2,
     "timezone": "Asia/Kolkata",
     "rate_limit_per_minute": 1000,
-    "frontend_origin": "http://localhost:3000",
     "log_level": "WARNING",
 }
 

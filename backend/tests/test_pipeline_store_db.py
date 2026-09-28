@@ -163,7 +163,7 @@ def test_values_keep_page_region_numbers_dates_and_the_reader(db: Database) -> N
     assert (when["value_date"], when["value_number"], when["confidence"]) == (date(2026, 8, 12), None, None)
 
 
-def test_reader_output_is_the_masked_span_list(db: Database) -> None:
+def test_reader_output_is_the_span_list(db: Database) -> None:
     customer, _ = new_customer(db)
     doc = new_document(db, customer)
     PgPipelineStore(db).save(content(customer, doc))

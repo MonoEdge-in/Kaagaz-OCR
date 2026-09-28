@@ -1,4 +1,4 @@
-"""Answering: a question in, a cited answer out (docs/system-design/03-answering.md).
+"""Answering: a question in, a cited answer out (docs/architecture.md).
 
 ``service.AnswerService`` is the entry point. Numbers come from fixed queries
 (``fixed_queries.py``); everything else is drafted from search evidence and
