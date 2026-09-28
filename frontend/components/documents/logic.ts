@@ -87,6 +87,30 @@ export function offsetAfterDelete(offset: number, shownBefore: number, pageSize:
   return shownBefore <= 1 && offset > 0 ? Math.max(0, offset - pageSize) : offset;
 }
 
+/** Rough but useful estimate for how long ingest will take after the file is received. */
+export function estimateIngestSeconds(sizeBytes: number, filesCount = 1): number {
+  const megabytes = Math.max(sizeBytes / (1024 * 1024), 0.1);
+  const estimate = megabytes * 8 + Math.max(filesCount - 1, 0) * 12;
+  return Math.max(4, Math.round(estimate));
+}
+
+export function formatEtaText(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return `About ${total} second${total === 1 ? "" : "s"}`;
+
+  const minutes = Math.floor(total / 60);
+  const remainder = total % 60;
+  if (remainder === 0) {
+    return `About ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  return `About ${minutes} minute${minutes === 1 ? "" : "s"} ${remainder} second${remainder === 1 ? "" : "s"}`;
+}
+
+export function formatProgressPercent(done: number, total: number): string {
+  if (total <= 0) return "0%";
+  return `${Math.round((done / total) * 100)}%`;
+}
+
 export type UploadState =
   | { kind: "waiting" }
   | { kind: "uploading"; fraction: number }
