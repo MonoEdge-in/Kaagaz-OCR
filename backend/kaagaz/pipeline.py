@@ -43,7 +43,7 @@ import io
 import logging
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from PIL import Image
 
@@ -375,7 +375,10 @@ class DocumentProcessor:
         return readings
 
 
-def _or_fail[T](call: Callable[[], T]) -> T:
+T = TypeVar("T")
+
+
+def _or_fail(call: Callable[[], T]) -> T:
     """``call()``, with a ReadError turned into a failure that cannot be retried.
     Raised outside the except block, so no parser error (which can quote document
     content) is chained onto it."""
