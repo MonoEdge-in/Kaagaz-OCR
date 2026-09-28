@@ -46,6 +46,22 @@ export function DocumentsView() {
   const uploads = useUploads(() => setReload((n) => n + 1));
 
   useEffect(() => {
+    const hasActiveUpload = uploads.entries.some(
+      (entry) => entry.state.kind === "waiting" || entry.state.kind === "uploading",
+    );
+    const hasCompletedUpload = uploads.entries.some(
+      (entry) => entry.state.kind === "done" || entry.state.kind === "duplicate",
+    );
+
+    if (!hasActiveUpload && uploads.entries.length > 0 && hasCompletedUpload) {
+      const timer = window.setTimeout(() => {
+        window.location.reload();
+      }, 250);
+      return () => window.clearTimeout(timer);
+    }
+  }, [uploads.entries]);
+
+  useEffect(() => {
     let cancelled = false;
     listDocuments({ limit: PAGE_SIZE, offset: query.offset, q: query.q }).then(
       (list) => {
