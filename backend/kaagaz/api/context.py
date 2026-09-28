@@ -13,7 +13,6 @@ from fastapi import Request
 
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
 from kaagaz.db.engine import Database
-from kaagaz.masking.identity import IndianIdMasker
 from kaagaz.settings import Settings
 
 
@@ -25,7 +24,6 @@ class AppContext:
     queue: ApiQueue
     answers: Answers
     clock: Callable[[], datetime]
-    masker: IndianIdMasker
 
 
 def get_context(request: Request) -> AppContext:

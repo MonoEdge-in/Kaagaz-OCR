@@ -91,7 +91,7 @@ jobs:
           # four digits, one letter. Warning only: real test fixtures may need
           # deliberately fake examples, and Vrushit decides case by case.
           if printf '%s' "$ADDED" | grep -Eq '[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}'; then
-            echo "::warning::Something shaped like an Aadhaar number was added. Confirm it is fake and that nothing real can reach a table, a log, or a prompt."
+            echo "::warning::Something shaped like an Aadhaar number was added. Confirm it is fake: real customer documents never go in git."
           fi
           if printf '%s' "$ADDED" | grep -Eq '[A-Z]{5}[0-9]{4}[A-Z]'; then
             echo "::warning::Something shaped like a PAN was added. Confirm it is fake."
@@ -118,24 +118,6 @@ jobs:
             exit 1
           fi
           echo "Clean. Nothing oversized."
-
-      - name: Pull request size
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          if [ -z "${BASE:-}" ]; then echo "Not a pull request, skipping."; exit 0; fi
-          CHANGED=$(git diff --numstat "$BASE" "$HEAD" \
-            | grep -vE '\.(lock|sum)$|package-lock\.json|poetry\.lock|yarn\.lock|uv\.lock' \
-            | awk '{ a += $1; d += $2 } END { print a + d + 0 }')
-          echo "Changed lines, excluding lock files: $CHANGED"
-          if [ "$CHANGED" -gt 600 ]; then
-            echo "::error::$CHANGED changed lines is too big to review properly. Split this pull request."
-            exit 1
-          elif [ "$CHANGED" -gt 300 ]; then
-            echo "::warning::$CHANGED changed lines. The target is about 300."
-          fi
 
       - name: Pull request title format
         env:

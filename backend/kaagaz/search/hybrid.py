@@ -184,8 +184,8 @@ def search(
 ) -> list[SearchHit]:
     """The best ``limit`` pieces of this customer's ready documents, best first.
 
-    ``conn`` must come from ``Database.customer(customer_id)``. The question
-    must already be masked. An empty question with no embedding finds nothing.
+    ``conn`` must come from ``Database.customer(customer_id)``. An empty question
+    with no embedding finds nothing.
     """
     if not 1 <= limit <= MAX_LIMIT:
         raise ValueError("limit must be between 1 and 100")

@@ -694,15 +694,6 @@ def test_evidence_text_is_escaped_inside_the_fence() -> None:
     assert "&lt;b&gt;bold&lt;/b&gt; &amp; more" in user
 
 
-def test_identity_numbers_are_masked_before_the_model() -> None:
-    leaky = piece("leaky.pdf", "Grand Total: Rs. 1,20,000 for INV-1042, PAN ABCDE1234F")
-    model = FakeModel()
-    service(pieces=[leaky], model=model)[0].answer(A, "What is the grand total of INV-1042?")
-    _, user = model.prompts[0]
-    assert "ABCDE1234F" not in user
-    assert "XXXXXX234F" in user
-
-
 # --- not found ------------------------------------------------------------------
 
 UNANSWERABLE = [

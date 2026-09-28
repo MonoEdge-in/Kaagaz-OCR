@@ -24,7 +24,6 @@ from kaagaz.api.middleware import RateLimiter, RequestMiddleware
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
 from kaagaz.api.routers import admin, auth, chat, documents, health, review
 from kaagaz.db.engine import Database, make_engine
-from kaagaz.masking.identity import IndianIdMasker
 from kaagaz.settings import Settings
 
 if TYPE_CHECKING:
@@ -55,7 +54,6 @@ def create_app(
         queue=queue if queue is not None else _default_queue(settings),
         answers=answers if answers is not None else _default_answers(settings, database, model, now),
         clock=now,
-        masker=IndianIdMasker(),
     )
 
     @asynccontextmanager

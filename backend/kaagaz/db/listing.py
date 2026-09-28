@@ -127,7 +127,7 @@ def list_values(conn: Connection, customer_id: str, document_id: str) -> Sequenc
 def sheet_cells(
     conn: Connection, customer_id: str, document_id: str, sheet: int, row_from: int, row_to: int
 ) -> Sequence[RowMapping]:
-    """The masked cell texts of one sheet between two rows, from the first reader's
+    """The cell texts of one sheet between two rows, from the first reader's
     stored output, ordered by row and column.
 
     Each stored span is ``{"text", "raw", "region": {...}, "confidence"}``

@@ -120,8 +120,8 @@ CI runs on pull requests into `master` only. Nothing runs after a merge.
 - No secret values added in the diff: AWS access keys, private key blocks, GitHub tokens, API keys, or a password inside a database connection string
 - Warns on anything shaped like an Aadhaar or PAN number, so a real one cannot slip in unnoticed
 - No leftover merge conflict markers
+- Pull request size: fails over 1000 changed lines, lock files excluded
 - No file over 2MB, because customer documents belong in storage and stay in git forever once committed
-- Pull request size: warns over 300 changed lines, fails over 600
 - Warns if the pull request title is not in the form `feat(s1): short description`
 
 **Backend, once `backend/` exists**

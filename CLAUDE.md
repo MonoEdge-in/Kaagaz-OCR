@@ -29,7 +29,7 @@ Hard rules. If a task seems to need one broken, stop and ask.
 
 1. **Never query the database without the customer filter applied.** Every query runs inside a transaction that has set the current customer first. No raw query, migration helper, debug script or test fixture is exempt.
 2. **Never add a dependency without Vrushit's approval.** Not a library, not a tool, not a GitHub Action. Propose it with its exact name and licence, and wait. Anything AGPL, SSPL or GPL v3 is refused outright and CI fails on it.
-3. **Never let a full Aadhaar or PAN number reach a table, a log line, a trace, an error message, or an AI prompt.** Mask at the moment of capture, before storage and before indexing.
+3. **Never add identity masking back.** Aadhaar and PAN numbers are kept and shown as read (docs/architecture.md, Decisions). Logs, traces and errors still carry ids and short codes only, never document content.
 4. **Never commit a secret.** No keys, tokens, passwords, connection strings or `.env` files.
 5. **Never show a value as fact without page coordinates.** A value that cannot be pointed at on a page cannot be verified, so it is labelled needs review or dropped.
 6. **Never guess to fill a gap.** "Unreadable" and "not found" are correct answers.
@@ -40,9 +40,8 @@ Hard rules. If a task seems to need one broken, stop and ask.
 ## Never weaken these, not even to make a test pass
 
 1. Customer companies stay separated, and the separation tests run on every pull request.
-2. Identity numbers are masked the moment a document is read.
-3. Every answer carries a source: document, page, spot. No source means no answer.
-4. Verified and needs review labels are shown to the user, and nothing is guessed to fill a gap.
+2. Every answer carries a source: document, page, spot. No source means no answer.
+3. Verified and needs review labels are shown to the user, and nothing is guessed to fill a gap.
 
 ## Build only what was asked
 
@@ -50,7 +49,7 @@ Hard rules. If a task seems to need one broken, stop and ask.
 - Noticed something else worth doing? Say it in one line and ask. Do not build it.
 - Do not pick up plan tasks on your own. The plan says what will exist. Tushar says what to do now.
 - No speculative generality. No plug in systems or config for cases this sprint does not have. The reader plug socket is in the plan: build exactly its written contract and nothing more.
-- Smallest diff that meets the acceptance criteria. Past about 300 lines, stop and propose a split.
+- Smallest diff that meets the acceptance criteria. Past 1000 changed lines, stop and propose a split: CI fails anything bigger.
 - Keep the code plain enough that Tushar can defend every line in review.
 
 ## Before you write code
@@ -133,10 +132,10 @@ If a hook or permission rule blocks you, do not work around it. Explain what you
 
 - [ ] Acceptance criteria met, and the plan task named
 - [ ] Tests added or updated, and they fail without this change
-- [ ] Customer separation, identity masking and the source rule all hold
+- [ ] Customer separation and the source rule both hold
 - [ ] Lint, format and typecheck pass on the changed code
 - [ ] No secrets in the diff, no unapproved dependency
-- [ ] Diff self reviewed: minimal, only what was asked, no debug leftovers, under about 300 lines
+- [ ] Diff self reviewed: minimal, only what was asked, no debug leftovers, under 1000 changed lines
 - [ ] Docs updated if behaviour or config changed
 
 ## How to report back

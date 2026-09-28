@@ -9,10 +9,9 @@ Customers upload business documents (invoices, registers, receipts, statements) 
 ## The rules the design is built around
 
 1. **Customers never cross.** Every query runs with the current customer set, and the database refuses anything else.
-2. **Identity numbers are masked at capture.** No full Aadhaar or PAN number reaches a table, log, trace, error or AI prompt.
-3. **No source, no answer.** Every value and every piece of text carries its document, page and position.
-4. **Verified or needs review, never guessed.** "Unreadable" and "not found" are valid answers.
-5. **Readers sit behind one plug socket.** Swapping the reader for a file type touches one module.
+2. **No source, no answer.** Every value and every piece of text carries its document, page and position.
+3. **Verified or needs review, never guessed.** "Unreadable" and "not found" are valid answers.
+4. **Readers sit behind one plug socket.** Swapping the reader for a file type touches one module.
 
 ## The parts
 
@@ -35,16 +34,15 @@ The browser talks only to the web app, which forwards `/api/*` to the API, so th
 2. **Scan** (worker). Only an explicit CLEAN verdict lets a file through, and `rejected` is final. A scanner that's down means a retry later, and the file is never opened meanwhile.
 3. **Prepare.** Page sizes, plus a picture of each page for PDFs and photos at `.../pages/{n}.png`.
 4. **Read** through the plug socket: CSV, Excel, PDF text (pdfplumber) with a second PDF reader (PDFium), and RapidOCR for scans. A type with no reader is marked `needs_reader`.
-5. **Mask** Aadhaar and PAN numbers in every span, before anything is kept.
-6. **Pieces and values.** Text is split into pieces for search, each with its regions. Values come from spreadsheet columns and labelled invoice fields. Every value is labelled verified or needs review, and this customer's remembered corrections are applied.
-7. **Save** in one transaction that replaces any earlier run, so a job delivered twice is safe. The document must still be clean at this point.
-8. **Index.** A meaning vector is made for each piece if a model is on. The document is then `ready`.
+5. **Pieces and values.** Text is split into pieces for search, each with its regions. Values come from spreadsheet columns and labelled invoice fields. Every value is labelled verified or needs review, and this customer's remembered corrections are applied.
+6. **Save** in one transaction that replaces any earlier run, so a job delivered twice is safe. The document must still be clean at this point.
+7. **Index.** A meaning vector is made for each piece if a model is on. The document is then `ready`.
 
 Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `needs_reader` and `failed`, each failure with a short code. A job that keeps failing goes to the failure bin, and one bad file never blocks the ones behind it.
 
 ## One question, step by step
 
-1. The question is masked, and Hinglish words and dates ("last month", in `TIMEZONE`) are understood.
+1. Hinglish words and dates ("last month", in `TIMEZONE`) are understood.
 2. A question asking for a number or a list runs a fixed, tested query, never SQL written by an AI.
 3. Anything else searches this customer's pieces three ways: exact words (full-text), typo tolerant (trigram) and meaning (pgvector). The three rankings are merged into one.
 4. If the evidence isn't strong enough, the answer is "I couldn't find this in your documents."
@@ -79,7 +77,7 @@ The `isolation` tests prove both on every pull request.
 | One customer reaching another's data | Both locks above; a job naming another customer's document stops before anything is read |
 | A malicious file | Virus scan first, deny by default; caps on sizes, cells, pages and pixels; no macros; nothing external |
 | Leaks through logs or errors | Errors and logs carry ids and short codes only, never file content or file names |
-| Identity numbers | Masked at capture, in text, raw readings, file names and questions |
+| Identity numbers | Not masked: kept and shown as read (see Decisions). Logs and errors still carry ids and codes only |
 | Document text steering the AI | Text is quoted as data; links and markup are stripped from answers |
 | Forged requests | A signed session cookie, `X-Requested-With: kaagaz` on every change, and a rate limit |
 | Secrets and dependencies | No secrets in git, and CI checks for them; every new library needs approval; AGPL, SSPL and GPL v3 are refused |
@@ -91,7 +89,7 @@ The `isolation` tests prove both on every pull request.
 | `backend/kaagaz/api/` | Sign-in, documents, chat, review, admin, health |
 | `backend/kaagaz/ingestion/`, `scanning/`, `jobs/`, `pipeline.py` | Upload, the virus gate, the worker loop, and one job end to end |
 | `backend/kaagaz/preparing/`, `reading/` | Page pictures, and the reader plug socket with its readers |
-| `backend/kaagaz/masking/`, `chunking/`, `extraction/` | Masking, pieces and values with their labels |
+| `backend/kaagaz/chunking/`, `extraction/` | Pieces, and values with their labels |
 | `backend/kaagaz/search/`, `answering/`, `ai/` | Search, answers, and the one client for the local model |
 | `backend/kaagaz/adapters/`, `db/`, `migrations/` | S3, SQS and clamd; every SQL statement; the schema |
 | `frontend/lib/`, `app/`, `components/` | Every backend call, the screens, and their parts |
@@ -99,7 +97,7 @@ The `isolation` tests prove both on every pull request.
 **Adding a reader.**
 - A reader has one method, `read(data) -> spans`, where each span has a non-empty cleaned `text`, a `raw` value and a `location`.
 - It raises `ReadError("short_code")` for a damaged file, and `NoReader(type)` for a type it doesn't handle.
-- It never masks, stores, logs or sends anything; the pipeline does that.
+- It never stores, logs or sends anything; the pipeline does that.
 - To register it, add one entry to the socket's mapping, keyed by the type in `kaagaz/ingestion/sniff.py`.
 - Any library it needs is a new dependency, which needs approval first.
 
@@ -118,7 +116,7 @@ The `isolation` tests prove both on every pull request.
 | SQS-style queue with a failure bin and at-least-once delivery; jobs are safe to run twice | Simple, scales by adding workers, and one bad file never blocks the rest |
 | SeaweedFS on the laptop (MinIO is AGPL) and S3 in AWS, through the same code | One storage client everywhere |
 | Numbers only come from fixed, tested queries | AI-written SQL can be confidently wrong |
-| Masking at capture, before storage and indexing | Nothing downstream can leak what was never kept |
+| No masking of Aadhaar or PAN numbers: they're kept and shown exactly as read (decided 28 Sep 2026) | Replaces the earlier mask-at-capture rule; the masking code is removed |
 | Everything works with the AI off (`MODEL_ENABLED=false`) | The laptop and CI run without models; a model that's down only loses meaning search |
 
 **Open**

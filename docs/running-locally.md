@@ -317,8 +317,8 @@ db "SELECT d.display_name, v.record_key, v.field, v.value_text, v.value_number, 
 **Pass, for the spreadsheet:** one `record_key` per row, and a field per column.
 **Fail:** a printed field with no row, or a wrong number or date.
 
-**Identity numbers are masked.** Put a made-up PAN or Aadhaar number in a sample and upload it.
-**Pass:** it appears masked in `pieces.text` and in `extracted_values.value_text`, never in full.
+**Identity numbers are kept as read.** Put a made-up PAN or Aadhaar number in a sample and upload it.
+**Pass:** it appears in full, exactly as printed, in `pieces.text` and in `extracted_values.value_text`.
 
 **Not built yet:** document-type detection, and the typed `invoices` and `invoice_lines` tables. Every value sits as one row per field in `extracted_values`.
 
@@ -426,7 +426,7 @@ curl -s -b cookies.txt -H 'X-Requested-With: kaagaz' -H 'Content-Type: applicati
 | 1 | Every file type uploads and reaches ready; bad types refused | | |
 | 2 | Original stored intact, duplicates caught, infected file rejected, actions logged, delete works, customers separated | | |
 | 3 | Pages, readings and positioned pieces for every type | | |
-| 4 | Invoice and spreadsheet values extracted correctly; identity numbers masked | | |
+| 4 | Invoice and spreadsheet values extracted correctly; identity numbers kept as read | | |
 | 5 | Every value has a page, box, reader and confidence | | |
 | 6 | Labels right; review queue, fix and remembered fix all work | | |
 | 7 | Keyword search works; meaning search with models on; chat cites sources | | |

@@ -3,8 +3,7 @@
 It implements ``BlobStorage`` (upload), ``Quarantine`` (the scan gate) and
 the page image calls the pipeline and the API use.
 
-Keys are made from ids only, never from file names, because a file name can
-hold a PAN or Aadhaar number (CLAUDE.md never-do 3). Every key starts with
+Keys are made from ids only, never from file names. Every key starts with
 the customer, so one customer's calls can only ever build keys under that
 customer's own prefix:
 
