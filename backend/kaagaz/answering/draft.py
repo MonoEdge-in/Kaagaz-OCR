@@ -114,7 +114,6 @@ def extractive_draft(keywords: Sequence[str], evidence: Sequence[Evidence]) -> D
     top = max((c[0] for c in candidates), default=0)
     best = sorted((c for c in candidates if c[0] == top), key=lambda c: (c[1], c[2]))
     best = best[:MAX_EXTRACTIVE_SENTENCES]
-    best.sort(key=lambda c: (c[1], c[2]))
     sentences = [DraftSentence(text=line, evidence=[n]) for _, _, _, line, n in best]
     return Draft("answered" if sentences else "not_found", sentences)
 

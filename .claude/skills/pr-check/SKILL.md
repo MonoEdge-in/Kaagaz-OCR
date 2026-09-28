@@ -13,8 +13,8 @@ push, never open the pull request.
 
 ## 1. Scope the diff
 
-- Run `git status`, `git diff --stat master...HEAD`, and the full
-  `git diff master...HEAD`.
+- Run `git status`, `git diff --stat main...HEAD`, and the full
+  `git diff main...HEAD`.
 - Get two things from Tushar, the pull request draft, or the commit messages:
   **what was asked**, and **which issue it closes**.
 
@@ -46,7 +46,7 @@ no data access in this diff". If a command does not exist yet, write
 ## 3. Report
 
 ```
-PR CHECK   <branch> into master        Closes #<issue>
+PR CHECK   <branch> into main        Closes #<issue>
 
 | # | Check | Result | Evidence |
 

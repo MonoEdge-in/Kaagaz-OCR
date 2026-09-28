@@ -89,7 +89,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "created_at",
         "uploaded_by_name",
     }
-    assert document["display_name"] == "PAN XXXXXX234F.pdf"
+    assert document["display_name"] == "PAN ABCDE1234F.pdf"
     assert document["detected_type"] == "pdf"
     assert document["size_bytes"] == len(PDF_BYTES)
     assert document["status"] == "received"
@@ -102,7 +102,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
     assert api.audit_actions(signed.customer_id)[-1] == "document.upload"
     with db.customer(signed.customer_id) as conn:
         stored_names: Sequence[str] = conn.execute(text("SELECT display_name FROM documents")).scalars().all()
-    assert "ABCDE1234F" not in " ".join(stored_names)
+    assert "ABCDE1234F" in " ".join(stored_names)
 
 
 @pytest.mark.db

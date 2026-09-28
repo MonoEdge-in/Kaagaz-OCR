@@ -4,7 +4,7 @@
 # the /api rewrite into the build, so it is a build argument, not only a
 # run-time variable. docker-compose.yml passes http://api:8000.
 #
-# Versions are pinned; CI fails on :latest. PROVISIONAL: Node 20 reached its
+# Versions are pinned. PROVISIONAL: Node 20 reached its
 # end of life in April 2026 (20.20.2 is its last release); moving to Node 22
 # or 24 is Vrushit's call.
 

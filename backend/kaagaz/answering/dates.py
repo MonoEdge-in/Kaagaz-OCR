@@ -24,10 +24,9 @@ rules are Vrushit's (docs/architecture.md).
 Time is O(n) in the number of words.
 """
 
-import re
 from datetime import date, timedelta
 
-from kaagaz.answering.hinglish import DATE_WORDS, NormalisedQuestion
+from kaagaz.answering.hinglish import _YEAR, DATE_WORDS, NormalisedQuestion
 
 DateRange = tuple[date, date]
 
@@ -41,7 +40,6 @@ _MONTH_NAMES = (
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
 )  # fmt: skip
-_YEAR = re.compile(r"(?:19|20)[0-9]{2}")
 # "may" is also an English verb: it is a month only next to a year or after "in".
 _MAY_NEEDS = frozenset({"in", "of", "for", "during"})
 _MAX_DAYS = 3660

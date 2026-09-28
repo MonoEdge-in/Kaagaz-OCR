@@ -1,9 +1,8 @@
 """What the upload service needs from the database, file storage and queue.
 
-These are interfaces only. The real ones (PostgreSQL with the customer
-separation rule from #2, S3 with the naming rule from #11, SQS) are not
-decided yet, so the service is written against these contracts and tested
-with in-memory fakes that live under tests/.
+These are interfaces only. The real ones are PgDocuments (kaagaz.db),
+S3Storage and SqsQueue (kaagaz.adapters); the tests use in-memory fakes
+that live under tests/.
 
 Every method takes ``customer_id`` first. There is no method that reads or
 lists across customers (CLAUDE.md never-do 1).

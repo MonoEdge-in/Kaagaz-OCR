@@ -33,7 +33,7 @@ Hard rules. If a task seems to need one broken, stop and ask.
 4. **Never commit a secret.** No keys, tokens, passwords, connection strings or `.env` files.
 5. **Never show a value as fact without page coordinates.** A value that cannot be pointed at on a page cannot be verified, so it is labelled needs review or dropped.
 6. **Never guess to fill a gap.** "Unreadable" and "not found" are correct answers.
-7. **Never push to `master`.** Work on a branch and open a pull request.
+7. **Never push to `main`.** Work on a branch and open a pull request.
 8. **Never game a check.** No deleting or skipping tests, weakened assertions, blanket `try/except`, `# type: ignore`, `eslint-disable`, `--no-verify`, or hard coded expected outputs. If a test is wrong, say why and ask.
 9. **Never create a new Markdown file unless the user asks for that file by name.** No summaries, plans, notes, reports, checklists, guides or READMEs of your own. Report back in the chat or the pull request description. If a doc truly needs to change, edit the existing file that covers it, in as few lines as possible, and only when the task changed behaviour, settings or the schema. `docs/` holds two files: `docs/architecture.md` is the one file for the system design and every decision, and `docs/running-locally.md` covers running and checking the product. PRDs are never stored in the repository.
 
@@ -108,19 +108,20 @@ AWS in Mumbai (ap-south-1). Python with FastAPI. Next.js with PDF.js. PostgreSQL
 
 Folders: `backend/`, `frontend/`, `infra/`, `docs/`.
 
-Commands for install, run, test, lint and typecheck are set up in Sprint 1 Day 1. Until they are in the README, find them in `pyproject.toml`, `package.json` or the Makefile and say where you found them. Never guess one.
+Commands for install, run, test, lint and typecheck are in `docs/running-locally.md`. If one you need is not there, find it in `backend/pyproject.toml` or `frontend/package.json` and say where you found it. Never guess one.
 
 ## Branches, pull requests and CI
 
-Branch: `<type>/<sprint>-<short-name>`, for example `feature/s1-upload-endpoint`. Types: `feature`, `fix`, `chore`, `docs`, `test`, `infra`.
+Branch: `<type>/<sprint>-<short-name>`, for example `feat/s1-upload-endpoint`. Types: `feat`, `fix`, `chore`, `docs`, `test`, `infra`.
 
-Pull request title: `feature(s1): upload endpoint with deduplication`. Fill the template fully.
+Pull request title: `feat(s1): upload endpoint with deduplication`; CI fails any other shape. Fill the template fully.
 
-A ruleset on `master` blocks the merge until CI is green and Vrushit has approved. CI runs on pull requests only and checks:
+A ruleset on `main` blocks the merge until CI is green and Vrushit has approved. CI runs on pull requests into `main` and checks:
 
 | Scope | Checks |
 |---|---|
-| Always | No secret files or secret values in the diff. No conflict markers. No file over 2MB. Pull request size, failing over 600 lines. |
+| Always (`ci.yml`) | No secret files or secret values in the diff. No conflict markers. No file over 2MB. |
+| The pull request (`pr.yml`) | Title and branch format. Size, failing over 1000 changed lines. Tests alongside code, suppressed checks, new dependencies and identity-number shapes, as warnings. |
 | Backend, from `backend/` | `ruff check`, `ruff format --check`, `mypy`, migrations from an empty database, then `pytest`. Dependency licences, failing on AGPL, SSPL or GPL v3. |
 | Frontend, from `frontend/` | `npm ci`, lint, typecheck, tests, production build. |
 

@@ -13,7 +13,6 @@ route to anyone who asks, and the frontend does not need them.
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 
 from fastapi import Depends, FastAPI
 
@@ -26,9 +25,6 @@ from kaagaz.api.routers import admin, auth, chat, documents, health, review
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.settings import Settings
 
-if TYPE_CHECKING:
-    from kaagaz.ai.client import ModelClient
-
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -40,7 +36,6 @@ def create_app(
     db: Database | None = None,
     storage: ApiStorage | None = None,
     queue: ApiQueue | None = None,
-    model: "ModelClient | None" = None,
     answers: Answers | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
@@ -52,7 +47,7 @@ def create_app(
         db=database,
         storage=storage if storage is not None else _default_storage(settings),
         queue=queue if queue is not None else _default_queue(settings),
-        answers=answers if answers is not None else _default_answers(settings, database, model, now),
+        answers=answers if answers is not None else _default_answers(settings, database, now),
         clock=now,
     )
 
@@ -90,11 +85,8 @@ def _default_queue(settings: Settings) -> ApiQueue:
     return SqsQueue(settings)
 
 
-def _default_answers(
-    settings: Settings, db: Database, model: "ModelClient | None", clock: Callable[[], datetime]
-) -> Answers:
+def _default_answers(settings: Settings, db: Database, clock: Callable[[], datetime]) -> Answers:
     from kaagaz.ai.client import build_model_client
     from kaagaz.answering.service import AnswerService
 
-    client = model if model is not None else build_model_client(settings)
-    return AnswerService(db=db, model=client, settings=settings, clock=clock)
+    return AnswerService(db=db, model=build_model_client(settings), settings=settings, clock=clock)

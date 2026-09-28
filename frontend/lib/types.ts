@@ -24,10 +24,6 @@ export type LabelReason =
   | "corrected"
   | "learned_correction";
 
-export interface ApiErrorBody {
-  error: { code: string; message: string };
-}
-
 export interface Me {
   user: { id: string; email: string; display_name: string; role: Role };
   customer: { id: string; name: string };

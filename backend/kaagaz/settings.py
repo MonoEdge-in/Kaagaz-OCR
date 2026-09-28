@@ -87,7 +87,6 @@ class Settings:
 
     # API.
     rate_limit_per_minute: int
-    frontend_origin: str
     log_level: str
 
     @classmethod
@@ -136,7 +135,6 @@ class Settings:
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             timezone=env.text("TIMEZONE"),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
-            frontend_origin=env.text("FRONTEND_ORIGIN"),
             log_level=env.text("LOG_LEVEL"),
         )
 

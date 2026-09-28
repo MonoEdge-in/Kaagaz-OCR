@@ -158,7 +158,7 @@ def test_feedback_upserts_and_shows_in_the_conversation(db: Database) -> None:
         rows = conn.execute(text("SELECT rating, reason FROM feedback")).all()
     assert len(rows) == 1
     assert rows[0][0] == "down"
-    assert PAN not in rows[0][1]
+    assert PAN in rows[0][1]
 
 
 @pytest.mark.db

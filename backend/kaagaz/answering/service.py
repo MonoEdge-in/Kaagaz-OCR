@@ -56,12 +56,12 @@ from kaagaz.answering.intent import FixedPlan, plan_fixed
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.verify import verify
 from kaagaz.db.engine import Database
+from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.settings import Settings
 
 Status = Literal["answered", "not_found"]
 Route = Literal["fixed_query", "search"]
 _MAX_NAME = 100  # a party name longer than this is cut in the sentence
-MAX_SEARCH_LIMIT = 100  # the most hits one search may return (kaagaz.search.hybrid)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +228,7 @@ class AnswerService:
         query_text = " ".join(normalised.keywords) or normalised.english
         if not query_text:
             return _not_found("search", shown, [], model_used=False)
-        limit = max(1, min(self._settings.answer_max_evidence, MAX_SEARCH_LIMIT))
+        limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         hits = self._retriever.search(customer_id, query_text, self._embed(normalised.english), limit)
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.

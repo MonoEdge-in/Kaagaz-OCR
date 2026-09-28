@@ -106,20 +106,6 @@ def list_users(conn: Connection, customer_id: str) -> Sequence[RowMapping]:
     )
 
 
-def get_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping | None:
-    return (
-        conn.execute(
-            text(
-                "SELECT u.id, u.email, u.display_name, u.role, u.disabled, u.created_at"
-                " FROM users u WHERE u.customer_id = :c AND u.id = :u"
-            ),
-            {"c": customer_id, "u": user_id},
-        )
-        .mappings()
-        .first()
-    )
-
-
 def create_user(
     conn: Connection,
     customer_id: str,

@@ -1,17 +1,11 @@
 name: CI
 
-# Runs on pull requests into master only. Nothing runs on master after a merge,
-# by design: with squash merging from an up to date branch, the code that was
-# tested on the branch is the code that lands.
-#
-# The Guardrails job is a required check in the master ruleset, so a red run
-# blocks the merge. Backend and Frontend are not required checks yet: they skip
-# themselves until those folders exist, and a skipped job can sit in pending
-# forever. Add them as required checks in Sprint 1, once they actually run.
+# Runs on pull requests into main, and by hand. The pull request's own rules
+# (title, branch name, size, identity-number shapes) are in pr.yml.
 
 on:
   pull_request:
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -22,8 +16,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BACKEND_DIR: backend
-  FRONTEND_DIR: frontend
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "20"
 
@@ -43,7 +35,7 @@ jobs:
       - name: No secret files committed
         run: |
           set -euo pipefail
-          BAD=$(git ls-files | grep -Ei '(^|/)\.env($|\.)|\.pem$|\.p12$|\.pfx$|(^|/)id_rsa$|\.keystore$' || true)
+          BAD=$(git ls-files | grep -Ei '(^|/)\.env($|\.)|\.pem$|\.p12$|\.pfx$|(^|/)id_rsa$|\.keystore$' | grep -Eiv '(^|/)\.env\.(example|sample|template)$' || true)
           if [ -n "$BAD" ]; then
             echo "::error::Files that must never be committed are in this branch."
             echo "$BAD"
@@ -72,31 +64,18 @@ jobs:
           check 'BEGIN [A-Z ]*PRIVATE KEY'             "private key"
           check 'gh[pousr]_[A-Za-z0-9]{36}'            "GitHub token"
           check 'sk-[A-Za-z0-9]{20,}'                  "API key"
-          check 'postgres(ql)?://[^:]+:[^@]+@'         "database password in a connection string"
+          REMOTE_DB=$(printf '%s' "$ADDED" | grep -Eo 'postgres(ql)?(\+[a-z0-9]+)?://[^:/@[:space:]]+:[^@[:space:]]+@[^:/[:space:]]+' \
+            | grep -Ev '@(localhost|127\.0\.0\.1|postgres)$' || true)
+          if [ -n "$REMOTE_DB" ]; then
+            echo "::error::Possible database password for a non-local host added in this pull request."
+            FOUND=1
+          fi
           if [ "$FOUND" -eq 1 ]; then
             echo "If this is a false positive, say so in the pull request and Vrushit will decide."
             exit 1
           fi
           echo "Clean. No secret shaped strings added."
 
-      - name: No identity numbers in the code
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          if [ -z "${BASE:-}" ]; then echo "Not a pull request, skipping."; exit 0; fi
-          ADDED=$(git diff --unified=0 "$BASE" "$HEAD" | grep '^+' | grep -v '^+++' || true)
-          # Aadhaar is usually written as four, four, four. PAN is five letters,
-          # four digits, one letter. Warning only: real test fixtures may need
-          # deliberately fake examples, and Vrushit decides case by case.
-          if printf '%s' "$ADDED" | grep -Eq '[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}'; then
-            echo "::warning::Something shaped like an Aadhaar number was added. Confirm it is fake: real customer documents never go in git."
-          fi
-          if printf '%s' "$ADDED" | grep -Eq '[A-Z]{5}[0-9]{4}[A-Z]'; then
-            echo "::warning::Something shaped like a PAN was added. Confirm it is fake."
-          fi
-          echo "Identity number scan done."
 
       - name: No merge conflict markers
         run: |
@@ -119,48 +98,7 @@ jobs:
           fi
           echo "Clean. Nothing oversized."
 
-      - name: Pull request title format
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          set -euo pipefail
-          if [ -z "${TITLE:-}" ]; then exit 0; fi
-          if printf '%s' "$TITLE" | grep -Eq '^(feat|fix|chore|docs|test|infra)\(s[1-4]\): .+'; then
-            echo "Title format is good."
-          else
-            echo "::warning::Title should look like 'feat(s1): upload endpoint with deduplication'. Got: $TITLE"
-          fi
 
-  # ---------------------------------------------------------------------------
-  # Works out which projects exist yet, so the jobs below can skip themselves.
-  # ---------------------------------------------------------------------------
-  detect:
-    name: What exists
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    outputs:
-      backend: ${{ steps.look.outputs.backend }}
-      frontend: ${{ steps.look.outputs.frontend }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: look
-        run: |
-          set -euo pipefail
-          if [ -f "$BACKEND_DIR/pyproject.toml" ] || [ -f "$BACKEND_DIR/requirements.txt" ]; then
-            echo "backend=true" >> "$GITHUB_OUTPUT"
-            echo "Backend found in $BACKEND_DIR."
-          else
-            echo "backend=false" >> "$GITHUB_OUTPUT"
-            echo "No backend yet."
-          fi
-          if [ -f "$FRONTEND_DIR/package.json" ]; then
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
-            echo "Frontend found in $FRONTEND_DIR."
-          else
-            echo "frontend=false" >> "$GITHUB_OUTPUT"
-            echo "No frontend yet."
-          fi
 
   # ---------------------------------------------------------------------------
   # Backend. Runs against a real Postgres with pgvector, because the isolation
@@ -168,14 +106,12 @@ jobs:
   # ---------------------------------------------------------------------------
   backend:
     name: Backend
-    needs: detect
-    if: needs.detect.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     services:
       postgres:
-        image: pgvector/pgvector:pg17
+        image: pgvector/pgvector:0.8.6-pg17
         env:
           POSTGRES_USER: kaagaz
           POSTGRES_PASSWORD: kaagaz_ci_only
@@ -208,12 +144,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          if [ -f pyproject.toml ]; then
-            pip install -e ".[dev]"
-          else
-            pip install -r requirements.txt
-            [ -f requirements-dev.txt ] && pip install -r requirements-dev.txt
-          fi
+          pip install -e ".[dev,ocr]"
 
       - name: Lint
         run: ruff check .
@@ -264,8 +195,6 @@ jobs:
   # ---------------------------------------------------------------------------
   frontend:
     name: Frontend
-    needs: detect
-    if: needs.detect.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -289,10 +218,10 @@ jobs:
         run: npm run lint
 
       - name: Types
-        run: npm run typecheck --if-present
+        run: npm run typecheck
 
       - name: Tests
-        run: npm test --if-present
+        run: npm test
 
       - name: Build
         run: npm run build
