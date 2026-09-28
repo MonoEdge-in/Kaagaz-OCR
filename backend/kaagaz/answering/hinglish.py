@@ -18,7 +18,7 @@ text without question words, filler and date words ("last month" is a date,
 not a topic; ``dates.py`` reads it). ``hinglish`` is True when any Hindi word
 was understood, so the chat can show "Hinglish understood as: ...".
 
-PROVISIONAL: the Hinglish rules are Vrushit's (docs/system-design/03).
+PROVISIONAL: the Hinglish rules are Vrushit's (docs/architecture.md).
 
 Time is O(n) in the number of words: at most three dictionary lookups each.
 """

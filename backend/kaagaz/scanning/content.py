@@ -69,8 +69,12 @@ def _has_zip_inside(data: bytes) -> bool:
 # --- PDF ---------------------------------------------------------------------------
 
 # Dictionary keys and action types that make a PDF do something by itself.
-_PDF_ACTIVE_KEYS = frozenset({"JavaScript", "JS", "Launch", "EmbeddedFile", "EmbeddedFiles", "EF", "RichMedia", "XFA"})
-_PDF_ACTIVE_ACTIONS = frozenset({"JavaScript", "Launch", "GoToE", "SubmitForm", "ImportData", "RichMediaExecute"})
+_PDF_ACTIVE_KEYS = frozenset(
+    {"JavaScript", "JS", "Launch", "EmbeddedFile", "EmbeddedFiles", "EF", "RichMedia", "XFA"}
+)
+_PDF_ACTIVE_ACTIONS = frozenset(
+    {"JavaScript", "Launch", "GoToE", "SubmitForm", "ImportData", "RichMediaExecute"}
+)
 _MAX_PDF_DEPTH = 64
 
 
@@ -160,7 +164,9 @@ def _zip_finding(data: bytes) -> Finding | None:
 
 _BOM = "﻿"
 _MARKUP_OR_SCRIPT_START = re.compile(r"^\s*(<|\{\\rtf|#!|@echo\b|::|rem\s)", re.IGNORECASE)
-_SCRIPT_ANYWHERE = re.compile(r"<\s*script\b|javascript\s*:|vbscript\s*:|<\s*iframe\b|<\s*object\b", re.IGNORECASE)
+_SCRIPT_ANYWHERE = re.compile(
+    r"<\s*script\b|javascript\s*:|vbscript\s*:|<\s*iframe\b|<\s*object\b", re.IGNORECASE
+)
 # A cell that starts a formula which runs a command or calls the internet.
 _DANGEROUS_FORMULA = re.compile(
     r"(^|[,;\t\"'])\s*[=+\-@]\s*(cmd\s*\||msexcel\s*\||dde\s*\(|ddeauto|webservice\s*\(|"
@@ -171,8 +177,7 @@ _DANGEROUS_FORMULA = re.compile(
 
 # DDE, the old way a spreadsheet cell starts another program: app|'topic'!item,
 # for example cmd|' /C calc'!A0. Checked anywhere, as it can hide mid-formula.
-_DDE_CALL = re.compile(r"[A-Za-z0-9_.]+\s*\|\s*'[^'
-]*'\s*!", re.IGNORECASE)
+_DDE_CALL = re.compile(r"[A-Za-z0-9_.]+\s*\|\s*'[^'\n]*'\s*!", re.IGNORECASE)
 
 
 def _text_finding(data: bytes) -> Finding | None:

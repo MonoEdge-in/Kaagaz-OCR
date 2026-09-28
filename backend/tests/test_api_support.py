@@ -6,7 +6,7 @@ builder owns (FULL-BUILD-SPEC section 10); pytest collects it and finds nothing.
 * ``ApiFakeStorage`` / ``ApiFakeQueue``: the in-memory fakes from tests/fakes.py
   plus the extra methods the API calls (page images, ping).
 * ``FakeAnswers``: returns a fixed ``Answer`` JSON and records the questions it
-  was asked, so a test can prove the question was masked first.
+  was asked, so a test can check the question it was given.
 * ``TestClient``: re-exported, so every API test imports it from one place.
 * ``Api``: a TestClient on a real test database, with helpers to add users,
   sign in and add document rows directly with SQL (as the pipeline would).

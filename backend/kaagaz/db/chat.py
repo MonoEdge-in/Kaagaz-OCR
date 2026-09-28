@@ -5,7 +5,7 @@ from ``Database.customer(customer_id)`` and filters on ``customer_id`` too.
 A conversation belongs to one user: every read and every feedback write also
 checks ``user_id``, so a colleague in the same customer cannot open it either.
 
-Question text is stored already masked (the API masks it first). The answer
+Question text is stored as asked, stripped of surrounding spaces. The answer
 is stored as the jsonb ``Answer.to_json()`` gives.
 """
 

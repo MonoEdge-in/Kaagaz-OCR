@@ -13,7 +13,6 @@ dependencies = [
     "sqlalchemy>=2.1",         # MIT, database access and Alembic's base
     "psycopg[binary]>=3.3",    # LGPL-3.0 (lesser GPL, passes the licence rule), PostgreSQL driver
     "alembic>=1.20",           # MIT, migrations
-    "pgvector>=0.5",           # MIT, vector column type for SQLAlchemy
     "boto3>=1.43",             # Apache-2.0, S3 and SQS
     "pdfplumber>=0.11.10",     # MIT, PDF text with positions (first reader)
     "pypdfium2>=5.13",         # Apache-2.0 / BSD-3-Clause, PDF page images and second reader
@@ -29,7 +28,7 @@ ocr = [
 ]
 dev = [
     "pytest>=9.1",             # MIT
-    "httpx2>=2.13",            # BSD-3-Clause, FastAPI's TestClient needs it (as in the root pyproject)
+    "httpx2>=2.13",            # BSD-3-Clause, FastAPI's TestClient needs it
     "mypy>=2.3",               # MIT
     "ruff>=0.16",              # MIT
 ]
@@ -57,8 +56,6 @@ select = [
 "tests/**" = ["S101", "S105", "S106", "S104"]
 # Migrations are fixed SQL; the f-strings only insert module constants (table and role names).
 "migrations/**" = ["E501", "S608"]
-# The masker lists look-alike spaces and dashes on purpose: that is what it matches.
-"kaagaz/masking/identity.py" = ["RUF001"]
 # The xlsx reader refuses any DOCTYPE before parsing, which blocks the entity attacks
 # defusedxml exists for, and caps sizes first (kaagaz/reading/xlsx_reader.py).
 "kaagaz/reading/xlsx_reader.py" = ["S314"]
@@ -78,7 +75,7 @@ exclude = ["^build/"]
 module = [
     "boto3", "boto3.*", "botocore", "botocore.*",
     "pdfplumber", "pdfplumber.*", "pypdfium2", "pypdfium2.*",
-    "pgvector", "pgvector.*", "rapidocr", "rapidocr.*",
+    "rapidocr", "rapidocr.*",
 ]
 ignore_missing_imports = true
 

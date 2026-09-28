@@ -22,11 +22,6 @@
   border-inline-end: 1px solid var(--border);
 }
 
-.end {
-  inset-inline: auto 0;
-  border-inline-start: 1px solid var(--border);
-}
-
 /* The page behind is dimmed with plain black at half strength in both themes. */
 .dialog::backdrop {
   background: var(--backdrop);
@@ -34,10 +29,6 @@
 
 .dialog[open].start {
   animation: slide-from-start var(--t-med) var(--ease);
-}
-
-.dialog[open].end {
-  animation: slide-from-end var(--t-med) var(--ease);
 }
 
 .panel {
@@ -86,10 +77,6 @@
 /* Right-to-left pages slide from the other side. */
 :global([dir="rtl"]) .dialog[open].start {
   animation-name: slide-from-end;
-}
-
-:global([dir="rtl"]) .dialog[open].end {
-  animation-name: slide-from-start;
 }
 
 @media (prefers-reduced-motion: reduce) {

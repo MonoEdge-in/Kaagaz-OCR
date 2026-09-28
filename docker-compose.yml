@@ -8,7 +8,7 @@
 # Only the stand-ins, to run the API and worker on the laptop itself:
 #   docker compose up postgres seaweedfs elasticmq clamav
 #
-# Image versions are pinned; CI fails on :latest.
+# Image versions are pinned; Dependabot proposes updates.
 name: kaagaz-ocr
 
 # Shared by the three backend containers (migrate, api, worker): one image,

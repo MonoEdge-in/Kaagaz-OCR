@@ -21,7 +21,7 @@ from itertools import groupby
 from kaagaz.chunking.piece import Piece, piece_label
 from kaagaz.reading.spans import CellLocation, Span
 
-__all__ = ["Piece", "column_letter", "pieces_from_rows"]
+__all__ = ["column_letter", "pieces_from_rows"]
 
 
 def column_letter(column: int) -> str:
