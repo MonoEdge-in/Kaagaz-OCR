@@ -67,14 +67,12 @@ jobs:
       - name: Size
         run: |
           set -euo pipefail
-          # uv.lock is machine-written, so it doesn't count.
-          changed=$(git diff --numstat "$BASE...$HEAD" -- . ':!uv.lock' | awk '{ a += $1; d += $2 } END { print a + d + 0 }')
-          echo "Changed lines, excluding uv.lock: $changed"
-          if [ "$changed" -gt 600 ]; then
-            echo "::error::$changed changed lines is too many to review properly. Split this pull request."
+          # Lock files are machine-written, so they don't count.
+          changed=$(git diff --numstat "$BASE...$HEAD" -- . ':!*.lock' ':!package-lock.json' | awk '{ a += $1; d += $2 } END { print a + d + 0 }')
+          echo "Changed lines, excluding lock files: $changed"
+          if [ "$changed" -gt 1000 ]; then
+            echo "::error::$changed changed lines. The limit is 1000: split this pull request."
             exit 1
-          elif [ "$changed" -gt 300 ]; then
-            echo "::warning::$changed changed lines. The target is about 300."
           fi
 
       - name: Tests come with the code

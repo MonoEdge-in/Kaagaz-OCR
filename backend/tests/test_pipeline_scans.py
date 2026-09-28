@@ -11,7 +11,6 @@ import unittest
 from PIL import Image
 
 from kaagaz.ingestion import sniff
-from kaagaz.masking.identity import IndianIdMasker
 from kaagaz.reading.spans import BoxLocation, PageInfo, ReadError, Span
 from kaagaz.scanning.gate import DocumentStatus
 from tests.fakes import FakeEmbedder, FakePrepared, FakePreparer, FakeVision, PresetSocket
@@ -136,9 +135,9 @@ class TextLayerTest(unittest.TestCase):
         self.assertEqual([v.field for v in system.store.values_for(CUSTOMER, doc)], ["invoice_number"])
         self.assertEqual([p.text for p in system.store.for_document(CUSTOMER, doc)], ["Invoice No: INV-17"])
 
-    def test_identity_numbers_in_lines_are_masked_before_saving(self) -> None:
+    def test_identity_numbers_in_lines_are_kept_as_read(self) -> None:
         lines = [line("GSTIN: 27ABCDE1234F1Z5", 0.1), line("Customer: Asha 2345 6789 0123", 0.13)]  # FAKE
-        system = build(masker=IndianIdMasker(), socket=PresetSocket({sniff.PDF: lines}, {sniff.PDF: lines}))
+        system = build(socket=PresetSocket({sniff.PDF: lines}, {sniff.PDF: lines}))
         doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
         system.worker.run_once()
 
@@ -147,11 +146,11 @@ class TextLayerTest(unittest.TestCase):
         stored = [s.text + s.raw for o in content.outputs for s in o.spans] + [p.text for p in content.pieces]
         stored += [f"{v.value_text} {v.value_raw} {v.second_reading}" for v in content.values]
         joined = " ".join(stored)
-        self.assertNotIn("ABCDE1234F", joined)
-        self.assertNotIn("2345 6789 0123", joined)
+        self.assertIn("ABCDE1234F", joined)
+        self.assertIn("2345 6789 0123", joined)
         self.assertEqual(
             {v.field: v.value_text for v in content.values},
-            {"gstin": "27XXXXXX234F1Z5", "buyer_name": "Asha XXXX XXXX 0123"},
+            {"gstin": "27ABCDE1234F1Z5", "buyer_name": "Asha 2345 6789 0123"},
         )
 
 
@@ -205,22 +204,21 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(len(vision.pictures), 1)  # stops asking once it is down
         self.assertEqual([getattr(r, "code", None) for r in logs.records], ["model_down"])
 
-    def test_a_line_with_an_identity_number_is_never_sent_to_the_vision_model(self) -> None:
+    def test_a_line_with_an_identity_number_goes_to_the_vision_model_like_any_other(self) -> None:
         lines = [line("GSTIN: 27ABCDE1234F1Z5", 0.1, confidence=0.95)]  # FAKE
         vision = FakeVision("GSTIN: 27ABCDE1234F1Z5")
         socket = PresetSocket({sniff.PDF: lines})
-        system = build(masker=IndianIdMasker(), socket=socket, preparer=scan_preparer(), vision=vision)
+        system = build(socket=socket, preparer=scan_preparer(), vision=vision)
         doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
         system.worker.run_once()
-        self.assertEqual(vision.pictures, [])
+        self.assertEqual(len(vision.pictures), 1)
         (value,) = system.store.values_for(CUSTOMER, doc)
-        self.assertEqual((value.value_text, value.label_reason), ("27XXXXXX234F1Z5", "single_reader"))
+        self.assertEqual(value.value_text, "27ABCDE1234F1Z5")
 
-    def test_the_vision_reading_is_masked_before_it_is_kept(self) -> None:
+    def test_the_vision_reading_is_kept_as_read(self) -> None:
         lines = [line("Seller: Sharma Traders", 0.1, confidence=0.95)]
         vision = FakeVision("Seller: Sharma Traders ABCDE1234F")  # FAKE number the model "saw"
         system = build(
-            masker=IndianIdMasker(),
             socket=PresetSocket({sniff.PDF: lines}),
             preparer=scan_preparer(),
             vision=vision,
@@ -228,7 +226,7 @@ class ScanTest(unittest.TestCase):
         doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
         system.worker.run_once()
         (value,) = system.store.values_for(CUSTOMER, doc)
-        self.assertEqual(value.second_reading, "Sharma Traders XXXXXX234F")
+        self.assertEqual(value.second_reading, "Sharma Traders ABCDE1234F")
         self.assertEqual(value.label_reason, "readers_disagree")
 
 

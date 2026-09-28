@@ -19,7 +19,7 @@ def test_answer_text_joins_sentences_or_says_not_found() -> None:
 
 
 @pytest.mark.db
-def test_ask_masks_the_question_stores_both_messages_and_audits(db: Database) -> None:
+def test_ask_keeps_the_question_as_asked_stores_both_messages_and_audits(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
 
@@ -27,10 +27,10 @@ def test_ask_masks_the_question_stores_both_messages_and_audits(db: Database) ->
 
     assert reply.status_code == 200
     body = reply.json()
-    masked = "total for PAN XXXXXX234F?"
-    assert api.answers.asked == [(signed.customer_id, masked)]
+    asked = f"total for PAN {PAN}?"
+    assert api.answers.asked == [(signed.customer_id, asked)]
     assert body["question"]["role"] == "user"
-    assert body["question"]["text"] == masked
+    assert body["question"]["text"] == asked
     assert body["question"]["answer"] is None
     assert body["question"]["feedback"] is None
     assert body["answer"]["role"] == "assistant"
@@ -44,8 +44,8 @@ def test_ask_masks_the_question_stores_both_messages_and_audits(db: Database) ->
         details: dict[str, object] = conn.execute(
             text("SELECT details FROM audit_log WHERE action = 'chat.ask'")
         ).scalar_one()
-    assert PAN not in stored
-    assert title == masked
+    assert PAN in stored
+    assert title == asked
     assert details == {
         "conversation_id": body["conversation_id"],
         "question_id": body["question"]["id"],

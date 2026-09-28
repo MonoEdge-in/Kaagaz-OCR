@@ -18,16 +18,15 @@ from typing import IO, Protocol
 
 @dataclass(frozen=True, slots=True)
 class DocumentRecord:
-    """One stored file. The raw file name is never kept: it can contain a PAN
-    or Aadhaar number (PRD question 1), so only a masked display name is."""
+    """One stored file. Only its display name is kept, never the raw file name."""
 
     customer_id: str
     document_id: str
     sha256: str
     size: int
     detected_type: str
-    # What the file list and source cards show: the uploaded name with identity
-    # numbers masked (PROVISIONAL, docs/system-design/04 "the file name").
+    # What the file list and source cards show: the uploaded name, cleaned by the API
+    # (path and control characters stripped, at most 255 characters).
     # The upload service never reads it; the API sets it.
     display_name: str = "document"
     uploaded_by: str | None = None  # the signed-in user's id

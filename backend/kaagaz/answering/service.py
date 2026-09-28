@@ -1,10 +1,10 @@
 """Answer one customer's question, with a source for every sentence.
 
 The API calls ``AnswerService.answer(customer_id, question)`` with the
-question already masked, and stores ``Answer.to_json()`` (the ``Answer`` type
+question, and stores ``Answer.to_json()`` (the ``Answer`` type
 in frontend/lib/types.ts, field for field).
 
-The steps (docs/system-design/03-answering.md):
+The steps (docs/architecture.md):
 
 1. ``hinglish.normalise``: the question in plain English words and keywords.
 2. ``dates.date_range``: the date range it names, from today in
@@ -146,7 +146,7 @@ class AnswerService:
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
 
     def answer(self, customer_id: str, question: str) -> Answer:
-        """Answer ``question`` (already masked) for ``customer_id`` only."""
+        """Answer ``question`` for ``customer_id`` only."""
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()

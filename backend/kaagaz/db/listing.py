@@ -3,7 +3,7 @@ values and spreadsheet cells, and deleting a document.
 
 Why here: the API only shapes JSON; the SQL lives in one reviewable place.
 Every function takes a connection from ``Database.customer(customer_id)`` and
-filters on ``customer_id`` as well (two locks, docs/system-design/04).
+filters on ``customer_id`` as well (two locks, docs/architecture.md).
 
 The ``q`` search matches ``display_name`` with ILIKE. The user's text is a bound
 parameter, and ``%``, ``_`` and ``\\`` in it are escaped, so it is matched
@@ -127,7 +127,7 @@ def list_values(conn: Connection, customer_id: str, document_id: str) -> Sequenc
 def sheet_cells(
     conn: Connection, customer_id: str, document_id: str, sheet: int, row_from: int, row_to: int
 ) -> Sequence[RowMapping]:
-    """The masked cell texts of one sheet between two rows, from the first reader's
+    """The cell texts of one sheet between two rows, from the first reader's
     stored output, ordered by row and column.
 
     Each stored span is ``{"text", "raw", "region": {...}, "confidence"}``

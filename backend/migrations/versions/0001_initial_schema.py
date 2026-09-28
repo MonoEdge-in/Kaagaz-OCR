@@ -1,7 +1,7 @@
 """The whole schema, with row level security on every customer table.
 
 PROVISIONAL: the database design is Vrushit's (#1, #2, #12). This follows the
-information list in docs/system-design/04-data-and-tenancy.md.
+information list in docs/architecture.md (Data and customer separation).
 
 Customer separation, two locks:
 

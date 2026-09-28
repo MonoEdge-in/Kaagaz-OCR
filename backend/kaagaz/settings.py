@@ -22,7 +22,7 @@ class SettingsError(Exception):
 class Settings:
     # Database. The app switches to ``db_app_role`` in every transaction, a role
     # that is not a superuser, does not own the tables and has no BYPASSRLS, so
-    # row level security always applies (docs/system-design/04).
+    # row level security always applies (docs/architecture.md).
     database_url: str
     db_app_role: str
 

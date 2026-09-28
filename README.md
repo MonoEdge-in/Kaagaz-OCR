@@ -52,23 +52,8 @@ Two rules hold the whole thing up:
 
 ## Product and system design
 
-The complete product specification and technical design are published in the
-repository so the intended behaviour, boundaries, and open decisions can be
-reviewed alongside the code:
-
-- [System design index](docs/system-design/README.md): architecture, ingestion,
-       answering, data and tenancy, security, operations, and decisions.
-- [Sprint 1 product specification](docs/prd/sprint-1.html): the full visual PRD
-       covering scope, acceptance criteria, work order, approvals, questions, and
-       risks.
-
-```mermaid
-flowchart LR
-              product["Product spec<br/>scope and acceptance"] --> design["System design<br/>flows and boundaries"]
-              design --> build["Backend implementation<br/>readers, pipeline, jobs"]
-              build --> evidence["Tests and source coordinates<br/>trustworthy answers"]
-              evidence --> product
-```
+- [docs/architecture.md](docs/architecture.md): the system design and every decision, in one file.
+- [docs/running-locally.md](docs/running-locally.md): running the product on a laptop, and checking each part works.
 
 ---
 
@@ -86,7 +71,7 @@ Locked:
 | Jobs | SQS with worker processes |
 | Infrastructure as code | AWS CDK |
 
-Still open, tracked in `docs/decisions/`:
+Still open, tracked in [docs/architecture.md](docs/architecture.md):
 
 - Which AI reads scanned pages.
 - The second, independent reader used for cross checking.
@@ -100,9 +85,8 @@ Still open, tracked in `docs/decisions/`:
 .github/          Pull request template, issue templates, CI, code owners
 backend/          FastAPI application, workers, readers, database migrations
 frontend/         Next.js application and the page viewer
-infra/            AWS CDK definitions
-docs/prd/         One PRD per sprint, written before any code
-docs/decisions/   Decision records: what we chose, what we rejected, and why
+infra/            Local stand-in config; AWS CDK definitions later
+docs/             architecture.md (design and decisions), running-locally.md
 ```
 
 `backend/` and `frontend/` arrive during Sprint 1. CI looks for them by name, so
@@ -136,8 +120,8 @@ CI runs on pull requests into `master` only. Nothing runs after a merge.
 - No secret values added in the diff: AWS access keys, private key blocks, GitHub tokens, API keys, or a password inside a database connection string
 - Warns on anything shaped like an Aadhaar or PAN number, so a real one cannot slip in unnoticed
 - No leftover merge conflict markers
+- Pull request size: fails over 1000 changed lines, lock files excluded
 - No file over 2MB, because customer documents belong in storage and stay in git forever once committed
-- Pull request size: warns over 300 changed lines, fails over 600
 - Warns if the pull request title is not in the form `feat(s1): short description`
 
 **Backend, once `backend/` exists**
@@ -164,7 +148,7 @@ The backend and frontend jobs skip themselves until those folders exist, so CI i
 
 **Read [CONTRIBUTING.md](CONTRIBUTING.md) before you do anything else.** It is the full process, stage by stage: understanding a sprint, writing the PRD, getting it approved, picking up an issue, branching, building, testing, opening the pull request, review, merge, and sign off. It also lists the rules that are never bent, and what to do when you are stuck.
 
-If you use Claude Code here, [CLAUDE.md](CLAUDE.md) loads automatically and carries the same rules in a form the assistant follows. Two skills are set up for you: `/sprint-prd` drafts the sprint brief, and `/pr-check` checks your branch before you open a pull request. See [.claude/README.md](.claude/README.md).
+If you use Claude Code here, [CLAUDE.md](CLAUDE.md) loads automatically and carries the same rules in a form the assistant follows. The `/pr-check` skill checks your branch before you open a pull request.
 
 ---
 
