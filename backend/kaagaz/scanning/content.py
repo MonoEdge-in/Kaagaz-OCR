@@ -177,7 +177,7 @@ _DANGEROUS_FORMULA = re.compile(
 
 # DDE, the old way a spreadsheet cell starts another program: app|'topic'!item,
 # for example cmd|' /C calc'!A0. Checked anywhere, as it can hide mid-formula.
-_DDE_CALL = re.compile(r"[A-Za-z0-9_.]+\s*\|\s*'[^'\n]*'\s*!", re.IGNORECASE)
+_DDE_CALL = re.compile(r"[A-Za-z0-9_.]+\s*\|\s*'[^'\n\r]*'\s*!", re.IGNORECASE)
 
 
 def _text_finding(data: bytes) -> Finding | None:
