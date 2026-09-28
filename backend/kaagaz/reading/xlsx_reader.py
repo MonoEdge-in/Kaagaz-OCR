@@ -123,14 +123,6 @@ class XlsxLimits:
             raise ValueError("every limit must be at least 1")
 
 
-class _Refused(Exception):
-    """Internal: stop reading with this code."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
-
-
 class XlsxReader:
     # Stored with the output (reader_outputs). This reader uses only the standard
     # library, so the version is this module's own: raise it when what it reads changes.
@@ -146,8 +138,6 @@ class XlsxReader:
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
                 spans = _Workbook(archive, self._limits).spans()
-        except _Refused as refused:
-            code = refused.code
         except _DAMAGED:
             code = "corrupt_file"
         if code is not None:
@@ -166,9 +156,9 @@ class _Workbook:
         if _WORKBOOK not in self._parts:
             raise NoReader(sniff.ZIP)  # a zip, but not a spreadsheet
         if len(infos) > limits.max_entries:
-            raise _Refused("too_many_parts")
+            raise ReadError("too_many_parts")
         if len({info.filename.lower() for info in infos}) != len(infos):
-            raise _Refused("duplicate_parts")
+            raise ReadError("duplicate_parts")
         self._bytes_read = 0
         self._cells = 0
         self._text_chars = 0
@@ -178,10 +168,10 @@ class _Workbook:
         self._refuse_macros()
         workbook = self._xml(_WORKBOOK)
         if workbook.tag != f"{_MAIN}workbook":
-            raise _Refused("unsupported_spreadsheet")  # e.g. Strict Open XML
+            raise ReadError("unsupported_spreadsheet")  # e.g. Strict Open XML
         sheets = workbook.find(f"{_MAIN}sheets")
         if sheets is None:
-            raise _Refused("corrupt_file")
+            raise ReadError("corrupt_file")
         targets = self._relationship_targets()
         shared = self._shared_strings()
 
@@ -189,7 +179,7 @@ class _Workbook:
         for sheet_number, sheet in enumerate(sheets.findall(f"{_MAIN}sheet"), start=1):
             part = targets.get(sheet.get(f"{_DOC_REL}id", ""))  # no id: no part, so corrupt
             if part is None:
-                raise _Refused("corrupt_file")
+                raise ReadError("corrupt_file")
             self._read_sheet(sheet_number, self._xml(part), shared, spans)
         return spans
 
@@ -199,24 +189,24 @@ class _Workbook:
         for name in self._parts:
             lower = name.lower()
             if lower.endswith(_MACRO_NAMES) or lower.startswith(_MACRO_FOLDERS):
-                raise _Refused("macros_not_allowed")
+                raise ReadError("macros_not_allowed")
         if _CONTENT_TYPES in self._parts:
             for entry in self._xml(_CONTENT_TYPES):
                 content_type = entry.get("ContentType", "").lower()
                 if any(word in content_type for word in _MACRO_CONTENT_WORDS):
-                    raise _Refused("macros_not_allowed")
+                    raise ReadError("macros_not_allowed")
 
     def _member(self, name: str) -> bytes:
         info = self._parts.get(name)
         if info is None or info.header_offset < 0:
-            raise _Refused("corrupt_file")
+            raise ReadError("corrupt_file")
         if info.flag_bits & _REFUSED_FLAGS:
-            raise _Refused("encrypted")
+            raise ReadError("encrypted")
         if info.compress_type not in _ALLOWED_COMPRESSION:
-            raise _Refused("unsupported_compression")
+            raise ReadError("unsupported_compression")
         limit = self._limits.max_member_bytes
         if info.file_size > limit:
-            raise _Refused("too_large_inside")
+            raise ReadError("too_large_inside")
         content = bytearray()
         with self._zip.open(info) as part:
             while chunk := part.read(64 * 1024):
@@ -224,16 +214,16 @@ class _Workbook:
                 # Backstop: zipfile stops at the declared size and fails the
                 # CRC check, but the limit must hold whatever zipfile does.
                 if len(content) > limit:
-                    raise _Refused("too_large_inside")
+                    raise ReadError("too_large_inside")
         self._bytes_read += len(content)
         if self._bytes_read > self._limits.max_total_bytes:
-            raise _Refused("too_large_inside")
+            raise ReadError("too_large_inside")
         return bytes(content)
 
     def _xml(self, name: str) -> ET.Element:
         text = self._member(name).decode("utf-8")
         if _DOCTYPE.search(text):
-            raise _Refused("doctype_not_allowed")
+            raise ReadError("doctype_not_allowed")
         return ET.fromstring(text)
 
     def _relationship_targets(self) -> dict[str, str]:
@@ -241,9 +231,9 @@ class _Workbook:
         targets = {}
         for rel in self._xml(_WORKBOOK_RELS).iter(f"{_PKG_REL}Relationship"):
             if (rel.get("TargetMode") or "").lower() == "external":
-                raise _Refused("external_link")
+                raise ReadError("external_link")
             if (rel.get("Type") or "").lower().endswith("/vbaproject"):
-                raise _Refused("macros_not_allowed")
+                raise ReadError("macros_not_allowed")
             rel_id, target = rel.get("Id"), rel.get("Target")
             if not rel_id or not target:
                 continue
@@ -275,7 +265,7 @@ class _Workbook:
                 else:
                     column, ref_row = _parse_ref(ref)
                     if ref_row != row_number:
-                        raise _Refused("corrupt_file")  # a cell outside its row
+                        raise ReadError("corrupt_file")  # a cell outside its row
                 self._check_order(sheet_number, row_number, column)
                 value = _cell_value(cell, shared)
                 if value is None or not value.strip():
@@ -286,16 +276,16 @@ class _Workbook:
     def _check_order(self, sheet: int, row: int, column: int) -> None:
         position = (sheet, row, column)
         if position <= self._last_cell:
-            raise _Refused("corrupt_file")  # repeated or backwards cell
+            raise ReadError("corrupt_file")  # repeated or backwards cell
         self._last_cell = position
 
     def _count(self, value: str) -> None:
         self._cells += 1
         self._text_chars += len(value)
         if self._cells > self._limits.max_cells:
-            raise _Refused("too_many_cells")
+            raise ReadError("too_many_cells")
         if self._text_chars > self._limits.max_text_chars:
-            raise _Refused("too_much_text")
+            raise ReadError("too_much_text")
 
 
 def _cell_value(cell: ET.Element, shared: list[str]) -> str | None:
@@ -331,13 +321,13 @@ def _parse_ref(ref: str) -> tuple[int, int]:
     """ "B7" -> (column 2, row 7). O(len(ref))."""
     match = _CELL_REF.fullmatch(ref)
     if match is None:
-        raise _Refused("corrupt_file")
+        raise ReadError("corrupt_file")
     column = 0
     for letter in match.group(1):
         column = column * 26 + (ord(letter) - ord("A") + 1)
     row = int(match.group(2))
     if column > _MAX_COLUMN or row > _MAX_ROW:
-        raise _Refused("corrupt_file")
+        raise ReadError("corrupt_file")
     return column, row
 
 
@@ -346,7 +336,7 @@ def _whole_number(text: str) -> int:
     damaged file. The length check comes first, so a huge digit string never
     reaches int()."""
     if len(text) > 7 or not text.isascii() or not text.isdigit():
-        raise _Refused("corrupt_file")
+        raise ReadError("corrupt_file")
     return int(text)
 
 
@@ -354,7 +344,7 @@ def _row_number(text: str | None, *, default: int) -> int:
     """A row's number from its "r" attribute, or the next row if it has none."""
     row = default if text is None else _whole_number(text)
     if not 1 <= row <= _MAX_ROW:
-        raise _Refused("corrupt_file")
+        raise ReadError("corrupt_file")
     return row
 
 
@@ -362,5 +352,5 @@ def _shared_index(text: str, count: int) -> int:
     """A position in the shared strings list, which must exist."""
     index = _whole_number(text)
     if index >= count:
-        raise _Refused("corrupt_file")
+        raise ReadError("corrupt_file")
     return index

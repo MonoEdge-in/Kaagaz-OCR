@@ -3,7 +3,7 @@
 Why these are separate from the API: the SQL stays in one place, plain and
 reviewable. Every function except the two named below takes a connection from
 ``Database.customer(customer_id)`` and also filters on ``customer_id`` (two
-locks, docs/system-design/04).
+locks, docs/architecture.md).
 
 The exceptions use ``Database.system()``, because there is no customer yet:
 
@@ -103,20 +103,6 @@ def list_users(conn: Connection, customer_id: str) -> Sequence[RowMapping]:
         )
         .mappings()
         .all()
-    )
-
-
-def get_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping | None:
-    return (
-        conn.execute(
-            text(
-                "SELECT u.id, u.email, u.display_name, u.role, u.disabled, u.created_at"
-                " FROM users u WHERE u.customer_id = :c AND u.id = :u"
-            ),
-            {"c": customer_id, "u": user_id},
-        )
-        .mappings()
-        .first()
     )
 
 

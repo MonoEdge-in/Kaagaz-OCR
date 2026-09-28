@@ -7,7 +7,7 @@ Why some choices:
   the body is parsed, and the parsed part's file object goes straight into
   ``UploadService.accept``, which reads it once with a hard limit. The file is
   never read whole into memory here.
-* **The file name** is masked (IndianIdMasker), its path stripped and cut to
+* **The file name** has its path and control characters stripped and is cut to
   255 characters before it is stored. The raw name is never stored or logged.
 * **The original file** is served only once the virus check passed (clean,
   ready or needs_reader). A rejected file is never served, and neither is one
@@ -39,7 +39,6 @@ from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.policy import UploadPolicy
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.ingestion.service import UploadService
-from kaagaz.masking.identity import IndianIdMasker
 
 router = APIRouter()
 
@@ -71,11 +70,11 @@ _REJECT_STATUS = {
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def display_name(filename: str | None, masker: IndianIdMasker) -> str:
+def display_name(filename: str | None) -> str:
     """The name shown for an upload: path stripped, control characters removed,
-    identity numbers masked, at most 255 characters, "document" if nothing is left."""
+    at most 255 characters, "document" if nothing is left."""
     name = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
-    name = masker.mask(_CONTROL.sub("", name)).strip()[:MAX_NAME].strip()
+    name = _CONTROL.sub("", name).strip()[:MAX_NAME].strip()
     return name or "document"
 
 
@@ -120,7 +119,7 @@ def _accept(context: AppContext, user: CurrentUser, upload: UploadFile, limit: i
         result = service.accept(
             user.customer_id,
             upload.file,
-            display_name=display_name(upload.filename, context.masker),
+            display_name=display_name(upload.filename),
             uploaded_by=user.user_id,
         )
     except UploadRejected as rejected:

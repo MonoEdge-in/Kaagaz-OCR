@@ -5,7 +5,6 @@ import re
 import shlex
 import sys
 
-PROTECTED = re.compile(r"(^|[\s:+/])(main|master|trunk|develop|prod|production|release[\w./-]*)$")
 CATASTROPHIC_TARGETS = {"/", "/*", "//", "/.", "~", "~/", "~/*", "$HOME", "$HOME/", "$HOME/*",
                         "${HOME}", "${HOME}/", ".", "./", "./*", "..", "../", "*", ".*"}
 SYSTEM_DIR = re.compile(r"^/(bin|boot|dev|etc|home|lib|lib64|opt|proc|root|sbin|srv|sys|usr|var|"
@@ -29,10 +28,6 @@ INFRA_ASK = [
     (re.compile(r"\bredis-cli\b.*\bflush(all|db)\b", re.I), "flushes Redis data"),
     (re.compile(r"\bdropdb\b|\bmongo(sh)?\b.*dropDatabase", re.I), "drops a database"),
 ]
-WRAPPERS = {"time", "nohup", "nice", "command", "builtin", "exec", "noglob", "stdbuf", "xargs", "ionice"}
-PIP_VALUE_FLAGS = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url",
-                   "--extra-index-url", "-t", "--target", "--prefix", "-f", "--find-links", "--root",
-                   "--src", "--python-version", "--platform", "--only-binary", "--no-binary"}
 DEP_ADVICE = ("verify each exists on the official registry under this exact name, is maintained, widely "
               "used and license-compatible, and that existing deps/stdlib can't do the job")
 

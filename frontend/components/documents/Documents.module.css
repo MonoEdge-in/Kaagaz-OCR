@@ -349,10 +349,6 @@ table.docs tbody tr[data-selected="true"] .selectCell input {
   margin-inline-end: auto;
 }
 
-.selectionBar .btn {
-  min-height: 36px;
-}
-
 .selectionError {
   flex-basis: 100%;
   margin: 0;

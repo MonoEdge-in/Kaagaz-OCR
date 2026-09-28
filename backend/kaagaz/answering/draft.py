@@ -30,7 +30,6 @@ from typing import Any, Literal
 
 from kaagaz.ai.client import ModelClient, ModelOutputError
 from kaagaz.answering.evidence import Evidence
-from kaagaz.masking.identity import IndianIdMasker
 
 MAX_EXTRACTIVE_SENTENCES = 3
 
@@ -83,16 +82,9 @@ class Draft:
 
 
 def user_prompt(question: str, evidence: Sequence[Evidence]) -> str:
-    """The question and the fenced evidence, masked again and escaped: neither can add a tag.
-
-    Text is masked at capture already; masking again right before the model
-    costs little and keeps never-do 3 true even if a caller forgot.
-    """
-    masker = IndianIdMasker()
-    blocks = [
-        f'<evidence id="{item.n}">\n{_escape(masker.mask(item.hit.text))}\n</evidence>' for item in evidence
-    ]
-    question_block = "<question>\n" + _escape(masker.mask(question)) + "\n</question>"
+    """The question and the fenced evidence, escaped: neither can add a tag."""
+    blocks = [f'<evidence id="{item.n}">\n{_escape(item.hit.text)}\n</evidence>' for item in evidence]
+    question_block = "<question>\n" + _escape(question) + "\n</question>"
     return "Question:\n" + question_block + "\n\nEvidence:\n" + "\n".join(blocks)
 
 
@@ -122,7 +114,6 @@ def extractive_draft(keywords: Sequence[str], evidence: Sequence[Evidence]) -> D
     top = max((c[0] for c in candidates), default=0)
     best = sorted((c for c in candidates if c[0] == top), key=lambda c: (c[1], c[2]))
     best = best[:MAX_EXTRACTIVE_SENTENCES]
-    best.sort(key=lambda c: (c[1], c[2]))
     sentences = [DraftSentence(text=line, evidence=[n]) for _, _, _, line, n in best]
     return Draft("answered" if sentences else "not_found", sentences)
 
