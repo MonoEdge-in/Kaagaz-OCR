@@ -1,66 +1,133 @@
-# Kaagaz-OCR architecture
+# Kaagaz architecture and decisions
 
-Kaagaz-OCR reads English business documents, turns them into typed PostgreSQL tables and searchable text, and manages the files. A separate NL-to-SQL agent, built with Hermes, answers questions from that data. Everything is built on a laptop first and later hosted in a dedicated AWS account in Mumbai.
+The one file for the system design and every decision. Keep it current: when the design or a decision changes, update this file in the same pull request. Don't add another design or decision file beside it.
 
-## Design rules
+## The product
 
-- **Documents stay in our account.** Every model runs on hardware we control. Temporal Cloud, when hosted, sees only IDs.
-- **One database holds everything.** Tables, document text and search vectors all live in PostgreSQL, so one query can combine them.
-- **Uploads add rows, never tables.** The schema changes only when we add a document type, through a reviewed migration.
-- **Every value is traceable.** Each extracted value points to its page, its position on that page and the model that read it.
-- **GPUs run only while there's work.** In AWS, a Spot GPU starts when scanned pages are waiting and stops when the queue is empty.
-- **Same code on the laptop and in AWS.** Everything runs in Docker; moving to AWS changes settings, not code.
+Customers upload business documents (invoices, registers, receipts, statements) and ask questions about them in chat, including Hinglish questions. Every answer points to its source: the document, the page and the exact spot. If the documents don't hold the answer, the system says so. Several customer companies share one system, and none of them ever sees another's data. At launch it reads English documents only.
+
+## The rules the design is built around
+
+1. **Customers never cross.** Every query runs with the current customer set, and the database refuses anything else.
+2. **No source, no answer.** Every value and every piece of text carries its document, page and position.
+3. **Verified or needs review, never guessed.** "Unreadable" and "not found" are valid answers.
+4. **Readers sit behind one plug socket.** Swapping the reader for a file type touches one module.
+
+## The parts
+
+| Part | On the laptop | In AWS (Mumbai) |
+|---|---|---|
+| Web app: Next.js with PDF.js | `frontend` container, port 3000 | the same image |
+| API: FastAPI, under `/api/*` | `api` container, port 8000 | the same image |
+| Worker: one job at a time | `worker` container | the same image |
+| Database: PostgreSQL 17 with pgvector and pg_trgm | `postgres` | Amazon RDS |
+| File storage, through the S3 API | SeaweedFS | Amazon S3 |
+| Job queue, through the SQS API, with a failure bin | ElasticMQ | Amazon SQS |
+| Virus scanner | ClamAV | ClamAV (provisional) |
+| Local AI: chat, embeddings and an optional vision reader | Ollama; everything works without it | provisional |
+
+The browser talks only to the web app, which forwards `/api/*` to the API, so the session cookie stays first-party.
 
 ## One upload, step by step
 
-| Step | What happens | Runs on | Writes |
-|---|---|---|---|
-| Upload | The browser gets a signed link from the API and sends the file straight to storage. The API then starts one Temporal workflow. | API, S3 | `incoming/{upload_id}/` |
-| Register | SHA-256 fingerprint; a known file links to the existing document, a new one is filed. | CPU worker | `documents`, `originals/` |
-| Route | Spreadsheets and text-layer PDFs stay on CPU; scans and photos go to the GPU queue. | CPU worker | `pages`, `pages/` |
-| Parse | Pages become blocks (headings, paragraphs, table cells, stamps, signatures) with positions. PaddleOCR reads scans; Qwen3.5 re-reads handwriting. | CPU and GPU workers | `blocks`, `parsed/` |
-| Extract | Qwen3.5 identifies the document type and fills its schema as valid JSON. | GPU worker | typed tables, `field_sources` |
-| Validate | Rule checks; one retry on the cropped region; then a review task, and the workflow waits for a person. | CPU worker | `review_tasks` |
-| Index | Chunks along sections and tables, each with a context header, embedded with Qwen3-Embedding-0.6B. | CPU worker | `chunks` |
+1. **Upload** (API). The file is read once: SHA-256 fingerprint, size limit, and the type taken from its first bytes, never from its name. A file this customer already uploaded is returned as a duplicate. Otherwise it is stored at `customers/{customer}/documents/{document}/original`, recorded as `received`, and a job naming (customer, document) goes on the queue. If a step fails, the earlier steps are undone, so a retry works.
+2. **Scan** (worker). Only an explicit CLEAN verdict lets a file through, and `rejected` is final. A scanner that's down means a retry later, and the file is never opened meanwhile.
+3. **Prepare.** Page sizes, plus a picture of each page for PDFs and photos at `.../pages/{n}.png`.
+4. **Read** through the plug socket: CSV, Excel, PDF text (pdfplumber) with a second PDF reader (PDFium), and RapidOCR for scans. A type with no reader is marked `needs_reader`.
+5. **Pieces and values.** Text is split into pieces for search, each with its regions. Values come from spreadsheet columns and labelled invoice fields. Every value is labelled verified or needs review, and this customer's remembered corrections are applied.
+6. **Save** in one transaction that replaces any earlier run, so a job delivered twice is safe. The document must still be clean at this point.
+7. **Index.** A meaning vector is made for each piece if a model is on. The document is then `ready`.
 
-## Components
+Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `needs_reader` and `failed`, each failure with a short code. A job that keeps failing goes to the failure bin, and one bad file never blocks the ones behind it.
 
-| Job | On the laptop | In AWS |
-|---|---|---|
-| API and basic UI | FastAPI in Docker | Same container on an EC2 app server |
-| Workflow engine | Temporal dev server | Temporal Cloud |
-| Database | PostgreSQL 17 + pgvector in Docker | RDS PostgreSQL, Aurora later |
-| File storage | SeaweedFS (S3 API) | Amazon S3 with lifecycle rules |
-| Reading scans | PaddleOCR PP-StructureV3 on CPU | PaddleOCR-VL-1.6 on a Spot L4 GPU |
-| Handwriting and fields | Qwen3.5 2B or 4B through Ollama | Qwen3.5-9B through vLLM |
-| Search embeddings | Qwen3-Embedding-0.6B on CPU | Same, on the app server |
-| Sign-in | Dev login | Amazon Cognito |
-| Infrastructure | Docker Compose | Terraform and GitHub Actions |
+## One question, step by step
 
-## Where data lives
+1. Hinglish words and dates ("last month", in `TIMEZONE`) are understood.
+2. A question asking for a number or a list runs a fixed, tested query, never SQL written by an AI.
+3. Anything else searches this customer's pieces three ways: exact words (full-text), typo tolerant (trigram) and meaning (pgvector). The three rankings are merged into one.
+4. If the evidence isn't strong enough, the answer is "I couldn't find this in your documents."
+5. The answer is drafted from the evidence only, with document text treated as data, never as instructions. Any claim without a piece and position is dropped, and each answer is labelled verified or needs review.
 
-- **S3** holds the files: `incoming/`, `originals/`, `pages/` and `parsed/`.
-- **PostgreSQL** holds everything else, in one schema created once by migrations:
-  - Files and management: `uploads`, `documents`, `folders`, `tags`, `document_versions`, `document_links`, `audit_log`.
-  - Document content: `pages`, `blocks`.
-  - Extraction and quality: `extraction_runs`, typed tables such as `invoices` and `invoice_lines`, `extracted_fields`, `field_sources`, `review_tasks`.
-  - Search: `chunks`, with a pgvector embedding and a full-text index.
+## Values, review and corrections
 
-## How questions get answered
+Every value keeps its raw reading, the second reading if there is one, its page, its region, the reader and a confidence score. Labels and their reasons:
 
-The NL-to-SQL agent connects with a read-only database user. It writes SQL for numbers and lists, and calls a search tool (a small MCP server that runs next to Hermes) for questions about what documents say. It can combine the two: filter documents with SQL, then search only inside them. A data dictionary in Markdown explains each table, column, unit and join.
+| Label | Reason |
+|---|---|
+| verified | `direct_cell` (a spreadsheet cell), `readers_agree`, `corrected`, `learned_correction` |
+| needs review | `readers_disagree`, `single_reader`, `low_confidence` |
+
+A reviewer picks the first reading, the second, or types the value. The fix is logged in `corrections`. If they choose to remember it, it goes into `learned_corrections` and is applied to this customer's later documents. The original file never changes.
+
+## Data and customer separation
+
+Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`. Every one of them except `customers` carries the customer.
+
+Customers are kept apart by two locks:
+
+1. **The database lock.** Row level security is on every customer table. The app connects through `kaagaz_app`, a role that isn't a superuser, doesn't own the tables and can't bypass the rules. Every transaction sets the current customer first.
+2. **The application lock.** Every query also names the customer, and no function lists across customers.
+
+The `isolation` tests prove both on every pull request.
+
+## Security
+
+| Threat | Control |
+|---|---|
+| One customer reaching another's data | Both locks above; a job naming another customer's document stops before anything is read |
+| A malicious file | Virus scan first, deny by default; caps on sizes, cells, pages and pixels; no macros; nothing external |
+| Leaks through logs or errors | Errors and logs carry ids and short codes only, never file content or file names |
+| Identity numbers | Not masked: kept and shown as read (see Decisions). Logs and errors still carry ids and codes only |
+| Document text steering the AI | Text is quoted as data; links and markup are stripped from answers |
+| Forged requests | A signed session cookie, `X-Requested-With: kaagaz` on every change, and a rate limit |
+| Secrets and dependencies | No secrets in git, and CI checks for them; every new library needs approval; AGPL, SSPL and GPL v3 are refused |
+
+## Code map
+
+| Folder | What |
+|---|---|
+| `backend/kaagaz/api/` | Sign-in, documents, chat, review, admin, health |
+| `backend/kaagaz/ingestion/`, `scanning/`, `jobs/`, `pipeline.py` | Upload, the virus gate, the worker loop, and one job end to end |
+| `backend/kaagaz/preparing/`, `reading/` | Page pictures, and the reader plug socket with its readers |
+| `backend/kaagaz/chunking/`, `extraction/` | Pieces, and values with their labels |
+| `backend/kaagaz/search/`, `answering/`, `ai/` | Search, answers, and the one client for the local model |
+| `backend/kaagaz/adapters/`, `db/`, `migrations/` | S3, SQS and clamd; every SQL statement; the schema |
+| `frontend/lib/`, `app/`, `components/` | Every backend call, the screens, and their parts |
+
+**Adding a reader.**
+- A reader has one method, `read(data) -> spans`, where each span has a non-empty cleaned `text`, a `raw` value and a `location`.
+- It raises `ReadError("short_code")` for a damaged file, and `NoReader(type)` for a type it doesn't handle.
+- It never stores, logs or sends anything; the pipeline does that.
+- To register it, add one entry to the socket's mapping, keyed by the type in `kaagaz/ingestion/sniff.py`.
+- Any library it needs is a new dependency, which needs approval first.
+
+**Frontend rules.**
+- Document text and server messages are shown as plain text, never as HTML.
+- Hiding a button is only a hint: the server checks the role on every request.
+- Colours come only from the tokens in `app/globals.css`.
 
 ## Decisions
 
-The architecture page has the full reasoning, including what we rejected and why. New decisions are added here.
+**Made**
 
-- **Qwen, not Gemma 4.** Gemma 4's strongest document model needs a 48 GB GPU, about 2.3 times the hourly cost of the 24 GB L4. The Gemma size that fits an L4 has no clear edge over Qwen3.5-9B on documents, and one model family keeps licensing and upgrades simple.
-- **Temporal** runs each document's steps with retries, and survives crashes and waits of several days for review.
-- **No separate vector database or cache yet.** pgvector and PostgreSQL full-text search cover search. Aurora, a read replica and ElastiCache come when load needs them.
+| Decision | Why |
+|---|---|
+| Several customers in one database, kept apart by row level security plus a customer filter in every query | Cheaper than a database per customer, and still safe |
+| SQS-style queue with a failure bin and at-least-once delivery; jobs are safe to run twice | Simple, scales by adding workers, and one bad file never blocks the rest |
+| SeaweedFS on the laptop (MinIO is AGPL) and S3 in AWS, through the same code | One storage client everywhere |
+| Numbers only come from fixed, tested queries | AI-written SQL can be confidently wrong |
+| No masking of Aadhaar or PAN numbers: they're kept and shown exactly as read (decided 28 Sep 2026) | Replaces the earlier mask-at-capture rule; the masking code is removed |
+| Everything works with the AI off (`MODEL_ENABLED=false`) | The laptop and CI run without models; a model that's down only loses meaning search |
 
-## Related pages
+**Open**
 
-Private pages; ask for access if a link doesn't open.
+| Decision | Blocks |
+|---|---|
+| Which design is current: this chat product, or the Document-to-SQL pipeline plan (Temporal, PaddleOCR, typed invoice tables, a search tool for an NL-to-SQL agent) | Which gaps get built next |
+| The AI that reads scans, and the second independent reader (today RapidOCR, and an optional `MODEL_VISION`) | Scan and handwriting quality |
+| What "verified" promises, in writing | The labels users see |
+| The chat and embedding models (`MODEL_CHAT`, `MODEL_EMBED`) | Answer quality and speed |
+| The virus scanner and upload limits in AWS (values marked PROVISIONAL in `.env.example`) | Hosting |
+| The go or no-go bar for launch, as a number | Launch |
 
-- [Document-to-SQL Pipeline](https://claude.ai/artifact/7ATLDAJRxG3Qaab16NhjN8): the full architecture, with diagrams.
-- [Five-Day Laptop Build](https://claude.ai/artifact/4TmQt2EUoM784YqgWeyQUo): the day-by-day checklist.
+Not built yet, against the Document-to-SQL plan: folders, tags and versions; the typed `invoices` and `invoice_lines` tables and the document-type step; rule checks such as whether the totals add up; and a search tool outside chat.

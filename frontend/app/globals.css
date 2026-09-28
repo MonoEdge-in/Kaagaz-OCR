@@ -54,7 +54,6 @@
   --fs-lg: clamp(1.125rem, 1.06rem + 0.3vw, 1.25rem);
   --fs-xl: clamp(1.25rem, 1.15rem + 0.5vw, 1.5625rem);
   --fs-2xl: clamp(1.5rem, 1.3rem + 1vw, 1.9375rem);
-  --fs-3xl: clamp(1.875rem, 1.5rem + 1.8vw, 2.4375rem);
 
   /* Spacing (4/8 scale), sizes, radius, elevation, motion, layers */
   --space-1: 4px;
@@ -76,9 +75,7 @@
   --t-med: 160ms;
   --z-sticky: 10;
   --z-header: 20;
-  --z-backdrop: 30;
   --z-drawer: 40;
-  --z-toast: 50;
   --z-skip: 60;
   --sidebar-w: 240px;
   --content-max: 1120px;
@@ -87,18 +84,6 @@
      sticky offsets and full-height screens. */
   --topbar-space: calc(var(--topbar-h) + env(safe-area-inset-top));
   --backdrop: rgb(0 0 0 / 0.45);
-
-  /* Old names, kept so every existing module still works */
-  --text: var(--fg);
-  --muted: var(--fg-muted);
-  --accent-text: var(--accent-fg);
-  --verified-text: var(--verified-fg);
-  --review-text: var(--review-fg);
-  --danger-text: var(--danger-fg);
-  --highlight: var(--hl-fill);
-  --highlight-border: var(--hl-border);
-  --radius: var(--r-md);
-  --gap: var(--space-4);
 
   color-scheme: light;
 }
@@ -566,18 +551,6 @@ select.input {
   border: 2px dashed var(--review-solid);
   border-radius: 4px;
   padding: 1px 9px;
-}
-
-.badge-danger {
-  background: var(--danger-bg);
-  color: var(--danger-fg);
-  border-radius: var(--r-sm);
-}
-
-.badge-neutral {
-  background: var(--surface-2);
-  color: var(--fg-muted);
-  border-radius: var(--r-sm);
 }
 
 /* Document status: square corners, outlined, a dot, ink or neutral colours. */

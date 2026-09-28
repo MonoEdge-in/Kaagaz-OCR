@@ -20,10 +20,6 @@ a.wordmark:hover {
   color: var(--fg);
 }
 
-.large {
-  font-size: var(--fs-2xl);
-}
-
 .reader {
   position: absolute;
   inset-inline-start: calc(100% + var(--space-2));

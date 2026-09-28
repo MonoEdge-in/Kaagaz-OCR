@@ -20,11 +20,10 @@ export interface DrawerProps {
   onClose(): void;
   title: string;
   id: string;
-  side?: "start" | "end";
   children: ReactNode;
 }
 
-export function Drawer({ open, onClose, title, id, side = "start", children }: DrawerProps) {
+export function Drawer({ open, onClose, title, id, children }: DrawerProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
   const lastPath = useRef<string | null>(null);
@@ -77,7 +76,7 @@ export function Drawer({ open, onClose, title, id, side = "start", children }: D
     <dialog
       ref={dialogRef}
       id={id}
-      className={`${styles.dialog} ${side === "end" ? styles.end : styles.start}`}
+      className={`${styles.dialog} ${styles.start}`}
       aria-labelledby={titleId}
       onCancel={(event) => {
         // Esc: let the parent's state close it, so the two never disagree.

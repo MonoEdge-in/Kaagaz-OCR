@@ -30,5 +30,5 @@ class AnswerLike(Protocol):
 
 class Answers(Protocol):
     def answer(self, customer_id: str, question: str) -> AnswerLike:
-        """``question`` is already masked."""
+        """``question`` is the stripped question text."""
         ...

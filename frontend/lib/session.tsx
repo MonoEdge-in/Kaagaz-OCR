@@ -15,7 +15,6 @@ import type { Me } from "./types";
 
 export interface Session {
   me: Me;
-  refresh(): Promise<void>;
 }
 
 const SessionContext = createContext<Session | null>(null);
@@ -54,13 +53,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (state.kind === "signed_out") router.replace("/login");
   }, [state.kind, router]);
 
-  const refresh = useCallback(async () => {
-    setState(await load());
-  }, [load]);
-
   const session = useMemo<Session | null>(
-    () => (state.kind === "signed_in" ? { me: state.me, refresh } : null),
-    [state, refresh],
+    () => (state.kind === "signed_in" ? { me: state.me } : null),
+    [state],
   );
 
   if (session) {

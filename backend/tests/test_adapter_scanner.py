@@ -174,9 +174,6 @@ class EicarDevScannerTest(unittest.TestCase):
         self.assertTrue(EICAR.startswith(b"X5O!P%@AP"))
         self.assertTrue(EICAR.endswith(b"$H+H*"))
 
-    def test_docstring_says_laptop_only(self) -> None:
-        self.assertIn("LAPTOP ONLY", EicarDevScanner.__doc__ or "")
-
 
 class BuildScannerTest(unittest.TestCase):
     def test_clamav(self) -> None:

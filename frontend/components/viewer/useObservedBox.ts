@@ -1,7 +1,7 @@
 "use client";
 
 // Measures an element's content box (ResizeObserver) and, for lazy previews,
-// notes once it has come within `rootMargin` of the viewport
+// notes once it has come within 200px of the viewport
 // (IntersectionObserver). It is a callback ref, so state is set only from the
 // observers' callbacks: never during render and never in an effect body.
 
@@ -12,7 +12,7 @@ export interface ObservedBox {
   height: number;
 }
 
-export function useObservedBox(lazy: boolean, rootMargin = "200px") {
+export function useObservedBox(lazy: boolean) {
   const [box, setBox] = useState<ObservedBox | null>(null);
   const [seen, setSeen] = useState(false);
 
@@ -50,7 +50,7 @@ export function useObservedBox(lazy: boolean, rootMargin = "200px") {
                 near.disconnect();
               }
             },
-            { rootMargin },
+            { rootMargin: "200px" },
           );
           near.observe(element);
           stops.push(() => near.disconnect());
@@ -60,7 +60,7 @@ export function useObservedBox(lazy: boolean, rootMargin = "200px") {
         for (const stop of stops) stop();
       };
     },
-    [lazy, rootMargin],
+    [lazy],
   );
 
   return { ref, box, near: !lazy || seen };
