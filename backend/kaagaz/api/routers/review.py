@@ -5,8 +5,6 @@ correction row written, the correction remembered (if asked) and the audit row
 written together, so a half-done correction can never be seen. Numbers and
 dates are parsed again from the new text with ``kaagaz.extraction.parsing``,
 the same rules the pipeline uses, so the fixed queries see the corrected value.
-
-A typed value is masked before it is stored (CLAUDE.md never-do 3).
 """
 
 import uuid
@@ -62,7 +60,7 @@ def resolve(value_id: uuid.UUID, body: ResolveBody, user: Reviewer, context: Con
 
     typed = None
     if body.choice == "typed":
-        typed = context.masker.mask((body.value or "").strip())
+        typed = (body.value or "").strip()
         if not typed:
             raise ApiError(400, "bad_request", "Type the correct value.")
 

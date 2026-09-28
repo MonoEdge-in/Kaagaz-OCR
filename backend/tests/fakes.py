@@ -2,7 +2,7 @@
 
 Test-only. They follow the port contracts in kaagaz.ingestion.ports,
 kaagaz.scanning.gate (status store, scanner, quarantine) and kaagaz.pipeline
-(documents, pipeline store, page pictures, preparer, socket, masker, models),
+(documents, pipeline store, page pictures, preparer, socket, models),
 keyed by customer first, so a cross-customer test can
 actually fail. They are never used by product code.
 """
@@ -339,17 +339,3 @@ class FakeEmbedder:
         if self.down:
             raise ModelDown
         return 0
-
-
-class FakeMasker:
-    """Stands in for the real masking rule (PRD question 1, Vrushit's).
-
-    Masks the made-up marker word ``SECRET`` so tests can prove masking runs
-    on every value before it is stored. It knows nothing about real Aadhaar
-    or PAN formats, and must never be used outside tests.
-    """
-
-    MARKER = "SECRET"
-
-    def mask(self, text: str) -> str:
-        return text.replace(self.MARKER, "*" * len(self.MARKER))

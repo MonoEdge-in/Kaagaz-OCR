@@ -3,7 +3,7 @@
 Implements ``DocumentRepository`` (kaagaz.ingestion.ports) and ``StatusStore``
 (kaagaz.scanning.gate). Every method opens its own transaction as the given
 customer, so row level security and the explicit ``customer_id`` filter both
-apply (two locks, docs/system-design/04).
+apply (two locks, docs/architecture.md).
 
 Status writes never move a document out of ``rejected``: the UPDATE says so,
 and a trigger refuses it as well (the gate's adapter contract).

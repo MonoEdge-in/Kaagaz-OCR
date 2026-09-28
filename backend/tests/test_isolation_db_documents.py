@@ -1,7 +1,7 @@
 """Row level security on the documents table, against a real PostgreSQL.
 
 Customer B uses customer A's exact ids and fingerprint and must see nothing,
-change nothing and be told nothing (docs/system-design/04, two locks).
+change nothing and be told nothing (docs/architecture.md, two locks).
 """
 
 import uuid

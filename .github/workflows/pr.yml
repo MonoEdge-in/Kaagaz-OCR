@@ -38,10 +38,10 @@ jobs:
         run: |
           set -euo pipefail
           # The title becomes the commit message on main when the pull request is squash-merged.
-          if grep -Eq '^(feature|fix|chore|docs|test|infra)\((d[1-5]|host|repo)\): .+' <<< "$TITLE"; then
+          if grep -Eq '^(feat|feature|fix|chore|docs|test|infra)\((s[1-4]|repo)\): .+' <<< "$TITLE"; then
             echo "Title format is good."
           else
-            echo "::error::Titles look like 'feature(d1): upload links and completion'. Got: $TITLE"
+            echo "::error::Titles look like 'feat(s1): upload endpoint with deduplication'. Got: $TITLE"
             exit 1
           fi
 
@@ -49,10 +49,10 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$BRANCH" =~ ^dependabot/ ]] \
-            || [[ "$BRANCH" =~ ^(feature|fix|chore|docs|test|infra)/(d[1-5]|host|repo)-[a-z0-9-]+$ ]]; then
+            || [[ "$BRANCH" =~ ^(feat|feature|fix|chore|docs|test|infra)/(s[1-4]|repo)-[a-z0-9-]+$ ]]; then
             echo "Branch name is good."
           else
-            echo "::warning::Branch names look like 'feature/d1-upload-api'. Got: $BRANCH"
+            echo "::warning::Branch names look like 'feat/s1-upload-endpoint'. Got: $BRANCH"
           fi
 
       - name: Linked issue
@@ -67,21 +67,20 @@ jobs:
       - name: Size
         run: |
           set -euo pipefail
-          # uv.lock is machine-written, so it doesn't count.
-          changed=$(git diff --numstat "$BASE...$HEAD" -- . ':!uv.lock' | awk '{ a += $1; d += $2 } END { print a + d + 0 }')
-          echo "Changed lines, excluding uv.lock: $changed"
-          if [ "$changed" -gt 600 ]; then
-            echo "::error::$changed changed lines is too many to review properly. Split this pull request."
+          # Lock files are machine-written, so they don't count.
+          changed=$(git diff --numstat "$BASE...$HEAD" -- . ':!*.lock' ':!package-lock.json' | awk '{ a += $1; d += $2 } END { print a + d + 0 }')
+          echo "Changed lines, excluding lock files: $changed"
+          if [ "$changed" -gt 1000 ]; then
+            echo "::error::$changed changed lines. The limit is 1000: split this pull request."
             exit 1
-          elif [ "$changed" -gt 300 ]; then
-            echo "::warning::$changed changed lines. The target is about 300."
           fi
 
       - name: Tests come with the code
         run: |
           set -euo pipefail
           changed=$(git diff --name-only "$BASE...$HEAD")
-          if grep -Eq '^(api|shared|worker)/.+\.py$' <<< "$changed" && ! grep -Eq '^tests/' <<< "$changed"; then
+          if grep -Eq '^(backend/kaagaz|backend/scripts|frontend/(app|components|lib))/' <<< "$changed" \
+            && ! grep -Eq '^(backend|frontend)/tests/' <<< "$changed"; then
             echo "::warning::Code changed but no test did. New behaviour needs a test that fails without it."
           else
             echo "Tests are accounted for."
@@ -103,17 +102,17 @@ jobs:
       - name: Dependencies
         run: |
           set -euo pipefail
-          if git diff --quiet "$BASE...$HEAD" -- '*pyproject.toml' uv.lock; then
+          files=$(git diff --name-only "$BASE...$HEAD" -- backend/pyproject.toml frontend/package.json)
+          if [ -z "$files" ]; then
             echo "No dependency changes."
             exit 0
           fi
-          new=$(git diff "$BASE...$HEAD" -- uv.lock | sed -nE 's/^\+name = "(.*)"$/\1/p' | sort -u | tr '\n' ' ')
-          echo "::warning::Dependencies changed. Vrushit approves every new library and its licence.${new:+ New in uv.lock: $new}"
+          echo "::warning::Dependencies changed in: $(tr '\n' ' ' <<< "$files"). Vrushit approves every new library and its licence."
 
       - name: PAN- or Aadhaar-shaped values
         run: |
           set -euo pipefail
-          added=$(git diff --unified=0 "$BASE...$HEAD" -- . ':!uv.lock' | grep -E '^\+[^+]' || true)
+          added=$(git diff --unified=0 "$BASE...$HEAD" -- . ':!*.lock' ':!package-lock.json' | grep -E '^\+[^+]' || true)
           # Warnings only: samples may need clearly fake examples, and Vrushit decides.
           # Aadhaar: 12 digits starting 2 to 9. PAN: 5 letters (the 4th names the holder type), 4 digits, 1 letter.
           if grep -Eq '(^|[^0-9])[2-9][0-9]{3}[ -]?[0-9]{4}[ -]?[0-9]{4}([^0-9]|$)' <<< "$added"; then

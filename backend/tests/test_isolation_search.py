@@ -2,7 +2,7 @@
 and embedding, and not even when the code names the wrong customer.
 
 Both locks are tested: row level security (the transaction's customer) and the
-explicit ``customer_id`` filter in every search query (docs/system-design/04).
+explicit ``customer_id`` filter in every search query (docs/architecture.md).
 """
 
 import pytest

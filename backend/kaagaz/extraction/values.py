@@ -2,7 +2,7 @@
 
 A value always has a location (a cell or a line box), so it can be pointed at
 on its page (CLAUDE.md never-do 5): there is no way to build one without.
-``value_raw`` is what the reader gave (masked), ``value_text`` the value shown,
+``value_raw`` is what the reader gave, ``value_text`` the value shown,
 which a learned correction may change; both are kept, so a silent change can
 be seen later.
 

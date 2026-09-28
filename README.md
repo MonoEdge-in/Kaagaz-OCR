@@ -37,7 +37,7 @@ Kaagaz reads scanned and digital documents (invoices, registers, receipts, state
 ## How a file becomes an answer
 
 ```
-Upload -> Virus scan -> Deduplicate -> Prepare (convert, deskew, save page images)
+Upload (fingerprint, skip duplicates) -> Virus scan -> Prepare (page sizes and page images)
        -> Read (direct extraction, or the reader plug socket for scans)
        -> Agree and validate -> Index (text pieces, coordinates, search)
 
@@ -52,23 +52,8 @@ Two rules hold the whole thing up:
 
 ## Product and system design
 
-The complete product specification and technical design are published in the
-repository so the intended behaviour, boundaries, and open decisions can be
-reviewed alongside the code:
-
-- [System design index](docs/system-design/README.md): architecture, ingestion,
-       answering, data and tenancy, security, operations, and decisions.
-- [Sprint 1 product specification](docs/prd/sprint-1.html): the full visual PRD
-       covering scope, acceptance criteria, work order, approvals, questions, and
-       risks.
-
-```mermaid
-flowchart LR
-              product["Product spec<br/>scope and acceptance"] --> design["System design<br/>flows and boundaries"]
-              design --> build["Backend implementation<br/>readers, pipeline, jobs"]
-              build --> evidence["Tests and source coordinates<br/>trustworthy answers"]
-              evidence --> product
-```
+- [docs/architecture.md](docs/architecture.md): the system design and every decision, in one file.
+- [docs/running-locally.md](docs/running-locally.md): running the product on a laptop, and checking each part works.
 
 ---
 
@@ -86,7 +71,7 @@ Locked:
 | Jobs | SQS with worker processes |
 | Infrastructure as code | AWS CDK |
 
-Still open, tracked in `docs/decisions/`:
+Still open, tracked in [docs/architecture.md](docs/architecture.md):
 
 - Which AI reads scanned pages.
 - The second, independent reader used for cross checking.
@@ -100,14 +85,9 @@ Still open, tracked in `docs/decisions/`:
 .github/          Pull request template, issue templates, CI, code owners
 backend/          FastAPI application, workers, readers, database migrations
 frontend/         Next.js application and the page viewer
-infra/            AWS CDK definitions
-docs/prd/         One PRD per sprint, written before any code
-docs/decisions/   Decision records: what we chose, what we rejected, and why
+infra/            Local stand-in config; AWS CDK definitions later
+docs/             architecture.md (design and decisions), running-locally.md
 ```
-
-`backend/` and `frontend/` arrive during Sprint 1. CI looks for them by name, so
-if you want different names, change `BACKEND_DIR` and `FRONTEND_DIR` at the top
-of `.github/workflows/ci.yml` at the same time.
 
 ---
 
@@ -118,29 +98,31 @@ Full steps, ports and the no-Docker path: [docs/running-locally.md](docs/running
 ```
 cp .env.example .env        # then set SESSION_SECRET to 32+ random characters
 docker compose up --build   # open http://localhost:3000
-docker compose exec api python -m kaagaz.cli seed-demo   # demo customers and users
+docker compose exec -e KAAGAZ_DEMO_PASSWORD='<12+ characters>' api python -m kaagaz.cli seed-demo
 ```
 
-Tests: `pytest -m isolation` then `pytest` from `backend/` (they need `DATABASE_URL`
-for the `db` tests), and `npm test` from `frontend/`.
+Tests: `pytest -m "not db"` from `backend/` needs no database; the full `pytest`, and most of
+`pytest -m isolation`, need `DATABASE_URL`. From `frontend/`: `npm test`.
 
 ---
 
 ## What CI checks on every pull request
 
-CI runs on pull requests into `master` only. Nothing runs after a merge.
+Two workflows run on every pull request into `main`: `ci.yml` checks the code, and `pr.yml` checks the pull request itself.
 
 **Guardrails, on every pull request, under a minute**
 
 - No `.env`, `.pem`, `.p12`, `id_rsa` or keystore files committed
 - No secret values added in the diff: AWS access keys, private key blocks, GitHub tokens, API keys, or a password inside a database connection string
-- Warns on anything shaped like an Aadhaar or PAN number, so a real one cannot slip in unnoticed
 - No leftover merge conflict markers
 - No file over 2MB, because customer documents belong in storage and stay in git forever once committed
-- Pull request size: warns over 300 changed lines, fails over 600
-- Warns if the pull request title is not in the form `feat(s1): short description`
 
-**Backend, once `backend/` exists**
+**The pull request itself (`pr.yml`)**
+
+- Fails if the title is not in the form `feat(s1): short description`, or if more than 1000 lines changed (lock files excluded)
+- Warns on: the branch name, no linked issue, code changed without tests, suppressed checks, new dependencies, and anything shaped like an Aadhaar or PAN number
+
+**Backend**
 
 - Runs against a real PostgreSQL 17 with pgvector, not a stand in, because isolation tests against a fake database prove nothing
 - **Customer isolation tests run first and on their own**, so a failure is the first thing you see. Any test proving customer A cannot reach customer B's data carries the pytest marker `isolation`
@@ -149,14 +131,12 @@ CI runs on pull requests into `master` only. Nothing runs after a merge.
 - Migrations applied from a completely empty database, so a broken migration is caught before it reaches a real one
 - The full `pytest` suite
 
-**Frontend, once `frontend/` exists**
+**Frontend**
 
 - `npm ci`, lint, typecheck, tests
 - A real production build, because an app that passes its tests and fails to build is a common and expensive surprise
 
-The backend and frontend jobs skip themselves until those folders exist, so CI is green today and starts enforcing the moment Sprint 1 creates them.
-
-> **Green CI is required to merge.** A ruleset on `master` rejects direct pushes and blocks a pull request until CI passes and Vrushit has approved it.
+> **Green CI is required to merge.** A ruleset on `main` rejects direct pushes and blocks a pull request until CI passes and Vrushit has approved it.
 
 ---
 
@@ -164,7 +144,7 @@ The backend and frontend jobs skip themselves until those folders exist, so CI i
 
 **Read [CONTRIBUTING.md](CONTRIBUTING.md) before you do anything else.** It is the full process, stage by stage: understanding a sprint, writing the PRD, getting it approved, picking up an issue, branching, building, testing, opening the pull request, review, merge, and sign off. It also lists the rules that are never bent, and what to do when you are stuck.
 
-If you use Claude Code here, [CLAUDE.md](CLAUDE.md) loads automatically and carries the same rules in a form the assistant follows. Two skills are set up for you: `/sprint-prd` drafts the sprint brief, and `/pr-check` checks your branch before you open a pull request. See [.claude/README.md](.claude/README.md).
+If you use Claude Code here, [CLAUDE.md](CLAUDE.md) loads automatically and carries the same rules in a form the assistant follows. The `/pr-check` skill checks your branch before you open a pull request.
 
 ---
 
