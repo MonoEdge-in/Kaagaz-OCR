@@ -12,18 +12,16 @@ The steps, in order, for one (customer, document):
 5. Read the bytes through the reader socket, then read them again with the
    second reader if the type has one. A type with no reader is marked "needs
    a reader" (its pages are kept) and the job ends normally.
-6. Mask identity numbers in every span, text and raw value, first and second
-   reading, before anything is kept (CLAUDE.md never-do 3).
-7. Pieces for search (kaagaz.chunking) and values for fixed queries
+6. Pieces for search (kaagaz.chunking) and values for fixed queries
    (kaagaz.extraction), each labelled verified or needs review. For scans,
    when a vision model is set, it reads each value's box again as the second
    reading. This customer's remembered corrections are applied last.
-8. Just before saving, the document must still be clean. Everything is saved
+7. Just before saving, the document must still be clean. Everything is saved
    in one transaction that replaces what an earlier run saved, so running the
    same job twice is safe (queues deliver at least once).
-9. Meaning vectors for the pieces, if a model is set. A model that is down
+8. Meaning vectors for the pieces, if a model is set. A model that is down
    only means no vectors: word and typo search still work.
-10. The page count, and the document is ready.
+9. The page count, and the document is ready.
 
 A failure a retry cannot fix marks the document failed with its short code.
 A rejected document stays rejected and keeps the reason it was rejected for,
@@ -101,7 +99,7 @@ class ReaderOutput:
     role: str  # "first" or "second"
     reader: str
     version: str
-    spans: tuple[Span, ...]  # masked
+    spans: tuple[Span, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,12 +116,6 @@ class DocumentContent:
 
 
 # --- what the processor needs (ports) ------------------------------------------
-
-
-class IdentityMasker(Protocol):
-    def mask(self, text: str) -> str:
-        """Return ``text`` with every full Aadhaar or PAN number masked."""
-        ...
 
 
 class DocumentStore(Protocol):
@@ -193,7 +185,6 @@ class DocumentProcessor:
         statuses: StatusStore,
         documents: DocumentStore,
         socket: ReadingSocket,
-        masker: IdentityMasker,
         prepare: Callable[[str, bytes], Prepared],
         sheet_pages: Callable[[list[Span]], Sequence[PageInfo]],
         page_images: PageImageStore,
@@ -209,7 +200,6 @@ class DocumentProcessor:
         self._statuses = statuses
         self._documents = documents
         self._socket = socket
-        self._masker = masker
         self._prepare = prepare
         self._sheet_pages = sheet_pages
         self._page_images = page_images
@@ -254,31 +244,27 @@ class DocumentProcessor:
         second = self._read_second(job, record.detected_type, data)
         heartbeat()
 
-        masked = [self._mask(span) for span in spans]
-        masked_second = None if second is None else [self._mask(span) for span in second]
-        # Lines that held an identity number: their pictures never go to a model.
-        with_identity = {s.location for s, m in zip(spans, masked, strict=True) if m != s}
         if not pages:
-            cells = [span for span in masked if isinstance(span.location, CellLocation)]
+            cells = [span for span in spans if isinstance(span.location, CellLocation)]
             pages = [PageRecord(info, False) for info in self._sheet_pages(cells)] if cells else []
 
         # The socket already refuses spans without a real location; this keeps the
         # rule here too, so no piece or value can be saved without one.
-        usable = [span for span in masked if _points_at(span.location)]
+        usable = [span for span in spans if _points_at(span.location)]
         pieces = pieces_from_rows(customer_id, document_id, usable)
         pieces += pieces_from_lines(customer_id, document_id, usable)
         values = values_from_cells(usable) + values_from_lines(usable)
-        readings = self._vision_readings(job, values, prepared.images, with_identity, heartbeat)
-        values = label_values(values, masked_second, readings)
+        readings = self._vision_readings(job, values, prepared.images, heartbeat)
+        values = label_values(values, second, readings)
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
             values = [_with_parsed(value) for value in apply_learned(values, learned)]
 
         reader, version = self._socket.reader_id(record.detected_type)
-        outputs = [ReaderOutput("first", reader, version, tuple(masked))]
-        if masked_second is not None:
+        outputs = [ReaderOutput("first", reader, version, tuple(spans))]
+        if second is not None:
             second_reader, second_version = self._socket.reader_id(record.detected_type, second=True)
-            outputs.append(ReaderOutput("second", second_reader, second_version, tuple(masked_second)))
+            outputs.append(ReaderOutput("second", second_reader, second_version, tuple(second)))
 
         require_clean(self._statuses, job)  # still clean just before writing
         self._store.save(DocumentContent(customer_id, document_id, pages, outputs, pieces, values, reader))
@@ -309,9 +295,6 @@ class DocumentProcessor:
             )
             return None
 
-    def _mask(self, span: Span) -> Span:
-        return replace(span, text=self._masker.mask(span.text), raw=self._masker.mask(span.raw))
-
     def _record_failure(self, job: Job, code: str) -> None:
         """Mark the document failed with ``code``. A document that is already
         rejected keeps the reason it was rejected for (only the scan's own
@@ -337,12 +320,11 @@ class DocumentProcessor:
         job: Job,
         values: list[ExtractedValue],
         images: Mapping[int, bytes],
-        skip: set[Location],
         heartbeat: Heartbeat,
     ) -> dict[Location, str]:
-        """A vision model's reading of each scanned value's box, by box. Boxes whose
-        line held an identity number are never sent. Stops at the first model error
-        (those values stay single reader). One page picture decoded at a time."""
+        """A vision model's reading of each scanned value's box, by box. Stops at the
+        first model error (those values stay single reader). One page picture decoded
+        at a time."""
         if self._vision is None:
             return {}
         wanted: dict[int, dict[BoxLocation, None]] = {}  # page -> boxes, in order, once each
@@ -350,7 +332,7 @@ class DocumentProcessor:
             box = value.location
             if not isinstance(box, BoxLocation) or value.confidence is None:
                 continue  # read directly, not scanned
-            if box not in skip and box.page in images:
+            if box.page in images:
                 wanted.setdefault(box.page, {})[box] = None
         readings: dict[Location, str] = {}
         for page_no, boxes in wanted.items():
@@ -368,9 +350,9 @@ class DocumentProcessor:
                             },
                         )
                         return readings
-                    masked = self._masker.mask(text).strip()
-                    if masked:
-                        readings[box] = masked
+                    text = text.strip()
+                    if text:
+                        readings[box] = text
             heartbeat()
         return readings
 
@@ -430,7 +412,6 @@ def build_processor(
     from kaagaz.ai.client import ModelOutputError, ModelUnavailable
     from kaagaz.db.documents import PgDocuments
     from kaagaz.db.pipeline_store import PgPipelineStore
-    from kaagaz.masking.identity import IndianIdMasker
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
     from kaagaz.reading.ocr import build_ocr_engine
     from kaagaz.reading.wiring import build_reader_socket
@@ -456,7 +437,6 @@ def build_processor(
         statuses=documents,
         documents=documents,
         socket=build_reader_socket(settings, build_ocr_engine(settings)),
-        masker=IndianIdMasker(),
         prepare=prepare,
         sheet_pages=sheet_pages,
         page_images=storage,

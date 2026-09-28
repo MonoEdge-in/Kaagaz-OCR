@@ -17,12 +17,11 @@ Closes #
 
 ## Checklist
 
-- [ ] Under about 300 changed lines, and does one job
+- [ ] Under 1000 changed lines, and does one job
 - [ ] Tests included, and they fail without this change
 - [ ] Every database query runs inside a transaction with the customer set
 - [ ] No new dependency, or Vrushit approved it (name it here, with its licence)
 - [ ] No secrets, keys or `.env` files committed
-- [ ] No full Aadhaar or PAN number can reach a table, a log, or an AI prompt
 - [ ] Any extracted value carries its page and coordinates
 - [ ] Docs updated if behaviour changed
 

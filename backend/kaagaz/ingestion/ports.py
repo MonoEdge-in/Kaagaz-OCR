@@ -1,9 +1,8 @@
 """What the upload service needs from the database, file storage and queue.
 
-These are interfaces only. The real ones (PostgreSQL with the customer
-separation rule from #2, S3 with the naming rule from #11, SQS) are not
-decided yet, so the service is written against these contracts and tested
-with in-memory fakes that live under tests/.
+These are interfaces only. The real ones are PgDocuments (kaagaz.db),
+S3Storage and SqsQueue (kaagaz.adapters); the tests use in-memory fakes
+that live under tests/.
 
 Every method takes ``customer_id`` first. There is no method that reads or
 lists across customers (CLAUDE.md never-do 1).
@@ -18,16 +17,15 @@ from typing import IO, Protocol
 
 @dataclass(frozen=True, slots=True)
 class DocumentRecord:
-    """One stored file. The raw file name is never kept: it can contain a PAN
-    or Aadhaar number (PRD question 1), so only a masked display name is."""
+    """One stored file. Only its display name is kept, never the raw file name."""
 
     customer_id: str
     document_id: str
     sha256: str
     size: int
     detected_type: str
-    # What the file list and source cards show: the uploaded name with identity
-    # numbers masked (PROVISIONAL, docs/system-design/04 "the file name").
+    # What the file list and source cards show: the uploaded name, cleaned by the API
+    # (path and control characters stripped, at most 255 characters).
     # The upload service never reads it; the API sets it.
     display_name: str = "document"
     uploaded_by: str | None = None  # the signed-in user's id

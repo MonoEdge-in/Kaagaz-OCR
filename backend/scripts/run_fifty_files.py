@@ -26,7 +26,6 @@ from kaagaz.ingestion.errors import UploadRejected
 from kaagaz.ingestion.policy import UploadPolicy
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import Worker
-from kaagaz.masking.identity import IndianIdMasker
 from kaagaz.pipeline import DocumentProcessor
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.socket import ReaderSocket
@@ -133,7 +132,6 @@ def main() -> None:
         statuses=statuses,
         documents=repo,
         socket=socket,
-        masker=IndianIdMasker(),
         prepare=FakePreparer().prepare,  # no page pictures: PDFs and photos have no reader here
         sheet_pages=fake_sheet_pages,
         page_images=MemoryPageImages(),

@@ -1,7 +1,7 @@
 """The whole product, once through, against a real PostgreSQL.
 
 Upload through the API, process each queued job with the production processor
-(real readers, masking, pieces, values, labels), then ask in the chat. Only
+(real readers, pieces, values, labels), then ask in the chat. Only
 file storage and the queue are in-memory stand-ins, and the virus scanner is
 the laptop EICAR scanner. No AI model: search runs without meaning vectors and
 answers quote the evidence.

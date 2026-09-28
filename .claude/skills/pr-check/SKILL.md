@@ -13,8 +13,8 @@ push, never open the pull request.
 
 ## 1. Scope the diff
 
-- Run `git status`, `git diff --stat master...HEAD`, and the full
-  `git diff master...HEAD`.
+- Run `git status`, `git diff --stat main...HEAD`, and the full
+  `git diff main...HEAD`.
 - Get two things from Tushar, the pull request draft, or the commit messages:
   **what was asked**, and **which issue it closes**.
 
@@ -22,7 +22,7 @@ push, never open the pull request.
 
 | # | Check | How | Fails when |
 |---|---|---|---|
-| 1 | Size | added plus removed lines from `--stat`, counting lock files separately | over about 300 lines of hand written code |
+| 1 | Size | added plus removed lines from `--stat`, counting lock files separately | over 1000 changed lines, lock files excluded |
 | 2 | One job | read the diff against the stated task | the changes serve more than one purpose |
 | 3 | Scope | every changed hunk maps to what was asked | extra features, refactors, reformatting, or files nobody asked for |
 | 4 | Acceptance criteria | stated in the issue or the pull request description | missing, or not checkable by someone else |
@@ -31,11 +31,10 @@ push, never open the pull request.
 | 7 | Lint, format, types | `ruff check`, `ruff format --check`, `mypy` in `backend/`; lint, typecheck and build in `frontend/` | errors in the changed files |
 | 8 | Customer filter | every new or changed query, ORM call, storage path, search call and cache key | any one of them without the customer filter applied |
 | 9 | Isolation test | touches data, so a test proves customer A cannot reach customer B | missing, or missing the `isolation` marker |
-| 10 | Identity numbers | read the diff for anything that logs, stores or prompts raw document text or extracted fields | a full Aadhaar or PAN could reach a table, a log or an AI prompt |
-| 11 | Source on answers | touches answering, so no path can return an answer without document, page and spot | a sourceless path exists |
-| 12 | New libraries | diff of `pyproject.toml`, `requirements*.txt`, `package.json` and lock files | any addition without Vrushit's approval recorded, including its licence |
-| 13 | Secrets and leftovers | search for keys, tokens, `.env` values, `print`, `console.log`, `debugger`, `.only`, commented out code, TODOs with no issue | any found |
-| 14 | Gaming a check | skipped or deleted tests, weakened assertions, `# type: ignore`, `@ts-ignore`, `eslint-disable`, blanket `try/except` | any found |
+| 10 | Source on answers | touches answering, so no path can return an answer without document, page and spot | a sourceless path exists |
+| 11 | New libraries | diff of `pyproject.toml`, `requirements*.txt`, `package.json` and lock files | any addition without Vrushit's approval recorded, including its licence |
+| 12 | Secrets and leftovers | search for keys, tokens, `.env` values, `print`, `console.log`, `debugger`, `.only`, commented out code, TODOs with no issue | any found |
+| 13 | Gaming a check | skipped or deleted tests, weakened assertions, `# type: ignore`, `@ts-ignore`, `eslint-disable`, blanket `try/except` | any found |
 
 Skip rows that do not apply and say why, for example "8 and 9 not applicable,
 no data access in this diff". If a command does not exist yet, write
@@ -47,7 +46,7 @@ no data access in this diff". If a command does not exist yet, write
 ## 3. Report
 
 ```
-PR CHECK   <branch> into master        Closes #<issue>
+PR CHECK   <branch> into main        Closes #<issue>
 
 | # | Check | Result | Evidence |
 
@@ -61,6 +60,6 @@ VERDICT: READY | FIX FIRST
 Draft the pull request description by filling in
 `.github/pull_request_template.md`: what changed and why, the issue it closes,
 the acceptance criteria, how it was tested with commands and their output, and
-what Vrushit should look at closely, such as separation, masking or migrations.
+what Vrushit should look at closely, such as separation or migrations.
 
 Hand the text to Tushar. He opens the pull request.

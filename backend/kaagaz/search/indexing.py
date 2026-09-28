@@ -8,8 +8,6 @@ database transaction, so a slow model never holds a transaction open.
 
 ``ModelUnavailable`` propagates: the caller decides (the pipeline logs it and
 marks the document ready without vectors; word and typo search still work).
-The piece text was masked before it was stored, so no full identity number
-reaches the model (CLAUDE.md never-do 3).
 
 Cost: ceil(n / batch_size) model calls and 2 * ceil(n / batch_size) + 1 short
 transactions for n pieces; O(batch_size * dim) memory.

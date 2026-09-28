@@ -89,7 +89,7 @@ class UploadService:
         display_name: str = "document",
         uploaded_by: str | None = None,
     ) -> UploadResult:
-        """``display_name`` must already be masked by the caller (the API)."""
+        """``display_name`` must already be cleaned by the caller (the API)."""
         if not isinstance(customer_id, str) or not customer_id:
             raise ValueError("customer_id is required")
 
