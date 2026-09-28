@@ -1,0 +1,225 @@
+/* The app shell. Below 1024 px: a 56 px sticky top bar and a menu drawer.
+   From 1024 px: a sticky full-height 240 px sidebar beside the content. */
+
+.frame {
+  min-height: 100dvh;
+}
+
+@media (min-width: 1024px) {
+  .frame {
+    display: grid;
+    grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+/* --- Top bar (phones and tablets) ------------------------------------------ */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-header);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: calc(var(--topbar-h) + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) max(var(--space-2), env(safe-area-inset-right)) 0
+    max(var(--space-2), env(safe-area-inset-left));
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.pageName {
+  min-width: 0;
+  margin-inline-start: auto;
+  padding-inline-end: var(--space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+@media (min-width: 1024px) {
+  .topbar {
+    display: none;
+  }
+}
+
+/* --- Sidebar (1024 px and up) ------------------------------------------------ */
+
+.sidebar {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .sidebar {
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow-y: auto;
+    background: var(--surface-2);
+    border-inline-end: 1px solid var(--border);
+  }
+}
+
+.sidebarBrand {
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  padding: var(--space-4) var(--space-5) var(--space-2);
+}
+
+/* --- The menu: shared by the sidebar and the drawer ------------------------- */
+
+.menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  flex: 1;
+  min-height: 100%;
+}
+
+.sidebar .menu {
+  min-height: 0;
+  padding: var(--space-3) var(--space-3) var(--space-4);
+}
+
+.links {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-h);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-weight: 500;
+  text-decoration: none;
+  transition: background-color var(--t-fast) var(--ease);
+}
+
+.link svg {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.link:hover {
+  background: var(--surface);
+  color: var(--fg);
+}
+
+.current,
+.current:hover {
+  background: var(--accent-soft);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.current svg {
+  color: var(--accent);
+}
+
+/* The current page's 3 px accent bar on the inline-start edge. */
+.current::before {
+  content: "";
+  position: absolute;
+  inset-block: var(--space-2);
+  inset-inline-start: 0;
+  width: 3px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.user {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) var(--space-2) 0;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+
+.user p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.userName {
+  font-weight: 600;
+}
+
+.userMeta {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.signOut {
+  justify-content: flex-start;
+  padding-inline: var(--space-3);
+}
+
+/* --- Content ------------------------------------------------------------------ */
+
+.main {
+  min-width: 0;
+  padding: 0;
+}
+
+/* Loading and error states before the shell exists (lib/session.tsx). */
+.centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100dvh;
+  padding: var(--space-5) var(--space-4);
+}
+
+.centeredBox {
+  width: 100%;
+  max-width: 28rem;
+}
+
+.loading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+.skip {
+  position: absolute;
+  inset-inline-start: var(--space-2);
+  top: var(--space-2);
+  z-index: var(--z-skip);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+
+.skip:focus,
+.skip:focus-visible {
+  transform: none;
+  color: var(--accent-fg);
+}

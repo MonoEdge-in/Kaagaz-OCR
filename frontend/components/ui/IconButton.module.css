@@ -1,0 +1,14 @@
+/* Icon only: a square target of --control-h (40 px, 44 px on touch). */
+.iconOnly {
+  min-width: var(--control-h);
+  padding: 0;
+}
+
+.withLabel {
+  padding-inline: var(--space-3) var(--space-4);
+}
+
+.iconOnly svg,
+.withLabel svg {
+  flex: none;
+}

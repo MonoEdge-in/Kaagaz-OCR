@@ -1,0 +1,114 @@
+/* One <table> for every width (council 2026-09-27, decision 7).
+
+   768 px and up: a normal table, 48 px rows, the header sticky under the top
+   bar, and no overflow wrapper (so the sticky header works and nothing
+   scrolls sideways; long text wraps instead).
+
+   Below 768 px: the same table reflowed into cards with CSS. Changing a table's
+   display drops its semantics in some browsers, so the markup carries
+   role="table|rowgroup|row|columnheader|cell" to put them back. A cell with
+   data-label shows that label above its value.
+
+   Used by the documents list and the admin Users and Activity tables. */
+
+.reflow {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.reflow td,
+.reflow th {
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 768px) {
+  .reflow thead th {
+    position: sticky;
+    top: var(--topbar-space);
+    z-index: var(--z-sticky);
+    background: var(--surface);
+    border-bottom: 0;
+    box-shadow: inset 0 -1px 0 var(--border);
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+
+  .reflow thead th:first-child {
+    border-start-start-radius: var(--r-md);
+  }
+
+  .reflow thead th:last-child {
+    border-start-end-radius: var(--r-md);
+  }
+
+  .reflow td {
+    height: 48px;
+    padding-block: var(--space-2);
+    vertical-align: middle;
+    border-bottom: 0;
+  }
+
+  .reflow tbody tr {
+    box-shadow: inset 0 -1px 0 var(--border);
+  }
+
+  .reflow tbody tr:last-child {
+    box-shadow: none;
+  }
+}
+
+@media (max-width: 767.98px) {
+  .reflow,
+  .reflow tbody,
+  .reflow tr,
+  .reflow td {
+    display: block;
+  }
+
+  .reflow {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+  }
+
+  /* The header row stays for screen readers; the cards label their own cells. */
+  .reflow thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .reflow tbody {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .reflow tbody tr {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .reflow td {
+    border: 0;
+    padding: var(--space-1) 0;
+  }
+
+  .reflow td[data-label]::before {
+    content: attr(data-label);
+    content: attr(data-label) / "";
+    display: block;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg-muted);
+  }
+}

@@ -1,0 +1,9 @@
+# Built inside the image from package-lock.json, never copied from the laptop.
+node_modules
+.next
+out
+coverage
+*.tsbuildinfo
+.env
+.env.*
+npm-debug.log*

@@ -13,19 +13,24 @@ PROVISIONAL: the record fields are a placeholder until the database design
 """
 
 from dataclasses import dataclass
-from typing import BinaryIO, Protocol
+from typing import IO, Protocol
 
 
 @dataclass(frozen=True, slots=True)
 class DocumentRecord:
-    """One stored file. There is deliberately no file name field: a name can
-    contain a PAN or Aadhaar number (PRD question 1)."""
+    """One stored file. The raw file name is never kept: it can contain a PAN
+    or Aadhaar number (PRD question 1), so only a masked display name is."""
 
     customer_id: str
     document_id: str
     sha256: str
     size: int
     detected_type: str
+    # What the file list and source cards show: the uploaded name with identity
+    # numbers masked (PROVISIONAL, docs/system-design/04 "the file name").
+    # The upload service never reads it; the API sets it.
+    display_name: str = "document"
+    uploaded_by: str | None = None  # the signed-in user's id
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +76,7 @@ class DocumentRepository(Protocol):
 class BlobStorage(Protocol):
     """File storage. The adapter owns how keys are named (#11)."""
 
-    def put(self, customer_id: str, document_id: str, data: BinaryIO) -> None: ...
+    def put(self, customer_id: str, document_id: str, data: IO[bytes]) -> None: ...
 
     def get(self, customer_id: str, document_id: str) -> bytes:
         """The file's bytes. Raises BlobNotFound for another customer's id."""

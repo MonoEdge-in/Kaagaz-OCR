@@ -1,18 +1,37 @@
-# Kaagaz-OCR local stack: `docker compose up --build` starts everything.
-# Infrastructure only (to run the app on the host): `docker compose up postgres seaweedfs temporal`
-# Image versions are pinned, and CI fails on :latest. Dependabot proposes updates.
+# Kaagaz local stack. LAPTOP ONLY: every key and password here is a local
+# placeholder. docs/running-locally.md has the steps.
+#
+#   cp .env.example .env        (then set SESSION_SECRET)
+#   docker compose up --build
+#   docker compose --profile ollama up --build     (also runs Ollama in Docker)
+#
+# Only the stand-ins, to run the API and worker on the laptop itself:
+#   docker compose up postgres seaweedfs elasticmq clamav
+#
+# Image versions are pinned; CI fails on :latest.
 name: kaagaz-ocr
 
-# Shared by the app containers (migrate, api, worker).
-x-app: &app
-  env_file:
-    - path: .env
-      required: false
+# Shared by the three backend containers (migrate, api, worker): one image,
+# built from backend/Dockerfile, with a different command each.
+x-backend: &backend
+  image: kaagaz-backend:local
+  build:
+    context: ./backend
+  env_file: .env
   environment:
-    # Containers reach each other by service name; .env keeps localhost for running on the host.
-    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}
-    S3_ENDPOINT_URL: http://seaweedfs:8333
-    TEMPORAL_ADDRESS: temporal:7233
+    # .env keeps localhost for running on the laptop; inside Docker the
+    # services reach each other by service name.
+    DATABASE_URL: postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}
+    STORAGE_ENDPOINT_URL: http://seaweedfs:8333
+    QUEUE_ENDPOINT_URL: http://elasticmq:9324
+    QUEUE_URL: http://elasticmq:9324/000000000000/kaagaz-jobs
+    CLAMAV_HOST: clamav
+    CLAMAV_PORT: "3310"
+    # Ollama on the laptop by default; http://ollama:11434 with the profile.
+    MODEL_BASE_URL: ${DOCKER_MODEL_BASE_URL:-http://host.docker.internal:11434}
+  # Docker Desktop knows host.docker.internal; this adds it on Linux too.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
 
 services:
   postgres:
@@ -31,9 +50,11 @@ services:
       timeout: 5s
       retries: 20
 
+  # File storage with the S3 API (Amazon S3 in AWS). One process runs the
+  # master, volume server, filer and S3 gateway. The access key is in
+  # infra/seaweedfs/s3.json and must match STORAGE_ACCESS_KEY in .env.
   seaweedfs:
     image: chrislusf/seaweedfs:4.47
-    # One process runs the master, volume server, filer and S3 gateway.
     command: server -dir=/data -ip.bind=0.0.0.0 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
     ports:
       - "8333:8333"
@@ -46,58 +67,119 @@ services:
       timeout: 5s
       retries: 30
 
-  temporal:
-    image: temporalio/temporal:1.9.1
-    command: server start-dev --ip 0.0.0.0 --db-filename /data/temporal.db
-    user: root # lets the dev server write its state file to the named volume
+  # The job queue with the SQS API (Amazon SQS in AWS): kaagaz-jobs and its
+  # failure bin kaagaz-jobs-failed, set up by infra/elasticmq/elasticmq.conf.
+  elasticmq:
+    image: softwaremill/elasticmq-native:1.7.1
     ports:
-      - "7233:7233"
-      - "8233:8233"
+      - "9324:9324"
     volumes:
-      - temporal-data:/data
+      - ./infra/elasticmq/elasticmq.conf:/opt/elasticmq.conf:ro
     healthcheck:
-      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9324/health"]
       interval: 5s
       timeout: 5s
       retries: 30
 
+  # The virus scanner: clamd on TCP 3310. The image ships with signatures and
+  # updates them on start; the first start can take several minutes, which is
+  # what the long start period allows for.
+  clamav:
+    image: clamav/clamav:1.5.4
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 6m
+
+  # One-shot: database migrations, then the storage bucket, then it exits.
   migrate:
-    <<: *app
-    build:
-      context: .
-      dockerfile: docker/api.Dockerfile
-    command: ["alembic", "upgrade", "head"]
+    <<: *backend
+    command:
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        python -c "from kaagaz.adapters.storage import S3Storage;
+        from kaagaz.settings import Settings;
+        S3Storage(Settings.from_env()).ensure_bucket()"
     depends_on:
       postgres:
         condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
 
   api:
-    <<: *app
-    build:
-      context: .
-      dockerfile: docker/api.Dockerfile
+    <<: *backend
+    command: ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
+    healthcheck:
+      # The image has no curl. urlopen raises on a 503, so a degraded
+      # /api/health fails the check.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
     depends_on:
       migrate:
         condition: service_completed_successfully
       seaweedfs:
         condition: service_healthy
-      temporal:
+      elasticmq:
         condition: service_healthy
 
   worker:
-    <<: *app
-    build:
-      context: .
-      dockerfile: docker/worker.Dockerfile
+    <<: *backend
+    command: ["python", "-m", "kaagaz.worker_main"]
+    # A bug ends the worker on purpose (kaagaz/worker_main.py); this brings it
+    # back, and the job returns to the queue.
+    restart: unless-stopped
+    # SIGTERM lets the job in hand finish first. After this, Docker kills it
+    # and the job is handed out again when its lease runs out.
+    stop_grace_period: 60s
     depends_on:
       migrate:
         condition: service_completed_successfully
-      temporal:
+      seaweedfs:
         condition: service_healthy
+      elasticmq:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Next.js writes the /api rewrite into the build (frontend/Dockerfile).
+        BACKEND_URL: http://api:8000
+    image: kaagaz-frontend:local
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Optional: Ollama in Docker (CPU). Start with --profile ollama and set
+  # DOCKER_MODEL_BASE_URL=http://ollama:11434 in .env. Pull the models once:
+  #   docker compose exec ollama ollama pull <MODEL_CHAT>   (and MODEL_EMBED)
+  ollama:
+    image: ollama/ollama:0.34.4
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
 
 volumes:
   postgres-data:
   seaweedfs-data:
-  temporal-data:
+  clamav-data:
+  ollama-data:

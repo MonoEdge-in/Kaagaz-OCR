@@ -1,0 +1,539 @@
+/* The documents screen. Tokens only (app/globals.css). */
+
+.small {
+  font-size: var(--fs-sm);
+  margin: 0;
+}
+
+.smallHeading {
+  margin: 0;
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+/* --- Dropzone ---------------------------------------------------------------- */
+
+.drop {
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  transition:
+    border-color var(--t-fast) var(--ease),
+    background-color var(--t-fast) var(--ease);
+}
+
+.drop p {
+  margin: 0;
+}
+
+.dropFull {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+}
+
+.dropSlim {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+
+.dropActive {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dropIcon {
+  color: var(--fg-muted);
+  flex: none;
+}
+
+.dropText {
+  font-weight: 600;
+}
+
+.dropHint {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.dropSlim .dropHint {
+  flex: 1 1 16rem;
+}
+
+/* --- Uploads ------------------------------------------------------------------ */
+
+.uploadsSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.uploadsHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.uploads {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.upload {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.upload[data-state="error"] {
+  border-color: var(--danger-fg);
+}
+
+.uploadIcon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--fg-muted);
+}
+
+.upload[data-state="error"] .uploadIcon {
+  color: var(--danger-fg);
+}
+
+.uploadBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.uploadHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+}
+
+.fileName {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.progressRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.progress {
+  flex: 1;
+  height: 8px;
+  accent-color: var(--accent);
+}
+
+/* --- The list ----------------------------------------------------------------- */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.listHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.listHeading {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.listHeading:focus {
+  outline: none;
+}
+
+.search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.searchField {
+  position: relative;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.searchIcon {
+  position: absolute;
+  inset-inline-start: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+.searchInput {
+  padding-inline-start: calc(var(--space-3) + 18px + var(--space-2));
+}
+
+.selectionBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.selectAll,
+.selectCell {
+  display: inline-flex;
+  align-items: center;
+}
+
+.selectAll {
+  gap: var(--space-2);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.selectColumn,
+.selectCell {
+  width: 3rem;
+  text-align: center;
+}
+
+.selectCell {
+  justify-content: center;
+}
+
+.selectAll input,
+.selectCell input {
+  flex: none;
+  cursor: pointer;
+}
+
+table.docs tbody tr[data-selected="true"] {
+  background: var(--accent-soft);
+}
+
+table.docs tbody tr[data-selected="true"] .selectCell input {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.bulkConfirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 24rem;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.bulkConfirm span {
+  margin-inline-end: auto;
+}
+
+.selectionBar .btn {
+  min-height: 36px;
+}
+
+.selectionError {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+@media (max-width: 639.98px) {
+  .listHead,
+  .search {
+    width: 100%;
+  }
+
+  .search > button {
+    flex: 1 1 auto;
+  }
+
+  .searchField {
+    flex-basis: 100%;
+  }
+}
+
+.errorBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--danger-fg);
+  border-radius: var(--r-md);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.errorIcon {
+  flex: none;
+  margin-top: 3px;
+}
+
+.errorBody {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.errorBody p {
+  margin: 0;
+}
+
+.errorTitle {
+  font-weight: 600;
+}
+
+.skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.skeletonRow {
+  height: 104px;
+  border-radius: var(--r-md);
+}
+
+@media (min-width: 768px) {
+  .skeletonRow {
+    height: 48px;
+    border-radius: var(--r-sm);
+  }
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* --- Rows: a table at 768 px and up, cards below (see Table.module.css) -------- */
+
+.name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.statusCell {
+  vertical-align: middle;
+}
+
+.statusContent {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.statusMessage {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.deleteButton {
+  color: var(--danger-fg);
+}
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.confirmButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.rowError {
+  margin: var(--space-1) 0 0;
+}
+
+@media (min-width: 768px) {
+  table.docs {
+    table-layout: fixed;
+  }
+
+  .selectColumn {
+    width: 3rem;
+  }
+
+  .nameColumn,
+  .nameCell {
+    width: 24%;
+  }
+
+  .statusColumn,
+  .statusCell {
+    width: 21%;
+  }
+
+  .typeColumn {
+    width: 10%;
+  }
+
+  .sizeColumn {
+    width: 8%;
+  }
+
+  .uploadedColumn {
+    width: 11%;
+  }
+
+  .byColumn,
+  .byCell {
+    width: 15%;
+  }
+
+  .byCell {
+    overflow-wrap: normal;
+  }
+
+  .nameCell {
+    min-width: 12rem;
+  }
+
+  .meta {
+    font-size: var(--fs-sm);
+  }
+
+  .statusMessage {
+    white-space: nowrap;
+  }
+
+  .actionsColumn,
+  .actionsCell {
+    text-align: end;
+    width: 7rem;
+    white-space: nowrap;
+  }
+
+  .confirm {
+    white-space: normal;
+    min-width: 13rem;
+    text-align: start;
+  }
+}
+
+@media (max-width: 767.98px) {
+  /* A card: the name, the status, one meta line, then Delete. */
+  table.docs > tbody > tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+  }
+
+  table.docs td {
+    padding: 0;
+  }
+
+  table.docs .selectColumn,
+  table.docs .selectCell {
+    width: auto;
+  }
+
+  table.docs .selectColumn {
+    display: none;
+  }
+
+  table.docs .selectCell[data-empty] {
+    display: none;
+  }
+
+  .selectCell {
+    flex: 0 0 auto;
+    margin-inline-end: var(--space-2);
+  }
+
+  .nameCell {
+    flex: 1 1 calc(100% - 3rem);
+  }
+
+  .name {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+
+  .statusCell {
+    flex: 1 1 100%;
+  }
+
+  .statusContent {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    margin-top: var(--space-2);
+  }
+
+  .meta {
+    flex: none;
+    margin-top: var(--space-2);
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+  }
+
+  .meta + .meta::before {
+    content: "·";
+    content: "·" / "";
+    margin-inline: var(--space-2);
+  }
+
+  .meta[data-empty] {
+    display: none;
+  }
+
+  .actionsCell {
+    flex: 1 1 100%;
+    margin-top: var(--space-3);
+  }
+
+  .actionsCell[data-empty] {
+    display: none;
+  }
+}

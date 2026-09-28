@@ -33,9 +33,20 @@ class AcceptTest(unittest.TestCase):
         self.assertEqual(record.detected_type, sniff.TEXT)
         self.assertEqual(len(record.sha256), 64)
 
-    def test_record_has_no_file_name_field(self) -> None:
+    def test_record_has_no_raw_file_name_field(self) -> None:
+        # Only a display name the API has already masked is kept (PROVISIONAL,
+        # docs/system-design/04 "the file name"); the raw name never is.
         names = {f.name for f in dataclasses.fields(DocumentRecord)}
-        self.assertEqual(names, {"customer_id", "document_id", "sha256", "size", "detected_type"})
+        self.assertEqual(
+            names,
+            {"customer_id", "document_id", "sha256", "size", "detected_type", "display_name", "uploaded_by"},
+        )
+
+    def test_record_keeps_the_display_name_and_uploader_it_was_given(self) -> None:
+        service, repo, _, _ = make_service()
+        service.accept(CUSTOMER, io.BytesIO(TEXT_BYTES), display_name="XXXXXX1234F.csv", uploaded_by="u1")
+        (record,) = repo.records_for(CUSTOMER)
+        self.assertEqual((record.display_name, record.uploaded_by), ("XXXXXX1234F.csv", "u1"))
 
     def test_missing_customer_is_refused(self) -> None:
         service, _, storage, _ = make_service()

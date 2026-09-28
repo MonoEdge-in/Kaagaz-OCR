@@ -1,0 +1,205 @@
+// The API contract, as the backend sends it (backend/kaagaz/api). Every field
+// named here exists in a response; nothing is optional unless marked so.
+
+export type Role = "member" | "reviewer" | "admin";
+
+export type DocumentStatus =
+  | "received"
+  | "clean"
+  | "rejected"
+  | "needs_reader"
+  | "ready"
+  | "failed";
+
+export type DetectedType = "pdf" | "png" | "jpeg" | "tiff" | "zip" | "ole2" | "text";
+
+export type Label = "verified" | "needs_review";
+
+export type LabelReason =
+  | "direct_cell"
+  | "readers_agree"
+  | "readers_disagree"
+  | "single_reader"
+  | "low_confidence"
+  | "corrected"
+  | "learned_correction";
+
+export interface ApiErrorBody {
+  error: { code: string; message: string };
+}
+
+export interface Me {
+  user: { id: string; email: string; display_name: string; role: Role };
+  customer: { id: string; name: string };
+}
+
+// Where a value sits. A box is in fractions (0 to 1) of the page's width and
+// height, origin top left. A cell is 1-based; for spreadsheets, page = sheet.
+export type Region =
+  | { kind: "box"; page: number; box: [number, number, number, number] }
+  | { kind: "cell"; page: number; row: number; column: number };
+
+export interface DocumentSummary {
+  id: string;
+  display_name: string;
+  detected_type: DetectedType;
+  size_bytes: number;
+  status: DocumentStatus;
+  failure_code: string | null;
+  status_message: string; // safe to show as is
+  page_count: number | null;
+  created_at: string; // ISO 8601
+  uploaded_by_name: string | null;
+}
+
+export interface PageSummary {
+  page_no: number;
+  width: number;
+  height: number;
+  unit: "pt" | "px" | "cells";
+  has_image: boolean;
+}
+
+export interface ExtractedValue {
+  id: string;
+  document_id: string;
+  record_key: string;
+  field: string;
+  value: string;
+  raw: string;
+  second_reading: string | null;
+  page_no: number;
+  region: Region;
+  label: Label;
+  label_reason: LabelReason;
+  confidence: number | null;
+}
+
+export interface DocumentDetail extends DocumentSummary {
+  pages: PageSummary[];
+  values: ExtractedValue[];
+}
+
+export interface DocumentList {
+  items: DocumentSummary[];
+  total: number;
+}
+
+export interface UploadResult {
+  document: DocumentSummary;
+  duplicate: boolean;
+}
+
+export interface SheetCells {
+  page_no: number;
+  total_rows: number;
+  rows: { row: number; cells: { column: number; text: string }[] }[];
+}
+
+export interface Citation {
+  n: number; // what sentences refer to, from 1
+  kind: "piece" | "value";
+  ref_id: string;
+  document_id: string;
+  document_name: string;
+  detected_type: DetectedType;
+  page_no: number;
+  regions: Region[];
+  snippet: string; // plain text, never markup
+  label: Label;
+}
+
+export interface AnswerSentence {
+  text: string;
+  citations: number[];
+}
+
+export interface Answer {
+  status: "answered" | "not_found";
+  label: Label | null; // null when not found
+  sentences: AnswerSentence[];
+  citations: Citation[];
+  closest_documents: { id: string; display_name: string }[];
+  route: "fixed_query" | "search";
+  normalized_question: string;
+  model_used: boolean;
+}
+
+export interface Message {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  created_at: string;
+  answer: Answer | null; // set for assistant messages only
+  feedback: "up" | "down" | null;
+}
+
+export interface ChatResponse {
+  conversation_id: string;
+  question: Message;
+  answer: Message;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at: string;
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  messages: Message[];
+}
+
+export interface ReviewItem {
+  value: ExtractedValue;
+  document_id: string;
+  document_name: string;
+  detected_type: DetectedType;
+  page: PageSummary;
+}
+
+export interface ReviewList {
+  items: ReviewItem[];
+  total: number;
+}
+
+export type ReviewChoice = "first" | "second" | "typed";
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  display_name: string;
+  role: Role;
+  disabled: boolean;
+  created_at: string;
+}
+
+export interface CustomerSettings {
+  customer_name: string;
+  max_upload_mb: number | null; // null: the platform limit applies
+  platform_max_upload_mb: number;
+}
+
+export interface AuditEntry {
+  id: number;
+  action: string;
+  actor_name: string | null;
+  target_type: string | null;
+  target_id: string | null;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface Stats {
+  documents_by_status: Partial<Record<DocumentStatus, number>>;
+  questions_total: number;
+  answered: number;
+  not_found: number;
+  verified_answers: number;
+  needs_review_answers: number;
+  feedback_up: number;
+  feedback_down: number;
+  open_review_items: number;
+}

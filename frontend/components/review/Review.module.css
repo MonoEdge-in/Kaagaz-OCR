@@ -1,0 +1,211 @@
+/* The review queue. Tokens only (app/globals.css). */
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.titleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.docLink {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.reason {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+/* The two readings: side by side from 640 px, stacked below. */
+.readings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+@media (min-width: 640px) {
+  .readings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.reading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.readingHeading {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.readingText {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  font-variant-numeric: tabular-nums;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+
+.noReading {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.typedForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.typedRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.typed {
+  flex: 1 1 14rem;
+  width: auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.remember {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.remember input {
+  flex: none;
+  margin-top: 3px;
+}
+
+.saving,
+.error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.saving {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.saved {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  font-size: var(--fs-sm);
+}
+
+.saved svg {
+  flex: none;
+  color: var(--accent);
+}
+
+.count {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+.skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.skeletonCard {
+  height: 26rem;
+  border-radius: var(--r-md);
+}
+
+.errorBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--danger-fg);
+  border-radius: var(--r-md);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.errorIcon {
+  flex: none;
+  margin-top: 3px;
+}
+
+.errorBody {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.errorBody p {
+  margin: 0;
+}
+
+.errorTitle {
+  font-weight: 600;
+}

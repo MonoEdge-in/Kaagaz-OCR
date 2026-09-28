@@ -1,0 +1,12 @@
+# Only pyproject.toml, kaagaz/, alembic.ini and migrations/ go into the image.
+.venv
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+tests
+scripts
+.env
+.env.*
+*.log

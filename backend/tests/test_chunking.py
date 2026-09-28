@@ -1,12 +1,25 @@
 import unittest
 
+from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import column_letter, pieces_from_rows
 from kaagaz.reading.csv_reader import CsvReader
-from kaagaz.reading.spans import CellLocation, Span
+from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 
 
-def span(text: str, sheet: int, row: int, column: int) -> Span:
-    return Span(text, text, CellLocation(sheet, row, column))
+def span(text: str, sheet: int, row: int, column: int, confidence: float | None = None) -> Span:
+    return Span(text, text, CellLocation(sheet, row, column), confidence)
+
+
+def cells(piece: Piece) -> list[CellLocation]:
+    """The piece's cells; fails if any location is not a cell."""
+    found = [location for location in piece.locations if isinstance(location, CellLocation)]
+    assert len(found) == len(piece.locations)
+    return found
+
+
+def sheet_and_row(piece: Piece) -> tuple[int, int]:
+    first = cells(piece)[0]
+    return first.sheet, first.row
 
 
 class ColumnLetterTest(unittest.TestCase):
@@ -28,15 +41,16 @@ class PiecesFromRowsTest(unittest.TestCase):
         spans = CsvReader(max_cells=100).read(b"invoice,amount\nINV-1,100\n")
         pieces = pieces_from_rows("cust-a", "doc-1", spans)
         self.assertEqual([p.text for p in pieces], ["A: invoice | B: amount", "A: INV-1 | B: 100"])
-        self.assertEqual([p.row for p in pieces], [1, 2])
+        self.assertEqual([sheet_and_row(p)[1] for p in pieces], [1, 2])
 
     def test_every_piece_traces_back_to_its_cells(self) -> None:
         spans = list(CsvReader(max_cells=100).read(b"a,,c\nd,e\n"))
         by_location = {s.location: s.text for s in spans}
         for piece in pieces_from_rows("cust-a", "doc-1", spans):
-            rebuilt = " | ".join(f"{column_letter(c.column)}: {by_location[c]}" for c in piece.cells)
+            rebuilt = " | ".join(f"{column_letter(c.column)}: {by_location[c]}" for c in cells(piece))
             self.assertEqual(rebuilt, piece.text)
-            self.assertTrue(all(c.row == piece.row and c.sheet == piece.sheet for c in piece.cells))
+            sheet, row = sheet_and_row(piece)
+            self.assertTrue(all(c.row == row and c.sheet == sheet for c in cells(piece)))
 
     def test_long_cell_is_never_cut(self) -> None:
         long_text = "x" * 5000
@@ -46,11 +60,14 @@ class PiecesFromRowsTest(unittest.TestCase):
     def test_rows_are_grouped_and_ordered_even_if_spans_arrive_out_of_order(self) -> None:
         spans = [span("b2", 1, 2, 2), span("a1", 1, 1, 1), span("a2", 1, 2, 1), span("s2", 2, 1, 1)]
         pieces = pieces_from_rows("cust-a", "doc-1", spans)
-        self.assertEqual([(p.sheet, p.row, p.text) for p in pieces], [
-            (1, 1, "A: a1"),
-            (1, 2, "A: a2 | B: b2"),
-            (2, 1, "A: s2"),
-        ])
+        self.assertEqual(
+            [(*sheet_and_row(p), p.text) for p in pieces],
+            [
+                (1, 1, "A: a1"),
+                (1, 2, "A: a2 | B: b2"),
+                (2, 1, "A: s2"),
+            ],
+        )
 
     def test_pieces_carry_their_customer_and_document(self) -> None:
         (piece,) = pieces_from_rows("cust-a", "doc-9", [span("x", 1, 1, 1)])
@@ -58,6 +75,27 @@ class PiecesFromRowsTest(unittest.TestCase):
 
     def test_no_spans_gives_no_pieces(self) -> None:
         self.assertEqual(pieces_from_rows("cust-a", "doc-1", []), [])
+
+    def test_regions_pages_and_label_of_a_row(self) -> None:
+        (piece,) = pieces_from_rows("cust-a", "doc-1", [span("x", 2, 5, 1), span("y", 2, 5, 3)])
+        self.assertEqual(
+            piece.regions(),
+            [
+                {"kind": "cell", "page": 2, "row": 5, "column": 1},
+                {"kind": "cell", "page": 2, "row": 5, "column": 3},
+            ],
+        )
+        self.assertEqual((piece.page_from, piece.page_to, piece.label), (2, 2, "verified"))
+
+    def test_a_row_with_an_unsure_cell_needs_review(self) -> None:
+        (piece,) = pieces_from_rows(
+            "cust-a", "doc-1", [span("x", 1, 1, 1), span("y", 1, 1, 2, confidence=0.99)]
+        )
+        self.assertEqual(piece.label, "needs_review")
+
+    def test_line_spans_are_left_to_the_line_chunker(self) -> None:
+        box = Span("line", "line", BoxLocation(1, 0.1, 0.1, 0.5, 0.2))
+        self.assertEqual(pieces_from_rows("cust-a", "doc-1", [box]), [])
 
 
 if __name__ == "__main__":

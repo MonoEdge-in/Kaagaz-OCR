@@ -41,7 +41,6 @@ database design (#1).
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import BinaryIO
 
 from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadRejected
 from kaagaz.ingestion.policy import UploadPolicy
@@ -53,7 +52,7 @@ from kaagaz.ingestion.ports import (
     JobQueue,
 )
 from kaagaz.ingestion.sniff import detect_type
-from kaagaz.ingestion.spool import read_limited
+from kaagaz.ingestion.spool import ByteSource, read_limited
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +81,15 @@ class UploadService:
         self._queue = queue
         self._new_id = new_id
 
-    def accept(self, customer_id: str, stream: BinaryIO) -> UploadResult:
+    def accept(
+        self,
+        customer_id: str,
+        stream: ByteSource,
+        *,
+        display_name: str = "document",
+        uploaded_by: str | None = None,
+    ) -> UploadResult:
+        """``display_name`` must already be masked by the caller (the API)."""
         if not isinstance(customer_id, str) or not customer_id:
             raise ValueError("customer_id is required")
 
@@ -105,6 +112,8 @@ class UploadService:
                 sha256=spooled.sha256,
                 size=spooled.size,
                 detected_type=detected,
+                display_name=display_name,
+                uploaded_by=uploaded_by,
             )
             # Store the exact bytes that were hashed.
             self._storage.put(customer_id, record.document_id, spooled.file)

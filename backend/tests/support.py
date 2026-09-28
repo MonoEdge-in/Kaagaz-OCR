@@ -54,7 +54,9 @@ class SeqIds:
         return f"doc-{self._n}"
 
 
-def make_service(policy: UploadPolicy = TEST_POLICY):
+def make_service(
+    policy: UploadPolicy = TEST_POLICY,
+) -> tuple[UploadService, MemoryRepository, MemoryStorage, MemoryQueue]:
     """An UploadService wired to fresh fakes. Returns (service, repo, storage, queue)."""
     repo, storage, queue = MemoryRepository(), MemoryStorage(), MemoryQueue()
     service = UploadService(policy, repo, storage, queue, new_id=SeqIds())

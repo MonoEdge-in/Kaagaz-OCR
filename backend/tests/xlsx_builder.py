@@ -14,7 +14,10 @@ PKG_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 def sheet_xml(cells_xml: str) -> str:
     """A worksheet whose <sheetData> holds ``cells_xml`` (rows and cells)."""
-    return f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="{MAIN_NS}"><sheetData>{cells_xml}</sheetData></worksheet>'
+    return (
+        f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="{MAIN_NS}">'
+        f"<sheetData>{cells_xml}</sheetData></worksheet>"
+    )
 
 
 def make_xlsx(
@@ -48,7 +51,8 @@ def make_xlsx(
         )
         archive.writestr(
             "xl/_rels/workbook.xml.rels",
-            f'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="{PKG_NS}">{"".join(rels)}</Relationships>',
+            f'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="{PKG_NS}">'
+            f"{''.join(rels)}</Relationships>",
         )
         if shared_strings is not None:
             items = "".join(f"<si><t>{text}</t></si>" for text in shared_strings)

@@ -1,0 +1,41 @@
+"""Alembic environment: migrations are plain SQL, so there is no model metadata.
+
+The URL comes from DATABASE_URL only, so no connection string is ever written
+into a file (CLAUDE.md never-do 4). Migrations run as the connecting user (the
+table owner), never as the restricted app role.
+"""
+
+import os
+
+from alembic import context
+from sqlalchemy import create_engine
+
+from kaagaz.db.engine import normalise_url
+
+
+def _url() -> str:
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        raise SystemExit("DATABASE_URL is not set")
+    return normalise_url(url)
+
+
+def run_offline() -> None:
+    context.configure(url=_url(), literal_binds=True, target_metadata=None)
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_online() -> None:
+    engine = create_engine(_url())
+    with engine.connect() as connection:
+        context.configure(connection=connection, target_metadata=None)
+        with context.begin_transaction():
+            context.run_migrations()
+    engine.dispose()
+
+
+if context.is_offline_mode():
+    run_offline()
+else:
+    run_online()

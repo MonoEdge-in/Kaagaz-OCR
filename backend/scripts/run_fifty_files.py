@@ -9,12 +9,14 @@ database, storage, queue or scanner. Timings are therefore a floor, not a
 forecast.
 
 The report lists every outcome, explains every failure in plain words, and
-records timings for upload and processing (median, 95th percentile, max).
+records timings for upload and processing (median, 95th percentile, max). It
+is a command line report, so it writes to standard output, not to the log.
 """
 
 import io
 import math
 import statistics
+import sys
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -30,7 +32,15 @@ from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.socket import ReaderSocket
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
-from tests.fakes import MemoryPieces, MemoryRepository, MemoryStatuses, MemoryStorage
+from tests.fakes import (
+    FakePreparer,
+    MemoryDocuments,
+    MemoryPageImages,
+    MemoryPipelineStore,
+    MemoryStatuses,
+    MemoryStorage,
+    fake_sheet_pages,
+)
 from tests.lease_queue import FakeClock, LeaseQueue
 from tests.xlsx_builder import make_xlsx, make_zip, sheet_xml
 
@@ -71,13 +81,17 @@ def make_samples() -> list[Sample]:
         samples.append(Sample(f"invoices_{i}.csv", f"invoice,amount\n{rows}".encode()))
     for i in range(10):
         cells = "".join(
-            f'<row r="{r}"><c r="A{r}" t="inlineStr"><is><t>Item {r}</t></is></c><c r="B{r}"><v>{r * 10}</v></c></row>'
+            f'<row r="{r}"><c r="A{r}" t="inlineStr"><is><t>Item {r}</t></is></c>'
+            f'<c r="B{r}"><v>{r * 10}</v></c></row>'
             for r in range(1, i * 20 + 2)
         )
         samples.append(Sample(f"register_{i}.xlsx", make_xlsx([("Register", sheet_xml(cells))])))
     samples += [Sample(f"scan_{i}.pdf", b"%PDF-1.7\n" + bytes(range(256)) * (i + 1)) for i in range(8)]
     samples += [Sample(f"photo_{i}.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * (500 * (i + 1))) for i in range(4)]
-    samples += [Sample(f"letter_{i}.docx", make_zip({"word/document.xml": b"<document/>" * (i + 1)})) for i in range(3)]
+    samples += [
+        Sample(f"letter_{i}.docx", make_zip({"word/document.xml": b"<document/>" * (i + 1)}))
+        for i in range(3)
+    ]
     samples += [
         Sample("broken_quote.csv", b'a,"never closed\n'),
         Sample("damaged.xlsx", make_xlsx([("S", sheet_xml('<row r="1"><c r="A0"><v>1</v></c></row>'))])),
@@ -98,18 +112,34 @@ def percentile(values: list[float], fraction: float) -> float:
 
 
 def main() -> None:
+    out = sys.stdout  # a command line report, so it writes to stdout rather than the log
     clock = FakeClock()
     queue = LeaseQueue(clock, lease_seconds=30, max_attempts=3)
-    repo, storage, statuses, pieces = MemoryRepository(), MemoryStorage(), MemoryStatuses(), MemoryPieces()
+    statuses, storage, store = MemoryStatuses(), MemoryStorage(), MemoryPipelineStore()
+    repo = MemoryDocuments(statuses)
     policy = UploadPolicy(max_bytes=100_000, allowed_types=frozenset(sniff.KNOWN_TYPES))
     upload = UploadService(policy, repo, storage, queue)
-    socket = ReaderSocket({
-        sniff.TEXT: CsvReader(max_cells=100_000),
-        sniff.ZIP: XlsxReader(XlsxLimits(max_entries=200, max_member_bytes=5_000_000,
-                                         max_total_bytes=20_000_000, max_cells=100_000, max_text_chars=10_000_000)),
-    })
+    limits = XlsxLimits(
+        max_entries=200,
+        max_member_bytes=5_000_000,
+        max_total_bytes=20_000_000,
+        max_cells=100_000,
+        max_text_chars=10_000_000,
+    )
+    socket = ReaderSocket({sniff.TEXT: CsvReader(max_cells=100_000), sniff.ZIP: XlsxReader(limits)})
     gate = ScanGate(storage, MarkerScanner(), storage, statuses)
-    worker = Worker(queue, DocumentProcessor(gate, statuses, repo, socket, IndianIdMasker(), pieces))
+    processor = DocumentProcessor(
+        gate=gate,
+        statuses=statuses,
+        documents=repo,
+        socket=socket,
+        masker=IndianIdMasker(),
+        prepare=FakePreparer().prepare,  # no page pictures: PDFs and photos have no reader here
+        sheet_pages=fake_sheet_pages,
+        page_images=MemoryPageImages(),
+        store=store,
+    )
+    worker = Worker(queue, processor)
 
     samples = make_samples()
     outcomes: dict[str, str] = {}
@@ -145,18 +175,26 @@ def main() -> None:
             outcomes[name] = status.value if isinstance(status, DocumentStatus) else "unknown"
 
     counts = Counter(outcomes.values())
-    total_pieces = sum(len(pieces.for_document(CUSTOMER, d)) for d in documents)
-    print("In-memory stand-ins for storage, database, queue and scanner: timings are a floor.")
-    print(f"Files: {len(samples)}   documents stored: {len(documents)}   pieces: {total_pieces}\n")
-    print(f"{'Outcome':<28} {'Files':>5}  Meaning")
+    total_pieces = sum(len(store.for_document(CUSTOMER, d)) for d in documents)
+    total_values = sum(len(store.values_for(CUSTOMER, d)) for d in documents)
+    out.write("In-memory stand-ins for storage, database, queue and scanner: timings are a floor.\n")
+    out.write(
+        f"Files: {len(samples)}   documents stored: {len(documents)}   pieces: {total_pieces}"
+        f"   values: {total_values}\n\n"
+    )
+    out.write(f"{'Outcome':<28} {'Files':>5}  Meaning\n")
     for outcome, count in sorted(counts.items()):
-        print(f"{outcome:<28} {count:>5}  {EXPLAIN.get(outcome, 'NOT EXPLAINED: investigate')}")
-    print()
+        out.write(f"{outcome:<28} {count:>5}  {EXPLAIN.get(outcome, 'NOT EXPLAINED: investigate')}\n")
+    out.write("\n")
     for label, values in (("Upload", upload_ms), ("Process (per job)", process_ms)):
-        print(f"{label:<18} median {statistics.median(values):7.2f} ms   "
-              f"p95 {percentile(values, 0.95):7.2f} ms   max {max(values):7.2f} ms   n={len(values)}")
+        out.write(
+            f"{label:<18} median {statistics.median(values):7.2f} ms   "
+            f"p95 {percentile(values, 0.95):7.2f} ms   max {max(values):7.2f} ms   n={len(values)}\n"
+        )
     unexplained = [o for o in counts if o not in EXPLAIN]
-    print("\nEvery outcome explained." if not unexplained else f"\nUNEXPLAINED outcomes: {unexplained}")
+    out.write(
+        "\nEvery outcome explained.\n" if not unexplained else f"\nUNEXPLAINED outcomes: {unexplained}\n"
+    )
 
 
 if __name__ == "__main__":
