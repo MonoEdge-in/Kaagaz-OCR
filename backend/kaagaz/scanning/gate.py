@@ -6,9 +6,10 @@ Deny by default: only an explicit ``Verdict.CLEAN`` lets a file through.
   (a rescan with different signatures must not be able to clear it).
 
 * CLEAN: the document is marked clean and later steps may open it.
-* INFECTED or UNSCANNABLE (for example encrypted, or too big for the
-  scanner), or any value that is not a Verdict: the file is quarantined, the
-  document is marked rejected, and the job fails for good.
+* INFECTED, BLOCKED (active content such as scripts or macros) or
+  UNSCANNABLE (for example encrypted, or too big for the scanner), or any
+  value that is not a Verdict: the file is quarantined, the document is
+  marked rejected, and the job fails for good.
 * The scanner is down or times out (ScannerError): the job fails but may be
   retried. The document stays unscanned, so no later step will open it.
 
@@ -37,6 +38,9 @@ class Verdict(Enum):
     CLEAN = "clean"
     INFECTED = "infected"
     UNSCANNABLE = "unscannable"
+    # Not a known virus, but content a business document must not carry:
+    # scripts, macros, hidden programs (kaagaz/scanning/content.py).
+    BLOCKED = "blocked"
 
 
 class DocumentStatus(Enum):
@@ -73,12 +77,16 @@ class StatusStore(Protocol):
 
 # Codes that mean the file failed the scan (now or earlier). Anything made
 # from such a file must be removed.
-REJECTION_CODES = frozenset({"virus_found", "unscannable", "rejected"})
+REJECTION_CODES = frozenset({"virus_found", "blocked_content", "unscannable", "rejected"})
 
 # What the customer sees for each rejection. No scanner names or details.
 CUSTOMER_MESSAGES = {
     "virus_found": "This file failed the virus check and was not processed.",
     "unscannable": "This file could not be checked for viruses, so it was not processed.",
+    "blocked_content": (
+        "This file contains scripts, macros or a hidden program, so it was not processed."
+        " Save it again as a plain PDF, photo or spreadsheet and upload that."
+    ),
 }
 
 
@@ -115,7 +123,8 @@ class ScanGate:
             self._statuses.set_status(customer_id, document_id, DocumentStatus.CLEAN)
             return data
 
-        code = "virus_found" if verdict is Verdict.INFECTED else "unscannable"
+        codes = {Verdict.INFECTED: "virus_found", Verdict.BLOCKED: "blocked_content"}
+        code = codes.get(verdict, "unscannable") if isinstance(verdict, Verdict) else "unscannable"
         # Refuse first: if moving the file to quarantine fails, it is already
         # marked rejected and no step will use it.
         self._statuses.set_status(customer_id, document_id, DocumentStatus.REJECTED)

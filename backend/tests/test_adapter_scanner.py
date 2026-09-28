@@ -12,7 +12,7 @@ import struct
 import threading
 import unittest
 
-from kaagaz.adapters.scanner import EICAR, ClamdScanner, EicarDevScanner, build_scanner
+from kaagaz.adapters.scanner import EICAR, ClamdScanner, EicarDevScanner, LayeredScanner, build_scanner
 from kaagaz.scanning.gate import ScannerError, Verdict
 from kaagaz.settings import SettingsError
 from tests.settings_factory import make_settings
@@ -178,7 +178,10 @@ class EicarDevScannerTest(unittest.TestCase):
 class BuildScannerTest(unittest.TestCase):
     def test_clamav(self) -> None:
         scanner = build_scanner(make_settings(scanner="clamav", clamav_host="clamav", clamav_port=3310))
-        self.assertIsInstance(scanner, ClamdScanner)
+        # Always behind the content check: there is no way to build clamd alone.
+        self.assertIsInstance(scanner, LayeredScanner)
+        assert isinstance(scanner, LayeredScanner)
+        self.assertIsInstance(scanner.scanner, ClamdScanner)
 
     def test_clamav_needs_host_and_port(self) -> None:
         for overrides in (
@@ -191,7 +194,9 @@ class BuildScannerTest(unittest.TestCase):
     def test_eicar_dev_warns(self) -> None:
         with self.assertLogs("kaagaz.adapters.scanner", "WARNING"):
             scanner = build_scanner(make_settings(scanner="eicar_dev"))
-        self.assertIsInstance(scanner, EicarDevScanner)
+        self.assertIsInstance(scanner, LayeredScanner)
+        assert isinstance(scanner, LayeredScanner)
+        self.assertIsInstance(scanner.scanner, EicarDevScanner)
 
     def test_unknown_scanner_is_refused(self) -> None:
         with self.assertRaises(SettingsError):

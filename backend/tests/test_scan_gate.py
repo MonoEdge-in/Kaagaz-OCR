@@ -98,7 +98,7 @@ class ScanGateTest(unittest.TestCase):
         self.assertIs(statuses.get_status(CUSTOMER, DOC), DocumentStatus.REJECTED)
 
     def test_every_rejection_code_has_a_plain_customer_message(self) -> None:
-        self.assertEqual(set(CUSTOMER_MESSAGES), {"virus_found", "unscannable"})
+        self.assertEqual(set(CUSTOMER_MESSAGES), {"virus_found", "blocked_content", "unscannable"})
         for message in CUSTOMER_MESSAGES.values():
             self.assertTrue(message.endswith("."))
 
