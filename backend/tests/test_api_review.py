@@ -1,7 +1,6 @@
 """The review queue and resolving a value, against a real database."""
 
 import threading
-import time
 import uuid
 from collections.abc import Sequence
 from datetime import date
@@ -12,7 +11,7 @@ from sqlalchemy import text
 
 from kaagaz.db import review as review_sql
 from kaagaz.db.engine import Database
-from tests.db_support import database_url, make_database
+from tests.db_support import database_url, make_database, wait_until_blocked
 from tests.test_api_support import CSRF, Api, Signed
 
 PAN = "ABCDE1234F"  # made up
@@ -251,23 +250,6 @@ def _named_database(name: str) -> Database:
     return make_database(f"{url}{'&' if '?' in url else '?'}application_name={name}")
 
 
-def _wait_until_blocked(db: Database, *, application_name: str, timeout: float = 5.0) -> None:
-    """Wait until the session named ``application_name`` waits on a lock. Polls every 20 ms.
-
-    Kept here because main's ``tests/db_support.py`` has no such helper.
-    """
-    deadline = time.monotonic() + timeout
-    query = text(
-        "SELECT count(*) FROM pg_stat_activity WHERE application_name = :name AND wait_event_type = 'Lock'"
-    )
-    while time.monotonic() < deadline:
-        with db.engine.connect() as conn:
-            if conn.execute(query, {"name": application_name}).scalar_one():
-                return
-        time.sleep(0.02)
-    raise AssertionError(f"{application_name} never waited on a lock")
-
-
 @pytest.mark.db
 def test_two_reviewers_at_once_only_one_wins(db: Database) -> None:
     """The order is forced: the test holds the value's lock until both requests wait
@@ -297,7 +279,7 @@ def test_two_reviewers_at_once_only_one_wins(db: Database) -> None:
             assert review_sql.lock_value(conn, customer_id, value_id) is not None
             for name, thread in threads.items():
                 thread.start()
-                _wait_until_blocked(db, application_name=f"review-{name}")
+                wait_until_blocked(db, application_name=f"review-{name}")
         for thread in threads.values():
             thread.join(timeout=10)
 
