@@ -439,6 +439,7 @@ def _user(**changes: Any) -> CurrentUser:
         "scope": "app",
         "session_version": 3,
         "must_change_password": False,
+        "totp_enabled": False,
     }
     return CurrentUser(**{**fields, **changes})
 

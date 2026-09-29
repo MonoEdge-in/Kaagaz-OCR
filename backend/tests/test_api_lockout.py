@@ -98,6 +98,7 @@ def test_the_admin_screen_replies_are_identical_too(db: Database) -> None:
     admin = api.enrol_admin(customer_id)
     locked = api.enrol_admin(customer_id)
     _, member_email = api.add_user(customer_id, "member")
+    _, no_2fa_email = api.add_user(customer_id, "admin")
     client = api.client()
     for _ in range(5):
         assert api.admin_login(client, locked.email, password=WRONG).status_code == 401
@@ -109,6 +110,7 @@ def test_the_admin_screen_replies_are_identical_too(db: Database) -> None:
         "wrong code": api.admin_login(client, admin.email, code=wrong_code(api, admin.secret)),
         "no code": api.admin_login(client, admin.email),
         "not an admin": api.admin_login(client, member_email),
+        "2FA off, wrong password": api.admin_login(client, no_2fa_email, password=WRONG),
     }
 
     assert {reply.status_code for reply in replies.values()} == {401}
@@ -224,6 +226,7 @@ def test_every_attempt_spends_exactly_one_hash(db: Database, monkeypatch: pytest
     _, locked_email = api.add_user(customer_id, "member")
     admin = api.enrol_admin(customer_id)
     locked_admin = api.enrol_admin(customer_id)
+    _, no_2fa_email = api.add_user(customer_id, "admin")
     with db.customer(customer_id) as conn:
         conn.execute(text("UPDATE users SET disabled = true WHERE id = :u"), {"u": disabled_id})
     _fail(api, locked_email, 5)
@@ -255,6 +258,7 @@ def test_every_attempt_spends_exactly_one_hash(db: Database, monkeypatch: pytest
         ),
         "admin: not an admin": lambda: api.admin_login(client, email),
         "admin: right code": lambda: api.admin_login(api.client(), admin.email, code=api.code(admin.secret)),
+        "admin: 2FA off, password alone": lambda: api.admin_login(api.client(), no_2fa_email),
     }
     for name, attempt in attempts.items():
         hashes.clear()

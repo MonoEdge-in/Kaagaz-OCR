@@ -1,9 +1,10 @@
-"""Signing in on the admin screen: password, 6-digit code, enrolment, the admin session.
+"""Signing in on the admin screen: password, 6-digit code, 2FA on and off, the admin session.
 
 PRD 1 A1, A2, A6 and A7, with the council's security findings: an enrol token
 is not a session and works once, a code works once, a wrong code counts toward
-the lockout, an enrolled admin is never offered enrolment again, and every
-/api/admin route needs the admin session (an admin's own app session included).
+the lockout, and every /api/admin route needs the admin session (an admin's own
+app session included). Two-step sign-in is each admin's own choice: while it
+is off the password alone signs in; once it is on, the code is always needed.
 """
 
 import base64
@@ -43,15 +44,22 @@ def _secret_from(grouped: str) -> bytes:
     return base64.b32decode(grouped.replace(" ", ""))
 
 
+def _turn_off(client: TestClient, password: str = PASSWORD) -> httpx.Response:
+    return client.post("/api/auth/admin/2fa/off", json={"password": password}, headers=CSRF)
+
+
 class _Enrolling:
-    """An admin who has typed the right password but has no code set up yet."""
+    """An admin with 2FA off, signed in on the admin screen with the password
+    alone, who has pressed "Turn on" (``/2fa/start``) and holds the new key."""
 
     def __init__(self, api: Api) -> None:
         self.api = api
         self.customer_id, _ = api.customer()
         self.user_id, self.email = api.add_user(self.customer_id, "admin")
         self.client = api.client()
-        self.reply = api.admin_login(self.client, self.email)
+        signed_in = api.admin_login(self.client, self.email)
+        assert signed_in.status_code == 200, signed_in.text
+        self.reply = self.client.post("/api/auth/admin/2fa/start", headers=CSRF)
         assert self.reply.status_code == 200, self.reply.text
         body = self.reply.json()
         self.token: str = body["enrol_token"]
@@ -66,39 +74,68 @@ class _Enrolling:
         )
 
 
-# --- enrolment -----------------------------------------------------------------------
+# --- 2FA off: the password alone -----------------------------------------------------------
 
 
-def test_the_first_admin_sign_in_offers_enrolment_and_stores_nothing_yet(db: Database) -> None:
+def test_an_admin_with_2fa_off_signs_in_with_the_password_alone(db: Database) -> None:
+    api = Api(db)
+    customer_id, _ = api.customer()
+    user_id, email = api.add_user(customer_id, "admin")
+    client = api.client()
+
+    reply = api.admin_login(client, email)
+
+    assert reply.status_code == 200, reply.text
+    me = reply.json()
+    assert me["user"]["id"] == user_id
+    assert me["user"]["totp_enabled"] is False
+    assert me["session"] == {"scope": "admin"}
+    assert "enrol" not in reply.text
+    assert f"Max-Age={60 * 60}" in reply.headers["set-cookie"]
+    assert client.get("/api/admin/users").status_code == 200
+    assert api.audit_rows(customer_id)[-1] == ("auth.admin_login", "user", user_id, {"second_factor": False})
+    assert api.user_state(customer_id, user_id)["failed_logins"] == 0
+
+
+# --- turning 2FA on ----------------------------------------------------------------------
+
+
+def test_turn_on_shows_a_new_key_and_stores_nothing_yet(db: Database) -> None:
     api = Api(db)
     enrolling = _Enrolling(api)
 
     body = enrolling.reply.json()
-    assert set(body) == {"enrol_required", "enrol_token", "secret"}
-    assert body["enrol_required"] is True
+    assert set(body) == {"enrol_token", "secret", "otpauth_uri"}
     assert GROUPED.fullmatch(enrolling.shown)
     assert len(enrolling.secret) == 20
+    assert body["otpauth_uri"] == totp.otpauth_uri(enrolling.secret, enrolling.email)
     assert "set-cookie" not in enrolling.reply.headers
-    assert enrolling.client.get("/api/auth/me").status_code == 401
     state = api.user_state(enrolling.customer_id, enrolling.user_id)
     assert state["totp_secret_enc"] is None
     assert state["totp_enabled_at"] is None
 
 
-def test_enrolling_with_the_code_starts_an_admin_session(db: Database) -> None:
+def test_turning_on_with_the_code_means_the_code_is_needed_from_then_on(db: Database) -> None:
+    """``enrol_totp`` does not change the session version, so every browser of
+    this admin stays signed in; the reply is a new admin session here."""
     api = Api(db)
     enrolling = _Enrolling(api)
+    other = api.client()
+    assert api.admin_login(other, enrolling.email).status_code == 200
+    version = api.user_state(enrolling.customer_id, enrolling.user_id)["session_version"]
 
     reply = enrolling.enrol()
 
     assert reply.status_code == 200, reply.text
     me = reply.json()
     assert me["user"]["id"] == enrolling.user_id
-    assert me["user"]["must_change_password"] is False
+    assert me["user"]["totp_enabled"] is True
     assert me["session"] == {"scope": "admin"}
     assert f"Max-Age={60 * 60}" in reply.headers["set-cookie"]
     assert enrolling.client.get("/api/admin/users").status_code == 200
+    assert other.get("/api/admin/users").status_code == 200
     state = api.user_state(enrolling.customer_id, enrolling.user_id)
+    assert state["session_version"] == version
     assert state["totp_enabled_at"] == api.clock()
     assert state["totp_last_step"] == api.step()
     sealed = str(state["totp_secret_enc"])
@@ -106,7 +143,25 @@ def test_enrolling_with_the_code_starts_an_admin_session(db: Database) -> None:
     assert totp.b32(enrolling.secret) not in sealed
     box = SecretBox(api.settings.totp_encryption_key)
     assert box.open(sealed, aad=enrolling.user_id) == enrolling.secret
-    assert api.audit_actions(enrolling.customer_id)[-2:] == ["auth.enrol", "auth.admin_login"]
+    assert api.audit_actions(enrolling.customer_id)[-2:] == ["auth.totp_on", "auth.admin_login"]
+
+    api.clock.advance(totp.STEP_SECONDS)
+    for code in (None, wrong_code(api, enrolling.secret)):
+        refused = api.admin_login(api.client(), enrolling.email, code=code)
+        assert refused.status_code == 401
+        assert refused.json()["error"]["code"] == "bad_credentials"
+    assert api.admin_login(api.client(), enrolling.email, code=api.code(enrolling.secret)).status_code == 200
+
+
+def test_turn_on_when_2fa_is_already_on_is_409(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_admin()
+
+    reply = signed.client.post("/api/auth/admin/2fa/start", headers=CSRF)
+
+    assert reply.status_code == 409
+    assert reply.json()["error"]["code"] == "conflict"
+    assert "secret" not in reply.text
 
 
 def test_enrol_sign_out_and_sign_in_again_with_the_code(db: Database) -> None:
@@ -228,6 +283,92 @@ def test_an_enrolled_admin_without_a_code_is_never_offered_enrolment(db: Databas
     after = api.user_state(customer_id, admin.user_id)
     assert after["totp_secret_enc"] == before["totp_secret_enc"]
     assert after["totp_enabled_at"] == before["totp_enabled_at"]
+
+
+# --- turning 2FA off ---------------------------------------------------------------------
+
+
+def test_turn_off_with_a_wrong_password_is_400_and_counts_toward_the_lockout(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_admin()
+    before = api.user_state(signed.customer_id, signed.user_id)
+
+    reply = _turn_off(signed.client, WRONG)
+
+    assert reply.status_code == 400
+    assert reply.json()["error"] == {"code": "bad_request", "message": "Your current password is not right."}
+    state = api.user_state(signed.customer_id, signed.user_id)
+    assert state["failed_logins"] == 1
+    assert state["totp_enabled_at"] == before["totp_enabled_at"]
+    assert state["session_version"] == before["session_version"]
+    assert api.audit_rows(signed.customer_id)[-1][3] == {"reason": "wrong_password"}
+
+    for _ in range(api.settings.login_max_failures - 1):
+        assert _turn_off(signed.client, WRONG).status_code == 400
+    locked = _turn_off(signed.client)
+    assert locked.status_code == 400
+    assert locked.json()["error"]["message"] == "Too many wrong passwords. Try again in 15 minutes."
+    assert api.user_state(signed.customer_id, signed.user_id)["totp_enabled_at"] is not None
+
+
+def test_turn_off_ends_the_other_sessions_and_keeps_this_one(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_admin()
+    assert signed.totp_secret is not None
+    api.clock.advance(totp.STEP_SECONDS)
+    other = api.client()
+    assert api.admin_login(other, signed.email, code=api.code(signed.totp_secret)).status_code == 200
+    version = api.user_state(signed.customer_id, signed.user_id)["session_version"]
+
+    reply = _turn_off(signed.client)
+
+    assert reply.status_code == 200, reply.text
+    me = reply.json()
+    assert me["user"]["id"] == signed.user_id
+    assert me["user"]["totp_enabled"] is False
+    assert me["session"] == {"scope": "admin"}
+    # Re-signed with the new version; the session keeps its end time.
+    assert f"Max-Age={60 * 60 - totp.STEP_SECONDS}" in reply.headers["set-cookie"]
+    assert signed.client.get("/api/admin/users").status_code == 200
+    assert other.get("/api/auth/me").status_code == 401
+    state = api.user_state(signed.customer_id, signed.user_id)
+    assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
+    assert state["session_version"] == version + 1
+    assert state["failed_logins"] == 0
+    assert api.audit_rows(signed.customer_id)[-1] == ("auth.totp_off", "user", signed.user_id, {})
+    assert api.admin_login(api.client(), signed.email).status_code == 200  # the password alone again
+
+
+def test_turn_off_when_2fa_is_already_off_is_409_and_not_counted(db: Database) -> None:
+    api = Api(db)
+    customer_id, _ = api.customer()
+    user_id, email = api.add_user(customer_id, "admin")
+    client = api.client()
+    assert api.admin_login(client, email).status_code == 200
+    before = api.user_state(customer_id, user_id)
+
+    reply = _turn_off(client)
+
+    assert reply.status_code == 409
+    assert reply.json()["error"]["code"] == "conflict"
+    assert api.user_state(customer_id, user_id) == before
+
+
+def test_turn_on_and_off_need_an_admin_session(db: Database) -> None:
+    api = Api(db)
+    app_session = api.new_signed("admin")  # an admin, signed in on the normal screen
+    before = api.user_state(app_session.customer_id, app_session.user_id)
+
+    for path, body in (
+        ("/api/auth/admin/2fa/start", None),
+        ("/api/auth/admin/2fa/off", {"password": PASSWORD}),
+    ):
+        refused = app_session.client.post(path, json=body, headers=CSRF)
+        assert refused.status_code == 403, path
+        assert refused.json() == ADMIN_SESSION_REFUSED, path
+        assert api.client().post(path, json=body, headers=CSRF).status_code == 401, path
+
+    assert api.user_state(app_session.customer_id, app_session.user_id) == before
 
 
 # --- codes -------------------------------------------------------------------------------
@@ -422,10 +563,12 @@ def test_no_secret_reaches_logs_audit_or_the_api(db: Database, caplog: pytest.Lo
     api.clock.advance(totp.STEP_SECONDS)
     replies.append(api.admin_login(client, enrolling.email, code=api.code(enrolling.secret)))
     sealed = str(api.user_state(enrolling.customer_id, enrolling.user_id)["totp_secret_enc"])
+    replies += [_turn_off(client, WRONG), _turn_off(client)]
 
     secrets = {
         "the secret": totp.b32(enrolling.secret),
         "the grouped secret": enrolling.shown,
+        "the otpauth link": enrolling.reply.json()["otpauth_uri"],
         "the sealed secret": sealed,
         "the enrol token": enrolling.token,
         "the password": PASSWORD,
