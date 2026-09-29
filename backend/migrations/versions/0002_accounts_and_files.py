@@ -102,6 +102,11 @@ UPGRADE = [
     """,
     # Runs as the table owner, and 0001 has no FORCE ROW LEVEL SECURITY, so this
     # sees every customer's rows: each existing document is its own first version.
+    # PROVISIONAL, accepted while there is no hosted data: the upgrade is one
+    # transaction, so documents stays locked until it ends, and this UPDATE fires
+    # documents_touch, so every row's updated_at becomes the migration time (nothing
+    # reads updated_at yet). Before a hosted run: SET lock_timeout first, and wrap
+    # this UPDATE in ALTER TABLE documents DISABLE / ENABLE TRIGGER documents_touch.
     "UPDATE documents SET family_id = id",
     "ALTER TABLE documents ALTER COLUMN family_id SET NOT NULL",
     """

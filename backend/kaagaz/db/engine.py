@@ -12,7 +12,8 @@ Every transaction starts the same way (CLAUDE.md never-do 1):
 ``Database.customer`` is for everything a customer does. ``Database.system`` has
 no current customer, so every customer table looks empty inside it; it exists
 only to call the few SECURITY DEFINER functions the schema provides (signing
-in by e-mail, creating a customer) and for health checks.
+in by e-mail, creating a customer, listing the customers with old trash for
+the purge) and for health checks.
 
 Queries are plain SQL through ``sqlalchemy.text`` with bound parameters.
 Never build SQL from strings (ruff's S608 checks for it).
