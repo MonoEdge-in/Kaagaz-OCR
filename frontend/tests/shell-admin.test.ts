@@ -277,11 +277,11 @@ describe("describeAction", () => {
       "auth.logout_everywhere",
       "user.unlock",
       "user.reset_password",
-      "user.reset_2fa",
+      "user.reset_totp",
     ];
     for (const action of actions) {
       expect(describeAction(action), action).not.toBe(action);
     }
-    expect(describeAction("user.reset_2fa")).toBe("Reset a user's 2FA");
+    expect(describeAction("user.reset_totp")).toBe("Reset a user's 2FA");
   });
 });
