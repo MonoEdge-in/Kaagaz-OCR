@@ -262,7 +262,7 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.logout_everywhere": "Signed out everywhere",
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
-  "user.reset_2fa": "Reset a user's 2FA",
+  "user.reset_totp": "Reset a user's 2FA",
 };
 
 /** The audit action in words; an action this screen does not know is shown as is. */
