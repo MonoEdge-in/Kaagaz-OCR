@@ -1,4 +1,5 @@
-/* Folders, tags and filters on the documents screen. Tokens only (app/globals.css). */
+/* Folders, tags and filters on the documents screen, and the viewer's folder
+   path and tags. Tokens only (app/globals.css). */
 
 /* --- Layout: the folder tree beside the list from 1024 px -------------------- */
 
@@ -323,7 +324,7 @@
   flex: 1 1 11rem;
 }
 
-/* --- Tags on a row: plain words, not a label or a status ----------------------- */
+/* --- Tags on a row and in the viewer: plain words, not a label or a status ---- */
 
 .tags {
   list-style: none;
