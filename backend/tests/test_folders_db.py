@@ -360,6 +360,52 @@ def test_parallel_same_name_creates_give_one_folder_and_one_name_taken(db: Datab
     assert _parents(db, customer) == {first.id: None}
 
 
+def test_a_create_inside_a_folder_being_moved_deeper_is_too_deep(db: Database) -> None:
+    customer, admin = new_customer(db)
+    with db.customer(customer) as conn:
+        chain = _chain(conn, customer, admin, 4, prefix="L")
+        lone = create_folder(conn, customer, name="Lone", parent_id=None, created_by=admin)
+    session = _session_name()
+
+    def create_inside_lone() -> FolderRow:
+        with db.customer(customer) as conn:
+            _named(conn, session)
+            return create_folder(conn, customer, name="Child", parent_id=lone.id, created_by=admin)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with db.customer(customer) as conn:
+            move_folder(conn, customer, lone.id, parent_id=chain[3].id)  # Lone is now at depth 5
+            later = pool.submit(create_inside_lone)
+            wait_until_blocked(db, application_name=session)
+        with pytest.raises(FolderTooDeep):
+            later.result(timeout=10)
+
+    assert lone.id not in _parents(db, customer).values()
+
+
+def test_a_create_inside_a_folder_being_deleted_is_not_found(db: Database) -> None:
+    customer, admin = new_customer(db)
+    with db.customer(customer) as conn:
+        doomed = create_folder(conn, customer, name="Doomed", parent_id=None, created_by=admin)
+    session = _session_name()
+
+    def create_inside() -> FolderRow:
+        with db.customer(customer) as conn:
+            _named(conn, session)
+            return create_folder(conn, customer, name="Child", parent_id=doomed.id, created_by=admin)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with db.customer(customer) as conn:
+            delete_folder(conn, customer, doomed.id)
+            later = pool.submit(create_inside)
+            wait_until_blocked(db, application_name=session)
+        # The tree lock turns what would be a raw foreign-key error into "not found".
+        with pytest.raises(FolderNotFound):
+            later.result(timeout=10)
+
+    assert _parents(db, customer) == {}
+
+
 # The family order every family lock uses: the first version (id = family_id), then by id.
 _LOCK_FAMILY_ROWS = (
     "SELECT id FROM documents WHERE customer_id = :c AND family_id = :f"
