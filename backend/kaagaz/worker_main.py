@@ -12,8 +12,14 @@ until it is told to stop:
   it out again once its lease runs out.
 * Anything else is a bug and ends the process on purpose (no blanket
   ``except Exception``, as in kaagaz/jobs/worker.py). docker-compose.yml
-  restarts it; the job goes back to the queue and, after the maximum number
-  of receives, to the failure bin.
+  restarts it; the job goes back to the queue, and its last delivery marks
+  the document failed (``retries_exhausted``) and buries the job.
+* The queue's maximum receives is read from the queue once, at start-up. A
+  queue without a redrive policy stops the worker before it takes any job.
+* Trash older than ``TRASH_DAYS`` is purged at most once an hour, between
+  jobs (``PurgeHourly``, kaagaz/jobs/purge.py). The hour is measured on the
+  injected clock. Several workers may purge at once: each family is taken by
+  one of them only.
 
 Logs are JSON lines holding ids, codes and counts only: never file names,
 document text or an exception's message (it could quote a document). An
@@ -23,25 +29,32 @@ PROVISIONAL: the pause after an outage reuses QUEUE_WAIT_SECONDS rather than
 adding a setting; back-off with jitter needs Vrushit's queue settings.
 """
 
+import functools
 import json
 import logging
 import signal
 import sys
 import threading
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from types import FrameType
 from typing import Protocol
 
 from kaagaz.adapters.queue import SqsQueue
 from kaagaz.adapters.scanner import build_scanner
 from kaagaz.adapters.storage import S3Storage
+from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
+from kaagaz.jobs.purge import purge_expired
+from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
 from kaagaz.settings import Settings
 
 logger = logging.getLogger("kaagaz.worker")
+
+# How often the trash purge runs, at most (PRD 1 F5).
+PURGE_EVERY = timedelta(hours=1)
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
@@ -93,8 +106,58 @@ class LoggedHandler:
         logger.info("job done", extra={**ids, "outcome": "done"})
 
 
+class MarkExhausted:
+    """The worker's ``on_exhausted``: marks the job's document (``mark`` is
+    PgDocuments.mark_exhausted) and logs it, with ids and the code only."""
+
+    def __init__(self, mark: Callable[[str, str], None]) -> None:
+        self._mark = mark
+
+    def __call__(self, job: Job) -> None:
+        self._mark(job.customer_id, job.document_id)
+        logger.warning(
+            "job %s",
+            "failed",
+            extra={
+                "customer_id": job.customer_id,
+                "document_id": job.document_id,
+                "outcome": "failed",
+                "code": RETRIES_EXHAUSTED,
+            },
+        )
+
+
 class RunsJobs(Protocol):
     def run_once(self) -> bool: ...
+
+
+class PurgeHourly:
+    """Wraps the worker: before a turn, runs ``purge`` (returns how many families
+    it purged) if an hour has passed on ``clock`` since the last run. The first
+    turn runs it.
+
+    The time is noted before the purge starts, so a purge that fails (storage
+    or the database down) raises to the loop, which pauses as for any outage,
+    and it is not tried again until the next hour; the jobs go on meanwhile.
+    O(1) per turn, plus the purge's own cost once an hour.
+    """
+
+    def __init__(self, worker: RunsJobs, purge: Callable[[], int], clock: Callable[[], datetime]) -> None:
+        self._worker = worker
+        self._purge = purge
+        self._clock = clock
+        self._last: datetime | None = None
+
+    def run_once(self) -> bool:
+        now = self._clock()
+        if self._last is None or now - self._last >= PURGE_EVERY:
+            self._last = now
+            logger.info("trash purged: %d families", self._purge())
+        return self._worker.run_once()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def install_stop_handlers(stop: threading.Event) -> None:
@@ -127,7 +190,18 @@ def run_until_stopped(worker: RunsJobs, stop: threading.Event, *, pause_seconds:
 def main() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
+    # A bug still ends the process (docker-compose.yml restarts it), but with one
+    # line naming the error's type. Python's own last words would be the traceback
+    # and the message, and a database error's message can quote row values.
+    try:
+        _serve(settings)
+    except Exception as error:  # noqa: BLE001 - the process boundary, see the comment above
+        logger.critical("worker crashed", extra={"code": type(error).__name__})
+        sys.exit(1)
 
+
+def _serve(settings: Settings) -> None:
+    """Build the worker and run jobs until it is told to stop."""
     # Imported here, not at the top: these modules pull in every reader, the
     # OCR engine and the AI client, and the loop above is tested without them.
     from kaagaz.ai.client import build_model_client
@@ -136,6 +210,7 @@ def main() -> None:
     db = Database(make_engine(settings.database_url), settings.db_app_role)
     storage = S3Storage(settings)
     queue = SqsQueue(settings)
+    max_receives = queue.max_receives()  # once; no redrive policy stops the worker here
     scanner = build_scanner(settings)
     model = build_model_client(settings)
     processor = build_processor(settings=settings, db=db, storage=storage, scanner=scanner, model=model)
@@ -144,11 +219,15 @@ def main() -> None:
     install_stop_handlers(stop)
     storage.ensure_bucket()  # the laptop's first start; in AWS it only checks
     logger.info("worker started")
-    run_until_stopped(
-        Worker(queue, LoggedHandler(processor)),
-        stop,
-        pause_seconds=settings.queue_wait_seconds,
+    jobs = Worker(
+        queue,
+        LoggedHandler(processor),
+        max_receives=max_receives,
+        on_exhausted=MarkExhausted(PgDocuments(db).mark_exhausted),
     )
+    purge = functools.partial(purge_expired, db, storage, _utc_now, settings.trash_days)
+    worker = PurgeHourly(jobs, purge, _utc_now)
+    run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
     db.engine.dispose()
     logger.info("worker stopped")
 

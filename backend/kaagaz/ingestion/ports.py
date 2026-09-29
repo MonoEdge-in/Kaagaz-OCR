@@ -29,6 +29,9 @@ class DocumentRecord:
     # The upload service never reads it; the API sets it.
     display_name: str = "document"
     uploaded_by: str | None = None  # the signed-in user's id
+    folder_id: str | None = None  # None: at the top level, in no folder
+    family_id: str | None = None  # None: its own id (a first version)
+    version_no: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +50,15 @@ class BlobNotFound(Exception):
     """No file with this id exists for this customer."""
 
 
+class UnknownFolder(Exception):
+    """The record names a folder this customer does not have (never there, or deleted)."""
+
+
+class UnknownFamily(Exception):
+    """A new version names a document this customer does not have, or one whose
+    family is in Trash, so there is no family to add it to."""
+
+
 class DocumentRepository(Protocol):
     def get(self, customer_id: str, document_id: str) -> DocumentRecord | None:
         """This customer's document with this id, or None (also for another
@@ -62,7 +74,25 @@ class DocumentRepository(Protocol):
 
         Must be atomic per (customer_id, sha256), so two identical uploads at
         the same moment cannot both be inserted. Returns the stored record and
-        True if it was inserted, or the existing record and False.
+        True if it was inserted, or the existing record and False. Raises
+        UnknownFolder, and inserts nothing, when ``record.folder_id`` is not
+        one of this customer's folders.
+        """
+        ...
+
+    def add_version_if_absent(
+        self, record: DocumentRecord, *, of_document_id: str
+    ) -> tuple[DocumentRecord, bool] | None:
+        """Insert ``record`` as the newest version of ``of_document_id``'s family
+        (PRD 1 F6), unless this customer already has this fingerprint.
+
+        Under the family lock, so two new versions at once get two numbers:
+        version_no is the family's highest plus one, not current (the pipeline
+        makes it current once it is read), with the family's id, folder and
+        tags. The record's own folder_id, family_id and version_no are not used.
+        Returns the stored record and True, or the existing record and False,
+        like ``add_if_absent``. None, with nothing inserted, when
+        ``of_document_id`` is not this customer's or its family is in Trash.
         """
         ...
 

@@ -5,16 +5,25 @@
 // sends the browser to /login when there is no session. Screens read the result
 // with useSession(); it is a hint for what to show, the server still decides
 // what each person may do.
+//
+// While the account has a temporary password (PRD A5), the provider shows the
+// set-new-password screen instead of the app, whatever the page; the server
+// refuses everything else until then. refresh() asks the server again, so the
+// app opens once the new password is saved.
 
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { appGate } from "@/components/shell/gate";
+import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
 import { ApiError, me as fetchMe } from "./api";
 import type { Me } from "./types";
 
 export interface Session {
   me: Me;
+  /** Load who is signed in again (after a password change, say); the screen stays meanwhile. */
+  refresh(): void;
 }
 
 const SessionContext = createContext<Session | null>(null);
@@ -53,13 +62,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (state.kind === "signed_out") router.replace("/login");
   }, [state.kind, router]);
 
+  const refresh = useCallback(() => setAttempt((n) => n + 1), []);
+
   const session = useMemo<Session | null>(
-    () => (state.kind === "signed_in" ? { me: state.me } : null),
-    [state],
+    () => (state.kind === "signed_in" ? { me: state.me, refresh } : null),
+    [state, refresh],
   );
 
   if (session) {
-    return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
+    return (
+      <SessionContext.Provider value={session}>
+        {appGate(session.me) === "set_password" ? (
+          <SetPasswordScreen me={session.me} onChanged={session.refresh} />
+        ) : (
+          children
+        )}
+      </SessionContext.Provider>
+    );
   }
 
   if (state.kind === "error") {

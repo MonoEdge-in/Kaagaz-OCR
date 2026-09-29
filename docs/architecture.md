@@ -32,13 +32,13 @@ The browser talks only to the web app, which forwards `/api/*` to the API, so th
 
 1. **Upload** (API). The file is read once: SHA-256 fingerprint, size limit, and the type taken from its first bytes, never from its name. A file this customer already uploaded is returned as a duplicate. Otherwise it is stored at `customers/{customer}/documents/{document}/original`, recorded as `received`, and a job naming (customer, document) goes on the queue. If a step fails, the earlier steps are undone, so a retry works.
 2. **Scan** (worker). Only an explicit CLEAN verdict lets a file through, and `rejected` is final. A scanner that's down means a retry later, and the file is never opened meanwhile.
-3. **Prepare.** Page sizes, plus a picture of each page for PDFs and photos at `.../pages/{n}.png`.
+3. **Prepare.** Page sizes, plus a picture of each page for PDFs and photos at `.../pages/{n}.webp` (stored as WebP; the model still reads the lossless PNG).
 4. **Read** through the plug socket: CSV, Excel, PDF text (pdfplumber) with a second PDF reader (PDFium), and RapidOCR for scans. A type with no reader is marked `needs_reader`.
 5. **Pieces and values.** Text is split into pieces for search, each with its regions. Values come from spreadsheet columns and labelled invoice fields. Every value is labelled verified or needs review, and this customer's remembered corrections are applied.
 6. **Save** in one transaction that replaces any earlier run, so a job delivered twice is safe. The document must still be clean at this point.
 7. **Index.** A meaning vector is made for each piece if a model is on. The document is then `ready`.
 
-Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `needs_reader` and `failed`, each failure with a short code. A job that keeps failing goes to the failure bin, and one bad file never blocks the ones behind it.
+Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `needs_reader` and `failed`, each failure with a short code. A job that keeps failing goes to the failure bin on the queue's last delivery, and its document ends `failed | retries_exhausted`; the worker reads that maximum from the queue's redrive policy at start-up and will not start without one. One bad file never blocks the ones behind it.
 
 ## One question, step by step
 
@@ -61,12 +61,12 @@ A reviewer picks the first reading, the second, or types the value. The fix is l
 
 ## Data and customer separation
 
-Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`. Every one of them except `customers` carries the customer.
+Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`, `folders`, `tags`, `document_tags`. Every one of them except `customers` carries the customer.
 
 Customers are kept apart by two locks:
 
 1. **The database lock.** Row level security is on every customer table. The app connects through `kaagaz_app`, a role that isn't a superuser, doesn't own the tables and can't bypass the rules. Every transaction sets the current customer first.
-2. **The application lock.** Every query also names the customer, and no function lists across customers.
+2. **The application lock.** Every query also names the customer. One function lists across customers: `kaagaz_customer_ids_with_trash` returns only the ids of customers with trash old enough to purge, for the worker's hourly purge (PROVISIONAL).
 
 The `isolation` tests prove both on every pull request.
 
@@ -130,4 +130,4 @@ The `isolation` tests prove both on every pull request.
 | The virus scanner and upload limits in AWS (values marked PROVISIONAL in `.env.example`) | Hosting |
 | The go or no-go bar for launch, as a number | Launch |
 
-Not built yet, against the Document-to-SQL plan: folders, tags and versions; the typed `invoices` and `invoice_lines` tables and the document-type step; rule checks such as whether the totals add up; and a search tool outside chat.
+Not built yet, against the Document-to-SQL plan: the typed `invoices` and `invoice_lines` tables and the document-type step; rule checks such as whether the totals add up; and a search tool outside chat.

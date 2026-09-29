@@ -1,4 +1,5 @@
-"""The worker loop: graceful stop on SIGINT and SIGTERM, outages, and job logs.
+"""The worker loop: graceful stop on SIGINT and SIGTERM, outages, job logs, and
+the trash purge at most once an hour.
 
 No real services: the loop runs the real Worker over the in-memory lease
 queue (tests/lease_queue.py). ``main()`` itself only wires the adapters
@@ -12,23 +13,38 @@ import signal
 import threading
 import unittest
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.worker import Heartbeat, JobFailed, Worker
-from kaagaz.worker_main import JsonFormatter, LoggedHandler, install_stop_handlers, run_until_stopped
+from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
+from kaagaz.settings import Settings, SettingsError
+from kaagaz.worker_main import (
+    JsonFormatter,
+    LoggedHandler,
+    MarkExhausted,
+    PurgeHourly,
+    install_stop_handlers,
+    run_until_stopped,
+)
 from tests.lease_queue import FakeClock, LeaseQueue
 
 FIRST = Job("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 SECOND = Job("11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333")
+MAX_RECEIVES = 3
 
 
 def make_queue(*jobs: Job) -> LeaseQueue:
-    queue = LeaseQueue(FakeClock(), lease_seconds=30.0, max_attempts=3)
+    queue = LeaseQueue(FakeClock(), lease_seconds=30.0, max_attempts=MAX_RECEIVES)
     for job in jobs:
         queue.enqueue(job)
     return queue
+
+
+def make_worker(queue: LeaseQueue, handler: Handler) -> Worker:
+    return Worker(queue, handler, max_receives=MAX_RECEIVES, on_exhausted=lambda job: None)
 
 
 class _ScriptedWorker:
@@ -63,7 +79,7 @@ class StopSignalTest(unittest.TestCase):
             handled.append(job)  # the job still runs to its end
 
         with self.assertLogs("kaagaz.worker", "INFO"):
-            run_until_stopped(Worker(queue, handler), self.stop, pause_seconds=0.01)
+            run_until_stopped(make_worker(queue, handler), self.stop, pause_seconds=0.01)
         self.assertTrue(self.stop.is_set())
         self.assertEqual(handled, [FIRST])  # the second job was not started
         self.assertEqual(queue.pending(), 1)  # the first was acked, the second waits
@@ -77,7 +93,7 @@ class StopSignalTest(unittest.TestCase):
     def test_a_stop_before_the_loop_starts_runs_nothing(self) -> None:
         queue = make_queue(FIRST)
         self.stop.set()
-        run_until_stopped(Worker(queue, lambda job, beat: None), self.stop, pause_seconds=0.01)
+        run_until_stopped(make_worker(queue, lambda job, beat: None), self.stop, pause_seconds=0.01)
         self.assertEqual(queue.pending(), 1)
 
 
@@ -143,8 +159,132 @@ class LoggedHandlerTest(unittest.TestCase):
             raise JobFailed("too_many_pages", retryable=False)
 
         with self.assertLogs("kaagaz.worker", "WARNING"):
-            Worker(queue, LoggedHandler(fail)).run_once()
+            make_worker(queue, LoggedHandler(fail)).run_once()
         self.assertEqual([failed.code for failed in queue.failed.values()], ["too_many_pages"])
+
+
+class MarkExhaustedTest(unittest.TestCase):
+    def test_the_document_is_marked_and_logged_with_ids_and_the_code_only(self) -> None:
+        marked: list[tuple[str, str]] = []
+        with self.assertLogs("kaagaz.worker", "WARNING") as logs:
+            MarkExhausted(lambda customer_id, document_id: marked.append((customer_id, document_id)))(FIRST)
+        self.assertEqual(marked, [(FIRST.customer_id, FIRST.document_id)])
+        (record,) = logs.records
+        fields = record.__dict__
+        self.assertEqual(
+            (fields["customer_id"], fields["document_id"], fields["outcome"], fields["code"]),
+            (FIRST.customer_id, FIRST.document_id, "failed", "retries_exhausted"),
+        )
+
+    def test_the_real_worker_marks_the_last_delivery(self) -> None:
+        clock = FakeClock()
+        queue = LeaseQueue(clock, lease_seconds=30.0, max_attempts=MAX_RECEIVES)
+        queue.enqueue(FIRST)
+        marked: list[tuple[str, str]] = []
+
+        def down(job: Job, beat: Heartbeat) -> None:
+            raise JobFailed("scanner_down", retryable=True)
+
+        on_exhausted = MarkExhausted(
+            lambda customer_id, document_id: marked.append((customer_id, document_id))
+        )
+        worker = Worker(queue, LoggedHandler(down), max_receives=MAX_RECEIVES, on_exhausted=on_exhausted)
+        with self.assertLogs("kaagaz.worker", "WARNING"):
+            for _ in range(MAX_RECEIVES):
+                worker.run_once()
+                clock.advance(30.0)
+        self.assertEqual(marked, [(FIRST.customer_id, FIRST.document_id)])
+        self.assertEqual([failed.code for failed in queue.failed.values()], ["retries_exhausted"])
+
+
+START = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = START
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+class _Jobs:
+    """A worker that only counts its turns."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run_once(self) -> bool:
+        self.calls += 1
+        return True
+
+
+class _Purge:
+    """Counts its runs; returns ``purged``, or raises ``error`` when one is given."""
+
+    def __init__(self, purged: int = 0, error: Exception | None = None) -> None:
+        self.purged = purged
+        self.error = error
+        self.runs = 0
+
+    def __call__(self) -> int:
+        self.runs += 1
+        if self.error is not None:
+            raise self.error
+        return self.purged
+
+
+class PurgeHourlyTest(unittest.TestCase):
+    def test_the_purge_runs_on_the_first_turn_then_at_most_once_an_hour(self) -> None:
+        clock, jobs, purge = _Clock(), _Jobs(), _Purge(purged=2)
+        worker = PurgeHourly(jobs, purge, clock)
+        runs = []
+        with self.assertLogs("kaagaz.worker", "INFO") as logs:
+            for minutes in (0, 30, 59, 60, 119, 120):
+                clock.now = START + timedelta(minutes=minutes)
+                self.assertTrue(worker.run_once())
+                runs.append(purge.runs)
+        self.assertEqual(runs, [1, 1, 1, 2, 2, 3])
+        self.assertEqual(jobs.calls, 6)
+        self.assertEqual(logs.records[0].getMessage(), "trash purged: 2 families")
+
+    def test_a_purge_that_fails_is_not_tried_again_within_the_hour(self) -> None:
+        clock, jobs, purge = _Clock(), _Jobs(), _Purge(error=BackendUnavailable("storage"))
+        worker = PurgeHourly(jobs, purge, clock)
+        with self.assertRaises(BackendUnavailable):
+            worker.run_once()
+        clock.now = START + timedelta(minutes=59)
+        self.assertTrue(worker.run_once())
+        self.assertEqual((purge.runs, jobs.calls), (1, 1))
+
+    def test_the_loop_pauses_after_a_failed_purge_and_goes_on_with_jobs(self) -> None:
+        stop = threading.Event()
+        jobs = _ScriptedWorker(stop, [lambda: True, lambda: True])
+        purge = _Purge(error=BackendUnavailable("storage"))
+        with self.assertLogs("kaagaz.worker", "WARNING") as logs:
+            run_until_stopped(PurgeHourly(jobs, purge, _Clock()), stop, pause_seconds=0.01)
+        self.assertEqual((purge.runs, jobs.calls), (1, 2))
+        self.assertEqual(logs.records[0].__dict__["code"], "storage")
+
+
+class TrashDaysSettingTest(unittest.TestCase):
+    @staticmethod
+    def _shipped() -> dict[str, str]:
+        values = {"SESSION_SECRET": "x" * 32}
+        for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
+            if line.strip() and not line.startswith("#"):
+                name, _, value = line.partition("=")
+                values.setdefault(name.strip(), value.strip())
+        return values
+
+    def test_the_shipped_settings_keep_trash_for_30_days(self) -> None:
+        self.assertEqual(Settings.from_env(self._shipped()).trash_days, 30)
+
+    def test_a_missing_trash_days_stops_start_up_with_its_name(self) -> None:
+        env = {name: value for name, value in self._shipped().items() if name != "TRASH_DAYS"}
+        with self.assertRaisesRegex(SettingsError, "TRASH_DAYS"):
+            Settings.from_env(env)
 
 
 class JsonFormatterTest(unittest.TestCase):

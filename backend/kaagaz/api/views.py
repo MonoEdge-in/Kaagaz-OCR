@@ -4,11 +4,15 @@ Why one place: the frontend's types are the contract. Each function here is
 named after the type it builds, so a reviewer can hold the two side by side.
 """
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import RowMapping
 
+from kaagaz.api.auth import CurrentUser
+from kaagaz.db.folders import FolderRow
+from kaagaz.db.tags import TagRow
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
 _STATUS_MESSAGES = {
@@ -23,16 +27,23 @@ def iso(value: datetime) -> str:
     return value.isoformat()
 
 
-def status_message(status: str, failure_code: str | None) -> str:
+def status_message(status: str, failure_code: str | None, *, detected_type: str, max_pages: int) -> str:
+    """``max_pages`` is the MAX_PAGES setting, named when a file had too many pages
+    (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it)."""
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
+    if status == "failed" and failure_code == "too_many_pages":
+        # PROVISIONAL: the PRD quotes the real page count, which is not stored when a file fails.
+        what = "This PDF" if detected_type == "pdf" else "This file"
+        return f"{what} has more than {max_pages} pages. The limit is {max_pages}. Split it into parts."
     if status == "failed":
         return "This file could not be read." + (f" ({failure_code})" if failure_code else "")
     return _STATUS_MESSAGES.get(status, "")
 
 
-def document_summary(row: RowMapping) -> dict[str, Any]:
-    """``DocumentSummary``."""
+def document_summary(row: RowMapping, *, max_pages: int, tags: Sequence[TagRow]) -> dict[str, Any]:
+    """``DocumentSummary``. ``max_pages`` is passed on to ``status_message``;
+    ``tags`` are the document's own, from one ``tags_for_documents`` call per page."""
     return {
         "id": str(row["id"]),
         "display_name": row["display_name"],
@@ -40,11 +51,48 @@ def document_summary(row: RowMapping) -> dict[str, Any]:
         "size_bytes": int(row["size_bytes"]),
         "status": row["status"],
         "failure_code": row["failure_code"],
-        "status_message": status_message(row["status"], row["failure_code"]),
+        "status_message": status_message(
+            row["status"], row["failure_code"], detected_type=row["detected_type"], max_pages=max_pages
+        ),
         "page_count": row["page_count"],
         "created_at": iso(row["created_at"]),
         "uploaded_by_name": row["uploaded_by_name"],
+        "folder_id": None if row["folder_id"] is None else str(row["folder_id"]),
+        "tags": [tag(each) for each in tags],
+        "deleted_at": None if row["deleted_at"] is None else iso(row["deleted_at"]),
+        "version_no": int(row["version_no"]),
+        "family_id": str(row["family_id"]),
     }
+
+
+def document_version(row: RowMapping) -> dict[str, Any]:
+    """``DocumentVersion``: one version in the detail's ``versions`` (``listing.family_versions``)."""
+    return {
+        "id": str(row["id"]),
+        "version_no": int(row["version_no"]),
+        "status": row["status"],
+        "is_current": bool(row["is_current"]),
+        "created_at": iso(row["created_at"]),
+    }
+
+
+def document_folder(path: Sequence[FolderRow]) -> dict[str, Any] | None:
+    """``DocumentFolder``: the document's folder and the folders from the top down
+    to it, itself last (``folders.folder_path``). None at the top level."""
+    if not path:
+        return None
+    here = path[-1]
+    return {"id": here.id, "name": here.name, "path": [{"id": each.id, "name": each.name} for each in path]}
+
+
+def folder(row: FolderRow) -> dict[str, Any]:
+    """``Folder``."""
+    return {"id": row.id, "name": row.name, "parent_id": row.parent_id, "created_at": iso(row.created_at)}
+
+
+def tag(row: TagRow) -> dict[str, Any]:
+    """``Tag``."""
+    return {"id": row.id, "name": row.name}
 
 
 def page_summary(row: RowMapping) -> dict[str, Any]:
@@ -105,8 +153,26 @@ def conversation_summary(row: RowMapping) -> dict[str, Any]:
     return {"id": str(row["id"]), "title": row["title"], "created_at": iso(row["created_at"])}
 
 
-def admin_user(row: RowMapping) -> dict[str, Any]:
-    """``AdminUser``."""
+def me_json(user: CurrentUser) -> dict[str, Any]:
+    """``Me``: who is signed in, their customer, and the session's scope ("app" from
+    /login, "admin" from /admin/login; the screen shows Admin only for "admin")."""
+    return {
+        "user": {
+            "id": user.user_id,
+            "email": user.email,
+            "display_name": user.display_name,
+            "role": user.role,
+            "must_change_password": user.must_change_password,
+        },
+        "customer": {"id": user.customer_id, "name": user.customer_name},
+        "session": {"scope": user.scope},
+    }
+
+
+def admin_user(row: RowMapping, *, now: datetime) -> dict[str, Any]:
+    """``AdminUser``. ``locked_until`` is null once the lock has passed, so the
+    screen never shows a lock that no longer holds."""
+    locked_until: datetime | None = row["locked_until"]
     return {
         "id": str(row["id"]),
         "email": row["email"],
@@ -114,6 +180,9 @@ def admin_user(row: RowMapping) -> dict[str, Any]:
         "role": row["role"],
         "disabled": bool(row["disabled"]),
         "created_at": iso(row["created_at"]),
+        "locked_until": iso(locked_until) if locked_until is not None and locked_until > now else None,
+        "totp_enabled": row["totp_enabled_at"] is not None,
+        "must_change_password": bool(row["must_change_password"]),
     }
 
 

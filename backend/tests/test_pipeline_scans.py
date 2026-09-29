@@ -3,6 +3,7 @@
 Readers, page preparation and models are fakes (tests/fakes.py), so these
 tests prove the pipeline's own steps: page pictures, pieces from lines,
 labelled values, second readings, the vision reader and the vectors step.
+The lease test at the end uses the real PDF reader with a slow fake OCR engine.
 """
 
 import io
@@ -11,14 +12,33 @@ import unittest
 from PIL import Image
 
 from kaagaz.ingestion import sniff
+from kaagaz.reading.ocr import OcrLine
+from kaagaz.reading.pdf_reader import PdfReader
+from kaagaz.reading.socket import ReaderSocket
 from kaagaz.reading.spans import BoxLocation, PageInfo, ReadError, Span
 from kaagaz.scanning.gate import DocumentStatus
 from tests.fakes import FakeEmbedder, FakePrepared, FakePreparer, FakeVision, PresetSocket
+from tests.lease_queue import FakeClock
+from tests.pdf_builder import Page, make_pdf
 from tests.support import PDF_BYTES
-from tests.test_pipeline import CUSTOMER, build
+from tests.test_pipeline import CUSTOMER, LEASE_SECONDS, build, make_worker, processor_with
 
-PNG_1 = b"page-one-png"
-PNG_2 = b"page-two-png"
+
+def png_of(width: int, height: int, color: str = "white") -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(out, format="PNG")
+    return out.getvalue()
+
+
+PNG_1 = png_of(612, 792)
+PNG_2 = png_of(300, 400, "gray")
+
+
+def webp_size(data: bytes) -> tuple[int, int]:
+    """The size of a stored page picture, which must be WebP (RIFF ... WEBP)."""
+    assert (data[:4], data[8:12]) == (b"RIFF", b"WEBP"), "stored page pictures are WebP"
+    with Image.open(io.BytesIO(data)) as picture:
+        return picture.size
 
 
 def line(text: str, top: float, *, confidence: float | None = None, page: int = 1) -> Span:
@@ -55,8 +75,8 @@ class TextLayerTest(unittest.TestCase):
         system.worker.run_once()
 
         self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
-        self.assertEqual(system.page_images.images[(CUSTOMER, doc, 1)], PNG_1)
-        self.assertEqual(system.page_images.images[(CUSTOMER, doc, 2)], PNG_2)
+        self.assertEqual(webp_size(system.page_images.images[(CUSTOMER, doc, 1)]), (612, 792))
+        self.assertEqual(webp_size(system.page_images.images[(CUSTOMER, doc, 2)]), (300, 400))
         pages = system.store.pages_for(CUSTOMER, doc)
         self.assertEqual(
             [(p.info.page, p.info.unit, p.has_image) for p in pages], [(1, "pt", True), (2, "pt", True)]
@@ -230,6 +250,55 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(value.label_reason, "readers_disagree")
 
 
+def checkerboard(width: int, height: int) -> Image.Image:
+    """One-pixel black and white squares: any lossy step blurs them into greys."""
+    black_first = bytes([0, 0, 0, 255, 255, 255] * (width // 2))
+    white_first = bytes([255, 255, 255, 0, 0, 0] * (width // 2))
+    return Image.frombytes("RGB", (width, height), (black_first + white_first) * (height // 2))
+
+
+def colours(data: bytes) -> set[tuple[int, ...] | float]:
+    """Every colour in a picture (Pillow gives RGB colours as tuples)."""
+    with Image.open(io.BytesIO(data)) as picture:
+        found = picture.convert("RGB").getcolors(maxcolors=1 << 24) or []
+    return {colour for _, colour in found}
+
+
+class PagePictureTest(unittest.TestCase):
+    def test_a_page_longer_than_webp_allows_is_stored_smaller_for_people_only(self) -> None:
+        # WebP holds at most 16383 pixels a side (PROVISIONAL: shrink for storage, never fail).
+        for width, height, stored in ((20_000, 10, (16_383, 8)), (10, 20_000, (8, 16_383))):
+            with self.subTest(size=(width, height)):
+                page = PageInfo(1, float(width), float(height), "px")
+                preparer = FakePreparer({sniff.PDF: FakePrepared([page], {1: png_of(width, height)})})
+                system = build(socket=PresetSocket({sniff.PDF: INVOICE}), preparer=preparer)
+                doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
+                system.worker.run_once()
+
+                self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
+                self.assertEqual(webp_size(system.page_images.images[(CUSTOMER, doc, 1)]), stored)
+                # The page keeps its real size; boxes are fractions of it.
+                (saved,) = system.store.pages_for(CUSTOMER, doc)
+                self.assertEqual((saved.info, saved.has_image), (page, True))
+
+    def test_vision_crops_come_from_the_lossless_page_not_the_stored_webp(self) -> None:
+        png = io.BytesIO()
+        checkerboard(400, 500).save(png, format="PNG")
+        page = PageInfo(1, 400.0, 500.0, "px")
+        preparer = FakePreparer({sniff.PDF: FakePrepared([page], {1: png.getvalue()})})
+        vision = FakeVision("Total: 1,180.00")
+        system = build(socket=PresetSocket({sniff.PDF: SCANNED[1:]}), preparer=preparer, vision=vision)
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
+        system.worker.run_once()
+
+        (crop,) = vision.pictures
+        self.assertEqual(colours(crop), {(0, 0, 0), (255, 255, 255)})  # exactly the page's pixels
+        stored = system.page_images.images[(CUSTOMER, doc, 1)]
+        self.assertGreater(len(colours(stored)), 2)  # the stored WebP is lossy, so it was not used
+        (value,) = system.store.values_for(CUSTOMER, doc)
+        self.assertEqual(value.label_reason, "readers_agree")
+
+
 class VectorsTest(unittest.TestCase):
     def test_vectors_are_made_once_after_saving(self) -> None:
         embed = FakeEmbedder()
@@ -263,6 +332,40 @@ class VectorsTest(unittest.TestCase):
         system.worker.run_once()
         self.assertEqual(embed.calls, [])
         self.assertEqual([f.code for f in system.queue.failed.values()], ["encrypted"])
+
+
+class SlowOcr:
+    """An OCR engine that takes ``seconds`` of the test clock to read each page."""
+
+    name = "slow-ocr"
+    version = "1"
+
+    def __init__(self, clock: FakeClock, seconds: float) -> None:
+        self._clock = clock
+        self._seconds = seconds
+        self.pages = 0
+
+    def read(self, image: Image.Image) -> list[OcrLine]:
+        self._clock.advance(self._seconds)
+        self.pages += 1
+        return [OcrLine(f"Scanned page {self.pages}", 60, 60, 300, 90, 0.9)]
+
+
+class LongReadingTest(unittest.TestCase):
+    def test_a_long_scan_keeps_its_lease_between_pages(self) -> None:
+        system = build()
+        ocr = SlowOcr(system.clock, seconds=20)
+        self.assertEqual(LEASE_SECONDS, 30)  # one page fits in a lease; three pages (60 s) do not
+        reader = PdfReader(ocr, max_pages=10, dpi=72, max_image_pixels=10_000_000)
+        processor = processor_with(system, ReaderSocket({sniff.PDF: reader}))
+        worker = make_worker(system.queue, processor, system.repo)
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(make_pdf([Page(), Page(), Page()]))).document_id
+
+        self.assertTrue(worker.run_once())
+        self.assertEqual(ocr.pages, 3)
+        self.assertEqual(system.queue.pending(), 0)  # acked: the lease was renewed after each page
+        self.assertEqual(system.queue.failed, {})
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
 
 
 if __name__ == "__main__":

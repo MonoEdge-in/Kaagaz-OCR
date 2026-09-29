@@ -24,10 +24,32 @@ export type LabelReason =
   | "corrected"
   | "learned_correction";
 
+/** "admin" only for a session started at /admin/login (PRD A1). */
+export type SessionScope = "app" | "admin";
+
+// must_change_password and session are always sent (backend api/views.py
+// me_json). Read them through components/shell/gate.ts, never directly, so
+// each rule lives in one place.
 export interface Me {
-  user: { id: string; email: string; display_name: string; role: Role };
+  user: {
+    id: string;
+    email: string;
+    display_name: string;
+    role: Role;
+    must_change_password: boolean;
+  };
   customer: { id: string; name: string };
+  session: { scope: SessionScope };
 }
+
+/** The first admin sign-in, before 2FA is set up: the key to type into the app. */
+export interface EnrolRequired {
+  enrol_required: true;
+  enrol_token: string; // lasts 10 minutes
+  secret: string; // base32, in groups of 4
+}
+
+export type AdminLoginResult = Me | EnrolRequired;
 
 // Where a value sits. A box is in fractions (0 to 1) of the page's width and
 // height, origin top left. A cell is 1-based; for spreadsheets, page = sheet.
@@ -46,6 +68,42 @@ export interface DocumentSummary {
   page_count: number | null;
   created_at: string; // ISO 8601
   uploaded_by_name: string | null;
+  folder_id: string | null; // null: at the top level, in no folder
+  tags: Tag[];
+  deleted_at: string | null; // set while the document (its whole family) is in Trash
+  version_no: number; // 1 for the first upload
+  family_id: string; // shared by every version of one document
+}
+
+/** One version of a document. Each is its own document id; the viewer opens any of them. */
+export interface DocumentVersion {
+  id: string;
+  version_no: number;
+  status: DocumentStatus;
+  is_current: boolean; // the one search and chat use: the highest version that is ready
+  created_at: string;
+}
+
+// A folder of this customer. The API sends the flat list; the screen builds the
+// tree (components/documents/folderTree.ts). Folder and tags belong to the
+// document's family: every version shares them.
+export interface Folder {
+  id: string;
+  name: string;
+  parent_id: string | null; // null: at the top level
+  created_at: string;
+}
+
+export interface Tag {
+  id: string;
+  name: string;
+}
+
+/** Where a document is filed: its folder, and the folders from the top down (`path`). */
+export interface DocumentFolder {
+  id: string;
+  name: string;
+  path: { id: string; name: string }[];
 }
 
 export interface PageSummary {
@@ -74,6 +132,8 @@ export interface ExtractedValue {
 export interface DocumentDetail extends DocumentSummary {
   pages: PageSummary[];
   values: ExtractedValue[];
+  folder: DocumentFolder | null; // null: at the top level
+  versions: DocumentVersion[]; // every version of the family, this one included
 }
 
 export interface DocumentList {
@@ -84,6 +144,7 @@ export interface DocumentList {
 export interface UploadResult {
   document: DocumentSummary;
   duplicate: boolean;
+  in_trash: boolean; // a duplicate of a document that is in Trash
 }
 
 export interface SheetCells {
@@ -170,6 +231,15 @@ export interface AdminUser {
   role: Role;
   disabled: boolean;
   created_at: string;
+  locked_until: string | null; // ISO 8601; null when not locked (a passed lock is sent as null)
+  totp_enabled: boolean;
+  must_change_password: boolean;
+}
+
+/** A reset password: the temporary password is in this one reply only. */
+export interface PasswordReset {
+  user: AdminUser;
+  temporary_password: string;
 }
 
 export interface CustomerSettings {

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import UploadRejected
-from kaagaz.ingestion.policy import UploadPolicy
+from kaagaz.ingestion.policy import KIND_OF, UploadPolicy, limits_by_type
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import Worker
 from kaagaz.pipeline import DocumentProcessor
@@ -45,6 +45,7 @@ from tests.xlsx_builder import make_xlsx, make_zip, sheet_xml
 
 CUSTOMER = "cust-demo"
 FAKE_VIRUS_MARKER = b"FAKE-VIRUS-FOR-TESTING"
+MAX_RECEIVES = 3  # the stand-in queue's maximum, which the worker must know
 
 # What each outcome means, for the report.
 EXPLAIN = {
@@ -113,10 +114,15 @@ def percentile(values: list[float], fraction: float) -> float:
 def main() -> None:
     out = sys.stdout  # a command line report, so it writes to stdout rather than the log
     clock = FakeClock()
-    queue = LeaseQueue(clock, lease_seconds=30, max_attempts=3)
+    queue = LeaseQueue(clock, lease_seconds=30, max_attempts=MAX_RECEIVES)
     statuses, storage, store = MemoryStatuses(), MemoryStorage(), MemoryPipelineStore()
     repo = MemoryDocuments(statuses)
-    policy = UploadPolicy(max_bytes=100_000, allowed_types=frozenset(sniff.KNOWN_TYPES))
+    # Every type that has a size limit (ole2 has none, and no sample is one).
+    policy = UploadPolicy(
+        max_bytes=100_000,
+        allowed_types=frozenset(KIND_OF),
+        type_limits=limits_by_type(pdf=100_000, image=100_000, sheet=100_000),
+    )
     upload = UploadService(policy, repo, storage, queue)
     limits = XlsxLimits(
         max_entries=200,
@@ -137,7 +143,12 @@ def main() -> None:
         page_images=MemoryPageImages(),
         store=store,
     )
-    worker = Worker(queue, processor)
+    worker = Worker(
+        queue,
+        processor,
+        max_receives=MAX_RECEIVES,
+        on_exhausted=lambda job: repo.mark_exhausted(job.customer_id, job.document_id),
+    )
 
     samples = make_samples()
     outcomes: dict[str, str] = {}

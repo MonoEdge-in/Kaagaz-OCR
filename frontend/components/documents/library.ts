@@ -1,0 +1,93 @@
+// Small decisions for folders, tags, rename and download, shared by the
+// documents screen and the viewer header. Pure functions, unit tested in node
+// (tests/shell-documents.test.ts). The server checks everything again.
+
+import { ApiError, fileUrl } from "@/lib/api";
+import { formatDate, typeLabel } from "@/lib/format";
+import type {
+  DetectedType,
+  DocumentFolder,
+  DocumentStatus,
+  DocumentSummary,
+  Tag,
+} from "@/lib/types";
+
+// The original is served only once the virus check has passed
+// (backend/kaagaz/api/routers/documents.py, _SERVABLE).
+const SERVABLE: readonly DocumentStatus[] = ["clean", "ready", "needs_reader"];
+
+/** Where "Download original" points: always through the API. null when the server would refuse. */
+export function downloadHref(document: Pick<DocumentSummary, "id" | "status">): string | null {
+  return SERVABLE.includes(document.status) ? fileUrl(document.id) : null;
+}
+
+/** The folders from the top down to the document's own, whether or not `path` already ends with it. */
+export function folderTrail(folder: DocumentFolder): { id: string; name: string }[] {
+  const last = folder.path.at(-1);
+  return last?.id === folder.id
+    ? folder.path
+    : [...folder.path, { id: folder.id, name: folder.name }];
+}
+
+function nameProblem(name: string, what: string, max: number): string | null {
+  const trimmed = name.trim();
+  if (trimmed === "") return `Enter a name for the ${what}.`;
+  if (trimmed.length > max) return `Use at most ${max} characters.`;
+  return null;
+}
+
+/** Folder names are 1 to 100 characters (PRD 1, F1). */
+export const folderNameProblem = (name: string) => nameProblem(name, "folder", 100);
+/** Tag names are 1 to 40 characters (PRD 1, F2). */
+export const tagNameProblem = (name: string) => nameProblem(name, "tag", 40);
+/** Document names are 1 to 255 characters; "GST 2026/27" keeps its slash. */
+export const documentNameProblem = (name: string) => nameProblem(name, "document", 255);
+
+/** The tag already called this, whatever the letter case, or null. Tag names are unique that way. */
+export function findTagByName(tags: readonly Tag[], name: string): Tag | null {
+  const wanted = name.trim().toLowerCase();
+  return tags.find((tag) => tag.name.toLowerCase() === wanted) ?? null;
+}
+
+/**
+ * What to say next to the form when a change fails. A taken name gets its own
+ * words; the folder rules (folder_cycle, folder_too_deep, folder_not_empty)
+ * come with the server's own message.
+ */
+export function libraryErrorText(error: unknown, what: "folder" | "tag" | "document"): string {
+  if (!(error instanceof ApiError)) return "Check your internet connection, then try again.";
+  if (error.code === "conflict" && what === "folder") {
+    return "A folder with this name is already here. Choose another name.";
+  }
+  if (error.code === "conflict" && what === "tag") return "A tag with this name already exists.";
+  return error.message;
+}
+
+// The words on each filter chip say what it is set to, so the chip row alone
+// tells what the list shows.
+
+export function tagsChipText(names: readonly string[]): string {
+  const [first] = names;
+  if (first === undefined) return "Tags";
+  return names.length === 1 ? `Tag: ${first}` : `Tags: ${first} and ${names.length - 1} more`;
+}
+
+export function typeChipText(type: DetectedType | null): string {
+  return type === null ? "Type" : `Type: ${typeLabel(type)}`;
+}
+
+/** from and to are YYYY-MM-DD, both days included. */
+export function dateChipText(from: string | null, to: string | null): string {
+  if (from !== null && to !== null) return `Uploaded ${formatDate(from)} to ${formatDate(to)}`;
+  if (from !== null) return `Uploaded from ${formatDate(from)}`;
+  if (to !== null) return `Uploaded until ${formatDate(to)}`;
+  return "Date uploaded";
+}
+
+/** The heading when the search or the filters leave nothing to list. */
+export function noMatchTitle(q: string, filtered: boolean): string {
+  if (q === "") return "No documents match these filters.";
+  return filtered
+    ? `No document names contain “${q}” with these filters.`
+    : `No document names contain “${q}”.`;
+}

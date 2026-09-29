@@ -7,6 +7,8 @@ customer data (CLAUDE.md never-do 3).
 
 from enum import StrEnum
 
+from kaagaz.ingestion.policy import Kind
+
 
 class RejectCode(StrEnum):
     """Why an upload was refused. Safe to show to the customer."""
@@ -17,11 +19,26 @@ class RejectCode(StrEnum):
 
 
 class UploadRejected(Exception):
-    """The file is refused. Nothing was stored, recorded or queued."""
+    """The file is refused. Nothing was stored, recorded or queued.
 
-    def __init__(self, code: RejectCode) -> None:
+    A file over its own type's limit also carries its kind, its size and that
+    limit in bytes, so the refusal can name them (PRD 1, U2). They are None
+    when the file was refused before its type was known (over every limit).
+    """
+
+    def __init__(
+        self,
+        code: RejectCode,
+        *,
+        kind: Kind | None = None,
+        size: int | None = None,
+        limit: int | None = None,
+    ) -> None:
         super().__init__(code.value)
         self.code = code
+        self.kind = kind
+        self.size = size
+        self.limit = limit
 
 
 class BackendUnavailable(Exception):

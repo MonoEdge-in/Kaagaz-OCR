@@ -1,7 +1,7 @@
 import ast
 import pathlib
 import unittest
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import ClassVar, cast
 
 from PIL import Image
@@ -13,7 +13,9 @@ from kaagaz.reading.socket import NoReader, ReaderSocket
 from kaagaz.reading.spans import BoxLocation, CellLocation, Location, ReadError, Span
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
+from tests.pdf_builder import Page, Text, make_pdf
 from tests.settings_factory import make_settings
+from tests.xlsx_builder import make_xlsx, sheet_xml
 
 PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "kaagaz"
 
@@ -27,8 +29,27 @@ class FixedReader:
     def __init__(self, *spans: Span) -> None:
         self._spans = list(spans)
 
-    def read(self, data: bytes) -> list[Span]:
+    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
         return self._spans
+
+
+class TwoPageReader:
+    """A test double for a reader of pages: calls ``on_page`` after each of two pages."""
+
+    name = "two-pages"
+    version = "1"
+
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
+        spans = []
+        for page in (1, 2):
+            self._events.append(f"read page {page}")
+            spans.append(Span("x", "x", BoxLocation(page, 0.1, 0.1, 0.5, 0.2)))
+            if on_page is not None:
+                on_page()
+        return spans
 
 
 class FakeOcr:
@@ -60,7 +81,7 @@ class ReaderSocketTest(unittest.TestCase):
             name = "one-cell"
             version = "1"
 
-            def read(self, data: bytes) -> Iterator[Span]:
+            def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> Iterator[Span]:
                 yield Span("hello", "hello", CellLocation(1, 1, 1))
 
         socket = ReaderSocket({sniff.TEXT: CsvReader(max_cells=100), "fake": OneCellReader()})
@@ -80,7 +101,7 @@ class ReaderSocketTest(unittest.TestCase):
             def __init__(self, span: Span) -> None:
                 self._span = span
 
-            def read(self, data: bytes) -> list[Span]:
+            def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
                 return [self._span]
 
         for name, bad in bad_spans.items():
@@ -93,6 +114,23 @@ class ReaderSocketTest(unittest.TestCase):
         socket = ReaderSocket(readers)
         readers.clear()
         self.assertEqual(len(socket.read(sniff.TEXT, b"a")), 1)
+
+    def test_on_page_reaches_the_reader_and_is_called_after_each_page(self) -> None:
+        events: list[str] = []
+        socket = ReaderSocket({sniff.PDF: TwoPageReader(events)})
+        spans = socket.read(sniff.PDF, b"", on_page=lambda: events.append("on_page"))
+        self.assertEqual(events, ["read page 1", "on_page", "read page 2", "on_page"])
+        self.assertEqual(len(spans), 2)
+
+    def test_every_wired_reader_accepts_on_page(self) -> None:
+        # The spans are the same with it or without it. A reader with nothing to
+        # beat for between pages (a spreadsheet, a typed PDF page) ignores it.
+        socket = build_reader_socket(make_settings(), FakeOcr())
+        workbook = make_xlsx([("S", sheet_xml('<row r="1"><c r="A1"><v>7</v></c></row>'))])
+        pdf = make_pdf([Page(texts=[Text(72, 700, "typed")])])
+        for kind, data in ((sniff.TEXT, b"a,b\n"), (sniff.ZIP, workbook), (sniff.PDF, pdf)):
+            with self.subTest(kind):
+                self.assertEqual(socket.read(kind, data, on_page=lambda: None), socket.read(kind, data))
 
 
 class SecondReaderTest(unittest.TestCase):

@@ -1,0 +1,49 @@
+/* A centred dialog, at most 30rem wide. Tokens only (app/globals.css). The
+   dialog has no padding, so a click on the dialog element itself is always a
+   click on the backdrop. */
+
+.dialog {
+  width: min(calc(100vw - 2 * var(--space-4)), 30rem);
+  max-width: 100%;
+  max-height: calc(100dvh - 2 * var(--space-4));
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: var(--e-2);
+  overflow: hidden;
+}
+
+.dialog::backdrop {
+  background: var(--backdrop);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 2 * var(--space-4));
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  overflow-wrap: anywhere;
+}
+
+.body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-4);
+}

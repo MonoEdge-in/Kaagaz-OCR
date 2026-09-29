@@ -15,7 +15,8 @@ worker takes it out), with the lease model described in kaagaz/jobs/ports.py:
   still running.
 * After the maximum number of receives, the queue itself moves a job to the
   failure bin: that is the redrive policy in infra/elasticmq/elasticmq.conf
-  (and in the AWS queue's settings), not code here.
+  (and in the AWS queue's settings), not code here. ``max_receives`` reads
+  that maximum from the queue, so the worker knows a job's last delivery.
 * A stale receipt raises ``LeaseLost``. Any other queue failure is
   ``BackendUnavailable``.
 
@@ -91,6 +92,23 @@ def _job_from_body(body: str) -> Job | None:
     if not customer_id or not document_id:
         return None
     return Job(customer_id=customer_id, document_id=document_id)
+
+
+def _max_receive_count(policy: object) -> int | None:
+    """``maxReceiveCount`` from a RedrivePolicy's JSON text, as a whole number of
+    at least 1, or None when there is no such count."""
+    if not isinstance(policy, str):
+        return None
+    try:
+        data = json.loads(policy)
+    except ValueError:
+        return None
+    count = data.get("maxReceiveCount") if isinstance(data, dict) else None
+    if isinstance(count, str) and count.isascii() and count.isdigit():
+        count = int(count)
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        return None
+    return count
 
 
 class SqsQueue:
@@ -195,6 +213,25 @@ class SqsQueue:
             self._client.get_queue_attributes(QueueUrl=self._url, AttributeNames=["QueueArn"])
         except _ANY_ERROR as error:
             raise BackendUnavailable("queue") from error
+
+    # --- Settings ----------------------------------------------------------
+
+    def max_receives(self) -> int:
+        """The queue's maximum receives: ``maxReceiveCount`` in its redrive policy.
+
+        The worker reads it once at start-up, to know which delivery of a job is
+        the last (kaagaz/jobs/worker.py). SQS gives the count as a number or as a
+        string, so both are read. A queue without a redrive policy is refused
+        with ValueError, so the worker does not start. O(1): one call.
+        """
+        try:
+            response = self._client.get_queue_attributes(QueueUrl=self._url, AttributeNames=["RedrivePolicy"])
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("queue") from error
+        count = _max_receive_count(response.get("Attributes", {}).get("RedrivePolicy"))
+        if count is None:
+            raise ValueError("the queue has no redrive policy with a whole maxReceiveCount of 1 or more")
+        return count
 
     # --- Helpers -----------------------------------------------------------
 

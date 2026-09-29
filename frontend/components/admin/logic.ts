@@ -2,8 +2,21 @@
 // are unit tested in node (tests/shell-admin.test.ts). The server checks every
 // one of these again; these checks only give a quicker, clearer message.
 
+import { sessionScope } from "@/components/shell/gate";
 import { formatNumber } from "@/lib/format";
-import type { DocumentStatus, Role, Stats } from "@/lib/types";
+import type { StatusTone } from "@/lib/format";
+import type { AdminUser, DocumentStatus, Me, Role, Stats } from "@/lib/types";
+
+/**
+ * "allow" only for an admin with an admin session (PRD A1); anyone else is
+ * sent to /admin/login. The server refuses every /api/admin call to an app
+ * session anyway (403 admin_session_required).
+ */
+export type AdminGate = "allow" | "admin_sign_in";
+
+export function adminGate(me: Me): AdminGate {
+  return me.user.role === "admin" && sessionScope(me) === "admin" ? "allow" : "admin_sign_in";
+}
 
 export const TABS = [
   { id: "users", label: "Users" },
@@ -66,6 +79,81 @@ export const NEW_USER_FIELD_IDS = {
 export function firstInvalidField(errors: NewUserErrors): keyof NewUserErrors | null {
   const order: (keyof NewUserErrors)[] = ["email", "display_name", "password"];
   return order.find((key) => errors[key] !== undefined) ?? null;
+}
+
+// --- The Users tab's status column and row actions --------------------------
+
+// India time on a 24-hour clock ("14:05"), whatever the browser's own zone is,
+// like every other time in the app (lib/format.ts).
+const lockTimeFormat = new Intl.DateTimeFormat("en-IN", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: "Asia/Kolkata",
+});
+
+export function lockedUntilText(iso: string): string {
+  return `Locked until ${lockTimeFormat.format(new Date(iso))}`;
+}
+
+/**
+ * Locked while the lock's end is still ahead of `now` (milliseconds). The
+ * server sends null once a lock has passed; the check here also covers a list
+ * that was loaded before the lock ran out. An unreadable time is no lock.
+ */
+export function isLocked(user: Pick<AdminUser, "locked_until">, now: number): boolean {
+  if (user.locked_until === null) return false;
+  const end = Date.parse(user.locked_until);
+  return Number.isFinite(end) && end > now;
+}
+
+export interface StatusPart {
+  text: string; // always shown, so colour is never the only signal
+  tone: StatusTone; // .status-chip data-tone
+}
+
+/**
+ * The status column: Active, "Locked until 14:05" or Disabled, then "2FA on"
+ * or "2FA off" (off is only worth saying for an admin, who needs it to sign in
+ * on the admin screen), then "Temporary password" until the user sets their own.
+ */
+export function userStatus(user: AdminUser, now: number): StatusPart[] {
+  const parts: StatusPart[] = [];
+  if (user.disabled) parts.push({ text: "Disabled", tone: "danger" });
+  else if (user.locked_until !== null && isLocked(user, now)) {
+    parts.push({ text: lockedUntilText(user.locked_until), tone: "danger" });
+  } else parts.push({ text: "Active", tone: "ready" });
+  if (user.totp_enabled) parts.push({ text: "2FA on", tone: "neutral" });
+  else if (user.role === "admin") parts.push({ text: "2FA off", tone: "neutral" });
+  if (user.must_change_password) parts.push({ text: "Temporary password", tone: "neutral" });
+  return parts;
+}
+
+export interface UserActions {
+  toggleDisabled: boolean;
+  unlock: boolean;
+  resetPassword: boolean;
+  reset2fa: boolean;
+}
+
+/**
+ * Which buttons a row shows. Nothing on the admin's own row: they cannot
+ * disable themselves or reset their own 2FA (the server refuses both), and
+ * they change their own password by signing in with it.
+ */
+export function userActions(
+  user: AdminUser,
+  { isSelf, now }: { isSelf: boolean; now: number },
+): UserActions {
+  if (isSelf) {
+    return { toggleDisabled: false, unlock: false, resetPassword: false, reset2fa: false };
+  }
+  return {
+    toggleDisabled: true,
+    unlock: isLocked(user, now),
+    resetPassword: true,
+    reset2fa: user.totp_enabled,
+  };
 }
 
 export type UploadLimit = { ok: true; value: number | null } | { ok: false; message: string };
@@ -166,6 +254,15 @@ const ACTION_WORDS: Record<string, string> = {
   "user.create": "Added a user",
   "user.update": "Changed a user",
   "settings.update": "Changed settings",
+  "auth.admin_login": "Signed in to admin",
+  "auth.login_failed": "Sign-in failed",
+  "auth.locked": "Account locked after wrong passwords",
+  "auth.enrol": "Set up 2FA",
+  "auth.password_change": "Changed their password",
+  "auth.logout_everywhere": "Signed out everywhere",
+  "user.unlock": "Unlocked a user",
+  "user.reset_password": "Reset a user's password",
+  "user.reset_totp": "Reset a user's 2FA",
 };
 
 /** The audit action in words; an action this screen does not know is shown as is. */

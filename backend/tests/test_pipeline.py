@@ -6,14 +6,15 @@ store is tested in test_pipeline_store_db.py and test_pipeline_db.py.
 
 import io
 import unittest
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.ingestion import sniff
-from kaagaz.ingestion.policy import UploadPolicy
+from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
-from kaagaz.jobs.worker import JobFailed, Worker
+from kaagaz.jobs.worker import Handler, JobFailed, Worker
 from kaagaz.pipeline import DocumentProcessor, ReadingSocket
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.socket import ReaderSocket
@@ -42,7 +43,11 @@ from tests.xlsx_builder import make_xlsx, make_zip, sheet_xml
 CUSTOMER = "cust-a"
 CSV = b"invoice,amount\nINV-1,100\nINV-2,250\n"
 # Real .xlsx files are a few KB, so the pipeline tests allow more than TEST_POLICY.
-PIPELINE_POLICY = UploadPolicy(max_bytes=100_000, allowed_types=TEST_POLICY.allowed_types)
+PIPELINE_POLICY = UploadPolicy(
+    max_bytes=100_000,
+    allowed_types=TEST_POLICY.allowed_types,
+    type_limits=limits_by_type(pdf=100_000, image=100_000, sheet=100_000),
+)
 XLSX_LIMITS = XlsxLimits(
     max_entries=100,
     max_member_bytes=100_000,
@@ -50,6 +55,8 @@ XLSX_LIMITS = XlsxLimits(
     max_cells=10_000,
     max_text_chars=10_000_000,
 )
+LEASE_SECONDS = 30
+MAX_RECEIVES = 3
 
 
 @dataclass
@@ -72,6 +79,16 @@ def real_socket(max_cells: int = 10_000) -> ReaderSocket:
     return ReaderSocket({sniff.TEXT: CsvReader(max_cells=max_cells), sniff.ZIP: XlsxReader(XLSX_LIMITS)})
 
 
+def make_worker(queue: LeaseQueue, handler: Handler, repo: MemoryDocuments) -> Worker:
+    """The worker as worker_main wires it: the last delivery marks the document."""
+    return Worker(
+        queue,
+        handler,
+        max_receives=MAX_RECEIVES,
+        on_exhausted=lambda job: repo.mark_exhausted(job.customer_id, job.document_id),
+    )
+
+
 def build(
     verdict: Verdict = Verdict.CLEAN,
     *,
@@ -82,7 +99,7 @@ def build(
     vision: FakeVision | None = None,
 ) -> System:
     clock = FakeClock()
-    queue = LeaseQueue(clock, lease_seconds=30, max_attempts=3)
+    queue = LeaseQueue(clock, lease_seconds=LEASE_SECONDS, max_attempts=MAX_RECEIVES)
     statuses, storage, store, page_images = (
         MemoryStatuses(),
         MemoryStorage(),
@@ -108,7 +125,7 @@ def build(
     )
     return System(
         upload,
-        Worker(queue, processor),
+        make_worker(queue, processor, repo),
         processor,
         queue,
         clock,
@@ -223,9 +240,11 @@ class PipelineTest(unittest.TestCase):
 
         class RejectingSocket(ReaderSocket):
             # Simulates an overlapping delivery rejecting the file mid-run.
-            def read(self, detected_type: str, data: bytes) -> list[Span]:
+            def read(
+                self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+            ) -> list[Span]:
                 system.statuses.set_status(CUSTOMER, doc, DocumentStatus.REJECTED)
-                return super().read(detected_type, data)
+                return super().read(detected_type, data, on_page=on_page)
 
         socket = RejectingSocket({sniff.TEXT: CsvReader(max_cells=100), sniff.ZIP: XlsxReader(XLSX_LIMITS)})
         processor = processor_with(system, socket)
@@ -299,6 +318,36 @@ class StatusAndFailureTest(unittest.TestCase):
         system.worker.run_once()
         self.assertIsNone(system.statuses.get_status(CUSTOMER, doc))
         self.assertNotIn((CUSTOMER, doc), system.repo.failure_codes)
+
+    def test_a_retryable_failure_on_every_delivery_ends_failed_retries_exhausted(self) -> None:
+        system = build(scanner=FakeScanner(error=True))  # the scanner stays down
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
+        for _ in range(MAX_RECEIVES):
+            system.worker.run_once()
+            system.clock.advance(LEASE_SECONDS)
+
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.FAILED)
+        self.assertEqual(system.repo.failure_codes[(CUSTOMER, doc)], "retries_exhausted")
+        self.assertEqual([f.code for f in system.queue.failed.values()], ["retries_exhausted"])
+        self.assertEqual(len(system.scanner.scanned), MAX_RECEIVES - 1)  # the last delivery reads nothing
+
+    def test_a_crash_on_every_delivery_still_ends_failed_retries_exhausted(self) -> None:
+        class CrashingPreparer(FakePreparer):
+            def prepare(self, detected_type: str, data: bytes) -> FakePrepared:
+                raise RuntimeError("a bug, after the scan passed")
+
+        system = build(preparer=CrashingPreparer())
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
+        for _ in range(MAX_RECEIVES - 1):
+            with self.assertRaises(RuntimeError):
+                system.worker.run_once()
+            system.clock.advance(LEASE_SECONDS)
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.CLEAN)  # "Reading…"
+        system.worker.run_once()
+
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.FAILED)
+        self.assertEqual(system.repo.failure_codes[(CUSTOMER, doc)], "retries_exhausted")
+        self.assertEqual([f.code for f in system.queue.failed.values()], ["retries_exhausted"])
 
     def test_an_infected_file_stays_rejected_and_keeps_its_reason(self) -> None:
         system = build(Verdict.INFECTED)

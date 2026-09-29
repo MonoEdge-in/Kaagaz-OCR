@@ -20,17 +20,14 @@ one indexed query for ``load_learned``.
 """
 
 import json
-from collections.abc import Collection, Iterator
-from contextlib import contextmanager
+from collections.abc import Collection
 from typing import Any
 
 from sqlalchemy import Connection, text
-from sqlalchemy.exc import OperationalError
 
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, unavailable
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
-from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.pipeline import DocumentContent
 from kaagaz.reading.spans import Span, location_to_json
 
@@ -115,7 +112,7 @@ class PgPipelineStore:
             for seq, piece in enumerate(content.pieces)
         ]
         values = [_value_row(ids, value, content.reader) for value in content.values]
-        with _unavailable(), self._db.customer(content.customer_id) as conn:
+        with unavailable(), self._db.customer(content.customer_id) as conn:
             _delete_all(conn, ids)
             for statement, rows in (
                 (_INSERT_PAGE, pages),
@@ -127,13 +124,13 @@ class PgPipelineStore:
                     conn.execute(statement, rows)  # one batched statement per table
 
     def clear(self, customer_id: str, document_id: str) -> None:
-        with _unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), self._db.customer(customer_id) as conn:
             _delete_all(conn, {"c": customer_id, "d": document_id})
 
     def load_learned(self, customer_id: str, fields: Collection[str]) -> list[LearnedCorrection]:
         if not fields:
             return []
-        with _unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), self._db.customer(customer_id) as conn:
             rows = conn.execute(_LEARNED, {"c": customer_id, "fields": sorted(fields)}).all()
         return [LearnedCorrection(str(row[0]), str(row[1]), str(row[2])) for row in rows]
 
@@ -160,13 +157,3 @@ def _value_row(ids: dict[str, str], value: ExtractedValue, reader: str) -> dict[
         "label": value.label,
         "label_reason": value.label_reason,
     }
-
-
-@contextmanager
-def _unavailable() -> Iterator[None]:
-    """Turn "cannot reach the database" into BackendUnavailable (the job is retried).
-    Constraint errors stay what they are: they are bugs, not outages."""
-    try:
-        yield
-    except OperationalError:
-        raise BackendUnavailable("database") from None

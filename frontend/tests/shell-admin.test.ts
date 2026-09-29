@@ -1,15 +1,146 @@
 import { describe, expect, it } from "vitest";
 import {
   TABS,
+  adminGate,
   describeAction,
   describeDetails,
   firstInvalidField,
+  isLocked,
+  lockedUntilText,
   parseUploadLimit,
   statTiles,
   tabAfterKey,
+  userActions,
+  userStatus,
   validateNewUser,
 } from "@/components/admin/logic";
-import type { Stats } from "@/lib/types";
+import type { AdminUser, Me, Role, SessionScope, Stats } from "@/lib/types";
+
+// 29 Sep 2026, 13:50 in India (08:20 UTC). A lock until 08:35 UTC is 14:05 there.
+const NOW = Date.parse("2026-09-29T08:20:00Z");
+const LOCK_END = "2026-09-29T08:35:00+00:00";
+
+const user = (changes: Partial<AdminUser> = {}): AdminUser => ({
+  id: "u2",
+  email: "ravi@sharma.in",
+  display_name: "Ravi",
+  role: "member",
+  disabled: false,
+  created_at: "2026-09-01T10:00:00+00:00",
+  locked_until: null,
+  totp_enabled: false,
+  must_change_password: false,
+  ...changes,
+});
+
+describe("lockedUntilText and isLocked", () => {
+  it("shows the lock's end in India time, on a 24-hour clock", () => {
+    expect(lockedUntilText(LOCK_END)).toBe("Locked until 14:05");
+    expect(lockedUntilText("2026-09-29T18:40:00Z")).toBe("Locked until 00:10");
+  });
+
+  it("is locked only until the lock's end", () => {
+    expect(isLocked(user({ locked_until: LOCK_END }), NOW)).toBe(true);
+    expect(isLocked(user({ locked_until: LOCK_END }), Date.parse(LOCK_END))).toBe(false);
+    expect(isLocked(user({ locked_until: "2026-09-29T08:00:00Z" }), NOW)).toBe(false);
+    expect(isLocked(user(), NOW)).toBe(false);
+    expect(isLocked(user({ locked_until: "not a date" }), NOW)).toBe(false);
+  });
+});
+
+describe("userStatus", () => {
+  const texts = (u: AdminUser, now = NOW) => userStatus(u, now).map((part) => part.text);
+
+  it("says Active for a normal account", () => {
+    expect(userStatus(user(), NOW)).toEqual([{ text: "Active", tone: "ready" }]);
+  });
+
+  it("says Locked until 14:05 while locked", () => {
+    expect(userStatus(user({ locked_until: LOCK_END }), NOW)).toEqual([
+      { text: "Locked until 14:05", tone: "danger" },
+    ]);
+  });
+
+  it("goes back to Active once the lock has passed, even before a reload", () => {
+    expect(texts(user({ locked_until: LOCK_END }), Date.parse("2026-09-29T08:36:00Z"))).toEqual([
+      "Active",
+    ]);
+  });
+
+  it("says Disabled for a disabled account, lock or not", () => {
+    expect(userStatus(user({ disabled: true, locked_until: LOCK_END }), NOW)).toEqual([
+      { text: "Disabled", tone: "danger" },
+    ]);
+  });
+
+  it("says 2FA on or off for admins", () => {
+    expect(texts(user({ role: "admin", totp_enabled: true }))).toEqual(["Active", "2FA on"]);
+    expect(texts(user({ role: "admin" }))).toEqual(["Active", "2FA off"]);
+    expect(texts(user({ role: "admin", disabled: true }))).toEqual(["Disabled", "2FA off"]);
+  });
+
+  it("says nothing about 2FA for other roles unless it is on", () => {
+    expect(texts(user({ role: "reviewer" }))).toEqual(["Active"]);
+    expect(texts(user({ role: "member", totp_enabled: true }))).toEqual(["Active", "2FA on"]);
+  });
+
+  it("marks an account that still has a temporary password", () => {
+    expect(texts(user({ must_change_password: true }))).toEqual(["Active", "Temporary password"]);
+  });
+});
+
+describe("userActions", () => {
+  const actions = (u: AdminUser, isSelf = false) => userActions(u, { isSelf, now: NOW });
+
+  it("offers disable and reset password for another user", () => {
+    expect(actions(user())).toEqual({
+      toggleDisabled: true,
+      unlock: false,
+      resetPassword: true,
+      reset2fa: false,
+    });
+  });
+
+  it("offers Unlock only while locked", () => {
+    expect(actions(user({ locked_until: LOCK_END })).unlock).toBe(true);
+    expect(actions(user({ locked_until: "2026-09-29T08:00:00Z" })).unlock).toBe(false);
+  });
+
+  it("offers Reset 2FA only when 2FA is on", () => {
+    expect(actions(user({ role: "admin", totp_enabled: true })).reset2fa).toBe(true);
+    expect(actions(user({ role: "admin" })).reset2fa).toBe(false);
+  });
+
+  it("offers an admin nothing on their own row (the server refuses it too)", () => {
+    expect(actions(user({ role: "admin", totp_enabled: true }), true)).toEqual({
+      toggleDisabled: false,
+      unlock: false,
+      resetPassword: false,
+      reset2fa: false,
+    });
+  });
+});
+
+describe("adminGate", () => {
+  const me = (role: Role, scope: SessionScope): Me => ({
+    user: { id: "u1", email: "asha@sharma.in", display_name: "Asha", role, must_change_password: false },
+    customer: { id: "c1", name: "Sharma Traders" },
+    session: { scope },
+  });
+
+  it("opens the admin screen only for an admin session", () => {
+    expect(adminGate(me("admin", "admin"))).toBe("allow");
+  });
+
+  it("sends an admin with an app session to admin sign-in", () => {
+    expect(adminGate(me("admin", "app"))).toBe("admin_sign_in");
+  });
+
+  it("sends anyone else to admin sign-in too", () => {
+    expect(adminGate(me("member", "app"))).toBe("admin_sign_in");
+    expect(adminGate(me("reviewer", "admin"))).toBe("admin_sign_in");
+  });
+});
 
 describe("tabAfterKey", () => {
   const count = TABS.length;
@@ -134,5 +265,23 @@ describe("describeAction", () => {
   it("puts known actions in words and leaves unknown ones as they are", () => {
     expect(describeAction("document.upload")).toBe("Uploaded a document");
     expect(describeAction("something.new")).toBe("something.new");
+  });
+
+  it("puts the sign-in and account actions of PRD A7 in words", () => {
+    const actions = [
+      "auth.admin_login",
+      "auth.login_failed",
+      "auth.locked",
+      "auth.enrol",
+      "auth.password_change",
+      "auth.logout_everywhere",
+      "user.unlock",
+      "user.reset_password",
+      "user.reset_totp",
+    ];
+    for (const action of actions) {
+      expect(describeAction(action), action).not.toBe(action);
+    }
+    expect(describeAction("user.reset_totp")).toBe("Reset a user's 2FA");
   });
 });

@@ -771,3 +771,16 @@
   color: var(--fg-muted);
   font-size: var(--fs-sm);
 }
+
+/* The small link to /admin/login under the form. The padding makes the tap
+   target 44 px tall without making the text any bigger. */
+.adminLink {
+  margin: calc(var(--space-3) * -1) 0 0;
+  font-size: var(--fs-sm);
+}
+
+.adminLink a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}

@@ -17,13 +17,24 @@ from kaagaz.ingestion.errors import BackendUnavailable
 
 MESSAGES = {
     "bad_request": "The request is not valid.",
-    "bad_credentials": "The e-mail or password is not right.",
+    # PRD 1 A3: one text for a wrong password, an unknown e-mail, a locked account
+    # and a wrong code. {minutes} is LOGIN_LOCK_MINUTES: use bad_credentials().
+    "bad_credentials": (
+        "Email or password is wrong, or the account is locked. Try again in {minutes} minutes."
+    ),
     "not_signed_in": "Please sign in.",
     "forbidden": "You don't have permission to do this.",
+    "admin_session_required": "Sign in on the admin screen to use this.",
+    "password_change_required": "Set a new password to continue.",
     "csrf": "This request was refused. Reload the page and try again.",
     "not_found": "We couldn't find that.",
     "method_not_allowed": "This action is not available here.",
     "conflict": "That already exists.",
+    "folder_cycle": "A folder can't go inside itself or one of its own folders.",
+    "folder_too_deep": "Folders can be at most 5 levels deep.",
+    "folder_not_empty": "This folder isn't empty. Move or delete what is inside it first.",
+    "not_needs_review": "This value doesn't need review any more.",
+    "not_in_trash": "Only a document in Trash can be deleted forever.",
     "too_large": "This file is too large.",
     "empty_file": "This file is empty.",
     "unsupported_type": "This kind of file is not supported.",
@@ -55,6 +66,11 @@ class ApiError(Exception):
         self.message = message or MESSAGES.get(code, MESSAGES["bad_request"])
 
 
+def bad_credentials(lock_minutes: int) -> ApiError:
+    """The one 401 for every failed sign-in, with the lock time filled in."""
+    return ApiError(401, "bad_credentials", MESSAGES["bad_credentials"].format(minutes=lock_minutes))
+
+
 def error_response(
     status: int, code: str, message: str | None = None, *, headers: dict[str, str] | None = None
 ) -> JSONResponse:
@@ -84,15 +100,11 @@ async def _unavailable(request: Request, exc: Exception) -> Response:
     return error_response(503, "backend_unavailable")
 
 
-async def _internal(request: Request, exc: Exception) -> Response:
-    # The last resort for a bug: the same JSON shape, and nothing from the error.
-    return error_response(500, "internal_error")
-
-
 def install(app: FastAPI) -> None:
+    # The last resort for a bug is kaagaz.api.middleware.ErrorMiddleware: the same
+    # JSON shape, and only the error's type in the log.
     app.add_exception_handler(ApiError, _api_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(BackendUnavailable, _unavailable)
     app.add_exception_handler(OperationalError, _unavailable)
-    app.add_exception_handler(500, _internal)

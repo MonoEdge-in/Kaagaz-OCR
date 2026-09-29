@@ -8,10 +8,13 @@ The steps, in order, for one (customer, document):
    bytes used below are exactly the bytes that were scanned.
 3. Check the scanned bytes still match the fingerprint taken at upload.
 4. Prepare the pages: sizes, and a picture of each page (PDFs, photos),
-   stored one by one. Spreadsheets get one page per sheet after reading.
+   stored one by one as WebP. The PNGs kept in memory stay lossless for the
+   vision crops. Spreadsheets get one page per sheet after reading.
 5. Read the bytes through the reader socket, then read them again with the
    second reader if the type has one. A type with no reader is marked "needs
-   a reader" (its pages are kept) and the job ends normally.
+   a reader" (its pages are kept) and the job ends normally. A reader that
+   reads page by page (OCR) beats the heartbeat after each page, so a long
+   scan keeps its lease.
 6. Pieces for search (kaagaz.chunking) and values for fixed queries
    (kaagaz.extraction), each labelled verified or needs review. For scans,
    when a vision model is set, it reads each value's box again as the second
@@ -21,7 +24,10 @@ The steps, in order, for one (customer, document):
    same job twice is safe (queues deliver at least once).
 8. Meaning vectors for the pieces, if a model is set. A model that is down
    only means no vectors: word and typo search still work.
-9. The page count, and the document is ready.
+9. The page count, and the document is ready, in one transaction that also
+   makes it its family's current version unless a newer version is ready
+   already (PRD 1 F6). A version that fails never gets here, so the one before
+   it stays current.
 
 A failure a retry cannot fix marks the document failed with its short code.
 A rejected document stays rejected and keeps the reason it was rejected for,
@@ -84,6 +90,11 @@ VISION_INSTRUCTION = (
 )
 _CROP_PADDING = 0.005  # a little of the page around a box, as a fraction of the page
 
+# Stored page pictures are for people to look at (PRD 1, S1), so they are WebP.
+_WEBP_QUALITY = 80
+_WEBP_METHOD = 4
+_WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
+
 
 # --- what is saved ------------------------------------------------------------
 
@@ -127,11 +138,18 @@ class DocumentStore(Protocol):
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None: ...
 
+    def mark_ready(self, customer_id: str, document_id: str, page_count: int) -> None:
+        """Ready with its page count, and current unless a newer version is ready.
+        Never moves a document out of rejected."""
+        ...
+
 
 class ReadingSocket(Protocol):
     """kaagaz.reading.socket.ReaderSocket in production."""
 
-    def read(self, detected_type: str, data: bytes) -> list[Span]: ...
+    def read(
+        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+    ) -> list[Span]: ...
 
     def read_second(self, detected_type: str, data: bytes) -> list[Span] | None: ...
 
@@ -149,7 +167,7 @@ class Prepared(Protocol):
 
 
 class PageImageStore(Protocol):
-    def put_page_image(self, customer_id: str, document_id: str, page_no: int, png: bytes) -> None: ...
+    def put_page_image(self, customer_id: str, document_id: str, page_no: int, image: bytes) -> None: ...
 
 
 class PipelineStore(Protocol):
@@ -229,12 +247,12 @@ class DocumentProcessor:
 
         prepared = _or_fail(lambda: self._prepare(record.detected_type, data))
         for page_no, png in prepared.images.items():
-            self._page_images.put_page_image(customer_id, document_id, page_no, png)
+            self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(png))
             heartbeat()
         pages = [PageRecord(info, info.page in prepared.images) for info in prepared.pages]
 
         try:
-            spans = _or_fail(lambda: self._socket.read(record.detected_type, data))
+            spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=heartbeat))
         except NoReader:
             require_clean(self._statuses, job)
             self._store.save(DocumentContent(customer_id, document_id, pages, [], [], [], reader=""))
@@ -270,8 +288,7 @@ class DocumentProcessor:
         self._store.save(DocumentContent(customer_id, document_id, pages, outputs, pieces, values, reader))
         heartbeat()
         self._index(job)
-        self._documents.set_page_count(customer_id, document_id, len(pages))
-        self._statuses.set_status(customer_id, document_id, DocumentStatus.READY)
+        self._documents.mark_ready(customer_id, document_id, len(pages))
 
     def _scan(self, job: Job) -> bytes:
         try:
@@ -389,6 +406,30 @@ def _crop(page: Image.Image, box: BoxLocation) -> bytes:
     out = io.BytesIO()
     page.crop((left, top, right, bottom)).save(out, format="PNG")
     return out.getvalue()
+
+
+def _stored_picture(png: bytes) -> bytes:
+    """The page picture as stored: WebP, made only here, just before storing, so
+    the PNG kept for the vision crops stays lossless. O(pixels), one page in memory.
+
+    PROVISIONAL (plan 7.6): a side longer than WebP allows is shrunk for storage
+    only. The page keeps its real size, and boxes are fractions of it, so they
+    still fit the smaller picture.
+    """
+    with Image.open(io.BytesIO(png)) as page:
+        picture: Image.Image = page
+        longest = max(page.size)
+        if longest > _WEBP_MAX_SIDE:
+            scale = _WEBP_MAX_SIDE / longest
+            size = (_scaled(page.width, scale), _scaled(page.height, scale))
+            picture = page.resize(size, Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        picture.save(out, format="WEBP", quality=_WEBP_QUALITY, method=_WEBP_METHOD)
+    return out.getvalue()
+
+
+def _scaled(side: int, scale: float) -> int:
+    return min(_WEBP_MAX_SIDE, max(1, round(side * scale)))
 
 
 def _code(error: Exception) -> str:

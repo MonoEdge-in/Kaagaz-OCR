@@ -3,16 +3,25 @@
 // Uploading. Files come from the "Upload files" button (the hidden file input
 // the documents screen owns) or are dropped on the dropzone. Each file is
 // checked first (kind and size), then sent one after another with its own
-// progress bar. The outcome, including "already uploaded" and any error, stays
-// next to its file.
+// progress bar, into the folder that was being viewed when they were added.
+// A new version of a document ("Upload new version") goes through the same
+// queue. The outcome, including "already uploaded" and any error, stays next
+// to its file; a duplicate whose earlier copy is in Trash offers Restore.
 
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
-import { ApiError, uploadDocument } from "@/lib/api";
+import { ApiError, restoreDocument, uploadDocument, uploadVersion } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { estimateIngestSeconds, formatEtaText, uploadStateText, validateUpload } from "./logic";
+import type { UploadResult } from "@/lib/types";
+import {
+  UPLOAD_LIMITS_HINT,
+  estimateIngestSeconds,
+  formatEtaText,
+  uploadStateText,
+  validateUpload,
+} from "./logic";
 import type { UploadState } from "./logic";
 import styles from "./Documents.module.css";
 
@@ -20,11 +29,16 @@ export interface UploadEntry {
   key: string;
   name: string;
   size: number;
+  versionOf?: string; // for a new version: the name of the document it updates
   state: UploadState;
 }
 
 const isBusy = (entry: UploadEntry) =>
-  entry.state.kind === "waiting" || entry.state.kind === "uploading";
+  entry.state.kind === "waiting" ||
+  entry.state.kind === "uploading" ||
+  entry.state.kind === "restoring";
+
+type Start = (onProgress: (fraction: number) => void) => Promise<UploadResult>;
 
 /** The upload queue: add files, watch them go, clear the finished ones. */
 export function useUploads(onUploaded: () => void) {
@@ -37,12 +51,10 @@ export function useUploads(onUploaded: () => void) {
     );
   }
 
-  async function send(key: string, file: File) {
+  async function send(key: string, start: Start) {
     update(key, { kind: "uploading", fraction: 0 });
     try {
-      const result = await uploadDocument(file, (fraction) =>
-        update(key, { kind: "uploading", fraction }),
-      );
+      const result = await start((fraction) => update(key, { kind: "uploading", fraction }));
       update(
         key,
         result.duplicate
@@ -50,6 +62,7 @@ export function useUploads(onUploaded: () => void) {
               kind: "duplicate",
               documentId: result.document.id,
               existingName: result.document.display_name,
+              inTrash: result.in_trash,
             }
           : { kind: "done", documentId: result.document.id },
       );
@@ -63,7 +76,8 @@ export function useUploads(onUploaded: () => void) {
     }
   }
 
-  async function addFiles(files: File[]) {
+  /** Queue files for upload into folderId (undefined: the top level). */
+  async function addFiles(files: File[], folderId?: string) {
     const added = files.map((file) => {
       nextKey.current += 1;
       const problem = validateUpload(file);
@@ -78,7 +92,43 @@ export function useUploads(onUploaded: () => void) {
     setEntries((current) => [...added.map((item) => item.entry), ...current]);
     // One at a time, so a big batch does not trip the rate limit.
     for (const { entry, file } of added) {
-      if (entry.state.kind === "waiting") await send(entry.key, file);
+      if (entry.state.kind === "waiting") {
+        await send(entry.key, (onProgress) => uploadDocument(file, onProgress, folderId));
+      }
+    }
+  }
+
+  /** Queue one file as the next version of a document. */
+  async function addVersion(file: File, of: { id: string; display_name: string }) {
+    nextKey.current += 1;
+    const key = `upload-${nextKey.current}`;
+    const problem = validateUpload(file);
+    setEntries((current) => [
+      {
+        key,
+        name: file.name,
+        size: file.size,
+        versionOf: of.display_name,
+        state: problem ? { kind: "error", message: problem } : { kind: "waiting" },
+      },
+      ...current,
+    ]);
+    if (!problem) await send(key, (onProgress) => uploadVersion(of.id, file, onProgress));
+  }
+
+  /** Bring back the copy in Trash that a duplicate upload matched. */
+  async function restore(key: string, documentId: string, existingName: string) {
+    update(key, { kind: "restoring", documentId, existingName });
+    try {
+      await restoreDocument(documentId);
+      update(key, { kind: "restored", documentId, existingName });
+      onUploaded();
+    } catch (caught) {
+      const restoreError =
+        caught instanceof ApiError
+          ? caught.message
+          : "Could not restore it. Check your connection, then try again.";
+      update(key, { kind: "duplicate", documentId, existingName, inTrash: true, restoreError });
     }
   }
 
@@ -86,10 +136,8 @@ export function useUploads(onUploaded: () => void) {
     setEntries((current) => current.filter(isBusy));
   }
 
-  return { entries, addFiles, clearFinished };
+  return { entries, addFiles, addVersion, restore, clearFinished };
 }
-
-const KINDS_HINT = "PDF, PNG, JPG, TIFF, CSV or XLSX, up to 50 MB each.";
 
 /**
  * Where files can be dropped. With no documents yet it is a full dashed card
@@ -141,7 +189,7 @@ export function Dropzone({
       {variant === "full" ? (
         <>
           {children}
-          <p className={styles.dropHint}>Or drag files here. {KINDS_HINT}</p>
+          <p className={styles.dropHint}>Or drag files here. {UPLOAD_LIMITS_HINT}</p>
         </>
       ) : (
         <>
@@ -152,7 +200,7 @@ export function Dropzone({
           <button type="button" className="btn" onClick={onChoose}>
             Choose files
           </button>
-          <p className={styles.dropHint}>{KINDS_HINT}</p>
+          <p className={styles.dropHint}>{UPLOAD_LIMITS_HINT}</p>
         </>
       )}
     </div>
@@ -162,9 +210,11 @@ export function Dropzone({
 export function UploadList({
   entries,
   onClearFinished,
+  onRestore,
 }: {
   entries: UploadEntry[];
   onClearFinished: () => void;
+  onRestore: (key: string, documentId: string, existingName: string) => void;
 }) {
   if (entries.length === 0) return null;
   const settled = entries.some((entry) => !isBusy(entry));
@@ -191,15 +241,25 @@ export function UploadList({
       </div>
       <ul className={styles.uploads} aria-live="polite">
         {entries.map((entry) => (
-          <UploadRow key={entry.key} entry={entry} />
+          <UploadRow key={entry.key} entry={entry} onRestore={onRestore} />
         ))}
       </ul>
     </section>
   );
 }
 
-function UploadRow({ entry }: { entry: UploadEntry }) {
+function UploadRow({
+  entry,
+  onRestore,
+}: {
+  entry: UploadEntry;
+  onRestore: (key: string, documentId: string, existingName: string) => void;
+}) {
   const { state } = entry;
+  // After Restore, the Restore button gives way to "Open it": focus follows.
+  const focusOnMount = useCallback((element: HTMLAnchorElement | null) => {
+    element?.focus();
+  }, []);
   const failed = state.kind === "error";
   const estimateSeconds = estimateIngestSeconds(entry.size);
   const etaText =
@@ -220,6 +280,9 @@ function UploadRow({ entry }: { entry: UploadEntry }) {
             {uploadStateText(state)}
           </span>
         </div>
+        {entry.versionOf !== undefined && (
+          <p className={`muted ${styles.small}`}>New version of “{entry.versionOf}”</p>
+        )}
         {state.kind === "uploading" && (
           <>
             <div className={styles.progressRow}>
@@ -242,10 +305,42 @@ function UploadRow({ entry }: { entry: UploadEntry }) {
             <span className="visually-hidden">{` ${entry.name}`}</span>
           </Link>
         )}
-        {state.kind === "duplicate" && (
+        {state.kind === "duplicate" && !state.inTrash && (
           <p className={styles.small}>
             This file was uploaded before, as “{state.existingName}”. Nothing new was stored.{" "}
             <Link href={`/documents/${state.documentId}`}>Open it</Link>
+          </p>
+        )}
+        {(state.kind === "restoring" || (state.kind === "duplicate" && state.inTrash)) && (
+          <>
+            <p className={styles.small}>
+              This file was uploaded before, as “{state.existingName}”, and that copy is in Trash.
+              Nothing new was stored.
+            </p>
+            <button
+              type="button"
+              className={`btn ${styles.inlineAction}`}
+              aria-disabled={state.kind === "restoring" ? true : undefined}
+              onClick={() => {
+                if (state.kind === "duplicate") onRestore(entry.key, state.documentId, state.existingName);
+              }}
+            >
+              {state.kind === "restoring" && <span className="spinner" aria-hidden="true" />}
+              {state.kind === "restoring" ? "Restoring…" : "Restore it from Trash"}
+            </button>
+            {state.kind === "duplicate" && state.restoreError && (
+              <p className={`error-text ${styles.small}`} role="alert">
+                {state.restoreError}
+              </p>
+            )}
+          </>
+        )}
+        {state.kind === "restored" && (
+          <p className={styles.small}>
+            Restored “{state.existingName}” from Trash.{" "}
+            <Link ref={focusOnMount} href={`/documents/${state.documentId}`}>
+              Open it
+            </Link>
           </p>
         )}
         {failed && <p className={`error-text ${styles.small}`}>{state.message}</p>}

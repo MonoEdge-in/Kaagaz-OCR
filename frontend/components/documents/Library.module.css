@@ -1,0 +1,443 @@
+/* Folders, tags and filters on the documents screen, and the viewer's folder
+   path and tags. Tokens only (app/globals.css). */
+
+/* --- Layout: the folder tree beside the list from 1024 px -------------------- */
+
+.libraryPage {
+  --tree-w: 13rem;
+}
+
+@media (min-width: 1024px) {
+  /* The tree takes its own room, so the list keeps the width it had. */
+  .libraryPage {
+    max-width: calc(var(--content-max) + var(--tree-w) + var(--space-5));
+  }
+}
+
+.library {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.treePane {
+  display: none;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+@media (min-width: 1024px) {
+  .library {
+    grid-template-columns: var(--tree-w) minmax(0, 1fr);
+  }
+
+  .treePane {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    position: sticky;
+    top: var(--space-4);
+    max-height: calc(100dvh - 2 * var(--space-4));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .placeHead .foldersButton {
+    display: none;
+  }
+}
+
+.paneHeading {
+  margin: 0;
+  padding-inline: var(--space-3);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+/* --- The tree ------------------------------------------------------------------ */
+
+.treeWrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.tree,
+.subtree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.subtree {
+  margin-inline-start: var(--space-3);
+  padding-inline-start: var(--space-1);
+  border-inline-start: 1px solid var(--border);
+}
+
+.treeLink {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.treeLink:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+/* Trash sits apart, after every folder. */
+.trashItem {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.trashItem .treeLink {
+  gap: var(--space-2);
+}
+
+.trashItem svg {
+  flex: none;
+}
+
+/* The folder being viewed: bold as well as tinted, so colour is not the only sign. */
+.treeLink[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* A short message with an optional Try again under it. */
+.note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.note p {
+  margin: 0;
+}
+
+.treeNote {
+  padding-inline: var(--space-3);
+}
+
+/* --- Where you are: the path, the folder's name and its actions ------------- */
+
+.placeHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.place {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.placeHeading {
+  margin: 0;
+  font-size: var(--fs-xl);
+  overflow-wrap: anywhere;
+}
+
+/* Focused by the screen after a delete or a move; the heading is not a control. */
+.placeHeading:focus {
+  outline: none;
+}
+
+.placeHint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.crumbs ol {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  font-size: var(--fs-sm);
+}
+
+.crumbs li {
+  overflow-wrap: anywhere;
+}
+
+.crumbs li + li::before {
+  content: "/";
+  content: "/" / "";
+  margin-inline-end: var(--space-1);
+  color: var(--fg-muted);
+}
+
+.folderActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1 1 100%;
+}
+
+.folderButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.danger {
+  color: var(--danger-fg);
+}
+
+.folderForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 34rem;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.folderForm p {
+  margin: 0;
+}
+
+.formButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* --- Filter chips ----------------------------------------------------------------- */
+
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.filterRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h);
+  max-width: 100%;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.chip:hover {
+  background: var(--surface-2);
+}
+
+/* Set to something: tinted and edged in ink; the words say what. */
+.chip[data-active="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filterPanel {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.filterPanel fieldset,
+.fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.filterPanel legend,
+.fieldset legend {
+  margin-bottom: var(--space-2);
+  padding: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.filterPanel p {
+  margin: 0;
+}
+
+.choices {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-4);
+  margin: 0;
+  padding: 0;
+}
+
+/* A checkbox or radio with its words: the whole line is the target. */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.check input {
+  flex: none;
+}
+
+.dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.dates > * {
+  flex: 1 1 11rem;
+}
+
+/* --- Tags on a row and in the viewer: plain words, not a label or a status ---- */
+
+.tags {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+}
+
+.rowTags {
+  margin-top: var(--space-1);
+}
+
+.tag {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* --- A row's Actions menu ------------------------------------------------------- */
+
+.menu {
+  position: relative;
+  display: inline-block;
+}
+
+/* It opens from the start edge of its button (on a card the button is at the
+   start); in the wide table it opens from the end (Documents.module.css). */
+.menuList {
+  position: absolute;
+  inset-inline-start: 0;
+  top: calc(100% + var(--space-1));
+  z-index: calc(var(--z-sticky) + 1);
+  min-width: 13rem;
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--e-2);
+  text-align: start;
+  white-space: normal;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: start;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.menuItem:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.menuItem.danger,
+.menuItem.danger:hover {
+  color: var(--danger-fg);
+}
+
+/* --- The forms inside a row's dialog ------------------------------------------ */
+
+.dialogForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.dialogForm p {
+  margin: 0;
+}
+
+.addTag {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.addTag input {
+  flex: 1 1 12rem;
+  width: auto;
+}

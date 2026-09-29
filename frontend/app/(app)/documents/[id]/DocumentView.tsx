@@ -1,21 +1,27 @@
 "use client";
 
-// The document screen: header and status, the page viewer and the values
-// table (side by side from 1024 px, stacked below). Clicking a value jumps to
-// its page and highlights its spot. Every value is shown as plain text; it came
-// from the document.
+// The document screen: header and status, where it is filed (its folder path,
+// its tags, Download original), its versions ("Version 2 of 2", each a link to
+// that version's own id), the page viewer and the values table (side by side
+// from 1024 px, stacked below). A document in Trash says so. Clicking a value jumps to its page and
+// highlights its spot. Every value is shown as plain text; it came from the
+// document.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { downloadHref, folderTrail } from "@/components/documents/library";
+import libraryStyles from "@/components/documents/Library.module.css";
+import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
 import { StatusChip } from "@/components/documents/StatusChip";
 import { Icon } from "@/components/ui/Icon";
 import { PageViewer } from "@/components/viewer/PageViewer";
+import { sortedVersions, versionNote, versionPosition, versionText } from "@/components/viewer/versions";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { fieldText, reasonText } from "@/components/viewer/labels";
 import { initialSelection, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { ApiError, getDocument } from "@/lib/api";
-import { typeLabel } from "@/lib/format";
+import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import type { DocumentDetail, ExtractedValue } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
@@ -128,6 +134,10 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
     detail.page_count !== null
       ? ` · ${detail.page_count} ${detail.page_count === 1 ? "page" : "pages"}`
       : "";
+  const trail = detail.folder ? folderTrail(detail.folder) : [];
+  const download = downloadHref(detail);
+  const position = versionPosition(detail);
+  const note = versionNote(detail);
 
   return (
     <div className="page">
@@ -142,6 +152,77 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
             {pagesText}
           </span>
         </div>
+        <div className={styles.place}>
+          <nav aria-label="Folder" className={`${libraryStyles.crumbs} ${styles.placeItem}`}>
+            <span className={styles.placeLabel}>Folder</span>
+            {trail.length === 0 ? (
+              <span className={styles.meta}>Not in a folder</span>
+            ) : (
+              <ol>
+                {trail.map((folder) => (
+                  <li key={folder.id}>
+                    <Link href={libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id })}>
+                      {folder.name}
+                    </Link>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </nav>
+          {detail.tags.length > 0 && (
+            <div className={styles.placeItem}>
+              <span className={styles.placeLabel} id="document-tags-label">
+                Tags
+              </span>
+              <ul className={libraryStyles.tags} aria-labelledby="document-tags-label">
+                {detail.tags.map((tag) => (
+                  <li key={tag.id} className={libraryStyles.tag}>
+                    {tag.name}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {position && (
+            <nav aria-label="Versions" className={styles.placeItem}>
+              <span className={styles.placeLabel}>{versionText(position)}</span>
+              <ol className={styles.versions}>
+                {sortedVersions(detail.versions).map((version) => {
+                  const here = version.id === detail.id;
+                  const words = `Version ${version.version_no}, uploaded ${formatDateTime(version.created_at)}${version.is_current ? ", used in search and chat" : ""}`;
+                  return (
+                    <li key={version.id}>
+                      <Link
+                        href={`/documents/${version.id}`}
+                        className={styles.versionLink}
+                        aria-current={here ? "page" : undefined}
+                        aria-label={words}
+                        title={words}
+                      >
+                        {version.version_no}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ol>
+            </nav>
+          )}
+          {download && (
+            <a className={`btn ${styles.download}`} href={download} download>
+              Download original
+            </a>
+          )}
+        </div>
+        {note && <p className={styles.note}>{note}</p>}
+        {detail.deleted_at !== null && (
+          <p className={styles.trashNotice} role="status">
+            <Icon name="trash" />
+            <span>
+              In Trash since {formatDate(detail.deleted_at)}, so it is left out of search and chat.{" "}
+              <Link href="/documents?trash=1">Open Trash</Link> to restore it.
+            </span>
+          </p>
+        )}
       </header>
       <p className="visually-hidden" aria-live="polite">
         {announcement}

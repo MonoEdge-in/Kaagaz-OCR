@@ -17,6 +17,11 @@ from sqlalchemy import text
 
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, PgFixedQueries
 from kaagaz.db.engine import Database
+from kaagaz.extraction.labelled import values_from_lines
+from kaagaz.extraction.parsing import parse_amount, parse_date
+from kaagaz.extraction.spreadsheet import values_from_cells
+from kaagaz.extraction.values import ExtractedValue
+from kaagaz.reading.spans import BoxLocation, CellLocation, Span, location_to_json
 from tests.db_support import new_customer
 
 pytestmark = pytest.mark.db
@@ -26,8 +31,8 @@ DATES = ("date", "invoice_date")
 PARTIES = ("party_name", "name")
 
 _DOCUMENT = text(
-    "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type, status)"
-    " VALUES (:id, :c, :name, :sha, 10, :type, :status)"
+    "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type, status,"
+    " family_id) VALUES (:id, :c, :name, :sha, 10, :type, :status, :id)"
 )
 _VALUE = text(
     "INSERT INTO extracted_values (id, customer_id, document_id, record_key, field, value_text,"
@@ -278,3 +283,136 @@ def test_start_and_end_go_together(db: Database) -> None:
         PgFixedQueries(db).total(customer, "profit", DATES, date(2026, 8, 1), None)
     with pytest.raises(ValueError, match="date fields"):
         PgFixedQueries(db).total(customer, "profit", (), *AUGUST)
+
+
+# --- a labelled invoice's values count once per document ------------------------------
+
+# A two-page invoice whose second page repeats the seller, the date and the total on
+# one line, as continuation pages do. values_from_lines keys page 1's values
+# "document" and page 2's repeats "page:2:line:1".
+INVOICE_LINES = [
+    (1, "Tax Invoice"),
+    (1, "Seller: Sharma Traders"),
+    (1, "Invoice No: INV-17"),
+    (1, "Invoice Date: 12/08/2026"),
+    (1, "Grand Total: Rs. 1,180.00"),
+    (2, "Seller: Sharma Traders   Invoice Date: 12/08/2026   Grand Total: Rs. 1,180.00"),
+]
+# A July invoice whose page 2 prints another "Date:" (by the signature, say): that
+# date is a "page:2:line:1" record, never the invoice's own date.
+LATER_DATE_LINES = [
+    (1, "Seller: Sharma Traders"),
+    (1, "Invoice Date: 12/07/2026"),
+    (1, "Grand Total: Rs. 1,180.00"),
+    (2, "Date: 03/08/2026"),
+]
+REGISTER = [
+    ("Party Name", "Total Amount", "Date"),
+    ("Sharma Traders", "1,000", "03/08/2026"),
+    ("Mehta Textiles", "2,500", "10/08/2026"),
+    ("Sharma Traders", "4,000", "20/08/2026"),
+]
+
+
+def as_stored(values: list[ExtractedValue]) -> list[dict[str, Any]]:
+    """The rows the pipeline saves: number and date parsed from the text
+    (kaagaz/pipeline.py _with_parsed), the region from the location."""
+    return [
+        {
+            "id": str(uuid.uuid4()),
+            "key": value.record_key,
+            "field": value.field,
+            "text": value.value_text,
+            "number": parse_amount(value.value_text),
+            "day": parse_date(value.value_text),
+            "page": value.location.page,
+            "region": json.dumps(location_to_json(value.location)),
+            "label": "verified",
+            "reason": "direct_cell" if isinstance(value.location, CellLocation) else "readers_agree",
+        }
+        for value in values
+    ]
+
+
+def add_invoice(
+    db: Database, customer: str, lines: list[tuple[int, str]] = INVOICE_LINES
+) -> list[dict[str, Any]]:
+    document = add_document(db, customer, "bill-17.pdf", detected_type="pdf")
+    spans = [
+        Span(text=line, raw=line, location=BoxLocation(page, 0.1, 0.1 * n, 0.9, 0.1 * n + 0.05))
+        for n, (page, line) in enumerate(lines, start=1)
+    ]
+    values = as_stored(values_from_lines(spans))
+    assert {v["key"] for v in values} == {"document", "page:2:line:1"}
+    add_values(db, customer, document, values)
+    return values
+
+
+def add_register(db: Database, customer: str) -> None:
+    document = add_document(db, customer, "sales-register.xlsx")
+    spans = [
+        Span(text=cell_text, raw=cell_text, location=CellLocation(1, r, c))
+        for r, cells in enumerate(REGISTER, start=1)
+        for c, cell_text in enumerate(cells, start=1)
+    ]
+    add_values(db, customer, document, as_stored(values_from_cells(spans)))
+
+
+def test_an_invoice_total_printed_on_two_pages_is_counted_once(db: Database) -> None:
+    customer, _ = new_customer(db)
+    values = add_invoice(db, customer)
+    fixed = PgFixedQueries(db)
+
+    [august] = fixed.total(customer, "total_amount", DATES, *AUGUST)
+    assert (august.number, august.records) == (Decimal(1180), 1)
+    first_page = {v["id"] for v in values if v["key"] == "document" and v["field"] != "party_name"}
+    assert {ref.value_id for ref in august.values} == first_page - ids(values, "invoice_number")
+    [overall] = fixed.total(customer, "total_amount", (), None, None)
+    assert (overall.number, overall.records) == (Decimal(1180), 1)
+
+
+def test_top_group_counts_an_invoice_once(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_invoice(db, customer)
+    fixed = PgFixedQueries(db)
+
+    august = fixed.top_group(customer, "total_amount", PARTIES, DATES, *AUGUST, True)
+    assert [(r.group, r.number, r.records) for r in august] == [("Sharma Traders", Decimal(1180), 1)]
+    overall = fixed.top_group(customer, "total_amount", PARTIES, (), None, None, True)
+    assert [(r.group, r.number, r.records) for r in overall] == [("Sharma Traders", Decimal(1180), 1)]
+
+
+def test_extreme_value_lists_an_invoice_once(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_invoice(db, customer)
+    rows = PgFixedQueries(db).extreme_value(customer, "total_amount", DATES, *AUGUST, True)
+    assert [(r.number, r.records) for r in rows] == [(Decimal(1180), 1)]
+
+
+def test_count_documents_takes_an_invoices_date_from_its_document_record(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_invoice(db, customer, LATER_DATE_LINES)
+    fixed = PgFixedQueries(db)
+
+    # The same answer as the total: the invoice is not in August at all.
+    assert fixed.count_documents(customer, *AUGUST, date_fields=DATES) == []
+    assert fixed.total(customer, "total_amount", DATES, *AUGUST) == []
+    [july] = fixed.count_documents(customer, date(2026, 7, 1), date(2026, 8, 1), date_fields=DATES)
+    assert (july.number, july.records) == (Decimal(1), 1)
+    assert [ref.value_text for ref in july.values] == ["12/07/2026"]
+
+
+def test_a_register_column_named_total_amount_still_sums_every_row(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_invoice(db, customer)
+    add_register(db, customer)
+    fixed = PgFixedQueries(db)
+
+    [august] = fixed.total(customer, "total_amount", DATES, *AUGUST)
+    # 1,000 + 2,500 + 4,000 from the register, and the invoice's 1,180 once
+    assert (august.number, august.records) == (Decimal(8680), 4)
+    rows = fixed.top_group(customer, "total_amount", PARTIES, DATES, *AUGUST, True)
+    assert [(r.group, r.number, r.records) for r in rows] == [
+        ("Sharma Traders", Decimal(6180), 3),
+        ("Mehta Textiles", Decimal(2500), 1),
+    ]

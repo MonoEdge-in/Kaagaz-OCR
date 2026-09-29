@@ -8,15 +8,15 @@ actually fail. They are never used by product code.
 """
 
 import threading
-from collections.abc import Collection
-from dataclasses import dataclass
+from collections.abc import Callable, Collection
+from dataclasses import dataclass, replace
 from typing import IO, Any
 
 from kaagaz.chunking.piece import Piece
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job
+from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job, UnknownFolder
 from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import CellLocation, PageInfo, ReadError, Span
@@ -27,12 +27,16 @@ class MemoryRepository:
     """Documents keyed by (customer_id, sha256): O(1) average lookup and insert.
 
     One lock makes check-and-insert atomic, like a UNIQUE (customer_id, sha256)
-    constraint would in the real database.
+    constraint would in the real database. A record filed in a folder that is
+    not in ``folders`` (keyed by customer) raises UnknownFolder, like the
+    folder foreign key.
     """
 
     def __init__(self) -> None:
         self._by_fingerprint: dict[tuple[str, str], DocumentRecord] = {}
         self._by_id: dict[tuple[str, str], DocumentRecord] = {}
+        self.folders: set[tuple[str, str]] = set()  # (customer_id, folder_id)
+        self.trashed_families: set[tuple[str, str]] = set()  # (customer_id, family_id) in Trash
         self._lock = threading.Lock()
         self.fail_add = False
         self.fail_remove = False
@@ -53,9 +57,42 @@ class MemoryRepository:
             existing = self._by_fingerprint.get(key)
             if existing is not None:
                 return existing, False
+            if record.folder_id is not None and (record.customer_id, record.folder_id) not in self.folders:
+                raise UnknownFolder(record.document_id)
             self._by_fingerprint[key] = record
             self._by_id[(record.customer_id, record.document_id)] = record
             return record, True
+
+    def add_version_if_absent(
+        self, record: DocumentRecord, *, of_document_id: str
+    ) -> tuple[DocumentRecord, bool] | None:
+        """Like PgDocuments.add_version_if_absent: None for a document this customer
+        does not have or a family in ``trashed_families``; else the duplicate rule of
+        ``add_if_absent``, then the family's next number, id and folder (no tags here)."""
+        if self.fail_add:
+            raise BackendUnavailable("database down")
+        customer_id = record.customer_id
+        with self._lock:
+            target = self._by_id.get((customer_id, of_document_id))
+            if target is None:
+                return None
+            family_id = target.family_id or target.document_id
+            if (customer_id, family_id) in self.trashed_families:
+                return None
+            existing = self._by_fingerprint.get((customer_id, record.sha256))
+            if existing is not None:
+                return existing, False
+            numbers = [
+                r.version_no
+                for (c, _), r in self._by_id.items()
+                if c == customer_id and (r.family_id or r.document_id) == family_id
+            ]
+            stored = replace(
+                record, folder_id=target.folder_id, family_id=family_id, version_no=max(numbers) + 1
+            )
+            self._by_fingerprint[(customer_id, record.sha256)] = stored
+            self._by_id[(customer_id, record.document_id)] = stored
+            return stored, True
 
     def remove(self, record: DocumentRecord) -> None:
         if self.fail_remove:
@@ -166,9 +203,9 @@ class MemoryQueue:
 
 
 class MemoryDocuments(MemoryRepository):
-    """MemoryRepository plus the pipeline's two writes (kaagaz.pipeline.DocumentStore),
+    """MemoryRepository plus the pipeline's writes (kaagaz.pipeline.DocumentStore),
     like kaagaz.db.documents.PgDocuments: ``set_failed`` marks the status failed
-    in ``statuses`` (which never leaves REJECTED) and keeps the code. Both do
+    in ``statuses`` (which never leaves REJECTED) and keeps the code. Each does
     nothing for a document this customer does not have, like an UPDATE whose
     WHERE matches no row."""
 
@@ -187,6 +224,23 @@ class MemoryDocuments(MemoryRepository):
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         if self.get(customer_id, document_id) is not None:
             self.page_counts[(customer_id, document_id)] = page_count
+
+    def mark_ready(self, customer_id: str, document_id: str, page_count: int) -> None:
+        """Like PgDocuments.mark_ready for a family of one version (records have no
+        family here): the page count, then ready. A rejected document keeps both.
+        Families of several versions are tested on PostgreSQL
+        (tests/test_documents_mark_ready_db.py)."""
+        if self._statuses.get_status(customer_id, document_id) is DocumentStatus.REJECTED:
+            return
+        self.set_page_count(customer_id, document_id, page_count)
+        if self.get(customer_id, document_id) is not None:
+            self._statuses.set_status(customer_id, document_id, DocumentStatus.READY)
+
+    def mark_exhausted(self, customer_id: str, document_id: str) -> None:
+        """The worker's last delivery, like PgDocuments.mark_exhausted: only a document
+        still in progress (received or clean) becomes failed with retries_exhausted."""
+        if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
+            self.set_failed(customer_id, document_id, "retries_exhausted")
 
 
 class MemoryPipelineStore:
@@ -285,7 +339,9 @@ class PresetSocket:
         self._first = first
         self._second = second or {}
 
-    def read(self, detected_type: str, data: bytes) -> list[Span]:
+    def read(
+        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+    ) -> list[Span]:
         if detected_type not in self._first:
             raise NoReader(detected_type)
         return self._give(self._first[detected_type])

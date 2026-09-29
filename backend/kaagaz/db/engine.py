@@ -12,7 +12,8 @@ Every transaction starts the same way (CLAUDE.md never-do 1):
 ``Database.customer`` is for everything a customer does. ``Database.system`` has
 no current customer, so every customer table looks empty inside it; it exists
 only to call the few SECURITY DEFINER functions the schema provides (signing
-in by e-mail, creating a customer) and for health checks.
+in by e-mail, creating a customer, listing the customers with old trash for
+the purge) and for health checks.
 
 Queries are plain SQL through ``sqlalchemy.text`` with bound parameters.
 Never build SQL from strings (ruff's S608 checks for it).
@@ -37,7 +38,20 @@ def normalise_url(url: str) -> str:
 
 
 def make_engine(database_url: str) -> Engine:
-    return create_engine(normalise_url(database_url), pool_pre_ping=True, future=True)
+    """``hide_parameters``: a failing statement's error and the engine's log lines
+    never show the bound values, which can be row values or document text."""
+    return create_engine(normalise_url(database_url), pool_pre_ping=True, future=True, hide_parameters=True)
+
+
+@contextmanager
+def unavailable() -> Iterator[None]:
+    """Turn "cannot reach the database" (OperationalError) into BackendUnavailable,
+    the error the upload service undoes and retries on and the worker retries the
+    job on. Constraint errors stay what they are: they are bugs, not outages."""
+    try:
+        yield
+    except OperationalError:
+        raise BackendUnavailable("database") from None
 
 
 def _is_role_name(name: str) -> bool:

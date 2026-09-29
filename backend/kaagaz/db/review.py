@@ -10,6 +10,11 @@ customers"): the unique key is (customer_id, field, raw_value).
 
 A value is listed with its page. Values whose page row is missing are not
 listed; the pipeline always stores the pages of a document it saves values for.
+
+A value of a document in Trash is neither listed, counted nor resolved (PRD 1
+F5): the ``LIVE`` text (kaagaz/db/visibility.py) is written out in each of
+those statements. Every version of a family is still listed: only search, chat
+and the fixed queries keep to the current one.
 """
 
 from collections.abc import Sequence
@@ -18,6 +23,9 @@ from decimal import Decimal
 
 from sqlalchemy import Connection, RowMapping, text
 
+# One value with its document and page. On its own, by value id (``get_item``),
+# it has no Trash filter (plan 9.7): it reads back a value that ``lock_value``
+# has just locked, and that lock is filtered.
 _ITEM = (
     "SELECT v.id, v.document_id, v.record_key, v.field, v.value_text, v.value_raw,"
     " v.second_reading, v.page_no, v.region, v.label, v.label_reason, v.confidence,"
@@ -30,33 +38,43 @@ _ITEM = (
     " WHERE v.customer_id = :c"
 )
 
-_COUNT = (
-    "SELECT count(*) FROM extracted_values v"
-    " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
-    " AND p.page_no = v.page_no"
-    " WHERE v.customer_id = :c"
+# The queue and its total repeat the same filter in full, so each can be checked on its own.
+_QUEUE = _ITEM + (
+    " AND d.deleted_at IS NULL AND v.label = 'needs_review'"
+    " AND (CAST(:doc AS uuid) IS NULL OR v.document_id = CAST(:doc AS uuid))"
+    " ORDER BY v.created_at, v.id LIMIT :limit OFFSET :offset"
 )
 
-_QUEUE_FILTER = (
-    " AND v.label = 'needs_review' AND (CAST(:doc AS uuid) IS NULL OR v.document_id = CAST(:doc AS uuid))"
+_COUNT = (
+    "SELECT count(*) FROM extracted_values v"
+    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
+    " AND p.page_no = v.page_no"
+    " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND v.label = 'needs_review'"
+    " AND (CAST(:doc AS uuid) IS NULL OR v.document_id = CAST(:doc AS uuid))"
+)
+
+# Only the value's row is locked (OF v), never the document's, so a resolve never
+# waits on the family lock that trash and the pipeline take.
+_LOCK_VALUE = (
+    "SELECT v.id, v.document_id, v.field, v.value_text, v.value_raw, v.second_reading, v.label"
+    " FROM extracted_values v"
+    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " WHERE v.customer_id = :c AND v.id = :v AND d.deleted_at IS NULL"
+    " FOR UPDATE OF v"
 )
 
 
 def list_queue(
     conn: Connection, customer_id: str, *, limit: int, offset: int, document_id: str | None
 ) -> tuple[Sequence[RowMapping], int]:
-    """Needs-review values, oldest first, and their total. Uses the partial index
-    ``extracted_values_review``: O(limit + offset) rows read."""
+    """Needs-review values of documents not in Trash, oldest first, and their total.
+    Uses the partial index ``extracted_values_review``, then each value's document
+    by primary key: O(limit + offset) rows read for the page, and O(n) for the
+    total over the customer's n needs-review values."""
     params = {"c": customer_id, "doc": document_id, "limit": limit, "offset": offset}
-    rows = (
-        conn.execute(
-            text(_ITEM + _QUEUE_FILTER + " ORDER BY v.created_at, v.id LIMIT :limit OFFSET :offset"),
-            params,
-        )
-        .mappings()
-        .all()
-    )
-    total: int = conn.execute(text(_COUNT + _QUEUE_FILTER), params).scalar_one()
+    rows = conn.execute(text(_QUEUE), params).mappings().all()
+    total: int = conn.execute(text(_COUNT), params).scalar_one()
     return rows, int(total)
 
 
@@ -66,18 +84,10 @@ def get_item(conn: Connection, customer_id: str, value_id: str) -> RowMapping | 
 
 def lock_value(conn: Connection, customer_id: str, value_id: str) -> RowMapping | None:
     """The value, locked until the transaction ends, so two reviewers cannot
-    resolve it at the same moment."""
-    return (
-        conn.execute(
-            text(
-                "SELECT id, document_id, field, value_text, value_raw, second_reading"
-                " FROM extracted_values WHERE customer_id = :c AND id = :v FOR UPDATE"
-            ),
-            {"c": customer_id, "v": value_id},
-        )
-        .mappings()
-        .first()
-    )
+    resolve it at the same moment. The label is read under the lock: the second
+    reviewer sees the first one's ``verified`` and is refused. None if there is no
+    such value, or its document is in Trash. O(1), by primary key."""
+    return conn.execute(text(_LOCK_VALUE), {"c": customer_id, "v": value_id}).mappings().first()
 
 
 def apply_correction(

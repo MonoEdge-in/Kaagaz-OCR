@@ -11,10 +11,12 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import { Drawer } from "@/components/ui/Drawer";
 import { IconButton } from "@/components/ui/IconButton";
-import { ApiError, logout } from "@/lib/api";
+import { ApiError, logout, logoutEverywhere } from "@/lib/api";
 import { useSession } from "@/lib/session";
+import { sessionScope } from "./gate";
 import { currentPageName, navLinks } from "./nav";
 import { ShellMenu } from "./ShellMenu";
+import type { SignOutKind } from "./ShellMenu";
 import { Wordmark } from "./Wordmark";
 import styles from "./Shell.module.css";
 
@@ -25,16 +27,18 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
+  const [signingOut, setSigningOut] = useState<SignOutKind | null>(null);
   const [signOutError, setSignOutError] = useState<string | null>(null);
-  const links = navLinks(me.user.role);
+  const links = navLinks(me.user.role, sessionScope(me));
   const pageName = currentPageName(links, pathname);
 
-  async function signOut() {
-    setSigningOut(true);
+  // "everywhere" raises the account's session version on the server, which
+  // ends this browser's session too, so both end on the sign-in page.
+  async function endSession(kind: SignOutKind) {
+    setSigningOut(kind);
     setSignOutError(null);
     try {
-      await logout();
+      await (kind === "everywhere" ? logoutEverywhere() : logout());
       router.replace("/login");
     } catch (caught) {
       // Already signed out on the server: go to the sign-in page anyway.
@@ -47,9 +51,12 @@ export function AppShell({ children }: { children: ReactNode }) {
           ? "Could not sign out. Try again in a minute."
           : "Could not reach Kaagaz to sign out. Check your internet connection and try again.",
       );
-      setSigningOut(false);
+      setSigningOut(null);
     }
   }
+
+  const signOut = () => endSession("here");
+  const signOutEverywhere = () => endSession("everywhere");
 
   const menu = (
     <ShellMenu
@@ -59,6 +66,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       signingOut={signingOut}
       signOutError={signOutError}
       onSignOut={signOut}
+      onSignOutEverywhere={signOutEverywhere}
       onLinkClick={() => setMenuOpen(false)}
     />
   );

@@ -21,7 +21,9 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
 
 Every query filters on ``p.customer_id = :c`` itself, on top of row level
 security (two locks, docs/architecture.md), and sees only pieces of documents
-whose status is ``ready``. Each list keeps at most ``CANDIDATES`` pieces.
+that are ready, the current version of their family and not in Trash
+(``LIVE_CURRENT`` in kaagaz/db/visibility.py, PRD 1 F5 and F6). Each list
+keeps at most ``CANDIDATES`` pieces.
 
 The lists are merged with reciprocal rank fusion (``fuse``): a piece scores the
 sum of 1 / (k + rank) over the lists it is in, so a piece found two ways ranks
@@ -58,13 +60,14 @@ FUZZY_THRESHOLD = 0.3
 
 # Every statement below repeats the same filter in full, so each one can be read
 # (and checked for the customer filter) on its own: this customer's pieces of
-# ready documents only.
+# ready, current documents that are not in Trash only. The ``LIVE_CURRENT`` text
+# is written out in each one, before any LIMIT (tests/test_visibility_guard.py).
 
 _WORD = text(
     "SELECT p.id, ts_rank_cd(p.tsv, websearch_to_tsquery('english', :q)) AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
-    " WHERE p.customer_id = :c AND d.status = 'ready'"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.tsv @@ websearch_to_tsquery('english', :q)"
     " ORDER BY score DESC, p.id LIMIT :n"
 )
@@ -75,7 +78,7 @@ _FUZZY = text(
     "SELECT p.id, word_similarity(:q, p.text) AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
-    " WHERE p.customer_id = :c AND d.status = 'ready'"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND :q <% p.text"
     " ORDER BY score DESC, p.id LIMIT :n"
 )
@@ -85,7 +88,7 @@ _MEANING = text(
     " SELECT p.id, p.embedding <=> CAST(:vec AS vector) AS distance"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
-    " WHERE p.customer_id = :c AND d.status = 'ready'"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.embedding IS NOT NULL"
     ") SELECT id, distance FROM candidates ORDER BY distance, id LIMIT :n"
 )
@@ -95,7 +98,7 @@ _DETAILS = text(
     " p.text, p.regions, p.label"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
-    " WHERE p.customer_id = :c AND d.status = 'ready'"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.id = ANY(CAST(:ids AS uuid[]))"
 )
 
@@ -182,7 +185,8 @@ def search(
     embedding: list[float] | None,
     limit: int,
 ) -> list[SearchHit]:
-    """The best ``limit`` pieces of this customer's ready documents, best first.
+    """The best ``limit`` pieces of this customer's ready, current documents
+    that are not in Trash, best first.
 
     ``conn`` must come from ``Database.customer(customer_id)``. An empty question
     with no embedding finds nothing.

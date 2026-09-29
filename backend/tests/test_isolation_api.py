@@ -2,7 +2,9 @@
 "not found", never A's data. A forged cookie naming A's customer is refused.
 
 This runs through the whole API (session, routes, SQL and row level
-security), so a route that forgot the customer filter fails here.
+security), so a route that forgot the customer filter fails here. Both
+customers' admins sign in on the admin screen, so the admin routes are
+reached and must answer 404 (never 403) for the other customer's ids.
 """
 
 import pytest
@@ -22,8 +24,8 @@ class _World:
         self.api = Api(db)
         a_customer, _ = self.api.customer("Sharma Traders")
         b_customer, _ = self.api.customer("Mehta Textiles")
-        self.a: Signed = self.api.sign_in(a_customer, "admin")
-        self.b: Signed = self.api.sign_in(b_customer, "admin")
+        self.a: Signed = self.api.admin_sign_in(a_customer)
+        self.b: Signed = self.api.admin_sign_in(b_customer)
         api, a = self.api, self.a
         self.document = api.add_document(a.customer_id, name="sharma-secret.pdf", uploaded_by=a.user_id)
         api.add_page(a.customer_id, self.document)
@@ -96,10 +98,45 @@ def test_b_cannot_resolve_a_value_of_a(world: _World) -> None:
         assert conn.execute(text("SELECT count(*) FROM learned_corrections")).scalar_one() == 0
 
 
+def test_b_gets_404_not_409_for_a_verified_value_of_a(world: _World) -> None:
+    api, a = world.api, world.a
+    verified = api.add_value(a.customer_id, world.document, label="verified", reason="readers_agree")
+    reply = world.b.client.post(
+        f"/api/review/{verified}", json={"choice": "first", "remember": False}, headers=CSRF
+    )
+    _assert_not_found(reply.status_code, reply.json())
+    with api.db.customer(a.customer_id) as conn:
+        row = conn.execute(
+            text("SELECT label, label_reason FROM extracted_values WHERE id = :v"), {"v": verified}
+        ).one()
+    assert tuple(row) == ("verified", "readers_agree")
+
+
 def test_b_cannot_change_a_user_of_a(world: _World) -> None:
     reply = world.b.client.patch(f"/api/admin/users/{world.a.user_id}", json={"disabled": True}, headers=CSRF)
     _assert_not_found(reply.status_code, reply.json())
     assert world.a.client.get("/api/auth/me").status_code == 200
+
+
+@pytest.mark.parametrize("action", ["unlock", "reset-password", "reset-2fa"])
+def test_b_cannot_unlock_or_reset_a_user_of_a(world: _World, action: str) -> None:
+    api, a = world.api, world.a
+    locked_id, locked_email = api.add_user(a.customer_id, "member")
+    for _ in range(api.settings.login_max_failures):
+        api.client().post(
+            "/api/auth/login", json={"email": locked_email, "password": "wrong password!!"}, headers=CSRF
+        )
+    before = {user: api.user_state(a.customer_id, user) for user in (a.user_id, locked_id)}
+
+    for user in (a.user_id, locked_id):
+        reply = world.b.client.post(f"/api/admin/users/{user}/{action}", headers=CSRF)
+        _assert_not_found(reply.status_code, reply.json())
+        assert "temporary_password" not in reply.text
+
+    assert {user: api.user_state(a.customer_id, user) for user in (a.user_id, locked_id)} == before
+    assert a.client.get("/api/admin/users").status_code == 200  # A's admin session is untouched
+    for customer_id in (a.customer_id, world.b.customer_id):
+        assert not [entry for entry in api.audit_actions(customer_id) if entry.startswith("user.")]
 
 
 def test_a_lists_never_show_up_for_b(world: _World) -> None:
@@ -142,7 +179,14 @@ def test_answers_are_asked_for_the_session_customer_only(world: _World) -> None:
 
 def test_a_forged_cookie_naming_a_is_refused(world: _World) -> None:
     client = world.api.client()
-    claims = SessionClaims(world.a.user_id, world.a.customer_id, "admin", int(NOW.timestamp()) + 3600)
+    claims = SessionClaims(
+        user_id=world.a.user_id,
+        customer_id=world.a.customer_id,
+        role="admin",
+        scope="admin",
+        session_version=1,
+        expires_at=int(NOW.timestamp()) + 3600,
+    )
     client.cookies.set(SESSION_COOKIE, sign_session(claims, "not-the-real-secret-but-long-enough-0000"))
     for path in ("/api/auth/me", f"/api/documents/{world.document}", "/api/admin/users"):
         reply = client.get(path)
@@ -154,6 +198,14 @@ def test_b_session_with_a_customer_id_swapped_in_is_refused(world: _World) -> No
     """A genuine token for B's user but naming A's customer (as if the secret had
     leaked) still finds no such user in A, so it is refused."""
     client = world.api.client()
-    claims = SessionClaims(world.b.user_id, world.a.customer_id, "admin", int(NOW.timestamp()) + 3600)
+    claims = SessionClaims(
+        user_id=world.b.user_id,
+        customer_id=world.a.customer_id,
+        role="admin",
+        scope="admin",
+        session_version=1,
+        expires_at=int(NOW.timestamp()) + 3600,
+    )
     client.cookies.set(SESSION_COOKIE, sign_session(claims, world.api.settings.session_secret))
     assert client.get("/api/auth/me").status_code == 401
+    assert client.get("/api/admin/users").status_code == 401

@@ -11,6 +11,9 @@ review. An image in which the engine finds no text at all fails with
 ``no_text``, the same as a scanned PDF: "unreadable" is a correct answer,
 never a guess.
 
+``on_page`` (if given) is called after each page, so a long TIFF can renew
+its lease between pages.
+
 Refusals are short codes raised outside any ``except`` block:
 ``corrupt_file``, ``too_many_pages`` (more than ``max_pages`` frames) and
 ``image_too_large`` (more than ``max_image_pixels``, checked from the image
@@ -18,6 +21,8 @@ header before its pixels are decoded).
 
 Time is the engine's time per page. Memory is one decoded page at a time.
 """
+
+from collections.abc import Callable
 
 from kaagaz.preparing.pages import image_pages
 from kaagaz.reading.ocr import OcrEngine, ocr_spans
@@ -35,12 +40,14 @@ class ImageReader:
         self.name = ocr.name  # "rapidocr" in the product
         self.version = ocr.version
 
-    def read(self, data: bytes) -> list[Span]:
+    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
         spans: list[Span] = []
         pages = image_pages(data, max_pages=self._max_pages, max_image_pixels=self._max_image_pixels)
         for number, image in enumerate(pages, start=1):
             spans.extend(ocr_spans(self._ocr.read(image), number, image.width, image.height))
             image.close()
+            if on_page is not None:
+                on_page()
         if not spans:
             raise ReadError("no_text")
         return spans

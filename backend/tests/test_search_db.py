@@ -45,8 +45,8 @@ def add_document(
         conn.execute(
             text(
                 "INSERT INTO documents"
-                " (id, customer_id, display_name, sha256, size_bytes, detected_type, status)"
-                " VALUES (:d, :c, :name, :h, 10, :type, :status)"
+                " (id, customer_id, display_name, sha256, size_bytes, detected_type, status, family_id)"
+                " VALUES (:d, :c, :name, :h, 10, :type, :status, :d)"
             ),
             {
                 "d": document_id,

@@ -147,11 +147,42 @@
   align-items: flex-start;
 }
 
+/* Status: Active / Locked until 14:05 / Disabled, then 2FA on or off. */
+.statusList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+/* "Saved", errors and the confirm question may wrap inside a no-wrap cell. */
+.rowMessage {
+  white-space: normal;
+}
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: normal;
+}
+
+.confirmButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 @media (min-width: 768px) {
   .actionsColumn,
   .actionsCell {
-    width: 9rem;
+    width: 11rem;
     white-space: nowrap;
+  }
+
+  .confirm {
+    min-width: 13rem;
   }
 }
 
@@ -293,4 +324,56 @@
 
 .errorTitle {
   font-weight: 600;
+}
+
+.redirect {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+/* --- A temporary password, shown once ----------------------------------------- */
+
+.reveal {
+  border-color: var(--accent);
+  border-inline-start-width: 4px;
+}
+
+.reveal p {
+  margin: 0;
+}
+
+.revealHeading:focus-visible {
+  outline-offset: 4px;
+}
+
+.secret {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  letter-spacing: 0.06em;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.secretRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+/* CopyButton: the button, then its polite status line. */
+.copy {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
 }
