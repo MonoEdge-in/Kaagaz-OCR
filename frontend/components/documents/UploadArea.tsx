@@ -12,7 +12,13 @@ import type { DragEvent, ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, uploadDocument } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { estimateIngestSeconds, formatEtaText, uploadStateText, validateUpload } from "./logic";
+import {
+  UPLOAD_LIMITS_HINT,
+  estimateIngestSeconds,
+  formatEtaText,
+  uploadStateText,
+  validateUpload,
+} from "./logic";
 import type { UploadState } from "./logic";
 import styles from "./Documents.module.css";
 
@@ -89,8 +95,6 @@ export function useUploads(onUploaded: () => void) {
   return { entries, addFiles, clearFinished };
 }
 
-const KINDS_HINT = "PDF, PNG, JPG, TIFF, CSV or XLSX, up to 50 MB each.";
-
 /**
  * Where files can be dropped. With no documents yet it is a full dashed card
  * holding the empty state; once there are documents it is a slim strip.
@@ -141,7 +145,7 @@ export function Dropzone({
       {variant === "full" ? (
         <>
           {children}
-          <p className={styles.dropHint}>Or drag files here. {KINDS_HINT}</p>
+          <p className={styles.dropHint}>Or drag files here. {UPLOAD_LIMITS_HINT}</p>
         </>
       ) : (
         <>
@@ -152,7 +156,7 @@ export function Dropzone({
           <button type="button" className="btn" onClick={onChoose}>
             Choose files
           </button>
-          <p className={styles.dropHint}>{KINDS_HINT}</p>
+          <p className={styles.dropHint}>{UPLOAD_LIMITS_HINT}</p>
         </>
       )}
     </div>
