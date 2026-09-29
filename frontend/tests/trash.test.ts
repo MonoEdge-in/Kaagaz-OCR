@@ -12,8 +12,9 @@ import { ApiError, deleteDocumentForever, listDocuments, restoreDocument } from 
 import type { Me, Role } from "@/lib/types";
 
 const me = (role: Role): Me => ({
-  user: { id: "u1", email: "asha@example.in", display_name: "Asha", role },
+  user: { id: "u1", email: "asha@example.in", display_name: "Asha", role, must_change_password: false },
   customer: { id: "c1", name: "Sharma Traders" },
+  session: { scope: "app" },
 });
 
 describe("who may delete for good", () => {
