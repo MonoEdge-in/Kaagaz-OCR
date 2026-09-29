@@ -92,6 +92,17 @@ def test_grouped_splits_into_groups_of_four() -> None:
     assert totp.grouped("") == ""
 
 
+def test_otpauth_uri_is_the_key_link_for_a_qr_code() -> None:
+    assert totp.otpauth_uri(RFC_SEED, "asha@sharma.in") == (
+        "otpauth://totp/Kaagaz:asha%40sharma.in?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        "&issuer=Kaagaz&algorithm=SHA1&digits=6&period=30"
+    )
+    # Anything in the e-mail that could break the link is encoded too.
+    assert totp.otpauth_uri(b"\x00", "a+b/c?d&e f@x.in").startswith(
+        "otpauth://totp/Kaagaz:a%2Bb%2Fc%3Fd%26e%20f%40x.in?secret=AA&"
+    )
+
+
 # --- the window: one step either side ---------------------------------------------
 
 

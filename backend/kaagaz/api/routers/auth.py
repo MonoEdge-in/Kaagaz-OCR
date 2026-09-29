@@ -1,11 +1,17 @@
 """Signing in, out and changing the password (PRD 1 A1 to A7, section 6).
 
 * ``POST /auth/login`` {email, password}: an app session (``scope: "app"``).
-* ``POST /auth/admin/login`` {email, password, code?}: admins only. An admin
-  without a two-step code set up gets ``{enrol_required, enrol_token, secret}``;
-  with one, the right code starts an admin session (ADMIN_SESSION_MINUTES).
+* ``POST /auth/admin/login`` {email, password, code?}: admins only, an admin
+  session (ADMIN_SESSION_MINUTES). Each admin chooses two-step sign-in: while
+  it is off the password alone is enough; once on, the right code too.
+* ``POST /auth/admin/2fa/start`` {password} (admin session): with the current
+  password, ``{enrol_token, secret, otpauth_uri}`` for turning it on. Asking
+  for the password means a stolen admin cookie alone cannot put its own key
+  on the account. Nothing is stored yet.
 * ``POST /auth/admin/enrol`` {enrol_token, code}: turns the code on and starts
-  an admin session.
+  an admin session. The session version stays, so other browsers stay in.
+* ``POST /auth/admin/2fa/off`` {password} (admin session): turns it off. Every
+  other browser is signed out, this one is re-signed.
 * ``POST /auth/password`` {current_password, new_password}: a new password;
   every other browser is signed out, this one is re-signed.
 * ``POST /auth/logout``, ``POST /auth/logout-everywhere``, ``GET /auth/me``.
@@ -45,6 +51,8 @@ from sqlalchemy import Connection
 
 from kaagaz.api import totp
 from kaagaz.api.auth import (
+    AdminSession,
+    CurrentUser,
     User,
     UserAllowPasswordChange,
     clear_session_cookie,
@@ -93,6 +101,12 @@ class EnrolBody(BaseModel):
     code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
+class CurrentPasswordBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD)
+
+
 class PasswordBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -116,12 +130,16 @@ def admin_login(body: AdminLoginBody, context: Context) -> JSONResponse:
         # The password was right; the screen sends them to /login to change it first.
         _succeeded(context, attempt)
         raise ApiError(403, "password_change_required")
-    if attempt.totp_enabled_at is None or attempt.totp_secret_enc is None:
-        _succeeded(context, attempt)
-        return JSONResponse(_enrol_offer(context, attempt))
+    if attempt.totp_enabled_at is None:
+        # This admin has not turned two-step sign-in on: the password is enough.
+        return _start_session(
+            context, attempt, scope="admin", action="auth.admin_login", details={"second_factor": False}
+        )
 
-    try:
-        secret = _box(context.settings.totp_encryption_key).open(attempt.totp_secret_enc, aad=attempt.user_id)
+    try:  # a missing secret ("") does not open either
+        secret = _box(context.settings.totp_encryption_key).open(
+            attempt.totp_secret_enc or "", aad=attempt.user_id
+        )
     except SecretBoxError:
         _failed(context, attempt, "totp_unreadable")  # another admin or the CLI resets it
         raise _refused(context) from None
@@ -184,11 +202,40 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
             ver=claims.session_version,
         )
         if enrolled:
-            _record(conn, customer_id, "auth.enrol", actor=user_id, target=user_id)
+            _record(conn, customer_id, "auth.totp_on", actor=user_id, target=user_id)
     if not enrolled:  # a second request with the same token, or something changed
         _failed(context, attempt, "enrol_refused")
         raise ApiError(401, "not_signed_in")
     return _start_session(context, attempt, scope="admin", action="auth.admin_login")
+
+
+@router.post("/auth/admin/2fa/start")
+def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Context) -> dict[str, str]:
+    if user.totp_enabled:
+        raise ApiError(409, "conflict", "Two-step sign-in is already on.")
+    now = context.clock()
+    _check_current_password(context, user, body.password, now)
+    with context.db.customer(user.customer_id) as conn:
+        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+    return _enrol_offer(context, user)
+
+
+@router.post("/auth/admin/2fa/off")
+def turn_off_two_step(
+    body: CurrentPasswordBody, user: AdminSession, request: Request, context: Context
+) -> JSONResponse:
+    if not user.totp_enabled:
+        raise ApiError(409, "conflict", "Two-step sign-in is already off.")
+    now = context.clock()
+    _check_current_password(context, user, body.password, now)
+    with context.db.customer(user.customer_id) as conn:
+        row = users_sql.reset_totp(conn, user.customer_id, user.user_id)
+        if row is None:
+            raise ApiError(401, "not_signed_in")
+        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+        _record(conn, user.customer_id, "auth.totp_off", actor=user.user_id, target=user.user_id)
+    changed = dataclasses.replace(user, session_version=int(row["session_version"]), totp_enabled=False)
+    return _keep_this_browser(request, context, changed, now)
 
 
 @router.post("/auth/password")
@@ -198,20 +245,7 @@ def change_password(
     if body.new_password == body.current_password:
         raise ApiError(400, "bad_request", "Choose a new password that is different from the current one.")
     now = context.clock()
-    attempt = _begin(context, user.customer_id, user.user_id, now)
-    if attempt is None:
-        # The lock stays on for a signed-in session too: letting a session check
-        # passwords during a lock would give a stolen session unlimited guesses.
-        minutes = context.settings.login_lock_minutes
-        raise ApiError(
-            400,
-            "bad_request",
-            f"Too many wrong passwords were tried on this account. Try again in {minutes} minutes,"
-            " or ask an admin to unlock it.",
-        )
-    if not verify_password(body.current_password, attempt.password_hash):
-        _failed(context, attempt, "wrong_password")
-        raise ApiError(400, "bad_request", "Your current password is not right.")
+    _check_current_password(context, user, body.current_password, now)
 
     password_hash = hash_password(body.new_password)
     with context.db.customer(user.customer_id) as conn:
@@ -222,17 +256,10 @@ def change_password(
             raise ApiError(401, "not_signed_in")
         users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
         _record(conn, user.customer_id, "auth.password_change", actor=user.user_id, target=user.user_id)
-
-    # Every other browser is now signed out (a new session version). This one keeps
-    # its scope and its end time, re-signed with the new version.
-    claims = session_claims(request, context.settings, _unix(now))
-    if claims is None:
-        raise ApiError(401, "not_signed_in")
-    renewed = dataclasses.replace(claims, session_version=int(row["session_version"]))
-    changed = dataclasses.replace(user, session_version=renewed.session_version, must_change_password=False)
-    response = JSONResponse(me_json(changed))
-    set_session_cookie(response, renewed, context.settings, now=_unix(now))
-    return response
+    changed = dataclasses.replace(
+        user, session_version=int(row["session_version"]), must_change_password=False
+    )
+    return _keep_this_browser(request, context, changed, now)
 
 
 @router.post("/auth/logout", status_code=204)
@@ -309,7 +336,49 @@ def _begin(context: AppContext, customer_id: str, user_id: str, now: datetime) -
         )
 
 
-def _start_session(context: AppContext, attempt: AttemptRow, *, scope: str, action: str) -> JSONResponse:
+def _check_current_password(context: AppContext, user: CurrentUser, password: str, now: datetime) -> None:
+    """The signed-in user's own password, counted like a sign-in (so wrong ones
+    lead to the lockout), else a 400 that says what is wrong."""
+    attempt = _begin(context, user.customer_id, user.user_id, now)
+    if attempt is None:
+        # The lock stays on for a signed-in session too: letting a session check
+        # passwords during a lock would give a stolen session unlimited guesses.
+        # No audit row: the lock itself was audited when it started.
+        minutes = context.settings.login_lock_minutes
+        raise ApiError(
+            400,
+            "bad_request",
+            f"Too many wrong passwords were tried on this account. Try again in {minutes} minutes,"
+            " or ask an admin to unlock it.",
+        )
+    if not verify_password(password, attempt.password_hash):
+        _failed(context, attempt, "wrong_password")
+        raise ApiError(400, "bad_request", "Your current password is not right.")
+
+
+def _keep_this_browser(
+    request: Request, context: AppContext, user: CurrentUser, now: datetime
+) -> JSONResponse:
+    """``Me`` after a change that raised the session version: every other browser
+    is now signed out, and this one keeps its scope and end time, re-signed with
+    ``user.session_version``."""
+    claims = session_claims(request, context.settings, _unix(now))
+    if claims is None:
+        raise ApiError(401, "not_signed_in")
+    renewed = dataclasses.replace(claims, session_version=user.session_version)
+    response = JSONResponse(me_json(user))
+    set_session_cookie(response, renewed, context.settings, now=_unix(now))
+    return response
+
+
+def _start_session(
+    context: AppContext,
+    attempt: AttemptRow,
+    *,
+    scope: str,
+    action: str,
+    details: dict[str, audit.DetailValue] | None = None,
+) -> JSONResponse:
     """The ``Me`` reply and a new session cookie of this scope; clears the count."""
     now = context.clock()
     user = load_user(context.db, attempt.customer_id, attempt.user_id, scope=scope)
@@ -317,7 +386,7 @@ def _start_session(context: AppContext, attempt: AttemptRow, *, scope: str, acti
         raise _refused(context)
     with context.db.customer(user.customer_id) as conn:
         users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
-        _record(conn, user.customer_id, action, actor=user.user_id, target=user.user_id)
+        _record(conn, user.customer_id, action, actor=user.user_id, target=user.user_id, details=details)
     claims = new_session(
         user_id=user.user_id,
         customer_id=user.customer_id,
@@ -332,28 +401,30 @@ def _start_session(context: AppContext, attempt: AttemptRow, *, scope: str, acti
     return response
 
 
-def _enrol_offer(context: AppContext, attempt: AttemptRow) -> dict[str, Any]:
-    """A new secret for the admin to type into an authenticator app, and the signed
-    enrol token that carries it (sealed) for 10 minutes. Nothing is stored."""
+def _enrol_offer(context: AppContext, user: CurrentUser) -> dict[str, str]:
+    """A new secret for the admin to put into an authenticator app (typed in, or
+    as the otpauth link in a QR code), and the signed enrol token that carries it
+    (sealed) for 10 minutes. Nothing is stored. The token, the key and the link
+    are all made from this one signed-in user."""
     secret = totp.new_secret()
-    sealed = _box(context.settings.totp_encryption_key).seal(secret, aad=attempt.user_id)
+    sealed = _box(context.settings.totp_encryption_key).seal(secret, aad=user.user_id)
     claims = new_enrol(
-        user_id=attempt.user_id,
-        customer_id=attempt.customer_id,
-        session_version=attempt.session_version,
+        user_id=user.user_id,
+        customer_id=user.customer_id,
+        session_version=user.session_version,
         sealed_secret=sealed,
         now=_unix(context.clock()),
     )
     return {
-        "enrol_required": True,
         "enrol_token": sign_enrol(claims, context.settings.session_secret),
         "secret": totp.grouped(totp.b32(secret)),
+        "otpauth_uri": totp.otpauth_uri(secret, user.email),
     }
 
 
 def _succeeded(context: AppContext, attempt: AttemptRow) -> None:
-    """The password was right but no session starts yet (enrolment next, or a
-    password change first): the count starts again all the same."""
+    """The password was right but no session starts yet (a password change
+    first): the count starts again all the same."""
     with context.db.customer(attempt.customer_id) as conn:
         users_sql.attempt_succeeded(conn, attempt.customer_id, attempt.user_id, now=context.clock())
 

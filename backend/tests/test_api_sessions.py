@@ -319,14 +319,18 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
     admin.client.post(f"/api/admin/users/{colleague.user_id}/reset-2fa", headers=CSRF)
     assert client.post("/api/auth/logout-everywhere", headers=CSRF).status_code == 204
     enrolling_id, enrolling_email = api.add_user(admin.customer_id, "admin")
-    offer = api.admin_login(api.client(), enrolling_email).json()
+    enrolling = api.client()
+    assert api.admin_login(enrolling, enrolling_email).status_code == 200  # 2FA off: the password alone
+    offer = enrolling.post("/api/auth/admin/2fa/start", json={"password": PASSWORD}, headers=CSRF).json()
     secret = base64.b32decode(offer["secret"].replace(" ", ""))
-    enrolled = api.client().post(
+    enrolled = enrolling.post(
         "/api/auth/admin/enrol",
         json={"enrol_token": offer["enrol_token"], "code": api.code(secret)},
         headers=CSRF,
     )
     assert enrolled.status_code == 200, enrolled.text
+    turned_off = enrolling.post("/api/auth/admin/2fa/off", json={"password": PASSWORD}, headers=CSRF)
+    assert turned_off.status_code == 200, turned_off.text
     assert admin.client.post("/api/auth/logout", headers=CSRF).status_code == 204
 
     with db.customer(admin.customer_id) as conn:
@@ -344,7 +348,8 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
         "auth.password_change",
         "auth.logout_everywhere",
         "auth.logout",
-        "auth.enrol",
+        "auth.totp_on",
+        "auth.totp_off",
         "user.unlock",
         "user.reset_password",
         "user.reset_totp",

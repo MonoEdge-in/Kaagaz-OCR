@@ -348,7 +348,7 @@ def test_reset_password_gives_a_temporary_password_and_ends_sessions(db: Databas
 
 
 @pytest.mark.db
-def test_reset_2fa_clears_the_code_so_the_admin_enrols_again(db: Database) -> None:
+def test_reset_2fa_clears_the_code_so_the_password_alone_signs_in(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
     colleague = api.enrol_admin(admin.customer_id)
@@ -361,9 +361,10 @@ def test_reset_2fa_clears_the_code_so_the_admin_enrols_again(db: Database) -> No
     state = api.user_state(admin.customer_id, colleague.user_id)
     assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
     assert api.audit_actions(admin.customer_id)[-1] == "user.reset_totp"
-    offer = api.admin_login(api.client(), colleague.email)
-    assert offer.status_code == 200
-    assert offer.json()["enrol_required"] is True
+    signed_in = api.admin_login(api.client(), colleague.email)
+    assert signed_in.status_code == 200, signed_in.text
+    assert signed_in.json()["user"]["totp_enabled"] is False
+    assert signed_in.json()["session"] == {"scope": "admin"}
 
 
 @pytest.mark.db

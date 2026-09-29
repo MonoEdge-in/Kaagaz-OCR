@@ -283,6 +283,7 @@ def me_json(user: CurrentUser) -> dict[str, Any]:
             "display_name": user.display_name,
             "role": user.role,
             "must_change_password": user.must_change_password,
+            "totp_enabled": user.totp_enabled,
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},

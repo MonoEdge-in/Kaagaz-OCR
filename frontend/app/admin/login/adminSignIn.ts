@@ -3,7 +3,6 @@
 // no. The e-mail and password rules are the normal sign-in's (app/login).
 
 import { ApiError } from "@/lib/api";
-import type { AdminLoginResult, EnrolRequired } from "@/lib/types";
 import {
   NETWORK_FAILURE,
   SIGN_IN_DOWN,
@@ -44,9 +43,8 @@ export interface AdminSignInErrors {
 }
 
 /**
- * The first screen's code may be left empty: an admin who has not set up 2FA
- * yet signs in without one and is shown the set-up next (PRD A2). A typed code
- * is checked.
+ * The code may be left empty: an admin who has not turned on two-step sign-in
+ * signs in with the password alone. A typed code is checked.
  */
 export function optionalCodeError(value: string): string | null {
   return normalizeCode(value) === "" ? null : codeError(value);
@@ -72,17 +70,17 @@ export function firstInvalidAdmin(errors: AdminSignInErrors): AdminSignInField |
   return null;
 }
 
-// --- The set-up step -------------------------------------------------------
+// --- The set-up step (EnrolStep, in Admin, Settings) ------------------------
 
 export const ENROL_ISSUER = "Kaagaz";
 
 export const ENROL_STEPS: readonly string[] = [
   "Open Google Authenticator or Microsoft Authenticator on your phone and add an account.",
-  "Choose to enter a setup key, then type the account and the key shown here.",
+  "Scan the QR code, or choose to enter a setup key and type the account and key shown here.",
   "Type the 6-digit code the app now shows, then press Finish setup.",
 ];
 
-/** What the app asks for when a key is typed in by hand. There is no QR code. */
+/** What the app asks for when a key is typed in by hand. */
 export function enrolDetails(email: string): { label: string; value: string }[] {
   return [
     { label: "Issuer", value: ENROL_ISSUER },
@@ -103,10 +101,6 @@ export function groupSecret(secret: string): string {
 /** The key as one word in capitals, for the clipboard. */
 export function secretForCopy(secret: string): string {
   return secret.replace(KEY_SEPARATORS, "").toUpperCase();
-}
-
-export function isEnrolRequired(result: AdminLoginResult): result is EnrolRequired {
-  return "enrol_required" in result && result.enrol_required === true;
 }
 
 // --- What to say when the server says no ------------------------------------

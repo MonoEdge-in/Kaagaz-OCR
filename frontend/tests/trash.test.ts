@@ -4,7 +4,7 @@ import {
   canDeleteForever,
   deletedForeverMessage,
   documentsCount,
-  foreverNeedsAdminSignIn,
+  foreverNeeds,
   foreverQuestion,
   restoredMessage,
   trashQuestion,
@@ -12,25 +12,34 @@ import {
 import { ApiError, deleteDocumentForever, listDocuments, restoreDocument } from "@/lib/api";
 import type { Me, Role, SessionScope } from "@/lib/types";
 
-const me = (role: Role, scope: SessionScope = "app"): Me => ({
-  user: { id: "u1", email: "asha@example.in", display_name: "Asha", role, must_change_password: false },
+const me = (role: Role, scope: SessionScope = "app", totp_enabled = true): Me => ({
+  user: {
+    id: "u1",
+    email: "asha@example.in",
+    display_name: "Asha",
+    role,
+    must_change_password: false,
+    totp_enabled,
+  },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope },
 });
 
 describe("who may delete for good", () => {
-  it("is an admin session only (PRD 1, F5); the server checks it again", () => {
+  it("is an admin session with two-step sign-in on only (PRD 1, F5); the server checks it again", () => {
     expect(canDeleteForever(me("admin", "admin"))).toBe(true);
+    expect(canDeleteForever(me("admin", "admin", false))).toBe(false);
     expect(canDeleteForever(me("admin", "app"))).toBe(false);
     expect(canDeleteForever(me("member"))).toBe(false);
     expect(canDeleteForever(me("reviewer"))).toBe(false);
   });
 
-  it("points an admin signed in at /login to the admin sign-in, and nobody else", () => {
-    expect(foreverNeedsAdminSignIn(me("admin", "app"))).toBe(true);
-    expect(foreverNeedsAdminSignIn(me("admin", "admin"))).toBe(false);
-    expect(foreverNeedsAdminSignIn(me("member"))).toBe(false);
-    expect(foreverNeedsAdminSignIn(me("reviewer"))).toBe(false);
+  it("tells an admin what to do first, and nobody else", () => {
+    expect(foreverNeeds(me("admin", "app"))).toBe("admin_sign_in");
+    expect(foreverNeeds(me("admin", "admin", false))).toBe("two_step");
+    expect(foreverNeeds(me("admin", "admin"))).toBeNull();
+    expect(foreverNeeds(me("member"))).toBeNull();
+    expect(foreverNeeds(me("reviewer"))).toBeNull();
   });
 });
 

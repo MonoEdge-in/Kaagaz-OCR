@@ -9,8 +9,9 @@
 // - the password is masked again as soon as the form is submitted;
 // - typed values stay after an error, except the code: a code works once and
 //   changes every 30 seconds.
-// A first sign-in (no 2FA yet) gets a set-up key back: EnrolStep then takes
-// this form's place. Signed in, the browser goes to /admin.
+// The code is optional: an admin who has not turned on two-step sign-in
+// leaves it empty (they can turn it on in Admin, Settings). Signed in, the
+// browser goes to /admin.
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -20,20 +21,17 @@ import { flushSync } from "react-dom";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { adminLogin } from "@/lib/api";
-import type { EnrolRequired } from "@/lib/types";
 import { emailError, normalizeEmail, passwordError } from "../../login/signIn";
 import login from "../../login/login.module.css";
 import {
   adminSignInError,
   firstInvalidAdmin,
-  isEnrolRequired,
   normalizeCode,
   optionalCodeError,
   validateAdminSignIn,
 } from "./adminSignIn";
 import type { AdminSignInError, AdminSignInErrors, AdminSignInField } from "./adminSignIn";
 import { CodeField } from "./CodeField";
-import { EnrolStep } from "./EnrolStep";
 import styles from "./adminLogin.module.css";
 
 const FIELD_IDS: Record<AdminSignInField, string> = {
@@ -44,9 +42,7 @@ const FIELD_IDS: Record<AdminSignInField, string> = {
 
 const NO_ERRORS: AdminSignInErrors = { email: null, password: null, code: null };
 
-const CODE_HINT =
-  "From your authenticator app. Signing in here for the first time? Leave it empty and set up " +
-  "the app next.";
+const CODE_HINT = "From your authenticator app. Leave it empty if two-step sign-in is off.";
 
 export function AdminSignInForm() {
   const router = useRouter();
@@ -64,21 +60,6 @@ export function AdminSignInForm() {
   });
   const [failure, setFailure] = useState<AdminSignInError | null>(null);
   const [busy, setBusy] = useState(false);
-  const [enrol, setEnrol] = useState<EnrolRequired | null>(null);
-
-  if (enrol) {
-    return (
-      <EnrolStep
-        enrol={enrol}
-        email={email}
-        onSignedIn={() => router.replace("/admin")}
-        onRestart={() => {
-          setEnrol(null);
-          setErrors(NO_ERRORS);
-        }}
-      />
-    );
-  }
 
   function change(field: AdminSignInField, value: string) {
     if (field === "email") setEmail(value);
@@ -110,18 +91,7 @@ export function AdminSignInForm() {
     setBusy(true);
     const typedCode = normalizeCode(code);
     try {
-      const result = await adminLogin(
-        normalizeEmail(email),
-        password,
-        typedCode === "" ? undefined : typedCode,
-      );
-      if (isEnrolRequired(result)) {
-        // The password has done its job; the enrol token carries the sign-in on.
-        setPassword("");
-        setBusy(false);
-        setEnrol(result);
-        return;
-      }
+      await adminLogin(normalizeEmail(email), password, typedCode === "" ? undefined : typedCode);
       router.replace("/admin");
     } catch (caught) {
       setFailure(adminSignInError(caught));
@@ -187,7 +157,7 @@ export function AdminSignInForm() {
 
       <CodeField
         id={FIELD_IDS.code}
-        label="6-digit code"
+        label="6-digit code, if you turned on two-step sign-in"
         value={code}
         onChange={(value) => change("code", value)}
         onBlur={() => blur("code", code)}

@@ -315,7 +315,7 @@ def accept_totp_step(conn: Connection, customer_id: str, user_id: str, step: int
 
 
 def reset_totp(conn: Connection, customer_id: str, user_id: str) -> RowMapping | None:
-    """Turn two-step sign-in off, so the next admin sign-in enrols again. Raises
+    """Turn two-step sign-in off, so the password alone signs in again. Raises
     ``session_version``, so every session ends. O(log n)."""
     return (
         conn.execute(
@@ -342,7 +342,7 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
         conn.execute(
             text(
                 "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"
-                " u.session_version, u.must_change_password,"
+                " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
                 " c.id AS customer_id, c.name AS customer_name"
                 " FROM users u JOIN customers c ON c.id = u.customer_id"
                 " WHERE u.customer_id = :c AND u.id = :u"

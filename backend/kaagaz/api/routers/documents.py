@@ -60,7 +60,7 @@ from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
-from kaagaz.api.auth import AdminSession, CurrentUser, User
+from kaagaz.api.auth import AdminWithTwoStep, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name
@@ -569,10 +569,10 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
 
 
 @router.delete("/documents/{document_id}/permanent", status_code=204)
-def delete_document_forever(document_id: uuid.UUID, user: AdminSession, context: Context) -> Response:
+def delete_document_forever(document_id: uuid.UUID, user: AdminWithTwoStep, context: Context) -> Response:
     """Delete every version of a family in Trash for good, rows and files (today's
-    full delete). An admin session only: it can't be undone, which is what the
-    admin sign-in with its two-step code is for."""
+    full delete). It can't be undone, so it needs an admin session whose admin has
+    two-step sign-in on (``require_admin_with_two_step``)."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
         try:

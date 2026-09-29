@@ -1,19 +1,20 @@
 "use client";
 
-// The first admin sign-in, before 2FA is set up (PRD A2). The server has
-// checked the password and sent a set-up key and a token that lasts 10
-// minutes. This step shows the key in groups of 4 with a Copy button, the
-// issuer and the account to type into the app, 3 short steps, then the code
-// field. There is no QR code (PRD 9). The key and the token live only in this
-// component's state: never in the address bar, storage or logs.
+// Turning on two-step sign-in (PRD A2), in Admin, Settings
+// (app/(app)/admin/TwoStepPanel.tsx). The server has sent a set-up key and a
+// token that lasts 10 minutes; nothing is stored yet. This step shows the key
+// as a QR code to scan, and in groups of 4 with a Copy button, the issuer and the
+// account to type into the app, 3 short steps, then the code field. The key and the token live only
+// in this component's state: never in the address bar, storage or logs.
 
 import { useCallback, useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { CopyButton } from "@/components/admin/CopyButton";
+import { QrCode } from "@/components/admin/QrCode";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { adminEnrol } from "@/lib/api";
-import type { EnrolRequired } from "@/lib/types";
+import type { Me, TwoStepSetup } from "@/lib/types";
 import login from "../../login/login.module.css";
 import {
   ENROL_STEPS,
@@ -32,12 +33,12 @@ const CODE_ID = "enrol-code";
 export function EnrolStep({
   enrol,
   email,
-  onSignedIn,
+  onTurnedOn,
   onRestart,
 }: {
-  enrol: EnrolRequired;
+  enrol: TwoStepSetup;
   email: string;
-  onSignedIn(): void;
+  onTurnedOn(me: Me): void;
   onRestart(): void;
 }) {
   const hydrated = useHydrated();
@@ -46,7 +47,7 @@ export function EnrolStep({
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // The step replaces the first form, so focus moves to its heading.
+  // The step replaces the Turn on button, so focus moves to its heading.
   const focusOnMount = useCallback((element: HTMLHeadingElement | null) => {
     element?.focus();
   }, []);
@@ -64,8 +65,7 @@ export function EnrolStep({
     setError(null);
     setBusy(true);
     try {
-      await adminEnrol(enrol.enrol_token, normalizeCode(code));
-      onSignedIn();
+      onTurnedOn(await adminEnrol(enrol.enrol_token, normalizeCode(code)));
     } catch (caught) {
       setFailure(enrolErrorMessage(caught));
       setCode(""); // a code works once and changes every 30 seconds
@@ -82,12 +82,12 @@ export function EnrolStep({
       aria-labelledby="enrol-title"
     >
       <div className={styles.intro}>
-        <h1 id="enrol-title" ref={focusOnMount} tabIndex={-1} className={styles.title}>
+        <h3 id="enrol-title" ref={focusOnMount} tabIndex={-1} className={styles.stepTitle}>
           Set up your authenticator app
-        </h1>
+        </h3>
         <p className={styles.lead}>
-          Admins sign in with a password and a 6-digit code from an app on their phone. Set it up
-          once, now.
+          Once it is on, admin sign-in asks for your password and a 6-digit code from an app on
+          your phone.
         </p>
       </div>
 
@@ -98,6 +98,10 @@ export function EnrolStep({
       </ol>
 
       <div className={`card ${styles.keyCard}`}>
+        <div className={styles.qr}>
+          <QrCode value={enrol.otpauth_uri} label="QR code to scan with your authenticator app" />
+        </div>
+        <p className={styles.note}>No camera to scan with? Type the account and key below instead.</p>
         <dl className={styles.details}>
           {enrolDetails(email).map((detail) => (
             <div key={detail.label} className={styles.detail}>

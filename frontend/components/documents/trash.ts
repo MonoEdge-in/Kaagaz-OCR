@@ -7,17 +7,20 @@ import { sessionScope } from "@/components/shell/gate";
 import type { DocumentSummary, Me } from "@/lib/types";
 
 /**
- * Only an admin session (from /admin/login) may delete for good; the server
- * says 403 admin_session_required to anyone else. Move to Trash and Restore
- * follow each document's can_delete.
+ * Only an admin session (from /admin/login) whose admin has two-step sign-in on
+ * may delete for good; the server says 403 admin_session_required or
+ * two_step_required to anyone else. Move to Trash and Restore follow each
+ * document's can_delete.
  */
 export function canDeleteForever(me: Me): boolean {
-  return me.user.role === "admin" && sessionScope(me) === "admin";
+  return me.user.role === "admin" && sessionScope(me) === "admin" && me.user.totp_enabled;
 }
 
-/** An admin signed in at /login: Trash says where Delete forever is. */
-export function foreverNeedsAdminSignIn(me: Me): boolean {
-  return me.user.role === "admin" && sessionScope(me) !== "admin";
+/** What an admin must do first to delete forever, for the note in Trash; null if nothing. */
+export function foreverNeeds(me: Me): "admin_sign_in" | "two_step" | null {
+  if (me.user.role !== "admin") return null;
+  if (sessionScope(me) !== "admin") return "admin_sign_in";
+  return me.user.totp_enabled ? null : "two_step";
 }
 
 /** "1 document", "3 documents". */
