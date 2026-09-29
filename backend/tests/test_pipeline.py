@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.ingestion import sniff
-from kaagaz.ingestion.policy import UploadPolicy
+from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import JobFailed, Worker
@@ -42,7 +42,11 @@ from tests.xlsx_builder import make_xlsx, make_zip, sheet_xml
 CUSTOMER = "cust-a"
 CSV = b"invoice,amount\nINV-1,100\nINV-2,250\n"
 # Real .xlsx files are a few KB, so the pipeline tests allow more than TEST_POLICY.
-PIPELINE_POLICY = UploadPolicy(max_bytes=100_000, allowed_types=TEST_POLICY.allowed_types)
+PIPELINE_POLICY = UploadPolicy(
+    max_bytes=100_000,
+    allowed_types=TEST_POLICY.allowed_types,
+    type_limits=limits_by_type(pdf=100_000, image=100_000, sheet=100_000),
+)
 XLSX_LIMITS = XlsxLimits(
     max_entries=100,
     max_member_bytes=100_000,

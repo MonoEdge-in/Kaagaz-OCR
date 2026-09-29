@@ -30,6 +30,8 @@ _BASE: dict[str, Any] = {
     "clamav_port": None,
     "scanner_timeout_seconds": 5.0,
     "max_upload_bytes": 5 * 1024 * 1024,
+    "max_image_bytes": 2 * 1024 * 1024,
+    "max_sheet_bytes": 1 * 1024 * 1024,
     "allowed_types": frozenset({"pdf", "png", "jpeg", "tiff", "zip", "text"}),
     "csv_max_cells": 100_000,
     "xlsx_max_entries": 200,
