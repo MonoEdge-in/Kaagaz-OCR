@@ -40,6 +40,8 @@ export interface RowEvents {
   /** After a move the row may be gone: focus the list's heading. */
   onFocusList(): void;
   onTagCreated(): void;
+  /** "Upload new version": the screen opens the file picker for this document. */
+  onUploadVersion(document: DocumentSummary): void;
 }
 
 interface Props extends RowEvents {
@@ -271,6 +273,10 @@ function DocumentRow({
     setError(null);
     if (action === "trash" || action === "forever") {
       setConfirming(action);
+      return;
+    }
+    if (action === "version") {
+      events.onUploadVersion(document);
       return;
     }
     if (action === "restore") {

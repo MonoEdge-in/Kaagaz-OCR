@@ -1,8 +1,8 @@
 "use client";
 
 // One document's actions, behind its "Actions" button. In a folder or All
-// documents: Rename, Move to folder, Tags, Download original and, for its
-// uploader or an admin, Move to Trash. In Trash: Restore (the uploader or an
+// documents: Rename, Move to folder, Tags, Upload new version, Download
+// original and, for its uploader or an admin, Move to Trash. In Trash: Restore (the uploader or an
 // admin), Download original and, for an admin, Delete forever (PRD 1, F5).
 // The menu is a disclosure (a button and a list of buttons): Tab moves through
 // it; Esc, a click elsewhere or leaving it closes it. Rename, Move and Tags
@@ -28,7 +28,7 @@ import {
 import styles from "./Library.module.css";
 
 export type EditAction = "rename" | "move" | "tags";
-export type RowAction = EditAction | "trash" | "restore" | "forever";
+export type RowAction = EditAction | "version" | "trash" | "restore" | "forever";
 
 export interface RowMenuProps {
   item: DocumentSummary;
@@ -61,7 +61,12 @@ function menuEntries(
     ? deletable
       ? [act("restore", "Restore")]
       : []
-    : [act("rename", "Rename"), act("move", "Move to folder"), act("tags", "Tags")];
+    : [
+        act("rename", "Rename"),
+        act("move", "Move to folder"),
+        act("tags", "Tags"),
+        act("version", "Upload new version"),
+      ];
   const download = downloadHref(item);
   if (download) entries.push({ kind: "download", href: download });
   if (inTrash && canForever) entries.push(act("forever", "Delete forever", true));

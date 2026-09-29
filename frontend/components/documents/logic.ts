@@ -185,7 +185,10 @@ export type UploadState =
   | { kind: "waiting" }
   | { kind: "uploading"; fraction: number }
   | { kind: "done"; documentId: string }
-  | { kind: "duplicate"; documentId: string; existingName: string }
+  // inTrash: the earlier copy is in Trash, so the row offers Restore.
+  | { kind: "duplicate"; documentId: string; existingName: string; inTrash: boolean; restoreError?: string }
+  | { kind: "restoring"; documentId: string; existingName: string }
+  | { kind: "restored"; documentId: string; existingName: string }
   | { kind: "error"; message: string };
 
 /**
@@ -202,10 +205,33 @@ export function uploadStateText(state: UploadState): string {
     case "done":
       return "Uploaded";
     case "duplicate":
-      return "Already uploaded";
+      return state.inTrash ? "Already uploaded, in Trash" : "Already uploaded";
+    case "restoring":
+      return "Restoring";
+    case "restored":
+      return "Restored from Trash";
     case "error":
       return "Not uploaded";
   }
+}
+
+/**
+ * Whether the screen reloads once a batch of uploads settles: nothing is still
+ * going, something new came of it, and no duplicate in Trash is waiting for
+ * the person to press Restore (a reload would take that choice away).
+ */
+export function shouldReloadAfterUploads(states: readonly UploadState[]): boolean {
+  const waiting = states.some(
+    (state) =>
+      state.kind === "waiting" ||
+      state.kind === "uploading" ||
+      state.kind === "restoring" ||
+      (state.kind === "duplicate" && state.inTrash),
+  );
+  const changed = states.some(
+    (state) => state.kind === "done" || state.kind === "duplicate" || state.kind === "restored",
+  );
+  return !waiting && changed;
 }
 
 /**

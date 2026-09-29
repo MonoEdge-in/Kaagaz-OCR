@@ -18,7 +18,7 @@ import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, listDocuments, listFolders, listTags } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import type { DocumentList, Folder, Tag } from "@/lib/types";
+import type { DocumentList, DocumentSummary, Folder, Tag } from "@/lib/types";
 import { DocumentsTable } from "./DocumentsTable";
 import { FolderActions } from "./FolderActions";
 import { FolderNav } from "./FolderNav";
@@ -35,6 +35,7 @@ import {
   offsetAfterDelete,
   pageInfo,
   shouldPoll,
+  shouldReloadAfterUploads,
 } from "./logic";
 import { Dropzone, UploadList, useUploads } from "./UploadArea";
 import styles from "./Documents.module.css";
@@ -55,6 +56,9 @@ const errorText = (caught: unknown) =>
 export function DocumentsView({ library }: { library: LibraryState }) {
   const { me } = useSession();
   const inputRef = useRef<HTMLInputElement>(null);
+  // "Upload new version": its own file input, and the document it is for.
+  const versionInputRef = useRef<HTMLInputElement>(null);
+  const versionOf = useRef<DocumentSummary | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const viewKey = libraryHref(library);
   const [draft, setDraft] = useState("");
@@ -76,14 +80,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const uploads = useUploads(() => setReload((n) => n + 1));
 
   useEffect(() => {
-    const hasActiveUpload = uploads.entries.some(
-      (entry) => entry.state.kind === "waiting" || entry.state.kind === "uploading",
-    );
-    const hasCompletedUpload = uploads.entries.some(
-      (entry) => entry.state.kind === "done" || entry.state.kind === "duplicate",
-    );
-
-    if (!hasActiveUpload && uploads.entries.length > 0 && hasCompletedUpload) {
+    if (shouldReloadAfterUploads(uploads.entries.map((entry) => entry.state))) {
       const timer = window.setTimeout(() => {
         window.location.reload();
       }, 250);
@@ -171,6 +168,19 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   // A filter or folder change rewrites the address in place. Next.js syncs
   // useSearchParams with history.replaceState without asking the server, so a
   // ticked box shows as ticked at once.
+  // Called from the row's menu click, so the browser still allows opening the picker.
+  function chooseVersion(document: DocumentSummary) {
+    versionOf.current = document;
+    versionInputRef.current?.click();
+  }
+
+  function onChooseVersion(event: ChangeEvent<HTMLInputElement>) {
+    const [file] = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    const of = versionOf.current;
+    if (file && of) void uploads.addVersion(file, of);
+  }
+
   function show(next: LibraryState) {
     window.history.replaceState(null, "", libraryHref(next));
   }
@@ -273,6 +283,18 @@ export function DocumentsView({ library }: { library: LibraryState }) {
         accept={ACCEPT_ATTRIBUTE}
         tabIndex={-1}
         onChange={onChoose}
+      />
+      <label htmlFor="version-input" className="visually-hidden">
+        File for the new version
+      </label>
+      <input
+        ref={versionInputRef}
+        id="version-input"
+        className="visually-hidden"
+        type="file"
+        accept={ACCEPT_ATTRIBUTE}
+        tabIndex={-1}
+        onChange={onChooseVersion}
       />
 
       <p className="visually-hidden" aria-live="polite">
@@ -390,7 +412,11 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 <Dropzone variant="slim" onFiles={addFiles} onChoose={openPicker} />
               )}
 
-              <UploadList entries={uploads.entries} onClearFinished={uploads.clearFinished} />
+              <UploadList
+                entries={uploads.entries}
+                onClearFinished={uploads.clearFinished}
+                onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
+              />
 
               {view !== "empty" && (
                 <div className={styles.list}>
@@ -496,6 +522,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                       onSaved={afterSave}
                       onFocusList={() => headingRef.current?.focus()}
                       onTagCreated={() => setTagsVersion((n) => n + 1)}
+                      onUploadVersion={chooseVersion}
                     />
                   )}
 

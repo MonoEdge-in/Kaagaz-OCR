@@ -60,6 +60,67 @@
   margin-inline-start: auto;
 }
 
+/* The versions: one small link per version, the one being viewed filled in. */
+.versions {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+}
+
+.versionLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--control-h);
+  min-height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.versionLink:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+/* Filled and bold, so colour is not the only sign of the one being viewed. */
+.versionLink[aria-current="page"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 700;
+}
+
+.note {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.trashNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  font-size: var(--fs-sm);
+}
+
+.trashNotice svg {
+  flex: none;
+  margin-top: 2px;
+}
+
 /* Viewer 3fr, values 2fr from 1024 px; stacked below that. */
 .layout {
   display: grid;
