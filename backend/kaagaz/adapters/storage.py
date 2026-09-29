@@ -8,7 +8,7 @@ the customer, so one customer's calls can only ever build keys under that
 customer's own prefix:
 
 * ``customers/{customer_id}/documents/{document_id}/original``
-* ``customers/{customer_id}/documents/{document_id}/pages/{page_no}.png``
+* ``customers/{customer_id}/documents/{document_id}/pages/{page_no}.webp``
 * ``quarantine/{customer_id}/{document_id}``: outside every customer prefix,
   so ``get`` cannot reach a quarantined file.
 
@@ -72,7 +72,7 @@ def original_key(customer_id: str, document_id: str) -> str:
 def page_image_key(customer_id: str, document_id: str, page_no: int) -> str:
     if page_no < 1:
         raise ValueError("page numbers start at 1")
-    return _document_prefix(customer_id, document_id) + f"pages/{page_no}.png"
+    return _document_prefix(customer_id, document_id) + f"pages/{page_no}.webp"
 
 
 def quarantine_key(customer_id: str, document_id: str) -> str:
@@ -169,15 +169,16 @@ class S3Storage:
 
     # --- Page images -------------------------------------------------------
 
-    def put_page_image(self, customer_id: str, document_id: str, page_no: int, png: bytes) -> None:
+    def put_page_image(self, customer_id: str, document_id: str, page_no: int, image: bytes) -> None:
+        """Store a page's WebP picture (the pipeline encodes it)."""
         key = page_image_key(customer_id, document_id, page_no)
         try:
-            self._client.put_object(Bucket=self._bucket, Key=key, Body=png, ContentType="image/png")
+            self._client.put_object(Bucket=self._bucket, Key=key, Body=image, ContentType="image/webp")
         except _ANY_ERROR as error:
             raise BackendUnavailable("storage") from error
 
     def get_page_image(self, customer_id: str, document_id: str, page_no: int) -> bytes:
-        """The page's PNG. BlobNotFound if this customer has no such page image."""
+        """The page's WebP picture. BlobNotFound if this customer has no such page image."""
         return self._get_bytes(page_image_key(customer_id, document_id, page_no), document_id)
 
     # --- Health and set-up -------------------------------------------------

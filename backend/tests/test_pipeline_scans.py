@@ -17,8 +17,22 @@ from tests.fakes import FakeEmbedder, FakePrepared, FakePreparer, FakeVision, Pr
 from tests.support import PDF_BYTES
 from tests.test_pipeline import CUSTOMER, build
 
-PNG_1 = b"page-one-png"
-PNG_2 = b"page-two-png"
+
+def png_of(width: int, height: int, color: str = "white") -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(out, format="PNG")
+    return out.getvalue()
+
+
+PNG_1 = png_of(612, 792)
+PNG_2 = png_of(300, 400, "gray")
+
+
+def webp_size(data: bytes) -> tuple[int, int]:
+    """The size of a stored page picture, which must be WebP (RIFF ... WEBP)."""
+    assert (data[:4], data[8:12]) == (b"RIFF", b"WEBP"), "stored page pictures are WebP"
+    with Image.open(io.BytesIO(data)) as picture:
+        return picture.size
 
 
 def line(text: str, top: float, *, confidence: float | None = None, page: int = 1) -> Span:
@@ -55,8 +69,8 @@ class TextLayerTest(unittest.TestCase):
         system.worker.run_once()
 
         self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
-        self.assertEqual(system.page_images.images[(CUSTOMER, doc, 1)], PNG_1)
-        self.assertEqual(system.page_images.images[(CUSTOMER, doc, 2)], PNG_2)
+        self.assertEqual(webp_size(system.page_images.images[(CUSTOMER, doc, 1)]), (612, 792))
+        self.assertEqual(webp_size(system.page_images.images[(CUSTOMER, doc, 2)]), (300, 400))
         pages = system.store.pages_for(CUSTOMER, doc)
         self.assertEqual(
             [(p.info.page, p.info.unit, p.has_image) for p in pages], [(1, "pt", True), (2, "pt", True)]
@@ -228,6 +242,55 @@ class ScanTest(unittest.TestCase):
         (value,) = system.store.values_for(CUSTOMER, doc)
         self.assertEqual(value.second_reading, "Sharma Traders ABCDE1234F")
         self.assertEqual(value.label_reason, "readers_disagree")
+
+
+def checkerboard(width: int, height: int) -> Image.Image:
+    """One-pixel black and white squares: any lossy step blurs them into greys."""
+    black_first = bytes([0, 0, 0, 255, 255, 255] * (width // 2))
+    white_first = bytes([255, 255, 255, 0, 0, 0] * (width // 2))
+    return Image.frombytes("RGB", (width, height), (black_first + white_first) * (height // 2))
+
+
+def colours(data: bytes) -> set[tuple[int, ...] | float]:
+    """Every colour in a picture (Pillow gives RGB colours as tuples)."""
+    with Image.open(io.BytesIO(data)) as picture:
+        found = picture.convert("RGB").getcolors(maxcolors=1 << 24) or []
+    return {colour for _, colour in found}
+
+
+class PagePictureTest(unittest.TestCase):
+    def test_a_page_longer_than_webp_allows_is_stored_smaller_for_people_only(self) -> None:
+        # WebP holds at most 16383 pixels a side (PROVISIONAL: shrink for storage, never fail).
+        for width, height, stored in ((20_000, 10, (16_383, 8)), (10, 20_000, (8, 16_383))):
+            with self.subTest(size=(width, height)):
+                page = PageInfo(1, float(width), float(height), "px")
+                preparer = FakePreparer({sniff.PDF: FakePrepared([page], {1: png_of(width, height)})})
+                system = build(socket=PresetSocket({sniff.PDF: INVOICE}), preparer=preparer)
+                doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
+                system.worker.run_once()
+
+                self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
+                self.assertEqual(webp_size(system.page_images.images[(CUSTOMER, doc, 1)]), stored)
+                # The page keeps its real size; boxes are fractions of it.
+                (saved,) = system.store.pages_for(CUSTOMER, doc)
+                self.assertEqual((saved.info, saved.has_image), (page, True))
+
+    def test_vision_crops_come_from_the_lossless_page_not_the_stored_webp(self) -> None:
+        png = io.BytesIO()
+        checkerboard(400, 500).save(png, format="PNG")
+        page = PageInfo(1, 400.0, 500.0, "px")
+        preparer = FakePreparer({sniff.PDF: FakePrepared([page], {1: png.getvalue()})})
+        vision = FakeVision("Total: 1,180.00")
+        system = build(socket=PresetSocket({sniff.PDF: SCANNED[1:]}), preparer=preparer, vision=vision)
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
+        system.worker.run_once()
+
+        (crop,) = vision.pictures
+        self.assertEqual(colours(crop), {(0, 0, 0), (255, 255, 255)})  # exactly the page's pixels
+        stored = system.page_images.images[(CUSTOMER, doc, 1)]
+        self.assertGreater(len(colours(stored)), 2)  # the stored WebP is lossy, so it was not used
+        (value,) = system.store.values_for(CUSTOMER, doc)
+        self.assertEqual(value.label_reason, "readers_agree")
 
 
 class VectorsTest(unittest.TestCase):

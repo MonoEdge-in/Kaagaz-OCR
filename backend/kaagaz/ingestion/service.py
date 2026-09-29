@@ -3,9 +3,13 @@
 The steps, in order:
 
 1. Read the stream once: fingerprint, size check, spooled copy (spool.py).
-2. Refuse empty files and types that are not allowed (sniff.py).
+   Reading stops past the largest limit of any allowed type.
+2. Refuse empty files and types that are not allowed (sniff.py), then a file
+   over its own type's limit (PRD 1, U2), with its kind, size and limit.
 3. If this customer already has this fingerprint, reply "duplicate" and stop.
 4. Store the file, record it, queue a job.
+
+Time O(n) in the bytes read, at most the largest limit plus one byte.
 
 The customer id is an argument. It must come from the server side (how the
 server knows the customer is PRD question 3), never from the request body or
@@ -15,7 +19,8 @@ Invariant: a record exists only if its file is stored and its job is queued.
 Each partial failure is undone in reverse order:
 
 * storing fails: nothing was recorded, the error propagates.
-* recording fails: the stored file is deleted, the error propagates.
+* recording fails: the stored file is deleted, the error propagates. That
+  includes a folder deleted since the API checked it (UnknownFolder).
 * lost a race (another identical upload was recorded first): our stored file
   is deleted and the winner's document is returned as a duplicate.
 * queueing fails: the record and the file are removed, so the customer can
@@ -43,13 +48,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadRejected
-from kaagaz.ingestion.policy import UploadPolicy
+from kaagaz.ingestion.policy import KIND_OF, UploadPolicy
 from kaagaz.ingestion.ports import (
     BlobStorage,
     DocumentRecord,
     DocumentRepository,
     Job,
     JobQueue,
+    UnknownFolder,
 )
 from kaagaz.ingestion.sniff import detect_type
 from kaagaz.ingestion.spool import ByteSource, read_limited
@@ -88,17 +94,25 @@ class UploadService:
         *,
         display_name: str = "document",
         uploaded_by: str | None = None,
+        folder_id: str | None = None,
     ) -> UploadResult:
-        """``display_name`` must already be cleaned by the caller (the API)."""
+        """``display_name`` must already be cleaned by the caller (the API).
+        ``folder_id`` files a new document there (None: the top level); a
+        duplicate stays where it is."""
         if not isinstance(customer_id, str) or not customer_id:
             raise ValueError("customer_id is required")
 
-        with read_limited(stream, self._policy.max_bytes) as spooled:
+        with read_limited(stream, self._policy.largest_limit) as spooled:
             if spooled.size == 0:
                 raise UploadRejected(RejectCode.EMPTY_FILE)
             detected = detect_type(spooled.head)
             if detected is None or detected not in self._policy.allowed_types:
                 raise UploadRejected(RejectCode.UNSUPPORTED_TYPE)
+            limit = self._policy.limit_for(detected)
+            if spooled.size > limit:
+                raise UploadRejected(
+                    RejectCode.TOO_LARGE, kind=KIND_OF[detected], size=spooled.size, limit=limit
+                )
 
             # Fast path: a duplicate never touches storage. The lookup is for
             # this customer only, so it cannot reveal other customers' files.
@@ -114,6 +128,7 @@ class UploadService:
                 detected_type=detected,
                 display_name=display_name,
                 uploaded_by=uploaded_by,
+                folder_id=folder_id,
             )
             # Store the exact bytes that were hashed.
             self._storage.put(customer_id, record.document_id, spooled.file)
@@ -126,7 +141,7 @@ class UploadService:
 
         try:
             stored, created = self._repository.add_if_absent(record)
-        except BackendUnavailable as error:
+        except (BackendUnavailable, UnknownFolder) as error:
             _undo(error, delete_file)
             raise
 
@@ -143,7 +158,7 @@ class UploadService:
         return UploadResult(record.document_id, duplicate=False)
 
 
-def _undo(error: BackendUnavailable, *steps: Callable[[], None]) -> None:
+def _undo(error: Exception, *steps: Callable[[], None]) -> None:
     """Run the undo steps in order, stopping at the first that fails.
 
     ``error`` is never replaced; a failed step is noted on it by name only,

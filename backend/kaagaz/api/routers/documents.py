@@ -1,12 +1,13 @@
-"""The document routes: list, upload, detail, the original file, page images,
-spreadsheet cells and delete.
+"""The document routes: list, upload, detail, rename or move, the original
+file, page images, spreadsheet cells and delete.
 
 Why some choices:
 
-* **Upload streams.** The Content-Length is checked against the limit before
-  the body is parsed, and the parsed part's file object goes straight into
-  ``UploadService.accept``, which reads it once with a hard limit. The file is
-  never read whole into memory here.
+* **Upload streams.** The request is checked before the body is parsed
+  (``upload_guard.py``), and the parsed part's file object goes straight into
+  ``UploadService.accept``, which reads it once with a hard limit and then
+  checks the limit of the file's own type. The file is never read whole into
+  memory here.
 * **The file name** has its path and control characters stripped and is cut to
   255 characters before it is stored. The raw name is never stored or logged.
 * **The original file** is served only once the virus check passed (clean,
@@ -16,14 +17,28 @@ Why some choices:
   name ``document.<ext>``, so nothing in it can run on our origin.
 * Another customer's id is simply "not found": every lookup runs as the
   signed-in customer.
+* **Folder and tags belong to the family** (plan 9.3). PATCH ``folder_id``
+  moves every version, under the family lock; a new name is for this version
+  only, cleaned by ``clean_document_name`` (no path strip). A missing key
+  means "don't change"; an explicit null folder means the top level.
+* **Upload into a folder** (PRD 1 U3): the folder is checked before anything is
+  stored or queued. If it is deleted in the moment after, the insert is refused
+  by the foreign key, the stored file is removed again, and the reply is 404.
+* **The list filters** are picked as fixed SQL fragments (``db/listing.py``).
+  An unknown folder is 404; an unknown tag simply matches nothing. Upload days
+  are read in the customer's timezone (TIMEZONE), and the end day is not
+  included.
 """
 
 import re
 import uuid
+from datetime import date, datetime, time
 from typing import Annotated, Any, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
@@ -31,14 +46,20 @@ from starlette.datastructures import UploadFile
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.views import document_summary, extracted_value, page_summary
+from kaagaz.api.names import DOCUMENT_NAME_MAX, clean_document_name
+from kaagaz.api.upload_guard import check_upload_request
+from kaagaz.api.views import document_folder, document_summary, extracted_value, page_summary
 from kaagaz.db import admin as admin_sql
-from kaagaz.db import audit, listing
+from kaagaz.db import audit, listing, trash
+from kaagaz.db import folders as folders_sql
+from kaagaz.db import tags as tags_sql
 from kaagaz.db.documents import PgDocuments
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
-from kaagaz.ingestion.policy import UploadPolicy
-from kaagaz.ingestion.ports import BlobNotFound
+from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
+from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
+from kaagaz.ingestion.ports import BlobNotFound, UnknownFolder
 from kaagaz.ingestion.service import UploadService
+from kaagaz.settings import Settings
 
 router = APIRouter()
 
@@ -46,11 +67,12 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MIB = 1024 * 1024
 MAX_SHEET_ROWS = 500
-# Room for the multipart boundary and part headers around the file itself.
-MULTIPART_OVERHEAD = 64 * 1024
 MAX_NAME = 255
+MAX_TAG_FILTERS = 50
 
 DocumentStatusParam = Literal["received", "clean", "rejected", "needs_reader", "ready", "failed"]
+DetectedTypeParam = Literal["pdf", "png", "jpeg", "tiff", "zip", "ole2", "text"]
+IsoDay = Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 
 _SERVABLE = frozenset({"clean", "ready", "needs_reader"})
 _CONTENT_TYPES = {
@@ -78,6 +100,27 @@ def display_name(filename: str | None) -> str:
     return name or "document"
 
 
+def day_start(day: str, timezone: str) -> datetime:
+    """The first instant of ``day`` (YYYY-MM-DD) in ``timezone``, the customer's
+    zone from the settings, never the server's. ValueError if it is not a real date."""
+    return datetime.combine(date.fromisoformat(day), time.min, tzinfo=ZoneInfo(timezone))
+
+
+def _folder_scope(
+    conn: Connection, customer_id: str, folder_id: uuid.UUID | Literal["root"] | None, subfolders: bool
+) -> list[str] | None:
+    """The folders a list is narrowed to: None for no folder filter ("root" is
+    ``top_level_only``), else the folder, or with ``subfolders`` its whole
+    subtree. 404 for a folder this customer does not have. O(s log F) for the
+    subtree's s folders."""
+    if not isinstance(folder_id, uuid.UUID):
+        return None
+    subtree = folders_sql.descendant_ids(conn, customer_id, str(folder_id))
+    if not subtree:
+        raise ApiError(404, "not_found")
+    return subtree if subfolders else [str(folder_id)]
+
+
 @router.get("/documents")
 def list_documents(
     user: User,
@@ -86,44 +129,109 @@ def list_documents(
     offset: Annotated[int, Query(ge=0)] = 0,
     status: DocumentStatusParam | None = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
+    folder_id: Annotated[uuid.UUID | Literal["root"] | None, Query()] = None,
+    include_subfolders: bool = False,
+    tag_id: Annotated[list[uuid.UUID] | None, Query(max_length=MAX_TAG_FILTERS)] = None,
+    detected_type: DetectedTypeParam | None = None,
+    uploaded_from: IsoDay = None,
+    uploaded_to: IsoDay = None,
 ) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    """One page and its total. The top level with its subfolders is everything,
+    so it filters nothing. At most four data queries, whatever the page size:
+    the folder's subtree, the page, the count and the page's tags (one batch)."""
+    zone = context.settings.timezone
+    try:
+        start = None if uploaded_from is None else day_start(uploaded_from, zone)
+        end = None if uploaded_to is None else day_start(uploaded_to, zone)
+    except ValueError:
+        raise ApiError(400, "bad_request", "Use real dates, written YYYY-MM-DD.") from None
+    customer_id = user.customer_id
+    with context.db.customer(customer_id) as conn:
+        folder_ids = _folder_scope(conn, customer_id, folder_id, include_subfolders)
         rows, total = listing.list_documents(
             conn,
-            user.customer_id,
+            customer_id,
             limit=limit,
             offset=offset,
             status=status,
             name_contains=q.strip() if q else None,
+            top_level_only=folder_id == "root" and not include_subfolders,
+            folder_ids=folder_ids,
+            tag_ids=[str(tag) for tag in tag_id or []],
+            detected_type=detected_type,
+            uploaded_from=start,
+            uploaded_to=end,
         )
-    return {"items": [document_summary(row) for row in rows], "total": total}
+        tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
+    max_pages = context.settings.max_pages
+    items = [document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])]) for row in rows]
+    return {"items": items, "total": total}
 
 
-def _upload_limit(context: AppContext, user: CurrentUser) -> int:
+def upload_policy(settings: Settings, customer_max_mb: int | None) -> UploadPolicy:
+    """The limits for one customer's upload (PRD 1, U2): each type's own limit,
+    lowered by the customer's own limit when an admin set one."""
+    max_bytes = settings.max_upload_bytes
+    if customer_max_mb is not None:
+        max_bytes = min(max_bytes, customer_max_mb * MIB)
+    return UploadPolicy(
+        max_bytes=max_bytes,
+        allowed_types=settings.allowed_types,
+        type_limits=limits_by_type(
+            pdf=settings.max_upload_bytes, image=settings.max_image_bytes, sheet=settings.max_sheet_bytes
+        ),
+    )
+
+
+def _upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
     with context.db.customer(user.customer_id) as conn:
         row = admin_sql.get_settings(conn, user.customer_id)
-    platform = context.settings.max_upload_bytes
-    if row is None or row["max_upload_mb"] is None:
-        return platform
-    return min(platform, int(row["max_upload_mb"]) * MIB)
+    customer_max_mb = None if row is None or row["max_upload_mb"] is None else int(row["max_upload_mb"])
+    return upload_policy(context.settings, customer_max_mb)
 
 
-def _accept(context: AppContext, user: CurrentUser, upload: UploadFile, limit: int) -> dict[str, Any]:
-    service = UploadService(
-        UploadPolicy(max_bytes=limit, allowed_types=context.settings.allowed_types),
-        PgDocuments(context.db),
-        context.storage,
-        context.queue,
-    )
+def _refusal_message(rejected: UploadRejected, policy: UploadPolicy) -> str | None:
+    """The words for a refused upload; None means the code's usual message."""
+    if rejected.code is not RejectCode.TOO_LARGE:
+        return None
+    if rejected.kind is None or rejected.size is None or rejected.limit is None:
+        return over_every_limit_message(policy.largest_limit)  # refused before its type was known
+    return too_large_message(rejected.kind, rejected.size, rejected.limit)
+
+
+def _form_folder_id(value: str | UploadFile | None) -> str | None:
+    """The optional ``folder_id`` form field: None when it is not sent, else a UUID (400)."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ApiError(400, "bad_request")
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        raise ApiError(400, "bad_request") from None
+
+
+def _accept(
+    context: AppContext, user: CurrentUser, upload: UploadFile, policy: UploadPolicy, folder_id: str | None
+) -> dict[str, Any]:
+    if folder_id is not None:
+        with context.db.customer(user.customer_id) as conn:
+            if not folders_sql.folder_path(conn, user.customer_id, folder_id):
+                raise ApiError(404, "not_found")  # before anything is stored or queued
+    service = UploadService(policy, PgDocuments(context.db), context.storage, context.queue)
     try:
         result = service.accept(
             user.customer_id,
             upload.file,
             display_name=display_name(upload.filename),
             uploaded_by=user.user_id,
+            folder_id=folder_id,
         )
     except UploadRejected as rejected:
-        raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value) from None
+        message = _refusal_message(rejected, policy)
+        raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
+    except UnknownFolder:  # deleted since the check; the service removed the stored file
+        raise ApiError(404, "not_found") from None
     with context.db.customer(user.customer_id) as conn:
         if not result.duplicate:
             audit.record(
@@ -135,24 +243,23 @@ def _accept(context: AppContext, user: CurrentUser, upload: UploadFile, limit: i
                 target_id=result.document_id,
             )
         row = listing.get_document(conn, user.customer_id, result.document_id)
+        tags = tags_sql.tags_for_documents(conn, user.customer_id, [result.document_id])
     if row is None:  # deleted in the moment since; nothing to show
         raise ApiError(404, "not_found")
-    return {"document": document_summary(row), "duplicate": result.duplicate}
+    summary = document_summary(row, max_pages=context.settings.max_pages, tags=tags[result.document_id])
+    return {"document": summary, "duplicate": result.duplicate}
 
 
 @router.post("/documents")
 async def upload_document(request: Request, user: User, context: Context) -> JSONResponse:
-    limit = await run_in_threadpool(_upload_limit, context, user)
-    length = request.headers.get("content-length", "")
-    if not length.isdigit():
-        raise ApiError(400, "bad_request", "The upload has no size. Please try again.")
-    if int(length) > limit + MULTIPART_OVERHEAD:
-        raise ApiError(413, "too_large")
+    policy = await run_in_threadpool(_upload_policy, context, user)
+    check_upload_request(request, policy)
     async with request.form(max_files=1, max_fields=10) as form:
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
-        body = await run_in_threadpool(_accept, context, user, upload, limit)
+        folder_id = _form_folder_id(form.get("folder_id"))
+        body = await run_in_threadpool(_accept, context, user, upload, policy, folder_id)
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
 
@@ -165,15 +272,74 @@ def _document_or_404(conn: Connection, user: CurrentUser, document_id: uuid.UUID
 
 @router.get("/documents/{document_id}")
 def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
         row = _document_or_404(conn, user, document_id)
-        pages = listing.list_pages(conn, user.customer_id, str(document_id))
-        values = listing.list_values(conn, user.customer_id, str(document_id))
+        pages = listing.list_pages(conn, customer_id, target)
+        values = listing.list_values(conn, customer_id, target)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+        folder = row["folder_id"]
+        path = [] if folder is None else folders_sql.folder_path(conn, customer_id, str(folder))
     return {
-        **document_summary(row),
+        **document_summary(row, max_pages=context.settings.max_pages, tags=tags),
         "pages": [page_summary(page) for page in pages],
         "values": [extracted_value(value) for value in values],
+        "folder": document_folder(path),
     }
+
+
+class DocumentChangesBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = None
+    folder_id: uuid.UUID | None = None  # an explicit null: the top level; left out: don't move
+
+
+@router.patch("/documents/{document_id}")
+def update_document(
+    document_id: uuid.UUID, body: DocumentChangesBody, user: User, context: Context
+) -> dict[str, Any]:
+    """Rename this version and/or move the whole family. Any user of the customer (PRD 1 F3)."""
+    given = body.model_fields_set
+    if not given:
+        raise ApiError(400, "bad_request", "Say what to change: the name, the folder, or both.")
+    name = None
+    if "display_name" in given:
+        name = clean_document_name(body.display_name or "")
+        if name is None:
+            raise ApiError(400, "bad_request", f"Enter a name of 1 to {DOCUMENT_NAME_MAX} characters.")
+    customer_id, target = user.customer_id, str(document_id)
+    folder_id = None if body.folder_id is None else str(body.folder_id)
+    try:
+        with context.db.customer(customer_id) as conn:
+            if trash.lock_family(conn, customer_id, target) is None:
+                raise ApiError(404, "not_found")
+            if "folder_id" in given:
+                listing.move_family(conn, customer_id, target, folder_id=folder_id)
+                audit.record(
+                    conn,
+                    customer_id,
+                    actor_user_id=user.user_id,
+                    action="document.move",
+                    target_type="document",
+                    target_id=target,
+                    details={"folder_id": folder_id},
+                )
+            if name is not None:
+                listing.rename_document(conn, customer_id, target, name=name)
+                audit.record(
+                    conn,
+                    customer_id,
+                    actor_user_id=user.user_id,
+                    action="document.rename",
+                    target_type="document",
+                    target_id=target,
+                )
+            row = _document_or_404(conn, user, document_id)
+            tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+    except folders_sql.FolderNotFound:  # not this customer's folder; nothing was changed
+        raise ApiError(404, "not_found") from None
+    return document_summary(row, max_pages=context.settings.max_pages, tags=tags)
 
 
 @router.get("/documents/{document_id}/file")
@@ -206,12 +372,12 @@ def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Co
     if row["status"] == "rejected" or page_no < 1:
         raise ApiError(404, "not_found")
     try:
-        png = context.storage.get_page_image(user.customer_id, str(document_id), page_no)
+        image = context.storage.get_page_image(user.customer_id, str(document_id), page_no)
     except BlobNotFound:
         raise ApiError(404, "not_found") from None
     return Response(
-        content=png,
-        media_type="image/png",
+        content=image,
+        media_type="image/webp",
         headers={"Content-Security-Policy": "sandbox", "Cache-Control": "private, no-store"},
     )
 

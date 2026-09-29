@@ -3,7 +3,7 @@
 import io
 
 from kaagaz.ingestion import sniff
-from kaagaz.ingestion.policy import UploadPolicy
+from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.service import UploadService
 from tests.fakes import MemoryQueue, MemoryRepository, MemoryStorage
 
@@ -14,6 +14,7 @@ TEXT_BYTES = b"invoice,amount\nINV-1,100\n"
 TEST_POLICY = UploadPolicy(
     max_bytes=1024,
     allowed_types=frozenset({sniff.PDF, sniff.PNG, sniff.TEXT, sniff.ZIP}),
+    type_limits=limits_by_type(pdf=1024, image=1024, sheet=1024),
 )
 
 

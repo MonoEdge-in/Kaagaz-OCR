@@ -39,7 +39,7 @@ from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.settings import Settings
-from tests.db_support import insert_document, new_customer
+from tests.db_support import insert_document, insert_folder, insert_tag, new_customer, tag_document
 from tests.fakes import MemoryQueue, MemoryStorage
 from tests.settings_factory import make_settings
 
@@ -387,6 +387,31 @@ class Api:
             ).all()
         return [str(row[0]) for row in rows]
 
+    def audit_rows(self, customer_id: str) -> list[tuple[str, str | None, str | None, dict[str, Any]]]:
+        """Every audit row of this customer, oldest first: (action, target_type, target_id, details)."""
+        with self.db.customer(customer_id) as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT action, target_type, target_id, details FROM audit_log"
+                    " WHERE customer_id = :c ORDER BY id"
+                ),
+                {"c": customer_id},
+            ).all()
+        return [(str(row[0]), row[1], row[2], dict(row[3])) for row in rows]
+
+    # --- the library: folders and tags, straight into the tables (PRD 1 WP1.5) ---------
+
+    def add_folder(self, customer_id: str, user_id: str, name: str, parent_id: str | None = None) -> str:
+        with self.db.customer(customer_id) as conn:
+            return insert_folder(conn, customer_id, user_id, name, parent_id)
+
+    def add_tag(self, customer_id: str, user_id: str, name: str) -> str:
+        with self.db.customer(customer_id) as conn:
+            return insert_tag(conn, customer_id, user_id, name)
+
+    def tag_document(self, customer_id: str, document_id: str, tag_id: str) -> None:
+        with self.db.customer(customer_id) as conn:
+            tag_document(conn, customer_id, document_id, tag_id)
 
 def wrong_code(api: Api, secret: bytes) -> str:
     """A well-formed 6-digit code that matches none of the steps accepted right now."""
