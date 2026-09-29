@@ -1,6 +1,5 @@
 """What the document screens read and change: the file list and its filters,
-one document, its pages, values and spreadsheet cells, rename, move, and
-deleting a document.
+one document, its pages, values and spreadsheet cells, rename and move.
 
 Why here: the API only shapes JSON; the SQL lives in one reviewable place.
 Every function takes a connection from ``Database.customer(customer_id)`` and
@@ -242,11 +241,3 @@ def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_
         if folder_missing(error):
             raise FolderNotFound() from None
         raise
-
-
-def delete_document(conn: Connection, customer_id: str, document_id: str) -> None:
-    """Delete the document; pages, pieces, values and the rest go with it (cascade)."""
-    conn.execute(
-        text("DELETE FROM documents WHERE customer_id = :c AND id = :d"),
-        {"c": customer_id, "d": document_id},
-    )

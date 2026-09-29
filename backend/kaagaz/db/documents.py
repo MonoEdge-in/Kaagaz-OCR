@@ -17,7 +17,7 @@ Each call is one indexed statement: O(log n) in the number of documents.
 ``mark_ready`` is the exception: it takes the family lock first (below).
 
 ``delete_forever`` is today's full delete of one document, shared by the trash
-purge (kaagaz/jobs/purge.py) and the permanent delete.
+purge (kaagaz/jobs/purge.py) and ``delete_family_forever`` (the permanent delete).
 """
 
 from collections.abc import Iterator, Sequence
@@ -99,6 +99,40 @@ def delete_forever(conn: Connection, storage: BlobStorage, customer_id: str, doc
         {"c": customer_id, "d": document_id},
     )
     storage.delete(customer_id, document_id)
+
+
+class NotInTrash(Exception):
+    """A version of the family is not in Trash, so nothing may be deleted forever."""
+
+
+# Every version of one family, and whether it is in Trash.
+_FAMILY_VERSIONS = (
+    "SELECT d.id, d.deleted_at IS NOT NULL AS in_trash FROM documents d"
+    " WHERE d.customer_id = :c AND d.family_id = :f ORDER BY d.id"
+)
+
+
+def delete_family_forever(
+    conn: Connection, storage: BlobStorage, customer_id: str, document_id: str
+) -> int | None:
+    """Delete every version of ``document_id``'s family for good, rows and files, by
+    ``delete_forever``, and return how many versions went; None if there is no such
+    document. Raises NotInTrash, and deletes nothing, unless every version is in Trash.
+
+    ``conn`` comes from ``Database.customer(customer_id)``. The family lock
+    (``trash.lock_family``) comes first. One transaction for the family: if storage
+    cannot be reached, every row comes back. 2 statements plus one per version, and
+    O(k) storage calls per version; O(v) space for the family's v versions.
+    """
+    family_id = lock_family(conn, customer_id, document_id)
+    if family_id is None:
+        return None
+    versions = conn.execute(text(_FAMILY_VERSIONS), {"c": customer_id, "f": family_id}).all()
+    if not all(version.in_trash for version in versions):
+        raise NotInTrash(document_id)
+    for version in versions:
+        delete_forever(conn, storage, customer_id, str(version.id))
+    return len(versions)
 
 
 def _record(row: Sequence[Any]) -> DocumentRecord:
