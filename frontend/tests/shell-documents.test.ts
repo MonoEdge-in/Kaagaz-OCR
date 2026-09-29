@@ -237,7 +237,7 @@ describe("uploadStateText", () => {
     expect(uploadStateText({ kind: "uploading", fraction: 0.42 })).toBe("Uploading");
     expect(uploadStateText({ kind: "done", documentId: "d" })).toBe("Uploaded");
     expect(
-      uploadStateText({ kind: "duplicate", documentId: "d", existingName: "x.pdf" }),
+      uploadStateText({ kind: "duplicate", documentId: "d", existingName: "x.pdf", inTrash: false }),
     ).toBe("Already uploaded");
     expect(uploadStateText({ kind: "error", message: "No." })).toBe("Not uploaded");
   });
