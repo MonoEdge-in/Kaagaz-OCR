@@ -18,7 +18,20 @@ import {
   uploadStateText,
   validateUpload,
 } from "@/components/documents/logic";
-import { uploadDocument } from "@/lib/api";
+import {
+  dateChipText,
+  documentNameProblem,
+  downloadHref,
+  findTagByName,
+  folderNameProblem,
+  folderTrail,
+  libraryErrorText,
+  noMatchTitle,
+  tagNameProblem,
+  tagsChipText,
+  typeChipText,
+} from "@/components/documents/library";
+import { ApiError, uploadDocument } from "@/lib/api";
 import type { DocumentStatus, Me, Role } from "@/lib/types";
 
 const MB = 1024 * 1024;
@@ -338,5 +351,117 @@ describe("uploadDocument into a folder", () => {
     expect(lastForm().has("folder_id")).toBe(false);
     FakeXhr.sent[0]?.reply(201, { document: { id: "d2" }, duplicate: false });
     await done;
+  });
+});
+
+describe("downloadHref", () => {
+  it("downloads the original through the API, never a storage link", () => {
+    expect(downloadHref({ id: "d-1", status: "ready" })).toBe("/api/documents/d-1/file");
+    expect(downloadHref({ id: "d-1", status: "needs_reader" })).toBe("/api/documents/d-1/file");
+    expect(downloadHref({ id: "d-1", status: "clean" })).toBe("/api/documents/d-1/file");
+  });
+
+  it("offers nothing the server would refuse: not yet checked, rejected or failed", () => {
+    for (const status of ["received", "rejected", "failed"] as const) {
+      expect(downloadHref({ id: "d-1", status })).toBeNull();
+    }
+  });
+});
+
+describe("folderTrail", () => {
+  const suppliers = { id: "s", name: "Suppliers" };
+  const year = { id: "y", name: "2026" };
+
+  it("lists the folders from the top down to the document's own folder", () => {
+    expect(folderTrail({ ...year, path: [suppliers, year] })).toEqual([suppliers, year]);
+  });
+
+  it("adds the folder itself when the path stops above it", () => {
+    expect(folderTrail({ ...year, path: [suppliers] })).toEqual([suppliers, year]);
+    expect(folderTrail({ ...suppliers, path: [] })).toEqual([suppliers]);
+  });
+});
+
+describe("names for folders, tags and documents", () => {
+  it("asks for a folder name of 1 to 100 characters", () => {
+    expect(folderNameProblem("   ")).toBe("Enter a name for the folder.");
+    expect(folderNameProblem("x".repeat(101))).toBe("Use at most 100 characters.");
+    expect(folderNameProblem(" Suppliers ")).toBeNull();
+    expect(folderNameProblem("x".repeat(100))).toBeNull();
+  });
+
+  it("asks for a tag name of 1 to 40 characters", () => {
+    expect(tagNameProblem("")).toBe("Enter a name for the tag.");
+    expect(tagNameProblem("x".repeat(41))).toBe("Use at most 40 characters.");
+    expect(tagNameProblem("GST")).toBeNull();
+  });
+
+  it("asks for a document name of 1 to 255 characters, slashes allowed", () => {
+    expect(documentNameProblem(" ")).toBe("Enter a name for the document.");
+    expect(documentNameProblem("x".repeat(256))).toBe("Use at most 255 characters.");
+    expect(documentNameProblem("GST 2026/27.pdf")).toBeNull();
+  });
+
+  it("finds an existing tag whatever the letter case or spaces", () => {
+    const tags = [
+      { id: "t1", name: "GST" },
+      { id: "t2", name: "Paid" },
+    ];
+    expect(findTagByName(tags, " gst ")).toEqual({ id: "t1", name: "GST" });
+    expect(findTagByName(tags, "unpaid")).toBeNull();
+  });
+});
+
+describe("libraryErrorText", () => {
+  const taken = new ApiError(409, "conflict", "That already exists.");
+
+  it("says which name is taken", () => {
+    expect(libraryErrorText(taken, "folder")).toBe(
+      "A folder with this name is already here. Choose another name.",
+    );
+    expect(libraryErrorText(taken, "tag")).toBe("A tag with this name already exists.");
+  });
+
+  it("passes the server's own words through for the folder rules", () => {
+    const notEmpty = new ApiError(
+      409,
+      "folder_not_empty",
+      "This folder isn't empty. Move or delete what is inside it first.",
+    );
+    expect(libraryErrorText(notEmpty, "folder")).toBe(notEmpty.message);
+  });
+
+  it("asks to check the connection when the server was not reached", () => {
+    expect(libraryErrorText(new TypeError("Failed to fetch"), "document")).toBe(
+      "Check your internet connection, then try again.",
+    );
+  });
+});
+
+describe("noMatchTitle", () => {
+  it("names the search words, the filters, or both", () => {
+    expect(noMatchTitle("gst", false)).toBe("No document names contain “gst”.");
+    expect(noMatchTitle("", true)).toBe("No documents match these filters.");
+    expect(noMatchTitle("gst", true)).toBe("No document names contain “gst” with these filters.");
+  });
+});
+
+describe("filter chip words", () => {
+  it("names the tags chosen, or just says Tags", () => {
+    expect(tagsChipText([])).toBe("Tags");
+    expect(tagsChipText(["GST"])).toBe("Tag: GST");
+    expect(tagsChipText(["GST", "Paid", "2026"])).toBe("Tags: GST and 2 more");
+  });
+
+  it("names the type chosen, or just says Type", () => {
+    expect(typeChipText(null)).toBe("Type");
+    expect(typeChipText("pdf")).toBe("Type: PDF");
+  });
+
+  it("names the days chosen, in India dates, or just says Date uploaded", () => {
+    expect(dateChipText(null, null)).toBe("Date uploaded");
+    expect(dateChipText("2026-09-01", "2026-09-30")).toBe("Uploaded 1 Sept 2026 to 30 Sept 2026");
+    expect(dateChipText("2026-09-01", null)).toBe("Uploaded from 1 Sept 2026");
+    expect(dateChipText(null, "2026-09-30")).toBe("Uploaded until 30 Sept 2026");
   });
 });
