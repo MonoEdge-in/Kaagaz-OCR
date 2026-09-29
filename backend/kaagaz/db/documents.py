@@ -69,8 +69,8 @@ class PgDocuments:
             inserted = conn.execute(
                 text(
                     "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                    " detected_type, uploaded_by)"
-                    " VALUES (:d, :c, :name, :h, :size, :type, :by)"
+                    " detected_type, uploaded_by, family_id)"
+                    " VALUES (:d, :c, :name, :h, :size, :type, :by, :d)"
                     " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                 ),
                 {

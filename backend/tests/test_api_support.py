@@ -196,8 +196,8 @@ class Api:
             conn.execute(
                 text(
                     "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                    " detected_type, status, failure_code, uploaded_by, page_count)"
-                    " VALUES (:d, :c, :n, :h, :s, :t, :st, :fc, :by, 1)"
+                    " detected_type, status, failure_code, uploaded_by, page_count, family_id)"
+                    " VALUES (:d, :c, :n, :h, :s, :t, :st, :fc, :by, 1, :d)"
                 ),
                 {
                     "d": document_id,

@@ -22,8 +22,8 @@ def test_correction_is_kept_when_its_value_is_replaced(db: Database) -> None:
     with db.customer(customer) as conn:
         conn.execute(
             text(
-                "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type)"
-                " VALUES (:d, :c, 'bill.pdf', :h, 10, 'pdf')"
+                "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
+                " family_id) VALUES (:d, :c, 'bill.pdf', :h, 10, 'pdf', :d)"
             ),
             {"d": document, "c": customer, "h": "b" * 64},
         )
