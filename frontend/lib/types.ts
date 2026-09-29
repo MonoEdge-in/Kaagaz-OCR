@@ -73,6 +73,19 @@ export interface DocumentSummary {
   deleted_at: string | null; // set while the document (its whole family) is in Trash
   version_no: number; // 1 for the first upload
   family_id: string; // shared by every version of one document
+  can_delete: boolean; // may move the family to Trash and restore it: an admin, or who uploaded every version
+  attempts: number; // reads tried so far; status_message already says "Try 2 of 5"
+  max_attempts: number | null;
+  newer_version: NewerVersion | null; // a later version still being read, or one that failed
+}
+
+/** A version newer than the one listed (the family's current), not in use yet. */
+export interface NewerVersion {
+  id: string;
+  version_no: number;
+  status: DocumentStatus;
+  failure_code: string | null;
+  status_message: string; // safe to show as is
 }
 
 /** One version of a document. Each is its own document id; the viewer opens any of them. */
@@ -141,6 +154,14 @@ export interface DocumentList {
   total: number;
 }
 
+/** GET /upload-limits: the largest file of each kind, already lowered by the customer's own limit. */
+export interface UploadLimits {
+  pdf_bytes: number;
+  image_bytes: number;
+  sheet_bytes: number;
+  max_pages: number; // for a PDF's pages and a TIFF's frames
+}
+
 export interface UploadResult {
   document: DocumentSummary;
   duplicate: boolean;
@@ -153,6 +174,9 @@ export interface SheetCells {
   rows: { row: number; cells: { column: number; text: string }[] }[];
 }
 
+/** What became of a cited document since the answer was given. Missing means "live". */
+export type SourceState = "live" | "older_version" | "in_trash" | "deleted";
+
 export interface Citation {
   n: number; // what sentences refer to, from 1
   kind: "piece" | "value";
@@ -161,9 +185,10 @@ export interface Citation {
   document_name: string;
   detected_type: DetectedType;
   page_no: number;
-  regions: Region[];
-  snippet: string; // plain text, never markup
+  regions: Region[]; // [] once the document is in Trash or deleted
+  snippet: string | null; // plain text, never markup; null once in Trash or deleted
   label: Label;
+  source_state?: SourceState;
 }
 
 export interface AnswerSentence {
@@ -268,4 +293,6 @@ export interface Stats {
   feedback_up: number;
   feedback_down: number;
   open_review_items: number;
+  older_versions: number; // versions kept that are not the current one
+  in_trash: number;
 }

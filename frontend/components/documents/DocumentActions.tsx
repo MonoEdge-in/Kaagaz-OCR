@@ -1,9 +1,10 @@
 "use client";
 
-// One document's actions, behind its "Actions" button. In a folder or All
-// documents: Rename, Move to folder, Tags, Upload new version, Download
-// original and, for its uploader or an admin, Move to Trash. In Trash: Restore (the uploader or an
-// admin), Download original and, for an admin, Delete forever (PRD 1, F5).
+// One document's actions, behind its "Actions" button (menuEntries,
+// library.ts). In a folder or All documents: Rename, Move to folder, Tags,
+// Upload new version, Download original and, when the server says can_delete,
+// Move to Trash. In Trash: Restore (can_delete), Download original and, in an
+// admin session, Delete forever (PRD 1, F5).
 // The menu is a disclosure (a button and a list of buttons): Tab moves through
 // it; Esc, a click elsewhere or leaving it closes it. Rename, Move and Tags
 // each open a small dialog with the error next to its field; Move to Trash and
@@ -20,66 +21,28 @@ import { inTreeOrder, pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import {
   documentNameProblem,
-  downloadHref,
   findTagByName,
   libraryErrorText,
+  menuEntries,
   tagNameProblem,
 } from "./library";
+import type { EditAction, RowAction } from "./library";
 import styles from "./Library.module.css";
-
-export type EditAction = "rename" | "move" | "tags";
-export type RowAction = EditAction | "version" | "trash" | "restore" | "forever";
 
 export interface RowMenuProps {
   item: DocumentSummary;
-  inTrash: boolean; // the Trash view
-  deletable: boolean; // the uploader or an admin: Move to Trash, and Restore
-  canForever: boolean; // an admin: Delete forever
+  canForever: boolean; // an admin session: Delete forever
   onPick(action: RowAction): void;
   /** The row keeps hold of the Actions button, to hand focus back to it. */
   toggleRef: RefCallback<HTMLButtonElement>;
 }
 
-type MenuEntry =
-  | { kind: "action"; action: RowAction; words: string; danger: boolean }
-  | { kind: "download"; href: string };
-
-/** What the menu lists, in order: the everyday actions, Download original, then the one that removes. */
-function menuEntries(
-  item: DocumentSummary,
-  inTrash: boolean,
-  deletable: boolean,
-  canForever: boolean,
-): MenuEntry[] {
-  const act = (action: RowAction, words: string, danger = false): MenuEntry => ({
-    kind: "action",
-    action,
-    words,
-    danger,
-  });
-  const entries: MenuEntry[] = inTrash
-    ? deletable
-      ? [act("restore", "Restore")]
-      : []
-    : [
-        act("rename", "Rename"),
-        act("move", "Move to folder"),
-        act("tags", "Tags"),
-        act("version", "Upload new version"),
-      ];
-  const download = downloadHref(item);
-  if (download) entries.push({ kind: "download", href: download });
-  if (inTrash && canForever) entries.push(act("forever", "Delete forever", true));
-  if (!inTrash && deletable) entries.push(act("trash", "Move to Trash", true));
-  return entries;
-}
-
-export function RowMenu({ item, inTrash, deletable, canForever, onPick, toggleRef }: RowMenuProps) {
+export function RowMenu({ item, canForever, onPick, toggleRef }: RowMenuProps) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement | null>(null);
   const menuId = useId();
-  const entries = menuEntries(item, inTrash, deletable, canForever);
+  const entries = menuEntries(item, canForever);
 
   const setButton = useCallback(
     (element: HTMLButtonElement | null) => {

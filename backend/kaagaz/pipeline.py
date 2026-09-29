@@ -63,7 +63,7 @@ from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.worker import Heartbeat, JobFailed
 from kaagaz.reading.socket import NoReader
-from kaagaz.reading.spans import BoxLocation, CellLocation, Location, PageInfo, ReadError, Span
+from kaagaz.reading.spans import BoxLocation, CellLocation, Location, PageInfo, ReadError, Span, TooManyPages
 from kaagaz.scanning.gate import (
     REJECTION_CODES,
     DocumentStatus,
@@ -245,7 +245,7 @@ class DocumentProcessor:
             raise JobFailed("content_changed", retryable=False)
         heartbeat()
 
-        prepared = _or_fail(lambda: self._prepare(record.detected_type, data))
+        prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data))
         for page_no, png in prepared.images.items():
             self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(png))
             heartbeat()
@@ -289,6 +289,15 @@ class DocumentProcessor:
         heartbeat()
         self._index(job)
         self._documents.mark_ready(customer_id, document_id, len(pages))
+
+    def _prepare_or_count(self, job: Job, detected_type: str, data: bytes) -> Prepared:
+        """``prepare``; a file with too many pages keeps its real page count before
+        it fails, so its message can name it."""
+        try:
+            return self._prepare(detected_type, data)
+        except TooManyPages as error:
+            self._documents.set_page_count(job.customer_id, job.document_id, error.pages)
+            raise
 
     def _scan(self, job: Job) -> bytes:
         try:

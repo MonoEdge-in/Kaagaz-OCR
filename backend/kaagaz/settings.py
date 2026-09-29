@@ -39,6 +39,7 @@ class Settings:
     queue_region: str
     queue_lease_seconds: int
     queue_wait_seconds: int
+    job_max_attempts: int
 
     # Virus scanner: "clamav" (clamd over TCP) or "eicar_dev" (laptop only:
     # finds the EICAR test file and nothing else; never use it with real files).
@@ -121,6 +122,7 @@ class Settings:
             queue_region=env.text("QUEUE_REGION"),
             queue_lease_seconds=env.integer("QUEUE_LEASE_SECONDS"),
             queue_wait_seconds=env.integer("QUEUE_WAIT_SECONDS"),
+            job_max_attempts=env.positive("JOB_MAX_ATTEMPTS"),
             scanner=env.choice("SCANNER", {"clamav", "eicar_dev"}),
             clamav_host=env.optional("CLAMAV_HOST"),
             clamav_port=env.optional_integer("CLAMAV_PORT"),

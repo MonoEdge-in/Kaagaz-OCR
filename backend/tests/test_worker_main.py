@@ -9,6 +9,7 @@ together and is not run here.
 import io
 import json
 import logging
+import re
 import signal
 import threading
 import unittest
@@ -17,8 +18,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.exc import ProgrammingError
+
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.ports import QueueSetupError
 from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
 from kaagaz.settings import Settings, SettingsError
 from kaagaz.worker_main import (
@@ -26,6 +30,8 @@ from kaagaz.worker_main import (
     LoggedHandler,
     MarkExhausted,
     PurgeHourly,
+    RecordAttempt,
+    check_queue_redrive,
     install_stop_handlers,
     run_until_stopped,
 )
@@ -33,18 +39,18 @@ from tests.lease_queue import FakeClock, LeaseQueue
 
 FIRST = Job("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 SECOND = Job("11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333")
-MAX_RECEIVES = 3
+MAX_ATTEMPTS = 3
 
 
 def make_queue(*jobs: Job) -> LeaseQueue:
-    queue = LeaseQueue(FakeClock(), lease_seconds=30.0, max_attempts=MAX_RECEIVES)
+    queue = LeaseQueue(FakeClock(), lease_seconds=30.0, max_attempts=MAX_ATTEMPTS + 3)
     for job in jobs:
         queue.enqueue(job)
     return queue
 
 
 def make_worker(queue: LeaseQueue, handler: Handler) -> Worker:
-    return Worker(queue, handler, max_receives=MAX_RECEIVES, on_exhausted=lambda job: None)
+    return Worker(queue, handler, max_attempts=MAX_ATTEMPTS, on_exhausted=lambda job: None)
 
 
 class _ScriptedWorker:
@@ -178,7 +184,7 @@ class MarkExhaustedTest(unittest.TestCase):
 
     def test_the_real_worker_marks_the_last_delivery(self) -> None:
         clock = FakeClock()
-        queue = LeaseQueue(clock, lease_seconds=30.0, max_attempts=MAX_RECEIVES)
+        queue = LeaseQueue(clock, lease_seconds=30.0, max_attempts=MAX_ATTEMPTS + 3)
         queue.enqueue(FIRST)
         marked: list[tuple[str, str]] = []
 
@@ -188,9 +194,9 @@ class MarkExhaustedTest(unittest.TestCase):
         on_exhausted = MarkExhausted(
             lambda customer_id, document_id: marked.append((customer_id, document_id))
         )
-        worker = Worker(queue, LoggedHandler(down), max_receives=MAX_RECEIVES, on_exhausted=on_exhausted)
+        worker = Worker(queue, LoggedHandler(down), max_attempts=MAX_ATTEMPTS, on_exhausted=on_exhausted)
         with self.assertLogs("kaagaz.worker", "WARNING"):
-            for _ in range(MAX_RECEIVES):
+            for _ in range(MAX_ATTEMPTS + 1):
                 worker.run_once()
                 clock.advance(30.0)
         self.assertEqual(marked, [(FIRST.customer_id, FIRST.document_id)])
@@ -258,6 +264,25 @@ class PurgeHourlyTest(unittest.TestCase):
         self.assertTrue(worker.run_once())
         self.assertEqual((purge.runs, jobs.calls), (1, 1))
 
+    def test_a_database_bug_in_the_purge_is_logged_and_the_jobs_go_on(self) -> None:
+        """Any SQLAlchemyError (a bad statement, say) must not stop the jobs, and must
+        not crash the worker: the first turn after a restart purges again, so a crash
+        here would repeat on every restart."""
+        clock, jobs = _Clock(), _Jobs()
+        purge = _Purge(error=ProgrammingError("DELETE ...", {}, Exception("secret row value")))
+        worker = PurgeHourly(jobs, purge, clock)
+        with self.assertLogs("kaagaz.worker", "ERROR") as logs:
+            self.assertTrue(worker.run_once())
+        self.assertEqual((purge.runs, jobs.calls), (1, 1))
+        (record,) = logs.records
+        self.assertEqual(
+            (record.getMessage(), record.__dict__["code"]), ("trash purge failed", "ProgrammingError")
+        )
+        self.assertNotIn("secret row value", JsonFormatter().format(record))
+        clock.now = START + timedelta(minutes=30)
+        self.assertTrue(worker.run_once())  # not tried again within the hour
+        self.assertEqual((purge.runs, jobs.calls), (1, 2))
+
     def test_the_loop_pauses_after_a_failed_purge_and_goes_on_with_jobs(self) -> None:
         stop = threading.Event()
         jobs = _ScriptedWorker(stop, [lambda: True, lambda: True])
@@ -268,10 +293,36 @@ class PurgeHourlyTest(unittest.TestCase):
         self.assertEqual(logs.records[0].__dict__["code"], "storage")
 
 
+class AttemptsTest(unittest.TestCase):
+    def test_each_try_is_recorded_with_the_worker_maximum(self) -> None:
+        recorded: list[tuple[str, str, int, int]] = []
+        record = RecordAttempt(lambda c, d, attempt, most: recorded.append((c, d, attempt, most)), 5)
+        record(FIRST, 2)
+        self.assertEqual(recorded, [(FIRST.customer_id, FIRST.document_id, 2, 5)])
+
+    def test_the_queue_must_leave_a_delivery_to_mark_and_one_spare(self) -> None:
+        for max_receives in (1, 5, 6):
+            with self.subTest(max_receives=max_receives), self.assertRaises(QueueSetupError) as ctx:
+                check_queue_redrive(max_receives, 5)
+            self.assertEqual(ctx.exception.code, "queue_redrive_too_low")
+        check_queue_redrive(7, 5)  # 5 tries, one delivery to mark, one spare
+
+    def test_the_shipped_queue_allows_the_shipped_attempts(self) -> None:
+        """.env.example's JOB_MAX_ATTEMPTS and elasticmq.conf's maxReceiveCount agree
+        with check_queue_redrive, so a fresh laptop's worker starts."""
+        attempts = Settings.from_env(TrashDaysSettingTest._shipped()).job_max_attempts
+        conf = (ENV_EXAMPLE.parent / "infra" / "elasticmq" / "elasticmq.conf").read_text(encoding="utf-8")
+        match = re.search(r"maxReceiveCount\s*=\s*(\d+)", conf)
+        assert match is not None
+        self.assertEqual(attempts, 5)
+        check_queue_redrive(int(match.group(1)), attempts)
+
+
 class TrashDaysSettingTest(unittest.TestCase):
     @staticmethod
     def _shipped() -> dict[str, str]:
-        values = {"SESSION_SECRET": "x" * 32}
+        # The two secrets are placeholders in .env.example that must fail on purpose.
+        values = {"SESSION_SECRET": "x" * 32, "TOTP_ENCRYPTION_KEY": "y" * 32}
         for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
             if line.strip() and not line.startswith("#"):
                 name, _, value = line.partition("=")

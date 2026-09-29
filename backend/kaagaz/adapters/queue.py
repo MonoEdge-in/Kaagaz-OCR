@@ -39,7 +39,7 @@ from botocore.exceptions import ConnectionError as BotoConnectionError
 
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.ports import Delivery, LeaseLost
+from kaagaz.jobs.ports import Delivery, LeaseLost, QueueSetupError
 from kaagaz.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -222,7 +222,7 @@ class SqsQueue:
         The worker reads it once at start-up, to know which delivery of a job is
         the last (kaagaz/jobs/worker.py). SQS gives the count as a number or as a
         string, so both are read. A queue without a redrive policy is refused
-        with ValueError, so the worker does not start. O(1): one call.
+        with QueueSetupError, so the worker does not start. O(1): one call.
         """
         try:
             response = self._client.get_queue_attributes(QueueUrl=self._url, AttributeNames=["RedrivePolicy"])
@@ -230,7 +230,7 @@ class SqsQueue:
             raise BackendUnavailable("queue") from error
         count = _max_receive_count(response.get("Attributes", {}).get("RedrivePolicy"))
         if count is None:
-            raise ValueError("the queue has no redrive policy with a whole maxReceiveCount of 1 or more")
+            raise QueueSetupError("queue_has_no_failure_bin")
         return count
 
     # --- Helpers -----------------------------------------------------------

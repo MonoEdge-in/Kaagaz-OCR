@@ -1,7 +1,7 @@
 // The decisions behind the documents screen, kept out of the components so
 // they are unit tested in node (tests/shell-documents.test.ts).
 
-import type { DocumentStatus, DocumentSummary, Me } from "@/lib/types";
+import type { DocumentStatus, DocumentSummary, UploadLimits } from "@/lib/types";
 
 /** File name endings the backend can take. The server checks the bytes again. */
 export const ACCEPTED_EXTENSIONS = [
@@ -36,21 +36,26 @@ const KIND_OF_EXTENSION: Readonly<Record<AcceptedExtension, UploadKind>> = {
 
 const MB = 1024 * 1024;
 
-/** The largest file of each kind (PRD U2). The server checks again after reading the first bytes. */
-export const UPLOAD_LIMIT_BYTES: Readonly<Record<UploadKind, number>> = {
-  pdf: 50 * MB,
-  image: 20 * MB,
-  sheet: 10 * MB,
+/**
+ * The platform's limits (PRD U2; MAX_PAGES in .env.example), used only until
+ * GET /upload-limits answers, or when it fails. The server's own answer
+ * already has the customer's lower limit in it, and it checks every file again.
+ */
+export const FALLBACK_UPLOAD_LIMITS: Readonly<UploadLimits> = {
+  pdf_bytes: 50 * MB,
+  image_bytes: 20 * MB,
+  sheet_bytes: 10 * MB,
+  max_pages: 100,
 };
 
-/** The largest file of any kind. The customer's own limit may be lower; the server decides. */
-export const MAX_UPLOAD_BYTES = Math.max(...Object.values(UPLOAD_LIMIT_BYTES));
-
 /** The limits in words, shown next to the dropzone. */
-export const UPLOAD_LIMITS_HINT =
-  `PDF up to ${UPLOAD_LIMIT_BYTES.pdf / MB} MB. ` +
-  `PNG, JPG or TIFF up to ${UPLOAD_LIMIT_BYTES.image / MB} MB. ` +
-  `CSV or XLSX up to ${UPLOAD_LIMIT_BYTES.sheet / MB} MB.`;
+export function uploadLimitsHint(limits: UploadLimits = FALLBACK_UPLOAD_LIMITS): string {
+  return (
+    `PDF up to ${Math.floor(limits.pdf_bytes / MB)} MB. ` +
+    `PNG, JPG or TIFF up to ${Math.floor(limits.image_bytes / MB)} MB. ` +
+    `CSV or XLSX up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
+  );
+}
 
 /** How often the list is asked again while a document is still being checked or read. */
 export const POLL_MS = 3000;
@@ -72,13 +77,16 @@ export function uploadKind(name: string): UploadKind | null {
   return isAccepted(ext) ? KIND_OF_EXTENSION[ext] : null;
 }
 
-/**
- * The largest file of this kind that may be sent. A customer's own limit can
- * only lower it, never raise it; null means the customer has none.
- */
-export function limitFor(kind: UploadKind, customerMaxBytes: number | null = null): number {
-  const typeLimit = UPLOAD_LIMIT_BYTES[kind];
-  return customerMaxBytes === null ? typeLimit : Math.min(typeLimit, customerMaxBytes);
+/** The largest file of this kind that may be sent. */
+export function limitFor(kind: UploadKind, limits: UploadLimits = FALLBACK_UPLOAD_LIMITS): number {
+  switch (kind) {
+    case "pdf":
+      return limits.pdf_bytes;
+    case "image":
+      return limits.image_bytes;
+    case "sheet":
+      return limits.sheet_bytes;
+  }
 }
 
 /**
@@ -103,18 +111,18 @@ export function tooLargeMessage(kind: UploadKind, sizeBytes: number, limitBytes:
 /**
  * Why a file will not be sent, in plain language, or null when it may be sent.
  * Checked before uploading so people get the answer at once. The limit is the
- * one for the file's kind, lowered by the customer's own limit when one is known.
+ * one for the file's kind, from the server's limits once they are known.
  */
 export function validateUpload(
   file: { name: string; size: number },
-  customerMaxBytes: number | null = null,
+  limits: UploadLimits = FALLBACK_UPLOAD_LIMITS,
 ): string | null {
   const kind = uploadKind(file.name);
   if (kind === null) {
     return "This kind of file can't be uploaded. Use PDF, PNG, JPG, TIFF, CSV or XLSX.";
   }
   if (file.size === 0) return "This file is empty.";
-  const limit = limitFor(kind, customerMaxBytes);
+  const limit = limitFor(kind, limits);
   if (file.size > limit) return tooLargeMessage(kind, file.size, limit);
   return null;
 }
@@ -124,16 +132,6 @@ const SETTLING: readonly DocumentStatus[] = ["received", "clean"];
 /** Keep asking the server only while something is still being checked or read. */
 export function shouldPoll(items: readonly Pick<DocumentSummary, "status">[]): boolean {
   return items.some((item) => SETTLING.includes(item.status));
-}
-
-/**
- * Whether to show Move to Trash, and Restore in Trash. The uploader is matched
- * by display name, which is a hint for the screen only: the server checks the
- * real uploader and the role.
- */
-export function canDelete(me: Me, document: Pick<DocumentSummary, "uploaded_by_name">): boolean {
-  if (me.user.role === "admin") return true;
-  return document.uploaded_by_name !== null && document.uploaded_by_name === me.user.display_name;
 }
 
 export interface PageInfo {

@@ -13,17 +13,21 @@
   That is normal, not an error.
 * anything else is a bug and propagates. The job is not acked, so the queue
   hands it out again. There is no blanket ``except Exception`` here on purpose.
-* the queue's last delivery of a job (its attempt reached ``max_receives``,
-  the queue's own maximum): the handler is not run. ``on_exhausted(job)``
-  marks the document failed, then the job is buried as ``retries_exhausted``.
-  Without this, the queue would move the job to the failure bin by itself and
-  nothing would mark the document, which would show "Reading…" for good. It
-  covers retryable failures and crashes alike.
+* each delivery up to ``max_attempts`` (JOB_MAX_ATTEMPTS, 5) runs the handler,
+  after ``on_attempt(job, attempt)`` records the try on the document, so the
+  file list can say "Try 2 of 5".
+* a delivery past ``max_attempts`` does not run the handler:
+  ``on_exhausted(job)`` marks the document failed, then the job is buried as
+  ``retries_exhausted``. Without this, the queue would move the job to the
+  failure bin by itself and nothing would mark the document, which would show
+  "Reading…" for good. It covers retryable failures and crashes alike.
+* if marking fails (the database is down), the error propagates and the job
+  is not buried: its next delivery tries the marking again. That is why the
+  queue's own maximum receives must be above ``max_attempts + 1``
+  (kaagaz/worker_main.py checks it at start-up), and it is 10 on the laptop.
 
 PROVISIONAL: the retry back-off is the fixed lease length. Exponential
 back-off with jitter needs the queue settings, which are Vrushit's.
-PROVISIONAL (plan 7.4): the last delivery only marks and buries, so with the
-queue's maximum of 5 receives the handler runs at most 4 times.
 
 Why one bad job cannot block the others: while a job is leased it is hidden,
 and each ``run_once`` handles exactly one job, so the jobs behind a failing one
@@ -60,18 +64,20 @@ class Worker:
         queue: WorkQueue,
         handler: Handler,
         *,
-        max_receives: int,
+        max_attempts: int,
         on_exhausted: Callable[[Job], None],
+        on_attempt: Callable[[Job, int], None] | None = None,
     ) -> None:
-        """``max_receives`` is the queue's maximum receives (SqsQueue.max_receives);
-        ``on_exhausted`` marks a job's document when its last delivery comes."""
-        if max_receives < 2:
-            # The last delivery never runs the handler, so 1 would read nothing.
-            raise ValueError("max_receives must be at least 2")
+        """``max_attempts`` is how many times the handler may run for one job;
+        ``on_exhausted`` marks a job's document when a delivery comes after that;
+        ``on_attempt`` records each try before the handler runs."""
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         self._queue = queue
         self._handler = handler
-        self._max_receives = max_receives
+        self._max_attempts = max_attempts
         self._on_exhausted = on_exhausted
+        self._on_attempt = on_attempt
 
     def run_once(self) -> bool:
         """Process one job. Returns False when the queue had nothing ready.
@@ -86,10 +92,12 @@ class Worker:
             self._queue.extend(delivery.receipt)
 
         try:
-            if delivery.attempt >= self._max_receives:
+            if delivery.attempt > self._max_attempts:
                 self._on_exhausted(delivery.job)
                 self._queue.bury(delivery.receipt, RETRIES_EXHAUSTED)
                 return True
+            if self._on_attempt is not None:
+                self._on_attempt(delivery.job, delivery.attempt)
             try:
                 self._handler(delivery.job, heartbeat)
             except JobFailed as failure:

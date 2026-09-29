@@ -96,7 +96,7 @@ docs/             architecture.md (design and decisions), running-locally.md
 Full steps, ports and the no-Docker path: [docs/running-locally.md](docs/running-locally.md).
 
 ```
-cp .env.example .env        # then set SESSION_SECRET to 32+ random characters
+cp .env.example .env        # then set SESSION_SECRET and TOTP_ENCRYPTION_KEY, 32+ random characters each
 docker compose up --build   # open http://localhost:3000
 docker compose exec -e KAAGAZ_DEMO_PASSWORD='<12+ characters>' api python -m kaagaz.cli seed-demo
 ```

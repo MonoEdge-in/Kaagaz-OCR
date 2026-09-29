@@ -111,10 +111,7 @@ def login(body: LoginBody, context: Context) -> JSONResponse:
 
 @router.post("/auth/admin/login")
 def admin_login(body: AdminLoginBody, context: Context) -> JSONResponse:
-    attempt = _check_password(context, body.email, body.password)
-    if attempt.role != "admin":
-        _failed(context, attempt, "not_admin")
-        raise _refused(context)
+    attempt = _check_password(context, body.email, body.password, admins_only=True)
     if attempt.must_change_password:
         # The password was right; the screen sends them to /login to change it first.
         _succeeded(context, attempt)
@@ -147,9 +144,15 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if claims is None:
         raise ApiError(401, "not_signed_in")
     customer_id, user_id = claims.customer_id, claims.user_id
+    with context.db.customer(customer_id) as conn:
+        still_valid = users_sql.enrol_still_open(conn, customer_id, user_id, claims.session_version)
+    if not still_valid:
+        # A token that was already used, or whose admin changed since: it can't be
+        # a guess at the code, so it is refused without counting a failure, and a
+        # replayed token can't lock the admin out.
+        raise ApiError(401, "not_signed_in")
     attempt = _begin(context, customer_id, user_id, now)
     if attempt is None:
-        _audit_failure(context, customer_id, user_id, "locked")
         raise _refused(context)
     if (
         attempt.role != "admin"
@@ -197,9 +200,15 @@ def change_password(
     now = context.clock()
     attempt = _begin(context, user.customer_id, user.user_id, now)
     if attempt is None:
-        _audit_failure(context, user.customer_id, user.user_id, "locked")
+        # The lock stays on for a signed-in session too: letting a session check
+        # passwords during a lock would give a stolen session unlimited guesses.
         minutes = context.settings.login_lock_minutes
-        raise ApiError(400, "bad_request", f"Too many wrong passwords. Try again in {minutes} minutes.")
+        raise ApiError(
+            400,
+            "bad_request",
+            f"Too many wrong passwords were tried on this account. Try again in {minutes} minutes,"
+            " or ask an admin to unlock it.",
+        )
     if not verify_password(body.current_password, attempt.password_hash):
         _failed(context, attempt, "wrong_password")
         raise ApiError(400, "bad_request", "Your current password is not right.")
@@ -253,23 +262,29 @@ def me(user: UserAllowPasswordChange) -> dict[str, Any]:
 # --- the steps they share ----------------------------------------------------------------
 
 
-def _check_password(context: AppContext, email: str, password: str) -> AttemptRow:
+def _check_password(
+    context: AppContext, email: str, password: str, *, admins_only: bool = False
+) -> AttemptRow:
     """The counted attempt of an enabled user whose password is right, else the one 401.
 
-    Exactly one scrypt hash on every path: the dummy one for an unknown e-mail
-    or a locked account, the real one otherwise. At most three short
-    transactions (the lookup, the counted attempt, the audit row), and none is
-    held open during the hash. O(1).
+    Exactly one scrypt hash on every path: the dummy one for an unknown e-mail,
+    a locked account or (``admins_only``) a user who isn't an admin, the real
+    one otherwise. A non-admin on the admin screen is refused before anything
+    is counted: the screen never checks their password, so it tells nothing
+    and can't lock them out. An attempt on a locked account writes no audit row
+    (``auth.locked`` was written when the lock started), so guessing at a
+    locked account can't grow the audit log. At most three short transactions
+    (the lookup, the counted attempt, the audit row), and none is held open
+    during the hash. O(1).
     """
     with context.db.system() as conn:
         found = users_sql.login_lookup(conn, email)
-    if found is None:
+    if found is None or (admins_only and found.role != "admin"):
         spend_password_time(password)
         raise _refused(context)
     attempt = _begin(context, found.customer_id, found.user_id, context.clock())
     if attempt is None:
         spend_password_time(password)
-        _audit_failure(context, found.customer_id, found.user_id, "locked")
         raise _refused(context)
     if not verify_password(password, attempt.password_hash):
         _failed(context, attempt, "wrong_password")

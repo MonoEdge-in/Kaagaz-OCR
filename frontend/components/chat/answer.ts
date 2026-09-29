@@ -1,7 +1,8 @@
 // The chat screen's small decisions, kept out of the components so they are
 // unit tested in node (tests/chat-*.test.ts): which source card a citation
 // number points at, the words for an answer's label, when to show how the
-// question was understood, and what the question box sends.
+// question was understood, what a source card may still show of its
+// document, and what the question box sends.
 
 import { pageLink } from "@/lib/regions";
 import type { Answer, AnswerSentence, Citation, Label, Message, Region } from "@/lib/types";
@@ -101,6 +102,27 @@ export function citationRegion(citation: Pick<Citation, "regions" | "page_no">):
     };
   }
   return onPage[0] ?? citation.regions[0];
+}
+
+export const DELETED_SOURCE_TEXT = "From a deleted document";
+export const OLDER_VERSION_TEXT = "From an older version";
+
+/**
+ * What became of a cited document, for its source card. "gone": it is in
+ * Trash or deleted, so the server sent no snippet and no spot, and the card
+ * shows no link and no preview. "older": a newer version is in use now; the
+ * card still links to the version that was cited. A missing state is "live".
+ */
+export function citationSource(citation: Pick<Citation, "source_state">): "live" | "older" | "gone" {
+  switch (citation.source_state) {
+    case "in_trash":
+    case "deleted":
+      return "gone";
+    case "older_version":
+      return "older";
+    default:
+      return "live";
+  }
 }
 
 /** "Open page": the document screen at the cited page, with the spot highlighted. */

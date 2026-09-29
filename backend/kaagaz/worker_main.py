@@ -12,14 +12,22 @@ until it is told to stop:
   it out again once its lease runs out.
 * Anything else is a bug and ends the process on purpose (no blanket
   ``except Exception``, as in kaagaz/jobs/worker.py). docker-compose.yml
-  restarts it; the job goes back to the queue, and its last delivery marks
-  the document failed (``retries_exhausted``) and buries the job.
-* The queue's maximum receives is read from the queue once, at start-up. A
-  queue without a redrive policy stops the worker before it takes any job.
+  restarts it; the job goes back to the queue, and the delivery after its
+  last attempt (JOB_MAX_ATTEMPTS) marks the document failed
+  (``retries_exhausted``) and buries the job.
+* Each attempt is written on the document (``attempts``, ``max_attempts``),
+  so the file list can say "Try 2 of 5".
+* The queue's maximum receives is read from the queue once, at start-up. It
+  must be above JOB_MAX_ATTEMPTS + 1, so a delivery is left to mark the
+  document even if the database is down at the first try. A queue without a
+  redrive policy, or with too low a maximum, stops the worker before it takes
+  any job, and the one crash line names the fix (QueueSetupError's code).
 * Trash older than ``TRASH_DAYS`` is purged at most once an hour, between
   jobs (``PurgeHourly``, kaagaz/jobs/purge.py). The hour is measured on the
   injected clock. Several workers may purge at once: each family is taken by
-  one of them only.
+  one of them only. A database error in the purge is logged by its type and
+  the jobs go on: the purge can never stop the worker, or crash it again on
+  every restart.
 
 Logs are JSON lines holding ids, codes and counts only: never file names,
 document text or an exception's message (it could quote a document). An
@@ -40,6 +48,8 @@ from datetime import UTC, datetime, timedelta
 from types import FrameType
 from typing import Protocol
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from kaagaz.adapters.queue import SqsQueue
 from kaagaz.adapters.scanner import build_scanner
 from kaagaz.adapters.storage import S3Storage
@@ -47,6 +57,7 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.ports import QueueSetupError
 from kaagaz.jobs.purge import purge_expired
 from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
 from kaagaz.settings import Settings
@@ -106,6 +117,27 @@ class LoggedHandler:
         logger.info("job done", extra={**ids, "outcome": "done"})
 
 
+class RecordAttempt:
+    """The worker's ``on_attempt``: writes the try on the document (``record`` is
+    PgDocuments.record_attempt), with the worker's maximum, before the handler runs."""
+
+    def __init__(self, record: Callable[[str, str, int, int], None], max_attempts: int) -> None:
+        self._record = record
+        self._max_attempts = max_attempts
+
+    def __call__(self, job: Job, attempt: int) -> None:
+        self._record(job.customer_id, job.document_id, attempt, self._max_attempts)
+
+
+def check_queue_redrive(max_receives: int, max_attempts: int) -> None:
+    """Refuse a queue whose own maximum receives would move a job to the failure
+    bin before the worker has marked its document: it must be above
+    ``max_attempts + 1`` (every attempt, one delivery to mark, one spare for a
+    database outage while marking). Raises QueueSetupError."""
+    if max_receives <= max_attempts + 1:
+        raise QueueSetupError("queue_redrive_too_low")
+
+
 class MarkExhausted:
     """The worker's ``on_exhausted``: marks the job's document (``mark`` is
     PgDocuments.mark_exhausted) and logs it, with ids and the code only."""
@@ -136,9 +168,13 @@ class PurgeHourly:
     it purged) if an hour has passed on ``clock`` since the last run. The first
     turn runs it.
 
-    The time is noted before the purge starts, so a purge that fails (storage
-    or the database down) raises to the loop, which pauses as for any outage,
-    and it is not tried again until the next hour; the jobs go on meanwhile.
+    The time is noted before the purge starts, so a purge that fails is not
+    tried again until the next hour; the jobs go on meanwhile. Storage or the
+    database being down (BackendUnavailable) raises to the loop, which pauses
+    as for any outage. Any other database error (SQLAlchemyError, a bug in a
+    statement, say) is logged by its type and swallowed here: the purge is
+    housekeeping, and it must not stop the jobs, or, since the first turn after
+    a restart purges, crash the worker on every restart.
     O(1) per turn, plus the purge's own cost once an hour.
     """
 
@@ -152,7 +188,10 @@ class PurgeHourly:
         now = self._clock()
         if self._last is None or now - self._last >= PURGE_EVERY:
             self._last = now
-            logger.info("trash purged: %d families", self._purge())
+            try:
+                logger.info("trash purged: %d families", self._purge())
+            except SQLAlchemyError as error:
+                logger.error("trash purge failed", extra={"code": type(error).__name__})
         return self._worker.run_once()
 
 
@@ -195,6 +234,10 @@ def main() -> None:
     # and the message, and a database error's message can quote row values.
     try:
         _serve(settings)
+    except QueueSetupError as error:
+        # A setup mistake, not a bug: the code says what to fix (jobs/ports.py).
+        logger.critical("worker cannot start: queue setup", extra={"code": error.code})
+        sys.exit(1)
     except Exception as error:  # noqa: BLE001 - the process boundary, see the comment above
         logger.critical("worker crashed", extra={"code": type(error).__name__})
         sys.exit(1)
@@ -211,6 +254,7 @@ def _serve(settings: Settings) -> None:
     storage = S3Storage(settings)
     queue = SqsQueue(settings)
     max_receives = queue.max_receives()  # once; no redrive policy stops the worker here
+    check_queue_redrive(max_receives, settings.job_max_attempts)
     scanner = build_scanner(settings)
     model = build_model_client(settings)
     processor = build_processor(settings=settings, db=db, storage=storage, scanner=scanner, model=model)
@@ -219,11 +263,13 @@ def _serve(settings: Settings) -> None:
     install_stop_handlers(stop)
     storage.ensure_bucket()  # the laptop's first start; in AWS it only checks
     logger.info("worker started")
+    documents = PgDocuments(db)
     jobs = Worker(
         queue,
         LoggedHandler(processor),
-        max_receives=max_receives,
-        on_exhausted=MarkExhausted(PgDocuments(db).mark_exhausted),
+        max_attempts=settings.job_max_attempts,
+        on_exhausted=MarkExhausted(documents.mark_exhausted),
+        on_attempt=RecordAttempt(documents.record_attempt, settings.job_max_attempts),
     )
     purge = functools.partial(purge_expired, db, storage, _utc_now, settings.trash_days)
     worker = PurgeHourly(jobs, purge, _utc_now)

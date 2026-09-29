@@ -10,15 +10,22 @@ guard test (WP1.6) checks that each listed constant contains the fragment text
 with ``in``. The text is fixed, and a test asserts it exactly. The alias is
 always ``d``.
 
-* ``LIVE``: not in Trash. The document list (default view) and review.
+* ``LIVE``: not in Trash, any version. Kept for statements that must see
+  every version of a live family.
+* ``LISTED``: not in Trash, the current version, in any state. The document
+  list and the admin numbers: one row per family, the version search and chat
+  use (a newer one still reading or failed is shown beside it, never instead).
 * ``LIVE_CURRENT``: not in Trash, the current version, and read. Search,
-  chat and the fixed queries, inside every CTE and before any LIMIT.
-* ``TRASHED``: in Trash. The Trash view and the purge.
+  chat, the fixed queries and review, inside every CTE and before any LIMIT.
+* ``TRASHED``: in Trash, any version. The purge.
+* ``TRASHED_LISTED``: in Trash, the current version. The Trash view.
 
 Lookups by id get no filter: a trashed document can still be opened, restored
 or deleted forever.
 """
 
 LIVE = " AND d.deleted_at IS NULL"
+LISTED = " AND d.deleted_at IS NULL AND d.is_current"
 LIVE_CURRENT = " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
 TRASHED = " AND d.deleted_at IS NOT NULL"
+TRASHED_LISTED = " AND d.deleted_at IS NOT NULL AND d.is_current"

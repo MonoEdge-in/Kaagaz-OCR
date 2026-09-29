@@ -25,6 +25,11 @@ COPY pyproject.toml ./
 COPY kaagaz kaagaz
 RUN pip install ".[ocr]"
 
+# Page pictures are stored as WebP (PRD 1 S1). Pillow's wheel carries libwebp;
+# stop the build here if a future Pillow or base image ever lacks it, rather
+# than at the first scan.
+RUN python -c "from PIL import features; assert features.check('webp'), 'Pillow has no WebP'"
+
 # RapidOCR fetches its model files on first use, into its own package folder,
 # which the non-root user below cannot write. Load it once here, as root, so
 # the files are part of the image.

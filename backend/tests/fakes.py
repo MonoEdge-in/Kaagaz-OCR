@@ -213,6 +213,7 @@ class MemoryDocuments(MemoryRepository):
         super().__init__()
         self._statuses = statuses
         self.failure_codes: dict[tuple[str, str], str] = {}
+        self.attempts: dict[tuple[str, str], tuple[int, int]] = {}
         self.page_counts: dict[tuple[str, str], int] = {}
 
     def set_failed(self, customer_id: str, document_id: str, code: str) -> None:
@@ -235,6 +236,12 @@ class MemoryDocuments(MemoryRepository):
         self.set_page_count(customer_id, document_id, page_count)
         if self.get(customer_id, document_id) is not None:
             self._statuses.set_status(customer_id, document_id, DocumentStatus.READY)
+
+    def record_attempt(self, customer_id: str, document_id: str, attempt: int, max_attempts: int) -> None:
+        """Like PgDocuments.record_attempt: only a document still in progress keeps
+        the try number (in ``attempts``, keyed like ``failure_codes``)."""
+        if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
+            self.attempts[(customer_id, document_id)] = (attempt, max_attempts)
 
     def mark_exhausted(self, customer_id: str, document_id: str) -> None:
         """The worker's last delivery, like PgDocuments.mark_exhausted: only a document
@@ -302,13 +309,18 @@ class FakePrepared:
 class FakePreparer:
     """Gives preset pages per file type, and none for any other type (like
     kaagaz.preparing.pages.prepare_pages does for spreadsheets). ``error`` makes
-    it raise ReadError with that code instead."""
+    it raise ReadError with that code instead, or that error itself (for example
+    TooManyPages with its count)."""
 
-    def __init__(self, by_type: dict[str, FakePrepared] | None = None, *, error: str | None = None) -> None:
+    def __init__(
+        self, by_type: dict[str, FakePrepared] | None = None, *, error: str | ReadError | None = None
+    ) -> None:
         self._by_type = dict(by_type or {})
         self._error = error
 
     def prepare(self, detected_type: str, data: bytes) -> FakePrepared:
+        if isinstance(self._error, ReadError):
+            raise self._error
         if self._error is not None:
             raise ReadError(self._error)
         return self._by_type.get(detected_type, FakePrepared([], {}))

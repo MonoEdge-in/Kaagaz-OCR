@@ -1,25 +1,29 @@
 import unittest
 
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import LeaseLost
 from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
 from tests.lease_queue import FakeClock, LeaseQueue
 
 LEASE = 30.0
-MAX_RECEIVES = 3
+MAX_ATTEMPTS = 3
+# The queue's own maximum receives: above MAX_ATTEMPTS + 1, as worker_main requires,
+# so a delivery is left to mark the document even when the first marking fails.
+QUEUE_MAX_RECEIVES = MAX_ATTEMPTS + 3
 GOOD, POISON, OTHER = Job("cust-a", "good"), Job("cust-a", "poison"), Job("cust-a", "other")
 
 
-def make_queue(max_attempts: int = MAX_RECEIVES) -> tuple[FakeClock, LeaseQueue]:
+def make_queue(max_attempts: int = QUEUE_MAX_RECEIVES) -> tuple[FakeClock, LeaseQueue]:
     clock = FakeClock()
     return clock, LeaseQueue(clock, lease_seconds=LEASE, max_attempts=max_attempts)
 
 
 def make_worker(queue: LeaseQueue, handler: Handler, marked: list[Job] | None = None) -> Worker:
-    """The worker under test, with the queue's maximum receives. ``marked`` collects
+    """The worker under test, with MAX_ATTEMPTS tries per job. ``marked`` collects
     every job ``on_exhausted`` is called with."""
     sink: list[Job] = [] if marked is None else marked
-    return Worker(queue, handler, max_receives=MAX_RECEIVES, on_exhausted=sink.append)
+    return Worker(queue, handler, max_attempts=MAX_ATTEMPTS, on_exhausted=sink.append)
 
 
 class LeaseQueueTest(unittest.TestCase):
@@ -89,16 +93,74 @@ class WorkerTest(unittest.TestCase):
         def on_exhausted(job: Job) -> None:
             marked.append((job, len(queue.failed)))  # how many jobs were buried by then
 
-        worker = Worker(queue, handler, max_receives=MAX_RECEIVES, on_exhausted=on_exhausted)
-        for _ in range(MAX_RECEIVES):
+        worker = Worker(queue, handler, max_attempts=MAX_ATTEMPTS, on_exhausted=on_exhausted)
+        for _ in range(MAX_ATTEMPTS + 1):
             self.assertTrue(worker.run_once())
             clock.advance(LEASE)
         self.assertFalse(worker.run_once())  # buried, nothing left
 
-        self.assertEqual(len(calls), MAX_RECEIVES - 1)  # the last delivery does not run the handler
+        self.assertEqual(len(calls), MAX_ATTEMPTS)  # every attempt ran; the next delivery only marks
         self.assertEqual(marked, [(POISON, 0)])  # called once, before the job was buried
         (failed,) = queue.failed.values()
-        self.assertEqual((failed.job, failed.attempts, failed.code), (POISON, 3, "retries_exhausted"))
+        self.assertEqual(
+            (failed.job, failed.attempts, failed.code), (POISON, MAX_ATTEMPTS + 1, "retries_exhausted")
+        )
+
+    def test_each_attempt_is_recorded_before_the_handler_runs(self) -> None:
+        clock, queue = make_queue()
+        queue.enqueue(POISON)
+        events: list[tuple[str, int]] = []
+
+        def handler(job: Job, beat: Heartbeat) -> None:
+            events.append(("ran", 0))
+            raise JobFailed("backend_down", retryable=True)
+
+        worker = Worker(
+            queue,
+            handler,
+            max_attempts=MAX_ATTEMPTS,
+            on_exhausted=lambda job: events.append(("exhausted", 0)),
+            on_attempt=lambda job, attempt: events.append(("attempt", attempt)),
+        )
+        for _ in range(MAX_ATTEMPTS + 1):
+            worker.run_once()
+            clock.advance(LEASE)
+        self.assertEqual(
+            events,
+            [
+                ("attempt", 1),
+                ("ran", 0),
+                ("attempt", 2),
+                ("ran", 0),
+                ("attempt", 3),
+                ("ran", 0),
+                ("exhausted", 0),
+            ],
+        )
+
+    def test_marking_that_fails_is_tried_again_on_the_next_delivery(self) -> None:
+        """The database is down when the job's tries run out: the job is not buried
+        (nothing would ever mark the document), and the next delivery marks it."""
+        clock, queue = make_queue()
+        queue.enqueue(GOOD)
+        for _ in range(MAX_ATTEMPTS):
+            queue.receive()  # earlier deliveries that crashed
+            clock.advance(LEASE)
+        tries: list[Job] = []
+
+        def mark(job: Job) -> None:
+            tries.append(job)
+            if len(tries) == 1:
+                raise BackendUnavailable("database")
+
+        worker = Worker(queue, lambda job, beat: None, max_attempts=MAX_ATTEMPTS, on_exhausted=mark)
+        with self.assertRaises(BackendUnavailable):
+            worker.run_once()
+        self.assertEqual(queue.failed, {})
+        clock.advance(LEASE)
+        self.assertTrue(worker.run_once())
+        self.assertEqual(tries, [GOOD, GOOD])
+        self.assertEqual([(f.job, f.code) for f in queue.failed.values()], [(GOOD, "retries_exhausted")])
 
     def test_an_unexpected_error_on_every_delivery_still_gets_marked(self) -> None:
         clock, queue = make_queue()
@@ -109,11 +171,11 @@ class WorkerTest(unittest.TestCase):
             raise RuntimeError("bug")
 
         worker = make_worker(queue, buggy, marked)
-        for _ in range(MAX_RECEIVES - 1):
+        for _ in range(MAX_ATTEMPTS):
             with self.assertRaises(RuntimeError):
                 worker.run_once()
             clock.advance(LEASE)
-        self.assertTrue(worker.run_once())  # the last delivery: marked and buried, the handler not run
+        self.assertTrue(worker.run_once())  # past the last attempt: marked and buried, the handler not run
 
         self.assertEqual(marked, [GOOD])
         self.assertEqual([(f.job, f.code) for f in queue.failed.values()], [(GOOD, "retries_exhausted")])
@@ -132,32 +194,32 @@ class WorkerTest(unittest.TestCase):
         worker = make_worker(queue, handler, marked)
         worker.run_once()
         clock.advance(LEASE)
-        worker.run_once()  # attempt 2 of 3: the last one that runs the handler
+        worker.run_once()  # attempt 2 of 3 succeeds
         self.assertEqual(queue.failed, {})
         self.assertEqual(queue.pending(), 0)
         self.assertEqual(marked, [])
 
     def test_a_lost_lease_on_the_last_delivery_does_not_crash_the_worker(self) -> None:
-        clock, queue = make_queue(max_attempts=MAX_RECEIVES + 1)  # the queue itself would still retry
+        clock, queue = make_queue()  # the queue itself would still retry
         queue.enqueue(GOOD)
-        for _ in range(MAX_RECEIVES - 1):
+        for _ in range(MAX_ATTEMPTS):
             queue.receive()  # earlier deliveries that crashed
             clock.advance(LEASE)
 
         def slow_mark(job: Job) -> None:
             clock.advance(LEASE + 1)  # the lease runs out while marking
 
-        worker = Worker(queue, lambda job, beat: None, max_receives=MAX_RECEIVES, on_exhausted=slow_mark)
+        worker = Worker(queue, lambda job, beat: None, max_attempts=MAX_ATTEMPTS, on_exhausted=slow_mark)
         self.assertTrue(worker.run_once())
         self.assertEqual(queue.failed, {})  # LeaseLost from bury: the next delivery decides
         self.assertEqual(queue.pending(), 1)
 
-    def test_max_receives_must_leave_the_handler_a_delivery(self) -> None:
+    def test_max_attempts_must_allow_one_attempt(self) -> None:
         _, queue = make_queue()
-        for max_receives in (0, 1):
-            with self.subTest(max_receives=max_receives), self.assertRaises(ValueError):
+        for max_attempts in (0, -1):
+            with self.subTest(max_attempts=max_attempts), self.assertRaises(ValueError):
                 Worker(
-                    queue, lambda job, beat: None, max_receives=max_receives, on_exhausted=lambda job: None
+                    queue, lambda job, beat: None, max_attempts=max_attempts, on_exhausted=lambda job: None
                 )
 
     def test_permanent_failure_is_buried_at_once_and_not_retried(self) -> None:
@@ -195,7 +257,7 @@ class WorkerTest(unittest.TestCase):
         worker.run_once()  # good runs next, without waiting for the poison
         self.assertEqual(done, [GOOD])
 
-        for _ in range(3):
+        for _ in range(MAX_ATTEMPTS):
             clock.advance(LEASE)
             worker.run_once()
         self.assertEqual([f.job for f in queue.failed.values()], [POISON])

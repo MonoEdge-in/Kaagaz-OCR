@@ -5,6 +5,7 @@ import {
   citationLink,
   citationMap,
   citationRegion,
+  citationSource,
   cleanQuestion,
   cleanReason,
   NOT_FOUND_TEXT,
@@ -80,6 +81,23 @@ describe("citations to source cards", () => {
 
   it("links to the page alone when there is no region", () => {
     expect(citationLink(citation(1, { regions: [] }))).toBe("/documents/doc-1?page=2");
+  });
+});
+
+describe("what a source card still shows of its document", () => {
+  it("treats a missing state, and live, as live", () => {
+    expect(citationSource(citation(1))).toBe("live");
+    expect(citationSource(citation(1, { source_state: "live" }))).toBe("live");
+  });
+
+  it("keeps the link for an older version", () => {
+    expect(citationSource(citation(1, { source_state: "older_version" }))).toBe("older");
+  });
+
+  it("shows nothing of a document in Trash or deleted", () => {
+    const gone = { snippet: null, regions: [] };
+    expect(citationSource(citation(1, { ...gone, source_state: "in_trash" }))).toBe("gone");
+    expect(citationSource(citation(1, { ...gone, source_state: "deleted" }))).toBe("gone");
   });
 });
 

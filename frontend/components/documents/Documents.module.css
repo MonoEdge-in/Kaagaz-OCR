@@ -448,6 +448,13 @@ table.docs th {
   overflow-wrap: anywhere;
 }
 
+/* A newer version still being read, or one that failed, under the name. */
+.newerVersion {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--fs-sm);
+}
+
 .statusCell {
   vertical-align: middle;
 }

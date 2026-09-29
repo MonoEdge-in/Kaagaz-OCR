@@ -1,9 +1,11 @@
-"""New versions, the Trash view and the newest version in the list (PRD 1 F5 and F6, WP1.6).
+"""New versions, the Trash view and the current version in the list (PRD 1 F5 and F6, WP1.6).
 
 ``POST /documents/{id}/versions`` has the checks and replies of ``POST /documents``.
 A version joins the family with the next number, not current, in the family's
-folder and with its tags. The list shows the newest version of each family, out
-of Trash unless ``trashed=true``; by id, any version opens, in Trash or not.
+folder and with its tags; a family in Trash gets none (409 ``in_trash``). The
+list shows the current version of each family, out of Trash unless
+``trashed=true``, with a newer version still being read or failed beside it
+(``newer_version``); by id, any version opens, in Trash or not.
 """
 
 from datetime import UTC, datetime
@@ -25,6 +27,7 @@ MB = 1024 * 1024
 V2_BYTES = b"%PDF-1.7\n" + b"2" * 200
 V3_BYTES = b"%PDF-1.7\n" + b"3" * 200
 UNKNOWN = "7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e"
+IN_TRASH = {"error": {"code": "in_trash", "message": "This document is in the Trash. Restore it first."}}
 
 
 def _version(signed: Signed, document_id: str, data: bytes, name: str = "bill v2.pdf") -> httpx.Response:
@@ -132,7 +135,7 @@ def test_a_duplicate_of_a_document_in_trash_says_so_on_both_routes(db: Database)
         assert body["document"]["deleted_at"] == NOW.isoformat()
 
 
-def test_a_version_of_a_family_in_trash_or_of_no_document_is_404_and_keeps_nothing(db: Database) -> None:
+def test_a_version_of_a_family_in_trash_is_409_of_no_document_404_and_keeps_nothing(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
     first = api.add_document(signed.customer_id)
@@ -140,10 +143,11 @@ def test_a_version_of_a_family_in_trash_or_of_no_document_is_404_and_keeps_nothi
     _trash(db, signed, second)
     live = api.add_document(signed.customer_id)
 
-    for target in (first, second, UNKNOWN):
+    for target in (first, second):
         reply = _version(signed, target, V2_BYTES)
-        assert reply.status_code == 404, target
-        assert reply.json()["error"]["code"] == "not_found"
+        assert (reply.status_code, reply.json()) == (409, IN_TRASH), target
+    unknown = _version(signed, UNKNOWN, V2_BYTES)
+    assert (unknown.status_code, unknown.json()["error"]["code"]) == (404, "not_found")
     assert (api.storage.count(), api.queue.jobs, _document_count(db, signed.customer_id)) == (3, [], 3)
     assert _version(signed, live, V2_BYTES).status_code == 201  # the same file on a live family
 
@@ -193,7 +197,7 @@ def test_the_version_route_has_the_upload_size_checks(db: Database) -> None:
 # --- the list and the detail ------------------------------------------------------------
 
 
-def test_the_list_shows_the_newest_version_of_each_family_and_trash_only_when_asked(db: Database) -> None:
+def test_the_list_shows_the_current_version_of_each_family_and_trash_only_when_asked(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
     folder = api.add_folder(signed.customer_id, signed.user_id, "Suppliers")
@@ -201,21 +205,73 @@ def test_the_list_shows_the_newest_version_of_each_family_and_trash_only_when_as
     newest = _later(api, signed, first, name="sharma v2.pdf", folder_id=folder, status="received")
     single = api.add_document(signed.customer_id, name="mehta.pdf")
     old_bin = api.add_document(signed.customer_id, name="sharma old.pdf", folder_id=folder)
-    new_bin = _later(api, signed, old_bin, name="sharma old v2.pdf", folder_id=folder)
+    _later(api, signed, old_bin, name="sharma old v2.pdf", folder_id=folder)
     _trash(db, signed, old_bin)
 
+    # The version search and chat use, never hidden by a newer one still reading.
     live = _listed(signed)
-    assert set(live) == {newest, single}
-    assert [live[newest][key] for key in ("version_no", "family_id", "deleted_at")] == [2, first, None]
-    assert set(_listed(signed, trashed="false")) == {newest, single}
+    assert set(live) == {first, single}
+    assert [live[first][key] for key in ("version_no", "family_id", "deleted_at")] == [1, first, None]
+    assert live[first]["newer_version"]["id"] == newest
+    assert set(_listed(signed, trashed="false")) == {first, single}
     binned = _listed(signed, trashed="true")
-    assert set(binned) == {new_bin}
-    assert (binned[new_bin]["family_id"], binned[new_bin]["deleted_at"]) == (old_bin, NOW.isoformat())
-    # The other filters still apply, in both views.
-    assert set(_listed(signed, q="SHARMA")) == {newest}
-    assert set(_listed(signed, trashed="true", folder_id=folder, q="old")) == {new_bin}
+    assert set(binned) == {old_bin}
+    assert (binned[old_bin]["family_id"], binned[old_bin]["deleted_at"]) == (old_bin, NOW.isoformat())
+    assert binned[old_bin]["newer_version"] is None  # every version is in Trash with it
+    # The other filters still apply, in both views, to the current version.
+    assert set(_listed(signed, q="SHARMA")) == {first}
+    assert set(_listed(signed, q="v2")) == set()
+    assert set(_listed(signed, trashed="true", folder_id=folder, q="old")) == {old_bin}
     assert set(_listed(signed, trashed="true", q="mehta")) == set()
-    assert set(_listed(signed, status="ready")) == {single}  # the newest version is still reading
+    assert set(_listed(signed, status="ready")) == {first, single}
+    assert set(_listed(signed, status="received")) == set()
+
+
+def test_a_newer_version_still_reading_or_failed_is_shown_beside_the_current_one(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    reading = api.add_document(signed.customer_id, name="reading.pdf", attempts=1, max_attempts=5)
+    reading_v2 = _later(api, signed, reading, status="received", attempts=2, max_attempts=5)
+    failed = api.add_document(signed.customer_id, name="failed.pdf")
+    _later(api, signed, failed, status="failed", failure_code="corrupt_file")
+    failed_v3 = api.add_document(
+        signed.customer_id,
+        family_id=failed,
+        version_no=3,
+        is_current=False,
+        status="failed",
+        failure_code="retries_exhausted",
+        attempts=5,
+        max_attempts=5,
+    )
+    single = api.add_document(signed.customer_id, name="single.pdf")
+
+    listed = _listed(signed)
+    assert set(listed) == {reading, failed, single}
+    assert listed[reading]["newer_version"] == {
+        "id": reading_v2,
+        "version_no": 2,
+        "status": "received",
+        "failure_code": None,
+        "status_message": "Waiting for the virus check. Try 2 of 5.",
+    }
+    assert listed[failed]["newer_version"] == {  # the newest of the newer ones
+        "id": failed_v3,
+        "version_no": 3,
+        "status": "failed",
+        "failure_code": "retries_exhausted",
+        "status_message": (
+            "We tried 5 times and couldn't read this file. Upload it again, or ask your admin to look at it."
+        ),
+    }
+    assert listed[single]["newer_version"] is None
+    # The current version's own tries: a ready one names none.
+    assert (listed[reading]["attempts"], listed[reading]["max_attempts"]) == (1, 5)
+    assert listed[reading]["status_message"] == "Ready. You can ask about it."
+    assert (listed[single]["attempts"], listed[single]["max_attempts"]) == (0, None)
+    detail = signed.client.get(f"/api/documents/{reading}").json()
+    assert detail["newer_version"] == listed[reading]["newer_version"]
+    assert signed.client.get(f"/api/documents/{reading_v2}").json()["newer_version"] is None
 
 
 def test_detail_lists_every_version_and_an_older_or_trashed_one_still_opens(db: Database) -> None:

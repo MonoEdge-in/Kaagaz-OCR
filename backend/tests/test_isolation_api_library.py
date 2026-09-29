@@ -1,9 +1,9 @@
 """Customer B, signed in as an admin, uses customer A's exact folder, tag and
-document ids on every library route and filter and gets 404 (or an empty list,
-where a list is the reply), never A's data, and A is unchanged afterwards.
+document ids on every library route and filter and gets 404, never A's data,
+and A is unchanged afterwards.
 
-B is an admin, so the admin-only tag delete reaches the lookup instead of
-stopping at the role check. This runs through the whole API (session, routes,
+B signs in on the admin screen, so the tag delete (an admin session only)
+reaches the lookup instead of stopping at the session check. This runs through the whole API (session, routes,
 SQL and row level security), so a route that forgot the customer filter fails.
 """
 
@@ -28,8 +28,8 @@ class _World:
         self.api = Api(db)
         a_customer, _ = self.api.customer("Sharma Traders")
         b_customer, _ = self.api.customer("Mehta Textiles")
-        self.a: Signed = self.api.sign_in(a_customer, "admin")
-        self.b: Signed = self.api.sign_in(b_customer, "admin")
+        self.a: Signed = self.api.admin_sign_in(a_customer)
+        self.b: Signed = self.api.admin_sign_in(b_customer)
         a, api = self.a, self.api
         self.folder = api.add_folder(a.customer_id, a.user_id, "sharma folder")
         self.child = api.add_folder(a.customer_id, a.user_id, "sharma child", self.folder)
@@ -131,14 +131,17 @@ def test_names_are_per_customer_so_b_may_reuse_a_names(world: _World) -> None:
     assert len(world.a_rows()["folders"]) == 2
 
 
-def test_b_cannot_list_by_a_folder_of_a_and_a_tag_of_a_matches_nothing(world: _World) -> None:
+def test_b_cannot_list_by_a_folder_or_a_tag_of_a(world: _World) -> None:
     b = world.b.client
-    for params in ({"folder_id": world.folder}, {"folder_id": world.folder, "include_subfolders": "true"}):
+    for params in (
+        {"folder_id": world.folder},
+        {"folder_id": world.folder, "include_subfolders": "true"},
+        {"tag_id": [world.tag]},
+        {"tag_id": [world.b_tag, world.tag]},
+    ):
         reply = b.get("/api/documents", params=params)
         _assert_not_found(reply.status_code, reply.json())
-    reply = b.get("/api/documents", params={"tag_id": [world.tag]})
-    assert reply.status_code == 200
-    assert reply.json() == {"items": [], "total": 0}
+        assert "sharma" not in reply.text
     # The same filters work for A.
     assert world.a.client.get("/api/documents", params={"folder_id": world.folder}).json()["total"] == 1
     assert world.a.client.get("/api/documents", params={"tag_id": [world.tag]}).json()["total"] == 1

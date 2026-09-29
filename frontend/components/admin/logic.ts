@@ -197,7 +197,11 @@ const STATUS_ORDER: readonly DocumentStatus[] = [
   "failed",
 ];
 
-/** The Numbers tab, in a fixed order, with Indian digit grouping. */
+/**
+ * The Numbers tab, in a fixed order, with Indian digit grouping. Documents by
+ * status count only current versions out of Trash; the versions kept behind
+ * them and what is in Trash have tiles of their own.
+ */
 export function statTiles(stats: Stats): Tile[] {
   const documents = STATUS_ORDER.reduce(
     (sum, status) => sum + (stats.documents_by_status[status] ?? 0),
@@ -211,6 +215,8 @@ export function statTiles(stats: Stats): Tile[] {
     });
   }
   tiles.push(
+    { label: "Other versions kept", value: formatNumber(stats.older_versions) },
+    { label: "In Trash", value: formatNumber(stats.in_trash) },
     { label: "Questions asked", value: formatNumber(stats.questions_total) },
     { label: "Answered", value: formatNumber(stats.answered) },
     { label: "Not found in the documents", value: formatNumber(stats.not_found) },

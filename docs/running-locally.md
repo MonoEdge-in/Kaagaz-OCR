@@ -26,8 +26,9 @@ cp .env.example .env                 # bash
 Copy-Item .env.example .env          # PowerShell
 ```
 
-Then set `SESSION_SECRET` in `.env` to at least 32 random characters. The
-placeholder is too short on purpose, so nothing starts until you do:
+Then set `SESSION_SECRET` and `TOTP_ENCRYPTION_KEY` in `.env`, each to at
+least 32 random characters and different from each other. Both placeholders
+are too short on purpose, so nothing starts until you do. Run this twice:
 
 ```
 python -c "import secrets; print(secrets.token_urlsafe(48))"
@@ -36,9 +37,12 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 `MODEL_ENABLED=false` (the default) runs everything with no AI. To use
 Ollama, pull `MODEL_CHAT` and `MODEL_EMBED` first, then set it to `true`.
 
-An older `.env` needs `MAX_IMAGE_MB` and `MAX_SHEET_MB` added from
-`.env.example` (a missing setting stops the start with its name), and the new
-`MAX_PAGES` and `MAX_IMAGE_PIXELS` values.
+An older `.env` needs these added from `.env.example` (a missing setting stops
+the start with its name): `TOTP_ENCRYPTION_KEY`, `LOGIN_MAX_FAILURES`,
+`LOGIN_LOCK_MINUTES`, `ADMIN_SESSION_MINUTES`, `MAX_IMAGE_MB`, `MAX_SHEET_MB`,
+`TRASH_DAYS` and `JOB_MAX_ATTEMPTS`, plus the new `MAX_PAGES` and
+`MAX_IMAGE_PIXELS` values. Recreate the queue too (`docker compose up -d
+--force-recreate elasticmq`): its failure-bin limit is now 10.
 
 ## 2a. Everything in Docker
 
@@ -184,7 +188,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 **3. Sessions, roles, CSRF and rate limit**
 - Check: as admin, disable the member (feature 23), then use the member's jar on `/auth/me`. As the member, open `$API/review` and `$API/admin/users`. Send `POST $API/auth/logout` without the `X-Requested-With` header. Send 130 quick requests: `for i in $(seq 130); do curl -s -o /dev/null -w '%{http_code}\n' $API/health; done | sort | uniq -c`.
 - Expect: the disabled member gets `401` at once. Members get `403 forbidden` on review and admin. No header gives `403 csrf`. About 120 replies of `200`, then `429 rate_limited` with `Retry-After: 60`. Every reply has `X-Request-ID`, `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
-- Tests: `test_api_auth.py` (`test_roles_gate_the_routes`, `test_post_without_csrf_header_is_refused`, `test_rate_limit_gives_429_with_the_error_shape`, `test_disabling_a_user_ends_their_session_on_the_next_request`).
+- Tests: `test_api_auth.py` (`test_roles_and_the_admin_session_gate_the_routes`, `test_post_without_csrf_header_is_refused`, `test_rate_limit_gives_429_with_the_error_shape`, `test_disabling_a_user_ends_their_session_on_the_next_request`).
 
 **4. App shell, navigation by role, theme**
 - Check (screen): sign in as each role; narrow the window below 1024 px; pick Dark in the Theme menu and reload.
@@ -202,7 +206,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **6. File types and upload limits**
 - Check: `: > e.csv; up e.csv`; `printf 'MZ\x90\x00' > a.exe; up a.exe`; any Word file `up letter.docx`; `head -c 52500000 /dev/zero > big.bin; up big.bin`.
-- Expect: empty file `400 empty_file`; unknown type `400 unsupported_type`; a .docx is a zip, so it is accepted (`201`) and ends `needs_reader`; the big file `413 too_large`. The type always comes from the first bytes, never the name. An admin's lower limit (feature 24) also applies. Each type has its own limit (`MAX_UPLOAD_MB` for PDFs, `MAX_IMAGE_MB` for photos and scans, `MAX_SHEET_MB` for spreadsheets and CSV), and the 413 names the limit, plus the size when the file is under the largest limit (`big.bin` is over it, so its reply names only the limit). The screen refuses a .exe, an empty file or one over its type's limit before sending anything.
+- Expect: empty file `400 empty_file`; unknown type `400 unsupported_type`; a .docx is a zip, so it is accepted (`201`) and ends `needs_reader`; the big file `413 too_large`. The type always comes from the first bytes, never the name. An admin's lower limit (feature 24) also applies. Each type has its own limit (`MAX_UPLOAD_MB` for PDFs, `MAX_IMAGE_MB` for photos and scans, `MAX_SHEET_MB` for spreadsheets and CSV), and the 413 names the limit, plus the size when the file is under the largest limit (`big.bin` is over it, so its reply names only the limit). The screen refuses a .exe, an empty file, one over its type's limit, or a PDF or TIFF over 100 pages ("This PDF has 180 pages. The limit is 100.") before sending anything; its limits come from `GET $API/upload-limits`.
 - Tests: `test_sniff.py`, `test_upload_service.py`, `test_api_documents.py` (`test_the_customers_own_limit_applies`).
 
 **7. Fingerprint and duplicates**
@@ -212,7 +216,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **8. Virus scan**
 - Check: make the harmless EICAR test file `eicar.txt` (its text is on the EICAR website; your own antivirus may grab it) and `up eicar.txt`. Then stop `clamav` and upload another new file.
-- Expect: `SQL "SELECT status,failure_code FROM documents WHERE display_name='eicar.txt'"` shows `rejected | virus_found`; the screen says "This file failed the virus check and was not processed."; `GET $API/documents/<id>/file` gives `404`; rejected is final. With the scanner down, the worker logs `"job retry"` with code `scanner_unavailable`, and the file stays `received` without being opened. If it is still down at the queue's last delivery (the 5th, about 20 minutes on), the file ends `failed | retries_exhausted`.
+- Expect: `SQL "SELECT status,failure_code FROM documents WHERE display_name='eicar.txt'"` shows `rejected | virus_found`; the screen says "This file failed the virus check and was not processed."; `GET $API/documents/<id>/file` gives `404`; rejected is final. With the scanner down, the worker logs `"job retry"` with code `scanner_unavailable`, and the file stays `received` without being opened. Each try shows in the list ("Try 2 of 5"); after the 5th (about 25 minutes on, with the 5-minute lease) the file ends `failed | retries_exhausted`, saying "We tried 5 times and couldn't read this file."
 - Tests: `test_scan_gate.py`, `test_adapter_scanner.py`, `test_pipeline.py` (`test_an_infected_file_stays_rejected_and_keeps_its_reason`).
 
 **9. Page preparation and page pictures**

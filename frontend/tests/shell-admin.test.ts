@@ -229,12 +229,21 @@ describe("statTiles", () => {
     feedback_up: 7,
     feedback_down: 1,
     open_review_items: 3,
+    older_versions: 12,
+    in_trash: 4,
   };
 
   it("adds up documents and fills missing statuses with zero", () => {
     const tiles = statTiles(stats);
     expect(tiles[0]).toEqual({ label: "Documents", value: "1,20,002" });
     expect(tiles.find((tile) => tile.label === "Documents being read")?.value).toBe("0");
+  });
+
+  it("shows the older versions kept and what is in Trash apart from the documents", () => {
+    const tiles = statTiles(stats);
+    expect(tiles.find((tile) => tile.label === "Other versions kept")?.value).toBe("12");
+    expect(tiles.find((tile) => tile.label === "In Trash")?.value).toBe("4");
+    expect(tiles[0]?.value).toBe("1,20,002");
   });
 
   it("says Verified and Needs review in words", () => {

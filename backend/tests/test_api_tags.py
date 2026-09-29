@@ -1,8 +1,9 @@
 """The tag routes and a document's tag set (PRD 1 F2) against a real database.
 
 The set rules themselves are tested on the helpers (test_tags_db.py); these
-tests check the reply shapes, the error codes, the name rule, the admin role
-for delete, the 50-tag cap at the boundary and the audit rows.
+tests check the reply shapes, the error codes, the name rule, the admin session
+for delete, no tags on a document in Trash, the 50-tag cap at the boundary and
+the audit rows.
 """
 
 from typing import Any
@@ -13,7 +14,7 @@ from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from tests.db_support import insert_document
-from tests.test_api_support import CSRF, Api, Signed
+from tests.test_api_support import CSRF, NOW, Api, Signed
 
 pytestmark = pytest.mark.db
 
@@ -79,7 +80,7 @@ def test_a_tag_name_must_be_1_to_40_characters_and_unique_in_any_case(db: Databa
 
 def test_an_admin_deletes_a_tag_and_it_comes_off_every_document(db: Database) -> None:
     api = Api(db)
-    admin = api.new_signed("admin")
+    admin = api.new_admin()
     tag = api.add_tag(admin.customer_id, admin.user_id, "Paid")
     document = _document(db, admin)
     api.tag_document(admin.customer_id, document, tag)
@@ -90,14 +91,14 @@ def test_an_admin_deletes_a_tag_and_it_comes_off_every_document(db: Database) ->
     assert admin.client.delete(f"/api/tags/{tag}", headers=CSRF).status_code == 404
 
 
-@pytest.mark.parametrize("role", ["member", "reviewer"])
-def test_only_the_admin_role_may_delete_a_tag(db: Database, role: str) -> None:
+@pytest.mark.parametrize("role", ["member", "reviewer", "admin"])
+def test_only_an_admin_session_may_delete_a_tag(db: Database, role: str) -> None:
     api = Api(db)
-    signed = api.new_signed(role)
+    signed = api.new_signed(role)  # an app session, an admin's included
     tag = api.add_tag(signed.customer_id, signed.user_id, "Paid")
     reply = signed.client.delete(f"/api/tags/{tag}", headers=CSRF)
     assert reply.status_code == 403
-    assert reply.json()["error"]["code"] == "forbidden"
+    assert reply.json()["error"]["code"] == "admin_session_required"
     assert [item["id"] for item in signed.client.get("/api/tags").json()["items"]] == [tag]
 
 
@@ -148,6 +149,23 @@ def test_an_unknown_tag_is_404_and_nothing_is_applied(db: Database) -> None:
     assert _set(signed, document, [gst]).status_code == 200  # the same set without the unknown tag
 
 
+def test_a_document_in_trash_cannot_be_tagged_and_keeps_its_tags(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    paid, gst = (api.add_tag(signed.customer_id, signed.user_id, name) for name in ("Paid", "GST"))
+    document = _document(db, signed, deleted_at=NOW, deleted_by=signed.user_id)
+    api.tag_document(signed.customer_id, document, paid)
+
+    for tag_ids in ([gst], [], [UNKNOWN]):
+        reply = _set(signed, document, tag_ids)
+        assert (reply.status_code, reply.json()["error"]) == (
+            409,
+            {"code": "in_trash", "message": "This document is in the Trash. Restore it first."},
+        )
+    assert _tag_ids_in_db(db, signed.customer_id, document) == [paid]
+    assert "document.tags" not in api.audit_actions(signed.customer_id)
+
+
 def test_at_most_50_tags_and_only_uuids(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
@@ -165,7 +183,7 @@ def test_at_most_50_tags_and_only_uuids(db: Database) -> None:
 
 def test_tag_changes_are_audited_with_ids_only(db: Database) -> None:
     api = Api(db)
-    admin = api.new_signed("admin")
+    admin = api.new_admin()
     document = _document(db, admin)
     tag = _create(admin, "Secret tag").json()["id"]
     _set(admin, document, [tag])

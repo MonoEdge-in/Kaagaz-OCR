@@ -87,6 +87,8 @@ _DOCUMENT_COLUMNS = frozenset(
         "family_id",
         "version_no",
         "is_current",
+        "attempts",
+        "max_attempts",
         "created_at",
     }
 )

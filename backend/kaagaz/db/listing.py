@@ -17,11 +17,18 @@ a bound parameter, never text put into the SQL.
 A folder and tags belong to the whole family (plan 9.3), so a move files every
 version; a name belongs to one version, so a rename changes only that one.
 
-What the list shows (PRD 1 F5 and F6, plan 9.7): the newest version of each
-family, out of Trash (``LIVE``), or only Trash (``TRASHED``). The fragment is
-written literally in ``_LIST`` and ``_TRASH_LIST``; a guard test checks it.
-Lookups by id (``_SELECT``, ``_VERSIONS``) have no such filter, so a document
-in Trash or an older version still opens.
+What the list shows (PRD 1 F5 and F6, plan 9.7): the current version of each
+family, out of Trash (``LISTED``), or only Trash (``TRASHED_LISTED``). The
+current version is the one search and chat use, so a newer version that is
+still being read, or failed, never hides it; that newer one comes along in the
+row's ``newer`` column instead. The fragment is written literally in ``_LIST``
+and ``_TRASH_LIST``; a guard test checks it. Lookups by id (``_SELECT``,
+``_VERSIONS``) have no such filter, so a document in Trash or an older version
+still opens.
+
+Every row also carries ``family_uploaders``: who uploaded each version of its
+family. Moving a family to Trash or back acts on every version, so only an
+admin, or a user who uploaded every version, may do it (``can_delete``).
 """
 
 from collections.abc import Sequence
@@ -34,11 +41,22 @@ from sqlalchemy.exc import IntegrityError
 from kaagaz.db.documents import folder_missing
 from kaagaz.db.folders import FolderNotFound
 
-# A DocumentSummary row: the document and its uploader's name.
+# A DocumentSummary row: the document, its uploader's name, who uploaded each
+# version of its family, and the newest version after it that is not in Trash
+# (one small JSON object, or NULL). Both subqueries use the index
+# documents_family_version on the family's few rows.
 _COLUMNS = (
     "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"
     " d.page_count, d.created_at, d.uploaded_by, d.folder_id, d.deleted_at, d.family_id, d.version_no,"
-    " u.display_name AS uploaded_by_name"
+    " d.attempts, d.max_attempts, u.display_name AS uploaded_by_name,"
+    " (SELECT array_agg(o.uploaded_by) FROM documents o"
+    " WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id) AS family_uploaders,"
+    " (SELECT json_build_object('id', n.id, 'version_no', n.version_no, 'status', n.status,"
+    " 'failure_code', n.failure_code, 'detected_type', n.detected_type, 'page_count', n.page_count,"
+    " 'attempts', n.attempts, 'max_attempts', n.max_attempts)"
+    " FROM documents n WHERE n.customer_id = d.customer_id AND n.family_id = d.family_id"
+    " AND n.version_no > d.version_no AND n.deleted_at IS NULL"
+    " ORDER BY n.version_no DESC LIMIT 1) AS newer"
 )
 
 _COUNT = "SELECT count(*)"
@@ -50,23 +68,19 @@ _SELECT = (
     " WHERE d.customer_id = :c AND d.id = :d"
 )
 
-# The list's rows: the newest version of each family (no newer one exists, found
-# on the index documents_family_version), not in Trash. _COLUMNS or _COUNT goes first.
+# The list's rows: the current version of each family (the unique index
+# documents_current allows one per family), not in Trash. _COLUMNS or _COUNT goes first.
 _LIST = (
     " FROM documents d"
     " LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
-    " WHERE d.customer_id = :c AND d.deleted_at IS NULL"
-    " AND NOT EXISTS (SELECT 1 FROM documents n WHERE n.customer_id = d.customer_id"
-    " AND n.family_id = d.family_id AND n.version_no > d.version_no)"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
 )
 
 # The same, in Trash (trashed=true).
 _TRASH_LIST = (
     " FROM documents d"
     " LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
-    " WHERE d.customer_id = :c AND d.deleted_at IS NOT NULL"
-    " AND NOT EXISTS (SELECT 1 FROM documents n WHERE n.customer_id = d.customer_id"
-    " AND n.family_id = d.family_id AND n.version_no > d.version_no)"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NOT NULL AND d.is_current"
 )
 
 _VERSIONS = (
@@ -124,7 +138,7 @@ def list_documents(
 ) -> tuple[Sequence[RowMapping], int]:
     """One page of this customer's documents, newest first, and the total that match.
 
-    One row per family: its newest version, out of Trash, or with ``trashed``
+    One row per family: its current version, out of Trash, or with ``trashed``
     only what is in Trash.
 
     Filters (each left at its default filters nothing): ``top_level_only`` (in no

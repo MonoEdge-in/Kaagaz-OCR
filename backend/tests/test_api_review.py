@@ -84,6 +84,35 @@ def test_queue_filters_by_document_and_paginates(db: Database) -> None:
 
 
 @pytest.mark.db
+def test_only_the_current_ready_version_is_reviewed(db: Database) -> None:
+    api, reviewer, older, older_value = _setup(db)
+    customer_id = reviewer.customer_id
+    with db.customer(customer_id) as conn:
+        conn.execute(text("UPDATE documents SET is_current = false WHERE id = :d"), {"d": older})
+    current = api.add_document(customer_id, name="bill v2.pdf", family_id=older, version_no=2)
+    reading = api.add_document(
+        customer_id, name="bill v3.pdf", family_id=older, version_no=3, is_current=False, status="clean"
+    )
+    values: dict[str, str] = {}
+    for document in (current, reading):
+        api.add_page(customer_id, document)
+        values[document] = api.add_value(customer_id, document)
+
+    body = reviewer.client.get("/api/review").json()
+    assert ([item["value"]["id"] for item in body["items"]], body["total"]) == ([values[current]], 1)
+    for value_id in (older_value, values[reading]):
+        reply = reviewer.client.post(
+            f"/api/review/{value_id}", json={"choice": "first", "remember": False}, headers=CSRF
+        )
+        assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
+        assert _stored(db, customer_id, value_id)[3] == "needs_review"
+    resolved = reviewer.client.post(
+        f"/api/review/{values[current]}", json={"choice": "first", "remember": False}, headers=CSRF
+    )
+    assert resolved.status_code == 200
+
+
+@pytest.mark.db
 def test_use_first_reading(db: Database) -> None:
     _, reviewer, _, value_id = _setup(db)
     reply = reviewer.client.post(

@@ -110,6 +110,26 @@ def messages_with_feedback(
     )
 
 
+def document_states(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> dict[str, str]:
+    """What became of each document a saved answer cites: ``live`` (the current
+    version, out of Trash), ``older_version`` (a newer version replaced it),
+    ``in_trash``. A document deleted forever is simply missing from the result.
+    One query, O(k log D) for k ids."""
+    if not document_ids:
+        return {}
+    rows = conn.execute(
+        text(
+            "SELECT id, deleted_at IS NOT NULL AS in_trash, is_current FROM documents"
+            " WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+        ),
+        {"c": customer_id, "ids": sorted(set(document_ids))},
+    ).all()
+    return {
+        str(row.id): "in_trash" if row.in_trash else "live" if row.is_current else "older_version"
+        for row in rows
+    }
+
+
 def upsert_feedback(
     conn: Connection,
     customer_id: str,

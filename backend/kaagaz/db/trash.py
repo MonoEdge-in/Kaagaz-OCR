@@ -74,6 +74,29 @@ def lock_family(conn: Connection, customer_id: str, document_id: str) -> str | N
     return str(families[0]) if families else None
 
 
+class InTrash(Exception):
+    """The document's family is in Trash. Trash means deleted: it can't be renamed,
+    moved, tagged or given a new version, only restored or deleted forever."""
+
+
+_FAMILY_IN_TRASH = (
+    "SELECT EXISTS (SELECT 1 FROM documents WHERE customer_id = :c AND family_id = :f"
+    " AND deleted_at IS NOT NULL)"
+)
+
+
+def lock_live_family(conn: Connection, customer_id: str, document_id: str) -> str | None:
+    """``lock_family``, then refuse a family in Trash (raises InTrash). The check is
+    made under the lock, so a trash can't slip in between. None if there is no
+    such document. O(v log D) time and O(v) space."""
+    family_id = lock_family(conn, customer_id, document_id)
+    if family_id is None:
+        return None
+    if conn.execute(text(_FAMILY_IN_TRASH), {"c": customer_id, "f": family_id}).scalar():
+        raise InTrash(document_id)
+    return family_id
+
+
 def trash_document(conn: Connection, customer_id: str, document_id: str, *, by: str, now: datetime) -> bool:
     """Move the document's whole family to Trash at ``now``, by user ``by``.
     False if there is no such document. A family already in Trash is left as it
