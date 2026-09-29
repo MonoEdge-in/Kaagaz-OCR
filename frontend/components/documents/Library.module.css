@@ -1,4 +1,4 @@
-/* Folders and filters on the documents screen. Tokens only (app/globals.css). */
+/* Folders, tags and filters on the documents screen. Tokens only (app/globals.css). */
 
 /* --- Layout: the folder tree beside the list from 1024 px -------------------- */
 
@@ -269,14 +269,16 @@
   background: var(--surface);
 }
 
-.filterPanel fieldset {
+.filterPanel fieldset,
+.fieldset {
   min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
 }
 
-.filterPanel legend {
+.filterPanel legend,
+.fieldset legend {
   margin-bottom: var(--space-2);
   padding: 0;
   font-size: var(--fs-sm);
@@ -319,4 +321,107 @@
 
 .dates > * {
   flex: 1 1 11rem;
+}
+
+/* --- Tags on a row: plain words, not a label or a status ----------------------- */
+
+.tags {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+}
+
+.rowTags {
+  margin-top: var(--space-1);
+}
+
+.tag {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* --- A row's Actions menu ------------------------------------------------------- */
+
+.menu {
+  position: relative;
+  display: inline-block;
+}
+
+/* It opens from the start edge of its button (on a card the button is at the
+   start); in the wide table it opens from the end (Documents.module.css). */
+.menuList {
+  position: absolute;
+  inset-inline-start: 0;
+  top: calc(100% + var(--space-1));
+  z-index: calc(var(--z-sticky) + 1);
+  min-width: 13rem;
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--e-2);
+  text-align: start;
+  white-space: normal;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: start;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.menuItem:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.menuItem.danger,
+.menuItem.danger:hover {
+  color: var(--danger-fg);
+}
+
+/* --- The forms inside a row's dialog ------------------------------------------ */
+
+.dialogForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.dialogForm p {
+  margin: 0;
+}
+
+.addTag {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.addTag input {
+  flex: 1 1 12rem;
+  width: auto;
 }

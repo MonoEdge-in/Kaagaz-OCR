@@ -464,10 +464,6 @@ table.docs th {
   color: var(--fg-muted);
 }
 
-.deleteButton {
-  color: var(--danger-fg);
-}
-
 .confirm {
   display: flex;
   flex-direction: column;
@@ -580,6 +576,12 @@ table.docs th {
     white-space: nowrap;
   }
 
+  /* The Actions menu opens towards the row, from the end of the table. */
+  .actionsCell ul {
+    inset-inline-start: auto;
+    inset-inline-end: 0;
+  }
+
   .confirm {
     white-space: normal;
     min-width: 13rem;
@@ -588,7 +590,7 @@ table.docs th {
 }
 
 @container docs-list (max-width: 47.98rem) {
-  /* A card: the name, the status, one meta line, then Delete. */
+  /* A card: the name and tags, the status, one meta line, then Actions. */
   table.docs,
   table.docs tbody,
   table.docs td {
@@ -694,9 +696,5 @@ table.docs th {
   .actionsCell {
     flex: 1 1 100%;
     margin-top: var(--space-3);
-  }
-
-  .actionsCell[data-empty] {
-    display: none;
   }
 }

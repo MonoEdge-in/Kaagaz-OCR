@@ -107,7 +107,7 @@ export function LibraryFilters({
                 Loading tags…
               </p>
             ) : tags.length === 0 ? (
-              <p className="muted">No tags yet.</p>
+              <p className="muted">No tags yet. Add tags to a document from its Actions button.</p>
             ) : (
               <ul className={styles.choices}>
                 {tags.map((tag) => (

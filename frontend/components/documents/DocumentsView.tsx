@@ -202,6 +202,11 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     else setReload((n) => n + 1);
   }
 
+  function afterSave(message: string) {
+    setAnnouncement(message);
+    setReload((n) => n + 1);
+  }
+
   function afterFolderChange(message: string, goTo?: { folderId: string | null }) {
     setAnnouncement(message);
     setFoldersVersion((n) => n + 1);
@@ -362,7 +367,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     action={uploadButton}
                   >
                     {current
-                      ? "Upload files here."
+                      ? "Upload files here, or move documents in with their Actions button."
                       : "Upload invoices, registers or bank statements, as PDF, photo or spreadsheet."}
                   </EmptyState>
                 </Dropzone>
@@ -469,7 +474,12 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                       items={shown.list.items}
                       me={me}
                       now={shown.now}
+                      tree={tree}
+                      tags={tags}
                       onDeleted={afterDelete}
+                      onSaved={afterSave}
+                      onFocusList={() => headingRef.current?.focus()}
+                      onTagCreated={() => setTagsVersion((n) => n + 1)}
                     />
                   )}
 

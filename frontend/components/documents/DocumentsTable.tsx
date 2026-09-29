@@ -1,29 +1,46 @@
 "use client";
 
 // The list of this customer's documents: one table, reflowed into cards when
-// the list is narrower than 48rem (Documents.module.css). Names and status
-// messages are shown as plain text. Delete asks "Delete this document for
-// everyone?" before anything is removed; focus goes to Cancel, and back to
-// Delete if it is cancelled.
+// the list is narrower than 48rem (Documents.module.css). Names, tags and
+// status messages are shown as plain text. Each row has an Actions button
+// (DocumentActions.tsx). Delete asks "Delete this document for everyone?"
+// before anything is removed; focus goes to Cancel, and back to Actions if it
+// is cancelled.
 
 import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, deleteDocument } from "@/lib/api";
 import { formatBytes, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
-import type { DocumentSummary, Me } from "@/lib/types";
+import type { DocumentSummary, Me, Tag } from "@/lib/types";
+import { EditDialog, RowMenu } from "./DocumentActions";
+import type { EditAction, RowAction } from "./DocumentActions";
+import type { FolderTree } from "./folderTree";
 import { canDelete, formatProgressPercent } from "./logic";
 import { StatusChip } from "./StatusChip";
 import styles from "./Documents.module.css";
+import library from "./Library.module.css";
 
-interface Props {
+/** What a row reports back to the screen. */
+export interface RowEvents {
+  onDeleted(name: string): void;
+  /** Renamed, moved or tagged: announce it and ask for the list again. */
+  onSaved(message: string): void;
+  /** After a move the row may be gone: focus the list's heading. */
+  onFocusList(): void;
+  onTagCreated(): void;
+}
+
+interface Props extends RowEvents {
   items: DocumentSummary[];
   me: Me;
   now: number;
-  onDeleted: (name: string) => void;
+  tree: FolderTree;
+  tags: Tag[] | null;
 }
 
-export function DocumentsTable({ items, me, now, onDeleted }: Props) {
+export function DocumentsTable({ items, me, now, tree, tags, ...events }: Props) {
+  const { onDeleted } = events;
   const deletableItems = useMemo(() => items.filter((item) => canDelete(me, item)), [items, me]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [confirming, setConfirming] = useState(false);
@@ -178,7 +195,9 @@ export function DocumentsTable({ items, me, now, onDeleted }: Props) {
               deletable={canDelete(me, document)}
               selected={selectedIds.has(document.id)}
               onToggle={() => toggle(document.id)}
-              onDeleted={onDeleted}
+              tree={tree}
+              tags={tags}
+              events={events}
             />
           ))}
         </tbody>
@@ -193,37 +212,67 @@ function DocumentRow({
   deletable,
   selected,
   onToggle,
-  onDeleted,
+  tree,
+  tags,
+  events,
 }: {
   document: DocumentSummary;
   now: number;
   deletable: boolean;
   selected: boolean;
   onToggle: () => void;
-  onDeleted: (name: string) => void;
+  tree: FolderTree;
+  tags: Tag[] | null;
+  events: RowEvents;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [editing, setEditing] = useState<EditAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const refocusDelete = useRef(false);
+  const actionsButton = useRef<HTMLButtonElement | null>(null);
+  const refocusActions = useRef(false);
+  const afterEdit = useRef<"actions" | "list">("actions");
 
   // Stable callback refs, so each runs once when its button appears.
   const focusOnMount = useCallback((element: HTMLButtonElement | null) => {
     element?.focus();
   }, []);
-  const focusDeleteIfAsked = useCallback((element: HTMLButtonElement | null) => {
-    if (element && refocusDelete.current) {
-      refocusDelete.current = false;
+  const holdActions = useCallback((element: HTMLButtonElement | null) => {
+    actionsButton.current = element;
+    if (element && refocusActions.current) {
+      refocusActions.current = false;
       element.focus();
     }
   }, []);
+
+  function pick(action: RowAction) {
+    setError(null);
+    if (action === "delete") {
+      setConfirming(true);
+      return;
+    }
+    afterEdit.current = "actions";
+    setEditing(action);
+  }
+
+  function saved(message: string, moved = false) {
+    afterEdit.current = moved ? "list" : "actions";
+    setEditing(null);
+    events.onSaved(message);
+  }
+
+  // The dialog is shut: hand focus back to Actions, or to the list after a move.
+  function dialogClosed() {
+    if (afterEdit.current === "list") events.onFocusList();
+    else actionsButton.current?.focus();
+  }
 
   async function remove() {
     setBusy(true);
     setError(null);
     try {
       await deleteDocument(document.id);
-      onDeleted(document.display_name);
+      events.onDeleted(document.display_name);
     } catch (caught) {
       setError(
         caught instanceof ApiError
@@ -231,13 +280,13 @@ function DocumentRow({
           : "Could not delete this document. Check your connection, then try again.",
       );
       setBusy(false);
-      refocusDelete.current = true;
+      refocusActions.current = true;
       setConfirming(false);
     }
   }
 
   function cancel() {
-    refocusDelete.current = true;
+    refocusActions.current = true;
     setConfirming(false);
   }
 
@@ -263,6 +312,15 @@ function DocumentRow({
         >
           {document.display_name}
         </Link>
+        {document.tags.length > 0 && (
+          <ul className={`${library.tags} ${library.rowTags}`} aria-label="Tags">
+            {document.tags.map((tag) => (
+              <li key={tag.id} className={library.tag}>
+                {tag.name}
+              </li>
+            ))}
+          </ul>
+        )}
       </td>
       <td role="cell" className={styles.statusCell}>
         <span className={styles.statusContent}>
@@ -289,22 +347,9 @@ function DocumentRow({
           </>
         )}
       </td>
-      <td
-        role="cell"
-        className={styles.actionsCell}
-        data-empty={deletable || error ? undefined : "true"}
-      >
-        {deletable && !confirming && (
-          <button
-            ref={focusDeleteIfAsked}
-            type="button"
-            className={`btn btn-quiet ${styles.deleteButton}`}
-            onClick={() => setConfirming(true)}
-            aria-label={`Delete ${document.display_name}`}
-          >
-            <Icon name="trash" />
-            <span>Delete</span>
-          </button>
+      <td role="cell" className={styles.actionsCell}>
+        {!confirming && (
+          <RowMenu item={document} deletable={deletable} onPick={pick} toggleRef={holdActions} />
         )}
         {deletable && confirming && (
           <div className={styles.confirm} role="group" aria-labelledby={`confirm-${document.id}`}>
@@ -336,6 +381,18 @@ function DocumentRow({
           <p className={`error-text ${styles.rowError}`} role="alert">
             {error}
           </p>
+        )}
+        {editing && (
+          <EditDialog
+            action={editing}
+            item={document}
+            tree={tree}
+            tags={tags}
+            onClose={() => setEditing(null)}
+            onClosed={dialogClosed}
+            onSaved={saved}
+            onTagCreated={events.onTagCreated}
+          />
         )}
       </td>
     </tr>
