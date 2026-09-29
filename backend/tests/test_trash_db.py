@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import Connection, text
 
-from kaagaz.db import trash, visibility
+from kaagaz.db import folders, trash, visibility
 from kaagaz.db.engine import Database
 from kaagaz.db.trash import (
     customer_ids_with_trash,
@@ -92,6 +92,8 @@ def test_trash_statements_use_the_fragments() -> None:
     assert visibility.LIVE in trash._TRASH
     assert visibility.TRASHED in trash._RESTORE
     assert visibility.TRASHED in trash._PURGE_PICK
+    assert visibility.TRASHED in trash._PURGE_LOCK
+    assert visibility.TRASHED in folders._DETACH_TRASHED
 
 
 # --- trash and restore ----------------------------------------------------------------
