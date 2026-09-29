@@ -13,11 +13,13 @@ from typing import Any
 import httpx2 as httpx
 import pytest
 from PIL import Image
-from sqlalchemy import event, text
+from sqlalchemy import Connection, event, text
 
 from kaagaz.api.routers.documents import day_start, display_name, upload_policy
 from kaagaz.api.views import status_message
+from kaagaz.db import folders as folders_sql
 from kaagaz.db.engine import Database
+from kaagaz.db.folders import FolderRow
 from kaagaz.db.pipeline_store import span_to_json
 from kaagaz.reading.spans import CellLocation, Span
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
@@ -776,6 +778,35 @@ def test_upload_into_an_unknown_or_malformed_folder_stores_and_queues_nothing(
         headers=CSRF,
     )
     assert reply.status_code == status
+    assert api.storage.count() == 0
+    assert api.queue.jobs == []
+    assert signed.client.get("/api/documents").json()["total"] == 0
+
+
+@pytest.mark.db
+def test_a_folder_deleted_just_after_the_check_is_404_and_the_stored_file_goes(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The folder passes the check, then is deleted before the insert: the foreign
+    key refuses the row, the stored file is removed again and nothing is queued."""
+    api = Api(db)
+    signed = api.new_signed()
+    folder = api.add_folder(signed.customer_id, signed.user_id, "Suppliers")
+    checked = folders_sql.folder_path
+
+    def check_then_delete(conn: Connection, customer_id: str, folder_id: str) -> list[FolderRow]:
+        path = checked(conn, customer_id, folder_id)
+        conn.execute(text("DELETE FROM folders WHERE id = :f"), {"f": folder_id})
+        return path
+
+    monkeypatch.setattr(folders_sql, "folder_path", check_then_delete)
+    reply = signed.client.post(
+        "/api/documents",
+        data={"folder_id": folder},
+        files={"file": ("bill.pdf", PDF_BYTES, "application/pdf")},
+        headers=CSRF,
+    )
+    assert reply.status_code == 404
     assert api.storage.count() == 0
     assert api.queue.jobs == []
     assert signed.client.get("/api/documents").json()["total"] == 0
