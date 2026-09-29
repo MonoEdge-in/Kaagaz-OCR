@@ -8,8 +8,13 @@ API can be built and tested with fakes on its own.
 
 The API docs pages (/docs, /openapi.json) are switched off: they list every
 route to anyone who asks, and the frontend does not need them.
+
+``configure_logging(level)`` is the API process's log setup, which
+``kaagaz.api.main`` calls once.
 """
 
+import logging
+import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -19,7 +24,7 @@ from fastapi import Depends, FastAPI
 from kaagaz.api import errors
 from kaagaz.api.auth import csrf_guard
 from kaagaz.api.context import AppContext
-from kaagaz.api.middleware import RateLimiter, RequestMiddleware
+from kaagaz.api.middleware import ErrorMiddleware, RateLimiter, RequestMiddleware
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
 from kaagaz.api.routers import admin, auth, chat, documents, health, review
 from kaagaz.db.engine import Database, make_engine
@@ -68,9 +73,30 @@ def create_app(
     app.state.kaagaz = context
     errors.install(app)
     app.add_middleware(RequestMiddleware, limiter=RateLimiter(settings.rate_limit_per_minute))
+    app.add_middleware(ErrorMiddleware)  # added last, so it is the outermost
     for router in (health.router, auth.router, documents.router, chat.router, review.router, admin.router):
         app.include_router(router, prefix="/api")
     return app
+
+
+def configure_logging(level: str) -> None:
+    """One JSON line per log record, the worker's format: an exception's type only,
+    never its message or traceback. On the root logger and on ``uvicorn.error``,
+    which uvicorn set up before importing the app and which would otherwise print
+    tracebacks through its own handler (so it no longer propagates to it).
+
+    uvicorn's own access log is switched off: its line holds the query string, and
+    a search there can be a name. The access line comes from RequestMiddleware."""
+    # Imported here, like the adapters below: the worker module brings them in.
+    from kaagaz.worker_main import JsonFormatter
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(JsonFormatter())
+    logging.basicConfig(level=level.upper(), handlers=[handler], force=True)
+    uvicorn_errors = logging.getLogger("uvicorn.error")
+    uvicorn_errors.handlers = [handler]
+    uvicorn_errors.propagate = False
+    logging.getLogger("uvicorn.access").disabled = True
 
 
 def _default_storage(settings: Settings) -> ApiStorage:

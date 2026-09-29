@@ -15,6 +15,10 @@ Why:
   in a shared cache), unless a route set its own.
 * **Access log**: method, path, status, time and the ids only. Never the body,
   the query string (it can hold a search for a name), file names or questions.
+* **Errors** (``ErrorMiddleware``): an error nothing else handled is the usual
+  500 JSON and one log line with the error's type and the request id. Never
+  its message or traceback: a database error can quote row values, and a
+  parser error document text.
 """
 
 import json
@@ -28,7 +32,7 @@ from dataclasses import dataclass
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from kaagaz.api.auth import session_claims
 from kaagaz.api.context import get_context
@@ -38,6 +42,7 @@ REQUEST_ID_HEADER = "X-Request-ID"
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 access_log = logging.getLogger("kaagaz.api.access")
+error_log = logging.getLogger("kaagaz.api.errors")
 
 
 @dataclass(slots=True)
@@ -135,3 +140,48 @@ class RequestMiddleware(BaseHTTPMiddleware):
         context = get_context(request)
         claims = session_claims(request, context.settings, int(context.clock().timestamp()))
         return None if claims is None else claims.user_id
+
+
+class ErrorMiddleware:
+    """The outermost of the app's own middleware (``create_app`` adds it last). Only
+    Starlette's ServerErrorMiddleware sits outside it, and no error reaches that any
+    more, so nothing is raised again for uvicorn to log with a traceback. O(1) per
+    request."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        started = False
+
+        async def send_watched(message: Message) -> None:
+            nonlocal started
+            started = started or message["type"] == "http.response.start"
+            await send(message)
+
+        # The one broad catch, at the ASGI boundary: whatever the app lets out ends here
+        # as one safe log line and a 500, and is never raised again.
+        try:
+            await self._app(scope, receive, send_watched)
+        except Exception as error:  # noqa: BLE001 - the ASGI boundary, see the comment above
+            request_id = _request_id(scope)
+            error_log.error(
+                json.dumps(
+                    {"event": "error", "request_id": request_id, "error": type(error).__name__},
+                    separators=(",", ":"),
+                )
+            )
+            if started:
+                return  # part of the reply is already sent; the server closes the connection
+            headers = None if request_id is None else {REQUEST_ID_HEADER: request_id}
+            await error_response(500, "internal_error", headers=headers)(scope, receive, send)
+
+
+def _request_id(scope: Scope) -> str | None:
+    """The id RequestMiddleware gave this request (kept in the scope's state), if it got that far."""
+    state = scope.get("state")
+    request_id = state.get("request_id") if isinstance(state, dict) else None
+    return request_id if isinstance(request_id, str) else None
