@@ -1,4 +1,4 @@
-"""Folders: one customer's tree, at most 5 levels deep (PRD 1 F2, WP1.2).
+"""Folders: one customer's tree, at most 5 levels deep (PRD 1 F1, WP1.2).
 
 Why here: the tree rules live in SQL next to the data. Every function takes a
 connection from ``Database.customer(customer_id)`` and also filters on
@@ -250,8 +250,9 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str) -> None:
 
     Raises FolderNotFound, or FolderNotEmpty when a folder or a live document
     is still inside (the foreign keys refuse the delete, and the detach is
-    rolled back with it). O(t log D + log F) time for its t trashed documents,
-    O(1) space.
+    rolled back with it). O(n log D + t log t + log F) time for the n documents
+    filed in it and the t trashed ones it moves (n = t when the delete succeeds),
+    O(t) space.
     """
     _lock_tree(conn, customer_id)
     params = {"c": customer_id, "f": folder_id}

@@ -1,4 +1,4 @@
-"""Folders: a tree at most 5 levels deep, per customer (PRD 1 F2, WP1.2).
+"""Folders: a tree at most 5 levels deep, per customer (PRD 1 F1, WP1.2).
 
 Every create, move and delete takes the customer's tree lock first, so two
 requests can never together make a cycle or a tree deeper than 5. The
