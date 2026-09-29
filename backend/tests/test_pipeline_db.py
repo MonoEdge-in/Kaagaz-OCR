@@ -150,3 +150,37 @@ def test_status_after_needs_reader(db: Database) -> None:
     doc = upload.accept(customer, io.BytesIO(b"%PDF-1.7\n" + b"0" * 200)).document_id
     processor(Job(customer, doc), lambda: None)
     assert PgDocuments(db).get_status(customer, doc) is DocumentStatus.NEEDS_READER
+
+
+def _as_version(db: Database, customer: str, document: str, *, of: str, number: int) -> str:
+    """Make an uploaded document version ``number`` of ``of``'s family, not current,
+    as a version upload leaves it."""
+    with db.customer(customer) as conn:
+        conn.execute(
+            text(
+                "UPDATE documents SET family_id = :f, version_no = :n, is_current = false"
+                " WHERE customer_id = :c AND id = :d"
+            ),
+            {"c": customer, "d": document, "f": of, "n": number},
+        )
+    return document
+
+
+def test_a_new_version_takes_over_once_ready_and_a_failed_one_changes_nothing(db: Database) -> None:
+    customer, _ = new_customer(db)
+    upload, processor, _ = setup(db)
+    first = upload.accept(customer, io.BytesIO(CSV)).document_id
+    processor(Job(customer, first), lambda: None)
+    second = upload.accept(customer, io.BytesIO(CSV + b"Gupta Stores,90,\n")).document_id
+    broken = upload.accept(customer, io.BytesIO(b'a,"never closed\n')).document_id
+    _as_version(db, customer, second, of=first, number=2)
+    _as_version(db, customer, broken, of=first, number=3)
+
+    processor(Job(customer, second), lambda: None)
+    with pytest.raises(JobFailed):
+        processor(Job(customer, broken), lambda: None)
+
+    sql = "SELECT status, is_current FROM documents WHERE id = :d"
+    assert one(db, customer, sql, first) == ("ready", False)
+    assert one(db, customer, sql, second) == ("ready", True)
+    assert one(db, customer, sql, broken) == ("failed", False)

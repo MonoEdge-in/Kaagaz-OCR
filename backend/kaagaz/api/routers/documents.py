@@ -1,5 +1,6 @@
 """The document routes: list, upload, detail, rename or move, the original
-file, page images, spreadsheet cells and delete.
+file, page images, spreadsheet cells, and Trash (move to Trash, restore,
+delete forever).
 
 Why some choices:
 
@@ -28,6 +29,13 @@ Why some choices:
   An unknown folder is 404; an unknown tag simply matches nothing. Upload days
   are read in the customer's timezone (TIMEZONE), and the end day is not
   included.
+* **Trash** (PRD 1 F5) acts on the whole family, under the family lock. A
+  delete only moves it to Trash (the admin or the uploader); nothing is removed
+  and storage is not touched, so a restore brings everything back. Only an
+  admin can delete forever, and only a family in Trash (409 ``not_in_trash``
+  otherwise); its files go inside the same transaction, so if storage cannot be
+  reached every row stays and the admin can try again. PROVISIONAL (plan 7.5):
+  "admin" is the role, not an admin session.
 """
 
 import re
@@ -43,7 +51,7 @@ from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
-from kaagaz.api.auth import CurrentUser, User
+from kaagaz.api.auth import Admin, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import DOCUMENT_NAME_MAX, clean_document_name
@@ -53,7 +61,7 @@ from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, listing, trash
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
-from kaagaz.db.documents import PgDocuments
+from kaagaz.db.documents import NotInTrash, PgDocuments, delete_family_forever
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
@@ -408,24 +416,75 @@ def get_sheet_cells(
     return {"page_no": page_no, "total_rows": int(page["height"]), "rows": rows}
 
 
+# --- Trash (PRD 1 F5) -------------------------------------------------------------
+
+
+def _uploader_or_admin(user: CurrentUser, row: RowMapping) -> None:
+    uploader = None if row["uploaded_by"] is None else str(row["uploaded_by"])
+    if user.role != "admin" and uploader != user.user_id:
+        raise ApiError(403, "forbidden")
+
+
 @router.delete("/documents/{document_id}", status_code=204)
 def delete_document(document_id: uuid.UUID, user: User, context: Context) -> Response:
-    with context.db.customer(user.customer_id) as conn:
+    """Move the whole family to Trash. A family already there keeps its first time."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
         row = _document_or_404(conn, user, document_id)
-        uploader = None if row["uploaded_by"] is None else str(row["uploaded_by"])
-        if user.role != "admin" and uploader != user.user_id:
-            raise ApiError(403, "forbidden")
-        listing.delete_document(conn, user.customer_id, str(document_id))
+        _uploader_or_admin(user, row)
+        if not trash.trash_document(conn, customer_id, target, by=user.user_id, now=context.clock()):
+            raise ApiError(404, "not_found")
         audit.record(
             conn,
-            user.customer_id,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="document.trash",
+            target_type="document",
+            target_id=target,
+            details={"status": row["status"]},
+        )
+    return Response(status_code=204)
+
+
+@router.post("/documents/{document_id}/restore")
+def restore_document(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """Bring the whole family back from Trash, and return this version's summary."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        _uploader_or_admin(user, _document_or_404(conn, user, document_id))
+        if not trash.restore_document(conn, customer_id, target):
+            raise ApiError(404, "not_found")
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="document.restore",
+            target_type="document",
+            target_id=target,
+        )
+        row = _document_or_404(conn, user, document_id)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+    return document_summary(row, max_pages=context.settings.max_pages, tags=tags)
+
+
+@router.delete("/documents/{document_id}/permanent", status_code=204)
+def delete_document_forever(document_id: uuid.UUID, user: Admin, context: Context) -> Response:
+    """Delete every version of a family in Trash for good, rows and files (today's full delete)."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        try:
+            versions = delete_family_forever(conn, context.storage, customer_id, target)
+        except NotInTrash:
+            raise ApiError(409, "not_in_trash") from None
+        if versions is None:
+            raise ApiError(404, "not_found")
+        audit.record(
+            conn,
+            customer_id,
             actor_user_id=user.user_id,
             action="document.delete",
             target_type="document",
-            target_id=str(document_id),
-            details={"status": row["status"]},
+            target_id=target,
+            details={"versions": versions},
         )
-        # Inside the transaction: if storage cannot be reached, the row stays and
-        # the admin can simply try again.
-        context.storage.delete(user.customer_id, str(document_id))
     return Response(status_code=204)

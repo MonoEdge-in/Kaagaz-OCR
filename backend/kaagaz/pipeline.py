@@ -24,7 +24,10 @@ The steps, in order, for one (customer, document):
    same job twice is safe (queues deliver at least once).
 8. Meaning vectors for the pieces, if a model is set. A model that is down
    only means no vectors: word and typo search still work.
-9. The page count, and the document is ready.
+9. The page count, and the document is ready, in one transaction that also
+   makes it its family's current version unless a newer version is ready
+   already (PRD 1 F6). A version that fails never gets here, so the one before
+   it stays current.
 
 A failure a retry cannot fix marks the document failed with its short code.
 A rejected document stays rejected and keeps the reason it was rejected for,
@@ -134,6 +137,11 @@ class DocumentStore(Protocol):
     def set_failed(self, customer_id: str, document_id: str, code: str) -> None: ...
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None: ...
+
+    def mark_ready(self, customer_id: str, document_id: str, page_count: int) -> None:
+        """Ready with its page count, and current unless a newer version is ready.
+        Never moves a document out of rejected."""
+        ...
 
 
 class ReadingSocket(Protocol):
@@ -280,8 +288,7 @@ class DocumentProcessor:
         self._store.save(DocumentContent(customer_id, document_id, pages, outputs, pieces, values, reader))
         heartbeat()
         self._index(job)
-        self._documents.set_page_count(customer_id, document_id, len(pages))
-        self._statuses.set_status(customer_id, document_id, DocumentStatus.READY)
+        self._documents.mark_ready(customer_id, document_id, len(pages))
 
     def _scan(self, job: Job) -> bytes:
         try:

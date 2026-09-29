@@ -89,6 +89,9 @@ class Settings:
     login_lock_minutes: int
     admin_session_minutes: int
 
+    # Trash (PRD 1 F5): days a document stays in Trash before the worker deletes it for good.
+    trash_days: int
+
     # Answers.
     answer_max_evidence: int
     answer_min_evidence_score: float
@@ -150,6 +153,7 @@ class Settings:
             login_max_failures=env.positive("LOGIN_MAX_FAILURES"),
             login_lock_minutes=env.positive("LOGIN_LOCK_MINUTES"),
             admin_session_minutes=env.positive("ADMIN_SESSION_MINUTES"),
+            trash_days=env.integer("TRASH_DAYS"),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             timezone=env.text("TIMEZONE"),

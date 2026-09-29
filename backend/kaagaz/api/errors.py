@@ -34,6 +34,7 @@ MESSAGES = {
     "folder_too_deep": "Folders can be at most 5 levels deep.",
     "folder_not_empty": "This folder isn't empty. Move or delete what is inside it first.",
     "not_needs_review": "This value doesn't need review any more.",
+    "not_in_trash": "Only a document in Trash can be deleted forever.",
     "too_large": "This file is too large.",
     "empty_file": "This file is empty.",
     "unsupported_type": "This kind of file is not supported.",

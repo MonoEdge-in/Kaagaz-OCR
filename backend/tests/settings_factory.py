@@ -57,6 +57,7 @@ _BASE: dict[str, Any] = {
     "login_max_failures": 5,
     "login_lock_minutes": 15,
     "admin_session_minutes": 60,
+    "trash_days": 30,
     "answer_max_evidence": 8,
     "answer_min_evidence_score": 0.2,
     "timezone": "Asia/Kolkata",

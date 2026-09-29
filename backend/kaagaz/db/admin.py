@@ -5,6 +5,10 @@ connection from ``Database.customer(customer_id)``; the ``customers`` table's
 policy lets a customer see and change only its own row.
 
 ``max_upload_mb`` NULL means the platform limit applies.
+
+The numbers leave out documents in Trash, and their values waiting for review
+(PRD 1 F5): the ``LIVE`` text (kaagaz/db/visibility.py) is written out in both
+statements. Every version of a family is counted.
 """
 
 from typing import Any
@@ -31,35 +35,32 @@ def update_settings(conn: Connection, customer_id: str, *, max_upload_mb: int | 
     )
 
 
+_DOCUMENTS_BY_STATUS = (
+    "SELECT d.status, count(*) FROM documents d"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL GROUP BY d.status"
+)
+
+_COUNTS = (
+    "SELECT m.questions_total, m.answered, m.not_found, m.verified_answers,"
+    " m.needs_review_answers, f.feedback_up, f.feedback_down, r.open_review_items"
+    " FROM (SELECT count(*) AS questions_total,"
+    " count(*) FILTER (WHERE answer ->> 'status' = 'answered') AS answered,"
+    " count(*) FILTER (WHERE answer ->> 'status' = 'not_found') AS not_found,"
+    " count(*) FILTER (WHERE answer ->> 'label' = 'verified') AS verified_answers,"
+    " count(*) FILTER (WHERE answer ->> 'label' = 'needs_review') AS needs_review_answers"
+    " FROM messages WHERE customer_id = :c AND role = 'assistant') AS m,"
+    " (SELECT count(*) FILTER (WHERE rating = 'up') AS feedback_up,"
+    " count(*) FILTER (WHERE rating = 'down') AS feedback_down"
+    " FROM feedback WHERE customer_id = :c) AS f,"
+    " (SELECT count(*) AS open_review_items FROM extracted_values v"
+    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND v.label = 'needs_review') AS r"
+)
+
+
 def stats(conn: Connection, customer_id: str) -> dict[str, Any]:
     """The admin's numbers in two queries: O(rows of this customer) counted once each."""
     params = {"c": customer_id}
-    by_status = {
-        str(row[0]): int(row[1])
-        for row in conn.execute(
-            text("SELECT status, count(*) FROM documents WHERE customer_id = :c GROUP BY status"), params
-        )
-    }
-    counts = (
-        conn.execute(
-            text(
-                "SELECT m.questions_total, m.answered, m.not_found, m.verified_answers,"
-                " m.needs_review_answers, f.feedback_up, f.feedback_down, v.open_review_items"
-                " FROM (SELECT count(*) AS questions_total,"
-                " count(*) FILTER (WHERE answer ->> 'status' = 'answered') AS answered,"
-                " count(*) FILTER (WHERE answer ->> 'status' = 'not_found') AS not_found,"
-                " count(*) FILTER (WHERE answer ->> 'label' = 'verified') AS verified_answers,"
-                " count(*) FILTER (WHERE answer ->> 'label' = 'needs_review') AS needs_review_answers"
-                " FROM messages WHERE customer_id = :c AND role = 'assistant') AS m,"
-                " (SELECT count(*) FILTER (WHERE rating = 'up') AS feedback_up,"
-                " count(*) FILTER (WHERE rating = 'down') AS feedback_down"
-                " FROM feedback WHERE customer_id = :c) AS f,"
-                " (SELECT count(*) AS open_review_items FROM extracted_values"
-                " WHERE customer_id = :c AND label = 'needs_review') AS v"
-            ),
-            params,
-        )
-        .mappings()
-        .one()
-    )
+    by_status = {str(row[0]): int(row[1]) for row in conn.execute(text(_DOCUMENTS_BY_STATUS), params)}
+    counts = conn.execute(text(_COUNTS), params).mappings().one()
     return {"documents_by_status": by_status, **{key: int(value) for key, value in counts.items()}}

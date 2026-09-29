@@ -130,4 +130,4 @@ The `isolation` tests prove both on every pull request.
 | The virus scanner and upload limits in AWS (values marked PROVISIONAL in `.env.example`) | Hosting |
 | The go or no-go bar for launch, as a number | Launch |
 
-Not built yet, against the Document-to-SQL plan: folders, tags and versions; the typed `invoices` and `invoice_lines` tables and the document-type step; rule checks such as whether the totals add up; and a search tool outside chat.
+Not built yet, against the Document-to-SQL plan: uploading a new version of a document; the typed `invoices` and `invoice_lines` tables and the document-type step; rule checks such as whether the totals add up; and a search tool outside chat.

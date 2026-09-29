@@ -1,4 +1,5 @@
-"""The worker loop: graceful stop on SIGINT and SIGTERM, outages, and job logs.
+"""The worker loop: graceful stop on SIGINT and SIGTERM, outages, job logs, and
+the trash purge at most once an hour.
 
 No real services: the loop runs the real Worker over the in-memory lease
 queue (tests/lease_queue.py). ``main()`` itself only wires the adapters
@@ -12,15 +13,19 @@ import signal
 import threading
 import unittest
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
+from kaagaz.settings import Settings, SettingsError
 from kaagaz.worker_main import (
     JsonFormatter,
     LoggedHandler,
     MarkExhausted,
+    PurgeHourly,
     install_stop_handlers,
     run_until_stopped,
 )
@@ -190,6 +195,96 @@ class MarkExhaustedTest(unittest.TestCase):
                 clock.advance(30.0)
         self.assertEqual(marked, [(FIRST.customer_id, FIRST.document_id)])
         self.assertEqual([failed.code for failed in queue.failed.values()], ["retries_exhausted"])
+
+
+START = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = START
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+class _Jobs:
+    """A worker that only counts its turns."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run_once(self) -> bool:
+        self.calls += 1
+        return True
+
+
+class _Purge:
+    """Counts its runs; returns ``purged``, or raises ``error`` when one is given."""
+
+    def __init__(self, purged: int = 0, error: Exception | None = None) -> None:
+        self.purged = purged
+        self.error = error
+        self.runs = 0
+
+    def __call__(self) -> int:
+        self.runs += 1
+        if self.error is not None:
+            raise self.error
+        return self.purged
+
+
+class PurgeHourlyTest(unittest.TestCase):
+    def test_the_purge_runs_on_the_first_turn_then_at_most_once_an_hour(self) -> None:
+        clock, jobs, purge = _Clock(), _Jobs(), _Purge(purged=2)
+        worker = PurgeHourly(jobs, purge, clock)
+        runs = []
+        with self.assertLogs("kaagaz.worker", "INFO") as logs:
+            for minutes in (0, 30, 59, 60, 119, 120):
+                clock.now = START + timedelta(minutes=minutes)
+                self.assertTrue(worker.run_once())
+                runs.append(purge.runs)
+        self.assertEqual(runs, [1, 1, 1, 2, 2, 3])
+        self.assertEqual(jobs.calls, 6)
+        self.assertEqual(logs.records[0].getMessage(), "trash purged: 2 families")
+
+    def test_a_purge_that_fails_is_not_tried_again_within_the_hour(self) -> None:
+        clock, jobs, purge = _Clock(), _Jobs(), _Purge(error=BackendUnavailable("storage"))
+        worker = PurgeHourly(jobs, purge, clock)
+        with self.assertRaises(BackendUnavailable):
+            worker.run_once()
+        clock.now = START + timedelta(minutes=59)
+        self.assertTrue(worker.run_once())
+        self.assertEqual((purge.runs, jobs.calls), (1, 1))
+
+    def test_the_loop_pauses_after_a_failed_purge_and_goes_on_with_jobs(self) -> None:
+        stop = threading.Event()
+        jobs = _ScriptedWorker(stop, [lambda: True, lambda: True])
+        purge = _Purge(error=BackendUnavailable("storage"))
+        with self.assertLogs("kaagaz.worker", "WARNING") as logs:
+            run_until_stopped(PurgeHourly(jobs, purge, _Clock()), stop, pause_seconds=0.01)
+        self.assertEqual((purge.runs, jobs.calls), (1, 2))
+        self.assertEqual(logs.records[0].__dict__["code"], "storage")
+
+
+class TrashDaysSettingTest(unittest.TestCase):
+    @staticmethod
+    def _shipped() -> dict[str, str]:
+        values = {"SESSION_SECRET": "x" * 32}
+        for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
+            if line.strip() and not line.startswith("#"):
+                name, _, value = line.partition("=")
+                values.setdefault(name.strip(), value.strip())
+        return values
+
+    def test_the_shipped_settings_keep_trash_for_30_days(self) -> None:
+        self.assertEqual(Settings.from_env(self._shipped()).trash_days, 30)
+
+    def test_a_missing_trash_days_stops_start_up_with_its_name(self) -> None:
+        env = {name: value for name, value in self._shipped().items() if name != "TRASH_DAYS"}
+        with self.assertRaisesRegex(SettingsError, "TRASH_DAYS"):
+            Settings.from_env(env)
 
 
 class JsonFormatterTest(unittest.TestCase):
