@@ -1,0 +1,182 @@
+/* Folders on the documents screen. Tokens only (app/globals.css). */
+
+/* --- Layout: the folder tree beside the list from 1024 px -------------------- */
+
+.libraryPage {
+  --tree-w: 13rem;
+}
+
+@media (min-width: 1024px) {
+  /* The tree takes its own room, so the list keeps the width it had. */
+  .libraryPage {
+    max-width: calc(var(--content-max) + var(--tree-w) + var(--space-5));
+  }
+}
+
+.library {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.treePane {
+  display: none;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+@media (min-width: 1024px) {
+  .library {
+    grid-template-columns: var(--tree-w) minmax(0, 1fr);
+  }
+
+  .treePane {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    position: sticky;
+    top: var(--space-4);
+    max-height: calc(100dvh - 2 * var(--space-4));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .placeHead .foldersButton {
+    display: none;
+  }
+}
+
+.paneHeading {
+  margin: 0;
+  padding-inline: var(--space-3);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+/* --- The tree ------------------------------------------------------------------ */
+
+.treeWrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.tree,
+.subtree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.subtree {
+  margin-inline-start: var(--space-3);
+  padding-inline-start: var(--space-1);
+  border-inline-start: 1px solid var(--border);
+}
+
+.treeLink {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.treeLink:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+/* The folder being viewed: bold as well as tinted, so colour is not the only sign. */
+.treeLink[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* A short message with an optional Try again under it. */
+.note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.note p {
+  margin: 0;
+}
+
+.treeNote {
+  padding-inline: var(--space-3);
+}
+
+/* --- Where you are: the path, the folder's name and its actions ------------- */
+
+.placeHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.place {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.placeHeading {
+  margin: 0;
+  font-size: var(--fs-xl);
+  overflow-wrap: anywhere;
+}
+
+/* Focused by the screen after a delete or a move; the heading is not a control. */
+.placeHeading:focus {
+  outline: none;
+}
+
+.placeHint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.crumbs ol {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  font-size: var(--fs-sm);
+}
+
+.crumbs li {
+  overflow-wrap: anywhere;
+}
+
+.crumbs li + li::before {
+  content: "/";
+  content: "/" / "";
+  margin-inline-end: var(--space-1);
+  color: var(--fg-muted);
+}

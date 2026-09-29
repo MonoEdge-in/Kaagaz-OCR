@@ -251,20 +251,12 @@
   gap: var(--space-3);
 }
 
-.listHeading {
-  margin: 0;
-  font-size: var(--fs-lg);
-}
-
-.listHeading:focus {
-  outline: none;
-}
-
 .search {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  flex: 0 1 36rem;
 }
 
 .searchField {
