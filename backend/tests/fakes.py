@@ -166,9 +166,9 @@ class MemoryQueue:
 
 
 class MemoryDocuments(MemoryRepository):
-    """MemoryRepository plus the pipeline's two writes (kaagaz.pipeline.DocumentStore),
+    """MemoryRepository plus the pipeline's writes (kaagaz.pipeline.DocumentStore),
     like kaagaz.db.documents.PgDocuments: ``set_failed`` marks the status failed
-    in ``statuses`` (which never leaves REJECTED) and keeps the code. Both do
+    in ``statuses`` (which never leaves REJECTED) and keeps the code. Each does
     nothing for a document this customer does not have, like an UPDATE whose
     WHERE matches no row."""
 
@@ -187,6 +187,17 @@ class MemoryDocuments(MemoryRepository):
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         if self.get(customer_id, document_id) is not None:
             self.page_counts[(customer_id, document_id)] = page_count
+
+    def mark_ready(self, customer_id: str, document_id: str, page_count: int) -> None:
+        """Like PgDocuments.mark_ready for a family of one version (records have no
+        family here): the page count, then ready. A rejected document keeps both.
+        Families of several versions are tested on PostgreSQL
+        (tests/test_documents_mark_ready_db.py)."""
+        if self._statuses.get_status(customer_id, document_id) is DocumentStatus.REJECTED:
+            return
+        self.set_page_count(customer_id, document_id, page_count)
+        if self.get(customer_id, document_id) is not None:
+            self._statuses.set_status(customer_id, document_id, DocumentStatus.READY)
 
     def mark_exhausted(self, customer_id: str, document_id: str) -> None:
         """The worker's last delivery, like PgDocuments.mark_exhausted: only a document

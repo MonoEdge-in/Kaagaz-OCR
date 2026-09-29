@@ -9,16 +9,18 @@ Status writes never move a document out of ``rejected``: the UPDATE says so,
 and a trigger refuses it as well (the gate's adapter contract).
 
 Each call is one indexed statement: O(log n) in the number of documents.
+``mark_ready`` is the exception: it takes the family lock first (below).
 """
 
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import Connection, text
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.db.engine import Database
+from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import DocumentRecord
 from kaagaz.scanning.gate import DocumentStatus
@@ -27,6 +29,51 @@ _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by"
     " FROM documents WHERE customer_id = :c"
 )
+
+
+# The highest ready version_no is current (PRD 1 F6, PROVISIONAL plan 7.3): is a
+# newer version of this document's family ready already?
+_READY_STATE = (
+    "SELECT d.status, EXISTS (SELECT 1 FROM documents newer WHERE newer.customer_id = :c"
+    " AND newer.family_id = d.family_id AND newer.status = 'ready'"
+    " AND newer.version_no > d.version_no) AS newer_ready"
+    " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
+)
+
+# The others first, then this one: the unique index documents_current allows
+# one current row per family at every moment.
+_OTHERS_NOT_CURRENT = (
+    "UPDATE documents SET is_current = false"
+    " WHERE customer_id = :c AND family_id = :f AND id <> :d AND is_current"
+)
+
+_READY = (
+    "UPDATE documents SET status = 'ready', failure_code = NULL, page_count = :pages, is_current = :current"
+    " WHERE customer_id = :c AND id = :d"
+)
+
+
+def mark_ready(conn: Connection, customer_id: str, document_id: str, page_count: int) -> None:
+    """The document is read: set it ready with its page count and, unless a newer
+    version of its family is ready already, make it the family's one current version.
+
+    ``conn`` comes from ``Database.customer(customer_id)``. The family lock
+    (``trash.lock_family``) comes before any write, so two versions finishing at
+    once queue, and trash, restore and the purge never deadlock with it. A
+    missing document, or a rejected one (final), is left as it is.
+    3 or 4 statements; O(v log D) time and O(v) space for the family's v versions.
+    """
+    family_id = lock_family(conn, customer_id, document_id)
+    if family_id is None:
+        return
+    params = {"c": customer_id, "d": document_id, "f": family_id}
+    state = conn.execute(text(_READY_STATE), params).one()
+    if state.status == DocumentStatus.REJECTED.value:
+        return
+    current = not state.newer_ready
+    if current:
+        conn.execute(text(_OTHERS_NOT_CURRENT), params)
+    conn.execute(text(_READY), {**params, "pages": page_count, "current": current})
 
 
 def _record(row: Sequence[Any]) -> DocumentRecord:
@@ -136,6 +183,11 @@ class PgDocuments:
                 ),
                 {"code": code, "c": customer_id, "d": document_id},
             )
+
+    def mark_ready(self, customer_id: str, document_id: str, page_count: int) -> None:
+        """``mark_ready`` in its own transaction: the pipeline's last step."""
+        with _unavailable(), self._db.customer(customer_id) as conn:
+            mark_ready(conn, customer_id, document_id, page_count)
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         with _unavailable(), self._db.customer(customer_id) as conn:
