@@ -14,7 +14,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import psycopg
 from sqlalchemy import Connection, text
+from sqlalchemy.exc import DBAPIError
 
 from kaagaz.db.engine import Database, make_engine
 
@@ -113,6 +115,56 @@ def insert_document(conn: Connection, customer_id: str, **columns: Any) -> str:
     )
     conn.execute(statement, {"customer_id": customer_id, **values})
     return str(values["id"])
+
+
+def violation(error: DBAPIError) -> tuple[str | None, str | None]:
+    """The SQLSTATE and the constraint name, so a test can't pass on the wrong error."""
+    assert isinstance(error.orig, psycopg.Error)
+    return error.orig.sqlstate, error.orig.diag.constraint_name
+
+
+def insert_folder(
+    conn: Connection, customer_id: str, user_id: str, name: str, parent_id: str | None = None
+) -> str:
+    """Insert one folder row straight into the table (no helper rules), and return its id. O(1)."""
+    return str(
+        conn.execute(
+            text(
+                "INSERT INTO folders (customer_id, parent_id, name, created_by)"
+                " VALUES (:c, :p, :n, :u) RETURNING id"
+            ),
+            {"c": customer_id, "p": parent_id, "n": name, "u": user_id},
+        ).scalar_one()
+    )
+
+
+def insert_tag(conn: Connection, customer_id: str, user_id: str, name: str) -> str:
+    """Insert one tag row straight into the table, and return its id. O(1)."""
+    return str(
+        conn.execute(
+            text("INSERT INTO tags (customer_id, name, created_by) VALUES (:c, :n, :u) RETURNING id"),
+            {"c": customer_id, "n": name, "u": user_id},
+        ).scalar_one()
+    )
+
+
+def tag_document(conn: Connection, customer_id: str, document_id: str, tag_id: str) -> None:
+    """Put one tag on one document. O(1)."""
+    conn.execute(
+        text("INSERT INTO document_tags (customer_id, document_id, tag_id) VALUES (:c, :d, :t)"),
+        {"c": customer_id, "d": document_id, "t": tag_id},
+    )
+
+
+def new_library(db: Database) -> dict[str, str]:
+    """A new customer with one folder, one tag and one tagged document in that folder."""
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        folder = insert_folder(conn, customer, user, "GST")
+        tag = insert_tag(conn, customer, user, "Paid")
+        document = insert_document(conn, customer, folder_id=folder, uploaded_by=user)
+        tag_document(conn, customer, document, tag)
+    return {"customer": customer, "user": user, "folder": folder, "tag": tag, "document": document}
 
 
 def wait_until_blocked(db: Database, *, application_name: str, timeout: float = 5.0) -> None:
