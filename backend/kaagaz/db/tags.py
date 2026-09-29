@@ -1,4 +1,4 @@
-"""Tags: a customer's labels, and the set of tags on a document family (PRD 1 F3, WP1.2).
+"""Tags: a customer's labels, and the set of tags on a document family (PRD 1 F2, WP1.2).
 
 Why here: the tag SQL in one place. Every function takes a connection from
 ``Database.customer(customer_id)`` and also filters on ``customer_id``.
