@@ -59,6 +59,20 @@ def document_summary(row: RowMapping, *, max_pages: int, tags: Sequence[TagRow])
         "uploaded_by_name": row["uploaded_by_name"],
         "folder_id": None if row["folder_id"] is None else str(row["folder_id"]),
         "tags": [tag(each) for each in tags],
+        "deleted_at": None if row["deleted_at"] is None else iso(row["deleted_at"]),
+        "version_no": int(row["version_no"]),
+        "family_id": str(row["family_id"]),
+    }
+
+
+def document_version(row: RowMapping) -> dict[str, Any]:
+    """``DocumentVersion``: one version in the detail's ``versions`` (``listing.family_versions``)."""
+    return {
+        "id": str(row["id"]),
+        "version_no": int(row["version_no"]),
+        "status": row["status"],
+        "is_current": bool(row["is_current"]),
+        "created_at": iso(row["created_at"]),
     }
 
 

@@ -8,8 +8,8 @@ from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
 from kaagaz.ingestion.policy import KIND_OF, UploadPolicy, limits_by_type
-from kaagaz.ingestion.ports import DocumentRecord, Job, UnknownFolder
-from kaagaz.ingestion.service import UploadService
+from kaagaz.ingestion.ports import DocumentRecord, Job, UnknownFamily, UnknownFolder
+from kaagaz.ingestion.service import UploadResult, UploadService
 from tests.fakes import MemoryQueue, MemoryRepository, MemoryStorage
 from tests.support import PDF_BYTES, TEST_POLICY, TEXT_BYTES, make_service
 
@@ -422,6 +422,59 @@ class PolicyTest(unittest.TestCase):
             dict(KIND_OF),
             {"pdf": "pdf", "png": "image", "jpeg": "image", "tiff": "image", "text": "sheet", "zip": "sheet"},
         )
+
+
+class VersionTest(unittest.TestCase):
+    """``accept_version`` (PRD 1 F6): the checks, duplicate rule and undo steps of
+    ``accept``. The repository puts the record in the family: the next number and
+    the family's folder (the fake's rule, like PostgreSQL's)."""
+
+    def _family(self) -> tuple[UploadService, MemoryRepository, MemoryStorage, MemoryQueue, str]:
+        service, repo, storage, queue = make_service()
+        repo.folders.add((CUSTOMER, "folder-1"))
+        first = service.accept(CUSTOMER, io.BytesIO(PDF_BYTES), folder_id="folder-1").document_id
+        return service, repo, storage, queue, first
+
+    def _version(self, service: UploadService, target: str, data: bytes = TEXT_BYTES) -> UploadResult:
+        return service.accept_version(
+            CUSTOMER, io.BytesIO(data), of_document_id=target, display_name="v2.csv", uploaded_by="u1"
+        )
+
+    def test_a_new_version_is_stored_recorded_in_the_family_and_queued(self) -> None:
+        service, repo, storage, queue, first = self._family()
+        result = self._version(service, first)
+        again = self._version(service, result.document_id, TEXT_BYTES + b"3")
+        self.assertFalse(result.duplicate or again.duplicate)
+        stored = [repo.get(CUSTOMER, r.document_id) for r in (result, again)]
+        self.assertEqual(
+            [(r.family_id, r.version_no, r.folder_id, r.display_name, r.uploaded_by) for r in stored if r],
+            [(first, 2, "folder-1", "v2.csv", "u1"), (first, 3, "folder-1", "v2.csv", "u1")],
+        )
+        self.assertEqual(storage.get(CUSTOMER, result.document_id), TEXT_BYTES)
+        self.assertEqual(
+            queue.jobs[1:], [Job(CUSTOMER, result.document_id), Job(CUSTOMER, again.document_id)]
+        )
+
+    def test_the_same_bytes_as_any_document_are_a_duplicate_and_nothing_is_stored(self) -> None:
+        service, _, storage, queue, first = self._family()
+        result = self._version(service, first, PDF_BYTES)
+        self.assertEqual((result.document_id, result.duplicate), (first, True))
+        self.assertEqual((storage.count(), len(queue.jobs)), (1, 1))
+
+    def test_a_family_in_trash_or_no_document_keeps_nothing(self) -> None:
+        service, repo, storage, queue, first = self._family()
+        repo.trashed_families.add((CUSTOMER, first))
+        for target in (first, "no-such-document"):
+            with self.subTest(target=target), self.assertRaises(UnknownFamily):
+                self._version(service, target)
+        self.assertEqual((storage.count(), len(queue.jobs), len(repo.records_for(CUSTOMER))), (1, 1, 1))
+
+    def test_a_queue_failure_undoes_the_version(self) -> None:
+        service, repo, storage, queue, first = self._family()
+        queue.fail_enqueue = True
+        with self.assertRaises(BackendUnavailable):
+            self._version(service, first)
+        self.assertEqual((storage.count(), len(repo.records_for(CUSTOMER))), (1, 1))
 
 
 if __name__ == "__main__":

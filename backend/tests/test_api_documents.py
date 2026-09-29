@@ -181,8 +181,16 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "uploaded_by_name",
         "folder_id",
         "tags",
+        "deleted_at",
+        "version_no",
+        "family_id",
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
+    assert (document["deleted_at"], document["version_no"], document["family_id"]) == (
+        None,
+        1,
+        document["id"],
+    )
     assert document["display_name"] == "PAN ABCDE1234F.pdf"
     assert document["detected_type"] == "pdf"
     assert document["size_bytes"] == len(PDF_BYTES)
