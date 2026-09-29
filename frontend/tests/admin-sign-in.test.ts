@@ -130,9 +130,10 @@ describe("the setup key", () => {
     ]);
   });
 
-  it("explains the set-up in 3 short steps", () => {
+  it("explains the set-up in 3 short steps, scanning the QR code first", () => {
     expect(ENROL_STEPS).toHaveLength(3);
     for (const step of ENROL_STEPS) expect(step.length).toBeLessThan(110);
+    expect(ENROL_STEPS[1]).toMatch(/^Scan the QR code/);
   });
 });
 
@@ -281,6 +282,13 @@ describe("admin sign-in markup", () => {
   it("has no forced set-up step at sign-in, and the code is optional", () => {
     expect(form).not.toContain("EnrolStep");
     expect(form).toContain('label="6-digit code, if you turned on two-step sign-in"');
+  });
+
+  it("shows the set-up link as a QR code above the typed key, never as text", () => {
+    expect(enrol).toContain("<QrCode value={enrol.otpauth_uri}");
+    expect(enrol.indexOf("<QrCode")).toBeLessThan(enrol.indexOf("groupSecret(enrol.secret)"));
+    // The link holds the secret: its one use is as the QR value, never as text.
+    expect(enrol.split("enrol.otpauth_uri")).toHaveLength(2);
   });
 
   it("turns 2FA on with the set-up step, and off with the current password", () => {
