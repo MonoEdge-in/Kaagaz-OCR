@@ -413,6 +413,7 @@ class Api:
         with self.db.customer(customer_id) as conn:
             tag_document(conn, customer_id, document_id, tag_id)
 
+
 def wrong_code(api: Api, secret: bytes) -> str:
     """A well-formed 6-digit code that matches none of the steps accepted right now."""
     accepted = {api.code(secret, offset) for offset in (-1, 0, 1)}
