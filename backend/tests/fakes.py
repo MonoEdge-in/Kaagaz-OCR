@@ -8,7 +8,7 @@ actually fail. They are never used by product code.
 """
 
 import threading
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import IO, Any
 
@@ -188,6 +188,12 @@ class MemoryDocuments(MemoryRepository):
         if self.get(customer_id, document_id) is not None:
             self.page_counts[(customer_id, document_id)] = page_count
 
+    def mark_exhausted(self, customer_id: str, document_id: str) -> None:
+        """The worker's last delivery, like PgDocuments.mark_exhausted: only a document
+        still in progress (received or clean) becomes failed with retries_exhausted."""
+        if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
+            self.set_failed(customer_id, document_id, "retries_exhausted")
+
 
 class MemoryPipelineStore:
     """What the pipeline saves, keyed by (customer_id, document_id). save() swaps
@@ -285,7 +291,9 @@ class PresetSocket:
         self._first = first
         self._second = second or {}
 
-    def read(self, detected_type: str, data: bytes) -> list[Span]:
+    def read(
+        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+    ) -> list[Span]:
         if detected_type not in self._first:
             raise NoReader(detected_type)
         return self._give(self._first[detected_type])

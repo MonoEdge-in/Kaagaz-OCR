@@ -2,16 +2,24 @@ import unittest
 
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import LeaseLost
-from kaagaz.jobs.worker import Heartbeat, JobFailed, Worker
+from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
 from tests.lease_queue import FakeClock, LeaseQueue
 
 LEASE = 30.0
+MAX_RECEIVES = 3
 GOOD, POISON, OTHER = Job("cust-a", "good"), Job("cust-a", "poison"), Job("cust-a", "other")
 
 
-def make_queue(max_attempts: int = 3) -> tuple[FakeClock, LeaseQueue]:
+def make_queue(max_attempts: int = MAX_RECEIVES) -> tuple[FakeClock, LeaseQueue]:
     clock = FakeClock()
     return clock, LeaseQueue(clock, lease_seconds=LEASE, max_attempts=max_attempts)
+
+
+def make_worker(queue: LeaseQueue, handler: Handler, marked: list[Job] | None = None) -> Worker:
+    """The worker under test, with the queue's maximum receives. ``marked`` collects
+    every job ``on_exhausted`` is called with."""
+    sink: list[Job] = [] if marked is None else marked
+    return Worker(queue, handler, max_receives=MAX_RECEIVES, on_exhausted=sink.append)
 
 
 class LeaseQueueTest(unittest.TestCase):
@@ -57,7 +65,7 @@ class WorkerTest(unittest.TestCase):
         _, queue = make_queue()
         queue.enqueue(GOOD)
         seen: list[Job] = []
-        worker = Worker(queue, lambda job, beat: seen.append(job))
+        worker = make_worker(queue, lambda job, beat: seen.append(job))
 
         self.assertTrue(worker.run_once())
         self.assertFalse(worker.run_once())
@@ -66,63 +74,113 @@ class WorkerTest(unittest.TestCase):
 
     def test_empty_queue_returns_false(self) -> None:
         _, queue = make_queue()
-        self.assertFalse(Worker(queue, lambda job, beat: None).run_once())
+        self.assertFalse(make_worker(queue, lambda job, beat: None).run_once())
 
-    def test_retryable_failure_retries_up_to_the_limit_then_goes_to_the_bin(self) -> None:
-        clock, queue = make_queue(max_attempts=3)
+    def test_retryable_failure_is_retried_then_the_last_delivery_marks_and_buries(self) -> None:
+        clock, queue = make_queue()
         queue.enqueue(POISON)
         calls = []
+        marked: list[tuple[Job, int]] = []
 
         def handler(job: Job, beat: Heartbeat) -> None:
             calls.append(job)
             raise JobFailed("backend_down", retryable=True)
 
-        worker = Worker(queue, handler)
-        for _ in range(3):
+        def on_exhausted(job: Job) -> None:
+            marked.append((job, len(queue.failed)))  # how many jobs were buried by then
+
+        worker = Worker(queue, handler, max_receives=MAX_RECEIVES, on_exhausted=on_exhausted)
+        for _ in range(MAX_RECEIVES):
             self.assertTrue(worker.run_once())
             clock.advance(LEASE)
-        self.assertFalse(worker.run_once())  # moved to the bin, nothing left
+        self.assertFalse(worker.run_once())  # buried, nothing left
 
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), MAX_RECEIVES - 1)  # the last delivery does not run the handler
+        self.assertEqual(marked, [(POISON, 0)])  # called once, before the job was buried
         (failed,) = queue.failed.values()
-        self.assertEqual((failed.job, failed.attempts, failed.code), (POISON, 3, "attempts_exhausted"))
+        self.assertEqual((failed.job, failed.attempts, failed.code), (POISON, 3, "retries_exhausted"))
 
-    def test_success_on_the_last_attempt_is_not_binned(self) -> None:
-        clock, queue = make_queue(max_attempts=2)
+    def test_an_unexpected_error_on_every_delivery_still_gets_marked(self) -> None:
+        clock, queue = make_queue()
+        queue.enqueue(GOOD)
+        marked: list[Job] = []
+
+        def buggy(job: Job, beat: Heartbeat) -> None:
+            raise RuntimeError("bug")
+
+        worker = make_worker(queue, buggy, marked)
+        for _ in range(MAX_RECEIVES - 1):
+            with self.assertRaises(RuntimeError):
+                worker.run_once()
+            clock.advance(LEASE)
+        self.assertTrue(worker.run_once())  # the last delivery: marked and buried, the handler not run
+
+        self.assertEqual(marked, [GOOD])
+        self.assertEqual([(f.job, f.code) for f in queue.failed.values()], [(GOOD, "retries_exhausted")])
+
+    def test_success_on_a_retry_is_not_marked_or_binned(self) -> None:
+        clock, queue = make_queue()
         queue.enqueue(GOOD)
         attempts = []
+        marked: list[Job] = []
 
         def handler(job: Job, beat: Heartbeat) -> None:
             attempts.append(job)
             if len(attempts) == 1:
                 raise JobFailed("backend_down", retryable=True)
 
-        worker = Worker(queue, handler)
+        worker = make_worker(queue, handler, marked)
         worker.run_once()
         clock.advance(LEASE)
-        worker.run_once()
+        worker.run_once()  # attempt 2 of 3: the last one that runs the handler
         self.assertEqual(queue.failed, {})
         self.assertEqual(queue.pending(), 0)
+        self.assertEqual(marked, [])
+
+    def test_a_lost_lease_on_the_last_delivery_does_not_crash_the_worker(self) -> None:
+        clock, queue = make_queue(max_attempts=MAX_RECEIVES + 1)  # the queue itself would still retry
+        queue.enqueue(GOOD)
+        for _ in range(MAX_RECEIVES - 1):
+            queue.receive()  # earlier deliveries that crashed
+            clock.advance(LEASE)
+
+        def slow_mark(job: Job) -> None:
+            clock.advance(LEASE + 1)  # the lease runs out while marking
+
+        worker = Worker(queue, lambda job, beat: None, max_receives=MAX_RECEIVES, on_exhausted=slow_mark)
+        self.assertTrue(worker.run_once())
+        self.assertEqual(queue.failed, {})  # LeaseLost from bury: the next delivery decides
+        self.assertEqual(queue.pending(), 1)
+
+    def test_max_receives_must_leave_the_handler_a_delivery(self) -> None:
+        _, queue = make_queue()
+        for max_receives in (0, 1):
+            with self.subTest(max_receives=max_receives), self.assertRaises(ValueError):
+                Worker(
+                    queue, lambda job, beat: None, max_receives=max_receives, on_exhausted=lambda job: None
+                )
 
     def test_permanent_failure_is_buried_at_once_and_not_retried(self) -> None:
         clock, queue = make_queue()
         queue.enqueue(POISON)
         calls = []
+        marked: list[Job] = []
 
         def handler(job: Job, beat: Heartbeat) -> None:
             calls.append(job)
             raise JobFailed("virus_found", retryable=False)
 
-        worker = Worker(queue, handler)
+        worker = make_worker(queue, handler, marked)
         worker.run_once()
         clock.advance(LEASE * 10)
         self.assertFalse(worker.run_once())
         self.assertEqual(len(calls), 1)
         (failed,) = queue.failed.values()
         self.assertEqual((failed.code, failed.attempts), ("virus_found", 1))
+        self.assertEqual(marked, [])  # a failure for good keeps its own code
 
     def test_poison_job_does_not_block_the_jobs_behind_it(self) -> None:
-        clock, queue = make_queue(max_attempts=3)
+        clock, queue = make_queue()
         queue.enqueue(POISON)
         queue.enqueue(GOOD)
         done: list[Job] = []
@@ -132,7 +190,7 @@ class WorkerTest(unittest.TestCase):
                 raise JobFailed("broken_file", retryable=True)
             done.append(job)
 
-        worker = Worker(queue, handler)
+        worker = make_worker(queue, handler)
         worker.run_once()  # poison fails
         worker.run_once()  # good runs next, without waiting for the poison
         self.assertEqual(done, [GOOD])
@@ -155,7 +213,7 @@ class WorkerTest(unittest.TestCase):
                 if other is not None:
                     seen_by_other_worker.append(other)
 
-        Worker(queue, slow_handler).run_once()
+        make_worker(queue, slow_handler).run_once()
         self.assertEqual(seen_by_other_worker, [])
         self.assertEqual(queue.pending(), 0)
 
@@ -167,7 +225,7 @@ class WorkerTest(unittest.TestCase):
             clock.advance(LEASE + 1)
             beat()  # the lease is gone: LeaseLost inside the handler
 
-        self.assertTrue(Worker(queue, too_slow).run_once())
+        self.assertTrue(make_worker(queue, too_slow).run_once())
         again = queue.receive()  # the job is still there for the next delivery
         assert again is not None
         self.assertEqual(again.attempt, 2)
@@ -179,7 +237,7 @@ class WorkerTest(unittest.TestCase):
         def slow_but_no_heartbeat(job: Job, beat: Heartbeat) -> None:
             clock.advance(LEASE + 1)
 
-        self.assertTrue(Worker(queue, slow_but_no_heartbeat).run_once())
+        self.assertTrue(make_worker(queue, slow_but_no_heartbeat).run_once())
         self.assertEqual(queue.pending(), 1)
         self.assertEqual(queue.failed, {})
 
@@ -191,7 +249,7 @@ class WorkerTest(unittest.TestCase):
             clock.advance(LEASE + 1)
             raise JobFailed("broken_file", retryable=False)
 
-        self.assertTrue(Worker(queue, slow_permanent_failure).run_once())
+        self.assertTrue(make_worker(queue, slow_permanent_failure).run_once())
         self.assertEqual(queue.failed, {})  # the next delivery decides
         self.assertEqual(queue.pending(), 1)
 
@@ -203,7 +261,7 @@ class WorkerTest(unittest.TestCase):
             raise RuntimeError("bug")
 
         with self.assertRaises(RuntimeError):
-            Worker(queue, buggy).run_once()
+            make_worker(queue, buggy).run_once()
         clock.advance(LEASE)
         again = queue.receive()
         assert again is not None

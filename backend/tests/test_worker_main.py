@@ -16,19 +16,30 @@ from typing import Any
 
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.worker import Heartbeat, JobFailed, Worker
-from kaagaz.worker_main import JsonFormatter, LoggedHandler, install_stop_handlers, run_until_stopped
+from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
+from kaagaz.worker_main import (
+    JsonFormatter,
+    LoggedHandler,
+    MarkExhausted,
+    install_stop_handlers,
+    run_until_stopped,
+)
 from tests.lease_queue import FakeClock, LeaseQueue
 
 FIRST = Job("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 SECOND = Job("11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333")
+MAX_RECEIVES = 3
 
 
 def make_queue(*jobs: Job) -> LeaseQueue:
-    queue = LeaseQueue(FakeClock(), lease_seconds=30.0, max_attempts=3)
+    queue = LeaseQueue(FakeClock(), lease_seconds=30.0, max_attempts=MAX_RECEIVES)
     for job in jobs:
         queue.enqueue(job)
     return queue
+
+
+def make_worker(queue: LeaseQueue, handler: Handler) -> Worker:
+    return Worker(queue, handler, max_receives=MAX_RECEIVES, on_exhausted=lambda job: None)
 
 
 class _ScriptedWorker:
@@ -63,7 +74,7 @@ class StopSignalTest(unittest.TestCase):
             handled.append(job)  # the job still runs to its end
 
         with self.assertLogs("kaagaz.worker", "INFO"):
-            run_until_stopped(Worker(queue, handler), self.stop, pause_seconds=0.01)
+            run_until_stopped(make_worker(queue, handler), self.stop, pause_seconds=0.01)
         self.assertTrue(self.stop.is_set())
         self.assertEqual(handled, [FIRST])  # the second job was not started
         self.assertEqual(queue.pending(), 1)  # the first was acked, the second waits
@@ -77,7 +88,7 @@ class StopSignalTest(unittest.TestCase):
     def test_a_stop_before_the_loop_starts_runs_nothing(self) -> None:
         queue = make_queue(FIRST)
         self.stop.set()
-        run_until_stopped(Worker(queue, lambda job, beat: None), self.stop, pause_seconds=0.01)
+        run_until_stopped(make_worker(queue, lambda job, beat: None), self.stop, pause_seconds=0.01)
         self.assertEqual(queue.pending(), 1)
 
 
@@ -143,8 +154,42 @@ class LoggedHandlerTest(unittest.TestCase):
             raise JobFailed("too_many_pages", retryable=False)
 
         with self.assertLogs("kaagaz.worker", "WARNING"):
-            Worker(queue, LoggedHandler(fail)).run_once()
+            make_worker(queue, LoggedHandler(fail)).run_once()
         self.assertEqual([failed.code for failed in queue.failed.values()], ["too_many_pages"])
+
+
+class MarkExhaustedTest(unittest.TestCase):
+    def test_the_document_is_marked_and_logged_with_ids_and_the_code_only(self) -> None:
+        marked: list[tuple[str, str]] = []
+        with self.assertLogs("kaagaz.worker", "WARNING") as logs:
+            MarkExhausted(lambda customer_id, document_id: marked.append((customer_id, document_id)))(FIRST)
+        self.assertEqual(marked, [(FIRST.customer_id, FIRST.document_id)])
+        (record,) = logs.records
+        fields = record.__dict__
+        self.assertEqual(
+            (fields["customer_id"], fields["document_id"], fields["outcome"], fields["code"]),
+            (FIRST.customer_id, FIRST.document_id, "failed", "retries_exhausted"),
+        )
+
+    def test_the_real_worker_marks_the_last_delivery(self) -> None:
+        clock = FakeClock()
+        queue = LeaseQueue(clock, lease_seconds=30.0, max_attempts=MAX_RECEIVES)
+        queue.enqueue(FIRST)
+        marked: list[tuple[str, str]] = []
+
+        def down(job: Job, beat: Heartbeat) -> None:
+            raise JobFailed("scanner_down", retryable=True)
+
+        on_exhausted = MarkExhausted(
+            lambda customer_id, document_id: marked.append((customer_id, document_id))
+        )
+        worker = Worker(queue, LoggedHandler(down), max_receives=MAX_RECEIVES, on_exhausted=on_exhausted)
+        with self.assertLogs("kaagaz.worker", "WARNING"):
+            for _ in range(MAX_RECEIVES):
+                worker.run_once()
+                clock.advance(30.0)
+        self.assertEqual(marked, [(FIRST.customer_id, FIRST.document_id)])
+        self.assertEqual([failed.code for failed in queue.failed.values()], ["retries_exhausted"])
 
 
 class JsonFormatterTest(unittest.TestCase):
