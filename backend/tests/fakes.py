@@ -9,7 +9,7 @@ actually fail. They are never used by product code.
 
 import threading
 from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import IO, Any
 
 from kaagaz.chunking.piece import Piece
@@ -36,6 +36,7 @@ class MemoryRepository:
         self._by_fingerprint: dict[tuple[str, str], DocumentRecord] = {}
         self._by_id: dict[tuple[str, str], DocumentRecord] = {}
         self.folders: set[tuple[str, str]] = set()  # (customer_id, folder_id)
+        self.trashed_families: set[tuple[str, str]] = set()  # (customer_id, family_id) in Trash
         self._lock = threading.Lock()
         self.fail_add = False
         self.fail_remove = False
@@ -61,6 +62,37 @@ class MemoryRepository:
             self._by_fingerprint[key] = record
             self._by_id[(record.customer_id, record.document_id)] = record
             return record, True
+
+    def add_version_if_absent(
+        self, record: DocumentRecord, *, of_document_id: str
+    ) -> tuple[DocumentRecord, bool] | None:
+        """Like PgDocuments.add_version_if_absent: None for a document this customer
+        does not have or a family in ``trashed_families``; else the duplicate rule of
+        ``add_if_absent``, then the family's next number, id and folder (no tags here)."""
+        if self.fail_add:
+            raise BackendUnavailable("database down")
+        customer_id = record.customer_id
+        with self._lock:
+            target = self._by_id.get((customer_id, of_document_id))
+            if target is None:
+                return None
+            family_id = target.family_id or target.document_id
+            if (customer_id, family_id) in self.trashed_families:
+                return None
+            existing = self._by_fingerprint.get((customer_id, record.sha256))
+            if existing is not None:
+                return existing, False
+            numbers = [
+                r.version_no
+                for (c, _), r in self._by_id.items()
+                if c == customer_id and (r.family_id or r.document_id) == family_id
+            ]
+            stored = replace(
+                record, folder_id=target.folder_id, family_id=family_id, version_no=max(numbers) + 1
+            )
+            self._by_fingerprint[(customer_id, record.sha256)] = stored
+            self._by_id[(customer_id, record.document_id)] = stored
+            return stored, True
 
     def remove(self, record: DocumentRecord) -> None:
         if self.fail_remove:

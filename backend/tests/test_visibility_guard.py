@@ -1,5 +1,5 @@
-"""Every statement that joins ``documents d`` for search, chat, review or the admin
-numbers carries its visibility fragment (PRD 1 F5 and F6, plan 9.7).
+"""Every statement that joins ``documents d`` for search, chat, review, the admin
+numbers or the document list carries its visibility fragment (PRD 1 F5 and F6, plan 9.7).
 
 The lists are explicit on purpose. A new statement that joins ``documents d`` in
 one of these modules fails the last test until it is added here: to FILTERED
@@ -16,11 +16,11 @@ from types import ModuleType
 from sqlalchemy import TextClause
 
 from kaagaz.answering import fixed_queries
-from kaagaz.db import admin, review
-from kaagaz.db.visibility import LIVE, LIVE_CURRENT
+from kaagaz.db import admin, listing, review
+from kaagaz.db.visibility import LIVE, LIVE_CURRENT, TRASHED
 from kaagaz.search import hybrid
 
-MODULES: tuple[ModuleType, ...] = (hybrid, fixed_queries, review, admin)
+MODULES: tuple[ModuleType, ...] = (hybrid, fixed_queries, review, admin, listing)
 
 # (module, constant name) -> the fragment it must carry.
 FILTERED: dict[tuple[ModuleType, str], str] = {
@@ -42,11 +42,19 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (review, "_LOCK_VALUE"): LIVE,
     (admin, "_DOCUMENTS_BY_STATUS"): LIVE,
     (admin, "_COUNTS"): LIVE,
+    # The document list: out of Trash by default, or only Trash (trashed=true).
+    (listing, "_LIST"): LIVE,
+    (listing, "_TRASH_LIST"): TRASHED,
 }
 
 # Statements that may see a document in Trash, and why.
 BY_ID: dict[tuple[ModuleType, str], str] = {
     (review, "_ITEM"): "get_item reads back one value by id, just after lock_value (filtered) locked it",
+    (
+        listing,
+        "_SELECT",
+    ): "get_document: the detail, the file and the pages open any version, in Trash or not",
+    (listing, "_VERSIONS"): "family_versions: the detail lists every version of its family, in Trash or not",
 }
 
 _JOINS_DOCUMENTS = re.compile(r"\bdocuments d\b")
