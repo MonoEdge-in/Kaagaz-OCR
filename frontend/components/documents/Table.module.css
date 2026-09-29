@@ -9,7 +9,9 @@
    role="table|rowgroup|row|columnheader|cell" to put them back. A cell with
    data-label shows that label above its value.
 
-   Used by the documents list and the admin Users and Activity tables. */
+   Used by the admin Users and Activity tables. The documents list has the same
+   rules in Documents.module.css, asking the list's width instead of the
+   window's, because the folder tree sits beside it. */
 
 .reflow {
   width: 100%;

@@ -2,6 +2,8 @@
 // FastAPI by next.config.ts), sends the session cookie, and turns an error reply
 // into an ApiError with the backend's short code.
 
+import { queryString } from "@/components/documents/libraryQuery";
+import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type {
   AdminLoginResult,
   AdminUser,
@@ -12,7 +14,8 @@ import type {
   CustomerSettings,
   DocumentDetail,
   DocumentList,
-  DocumentStatus,
+  DocumentSummary,
+  Folder,
   Me,
   PasswordReset,
   ReviewChoice,
@@ -21,6 +24,7 @@ import type {
   Role,
   SheetCells,
   Stats,
+  Tag,
   UploadResult,
 } from "./types";
 
@@ -118,21 +122,34 @@ export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everyw
 
 // --- documents -----------------------------------------------------------------
 
-export const listDocuments = (
-  params: { limit?: number; offset?: number; status?: DocumentStatus; q?: string } = {},
-) => request<DocumentList>("GET", `/documents${query(params)}`);
+// The list's lists and booleans (tag_id, include_subfolders) need queryString();
+// see the merge note in components/documents/libraryQuery.ts.
+export const listDocuments = (params: DocumentListParams = {}) =>
+  request<DocumentList>("GET", `/documents${queryString(params)}`);
 export const getDocument = (id: string) => request<DocumentDetail>("GET", `/documents/${id}`);
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);
+/** Rename or move. An explicit folder_id: null moves the document to the top level. */
+export const updateDocument = (
+  id: string,
+  changes: { display_name?: string; folder_id?: string | null },
+) => request<DocumentSummary>("PATCH", `/documents/${id}`, changes);
+/** Replace the document's tags with exactly these. */
+export const setDocumentTags = (id: string, tagIds: string[]) =>
+  request<{ items: Tag[] }>("PUT", `/documents/${id}/tags`, { tag_ids: tagIds });
 export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 200) =>
   request<SheetCells>(
     "GET",
     `/documents/${id}/pages/${pageNo}/cells${query({ row_from: rowFrom, row_to: rowTo })}`,
   );
 
-/** Upload one file with progress (fetch cannot report upload progress, XHR can). */
+/**
+ * Upload one file with progress (fetch cannot report upload progress, XHR can),
+ * into a folder when one is given, else at the top level.
+ */
 export function uploadDocument(
   file: File,
   onProgress: (fraction: number) => void,
+  folderId?: string,
 ): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -160,10 +177,26 @@ export function uploadDocument(
     };
     xhr.onerror = () => reject(new ApiError(0, "network", "Could not reach the server."));
     const form = new FormData();
+    if (folderId) form.append("folder_id", folderId);
     form.append("file", file);
     xhr.send(form);
   });
 }
+
+// --- folders and tags ------------------------------------------------------------
+
+export const listFolders = () => request<{ items: Folder[] }>("GET", "/folders");
+/** A new folder inside parentId, or at the top level for null. */
+export const createFolder = (name: string, parentId: string | null) =>
+  request<Folder>("POST", "/folders", { name, ...(parentId ? { parent_id: parentId } : {}) });
+/** Rename or move. An explicit parent_id: null moves the folder to the top level. */
+export const updateFolder = (id: string, changes: { name?: string; parent_id?: string | null }) =>
+  request<Folder>("PATCH", `/folders/${id}`, changes);
+export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
+export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
+export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
+/** Admins only; the server checks the role. */
+export const deleteTag = (id: string) => request<void>("DELETE", `/tags/${id}`);
 
 // --- chat ----------------------------------------------------------------------
 

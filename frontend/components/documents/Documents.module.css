@@ -236,7 +236,10 @@
 
 /* --- The list ----------------------------------------------------------------- */
 
+/* The list is a size container: the table follows the list's own width, since
+   the folder tree beside it (from 1024 px) takes room the window still has. */
 .list {
+  container: docs-list / inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -251,20 +254,12 @@
   gap: var(--space-3);
 }
 
-.listHeading {
-  margin: 0;
-  font-size: var(--fs-lg);
-}
-
-.listHeading:focus {
-  outline: none;
-}
-
 .search {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  flex: 0 1 36rem;
 }
 
 .searchField {
@@ -405,12 +400,13 @@ table.docs tbody tr[data-selected="true"] .selectCell input {
   gap: var(--space-2);
 }
 
+
 .skeletonRow {
   height: 104px;
   border-radius: var(--r-md);
 }
 
-@media (min-width: 768px) {
+@container docs-list (min-width: 48rem) {
   .skeletonRow {
     height: 48px;
     border-radius: var(--r-sm);
@@ -425,7 +421,27 @@ table.docs tbody tr[data-selected="true"] .selectCell input {
   justify-content: flex-end;
 }
 
-/* --- Rows: a table at 768 px and up, cards below (see Table.module.css) -------- */
+/* --- Rows: a table when the list is 48rem wide or more, cards below -------------
+
+   Below 48rem the eight columns crowd (the Uploaded time runs into By), so
+   the list shows cards: with the tree beside it that is up to about a 1300 px
+   screen. These rules follow Table.module.css (the admin tables), but ask the
+   list's width instead of the window's. The markup carries role="table|
+   rowgroup|row|columnheader|cell", so the cards keep the table's meaning. */
+
+table.docs {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+table.docs td,
+table.docs th {
+  overflow-wrap: anywhere;
+}
 
 .name {
   font-weight: 600;
@@ -448,10 +464,6 @@ table.docs tbody tr[data-selected="true"] .selectCell input {
   color: var(--fg-muted);
 }
 
-.deleteButton {
-  color: var(--danger-fg);
-}
-
 .confirm {
   display: flex;
   flex-direction: column;
@@ -470,9 +482,44 @@ table.docs tbody tr[data-selected="true"] .selectCell input {
   margin: var(--space-1) 0 0;
 }
 
-@media (min-width: 768px) {
+@container docs-list (min-width: 48rem) {
   table.docs {
     table-layout: fixed;
+  }
+
+  /* The header sticks under the top bar; no overflow wrapper, so nothing scrolls sideways. */
+  table.docs thead th {
+    position: sticky;
+    top: var(--topbar-space);
+    z-index: var(--z-sticky);
+    background: var(--surface);
+    border-bottom: 0;
+    box-shadow: inset 0 -1px 0 var(--border);
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+
+  table.docs thead th:first-child {
+    border-start-start-radius: var(--r-md);
+  }
+
+  table.docs thead th:last-child {
+    border-start-end-radius: var(--r-md);
+  }
+
+  table.docs td {
+    height: 48px;
+    padding-block: var(--space-2);
+    vertical-align: middle;
+    border-bottom: 0;
+  }
+
+  table.docs tbody tr {
+    box-shadow: inset 0 -1px 0 var(--border);
+  }
+
+  table.docs tbody tr:last-child {
+    box-shadow: none;
   }
 
   .selectColumn {
@@ -529,6 +576,12 @@ table.docs tbody tr[data-selected="true"] .selectCell input {
     white-space: nowrap;
   }
 
+  /* The Actions menu opens towards the row, from the end of the table. */
+  .actionsCell ul {
+    inset-inline-start: auto;
+    inset-inline-end: 0;
+  }
+
   .confirm {
     white-space: normal;
     min-width: 13rem;
@@ -536,15 +589,48 @@ table.docs tbody tr[data-selected="true"] .selectCell input {
   }
 }
 
-@media (max-width: 767.98px) {
-  /* A card: the name, the status, one meta line, then Delete. */
+@container docs-list (max-width: 47.98rem) {
+  /* A card: the name and tags, the status, one meta line, then Actions. */
+  table.docs,
+  table.docs tbody,
+  table.docs td {
+    display: block;
+  }
+
+  table.docs {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+  }
+
+  /* The header row stays for screen readers; the cards show no header. */
+  table.docs thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  table.docs tbody {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
   table.docs > tbody > tr {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--space-3) var(--space-4);
   }
 
   table.docs td {
+    border: 0;
     padding: 0;
   }
 
@@ -610,9 +696,5 @@ table.docs tbody tr[data-selected="true"] .selectCell input {
   .actionsCell {
     flex: 1 1 100%;
     margin-top: var(--space-3);
-  }
-
-  .actionsCell[data-empty] {
-    display: none;
   }
 }

@@ -18,8 +18,39 @@ export const ACCEPTED_EXTENSIONS = [
 /** For the file picker's accept attribute. */
 export const ACCEPT_ATTRIBUTE = ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`).join(",");
 
-/** The largest file we send. The customer's own limit may be lower; the server decides. */
-export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+type AcceptedExtension = (typeof ACCEPTED_EXTENSIONS)[number];
+
+/** The size group a file falls in, the same names the server uses ("pdf", "image", "sheet"). */
+export type UploadKind = "pdf" | "image" | "sheet";
+
+const KIND_OF_EXTENSION: Readonly<Record<AcceptedExtension, UploadKind>> = {
+  pdf: "pdf",
+  png: "image",
+  jpg: "image",
+  jpeg: "image",
+  tif: "image",
+  tiff: "image",
+  csv: "sheet",
+  xlsx: "sheet",
+};
+
+const MB = 1024 * 1024;
+
+/** The largest file of each kind (PRD U2). The server checks again after reading the first bytes. */
+export const UPLOAD_LIMIT_BYTES: Readonly<Record<UploadKind, number>> = {
+  pdf: 50 * MB,
+  image: 20 * MB,
+  sheet: 10 * MB,
+};
+
+/** The largest file of any kind. The customer's own limit may be lower; the server decides. */
+export const MAX_UPLOAD_BYTES = Math.max(...Object.values(UPLOAD_LIMIT_BYTES));
+
+/** The limits in words, shown next to the dropzone. */
+export const UPLOAD_LIMITS_HINT =
+  `PDF up to ${UPLOAD_LIMIT_BYTES.pdf / MB} MB. ` +
+  `PNG, JPG or TIFF up to ${UPLOAD_LIMIT_BYTES.image / MB} MB. ` +
+  `CSV or XLSX up to ${UPLOAD_LIMIT_BYTES.sheet / MB} MB.`;
 
 /** How often the list is asked again while a document is still being checked or read. */
 export const POLL_MS = 3000;
@@ -31,22 +62,60 @@ function extension(name: string): string {
   return dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
 }
 
+function isAccepted(ext: string): ext is AcceptedExtension {
+  return (ACCEPTED_EXTENSIONS as readonly string[]).includes(ext);
+}
+
+/** The kind a file name's ending stands for, in any letter case, or null when it is not accepted. */
+export function uploadKind(name: string): UploadKind | null {
+  const ext = extension(name);
+  return isAccepted(ext) ? KIND_OF_EXTENSION[ext] : null;
+}
+
+/**
+ * The largest file of this kind that may be sent. A customer's own limit can
+ * only lower it, never raise it; null means the customer has none.
+ */
+export function limitFor(kind: UploadKind, customerMaxBytes: number | null = null): number {
+  const typeLimit = UPLOAD_LIMIT_BYTES[kind];
+  return customerMaxBytes === null ? typeLimit : Math.min(typeLimit, customerMaxBytes);
+}
+
+/**
+ * The refusal for a file over its limit, naming the limit, the size and the
+ * fix. The same words as the server's too_large_message. The size is rounded
+ * up, so a file just over 20 MB says 21 MB, never 20; the limit is rounded
+ * down, so it is never overstated.
+ */
+export function tooLargeMessage(kind: UploadKind, sizeBytes: number, limitBytes: number): string {
+  const limit = Math.floor(limitBytes / MB);
+  const size = Math.ceil(sizeBytes / MB);
+  switch (kind) {
+    case "pdf":
+      return `PDFs can be up to ${limit} MB. This one is ${size} MB. Split it or save it smaller and try again.`;
+    case "image":
+      return `Photos and scans can be up to ${limit} MB. This one is ${size} MB. Save it at a lower resolution and try again.`;
+    case "sheet":
+      return `Spreadsheets and CSV files can be up to ${limit} MB. This one is ${size} MB. Split it into smaller files and try again.`;
+  }
+}
+
 /**
  * Why a file will not be sent, in plain language, or null when it may be sent.
- * Checked before uploading so people get the answer at once.
+ * Checked before uploading so people get the answer at once. The limit is the
+ * one for the file's kind, lowered by the customer's own limit when one is known.
  */
 export function validateUpload(
   file: { name: string; size: number },
-  maxBytes: number = MAX_UPLOAD_BYTES,
+  customerMaxBytes: number | null = null,
 ): string | null {
-  const ext = extension(file.name);
-  if (!(ACCEPTED_EXTENSIONS as readonly string[]).includes(ext)) {
+  const kind = uploadKind(file.name);
+  if (kind === null) {
     return "This kind of file can't be uploaded. Use PDF, PNG, JPG, TIFF, CSV or XLSX.";
   }
   if (file.size === 0) return "This file is empty.";
-  if (file.size > maxBytes) {
-    return `This file is larger than ${Math.floor(maxBytes / (1024 * 1024))} MB.`;
-  }
+  const limit = limitFor(kind, customerMaxBytes);
+  if (file.size > limit) return tooLargeMessage(kind, file.size, limit);
   return null;
 }
 
@@ -138,12 +207,20 @@ export function uploadStateText(state: UploadState): string {
   }
 }
 
-/** What the list area shows. A failed refresh keeps the list it already has. */
+/**
+ * What the list area shows. A failed refresh keeps the list it already has.
+ * Nothing left by a search or by filters is "no-match", never "empty".
+ */
 export type ListView = "loading" | "error" | "empty" | "no-match" | "list";
 
-export function listView(total: number | null, failed: boolean, q: string): ListView {
+export function listView(
+  total: number | null,
+  failed: boolean,
+  q: string,
+  filtered = false,
+): ListView {
   if (total === null) return failed ? "error" : "loading";
-  if (total === 0) return q === "" ? "empty" : "no-match";
+  if (total === 0) return q === "" && !filtered ? "empty" : "no-match";
   return "list";
 }
 

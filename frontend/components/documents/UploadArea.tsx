@@ -3,8 +3,9 @@
 // Uploading. Files come from the "Upload files" button (the hidden file input
 // the documents screen owns) or are dropped on the dropzone. Each file is
 // checked first (kind and size), then sent one after another with its own
-// progress bar. The outcome, including "already uploaded" and any error, stays
-// next to its file.
+// progress bar, into the folder that was being viewed when they were added.
+// The outcome, including "already uploaded" and any error, stays next to its
+// file.
 
 import Link from "next/link";
 import { useRef, useState } from "react";
@@ -12,7 +13,13 @@ import type { DragEvent, ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, uploadDocument } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
-import { estimateIngestSeconds, formatEtaText, uploadStateText, validateUpload } from "./logic";
+import {
+  UPLOAD_LIMITS_HINT,
+  estimateIngestSeconds,
+  formatEtaText,
+  uploadStateText,
+  validateUpload,
+} from "./logic";
 import type { UploadState } from "./logic";
 import styles from "./Documents.module.css";
 
@@ -37,11 +44,13 @@ export function useUploads(onUploaded: () => void) {
     );
   }
 
-  async function send(key: string, file: File) {
+  async function send(key: string, file: File, folderId: string | undefined) {
     update(key, { kind: "uploading", fraction: 0 });
     try {
-      const result = await uploadDocument(file, (fraction) =>
-        update(key, { kind: "uploading", fraction }),
+      const result = await uploadDocument(
+        file,
+        (fraction) => update(key, { kind: "uploading", fraction }),
+        folderId,
       );
       update(
         key,
@@ -63,7 +72,8 @@ export function useUploads(onUploaded: () => void) {
     }
   }
 
-  async function addFiles(files: File[]) {
+  /** Queue files for upload into folderId (undefined: the top level). */
+  async function addFiles(files: File[], folderId?: string) {
     const added = files.map((file) => {
       nextKey.current += 1;
       const problem = validateUpload(file);
@@ -78,7 +88,7 @@ export function useUploads(onUploaded: () => void) {
     setEntries((current) => [...added.map((item) => item.entry), ...current]);
     // One at a time, so a big batch does not trip the rate limit.
     for (const { entry, file } of added) {
-      if (entry.state.kind === "waiting") await send(entry.key, file);
+      if (entry.state.kind === "waiting") await send(entry.key, file, folderId);
     }
   }
 
@@ -88,8 +98,6 @@ export function useUploads(onUploaded: () => void) {
 
   return { entries, addFiles, clearFinished };
 }
-
-const KINDS_HINT = "PDF, PNG, JPG, TIFF, CSV or XLSX, up to 50 MB each.";
 
 /**
  * Where files can be dropped. With no documents yet it is a full dashed card
@@ -141,7 +149,7 @@ export function Dropzone({
       {variant === "full" ? (
         <>
           {children}
-          <p className={styles.dropHint}>Or drag files here. {KINDS_HINT}</p>
+          <p className={styles.dropHint}>Or drag files here. {UPLOAD_LIMITS_HINT}</p>
         </>
       ) : (
         <>
@@ -152,7 +160,7 @@ export function Dropzone({
           <button type="button" className="btn" onClick={onChoose}>
             Choose files
           </button>
-          <p className={styles.dropHint}>{KINDS_HINT}</p>
+          <p className={styles.dropHint}>{UPLOAD_LIMITS_HINT}</p>
         </>
       )}
     </div>
