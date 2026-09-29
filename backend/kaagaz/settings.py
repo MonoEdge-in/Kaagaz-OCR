@@ -82,6 +82,9 @@ class Settings:
     session_hours: int
     cookie_secure: bool
 
+    # Trash (PRD 1 F5): days a document stays in Trash before the worker deletes it for good.
+    trash_days: int
+
     # Answers.
     answer_max_evidence: int
     answer_min_evidence_score: float
@@ -135,6 +138,7 @@ class Settings:
             session_secret=env.secret("SESSION_SECRET"),
             session_hours=env.integer("SESSION_HOURS"),
             cookie_secure=env.boolean("COOKIE_SECURE"),
+            trash_days=env.integer("TRASH_DAYS"),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             timezone=env.text("TIMEZONE"),

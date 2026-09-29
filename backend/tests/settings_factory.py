@@ -53,6 +53,7 @@ _BASE: dict[str, Any] = {
     "session_secret": "test-session-secret-that-is-long-enough-000",
     "session_hours": 12,
     "cookie_secure": False,
+    "trash_days": 30,
     "answer_max_evidence": 8,
     "answer_min_evidence_score": 0.2,
     "timezone": "Asia/Kolkata",

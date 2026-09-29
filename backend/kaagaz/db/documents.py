@@ -10,6 +10,9 @@ and a trigger refuses it as well (the gate's adapter contract).
 
 Each call is one indexed statement: O(log n) in the number of documents.
 ``mark_ready`` is the exception: it takes the family lock first (below).
+
+``delete_forever`` is today's full delete of one document, shared by the trash
+purge (kaagaz/jobs/purge.py) and the permanent delete.
 """
 
 from collections.abc import Iterator, Sequence
@@ -22,7 +25,7 @@ from sqlalchemy.exc import OperationalError
 from kaagaz.db.engine import Database
 from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import DocumentRecord
+from kaagaz.ingestion.ports import BlobStorage, DocumentRecord
 from kaagaz.scanning.gate import DocumentStatus
 
 _SELECT = (
@@ -74,6 +77,22 @@ def mark_ready(conn: Connection, customer_id: str, document_id: str, page_count:
     if current:
         conn.execute(text(_OTHERS_NOT_CURRENT), params)
     conn.execute(text(_READY), {**params, "pages": page_count, "current": current})
+
+
+def delete_forever(conn: Connection, storage: BlobStorage, customer_id: str, document_id: str) -> None:
+    """Delete one document for good: its row, with its pages, pieces, values and
+    the rest (cascade), then its stored files.
+
+    ``conn`` comes from ``Database.customer(customer_id)``. The files go inside
+    that transaction: if storage cannot be reached, BackendUnavailable rolls the
+    row back and a retry works. One statement, plus O(k) storage calls for the
+    document's k stored files.
+    """
+    conn.execute(
+        text("DELETE FROM documents WHERE customer_id = :c AND id = :d"),
+        {"c": customer_id, "d": document_id},
+    )
+    storage.delete(customer_id, document_id)
 
 
 def _record(row: Sequence[Any]) -> DocumentRecord:

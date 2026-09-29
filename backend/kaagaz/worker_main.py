@@ -16,6 +16,10 @@ until it is told to stop:
   the document failed (``retries_exhausted``) and buries the job.
 * The queue's maximum receives is read from the queue once, at start-up. A
   queue without a redrive policy stops the worker before it takes any job.
+* Trash older than ``TRASH_DAYS`` is purged at most once an hour, between
+  jobs (``PurgeHourly``, kaagaz/jobs/purge.py). The hour is measured on the
+  injected clock. Several workers may purge at once: each family is taken by
+  one of them only.
 
 Logs are JSON lines holding ids, codes and counts only: never file names,
 document text or an exception's message (it could quote a document). An
@@ -25,13 +29,14 @@ PROVISIONAL: the pause after an outage reuses QUEUE_WAIT_SECONDS rather than
 adding a setting; back-off with jitter needs Vrushit's queue settings.
 """
 
+import functools
 import json
 import logging
 import signal
 import sys
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import FrameType
 from typing import Protocol
 
@@ -42,10 +47,14 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.purge import purge_expired
 from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
 from kaagaz.settings import Settings
 
 logger = logging.getLogger("kaagaz.worker")
+
+# How often the trash purge runs, at most (PRD 1 F5).
+PURGE_EVERY = timedelta(hours=1)
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
@@ -122,6 +131,35 @@ class RunsJobs(Protocol):
     def run_once(self) -> bool: ...
 
 
+class PurgeHourly:
+    """Wraps the worker: before a turn, runs ``purge`` (returns how many families
+    it purged) if an hour has passed on ``clock`` since the last run. The first
+    turn runs it.
+
+    The time is noted before the purge starts, so a purge that fails (storage
+    or the database down) raises to the loop, which pauses as for any outage,
+    and it is not tried again until the next hour; the jobs go on meanwhile.
+    O(1) per turn, plus the purge's own cost once an hour.
+    """
+
+    def __init__(self, worker: RunsJobs, purge: Callable[[], int], clock: Callable[[], datetime]) -> None:
+        self._worker = worker
+        self._purge = purge
+        self._clock = clock
+        self._last: datetime | None = None
+
+    def run_once(self) -> bool:
+        now = self._clock()
+        if self._last is None or now - self._last >= PURGE_EVERY:
+            self._last = now
+            logger.info("trash purged: %d families", self._purge())
+        return self._worker.run_once()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 def install_stop_handlers(stop: threading.Event) -> None:
     """SIGINT and SIGTERM set ``stop``. Must be called from the main thread."""
 
@@ -170,12 +208,14 @@ def main() -> None:
     install_stop_handlers(stop)
     storage.ensure_bucket()  # the laptop's first start; in AWS it only checks
     logger.info("worker started")
-    worker = Worker(
+    jobs = Worker(
         queue,
         LoggedHandler(processor),
         max_receives=max_receives,
         on_exhausted=MarkExhausted(PgDocuments(db).mark_exhausted),
     )
+    purge = functools.partial(purge_expired, db, storage, _utc_now, settings.trash_days)
+    worker = PurgeHourly(jobs, purge, _utc_now)
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
     db.engine.dispose()
     logger.info("worker stopped")
