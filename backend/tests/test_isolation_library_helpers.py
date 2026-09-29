@@ -1,9 +1,10 @@
 """The library helpers, called by customer B with customer A's exact ids.
 
-``kaagaz.db.folders``, ``tags`` and ``trash`` must give B "not found" (the 404 the
-API will show) or False, and leave A unchanged. Each test passes while either
-lock holds (the helper's own customer filter or row level security), so each one
-also checks both customers' rows afterwards.
+``kaagaz.db.tags`` and ``trash`` must give B "not found" (the 404 the API will
+show) or False, and leave A unchanged. Each test passes while either lock holds
+(the helper's own customer filter or row level security), so each one also
+checks both customers' rows afterwards. The folder helpers have their own file,
+test_isolation_folder_helpers.py.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -12,14 +13,6 @@ import pytest
 from sqlalchemy import Connection, text
 
 from kaagaz.db.engine import Database
-from kaagaz.db.folders import (
-    FolderNotFound,
-    create_folder,
-    delete_folder,
-    list_folders,
-    move_folder,
-    rename_folder,
-)
 from kaagaz.db.tags import TagNotFound, delete_tag, list_tags, set_document_tags, tags_for_documents
 from kaagaz.db.trash import lock_family, purge_next_family, restore_document, trash_document
 from tests.db_support import insert_document, insert_tag, new_customer, new_library
@@ -53,54 +46,9 @@ def _trashed_document(db: Database, customer_id: str, *, deleted_at: datetime) -
 NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
 
 
-def _folders(db: Database, customer_id: str) -> list[tuple[str, str | None, str]]:
-    with db.customer(customer_id) as conn:
-        return [(row.id, row.parent_id, row.name) for row in list_folders(conn, customer_id)]
-
-
 def _tag_ids(db: Database, customer_id: str, document_id: str) -> list[str]:
     with db.customer(customer_id) as conn:
         return [row.id for row in tags_for_documents(conn, customer_id, [document_id])[document_id]]
-
-
-def test_create_folder_inside_another_customer_folder_is_not_found(db: Database) -> None:
-    a = new_library(db)
-    b = new_library(db)
-    with pytest.raises(FolderNotFound) as caught, db.customer(b["customer"]) as conn:
-        create_folder(conn, b["customer"], name="Inside A", parent_id=a["folder"], created_by=b["user"])
-    assert caught.value.code == "not_found"
-    assert _folders(db, b["customer"]) == [(b["folder"], None, "GST")]
-    assert _folders(db, a["customer"]) == [(a["folder"], None, "GST")]
-
-
-def test_rename_move_and_delete_of_another_customer_folder_are_not_found(db: Database) -> None:
-    a = new_library(db)
-    b = new_library(db)
-    with db.customer(a["customer"]) as conn:
-        # delete_folder first moves trashed documents out; it must not touch A's.
-        a_trashed = insert_document(conn, a["customer"], folder_id=a["folder"], deleted_at=NOW)
-
-    with pytest.raises(FolderNotFound) as caught, db.customer(b["customer"]) as conn:
-        rename_folder(conn, b["customer"], a["folder"], name="Taken")
-    assert caught.value.code == "not_found"
-    with pytest.raises(FolderNotFound) as caught, db.customer(b["customer"]) as conn:
-        move_folder(conn, b["customer"], a["folder"], parent_id=None)
-    assert caught.value.code == "not_found"
-    with pytest.raises(FolderNotFound) as caught, db.customer(b["customer"]) as conn:
-        move_folder(conn, b["customer"], a["folder"], parent_id=b["folder"])
-    assert caught.value.code == "not_found"
-    with pytest.raises(FolderNotFound) as caught, db.customer(b["customer"]) as conn:
-        move_folder(conn, b["customer"], b["folder"], parent_id=a["folder"])
-    assert caught.value.code == "not_found"
-    with pytest.raises(FolderNotFound) as caught, db.customer(b["customer"]) as conn:
-        delete_folder(conn, b["customer"], a["folder"])
-    assert caught.value.code == "not_found"
-
-    assert _folders(db, a["customer"]) == [(a["folder"], None, "GST")]
-    assert _folders(db, b["customer"]) == [(b["folder"], None, "GST")]
-    with db.customer(a["customer"]) as conn:
-        filed = conn.execute(text("SELECT id FROM documents WHERE folder_id = :f"), {"f": a["folder"]}).all()
-    assert sorted(str(row[0]) for row in filed) == sorted([a["document"], a_trashed])
 
 
 def test_set_document_tags_with_another_customer_tag_or_document_is_not_found(db: Database) -> None:
@@ -160,10 +108,8 @@ def test_lists_never_show_another_customer_rows(db: Database) -> None:
     a = new_library(db)
     b = new_library(db)
     with db.customer(b["customer"]) as conn:
-        folders = [row.id for row in list_folders(conn, b["customer"])]
         tags = [row.id for row in list_tags(conn, b["customer"])]
         by_document = tags_for_documents(conn, b["customer"], [b["document"], a["document"]])
-    assert folders == [b["folder"]]
     assert tags == [b["tag"]]
     assert {document: [row.id for row in rows] for document, rows in by_document.items()} == {
         b["document"]: [b["tag"]],

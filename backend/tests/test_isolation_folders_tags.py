@@ -170,6 +170,39 @@ def test_a_document_tag_cannot_point_at_another_customer_document_or_tag(db: Dat
     assert violation(caught.value) == ("23503", "document_tags_customer_id_tag_id_fkey")
 
 
+def test_a_folder_tag_or_trash_mark_cannot_name_another_customer_user(db: Database) -> None:
+    """created_by and deleted_by use (customer_id, user) keys too: the user must be the row's customer's."""
+    a = new_library(db)
+    b = new_library(db)
+    trashed = {"at": datetime(2026, 9, 29, tzinfo=UTC), "d": a["document"]}
+    attempts: tuple[tuple[str, dict[str, object], str], ...] = (
+        (
+            "INSERT INTO folders (customer_id, name, created_by) VALUES (:a, 'Theirs', :b_user)",
+            {},
+            "folders_customer_id_created_by_fkey",
+        ),
+        (
+            "INSERT INTO tags (customer_id, name, created_by) VALUES (:a, 'Theirs', :b_user)",
+            {},
+            "tags_customer_id_created_by_fkey",
+        ),
+        (
+            "UPDATE documents SET deleted_at = :at, deleted_by = :b_user WHERE id = :d",
+            trashed,
+            "documents_deleted_by_fk",
+        ),
+    )
+    for statement, params, constraint in attempts:
+        with pytest.raises(IntegrityError) as caught, db.customer(a["customer"]) as conn:
+            conn.execute(text(statement), {"a": a["customer"], "b_user": b["user"], **params})
+        assert violation(caught.value) == ("23503", constraint), statement
+
+    with db.customer(a["customer"]) as conn:
+        assert _count(conn, "SELECT count(*) FROM folders WHERE name = 'Theirs'") == 0
+        assert _count(conn, "SELECT count(*) FROM tags WHERE name = 'Theirs'") == 0
+        assert _count(conn, "SELECT count(*) FROM documents WHERE deleted_at IS NOT NULL") == 0
+
+
 def _trashed_document(db: Database, customer_id: str, *, deleted_at: datetime) -> str:
     with db.customer(customer_id) as conn:
         return insert_document(conn, customer_id, deleted_at=deleted_at)

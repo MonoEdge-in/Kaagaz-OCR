@@ -1,4 +1,4 @@
-"""Folders: one customer's tree, at most 5 levels deep (PRD 1 F2, WP1.2).
+"""Folders: one customer's tree, at most 5 levels deep (PRD 1 F1, WP1.2).
 
 Why here: the tree rules live in SQL next to the data. Every function takes a
 connection from ``Database.customer(customer_id)`` and also filters on
@@ -166,9 +166,14 @@ _MOVE_CHECK = (
 
 # Trashed documents keep their folder until they are restored or purged; a
 # folder holding only those can still be deleted, and they go to the top level.
+# The rows are locked in family order (each family's first version, id =
+# family_id, then by id), the order every family lock uses, so a folder delete
+# and a restore of one of its families queue instead of deadlocking.
 _DETACH_TRASHED = (
-    "UPDATE documents d SET folder_id = NULL"
-    " WHERE d.customer_id = :c AND d.folder_id = :f AND d.deleted_at IS NOT NULL"
+    "UPDATE documents d SET folder_id = NULL FROM ("
+    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = :f AND deleted_at IS NOT NULL"
+    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
+    " WHERE d.customer_id = :c AND d.id = l.id AND d.deleted_at IS NOT NULL"
 )
 
 _DELETE = "DELETE FROM folders WHERE customer_id = :c AND id = :f RETURNING id"
@@ -245,8 +250,9 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str) -> None:
 
     Raises FolderNotFound, or FolderNotEmpty when a folder or a live document
     is still inside (the foreign keys refuse the delete, and the detach is
-    rolled back with it). O(t log D + log F) time for its t trashed documents,
-    O(1) space.
+    rolled back with it). O(n log D + t log t + log F) time for the n documents
+    filed in it and the t trashed ones it moves (n = t when the delete succeeds),
+    O(t) space.
     """
     _lock_tree(conn, customer_id)
     params = {"c": customer_id, "f": folder_id}

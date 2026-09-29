@@ -1,4 +1,4 @@
-"""Tags: a customer's labels, and the set of tags on a document family (PRD 1 F3, WP1.2).
+"""Tags: a customer's labels, and the set of tags on a document family (PRD 1 F2, WP1.2).
 
 Tags belong to the family: setting them through any version writes the same
 set to every version. The concurrency tests force the order with

@@ -8,8 +8,9 @@ The family is the unit (plan 9.3): every version of a document shares its
 ``family_id``, its folder, its tags and its place in Trash. ``lock_family`` is
 the one lock for a family, taken first by trash, restore, permanent delete,
 the version insert, ``mark_ready`` and the folder and tag writes. It locks the
-rows in id order, so two lockers of one family always queue instead of
-deadlocking.
+family's first version (id = family_id) first, then the rest by id. That row
+never changes, so two lockers of one family always queue on it instead of
+deadlocking, even when a new version arrives while one of them waits.
 
 Time is always passed in (``now``, ``before``) from the injected clock, never
 read with SQL ``now()``, so tests move the clock instead of waiting.
@@ -26,7 +27,7 @@ from sqlalchemy import Connection, text
 _LOCK_FAMILY = (
     "SELECT family_id FROM documents WHERE customer_id = :c"
     " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d)"
-    " ORDER BY id FOR NO KEY UPDATE"
+    " ORDER BY (id <> family_id), id FOR NO KEY UPDATE"
 )
 
 # A family already in Trash keeps its first deleted_at, so the purge clock is
@@ -43,16 +44,15 @@ _RESTORE = (
 
 _CUSTOMERS_WITH_TRASH = "SELECT t.id FROM kaagaz_customer_ids_with_trash(:before) AS t (id) ORDER BY t.id"
 
-# One family whose trash is older than :before. Only the family's first row in
-# lock order (the smallest id) can be picked, and it is taken with SKIP LOCKED:
-# every family locker takes that row first, so a family someone holds is
-# skipped, and nobody holding another of its rows can be waiting on us.
+# One family whose trash is older than :before, picked by its first version
+# (id = family_id) with SKIP LOCKED: every family locker takes that row first,
+# so a family someone holds is skipped, and nobody holding another of its rows
+# can be waiting on us.
 _PURGE_PICK = (
     "SELECT d.family_id FROM documents d"
-    " WHERE d.customer_id = :c AND d.deleted_at IS NOT NULL AND d.deleted_at < :before"
-    " AND NOT EXISTS (SELECT 1 FROM documents o"
-    " WHERE o.customer_id = :c AND o.family_id = d.family_id AND o.id < d.id)"
-    " ORDER BY d.deleted_at, d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED"
+    " WHERE d.customer_id = :c AND d.id = d.family_id"
+    " AND d.deleted_at IS NOT NULL AND d.deleted_at < :before"
+    " ORDER BY d.deleted_at, d.id LIMIT 1 FOR UPDATE SKIP LOCKED"
 )
 
 # The rest of the picked family, in lock order. Only trashed rows are returned,
@@ -60,13 +60,13 @@ _PURGE_PICK = (
 _PURGE_LOCK = (
     "SELECT d.id FROM documents d"
     " WHERE d.customer_id = :c AND d.family_id = :f AND d.deleted_at IS NOT NULL"
-    " ORDER BY d.id FOR UPDATE"
+    " ORDER BY (d.id <> d.family_id), d.id FOR UPDATE"
 )
 
 
 def lock_family(conn: Connection, customer_id: str, document_id: str) -> str | None:
     """Lock every version of ``document_id``'s family until the transaction ends,
-    in id order, and return the family_id; None if there is no such document for
+    first version first, and return the family_id; None if there is no such document for
     this customer. O(v log D) time and O(v) space for the family's v versions."""
     families: Sequence[object] = (
         conn.execute(text(_LOCK_FAMILY), {"c": customer_id, "d": document_id}).scalars().all()
@@ -111,7 +111,7 @@ def customer_ids_with_trash(conn: Connection, *, before: datetime) -> list[str]:
 
 def purge_next_family(conn: Connection, customer_id: str, *, before: datetime) -> list[str]:
     """Lock the family longest in Trash (trashed before ``before``) and return its
-    document ids, smallest first; empty when there is nothing to purge.
+    document ids, first version first; empty when there is nothing to purge.
 
     A family another transaction holds is skipped, never waited for. The caller
     deletes the storage and the rows of exactly these ids in this same
