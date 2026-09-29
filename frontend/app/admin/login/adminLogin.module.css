@@ -1,6 +1,7 @@
-/* Admin sign-in and the 2FA set-up step. The frame, banner, submit button and
-   help line come from app/login/login.module.css; this adds only what the
-   admin screen has of its own. Tokens only (app/globals.css). */
+/* Admin sign-in and the 2FA set-up step (shown in Admin, Settings). The frame,
+   banner, submit button and help line come from app/login/login.module.css;
+   this adds only what the admin screen has of its own. Tokens only
+   (app/globals.css). */
 
 .page {
   position: relative;
@@ -26,8 +27,18 @@
   font-size: var(--fs-2xl);
 }
 
-.title:focus-visible {
+.stepTitle {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.stepTitle:focus-visible {
   outline-offset: 4px;
+}
+
+/* The lines of the admin's own Two-step sign-in section. */
+.twoStepText {
+  margin: 0;
 }
 
 .lead {

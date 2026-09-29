@@ -2,7 +2,9 @@
 
 // The admin screen: four tabs (Users, Settings, Activity, Numbers) as a
 // segmented control that scrolls sideways on its own at small widths. Only the
-// open tab is mounted, so each one loads its data when it is opened.
+// open tab is mounted, so each one loads its data when it is opened. Settings
+// also shows `twoStep`, the signed-in admin's own Two-step sign-in, which the
+// page passes in (it is built in app/ from the admin sign-in's set-up step).
 //
 // It opens only for an admin session (PRD A1): anyone else, including an admin
 // who signed in at /login, is sent to /admin/login. The link is shown to admin
@@ -10,7 +12,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { useSession } from "@/lib/session";
 import { ActivityPanel } from "./ActivityPanel";
 import { TABS, adminGate, tabAfterKey } from "./logic";
@@ -20,7 +22,7 @@ import { SettingsPanel } from "./SettingsPanel";
 import { UsersPanel } from "./UsersPanel";
 import styles from "./Admin.module.css";
 
-export function AdminView() {
+export function AdminView({ twoStep }: { twoStep: ReactNode }) {
   const { me } = useSession();
   const router = useRouter();
   const gate = adminGate(me);
@@ -89,7 +91,12 @@ export function AdminView() {
           className={styles.panel}
         >
           {tab.id === active && tab.id === "users" && <UsersPanel currentUserId={me.user.id} />}
-          {tab.id === active && tab.id === "settings" && <SettingsPanel />}
+          {tab.id === active && tab.id === "settings" && (
+            <div className={styles.panelStack}>
+              <SettingsPanel />
+              {twoStep}
+            </div>
+          )}
           {tab.id === active && tab.id === "activity" && <ActivityPanel />}
           {tab.id === active && tab.id === "numbers" && <NumbersPanel />}
         </div>

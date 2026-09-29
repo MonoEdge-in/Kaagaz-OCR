@@ -37,19 +37,18 @@ export interface Me {
     display_name: string;
     role: Role;
     must_change_password: boolean;
+    totp_enabled: boolean; // two-step sign-in is on (each admin chooses)
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
 }
 
-/** The first admin sign-in, before 2FA is set up: the key to type into the app. */
-export interface EnrolRequired {
-  enrol_required: true;
+/** "Turn on" two-step sign-in (POST /auth/admin/2fa/start). Nothing is stored yet. */
+export interface TwoStepSetup {
   enrol_token: string; // lasts 10 minutes
   secret: string; // base32, in groups of 4
+  otpauth_uri: string; // the same key as an otpauth:// link, for a QR code
 }
-
-export type AdminLoginResult = Me | EnrolRequired;
 
 // Where a value sits. A box is in fractions (0 to 1) of the page's width and
 // height, origin top left. A cell is 1-based; for spreadsheets, page = sheet.

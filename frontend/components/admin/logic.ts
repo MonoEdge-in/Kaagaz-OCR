@@ -114,8 +114,8 @@ export interface StatusPart {
 
 /**
  * The status column: Active, "Locked until 14:05" or Disabled, then "2FA on"
- * or "2FA off" (off is only worth saying for an admin, who needs it to sign in
- * on the admin screen), then "Temporary password" until the user sets their own.
+ * or "2FA off" (off is only worth saying for an admin, who can turn it on for
+ * the admin screen), then "Temporary password" until the user sets their own.
  */
 export function userStatus(user: AdminUser, now: number): StatusPart[] {
   const parts: StatusPart[] = [];
@@ -258,6 +258,8 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.login_failed": "Sign-in failed",
   "auth.locked": "Account locked after wrong passwords",
   "auth.enrol": "Set up 2FA",
+  "auth.totp_on": "Turned on 2FA",
+  "auth.totp_off": "Turned off 2FA",
   "auth.password_change": "Changed their password",
   "auth.logout_everywhere": "Signed out everywhere",
   "user.unlock": "Unlocked a user",

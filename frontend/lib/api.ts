@@ -4,7 +4,6 @@
 
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type {
-  AdminLoginResult,
   AdminUser,
   AuditEntry,
   ChatResponse,
@@ -24,6 +23,7 @@ import type {
   SheetCells,
   Stats,
   Tag,
+  TwoStepSetup,
   UploadResult,
 } from "./types";
 
@@ -106,15 +106,20 @@ export const login = (email: string, password: string) =>
 export const logout = () => request<void>("POST", "/auth/logout");
 export const me = () => request<Me>("GET", "/auth/me");
 
-/** The admin screen's sign-in. Without a code, a first sign-in gets the 2FA set-up. */
+/** The admin screen's sign-in. The code is needed only once the admin has turned 2FA on. */
 export const adminLogin = (email: string, password: string, code?: string) =>
-  request<AdminLoginResult>("POST", "/auth/admin/login", {
+  request<Me>("POST", "/auth/admin/login", {
     email,
     password,
     ...(code === undefined ? {} : { code }),
   });
+/** The signed-in admin's own two-step sign-in: a new key, then the first code turns it on. */
+export const startTwoStep = () => request<TwoStepSetup>("POST", "/auth/admin/2fa/start");
 export const adminEnrol = (enrolToken: string, code: string) =>
   request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
+/** Turns it off; the server re-signs this browser and signs out the others. */
+export const turnOffTwoStep = (password: string) =>
+  request<Me>("POST", "/auth/admin/2fa/off", { password });
 export const changePassword = (current: string, next: string) =>
   request<Me>("POST", "/auth/password", { current_password: current, new_password: next });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
