@@ -12,6 +12,9 @@ Rules shared by every query (never a guess, CLAUDE.md never-do 6):
 * Only documents with status ``ready``, always inside ``db.customer`` and
   always ``WHERE customer_id = :customer_id`` (the second lock next to row
   level security).
+* Only the current version of a family, and nothing in Trash (PRD 1 F5 and
+  F6): the ``LIVE_CURRENT`` text (kaagaz/db/visibility.py) is written out in
+  every CTE that reads values, and in the lookup of the cited values.
 * The metric is one field. The party and the date are each a list of
   candidate fields (``party_name``, ``name``...), because an invoice and a
   register name them differently; the record's own value is used.
@@ -115,7 +118,7 @@ _AVAILABLE_FIELDS = text(
     SELECT DISTINCT v.field
     FROM extracted_values v
     JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-    WHERE v.customer_id = :customer_id AND d.status = 'ready'
+    WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
     """
 )
 
@@ -126,8 +129,8 @@ _TOP_GROUP = text(
                (array_agg(v.value_number))[1] AS amount, bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-        WHERE v.customer_id = :customer_id AND d.status = 'ready' AND v.field = :metric
-          AND v.record_key NOT LIKE 'page:%'
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+          AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), grp AS (
@@ -135,7 +138,7 @@ _TOP_GROUP = text(
                (array_agg(v.value_text))[1] AS name, bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-        WHERE v.customer_id = :customer_id AND d.status = 'ready'
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:group_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(btrim(v.value_text) <> '')
@@ -144,7 +147,7 @@ _TOP_GROUP = text(
                bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-        WHERE v.customer_id = :customer_id AND d.status = 'ready'
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
@@ -182,8 +185,8 @@ _TOTAL = text(
                (array_agg(v.value_number))[1] AS amount, bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-        WHERE v.customer_id = :customer_id AND d.status = 'ready' AND v.field = :metric
-          AND v.record_key NOT LIKE 'page:%'
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+          AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), dated AS (
@@ -191,7 +194,7 @@ _TOTAL = text(
                bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-        WHERE v.customer_id = :customer_id AND d.status = 'ready'
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
@@ -221,8 +224,8 @@ _EXTREME_VALUE = text(
                (array_agg(v.value_number))[1] AS amount, bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-        WHERE v.customer_id = :customer_id AND d.status = 'ready' AND v.field = :metric
-          AND v.record_key NOT LIKE 'page:%'
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+          AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), dated AS (
@@ -230,7 +233,7 @@ _EXTREME_VALUE = text(
                bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-        WHERE v.customer_id = :customer_id AND d.status = 'ready'
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
@@ -257,7 +260,7 @@ _COUNT_DOCUMENTS = text(
                bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-        WHERE v.customer_id = :customer_id AND d.status = 'ready'
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[]))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
@@ -283,7 +286,8 @@ _VALUE_REFS = text(
            d.detected_type, v.page_no, v.region, v.field, v.value_text, v.label
     FROM extracted_values v
     JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-    WHERE v.customer_id = :customer_id AND v.id = ANY(CAST(:ids AS uuid[]))
+    WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+      AND v.id = ANY(CAST(:ids AS uuid[]))
     """
 )
 
