@@ -5,6 +5,7 @@ writes into its SQL. Times are always passed in, never read from the
 database clock, so these tests use fixed dates instead of waiting.
 """
 
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -178,6 +179,49 @@ def test_a_restore_waits_for_a_trash_of_the_same_family(db: Database) -> None:
         assert restoring.result(timeout=10) is True
 
     assert _state(db, customer) == {first: (None, None), second: (None, None)}
+
+
+def test_a_family_that_grows_while_a_trash_waits_still_queues(db: Database) -> None:
+    """Version 2 arrives, with an id below version 1's, while a trash waits for the family.
+
+    The trash (paused between its two statements) locked only what its snapshot saw.
+    A restore that starts later sees both rows. Unless both take the first version
+    first, the restore holds version 2 while the trash needs it: a deadlock.
+    """
+    customer, admin = new_customer(db)
+    with db.customer(customer) as conn:
+        first = insert_document(conn, customer, id="ffffffff-ffff-4fff-bfff-" + uuid.uuid4().hex[:12])
+    smaller = "00000000-0000-4000-8000-" + uuid.uuid4().hex[:12]
+    trasher, restorer = f"trash-{uuid.uuid4().hex[:16]}", f"trash-{uuid.uuid4().hex[:16]}"
+    locked, go = threading.Event(), threading.Event()
+
+    def trash_in_two_steps() -> None:
+        with db.customer(customer) as conn:
+            _named(conn, trasher)
+            lock_family(conn, customer, first)
+            locked.set()
+            go.wait(timeout=10)
+            conn.execute(text(trash._TRASH), {"c": customer, "f": first, "by": admin, "now": NOW})
+
+    def restore() -> bool:
+        with db.customer(customer) as conn:
+            _named(conn, restorer)
+            return restore_document(conn, customer, first)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with db.customer(customer) as conn:  # the version insert, under the family lock
+            lock_family(conn, customer, first)
+            insert_document(conn, customer, id=smaller, family_id=first, version_no=2, is_current=False)
+            trashing = pool.submit(trash_in_two_steps)
+            wait_until_blocked(db, application_name=trasher)
+        assert locked.wait(timeout=10)
+        restoring = pool.submit(restore)
+        wait_until_blocked(db, application_name=restorer)
+        go.set()
+        trashing.result(timeout=10)
+        assert restoring.result(timeout=10) is True
+
+    assert _state(db, customer) == {first: (None, None), smaller: (None, None)}
 
 
 # --- purge ------------------------------------------------------------------------------
