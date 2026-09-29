@@ -197,7 +197,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **6. File types and upload limits**
 - Check: `: > e.csv; up e.csv`; `printf 'MZ\x90\x00' > a.exe; up a.exe`; any Word file `up letter.docx`; `head -c 52500000 /dev/zero > big.bin; up big.bin`.
-- Expect: empty file `400 empty_file`; unknown type `400 unsupported_type`; a .docx is a zip, so it is accepted (`201`) and ends `needs_reader`; the big file `413 too_large`. The type always comes from the first bytes, never the name. An admin's lower limit (feature 24) also applies. The screen refuses a .exe, an empty file or one over 50 MB before sending anything.
+- Expect: empty file `400 empty_file`; unknown type `400 unsupported_type`; a .docx is a zip, so it is accepted (`201`) and ends `needs_reader`; the big file `413 too_large`. The type always comes from the first bytes, never the name. An admin's lower limit (feature 24) also applies. Each type has its own limit (`MAX_UPLOAD_MB` for PDFs, `MAX_IMAGE_MB` for photos and scans, `MAX_SHEET_MB` for spreadsheets and CSV), and the 413 names the limit and the size. The screen refuses a .exe, an empty file or one over its type's limit before sending anything.
 - Tests: `test_sniff.py`, `test_upload_service.py`, `test_api_documents.py` (`test_the_customers_own_limit_applies`).
 
 **7. Fingerprint and duplicates**
@@ -211,8 +211,8 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Tests: `test_scan_gate.py`, `test_adapter_scanner.py`, `test_pipeline.py` (`test_an_infected_file_stays_rejected_and_keeps_its_reason`).
 
 **9. Page preparation and page pictures**
-- Check: upload a two-page PDF, then `SQL "SELECT page_no,width,height,unit,has_image FROM pages WHERE document_id='<id>' ORDER BY page_no"` and `curl -b admin@sharma-traders.example.jar -o p1.png $API/documents/<id>/pages/1/image`.
-- Expect: two rows in `pt` (about 595 by 842 for A4) with `has_image = t`, and a PNG at 150 DPI. A spreadsheet gives one page per sheet in `cells` with no image; a photo gives `px`. With `MAX_PAGES=1` in `.env` and the worker restarted, a two-page PDF ends `failed | too_many_pages`.
+- Check: upload a two-page PDF, then `SQL "SELECT page_no,width,height,unit,has_image FROM pages WHERE document_id='<id>' ORDER BY page_no"` and `curl -b admin@sharma-traders.example.jar -o p1.webp $API/documents/<id>/pages/1/image`.
+- Expect: two rows in `pt` (about 595 by 842 for A4) with `has_image = t`, and a WebP at 150 DPI. A spreadsheet gives one page per sheet in `cells` with no image; a photo gives `px`. With `MAX_PAGES=1` in `.env` and the worker restarted, a two-page PDF ends `failed | too_many_pages`.
 - Tests: `test_preparing.py`, `test_api_documents.py` (`test_page_image`).
 
 **10. Readers**

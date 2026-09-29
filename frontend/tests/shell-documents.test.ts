@@ -7,10 +7,14 @@ import {
   estimateIngestSeconds,
   formatEtaText,
   formatProgressPercent,
+  limitFor,
   listView,
   offsetAfterDelete,
   pageInfo,
   shouldPoll,
+  tooLargeMessage,
+  UPLOAD_LIMITS_HINT,
+  uploadKind,
   uploadStateText,
   validateUpload,
 } from "@/components/documents/logic";
@@ -39,18 +43,115 @@ describe("validateUpload", () => {
   it("allows exactly the limit and refuses one byte over", () => {
     expect(validateUpload({ name: "a.pdf", size: MAX_UPLOAD_BYTES })).toBeNull();
     expect(validateUpload({ name: "a.pdf", size: MAX_UPLOAD_BYTES + 1 })).toBe(
-      "This file is larger than 50 MB.",
+      "PDFs can be up to 50 MB. This one is 51 MB. Split it or save it smaller and try again.",
     );
   });
 
   it("uses a smaller limit when given one", () => {
     expect(validateUpload({ name: "a.csv", size: 6 * MB }, 5 * MB)).toBe(
-      "This file is larger than 5 MB.",
+      "Spreadsheets and CSV files can be up to 5 MB. This one is 6 MB. Split it into smaller files and try again.",
     );
   });
 
   it("offers the same kinds in the file picker", () => {
     expect(ACCEPT_ATTRIBUTE).toBe(".pdf,.png,.jpg,.jpeg,.tif,.tiff,.csv,.xlsx");
+  });
+});
+
+describe("upload limits by type (PRD U2)", () => {
+  const cases = [
+    { names: ["a.pdf"], limit: 50 * MB },
+    { names: ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff"], limit: 20 * MB },
+    { names: ["a.csv", "a.xlsx"], limit: 10 * MB },
+  ];
+
+  it("allows each type exactly at its limit and refuses one byte over", () => {
+    for (const { names, limit } of cases) {
+      for (const name of names) {
+        expect(validateUpload({ name, size: limit }), name).toBeNull();
+        expect(validateUpload({ name, size: limit + 1 }), name).toMatch(/can be up to/);
+      }
+    }
+  });
+
+  it("reads the ending in any letter case", () => {
+    expect(validateUpload({ name: "SCAN.TIFF", size: 20 * MB })).toBeNull();
+    expect(validateUpload({ name: "SCAN.TIFF", size: 20 * MB + 1 })).toBe(
+      "Photos and scans can be up to 20 MB. This one is 21 MB. Save it at a lower resolution and try again.",
+    );
+    expect(validateUpload({ name: "Photo.JpG", size: 20 * MB + 1 })).toMatch(/^Photos and scans/);
+    expect(validateUpload({ name: "BOOK.XLSX", size: 10 * MB + 1 })).toMatch(/^Spreadsheets/);
+    expect(validateUpload({ name: "DEED.PDF", size: 50 * MB })).toBeNull();
+    expect(uploadKind("DEED.PDF")).toBe("pdf");
+    expect(uploadKind("IMG_01.JPEG")).toBe("image");
+    expect(uploadKind("Ledger.Csv")).toBe("sheet");
+  });
+
+  it("knows the kind only for accepted endings", () => {
+    expect(uploadKind("virus.exe")).toBeNull();
+    expect(uploadKind("README")).toBeNull();
+    expect(uploadKind("a.constructor")).toBeNull();
+    expect(uploadKind("invoice.pdf.exe")).toBeNull();
+  });
+
+  it("names the limit, the size and the fix, in full", () => {
+    expect(validateUpload({ name: "photo.jpg", size: 34 * MB })).toBe(
+      "Photos and scans can be up to 20 MB. This one is 34 MB. Save it at a lower resolution and try again.",
+    );
+    expect(validateUpload({ name: "statement.pdf", size: 61 * MB })).toBe(
+      "PDFs can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
+    );
+    expect(validateUpload({ name: "ledger.xlsx", size: 12 * MB })).toBe(
+      "Spreadsheets and CSV files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
+    );
+    expect(tooLargeMessage("image", 34 * MB, 20 * MB)).toBe(
+      "Photos and scans can be up to 20 MB. This one is 34 MB. Save it at a lower resolution and try again.",
+    );
+    expect(tooLargeMessage("pdf", 61 * MB, 50 * MB)).toBe(
+      "PDFs can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
+    );
+    expect(tooLargeMessage("sheet", 12 * MB, 10 * MB)).toBe(
+      "Spreadsheets and CSV files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
+    );
+  });
+
+  it("rounds the size up, so a file just over the limit never shows the limit", () => {
+    expect(tooLargeMessage("image", 20 * MB + 1, 20 * MB)).toContain("This one is 21 MB.");
+    expect(tooLargeMessage("image", 33 * MB + 1, 20 * MB)).toContain("This one is 34 MB.");
+    expect(tooLargeMessage("pdf", 60.01 * MB, 50 * MB)).toContain("This one is 61 MB.");
+    expect(tooLargeMessage("sheet", 11.5 * MB, 10 * MB)).toContain("This one is 12 MB.");
+    expect(tooLargeMessage("sheet", 12 * MB, 10 * MB)).toContain("This one is 12 MB.");
+  });
+
+  it("uses the lower of the customer's limit and the type's limit", () => {
+    expect(limitFor("pdf")).toBe(50 * MB);
+    expect(limitFor("image")).toBe(20 * MB);
+    expect(limitFor("sheet")).toBe(10 * MB);
+    expect(limitFor("pdf", 25 * MB)).toBe(25 * MB);
+    expect(limitFor("image", 25 * MB)).toBe(20 * MB);
+    expect(limitFor("sheet", 25 * MB)).toBe(10 * MB);
+    expect(limitFor("image", null)).toBe(20 * MB);
+
+    // A lower customer limit is the one named.
+    expect(validateUpload({ name: "a.pdf", size: 25 * MB }, 25 * MB)).toBeNull();
+    expect(validateUpload({ name: "a.pdf", size: 25 * MB + 1 }, 25 * MB)).toBe(
+      "PDFs can be up to 25 MB. This one is 26 MB. Split it or save it smaller and try again.",
+    );
+    // A higher customer limit never raises the type's limit.
+    expect(validateUpload({ name: "a.png", size: 21 * MB }, 50 * MB)).toBe(
+      "Photos and scans can be up to 20 MB. This one is 21 MB. Save it at a lower resolution and try again.",
+    );
+    expect(validateUpload({ name: "a.csv", size: 10 * MB }, 50 * MB)).toBeNull();
+  });
+
+  it("keeps the largest limit as the overall ceiling", () => {
+    expect(MAX_UPLOAD_BYTES).toBe(50 * MB);
+  });
+
+  it("tells people each type's limit next to the dropzone", () => {
+    expect(UPLOAD_LIMITS_HINT).toBe(
+      "PDF up to 50 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+    );
   });
 });
 
