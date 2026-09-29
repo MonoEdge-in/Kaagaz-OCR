@@ -61,12 +61,12 @@ A reviewer picks the first reading, the second, or types the value. The fix is l
 
 ## Data and customer separation
 
-Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`. Every one of them except `customers` carries the customer.
+Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`, `folders`, `tags`, `document_tags`. Every one of them except `customers` carries the customer.
 
 Customers are kept apart by two locks:
 
 1. **The database lock.** Row level security is on every customer table. The app connects through `kaagaz_app`, a role that isn't a superuser, doesn't own the tables and can't bypass the rules. Every transaction sets the current customer first.
-2. **The application lock.** Every query also names the customer, and no function lists across customers.
+2. **The application lock.** Every query also names the customer. One function lists across customers: `kaagaz_customer_ids_with_trash` returns only the ids of customers with trash old enough to purge, for the worker's hourly purge (PROVISIONAL).
 
 The `isolation` tests prove both on every pull request.
 
