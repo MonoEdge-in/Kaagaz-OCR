@@ -57,7 +57,7 @@ class StubbedStorageTest(unittest.TestCase):
 
     def test_keys_are_made_from_ids_only(self) -> None:
         self.assertEqual(original_key(CUSTOMER, DOCUMENT), PREFIX + "original")
-        self.assertEqual(page_image_key(CUSTOMER, DOCUMENT, 3), PREFIX + "pages/3.png")
+        self.assertEqual(page_image_key(CUSTOMER, DOCUMENT, 3), PREFIX + "pages/3.webp")
         self.assertEqual(quarantine_key(CUSTOMER, DOCUMENT), f"quarantine/{CUSTOMER}/{DOCUMENT}")
 
     def test_ids_are_written_in_standard_form(self) -> None:
@@ -109,14 +109,14 @@ class StubbedStorageTest(unittest.TestCase):
     # --- page images --------------------------------------------------------
 
     def test_page_image_round_trip(self) -> None:
-        png = b"\x89PNG\r\n\x1a\n..."
-        key = PREFIX + "pages/2.png"
+        webp = b"RIFF\x00\x00\x00\x00WEBPVP8 ..."
+        key = PREFIX + "pages/2.webp"
         self.stub.add_response(
-            "put_object", {}, {"Bucket": BUCKET, "Key": key, "Body": png, "ContentType": "image/png"}
+            "put_object", {}, {"Bucket": BUCKET, "Key": key, "Body": webp, "ContentType": "image/webp"}
         )
-        self.stub.add_response("get_object", {"Body": body(png)}, {"Bucket": BUCKET, "Key": key})
-        self.storage.put_page_image(CUSTOMER, DOCUMENT, 2, png)
-        self.assertEqual(self.storage.get_page_image(CUSTOMER, DOCUMENT, 2), png)
+        self.stub.add_response("get_object", {"Body": body(webp)}, {"Bucket": BUCKET, "Key": key})
+        self.storage.put_page_image(CUSTOMER, DOCUMENT, 2, webp)
+        self.assertEqual(self.storage.get_page_image(CUSTOMER, DOCUMENT, 2), webp)
 
     def test_missing_page_image_is_blob_not_found(self) -> None:
         self.stub.add_client_error("get_object", "NoSuchKey", http_status_code=404)

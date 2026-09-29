@@ -1,24 +1,61 @@
 """The document routes against a real database, with fake storage and queue.
 
-Pure helpers (the display name and the status messages) are tested first,
-without a database.
+Pure helpers (the display name, the status messages and the upload limits)
+are tested first, without a database.
 """
 
-from collections.abc import Sequence
+import io
+from collections.abc import Iterator, Sequence
+from pathlib import Path
 from typing import Any
 
 import httpx2 as httpx
 import pytest
+from PIL import Image
 from sqlalchemy import text
 
-from kaagaz.api.routers.documents import display_name
+from kaagaz.api.routers.documents import display_name, upload_policy
 from kaagaz.api.views import status_message
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import span_to_json
 from kaagaz.reading.spans import CellLocation, Span
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
+from kaagaz.settings import Settings, SettingsError
 from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, PDF_BYTES, Api, TestClient
+from tests.xlsx_builder import make_xlsx, sheet_xml
+
+MB = 1024 * 1024
+ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
+
+
+def _picture(fmt: str) -> bytes:
+    """A small made-up photo or scan, made with Pillow."""
+    out = io.BytesIO()
+    Image.new("RGB", (40, 30), "white").save(out, format=fmt)
+    return out.getvalue()
+
+
+CSV_BYTES = b"invoice,amount\nINV-1,100\n"
+XLSX_BYTES = make_xlsx([("Register", sheet_xml('<row r="1"><c r="A1"><v>1</v></c></row>'))])
+PNG_BYTES, JPEG_BYTES, TIFF_BYTES = _picture("PNG"), _picture("JPEG"), _picture("TIFF")
+# A Windows program (its first bytes are "MZ") renamed to .pdf.
+EXE_BYTES = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00" + b"\x00" * 200
+
+
+def _padded(data: bytes, size: int, filler: bytes = b"\x00") -> bytes:
+    """``data`` made ``size`` bytes long. The type comes from the first bytes only."""
+    return data + filler * (size - len(data))
+
+
+def _env_example() -> dict[str, str]:
+    values = {}
+    for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
+        if line.strip() and not line.startswith("#"):
+            name, _, value = line.partition("=")
+            values[name.strip()] = value.strip()
+    return values
+
 
 # --- pure ---------------------------------------------------------------------------
 
@@ -47,13 +84,52 @@ def test_display_name_keeps_identity_numbers_and_is_cut_to_255() -> None:
 
 
 def test_status_messages() -> None:
-    assert status_message("received", None) == "Waiting for the virus check."
-    assert status_message("clean", None) == "Reading the document…"
-    assert status_message("ready", None) == "Ready. You can ask about it."
-    assert status_message("needs_reader", None) == "Stored safely. This kind of file can't be read yet."
-    assert status_message("rejected", "virus_found") == CUSTOMER_MESSAGES["virus_found"]
-    assert status_message("rejected", None) == "This file was not processed."
-    assert status_message("failed", "corrupt_file") == "This file could not be read. (corrupt_file)"
+    def message(status: str, failure_code: str | None = None) -> str:
+        return status_message(status, failure_code, max_pages=100)
+
+    assert message("received") == "Waiting for the virus check."
+    assert message("clean") == "Reading the document…"
+    assert message("ready") == "Ready. You can ask about it."
+    assert message("needs_reader") == "Stored safely. This kind of file can't be read yet."
+    assert message("rejected", "virus_found") == CUSTOMER_MESSAGES["virus_found"]
+    assert message("rejected") == "This file was not processed."
+    assert message("failed", "corrupt_file") == "This file could not be read. (corrupt_file)"
+    # PROVISIONAL: the PRD quotes the real page count, which is not stored when a PDF fails.
+    assert message("failed", "too_many_pages") == (
+        "This PDF has more than 100 pages. The limit is 100. Split it into parts."
+    )
+
+
+def test_the_shipped_settings_give_every_allowed_type_its_limit() -> None:
+    env = {**_env_example(), "SESSION_SECRET": "x" * 32}
+    settings = Settings.from_env(env)
+    policy = upload_policy(settings, customer_max_mb=None)
+    limits = {detected: policy.limit_for(detected) for detected in settings.allowed_types}
+    assert limits == {
+        "pdf": 50 * MB,
+        "png": 20 * MB,
+        "jpeg": 20 * MB,
+        "tiff": 20 * MB,
+        "text": 10 * MB,
+        "zip": 10 * MB,
+    }
+    assert (settings.max_pages, settings.max_image_pixels) == (100, 40_000_000)
+
+
+@pytest.mark.parametrize("name", ["MAX_IMAGE_MB", "MAX_SHEET_MB"])
+def test_a_missing_type_limit_stops_start_up_with_its_name(name: str) -> None:
+    env = {**_env_example(), "SESSION_SECRET": "x" * 32}
+    del env[name]
+    with pytest.raises(SettingsError, match=name):
+        Settings.from_env(env)
+
+
+def test_the_customers_own_limit_only_lowers_the_type_limits() -> None:
+    settings = make_settings()  # PDFs 5 MB, photos 2 MB, sheets 1 MB
+    assert upload_policy(settings, customer_max_mb=4).limit_for("png") == 2 * MB
+    assert upload_policy(settings, customer_max_mb=4).limit_for("pdf") == 4 * MB
+    assert upload_policy(settings, customer_max_mb=1).limit_for("png") == 1 * MB
+    assert upload_policy(settings, customer_max_mb=None).largest_limit == 5 * MB
 
 
 # --- upload ---------------------------------------------------------------------------
@@ -164,6 +240,171 @@ def test_the_customers_own_limit_applies(db: Database) -> None:
 
 
 @pytest.mark.db
+@pytest.mark.parametrize(
+    ("name", "data", "detected"),
+    [
+        ("bill.pdf", PDF_BYTES, "pdf"),
+        ("register.csv", CSV_BYTES, "text"),
+        ("register.xlsx", XLSX_BYTES, "zip"),
+        ("scan.png", PNG_BYTES, "png"),
+        ("photo.jpg", JPEG_BYTES, "jpeg"),
+        ("scan.tif", TIFF_BYTES, "tiff"),
+    ],
+    ids=["pdf", "csv", "xlsx", "png", "jpeg", "tiff"],
+)
+def test_each_supported_type_is_accepted(db: Database, name: str, data: bytes, detected: str) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    reply = _upload(signed.client, data, name=name)
+    assert reply.status_code == 201
+    assert reply.json()["document"]["detected_type"] == detected
+    assert len(api.queue.jobs) == 1
+
+
+@pytest.mark.db
+def test_an_exe_renamed_to_pdf_is_refused_by_its_first_bytes(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    reply = _upload(signed.client, EXE_BYTES, name="invoice.pdf")
+    assert reply.status_code == 400
+    assert reply.json()["error"] == {
+        "code": "unsupported_type",
+        "message": "This kind of file is not supported.",
+    }
+    assert api.storage.count() == 0
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("name", "data", "message"),
+    [
+        (
+            "photo.jpg",
+            _padded(JPEG_BYTES, 2 * MB + 1),
+            "Photos and scans can be up to 2 MB. This one is 3 MB."
+            " Save it at a lower resolution and try again.",
+        ),
+        (
+            "register.csv",
+            _padded(CSV_BYTES, 1 * MB + 1, b"0"),
+            "Spreadsheets and CSV files can be up to 1 MB. This one is 2 MB."
+            " Split it into smaller files and try again.",
+        ),
+        (
+            # The PDF limit is the largest, so a PDF over it is over every limit.
+            "bill.pdf",
+            _padded(PDF_BYTES, 5 * MB + 1),
+            "Files can be up to 5 MB. This one is larger. Split it or save it smaller and try again.",
+        ),
+    ],
+    ids=["photo", "sheet", "pdf"],
+)
+def test_a_file_over_its_limit_is_413_naming_the_limit(
+    db: Database, name: str, data: bytes, message: str
+) -> None:
+    api = Api(db)  # PDFs 5 MB, photos 2 MB, sheets 1 MB
+    signed = api.new_signed()
+    reply = _upload(signed.client, data, name=name)
+    assert reply.status_code == 413
+    assert reply.json()["error"] == {"code": "too_large", "message": message}
+    assert api.storage.count() == 0
+    assert api.queue.jobs == []
+
+
+@pytest.mark.db
+def test_a_file_at_its_limit_is_accepted(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    assert _upload(signed.client, _padded(JPEG_BYTES, 2 * MB), name="photo.jpg").status_code == 201
+    assert _upload(signed.client, _padded(CSV_BYTES, 1 * MB, b"0"), name="a.csv").status_code == 201
+
+
+@pytest.mark.db
+def test_the_customers_own_limit_lowers_a_types_limit_but_never_raises_it(db: Database) -> None:
+    api = Api(db)  # photos 2 MB
+    signed = api.new_signed()
+    with db.customer(signed.customer_id) as conn:
+        conn.execute(text("UPDATE customers SET max_upload_mb = 4"))
+    reply = _upload(signed.client, _padded(JPEG_BYTES, 2 * MB + 1), name="photo.jpg")
+    assert reply.status_code == 413
+    assert reply.json()["error"]["message"].startswith("Photos and scans can be up to 2 MB.")
+    # The PDF limit (5 MB) is lowered to 4 MB, now the largest of all, and the reply names it.
+    reply = _upload(signed.client, _padded(PDF_BYTES, 4 * MB + 1))
+    assert reply.status_code == 413
+    assert reply.json()["error"]["message"] == (
+        "Files can be up to 4 MB. This one is larger. Split it or save it smaller and try again."
+    )
+
+
+@pytest.mark.db
+def test_the_exit_batch_gets_one_answer_for_each_file(db: Database) -> None:
+    """PRD 1 exit test: 4 accepted, 1 duplicate, 1 wrong type, 1 too large, each its own reply."""
+    api = Api(db)
+    signed = api.new_signed()
+    batch = [
+        ("bill.pdf", PDF_BYTES),
+        ("register.csv", CSV_BYTES),
+        ("register.xlsx", XLSX_BYTES),
+        ("photo.jpg", JPEG_BYTES),
+        ("bill again.pdf", PDF_BYTES),
+        ("setup.pdf", EXE_BYTES),
+        ("big photo.jpg", _padded(JPEG_BYTES, 2 * MB + 1)),
+    ]
+    replies = [_upload(signed.client, data, name=name) for name, data in batch]
+
+    assert [reply.status_code for reply in replies] == [201, 201, 201, 201, 200, 400, 413]
+    accepted = [reply.json() for reply in replies[:5]]
+    assert [body["duplicate"] for body in accepted] == [False, False, False, False, True]
+    assert [body["document"]["detected_type"] for body in accepted[:4]] == ["pdf", "text", "zip", "jpeg"]
+    assert accepted[4]["document"]["id"] == accepted[0]["document"]["id"]
+    errors = [reply.json()["error"] for reply in replies[5:]]
+    assert [error["code"] for error in errors] == ["unsupported_type", "too_large"]
+    assert errors[0]["message"] != errors[1]["message"]
+    assert errors[1]["message"] == (
+        "Photos and scans can be up to 2 MB. This one is 3 MB. Save it at a lower resolution and try again."
+    )
+    assert api.storage.count() == 4
+    assert len(api.queue.jobs) == 4
+
+
+def _chunks() -> Iterator[bytes]:
+    yield b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.pdf"\r\n\r\n'
+    yield PDF_BYTES
+    yield b"\r\n--b--\r\n"
+
+
+@pytest.mark.db
+def test_a_chunked_upload_is_refused_before_its_body_is_read(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    reply = signed.client.post(
+        "/api/documents",
+        content=_chunks(),
+        headers={**CSRF, "Content-Type": "multipart/form-data; boundary=b"},
+    )
+    assert reply.request.headers["transfer-encoding"] == "chunked"
+    assert "content-length" not in reply.request.headers
+    assert reply.status_code == 400
+    assert reply.json()["error"]["code"] == "bad_request"
+    assert api.storage.count() == 0
+
+
+@pytest.mark.db
+def test_a_transfer_encoding_next_to_a_content_length_is_refused(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    request = signed.client.build_request(
+        "POST", "/api/documents", files={"file": ("a.pdf", PDF_BYTES, "application/pdf")}, headers=CSRF
+    )
+    request.headers["Transfer-Encoding"] = "chunked"
+    assert "content-length" in request.headers
+    reply = signed.client.send(request)
+    assert reply.status_code == 400
+    assert reply.json()["error"]["code"] == "bad_request"
+    assert api.storage.count() == 0
+
+
+@pytest.mark.db
 def test_upload_without_a_file_field_is_400(db: Database) -> None:
     signed = Api(db).new_signed()
     reply = signed.client.post("/api/documents", data={"other": "x"}, headers=CSRF)
@@ -241,6 +482,19 @@ def test_list_filters_by_status(db: Database) -> None:
     reply = signed.client.get("/api/documents?status=rejected").json()
     assert [item["id"] for item in reply["items"]] == [rejected]
     assert reply["items"][0]["status_message"] == CUSTOMER_MESSAGES["virus_found"]
+
+
+@pytest.mark.db
+def test_a_pdf_with_too_many_pages_is_told_the_limit_from_the_settings(db: Database) -> None:
+    api = Api(db, settings=make_settings(max_pages=100))
+    signed = api.new_signed()
+    document_id = api.add_document(signed.customer_id, status="failed", failure_code="too_many_pages")
+    (item,) = signed.client.get("/api/documents").json()["items"]
+    assert (
+        item["status_message"] == "This PDF has more than 100 pages. The limit is 100. Split it into parts."
+    )
+    detail = signed.client.get(f"/api/documents/{document_id}").json()
+    assert detail["status_message"] == item["status_message"]
 
 
 @pytest.mark.db
@@ -330,11 +584,11 @@ def test_page_image(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
     document_id = api.add_document(signed.customer_id)
-    api.storage.page_images[(signed.customer_id, document_id, 1)] = b"\x89PNG fake"
+    api.storage.page_images[(signed.customer_id, document_id, 1)] = b"RIFF\x00\x00\x00\x00WEBPVP8 fake"
     reply = signed.client.get(f"/api/documents/{document_id}/pages/1/image")
     assert reply.status_code == 200
-    assert reply.headers["content-type"] == "image/png"
-    assert reply.content == b"\x89PNG fake"
+    assert reply.headers["content-type"] == "image/webp"
+    assert reply.content == b"RIFF\x00\x00\x00\x00WEBPVP8 fake"
     assert signed.client.get(f"/api/documents/{document_id}/pages/2/image").status_code == 404
 
 
