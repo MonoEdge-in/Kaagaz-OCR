@@ -1,9 +1,10 @@
 "use client";
 
-// The list of this customer's documents: one table, reflowed into cards below
-// 768 px (Table.module.css). Names and status messages are shown as plain
-// text. Delete asks "Delete this document for everyone?" before anything is
-// removed; focus goes to Cancel, and back to Delete if it is cancelled.
+// The list of this customer's documents: one table, reflowed into cards when
+// the list is narrower than 44rem (Documents.module.css). Names and status
+// messages are shown as plain text. Delete asks "Delete this document for
+// everyone?" before anything is removed; focus goes to Cancel, and back to
+// Delete if it is cancelled.
 
 import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -14,7 +15,6 @@ import type { DocumentSummary, Me } from "@/lib/types";
 import { canDelete, formatProgressPercent } from "./logic";
 import { StatusChip } from "./StatusChip";
 import styles from "./Documents.module.css";
-import table from "./Table.module.css";
 
 interface Props {
   items: DocumentSummary[];
@@ -151,7 +151,7 @@ export function DocumentsTable({ items, me, now, onDeleted }: Props) {
           {error && <p className={`error-text ${styles.selectionError}`} role="alert">{error}</p>}
         </div>
       )}
-      <table className={`table ${table.reflow} ${styles.docs}`} role="table">
+      <table className={`table ${styles.docs}`} role="table">
         <caption className="visually-hidden">Your documents</caption>
         <thead role="rowgroup">
           <tr role="row">
