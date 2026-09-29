@@ -8,7 +8,7 @@ from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
 from kaagaz.ingestion.policy import KIND_OF, UploadPolicy, limits_by_type
-from kaagaz.ingestion.ports import DocumentRecord, Job
+from kaagaz.ingestion.ports import DocumentRecord, Job, UnknownFolder
 from kaagaz.ingestion.service import UploadService
 from tests.fakes import MemoryQueue, MemoryRepository, MemoryStorage
 from tests.support import PDF_BYTES, TEST_POLICY, TEXT_BYTES, make_service
@@ -56,7 +56,18 @@ class AcceptTest(unittest.TestCase):
         names = {f.name for f in dataclasses.fields(DocumentRecord)}
         self.assertEqual(
             names,
-            {"customer_id", "document_id", "sha256", "size", "detected_type", "display_name", "uploaded_by"},
+            {
+                "customer_id",
+                "document_id",
+                "sha256",
+                "size",
+                "detected_type",
+                "display_name",
+                "uploaded_by",
+                "folder_id",
+                "family_id",
+                "version_no",
+            },
         )
 
     def test_record_keeps_the_display_name_and_uploader_it_was_given(self) -> None:
@@ -64,6 +75,17 @@ class AcceptTest(unittest.TestCase):
         service.accept(CUSTOMER, io.BytesIO(TEXT_BYTES), display_name="XXXXXX1234F.csv", uploaded_by="u1")
         (record,) = repo.records_for(CUSTOMER)
         self.assertEqual((record.display_name, record.uploaded_by), ("XXXXXX1234F.csv", "u1"))
+
+    def test_record_keeps_its_folder_and_is_the_first_version_of_its_own_family(self) -> None:
+        service, repo, _, _ = make_service()
+        repo.folders.add((CUSTOMER, "folder-1"))
+        service.accept(CUSTOMER, io.BytesIO(PDF_BYTES), folder_id="folder-1")
+        service.accept(CUSTOMER, io.BytesIO(TEXT_BYTES))
+        by_type = {record.detected_type: record for record in repo.records_for(CUSTOMER)}
+        self.assertEqual(
+            [(r.folder_id, r.family_id, r.version_no) for r in (by_type[sniff.PDF], by_type[sniff.TEXT])],
+            [("folder-1", None, 1), (None, None, 1)],  # family None: the document's own id
+        )
 
     def test_missing_customer_is_refused(self) -> None:
         service, _, storage, _ = make_service()
@@ -277,6 +299,14 @@ class PartialFailureTest(unittest.TestCase):
         self.assertEqual(storage.count(), 0)
         self.assertEqual(queue.jobs, [])
 
+    def test_a_folder_gone_by_the_insert_deletes_the_stored_file_and_queues_nothing(self) -> None:
+        service, repo, storage, queue = make_service()
+        with self.assertRaises(UnknownFolder):
+            service.accept(CUSTOMER, io.BytesIO(PDF_BYTES), folder_id="gone")
+        self.assertEqual(repo.records_for(CUSTOMER), [])
+        self.assertEqual(storage.count(), 0)
+        self.assertEqual(queue.jobs, [])
+
     def test_queue_failure_undoes_everything_and_a_retry_works(self) -> None:
         service, repo, storage, queue = make_service()
         queue.fail_enqueue = True
@@ -314,6 +344,14 @@ class FailedUndoTest(unittest.TestCase):
             service.accept(CUSTOMER, io.BytesIO(PDF_BYTES))
         self.assertEqual(str(ctx.exception), "database down")
         self.assertIn("undo step failed: delete_file", ctx.exception.__notes__)
+        self.assertEqual(queue.jobs, [])
+
+    def test_a_folder_gone_keeps_its_own_error_when_deleting_the_file_fails(self) -> None:
+        service, _, storage, queue = make_service()
+        storage.fail_delete = True
+        with self.assertRaises(UnknownFolder) as ctx:
+            service.accept(CUSTOMER, io.BytesIO(PDF_BYTES), folder_id="gone")
+        self.assertEqual(ctx.exception.__notes__, ["undo step failed: delete_file"])
         self.assertEqual(queue.jobs, [])
 
     def test_spooled_copy_is_closed_when_storing_fails(self) -> None:

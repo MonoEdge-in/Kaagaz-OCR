@@ -5,24 +5,26 @@ are tested first, without a database.
 """
 
 import io
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx2 as httpx
 import pytest
 from PIL import Image
-from sqlalchemy import text
+from sqlalchemy import event, text
 
-from kaagaz.api.routers.documents import display_name, upload_policy
+from kaagaz.api.routers.documents import day_start, display_name, upload_policy
 from kaagaz.api.views import status_message
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import span_to_json
 from kaagaz.reading.spans import CellLocation, Span
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 from kaagaz.settings import Settings, SettingsError
+from tests.db_support import insert_document
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, PDF_BYTES, Api, TestClient
+from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed, TestClient
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
 MB = 1024 * 1024
@@ -81,6 +83,13 @@ def test_display_name_keeps_identity_numbers_and_is_cut_to_255() -> None:
     name = "PAN ABCDE1234F aadhaar 2345 6789 0123.pdf"
     assert display_name(name) == name
     assert len(display_name("a" * 400 + ".pdf")) == 255
+
+
+def test_a_day_starts_at_midnight_in_the_customers_timezone() -> None:
+    assert day_start("2026-09-02", "Asia/Kolkata") == datetime(2026, 9, 1, 18, 30, tzinfo=UTC)
+    assert day_start("2026-09-02", "UTC") == datetime(2026, 9, 2, tzinfo=UTC)
+    with pytest.raises(ValueError):
+        day_start("2026-02-30", "Asia/Kolkata")
 
 
 def test_status_messages() -> None:
@@ -164,7 +173,10 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "page_count",
         "created_at",
         "uploaded_by_name",
+        "folder_id",
+        "tags",
     }
+    assert (document["folder_id"], document["tags"]) == (None, [])
     assert document["display_name"] == "PAN ABCDE1234F.pdf"
     assert document["detected_type"] == "pdf"
     assert document["size_bytes"] == len(PDF_BYTES)
@@ -677,3 +689,311 @@ def test_delete_keeps_the_row_when_storage_is_down(db: Database) -> None:
     assert admin.client.delete(f"/api/documents/{document_id}", headers=CSRF).status_code == 503
     assert admin.client.get(f"/api/documents/{document_id}").status_code == 200
     assert "document.delete" not in api.audit_actions(admin.customer_id)
+
+
+# --- the library: folder, tags, rename, move and list filters (PRD 1 F1 to F4, U3) -----------
+
+UNKNOWN = "7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e"
+
+
+def _filed(db: Database, signed: Signed, **columns: Any) -> str:
+    """A document row as the pipeline leaves it, with any columns given (no stored file)."""
+    with db.customer(signed.customer_id) as conn:
+        return insert_document(conn, signed.customer_id, uploaded_by=signed.user_id, **columns)
+
+
+def _listed(signed: Signed, **params: Any) -> set[str]:
+    reply = signed.client.get("/api/documents", params=params)
+    assert reply.status_code == 200, reply.text
+    body = reply.json()
+    assert body["total"] == len(body["items"])
+    return {item["id"] for item in body["items"]}
+
+
+def _patch(signed: Signed, document_id: str, body: dict[str, Any]) -> httpx.Response:
+    reply: httpx.Response = signed.client.patch(f"/api/documents/{document_id}", json=body, headers=CSRF)
+    return reply
+
+
+def _columns(db: Database, customer_id: str, document_id: str) -> tuple[str | None, str]:
+    """(folder_id, display_name) of one document row."""
+    with db.customer(customer_id) as conn:
+        folder, name = conn.execute(
+            text("SELECT folder_id, display_name FROM documents WHERE id = :d"), {"d": document_id}
+        ).one()
+    return (None if folder is None else str(folder)), str(name)
+
+
+def _statements(db: Database, run: Callable[[], object]) -> int:
+    """How many SQL statements ``run`` sends to the database."""
+    count = 0
+
+    def counted(*_: object) -> None:
+        nonlocal count
+        count += 1
+
+    event.listen(db.engine, "before_cursor_execute", counted)
+    try:
+        run()
+    finally:
+        event.remove(db.engine, "before_cursor_execute", counted)
+    return count
+
+
+@pytest.mark.db
+def test_upload_into_a_folder_files_it_there_as_the_first_version_of_its_own_family(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    folder = api.add_folder(signed.customer_id, signed.user_id, "Suppliers")
+    reply = signed.client.post(
+        "/api/documents",
+        data={"folder_id": folder},
+        files={"file": ("bill.pdf", PDF_BYTES, "application/pdf")},
+        headers=CSRF,
+    )
+    assert reply.status_code == 201
+    document = reply.json()["document"]
+    assert document["folder_id"] == folder
+    with db.customer(signed.customer_id) as conn:
+        row = conn.execute(
+            text("SELECT folder_id, family_id, version_no, is_current FROM documents WHERE id = :d"),
+            {"d": document["id"]},
+        ).one()
+    assert (str(row[0]), str(row[1]), row[2], row[3]) == (folder, document["id"], 1, True)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(("folder_id", "status"), [(UNKNOWN, 404), ("not-a-uuid", 400), ("", 400)])
+def test_upload_into_an_unknown_or_malformed_folder_stores_and_queues_nothing(
+    db: Database, folder_id: str, status: int
+) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    reply = signed.client.post(
+        "/api/documents",
+        data={"folder_id": folder_id},
+        files={"file": ("bill.pdf", PDF_BYTES, "application/pdf")},
+        headers=CSRF,
+    )
+    assert reply.status_code == status
+    assert api.storage.count() == 0
+    assert api.queue.jobs == []
+    assert signed.client.get("/api/documents").json()["total"] == 0
+
+
+@pytest.mark.db
+def test_the_list_gives_each_document_its_folder_and_tags_with_no_query_per_row(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    folder = api.add_folder(signed.customer_id, signed.user_id, "Suppliers")
+    paid, gst = (api.add_tag(signed.customer_id, signed.user_id, name) for name in ("Paid", "GST"))
+    tagged = _filed(db, signed, folder_id=folder)
+    api.tag_document(signed.customer_id, tagged, paid)
+    api.tag_document(signed.customer_id, tagged, gst)
+
+    (item,) = signed.client.get("/api/documents").json()["items"]
+    assert (item["folder_id"], item["tags"]) == (
+        folder,
+        [{"id": gst, "name": "GST"}, {"id": paid, "name": "Paid"}],
+    )
+
+    one = _statements(db, lambda: signed.client.get("/api/documents"))
+    for _ in range(5):
+        api.tag_document(signed.customer_id, _filed(db, signed), paid)
+    assert _statements(db, lambda: signed.client.get("/api/documents")) == one
+
+
+@pytest.mark.db
+def test_the_list_filters_by_folder_with_or_without_subfolders_or_the_top_level(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    top = api.add_folder(signed.customer_id, signed.user_id, "Suppliers")
+    child = api.add_folder(signed.customer_id, signed.user_id, "2026", top)
+    other = api.add_folder(signed.customer_id, signed.user_id, "Banks")
+    loose, in_top, in_child, in_other = (_filed(db, signed, folder_id=f) for f in (None, top, child, other))
+
+    assert _listed(signed) == {loose, in_top, in_child, in_other}
+    assert _listed(signed, folder_id=top) == {in_top}
+    assert _listed(signed, folder_id=top, include_subfolders="false") == {in_top}
+    assert _listed(signed, folder_id=top, include_subfolders="true") == {in_top, in_child}
+    assert _listed(signed, folder_id=child, include_subfolders="true") == {in_child}
+    assert _listed(signed, folder_id="root") == {loose}
+    assert _listed(signed, folder_id="root", include_subfolders="true") == {loose, in_top, in_child, in_other}
+
+
+@pytest.mark.db
+def test_an_unknown_folder_in_the_list_is_404_and_a_malformed_one_is_400(db: Database) -> None:
+    signed = Api(db).new_signed()
+    unknown = signed.client.get("/api/documents", params={"folder_id": UNKNOWN})
+    assert unknown.status_code == 404
+    assert unknown.json()["error"]["code"] == "not_found"
+    assert signed.client.get("/api/documents", params={"folder_id": "Suppliers"}).status_code == 400
+
+
+@pytest.mark.db
+def test_the_list_filters_by_tags_and_every_tag_must_match(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    paid, gst = (api.add_tag(signed.customer_id, signed.user_id, name) for name in ("Paid", "GST"))
+    both, only_paid, _untagged = (_filed(db, signed) for _ in range(3))
+    for document, tag in ((both, paid), (both, gst), (only_paid, paid)):
+        api.tag_document(signed.customer_id, document, tag)
+
+    assert _listed(signed, tag_id=[paid]) == {both, only_paid}
+    assert _listed(signed, tag_id=[paid, gst]) == {both}
+    assert _listed(signed, tag_id=[paid, paid]) == {both, only_paid}
+    assert _listed(signed, tag_id=[UNKNOWN]) == set()
+    assert _listed(signed, tag_id=[paid, UNKNOWN]) == set()
+    assert len(_listed(signed, tag_id=[paid] * 50)) == 2
+    assert signed.client.get("/api/documents", params={"tag_id": [paid] * 51}).status_code == 400
+    assert signed.client.get("/api/documents", params={"tag_id": "not-a-uuid"}).status_code == 400
+
+
+@pytest.mark.db
+def test_the_list_filters_by_detected_type(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    sheet = _filed(db, signed, detected_type="text", display_name="register.csv")
+    _filed(db, signed, detected_type="pdf")
+    assert _listed(signed, detected_type="text") == {sheet}
+    assert signed.client.get("/api/documents", params={"detected_type": "exe"}).status_code == 400
+
+
+@pytest.mark.db
+def test_upload_dates_are_days_in_the_customers_timezone_and_the_end_is_exclusive(db: Database) -> None:
+    api = Api(db)  # TIMEZONE is Asia/Kolkata, 5:30 ahead of UTC
+    signed = api.new_signed()
+    last_second_of_1_sep = _filed(db, signed, created_at=datetime(2026, 9, 1, 18, 29, 59, tzinfo=UTC))
+    first_second_of_2_sep = _filed(db, signed, created_at=datetime(2026, 9, 1, 18, 30, tzinfo=UTC))
+
+    assert _listed(signed, uploaded_from="2026-09-02") == {first_second_of_2_sep}
+    assert _listed(signed, uploaded_to="2026-09-02") == {last_second_of_1_sep}
+    assert _listed(signed, uploaded_from="2026-09-01", uploaded_to="2026-09-03") == {
+        last_second_of_1_sep,
+        first_second_of_2_sep,
+    }
+    for bad in ("2026-9-2", "2026-02-30", "02-09-2026", "2026-09-02T00:00"):
+        reply = signed.client.get("/api/documents", params={"uploaded_from": bad})
+        assert reply.status_code == 400, bad
+
+
+@pytest.mark.db
+def test_new_filters_combine_with_the_old_ones_before_the_page_is_cut(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    folder = api.add_folder(signed.customer_id, signed.user_id, "Suppliers")
+    wanted = {_filed(db, signed, folder_id=folder, display_name=f"sharma {n}.pdf") for n in range(2)}
+    _filed(db, signed, folder_id=folder, display_name="sharma failed.pdf", status="failed")
+    _filed(db, signed, folder_id=folder, display_name="mehta.pdf")
+    for _ in range(3):
+        _filed(db, signed, display_name="sharma elsewhere.pdf")
+
+    page = signed.client.get(
+        "/api/documents", params={"folder_id": folder, "status": "ready", "q": "SHARMA", "limit": 1}
+    ).json()
+    assert page["total"] == 2
+    assert {item["id"] for item in page["items"]} < wanted
+
+
+@pytest.mark.db
+def test_rename_cleans_the_name_and_renames_only_this_version(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed("member")
+    first = _filed(db, signed, display_name="old.pdf")
+    second = _filed(db, signed, display_name="old v2.pdf", family_id=first, version_no=2, is_current=False)
+
+    reply = _patch(signed, first, {"display_name": "  GST 2026/27\t"})
+    assert reply.status_code == 200
+    summary = reply.json()
+    assert (summary["id"], summary["display_name"], summary["folder_id"], summary["tags"]) == (
+        first,
+        "GST 2026/27",
+        None,
+        [],
+    )
+    assert _columns(db, signed.customer_id, second) == (None, "old v2.pdf")
+    assert api.audit_rows(signed.customer_id)[-1] == ("document.rename", "document", first, {})
+
+
+@pytest.mark.db
+def test_a_bad_patch_is_400_and_changes_nothing(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    document = _filed(db, signed, display_name="old.pdf")
+    for body in (
+        {"display_name": ""},
+        {"display_name": " \n"},
+        {"display_name": "a" * 256},
+        {"display_name": None},
+        {"folder_id": "Suppliers"},
+        {"title": "x"},
+        {},
+    ):
+        assert _patch(signed, document, body).status_code == 400, body
+    assert _columns(db, signed.customer_id, document) == (None, "old.pdf")
+
+
+@pytest.mark.db
+def test_move_files_every_version_and_an_explicit_null_goes_to_the_top_level(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    folder = api.add_folder(signed.customer_id, signed.user_id, "Suppliers")
+    first = _filed(db, signed)
+    second = _filed(db, signed, family_id=first, version_no=2, is_current=False)
+
+    moved = _patch(signed, second, {"folder_id": folder})
+    assert moved.status_code == 200
+    assert moved.json()["folder_id"] == folder
+    assert [_columns(db, signed.customer_id, d)[0] for d in (first, second)] == [folder, folder]
+
+    renamed = _patch(signed, first, {"display_name": "renamed.pdf"})  # no folder_id key: stays put
+    assert renamed.json()["folder_id"] == folder
+
+    both = _patch(signed, first, {"folder_id": None, "display_name": "top.pdf"})
+    assert (both.json()["folder_id"], both.json()["display_name"]) == (None, "top.pdf")
+    assert [_columns(db, signed.customer_id, d)[0] for d in (first, second)] == [None, None]
+
+    rows = [row for row in api.audit_rows(signed.customer_id) if row[0].startswith("document.")]
+    assert rows == [
+        ("document.move", "document", second, {"folder_id": folder}),
+        ("document.rename", "document", first, {}),
+        ("document.move", "document", first, {"folder_id": None}),
+        ("document.rename", "document", first, {}),
+    ]
+
+
+@pytest.mark.db
+def test_move_to_an_unknown_folder_or_of_an_unknown_document_is_404_and_changes_nothing(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    document = _filed(db, signed, display_name="old.pdf")
+    for body in ({"folder_id": UNKNOWN}, {"folder_id": UNKNOWN, "display_name": "new.pdf"}):
+        reply = _patch(signed, document, body)
+        assert reply.status_code == 404
+        assert reply.json()["error"]["code"] == "not_found"
+    assert _columns(db, signed.customer_id, document) == (None, "old.pdf")
+    assert _patch(signed, UNKNOWN, {"display_name": "new.pdf"}).status_code == 404
+    assert not [row for row in api.audit_rows(signed.customer_id) if row[0].startswith("document.")]
+
+
+@pytest.mark.db
+def test_detail_shows_the_folder_path_from_the_top_and_the_tags(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    top = api.add_folder(signed.customer_id, signed.user_id, "Suppliers")
+    child = api.add_folder(signed.customer_id, signed.user_id, "2026", top)
+    gst = api.add_tag(signed.customer_id, signed.user_id, "GST")
+    filed = _filed(db, signed, folder_id=child)
+    api.tag_document(signed.customer_id, filed, gst)
+    loose = _filed(db, signed)
+
+    detail = signed.client.get(f"/api/documents/{filed}").json()
+    assert detail["folder_id"] == child
+    assert detail["folder"] == {
+        "id": child,
+        "name": "2026",
+        "path": [{"id": top, "name": "Suppliers"}, {"id": child, "name": "2026"}],
+    }
+    assert detail["tags"] == [{"id": gst, "name": "GST"}]
+    top_level = signed.client.get(f"/api/documents/{loose}").json()
+    assert (top_level["folder"], top_level["tags"]) == (None, [])
