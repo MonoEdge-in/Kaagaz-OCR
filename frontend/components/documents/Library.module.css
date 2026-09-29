@@ -180,3 +180,41 @@
   margin-inline-end: var(--space-1);
   color: var(--fg-muted);
 }
+
+.folderActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1 1 100%;
+}
+
+.folderButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.danger {
+  color: var(--danger-fg);
+}
+
+.folderForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 34rem;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.folderForm p {
+  margin: 0;
+}
+
+.formButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}

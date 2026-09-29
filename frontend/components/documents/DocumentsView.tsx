@@ -1,12 +1,13 @@
 "use client";
 
 // The documents screen: the page header with "Upload files"; the folder tree
-// (beside the list from 1024 px, in a drawer below that); where you are; the
-// dropzone, which uploads into the folder being viewed; uploads in progress;
-// search; the list and its pages. The folder lives in the page address
-// (libraryQuery.ts), so a reload keeps it and Back returns to the folder
-// before. While any document is still being checked or read, the list is
-// asked for again every 3 seconds; once all have settled, it stops.
+// (beside the list from 1024 px, in a drawer below that); where you are, with
+// New folder, Rename, Move and Delete; the dropzone, which uploads into the
+// folder being viewed; uploads in progress; search; the list and its pages.
+// The folder lives in the page address (libraryQuery.ts), so a reload keeps
+// it and Back returns to the folder before. While any document is still
+// being checked or read, the list is asked for again every 3 seconds; once
+// all have settled, it stops.
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -19,6 +20,7 @@ import { ApiError, listDocuments, listFolders } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { DocumentList, Folder } from "@/lib/types";
 import { DocumentsTable } from "./DocumentsTable";
+import { FolderActions } from "./FolderActions";
 import { FolderNav } from "./FolderNav";
 import { buildTree, folderPath } from "./folderTree";
 import { libraryHref, listParams } from "./libraryQuery";
@@ -144,6 +146,13 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     if (files.length > 0) addFiles(files);
   }
 
+  // After a folder is deleted, the address is rewritten in place to show the
+  // folder above it. Next.js syncs useSearchParams with history.replaceState
+  // without asking the server.
+  function show(next: LibraryState) {
+    window.history.replaceState(null, "", libraryHref(next));
+  }
+
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSearch({ view: viewKey, q: draft.trim(), offset: 0 });
@@ -164,6 +173,15 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     const nextOffset = offsetAfterDelete(offset, shown?.list.items.length ?? 0, PAGE_SIZE);
     if (nextOffset !== offset) turnPage(nextOffset);
     else setReload((n) => n + 1);
+  }
+
+  function afterFolderChange(message: string, goTo?: { folderId: string | null }) {
+    setAnnouncement(message);
+    setFoldersVersion((n) => n + 1);
+    if (goTo) {
+      show({ ...library, folderId: goTo.folderId, subfolders: goTo.folderId !== null && library.subfolders });
+      headingRef.current?.focus();
+    }
   }
 
   function navigated(placeName: string) {
@@ -279,6 +297,14 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 <p className={libraryStyles.placeHint}>Files you upload here go into this folder.</p>
               )}
             </div>
+            {folders !== null && !folderGone && (
+              <FolderActions
+                key={current?.folder.id ?? "all"}
+                tree={tree}
+                current={current}
+                onChanged={afterFolderChange}
+              />
+            )}
           </div>
 
           {folderGone ? (
