@@ -166,9 +166,14 @@ _MOVE_CHECK = (
 
 # Trashed documents keep their folder until they are restored or purged; a
 # folder holding only those can still be deleted, and they go to the top level.
+# The rows are locked in family order (each family's first version, id =
+# family_id, then by id), the order every family lock uses, so a folder delete
+# and a restore of one of its families queue instead of deadlocking.
 _DETACH_TRASHED = (
-    "UPDATE documents d SET folder_id = NULL"
-    " WHERE d.customer_id = :c AND d.folder_id = :f AND d.deleted_at IS NOT NULL"
+    "UPDATE documents d SET folder_id = NULL FROM ("
+    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = :f AND deleted_at IS NOT NULL"
+    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
+    " WHERE d.customer_id = :c AND d.id = l.id AND d.deleted_at IS NOT NULL"
 )
 
 _DELETE = "DELETE FROM folders WHERE customer_id = :c AND id = :f RETURNING id"
