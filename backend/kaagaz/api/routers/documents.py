@@ -44,6 +44,7 @@ Why some choices:
 
 import re
 import uuid
+from collections.abc import Mapping
 from datetime import date, datetime, time
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
@@ -76,7 +77,7 @@ from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import BlobNotFound, UnknownFamily, UnknownFolder
-from kaagaz.ingestion.service import UploadService
+from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.settings import Settings
 
 router = APIRouter()
@@ -252,18 +253,33 @@ def _accept(
         raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
     except UnknownFolder:  # deleted since the check; the service removed the stored file
         raise ApiError(404, "not_found") from None
-    with context.db.customer(user.customer_id) as conn:
+    return _upload_reply(context, user, result, action="document.upload")
+
+
+def _upload_reply(
+    context: AppContext,
+    user: CurrentUser,
+    result: UploadResult,
+    *,
+    action: str,
+    details: Mapping[str, audit.DetailValue] | None = None,
+) -> dict[str, Any]:
+    """The reply to an upload or a new version: the document, and whether it was a
+    duplicate and is in Trash. A new file (not a duplicate) is audited first."""
+    customer_id = user.customer_id
+    with context.db.customer(customer_id) as conn:
         if not result.duplicate:
             audit.record(
                 conn,
-                user.customer_id,
+                customer_id,
                 actor_user_id=user.user_id,
-                action="document.upload",
+                action=action,
                 target_type="document",
                 target_id=result.document_id,
+                details=details,
             )
-        row = listing.get_document(conn, user.customer_id, result.document_id)
-        tags = tags_sql.tags_for_documents(conn, user.customer_id, [result.document_id])
+        row = listing.get_document(conn, customer_id, result.document_id)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [result.document_id])
     if row is None:  # deleted in the moment since; nothing to show
         raise ApiError(404, "not_found")
     summary = document_summary(row, max_pages=context.settings.max_pages, tags=tags[result.document_id])
@@ -306,24 +322,8 @@ def _accept_version(
         raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
     except UnknownFamily:  # gone or moved to Trash since the check; the service removed the stored file
         raise ApiError(404, "not_found") from None
-    with context.db.customer(customer_id) as conn:
-        if not result.duplicate:
-            audit.record(
-                conn,
-                customer_id,
-                actor_user_id=user.user_id,
-                action="document.version",
-                target_type="document",
-                target_id=result.document_id,
-                details={"family_id": str(target["family_id"])},
-            )
-        row = listing.get_document(conn, customer_id, result.document_id)
-        tags = tags_sql.tags_for_documents(conn, customer_id, [result.document_id])
-    if row is None:  # deleted in the moment since; nothing to show
-        raise ApiError(404, "not_found")
-    summary = document_summary(row, max_pages=context.settings.max_pages, tags=tags[result.document_id])
-    in_trash = result.duplicate and row["deleted_at"] is not None
-    return {"document": summary, "duplicate": result.duplicate, "in_trash": in_trash}
+    details = {"family_id": str(target["family_id"])}
+    return _upload_reply(context, user, result, action="document.version", details=details)
 
 
 @router.post("/documents/{document_id}/versions")
