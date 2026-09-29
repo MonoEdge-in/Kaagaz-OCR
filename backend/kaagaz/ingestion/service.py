@@ -3,9 +3,13 @@
 The steps, in order:
 
 1. Read the stream once: fingerprint, size check, spooled copy (spool.py).
-2. Refuse empty files and types that are not allowed (sniff.py).
+   Reading stops past the largest limit of any allowed type.
+2. Refuse empty files and types that are not allowed (sniff.py), then a file
+   over its own type's limit (PRD 1, U2), with its kind, size and limit.
 3. If this customer already has this fingerprint, reply "duplicate" and stop.
 4. Store the file, record it, queue a job.
+
+Time O(n) in the bytes read, at most the largest limit plus one byte.
 
 The customer id is an argument. It must come from the server side (how the
 server knows the customer is PRD question 3), never from the request body or
@@ -43,7 +47,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadRejected
-from kaagaz.ingestion.policy import UploadPolicy
+from kaagaz.ingestion.policy import KIND_OF, UploadPolicy
 from kaagaz.ingestion.ports import (
     BlobStorage,
     DocumentRecord,
@@ -93,12 +97,17 @@ class UploadService:
         if not isinstance(customer_id, str) or not customer_id:
             raise ValueError("customer_id is required")
 
-        with read_limited(stream, self._policy.max_bytes) as spooled:
+        with read_limited(stream, self._policy.largest_limit) as spooled:
             if spooled.size == 0:
                 raise UploadRejected(RejectCode.EMPTY_FILE)
             detected = detect_type(spooled.head)
             if detected is None or detected not in self._policy.allowed_types:
                 raise UploadRejected(RejectCode.UNSUPPORTED_TYPE)
+            limit = self._policy.limit_for(detected)
+            if spooled.size > limit:
+                raise UploadRejected(
+                    RejectCode.TOO_LARGE, kind=KIND_OF[detected], size=spooled.size, limit=limit
+                )
 
             # Fast path: a duplicate never touches storage. The lookup is for
             # this customer only, so it cannot reveal other customers' files.

@@ -47,8 +47,10 @@ class Settings:
     clamav_port: int | None
     scanner_timeout_seconds: float
 
-    # Upload limits.
+    # Upload limits, by file type (PRD 1, U2). max_upload_bytes is also the PDF limit.
     max_upload_bytes: int
+    max_image_bytes: int  # PNG, JPEG, TIFF
+    max_sheet_bytes: int  # XLSX, CSV
     allowed_types: frozenset[str]
 
     # Reader limits.
@@ -110,6 +112,8 @@ class Settings:
             clamav_port=env.optional_integer("CLAMAV_PORT"),
             scanner_timeout_seconds=env.number("SCANNER_TIMEOUT_SECONDS"),
             max_upload_bytes=env.integer("MAX_UPLOAD_MB") * 1024 * 1024,
+            max_image_bytes=env.integer("MAX_IMAGE_MB") * 1024 * 1024,
+            max_sheet_bytes=env.integer("MAX_SHEET_MB") * 1024 * 1024,
             allowed_types=env.words("ALLOWED_TYPES"),
             csv_max_cells=env.integer("CSV_MAX_CELLS"),
             xlsx_max_entries=env.integer("XLSX_MAX_ENTRIES"),

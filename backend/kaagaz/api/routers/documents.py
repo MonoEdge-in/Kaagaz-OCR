@@ -3,10 +3,11 @@ spreadsheet cells and delete.
 
 Why some choices:
 
-* **Upload streams.** The Content-Length is checked against the limit before
-  the body is parsed, and the parsed part's file object goes straight into
-  ``UploadService.accept``, which reads it once with a hard limit. The file is
-  never read whole into memory here.
+* **Upload streams.** The request is checked before the body is parsed
+  (``upload_guard.py``), and the parsed part's file object goes straight into
+  ``UploadService.accept``, which reads it once with a hard limit and then
+  checks the limit of the file's own type. The file is never read whole into
+  memory here.
 * **The file name** has its path and control characters stripped and is cut to
   255 characters before it is stored. The raw name is never stored or logged.
 * **The original file** is served only once the virus check passed (clean,
@@ -31,14 +32,17 @@ from starlette.datastructures import UploadFile
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import document_summary, extracted_value, page_summary
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, listing
 from kaagaz.db.documents import PgDocuments
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
-from kaagaz.ingestion.policy import UploadPolicy
+from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
+from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.ingestion.service import UploadService
+from kaagaz.settings import Settings
 
 router = APIRouter()
 
@@ -46,8 +50,6 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MIB = 1024 * 1024
 MAX_SHEET_ROWS = 500
-# Room for the multipart boundary and part headers around the file itself.
-MULTIPART_OVERHEAD = 64 * 1024
 MAX_NAME = 255
 
 DocumentStatusParam = Literal["received", "clean", "rejected", "needs_reader", "ready", "failed"]
@@ -96,25 +98,45 @@ def list_documents(
             status=status,
             name_contains=q.strip() if q else None,
         )
-    return {"items": [document_summary(row) for row in rows], "total": total}
+    max_pages = context.settings.max_pages
+    return {"items": [document_summary(row, max_pages=max_pages) for row in rows], "total": total}
 
 
-def _upload_limit(context: AppContext, user: CurrentUser) -> int:
+def upload_policy(settings: Settings, customer_max_mb: int | None) -> UploadPolicy:
+    """The limits for one customer's upload (PRD 1, U2): each type's own limit,
+    lowered by the customer's own limit when an admin set one."""
+    max_bytes = settings.max_upload_bytes
+    if customer_max_mb is not None:
+        max_bytes = min(max_bytes, customer_max_mb * MIB)
+    return UploadPolicy(
+        max_bytes=max_bytes,
+        allowed_types=settings.allowed_types,
+        type_limits=limits_by_type(
+            pdf=settings.max_upload_bytes, image=settings.max_image_bytes, sheet=settings.max_sheet_bytes
+        ),
+    )
+
+
+def _upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
     with context.db.customer(user.customer_id) as conn:
         row = admin_sql.get_settings(conn, user.customer_id)
-    platform = context.settings.max_upload_bytes
-    if row is None or row["max_upload_mb"] is None:
-        return platform
-    return min(platform, int(row["max_upload_mb"]) * MIB)
+    customer_max_mb = None if row is None or row["max_upload_mb"] is None else int(row["max_upload_mb"])
+    return upload_policy(context.settings, customer_max_mb)
 
 
-def _accept(context: AppContext, user: CurrentUser, upload: UploadFile, limit: int) -> dict[str, Any]:
-    service = UploadService(
-        UploadPolicy(max_bytes=limit, allowed_types=context.settings.allowed_types),
-        PgDocuments(context.db),
-        context.storage,
-        context.queue,
-    )
+def _refusal_message(rejected: UploadRejected, policy: UploadPolicy) -> str | None:
+    """The words for a refused upload; None means the code's usual message."""
+    if rejected.code is not RejectCode.TOO_LARGE:
+        return None
+    if rejected.kind is None or rejected.size is None or rejected.limit is None:
+        return over_every_limit_message(policy.largest_limit)  # refused before its type was known
+    return too_large_message(rejected.kind, rejected.size, rejected.limit)
+
+
+def _accept(
+    context: AppContext, user: CurrentUser, upload: UploadFile, policy: UploadPolicy
+) -> dict[str, Any]:
+    service = UploadService(policy, PgDocuments(context.db), context.storage, context.queue)
     try:
         result = service.accept(
             user.customer_id,
@@ -123,7 +145,8 @@ def _accept(context: AppContext, user: CurrentUser, upload: UploadFile, limit: i
             uploaded_by=user.user_id,
         )
     except UploadRejected as rejected:
-        raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value) from None
+        message = _refusal_message(rejected, policy)
+        raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
     with context.db.customer(user.customer_id) as conn:
         if not result.duplicate:
             audit.record(
@@ -137,22 +160,19 @@ def _accept(context: AppContext, user: CurrentUser, upload: UploadFile, limit: i
         row = listing.get_document(conn, user.customer_id, result.document_id)
     if row is None:  # deleted in the moment since; nothing to show
         raise ApiError(404, "not_found")
-    return {"document": document_summary(row), "duplicate": result.duplicate}
+    summary = document_summary(row, max_pages=context.settings.max_pages)
+    return {"document": summary, "duplicate": result.duplicate}
 
 
 @router.post("/documents")
 async def upload_document(request: Request, user: User, context: Context) -> JSONResponse:
-    limit = await run_in_threadpool(_upload_limit, context, user)
-    length = request.headers.get("content-length", "")
-    if not length.isdigit():
-        raise ApiError(400, "bad_request", "The upload has no size. Please try again.")
-    if int(length) > limit + MULTIPART_OVERHEAD:
-        raise ApiError(413, "too_large")
+    policy = await run_in_threadpool(_upload_policy, context, user)
+    check_upload_request(request, policy)
     async with request.form(max_files=1, max_fields=10) as form:
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
-        body = await run_in_threadpool(_accept, context, user, upload, limit)
+        body = await run_in_threadpool(_accept, context, user, upload, policy)
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
 
@@ -170,7 +190,7 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         pages = listing.list_pages(conn, user.customer_id, str(document_id))
         values = listing.list_values(conn, user.customer_id, str(document_id))
     return {
-        **document_summary(row),
+        **document_summary(row, max_pages=context.settings.max_pages),
         "pages": [page_summary(page) for page in pages],
         "values": [extracted_value(value) for value in values],
     }
@@ -206,12 +226,12 @@ def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Co
     if row["status"] == "rejected" or page_no < 1:
         raise ApiError(404, "not_found")
     try:
-        png = context.storage.get_page_image(user.customer_id, str(document_id), page_no)
+        image = context.storage.get_page_image(user.customer_id, str(document_id), page_no)
     except BlobNotFound:
         raise ApiError(404, "not_found") from None
     return Response(
-        content=png,
-        media_type="image/png",
+        content=image,
+        media_type="image/webp",
         headers={"Content-Security-Policy": "sandbox", "Cache-Control": "private, no-store"},
     )
 

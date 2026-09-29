@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import UploadRejected
-from kaagaz.ingestion.policy import UploadPolicy
+from kaagaz.ingestion.policy import KIND_OF, UploadPolicy, limits_by_type
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import Worker
 from kaagaz.pipeline import DocumentProcessor
@@ -116,7 +116,12 @@ def main() -> None:
     queue = LeaseQueue(clock, lease_seconds=30, max_attempts=3)
     statuses, storage, store = MemoryStatuses(), MemoryStorage(), MemoryPipelineStore()
     repo = MemoryDocuments(statuses)
-    policy = UploadPolicy(max_bytes=100_000, allowed_types=frozenset(sniff.KNOWN_TYPES))
+    # Every type that has a size limit (ole2 has none, and no sample is one).
+    policy = UploadPolicy(
+        max_bytes=100_000,
+        allowed_types=frozenset(KIND_OF),
+        type_limits=limits_by_type(pdf=100_000, image=100_000, sheet=100_000),
+    )
     upload = UploadService(policy, repo, storage, queue)
     limits = XlsxLimits(
         max_entries=200,
