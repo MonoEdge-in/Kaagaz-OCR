@@ -15,6 +15,7 @@ describe("query", () => {
   it("is empty when nothing is set", () => {
     expect(query({})).toBe("");
     expect(query({ q: "", status: undefined })).toBe("");
+    expect(query({ q: "", tag_id: [], folder_id: undefined })).toBe("");
   });
 
   it("keeps strings and numbers as before, zero included", () => {
@@ -36,6 +37,10 @@ describe("query", () => {
     expect(query({ include_subfolders: true, trashed: false })).toBe(
       "?include_subfolders=true&trashed=false",
     );
+  });
+
+  it("encodes what was typed", () => {
+    expect(query({ q: "GST & co" })).toBe("?q=GST+%26+co");
   });
 
   it("keeps the order the keys were given in", () => {

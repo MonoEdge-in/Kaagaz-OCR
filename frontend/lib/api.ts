@@ -2,7 +2,6 @@
 // FastAPI by next.config.ts), sends the session cookie, and turns an error reply
 // into an ApiError with the backend's short code.
 
-import { queryString } from "@/components/documents/libraryQuery";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type {
   AdminLoginResult,
@@ -122,10 +121,8 @@ export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everyw
 
 // --- documents -----------------------------------------------------------------
 
-// The list's lists and booleans (tag_id, include_subfolders) need queryString();
-// see the merge note in components/documents/libraryQuery.ts.
 export const listDocuments = (params: DocumentListParams = {}) =>
-  request<DocumentList>("GET", `/documents${queryString(params)}`);
+  request<DocumentList>("GET", `/documents${query(params)}`);
 export const getDocument = (id: string) => request<DocumentDetail>("GET", `/documents/${id}`);
 /** Moves the document, with every version of it, to Trash (PRD 1, F5). */
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);

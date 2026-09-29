@@ -8,7 +8,6 @@ import {
   libraryFromSearch,
   libraryHref,
   listParams,
-  queryString,
 } from "@/components/documents/libraryQuery";
 import type { LibraryState } from "@/components/documents/libraryQuery";
 import { listDocuments } from "@/lib/api";
@@ -19,30 +18,6 @@ const PAID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
 
 afterEach(() => {
   vi.unstubAllGlobals();
-});
-
-describe("queryString", () => {
-  it("repeats a key once for each value in a list", () => {
-    expect(queryString({ tag_id: [GST, PAID] })).toBe(`?tag_id=${GST}&tag_id=${PAID}`);
-  });
-
-  it("writes booleans as true and false", () => {
-    expect(queryString({ include_subfolders: true })).toBe("?include_subfolders=true");
-    expect(queryString({ include_subfolders: false })).toBe("?include_subfolders=false");
-  });
-
-  it("keeps numbers, zero included", () => {
-    expect(queryString({ limit: 25, offset: 0 })).toBe("?limit=25&offset=0");
-  });
-
-  it("leaves out missing and empty values and empty lists", () => {
-    expect(queryString({ q: "", tag_id: [], folder_id: undefined, status: null })).toBe("");
-    expect(queryString({ tag_id: ["", GST] })).toBe(`?tag_id=${GST}`);
-  });
-
-  it("encodes what was typed", () => {
-    expect(queryString({ q: "GST & co" })).toBe("?q=GST+%26+co");
-  });
 });
 
 describe("listDocuments", () => {

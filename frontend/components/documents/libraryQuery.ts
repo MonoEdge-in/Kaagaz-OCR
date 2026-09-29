@@ -1,35 +1,14 @@
 // The documents list, as a request and as a page address. Pure functions,
 // unit tested in node (tests/library-query.test.ts).
 //
-// The list request repeats a key for each tag (tag_id=a&tag_id=b) and sends
-// booleans, which the shared query() in lib/api.ts does not write yet, so
-// queryString() here does. MERGE NOTE (WP1.5): once query() handles lists and
-// booleans, listDocuments can use it and queryString() can go.
-//
 // The page address (/documents?folder=…&tag=…) holds the folder and the
 // filters, so a reload, a folder link from the viewer and Back all show the
 // same view. Only well-formed values are read from it; the server still
 // decides what this person may see.
 
+import { query } from "@/lib/api";
 import type { DetectedType, DocumentStatus } from "@/lib/types";
 import { PAGE_SIZE } from "./logic";
-
-export type QueryValue = string | number | boolean | readonly string[] | null | undefined;
-
-/** "?limit=25&tag_id=a&tag_id=b". Missing, empty and [] values are left out; "" when none are left. */
-export function queryString(params: Readonly<Record<string, QueryValue>>): string {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null || value === "") continue;
-    if (typeof value === "object") {
-      for (const item of value) if (item !== "") search.append(key, item);
-    } else {
-      search.append(key, String(value));
-    }
-  }
-  const text = search.toString();
-  return text ? `?${text}` : "";
-}
 
 /** GET /api/documents parameters (WP1.5 adds everything after q). */
 export type DocumentListParams = {
@@ -136,14 +115,14 @@ export function libraryFromSearch(search: SearchLike): LibraryState {
 
 /** The page address for a view: "/documents" for all documents with no filter. */
 export function libraryHref(state: LibraryState): string {
-  return `/documents${queryString({
-    trash: state.trash ? "1" : null,
-    folder: state.folderId,
-    sub: state.folderId !== null && state.subfolders ? "1" : null,
+  return `/documents${query({
+    trash: state.trash ? "1" : undefined,
+    folder: state.folderId ?? undefined,
+    sub: state.folderId !== null && state.subfolders ? "1" : undefined,
     tag: state.tagIds,
-    type: state.type,
-    from: state.from,
-    to: state.to,
+    type: state.type ?? undefined,
+    from: state.from ?? undefined,
+    to: state.to ?? undefined,
   })}`;
 }
 
