@@ -27,13 +27,15 @@ def iso(value: datetime) -> str:
     return value.isoformat()
 
 
-def status_message(status: str, failure_code: str | None, *, max_pages: int) -> str:
-    """``max_pages`` is the MAX_PAGES setting, named when a PDF had too many pages."""
+def status_message(status: str, failure_code: str | None, *, detected_type: str, max_pages: int) -> str:
+    """``max_pages`` is the MAX_PAGES setting, named when a file had too many pages
+    (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it)."""
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
-        # PROVISIONAL: the PRD quotes the real page count, which is not stored when a PDF fails.
-        return f"This PDF has more than {max_pages} pages. The limit is {max_pages}. Split it into parts."
+        # PROVISIONAL: the PRD quotes the real page count, which is not stored when a file fails.
+        what = "This PDF" if detected_type == "pdf" else "This file"
+        return f"{what} has more than {max_pages} pages. The limit is {max_pages}. Split it into parts."
     if status == "failed":
         return "This file could not be read." + (f" ({failure_code})" if failure_code else "")
     return _STATUS_MESSAGES.get(status, "")
@@ -49,7 +51,9 @@ def document_summary(row: RowMapping, *, max_pages: int, tags: Sequence[TagRow])
         "size_bytes": int(row["size_bytes"]),
         "status": row["status"],
         "failure_code": row["failure_code"],
-        "status_message": status_message(row["status"], row["failure_code"], max_pages=max_pages),
+        "status_message": status_message(
+            row["status"], row["failure_code"], detected_type=row["detected_type"], max_pages=max_pages
+        ),
         "page_count": row["page_count"],
         "created_at": iso(row["created_at"]),
         "uploaded_by_name": row["uploaded_by_name"],

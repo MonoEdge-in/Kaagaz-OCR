@@ -95,8 +95,8 @@ def test_a_day_starts_at_midnight_in_the_customers_timezone() -> None:
 
 
 def test_status_messages() -> None:
-    def message(status: str, failure_code: str | None = None) -> str:
-        return status_message(status, failure_code, max_pages=100)
+    def message(status: str, failure_code: str | None = None, detected_type: str = "pdf") -> str:
+        return status_message(status, failure_code, detected_type=detected_type, max_pages=100)
 
     assert message("received") == "Waiting for the virus check."
     assert message("clean") == "Reading the document…"
@@ -108,6 +108,10 @@ def test_status_messages() -> None:
     # PROVISIONAL: the PRD quotes the real page count, which is not stored when a PDF fails.
     assert message("failed", "too_many_pages") == (
         "This PDF has more than 100 pages. The limit is 100. Split it into parts."
+    )
+    # A TIFF's frames are its pages, and they have the same limit.
+    assert message("failed", "too_many_pages", "tiff") == (
+        "This file has more than 100 pages. The limit is 100. Split it into parts."
     )
 
 
@@ -419,6 +423,26 @@ def test_a_transfer_encoding_next_to_a_content_length_is_refused(db: Database) -
 
 
 @pytest.mark.db
+def test_a_declared_size_over_every_limit_is_413_before_the_body_is_read(db: Database) -> None:
+    api = Api(db)  # the largest limit is the PDF limit, 5 MB
+    signed = api.new_signed()
+    request = signed.client.build_request(
+        "POST", "/api/documents", files={"file": ("a.pdf", PDF_BYTES, "application/pdf")}, headers=CSRF
+    )
+    # The body is a small PDF the upload would take. Only its declared size is too large,
+    # so this reply can only come from the check made before the body is read.
+    request.headers["Content-Length"] = str(5 * MB + 64 * 1024 + 1)
+    reply = signed.client.send(request)
+    assert reply.status_code == 413
+    assert reply.json()["error"] == {
+        "code": "too_large",
+        "message": "Files can be up to 5 MB. This one is larger. Split it or save it smaller and try again.",
+    }
+    assert api.storage.count() == 0
+    assert api.queue.jobs == []
+
+
+@pytest.mark.db
 def test_upload_without_a_file_field_is_400(db: Database) -> None:
     signed = Api(db).new_signed()
     reply = signed.client.post("/api/documents", data={"other": "x"}, headers=CSRF)
@@ -506,6 +530,21 @@ def test_a_pdf_with_too_many_pages_is_told_the_limit_from_the_settings(db: Datab
     (item,) = signed.client.get("/api/documents").json()["items"]
     assert (
         item["status_message"] == "This PDF has more than 100 pages. The limit is 100. Split it into parts."
+    )
+    detail = signed.client.get(f"/api/documents/{document_id}").json()
+    assert detail["status_message"] == item["status_message"]
+
+
+@pytest.mark.db
+def test_a_tiff_with_too_many_frames_is_not_called_a_pdf(db: Database) -> None:
+    api = Api(db, settings=make_settings(max_pages=100))
+    signed = api.new_signed()
+    document_id = api.add_document(
+        signed.customer_id, detected_type="tiff", status="failed", failure_code="too_many_pages"
+    )
+    (item,) = signed.client.get("/api/documents").json()["items"]
+    assert (
+        item["status_message"] == "This file has more than 100 pages. The limit is 100. Split it into parts."
     )
     detail = signed.client.get(f"/api/documents/{document_id}").json()
     assert detail["status_message"] == item["status_message"]
