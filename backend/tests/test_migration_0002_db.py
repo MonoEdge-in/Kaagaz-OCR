@@ -1,8 +1,8 @@
 """Migration 0002 on a fresh database: the backfill, the downgrade, and upgrading again.
 
 The fresh database is DATABASE_URL's database name plus ``_fresh``, dropped and
-created again for each test (so on the laptop, ``kaagaz_wp12_fresh`` for
-``kaagaz_wp12``). Rows are written and read through the app role with the
+created again for each test (for example ``kaagaz_test_fresh`` for
+``kaagaz_test``). Rows are written and read through the app role with the
 customer set, like every other test; only the migrations run as the owner.
 """
 
