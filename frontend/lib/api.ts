@@ -222,8 +222,6 @@ export const updateFolder = (id: string, changes: { name?: string; parent_id?: s
 export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
 export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
-/** Admins only; the server checks the role. */
-export const deleteTag = (id: string) => request<void>("DELETE", `/tags/${id}`);
 
 // --- chat ----------------------------------------------------------------------
 
