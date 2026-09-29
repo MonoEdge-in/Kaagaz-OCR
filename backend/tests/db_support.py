@@ -167,6 +167,11 @@ def new_library(db: Database) -> dict[str, str]:
     return {"customer": customer, "user": user, "folder": folder, "tag": tag, "document": document}
 
 
+def name_session(conn: Connection, application_name: str) -> None:
+    """Name this transaction's session, so ``wait_until_blocked`` can find it."""
+    conn.execute(text("SELECT set_config('application_name', :name, true)"), {"name": application_name})
+
+
 def wait_until_blocked(db: Database, *, application_name: str, timeout: float = 5.0) -> None:
     """Wait until the session named ``application_name`` is waiting on a lock.
 

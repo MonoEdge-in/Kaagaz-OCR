@@ -27,7 +27,7 @@ from sqlalchemy.exc import NoResultFound
 
 from kaagaz.db import users
 from kaagaz.db.engine import Database
-from tests.db_support import new_customer, wait_until_blocked
+from tests.db_support import name_session, new_customer, wait_until_blocked
 
 pytestmark = pytest.mark.db
 
@@ -119,7 +119,7 @@ def _race[T](
 
     def blocked() -> T:
         with db.customer(customer_id) as conn:
-            conn.execute(text("SELECT set_config('application_name', :name, true)"), {"name": name})
+            name_session(conn, name)
             return second(conn)
 
     with ThreadPoolExecutor(max_workers=1) as pool:

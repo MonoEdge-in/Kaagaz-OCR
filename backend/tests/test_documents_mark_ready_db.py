@@ -15,7 +15,7 @@ from sqlalchemy import Connection, text
 
 from kaagaz.db.documents import PgDocuments, mark_ready
 from kaagaz.db.engine import Database
-from tests.db_support import insert_document, new_customer, wait_until_blocked
+from tests.db_support import insert_document, name_session, new_customer, wait_until_blocked
 
 pytestmark = pytest.mark.db
 
@@ -45,10 +45,6 @@ def _state(db: Database, customer: str, ids: list[str]) -> list[tuple[str, bool,
             )
         }
     return [rows[document] for document in ids]
-
-
-def _named(conn: Connection, application_name: str) -> None:
-    conn.execute(text("SELECT set_config('application_name', :name, true)"), {"name": application_name})
 
 
 def test_a_first_version_becomes_ready_and_current_with_its_page_count(db: Database) -> None:
@@ -142,7 +138,7 @@ def test_two_versions_finishing_at_once_leave_exactly_one_current(db: Database, 
 
     def finish_behind() -> None:
         with db.customer(customer) as conn:
-            _named(conn, session)
+            name_session(conn, session)
             mark_ready(conn, customer, behind, 1)
 
     with ThreadPoolExecutor(max_workers=1) as pool:

@@ -22,7 +22,7 @@ from kaagaz.db.trash import (
     restore_document,
     trash_document,
 )
-from tests.db_support import insert_document, new_customer, wait_until_blocked
+from tests.db_support import insert_document, name_session, new_customer, wait_until_blocked
 
 pytestmark = pytest.mark.db
 
@@ -59,10 +59,6 @@ def _family(conn: Connection, customer: str, versions: int, **columns: object) -
 
 def _ids(conn: Connection, statement: str, customer: str) -> set[str]:
     return {str(row[0]) for row in conn.execute(text(statement), {"c": customer})}
-
-
-def _named(conn: Connection, application_name: str) -> None:
-    conn.execute(text("SELECT set_config('application_name', :name, true)"), {"name": application_name})
 
 
 # --- visibility fragments -----------------------------------------------------------
@@ -170,7 +166,7 @@ def test_a_restore_waits_for_a_trash_of_the_same_family(db: Database) -> None:
 
     def restore_second() -> bool:
         with db.customer(customer) as conn:
-            _named(conn, session)
+            name_session(conn, session)
             return restore_document(conn, customer, second)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -199,7 +195,7 @@ def test_a_family_that_grows_while_a_trash_waits_still_queues(db: Database) -> N
 
     def trash_in_two_steps() -> None:
         with db.customer(customer) as conn:
-            _named(conn, trasher)
+            name_session(conn, trasher)
             lock_family(conn, customer, first)
             locked.set()
             go.wait(timeout=10)
@@ -207,7 +203,7 @@ def test_a_family_that_grows_while_a_trash_waits_still_queues(db: Database) -> N
 
     def restore() -> bool:
         with db.customer(customer) as conn:
-            _named(conn, restorer)
+            name_session(conn, restorer)
             return restore_document(conn, customer, first)
 
     with ThreadPoolExecutor(max_workers=2) as pool:

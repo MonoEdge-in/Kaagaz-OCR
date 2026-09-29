@@ -30,7 +30,7 @@ from kaagaz.db.folders import (
     move_folder,
     rename_folder,
 )
-from tests.db_support import insert_document, new_customer, wait_until_blocked
+from tests.db_support import insert_document, name_session, new_customer, wait_until_blocked
 
 pytestmark = pytest.mark.db
 
@@ -51,11 +51,6 @@ def _chain(conn: Connection, customer: str, admin: str, depth: int, *, prefix: s
 def _parents(db: Database, customer: str) -> dict[str, str | None]:
     with db.customer(customer) as conn:
         return {folder.id: folder.parent_id for folder in list_folders(conn, customer)}
-
-
-def _named(conn: Connection, application_name: str) -> None:
-    """Name this transaction's session, so ``wait_until_blocked`` can find it."""
-    conn.execute(text("SELECT set_config('application_name', :name, true)"), {"name": application_name})
 
 
 def _session_name() -> str:
@@ -326,7 +321,7 @@ def test_parallel_opposite_moves_cannot_make_a_cycle(db: Database) -> None:
 
     def move_y_under_x() -> FolderRow:
         with db.customer(customer) as conn:
-            _named(conn, session)
+            name_session(conn, session)
             return move_folder(conn, customer, y.id, parent_id=x.id)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -346,7 +341,7 @@ def test_parallel_same_name_creates_give_one_folder_and_one_name_taken(db: Datab
 
     def create_again() -> FolderRow:
         with db.customer(customer) as conn:
-            _named(conn, session)
+            name_session(conn, session)
             return create_folder(conn, customer, name="tax", parent_id=None, created_by=admin)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -369,7 +364,7 @@ def test_a_create_inside_a_folder_being_moved_deeper_is_too_deep(db: Database) -
 
     def create_inside_lone() -> FolderRow:
         with db.customer(customer) as conn:
-            _named(conn, session)
+            name_session(conn, session)
             return create_folder(conn, customer, name="Child", parent_id=lone.id, created_by=admin)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -391,7 +386,7 @@ def test_a_create_inside_a_folder_being_deleted_is_not_found(db: Database) -> No
 
     def create_inside() -> FolderRow:
         with db.customer(customer) as conn:
-            _named(conn, session)
+            name_session(conn, session)
             return create_folder(conn, customer, name="Child", parent_id=doomed.id, created_by=admin)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -439,13 +434,13 @@ def test_a_folder_delete_and_a_family_restore_lock_the_trashed_rows_in_the_same_
 
     def restore_family() -> None:
         with db.customer(customer) as conn:
-            _named(conn, restorer)
+            name_session(conn, restorer)
             conn.execute(text(_LOCK_FAMILY_ROWS), family)
             conn.execute(text(_RESTORE_FAMILY), family)
 
     def delete_the_folder() -> None:
         with db.customer(customer) as conn:
-            _named(conn, deleter)
+            name_session(conn, deleter)
             delete_folder(conn, customer, folder.id)
 
     with ThreadPoolExecutor(max_workers=2) as pool:

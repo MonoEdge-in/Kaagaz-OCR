@@ -12,12 +12,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import Connection, text
+from sqlalchemy import text
 
 from kaagaz.db.documents import PgDocuments, add_version
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import DocumentRecord
-from tests.db_support import insert_document, new_customer, new_library, wait_until_blocked
+from tests.db_support import insert_document, name_session, new_customer, new_library, wait_until_blocked
 
 pytestmark = pytest.mark.db
 
@@ -37,10 +37,6 @@ def _versions(db: Database, customer: str) -> list[tuple[str, str, int, bool]]:
             text("SELECT id, family_id, version_no, is_current FROM documents ORDER BY family_id, version_no")
         ).all()
     return [(str(row[0]), str(row[1]), int(row[2]), bool(row[3])) for row in rows]
-
-
-def _named(conn: Connection, application_name: str) -> None:
-    conn.execute(text("SELECT set_config('application_name', :name, true)"), {"name": application_name})
 
 
 def test_a_family_in_trash_or_no_document_of_this_customer_gets_no_version(db: Database) -> None:
@@ -86,7 +82,7 @@ def test_two_versions_at_once_get_2_and_3_never_the_same_number(db: Database) ->
 
     def second_upload() -> tuple[DocumentRecord, bool] | None:
         with db.customer(customer) as conn:
-            _named(conn, session)
+            name_session(conn, session)
             return add_version(conn, _record(customer), of_document_id=first)
 
     with ThreadPoolExecutor(max_workers=1) as pool:

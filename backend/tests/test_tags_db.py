@@ -9,7 +9,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection
 
 from kaagaz.db.engine import Database
 from kaagaz.db.tags import (
@@ -23,7 +23,7 @@ from kaagaz.db.tags import (
     set_document_tags,
     tags_for_documents,
 )
-from tests.db_support import insert_document, new_customer, wait_until_blocked
+from tests.db_support import insert_document, name_session, new_customer, wait_until_blocked
 
 pytestmark = pytest.mark.db
 
@@ -40,10 +40,6 @@ def _stored(db: Database, customer: str, document_id: str) -> list[str]:
     """The tag names stored on one document row, sorted."""
     with db.customer(customer) as conn:
         return _names(tags_for_documents(conn, customer, [document_id])[document_id])
-
-
-def _named(conn: Connection, application_name: str) -> None:
-    conn.execute(text("SELECT set_config('application_name', :name, true)"), {"name": application_name})
 
 
 def _session_name() -> str:
@@ -185,7 +181,7 @@ def test_parallel_sets_on_one_family_end_with_the_second_set(db: Database) -> No
 
     def set_bank_through_the_other_version() -> list[TagRow]:
         with db.customer(customer) as conn:
-            _named(conn, session)
+            name_session(conn, session)
             return set_document_tags(conn, customer, second, [bank.id])
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -209,7 +205,7 @@ def test_a_tag_deleted_during_a_set_is_not_found(db: Database) -> None:
 
     def set_rent() -> list[TagRow]:
         with db.customer(customer) as conn:
-            _named(conn, session)
+            name_session(conn, session)
             return set_document_tags(conn, customer, document, [rent.id])
 
     with ThreadPoolExecutor(max_workers=1) as pool:
