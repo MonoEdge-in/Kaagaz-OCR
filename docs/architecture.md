@@ -38,7 +38,7 @@ The browser talks only to the web app, which forwards `/api/*` to the API, so th
 6. **Save** in one transaction that replaces any earlier run, so a job delivered twice is safe. The document must still be clean at this point.
 7. **Index.** A meaning vector is made for each piece if a model is on. The document is then `ready`.
 
-Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `needs_reader` and `failed`, each failure with a short code. A job that keeps failing goes to the failure bin, and one bad file never blocks the ones behind it.
+Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `needs_reader` and `failed`, each failure with a short code. A job that keeps failing goes to the failure bin on the queue's last delivery, and its document ends `failed | retries_exhausted`; the worker reads that maximum from the queue's redrive policy at start-up and will not start without one. One bad file never blocks the ones behind it.
 
 ## One question, step by step
 
