@@ -17,9 +17,15 @@ from kaagaz.ingestion.errors import BackendUnavailable
 
 MESSAGES = {
     "bad_request": "The request is not valid.",
-    "bad_credentials": "The e-mail or password is not right.",
+    # PRD 1 A3: one text for a wrong password, an unknown e-mail, a locked account
+    # and a wrong code. {minutes} is LOGIN_LOCK_MINUTES: use bad_credentials().
+    "bad_credentials": (
+        "Email or password is wrong, or the account is locked. Try again in {minutes} minutes."
+    ),
     "not_signed_in": "Please sign in.",
     "forbidden": "You don't have permission to do this.",
+    "admin_session_required": "Sign in on the admin screen to use this.",
+    "password_change_required": "Set a new password to continue.",
     "csrf": "This request was refused. Reload the page and try again.",
     "not_found": "We couldn't find that.",
     "method_not_allowed": "This action is not available here.",
@@ -57,6 +63,11 @@ class ApiError(Exception):
         self.status = status
         self.code = code
         self.message = message or MESSAGES.get(code, MESSAGES["bad_request"])
+
+
+def bad_credentials(lock_minutes: int) -> ApiError:
+    """The one 401 for every failed sign-in, with the lock time filled in."""
+    return ApiError(401, "bad_credentials", MESSAGES["bad_credentials"].format(minutes=lock_minutes))
 
 
 def error_response(

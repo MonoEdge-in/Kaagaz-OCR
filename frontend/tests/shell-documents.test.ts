@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPT_ATTRIBUTE,
   MAX_UPLOAD_BYTES,
@@ -7,13 +7,31 @@ import {
   estimateIngestSeconds,
   formatEtaText,
   formatProgressPercent,
+  limitFor,
   listView,
   offsetAfterDelete,
   pageInfo,
   shouldPoll,
+  tooLargeMessage,
+  UPLOAD_LIMITS_HINT,
+  uploadKind,
   uploadStateText,
   validateUpload,
 } from "@/components/documents/logic";
+import {
+  dateChipText,
+  documentNameProblem,
+  downloadHref,
+  findTagByName,
+  folderNameProblem,
+  folderTrail,
+  libraryErrorText,
+  noMatchTitle,
+  tagNameProblem,
+  tagsChipText,
+  typeChipText,
+} from "@/components/documents/library";
+import { ApiError, uploadDocument } from "@/lib/api";
 import type { DocumentStatus, Me, Role } from "@/lib/types";
 
 const MB = 1024 * 1024;
@@ -39,18 +57,115 @@ describe("validateUpload", () => {
   it("allows exactly the limit and refuses one byte over", () => {
     expect(validateUpload({ name: "a.pdf", size: MAX_UPLOAD_BYTES })).toBeNull();
     expect(validateUpload({ name: "a.pdf", size: MAX_UPLOAD_BYTES + 1 })).toBe(
-      "This file is larger than 50 MB.",
+      "PDFs can be up to 50 MB. This one is 51 MB. Split it or save it smaller and try again.",
     );
   });
 
   it("uses a smaller limit when given one", () => {
     expect(validateUpload({ name: "a.csv", size: 6 * MB }, 5 * MB)).toBe(
-      "This file is larger than 5 MB.",
+      "Spreadsheets and CSV files can be up to 5 MB. This one is 6 MB. Split it into smaller files and try again.",
     );
   });
 
   it("offers the same kinds in the file picker", () => {
     expect(ACCEPT_ATTRIBUTE).toBe(".pdf,.png,.jpg,.jpeg,.tif,.tiff,.csv,.xlsx");
+  });
+});
+
+describe("upload limits by type (PRD U2)", () => {
+  const cases = [
+    { names: ["a.pdf"], limit: 50 * MB },
+    { names: ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff"], limit: 20 * MB },
+    { names: ["a.csv", "a.xlsx"], limit: 10 * MB },
+  ];
+
+  it("allows each type exactly at its limit and refuses one byte over", () => {
+    for (const { names, limit } of cases) {
+      for (const name of names) {
+        expect(validateUpload({ name, size: limit }), name).toBeNull();
+        expect(validateUpload({ name, size: limit + 1 }), name).toMatch(/can be up to/);
+      }
+    }
+  });
+
+  it("reads the ending in any letter case", () => {
+    expect(validateUpload({ name: "SCAN.TIFF", size: 20 * MB })).toBeNull();
+    expect(validateUpload({ name: "SCAN.TIFF", size: 20 * MB + 1 })).toBe(
+      "Photos and scans can be up to 20 MB. This one is 21 MB. Save it at a lower resolution and try again.",
+    );
+    expect(validateUpload({ name: "Photo.JpG", size: 20 * MB + 1 })).toMatch(/^Photos and scans/);
+    expect(validateUpload({ name: "BOOK.XLSX", size: 10 * MB + 1 })).toMatch(/^Spreadsheets/);
+    expect(validateUpload({ name: "DEED.PDF", size: 50 * MB })).toBeNull();
+    expect(uploadKind("DEED.PDF")).toBe("pdf");
+    expect(uploadKind("IMG_01.JPEG")).toBe("image");
+    expect(uploadKind("Ledger.Csv")).toBe("sheet");
+  });
+
+  it("knows the kind only for accepted endings", () => {
+    expect(uploadKind("virus.exe")).toBeNull();
+    expect(uploadKind("README")).toBeNull();
+    expect(uploadKind("a.constructor")).toBeNull();
+    expect(uploadKind("invoice.pdf.exe")).toBeNull();
+  });
+
+  it("names the limit, the size and the fix, in full", () => {
+    expect(validateUpload({ name: "photo.jpg", size: 34 * MB })).toBe(
+      "Photos and scans can be up to 20 MB. This one is 34 MB. Save it at a lower resolution and try again.",
+    );
+    expect(validateUpload({ name: "statement.pdf", size: 61 * MB })).toBe(
+      "PDFs can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
+    );
+    expect(validateUpload({ name: "ledger.xlsx", size: 12 * MB })).toBe(
+      "Spreadsheets and CSV files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
+    );
+    expect(tooLargeMessage("image", 34 * MB, 20 * MB)).toBe(
+      "Photos and scans can be up to 20 MB. This one is 34 MB. Save it at a lower resolution and try again.",
+    );
+    expect(tooLargeMessage("pdf", 61 * MB, 50 * MB)).toBe(
+      "PDFs can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
+    );
+    expect(tooLargeMessage("sheet", 12 * MB, 10 * MB)).toBe(
+      "Spreadsheets and CSV files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
+    );
+  });
+
+  it("rounds the size up, so a file just over the limit never shows the limit", () => {
+    expect(tooLargeMessage("image", 20 * MB + 1, 20 * MB)).toContain("This one is 21 MB.");
+    expect(tooLargeMessage("image", 33 * MB + 1, 20 * MB)).toContain("This one is 34 MB.");
+    expect(tooLargeMessage("pdf", 60.01 * MB, 50 * MB)).toContain("This one is 61 MB.");
+    expect(tooLargeMessage("sheet", 11.5 * MB, 10 * MB)).toContain("This one is 12 MB.");
+    expect(tooLargeMessage("sheet", 12 * MB, 10 * MB)).toContain("This one is 12 MB.");
+  });
+
+  it("uses the lower of the customer's limit and the type's limit", () => {
+    expect(limitFor("pdf")).toBe(50 * MB);
+    expect(limitFor("image")).toBe(20 * MB);
+    expect(limitFor("sheet")).toBe(10 * MB);
+    expect(limitFor("pdf", 25 * MB)).toBe(25 * MB);
+    expect(limitFor("image", 25 * MB)).toBe(20 * MB);
+    expect(limitFor("sheet", 25 * MB)).toBe(10 * MB);
+    expect(limitFor("image", null)).toBe(20 * MB);
+
+    // A lower customer limit is the one named.
+    expect(validateUpload({ name: "a.pdf", size: 25 * MB }, 25 * MB)).toBeNull();
+    expect(validateUpload({ name: "a.pdf", size: 25 * MB + 1 }, 25 * MB)).toBe(
+      "PDFs can be up to 25 MB. This one is 26 MB. Split it or save it smaller and try again.",
+    );
+    // A higher customer limit never raises the type's limit.
+    expect(validateUpload({ name: "a.png", size: 21 * MB }, 50 * MB)).toBe(
+      "Photos and scans can be up to 20 MB. This one is 21 MB. Save it at a lower resolution and try again.",
+    );
+    expect(validateUpload({ name: "a.csv", size: 10 * MB }, 50 * MB)).toBeNull();
+  });
+
+  it("keeps the largest limit as the overall ceiling", () => {
+    expect(MAX_UPLOAD_BYTES).toBe(50 * MB);
+  });
+
+  it("tells people each type's limit next to the dropzone", () => {
+    expect(UPLOAD_LIMITS_HINT).toBe(
+      "PDF up to 50 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+    );
   });
 });
 
@@ -70,8 +185,9 @@ describe("shouldPoll", () => {
 
 describe("canDelete", () => {
   const me = (role: Role, name = "Asha"): Me => ({
-    user: { id: "u1", email: "asha@example.in", display_name: name, role },
+    user: { id: "u1", email: "asha@example.in", display_name: name, role, must_change_password: false },
     customer: { id: "c1", name: "Sharma Traders" },
+    session: { scope: "app" },
   });
 
   it("lets an admin delete anything", () => {
@@ -168,5 +284,193 @@ describe("formatProgressPercent", () => {
 describe("deletedMessage", () => {
   it("names the document, as plain text", () => {
     expect(deletedMessage("Bill <1>.pdf")).toBe("Deleted Bill <1>.pdf.");
+  });
+});
+
+// --- WP1.5: folders, tags, filters and downloads ----------------------------------
+
+describe("listView with filters", () => {
+  it("shows no match, not the first-upload screen, when filters leave nothing", () => {
+    expect(listView(0, false, "", true)).toBe("no-match");
+    expect(listView(0, false, "", false)).toBe("empty");
+    expect(listView(3, false, "", true)).toBe("list");
+  });
+});
+
+describe("uploadDocument into a folder", () => {
+  const FOLDER = "0b4f7a8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
+
+  // Stands in for the browser's XMLHttpRequest and keeps what was sent.
+  class FakeXhr {
+    static sent: FakeXhr[] = [];
+    method = "";
+    url = "";
+    body: unknown = null;
+    status = 0;
+    responseText = "";
+    withCredentials = false;
+    headers: Record<string, string> = {};
+    upload: { onprogress: ((event: ProgressEvent) => void) | null } = { onprogress: null };
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    open(method: string, url: string) {
+      this.method = method;
+      this.url = url;
+    }
+    setRequestHeader(name: string, value: string) {
+      this.headers[name] = value;
+    }
+    send(body: unknown) {
+      this.body = body;
+      FakeXhr.sent.push(this);
+    }
+    reply(status: number, body: unknown) {
+      this.status = status;
+      this.responseText = JSON.stringify(body);
+      this.onload?.();
+    }
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    FakeXhr.sent = [];
+  });
+
+  function lastForm(): FormData {
+    const xhr = FakeXhr.sent.at(-1);
+    if (!xhr || !(xhr.body instanceof FormData)) throw new Error("nothing was uploaded");
+    return xhr.body;
+  }
+
+  it("sends the folder being viewed as the form field folder_id, with the file", async () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    const file = new File(["%PDF-1.7"], "bill.pdf", { type: "application/pdf" });
+    const done = uploadDocument(file, () => {}, FOLDER);
+    const form = lastForm();
+    expect(form.get("folder_id")).toBe(FOLDER);
+    expect(form.get("file")).toBeInstanceOf(File);
+    expect(FakeXhr.sent[0]?.url).toBe("/api/documents");
+    FakeXhr.sent[0]?.reply(201, { document: { id: "d1" }, duplicate: false });
+    await expect(done).resolves.toMatchObject({ duplicate: false });
+  });
+
+  it("sends no folder_id when uploading at the top level", async () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    const done = uploadDocument(new File(["a,b"], "rates.csv"), () => {});
+    expect(lastForm().has("folder_id")).toBe(false);
+    FakeXhr.sent[0]?.reply(201, { document: { id: "d2" }, duplicate: false });
+    await done;
+  });
+});
+
+describe("downloadHref", () => {
+  it("downloads the original through the API, never a storage link", () => {
+    expect(downloadHref({ id: "d-1", status: "ready" })).toBe("/api/documents/d-1/file");
+    expect(downloadHref({ id: "d-1", status: "needs_reader" })).toBe("/api/documents/d-1/file");
+    expect(downloadHref({ id: "d-1", status: "clean" })).toBe("/api/documents/d-1/file");
+  });
+
+  it("offers nothing the server would refuse: not yet checked, rejected or failed", () => {
+    for (const status of ["received", "rejected", "failed"] as const) {
+      expect(downloadHref({ id: "d-1", status })).toBeNull();
+    }
+  });
+});
+
+describe("folderTrail", () => {
+  const suppliers = { id: "s", name: "Suppliers" };
+  const year = { id: "y", name: "2026" };
+
+  it("lists the folders from the top down to the document's own folder", () => {
+    expect(folderTrail({ ...year, path: [suppliers, year] })).toEqual([suppliers, year]);
+  });
+
+  it("adds the folder itself when the path stops above it", () => {
+    expect(folderTrail({ ...year, path: [suppliers] })).toEqual([suppliers, year]);
+    expect(folderTrail({ ...suppliers, path: [] })).toEqual([suppliers]);
+  });
+});
+
+describe("names for folders, tags and documents", () => {
+  it("asks for a folder name of 1 to 100 characters", () => {
+    expect(folderNameProblem("   ")).toBe("Enter a name for the folder.");
+    expect(folderNameProblem("x".repeat(101))).toBe("Use at most 100 characters.");
+    expect(folderNameProblem(" Suppliers ")).toBeNull();
+    expect(folderNameProblem("x".repeat(100))).toBeNull();
+  });
+
+  it("asks for a tag name of 1 to 40 characters", () => {
+    expect(tagNameProblem("")).toBe("Enter a name for the tag.");
+    expect(tagNameProblem("x".repeat(41))).toBe("Use at most 40 characters.");
+    expect(tagNameProblem("GST")).toBeNull();
+  });
+
+  it("asks for a document name of 1 to 255 characters, slashes allowed", () => {
+    expect(documentNameProblem(" ")).toBe("Enter a name for the document.");
+    expect(documentNameProblem("x".repeat(256))).toBe("Use at most 255 characters.");
+    expect(documentNameProblem("GST 2026/27.pdf")).toBeNull();
+  });
+
+  it("finds an existing tag whatever the letter case or spaces", () => {
+    const tags = [
+      { id: "t1", name: "GST" },
+      { id: "t2", name: "Paid" },
+    ];
+    expect(findTagByName(tags, " gst ")).toEqual({ id: "t1", name: "GST" });
+    expect(findTagByName(tags, "unpaid")).toBeNull();
+  });
+});
+
+describe("libraryErrorText", () => {
+  const taken = new ApiError(409, "conflict", "That already exists.");
+
+  it("says which name is taken", () => {
+    expect(libraryErrorText(taken, "folder")).toBe(
+      "A folder with this name is already here. Choose another name.",
+    );
+    expect(libraryErrorText(taken, "tag")).toBe("A tag with this name already exists.");
+  });
+
+  it("passes the server's own words through for the folder rules", () => {
+    const notEmpty = new ApiError(
+      409,
+      "folder_not_empty",
+      "This folder isn't empty. Move or delete what is inside it first.",
+    );
+    expect(libraryErrorText(notEmpty, "folder")).toBe(notEmpty.message);
+  });
+
+  it("asks to check the connection when the server was not reached", () => {
+    expect(libraryErrorText(new TypeError("Failed to fetch"), "document")).toBe(
+      "Check your internet connection, then try again.",
+    );
+  });
+});
+
+describe("noMatchTitle", () => {
+  it("names the search words, the filters, or both", () => {
+    expect(noMatchTitle("gst", false)).toBe("No document names contain “gst”.");
+    expect(noMatchTitle("", true)).toBe("No documents match these filters.");
+    expect(noMatchTitle("gst", true)).toBe("No document names contain “gst” with these filters.");
+  });
+});
+
+describe("filter chip words", () => {
+  it("names the tags chosen, or just says Tags", () => {
+    expect(tagsChipText([])).toBe("Tags");
+    expect(tagsChipText(["GST"])).toBe("Tag: GST");
+    expect(tagsChipText(["GST", "Paid", "2026"])).toBe("Tags: GST and 2 more");
+  });
+
+  it("names the type chosen, or just says Type", () => {
+    expect(typeChipText(null)).toBe("Type");
+    expect(typeChipText("pdf")).toBe("Type: PDF");
+  });
+
+  it("names the days chosen, in India dates, or just says Date uploaded", () => {
+    expect(dateChipText(null, null)).toBe("Date uploaded");
+    expect(dateChipText("2026-09-01", "2026-09-30")).toBe("Uploaded 1 Sept 2026 to 30 Sept 2026");
+    expect(dateChipText("2026-09-01", null)).toBe("Uploaded from 1 Sept 2026");
+    expect(dateChipText(null, "2026-09-30")).toBe("Uploaded until 30 Sept 2026");
   });
 });

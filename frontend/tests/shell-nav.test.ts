@@ -2,17 +2,19 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ICON_NAMES } from "@/components/ui/icons";
+import { appGate, mustChangePassword, sessionScope } from "@/components/shell/gate";
 import { currentPageName, isCurrent, navLinks, roleName } from "@/components/shell/nav";
+import type { Me, Role, SessionScope } from "@/lib/types";
 
 describe("navLinks", () => {
-  const labels = (role: Parameters<typeof navLinks>[0]) => navLinks(role).map((l) => l.label);
+  const labels = (role: Role, scope: SessionScope) => navLinks(role, scope).map((l) => l.label);
 
   it("gives a member Documents and Ask only", () => {
-    expect(labels("member")).toEqual(["Documents", "Ask"]);
+    expect(labels("member", "app")).toEqual(["Documents", "Ask"]);
   });
 
   it("gives a member no Review or Admin link, by label or by address", () => {
-    const links = navLinks("member");
+    const links = navLinks("member", "app");
     expect(links.map((l) => l.href)).toEqual(["/documents", "/chat"]);
     for (const link of links) {
       expect(link.href).not.toMatch(/^\/(review|admin)(\/|$)/);
@@ -21,21 +23,67 @@ describe("navLinks", () => {
   });
 
   it("adds Review for a reviewer", () => {
-    expect(labels("reviewer")).toEqual(["Documents", "Ask", "Review"]);
+    expect(labels("reviewer", "app")).toEqual(["Documents", "Ask", "Review"]);
   });
 
-  it("adds Review and Admin for an admin", () => {
-    expect(labels("admin")).toEqual(["Documents", "Ask", "Review", "Admin"]);
+  // PRD A1: the same admin account signed in at /login sees no Admin menu.
+  it("gives an admin with an app session Review but no Admin", () => {
+    expect(labels("admin", "app")).toEqual(["Documents", "Ask", "Review"]);
+    expect(navLinks("admin", "app").map((l) => l.href)).not.toContain("/admin");
+  });
+
+  it("adds Admin only for an admin with an admin session", () => {
+    expect(labels("admin", "admin")).toEqual(["Documents", "Ask", "Review", "Admin"]);
+  });
+
+  it("never gives Admin to a non-admin, whatever the scope says", () => {
+    expect(labels("member", "admin")).toEqual(["Documents", "Ask"]);
+    expect(labels("reviewer", "admin")).toEqual(["Documents", "Ask", "Review"]);
   });
 
   it("points Ask at /chat", () => {
-    expect(navLinks("member").find((l) => l.label === "Ask")?.href).toBe("/chat");
+    expect(navLinks("member", "app").find((l) => l.label === "Ask")?.href).toBe("/chat");
   });
 
   it("gives every link a known icon", () => {
-    for (const link of navLinks("admin")) {
+    for (const link of navLinks("admin", "admin")) {
       expect(ICON_NAMES).toContain(link.icon);
     }
+  });
+});
+
+describe("the session gate", () => {
+  const me = ({
+    must_change_password = false,
+    scope = "app",
+  }: { must_change_password?: boolean; scope?: SessionScope } = {}): Me => ({
+    user: { id: "u1", email: "asha@sharma.in", display_name: "Asha", role: "admin", must_change_password },
+    customer: { id: "c1", name: "Sharma Traders" },
+    session: { scope },
+  });
+
+  it("reads the scope", () => {
+    expect(sessionScope(me({ scope: "admin" }))).toBe("admin");
+    expect(sessionScope(me({ scope: "app" }))).toBe("app");
+  });
+
+  it("shows the set-new-password screen whenever the flag is set, in either scope", () => {
+    expect(appGate(me({ must_change_password: true, scope: "app" }))).toBe("set_password");
+    expect(appGate(me({ must_change_password: true, scope: "admin" }))).toBe("set_password");
+    expect(mustChangePassword(me({ must_change_password: true }))).toBe(true);
+  });
+
+  it("opens the app when no new password is needed", () => {
+    expect(appGate(me({ must_change_password: false, scope: "app" }))).toBe("app");
+    expect(appGate(me())).toBe("app");
+    expect(mustChangePassword(me())).toBe(false);
+  });
+
+  it("is applied by the session provider, which can also reload who is signed in", () => {
+    const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
+    expect(session).toContain("appGate(");
+    expect(session).toContain("<SetPasswordScreen");
+    expect(session).toMatch(/refresh\(\): void/);
   });
 });
 
@@ -67,6 +115,21 @@ describe("one nav list for the sidebar and the drawer", () => {
       expect(text, name).not.toMatch(/["'`]\/(review|admin)\b/);
     }
   });
+
+  it("passes the session scope to navLinks()", () => {
+    expect(shell).toContain("navLinks(me.user.role, sessionScope(me))");
+  });
+
+  // PRD 7: "Sign out everywhere" in the account menu. It sits in ShellMenu, so
+  // the sidebar and the drawer both have it.
+  it("offers Sign out everywhere in the one menu, next to Sign out", () => {
+    const menu = sources.find((s) => s.name === "ShellMenu.tsx")?.text ?? "";
+    expect(menu).toContain("Sign out everywhere");
+    expect(menu).toContain("onClick={onSignOutEverywhere}");
+    expect(menu.indexOf("Sign out everywhere")).toBeGreaterThan(menu.indexOf("onClick={onSignOut}"));
+    expect(shell).toContain("logoutEverywhere()");
+    expect(shell).toContain("onSignOutEverywhere={signOutEverywhere}");
+  });
 });
 
 describe("isCurrent", () => {
@@ -80,15 +143,15 @@ describe("isCurrent", () => {
 
 describe("currentPageName", () => {
   it("names the page for the top bar, including pages below a link", () => {
-    const links = navLinks("admin");
+    const links = navLinks("admin", "admin");
     expect(currentPageName(links, "/documents/abc")).toBe("Documents");
     expect(currentPageName(links, "/chat")).toBe("Ask");
     expect(currentPageName(links, "/admin")).toBe("Admin");
   });
 
   it("names no page a member has no link for", () => {
-    expect(currentPageName(navLinks("member"), "/review")).toBeNull();
-    expect(currentPageName(navLinks("member"), "/somewhere")).toBeNull();
+    expect(currentPageName(navLinks("member", "app"), "/review")).toBeNull();
+    expect(currentPageName(navLinks("member", "app"), "/somewhere")).toBeNull();
   });
 });
 

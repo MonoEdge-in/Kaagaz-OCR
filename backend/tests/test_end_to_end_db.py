@@ -71,6 +71,7 @@ def _sign_in(db: Database, app_client: TestClient, customer_id: str) -> None:
             display_name="Test member",
             role="member",
             password_hash=hash_password(PASSWORD),
+            must_change_password=False,
         )
     reply = app_client.post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)
     assert reply.status_code == 200, reply.text

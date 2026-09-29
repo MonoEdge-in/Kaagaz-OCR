@@ -1,18 +1,34 @@
-"""The admin routes against a real database."""
+"""The admin routes against a real database, called with an admin session
+(signed in on the admin screen with a code; tests/test_api_admin_sign_in.py
+checks that an app session is refused on every one of them)."""
 
 import json
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import text
 
 from kaagaz.db.engine import Database
-from tests.test_api_support import CSRF, PASSWORD, Api, answer_json
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, answer_json
+
+ADMIN_USER_FIELDS = {
+    "id",
+    "email",
+    "display_name",
+    "role",
+    "disabled",
+    "created_at",
+    "locked_until",
+    "totp_enabled",
+    "must_change_password",
+}
+WRONG = "wrong password!!"
 
 
 @pytest.mark.db
 def test_admin_lists_and_creates_users_and_the_new_user_can_sign_in(db: Database) -> None:
     api = Api(db)
-    admin = api.new_signed("admin")
+    admin = api.new_admin()
     email = f"New.Person.{admin.user_id[:8]}@Example.test"
 
     created = admin.client.post(
@@ -23,16 +39,20 @@ def test_admin_lists_and_creates_users_and_the_new_user_can_sign_in(db: Database
 
     assert created.status_code == 201
     user = created.json()
-    assert set(user) == {"id", "email", "display_name", "role", "disabled", "created_at"}
+    assert set(user) == ADMIN_USER_FIELDS
     assert user["email"] == email.lower()
     assert user["display_name"] == "New Person"
     assert user["role"] == "reviewer"
     assert user["disabled"] is False
+    assert user["locked_until"] is None
+    assert user["totp_enabled"] is False
+    assert user["must_change_password"] is True  # the admin chose it, so it is temporary
     assert api.audit_actions(admin.customer_id)[-1] == "user.create"
     listed = admin.client.get("/api/admin/users").json()["items"]
     assert user["id"] in [item["id"] for item in listed]
     login = api.client().post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)
     assert login.status_code == 200
+    assert login.json()["user"]["must_change_password"] is True
     with db.customer(admin.customer_id) as conn:
         details: dict[str, object] = conn.execute(
             text("SELECT details FROM audit_log WHERE action = 'user.create'")
@@ -43,7 +63,7 @@ def test_admin_lists_and_creates_users_and_the_new_user_can_sign_in(db: Database
 @pytest.mark.db
 def test_a_taken_email_is_409_even_in_another_customer(db: Database) -> None:
     api = Api(db)
-    admin = api.new_signed("admin")
+    admin = api.new_admin()
     other_customer, _ = api.customer()
     _, taken = api.add_user(other_customer, "member")
     reply = admin.client.post(
@@ -67,14 +87,14 @@ def test_a_taken_email_is_409_even_in_another_customer(db: Database) -> None:
     ],
 )
 def test_bad_new_users_are_400(db: Database, body: dict[str, str]) -> None:
-    admin = Api(db).new_signed("admin")
+    admin = Api(db).new_admin()
     assert admin.client.post("/api/admin/users", json=body, headers=CSRF).status_code == 400
 
 
 @pytest.mark.db
 def test_update_role_disable_and_password(db: Database) -> None:
     api = Api(db)
-    admin = api.new_signed("admin")
+    admin = api.new_admin()
     member = api.sign_in(admin.customer_id, "member")
 
     promoted = admin.client.patch(
@@ -89,10 +109,12 @@ def test_update_role_disable_and_password(db: Database) -> None:
         f"/api/admin/users/{member.user_id}", json={"password": new_password}, headers=CSRF
     )
     assert changed.json()["role"] == "reviewer"  # untouched fields stay
+    assert changed.json()["must_change_password"] is True
     login = api.client().post(
         "/api/auth/login", json={"email": member.email, "password": new_password}, headers=CSRF
     )
     assert login.status_code == 200
+    assert login.json()["user"]["must_change_password"] is True
 
     disabled = admin.client.patch(f"/api/admin/users/{member.user_id}", json={"disabled": True}, headers=CSRF)
     assert disabled.json()["disabled"] is True
@@ -106,7 +128,7 @@ def test_update_role_disable_and_password(db: Database) -> None:
 @pytest.mark.db
 @pytest.mark.parametrize("body", [{"disabled": True}, {"role": "member"}, {"role": "reviewer"}])
 def test_an_admin_cannot_lock_themselves_out(db: Database, body: dict[str, object]) -> None:
-    admin = Api(db).new_signed("admin")
+    admin = Api(db).new_admin()
     reply = admin.client.patch(f"/api/admin/users/{admin.user_id}", json=body, headers=CSRF)
     assert reply.status_code == 400
     assert admin.client.get("/api/auth/me").json()["user"]["role"] == "admin"
@@ -114,7 +136,7 @@ def test_an_admin_cannot_lock_themselves_out(db: Database, body: dict[str, objec
 
 @pytest.mark.db
 def test_an_admin_may_change_their_own_password(db: Database) -> None:
-    admin = Api(db).new_signed("admin")
+    admin = Api(db).new_admin()
     reply = admin.client.patch(
         f"/api/admin/users/{admin.user_id}",
         json={"password": "my new long password", "role": "admin"},
@@ -125,7 +147,7 @@ def test_an_admin_may_change_their_own_password(db: Database) -> None:
 
 @pytest.mark.db
 def test_update_unknown_user_is_404(db: Database) -> None:
-    admin = Api(db).new_signed("admin")
+    admin = Api(db).new_admin()
     reply = admin.client.patch(
         "/api/admin/users/7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e", json={"role": "member"}, headers=CSRF
     )
@@ -136,7 +158,7 @@ def test_update_unknown_user_is_404(db: Database) -> None:
 def test_settings_read_and_change_within_the_platform_limit(db: Database) -> None:
     api = Api(db)  # platform limit: 5 MB
     customer_id, _ = api.customer("Mehta Textiles")
-    admin = api.sign_in(customer_id, "admin")
+    admin = api.admin_sign_in(customer_id)
 
     assert admin.client.get("/api/admin/settings").json() == {
         "customer_name": "Mehta Textiles",
@@ -159,25 +181,25 @@ def test_settings_read_and_change_within_the_platform_limit(db: Database) -> Non
 @pytest.mark.db
 def test_audit_log_is_newest_first_with_actor_names_and_paginated(db: Database) -> None:
     api = Api(db)
-    admin = api.new_signed("admin")
+    admin = api.new_admin()
     admin.client.patch("/api/admin/settings", json={"max_upload_mb": 2}, headers=CSRF)
 
     body = admin.client.get("/api/admin/audit?limit=1").json()
 
-    assert body["total"] == 2  # auth.login, settings.update
+    assert body["total"] == 2  # auth.admin_login, settings.update
     entry = body["items"][0]
     assert set(entry) == {"id", "action", "actor_name", "target_type", "target_id", "details", "created_at"}
     assert entry["action"] == "settings.update"
     assert entry["actor_name"] == "Test admin"
     assert entry["details"] == {"max_upload_mb": 2}
     older = admin.client.get("/api/admin/audit?limit=1&offset=1").json()["items"]
-    assert [item["action"] for item in older] == ["auth.login"]
+    assert [item["action"] for item in older] == ["auth.admin_login"]
 
 
 @pytest.mark.db
 def test_stats_count_this_customers_activity(db: Database) -> None:
     api = Api(db)
-    admin = api.new_signed("admin")
+    admin = api.new_admin()
     ready = api.add_document(admin.customer_id, status="ready")
     api.add_document(admin.customer_id, status="rejected", failure_code="virus_found")
     api.add_page(admin.customer_id, ready)
@@ -200,3 +222,129 @@ def test_stats_count_this_customers_activity(db: Database) -> None:
         "feedback_down": 0,
         "open_review_items": 1,
     }
+
+
+# --- lockout, temporary passwords and 2FA: the admin's three buttons ----------------------------
+
+
+def _lock(api: Api, email: str) -> None:
+    client = api.client()
+    for _ in range(api.settings.login_max_failures):
+        client.post("/api/auth/login", json={"email": email, "password": WRONG}, headers=CSRF)
+
+
+@pytest.mark.db
+def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    member_id, member_email = api.add_user(admin.customer_id, "member")
+    _lock(api, member_email)
+
+    items = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
+
+    assert all(set(item) == ADMIN_USER_FIELDS for item in items.values())
+    assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=15)).isoformat()
+    assert items[member_id]["totp_enabled"] is False
+    assert items[admin.user_id]["totp_enabled"] is True
+    assert items[admin.user_id]["must_change_password"] is False
+    api.clock.advance(15 * 60 + 1)
+    later = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
+    assert later[member_id]["locked_until"] is None  # a lock that has passed is not shown
+
+
+@pytest.mark.db
+def test_unlock(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    member_id, member_email = api.add_user(admin.customer_id, "member")
+    _lock(api, member_email)
+
+    reply = admin.client.post(f"/api/admin/users/{member_id}/unlock", headers=CSRF)
+
+    assert reply.status_code == 200, reply.text
+    assert set(reply.json()) == ADMIN_USER_FIELDS
+    assert reply.json()["locked_until"] is None
+    login = api.client().post(
+        "/api/auth/login", json={"email": member_email, "password": PASSWORD}, headers=CSRF
+    )
+    assert login.status_code == 200
+    assert api.audit_actions(admin.customer_id)[-2:] == ["user.unlock", "auth.login"]
+
+
+@pytest.mark.db
+def test_reset_password_gives_a_temporary_password_and_ends_sessions(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    member = api.sign_in(admin.customer_id, "member")
+
+    reply = admin.client.post(f"/api/admin/users/{member.user_id}/reset-password", headers=CSRF)
+
+    assert reply.status_code == 200, reply.text
+    body = reply.json()
+    assert set(body["user"]) == ADMIN_USER_FIELDS
+    assert body["user"]["must_change_password"] is True
+    assert len(body["temporary_password"]) == 16
+    assert member.client.get("/api/auth/me").status_code == 401
+    assert api.audit_actions(admin.customer_id)[-1] == "user.reset_password"
+    with db.customer(admin.customer_id) as conn:
+        details: dict[str, object] = conn.execute(
+            text("SELECT details FROM audit_log WHERE action = 'user.reset_password'")
+        ).scalar_one()
+    assert body["temporary_password"] not in json.dumps(details)
+
+
+@pytest.mark.db
+def test_reset_2fa_clears_the_code_so_the_admin_enrols_again(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    colleague = api.enrol_admin(admin.customer_id)
+
+    reply = admin.client.post(f"/api/admin/users/{colleague.user_id}/reset-2fa", headers=CSRF)
+
+    assert reply.status_code == 200, reply.text
+    assert set(reply.json()) == ADMIN_USER_FIELDS
+    assert reply.json()["totp_enabled"] is False
+    state = api.user_state(admin.customer_id, colleague.user_id)
+    assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
+    assert api.audit_actions(admin.customer_id)[-1] == "user.reset_totp"
+    offer = api.admin_login(api.client(), colleague.email)
+    assert offer.status_code == 200
+    assert offer.json()["enrol_required"] is True
+
+
+@pytest.mark.db
+def test_an_admin_cannot_reset_their_own_2fa(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    before = api.user_state(admin.customer_id, admin.user_id)
+
+    reply = admin.client.post(f"/api/admin/users/{admin.user_id}/reset-2fa", headers=CSRF)
+
+    assert reply.status_code == 400
+    assert reply.json()["error"]["code"] == "bad_request"
+    assert api.user_state(admin.customer_id, admin.user_id) == before
+    assert admin.client.get("/api/admin/users").status_code == 200
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("action", ["unlock", "reset-password", "reset-2fa"])
+def test_the_three_buttons_on_an_unknown_user_are_404(db: Database, action: str) -> None:
+    admin = Api(db).new_admin()
+    reply = admin.client.post(f"/api/admin/users/{ANY_ID}/{action}", headers=CSRF)
+    assert reply.status_code == 404
+    assert reply.json()["error"]["code"] == "not_found"
+    malformed = admin.client.post(f"/api/admin/users/not-a-uuid/{action}", headers=CSRF)
+    assert malformed.status_code == 400
+
+
+@pytest.mark.db
+def test_disabling_a_user_ends_their_sessions(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    member = api.sign_in(admin.customer_id, "member")
+    version = api.user_state(admin.customer_id, member.user_id)["session_version"]
+
+    admin.client.patch(f"/api/admin/users/{member.user_id}", json={"disabled": True}, headers=CSRF)
+
+    assert api.user_state(admin.customer_id, member.user_id)["session_version"] > version
+    assert member.client.get("/api/auth/me").status_code == 401

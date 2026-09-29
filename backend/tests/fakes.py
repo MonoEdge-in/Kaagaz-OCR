@@ -16,7 +16,7 @@ from kaagaz.chunking.piece import Piece
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job
+from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job, UnknownFolder
 from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import CellLocation, PageInfo, ReadError, Span
@@ -27,12 +27,15 @@ class MemoryRepository:
     """Documents keyed by (customer_id, sha256): O(1) average lookup and insert.
 
     One lock makes check-and-insert atomic, like a UNIQUE (customer_id, sha256)
-    constraint would in the real database.
+    constraint would in the real database. A record filed in a folder that is
+    not in ``folders`` (keyed by customer) raises UnknownFolder, like the
+    folder foreign key.
     """
 
     def __init__(self) -> None:
         self._by_fingerprint: dict[tuple[str, str], DocumentRecord] = {}
         self._by_id: dict[tuple[str, str], DocumentRecord] = {}
+        self.folders: set[tuple[str, str]] = set()  # (customer_id, folder_id)
         self._lock = threading.Lock()
         self.fail_add = False
         self.fail_remove = False
@@ -53,6 +56,8 @@ class MemoryRepository:
             existing = self._by_fingerprint.get(key)
             if existing is not None:
                 return existing, False
+            if record.folder_id is not None and (record.customer_id, record.folder_id) not in self.folders:
+                raise UnknownFolder(record.document_id)
             self._by_fingerprint[key] = record
             self._by_id[(record.customer_id, record.document_id)] = record
             return record, True

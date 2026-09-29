@@ -298,6 +298,14 @@ INVOICE_LINES = [
     (1, "Grand Total: Rs. 1,180.00"),
     (2, "Seller: Sharma Traders   Invoice Date: 12/08/2026   Grand Total: Rs. 1,180.00"),
 ]
+# A July invoice whose page 2 prints another "Date:" (by the signature, say): that
+# date is a "page:2:line:1" record, never the invoice's own date.
+LATER_DATE_LINES = [
+    (1, "Seller: Sharma Traders"),
+    (1, "Invoice Date: 12/07/2026"),
+    (1, "Grand Total: Rs. 1,180.00"),
+    (2, "Date: 03/08/2026"),
+]
 REGISTER = [
     ("Party Name", "Total Amount", "Date"),
     ("Sharma Traders", "1,000", "03/08/2026"),
@@ -326,11 +334,13 @@ def as_stored(values: list[ExtractedValue]) -> list[dict[str, Any]]:
     ]
 
 
-def add_invoice(db: Database, customer: str) -> list[dict[str, Any]]:
+def add_invoice(
+    db: Database, customer: str, lines: list[tuple[int, str]] = INVOICE_LINES
+) -> list[dict[str, Any]]:
     document = add_document(db, customer, "bill-17.pdf", detected_type="pdf")
     spans = [
         Span(text=line, raw=line, location=BoxLocation(page, 0.1, 0.1 * n, 0.9, 0.1 * n + 0.05))
-        for n, (page, line) in enumerate(INVOICE_LINES, start=1)
+        for n, (page, line) in enumerate(lines, start=1)
     ]
     values = as_stored(values_from_lines(spans))
     assert {v["key"] for v in values} == {"document", "page:2:line:1"}
@@ -377,6 +387,19 @@ def test_extreme_value_lists_an_invoice_once(db: Database) -> None:
     add_invoice(db, customer)
     rows = PgFixedQueries(db).extreme_value(customer, "total_amount", DATES, *AUGUST, True)
     assert [(r.number, r.records) for r in rows] == [(Decimal(1180), 1)]
+
+
+def test_count_documents_takes_an_invoices_date_from_its_document_record(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_invoice(db, customer, LATER_DATE_LINES)
+    fixed = PgFixedQueries(db)
+
+    # The same answer as the total: the invoice is not in August at all.
+    assert fixed.count_documents(customer, *AUGUST, date_fields=DATES) == []
+    assert fixed.total(customer, "total_amount", DATES, *AUGUST) == []
+    [july] = fixed.count_documents(customer, date(2026, 7, 1), date(2026, 8, 1), date_fields=DATES)
+    assert (july.number, july.records) == (Decimal(1), 1)
+    assert [ref.value_text for ref in july.values] == ["12/07/2026"]
 
 
 def test_a_register_column_named_total_amount_still_sums_every_row(db: Database) -> None:

@@ -172,3 +172,76 @@ def test_seed_demo_makes_two_customers_with_three_roles_and_is_safe_to_rerun(db:
 
 def test_seed_demo_needs_the_password_variable(db: Database) -> None:
     assert main(["seed-demo"], db=db, environ={}, out=io.StringIO(), ask=_never_ask) == 2
+
+
+# --- reset-admin-2fa: the way back in for the last admin (PRD 1 A6) -------------------------
+
+
+def _enrolled_admin(db: Database) -> tuple[str, str, str]:
+    """A customer whose first admin has a two-step code set up. Returns (customer, user, e-mail)."""
+    customer_id, user_id = new_customer(db)
+    with db.customer(customer_id) as conn:
+        email = str(
+            conn.execute(
+                text(
+                    "UPDATE users SET totp_secret_enc = 'v1:not-a-real-sealed-secret',"
+                    " totp_enabled_at = now(), totp_last_step = 100"
+                    " WHERE id = :u RETURNING email"
+                ),
+                {"u": user_id},
+            ).scalar_one()
+        )
+    return customer_id, user_id, email
+
+
+def _two_step(db: Database, customer_id: str, user_id: str) -> tuple[object, ...]:
+    with db.customer(customer_id) as conn:
+        row = conn.execute(
+            text(
+                "SELECT totp_secret_enc, totp_enabled_at, totp_last_step, session_version"
+                " FROM users WHERE id = :u"
+            ),
+            {"u": user_id},
+        ).one()
+    return tuple(row)
+
+
+def test_reset_admin_2fa_clears_the_code_and_ends_the_sessions(db: Database) -> None:
+    customer_id, user_id, email = _enrolled_admin(db)
+    out = io.StringIO()
+
+    code = main(["reset-admin-2fa", "--email", email.upper()], db=db, environ={}, out=out, ask=_never_ask)
+
+    assert code == 0
+    assert _two_step(db, customer_id, user_id) == (None, None, None, 2)
+    assert out.getvalue() == f"user {user_id}: 2FA reset, they set it up again at the next admin sign-in\n"
+    with db.customer(customer_id) as conn:
+        rows = conn.execute(text("SELECT action, actor_user_id, target_id, details FROM audit_log")).all()
+    assert [tuple(row) for row in rows] == [("user.reset_totp", None, user_id, {"by": "cli"})]
+
+
+@pytest.mark.parametrize("role", ["member", "reviewer", None])
+def test_reset_admin_2fa_needs_an_admins_email(db: Database, role: str | None) -> None:
+    customer_id, _ = new_customer(db)
+    email = f"nobody-{uuid.uuid4().hex[:8]}@example.test"
+    if role is not None:
+        main(
+            ["create-user", "--customer-id", customer_id, "--email", email, "--name", "X", "--role", role],
+            db=db,
+            environ={"KAAGAZ_ADMIN_PASSWORD": PASSWORD},
+            out=io.StringIO(),
+        )
+    before = _audit_count(db, customer_id)
+
+    assert main(["reset-admin-2fa", "--email", email], db=db, environ={}, out=io.StringIO()) == 2
+    assert _audit_count(db, customer_id) == before
+
+
+def test_reset_admin_2fa_needs_the_email_flag() -> None:
+    with pytest.raises(SystemExit):
+        main(["reset-admin-2fa"])
+
+
+def _audit_count(db: Database, customer_id: str) -> int:
+    with db.customer(customer_id) as conn:
+        return int(conn.execute(text("SELECT count(*) FROM audit_log")).scalar_one())

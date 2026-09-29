@@ -19,7 +19,8 @@ Invariant: a record exists only if its file is stored and its job is queued.
 Each partial failure is undone in reverse order:
 
 * storing fails: nothing was recorded, the error propagates.
-* recording fails: the stored file is deleted, the error propagates.
+* recording fails: the stored file is deleted, the error propagates. That
+  includes a folder deleted since the API checked it (UnknownFolder).
 * lost a race (another identical upload was recorded first): our stored file
   is deleted and the winner's document is returned as a duplicate.
 * queueing fails: the record and the file are removed, so the customer can
@@ -54,6 +55,7 @@ from kaagaz.ingestion.ports import (
     DocumentRepository,
     Job,
     JobQueue,
+    UnknownFolder,
 )
 from kaagaz.ingestion.sniff import detect_type
 from kaagaz.ingestion.spool import ByteSource, read_limited
@@ -92,8 +94,11 @@ class UploadService:
         *,
         display_name: str = "document",
         uploaded_by: str | None = None,
+        folder_id: str | None = None,
     ) -> UploadResult:
-        """``display_name`` must already be cleaned by the caller (the API)."""
+        """``display_name`` must already be cleaned by the caller (the API).
+        ``folder_id`` files a new document there (None: the top level); a
+        duplicate stays where it is."""
         if not isinstance(customer_id, str) or not customer_id:
             raise ValueError("customer_id is required")
 
@@ -123,6 +128,7 @@ class UploadService:
                 detected_type=detected,
                 display_name=display_name,
                 uploaded_by=uploaded_by,
+                folder_id=folder_id,
             )
             # Store the exact bytes that were hashed.
             self._storage.put(customer_id, record.document_id, spooled.file)
@@ -135,7 +141,7 @@ class UploadService:
 
         try:
             stored, created = self._repository.add_if_absent(record)
-        except BackendUnavailable as error:
+        except (BackendUnavailable, UnknownFolder) as error:
             _undo(error, delete_file)
             raise
 
@@ -152,7 +158,7 @@ class UploadService:
         return UploadResult(record.document_id, duplicate=False)
 
 
-def _undo(error: BackendUnavailable, *steps: Callable[[], None]) -> None:
+def _undo(error: Exception, *steps: Callable[[], None]) -> None:
     """Run the undo steps in order, stopping at the first that fails.
 
     ``error`` is never replaced; a failed step is noted on it by name only,

@@ -2,8 +2,10 @@
 // panel (static text only: no API call, no customer names or counts) and the
 // form. Below 900 px it is the wordmark and the form. The backend gives the
 // same short message for an unknown e-mail, a wrong password or a disabled
-// account, and the form shows it as is.
+// account, and the form shows it as is. A small link under the form goes to
+// the separate admin sign-in (PRD A1).
 
+import Link from "next/link";
 import { Wordmark } from "@/components/shell/Wordmark";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { SignInForm } from "./SignInForm";
@@ -68,6 +70,9 @@ export default function LoginPage() {
             <Wordmark reader={false} />
           </div>
           <SignInForm />
+          <p className={styles.adminLink}>
+            <Link href="/admin/login">Admin sign-in</Link>
+          </p>
         </div>
       </main>
     </div>

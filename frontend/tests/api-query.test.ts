@@ -1,0 +1,165 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  adminEnrol,
+  adminLogin,
+  changePassword,
+  logoutEverywhere,
+  query,
+  resetUser2fa,
+  resetUserPassword,
+  unlockUser,
+} from "@/lib/api";
+import type { AdminUser, Me } from "@/lib/types";
+
+describe("query", () => {
+  it("is empty when nothing is set", () => {
+    expect(query({})).toBe("");
+    expect(query({ q: "", status: undefined })).toBe("");
+  });
+
+  it("keeps strings and numbers as before, zero included", () => {
+    expect(query({ limit: 50, offset: 0, q: "GST 2026/27" })).toBe(
+      "?limit=50&offset=0&q=GST+2026%2F27",
+    );
+  });
+
+  it("repeats the key once for each item of an array", () => {
+    expect(query({ tag_id: ["t1", "t2", "t3"] })).toBe("?tag_id=t1&tag_id=t2&tag_id=t3");
+  });
+
+  it("sends nothing for an empty array or an empty item", () => {
+    expect(query({ tag_id: [] })).toBe("");
+    expect(query({ tag_id: ["", "t2"] })).toBe("?tag_id=t2");
+  });
+
+  it("writes booleans as true and false, and keeps false", () => {
+    expect(query({ include_subfolders: true, trashed: false })).toBe(
+      "?include_subfolders=true&trashed=false",
+    );
+  });
+
+  it("keeps the order the keys were given in", () => {
+    expect(query({ folder_id: "f1", tag_id: ["a", "b"], limit: 20 })).toBe(
+      "?folder_id=f1&tag_id=a&tag_id=b&limit=20",
+    );
+  });
+});
+
+// The sign-in and admin calls, checked against the contract (plan 4 WP1.3a and
+// 9.5): the method, the path, the CSRF header and the exact JSON body.
+describe("sign-in and admin calls", () => {
+  const ME: Me = {
+    user: {
+      id: "u1",
+      email: "asha@sharma.in",
+      display_name: "Asha",
+      role: "admin",
+      must_change_password: false,
+    },
+    customer: { id: "c1", name: "Sharma Traders" },
+    session: { scope: "admin" },
+  };
+  const USER: AdminUser = {
+    id: "u2",
+    email: "ravi@sharma.in",
+    display_name: "Ravi",
+    role: "member",
+    disabled: false,
+    created_at: "2026-09-01T10:00:00+00:00",
+    locked_until: null,
+    totp_enabled: false,
+    must_change_password: false,
+  };
+
+  const calls: { url: string; init: RequestInit | undefined }[] = [];
+
+  function reply(status: number, body?: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return new Response(body === undefined ? null : JSON.stringify(body), { status });
+      }),
+    );
+  }
+
+  function sent(index: number) {
+    const call = calls[index];
+    if (!call) throw new Error(`no call ${index}`);
+    const body = call.init?.body;
+    return {
+      url: call.url,
+      method: call.init?.method,
+      headers: call.init?.headers,
+      body: typeof body === "string" ? (JSON.parse(body) as unknown) : undefined,
+    };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    calls.length = 0;
+  });
+
+  it("signs an admin in, sending the code only when there is one", async () => {
+    reply(200, ME);
+    expect(await adminLogin("asha@sharma.in", "a long password", "123456")).toEqual(ME);
+    await adminLogin("asha@sharma.in", "a long password");
+    expect(sent(0)).toMatchObject({
+      url: "/api/auth/admin/login",
+      method: "POST",
+      headers: { "X-Requested-With": "kaagaz" },
+      body: { email: "asha@sharma.in", password: "a long password", code: "123456" },
+    });
+    expect(sent(1).body).toEqual({ email: "asha@sharma.in", password: "a long password" });
+  });
+
+  it("returns the enrol reply as it is", async () => {
+    const enrol = { enrol_required: true, enrol_token: "tok", secret: "JBSW Y3DP" };
+    reply(200, enrol);
+    expect(await adminLogin("asha@sharma.in", "a long password")).toEqual(enrol);
+  });
+
+  it("finishes enrolment with the token and the code", async () => {
+    reply(200, ME);
+    expect(await adminEnrol("tok", "654321")).toEqual(ME);
+    expect(sent(0)).toMatchObject({
+      url: "/api/auth/admin/enrol",
+      method: "POST",
+      body: { enrol_token: "tok", code: "654321" },
+    });
+  });
+
+  it("changes the password with the current and the new one", async () => {
+    reply(200, ME);
+    await changePassword("temporary one", "my own new password");
+    expect(sent(0)).toMatchObject({
+      url: "/api/auth/password",
+      method: "POST",
+      headers: { "X-Requested-With": "kaagaz" },
+      body: { current_password: "temporary one", new_password: "my own new password" },
+    });
+  });
+
+  it("signs out everywhere with an empty body", async () => {
+    reply(204);
+    await expect(logoutEverywhere()).resolves.toBeUndefined();
+    expect(sent(0)).toMatchObject({ url: "/api/auth/logout-everywhere", method: "POST" });
+    expect(sent(0).body).toBeUndefined();
+  });
+
+  it("unlocks, resets a password and resets 2FA for one user", async () => {
+    reply(200, USER);
+    expect(await unlockUser("u2")).toEqual(USER);
+    expect(await resetUser2fa("u2")).toEqual(USER);
+    expect(sent(0)).toMatchObject({ url: "/api/admin/users/u2/unlock", method: "POST" });
+    expect(sent(1)).toMatchObject({ url: "/api/admin/users/u2/reset-2fa", method: "POST" });
+
+    vi.unstubAllGlobals();
+    reply(200, { user: USER, temporary_password: "Temp-Pass-1234" });
+    expect(await resetUserPassword("u2")).toEqual({
+      user: USER,
+      temporary_password: "Temp-Pass-1234",
+    });
+    expect(sent(2)).toMatchObject({ url: "/api/admin/users/u2/reset-password", method: "POST" });
+  });
+});

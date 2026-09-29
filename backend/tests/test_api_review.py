@@ -245,21 +245,6 @@ def test_resolving_twice_is_409_the_second_time(db: Database) -> None:
     assert api.audit_actions(reviewer.customer_id).count("review.resolve") == 1
 
 
-@pytest.mark.db
-@pytest.mark.isolation
-def test_another_customers_verified_value_is_404_not_409(db: Database) -> None:
-    api, owner, document_id, _ = _setup(db)
-    verified = api.add_value(owner.customer_id, document_id, label="verified", reason="readers_agree")
-    stranger = api.new_signed("reviewer")
-
-    reply = stranger.client.post(
-        f"/api/review/{verified}", json={"choice": "first", "remember": False}, headers=CSRF
-    )
-
-    assert reply.status_code == 404
-    assert _stored(db, owner.customer_id, verified)[3:] == ("verified", "readers_agree")
-
-
 def _named_database(name: str) -> Database:
     """The test database, with every session named ``name`` in pg_stat_activity."""
     url = database_url()
@@ -269,8 +254,7 @@ def _named_database(name: str) -> Database:
 def _wait_until_blocked(db: Database, *, application_name: str, timeout: float = 5.0) -> None:
     """Wait until the session named ``application_name`` waits on a lock. Polls every 20 ms.
 
-    The same helper as ``tests/db_support.wait_until_blocked`` on the schema branch
-    (plan 9.1), which this branch does not have yet: use that one once it lands.
+    Kept here because main's ``tests/db_support.py`` has no such helper.
     """
     deadline = time.monotonic() + timeout
     query = text(

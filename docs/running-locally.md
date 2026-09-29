@@ -36,6 +36,10 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 `MODEL_ENABLED=false` (the default) runs everything with no AI. To use
 Ollama, pull `MODEL_CHAT` and `MODEL_EMBED` first, then set it to `true`.
 
+An older `.env` needs `MAX_IMAGE_MB` and `MAX_SHEET_MB` added from
+`.env.example` (a missing setting stops the start with its name), and the new
+`MAX_PAGES` and `MAX_IMAGE_PIXELS` values.
+
 ## 2a. Everything in Docker
 
 ```
@@ -197,7 +201,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **6. File types and upload limits**
 - Check: `: > e.csv; up e.csv`; `printf 'MZ\x90\x00' > a.exe; up a.exe`; any Word file `up letter.docx`; `head -c 52500000 /dev/zero > big.bin; up big.bin`.
-- Expect: empty file `400 empty_file`; unknown type `400 unsupported_type`; a .docx is a zip, so it is accepted (`201`) and ends `needs_reader`; the big file `413 too_large`. The type always comes from the first bytes, never the name. An admin's lower limit (feature 24) also applies. The screen refuses a .exe, an empty file or one over 50 MB before sending anything.
+- Expect: empty file `400 empty_file`; unknown type `400 unsupported_type`; a .docx is a zip, so it is accepted (`201`) and ends `needs_reader`; the big file `413 too_large`. The type always comes from the first bytes, never the name. An admin's lower limit (feature 24) also applies. Each type has its own limit (`MAX_UPLOAD_MB` for PDFs, `MAX_IMAGE_MB` for photos and scans, `MAX_SHEET_MB` for spreadsheets and CSV), and the 413 names the limit, plus the size when the file is under the largest limit (`big.bin` is over it, so its reply names only the limit). The screen refuses a .exe, an empty file or one over its type's limit before sending anything.
 - Tests: `test_sniff.py`, `test_upload_service.py`, `test_api_documents.py` (`test_the_customers_own_limit_applies`).
 
 **7. Fingerprint and duplicates**
@@ -207,12 +211,12 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **8. Virus scan**
 - Check: make the harmless EICAR test file `eicar.txt` (its text is on the EICAR website; your own antivirus may grab it) and `up eicar.txt`. Then stop `clamav` and upload another new file.
-- Expect: `SQL "SELECT status,failure_code FROM documents WHERE display_name='eicar.txt'"` shows `rejected | virus_found`; the screen says "This file failed the virus check and was not processed."; `GET $API/documents/<id>/file` gives `404`; rejected is final. With the scanner down, the worker logs `"job retry"` with code `scanner_unavailable`, and the file stays `received` without being opened.
+- Expect: `SQL "SELECT status,failure_code FROM documents WHERE display_name='eicar.txt'"` shows `rejected | virus_found`; the screen says "This file failed the virus check and was not processed."; `GET $API/documents/<id>/file` gives `404`; rejected is final. With the scanner down, the worker logs `"job retry"` with code `scanner_unavailable`, and the file stays `received` without being opened. If it is still down at the queue's last delivery (the 5th, about 20 minutes on), the file ends `failed | retries_exhausted`.
 - Tests: `test_scan_gate.py`, `test_adapter_scanner.py`, `test_pipeline.py` (`test_an_infected_file_stays_rejected_and_keeps_its_reason`).
 
 **9. Page preparation and page pictures**
-- Check: upload a two-page PDF, then `SQL "SELECT page_no,width,height,unit,has_image FROM pages WHERE document_id='<id>' ORDER BY page_no"` and `curl -b admin@sharma-traders.example.jar -o p1.png $API/documents/<id>/pages/1/image`.
-- Expect: two rows in `pt` (about 595 by 842 for A4) with `has_image = t`, and a PNG at 150 DPI. A spreadsheet gives one page per sheet in `cells` with no image; a photo gives `px`. With `MAX_PAGES=1` in `.env` and the worker restarted, a two-page PDF ends `failed | too_many_pages`.
+- Check: upload a two-page PDF, then `SQL "SELECT page_no,width,height,unit,has_image FROM pages WHERE document_id='<id>' ORDER BY page_no"` and `curl -b admin@sharma-traders.example.jar -o p1.webp $API/documents/<id>/pages/1/image`.
+- Expect: two rows in `pt` (about 595 by 842 for A4) with `has_image = t`, and a WebP at 150 DPI. A spreadsheet gives one page per sheet in `cells` with no image; a photo gives `px`. With `MAX_PAGES=1` in `.env` and the worker restarted, a two-page PDF ends `failed | too_many_pages`.
 - Tests: `test_preparing.py`, `test_api_documents.py` (`test_page_image`).
 
 **10. Readers**
@@ -258,7 +262,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **16. Review queue and fixing a value**
 - Check: make one doubtful value, `SQL "UPDATE extracted_values SET label='needs_review', label_reason='single_reader' WHERE id=(SELECT id FROM extracted_values LIMIT 1) RETURNING id"`; `login reviewer@sharma-traders.example`; `curl -b reviewer@sharma-traders.example.jar $API/review`; then `curl -b reviewer@sharma-traders.example.jar -H "$H" -H "$J" -d '{"choice":"typed","value":"55000","remember":true}' $API/review/<value id>`.
-- Expect: the queue lists only `needs_review` values, oldest first, each with its page. The fix gives `200`; the value becomes `verified | corrected`; `SQL "SELECT choice,old_value,new_value FROM corrections"` and `SQL "SELECT field,raw_value,corrected_value FROM learned_corrections"` each gain a row. Choosing `second` when there is no second reading gives `400`. On screen, the card leaves and the count drops.
+- Expect: the queue lists only `needs_review` values, oldest first, each with its page. The fix gives `200`; the value becomes `verified | corrected`; `SQL "SELECT choice,old_value,new_value FROM corrections"` and `SQL "SELECT field,raw_value,corrected_value FROM learned_corrections"` each gain a row. Choosing `second` when there is no second reading gives `400`. Sending the same fix again, or fixing a value that is already `verified`, gives `409 not_needs_review` and changes nothing. On screen, the card leaves and the count drops.
 - Tests: `test_api_review.py`; `frontend/tests/review-queue.test.ts`.
 
 **17. Remembered corrections**

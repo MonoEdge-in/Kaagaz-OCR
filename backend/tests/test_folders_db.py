@@ -1,4 +1,4 @@
-"""Folders: a tree at most 5 levels deep, per customer (PRD 1 F2, WP1.2).
+"""Folders: a tree at most 5 levels deep, per customer (PRD 1 F1, WP1.2).
 
 Every create, move and delete takes the customer's tree lock first, so two
 requests can never together make a cycle or a tree deeper than 5. The
@@ -358,6 +358,116 @@ def test_parallel_same_name_creates_give_one_folder_and_one_name_taken(db: Datab
             second.result(timeout=10)
 
     assert _parents(db, customer) == {first.id: None}
+
+
+def test_a_create_inside_a_folder_being_moved_deeper_is_too_deep(db: Database) -> None:
+    customer, admin = new_customer(db)
+    with db.customer(customer) as conn:
+        chain = _chain(conn, customer, admin, 4, prefix="L")
+        lone = create_folder(conn, customer, name="Lone", parent_id=None, created_by=admin)
+    session = _session_name()
+
+    def create_inside_lone() -> FolderRow:
+        with db.customer(customer) as conn:
+            _named(conn, session)
+            return create_folder(conn, customer, name="Child", parent_id=lone.id, created_by=admin)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with db.customer(customer) as conn:
+            move_folder(conn, customer, lone.id, parent_id=chain[3].id)  # Lone is now at depth 5
+            later = pool.submit(create_inside_lone)
+            wait_until_blocked(db, application_name=session)
+        with pytest.raises(FolderTooDeep):
+            later.result(timeout=10)
+
+    assert lone.id not in _parents(db, customer).values()
+
+
+def test_a_create_inside_a_folder_being_deleted_is_not_found(db: Database) -> None:
+    customer, admin = new_customer(db)
+    with db.customer(customer) as conn:
+        doomed = create_folder(conn, customer, name="Doomed", parent_id=None, created_by=admin)
+    session = _session_name()
+
+    def create_inside() -> FolderRow:
+        with db.customer(customer) as conn:
+            _named(conn, session)
+            return create_folder(conn, customer, name="Child", parent_id=doomed.id, created_by=admin)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with db.customer(customer) as conn:
+            delete_folder(conn, customer, doomed.id)
+            later = pool.submit(create_inside)
+            wait_until_blocked(db, application_name=session)
+        # The tree lock turns what would be a raw foreign-key error into "not found".
+        with pytest.raises(FolderNotFound):
+            later.result(timeout=10)
+
+    assert _parents(db, customer) == {}
+
+
+# The family order every family lock uses: the first version (id = family_id), then by id.
+_LOCK_FAMILY_ROWS = (
+    "SELECT id FROM documents WHERE customer_id = :c AND family_id = :f"
+    " ORDER BY (id <> family_id), id FOR NO KEY UPDATE"
+)
+_RESTORE_FAMILY = (
+    "UPDATE documents SET deleted_at = NULL, deleted_by = NULL WHERE customer_id = :c AND family_id = :f"
+)
+
+
+def test_a_folder_delete_and_a_family_restore_lock_the_trashed_rows_in_the_same_order(db: Database) -> None:
+    """A trashed two-version family in the folder: the delete and a restore must queue, not deadlock.
+
+    A short FOR SHARE on the first version lines them up: the restore waits first,
+    the delete second. The later version is visited first by a plain scan (it was
+    inserted first and is newer), so a delete that locks in scan order holds it
+    while the restore holds the first version, and PostgreSQL reports a deadlock.
+    """
+    customer, admin = new_customer(db)
+    with db.customer(customer) as conn:
+        folder = create_folder(conn, customer, name="Old", parent_id=None, created_by=admin)
+        binned = {"folder_id": folder.id, "deleted_at": TRASHED_AT, "deleted_by": admin}
+        head = str(uuid.uuid4())
+        newer = datetime(2026, 8, 2, tzinfo=UTC)
+        later = insert_document(
+            conn, customer, family_id=head, version_no=2, is_current=False, created_at=newer, **binned
+        )
+        insert_document(conn, customer, id=head, created_at=datetime(2026, 8, 1, tzinfo=UTC), **binned)
+    restorer, deleter = _session_name(), _session_name()
+    family = {"c": customer, "f": head}
+
+    def restore_family() -> None:
+        with db.customer(customer) as conn:
+            _named(conn, restorer)
+            conn.execute(text(_LOCK_FAMILY_ROWS), family)
+            conn.execute(text(_RESTORE_FAMILY), family)
+
+    def delete_the_folder() -> None:
+        with db.customer(customer) as conn:
+            _named(conn, deleter)
+            delete_folder(conn, customer, folder.id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with db.customer(customer) as holder:
+            holder.execute(text("SELECT 1 FROM documents WHERE id = :d FOR SHARE"), {"d": head})
+            restored = pool.submit(restore_family)
+            wait_until_blocked(db, application_name=restorer)
+            deleted = pool.submit(delete_the_folder)
+            wait_until_blocked(db, application_name=deleter)
+        restored.result(timeout=10)
+        # The restore won, so the folder holds live documents again.
+        with pytest.raises(FolderNotEmpty):
+            deleted.result(timeout=10)
+
+    with db.customer(customer) as conn:
+        rows = conn.execute(
+            text("SELECT id, folder_id, deleted_at FROM documents WHERE customer_id = :c"), {"c": customer}
+        ).all()
+    assert {str(row[0]): (str(row[1]), row[2]) for row in rows} == {
+        head: (folder.id, None),
+        later: (folder.id, None),
+    }
 
 
 def test_every_folder_error_carries_its_code() -> None:

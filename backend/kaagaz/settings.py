@@ -77,10 +77,17 @@ class Settings:
     embedding_dim: int
     model_timeout_seconds: float
 
-    # Sign-in.
+    # Sign-in. The TOTP key encrypts the admins' two-step secrets
+    # (kaagaz.api.secret_box); it must differ from the session secret, so one
+    # leaked value does not give away both. Lockout: after login_max_failures
+    # wrong attempts in a row the account is locked for login_lock_minutes.
     session_secret: str
     session_hours: int
     cookie_secure: bool
+    totp_encryption_key: str
+    login_max_failures: int
+    login_lock_minutes: int
+    admin_session_minutes: int
 
     # Trash (PRD 1 F5): days a document stays in Trash before the worker deletes it for good.
     trash_days: int
@@ -97,6 +104,10 @@ class Settings:
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
         env = _Env(os.environ if environ is None else environ)
+        session_secret = env.secret("SESSION_SECRET")
+        totp_encryption_key = env.secret("TOTP_ENCRYPTION_KEY")
+        if totp_encryption_key == session_secret:
+            raise SettingsError("TOTP_ENCRYPTION_KEY must differ from SESSION_SECRET")
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -135,9 +146,13 @@ class Settings:
             model_vision=env.optional("MODEL_VISION"),
             embedding_dim=env.integer("EMBEDDING_DIM"),
             model_timeout_seconds=env.number("MODEL_TIMEOUT_SECONDS"),
-            session_secret=env.secret("SESSION_SECRET"),
+            session_secret=session_secret,
             session_hours=env.integer("SESSION_HOURS"),
             cookie_secure=env.boolean("COOKIE_SECURE"),
+            totp_encryption_key=totp_encryption_key,
+            login_max_failures=env.positive("LOGIN_MAX_FAILURES"),
+            login_lock_minutes=env.positive("LOGIN_LOCK_MINUTES"),
+            admin_session_minutes=env.positive("ADMIN_SESSION_MINUTES"),
             trash_days=env.integer("TRASH_DAYS"),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
@@ -175,6 +190,12 @@ class _Env:
             raise SettingsError(f"{name} must be a whole number") from None
         if number < 0:
             raise SettingsError(f"{name} must not be negative")
+        return number
+
+    def positive(self, name: str) -> int:
+        number = self.integer(name)
+        if number < 1:
+            raise SettingsError(f"{name} must be at least 1")
         return number
 
     def optional_integer(self, name: str) -> int | None:

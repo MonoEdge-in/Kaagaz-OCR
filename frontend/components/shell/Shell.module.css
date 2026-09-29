@@ -170,6 +170,12 @@
   font-size: var(--fs-sm);
 }
 
+.signOuts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .signOut {
   justify-content: flex-start;
   padding-inline: var(--space-3);
@@ -205,6 +211,66 @@
   gap: var(--space-2);
   color: var(--fg-muted);
   margin: 0;
+}
+
+/* The set-new-password screen (SetPasswordScreen), shown before the shell. */
+.gate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.gateForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.gateIntro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.gateTitle {
+  margin: 0;
+  font-size: var(--fs-2xl);
+}
+
+.gateLead {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+.gateBanner {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--danger-fg);
+  border-inline-start-width: 4px;
+  border-radius: var(--r-sm);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-weight: 600;
+}
+
+.gateSubmit {
+  min-height: calc(var(--control-h) + 4px);
+  font-size: var(--fs-base);
+}
+
+.gateFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.gateFooter p {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .skip {

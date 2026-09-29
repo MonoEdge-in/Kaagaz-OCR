@@ -2,7 +2,10 @@
 // FastAPI by next.config.ts), sends the session cookie, and turns an error reply
 // into an ApiError with the backend's short code.
 
+import { queryString } from "@/components/documents/libraryQuery";
+import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type {
+  AdminLoginResult,
   AdminUser,
   AuditEntry,
   ChatResponse,
@@ -11,14 +14,17 @@ import type {
   CustomerSettings,
   DocumentDetail,
   DocumentList,
-  DocumentStatus,
+  DocumentSummary,
+  Folder,
   Me,
+  PasswordReset,
   ReviewChoice,
   ReviewItem,
   ReviewList,
   Role,
   SheetCells,
   Stats,
+  Tag,
   UploadResult,
 } from "./types";
 
@@ -64,10 +70,25 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (await response.json()) as T;
 }
 
-function query(params: Record<string, string | number | undefined>): string {
+export type QueryValue = string | number | boolean | readonly (string | number)[] | undefined;
+
+// Array.isArray does not narrow a readonly array type; this guard does.
+function isList(value: QueryValue): value is readonly (string | number)[] {
+  return Array.isArray(value);
+}
+
+/**
+ * "?a=1&b=x", in the order given. undefined and "" are left out; an array
+ * repeats its key once per item (tag_id=a&tag_id=b); a boolean is "true" or
+ * "false", so false is still sent.
+ */
+export function query(params: Record<string, QueryValue>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== "") search.set(key, String(value));
+    const items = isList(value) ? value : [value];
+    for (const item of items) {
+      if (item !== undefined && item !== "") search.append(key, String(item));
+    }
   }
   const text = search.toString();
   return text ? `?${text}` : "";
@@ -86,23 +107,49 @@ export const login = (email: string, password: string) =>
 export const logout = () => request<void>("POST", "/auth/logout");
 export const me = () => request<Me>("GET", "/auth/me");
 
+/** The admin screen's sign-in. Without a code, a first sign-in gets the 2FA set-up. */
+export const adminLogin = (email: string, password: string, code?: string) =>
+  request<AdminLoginResult>("POST", "/auth/admin/login", {
+    email,
+    password,
+    ...(code === undefined ? {} : { code }),
+  });
+export const adminEnrol = (enrolToken: string, code: string) =>
+  request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
+export const changePassword = (current: string, next: string) =>
+  request<Me>("POST", "/auth/password", { current_password: current, new_password: next });
+export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
+
 // --- documents -----------------------------------------------------------------
 
-export const listDocuments = (
-  params: { limit?: number; offset?: number; status?: DocumentStatus; q?: string } = {},
-) => request<DocumentList>("GET", `/documents${query(params)}`);
+// The list's lists and booleans (tag_id, include_subfolders) need queryString();
+// see the merge note in components/documents/libraryQuery.ts.
+export const listDocuments = (params: DocumentListParams = {}) =>
+  request<DocumentList>("GET", `/documents${queryString(params)}`);
 export const getDocument = (id: string) => request<DocumentDetail>("GET", `/documents/${id}`);
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);
+/** Rename or move. An explicit folder_id: null moves the document to the top level. */
+export const updateDocument = (
+  id: string,
+  changes: { display_name?: string; folder_id?: string | null },
+) => request<DocumentSummary>("PATCH", `/documents/${id}`, changes);
+/** Replace the document's tags with exactly these. */
+export const setDocumentTags = (id: string, tagIds: string[]) =>
+  request<{ items: Tag[] }>("PUT", `/documents/${id}/tags`, { tag_ids: tagIds });
 export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 200) =>
   request<SheetCells>(
     "GET",
     `/documents/${id}/pages/${pageNo}/cells${query({ row_from: rowFrom, row_to: rowTo })}`,
   );
 
-/** Upload one file with progress (fetch cannot report upload progress, XHR can). */
+/**
+ * Upload one file with progress (fetch cannot report upload progress, XHR can),
+ * into a folder when one is given, else at the top level.
+ */
 export function uploadDocument(
   file: File,
   onProgress: (fraction: number) => void,
+  folderId?: string,
 ): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -130,10 +177,26 @@ export function uploadDocument(
     };
     xhr.onerror = () => reject(new ApiError(0, "network", "Could not reach the server."));
     const form = new FormData();
+    if (folderId) form.append("folder_id", folderId);
     form.append("file", file);
     xhr.send(form);
   });
 }
+
+// --- folders and tags ------------------------------------------------------------
+
+export const listFolders = () => request<{ items: Folder[] }>("GET", "/folders");
+/** A new folder inside parentId, or at the top level for null. */
+export const createFolder = (name: string, parentId: string | null) =>
+  request<Folder>("POST", "/folders", { name, ...(parentId ? { parent_id: parentId } : {}) });
+/** Rename or move. An explicit parent_id: null moves the folder to the top level. */
+export const updateFolder = (id: string, changes: { name?: string; parent_id?: string | null }) =>
+  request<Folder>("PATCH", `/folders/${id}`, changes);
+export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
+export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
+export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
+/** Admins only; the server checks the role. */
+export const deleteTag = (id: string) => request<void>("DELETE", `/tags/${id}`);
 
 // --- chat ----------------------------------------------------------------------
 
@@ -181,6 +244,11 @@ export const updateUser = (
   id: string,
   changes: { role?: Role; disabled?: boolean; password?: string },
 ) => request<AdminUser>("PATCH", `/admin/users/${id}`, changes);
+export const unlockUser = (id: string) => request<AdminUser>("POST", `/admin/users/${id}/unlock`);
+export const resetUserPassword = (id: string) =>
+  request<PasswordReset>("POST", `/admin/users/${id}/reset-password`);
+export const resetUser2fa = (id: string) =>
+  request<AdminUser>("POST", `/admin/users/${id}/reset-2fa`);
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
 export const updateSettings = (maxUploadMb: number | null) =>
   request<CustomerSettings>("PATCH", "/admin/settings", { max_upload_mb: maxUploadMb });
