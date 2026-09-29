@@ -3,7 +3,9 @@ import {
   adminEnrol,
   adminLogin,
   changePassword,
+  getUploadLimits,
   logoutEverywhere,
+  onSessionEnded,
   query,
   resetUser2fa,
   resetUserPassword,
@@ -186,5 +188,47 @@ describe("sign-in and admin calls", () => {
       temporary_password: "Temp-Pass-1234",
     });
     expect(sent(2)).toMatchObject({ url: "/api/admin/users/u2/reset-password", method: "POST" });
+  });
+});
+
+describe("upload limits and a session that ends", () => {
+  const urls: string[] = [];
+
+  function reply(status: number, body?: unknown) {
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return new Response(body === undefined ? null : JSON.stringify(body), { status });
+    });
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    onSessionEnded(null);
+    urls.length = 0;
+  });
+
+  it("asks GET /upload-limits for the limits", async () => {
+    const limits = { pdf_bytes: 1, image_bytes: 2, sheet_bytes: 3, max_pages: 4 };
+    reply(200, limits);
+    expect(await getUploadLimits()).toEqual(limits);
+    expect(urls).toEqual(["/api/upload-limits"]);
+  });
+
+  it("tells the listener when a reply says the session has ended", async () => {
+    const ended = vi.fn();
+    onSessionEnded(ended);
+    reply(401, { error: { code: "not_signed_in", message: "Please sign in." } });
+    await expect(getUploadLimits()).rejects.toMatchObject({ status: 401, code: "not_signed_in" });
+    expect(ended).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not for a wrong password or any other refusal", async () => {
+    const ended = vi.fn();
+    onSessionEnded(ended);
+    reply(401, { error: { code: "bad_credentials", message: "Wrong e-mail or password." } });
+    await expect(adminLogin("asha@sharma.in", "a long password")).rejects.toBeInstanceOf(Error);
+    reply(403, { error: { code: "admin_session_required", message: "Sign in on the admin screen." } });
+    await expect(getUploadLimits()).rejects.toMatchObject({ status: 403 });
+    expect(ended).not.toHaveBeenCalled();
   });
 });

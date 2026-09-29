@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  newerVersionText,
   sortedVersions,
   versionNote,
   versionPosition,
@@ -62,5 +63,13 @@ describe("the note under the picker", () => {
 
   it("says nothing when no version is in use yet", () => {
     expect(versionNote({ id: "a", versions: [version("a", 1, false, "received")] })).toBeNull();
+  });
+});
+
+describe("the line for a newer version", () => {
+  it("names the version and gives the server's status message as is", () => {
+    expect(
+      newerVersionText({ version_no: 3, status_message: "Reading the document… Try 2 of 5." }),
+    ).toBe("Version 3: Reading the document… Try 2 of 5.");
   });
 });

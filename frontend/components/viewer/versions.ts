@@ -4,7 +4,7 @@
 // (PROVISIONAL 7.3). Pure functions, unit tested in node
 // (tests/viewer-versions.test.ts).
 
-import type { DocumentDetail, DocumentStatus, DocumentVersion } from "@/lib/types";
+import type { DocumentDetail, DocumentStatus, DocumentVersion, NewerVersion } from "@/lib/types";
 
 type WithVersions = Pick<DocumentDetail, "id" | "versions">;
 
@@ -38,4 +38,13 @@ export function versionNote(detail: WithVersions): string | null {
   return STILL_READING.includes(viewed.status)
     ? `This version is still being read. Search and chat use version ${inUse.version_no} until it is ready.`
     : `This version isn't used. Search and chat use version ${inUse.version_no}.`;
+}
+
+/**
+ * The line for a newer version that is still being read, or failed, shown
+ * under the current one in the list and the viewer: "Version 3: Reading the
+ * document… Try 2 of 5." The server's status message is shown as is.
+ */
+export function newerVersionText(newer: Pick<NewerVersion, "version_no" | "status_message">): string {
+  return `Version ${newer.version_no}: ${newer.status_message}`;
 }

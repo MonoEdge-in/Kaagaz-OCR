@@ -15,8 +15,8 @@ Why the session version: disabling a user, setting their password, resetting
 their password or their two-step code all raise ``session_version`` (in
 ``kaagaz.db.users``), so every session of theirs ends at its next request. A
 password an admin sets is temporary: the user must choose a new one first.
-A role change ends the old session too, because every request re-checks the
-role in the database (kaagaz.api.auth).
+A role change raises it too: every request re-checks the role, but a user
+demoted and later promoted again must not get their old sessions back.
 """
 
 import re
@@ -173,6 +173,10 @@ def reset_password(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
     """A new temporary password, returned this once and stored only as its hash.
     The user must set their own at the next sign-in; their sessions end."""
     target = str(user_id)
+    if target == user.user_id:
+        # It would end this admin session and force a password change; the
+        # account menu's Change password is the way to change your own.
+        raise ApiError(400, "bad_request", "You can't reset your own password here. Use Change password.")
     temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
     password_hash = hash_password(temporary)
     with context.db.customer(user.customer_id) as conn:

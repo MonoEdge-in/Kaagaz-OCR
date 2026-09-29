@@ -3,8 +3,9 @@ review and the admin numbers can see (PRD 1 F5 and F6, plan 9.7).
 
 Each test builds one customer with three read documents that say the same
 thing: version 1 and version 2 (current) of one family, and a third document in
-Trash. Search and the fixed queries see only version 2. Review and the admin
-numbers leave out Trash but keep every version (``LIVE``, not ``LIVE_CURRENT``).
+Trash. Search, the fixed queries and review see only version 2
+(``LIVE_CURRENT``). The admin numbers count each family once by its current
+version, and count older versions and Trash on their own.
 """
 
 from dataclasses import dataclass
@@ -138,27 +139,47 @@ def test_the_cited_values_lookup_leaves_out_trash_and_older_versions(db: Databas
 # --- review and the admin numbers ---------------------------------------------------------
 
 
-def test_review_lists_every_version_but_not_trash(db: Database) -> None:
+def test_review_lists_only_the_current_version_not_older_ones_or_trash(db: Database) -> None:
     library = _library(db)
     customer = library.customer
     with db.customer(customer) as conn:
         rows, total = review.list_queue(conn, customer, limit=10, offset=0, document_id=None)
-        in_trash, _ = review.list_queue(
+        older, older_total = review.list_queue(
+            conn, customer, limit=10, offset=0, document_id=library.documents["old"]
+        )
+        in_trash, trash_total = review.list_queue(
             conn, customer, limit=10, offset=0, document_id=library.documents["binned"]
         )
 
-        assert {str(row["id"]) for row in rows} == {library.to_review["old"], library.to_review["current"]}
-        assert total == 2
-        assert (list(in_trash), total) == ([], 2)
+        assert [str(row["id"]) for row in rows] == [library.to_review["current"]]
+        assert total == 1
+        assert (list(older), older_total) == ([], 0)
+        assert (list(in_trash), trash_total) == ([], 0)
         assert review.lock_value(conn, customer, library.to_review["binned"]) is None
-        assert review.lock_value(conn, customer, library.to_review["old"]) is not None
+        assert review.lock_value(conn, customer, library.to_review["old"]) is None
+        assert review.lock_value(conn, customer, library.to_review["current"]) is not None
         # By id there is no Trash filter (plan 9.7): the read-back after a resolve.
         assert review.get_item(conn, customer, library.to_review["binned"]) is not None
 
 
-def test_the_admin_numbers_leave_out_trash(db: Database) -> None:
+def test_review_leaves_out_a_current_version_that_is_not_read(db: Database) -> None:
+    library = _library(db)
+    customer = library.customer
+    with db.customer(customer) as conn:
+        conn.execute(
+            text("UPDATE documents SET status = 'failed' WHERE id = :d"), {"d": library.documents["current"]}
+        )
+        rows, total = review.list_queue(conn, customer, limit=10, offset=0, document_id=None)
+        assert (list(rows), total) == ([], 0)
+        assert review.lock_value(conn, customer, library.to_review["current"]) is None
+        assert admin.stats(conn, customer)["open_review_items"] == 0
+
+
+def test_the_admin_numbers_count_each_family_once_and_older_versions_and_trash_apart(db: Database) -> None:
     library = _library(db)
     with db.customer(library.customer) as conn:
+        insert_document(conn, library.customer, status="received")  # its own family, current
         numbers = admin.stats(conn, library.customer)
-    assert numbers["documents_by_status"] == {"ready": 2}
-    assert numbers["open_review_items"] == 2
+    assert numbers["documents_by_status"] == {"ready": 1, "received": 1}
+    assert numbers["open_review_items"] == 1
+    assert (numbers["older_versions"], numbers["in_trash"]) == (1, 1)

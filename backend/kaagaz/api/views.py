@@ -4,7 +4,7 @@ Why one place: the frontend's types are the contract. Each function here is
 named after the type it builds, so a reviewer can hold the two side by side.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -27,23 +27,82 @@ def iso(value: datetime) -> str:
     return value.isoformat()
 
 
-def status_message(status: str, failure_code: str | None, *, detected_type: str, max_pages: int) -> str:
+def status_message(
+    status: str,
+    failure_code: str | None,
+    *,
+    detected_type: str,
+    max_pages: int,
+    page_count: int | None = None,
+    attempts: int = 0,
+    max_attempts: int | None = None,
+) -> str:
     """``max_pages`` is the MAX_PAGES setting, named when a file had too many pages
-    (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it)."""
+    (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it),
+    with its real ``page_count`` when the worker stored it. ``attempts`` and
+    ``max_attempts`` are the worker's tries: shown from the second try on, and
+    named when they ran out (``retries_exhausted``)."""
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
-        # PROVISIONAL: the PRD quotes the real page count, which is not stored when a file fails.
         what = "This PDF" if detected_type == "pdf" else "This file"
-        return f"{what} has more than {max_pages} pages. The limit is {max_pages}. Split it into parts."
+        if page_count is None:  # failed before the count was stored
+            return f"{what} has more than {max_pages} pages. The limit is {max_pages}. Split it into parts."
+        split = "Split it into parts and upload each one."
+        return f"{what} has {page_count} pages. The limit is {max_pages}. {split}"
+    if status == "failed" and failure_code == "retries_exhausted":
+        tries = f"{max_attempts} times" if max_attempts else "several times"
+        return (
+            f"We tried {tries} and couldn't read this file. Upload it again, or ask your admin to look at it."
+        )
     if status == "failed":
         return "This file could not be read." + (f" ({failure_code})" if failure_code else "")
-    return _STATUS_MESSAGES.get(status, "")
+    message = _STATUS_MESSAGES.get(status, "")
+    if status in ("received", "clean") and attempts >= 2 and max_attempts:
+        message += f" Try {min(attempts, max_attempts)} of {max_attempts}."
+    return message
 
 
-def document_summary(row: RowMapping, *, max_pages: int, tags: Sequence[TagRow]) -> dict[str, Any]:
+def can_delete(row: RowMapping, user: CurrentUser) -> bool:
+    """May ``user`` move this document's family to Trash, or bring it back? Both act
+    on every version, so: an admin, or the one user who uploaded every version.
+    ``family_uploaders`` comes from db/listing.py's _COLUMNS."""
+    if user.role == "admin":
+        return True
+    uploaders = row["family_uploaders"] or []
+    return bool(uploaders) and all(
+        uploader is not None and str(uploader) == user.user_id for uploader in uploaders
+    )
+
+
+def newer_version(newer: Mapping[str, Any] | None, *, max_pages: int) -> dict[str, Any] | None:
+    """``NewerVersion``: the family's newest version after this one, while it is
+    still being read or failed (a ready one would be current)."""
+    if newer is None:
+        return None
+    return {
+        "id": str(newer["id"]),
+        "version_no": int(newer["version_no"]),
+        "status": newer["status"],
+        "failure_code": newer["failure_code"],
+        "status_message": status_message(
+            newer["status"],
+            newer["failure_code"],
+            detected_type=newer["detected_type"],
+            max_pages=max_pages,
+            page_count=newer["page_count"],
+            attempts=int(newer["attempts"] or 0),
+            max_attempts=newer["max_attempts"],
+        ),
+    }
+
+
+def document_summary(
+    row: RowMapping, *, max_pages: int, tags: Sequence[TagRow], user: CurrentUser
+) -> dict[str, Any]:
     """``DocumentSummary``. ``max_pages`` is passed on to ``status_message``;
-    ``tags`` are the document's own, from one ``tags_for_documents`` call per page."""
+    ``tags`` are the document's own, from one ``tags_for_documents`` call per page;
+    ``user`` decides ``can_delete``."""
     return {
         "id": str(row["id"]),
         "display_name": row["display_name"],
@@ -52,8 +111,18 @@ def document_summary(row: RowMapping, *, max_pages: int, tags: Sequence[TagRow])
         "status": row["status"],
         "failure_code": row["failure_code"],
         "status_message": status_message(
-            row["status"], row["failure_code"], detected_type=row["detected_type"], max_pages=max_pages
+            row["status"],
+            row["failure_code"],
+            detected_type=row["detected_type"],
+            max_pages=max_pages,
+            page_count=row["page_count"],
+            attempts=int(row["attempts"]),
+            max_attempts=row["max_attempts"],
         ),
+        "attempts": int(row["attempts"]),
+        "max_attempts": row["max_attempts"],
+        "can_delete": can_delete(row, user),
+        "newer_version": newer_version(row["newer"], max_pages=max_pages),
         "page_count": row["page_count"],
         "created_at": iso(row["created_at"]),
         "uploaded_by_name": row["uploaded_by_name"],
@@ -146,6 +215,57 @@ def message(row: RowMapping, feedback: str | None = None) -> dict[str, Any]:
         "answer": row["answer"],
         "feedback": feedback,
     }
+
+
+# The words that stand in for a sentence whose every source has been deleted.
+GONE_SENTENCE = "This part of the answer came from a document that has since been deleted."
+_GONE = ("in_trash", "deleted")
+
+
+def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
+    """Every document a saved answer points at: its citations and closest documents."""
+    if not answer:
+        return []
+    ids = [str(each["document_id"]) for each in answer.get("citations", []) if each.get("document_id")]
+    ids += [str(each["id"]) for each in answer.get("closest_documents", []) if each.get("id")]
+    return ids
+
+
+def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, str]) -> dict[str, Any]:
+    """A saved answer as it may be shown now (``states`` from db/chat.py
+    ``document_states``; a missing id was deleted forever).
+
+    * Each citation gets ``source_state``. One from a document in Trash or
+      deleted loses its snippet and its highlight regions: Trash means deleted,
+      so its words and its place on the page must not show any more.
+    * A sentence whose every citation is gone is replaced by ``GONE_SENTENCE``.
+    * Closest documents that are gone are left out.
+    A citation of an older version keeps its text and link, marked
+    ``older_version``: it was true of that version. The stored answer is never
+    changed, so a restore brings everything back. O(citations + sentences).
+    """
+    citations = []
+    gone: set[int] = set()
+    for each in answer.get("citations", []):
+        state = states.get(str(each.get("document_id")), "deleted")
+        citation = {**each, "source_state": state}
+        if state in _GONE:
+            citation["snippet"] = None
+            citation["regions"] = []
+            gone.add(each.get("n"))
+        citations.append(citation)
+    sentences = []
+    for sentence in answer.get("sentences", []):
+        cited = sentence.get("citations", [])
+        if cited and all(number in gone for number in cited):
+            sentence = {**sentence, "text": GONE_SENTENCE}
+        sentences.append(sentence)
+    closest = [
+        each
+        for each in answer.get("closest_documents", [])
+        if states.get(str(each.get("id"))) not in (None, *_GONE)
+    ]
+    return {**answer, "citations": citations, "sentences": sentences, "closest_documents": closest}
 
 
 def conversation_summary(row: RowMapping) -> dict[str, Any]:

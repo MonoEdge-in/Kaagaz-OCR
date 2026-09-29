@@ -4,6 +4,8 @@
 // the document and page, its label, a zoomed-in preview of the spot (loaded
 // only when the card comes near view), the cited text (plain text, it came
 // from the document), and a link that opens the page with the spot highlighted.
+// A source from an older version says so; one whose document is in Trash or
+// deleted shows only "From a deleted document" and its label (citationSource).
 
 import Link from "next/link";
 import { useRef } from "react";
@@ -12,7 +14,14 @@ import { useDocumentDetail } from "@/components/viewer/documentCache";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import type { Citation } from "@/lib/types";
-import { cardId, citationLink, citationRegion } from "./answer";
+import {
+  DELETED_SOURCE_TEXT,
+  OLDER_VERSION_TEXT,
+  cardId,
+  citationLink,
+  citationRegion,
+  citationSource,
+} from "./answer";
 import { useNearView } from "./hooks";
 import { sourceAction, sourceMeta } from "./logic";
 import styles from "./Chat.module.css";
@@ -50,6 +59,25 @@ function LazySourcePreview({ citation }: { citation: Citation }) {
 export function SourceCard({ citation, messageId }: { citation: Citation; messageId: string }) {
   const id = cardId(messageId, citation.n);
   const headingId = `${id}-title`;
+  const source = citationSource(citation);
+  if (source === "gone") {
+    return (
+      <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId}>
+        <div className={styles.sourceHeader}>
+          <span className={styles.numberMark} aria-hidden="true">
+            {citation.n}
+          </span>
+          <div className={styles.sourceHeading}>
+            <h4 id={headingId} className={styles.sourceTitle}>
+              <span className="visually-hidden">{`Source ${citation.n}: `}</span>
+              {DELETED_SOURCE_TEXT}
+            </h4>
+            <LabelBadge label={citation.label} />
+          </div>
+        </div>
+      </article>
+    );
+  }
   const action = sourceAction(citation);
   return (
     <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId}>
@@ -63,6 +91,7 @@ export function SourceCard({ citation, messageId }: { citation: Citation; messag
             {citation.document_name}
           </h4>
           <p className={styles.sourceMeta}>{sourceMeta(citation)}</p>
+          {source === "older" && <p className={styles.sourceMeta}>{OLDER_VERSION_TEXT}</p>}
           {citation.label === "needs_review" ? (
             <Link
               href={`/review?document_id=${encodeURIComponent(citation.document_id)}`}
@@ -77,7 +106,9 @@ export function SourceCard({ citation, messageId }: { citation: Citation; messag
         </div>
       </div>
       <LazySourcePreview citation={citation} />
-      <blockquote className={styles.snippet}>{citation.snippet}</blockquote>
+      {citation.snippet !== null && (
+        <blockquote className={styles.snippet}>{citation.snippet}</blockquote>
+      )}
       <div className={styles.sourceAction}>
         {action.reason ? <p className={styles.sourceReason}>{action.reason}</p> : null}
         <Link

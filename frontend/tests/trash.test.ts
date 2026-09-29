@@ -4,14 +4,15 @@ import {
   canDeleteForever,
   deletedForeverMessage,
   documentsCount,
+  foreverNeedsAdminSignIn,
   foreverQuestion,
   restoredMessage,
   trashQuestion,
 } from "@/components/documents/trash";
 import { ApiError, deleteDocumentForever, listDocuments, restoreDocument } from "@/lib/api";
-import type { Me, Role } from "@/lib/types";
+import type { Me, Role, SessionScope } from "@/lib/types";
 
-const me = (role: Role): Me => ({
+const me = (role: Role, scope: SessionScope = "app"): Me => ({
   user: {
     id: "u1",
     email: "asha@example.in",
@@ -21,14 +22,22 @@ const me = (role: Role): Me => ({
     totp_enabled: false,
   },
   customer: { id: "c1", name: "Sharma Traders" },
-  session: { scope: "app" },
+  session: { scope },
 });
 
 describe("who may delete for good", () => {
-  it("is an admin only (PRD 1, F5); the server checks the role again", () => {
-    expect(canDeleteForever(me("admin"))).toBe(true);
+  it("is an admin session only (PRD 1, F5); the server checks it again", () => {
+    expect(canDeleteForever(me("admin", "admin"))).toBe(true);
+    expect(canDeleteForever(me("admin", "app"))).toBe(false);
     expect(canDeleteForever(me("member"))).toBe(false);
     expect(canDeleteForever(me("reviewer"))).toBe(false);
+  });
+
+  it("points an admin signed in at /login to the admin sign-in, and nobody else", () => {
+    expect(foreverNeedsAdminSignIn(me("admin", "app"))).toBe(true);
+    expect(foreverNeedsAdminSignIn(me("admin", "admin"))).toBe(false);
+    expect(foreverNeedsAdminSignIn(me("member"))).toBe(false);
+    expect(foreverNeedsAdminSignIn(me("reviewer"))).toBe(false);
   });
 });
 

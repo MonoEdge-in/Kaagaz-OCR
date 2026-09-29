@@ -1,21 +1,113 @@
-"""Chat against a real database, with a fake answer service."""
+"""Chat against a real database, with a fake answer service.
+
+Pure helpers (the answer text, and a saved answer's sources as they are now)
+are tested first, without a database.
+"""
+
+from typing import Any
 
 import pytest
 from sqlalchemy import text
 
 from kaagaz.api.app import create_app
 from kaagaz.api.routers.chat import NOT_FOUND_TEXT, answer_text
+from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, cited_document_ids
 from kaagaz.db.engine import Database
 from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, NOW, PASSWORD, Api, TestClient, answer_json
 
 PAN = "ABCDE1234F"  # made up
+REGION = {"kind": "box", "page": 1, "box": [0.1, 0.2, 0.3, 0.25]}
+
+
+def _citation(n: int, document_id: str) -> dict[str, Any]:
+    """A saved citation, as ``Citation.to_json`` writes it."""
+    return {
+        "n": n,
+        "kind": "piece",
+        "ref_id": f"piece-{n}",
+        "document_id": document_id,
+        "document_name": f"bill {n}.pdf",
+        "detected_type": "pdf",
+        "page_no": 1,
+        "regions": [REGION],
+        "snippet": f"Total {n}00",
+        "label": "verified",
+    }
+
+
+def _cited_answer(*document_ids: str, closest: tuple[str, ...] = ()) -> dict[str, Any]:
+    """An answer with one sentence per document, each citing only its own, and
+    one more sentence citing all of them."""
+    numbers = list(range(1, len(document_ids) + 1))
+    return {
+        **answer_json(),
+        "sentences": [{"text": f"Sentence {n}.", "citations": [n]} for n in numbers]
+        + [{"text": "All of them.", "citations": numbers}],
+        "citations": [
+            _citation(n, document_id) for n, document_id in zip(numbers, document_ids, strict=True)
+        ],
+        "closest_documents": [{"id": each, "display_name": f"{each}.pdf"} for each in closest],
+    }
 
 
 def test_answer_text_joins_sentences_or_says_not_found() -> None:
     assert answer_text(answer_json()) == "The total is 1,200."
     assert answer_text(answer_json(status="not_found")) == NOT_FOUND_TEXT
     assert answer_text({"status": "answered", "sentences": "junk"}) == NOT_FOUND_TEXT
+
+
+def test_cited_document_ids_are_the_citations_and_the_closest_documents() -> None:
+    answer = _cited_answer("d1", "d2", closest=("d3",))
+    assert cited_document_ids(answer) == ["d1", "d2", "d3"]
+    assert cited_document_ids(None) == []
+    assert cited_document_ids(answer_json(status="not_found")) == []
+
+
+def test_a_saved_answer_shows_each_source_as_it_is_now() -> None:
+    answer = _cited_answer("live", "older", "binned", "gone", closest=("live", "binned", "gone"))
+    states = {"live": "live", "older": "older_version", "binned": "in_trash"}  # "gone": deleted forever
+
+    shown = answer_with_source_states(answer, states)
+
+    assert [(c["document_id"], c["source_state"]) for c in shown["citations"]] == [
+        ("live", "live"),
+        ("older", "older_version"),
+        ("binned", "in_trash"),
+        ("gone", "deleted"),
+    ]
+    # A live or older citation keeps its words and its place on the page.
+    for kept in shown["citations"][:2]:
+        assert (kept["snippet"], kept["regions"]) == (f"Total {kept['n']}00", [REGION])
+    # Trash means deleted: neither its words nor its place show any more.
+    for gone in shown["citations"][2:]:
+        assert (gone["snippet"], gone["regions"]) == (None, [])
+        assert gone["document_name"] == f"bill {gone['n']}.pdf"
+    assert [sentence["text"] for sentence in shown["sentences"]] == [
+        "Sentence 1.",
+        "Sentence 2.",
+        GONE_SENTENCE,
+        GONE_SENTENCE,
+        "All of them.",  # two of its four sources are still there
+    ]
+    assert shown["closest_documents"] == [{"id": "live", "display_name": "live.pdf"}]
+    # The stored answer is never changed, so a restore brings everything back.
+    assert answer == _cited_answer("live", "older", "binned", "gone", closest=("live", "binned", "gone"))
+
+
+def test_a_sentence_whose_every_source_is_gone_is_replaced_and_one_without_sources_is_kept() -> None:
+    answer = {
+        **_cited_answer("binned", "gone"),
+        "sentences": [
+            {"text": "From both.", "citations": [1, 2]},
+            {"text": "No source.", "citations": []},
+        ],
+    }
+    shown = answer_with_source_states(answer, {"binned": "in_trash"})
+    assert [sentence["text"] for sentence in shown["sentences"]] == [GONE_SENTENCE, "No source."]
+    assert {key: shown[key] for key in ("status", "label", "route")} == {
+        key: answer[key] for key in ("status", "label", "route")
+    }
 
 
 @pytest.mark.db
@@ -210,3 +302,37 @@ def test_default_wiring_uses_the_real_answer_service_without_a_model(db: Databas
     assert answer["label"] is None
     assert answer["model_used"] is False
     assert body["answer"]["text"] == NOT_FOUND_TEXT
+
+
+@pytest.mark.db
+def test_a_saved_answer_shows_a_source_moved_to_trash_as_gone(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    binned = api.add_document(signed.customer_id, name="bill 1.pdf", uploaded_by=signed.user_id)
+    live = api.add_document(signed.customer_id, name="bill 2.pdf", uploaded_by=signed.user_id)
+    api.answers.reply = _cited_answer(binned, live, closest=(binned, live))
+    body = signed.client.post("/api/chat", json={"question": "totals?"}, headers=CSRF).json()
+    assert signed.client.delete(f"/api/documents/{binned}", headers=CSRF).status_code == 204
+
+    messages = signed.client.get(f"/api/conversations/{body['conversation_id']}").json()["messages"]
+
+    shown = messages[1]["answer"]
+    assert [(c["document_id"], c["source_state"]) for c in shown["citations"]] == [
+        (binned, "in_trash"),
+        (live, "live"),
+    ]
+    assert (shown["citations"][0]["snippet"], shown["citations"][0]["regions"]) == (None, [])
+    assert (shown["citations"][1]["snippet"], shown["citations"][1]["regions"]) == ("Total 200", [REGION])
+    assert [sentence["text"] for sentence in shown["sentences"]] == [
+        GONE_SENTENCE,
+        "Sentence 2.",
+        "All of them.",
+    ]
+    assert [each["id"] for each in shown["closest_documents"]] == [live]
+    # Restored, the answer is whole again: the stored answer was never changed.
+    assert signed.client.post(f"/api/documents/{binned}/restore", headers=CSRF).status_code == 200
+    again = signed.client.get(f"/api/conversations/{body['conversation_id']}").json()["messages"][1]["answer"]
+    assert [c["source_state"] for c in again["citations"]] == ["live", "live"]
+    assert {key: value for key, value in again.items() if key != "citations"} == {
+        key: value for key, value in api.answers.reply.items() if key != "citations"
+    }

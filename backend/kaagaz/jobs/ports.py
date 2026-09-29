@@ -37,6 +37,19 @@ class LeaseLost(Exception):
     """The receipt is stale: the lease ran out or the job was handed out again."""
 
 
+class QueueSetupError(Exception):
+    """The queue is set up in a way the worker can't run with. ``code`` is short,
+    fixed and safe to log, so the one crash line says what to fix:
+
+    * ``queue_has_no_failure_bin``: no redrive policy with a maxReceiveCount.
+    * ``queue_redrive_too_low``: maxReceiveCount is not above JOB_MAX_ATTEMPTS + 1.
+    """
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 class WorkQueue(Protocol):
     def receive(self) -> Delivery | None: ...
 

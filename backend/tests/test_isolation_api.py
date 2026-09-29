@@ -156,10 +156,17 @@ def test_a_lists_never_show_up_for_b(world: _World) -> None:
         assert world.document not in reply.text, path
         assert world.a.user_id not in reply.text, path
 
+    # A keeps an older version and a family in Trash; B's numbers count neither.
+    api, a = world.api, world.a
+    api.add_document(a.customer_id, family_id=world.document, version_no=2, is_current=False)
+    api.add_document(a.customer_id, name="sharma-binned.pdf", deleted_at=NOW, deleted_by=a.user_id)
     stats = b.get("/api/admin/stats").json()
     assert stats["documents_by_status"] == {}
     assert stats["questions_total"] == 0
     assert stats["open_review_items"] == 0
+    assert (stats["older_versions"], stats["in_trash"]) == (0, 0)
+    a_stats = a.client.get("/api/admin/stats").json()
+    assert (a_stats["older_versions"], a_stats["in_trash"]) == (1, 1)
     assert b.get("/api/admin/settings").json()["customer_name"] == "Mehta Textiles"
 
 

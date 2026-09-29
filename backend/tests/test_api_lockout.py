@@ -60,10 +60,9 @@ def test_five_wrong_passwords_lock_and_the_sixth_right_password_is_refused(db: D
     assert sixth.status_code == 401
     assert sixth.json()["error"]["code"] == "bad_credentials"
     assert "set-cookie" not in sixth.headers
-    assert api.audit_actions(customer_id) == ["auth.login_failed"] * 5 + ["auth.locked", "auth.login_failed"]
-    assert _audit_details(db, customer_id, "auth.login_failed") == [{"reason": "wrong_password"}] * 5 + [
-        {"reason": "locked"}
-    ]
+    # The refused sixth attempt writes nothing: the lock was audited when it started.
+    assert api.audit_actions(customer_id) == ["auth.login_failed"] * 5 + ["auth.locked"]
+    assert _audit_details(db, customer_id, "auth.login_failed") == [{"reason": "wrong_password"}] * 5
 
 
 def test_locked_unknown_wrong_and_disabled_replies_are_identical(db: Database) -> None:

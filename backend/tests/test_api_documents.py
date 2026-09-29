@@ -115,8 +115,52 @@ def test_status_messages() -> None:
     )
 
 
+def test_status_messages_name_the_tries_and_the_real_page_count() -> None:
+    def message(
+        status: str,
+        failure_code: str | None = None,
+        *,
+        detected_type: str = "pdf",
+        page_count: int | None = None,
+        attempts: int = 0,
+        max_attempts: int | None = None,
+    ) -> str:
+        return status_message(
+            status,
+            failure_code,
+            detected_type=detected_type,
+            max_pages=100,
+            page_count=page_count,
+            attempts=attempts,
+            max_attempts=max_attempts,
+        )
+
+    # From the second try on, a file still in progress says which try it is.
+    assert message("received", attempts=1, max_attempts=5) == "Waiting for the virus check."
+    assert message("received", attempts=2, max_attempts=5) == "Waiting for the virus check. Try 2 of 5."
+    assert message("clean", attempts=5, max_attempts=5) == "Reading the document… Try 5 of 5."
+    assert message("clean", attempts=7, max_attempts=5) == "Reading the document… Try 5 of 5."
+    assert message("clean", attempts=3, max_attempts=None) == "Reading the document…"
+    assert message("ready", attempts=3, max_attempts=5) == "Ready. You can ask about it."
+    # The tries ran out.
+    assert message("failed", "retries_exhausted", attempts=5, max_attempts=5) == (
+        "We tried 5 times and couldn't read this file. Upload it again, or ask your admin to look at it."
+    )
+    assert message("failed", "retries_exhausted") == (
+        "We tried several times and couldn't read this file."
+        " Upload it again, or ask your admin to look at it."
+    )
+    # The worker stored the real page count before the file failed.
+    assert message("failed", "too_many_pages", page_count=180) == (
+        "This PDF has 180 pages. The limit is 100. Split it into parts and upload each one."
+    )
+    assert message("failed", "too_many_pages", detected_type="tiff", page_count=101) == (
+        "This file has 101 pages. The limit is 100. Split it into parts and upload each one."
+    )
+
+
 def test_the_shipped_settings_give_every_allowed_type_its_limit() -> None:
-    env = {**_env_example(), "SESSION_SECRET": "x" * 32}
+    env = {**_env_example(), "SESSION_SECRET": "x" * 32, "TOTP_ENCRYPTION_KEY": "y" * 32}
     settings = Settings.from_env(env)
     policy = upload_policy(settings, customer_max_mb=None)
     limits = {detected: policy.limit_for(detected) for detected in settings.allowed_types}
@@ -133,7 +177,7 @@ def test_the_shipped_settings_give_every_allowed_type_its_limit() -> None:
 
 @pytest.mark.parametrize("name", ["MAX_IMAGE_MB", "MAX_SHEET_MB"])
 def test_a_missing_type_limit_stops_start_up_with_its_name(name: str) -> None:
-    env = {**_env_example(), "SESSION_SECRET": "x" * 32}
+    env = {**_env_example(), "SESSION_SECRET": "x" * 32, "TOTP_ENCRYPTION_KEY": "y" * 32}
     del env[name]
     with pytest.raises(SettingsError, match=name):
         Settings.from_env(env)
@@ -184,8 +228,14 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "deleted_at",
         "version_no",
         "family_id",
+        "attempts",
+        "max_attempts",
+        "can_delete",
+        "newer_version",
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
+    assert (document["attempts"], document["max_attempts"]) == (0, None)
+    assert (document["can_delete"], document["newer_version"]) == (True, None)
     assert (document["deleted_at"], document["version_no"], document["family_id"]) == (
         None,
         1,
@@ -363,6 +413,27 @@ def test_the_customers_own_limit_lowers_a_types_limit_but_never_raises_it(db: Da
 
 
 @pytest.mark.db
+def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Database) -> None:
+    api = Api(db)  # PDFs 5 MB, photos 2 MB, sheets 1 MB
+    signed = api.new_signed()
+    reply = signed.client.get("/api/upload-limits")
+    assert reply.status_code == 200
+    max_pages = api.settings.max_pages
+    assert reply.json() == {
+        "pdf_bytes": 5 * MB,
+        "image_bytes": 2 * MB,
+        "sheet_bytes": MB,
+        "max_pages": max_pages,
+    }
+
+    with db.customer(signed.customer_id) as conn:
+        conn.execute(text("UPDATE customers SET max_upload_mb = 4"))
+    lowered = signed.client.get("/api/upload-limits").json()
+    assert lowered == {"pdf_bytes": 4 * MB, "image_bytes": 2 * MB, "sheet_bytes": MB, "max_pages": max_pages}
+    assert api.client().get("/api/upload-limits").status_code == 401
+
+
+@pytest.mark.db
 def test_the_exit_batch_gets_one_answer_for_each_file(db: Database) -> None:
     """PRD 1 exit test: 4 accepted, 1 duplicate, 1 wrong type, 1 too large, each its own reply."""
     api = Api(db)
@@ -534,7 +605,9 @@ def test_list_filters_by_status(db: Database) -> None:
 def test_a_pdf_with_too_many_pages_is_told_the_limit_from_the_settings(db: Database) -> None:
     api = Api(db, settings=make_settings(max_pages=100))
     signed = api.new_signed()
-    document_id = api.add_document(signed.customer_id, status="failed", failure_code="too_many_pages")
+    document_id = api.add_document(
+        signed.customer_id, status="failed", failure_code="too_many_pages", page_count=None
+    )
     (item,) = signed.client.get("/api/documents").json()["items"]
     assert (
         item["status_message"] == "This PDF has more than 100 pages. The limit is 100. Split it into parts."
@@ -544,11 +617,31 @@ def test_a_pdf_with_too_many_pages_is_told_the_limit_from_the_settings(db: Datab
 
 
 @pytest.mark.db
+def test_a_pdf_with_too_many_pages_is_told_its_real_page_count_once_stored(db: Database) -> None:
+    api = Api(db, settings=make_settings(max_pages=100))
+    signed = api.new_signed()
+    document_id = api.add_document(
+        signed.customer_id, status="failed", failure_code="too_many_pages", page_count=180
+    )
+    (item,) = signed.client.get("/api/documents").json()["items"]
+    assert item["status_message"] == (
+        "This PDF has 180 pages. The limit is 100. Split it into parts and upload each one."
+    )
+    assert item["page_count"] == 180
+    detail = signed.client.get(f"/api/documents/{document_id}").json()
+    assert detail["status_message"] == item["status_message"]
+
+
+@pytest.mark.db
 def test_a_tiff_with_too_many_frames_is_not_called_a_pdf(db: Database) -> None:
     api = Api(db, settings=make_settings(max_pages=100))
     signed = api.new_signed()
     document_id = api.add_document(
-        signed.customer_id, detected_type="tiff", status="failed", failure_code="too_many_pages"
+        signed.customer_id,
+        detected_type="tiff",
+        status="failed",
+        failure_code="too_many_pages",
+        page_count=None,
     )
     (item,) = signed.client.get("/api/documents").json()["items"]
     assert (
@@ -923,8 +1016,9 @@ def test_the_list_filters_by_tags_and_every_tag_must_match(db: Database) -> None
     assert _listed(signed, tag_id=[paid]) == {both, only_paid}
     assert _listed(signed, tag_id=[paid, gst]) == {both}
     assert _listed(signed, tag_id=[paid, paid]) == {both, only_paid}
-    assert _listed(signed, tag_id=[UNKNOWN]) == set()
-    assert _listed(signed, tag_id=[paid, UNKNOWN]) == set()
+    for unknown in ([UNKNOWN], [paid, UNKNOWN]):  # a tag this customer does not have
+        reply = signed.client.get("/api/documents", params={"tag_id": unknown})
+        assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
     assert len(_listed(signed, tag_id=[paid] * 50)) == 2
     assert signed.client.get("/api/documents", params={"tag_id": [paid] * 51}).status_code == 400
     assert signed.client.get("/api/documents", params={"tag_id": "not-a-uuid"}).status_code == 400

@@ -6,9 +6,10 @@ policy lets a customer see and change only its own row.
 
 ``max_upload_mb`` NULL means the platform limit applies.
 
-The numbers leave out documents in Trash, and their values waiting for review
-(PRD 1 F5): the ``LIVE`` text (kaagaz/db/visibility.py) is written out in both
-statements. Every version of a family is counted.
+The numbers count each family once, by its current version, and leave out
+Trash (``LISTED``, kaagaz/db/visibility.py); values waiting for review are
+counted as the review queue shows them (``LIVE_CURRENT``). Older versions and
+what is in Trash are counted on their own (``_KEPT``), so nothing is hidden.
 """
 
 from typing import Any
@@ -37,7 +38,7 @@ def update_settings(conn: Connection, customer_id: str, *, max_upload_mb: int | 
 
 _DOCUMENTS_BY_STATUS = (
     "SELECT d.status, count(*) FROM documents d"
-    " WHERE d.customer_id = :c AND d.deleted_at IS NULL GROUP BY d.status"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current GROUP BY d.status"
 )
 
 _COUNTS = (
@@ -54,13 +55,28 @@ _COUNTS = (
     " FROM feedback WHERE customer_id = :c) AS f,"
     " (SELECT count(*) AS open_review_items FROM extracted_values v"
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
-    " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND v.label = 'needs_review') AS r"
+    " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND v.label = 'needs_review') AS r"
+)
+
+# Every version on purpose: what the two numbers above leave out. ``older_versions``
+# is every version out of Trash that isn't current: the older ones, and a newer one
+# still being read or failed (the list shows that one beside the current version).
+_KEPT = (
+    "SELECT count(*) FILTER (WHERE d.deleted_at IS NULL AND NOT d.is_current) AS older_versions,"
+    " count(DISTINCT d.family_id) FILTER (WHERE d.deleted_at IS NOT NULL) AS in_trash"
+    " FROM documents d WHERE d.customer_id = :c"
 )
 
 
 def stats(conn: Connection, customer_id: str) -> dict[str, Any]:
-    """The admin's numbers in two queries: O(rows of this customer) counted once each."""
+    """The admin's numbers in three queries: O(rows of this customer) counted once each."""
     params = {"c": customer_id}
     by_status = {str(row[0]): int(row[1]) for row in conn.execute(text(_DOCUMENTS_BY_STATUS), params)}
     counts = conn.execute(text(_COUNTS), params).mappings().one()
-    return {"documents_by_status": by_status, **{key: int(value) for key, value in counts.items()}}
+    kept = conn.execute(text(_KEPT), params).mappings().one()
+    return {
+        "documents_by_status": by_status,
+        **{key: int(value) for key, value in counts.items()},
+        **{key: int(value) for key, value in kept.items()},
+    }

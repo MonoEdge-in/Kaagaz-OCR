@@ -102,12 +102,13 @@ UPGRADE = [
     """,
     # Runs as the table owner, and 0001 has no FORCE ROW LEVEL SECURITY, so this
     # sees every customer's rows: each existing document is its own first version.
-    # PROVISIONAL, accepted while there is no hosted data: the upgrade is one
-    # transaction, so documents stays locked until it ends, and this UPDATE fires
-    # documents_touch, so every row's updated_at becomes the migration time (nothing
-    # reads updated_at yet). Before a hosted run: SET lock_timeout first, and wrap
-    # this UPDATE in ALTER TABLE documents DISABLE / ENABLE TRIGGER documents_touch.
+    # The upgrade is one transaction, so documents stays locked until it ends;
+    # migrations/env.py sets lock_timeout, so a busy table makes the migration
+    # fail fast instead of queueing every request behind it. The touch trigger is
+    # off for the backfill only, so updated_at keeps each row's real last change.
+    "ALTER TABLE documents DISABLE TRIGGER documents_touch",
     "UPDATE documents SET family_id = id",
+    "ALTER TABLE documents ENABLE TRIGGER documents_touch",
     "ALTER TABLE documents ALTER COLUMN family_id SET NOT NULL",
     """
     ALTER TABLE documents ADD CONSTRAINT documents_folder_fk

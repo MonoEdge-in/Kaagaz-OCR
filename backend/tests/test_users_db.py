@@ -513,16 +513,24 @@ def test_update_user_setting_a_password_raises_the_version_and_asks_for_a_new_on
     assert _state(db, customer_id, user_id)["password_hash"] == "scrypt$y"
 
 
-def test_update_user_role_or_enabling_keeps_the_version(db: Database) -> None:
+def test_update_user_changing_the_role_raises_the_version(db: Database) -> None:
+    customer_id, user_id = _user(db, "member")
+    with db.customer(customer_id) as conn:
+        row = users.update_user(
+            conn, customer_id, user_id, role="reviewer", disabled=None, password_hash=None
+        )
+    assert row is not None
+    assert (row["role"], row["session_version"], row["must_change_password"]) == ("reviewer", 2, False)
+
+
+def test_update_user_enabling_or_the_same_role_keeps_the_version(db: Database) -> None:
     customer_id, user_id = _user(db, "member")
     _set(db, customer_id, user_id, disabled=True)
     with db.customer(customer_id) as conn:
-        row = users.update_user(
-            conn, customer_id, user_id, role="reviewer", disabled=False, password_hash=None
-        )
+        row = users.update_user(conn, customer_id, user_id, role="member", disabled=False, password_hash=None)
     assert row is not None
     assert (row["role"], row["disabled"], row["session_version"], row["must_change_password"]) == (
-        "reviewer",
+        "member",
         False,
         1,
         False,

@@ -291,6 +291,7 @@ class Api:
         uploaded_by: str | None = None,
         data: bytes = PDF_BYTES,
         failure_code: str | None = None,
+        page_count: int | None = 1,
         **columns: Any,
     ) -> str:
         """One document row (through ``db_support.insert_document``) and its stored file.
@@ -308,7 +309,7 @@ class Api:
                 status=status,
                 failure_code=failure_code,
                 uploaded_by=uploaded_by,
-                page_count=1,
+                page_count=page_count,
                 **columns,
             )
         self.storage.put(customer_id, document_id, io.BytesIO(data))

@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPT_ATTRIBUTE,
-  MAX_UPLOAD_BYTES,
-  canDelete,
+  FALLBACK_UPLOAD_LIMITS,
   deletedMessage,
   estimateIngestSeconds,
   formatEtaText,
@@ -13,8 +12,8 @@ import {
   pageInfo,
   shouldPoll,
   tooLargeMessage,
-  UPLOAD_LIMITS_HINT,
   uploadKind,
+  uploadLimitsHint,
   uploadStateText,
   validateUpload,
 } from "@/components/documents/logic";
@@ -26,13 +25,14 @@ import {
   folderNameProblem,
   folderTrail,
   libraryErrorText,
+  menuEntries,
   noMatchTitle,
   tagNameProblem,
   tagsChipText,
   typeChipText,
 } from "@/components/documents/library";
 import { ApiError, uploadDocument, uploadVersion } from "@/lib/api";
-import type { DocumentStatus, Me, Role } from "@/lib/types";
+import type { DocumentStatus, UploadLimits } from "@/lib/types";
 
 const MB = 1024 * 1024;
 
@@ -55,14 +55,15 @@ describe("validateUpload", () => {
   });
 
   it("allows exactly the limit and refuses one byte over", () => {
-    expect(validateUpload({ name: "a.pdf", size: MAX_UPLOAD_BYTES })).toBeNull();
-    expect(validateUpload({ name: "a.pdf", size: MAX_UPLOAD_BYTES + 1 })).toBe(
+    expect(validateUpload({ name: "a.pdf", size: 50 * MB })).toBeNull();
+    expect(validateUpload({ name: "a.pdf", size: 50 * MB + 1 })).toBe(
       "PDFs can be up to 50 MB. This one is 51 MB. Split it or save it smaller and try again.",
     );
   });
 
-  it("uses a smaller limit when given one", () => {
-    expect(validateUpload({ name: "a.csv", size: 6 * MB }, 5 * MB)).toBe(
+  it("uses the server's limits when given them", () => {
+    const limits: UploadLimits = { ...FALLBACK_UPLOAD_LIMITS, sheet_bytes: 5 * MB };
+    expect(validateUpload({ name: "a.csv", size: 6 * MB }, limits)).toBe(
       "Spreadsheets and CSV files can be up to 5 MB. This one is 6 MB. Split it into smaller files and try again.",
     );
   });
@@ -137,34 +138,47 @@ describe("upload limits by type (PRD U2)", () => {
     expect(tooLargeMessage("sheet", 12 * MB, 10 * MB)).toContain("This one is 12 MB.");
   });
 
-  it("uses the lower of the customer's limit and the type's limit", () => {
+  // GET /upload-limits, with a customer limit of 25 MB already applied by the server.
+  const customer: UploadLimits = {
+    pdf_bytes: 25 * MB,
+    image_bytes: 20 * MB,
+    sheet_bytes: 10 * MB,
+    max_pages: 40,
+  };
+
+  it("uses the platform's limits until the server's arrive", () => {
+    expect(FALLBACK_UPLOAD_LIMITS).toEqual({
+      pdf_bytes: 50 * MB,
+      image_bytes: 20 * MB,
+      sheet_bytes: 10 * MB,
+      max_pages: 100,
+    });
     expect(limitFor("pdf")).toBe(50 * MB);
     expect(limitFor("image")).toBe(20 * MB);
     expect(limitFor("sheet")).toBe(10 * MB);
-    expect(limitFor("pdf", 25 * MB)).toBe(25 * MB);
-    expect(limitFor("image", 25 * MB)).toBe(20 * MB);
-    expect(limitFor("sheet", 25 * MB)).toBe(10 * MB);
-    expect(limitFor("image", null)).toBe(20 * MB);
-
-    // A lower customer limit is the one named.
-    expect(validateUpload({ name: "a.pdf", size: 25 * MB }, 25 * MB)).toBeNull();
-    expect(validateUpload({ name: "a.pdf", size: 25 * MB + 1 }, 25 * MB)).toBe(
-      "PDFs can be up to 25 MB. This one is 26 MB. Split it or save it smaller and try again.",
-    );
-    // A higher customer limit never raises the type's limit.
-    expect(validateUpload({ name: "a.png", size: 21 * MB }, 50 * MB)).toBe(
-      "Photos and scans can be up to 20 MB. This one is 21 MB. Save it at a lower resolution and try again.",
-    );
-    expect(validateUpload({ name: "a.csv", size: 10 * MB }, 50 * MB)).toBeNull();
   });
 
-  it("keeps the largest limit as the overall ceiling", () => {
-    expect(MAX_UPLOAD_BYTES).toBe(50 * MB);
+  it("uses the server's limits, and names them in the refusal", () => {
+    expect(limitFor("pdf", customer)).toBe(25 * MB);
+    expect(limitFor("image", customer)).toBe(20 * MB);
+    expect(limitFor("sheet", customer)).toBe(10 * MB);
+
+    expect(validateUpload({ name: "a.pdf", size: 25 * MB }, customer)).toBeNull();
+    expect(validateUpload({ name: "a.pdf", size: 25 * MB + 1 }, customer)).toBe(
+      "PDFs can be up to 25 MB. This one is 26 MB. Split it or save it smaller and try again.",
+    );
+    expect(validateUpload({ name: "a.png", size: 21 * MB }, customer)).toBe(
+      "Photos and scans can be up to 20 MB. This one is 21 MB. Save it at a lower resolution and try again.",
+    );
+    expect(validateUpload({ name: "a.csv", size: 10 * MB }, customer)).toBeNull();
   });
 
   it("tells people each type's limit next to the dropzone", () => {
-    expect(UPLOAD_LIMITS_HINT).toBe(
+    expect(uploadLimitsHint()).toBe(
       "PDF up to 50 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+    );
+    expect(uploadLimitsHint(customer)).toBe(
+      "PDF up to 25 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
     );
   });
 });
@@ -183,33 +197,42 @@ describe("shouldPoll", () => {
   });
 });
 
-describe("canDelete", () => {
-  const me = (role: Role, name = "Asha"): Me => ({
-    user: {
-      id: "u1",
-      email: "asha@example.in",
-      display_name: name,
-      role,
-      must_change_password: false,
-      totp_enabled: false,
-    },
-    customer: { id: "c1", name: "Sharma Traders" },
-    session: { scope: "app" },
+describe("menuEntries", () => {
+  const TRASHED = "2026-09-20T10:00:00Z";
+  const doc = (
+    changes: { deleted_at?: string | null; can_delete?: boolean; status?: DocumentStatus } = {},
+  ) => ({ id: "d-1", status: "ready" as DocumentStatus, deleted_at: null, can_delete: false, ...changes });
+  const words = (entries: ReturnType<typeof menuEntries>) =>
+    entries.map((entry) => (entry.kind === "download" ? "Download original" : entry.words));
+
+  it("offers the everyday actions to anyone, and Move to Trash only with can_delete", () => {
+    expect(words(menuEntries(doc(), true))).toEqual([
+      "Rename",
+      "Move to folder",
+      "Tags",
+      "Upload new version",
+      "Download original",
+    ]);
+    expect(words(menuEntries(doc({ can_delete: true }), false)).at(-1)).toBe("Move to Trash");
   });
 
-  it("lets an admin delete anything", () => {
-    expect(canDelete(me("admin"), { uploaded_by_name: "Someone else" })).toBe(true);
-    expect(canDelete(me("admin"), { uploaded_by_name: null })).toBe(true);
+  it("offers nothing that changes a document in Trash, only Restore and Delete forever", () => {
+    expect(words(menuEntries(doc({ deleted_at: TRASHED, can_delete: true }), true))).toEqual([
+      "Restore",
+      "Delete forever",
+    ]);
   });
 
-  it("lets the uploader delete their own", () => {
-    expect(canDelete(me("member"), { uploaded_by_name: "Asha" })).toBe(true);
-    expect(canDelete(me("reviewer"), { uploaded_by_name: "Asha" })).toBe(true);
+  it("offers Restore only with can_delete, and Delete forever only in an admin session", () => {
+    expect(words(menuEntries(doc({ deleted_at: TRASHED, can_delete: true }), false))).toEqual(["Restore"]);
+    expect(words(menuEntries(doc({ deleted_at: TRASHED }), true))).toEqual(["Delete forever"]);
+    expect(words(menuEntries(doc({ deleted_at: TRASHED }), false))).toEqual([]);
   });
 
-  it("hides delete from others", () => {
-    expect(canDelete(me("member"), { uploaded_by_name: "Ravi" })).toBe(false);
-    expect(canDelete(me("reviewer"), { uploaded_by_name: null })).toBe(false);
+  it("leaves Download original out when the server would refuse it", () => {
+    expect(words(menuEntries(doc({ status: "received" }), false))).not.toContain(
+      "Download original",
+    );
   });
 });
 

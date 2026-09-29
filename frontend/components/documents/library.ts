@@ -21,6 +21,49 @@ export function downloadHref(document: Pick<DocumentSummary, "id" | "status">): 
   return SERVABLE.includes(document.status) ? fileUrl(document.id) : null;
 }
 
+export type EditAction = "rename" | "move" | "tags";
+export type RowAction = EditAction | "version" | "trash" | "restore" | "forever";
+
+export type MenuEntry =
+  | { kind: "action"; action: RowAction; words: string; danger: boolean }
+  | { kind: "download"; href: string };
+
+/**
+ * What a document's Actions menu lists, in order: the everyday actions,
+ * Download original, then the one that removes. A document in Trash can't be
+ * renamed, moved, tagged or given a new version (the server says 409
+ * in_trash): it offers Restore when can_delete, and Delete forever in an
+ * admin session (canForever). Out of Trash, Move to Trash needs can_delete.
+ */
+export function menuEntries(
+  item: Pick<DocumentSummary, "id" | "status" | "deleted_at" | "can_delete">,
+  canForever: boolean,
+): MenuEntry[] {
+  const act = (action: RowAction, words: string, danger = false): MenuEntry => ({
+    kind: "action",
+    action,
+    words,
+    danger,
+  });
+  const trashed = item.deleted_at !== null;
+  const entries: MenuEntry[] = trashed
+    ? item.can_delete
+      ? [act("restore", "Restore")]
+      : []
+    : [
+        act("rename", "Rename"),
+        act("move", "Move to folder"),
+        act("tags", "Tags"),
+        act("version", "Upload new version"),
+      ];
+  // Trash means deleted: a document there can only be restored or deleted forever.
+  const download = trashed ? null : downloadHref(item);
+  if (download) entries.push({ kind: "download", href: download });
+  if (trashed && canForever) entries.push(act("forever", "Delete forever", true));
+  if (!trashed && item.can_delete) entries.push(act("trash", "Move to Trash", true));
+  return entries;
+}
+
 /** The folders from the top down to the document's own, whether or not `path` already ends with it. */
 export function folderTrail(folder: DocumentFolder): { id: string; name: string }[] {
   const last = folder.path.at(-1);

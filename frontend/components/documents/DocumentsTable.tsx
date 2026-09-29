@@ -6,18 +6,21 @@
 // (DocumentActions.tsx). Move to Trash, and Delete forever in Trash, ask
 // first; focus goes to Cancel, and back to Actions if it is cancelled. Restore
 // needs no question: nothing is lost. In Trash the list shows when each
-// document was trashed, and has no selection bar.
+// document was trashed, and has no selection bar. Each row is the family's
+// current version; a newer one still being read, or one that failed, gets a
+// line under the name ("Version 3: ..."), linking to it.
 
 import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { newerVersionText } from "@/components/viewer/versions";
 import { ApiError, deleteDocument, deleteDocumentForever, restoreDocument } from "@/lib/api";
 import { formatBytes, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { EditDialog, RowMenu } from "./DocumentActions";
-import type { EditAction, RowAction } from "./DocumentActions";
 import type { FolderTree } from "./folderTree";
-import { canDelete, deletedMessage, formatProgressPercent } from "./logic";
+import type { EditAction, RowAction } from "./library";
+import { deletedMessage, formatProgressPercent } from "./logic";
 import { StatusChip } from "./StatusChip";
 import {
   bulkTrashQuestion,
@@ -56,7 +59,7 @@ interface Props extends RowEvents {
 export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events }: Props) {
   const { onRemoved } = events;
   const canForever = canDeleteForever(me);
-  const deletableItems = useMemo(() => items.filter((item) => canDelete(me, item)), [items, me]);
+  const deletableItems = useMemo(() => items.filter((item) => item.can_delete), [items]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -209,7 +212,7 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
               document={document}
               now={now}
               inTrash={inTrash}
-              deletable={canDelete(me, document)}
+              deletable={document.can_delete}
               canForever={canForever}
               selected={selectedIds.has(document.id)}
               onToggle={() => toggle(document.id)}
@@ -375,6 +378,11 @@ function DocumentRow({
             ))}
           </ul>
         )}
+        {document.newer_version && (
+          <Link href={`/documents/${document.newer_version.id}`} className={styles.newerVersion}>
+            {newerVersionText(document.newer_version)}
+          </Link>
+        )}
       </td>
       <td role="cell" className={styles.statusCell}>
         <span className={styles.statusContent}>
@@ -406,8 +414,6 @@ function DocumentRow({
         {confirming === null && !busy && (
           <RowMenu
             item={document}
-            inTrash={inTrash}
-            deletable={deletable}
             canForever={canForever}
             onPick={pick}
             toggleRef={holdActions}

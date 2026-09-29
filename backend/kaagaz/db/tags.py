@@ -27,7 +27,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
-from kaagaz.db.trash import lock_family
+from kaagaz.db.trash import lock_live_family
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +97,18 @@ _FOR_DOCUMENTS = (
 )
 
 
+def count_existing(conn: Connection, customer_id: str, tag_ids: Sequence[str]) -> int:
+    """How many of these distinct tag ids this customer has (another customer's
+    count as missing). O(k log T) for k ids."""
+    wanted = list(dict.fromkeys(str(uuid.UUID(tag_id)) for tag_id in tag_ids))
+    return int(
+        conn.execute(
+            text("SELECT count(*) FROM tags WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"),
+            {"c": customer_id, "ids": wanted},
+        ).scalar_one()
+    )
+
+
 def list_tags(conn: Connection, customer_id: str) -> list[TagRow]:
     """Every tag of this customer, by name. O(T log T) time, O(T) space."""
     return [_tag(row) for row in conn.execute(text(_LIST), {"c": customer_id})]
@@ -125,6 +137,7 @@ def set_document_tags(
     """Make ``tag_ids`` the whole tag set of the document's family (every version),
     and return those tags by name. An empty list clears it; duplicates are ignored.
 
+    A family in Trash raises InTrash (``trash.lock_live_family``): Trash means deleted.
     In order: the family lock, a KEY SHARE lock on the k tags (all k must be this
     customer's, else TagNotFound), then the delete of the others and the insert
     of the missing ones. TagNotFound too when there is no such document; nothing
@@ -132,7 +145,7 @@ def set_document_tags(
     family's v versions with t tags each, O(k + v) space.
     """
     wanted = list(dict.fromkeys(str(uuid.UUID(tag_id)) for tag_id in tag_ids))
-    family_id = lock_family(conn, customer_id, document_id)
+    family_id = lock_live_family(conn, customer_id, document_id)  # InTrash for a family in Trash
     if family_id is None:
         raise TagNotFound()
     params = {"c": customer_id, "f": family_id, "ids": wanted}

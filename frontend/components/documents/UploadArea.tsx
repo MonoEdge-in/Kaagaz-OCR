@@ -2,27 +2,37 @@
 
 // Uploading. Files come from the "Upload files" button (the hidden file input
 // the documents screen owns) or are dropped on the dropzone. Each file is
-// checked first (kind and size), then sent one after another with its own
+// checked first (kind and size, against the limits from GET /upload-limits),
+// then, just before its turn, a PDF's or TIFF's pages are counted (it stays
+// "Waiting" meanwhile), then it is sent, one after another with its own
 // progress bar, into the folder that was being viewed when they were added.
 // A new version of a document ("Upload new version") goes through the same
 // queue. The outcome, including "already uploaded" and any error, stays next
 // to its file; a duplicate whose earlier copy is in Trash offers Restore.
 
 import Link from "next/link";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
-import { ApiError, restoreDocument, uploadDocument, uploadVersion } from "@/lib/api";
-import { formatBytes } from "@/lib/format";
-import type { UploadResult } from "@/lib/types";
 import {
-  UPLOAD_LIMITS_HINT,
+  ApiError,
+  getUploadLimits,
+  restoreDocument,
+  uploadDocument,
+  uploadVersion,
+} from "@/lib/api";
+import { formatBytes } from "@/lib/format";
+import type { UploadLimits, UploadResult } from "@/lib/types";
+import {
+  FALLBACK_UPLOAD_LIMITS,
   estimateIngestSeconds,
   formatEtaText,
+  uploadLimitsHint,
   uploadStateText,
   validateUpload,
 } from "./logic";
 import type { UploadState } from "./logic";
+import { pageProblem } from "./pageCount";
 import styles from "./Documents.module.css";
 
 export interface UploadEntry {
@@ -44,6 +54,22 @@ type Start = (onProgress: (fraction: number) => void) => Promise<UploadResult>;
 export function useUploads(onUploaded: () => void) {
   const nextKey = useRef(0);
   const [entries, setEntries] = useState<UploadEntry[]>([]);
+  const [limits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
+
+  // Asked once. Until it answers, or if it fails, the platform's limits apply;
+  // the server checks every file again either way.
+  useEffect(() => {
+    let cancelled = false;
+    getUploadLimits().then(
+      (loaded) => {
+        if (!cancelled) setLimits(loaded);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function update(key: string, state: UploadState) {
     setEntries((current) =>
@@ -76,11 +102,18 @@ export function useUploads(onUploaded: () => void) {
     }
   }
 
+  /** Count a PDF's or TIFF's pages, then send it, unless it has too many. */
+  async function checkThenSend(key: string, file: File, start: Start) {
+    const problem = await pageProblem(file, limits.max_pages);
+    if (problem) update(key, { kind: "error", message: problem });
+    else await send(key, start);
+  }
+
   /** Queue files for upload into folderId (undefined: the top level). */
   async function addFiles(files: File[], folderId?: string) {
     const added = files.map((file) => {
       nextKey.current += 1;
-      const problem = validateUpload(file);
+      const problem = validateUpload(file, limits);
       const entry: UploadEntry = {
         key: `upload-${nextKey.current}`,
         name: file.name,
@@ -93,7 +126,9 @@ export function useUploads(onUploaded: () => void) {
     // One at a time, so a big batch does not trip the rate limit.
     for (const { entry, file } of added) {
       if (entry.state.kind === "waiting") {
-        await send(entry.key, (onProgress) => uploadDocument(file, onProgress, folderId));
+        await checkThenSend(entry.key, file, (onProgress) =>
+          uploadDocument(file, onProgress, folderId),
+        );
       }
     }
   }
@@ -102,7 +137,7 @@ export function useUploads(onUploaded: () => void) {
   async function addVersion(file: File, of: { id: string; display_name: string }) {
     nextKey.current += 1;
     const key = `upload-${nextKey.current}`;
-    const problem = validateUpload(file);
+    const problem = validateUpload(file, limits);
     setEntries((current) => [
       {
         key,
@@ -113,7 +148,9 @@ export function useUploads(onUploaded: () => void) {
       },
       ...current,
     ]);
-    if (!problem) await send(key, (onProgress) => uploadVersion(of.id, file, onProgress));
+    if (!problem) {
+      await checkThenSend(key, file, (onProgress) => uploadVersion(of.id, file, onProgress));
+    }
   }
 
   /** Bring back the copy in Trash that a duplicate upload matched. */
@@ -136,7 +173,7 @@ export function useUploads(onUploaded: () => void) {
     setEntries((current) => current.filter(isBusy));
   }
 
-  return { entries, addFiles, addVersion, restore, clearFinished };
+  return { entries, limits, addFiles, addVersion, restore, clearFinished };
 }
 
 /**
@@ -145,11 +182,13 @@ export function useUploads(onUploaded: () => void) {
  */
 export function Dropzone({
   variant,
+  limits,
   onFiles,
   onChoose,
   children,
 }: {
   variant: "full" | "slim";
+  limits: UploadLimits;
   onFiles: (files: File[]) => void;
   onChoose: () => void;
   children?: ReactNode;
@@ -189,7 +228,7 @@ export function Dropzone({
       {variant === "full" ? (
         <>
           {children}
-          <p className={styles.dropHint}>Or drag files here. {UPLOAD_LIMITS_HINT}</p>
+          <p className={styles.dropHint}>Or drag files here. {uploadLimitsHint(limits)}</p>
         </>
       ) : (
         <>
@@ -200,7 +239,7 @@ export function Dropzone({
           <button type="button" className="btn" onClick={onChoose}>
             Choose files
           </button>
-          <p className={styles.dropHint}>{UPLOAD_LIMITS_HINT}</p>
+          <p className={styles.dropHint}>{uploadLimitsHint(limits)}</p>
         </>
       )}
     </div>

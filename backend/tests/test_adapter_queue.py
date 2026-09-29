@@ -17,7 +17,7 @@ from botocore.stub import Stubber
 from kaagaz.adapters.queue import SqsQueue
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.ports import LeaseLost
+from kaagaz.jobs.ports import LeaseLost, QueueSetupError
 from kaagaz.jobs.worker import JobFailed, Worker
 from tests.settings_factory import make_settings
 
@@ -229,15 +229,14 @@ class StubbedQueueTest(unittest.TestCase):
         }.items():
             with self.subTest(name):
                 self.redrive_policy(attributes)
-                with self.assertRaises(ValueError) as ctx:
+                with self.assertRaises(QueueSetupError) as ctx:
                     self.queue.max_receives()
-                self.assertIn("maxReceiveCount", str(ctx.exception))
+                self.assertEqual(ctx.exception.code, "queue_has_no_failure_bin")
 
     def test_worker_buries_the_last_delivery_as_retries_exhausted_through_the_adapter(self) -> None:
-        """The real Worker against this adapter: at the queue's maximum receive count
-        the document is marked, the job is buried with its code, and the handler is
-        not run."""
-        self.receive_one(receipt="r-5", count="5")
+        """The real Worker against this adapter: the delivery after the last attempt
+        marks the document, buries the job with its code, and does not run the handler."""
+        self.receive_one(receipt="r-5", count="6")
         self.stub.add_response(
             "change_message_visibility",
             {},
@@ -258,7 +257,7 @@ class StubbedQueueTest(unittest.TestCase):
         marked: list[Job] = []
         ran: list[Job] = []
         worker = Worker(
-            self.queue, lambda job, beat: ran.append(job), max_receives=5, on_exhausted=marked.append
+            self.queue, lambda job, beat: ran.append(job), max_attempts=5, on_exhausted=marked.append
         )
 
         self.assertTrue(worker.run_once())
@@ -289,7 +288,7 @@ class StubbedQueueTest(unittest.TestCase):
             raise JobFailed("too_many_pages", retryable=False)
 
         marked: list[Job] = []
-        self.assertTrue(Worker(self.queue, handler, max_receives=5, on_exhausted=marked.append).run_once())
+        self.assertTrue(Worker(self.queue, handler, max_attempts=5, on_exhausted=marked.append).run_once())
         self.assertEqual(marked, [])  # a failure for good keeps its own code
 
 

@@ -356,6 +356,19 @@ class PgDocuments:
 
     # --- used by the worker ---------------------------------------------------
 
+    def record_attempt(self, customer_id: str, document_id: str, attempt: int, max_attempts: int) -> None:
+        """Write the worker's try number on a document still in progress (received
+        or clean), before the try runs, so the file list can say "Try 2 of 5".
+        A finished or rejected document is left alone. One indexed statement."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            conn.execute(
+                text(
+                    "UPDATE documents SET attempts = :a, max_attempts = :m"
+                    " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
+                ),
+                {"a": attempt, "m": max_attempts, "c": customer_id, "d": document_id},
+            )
+
     def mark_exhausted(self, customer_id: str, document_id: str) -> None:
         """The queue's last delivery of this document's job came: mark it failed
         with ``retries_exhausted``, so it does not show "Reading…" for good.
