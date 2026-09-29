@@ -241,7 +241,7 @@ describe("statTiles", () => {
 
   it("shows the older versions kept and what is in Trash apart from the documents", () => {
     const tiles = statTiles(stats);
-    expect(tiles.find((tile) => tile.label === "Older versions kept")?.value).toBe("12");
+    expect(tiles.find((tile) => tile.label === "Other versions kept")?.value).toBe("12");
     expect(tiles.find((tile) => tile.label === "In Trash")?.value).toBe("4");
     expect(tiles[0]?.value).toBe("1,20,002");
   });

@@ -215,7 +215,7 @@ export function statTiles(stats: Stats): Tile[] {
     });
   }
   tiles.push(
-    { label: "Older versions kept", value: formatNumber(stats.older_versions) },
+    { label: "Other versions kept", value: formatNumber(stats.older_versions) },
     { label: "In Trash", value: formatNumber(stats.in_trash) },
     { label: "Questions asked", value: formatNumber(stats.questions_total) },
     { label: "Answered", value: formatNumber(stats.answered) },

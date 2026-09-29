@@ -170,7 +170,7 @@ def test_a_family_with_versions_from_two_users_goes_to_trash_only_by_an_admin(db
 
 def test_an_unknown_document_is_404_on_every_trash_route(db: Database) -> None:
     admin = Api(db).new_admin()
-    unknown ="7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e"
+    unknown = "7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e"
     replies = [
         admin.client.delete(f"/api/documents/{unknown}", headers=CSRF),
         admin.client.post(f"/api/documents/{unknown}/restore", headers=CSRF),

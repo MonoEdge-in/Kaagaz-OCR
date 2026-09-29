@@ -59,7 +59,9 @@ _COUNTS = (
     " AND v.label = 'needs_review') AS r"
 )
 
-# Every version on purpose: what the two numbers above leave out.
+# Every version on purpose: what the two numbers above leave out. ``older_versions``
+# is every version out of Trash that isn't current: the older ones, and a newer one
+# still being read or failed (the list shows that one beside the current version).
 _KEPT = (
     "SELECT count(*) FILTER (WHERE d.deleted_at IS NULL AND NOT d.is_current) AS older_versions,"
     " count(DISTINCT d.family_id) FILTER (WHERE d.deleted_at IS NOT NULL) AS in_trash"

@@ -156,7 +156,10 @@ def test_an_enrol_token_from_before_a_session_change_does_not_enrol(db: Database
 
     assert reply.status_code == 401
     assert reply.json()["error"]["code"] == "not_signed_in"
-    assert api.user_state(enrolling.customer_id, enrolling.user_id)["totp_enabled_at"] is None
+    state = api.user_state(enrolling.customer_id, enrolling.user_id)
+    assert state["totp_enabled_at"] is None
+    assert state["failed_logins"] == 0  # a stale token is not a guess: nothing is counted
+    assert "auth.login_failed" not in api.audit_actions(enrolling.customer_id)
 
 
 def test_an_expired_or_changed_enrol_token_is_refused(db: Database) -> None:

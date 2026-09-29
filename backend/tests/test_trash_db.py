@@ -36,6 +36,12 @@ _LIVE_CURRENT_IDS = (
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
 )
 _TRASHED_IDS = "SELECT d.id FROM documents d WHERE d.customer_id = :c AND d.deleted_at IS NOT NULL"
+_LISTED_IDS = (
+    "SELECT d.id FROM documents d WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
+)
+_TRASHED_LISTED_IDS = (
+    "SELECT d.id FROM documents d WHERE d.customer_id = :c AND d.deleted_at IS NOT NULL AND d.is_current"
+)
 
 
 def _state(db: Database, customer: str) -> dict[str, tuple[datetime | None, str | None]]:
@@ -82,6 +88,23 @@ def test_visibility_fragments_have_their_exact_text_and_pick_the_right_rows(db: 
         assert _ids(conn, _LIVE_IDS, customer) == {current, older_view, reading}
         assert _ids(conn, _LIVE_CURRENT_IDS, customer) == {current}
         assert _ids(conn, _TRASHED_IDS, customer) == {binned}
+
+
+def test_the_list_fragments_have_their_exact_text_and_pick_one_row_per_family(db: Database) -> None:
+    assert visibility.LISTED == " AND d.deleted_at IS NULL AND d.is_current"
+    assert visibility.TRASHED_LISTED == " AND d.deleted_at IS NOT NULL AND d.is_current"
+    assert visibility.LISTED in _LISTED_IDS
+    assert visibility.TRASHED_LISTED in _TRASHED_LISTED_IDS
+
+    customer, admin = new_customer(db)
+    with db.customer(customer) as conn:
+        current, _newer_reading = _family(conn, customer, 2)
+        reading = insert_document(conn, customer, status="received")
+        binned, _binned_older = _family(conn, customer, 2, deleted_at=NOW, deleted_by=admin)
+
+        # Every state of the current version, and nothing of a newer one or of Trash.
+        assert _ids(conn, _LISTED_IDS, customer) == {current, reading}
+        assert _ids(conn, _TRASHED_LISTED_IDS, customer) == {binned}
 
 
 def test_trash_statements_use_the_fragments() -> None:

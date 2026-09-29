@@ -309,13 +309,18 @@ class FakePrepared:
 class FakePreparer:
     """Gives preset pages per file type, and none for any other type (like
     kaagaz.preparing.pages.prepare_pages does for spreadsheets). ``error`` makes
-    it raise ReadError with that code instead."""
+    it raise ReadError with that code instead, or that error itself (for example
+    TooManyPages with its count)."""
 
-    def __init__(self, by_type: dict[str, FakePrepared] | None = None, *, error: str | None = None) -> None:
+    def __init__(
+        self, by_type: dict[str, FakePrepared] | None = None, *, error: str | ReadError | None = None
+    ) -> None:
         self._by_type = dict(by_type or {})
         self._error = error
 
     def prepare(self, detected_type: str, data: bytes) -> FakePrepared:
+        if isinstance(self._error, ReadError):
+            raise self._error
         if self._error is not None:
             raise ReadError(self._error)
         return self._by_type.get(detected_type, FakePrepared([], {}))

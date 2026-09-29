@@ -40,8 +40,9 @@ Why some choices:
 * **Trash means deleted.** A family in Trash can't be renamed, moved, tagged
   or given a new version: 409 ``in_trash``, checked under the family lock.
 * **Versions** (PRD 1 F6) have the checks and replies of upload. A family not
-  there is 404, and one in Trash 409, checked before storing and again under
-  the lock. The list shows each family's current version, with a newer one
+  there is 404, and one in Trash 409, checked before storing. Under the lock it
+  is checked again: one moved to Trash in the moment between is 404, and the
+  stored file is removed. The list shows each family's current version, with a newer one
   that is still being read or failed beside it (``newer_version``); by id, any
   version opens. A duplicate in Trash says ``in_trash: true``.
 """

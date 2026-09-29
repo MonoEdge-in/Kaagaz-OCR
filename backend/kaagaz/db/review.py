@@ -11,10 +11,10 @@ customers"): the unique key is (customer_id, field, raw_value).
 A value is listed with its page. Values whose page row is missing are not
 listed; the pipeline always stores the pages of a document it saves values for.
 
-A value of a document in Trash is neither listed, counted nor resolved (PRD 1
-F5): the ``LIVE`` text (kaagaz/db/visibility.py) is written out in each of
-those statements. Every version of a family is still listed: only search, chat
-and the fixed queries keep to the current one.
+Only values of each family's current, ready version, out of Trash, are listed,
+counted or resolved (the ``LIVE_CURRENT`` text, kaagaz/db/visibility.py, is
+written out in each of those statements): an older version's values no longer
+reach any answer, and a version still being read has nothing final to review.
 """
 
 from collections.abc import Sequence

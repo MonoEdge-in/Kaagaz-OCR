@@ -142,9 +142,14 @@ def test_a_demoted_and_promoted_again_user_does_not_get_old_sessions_back(db: Da
 
 @pytest.mark.db
 def test_an_admin_cannot_reset_their_own_password(db: Database) -> None:
-    admin = Api(db).new_admin()
+    api = Api(db)
+    admin = api.new_admin()
+    before = api.user_state(admin.customer_id, admin.user_id)
     reply = admin.client.post(f"/api/admin/users/{admin.user_id}/reset-password", headers=CSRF)
     assert reply.status_code == 400
+    assert reply.json()["error"]["code"] == "bad_request"
+    assert api.user_state(admin.customer_id, admin.user_id) == before
+    assert "user.reset_password" not in api.audit_actions(admin.customer_id)
     assert admin.client.get("/api/auth/me").status_code == 200  # the session did not end
 
 
@@ -244,7 +249,33 @@ def test_stats_count_this_customers_activity(db: Database) -> None:
         "feedback_up": 1,
         "feedback_down": 0,
         "open_review_items": 1,
+        "older_versions": 0,
+        "in_trash": 0,
     }
+
+
+@pytest.mark.db
+def test_stats_count_each_family_by_its_current_version_and_older_versions_and_trash_apart(
+    db: Database,
+) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    first = api.add_document(c, status="ready", is_current=False)
+    current = api.add_document(c, status="ready", family_id=first, version_no=2)
+    reading = api.add_document(c, status="received", family_id=first, version_no=3, is_current=False)
+    for document in (first, current, reading):
+        api.add_page(c, document)
+        api.add_value(c, document)
+    binned = api.add_document(c, status="ready", deleted_at=api.clock(), deleted_by=admin.user_id)
+    api.add_document(c, family_id=binned, version_no=2, is_current=False, deleted_at=api.clock())
+    api.add_document(c, status="failed", failure_code="corrupt_file")
+
+    stats = admin.client.get("/api/admin/stats").json()
+
+    assert stats["documents_by_status"] == {"ready": 1, "failed": 1}
+    assert stats["open_review_items"] == 1  # the current version's value, as the review queue shows it
+    assert (stats["older_versions"], stats["in_trash"]) == (2, 1)
 
 
 # --- lockout, temporary passwords and 2FA: the admin's three buttons ----------------------------
