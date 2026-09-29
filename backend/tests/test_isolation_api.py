@@ -98,6 +98,20 @@ def test_b_cannot_resolve_a_value_of_a(world: _World) -> None:
         assert conn.execute(text("SELECT count(*) FROM learned_corrections")).scalar_one() == 0
 
 
+def test_b_gets_404_not_409_for_a_verified_value_of_a(world: _World) -> None:
+    api, a = world.api, world.a
+    verified = api.add_value(a.customer_id, world.document, label="verified", reason="readers_agree")
+    reply = world.b.client.post(
+        f"/api/review/{verified}", json={"choice": "first", "remember": False}, headers=CSRF
+    )
+    _assert_not_found(reply.status_code, reply.json())
+    with api.db.customer(a.customer_id) as conn:
+        row = conn.execute(
+            text("SELECT label, label_reason FROM extracted_values WHERE id = :v"), {"v": verified}
+        ).one()
+    assert tuple(row) == ("verified", "readers_agree")
+
+
 def test_b_cannot_change_a_user_of_a(world: _World) -> None:
     reply = world.b.client.patch(f"/api/admin/users/{world.a.user_id}", json={"disabled": True}, headers=CSRF)
     _assert_not_found(reply.status_code, reply.json())

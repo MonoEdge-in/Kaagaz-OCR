@@ -69,6 +69,11 @@ def resolve(value_id: uuid.UUID, body: ResolveBody, user: Reviewer, context: Con
         current = review_sql.lock_value(conn, customer_id, value)
         if current is None:
             raise ApiError(404, "not_found")
+        # Checked under the lock and after the 404, so a verified value (or one another
+        # reviewer resolved a moment ago) is never overwritten, and another customer's
+        # value stays a 404.
+        if current["label"] != "needs_review":
+            raise ApiError(409, "not_needs_review")
         if body.choice == "first":
             new_text = str(current["value_raw"])
         elif body.choice == "second":

@@ -1,5 +1,7 @@
 """The review queue and resolving a value, against a real database."""
 
+import threading
+import time
 import uuid
 from collections.abc import Sequence
 from datetime import date
@@ -8,10 +10,15 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import text
 
+from kaagaz.db import review as review_sql
 from kaagaz.db.engine import Database
+from tests.db_support import database_url, make_database
 from tests.test_api_support import CSRF, Api, Signed
 
 PAN = "ABCDE1234F"  # made up
+NOT_NEEDS_REVIEW = {
+    "error": {"code": "not_needs_review", "message": "This value doesn't need review any more."}
+}
 
 
 def _setup(db: Database) -> tuple[Api, Signed, str, str]:
@@ -190,3 +197,114 @@ def test_members_cannot_resolve(db: Database) -> None:
     )
     assert reply.status_code == 403
     assert _stored(db, reviewer.customer_id, value_id)[3] == "needs_review"
+
+
+# --- only a value that needs review can be resolved -----------------------------------
+
+
+def _writes(db: Database, customer_id: str) -> tuple[int, int]:
+    """How many corrections and remembered corrections the customer has."""
+    with db.customer(customer_id) as conn:
+        corrections: int = conn.execute(text("SELECT count(*) FROM corrections")).scalar_one()
+        learned: int = conn.execute(text("SELECT count(*) FROM learned_corrections")).scalar_one()
+    return int(corrections), int(learned)
+
+
+@pytest.mark.db
+def test_a_verified_value_is_409_and_nothing_changes(db: Database) -> None:
+    api, reviewer, document_id, _ = _setup(db)
+    verified = api.add_value(reviewer.customer_id, document_id, label="verified", reason="readers_agree")
+    audit_before = api.audit_actions(reviewer.customer_id)
+
+    reply = reviewer.client.post(
+        f"/api/review/{verified}", json={"choice": "typed", "value": "9,999", "remember": True}, headers=CSRF
+    )
+
+    assert reply.status_code == 409
+    assert reply.json() == NOT_NEEDS_REVIEW
+    assert _stored(db, reviewer.customer_id, verified) == ("1,200", None, None, "verified", "readers_agree")
+    assert _writes(db, reviewer.customer_id) == (0, 0)
+    assert api.audit_actions(reviewer.customer_id) == audit_before
+
+
+@pytest.mark.db
+def test_resolving_twice_is_409_the_second_time(db: Database) -> None:
+    api, reviewer, _, value_id = _setup(db)
+    first = reviewer.client.post(
+        f"/api/review/{value_id}", json={"choice": "second", "remember": False}, headers=CSRF
+    )
+    again = reviewer.client.post(
+        f"/api/review/{value_id}", json={"choice": "typed", "value": "9,999", "remember": True}, headers=CSRF
+    )
+
+    assert first.status_code == 200
+    assert again.status_code == 409
+    assert again.json() == NOT_NEEDS_REVIEW
+    assert _stored(db, reviewer.customer_id, value_id)[:2] == ("1,250", Decimal(1250))
+    assert _writes(db, reviewer.customer_id) == (1, 0)
+    assert api.audit_actions(reviewer.customer_id).count("review.resolve") == 1
+
+
+def _named_database(name: str) -> Database:
+    """The test database, with every session named ``name`` in pg_stat_activity."""
+    url = database_url()
+    return make_database(f"{url}{'&' if '?' in url else '?'}application_name={name}")
+
+
+def _wait_until_blocked(db: Database, *, application_name: str, timeout: float = 5.0) -> None:
+    """Wait until the session named ``application_name`` waits on a lock. Polls every 20 ms.
+
+    Kept here because main's ``tests/db_support.py`` has no such helper.
+    """
+    deadline = time.monotonic() + timeout
+    query = text(
+        "SELECT count(*) FROM pg_stat_activity WHERE application_name = :name AND wait_event_type = 'Lock'"
+    )
+    while time.monotonic() < deadline:
+        with db.engine.connect() as conn:
+            if conn.execute(query, {"name": application_name}).scalar_one():
+                return
+        time.sleep(0.02)
+    raise AssertionError(f"{application_name} never waited on a lock")
+
+
+@pytest.mark.db
+def test_two_reviewers_at_once_only_one_wins(db: Database) -> None:
+    """The order is forced: the test holds the value's lock until both requests wait
+    behind it, first then second, so the result never depends on timing."""
+    first_db, second_db = _named_database("review-first"), _named_database("review-second")
+    try:
+        first_api, second_api = Api(first_db), Api(second_db)
+        first = first_api.new_signed("reviewer")
+        customer_id = first.customer_id
+        second = second_api.sign_in(customer_id, "reviewer")
+        document_id = first_api.add_document(customer_id, name="bill.pdf")
+        first_api.add_page(customer_id, document_id)
+        value_id = first_api.add_value(customer_id, document_id)
+        statuses: dict[str, int] = {}
+
+        def resolve(name: str, signed: Signed, typed: str) -> None:
+            body = {"choice": "typed", "value": typed, "remember": False}
+            statuses[name] = signed.client.post(
+                f"/api/review/{value_id}", json=body, headers=CSRF
+            ).status_code
+
+        threads = {
+            "first": threading.Thread(target=resolve, args=("first", first, "1,300")),
+            "second": threading.Thread(target=resolve, args=("second", second, "1,400")),
+        }
+        with db.customer(customer_id) as conn:
+            assert review_sql.lock_value(conn, customer_id, value_id) is not None
+            for name, thread in threads.items():
+                thread.start()
+                _wait_until_blocked(db, application_name=f"review-{name}")
+        for thread in threads.values():
+            thread.join(timeout=10)
+
+        assert statuses == {"first": 200, "second": 409}
+        assert _stored(db, customer_id, value_id)[:2] == ("1,300", Decimal(1300))
+        assert _writes(db, customer_id) == (1, 0)
+        assert first_api.audit_actions(customer_id).count("review.resolve") == 1
+    finally:
+        first_db.engine.dispose()
+        second_db.engine.dispose()

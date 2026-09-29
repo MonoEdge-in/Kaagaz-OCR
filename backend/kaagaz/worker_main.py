@@ -152,7 +152,18 @@ def run_until_stopped(worker: RunsJobs, stop: threading.Event, *, pause_seconds:
 def main() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
+    # A bug still ends the process (docker-compose.yml restarts it), but with one
+    # line naming the error's type. Python's own last words would be the traceback
+    # and the message, and a database error's message can quote row values.
+    try:
+        _serve(settings)
+    except Exception as error:  # noqa: BLE001 - the process boundary, see the comment above
+        logger.critical("worker crashed", extra={"code": type(error).__name__})
+        sys.exit(1)
 
+
+def _serve(settings: Settings) -> None:
+    """Build the worker and run jobs until it is told to stop."""
     # Imported here, not at the top: these modules pull in every reader, the
     # OCR engine and the AI client, and the loop above is tested without them.
     from kaagaz.ai.client import build_model_client

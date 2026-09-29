@@ -258,7 +258,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **16. Review queue and fixing a value**
 - Check: make one doubtful value, `SQL "UPDATE extracted_values SET label='needs_review', label_reason='single_reader' WHERE id=(SELECT id FROM extracted_values LIMIT 1) RETURNING id"`; `login reviewer@sharma-traders.example`; `curl -b reviewer@sharma-traders.example.jar $API/review`; then `curl -b reviewer@sharma-traders.example.jar -H "$H" -H "$J" -d '{"choice":"typed","value":"55000","remember":true}' $API/review/<value id>`.
-- Expect: the queue lists only `needs_review` values, oldest first, each with its page. The fix gives `200`; the value becomes `verified | corrected`; `SQL "SELECT choice,old_value,new_value FROM corrections"` and `SQL "SELECT field,raw_value,corrected_value FROM learned_corrections"` each gain a row. Choosing `second` when there is no second reading gives `400`. On screen, the card leaves and the count drops.
+- Expect: the queue lists only `needs_review` values, oldest first, each with its page. The fix gives `200`; the value becomes `verified | corrected`; `SQL "SELECT choice,old_value,new_value FROM corrections"` and `SQL "SELECT field,raw_value,corrected_value FROM learned_corrections"` each gain a row. Choosing `second` when there is no second reading gives `400`. Sending the same fix again, or fixing a value that is already `verified`, gives `409 not_needs_review` and changes nothing. On screen, the card leaves and the count drops.
 - Tests: `test_api_review.py`; `frontend/tests/review-queue.test.ts`.
 
 **17. Remembered corrections**
