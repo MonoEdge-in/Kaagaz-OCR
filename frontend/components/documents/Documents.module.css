@@ -582,9 +582,29 @@ table.docs th {
     inset-inline-end: 0;
   }
 
+  /* The question is wider than the Actions column, so it opens as a small
+     panel over the end of its row instead of running off the table. */
+  .actionsCell {
+    position: relative;
+  }
+
   .confirm {
+    position: absolute;
+    inset-inline-end: var(--space-2);
+    top: var(--space-1);
+    z-index: calc(var(--z-sticky) + 1);
+    width: min(20rem, 80vw);
+    padding: var(--space-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--e-2);
     white-space: normal;
-    min-width: 13rem;
+    text-align: start;
+  }
+
+  .rowError {
+    white-space: normal;
     text-align: start;
   }
 }

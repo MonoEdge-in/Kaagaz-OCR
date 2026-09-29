@@ -1,12 +1,14 @@
 "use client";
 
-// One document's actions, behind its "Actions" button: Rename, Move to folder,
-// Tags, Download original and, for its uploader or an admin, Delete. The menu
-// is a disclosure (a button and a list of buttons): Tab moves through it; Esc,
-// a click elsewhere or leaving it closes it. Rename, Move and Tags each open a
-// small dialog with the error next to its field; Delete keeps the table's own
-// "are you sure" step. Any user of the customer may rename, move and tag
-// (PRD 1, F2 and F3); the server checks again.
+// One document's actions, behind its "Actions" button. In a folder or All
+// documents: Rename, Move to folder, Tags, Download original and, for its
+// uploader or an admin, Move to Trash. In Trash: Restore (the uploader or an
+// admin), Download original and, for an admin, Delete forever (PRD 1, F5).
+// The menu is a disclosure (a button and a list of buttons): Tab moves through
+// it; Esc, a click elsewhere or leaving it closes it. Rename, Move and Tags
+// each open a small dialog with the error next to its field; Move to Trash and
+// Delete forever keep the table's own "are you sure" step. Any user of the
+// customer may rename, move and tag (PRD 1, F2 and F3); the server checks again.
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, RefCallback } from "react";
@@ -26,22 +28,53 @@ import {
 import styles from "./Library.module.css";
 
 export type EditAction = "rename" | "move" | "tags";
-export type RowAction = EditAction | "delete";
+export type RowAction = EditAction | "trash" | "restore" | "forever";
 
 export interface RowMenuProps {
   item: DocumentSummary;
-  deletable: boolean;
+  inTrash: boolean; // the Trash view
+  deletable: boolean; // the uploader or an admin: Move to Trash, and Restore
+  canForever: boolean; // an admin: Delete forever
   onPick(action: RowAction): void;
   /** The row keeps hold of the Actions button, to hand focus back to it. */
   toggleRef: RefCallback<HTMLButtonElement>;
 }
 
-export function RowMenu({ item, deletable, onPick, toggleRef }: RowMenuProps) {
+type MenuEntry =
+  | { kind: "action"; action: RowAction; words: string; danger: boolean }
+  | { kind: "download"; href: string };
+
+/** What the menu lists, in order: the everyday actions, Download original, then the one that removes. */
+function menuEntries(
+  item: DocumentSummary,
+  inTrash: boolean,
+  deletable: boolean,
+  canForever: boolean,
+): MenuEntry[] {
+  const act = (action: RowAction, words: string, danger = false): MenuEntry => ({
+    kind: "action",
+    action,
+    words,
+    danger,
+  });
+  const entries: MenuEntry[] = inTrash
+    ? deletable
+      ? [act("restore", "Restore")]
+      : []
+    : [act("rename", "Rename"), act("move", "Move to folder"), act("tags", "Tags")];
+  const download = downloadHref(item);
+  if (download) entries.push({ kind: "download", href: download });
+  if (inTrash && canForever) entries.push(act("forever", "Delete forever", true));
+  if (!inTrash && deletable) entries.push(act("trash", "Move to Trash", true));
+  return entries;
+}
+
+export function RowMenu({ item, inTrash, deletable, canForever, onPick, toggleRef }: RowMenuProps) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement | null>(null);
   const menuId = useId();
-  const download = downloadHref(item);
+  const entries = menuEntries(item, inTrash, deletable, canForever);
 
   const setButton = useCallback(
     (element: HTMLButtonElement | null) => {
@@ -77,6 +110,7 @@ export function RowMenu({ item, deletable, onPick, toggleRef }: RowMenuProps) {
     onPick(action);
   }
 
+  if (entries.length === 0) return null;
   return (
     <div
       ref={wrap}
@@ -100,48 +134,34 @@ export function RowMenu({ item, deletable, onPick, toggleRef }: RowMenuProps) {
       </button>
       {open && (
         <ul id={menuId} className={styles.menuList} aria-label={`Actions for ${item.display_name}`}>
-          <li>
-            <button ref={focusOnMount} type="button" className={styles.menuItem} onClick={() => pick("rename")}>
-              Rename
-            </button>
-          </li>
-          <li>
-            <button type="button" className={styles.menuItem} onClick={() => pick("move")}>
-              Move to folder
-            </button>
-          </li>
-          <li>
-            <button type="button" className={styles.menuItem} onClick={() => pick("tags")}>
-              Tags
-            </button>
-          </li>
-          {download && (
-            <li>
-              <a
-                className={styles.menuItem}
-                href={download}
-                download
-                onClick={() => {
-                  setOpen(false);
-                  button.current?.focus();
-                }}
-              >
-                Download original
-              </a>
+          {entries.map((entry, index) => (
+            <li key={entry.kind === "download" ? "download" : entry.action}>
+              {entry.kind === "download" ? (
+                <a
+                  ref={index === 0 ? focusOnMount : undefined}
+                  className={styles.menuItem}
+                  href={entry.href}
+                  download
+                  onClick={() => {
+                    setOpen(false);
+                    button.current?.focus();
+                  }}
+                >
+                  Download original
+                </a>
+              ) : (
+                <button
+                  ref={index === 0 ? focusOnMount : undefined}
+                  type="button"
+                  className={entry.danger ? `${styles.menuItem} ${styles.danger}` : styles.menuItem}
+                  onClick={() => pick(entry.action)}
+                >
+                  {entry.danger && <Icon name="trash" />}
+                  {entry.words}
+                </button>
+              )}
             </li>
-          )}
-          {deletable && (
-            <li>
-              <button
-                type="button"
-                className={`${styles.menuItem} ${styles.danger}`}
-                onClick={() => pick("delete")}
-              >
-                <Icon name="trash" />
-                Delete
-              </button>
-            </li>
-          )}
+          ))}
         </ul>
       )}
     </div>

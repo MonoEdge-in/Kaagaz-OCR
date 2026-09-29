@@ -10,7 +10,7 @@ import { useId, useState } from "react";
 import { typeLabel } from "@/lib/format";
 import type { Tag } from "@/lib/types";
 import { dateChipText, tagsChipText, typeChipText } from "./library";
-import { ALL_DOCUMENTS, FILTER_TYPES, isFiltered, isIsoDate } from "./libraryQuery";
+import { FILTER_TYPES, isFiltered, isIsoDate } from "./libraryQuery";
 import type { LibraryState } from "./libraryQuery";
 import styles from "./Library.module.css";
 
@@ -63,7 +63,7 @@ export function LibraryFilters({
 
   function clear() {
     setOpen(null);
-    onChange({ ...ALL_DOCUMENTS, folderId: library.folderId, subfolders: library.subfolders });
+    onChange({ ...library, tagIds: [], type: null, from: null, to: null });
   }
 
   return (

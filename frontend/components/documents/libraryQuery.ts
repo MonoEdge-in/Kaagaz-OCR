@@ -43,12 +43,14 @@ export type DocumentListParams = {
   detected_type?: DetectedType;
   uploaded_from?: string; // YYYY-MM-DD, the first day included
   uploaded_to?: string; // YYYY-MM-DD, exclusive: the day after the last one
+  trashed?: boolean; // WP1.6: true lists only what is in Trash; left out, only what is not
 };
 
-/** What the documents screen shows: one folder (or all documents) and the filters. */
+/** What the documents screen shows: one folder, all documents or Trash, and the filters. */
 export interface LibraryState {
-  readonly folderId: string | null; // null: all documents, in every folder
+  readonly folderId: string | null; // null: all documents, in every folder (or Trash)
   readonly subfolders: boolean; // in a folder: also the documents in its subfolders
+  readonly trash: boolean; // Trash: every folder, only what is in Trash
   readonly tagIds: readonly string[]; // every tag must match
   readonly type: DetectedType | null;
   readonly from: string | null; // YYYY-MM-DD, the first day included
@@ -58,6 +60,7 @@ export interface LibraryState {
 export const ALL_DOCUMENTS: LibraryState = {
   folderId: null,
   subfolders: false,
+  trash: false,
   tagIds: [],
   type: null,
   from: null,
@@ -108,9 +111,10 @@ interface SearchLike {
   getAll(name: string): string[];
 }
 
-/** The view named in the page address; anything malformed is dropped. */
+/** The view named in the page address; anything malformed is dropped. Trash has no folder. */
 export function libraryFromSearch(search: SearchLike): LibraryState {
-  const folder = search.get("folder");
+  const trash = search.get("trash") === "1";
+  const folder = trash ? null : search.get("folder");
   const folderId = folder !== null && UUID.test(folder) ? folder.toLowerCase() : null;
   const tags = search
     .getAll("tag")
@@ -122,6 +126,7 @@ export function libraryFromSearch(search: SearchLike): LibraryState {
   return {
     folderId,
     subfolders: folderId !== null && search.get("sub") === "1",
+    trash,
     tagIds: [...new Set(tags)].slice(0, MAX_TAG_FILTERS),
     type: FILTER_TYPES.find((kind) => kind === type) ?? null,
     from: from !== null && isIsoDate(from) ? from : null,
@@ -132,6 +137,7 @@ export function libraryFromSearch(search: SearchLike): LibraryState {
 /** The page address for a view: "/documents" for all documents with no filter. */
 export function libraryHref(state: LibraryState): string {
   return `/documents${queryString({
+    trash: state.trash ? "1" : null,
     folder: state.folderId,
     sub: state.folderId !== null && state.subfolders ? "1" : null,
     tag: state.tagIds,
@@ -146,6 +152,7 @@ export function listParams(state: LibraryState, q: string, offset: number): Docu
   return {
     limit: PAGE_SIZE,
     offset,
+    trashed: state.trash ? true : undefined,
     q: q === "" ? undefined : q,
     folder_id: state.folderId ?? undefined,
     include_subfolders: state.folderId === null ? undefined : state.subfolders,

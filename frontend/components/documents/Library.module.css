@@ -99,6 +99,21 @@
   color: var(--fg);
 }
 
+/* Trash sits apart, after every folder. */
+.trashItem {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.trashItem .treeLink {
+  gap: var(--space-2);
+}
+
+.trashItem svg {
+  flex: none;
+}
+
 /* The folder being viewed: bold as well as tinted, so colour is not the only sign. */
 .treeLink[aria-current="page"] {
   background: var(--accent-soft);

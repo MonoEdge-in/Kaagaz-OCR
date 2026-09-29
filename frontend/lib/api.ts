@@ -127,7 +127,14 @@ export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everyw
 export const listDocuments = (params: DocumentListParams = {}) =>
   request<DocumentList>("GET", `/documents${queryString(params)}`);
 export const getDocument = (id: string) => request<DocumentDetail>("GET", `/documents/${id}`);
+/** Moves the document, with every version of it, to Trash (PRD 1, F5). */
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);
+/** Brings a document in Trash back, with every version of it. */
+export const restoreDocument = (id: string) =>
+  request<DocumentSummary>("POST", `/documents/${id}/restore`);
+/** Admins only, and only from Trash (409 not_in_trash otherwise). Every version goes. */
+export const deleteDocumentForever = (id: string) =>
+  request<void>("DELETE", `/documents/${id}/permanent`);
 /** Rename or move. An explicit folder_id: null moves the document to the top level. */
 export const updateDocument = (
   id: string,
@@ -151,9 +158,35 @@ export function uploadDocument(
   onProgress: (fraction: number) => void,
   folderId?: string,
 ): Promise<UploadResult> {
+  const form = new FormData();
+  if (folderId) form.append("folder_id", folderId);
+  form.append("file", file);
+  return sendForm("/api/documents", form, onProgress);
+}
+
+/**
+ * Upload a new version of a document, with progress. The server gives it the
+ * next version number and the family's folder and tags; the reply has the
+ * same shape as an upload.
+ */
+export function uploadVersion(
+  documentId: string,
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<UploadResult> {
+  const form = new FormData();
+  form.append("file", file);
+  return sendForm(`/api/documents/${documentId}/versions`, form, onProgress);
+}
+
+function sendForm(
+  url: string,
+  form: FormData,
+  onProgress: (fraction: number) => void,
+): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/documents");
+    xhr.open("POST", url);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
     xhr.upload.onprogress = (event) => {
@@ -176,9 +209,6 @@ export function uploadDocument(
       );
     };
     xhr.onerror = () => reject(new ApiError(0, "network", "Could not reach the server."));
-    const form = new FormData();
-    if (folderId) form.append("folder_id", folderId);
-    form.append("file", file);
     xhr.send(form);
   });
 }

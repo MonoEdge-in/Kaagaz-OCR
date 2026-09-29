@@ -3,8 +3,9 @@
 // The folder tree: "All documents", then every folder, nested and sorted by
 // name (folderTree.ts). Each entry is a link to that folder's view, so it can
 // be opened in a new tab and Back returns to the folder before. The filters in
-// use stay as they are. It is shown beside the list from 1024 px and inside a
-// Drawer below that; the documents screen renders it in both places.
+// use stay as they are. Trash comes last, set apart from the folders. It is
+// shown beside the list from 1024 px and inside a Drawer below that; the
+// documents screen renders it in both places.
 
 import Link from "next/link";
 import { Icon } from "@/components/ui/Icon";
@@ -29,10 +30,10 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate }
       <ul className={styles.tree}>
         <li>
           <Link
-            href={libraryHref({ ...library, folderId: null, subfolders: false })}
+            href={libraryHref({ ...library, folderId: null, subfolders: false, trash: false })}
             scroll={false}
             className={styles.treeLink}
-            aria-current={library.folderId === null ? "page" : undefined}
+            aria-current={library.folderId === null && !library.trash ? "page" : undefined}
             onClick={() => onNavigate("All documents")}
           >
             All documents
@@ -41,7 +42,18 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate }
         {tree.roots.map((node) => (
           <FolderItem key={node.folder.id} node={node} library={library} onNavigate={onNavigate} />
         ))}
-        {/* WP1.6: the Trash entry goes here, as the last item of this list. */}
+        <li className={styles.trashItem}>
+          <Link
+            href={libraryHref({ ...library, folderId: null, subfolders: false, trash: true })}
+            scroll={false}
+            className={styles.treeLink}
+            aria-current={library.trash ? "page" : undefined}
+            onClick={() => onNavigate("Trash")}
+          >
+            <Icon name="trash" />
+            Trash
+          </Link>
+        </li>
       </ul>
       {loading && (
         <p className={`muted delayed ${styles.note} ${styles.treeNote}`} role="status">
@@ -76,7 +88,7 @@ function FolderItem({
   return (
     <li>
       <Link
-        href={libraryHref({ ...library, folderId: node.folder.id })}
+        href={libraryHref({ ...library, folderId: node.folder.id, trash: false })}
         scroll={false}
         className={styles.treeLink}
         aria-current={here ? "page" : undefined}

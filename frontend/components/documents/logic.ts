@@ -127,8 +127,9 @@ export function shouldPoll(items: readonly Pick<DocumentSummary, "status">[]): b
 }
 
 /**
- * Whether to show Delete. The uploader is matched by display name, which is a
- * hint for the screen only: the server checks the real uploader and the role.
+ * Whether to show Move to Trash, and Restore in Trash. The uploader is matched
+ * by display name, which is a hint for the screen only: the server checks the
+ * real uploader and the role.
  */
 export function canDelete(me: Me, document: Pick<DocumentSummary, "uploaded_by_name">): boolean {
   if (me.user.role === "admin") return true;
@@ -224,7 +225,7 @@ export function listView(
   return "list";
 }
 
-/** The polite announcement once a document is gone from the list. */
+/** The polite announcement once a document is gone from the list: Delete moves it to Trash. */
 export function deletedMessage(name: string): string {
-  return `Deleted ${name}.`;
+  return `Moved ${name} to Trash.`;
 }

@@ -25,13 +25,12 @@ import { FolderNav } from "./FolderNav";
 import { buildTree, folderPath } from "./folderTree";
 import { noMatchTitle } from "./library";
 import { LibraryFilters } from "./LibraryFilters";
-import { ALL_DOCUMENTS, isFiltered, libraryHref, listParams } from "./libraryQuery";
+import { isFiltered, libraryHref, listParams } from "./libraryQuery";
 import type { LibraryState } from "./libraryQuery";
 import {
   ACCEPT_ATTRIBUTE,
   PAGE_SIZE,
   POLL_MS,
-  deletedMessage,
   listView,
   offsetAfterDelete,
   pageInfo,
@@ -177,7 +176,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   }
 
   function clearFilters() {
-    show({ ...ALL_DOCUMENTS, folderId: library.folderId, subfolders: library.subfolders });
+    show({ ...library, tagIds: [], type: null, from: null, to: null });
   }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -194,8 +193,9 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     setSearch({ view: viewKey, q, offset: nextOffset });
   }
 
-  function afterDelete(name: string) {
-    setAnnouncement(deletedMessage(name));
+  // Moved to Trash, restored or deleted for good: the row has left this list.
+  function afterRemoved(message: string) {
+    setAnnouncement(message);
     headingRef.current?.focus();
     const nextOffset = offsetAfterDelete(offset, shown?.list.items.length ?? 0, PAGE_SIZE);
     if (nextOffset !== offset) turnPage(nextOffset);
@@ -226,7 +226,11 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const pages = list ? pageInfo(offset, list.items.length, list.total) : null;
   // Search and filters stay while the next list loads, so an open filter panel stays open.
   const showControls = view === "list" || view === "no-match" || (loaded !== null && !shown);
-  const placeName = current?.folder.name ?? (library.folderId === null ? "All documents" : "Folder");
+  const placeName = library.trash
+    ? "Trash"
+    : (current?.folder.name ?? (library.folderId === null ? "All documents" : "Folder"));
+  // Nothing is uploaded into Trash, and it has no folder to change.
+  const canUpload = !folderGone && !library.trash;
   const above = current ? folderPath(tree, current.folder.id).slice(0, -1) : [];
 
   const nav = (
@@ -254,7 +258,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
           <h1>Documents</h1>
           <p>Upload documents, file them in folders, then ask about them.</p>
         </div>
-        {!folderGone && uploadButton}
+        {canUpload && uploadButton}
       </header>
 
       <label htmlFor="upload-input" className="visually-hidden">
@@ -328,8 +332,13 @@ export function DocumentsView({ library }: { library: LibraryState }) {
               {current && (
                 <p className={libraryStyles.placeHint}>Files you upload here go into this folder.</p>
               )}
+              {library.trash && (
+                <p className={libraryStyles.placeHint}>
+                  Documents in Trash are left out of search and chat. Restore one to use it again.
+                </p>
+              )}
             </div>
-            {folders !== null && !folderGone && (
+            {folders !== null && canUpload && (
               <FolderActions
                 key={current?.folder.id ?? "all"}
                 tree={tree}
@@ -358,7 +367,13 @@ export function DocumentsView({ library }: { library: LibraryState }) {
             </EmptyState>
           ) : (
             <>
-              {view === "empty" ? (
+              {library.trash ? (
+                view === "empty" && (
+                  <EmptyState icon="trash" title="Trash is empty" headingLevel={3}>
+                    Documents moved to Trash show here, until they are restored or deleted for good.
+                  </EmptyState>
+                )
+              ) : view === "empty" ? (
                 <Dropzone variant="full" onFiles={addFiles} onChoose={openPicker}>
                   <EmptyState
                     icon="file"
@@ -476,7 +491,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                       now={shown.now}
                       tree={tree}
                       tags={tags}
-                      onDeleted={afterDelete}
+                      inTrash={library.trash}
+                      onRemoved={afterRemoved}
                       onSaved={afterSave}
                       onFocusList={() => headingRef.current?.focus()}
                       onTagCreated={() => setTagsVersion((n) => n + 1)}

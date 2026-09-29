@@ -70,6 +70,18 @@ export interface DocumentSummary {
   uploaded_by_name: string | null;
   folder_id: string | null; // null: at the top level, in no folder
   tags: Tag[];
+  deleted_at: string | null; // set while the document (its whole family) is in Trash
+  version_no: number; // 1 for the first upload
+  family_id: string; // shared by every version of one document
+}
+
+/** One version of a document. Each is its own document id; the viewer opens any of them. */
+export interface DocumentVersion {
+  id: string;
+  version_no: number;
+  status: DocumentStatus;
+  is_current: boolean; // the one search and chat use: the highest version that is ready
+  created_at: string;
 }
 
 // A folder of this customer. The API sends the flat list; the screen builds the
@@ -121,6 +133,7 @@ export interface DocumentDetail extends DocumentSummary {
   pages: PageSummary[];
   values: ExtractedValue[];
   folder: DocumentFolder | null; // null: at the top level
+  versions: DocumentVersion[]; // every version of the family, this one included
 }
 
 export interface DocumentList {
@@ -131,6 +144,7 @@ export interface DocumentList {
 export interface UploadResult {
   document: DocumentSummary;
   duplicate: boolean;
+  in_trash: boolean; // a duplicate of a document that is in Trash
 }
 
 export interface SheetCells {
