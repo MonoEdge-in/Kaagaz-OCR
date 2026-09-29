@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -165,6 +166,32 @@ def new_library(db: Database) -> dict[str, str]:
         document = insert_document(conn, customer, folder_id=folder, uploaded_by=user)
         tag_document(conn, customer, document, tag)
     return {"customer": customer, "user": user, "folder": folder, "tag": tag, "document": document}
+
+
+def library_rows_seen(db: Database, customer_id: str, library: dict[str, str]) -> tuple[int, int, int]:
+    """How many of ``library``'s folder, tag and document_tags rows ``customer_id`` can
+    see, by id. ``library`` is what ``new_library`` returns."""
+    with db.customer(customer_id) as conn:
+        return (
+            count_rows(conn, "SELECT count(*) FROM folders WHERE id = :f", {"f": library["folder"]}),
+            count_rows(conn, "SELECT count(*) FROM tags WHERE id = :t", {"t": library["tag"]}),
+            count_rows(
+                conn,
+                "SELECT count(*) FROM document_tags WHERE document_id = :d AND tag_id = :t",
+                {"d": library["document"], "t": library["tag"]},
+            ),
+        )
+
+
+def new_trashed_document(db: Database, customer_id: str, *, deleted_at: datetime) -> str:
+    """One document already in Trash since ``deleted_at``, in its own transaction. O(1)."""
+    with db.customer(customer_id) as conn:
+        return insert_document(conn, customer_id, deleted_at=deleted_at)
+
+
+def count_rows(conn: Connection, statement: str, params: dict[str, str] | None = None) -> int:
+    """The single number a ``SELECT count(*)`` statement returns."""
+    return int(conn.execute(text(statement), params or {}).scalar_one())
 
 
 def name_session(conn: Connection, application_name: str) -> None:

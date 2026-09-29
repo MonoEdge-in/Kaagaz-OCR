@@ -11,16 +11,19 @@ from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
-from sqlalchemy import Connection, text
+from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 
 from kaagaz.db.engine import Database
 from tests.db_support import (
+    count_rows,
     insert_document,
     insert_folder,
     insert_tag,
+    library_rows_seen,
     new_customer,
     new_library,
+    new_trashed_document,
     tag_document,
     violation,
 )
@@ -35,36 +38,18 @@ def _refused_by_policy(error: DBAPIError) -> bool:
     return error.orig.sqlstate == "42501" and "row-level security policy" in message
 
 
-def _count(conn: Connection, statement: str, params: dict[str, str] | None = None) -> int:
-    return int(conn.execute(text(statement), params or {}).scalar_one())
-
-
-def _seen(db: Database, customer_id: str, a: dict[str, str]) -> tuple[int, int, int]:
-    """How many of A's folder, tag and document_tags rows ``customer_id`` can see, by id."""
-    with db.customer(customer_id) as conn:
-        return (
-            _count(conn, "SELECT count(*) FROM folders WHERE id = :f", {"f": a["folder"]}),
-            _count(conn, "SELECT count(*) FROM tags WHERE id = :t", {"t": a["tag"]}),
-            _count(
-                conn,
-                "SELECT count(*) FROM document_tags WHERE document_id = :d AND tag_id = :t",
-                {"d": a["document"], "t": a["tag"]},
-            ),
-        )
-
-
 def test_other_customer_sees_none_of_the_rows_even_by_id(db: Database) -> None:
     a = new_library(db)
     b, _ = new_customer(db)
 
-    assert _seen(db, a["customer"], a) == (1, 1, 1)
-    assert _seen(db, b, a) == (0, 0, 0)
+    assert library_rows_seen(db, a["customer"], a) == (1, 1, 1)
+    assert library_rows_seen(db, b, a) == (0, 0, 0)
     with db.customer(b) as conn:
         # Naming A in the WHERE changes nothing: the policy still hides every row.
         by_customer = {"a": a["customer"]}
-        assert _count(conn, "SELECT count(*) FROM folders WHERE customer_id = :a", by_customer) == 0
-        assert _count(conn, "SELECT count(*) FROM tags WHERE customer_id = :a", by_customer) == 0
-        assert _count(conn, "SELECT count(*) FROM document_tags WHERE customer_id = :a", by_customer) == 0
+        assert count_rows(conn, "SELECT count(*) FROM folders WHERE customer_id = :a", by_customer) == 0
+        assert count_rows(conn, "SELECT count(*) FROM tags WHERE customer_id = :a", by_customer) == 0
+        assert count_rows(conn, "SELECT count(*) FROM document_tags WHERE customer_id = :a", by_customer) == 0
 
 
 def test_other_customer_cannot_insert_rows_naming_a(db: Database) -> None:
@@ -85,8 +70,10 @@ def test_other_customer_cannot_insert_rows_naming_a(db: Database) -> None:
         assert _refused_by_policy(caught.value), statement
 
     with db.customer(a["customer"]) as conn:
-        assert _count(conn, "SELECT count(*) FROM folders WHERE name = 'Mine now'") == 0
-        assert _count(conn, "SELECT count(*) FROM document_tags WHERE tag_id = :t", {"t": unused_tag}) == 0
+        assert count_rows(conn, "SELECT count(*) FROM folders WHERE name = 'Mine now'") == 0
+        assert (
+            count_rows(conn, "SELECT count(*) FROM document_tags WHERE tag_id = :t", {"t": unused_tag}) == 0
+        )
 
 
 def test_other_customer_cannot_move_its_own_rows_to_a(db: Database) -> None:
@@ -117,7 +104,7 @@ def test_other_customer_cannot_update_or_delete_a_rows(db: Database) -> None:
         changed = [conn.execute(text(statement), params).rowcount for statement, params in writes]
     assert changed == [0, 0, 0, 0, 0, 0]
 
-    assert _seen(db, a["customer"], a) == (1, 1, 1)
+    assert library_rows_seen(db, a["customer"], a) == (1, 1, 1)
     with db.customer(a["customer"]) as conn:
         names = conn.execute(
             text("SELECT f.name, t.name FROM folders f, tags t WHERE f.id = :f AND t.id = :t"),
@@ -198,14 +185,9 @@ def test_a_folder_tag_or_trash_mark_cannot_name_another_customer_user(db: Databa
         assert violation(caught.value) == ("23503", constraint), statement
 
     with db.customer(a["customer"]) as conn:
-        assert _count(conn, "SELECT count(*) FROM folders WHERE name = 'Theirs'") == 0
-        assert _count(conn, "SELECT count(*) FROM tags WHERE name = 'Theirs'") == 0
-        assert _count(conn, "SELECT count(*) FROM documents WHERE deleted_at IS NOT NULL") == 0
-
-
-def _trashed_document(db: Database, customer_id: str, *, deleted_at: datetime) -> str:
-    with db.customer(customer_id) as conn:
-        return insert_document(conn, customer_id, deleted_at=deleted_at)
+        assert count_rows(conn, "SELECT count(*) FROM folders WHERE name = 'Theirs'") == 0
+        assert count_rows(conn, "SELECT count(*) FROM tags WHERE name = 'Theirs'") == 0
+        assert count_rows(conn, "SELECT count(*) FROM documents WHERE deleted_at IS NOT NULL") == 0
 
 
 def test_customer_ids_with_trash_returns_only_ids_of_customers_with_old_trash(db: Database) -> None:
@@ -213,9 +195,9 @@ def test_customer_ids_with_trash_returns_only_ids_of_customers_with_old_trash(db
     old, _ = new_customer(db)
     recent, _ = new_customer(db)
     live, _ = new_customer(db)
-    _trashed_document(db, old, deleted_at=now - timedelta(days=31))
-    _trashed_document(db, old, deleted_at=now - timedelta(days=40))
-    _trashed_document(db, recent, deleted_at=now - timedelta(days=1))
+    new_trashed_document(db, old, deleted_at=now - timedelta(days=31))
+    new_trashed_document(db, old, deleted_at=now - timedelta(days=40))
+    new_trashed_document(db, recent, deleted_at=now - timedelta(days=1))
     with db.customer(live) as conn:
         insert_document(conn, live)
 
@@ -256,13 +238,13 @@ def test_customer_ids_with_trash_is_a_narrow_owner_rights_function(db: Database)
 def test_a_system_transaction_sees_no_customer_rows(db: Database) -> None:
     """Why the trash function exists: with no current customer, every table looks empty."""
     a = new_library(db)
-    _trashed_document(db, a["customer"], deleted_at=datetime(2026, 1, 1, tzinfo=UTC))
+    new_trashed_document(db, a["customer"], deleted_at=datetime(2026, 1, 1, tzinfo=UTC))
     with db.system() as conn:
-        assert _count(conn, "SELECT count(*) FROM customers") == 0
-        assert _count(conn, "SELECT count(*) FROM documents WHERE deleted_at IS NOT NULL") == 0
-        assert _count(conn, "SELECT count(*) FROM folders") == 0
-        assert _count(conn, "SELECT count(*) FROM tags") == 0
-        assert _count(conn, "SELECT count(*) FROM document_tags") == 0
+        assert count_rows(conn, "SELECT count(*) FROM customers") == 0
+        assert count_rows(conn, "SELECT count(*) FROM documents WHERE deleted_at IS NOT NULL") == 0
+        assert count_rows(conn, "SELECT count(*) FROM folders") == 0
+        assert count_rows(conn, "SELECT count(*) FROM tags") == 0
+        assert count_rows(conn, "SELECT count(*) FROM document_tags") == 0
         through_function = conn.execute(
             text("SELECT count(*) FROM kaagaz_customer_ids_with_trash(:before) AS c WHERE c = :a"),
             {"before": datetime(2026, 1, 2, tzinfo=UTC), "a": a["customer"]},

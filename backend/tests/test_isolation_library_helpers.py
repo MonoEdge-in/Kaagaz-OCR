@@ -10,37 +10,20 @@ test_isolation_folder_helpers.py.
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import Connection, text
+from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from kaagaz.db.tags import TagNotFound, delete_tag, list_tags, set_document_tags, tags_for_documents
 from kaagaz.db.trash import lock_family, purge_next_family, restore_document, trash_document
-from tests.db_support import insert_document, insert_tag, new_customer, new_library
+from tests.db_support import (
+    insert_tag,
+    library_rows_seen,
+    new_customer,
+    new_library,
+    new_trashed_document,
+)
 
 pytestmark = pytest.mark.db
-
-
-def _count(conn: Connection, statement: str, params: dict[str, str] | None = None) -> int:
-    return int(conn.execute(text(statement), params or {}).scalar_one())
-
-
-def _seen(db: Database, customer_id: str, a: dict[str, str]) -> tuple[int, int, int]:
-    """How many of A's folder, tag and document_tags rows ``customer_id`` can see, by id."""
-    with db.customer(customer_id) as conn:
-        return (
-            _count(conn, "SELECT count(*) FROM folders WHERE id = :f", {"f": a["folder"]}),
-            _count(conn, "SELECT count(*) FROM tags WHERE id = :t", {"t": a["tag"]}),
-            _count(
-                conn,
-                "SELECT count(*) FROM document_tags WHERE document_id = :d AND tag_id = :t",
-                {"d": a["document"], "t": a["tag"]},
-            ),
-        )
-
-
-def _trashed_document(db: Database, customer_id: str, *, deleted_at: datetime) -> str:
-    with db.customer(customer_id) as conn:
-        return insert_document(conn, customer_id, deleted_at=deleted_at)
 
 
 NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
@@ -76,13 +59,13 @@ def test_delete_tag_of_another_customer_is_false(db: Database) -> None:
     b = new_library(db)
     with db.customer(b["customer"]) as conn:
         assert delete_tag(conn, b["customer"], a["tag"]) is False
-    assert _seen(db, a["customer"], a) == (1, 1, 1)
+    assert library_rows_seen(db, a["customer"], a) == (1, 1, 1)
 
 
 def test_trash_and_restore_of_another_customer_document_are_false(db: Database) -> None:
     a = new_library(db)
     b = new_library(db)
-    a_trashed = _trashed_document(db, a["customer"], deleted_at=NOW - timedelta(days=1))
+    a_trashed = new_trashed_document(db, a["customer"], deleted_at=NOW - timedelta(days=1))
     with db.customer(b["customer"]) as conn:
         assert trash_document(conn, b["customer"], a["document"], by=b["user"], now=NOW) is False
         assert restore_document(conn, b["customer"], a_trashed) is False
@@ -122,8 +105,8 @@ def test_purge_next_family_never_returns_another_customer_documents(db: Database
     b, _ = new_customer(db)
     clean, _ = new_customer(db)
     # A's trash is far older than B's, so a purge without the customer filter would pick it first.
-    a_trashed = {_trashed_document(db, a, deleted_at=datetime(2000, 1, 1, tzinfo=UTC)) for _ in range(2)}
-    b_trashed = _trashed_document(db, b, deleted_at=NOW - timedelta(days=40))
+    a_trashed = {new_trashed_document(db, a, deleted_at=datetime(2000, 1, 1, tzinfo=UTC)) for _ in range(2)}
+    b_trashed = new_trashed_document(db, b, deleted_at=NOW - timedelta(days=40))
 
     with db.customer(b) as conn:
         picked = purge_next_family(conn, b, before=NOW)
