@@ -123,7 +123,14 @@ describe("userActions", () => {
 
 describe("adminGate", () => {
   const me = (role: Role, scope: SessionScope): Me => ({
-    user: { id: "u1", email: "asha@sharma.in", display_name: "Asha", role, must_change_password: false },
+    user: {
+      id: "u1",
+      email: "asha@sharma.in",
+      display_name: "Asha",
+      role,
+      must_change_password: false,
+      totp_enabled: false,
+    },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
   });

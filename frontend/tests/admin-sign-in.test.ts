@@ -16,7 +16,6 @@ import {
   enrolErrorMessage,
   firstInvalidAdmin,
   groupSecret,
-  isEnrolRequired,
   normalizeCode,
   secretForCopy,
   validateAdminSignIn,
@@ -35,7 +34,6 @@ import {
   validateNewPassword,
 } from "@/components/shell/setPassword";
 import { ApiError } from "@/lib/api";
-import type { Me } from "@/lib/types";
 
 describe("the 6-digit code", () => {
   it("accepts 6 ASCII digits", () => {
@@ -82,7 +80,7 @@ describe("the 6-digit code", () => {
 });
 
 describe("validateAdminSignIn and firstInvalidAdmin", () => {
-  it("lets the code be empty on the first screen (the first sign-in sets it up)", () => {
+  it("lets the code be empty (an admin who has not turned on two-step sign-in)", () => {
     expect(validateAdminSignIn("asha@sharma.in", "a long password", "")).toEqual({
       email: null,
       password: null,
@@ -135,25 +133,6 @@ describe("the setup key", () => {
   it("explains the set-up in 3 short steps", () => {
     expect(ENROL_STEPS).toHaveLength(3);
     for (const step of ENROL_STEPS) expect(step.length).toBeLessThan(110);
-  });
-});
-
-describe("isEnrolRequired", () => {
-  const me: Me = {
-    user: {
-      id: "u1",
-      email: "asha@sharma.in",
-      display_name: "Asha",
-      role: "admin",
-      must_change_password: false,
-    },
-    customer: { id: "c1", name: "Sharma Traders" },
-    session: { scope: "admin" },
-  };
-
-  it("tells an enrol reply from a signed-in reply", () => {
-    expect(isEnrolRequired({ enrol_required: true, enrol_token: "t", secret: "ABCD" })).toBe(true);
-    expect(isEnrolRequired(me)).toBe(false);
   });
 });
 
@@ -286,16 +265,28 @@ describe("admin sign-in markup", () => {
   const form = read("app/admin/login/AdminSignInForm.tsx");
   const enrol = read("app/admin/login/EnrolStep.tsx");
   const code = read("app/admin/login/CodeField.tsx");
+  const panel = read("app/(app)/admin/TwoStepPanel.tsx");
   const setPassword = read("components/shell/SetPasswordScreen.tsx");
 
   it("posts (never GET), does its own validation and names no field", () => {
-    for (const source of [form, enrol, setPassword]) {
+    for (const source of [form, enrol, panel, setPassword]) {
       expect(source).toMatch(/<form\s[^>]*method="post"/);
       expect(source).toMatch(/<form\s[^>]*noValidate/);
     }
-    for (const source of [form, enrol, code, setPassword]) {
+    for (const source of [form, enrol, code, panel, setPassword]) {
       expect(withoutIcons(source)).not.toMatch(/\sname=/);
     }
+  });
+
+  it("has no forced set-up step at sign-in, and the code is optional", () => {
+    expect(form).not.toContain("EnrolStep");
+    expect(form).toContain('label="6-digit code, if you turned on two-step sign-in"');
+  });
+
+  it("turns 2FA on with the set-up step, and off with the current password", () => {
+    expect(panel).toContain("<EnrolStep");
+    expect(panel).toContain("<PasswordField");
+    expect(panel).toContain("disabled={!hydrated || busy}");
   });
 
   it("asks for the code with the number keyboard and one-time-code autofill", () => {

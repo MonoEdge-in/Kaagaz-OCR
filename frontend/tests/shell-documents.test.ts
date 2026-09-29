@@ -185,7 +185,14 @@ describe("shouldPoll", () => {
 
 describe("canDelete", () => {
   const me = (role: Role, name = "Asha"): Me => ({
-    user: { id: "u1", email: "asha@example.in", display_name: name, role, must_change_password: false },
+    user: {
+      id: "u1",
+      email: "asha@example.in",
+      display_name: name,
+      role,
+      must_change_password: false,
+      totp_enabled: false,
+    },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope: "app" },
   });

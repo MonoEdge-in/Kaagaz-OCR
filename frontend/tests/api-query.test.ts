@@ -7,6 +7,8 @@ import {
   query,
   resetUser2fa,
   resetUserPassword,
+  startTwoStep,
+  turnOffTwoStep,
   unlockUser,
 } from "@/lib/api";
 import type { AdminUser, Me } from "@/lib/types";
@@ -60,6 +62,7 @@ describe("sign-in and admin calls", () => {
       display_name: "Asha",
       role: "admin",
       must_change_password: false,
+      totp_enabled: false,
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope: "admin" },
@@ -118,10 +121,27 @@ describe("sign-in and admin calls", () => {
     expect(sent(1).body).toEqual({ email: "asha@sharma.in", password: "a long password" });
   });
 
-  it("returns the enrol reply as it is", async () => {
-    const enrol = { enrol_required: true, enrol_token: "tok", secret: "JBSW Y3DP" };
-    reply(200, enrol);
-    expect(await adminLogin("asha@sharma.in", "a long password")).toEqual(enrol);
+  it("starts turning 2FA on with an empty body and returns the set-up as it is", async () => {
+    const setup = { enrol_token: "tok", secret: "JBSW Y3DP", otpauth_uri: "otpauth://totp/x" };
+    reply(200, setup);
+    expect(await startTwoStep()).toEqual(setup);
+    expect(sent(0)).toMatchObject({
+      url: "/api/auth/admin/2fa/start",
+      method: "POST",
+      headers: { "X-Requested-With": "kaagaz" },
+    });
+    expect(sent(0).body).toBeUndefined();
+  });
+
+  it("turns 2FA off with the current password", async () => {
+    reply(200, ME);
+    expect(await turnOffTwoStep("a long password")).toEqual(ME);
+    expect(sent(0)).toMatchObject({
+      url: "/api/auth/admin/2fa/off",
+      method: "POST",
+      headers: { "X-Requested-With": "kaagaz" },
+      body: { password: "a long password" },
+    });
   });
 
   it("finishes enrolment with the token and the code", async () => {

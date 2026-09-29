@@ -57,7 +57,14 @@ describe("the session gate", () => {
     must_change_password = false,
     scope = "app",
   }: { must_change_password?: boolean; scope?: SessionScope } = {}): Me => ({
-    user: { id: "u1", email: "asha@sharma.in", display_name: "Asha", role: "admin", must_change_password },
+    user: {
+      id: "u1",
+      email: "asha@sharma.in",
+      display_name: "Asha",
+      role: "admin",
+      must_change_password,
+      totp_enabled: false,
+    },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
   });
