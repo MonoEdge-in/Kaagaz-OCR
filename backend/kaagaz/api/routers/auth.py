@@ -4,8 +4,10 @@
 * ``POST /auth/admin/login`` {email, password, code?}: admins only, an admin
   session (ADMIN_SESSION_MINUTES). Each admin chooses two-step sign-in: while
   it is off the password alone is enough; once on, the right code too.
-* ``POST /auth/admin/2fa/start`` (admin session): ``{enrol_token, secret,
-  otpauth_uri}`` for turning it on. Nothing is stored yet.
+* ``POST /auth/admin/2fa/start`` {password} (admin session): with the current
+  password, ``{enrol_token, secret, otpauth_uri}`` for turning it on. Asking
+  for the password means a stolen admin cookie alone cannot put its own key
+  on the account. Nothing is stored yet.
 * ``POST /auth/admin/enrol`` {enrol_token, code}: turns the code on and starts
   an admin session. The session version stays, so other browsers stay in.
 * ``POST /auth/admin/2fa/off`` {password} (admin session): turns it off. Every
@@ -99,7 +101,7 @@ class EnrolBody(BaseModel):
     code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
-class TurnOffBody(BaseModel):
+class CurrentPasswordBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     password: str = Field(min_length=1, max_length=MAX_PASSWORD)
@@ -205,15 +207,19 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
 
 
 @router.post("/auth/admin/2fa/start")
-def turn_on_two_step(user: AdminSession, context: Context) -> dict[str, str]:
+def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Context) -> dict[str, str]:
     if user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already on.")
+    now = context.clock()
+    _check_current_password(context, user, body.password, now)
+    with context.db.customer(user.customer_id) as conn:
+        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
     return _enrol_offer(context, user)
 
 
 @router.post("/auth/admin/2fa/off")
 def turn_off_two_step(
-    body: TurnOffBody, user: AdminSession, request: Request, context: Context
+    body: CurrentPasswordBody, user: AdminSession, request: Request, context: Context
 ) -> JSONResponse:
     if not user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already off.")

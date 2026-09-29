@@ -1,6 +1,6 @@
 // The signed-in admin's own two-step sign-in (2FA), kept pure so vitest can
-// prove it: On or Off, the password to turn it off, and what to say when the
-// server says no. The code and set-up key rules are app/admin/login/adminSignIn.ts.
+// prove it: On or Off, the password to turn it on or off, and what to say
+// when the server says no. The code and set-up key rules are app/admin/login/adminSignIn.ts.
 
 import { ApiError } from "@/lib/api";
 import type { Me } from "@/lib/types";
@@ -20,14 +20,32 @@ export const TWO_STEP_TEXT: Record<TwoStepState, { label: string; meaning: strin
   off: { label: "Off", meaning: "Admin sign-in asks for your password only." },
 };
 
-export const TURN_OFF_QUESTION =
-  "Turn off two-step sign-in? Admin sign-in will ask for your password only, and your other " +
-  "browsers will be signed out.";
+interface PasswordStep {
+  question: string;
+  button: string;
+  busy: string;
+}
+
+/** Turning it on or off asks for the current password first: the question and the button. */
+export const PASSWORD_STEP: Record<TwoStepState, PasswordStep> = {
+  on: {
+    question: "Turn on two-step sign-in. Enter your current password to see your new key.",
+    button: "Show my key",
+    busy: "Checking…",
+  },
+  off: {
+    question:
+      "Turn off two-step sign-in? Admin sign-in will ask for your password only, and your " +
+      "other browsers will be signed out.",
+    button: "Yes, turn off",
+    busy: "Turning off…",
+  },
+};
 
 export const PASSWORD_MISSING = "Enter your current password.";
 
 /** The current password, exactly as typed: never trimmed. */
-export function turnOffPasswordError(value: string): string | null {
+export function currentPasswordError(value: string): string | null {
   return value === "" ? PASSWORD_MISSING : null;
 }
 

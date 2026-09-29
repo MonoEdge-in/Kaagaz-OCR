@@ -113,8 +113,10 @@ export const adminLogin = (email: string, password: string, code?: string) =>
     password,
     ...(code === undefined ? {} : { code }),
   });
-/** The signed-in admin's own two-step sign-in: a new key, then the first code turns it on. */
-export const startTwoStep = () => request<TwoStepSetup>("POST", "/auth/admin/2fa/start");
+/** The signed-in admin's own two-step sign-in: with the current password, a new
+ * key; then the first code turns it on. */
+export const startTwoStep = (password: string) =>
+  request<TwoStepSetup>("POST", "/auth/admin/2fa/start", { password });
 export const adminEnrol = (enrolToken: string, code: string) =>
   request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
 /** Turns it off; the server re-signs this browser and signs out the others. */

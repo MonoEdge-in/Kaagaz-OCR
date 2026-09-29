@@ -1,11 +1,11 @@
 "use client";
 
 // The signed-in admin's own two-step sign-in (2FA), in Admin, Settings: On or
-// Off, and one button to change it. "Turn on" gets a new key and shows the
-// set-up step; the first right code turns it on. "Turn off" asks for the
-// current password (a wrong one counts toward the lockout); this browser stays
-// signed in, the admin's other browsers are signed out. Like the sign-in
-// forms: method="post", no name attributes, the password masked on submit.
+// Off, and one button to change it. Both ask for the current password first (a
+// wrong one counts toward the lockout). "Turn on" then shows the new key and
+// its QR code; the first right code turns it on. "Turn off" keeps this browser
+// signed in and signs out the admin's other browsers. Like the sign-in forms:
+// method="post", no name attributes, the password masked again on submit.
 
 import { useState } from "react";
 import type { FormEvent } from "react";
@@ -14,9 +14,9 @@ import { EnrolStep } from "@/app/admin/login/EnrolStep";
 import styles from "@/app/admin/login/adminLogin.module.css";
 import admin from "@/components/admin/Admin.module.css";
 import {
-  TURN_OFF_QUESTION,
+  PASSWORD_STEP,
   TWO_STEP_TEXT,
-  turnOffPasswordError,
+  currentPasswordError,
   twoStepError,
   twoStepState,
 } from "@/components/admin/twoStep";
@@ -29,7 +29,11 @@ import type { Me, TwoStepSetup } from "@/lib/types";
 
 const PASSWORD_ID = "two-step-password";
 
-type Step = { kind: "idle" } | { kind: "turning_on"; setup: TwoStepSetup } | { kind: "turning_off" };
+// "password": the current password, to turn it on or off (`to`).
+type Step =
+  | { kind: "idle" }
+  | { kind: "password"; to: TwoStepState }
+  | { kind: "turning_on"; setup: TwoStepSetup };
 
 export function TwoStepPanel() {
   const { me, refresh } = useSession();
@@ -58,24 +62,12 @@ export function TwoStepPanel() {
     refresh();
   }
 
-  async function turnOn() {
-    show({ kind: "idle" });
-    setBusy(true);
-    try {
-      show({ kind: "turning_on", setup: await startTwoStep() });
-    } catch (caught) {
-      setFailure(twoStepError(caught));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function turnOff(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>, to: TwoStepState) {
     event.preventDefault();
     if (busy) return;
     setMasked(true);
     setFailure(null);
-    const found = turnOffPasswordError(password);
+    const found = currentPasswordError(password);
     if (found) {
       flushSync(() => setError(found));
       document.getElementById(PASSWORD_ID)?.focus();
@@ -84,7 +76,8 @@ export function TwoStepPanel() {
     setError(null);
     setBusy(true);
     try {
-      changed(await turnOffTwoStep(password));
+      if (to === "on") show({ kind: "turning_on", setup: await startTwoStep(password) });
+      else changed(await turnOffTwoStep(password));
     } catch (caught) {
       setFailure(twoStepError(caught));
     } finally {
@@ -110,16 +103,16 @@ export function TwoStepPanel() {
         />
       )}
 
-      {step.kind === "turning_off" && (
+      {step.kind === "password" && (
         <form
           method="post"
           noValidate
-          onSubmit={turnOff}
+          onSubmit={(event) => void submit(event, step.to)}
           className="stack"
-          aria-labelledby="turn-off-question"
+          aria-labelledby="two-step-question"
         >
-          <p id="turn-off-question" className={styles.twoStepText}>
-            <strong>{TURN_OFF_QUESTION}</strong>
+          <p id="two-step-question" className={styles.twoStepText}>
+            <strong>{PASSWORD_STEP[step.to].question}</strong>
           </p>
           <PasswordField
             id={PASSWORD_ID}
@@ -127,7 +120,7 @@ export function TwoStepPanel() {
             value={password}
             onChange={(value) => {
               setPassword(value);
-              if (error) setError(turnOffPasswordError(value));
+              if (error) setError(currentPasswordError(value));
             }}
             autoComplete="current-password"
             required
@@ -138,12 +131,12 @@ export function TwoStepPanel() {
           <div className="row">
             <button
               type="submit"
-              className="btn btn-danger"
+              className={step.to === "on" ? "btn btn-primary" : "btn btn-danger"}
               disabled={!hydrated || busy}
               aria-busy={busy || undefined}
             >
               {busy && <span className="spinner" aria-hidden="true" />}
-              {busy ? "Turning off…" : "Yes, turn off"}
+              {busy ? PASSWORD_STEP[step.to].busy : PASSWORD_STEP[step.to].button}
             </button>
             <button type="button" className="btn" onClick={() => show({ kind: "idle" })} disabled={busy}>
               Cancel
@@ -157,11 +150,9 @@ export function TwoStepPanel() {
           <button
             type="button"
             className={state === "off" ? "btn btn-primary" : "btn"}
-            onClick={() => (state === "off" ? void turnOn() : show({ kind: "turning_off" }))}
+            onClick={() => show({ kind: "password", to: state === "off" ? "on" : "off" })}
             disabled={!hydrated || busy}
-            aria-busy={busy || undefined}
           >
-            {busy && <span className="spinner" aria-hidden="true" />}
             {state === "off" ? "Turn on" : "Turn off"}
           </button>
         </div>

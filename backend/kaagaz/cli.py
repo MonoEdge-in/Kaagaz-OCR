@@ -8,7 +8,7 @@
   again: a customer whose admin already exists is skipped.
 * ``reset-admin-2fa --email``: turn an admin's two-step code off (PRD 1 A6), for
   the last admin of a customer, who has no other admin to do it. Their sessions
-  end and their next admin sign-in sets a new code up. It needs no password:
+  end; they can turn it on again in Admin, Settings. It needs no password:
   whoever runs it already has the server.
 
 Why passwords are never flags: a flag lands in the shell history and the
@@ -193,7 +193,7 @@ def main(
             stdout.write(f"user {user_id}\n")
         elif args.command == "reset-admin-2fa":
             user_id = _reset_admin_2fa(db, args.email)
-            stdout.write(f"user {user_id}: 2FA reset, they set it up again at the next admin sign-in\n")
+            stdout.write(f"user {user_id}: 2FA is off; they can turn it on again in Admin, Settings\n")
         else:
             _seed_demo(db, _password(env, DEMO_ENV_VAR, None), stdout)
     except (CliError, SettingsError) as error:
