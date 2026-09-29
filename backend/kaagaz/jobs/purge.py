@@ -23,16 +23,12 @@ deleted just before the error stay deleted; the next run deletes the rest.
 Time comes from the injected clock, never SQL ``now()``.
 """
 
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
-from sqlalchemy.exc import OperationalError
-
 from kaagaz.db.documents import delete_forever
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.trash import customer_ids_with_trash, purge_next_family
-from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage
 
 
@@ -53,7 +49,7 @@ def purge_expired(
         raise ValueError("the clock must give a time with a time zone")
     before = now - timedelta(days=trash_days)
     purged = 0
-    with _unavailable():
+    with unavailable():
         with db.system() as conn:
             customers = customer_ids_with_trash(conn, before=before)
         for customer_id in customers:
@@ -69,13 +65,3 @@ def _purge_one_family(db: Database, storage: BlobStorage, customer_id: str, befo
         for document_id in document_ids:
             delete_forever(conn, storage, customer_id, document_id)
     return bool(document_ids)
-
-
-@contextmanager
-def _unavailable() -> Iterator[None]:
-    """Turn "cannot reach the database" into BackendUnavailable, like the other
-    worker steps, so the worker loop pauses instead of stopping."""
-    try:
-        yield
-    except OperationalError:
-        raise BackendUnavailable("database") from None

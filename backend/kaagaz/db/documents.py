@@ -22,17 +22,15 @@ purge (kaagaz/jobs/purge.py) and ``delete_family_forever`` (the permanent delete
 """
 
 import dataclasses
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import Connection, text
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, sqlstate
 from kaagaz.db.trash import lock_family
-from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, UnknownFolder
 from kaagaz.scanning.gate import DocumentStatus
 
@@ -238,7 +236,7 @@ class PgDocuments:
     # --- DocumentRepository ---------------------------------------------------
 
     def get(self, customer_id: str, document_id: str) -> DocumentRecord | None:
-        with _unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), self._db.customer(customer_id) as conn:
             row = conn.execute(
                 text(_SELECT + " AND id = :d"),
                 {"c": customer_id, "d": document_id},
@@ -246,7 +244,7 @@ class PgDocuments:
         return None if row is None else _record(row)
 
     def find_by_fingerprint(self, customer_id: str, sha256: str) -> DocumentRecord | None:
-        with _unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), self._db.customer(customer_id) as conn:
             row = conn.execute(
                 text(_SELECT + " AND sha256 = :h"),
                 {"c": customer_id, "h": sha256},
@@ -256,7 +254,7 @@ class PgDocuments:
     def add_if_absent(self, record: DocumentRecord) -> tuple[DocumentRecord, bool]:
         """Atomic per (customer, fingerprint): the unique index decides the race.
         Raises UnknownFolder when the record's folder is not this customer's."""
-        with _unavailable(), self._db.customer(record.customer_id) as conn:
+        with unavailable(), self._db.customer(record.customer_id) as conn:
             params = {
                 "d": record.document_id,
                 "c": record.customer_id,
@@ -295,11 +293,11 @@ class PgDocuments:
         self, record: DocumentRecord, *, of_document_id: str
     ) -> tuple[DocumentRecord, bool] | None:
         """``add_version`` in its own transaction."""
-        with _unavailable(), self._db.customer(record.customer_id) as conn:
+        with unavailable(), self._db.customer(record.customer_id) as conn:
             return add_version(conn, record, of_document_id=of_document_id)
 
     def remove(self, record: DocumentRecord) -> None:
-        with _unavailable(), self._db.customer(record.customer_id) as conn:
+        with unavailable(), self._db.customer(record.customer_id) as conn:
             conn.execute(
                 text("DELETE FROM documents WHERE customer_id = :c AND id = :d AND sha256 = :h"),
                 {"c": record.customer_id, "d": record.document_id, "h": record.sha256},
@@ -308,7 +306,7 @@ class PgDocuments:
     # --- StatusStore ----------------------------------------------------------
 
     def get_status(self, customer_id: str, document_id: str) -> DocumentStatus | None:
-        with _unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), self._db.customer(customer_id) as conn:
             status = conn.execute(
                 text("SELECT status FROM documents WHERE customer_id = :c AND id = :d"),
                 {"c": customer_id, "d": document_id},
@@ -319,7 +317,7 @@ class PgDocuments:
         return DocumentStatus(status)
 
     def set_status(self, customer_id: str, document_id: str, status: DocumentStatus) -> None:
-        with _unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(
                 text(
                     "UPDATE documents SET status = :s, failure_code = NULL"
@@ -333,7 +331,7 @@ class PgDocuments:
     def set_failed(self, customer_id: str, document_id: str, code: str) -> None:
         """Mark a document failed for good with a short code. Rejected stays rejected,
         but keeps its code so the file list can say why."""
-        with _unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(
                 text(
                     "UPDATE documents"
@@ -346,11 +344,11 @@ class PgDocuments:
 
     def mark_ready(self, customer_id: str, document_id: str, page_count: int) -> None:
         """``mark_ready`` in its own transaction: the pipeline's last step."""
-        with _unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), self._db.customer(customer_id) as conn:
             mark_ready(conn, customer_id, document_id, page_count)
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
-        with _unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(
                 text("UPDATE documents SET page_count = :n WHERE customer_id = :c AND id = :d"),
                 {"n": page_count, "c": customer_id, "d": document_id},
@@ -366,7 +364,7 @@ class PgDocuments:
         one conditional statement: a rejected one keeps its reason, and a ready,
         needs_reader or failed one keeps its state and code.
         """
-        with _unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(
                 text(
                     "UPDATE documents SET status = 'failed', failure_code = 'retries_exhausted'"
@@ -374,13 +372,3 @@ class PgDocuments:
                 ),
                 {"c": customer_id, "d": document_id},
             )
-
-
-@contextmanager
-def _unavailable() -> Iterator[None]:
-    """Turn "cannot reach the database" into BackendUnavailable, the one error the
-    upload service may undo and retry on. Constraint errors stay what they are."""
-    try:
-        yield
-    except OperationalError:
-        raise BackendUnavailable("database") from None

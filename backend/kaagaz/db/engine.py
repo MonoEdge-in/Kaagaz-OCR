@@ -43,6 +43,17 @@ def make_engine(database_url: str) -> Engine:
     return create_engine(normalise_url(database_url), pool_pre_ping=True, future=True, hide_parameters=True)
 
 
+@contextmanager
+def unavailable() -> Iterator[None]:
+    """Turn "cannot reach the database" (OperationalError) into BackendUnavailable,
+    the error the upload service undoes and retries on and the worker retries the
+    job on. Constraint errors stay what they are: they are bugs, not outages."""
+    try:
+        yield
+    except OperationalError:
+        raise BackendUnavailable("database") from None
+
+
 def _is_role_name(name: str) -> bool:
     return bool(name) and name.replace("_", "").isalnum() and not name[0].isdigit()
 
