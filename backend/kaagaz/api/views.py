@@ -9,6 +9,8 @@ from typing import Any
 
 from sqlalchemy import RowMapping
 
+from kaagaz.db.folders import FolderRow
+from kaagaz.db.tags import TagRow
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
 _STATUS_MESSAGES = {
@@ -49,6 +51,16 @@ def document_summary(row: RowMapping, *, max_pages: int) -> dict[str, Any]:
         "created_at": iso(row["created_at"]),
         "uploaded_by_name": row["uploaded_by_name"],
     }
+
+
+def folder(row: FolderRow) -> dict[str, Any]:
+    """``Folder``."""
+    return {"id": row.id, "name": row.name, "parent_id": row.parent_id, "created_at": iso(row.created_at)}
+
+
+def tag(row: TagRow) -> dict[str, Any]:
+    """``Tag``."""
+    return {"id": row.id, "name": row.name}
 
 
 def page_summary(row: RowMapping) -> dict[str, Any]:

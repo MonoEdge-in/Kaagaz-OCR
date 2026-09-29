@@ -21,7 +21,7 @@ from kaagaz.api.auth import csrf_guard
 from kaagaz.api.context import AppContext
 from kaagaz.api.middleware import RateLimiter, RequestMiddleware
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
-from kaagaz.api.routers import admin, auth, chat, documents, health, review
+from kaagaz.api.routers import admin, auth, chat, documents, folders, health, review, tags
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.settings import Settings
 
@@ -68,7 +68,16 @@ def create_app(
     app.state.kaagaz = context
     errors.install(app)
     app.add_middleware(RequestMiddleware, limiter=RateLimiter(settings.rate_limit_per_minute))
-    for router in (health.router, auth.router, documents.router, chat.router, review.router, admin.router):
+    for router in (
+        health.router,
+        auth.router,
+        documents.router,
+        folders.router,
+        tags.router,
+        chat.router,
+        review.router,
+        admin.router,
+    ):
         app.include_router(router, prefix="/api")
     return app
 
