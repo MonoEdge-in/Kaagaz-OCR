@@ -8,6 +8,11 @@ apply (two locks, docs/architecture.md).
 Status writes never move a document out of ``rejected``: the UPDATE says so,
 and a trigger refuses it as well (the gate's adapter contract).
 
+A record filed in a folder the customer does not have is refused by the
+foreign key ``documents_folder_fk`` (it names the customer too, so another
+customer's folder fails the same way), and ``add_if_absent`` raises
+UnknownFolder.
+
 Each call is one indexed statement: O(log n) in the number of documents.
 """
 
@@ -16,15 +21,16 @@ from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import DocumentRecord
+from kaagaz.ingestion.ports import DocumentRecord, UnknownFolder
 from kaagaz.scanning.gate import DocumentStatus
 
 _SELECT = (
-    "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by"
+    "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
+    " folder_id, family_id, version_no"
     " FROM documents WHERE customer_id = :c"
 )
 
@@ -38,6 +44,18 @@ def _record(row: Sequence[Any]) -> DocumentRecord:
         detected_type=str(row[4]),
         display_name=str(row[5]),
         uploaded_by=None if row[6] is None else str(row[6]),
+        folder_id=None if row[7] is None else str(row[7]),
+        family_id=str(row[8]),
+        version_no=int(str(row[9])),
+    )
+
+
+def folder_missing(error: IntegrityError) -> bool:
+    """True when ``error`` is ``documents_folder_fk`` refusing a folder id (23503)."""
+    diag = getattr(error.orig, "diag", None)
+    return (
+        getattr(error.orig, "sqlstate", None) == "23503"
+        and getattr(diag, "constraint_name", None) == "documents_folder_fk"
     )
 
 
@@ -64,25 +82,35 @@ class PgDocuments:
         return None if row is None else _record(row)
 
     def add_if_absent(self, record: DocumentRecord) -> tuple[DocumentRecord, bool]:
-        """Atomic per (customer, fingerprint): the unique index decides the race."""
+        """Atomic per (customer, fingerprint): the unique index decides the race.
+        Raises UnknownFolder when the record's folder is not this customer's."""
         with _unavailable(), self._db.customer(record.customer_id) as conn:
-            inserted = conn.execute(
-                text(
-                    "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                    " detected_type, uploaded_by, family_id)"
-                    " VALUES (:d, :c, :name, :h, :size, :type, :by, :d)"
-                    " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
-                ),
-                {
-                    "d": record.document_id,
-                    "c": record.customer_id,
-                    "name": record.display_name,
-                    "h": record.sha256,
-                    "size": record.size,
-                    "type": record.detected_type,
-                    "by": record.uploaded_by,
-                },
-            ).first()
+            params = {
+                "d": record.document_id,
+                "c": record.customer_id,
+                "name": record.display_name,
+                "h": record.sha256,
+                "size": record.size,
+                "type": record.detected_type,
+                "by": record.uploaded_by,
+                "folder": record.folder_id,
+                "family": record.family_id or record.document_id,
+                "version": record.version_no,
+            }
+            try:
+                inserted = conn.execute(
+                    text(
+                        "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
+                        " detected_type, uploaded_by, folder_id, family_id, version_no)"
+                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version)"
+                        " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
+                    ),
+                    params,
+                ).first()
+            except IntegrityError as error:
+                if folder_missing(error):
+                    raise UnknownFolder(record.document_id) from None
+                raise
             if inserted is not None:
                 return record, True
             row = conn.execute(

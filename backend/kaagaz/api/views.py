@@ -4,6 +4,7 @@ Why one place: the frontend's types are the contract. Each function here is
 named after the type it builds, so a reviewer can hold the two side by side.
 """
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -37,8 +38,9 @@ def status_message(status: str, failure_code: str | None, *, max_pages: int) -> 
     return _STATUS_MESSAGES.get(status, "")
 
 
-def document_summary(row: RowMapping, *, max_pages: int) -> dict[str, Any]:
-    """``DocumentSummary``. ``max_pages`` is passed on to ``status_message``."""
+def document_summary(row: RowMapping, *, max_pages: int, tags: Sequence[TagRow]) -> dict[str, Any]:
+    """``DocumentSummary``. ``max_pages`` is passed on to ``status_message``;
+    ``tags`` are the document's own, from one ``tags_for_documents`` call per page."""
     return {
         "id": str(row["id"]),
         "display_name": row["display_name"],
@@ -50,7 +52,18 @@ def document_summary(row: RowMapping, *, max_pages: int) -> dict[str, Any]:
         "page_count": row["page_count"],
         "created_at": iso(row["created_at"]),
         "uploaded_by_name": row["uploaded_by_name"],
+        "folder_id": None if row["folder_id"] is None else str(row["folder_id"]),
+        "tags": [tag(each) for each in tags],
     }
+
+
+def document_folder(path: Sequence[FolderRow]) -> dict[str, Any] | None:
+    """``DocumentFolder``: the document's folder and the folders from the top down
+    to it, itself last (``folders.folder_path``). None at the top level."""
+    if not path:
+        return None
+    here = path[-1]
+    return {"id": here.id, "name": here.name, "path": [{"id": each.id, "name": each.name} for each in path]}
 
 
 def folder(row: FolderRow) -> dict[str, Any]:

@@ -29,6 +29,9 @@ class DocumentRecord:
     # The upload service never reads it; the API sets it.
     display_name: str = "document"
     uploaded_by: str | None = None  # the signed-in user's id
+    folder_id: str | None = None  # None: at the top level, in no folder
+    family_id: str | None = None  # None: its own id (a first version)
+    version_no: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +50,10 @@ class BlobNotFound(Exception):
     """No file with this id exists for this customer."""
 
 
+class UnknownFolder(Exception):
+    """The record names a folder this customer does not have (never there, or deleted)."""
+
+
 class DocumentRepository(Protocol):
     def get(self, customer_id: str, document_id: str) -> DocumentRecord | None:
         """This customer's document with this id, or None (also for another
@@ -62,7 +69,9 @@ class DocumentRepository(Protocol):
 
         Must be atomic per (customer_id, sha256), so two identical uploads at
         the same moment cannot both be inserted. Returns the stored record and
-        True if it was inserted, or the existing record and False.
+        True if it was inserted, or the existing record and False. Raises
+        UnknownFolder, and inserts nothing, when ``record.folder_id`` is not
+        one of this customer's folders.
         """
         ...
 
