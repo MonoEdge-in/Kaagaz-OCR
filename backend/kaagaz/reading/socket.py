@@ -21,11 +21,18 @@ Every span from either reader is checked before it leaves the socket: text
 present, a real cell or a box inside the page, and a confidence that is None
 or between 0 and 1.
 
-PROVISIONAL until the reader contract (#3) is written.
+``read`` takes an optional ``on_page`` callback. A reader that reads page by
+page (OCR of scans and photos) calls it after each page, so a long reading
+can say "still working" (the worker's heartbeat renews the job's lease). It
+is keyword-only and optional, so a reader with nothing to beat for between
+pages accepts it and ignores it.
+
+PROVISIONAL until the reader contract (#3) is written. PROVISIONAL (plan
+7.4): ``on_page`` is part of that contract, for Vrushit and PRD 2 to agree.
 """
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Protocol
 
 from kaagaz.reading.spans import BoxLocation, CellLocation, ReadError, Span
@@ -35,7 +42,7 @@ class Reader(Protocol):
     name: str
     version: str
 
-    def read(self, data: bytes) -> Iterable[Span]: ...
+    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> Iterable[Span]: ...
 
 
 class NoReader(Exception):
@@ -54,18 +61,21 @@ class ReaderSocket:
         self._readers = dict(readers)
         self._second_readers = dict(second_readers or {})
 
-    def read(self, detected_type: str, data: bytes) -> list[Span]:
+    def read(
+        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+    ) -> list[Span]:
         """All spans of the document, or ReadError / NoReader.
 
         The socket checks every span has a real location and non-empty text,
         so no reader can hand back a value that cannot be pointed at. A
         reader that breaks this is a bug in that reader; it fails with
         ``invalid_reader_output`` for good rather than being retried.
+        ``on_page`` is handed to the reader as it is (see the module notes).
         """
         reader = self._readers.get(detected_type)  # O(1) dispatch
         if reader is None:
             raise NoReader(detected_type)
-        return _checked(reader.read(data))
+        return _checked(reader.read(data, on_page=on_page))
 
     def read_second(self, detected_type: str, data: bytes) -> list[Span] | None:
         """The second reader's spans, checked the same way, or None when the

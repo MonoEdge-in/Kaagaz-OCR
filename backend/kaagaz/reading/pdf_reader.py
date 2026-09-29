@@ -9,8 +9,9 @@ confidence: the text is exactly what the file holds.
 
 A page with no words at all has no text layer: it is a scan inside a PDF.
 With an OCR engine, that page is drawn with pypdfium2 at ``dpi`` and read by
-the engine, whose spans carry its confidence. Without one, the page gives
-nothing. If the whole document gives nothing:
+the engine, whose spans carry its confidence, and ``on_page`` (if given) is
+called after it, so a long scan can renew its lease between pages. Without
+an engine, the page gives nothing. If the whole document gives nothing:
 
 * without OCR: ``NoReader("pdf")``, so it is stored and marked needs_reader;
 * with OCR: ``ReadError("no_text")``: it was read and holds no text.
@@ -34,6 +35,7 @@ it is read, and an OCR'd page's picture after the engine has read it.
 import io
 import struct
 import zlib
+from collections.abc import Callable
 
 import pdfplumber
 from pdfminer.pdfdocument import PDFEncryptionError
@@ -83,10 +85,10 @@ class PdfReader:
         version = str(pdfplumber.__version__)
         self.version = version if ocr is None else f"{version}+{ocr.name}-{ocr.version}"
 
-    def read(self, data: bytes) -> list[Span]:
+    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
         spans, pages_without_text = self._read_text_layer(data)
         if pages_without_text and self._ocr is not None:
-            spans.extend(self._read_scanned_pages(data, pages_without_text, self._ocr))
+            spans.extend(self._read_scanned_pages(data, pages_without_text, self._ocr, on_page))
             spans.sort(key=lambda span: span.location.page)  # stable: line order kept
         if not spans:
             if self._ocr is None:
@@ -118,7 +120,9 @@ class PdfReader:
             raise ReadError(code)  # outside the except blocks: nothing chained
         return spans, pages_without_text
 
-    def _read_scanned_pages(self, data: bytes, numbers: list[int], ocr: OcrEngine) -> list[Span]:
+    def _read_scanned_pages(
+        self, data: bytes, numbers: list[int], ocr: OcrEngine, on_page: Callable[[], None] | None
+    ) -> list[Span]:
         spans: list[Span] = []
         document = open_pdf(data)
         try:
@@ -130,6 +134,8 @@ class PdfReader:
                     page.close()
                 spans.extend(ocr_spans(ocr.read(image), number, image.width, image.height))
                 image.close()
+                if on_page is not None:
+                    on_page()
         finally:
             document.close()
         return spans

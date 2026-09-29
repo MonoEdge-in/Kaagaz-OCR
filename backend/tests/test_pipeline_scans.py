@@ -3,6 +3,7 @@
 Readers, page preparation and models are fakes (tests/fakes.py), so these
 tests prove the pipeline's own steps: page pictures, pieces from lines,
 labelled values, second readings, the vision reader and the vectors step.
+The lease test at the end uses the real PDF reader with a slow fake OCR engine.
 """
 
 import io
@@ -11,11 +12,16 @@ import unittest
 from PIL import Image
 
 from kaagaz.ingestion import sniff
+from kaagaz.reading.ocr import OcrLine
+from kaagaz.reading.pdf_reader import PdfReader
+from kaagaz.reading.socket import ReaderSocket
 from kaagaz.reading.spans import BoxLocation, PageInfo, ReadError, Span
 from kaagaz.scanning.gate import DocumentStatus
 from tests.fakes import FakeEmbedder, FakePrepared, FakePreparer, FakeVision, PresetSocket
+from tests.lease_queue import FakeClock
+from tests.pdf_builder import Page, make_pdf
 from tests.support import PDF_BYTES
-from tests.test_pipeline import CUSTOMER, build
+from tests.test_pipeline import CUSTOMER, LEASE_SECONDS, build, make_worker, processor_with
 
 
 def png_of(width: int, height: int, color: str = "white") -> bytes:
@@ -326,6 +332,40 @@ class VectorsTest(unittest.TestCase):
         system.worker.run_once()
         self.assertEqual(embed.calls, [])
         self.assertEqual([f.code for f in system.queue.failed.values()], ["encrypted"])
+
+
+class SlowOcr:
+    """An OCR engine that takes ``seconds`` of the test clock to read each page."""
+
+    name = "slow-ocr"
+    version = "1"
+
+    def __init__(self, clock: FakeClock, seconds: float) -> None:
+        self._clock = clock
+        self._seconds = seconds
+        self.pages = 0
+
+    def read(self, image: Image.Image) -> list[OcrLine]:
+        self._clock.advance(self._seconds)
+        self.pages += 1
+        return [OcrLine(f"Scanned page {self.pages}", 60, 60, 300, 90, 0.9)]
+
+
+class LongReadingTest(unittest.TestCase):
+    def test_a_long_scan_keeps_its_lease_between_pages(self) -> None:
+        system = build()
+        ocr = SlowOcr(system.clock, seconds=20)
+        self.assertEqual(LEASE_SECONDS, 30)  # one page fits in a lease; three pages (60 s) do not
+        reader = PdfReader(ocr, max_pages=10, dpi=72, max_image_pixels=10_000_000)
+        processor = processor_with(system, ReaderSocket({sniff.PDF: reader}))
+        worker = make_worker(system.queue, processor, system.repo)
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(make_pdf([Page(), Page(), Page()]))).document_id
+
+        self.assertTrue(worker.run_once())
+        self.assertEqual(ocr.pages, 3)
+        self.assertEqual(system.queue.pending(), 0)  # acked: the lease was renewed after each page
+        self.assertEqual(system.queue.failed, {})
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
 
 
 if __name__ == "__main__":
