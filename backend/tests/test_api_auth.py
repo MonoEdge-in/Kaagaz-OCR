@@ -7,7 +7,6 @@ second half (marked ``db``) signs in against a real PostgreSQL.
 
 import base64
 import json
-from datetime import timedelta
 
 import pytest
 from sqlalchemy import text
@@ -32,12 +31,25 @@ from tests.test_api_support import (
     ApiFakeQueue,
     ApiFakeStorage,
     FakeAnswers,
+    Signed,
     TestClient,
 )
 
-SECRET = "a-test-secret-that-is-long-enough-000000"
 UID = "11111111-1111-4111-8111-111111111111"
-CID = "22222222-2222-4222-8222-222222222222"
+BAD_CREDENTIALS = "Email or password is wrong, or the account is locked. Try again in 15 minutes."
+
+
+def _claims(
+    customer_id: str, *, user_id: str = UID, role: str = "admin", scope: str = "admin"
+) -> SessionClaims:
+    return SessionClaims(
+        user_id=user_id,
+        customer_id=customer_id,
+        role=role,
+        scope=scope,
+        session_version=1,
+        expires_at=int(NOW.timestamp()) + 3600,
+    )
 
 
 def _offline_client(**settings: object) -> TestClient:
@@ -79,51 +91,18 @@ def test_malformed_or_foreign_hashes_never_verify(stored: str) -> None:
     assert not verify_password("anything", stored)
 
 
-# --- session tokens --------------------------------------------------------------
-
-
-def _claims(exp: int = 2_000_000_000, role: str = "member") -> SessionClaims:
-    return SessionClaims(user_id=UID, customer_id=CID, role=role, expires_at=exp)
-
-
-def test_token_round_trips() -> None:
-    token = sign_session(_claims(), SECRET)
-    assert read_session(token, SECRET, now=1_000) == _claims()
-
-
-def test_token_payload_is_the_agreed_json() -> None:
-    body = sign_session(_claims(), SECRET).split(".")[0]
-    payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
-    assert payload == {"uid": UID, "cid": CID, "role": "member", "exp": 2_000_000_000}
-
-
-def test_token_with_another_secret_is_refused() -> None:
-    token = sign_session(_claims(), "another-secret-that-is-long-enough-00000")
-    assert read_session(token, SECRET, now=1_000) is None
+# --- session tokens (the format itself: tests/test_auth_tokens.py) -------------------------
 
 
 def test_token_with_a_changed_customer_is_refused() -> None:
-    token = sign_session(_claims(), SECRET)
+    secret = "a-test-secret-that-is-long-enough-000000"
+    token = sign_session(_claims("22222222-2222-4222-8222-222222222222"), secret)
     body, signature = token.split(".")
     payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+    assert read_session(token, secret, now=1_000) is not None
     payload["cid"] = "33333333-3333-4333-8333-333333333333"
     forged = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
-    assert read_session(forged + "." + signature, SECRET, now=1_000) is None
-
-
-def test_expired_token_is_refused() -> None:
-    token = sign_session(_claims(exp=1_000), SECRET)
-    assert read_session(token, SECRET, now=1_000) is None
-    assert read_session(token, SECRET, now=999) is not None
-
-
-@pytest.mark.parametrize("token", ["", ".", "abc", "abc.", ".abc", "a.b.c", "é.é", "!!!.???"])
-def test_garbage_tokens_are_refused(token: str) -> None:
-    assert read_session(token, SECRET, now=1_000) is None
-
-
-def test_token_with_unknown_role_is_refused() -> None:
-    assert read_session(sign_session(_claims(role="owner"), SECRET), SECRET, now=1_000) is None
+    assert read_session(forged + "." + signature, secret, now=1_000) is None
 
 
 # --- rate limiter ----------------------------------------------------------------
@@ -225,7 +204,9 @@ def test_rate_limit_gives_429_with_the_error_shape() -> None:
 
 def test_forged_cookie_is_not_signed_in_without_a_database_lookup() -> None:
     client = _offline_client()
-    forged = sign_session(_claims(exp=int(NOW.timestamp()) + 3600), "someone-elses-secret-long-enough-000000")
+    forged = sign_session(
+        _claims("22222222-2222-4222-8222-222222222222"), "someone-elses-secret-long-enough-000000"
+    )
     client.cookies.set(SESSION_COOKIE, forged)
     reply = client.get("/api/auth/me")
     assert reply.status_code == 401
@@ -256,8 +237,15 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
 
     assert reply.status_code == 200
     assert reply.json() == {
-        "user": {"id": user_id, "email": email, "display_name": "Test reviewer", "role": "reviewer"},
+        "user": {
+            "id": user_id,
+            "email": email,
+            "display_name": "Test reviewer",
+            "role": "reviewer",
+            "must_change_password": False,
+        },
         "customer": {"id": customer_id, "name": "Sharma Traders"},
+        "session": {"scope": "app"},
     }
     cookie = reply.headers["set-cookie"]
     assert cookie.startswith(f"{SESSION_COOKIE}=")
@@ -298,7 +286,7 @@ def test_bad_credentials_look_the_same_for_every_reason(db: Database) -> None:
 
     assert {reply.status_code for reply in replies} == {401}
     assert len({reply.text for reply in replies}) == 1
-    assert replies[0].json()["error"]["code"] == "bad_credentials"
+    assert replies[0].json() == {"error": {"code": "bad_credentials", "message": BAD_CREDENTIALS}}
     assert all("set-cookie" not in reply.headers for reply in replies)
 
 
@@ -325,18 +313,20 @@ def test_disabling_a_user_ends_their_session_on_the_next_request(db: Database) -
 @pytest.mark.db
 def test_a_changed_role_ends_the_old_session(db: Database) -> None:
     api = Api(db)
-    signed = api.new_signed("admin")
+    signed = api.new_admin()
     with db.customer(signed.customer_id) as conn:
         conn.execute(text("UPDATE users SET role = 'member' WHERE id = :u"), {"u": signed.user_id})
     assert signed.client.get("/api/admin/users").status_code == 401
+    assert signed.client.get("/api/auth/me").status_code == 401
 
 
 @pytest.mark.db
-def test_expired_session_is_refused(db: Database) -> None:
-    now = [NOW]
-    api = Api(db, clock=lambda: now[0])
+def test_an_app_session_lasts_session_hours(db: Database) -> None:
+    api = Api(db)
     signed = api.new_signed()
-    now[0] = NOW + timedelta(hours=12, seconds=1)
+    api.clock.advance(12 * 3600 - 1)
+    assert signed.client.get("/api/auth/me").status_code == 200
+    api.clock.advance(1)
     assert signed.client.get("/api/auth/me").status_code == 401
 
 
@@ -345,28 +335,52 @@ def test_genuine_token_for_a_user_that_does_not_exist_is_refused(db: Database) -
     api = Api(db)
     customer_id, _ = api.customer()
     client = api.client()
-    token = sign_session(
-        SessionClaims(UID, customer_id, "admin", int(NOW.timestamp()) + 3600), api.settings.session_secret
-    )
+    token = sign_session(_claims(customer_id), api.settings.session_secret)
     client.cookies.set(SESSION_COOKIE, token)
     assert client.get("/api/auth/me").status_code == 401
 
 
 @pytest.mark.db
 @pytest.mark.parametrize(
-    ("role", "path", "status"),
+    ("who", "path", "status", "code"),
     [
-        ("member", "/api/review", 403),
-        ("member", "/api/admin/users", 403),
-        ("reviewer", "/api/review", 200),
-        ("reviewer", "/api/admin/stats", 403),
-        ("admin", "/api/review", 200),
-        ("admin", "/api/admin/stats", 200),
+        ("member", "/api/review", 403, "forbidden"),
+        ("member", "/api/admin/users", 403, "admin_session_required"),
+        ("reviewer", "/api/review", 200, None),
+        ("reviewer", "/api/admin/stats", 403, "admin_session_required"),
+        ("admin", "/api/review", 200, None),
+        ("admin", "/api/admin/stats", 403, "admin_session_required"),
+        ("admin session", "/api/review", 200, None),
+        ("admin session", "/api/admin/stats", 200, None),
     ],
 )
-def test_roles_gate_the_routes(db: Database, role: str, path: str, status: int) -> None:
-    signed = Api(db).new_signed(role)
+def test_roles_and_the_admin_session_gate_the_routes(
+    db: Database, who: str, path: str, status: int, code: str | None
+) -> None:
+    api = Api(db)
+    signed: Signed = api.new_admin() if who == "admin session" else api.new_signed(who)
     reply = signed.client.get(path)
     assert reply.status_code == status
-    if status == 403:
-        assert reply.json()["error"]["code"] == "forbidden"
+    if code is not None:
+        assert reply.json()["error"]["code"] == code
+
+
+@pytest.mark.db
+def test_login_writes_the_sign_in_time_and_resets_the_count(db: Database) -> None:
+    api = Api(db)
+    customer_id, _ = api.customer()
+    user_id, email = api.add_user(customer_id, "member")
+    client = api.client()
+    client.post("/api/auth/login", json={"email": email, "password": "not the password!!"}, headers=CSRF)
+    assert api.user_state(customer_id, user_id)["failed_logins"] == 1
+
+    assert (
+        client.post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF).status_code
+        == 200
+    )
+
+    assert api.user_state(customer_id, user_id)["failed_logins"] == 0
+    with db.customer(customer_id) as conn:
+        signed_in_at = conn.execute(text("SELECT last_login_at FROM users WHERE id = :u"), {"u": user_id})
+        assert signed_in_at.scalar_one() == api.clock()
+    assert api.audit_actions(customer_id) == ["auth.login_failed", "auth.login"]

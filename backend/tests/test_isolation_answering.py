@@ -43,7 +43,7 @@ def _seed(db: Database, customer: str) -> dict[str, str]:
         conn.execute(
             text(
                 "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
-                " status) VALUES (:id, :c, :name, :sha, 10, :type, 'ready')"
+                " status, family_id) VALUES (:id, :c, :name, :sha, 10, :type, 'ready', :id)"
             ),
             [
                 {"id": sheet, "c": customer, "name": "register.xlsx", "type": "zip", "sha": _sha(sheet)},

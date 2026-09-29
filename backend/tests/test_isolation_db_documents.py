@@ -69,8 +69,8 @@ def test_writing_a_row_for_another_customer_is_refused(db: Database) -> None:
     with pytest.raises(ProgrammingError), db.customer(b) as conn:
         conn.execute(
             text(
-                "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type)"
-                " VALUES (:d, :c, 'x', :h, 1, 'pdf')"
+                "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
+                " family_id) VALUES (:d, :c, 'x', :h, 1, 'pdf', :d)"
             ),
             {"d": str(uuid.uuid4()), "c": a, "h": SHA},
         )

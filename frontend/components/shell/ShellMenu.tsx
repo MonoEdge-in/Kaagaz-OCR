@@ -1,9 +1,10 @@
 "use client";
 
 // What the sidebar (1024 px and up) and the menu drawer (below) both hold, in
-// order: the links for this person's role, a spacer, the theme switch, who is
-// signed in and for which customer, and Sign out. One component, so the two
-// places always show the same things.
+// order: the links for this person's role and session, a spacer, the theme
+// switch, who is signed in and for which customer, then the two ways to sign
+// out: this browser only, or every browser and phone at once (PRD A4). One
+// component, so the two places always show the same things.
 
 import Link from "next/link";
 import { Icon } from "@/components/ui/Icon";
@@ -13,13 +14,17 @@ import { isCurrent, roleName } from "./nav";
 import type { NavLink } from "./nav";
 import styles from "./Shell.module.css";
 
+/** Which sign-out is running: this browser ("here") or all of them. */
+export type SignOutKind = "here" | "everywhere";
+
 export interface ShellMenuProps {
   links: readonly NavLink[];
   pathname: string;
   me: Me;
-  signingOut: boolean;
+  signingOut: SignOutKind | null;
   signOutError: string | null;
   onSignOut(): void;
+  onSignOutEverywhere(): void;
   /** Called when a link is followed, so the drawer also closes on its own page's link. */
   onLinkClick?(): void;
 }
@@ -31,6 +36,7 @@ export function ShellMenu({
   signingOut,
   signOutError,
   onSignOut,
+  onSignOutEverywhere,
   onLinkClick,
 }: ShellMenuProps) {
   return (
@@ -67,16 +73,30 @@ export function ShellMenu({
         </p>
       </div>
 
-      <button
-        type="button"
-        className={`btn btn-quiet btn-block ${styles.signOut}`}
-        onClick={onSignOut}
-        disabled={signingOut}
-        aria-busy={signingOut || undefined}
-      >
-        <Icon name="logout" />
-        <span>{signingOut ? "Signing out…" : "Sign out"}</span>
-      </button>
+      <div className={styles.signOuts}>
+        <button
+          type="button"
+          className={`btn btn-quiet btn-block ${styles.signOut}`}
+          onClick={onSignOut}
+          disabled={signingOut !== null}
+          aria-busy={signingOut === "here" || undefined}
+        >
+          <Icon name="logout" />
+          <span>{signingOut === "here" ? "Signing out…" : "Sign out"}</span>
+        </button>
+        <button
+          type="button"
+          className={`btn btn-quiet btn-block ${styles.signOut}`}
+          onClick={onSignOutEverywhere}
+          disabled={signingOut !== null}
+          aria-busy={signingOut === "everywhere" || undefined}
+        >
+          <Icon name="logout" />
+          <span>
+            {signingOut === "everywhere" ? "Signing out everywhere…" : "Sign out everywhere"}
+          </span>
+        </button>
+      </div>
       {signOutError && (
         <p className="error-text" role="alert">
           {signOutError}

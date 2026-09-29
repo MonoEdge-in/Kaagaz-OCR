@@ -26,8 +26,8 @@ DATES = ("date", "invoice_date")
 PARTIES = ("party_name", "name")
 
 _DOCUMENT = text(
-    "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type, status)"
-    " VALUES (:id, :c, :name, :sha, 10, :type, :status)"
+    "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type, status,"
+    " family_id) VALUES (:id, :c, :name, :sha, 10, :type, :status, :id)"
 )
 _VALUE = text(
     "INSERT INTO extracted_values (id, customer_id, document_id, record_key, field, value_text,"

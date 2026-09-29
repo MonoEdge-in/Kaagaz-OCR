@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import RowMapping
 
+from kaagaz.api.auth import CurrentUser
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
 _STATUS_MESSAGES = {
@@ -105,8 +106,26 @@ def conversation_summary(row: RowMapping) -> dict[str, Any]:
     return {"id": str(row["id"]), "title": row["title"], "created_at": iso(row["created_at"])}
 
 
-def admin_user(row: RowMapping) -> dict[str, Any]:
-    """``AdminUser``."""
+def me_json(user: CurrentUser) -> dict[str, Any]:
+    """``Me``: who is signed in, their customer, and the session's scope ("app" from
+    /login, "admin" from /admin/login; the screen shows Admin only for "admin")."""
+    return {
+        "user": {
+            "id": user.user_id,
+            "email": user.email,
+            "display_name": user.display_name,
+            "role": user.role,
+            "must_change_password": user.must_change_password,
+        },
+        "customer": {"id": user.customer_id, "name": user.customer_name},
+        "session": {"scope": user.scope},
+    }
+
+
+def admin_user(row: RowMapping, *, now: datetime) -> dict[str, Any]:
+    """``AdminUser``. ``locked_until`` is null once the lock has passed, so the
+    screen never shows a lock that no longer holds."""
+    locked_until: datetime | None = row["locked_until"]
     return {
         "id": str(row["id"]),
         "email": row["email"],
@@ -114,6 +133,9 @@ def admin_user(row: RowMapping) -> dict[str, Any]:
         "role": row["role"],
         "disabled": bool(row["disabled"]),
         "created_at": iso(row["created_at"]),
+        "locked_until": iso(locked_until) if locked_until is not None and locked_until > now else None,
+        "totp_enabled": row["totp_enabled_at"] is not None,
+        "must_change_password": bool(row["must_change_password"]),
     }
 
 

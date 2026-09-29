@@ -3,6 +3,7 @@
 // into an ApiError with the backend's short code.
 
 import type {
+  AdminLoginResult,
   AdminUser,
   AuditEntry,
   ChatResponse,
@@ -13,6 +14,7 @@ import type {
   DocumentList,
   DocumentStatus,
   Me,
+  PasswordReset,
   ReviewChoice,
   ReviewItem,
   ReviewList,
@@ -64,10 +66,25 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (await response.json()) as T;
 }
 
-function query(params: Record<string, string | number | undefined>): string {
+export type QueryValue = string | number | boolean | readonly (string | number)[] | undefined;
+
+// Array.isArray does not narrow a readonly array type; this guard does.
+function isList(value: QueryValue): value is readonly (string | number)[] {
+  return Array.isArray(value);
+}
+
+/**
+ * "?a=1&b=x", in the order given. undefined and "" are left out; an array
+ * repeats its key once per item (tag_id=a&tag_id=b); a boolean is "true" or
+ * "false", so false is still sent.
+ */
+export function query(params: Record<string, QueryValue>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== "") search.set(key, String(value));
+    const items = isList(value) ? value : [value];
+    for (const item of items) {
+      if (item !== undefined && item !== "") search.append(key, String(item));
+    }
   }
   const text = search.toString();
   return text ? `?${text}` : "";
@@ -85,6 +102,19 @@ export const login = (email: string, password: string) =>
   request<Me>("POST", "/auth/login", { email, password });
 export const logout = () => request<void>("POST", "/auth/logout");
 export const me = () => request<Me>("GET", "/auth/me");
+
+/** The admin screen's sign-in. Without a code, a first sign-in gets the 2FA set-up. */
+export const adminLogin = (email: string, password: string, code?: string) =>
+  request<AdminLoginResult>("POST", "/auth/admin/login", {
+    email,
+    password,
+    ...(code === undefined ? {} : { code }),
+  });
+export const adminEnrol = (enrolToken: string, code: string) =>
+  request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
+export const changePassword = (current: string, next: string) =>
+  request<Me>("POST", "/auth/password", { current_password: current, new_password: next });
+export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
 
 // --- documents -----------------------------------------------------------------
 
@@ -181,6 +211,11 @@ export const updateUser = (
   id: string,
   changes: { role?: Role; disabled?: boolean; password?: string },
 ) => request<AdminUser>("PATCH", `/admin/users/${id}`, changes);
+export const unlockUser = (id: string) => request<AdminUser>("POST", `/admin/users/${id}/unlock`);
+export const resetUserPassword = (id: string) =>
+  request<PasswordReset>("POST", `/admin/users/${id}/reset-password`);
+export const resetUser2fa = (id: string) =>
+  request<AdminUser>("POST", `/admin/users/${id}/reset-2fa`);
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
 export const updateSettings = (maxUploadMb: number | null) =>
   request<CustomerSettings>("PATCH", "/admin/settings", { max_upload_mb: maxUploadMb });
