@@ -92,7 +92,7 @@ class LargePhotoTest(unittest.TestCase):
             page_images=page_images,
             store=MemoryPipelineStore(),
         )
-        worker = Worker(queue, processor, max_receives=3, on_exhausted=lambda job: None)
+        worker = Worker(queue, processor, max_attempts=2, on_exhausted=lambda job: None)
 
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "photo.png"

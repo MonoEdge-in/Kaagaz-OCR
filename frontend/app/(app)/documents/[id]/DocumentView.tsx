@@ -3,9 +3,10 @@
 // The document screen: header and status, where it is filed (its folder path,
 // its tags, Download original), its versions ("Version 2 of 2", each a link to
 // that version's own id), the page viewer and the values table (side by side
-// from 1024 px, stacked below). A document in Trash says so. Clicking a value jumps to its page and
-// highlights its spot. Every value is shown as plain text; it came from the
-// document.
+// from 1024 px, stacked below). A newer version still being read, or one that
+// failed, gets a line linking to it. A document in Trash says so. Clicking a
+// value jumps to its page and highlights its spot. Every value is shown as
+// plain text; it came from the document.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -15,7 +16,13 @@ import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery"
 import { StatusChip } from "@/components/documents/StatusChip";
 import { Icon } from "@/components/ui/Icon";
 import { PageViewer } from "@/components/viewer/PageViewer";
-import { sortedVersions, versionNote, versionPosition, versionText } from "@/components/viewer/versions";
+import {
+  newerVersionText,
+  sortedVersions,
+  versionNote,
+  versionPosition,
+  versionText,
+} from "@/components/viewer/versions";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { fieldText, reasonText } from "@/components/viewer/labels";
 import { initialSelection, selectValue } from "@/components/viewer/selection";
@@ -135,7 +142,8 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
       ? ` · ${detail.page_count} ${detail.page_count === 1 ? "page" : "pages"}`
       : "";
   const trail = detail.folder ? folderTrail(detail.folder) : [];
-  const download = downloadHref(detail);
+  // Trash means deleted: no download from there, only Restore (the Trash view).
+  const download = detail.deleted_at === null ? downloadHref(detail) : null;
   const position = versionPosition(detail);
   const note = versionNote(detail);
 
@@ -214,6 +222,13 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
           )}
         </div>
         {note && <p className={styles.note}>{note}</p>}
+        {detail.newer_version && (
+          <p className={styles.note}>
+            <Link href={`/documents/${detail.newer_version.id}`}>
+              {newerVersionText(detail.newer_version)}
+            </Link>
+          </p>
+        )}
         {detail.deleted_at !== null && (
           <p className={styles.trashNotice} role="status">
             <Icon name="trash" />

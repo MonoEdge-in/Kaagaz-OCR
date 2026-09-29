@@ -1,6 +1,8 @@
 // The one place the app calls the backend. Every call goes to /api (forwarded to
 // FastAPI by next.config.ts), sends the session cookie, and turns an error reply
-// into an ApiError with the backend's short code.
+// into an ApiError with the backend's short code. A reply saying the session
+// has ended (401 not_signed_in) is also told to the session provider, which
+// sends the browser to sign in (lib/session.tsx).
 
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type {
@@ -24,6 +26,7 @@ import type {
   SheetCells,
   Stats,
   Tag,
+  UploadLimits,
   UploadResult,
 } from "./types";
 
@@ -36,6 +39,18 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+let sessionEnded: (() => void) | null = null;
+
+/** Who to tell when a reply says the session has ended; null stops telling. */
+export function onSessionEnded(listener: (() => void) | null): void {
+  sessionEnded = listener;
+}
+
+function noticeSessionEnd(error: ApiError): ApiError {
+  if (error.status === 401 && error.code === "not_signed_in") sessionEnded?.();
+  return error;
 }
 
 // State-changing requests carry this header; the backend refuses them without it,
@@ -64,7 +79,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!response.ok) throw await errorFrom(response);
+  if (!response.ok) throw noticeSessionEnd(await errorFrom(response));
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
@@ -129,10 +144,17 @@ export const deleteDocument = (id: string) => request<void>("DELETE", `/document
 /** Brings a document in Trash back, with every version of it. */
 export const restoreDocument = (id: string) =>
   request<DocumentSummary>("POST", `/documents/${id}/restore`);
-/** Admins only, and only from Trash (409 not_in_trash otherwise). Every version goes. */
+/**
+ * Only in an admin session (403 admin_session_required otherwise), and only
+ * from Trash (409 not_in_trash otherwise). Every version goes.
+ */
 export const deleteDocumentForever = (id: string) =>
   request<void>("DELETE", `/documents/${id}/permanent`);
-/** Rename or move. An explicit folder_id: null moves the document to the top level. */
+/**
+ * Rename or move. An explicit folder_id: null moves the document to the top
+ * level. Renaming, moving, tagging and a new version are refused in Trash
+ * (409 in_trash).
+ */
 export const updateDocument = (
   id: string,
   changes: { display_name?: string; folder_id?: string | null },
@@ -140,6 +162,8 @@ export const updateDocument = (
 /** Replace the document's tags with exactly these. */
 export const setDocumentTags = (id: string, tagIds: string[]) =>
   request<{ items: Tag[] }>("PUT", `/documents/${id}/tags`, { tag_ids: tagIds });
+/** The largest file of each kind and the most pages, with the customer's own limit applied. */
+export const getUploadLimits = () => request<UploadLimits>("GET", "/upload-limits");
 export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 200) =>
   request<SheetCells>(
     "GET",
@@ -202,7 +226,9 @@ function sendForm(
       }
       const error = (body as { error?: { code?: string; message?: string } } | null)?.error;
       reject(
-        new ApiError(xhr.status, error?.code ?? "error", error?.message ?? "Upload failed."),
+        noticeSessionEnd(
+          new ApiError(xhr.status, error?.code ?? "error", error?.message ?? "Upload failed."),
+        ),
       );
     };
     xhr.onerror = () => reject(new ApiError(0, "network", "Could not reach the server."));

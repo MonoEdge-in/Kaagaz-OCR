@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ICON_NAMES } from "@/components/ui/icons";
-import { appGate, mustChangePassword, sessionScope } from "@/components/shell/gate";
+import { appGate, mustChangePassword, sessionScope, signInPath } from "@/components/shell/gate";
 import { currentPageName, isCurrent, navLinks, roleName } from "@/components/shell/nav";
 import type { Me, Role, SessionScope } from "@/lib/types";
 
@@ -84,6 +84,28 @@ describe("the session gate", () => {
     expect(session).toContain("appGate(");
     expect(session).toContain("<SetPasswordScreen");
     expect(session).toMatch(/refresh\(\): void/);
+  });
+});
+
+describe("where to sign in", () => {
+  it("sends the admin screens to the admin sign-in", () => {
+    expect(signInPath("/admin")).toBe("/admin/login");
+    expect(signInPath("/admin/users")).toBe("/admin/login");
+  });
+
+  it("sends every other page to the normal sign-in", () => {
+    expect(signInPath("/documents")).toBe("/login");
+    expect(signInPath("/documents/d-1")).toBe("/login");
+    expect(signInPath("/chat")).toBe("/login");
+    expect(signInPath("/")).toBe("/login");
+    expect(signInPath("/administration")).toBe("/login");
+  });
+
+  it("is used by the session provider, with no session and when one ends", () => {
+    const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
+    expect(session).toContain("router.replace(signInPath(pathname))");
+    expect(session).toContain("onSessionEnded(");
+    expect(session).not.toContain('router.replace("/login")');
   });
 });
 

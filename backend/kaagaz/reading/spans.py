@@ -89,6 +89,15 @@ class ReadError(Exception):
         self.code = code
 
 
+class TooManyPages(ReadError):
+    """``too_many_pages``, with the real count, so the file list can say
+    "This PDF has 180 pages" (the pipeline stores it as the page count)."""
+
+    def __init__(self, pages: int) -> None:
+        super().__init__("too_many_pages")
+        self.pages = pages
+
+
 def location_to_json(location: Location) -> dict[str, Any]:
     if isinstance(location, CellLocation):
         return {"kind": "cell", "page": location.sheet, "row": location.row, "column": location.column}

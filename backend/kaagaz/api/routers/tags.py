@@ -2,10 +2,10 @@
 
 Why some choices:
 
-* **Anyone** in the customer may create a tag and tag a document. **Only the
-  admin role** may delete a tag: the PRD's rule, checked on the role and not
-  on an admin session (PROVISIONAL 7.5). A deleted tag comes off every
-  document.
+* **Anyone** in the customer may create a tag and tag a document. **Only an
+  admin session** (the admin sign-in screen) may delete a tag, as for deleting
+  a document forever: it comes off every document and can't be undone.
+* **Trash means deleted:** a document in Trash can't be tagged (409 ``in_trash``).
 * **PUT replaces the whole set** on the document's family: every version gets
   the same tags (plan 9.3), under the family lock (``kaagaz.db.tags``). One
   unknown tag, or another customer's, is 404 and nothing is applied. At most
@@ -24,13 +24,14 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection
 
-from kaagaz.api.auth import Admin, CurrentUser, User
+from kaagaz.api.auth import AdminSession, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import TAG_NAME_MAX, clean_name
 from kaagaz.api.views import tag
 from kaagaz.db import audit
 from kaagaz.db import tags as tags_sql
+from kaagaz.db.trash import InTrash
 
 router = APIRouter()
 
@@ -98,7 +99,7 @@ def create_tag(body: NewTagBody, user: User, context: Context) -> dict[str, Any]
 
 
 @router.delete("/tags/{tag_id}", status_code=204)
-def delete_tag(tag_id: uuid.UUID, user: Admin, context: Context) -> Response:
+def delete_tag(tag_id: uuid.UUID, user: AdminSession, context: Context) -> Response:
     target = str(tag_id)
     with context.db.customer(user.customer_id) as conn:
         if not tags_sql.delete_tag(conn, user.customer_id, target):
@@ -113,7 +114,10 @@ def set_document_tags(
 ) -> dict[str, Any]:
     target = str(document_id)
     wanted = [str(tag_id) for tag_id in body.tag_ids]
-    with _refused(), context.db.customer(user.customer_id) as conn:
-        rows = tags_sql.set_document_tags(conn, user.customer_id, target, wanted)
-        _audit(conn, user, "document.tags", "document", target, {"tag_count": len(rows)})
+    try:
+        with _refused(), context.db.customer(user.customer_id) as conn:
+            rows = tags_sql.set_document_tags(conn, user.customer_id, target, wanted)
+            _audit(conn, user, "document.tags", "document", target, {"tag_count": len(rows)})
+    except InTrash:  # Trash means deleted: nothing was changed
+        raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None
     return {"items": [tag(row) for row in rows]}

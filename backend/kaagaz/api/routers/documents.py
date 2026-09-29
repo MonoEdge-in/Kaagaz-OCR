@@ -26,20 +26,24 @@ Why some choices:
   stored or queued. If it is deleted in the moment after, the insert is refused
   by the foreign key, the stored file is removed again, and the reply is 404.
 * **The list filters** are picked as fixed SQL fragments (``db/listing.py``).
-  An unknown folder is 404; an unknown tag simply matches nothing. Upload days
+  An unknown folder or tag is 404, another customer's included. Upload days
   are read in the customer's timezone (TIMEZONE), and the end day is not
   included.
 * **Trash** (PRD 1 F5) acts on the whole family, under the family lock. A
-  delete only moves it to Trash (the admin or the uploader); nothing is removed
-  and storage is not touched, so a restore brings everything back. Only an
-  admin can delete forever, and only a family in Trash (409 ``not_in_trash``
+  delete only moves it to Trash; nothing is removed and storage is not touched,
+  so a restore brings everything back. Because both act on every version, only
+  an admin or a user who uploaded every version may do them (``can_delete`` in
+  the summary, kaagaz/api/views.py). Only an admin session (the admin sign-in
+  screen) can delete forever, and only a family in Trash (409 ``not_in_trash``
   otherwise); its files go inside the same transaction, so if storage cannot be
-  reached every row stays and the admin can try again. PROVISIONAL (plan 7.5):
-  "admin" is the role, not an admin session.
-* **Versions** (PRD 1 F6) have the checks and replies of upload. A family in
-  Trash or not there is 404, checked before storing and again under the lock.
-  The list shows each family's newest version (Trash with ``trashed=true``);
-  by id, any version opens. A duplicate in Trash says ``in_trash: true``.
+  reached every row stays and the admin can try again.
+* **Trash means deleted.** A family in Trash can't be renamed, moved, tagged
+  or given a new version: 409 ``in_trash``, checked under the family lock.
+* **Versions** (PRD 1 F6) have the checks and replies of upload. A family not
+  there is 404, and one in Trash 409, checked before storing and again under
+  the lock. The list shows each family's current version, with a newer one
+  that is still being read or failed beside it (``newer_version``); by id, any
+  version opens. A duplicate in Trash says ``in_trash: true``.
 """
 
 import uuid
@@ -55,12 +59,13 @@ from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
-from kaagaz.api.auth import Admin, CurrentUser, User
+from kaagaz.api.auth import AdminSession, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name
 from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
+    can_delete,
     document_folder,
     document_summary,
     document_version,
@@ -72,6 +77,7 @@ from kaagaz.db import audit, listing, trash
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
 from kaagaz.db.documents import NotInTrash, PgDocuments, delete_family_forever
+from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
@@ -163,8 +169,11 @@ def list_documents(
     except ValueError:
         raise ApiError(400, "bad_request", "Use real dates, written YYYY-MM-DD.") from None
     customer_id = user.customer_id
+    tag_ids = [str(tag) for tag in tag_id or []]
     with context.db.customer(customer_id) as conn:
         folder_ids = _folder_scope(conn, customer_id, folder_id, include_subfolders)
+        if tag_ids and tags_sql.count_existing(conn, customer_id, tag_ids) != len(set(tag_ids)):
+            raise ApiError(404, "not_found")  # a tag this customer does not have
         rows, total = listing.list_documents(
             conn,
             customer_id,
@@ -174,7 +183,7 @@ def list_documents(
             name_contains=q.strip() if q else None,
             top_level_only=folder_id == "root" and not include_subfolders,
             folder_ids=folder_ids,
-            tag_ids=[str(tag) for tag in tag_id or []],
+            tag_ids=tag_ids,
             detected_type=detected_type,
             uploaded_from=start,
             uploaded_to=end,
@@ -182,7 +191,7 @@ def list_documents(
         )
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
     max_pages = context.settings.max_pages
-    items = [document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])]) for row in rows]
+    items = [document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user) for row in rows]
     return {"items": items, "total": total}
 
 
@@ -206,6 +215,21 @@ def _upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
         row = admin_sql.get_settings(conn, user.customer_id)
     customer_max_mb = None if row is None or row["max_upload_mb"] is None else int(row["max_upload_mb"])
     return upload_policy(context.settings, customer_max_mb)
+
+
+@router.get("/upload-limits")
+def get_upload_limits(user: User, context: Context) -> dict[str, int]:
+    """``UploadLimits``: the limits this user's uploads are checked against, each
+    already lowered by the customer's own limit, so the browser can refuse a file
+    before sending it (PRD 1 U2) and count a PDF's pages first (``max_pages``).
+    The server still checks everything itself. One query."""
+    policy = _upload_policy(context, user)
+    return {
+        "pdf_bytes": policy.limit_for(sniff.PDF),
+        "image_bytes": policy.limit_for(sniff.PNG),
+        "sheet_bytes": policy.limit_for(sniff.ZIP),
+        "max_pages": context.settings.max_pages,
+    }
 
 
 def _refusal_message(rejected: UploadRejected, policy: UploadPolicy) -> str | None:
@@ -279,7 +303,9 @@ def _upload_reply(
         tags = tags_sql.tags_for_documents(conn, customer_id, [result.document_id])
     if row is None:  # deleted in the moment since; nothing to show
         raise ApiError(404, "not_found")
-    summary = document_summary(row, max_pages=context.settings.max_pages, tags=tags[result.document_id])
+    summary = document_summary(
+        row, max_pages=context.settings.max_pages, tags=tags[result.document_id], user=user
+    )
     in_trash = result.duplicate and row["deleted_at"] is not None
     return {"document": summary, "duplicate": result.duplicate, "in_trash": in_trash}
 
@@ -303,8 +329,10 @@ def _accept_version(
     customer_id = user.customer_id
     with context.db.customer(customer_id) as conn:
         target = listing.get_document(conn, customer_id, of_document_id)
-    if target is None or target["deleted_at"] is not None:
+    if target is None:
         raise ApiError(404, "not_found")  # before anything is stored or queued
+    if target["deleted_at"] is not None:
+        raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
     service = UploadService(policy, PgDocuments(context.db), context.storage, context.queue)
     try:
         result = service.accept_version(
@@ -357,7 +385,7 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         path = [] if folder is None else folders_sql.folder_path(conn, customer_id, str(folder))
         versions = listing.family_versions(conn, customer_id, str(row["family_id"]))
     return {
-        **document_summary(row, max_pages=context.settings.max_pages, tags=tags),
+        **document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user),
         "pages": [page_summary(page) for page in pages],
         "values": [extracted_value(value) for value in values],
         "folder": document_folder(path),
@@ -389,7 +417,7 @@ def update_document(
     folder_id = None if body.folder_id is None else str(body.folder_id)
     try:
         with context.db.customer(customer_id) as conn:
-            if trash.lock_family(conn, customer_id, target) is None:
+            if trash.lock_live_family(conn, customer_id, target) is None:
                 raise ApiError(404, "not_found")
             if "folder_id" in given:
                 listing.move_family(conn, customer_id, target, folder_id=folder_id)
@@ -416,7 +444,9 @@ def update_document(
             tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
     except folders_sql.FolderNotFound:  # not this customer's folder; nothing was changed
         raise ApiError(404, "not_found") from None
-    return document_summary(row, max_pages=context.settings.max_pages, tags=tags)
+    except trash.InTrash:  # Trash means deleted: nothing was changed
+        raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None
+    return document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
 
 
 @router.get("/documents/{document_id}/file")
@@ -488,9 +518,10 @@ def get_sheet_cells(
 # --- Trash (PRD 1 F5) -------------------------------------------------------------
 
 
-def _uploader_or_admin(user: CurrentUser, row: RowMapping) -> None:
-    uploader = None if row["uploaded_by"] is None else str(row["uploaded_by"])
-    if user.role != "admin" and uploader != user.user_id:
+def _may_trash(user: CurrentUser, row: RowMapping) -> None:
+    """Trash and restore act on every version, so the rule looks at every version's
+    uploader, not only this one's (``can_delete``)."""
+    if not can_delete(row, user):
         raise ApiError(403, "forbidden")
 
 
@@ -500,7 +531,7 @@ def delete_document(document_id: uuid.UUID, user: User, context: Context) -> Res
     customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
         row = _document_or_404(conn, user, document_id)
-        _uploader_or_admin(user, row)
+        _may_trash(user, row)
         if not trash.trash_document(conn, customer_id, target, by=user.user_id, now=context.clock()):
             raise ApiError(404, "not_found")
         audit.record(
@@ -520,7 +551,7 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
     """Bring the whole family back from Trash, and return this version's summary."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
-        _uploader_or_admin(user, _document_or_404(conn, user, document_id))
+        _may_trash(user, _document_or_404(conn, user, document_id))
         if not trash.restore_document(conn, customer_id, target):
             raise ApiError(404, "not_found")
         audit.record(
@@ -533,12 +564,14 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
         )
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
-    return document_summary(row, max_pages=context.settings.max_pages, tags=tags)
+    return document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
 
 
 @router.delete("/documents/{document_id}/permanent", status_code=204)
-def delete_document_forever(document_id: uuid.UUID, user: Admin, context: Context) -> Response:
-    """Delete every version of a family in Trash for good, rows and files (today's full delete)."""
+def delete_document_forever(document_id: uuid.UUID, user: AdminSession, context: Context) -> Response:
+    """Delete every version of a family in Trash for good, rows and files (today's
+    full delete). An admin session only: it can't be undone, which is what the
+    admin sign-in with its two-step code is for."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
         try:

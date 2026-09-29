@@ -126,7 +126,7 @@ class StubbedStorageTest(unittest.TestCase):
     # --- delete -------------------------------------------------------------
 
     def test_delete_removes_original_pages_and_quarantine_copy(self) -> None:
-        listed = [PREFIX + "original", PREFIX + "pages/1.png", PREFIX + "pages/2.png"]
+        listed = [PREFIX + "original", PREFIX + "pages/1.webp", PREFIX + "pages/2.webp"]
         self.stub.add_response(
             "list_objects_v2",
             {"Contents": [{"Key": key} for key in listed], "IsTruncated": False},
@@ -148,10 +148,10 @@ class StubbedStorageTest(unittest.TestCase):
         )
         self.stub.add_response(
             "list_objects_v2",
-            {"Contents": [{"Key": PREFIX + "pages/1.png"}], "IsTruncated": False},
+            {"Contents": [{"Key": PREFIX + "pages/1.webp"}], "IsTruncated": False},
             {"Bucket": BUCKET, "Prefix": PREFIX, "ContinuationToken": "t1"},
         )
-        expected = [PREFIX + "original", PREFIX + "pages/1.png", f"quarantine/{CUSTOMER}/{DOCUMENT}"]
+        expected = [PREFIX + "original", PREFIX + "pages/1.webp", f"quarantine/{CUSTOMER}/{DOCUMENT}"]
         self.stub.add_response(
             "delete_objects",
             {},

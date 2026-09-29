@@ -30,15 +30,15 @@ The browser talks only to the web app, which forwards `/api/*` to the API, so th
 
 ## One upload, step by step
 
-1. **Upload** (API). The file is read once: SHA-256 fingerprint, size limit, and the type taken from its first bytes, never from its name. A file this customer already uploaded is returned as a duplicate. Otherwise it is stored at `customers/{customer}/documents/{document}/original`, recorded as `received`, and a job naming (customer, document) goes on the queue. If a step fails, the earlier steps are undone, so a retry works.
+1. **Upload** (API). The file is read once: SHA-256 fingerprint, the type taken from its first bytes (never from its name), then that type's own size limit: PDFs 50 MB, photos and scans 20 MB, spreadsheets 10 MB, each lowered by the customer's own limit. The browser checks the same limits first (`GET /api/upload-limits`), and counts a PDF's or TIFF's pages, so a file over 100 pages is never sent. A file this customer already uploaded is returned as a duplicate. Otherwise it is stored at `customers/{customer}/documents/{document}/original`, recorded as `received`, and a job naming (customer, document) goes on the queue. If a step fails, the earlier steps are undone, so a retry works.
 2. **Scan** (worker). Only an explicit CLEAN verdict lets a file through, and `rejected` is final. A scanner that's down means a retry later, and the file is never opened meanwhile.
-3. **Prepare.** Page sizes, plus a picture of each page for PDFs and photos at `.../pages/{n}.webp` (stored as WebP; the model still reads the lossless PNG).
+3. **Prepare.** Page sizes, plus a picture of each page for PDFs and photos at `.../pages/{n}.webp` (stored as WebP; the model still reads the lossless PNG). A file over `MAX_PAGES` fails `too_many_pages` with its real page count stored, so the message names it.
 4. **Read** through the plug socket: CSV, Excel, PDF text (pdfplumber) with a second PDF reader (PDFium), and RapidOCR for scans. A type with no reader is marked `needs_reader`.
 5. **Pieces and values.** Text is split into pieces for search, each with its regions. Values come from spreadsheet columns and labelled invoice fields. Every value is labelled verified or needs review, and this customer's remembered corrections are applied.
 6. **Save** in one transaction that replaces any earlier run, so a job delivered twice is safe. The document must still be clean at this point.
 7. **Index.** A meaning vector is made for each piece if a model is on. The document is then `ready`.
 
-Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `needs_reader` and `failed`, each failure with a short code. A job that keeps failing goes to the failure bin on the queue's last delivery, and its document ends `failed | retries_exhausted`; the worker reads that maximum from the queue's redrive policy at start-up and will not start without one. One bad file never blocks the ones behind it.
+Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `needs_reader` and `failed`, each failure with a short code. The worker tries a job `JOB_MAX_ATTEMPTS` (5) times and writes each try on the document, so the list says "Try 2 of 5". The delivery after the last try marks the document `failed | retries_exhausted` ("We tried 5 times…") and buries the job; if the database is down just then, a later delivery marks it. So the queue's own `maxReceiveCount` must be above `JOB_MAX_ATTEMPTS + 1` (10 on the laptop), and the worker refuses to start otherwise, logging `queue_redrive_too_low` or `queue_has_no_failure_bin`. The hourly trash purge can't stop or crash the worker: a database error there is logged and the jobs go on. One bad file never blocks the ones behind it.
 
 ## One question, step by step
 
@@ -57,7 +57,7 @@ Every value keeps its raw reading, the second reading if there is one, its page,
 | verified | `direct_cell` (a spreadsheet cell), `readers_agree`, `corrected`, `learned_correction` |
 | needs review | `readers_disagree`, `single_reader`, `low_confidence` |
 
-A reviewer picks the first reading, the second, or types the value. The fix is logged in `corrections`. If they choose to remember it, it goes into `learned_corrections` and is applied to this customer's later documents. The original file never changes.
+The review queue shows only values of each family's current, ready version, out of Trash: an older version's values no longer reach any answer. A reviewer picks the first reading, the second, or types the value. The fix is logged in `corrections`. If they choose to remember it, it goes into `learned_corrections` and is applied to this customer's later documents. The original file never changes.
 
 ## Data and customer separation
 
@@ -70,6 +70,8 @@ Customers are kept apart by two locks:
 
 The `isolation` tests prove both on every pull request.
 
+**Folders, versions and Trash.** Folders and tags belong to a document's whole family of versions. The list, search, chat, review and the admin numbers use each family's current version: the highest version that finished reading. A newer version still reading, or failed, is shown beside it and never hides it. Trash means deleted: a family in Trash can't be renamed, moved, tagged, downloaded or given a new version, only restored or deleted forever. Moving to Trash and restoring act on every version, so only an admin or the user who uploaded every version may do them. Deleting forever, and deleting a tag, need an admin session (the admin sign-in with its code). Saved chat answers hide the words and highlights of any source that is now in Trash or deleted, and mark a source that a newer version replaced.
+
 ## Security
 
 | Threat | Control |
@@ -80,6 +82,8 @@ The `isolation` tests prove both on every pull request.
 | Identity numbers | Not masked: kept and shown as read (see Decisions). Logs and errors still carry ids and codes only |
 | Document text steering the AI | Text is quoted as data; links and markup are stripped from answers |
 | Forged requests | A signed session cookie, `X-Requested-With: kaagaz` on every change, and a rate limit |
+| Guessing passwords and codes | 5 wrong passwords lock an account for 15 minutes; admins also need a 6-digit code. The admin screen never checks a non-admin's password, and a used enrol token is refused without counting, so neither can lock anyone out. A password change, a role change, a disabled account or a 2FA reset ends every session |
+| Migrations blocking the app | Every migration runs with `lock_timeout` 10 s (`migrations/env.py`), so a busy table makes it fail fast instead of queueing requests |
 | Secrets and dependencies | No secrets in git, and CI checks for them; every new library needs approval; AGPL, SSPL and GPL v3 are refused |
 
 ## Code map

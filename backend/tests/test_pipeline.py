@@ -56,7 +56,7 @@ XLSX_LIMITS = XlsxLimits(
     max_text_chars=10_000_000,
 )
 LEASE_SECONDS = 30
-MAX_RECEIVES = 3
+MAX_ATTEMPTS = 3
 
 
 @dataclass
@@ -80,11 +80,11 @@ def real_socket(max_cells: int = 10_000) -> ReaderSocket:
 
 
 def make_worker(queue: LeaseQueue, handler: Handler, repo: MemoryDocuments) -> Worker:
-    """The worker as worker_main wires it: the last delivery marks the document."""
+    """The worker as worker_main wires it: the delivery after the last attempt marks the document."""
     return Worker(
         queue,
         handler,
-        max_receives=MAX_RECEIVES,
+        max_attempts=MAX_ATTEMPTS,
         on_exhausted=lambda job: repo.mark_exhausted(job.customer_id, job.document_id),
     )
 
@@ -99,7 +99,7 @@ def build(
     vision: FakeVision | None = None,
 ) -> System:
     clock = FakeClock()
-    queue = LeaseQueue(clock, lease_seconds=LEASE_SECONDS, max_attempts=MAX_RECEIVES)
+    queue = LeaseQueue(clock, lease_seconds=LEASE_SECONDS, max_attempts=MAX_ATTEMPTS + 3)
     statuses, storage, store, page_images = (
         MemoryStatuses(),
         MemoryStorage(),
@@ -322,14 +322,14 @@ class StatusAndFailureTest(unittest.TestCase):
     def test_a_retryable_failure_on_every_delivery_ends_failed_retries_exhausted(self) -> None:
         system = build(scanner=FakeScanner(error=True))  # the scanner stays down
         doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
-        for _ in range(MAX_RECEIVES):
+        for _ in range(MAX_ATTEMPTS + 1):
             system.worker.run_once()
             system.clock.advance(LEASE_SECONDS)
 
         self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.FAILED)
         self.assertEqual(system.repo.failure_codes[(CUSTOMER, doc)], "retries_exhausted")
         self.assertEqual([f.code for f in system.queue.failed.values()], ["retries_exhausted"])
-        self.assertEqual(len(system.scanner.scanned), MAX_RECEIVES - 1)  # the last delivery reads nothing
+        self.assertEqual(len(system.scanner.scanned), MAX_ATTEMPTS)  # the marking delivery reads nothing
 
     def test_a_crash_on_every_delivery_still_ends_failed_retries_exhausted(self) -> None:
         class CrashingPreparer(FakePreparer):
@@ -338,7 +338,7 @@ class StatusAndFailureTest(unittest.TestCase):
 
         system = build(preparer=CrashingPreparer())
         doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
-        for _ in range(MAX_RECEIVES - 1):
+        for _ in range(MAX_ATTEMPTS):
             with self.assertRaises(RuntimeError):
                 system.worker.run_once()
             system.clock.advance(LEASE_SECONDS)

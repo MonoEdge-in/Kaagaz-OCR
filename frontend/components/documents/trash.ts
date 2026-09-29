@@ -3,11 +3,21 @@
 // of the document. Pure functions, unit tested in node (tests/trash.test.ts).
 // The server checks every rule again.
 
+import { sessionScope } from "@/components/shell/gate";
 import type { DocumentSummary, Me } from "@/lib/types";
 
-/** Only an admin may delete for good. Move to Trash and Restore follow canDelete (logic.ts). */
+/**
+ * Only an admin session (from /admin/login) may delete for good; the server
+ * says 403 admin_session_required to anyone else. Move to Trash and Restore
+ * follow each document's can_delete.
+ */
 export function canDeleteForever(me: Me): boolean {
-  return me.user.role === "admin";
+  return me.user.role === "admin" && sessionScope(me) === "admin";
+}
+
+/** An admin signed in at /login: Trash says where Delete forever is. */
+export function foreverNeedsAdminSignIn(me: Me): boolean {
+  return me.user.role === "admin" && sessionScope(me) !== "admin";
 }
 
 /** "1 document", "3 documents". */

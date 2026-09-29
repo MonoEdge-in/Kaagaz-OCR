@@ -2,7 +2,9 @@
 
 // Who is signed in, for every screen inside the app. The provider asks the
 // backend once (GET /api/auth/me), shows a loading state until it knows, and
-// sends the browser to /login when there is no session. Screens read the result
+// sends the browser to sign in when there is no session, or when any later
+// reply says it has ended: the admin screens to /admin/login, the rest to
+// /login (signInPath, components/shell/gate.ts). Screens read the result
 // with useSession(); it is a hint for what to show, the server still decides
 // what each person may do.
 //
@@ -11,13 +13,13 @@
 // refuses everything else until then. refresh() asks the server again, so the
 // app opens once the new password is saved.
 
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { appGate } from "@/components/shell/gate";
+import { appGate, signInPath } from "@/components/shell/gate";
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
-import { ApiError, me as fetchMe } from "./api";
+import { ApiError, me as fetchMe, onSessionEnded } from "./api";
 import type { Me } from "./types";
 
 export interface Session {
@@ -36,6 +38,7 @@ type Loaded =
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [state, setState] = useState<Loaded>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
 
@@ -58,9 +61,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, [load, attempt]);
 
+  // A session that ends while a screen is open (an admin session runs out, say).
   useEffect(() => {
-    if (state.kind === "signed_out") router.replace("/login");
-  }, [state.kind, router]);
+    onSessionEnded(() => setState({ kind: "signed_out" }));
+    return () => onSessionEnded(null);
+  }, []);
+
+  useEffect(() => {
+    if (state.kind === "signed_out") router.replace(signInPath(pathname));
+  }, [state.kind, router, pathname]);
 
   const refresh = useCallback(() => setAttempt((n) => n + 1), []);
 

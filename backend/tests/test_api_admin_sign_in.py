@@ -137,7 +137,9 @@ def test_an_enrol_token_cannot_enrol_twice(db: Database) -> None:
     assert second.status_code == 401
     assert second.json()["error"]["code"] == "not_signed_in"
     assert "set-cookie" not in second.headers
-    assert api.user_state(enrolling.customer_id, enrolling.user_id)["totp_secret_enc"] == stored
+    state = api.user_state(enrolling.customer_id, enrolling.user_id)
+    assert state["totp_secret_enc"] == stored
+    assert state["failed_logins"] == 0  # a replayed token is not a guess: it can't lock the admin out
 
 
 def test_an_enrol_token_from_before_a_session_change_does_not_enrol(db: Database) -> None:
@@ -322,7 +324,7 @@ def test_an_admin_who_must_change_their_password_gets_403(db: Database, enrolled
 def test_a_non_admin_on_the_admin_screen_gets_the_plain_401(db: Database, role: str) -> None:
     api = Api(db)
     customer_id, _ = api.customer()
-    _, email = api.add_user(customer_id, role)
+    user_id, email = api.add_user(customer_id, role)
     client = api.client()
 
     right = api.admin_login(client, email)
@@ -332,6 +334,15 @@ def test_a_non_admin_on_the_admin_screen_gets_the_plain_401(db: Database, role: 
     assert right.text == wrong.text
     assert right.json()["error"]["code"] == "bad_credentials"
     assert "set-cookie" not in right.headers
+    # Nothing counted and nothing audited: the admin screen can't lock a member out.
+    for _ in range(10):
+        api.admin_login(client, email, password=WRONG)
+    assert api.user_state(customer_id, user_id)["failed_logins"] == 0
+    assert "auth.login_failed" not in api.audit_actions(customer_id)
+    signed_in = api.client().post(
+        "/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF
+    )
+    assert signed_in.status_code == 200  # still not locked
 
 
 # --- the admin session -------------------------------------------------------------------------

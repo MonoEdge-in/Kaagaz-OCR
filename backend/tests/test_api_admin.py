@@ -126,6 +126,29 @@ def test_update_role_disable_and_password(db: Database) -> None:
 
 
 @pytest.mark.db
+def test_a_demoted_and_promoted_again_user_does_not_get_old_sessions_back(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    other = api.sign_in(admin.customer_id, "admin")
+    for role in ("member", "admin"):
+        reply = admin.client.patch(f"/api/admin/users/{other.user_id}", json={"role": role}, headers=CSRF)
+        assert reply.status_code == 200
+    assert other.client.get("/api/auth/me").status_code == 401  # the cookie from before the demotion
+
+    same = admin.client.patch(f"/api/admin/users/{admin.user_id}", json={"role": "admin"}, headers=CSRF)
+    assert same.status_code == 200  # setting the role it already has
+    assert admin.client.get("/api/auth/me").status_code == 200  # ends no session
+
+
+@pytest.mark.db
+def test_an_admin_cannot_reset_their_own_password(db: Database) -> None:
+    admin = Api(db).new_admin()
+    reply = admin.client.post(f"/api/admin/users/{admin.user_id}/reset-password", headers=CSRF)
+    assert reply.status_code == 400
+    assert admin.client.get("/api/auth/me").status_code == 200  # the session did not end
+
+
+@pytest.mark.db
 @pytest.mark.parametrize("body", [{"disabled": True}, {"role": "member"}, {"role": "reviewer"}])
 def test_an_admin_cannot_lock_themselves_out(db: Database, body: dict[str, object]) -> None:
     admin = Api(db).new_admin()

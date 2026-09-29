@@ -17,7 +17,7 @@ from sqlalchemy import TextClause
 
 from kaagaz.answering import fixed_queries
 from kaagaz.db import admin, listing, review
-from kaagaz.db.visibility import LIVE, LIVE_CURRENT, TRASHED
+from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid
 
 MODULES: tuple[ModuleType, ...] = (hybrid, fixed_queries, review, admin, listing)
@@ -36,15 +36,23 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (fixed_queries, "_EXTREME_VALUE"): LIVE_CURRENT,
     (fixed_queries, "_COUNT_DOCUMENTS"): LIVE_CURRENT,
     (fixed_queries, "_VALUE_REFS"): LIVE_CURRENT,
-    # Review and the admin numbers: not in Trash (every version counts).
-    (review, "_QUEUE"): LIVE,
-    (review, "_COUNT"): LIVE,
-    (review, "_LOCK_VALUE"): LIVE,
-    (admin, "_DOCUMENTS_BY_STATUS"): LIVE,
-    (admin, "_COUNTS"): LIVE,
-    # The document list: out of Trash by default, or only Trash (trashed=true).
-    (listing, "_LIST"): LIVE,
-    (listing, "_TRASH_LIST"): TRASHED,
+    # Review: the values of the version answers use, and nothing else.
+    (review, "_QUEUE"): LIVE_CURRENT,
+    (review, "_COUNT"): LIVE_CURRENT,
+    (review, "_LOCK_VALUE"): LIVE_CURRENT,
+    # The admin numbers: each family once, by its current version; open review
+    # items as the queue shows them.
+    (admin, "_DOCUMENTS_BY_STATUS"): LISTED,
+    (admin, "_COUNTS"): LIVE_CURRENT,
+    # The document list: each family's current version, out of Trash by default,
+    # or only Trash (trashed=true).
+    (listing, "_LIST"): LISTED,
+    (listing, "_TRASH_LIST"): TRASHED_LISTED,
+}
+
+# Statements that count every version on purpose, and why.
+ALL_VERSIONS: dict[tuple[ModuleType, str], str] = {
+    (admin, "_KEPT"): "the admin numbers show how many older versions and Trash families are kept",
 }
 
 # Statements that may see a document in Trash, and why.
@@ -85,7 +93,7 @@ class VisibilityGuardTest(unittest.TestCase):
                 self.assertNotIn(LIVE, sql)
 
     def test_every_statement_that_joins_documents_is_listed(self) -> None:
-        listed = set(FILTERED) | set(BY_ID)
+        listed = set(FILTERED) | set(BY_ID) | set(ALL_VERSIONS)
         for module in MODULES:
             with self.subTest(module=module.__name__):
                 found = {

@@ -41,7 +41,7 @@ import pypdfium2.raw as pdfium_c
 from PIL import Image, ImageOps
 
 from kaagaz.ingestion import sniff
-from kaagaz.reading.spans import CellLocation, PageInfo, ReadError, Span
+from kaagaz.reading.spans import CellLocation, PageInfo, ReadError, Span, TooManyPages
 
 _IMAGE_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF})
 _IMAGE_FORMATS = ("PNG", "JPEG", "TIFF")  # Pillow never tries any other format
@@ -132,7 +132,7 @@ def open_pdf(data: bytes) -> Any:
 
 def check_page_count(count: int, max_pages: int) -> None:
     if count > max_pages:
-        raise ReadError("too_many_pages")
+        raise TooManyPages(count)
 
 
 def render_pdf_page(page: Any, *, dpi: int, max_image_pixels: int) -> Image.Image:

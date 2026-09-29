@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.views import conversation_summary, message
+from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
 from kaagaz.db import audit
 from kaagaz.db import chat as chat_sql
 
@@ -115,11 +115,16 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
         if found is None:
             raise ApiError(404, "not_found")
         rows = chat_sql.messages_with_feedback(conn, user.customer_id, str(conversation_id), user.user_id)
-    return {
-        "id": str(found["id"]),
-        "title": found["title"],
-        "messages": [message(row, row["feedback"]) for row in rows],
-    }
+        cited = [document_id for row in rows for document_id in cited_document_ids(row["answer"])]
+        states = chat_sql.document_states(conn, user.customer_id, cited)
+    messages = []
+    for row in rows:
+        shown = message(row, row["feedback"])
+        if shown["answer"]:
+            # Sources moved to Trash, deleted or replaced since: see views.answer_with_source_states.
+            shown["answer"] = answer_with_source_states(shown["answer"], states)
+        messages.append(shown)
+    return {"id": str(found["id"]), "title": found["title"], "messages": messages}
 
 
 @router.post("/messages/{message_id}/feedback", status_code=204)

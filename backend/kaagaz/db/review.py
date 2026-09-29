@@ -40,7 +40,7 @@ _ITEM = (
 
 # The queue and its total repeat the same filter in full, so each can be checked on its own.
 _QUEUE = _ITEM + (
-    " AND d.deleted_at IS NULL AND v.label = 'needs_review'"
+    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready' AND v.label = 'needs_review'"
     " AND (CAST(:doc AS uuid) IS NULL OR v.document_id = CAST(:doc AS uuid))"
     " ORDER BY v.created_at, v.id LIMIT :limit OFFSET :offset"
 )
@@ -50,7 +50,8 @@ _COUNT = (
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
-    " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND v.label = 'needs_review'"
+    " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND v.label = 'needs_review'"
     " AND (CAST(:doc AS uuid) IS NULL OR v.document_id = CAST(:doc AS uuid))"
 )
 
@@ -60,7 +61,7 @@ _LOCK_VALUE = (
     "SELECT v.id, v.document_id, v.field, v.value_text, v.value_raw, v.second_reading, v.label"
     " FROM extracted_values v"
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
-    " WHERE v.customer_id = :c AND v.id = :v AND d.deleted_at IS NULL"
+    " WHERE v.customer_id = :c AND v.id = :v AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " FOR UPDATE OF v"
 )
 

@@ -20,3 +20,11 @@ export type AppGate = "set_password" | "app";
 export function appGate(me: Me): AppGate {
   return mustChangePassword(me) ? "set_password" : "app";
 }
+
+/**
+ * Where to sign in when there is no session, or it has just ended: the admin
+ * screens (/admin and below) go to the admin sign-in, every other page to /login.
+ */
+export function signInPath(pathname: string): string {
+  return pathname === "/admin" || pathname.startsWith("/admin/") ? "/admin/login" : "/login";
+}

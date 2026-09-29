@@ -25,6 +25,7 @@ _BASE: dict[str, Any] = {
     "queue_region": "us-east-1",
     "queue_lease_seconds": 60,
     "queue_wait_seconds": 1,
+    "job_max_attempts": 5,
     "scanner": "eicar_dev",
     "clamav_host": None,
     "clamav_port": None,

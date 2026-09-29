@@ -26,11 +26,20 @@ def run_offline() -> None:
         context.run_migrations()
 
 
+# How long a migration waits for a table another session holds before it fails.
+# A migration that takes a busy table otherwise queues every request behind its
+# lock; failing fast leaves the running app alone, and it can be run again when
+# quiet. Short enough for a request to notice, long enough for one to finish.
+LOCK_TIMEOUT = "10s"
+
+
 def run_online() -> None:
     engine = create_engine(_url())
     with engine.connect() as connection:
         context.configure(connection=connection, target_metadata=None)
         with context.begin_transaction():
+            # SET LOCAL: inside the migration's own transaction, gone when it ends.
+            context.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
             context.run_migrations()
     engine.dispose()
 

@@ -1,7 +1,7 @@
 # Kaagaz local stack. LAPTOP ONLY: every key and password here is a local
 # placeholder. docs/running-locally.md has the steps.
 #
-#   cp .env.example .env        (then set SESSION_SECRET)
+#   cp .env.example .env        (then set SESSION_SECRET and TOTP_ENCRYPTION_KEY)
 #   docker compose up --build
 #   docker compose --profile ollama up --build     (also runs Ollama in Docker)
 #

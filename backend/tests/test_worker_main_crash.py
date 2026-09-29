@@ -9,6 +9,7 @@ from unittest import mock
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz import worker_main
+from kaagaz.jobs.ports import QueueSetupError
 from kaagaz.settings import Settings
 from tests.settings_factory import make_settings
 
@@ -43,6 +44,27 @@ class WorkerCrashTest(unittest.TestCase):
         line = worker_main.JsonFormatter().format(record)
         self.assertNotIn(ROW_VALUE, line)
         self.assertNotIn("Traceback", line)
+
+    def test_a_queue_setup_mistake_names_the_fix(self) -> None:
+        """A queue without a failure bin, or with too low a maximum, stops the worker
+        with one line whose code says what to change, not just "ValueError"."""
+        with (
+            mock.patch.object(Settings, "from_env", return_value=make_settings()),
+            mock.patch.object(worker_main, "configure_logging"),
+            mock.patch.object(
+                worker_main, "make_engine", side_effect=QueueSetupError("queue_redrive_too_low")
+            ),
+            self.assertLogs("kaagaz.worker", "DEBUG") as logs,
+            self.assertRaises(SystemExit) as ended,
+        ):
+            worker_main.main()
+
+        self.assertEqual(ended.exception.code, 1)
+        (record,) = logs.records
+        self.assertEqual(
+            (record.levelname, record.getMessage(), record.__dict__["code"]),
+            ("CRITICAL", "worker cannot start: queue setup", "queue_redrive_too_low"),
+        )
 
 
 if __name__ == "__main__":

@@ -37,6 +37,7 @@ import {
   shouldPoll,
   shouldReloadAfterUploads,
 } from "./logic";
+import { foreverNeedsAdminSignIn } from "./trash";
 import { Dropzone, UploadList, useUploads } from "./UploadArea";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
@@ -359,6 +360,11 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   Documents in Trash are left out of search and chat. Restore one to use it again.
                 </p>
               )}
+              {library.trash && foreverNeedsAdminSignIn(me) && (
+                <p className={libraryStyles.placeHint}>
+                  To delete forever, <Link href="/admin/login">sign in on the admin sign-in screen</Link>.
+                </p>
+              )}
             </div>
             {folders !== null && canUpload && (
               <FolderActions
@@ -396,7 +402,12 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   </EmptyState>
                 )
               ) : view === "empty" ? (
-                <Dropzone variant="full" onFiles={addFiles} onChoose={openPicker}>
+                <Dropzone
+                  variant="full"
+                  limits={uploads.limits}
+                  onFiles={addFiles}
+                  onChoose={openPicker}
+                >
                   <EmptyState
                     icon="file"
                     title={current ? "No documents in this folder yet" : "No documents yet"}
@@ -409,7 +420,12 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   </EmptyState>
                 </Dropzone>
               ) : (
-                <Dropzone variant="slim" onFiles={addFiles} onChoose={openPicker} />
+                <Dropzone
+                  variant="slim"
+                  limits={uploads.limits}
+                  onFiles={addFiles}
+                  onChoose={openPicker}
+                />
               )}
 
               <UploadList

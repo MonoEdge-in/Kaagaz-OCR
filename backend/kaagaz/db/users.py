@@ -178,6 +178,23 @@ def begin_attempt(
     )
 
 
+def enrol_still_open(conn: Connection, customer_id: str, user_id: str, session_version: int) -> bool:
+    """Can an enrol token for this user and session version still be used? Only
+    for an enabled admin with no two-step code yet, no temporary password, and
+    the same session version as when the token was made. Read only: nothing is
+    counted. O(log n)."""
+    return bool(
+        conn.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM users WHERE customer_id = :c AND id = :u"
+                " AND role = 'admin' AND NOT disabled AND NOT must_change_password"
+                " AND totp_enabled_at IS NULL AND session_version = :v)"
+            ),
+            {"c": customer_id, "u": user_id, "v": session_version},
+        ).scalar()
+    )
+
+
 def attempt_succeeded(conn: Connection, customer_id: str, user_id: str, *, now: datetime) -> None:
     """The attempt counted by ``begin_attempt`` was right: clear the count and any
     lock, and stamp ``last_login_at``. O(log n)."""
@@ -406,9 +423,11 @@ def update_user(
 ) -> RowMapping | None:
     """Change only the fields given (None keeps the stored value). None if no such user.
 
-    Disabling a user or setting a password raises ``session_version`` (every
-    session ends). A password set here is an admin's, so it is temporary and
-    ``must_change_password`` is set."""
+    Disabling a user, setting a password or changing the role raises
+    ``session_version`` (every session ends). The role counts even though every
+    request re-checks it: an admin demoted and later made admin again must not
+    get their old cookies back. A password set here is an admin's, so it is
+    temporary and ``must_change_password`` is set."""
     return (
         conn.execute(
             text(
@@ -418,7 +437,8 @@ def update_user(
                 " password_hash = COALESCE(CAST(:hash AS text), u.password_hash),"
                 " must_change_password = (CAST(:hash AS text) IS NOT NULL) OR u.must_change_password,"
                 " session_version = u.session_version + CASE"
-                "   WHEN CAST(:hash AS text) IS NOT NULL OR CAST(:disabled AS boolean) IS TRUE THEN 1"
+                "   WHEN CAST(:hash AS text) IS NOT NULL OR CAST(:disabled AS boolean) IS TRUE"
+                "   OR (CAST(:role AS text) IS NOT NULL AND CAST(:role AS text) <> u.role) THEN 1"
                 "   ELSE 0 END"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"

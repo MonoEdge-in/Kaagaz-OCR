@@ -346,19 +346,34 @@ def test_an_enrol_token_with_a_bad_or_extra_field_is_refused(changes: dict[str, 
 
 
 def _example_env(**changes: str | None) -> dict[str, str]:
-    """.env.example as a mapping, with a usable SESSION_SECRET (its placeholder is too short on purpose)."""
+    """.env.example as a mapping, with a usable SESSION_SECRET and TOTP_ENCRYPTION_KEY
+    (both placeholders are too short on purpose)."""
     env: dict[str, str] = {}
     for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
         if line.strip() and not line.lstrip().startswith("#"):
             name, _, value = line.partition("=")
             env[name.strip()] = value.strip()
     env["SESSION_SECRET"] = "a-laptop-session-secret-for-this-test-0000"
+    env["TOTP_ENCRYPTION_KEY"] = "a-laptop-totp-key-for-this-test-not-the-session-0000"
     for changed, new_value in changes.items():
         if new_value is None:
             env.pop(changed, None)
         else:
             env[changed] = new_value
     return env
+
+
+def test_the_shipped_placeholder_keys_stop_start_up() -> None:
+    """Copying .env.example and setting only SESSION_SECRET must not start with a
+    publicly known TOTP key: the placeholder is too short on purpose."""
+    env: dict[str, str] = {}
+    for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
+        if line.strip() and not line.startswith("#"):
+            name, _, value = line.partition("=")
+            env.setdefault(name.strip(), value.strip())
+    env["SESSION_SECRET"] = "a-laptop-session-secret-for-this-test-0000"
+    with pytest.raises(SettingsError, match="TOTP_ENCRYPTION_KEY"):
+        Settings.from_env(env)
 
 
 def test_env_example_lists_the_sign_in_settings() -> None:
