@@ -288,6 +288,14 @@ describe("deletedMessage", () => {
 
 // --- WP1.5: folders, tags, filters and downloads ----------------------------------
 
+describe("listView with filters", () => {
+  it("shows no match, not the first-upload screen, when filters leave nothing", () => {
+    expect(listView(0, false, "", true)).toBe("no-match");
+    expect(listView(0, false, "", false)).toBe("empty");
+    expect(listView(3, false, "", true)).toBe("list");
+  });
+});
+
 describe("uploadDocument into a folder", () => {
   const FOLDER = "0b4f7a8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
 
