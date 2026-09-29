@@ -36,6 +36,10 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 `MODEL_ENABLED=false` (the default) runs everything with no AI. To use
 Ollama, pull `MODEL_CHAT` and `MODEL_EMBED` first, then set it to `true`.
 
+An older `.env` needs `MAX_IMAGE_MB` and `MAX_SHEET_MB` added from
+`.env.example` (a missing setting stops the start with its name), and the new
+`MAX_PAGES` and `MAX_IMAGE_PIXELS` values.
+
 ## 2a. Everything in Docker
 
 ```
@@ -197,7 +201,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **6. File types and upload limits**
 - Check: `: > e.csv; up e.csv`; `printf 'MZ\x90\x00' > a.exe; up a.exe`; any Word file `up letter.docx`; `head -c 52500000 /dev/zero > big.bin; up big.bin`.
-- Expect: empty file `400 empty_file`; unknown type `400 unsupported_type`; a .docx is a zip, so it is accepted (`201`) and ends `needs_reader`; the big file `413 too_large`. The type always comes from the first bytes, never the name. An admin's lower limit (feature 24) also applies. Each type has its own limit (`MAX_UPLOAD_MB` for PDFs, `MAX_IMAGE_MB` for photos and scans, `MAX_SHEET_MB` for spreadsheets and CSV), and the 413 names the limit and the size. The screen refuses a .exe, an empty file or one over its type's limit before sending anything.
+- Expect: empty file `400 empty_file`; unknown type `400 unsupported_type`; a .docx is a zip, so it is accepted (`201`) and ends `needs_reader`; the big file `413 too_large`. The type always comes from the first bytes, never the name. An admin's lower limit (feature 24) also applies. Each type has its own limit (`MAX_UPLOAD_MB` for PDFs, `MAX_IMAGE_MB` for photos and scans, `MAX_SHEET_MB` for spreadsheets and CSV), and the 413 names the limit, plus the size when the file is under the largest limit (`big.bin` is over it, so its reply names only the limit). The screen refuses a .exe, an empty file or one over its type's limit before sending anything.
 - Tests: `test_sniff.py`, `test_upload_service.py`, `test_api_documents.py` (`test_the_customers_own_limit_applies`).
 
 **7. Fingerprint and duplicates**
