@@ -93,6 +93,7 @@ describe("the library in the page address", () => {
   const everything: LibraryState = {
     folderId: FOLDER,
     subfolders: true,
+    trash: false,
     tagIds: [GST, PAID],
     type: "pdf",
     from: "2026-09-01",
@@ -131,9 +132,27 @@ describe("the library in the page address", () => {
     expect(new Set(state.tagIds).size).toBe(state.tagIds.length);
     expect(state.tagIds).toHaveLength(MAX_TAG_FILTERS);
   });
+
+  it("has Trash as its own view, with no folder, and keeps the filters there", () => {
+    const trash: LibraryState = { ...ALL_DOCUMENTS, trash: true, tagIds: [GST] };
+    expect(libraryHref(trash)).toBe(`/documents?trash=1&tag=${GST}`);
+    expect(libraryFromSearch(new URLSearchParams(`trash=1&tag=${GST}`))).toEqual(trash);
+    expect(
+      libraryFromSearch(new URLSearchParams(`trash=1&folder=${FOLDER}&sub=1`)),
+    ).toEqual({ ...ALL_DOCUMENTS, trash: true });
+    expect(libraryFromSearch(new URLSearchParams("trash=yes")).trash).toBe(false);
+  });
 });
 
 describe("listParams", () => {
+  it("asks only for what is in Trash in the Trash view", () => {
+    expect(listParams({ ...ALL_DOCUMENTS, trash: true }, "", 0)).toEqual({
+      limit: 25,
+      offset: 0,
+      trashed: true,
+    });
+  });
+
   it("asks for a page of everything when nothing is chosen", () => {
     expect(listParams(ALL_DOCUMENTS, "", 0)).toEqual({ limit: 25, offset: 0 });
   });

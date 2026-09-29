@@ -31,7 +31,7 @@ import {
   tagsChipText,
   typeChipText,
 } from "@/components/documents/library";
-import { ApiError, uploadDocument } from "@/lib/api";
+import { ApiError, uploadDocument, uploadVersion } from "@/lib/api";
 import type { DocumentStatus, Me, Role } from "@/lib/types";
 
 const MB = 1024 * 1024;
@@ -282,8 +282,8 @@ describe("formatProgressPercent", () => {
 });
 
 describe("deletedMessage", () => {
-  it("names the document, as plain text", () => {
-    expect(deletedMessage("Bill <1>.pdf")).toBe("Deleted Bill <1>.pdf.");
+  it("names the document, as plain text, and says it went to Trash (PRD 1, F5)", () => {
+    expect(deletedMessage("Bill <1>.pdf")).toBe("Moved Bill <1>.pdf to Trash.");
   });
 });
 
@@ -310,7 +310,8 @@ describe("uploadDocument into a folder", () => {
     responseText = "";
     withCredentials = false;
     headers: Record<string, string> = {};
-    upload: { onprogress: ((event: ProgressEvent) => void) | null } = { onprogress: null };
+    upload: { onprogress: ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) | null } =
+      { onprogress: null };
     onload: (() => void) | null = null;
     onerror: (() => void) | null = null;
     open(method: string, url: string) {
@@ -360,6 +361,22 @@ describe("uploadDocument into a folder", () => {
     expect(lastForm().has("folder_id")).toBe(false);
     FakeXhr.sent[0]?.reply(201, { document: { id: "d2" }, duplicate: false });
     await done;
+  });
+
+  it("sends a new version to /documents/{id}/versions, with progress, and no folder", async () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    const fractions: number[] = [];
+    const done = uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), (f) => fractions.push(f));
+    const xhr = FakeXhr.sent[0];
+    expect(xhr?.method).toBe("POST");
+    expect(xhr?.url).toBe("/api/documents/d1/versions");
+    expect(xhr?.headers["X-Requested-With"]).toBe("kaagaz");
+    expect(lastForm().get("file")).toBeInstanceOf(File);
+    expect(lastForm().has("folder_id")).toBe(false);
+    xhr?.upload.onprogress?.({ lengthComputable: true, loaded: 1, total: 4 });
+    expect(fractions).toEqual([0.25]);
+    xhr?.reply(201, { document: { id: "d9", version_no: 2 }, duplicate: false, in_trash: false });
+    await expect(done).resolves.toMatchObject({ document: { id: "d9" }, in_trash: false });
   });
 });
 
