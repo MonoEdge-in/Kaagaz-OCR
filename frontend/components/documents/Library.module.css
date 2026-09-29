@@ -1,4 +1,4 @@
-/* Folders on the documents screen. Tokens only (app/globals.css). */
+/* Folders and filters on the documents screen. Tokens only (app/globals.css). */
 
 /* --- Layout: the folder tree beside the list from 1024 px -------------------- */
 
@@ -217,4 +217,106 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+/* --- Filter chips ----------------------------------------------------------------- */
+
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.filterRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h);
+  max-width: 100%;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.chip:hover {
+  background: var(--surface-2);
+}
+
+/* Set to something: tinted and edged in ink; the words say what. */
+.chip[data-active="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filterPanel {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.filterPanel fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.filterPanel legend {
+  margin-bottom: var(--space-2);
+  padding: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.filterPanel p {
+  margin: 0;
+}
+
+.choices {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-4);
+  margin: 0;
+  padding: 0;
+}
+
+/* A checkbox or radio with its words: the whole line is the target. */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.check input {
+  flex: none;
+}
+
+.dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.dates > * {
+  flex: 1 1 11rem;
 }

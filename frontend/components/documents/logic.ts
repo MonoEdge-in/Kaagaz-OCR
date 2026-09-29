@@ -207,12 +207,20 @@ export function uploadStateText(state: UploadState): string {
   }
 }
 
-/** What the list area shows. A failed refresh keeps the list it already has. */
+/**
+ * What the list area shows. A failed refresh keeps the list it already has.
+ * Nothing left by a search or by filters is "no-match", never "empty".
+ */
 export type ListView = "loading" | "error" | "empty" | "no-match" | "list";
 
-export function listView(total: number | null, failed: boolean, q: string): ListView {
+export function listView(
+  total: number | null,
+  failed: boolean,
+  q: string,
+  filtered = false,
+): ListView {
   if (total === null) return failed ? "error" : "loading";
-  if (total === 0) return q === "" ? "empty" : "no-match";
+  if (total === 0) return q === "" && !filtered ? "empty" : "no-match";
   return "list";
 }
 

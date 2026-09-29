@@ -1,22 +1,18 @@
 "use client";
 
-// /documents: the documents screen. ?folder=… picks the folder
-// (components/documents/libraryQuery.ts). The URL is read inside Suspense, as
-// Next.js requires.
+// /documents: the documents screen. ?folder=…&sub=1&tag=…&type=…&from=…&to=…
+// pick the folder and the filters (components/documents/libraryQuery.ts). The
+// URL is read inside Suspense, as Next.js requires.
 
 import { useSearchParams } from "next/navigation";
 import { Suspense, useMemo } from "react";
 import { DocumentsView } from "@/components/documents/DocumentsView";
-import { ALL_DOCUMENTS, libraryFromSearch } from "@/components/documents/libraryQuery";
+import { libraryFromSearch } from "@/components/documents/libraryQuery";
 
 function DocumentsRoute() {
   const search = useSearchParams().toString();
   // One view object per address, so the screen asks for its list only when the address changes.
-  // Only the folder is read from it: this screen has no filters.
-  const library = useMemo(
-    () => ({ ...ALL_DOCUMENTS, folderId: libraryFromSearch(new URLSearchParams(search)).folderId }),
-    [search],
-  );
+  const library = useMemo(() => libraryFromSearch(new URLSearchParams(search)), [search]);
   return <DocumentsView library={library} />;
 }
 

@@ -2,9 +2,9 @@
 
 // The folder tree: "All documents", then every folder, nested and sorted by
 // name (folderTree.ts). Each entry is a link to that folder's view, so it can
-// be opened in a new tab and Back returns to the folder before. It is shown
-// beside the list from 1024 px and inside a Drawer below that; the documents
-// screen renders it in both places.
+// be opened in a new tab and Back returns to the folder before. The filters in
+// use stay as they are. It is shown beside the list from 1024 px and inside a
+// Drawer below that; the documents screen renders it in both places.
 
 import Link from "next/link";
 import { Icon } from "@/components/ui/Icon";

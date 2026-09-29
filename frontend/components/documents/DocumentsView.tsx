@@ -3,11 +3,11 @@
 // The documents screen: the page header with "Upload files"; the folder tree
 // (beside the list from 1024 px, in a drawer below that); where you are, with
 // New folder, Rename, Move and Delete; the dropzone, which uploads into the
-// folder being viewed; uploads in progress; search; the list and its pages.
-// The folder lives in the page address (libraryQuery.ts), so a reload keeps
-// it and Back returns to the folder before. While any document is still
-// being checked or read, the list is asked for again every 3 seconds; once
-// all have settled, it stops.
+// folder being viewed; uploads in progress; search and the filter chips; the
+// list and its pages. The folder and the filters live in the page address
+// (libraryQuery.ts), so a reload keeps them and Back returns to the folder
+// before. While any document is still being checked or read, the list is
+// asked for again every 3 seconds; once all have settled, it stops.
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -16,14 +16,16 @@ import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { ApiError, listDocuments, listFolders } from "@/lib/api";
+import { ApiError, listDocuments, listFolders, listTags } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import type { DocumentList, Folder } from "@/lib/types";
+import type { DocumentList, Folder, Tag } from "@/lib/types";
 import { DocumentsTable } from "./DocumentsTable";
 import { FolderActions } from "./FolderActions";
 import { FolderNav } from "./FolderNav";
 import { buildTree, folderPath } from "./folderTree";
-import { libraryHref, listParams } from "./libraryQuery";
+import { noMatchTitle } from "./library";
+import { LibraryFilters } from "./LibraryFilters";
+import { ALL_DOCUMENTS, isFiltered, libraryHref, listParams } from "./libraryQuery";
 import type { LibraryState } from "./libraryQuery";
 import {
   ACCEPT_ATTRIBUTE,
@@ -57,7 +59,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const viewKey = libraryHref(library);
   const [draft, setDraft] = useState("");
-  // The page belongs to the view it was turned in: a new folder starts at page 1.
+  // The page belongs to the view it was turned in: a new folder or filter starts at page 1.
   const [search, setSearch] = useState({ view: viewKey, q: "", offset: 0 });
   const q = search.q;
   const offset = search.view === viewKey ? search.offset : 0;
@@ -68,6 +70,9 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [foldersError, setFoldersError] = useState<string | null>(null);
   const [foldersVersion, setFoldersVersion] = useState(0);
+  const [tags, setTags] = useState<Tag[] | null>(null);
+  const [tagsError, setTagsError] = useState<string | null>(null);
+  const [tagsVersion, setTagsVersion] = useState(0);
   const [foldersOpen, setFoldersOpen] = useState(false);
   const uploads = useUploads(() => setReload((n) => n + 1));
 
@@ -106,6 +111,23 @@ export function DocumentsView({ library }: { library: LibraryState }) {
 
   useEffect(() => {
     let cancelled = false;
+    listTags().then(
+      (result) => {
+        if (cancelled) return;
+        setTags(result.items);
+        setTagsError(null);
+      },
+      (caught: unknown) => {
+        if (!cancelled) setTagsError(errorText(caught));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [tagsVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
     listDocuments(listParams(library, q, offset)).then(
       (list) => {
         if (cancelled) return;
@@ -121,7 +143,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     };
   }, [library, viewKey, q, offset, reload]);
 
-  // A new folder shows "loading" until its own list arrives.
+  // A new folder or filter shows "loading" until its own list arrives.
   const shown = loaded && loaded.view === viewKey ? loaded : null;
   const error = failure && failure.view === viewKey ? failure.message : null;
   const items = shown?.list.items;
@@ -134,6 +156,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const tree = useMemo(() => buildTree(folders ?? []), [folders]);
   const current = library.folderId === null ? null : (tree.byId.get(library.folderId) ?? null);
   const folderGone = folders !== null && library.folderId !== null && current === null;
+  const filtered = isFiltered(library);
   // The folder in the address, even before the folder list has loaded.
   const uploadInto = library.folderId ?? undefined;
 
@@ -146,11 +169,15 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     if (files.length > 0) addFiles(files);
   }
 
-  // After a folder is deleted, the address is rewritten in place to show the
-  // folder above it. Next.js syncs useSearchParams with history.replaceState
-  // without asking the server.
+  // A filter or folder change rewrites the address in place. Next.js syncs
+  // useSearchParams with history.replaceState without asking the server, so a
+  // ticked box shows as ticked at once.
   function show(next: LibraryState) {
     window.history.replaceState(null, "", libraryHref(next));
+  }
+
+  function clearFilters() {
+    show({ ...ALL_DOCUMENTS, folderId: library.folderId, subfolders: library.subfolders });
   }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -190,9 +217,9 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   }
 
   const list = shown?.list;
-  const view = listView(list ? list.total : null, error !== null, q);
+  const view = listView(list ? list.total : null, error !== null, q, filtered);
   const pages = list ? pageInfo(offset, list.items.length, list.total) : null;
-  // The search stays while the next list loads.
+  // Search and filters stay while the next list loads, so an open filter panel stays open.
   const showControls = view === "list" || view === "no-match" || (loaded !== null && !shown);
   const placeName = current?.folder.name ?? (library.folderId === null ? "All documents" : "Folder");
   const above = current ? folderPath(tree, current.folder.id).slice(0, -1) : [];
@@ -377,6 +404,17 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     </div>
                   )}
 
+                  {showControls && (
+                    <LibraryFilters
+                      library={library}
+                      tags={tags}
+                      tagsError={tagsError}
+                      onRetryTags={() => setTagsVersion((n) => n + 1)}
+                      showSubfolders={current !== null && current.children.length > 0}
+                      onChange={show}
+                    />
+                  )}
+
                   {error && (
                     <div className={styles.errorBanner} role="alert">
                       <Icon name="alert" className={styles.errorIcon} />
@@ -407,12 +445,21 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   {view === "no-match" && (
                     <EmptyState
                       icon="search-off"
-                      title={`No document names contain “${q}”.`}
+                      title={noMatchTitle(q, filtered)}
                       headingLevel={3}
                       action={
-                        <button type="button" className="btn" onClick={clearSearch}>
-                          Clear search
-                        </button>
+                        <>
+                          {q !== "" && (
+                            <button type="button" className="btn" onClick={clearSearch}>
+                              Clear search
+                            </button>
+                          )}
+                          {filtered && (
+                            <button type="button" className="btn" onClick={clearFilters}>
+                              Clear filters
+                            </button>
+                          )}
+                        </>
                       }
                     />
                   )}
