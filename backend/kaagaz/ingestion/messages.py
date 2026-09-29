@@ -12,6 +12,10 @@ from kaagaz.ingestion.policy import Kind
 MB = 1024 * 1024
 
 _TOO_LARGE: dict[Kind, str] = {
+    # The server never sends this one: the PDF limit is MAX_UPLOAD_MB (or the
+    # customer's lower one), the largest of all, so an upload over it stops while
+    # it is read, before its type is known (over_every_limit_message). It stays
+    # so the words match the screen's, which checks by the file name.
     "pdf": "PDFs can be up to {limit} MB. This one is {size} MB. Split it or save it smaller and try again.",
     "image": (
         "Photos and scans can be up to {limit} MB. This one is {size} MB."
