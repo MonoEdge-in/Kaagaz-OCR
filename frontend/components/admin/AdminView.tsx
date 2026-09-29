@@ -2,15 +2,18 @@
 
 // The admin screen: four tabs (Users, Settings, Activity, Numbers) as a
 // segmented control that scrolls sideways on its own at small widths. Only the
-// open tab is mounted, so each one loads its data when it is opened. The link is
-// shown to admins only, and the server refuses the data to anyone else.
+// open tab is mounted, so each one loads its data when it is opened.
+//
+// It opens only for an admin session (PRD A1): anyone else, including an admin
+// who signed in at /login, is sent to /admin/login. The link is shown to admin
+// sessions only, and the server refuses the data to anyone else.
 
-import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { EmptyState } from "@/components/ui/EmptyState";
 import { useSession } from "@/lib/session";
 import { ActivityPanel } from "./ActivityPanel";
-import { TABS, tabAfterKey } from "./logic";
+import { TABS, adminGate, tabAfterKey } from "./logic";
 import type { TabId } from "./logic";
 import { NumbersPanel } from "./NumbersPanel";
 import { SettingsPanel } from "./SettingsPanel";
@@ -19,16 +22,22 @@ import styles from "./Admin.module.css";
 
 export function AdminView() {
   const { me } = useSession();
+  const router = useRouter();
+  const gate = adminGate(me);
   const [active, setActive] = useState<TabId>("users");
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  if (me.user.role !== "admin") {
+  useEffect(() => {
+    if (gate === "admin_sign_in") router.replace("/admin/login");
+  }, [gate, router]);
+
+  if (gate !== "allow") {
     return (
       <div className="page">
-        <h1>Admin</h1>
-        <EmptyState icon="admin" title="Admin is for admins">
-          Only an admin can use this page. Ask your account admin if you need something changed.
-        </EmptyState>
+        <p className={`delayed ${styles.redirect}`} role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" />
+          Taking you to admin sign-in…
+        </p>
       </div>
     );
   }

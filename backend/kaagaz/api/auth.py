@@ -1,23 +1,38 @@
-"""Sign-in: password hashes, the session cookie, who the caller is, and CSRF.
+"""Sign-in: password hashes, the session and enrol tokens, who the caller is, and CSRF.
 
-Why each piece (FULL-BUILD-SPEC section 3):
+Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
 
 * **Passwords** are hashed with scrypt (standard library), 16 random salt
   bytes, n=2**14, r=8, p=1, 32 bytes out, stored as
   ``scrypt$16384$8$1$<salt b64>$<hash b64>``, and compared in constant time.
 * **The session** is a cookie ``<payload b64url>.<HMAC-SHA256 b64url>``. The
-  payload is ``{"uid","cid","role","exp"}``. Nothing is stored server side,
-  so every request re-checks, with one query inside ``db.customer(cid)``, that
-  the user still exists, is not disabled and still has that role.
+  payload is ``{"uid","cid","role","scope","ver","exp"}`` and the MAC is over
+  ``b"session\\x00" + body``. ``scope`` is "app" (from /login) or "admin" (from
+  /admin/login, admins only); ``ver`` is the user's ``session_version``. Nothing
+  is stored server side, so every request re-checks, with one query inside
+  ``db.customer(cid)``, that the user still exists, is not disabled, still has
+  that role and still has that session version. Raising the version (a new
+  password, "sign out everywhere", disabling, a 2FA reset) ends every other
+  session at its next request.
+* **The enrol token** carries a pending TOTP secret between an admin's first
+  sign-in and their first code: ``{"uid","cid","ver","sec","exp"}``, MAC over
+  ``b"enrol\\x00" + body``, 10 minutes. The two purposes have different MAC
+  inputs and different fields, so neither token ever reads as the other.
+* **Strict claims**: a token with a missing, extra or wrongly typed field is
+  refused, so a Sprint 1 cookie (no scope, no ver) is refused and its user
+  signs in once more.
 * **The customer always comes from the session**, never from the request: the
   signed ``cid`` is the only customer id any route uses.
+* **The password-change gate is inside ``current_user``** (deny by default):
+  while ``must_change_password`` is set, every route refuses with 403
+  ``password_change_required``, except the few that use
+  ``current_user_allow_password_change`` (/auth/password, /auth/logout, /auth/me).
 * **CSRF**: every request that is not GET, HEAD or OPTIONS must carry
   ``X-Requested-With: kaagaz``. A cross-site form cannot add a header, and a
   cross-site script cannot either without CORS, which the API never allows.
 
-PROVISIONAL (security configuration is Vrushit's): logout only clears the
-cookie, so a copied token stays valid until it expires; a password change
-does not end other sessions. Ending them needs a session version column.
+PROVISIONAL (security configuration is Vrushit's): logout only clears this
+browser's cookie; "sign out everywhere" is what ends a copied token early.
 """
 
 import base64
@@ -44,6 +59,8 @@ SESSION_COOKIE = "kaagaz_session"
 CSRF_HEADER = "x-requested-with"
 CSRF_VALUE = "kaagaz"
 ROLES = ("member", "reviewer", "admin")
+SCOPES = ("app", "admin")
+ENROL_SECONDS = 10 * 60
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_LEN = 2**14, 8, 1, 32
@@ -97,57 +114,182 @@ def _scrypt(password: str, salt: bytes) -> bytes:
     )
 
 
-# --- session tokens ------------------------------------------------------------
+# --- session and enrol tokens ----------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SessionClaims:
     user_id: str
     customer_id: str
     role: str
+    scope: str  # "app" or "admin"
+    session_version: int
     expires_at: int  # seconds since the epoch
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EnrolClaims:
+    user_id: str
+    customer_id: str
+    session_version: int
+    sealed_secret: str  # SecretBox.seal(pending secret, aad=user_id)
+    expires_at: int  # seconds since the epoch
+
+
+_SESSION_PURPOSE = b"session"
+_ENROL_PURPOSE = b"enrol"
+_SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp"})
+_ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
+
+
+def session_seconds(scope: str, settings: Settings) -> int:
+    """How long a session of this scope lasts: ADMIN_SESSION_MINUTES or SESSION_HOURS."""
+    if scope == "admin":
+        return settings.admin_session_minutes * 60
+    if scope == "app":
+        return settings.session_hours * 3600
+    raise ValueError("unknown session scope")
+
+
+def new_session(
+    *,
+    user_id: str,
+    customer_id: str,
+    role: str,
+    scope: str,
+    session_version: int,
+    settings: Settings,
+    now: int,
+) -> SessionClaims:
+    """Claims for a new session that ends one scope lifetime after ``now``."""
+    return SessionClaims(
+        user_id=user_id,
+        customer_id=customer_id,
+        role=role,
+        scope=scope,
+        session_version=session_version,
+        expires_at=now + session_seconds(scope, settings),
+    )
+
+
 def sign_session(claims: SessionClaims, secret: str) -> str:
-    payload = json.dumps(
-        {"uid": claims.user_id, "cid": claims.customer_id, "role": claims.role, "exp": claims.expires_at},
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    body = _b64url(payload)
-    return body + "." + _b64url(_mac(body, secret))
+    return _sign(
+        {
+            "uid": claims.user_id,
+            "cid": claims.customer_id,
+            "role": claims.role,
+            "scope": claims.scope,
+            "ver": claims.session_version,
+            "exp": claims.expires_at,
+        },
+        _SESSION_PURPOSE,
+        secret,
+    )
 
 
 def read_session(token: str, secret: str, now: int) -> SessionClaims | None:
-    """The claims of a genuine, unexpired token, else None. Constant-time check."""
+    """The claims of a genuine, unexpired session token, else None. Constant-time check."""
+    return _claims(_verified(token, _SESSION_PURPOSE, secret), now)
+
+
+def new_enrol(
+    *, user_id: str, customer_id: str, session_version: int, sealed_secret: str, now: int
+) -> EnrolClaims:
+    """Claims for an enrol token that ends ENROL_SECONDS (10 minutes) after ``now``."""
+    return EnrolClaims(
+        user_id=user_id,
+        customer_id=customer_id,
+        session_version=session_version,
+        sealed_secret=sealed_secret,
+        expires_at=now + ENROL_SECONDS,
+    )
+
+
+def sign_enrol(claims: EnrolClaims, secret: str) -> str:
+    return _sign(
+        {
+            "uid": claims.user_id,
+            "cid": claims.customer_id,
+            "ver": claims.session_version,
+            "sec": claims.sealed_secret,
+            "exp": claims.expires_at,
+        },
+        _ENROL_PURPOSE,
+        secret,
+    )
+
+
+def read_enrol(token: str, secret: str, now: int) -> EnrolClaims | None:
+    """The claims of a genuine, unexpired enrol token, else None. Constant-time check."""
+    return _enrol_claims(_verified(token, _ENROL_PURPOSE, secret), now)
+
+
+def _sign(payload: dict[str, Any], purpose: bytes, secret: str) -> str:
+    body = _b64url(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
+    return body + "." + _b64url(_mac(purpose, body, secret))
+
+
+def _verified(token: str, purpose: bytes, secret: str) -> Any:
+    """The decoded JSON body of a token whose MAC is right for this purpose, else None."""
     body, dot, signature = token.partition(".")
-    if not dot or not body or not signature:
+    if not dot or not body or not signature or not body.isascii():
         return None
     try:
         given = _unb64url(signature)
-        if not hmac.compare_digest(given, _mac(body, secret)):
+        if not hmac.compare_digest(given, _mac(purpose, body, secret)):
             return None
-        data = json.loads(_unb64url(body))
+        return json.loads(_unb64url(body))
     except (binascii.Error, ValueError):
         return None
-    return _claims(data, now)
 
 
 def _claims(data: Any, now: int) -> SessionClaims | None:
-    if not isinstance(data, dict):
+    """Strict: exactly the six fields, each of its type; scope "admin" needs role "admin"."""
+    if not isinstance(data, dict) or set(data) != _SESSION_FIELDS:
         return None
-    uid, cid, role, exp = data.get("uid"), data.get("cid"), data.get("role"), data.get("exp")
+    uid, cid, role, scope = data["uid"], data["cid"], data["role"], data["scope"]
+    ver, exp = data["ver"], data["exp"]
     if not (isinstance(uid, str) and isinstance(cid, str) and isinstance(role, str)):
         return None
-    if not isinstance(exp, int) or isinstance(exp, bool) or exp <= now or role not in ROLES:
+    if not isinstance(scope, str) or scope not in SCOPES or role not in ROLES:
+        return None
+    if scope == "admin" and role != "admin":
+        return None
+    if not (_is_version(ver) and _is_int(exp)) or exp <= now:
         return None
     if not (_is_uuid(uid) and _is_uuid(cid)):
         return None
-    return SessionClaims(user_id=uid, customer_id=cid, role=role, expires_at=exp)
+    return SessionClaims(
+        user_id=uid, customer_id=cid, role=role, scope=scope, session_version=ver, expires_at=exp
+    )
 
 
-def _mac(body: str, secret: str) -> bytes:
-    return hmac.new(secret.encode(), body.encode("ascii"), hashlib.sha256).digest()
+def _enrol_claims(data: Any, now: int) -> EnrolClaims | None:
+    """Strict: exactly the five fields, each of its type."""
+    if not isinstance(data, dict) or set(data) != _ENROL_FIELDS:
+        return None
+    uid, cid, ver, sec, exp = data["uid"], data["cid"], data["ver"], data["sec"], data["exp"]
+    if not (isinstance(uid, str) and isinstance(cid, str) and isinstance(sec, str) and sec):
+        return None
+    if not (_is_version(ver) and _is_int(exp)) or exp <= now:
+        return None
+    if not (_is_uuid(uid) and _is_uuid(cid)):
+        return None
+    return EnrolClaims(user_id=uid, customer_id=cid, session_version=ver, sealed_secret=sec, expires_at=exp)
+
+
+def _is_int(value: object) -> bool:
+    """A JSON whole number: an int and not a bool (``True`` is an int in Python)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_version(value: object) -> bool:
+    """A session version: a whole number of at least 1, like the column's CHECK."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _mac(purpose: bytes, body: str, secret: str) -> bytes:
+    return hmac.new(secret.encode(), purpose + b"\x00" + body.encode("ascii"), hashlib.sha256).digest()
 
 
 def _b64url(raw: bytes) -> str:
@@ -174,11 +316,16 @@ def session_claims(request: Request, settings: Settings, now: int) -> SessionCla
     return None if not token else read_session(token, settings.session_secret, now)
 
 
-def set_session_cookie(response: Response, token: str, settings: Settings) -> None:
+def set_session_cookie(response: Response, claims: SessionClaims, settings: Settings, *, now: int) -> None:
+    """Sign ``claims`` and set them as the cookie. Its max-age is the token's own
+    remaining lifetime (``expires_at - now``), so the two never disagree."""
+    max_age = claims.expires_at - now
+    if max_age <= 0:
+        raise ValueError("the session has already expired")
     response.set_cookie(
         SESSION_COOKIE,
-        token,
-        max_age=settings.session_hours * 3600,
+        sign_session(claims, settings.session_secret),
+        max_age=max_age,
         httponly=True,
         samesite="lax",
         secure=settings.cookie_secure,
@@ -195,7 +342,7 @@ def clear_session_cookie(response: Response, settings: Settings) -> None:
 # --- who is calling ------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class CurrentUser:
     user_id: str
     customer_id: str
@@ -203,23 +350,44 @@ class CurrentUser:
     display_name: str
     role: str
     customer_name: str
+    scope: str  # the session's: "app" or "admin"
+    session_version: int
+    must_change_password: bool
 
 
 def current_user(request: Request) -> CurrentUser:
-    """The signed-in user, re-checked in the database on every request. 401 otherwise."""
+    """The signed-in user, re-checked in the database on every request.
+
+    401 ``not_signed_in`` unless the session is genuine and still matches the
+    user (enabled, same role, same session version). Then 403
+    ``password_change_required`` while the user must set a new password."""
+    user = _signed_in(request)
+    if user.must_change_password:
+        raise ApiError(403, "password_change_required")
+    return user
+
+
+def current_user_allow_password_change(request: Request) -> CurrentUser:
+    """``current_user`` without the password-change gate. Only for /auth/password,
+    /auth/logout and /auth/me."""
+    return _signed_in(request)
+
+
+def _signed_in(request: Request) -> CurrentUser:
     context = get_context(request)
     now = int(context.clock().timestamp())
     claims = session_claims(request, context.settings, now)
     if claims is None:
         raise ApiError(401, "not_signed_in")
-    user = load_user(context.db, claims.customer_id, claims.user_id)
-    if user is None or user.role != claims.role:
+    user = load_user(context.db, claims.customer_id, claims.user_id, scope=claims.scope)
+    if user is None or user.role != claims.role or user.session_version != claims.session_version:
         raise ApiError(401, "not_signed_in")
     return user
 
 
-def load_user(db: Database, customer_id: str, user_id: str) -> CurrentUser | None:
-    """The enabled user with this id in this customer, or None."""
+def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> CurrentUser | None:
+    """The enabled user with this id in this customer, or None. ``scope`` is the
+    session's (at sign-in, the one being started). One indexed query."""
     with db.customer(customer_id) as conn:
         row = users_sql.session_user(conn, customer_id, user_id)
     if row is None or row["disabled"]:
@@ -231,10 +399,25 @@ def load_user(db: Database, customer_id: str, user_id: str) -> CurrentUser | Non
         display_name=str(row["display_name"]),
         role=str(row["role"]),
         customer_name=str(row["customer_name"]),
+        scope=scope,
+        session_version=int(row["session_version"]),
+        must_change_password=bool(row["must_change_password"]),
     )
 
 
 User = Annotated[CurrentUser, Depends(current_user)]
+UserAllowPasswordChange = Annotated[CurrentUser, Depends(current_user_allow_password_change)]
+
+
+def require_admin_session(user: User) -> CurrentUser:
+    """For the /admin router: an admin signed in at /admin/login, else 403
+    ``admin_session_required`` (an admin's own app session included)."""
+    if user.scope != "admin" or user.role != "admin":
+        raise ApiError(403, "admin_session_required")
+    return user
+
+
+AdminSession = Annotated[CurrentUser, Depends(require_admin_session)]
 
 
 def require_role(*roles: str) -> Callable[[CurrentUser], CurrentUser]:
@@ -259,16 +442,3 @@ def csrf_guard(request: Request) -> None:
         return
     if request.headers.get(CSRF_HEADER) != CSRF_VALUE:
         raise ApiError(403, "csrf")
-
-
-def me_json(user: CurrentUser) -> dict[str, Any]:
-    """The ``Me`` type of frontend/lib/types.ts."""
-    return {
-        "user": {
-            "id": user.user_id,
-            "email": user.email,
-            "display_name": user.display_name,
-            "role": user.role,
-        },
-        "customer": {"id": user.customer_id, "name": user.customer_name},
-    }

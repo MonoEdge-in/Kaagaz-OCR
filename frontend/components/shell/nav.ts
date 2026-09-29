@@ -1,10 +1,10 @@
-// Which links the shell shows for a role. This one list feeds both the desktop
-// sidebar and the phone drawer (ShellMenu), so the two can never disagree. The
-// server still refuses a page's data to someone without the role; hiding a
-// link is only a convenience.
+// Which links the shell shows for a role and session. This one list feeds both
+// the desktop sidebar and the phone drawer (ShellMenu), so the two can never
+// disagree. The server still refuses a page's data to someone without the role
+// or the admin session; hiding a link is only a convenience.
 
 import type { IconName } from "@/components/ui/icons";
-import type { Role } from "@/lib/types";
+import type { Role, SessionScope } from "@/lib/types";
 
 export interface NavLink {
   href: string;
@@ -12,18 +12,21 @@ export interface NavLink {
   icon: IconName;
 }
 
-const LINKS: { link: NavLink; roles: readonly Role[] }[] = [
+const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope }[] = [
   {
     link: { href: "/documents", label: "Documents", icon: "documents" },
     roles: ["member", "reviewer", "admin"],
   },
   { link: { href: "/chat", label: "Ask", icon: "chat" }, roles: ["member", "reviewer", "admin"] },
   { link: { href: "/review", label: "Review", icon: "review" }, roles: ["reviewer", "admin"] },
-  { link: { href: "/admin", label: "Admin", icon: "admin" }, roles: ["admin"] },
+  // PRD A1: an admin signed in at /login gets no Admin menu.
+  { link: { href: "/admin", label: "Admin", icon: "admin" }, roles: ["admin"], scope: "admin" },
 ];
 
-export function navLinks(role: Role): NavLink[] {
-  return LINKS.filter((entry) => entry.roles.includes(role)).map((entry) => entry.link);
+export function navLinks(role: Role, scope: SessionScope): NavLink[] {
+  return LINKS.filter(
+    (entry) => entry.roles.includes(role) && (entry.scope === undefined || entry.scope === scope),
+  ).map((entry) => entry.link);
 }
 
 /** A link is current on its own path and on every path below it (/documents/abc). */

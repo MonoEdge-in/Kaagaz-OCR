@@ -24,10 +24,32 @@ export type LabelReason =
   | "corrected"
   | "learned_correction";
 
+/** "admin" only for a session started at /admin/login (PRD A1). */
+export type SessionScope = "app" | "admin";
+
+// must_change_password and session are always sent (backend api/views.py
+// me_json). Read them through components/shell/gate.ts, never directly, so
+// each rule lives in one place.
 export interface Me {
-  user: { id: string; email: string; display_name: string; role: Role };
+  user: {
+    id: string;
+    email: string;
+    display_name: string;
+    role: Role;
+    must_change_password: boolean;
+  };
   customer: { id: string; name: string };
+  session: { scope: SessionScope };
 }
+
+/** The first admin sign-in, before 2FA is set up: the key to type into the app. */
+export interface EnrolRequired {
+  enrol_required: true;
+  enrol_token: string; // lasts 10 minutes
+  secret: string; // base32, in groups of 4
+}
+
+export type AdminLoginResult = Me | EnrolRequired;
 
 // Where a value sits. A box is in fractions (0 to 1) of the page's width and
 // height, origin top left. A cell is 1-based; for spreadsheets, page = sheet.
@@ -170,6 +192,15 @@ export interface AdminUser {
   role: Role;
   disabled: boolean;
   created_at: string;
+  locked_until: string | null; // ISO 8601; null when not locked (a passed lock is sent as null)
+  totp_enabled: boolean;
+  must_change_password: boolean;
+}
+
+/** A reset password: the temporary password is in this one reply only. */
+export interface PasswordReset {
+  user: AdminUser;
+  temporary_password: string;
 }
 
 export interface CustomerSettings {

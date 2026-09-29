@@ -6,6 +6,10 @@
 * ``seed-demo``: two made-up customers for the laptop, "Sharma Traders" and
   "Mehta Textiles", each with an admin, a reviewer and a member. Safe to run
   again: a customer whose admin already exists is skipped.
+* ``reset-admin-2fa --email``: turn an admin's two-step code off (PRD 1 A6), for
+  the last admin of a customer, who has no other admin to do it. Their sessions
+  end and their next admin sign-in sets a new code up. It needs no password:
+  whoever runs it already has the server.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -61,6 +65,9 @@ def _parser() -> argparse.ArgumentParser:
     user.add_argument("--role", required=True, choices=ROLES)
 
     commands.add_parser("seed-demo", help="two made-up customers for the laptop")
+
+    reset = commands.add_parser("reset-admin-2fa", help="turn an admin's two-step code off")
+    reset.add_argument("--email", required=True)
     return parser
 
 
@@ -106,6 +113,7 @@ def _create_user(db: Database, customer_id: str, email: str, name: str, role: st
                 display_name=name,
                 role=role,
                 password_hash=hash_password(password),
+                must_change_password=False,
             )
             audit.record(
                 conn,
@@ -119,6 +127,28 @@ def _create_user(db: Database, customer_id: str, email: str, name: str, role: st
     except users_sql.EmailTaken:
         raise CliError("that e-mail is already in use") from None
     return str(row["id"])
+
+
+def _reset_admin_2fa(db: Database, email: str) -> str:
+    """Clear the admin's two-step code and raise their session version. Returns their id."""
+    with db.system() as conn:
+        found = users_sql.login_lookup(conn, email)
+    if found is None or found.role != "admin":
+        raise CliError("no admin has that e-mail")
+    with db.customer(found.customer_id) as conn:
+        if users_sql.reset_totp(conn, found.customer_id, found.user_id) is None:
+            raise CliError("no admin has that e-mail")
+        # PROVISIONAL: "user.reset_totp", the same action as the admin screen's 2FA reset.
+        audit.record(
+            conn,
+            found.customer_id,
+            actor_user_id=None,
+            action="user.reset_totp",
+            target_type="user",
+            target_id=found.user_id,
+            details={"by": "cli"},
+        )
+    return found.user_id
 
 
 def _seed_demo(db: Database, password: str, out: TextIO) -> None:
@@ -161,6 +191,9 @@ def main(
             password = _password(env, ADMIN_ENV_VAR, ask)
             user_id = _create_user(db, args.customer_id, args.email, args.name, args.role, password)
             stdout.write(f"user {user_id}\n")
+        elif args.command == "reset-admin-2fa":
+            user_id = _reset_admin_2fa(db, args.email)
+            stdout.write(f"user {user_id}: 2FA reset, they set it up again at the next admin sign-in\n")
         else:
             _seed_demo(db, _password(env, DEMO_ENV_VAR, None), stdout)
     except (CliError, SettingsError) as error:
