@@ -8,20 +8,21 @@ Customers upload business documents (invoices, registers, receipts, statements, 
 
 **People.** Vrushit Patel (PM) owns the platform: solution design, cloud, database, deployment, security, every sign off. Tushar owns the application: everything a user touches. You are working with Tushar. Every line you write will be read by Vrushit before it merges.
 
-**Plan.** Scope and dates come from the Delivery Plan: https://claude.ai/artifact/Jeebdv68HRvxr8rTMYKe6s
+**Plan.** The build before handover runs Wed 30 Sep to Fri 2 Oct 2026, in three PRDs (sprint tag `s2`). Scope, names and work packages come from them:
 
-| Sprint | Dates 2026 | Goal |
+| PRD | Build days | Scope |
 |---|---|---|
-| 1 Foundation | 23 to 29 Sep | Upload, store, prepare, read clean digital files. Customers separated. |
-| 2 The Answer | 30 Sep to 7 Oct | Ask a question, get a cited answer. MVP. |
-| 3 Trust | 8 to 14 Oct | Verified and needs review labels. Corrections. |
-| 4 Launch | 15 to 22 Oct | Safe, measured, live. |
+| 1 Accounts and Files: https://claude.ai/artifact/1wgupLxkQ95aZonGgmSfQN | 30 Sep | Sign-in, upload limits, file storage, folders, tags, Trash, versions |
+| 2 Document Understanding: https://claude.ai/artifact/WNnL11dDXw2Lozt1679RMx | 30 Sep to 1 Oct | Page route, PaddleOCR-VL, Qwen, cross-page pieces, document card, invoice tables, checks |
+| 3 Search and Handover: https://claude.ai/artifact/448jQMudfNE8JJssD2UTNS | 2 Oct | Embeddings, search, chat follow-ups, viewer panels, golden questions, handover |
 
-Every sprint opens with Tushar's PRD on the sprint PRD issue, reviewed by Vrushit. No code before it is agreed. PRDs are never stored in the repository.
+After handover: the NL-to-SQL agent and hosting in AWS. The architecture page for both: https://claude.ai/artifact/7ATLDAJRxG3Qaab16NhjN8
 
-**In scope at launch.** English documents of any file type. Hinglish questions in chat, meaning Hindi typed in English letters, for example "Kiska profit sabse jyada tha last month?". A highlighted source page on every answer. Verified and needs review labels. Several customer companies separated from day one. A correction screen that remembers corrections per customer.
+Build one PRD work package per branch, as the PRD names it. PRDs are never stored in the repository.
 
-**Not at launch.** Reading Hindi or Devanagari documents. Do not build for it.
+**In scope.** Documents of any file type in English, Hindi and Marathi (Latin and Devanagari scripts). Answers in English only; cited text keeps its own script. Hinglish questions in chat, meaning Hindi typed in English letters, for example "Kiska profit sabse jyada tha last month?". A highlighted source page on every answer. Verified and needs review labels. Several customer companies separated from day one. A correction screen that remembers corrections per customer.
+
+**Not in scope.** Answers in Hindi or Marathi. Promising scripts other than Latin and Devanagari.
 
 ## Never do these
 
@@ -86,10 +87,10 @@ If code depends on one of these and it is not written down in the Decisions sect
 
 | Decision | Due |
 |---|---|
-| Which AI reads scanned pages | Fri 25 Sep |
-| The second, independent reader | Tue 6 Oct |
 | What "verified" promises, in writing | Fri 9 Oct |
 | The go or no go bar for launch, as a number | Fri 16 Oct |
+
+Made on 29 Sep 2026 and recorded in `docs/architecture.md`: the scan reader (PaddleOCR-VL), the second reader for scans (Qwen vision on value crops), the models, and the design.
 
 Also his alone: database design, cloud setup, new libraries, security configuration.
 
@@ -104,7 +105,7 @@ Also his alone: database design, cloud setup, new libraries, security configurat
 
 ## Stack
 
-AWS in Mumbai (ap-south-1). Python with FastAPI. Next.js with PDF.js. PostgreSQL with pgvector, full text search and fuzzy matching. S3 for files, one prefix per customer. SQS with worker processes. AWS CDK for infrastructure.
+Python with FastAPI. Next.js with PDF.js. PostgreSQL with pgvector, full text search and fuzzy matching. S3 API for files (SeaweedFS on the laptop), one prefix per customer. SQS API with worker processes (ElasticMQ on the laptop). PaddleOCR-VL in its own container and Qwen models through Ollama. Everything runs with Docker Compose. After handover: AWS in Mumbai (ap-south-1), with its infrastructure as code.
 
 Folders: `backend/`, `frontend/`, `infra/`, `docs/`.
 

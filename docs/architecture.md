@@ -122,15 +122,25 @@ The `isolation` tests prove both on every pull request.
 | Numbers only come from fixed, tested queries | AI-written SQL can be confidently wrong |
 | No masking of Aadhaar or PAN numbers: they're kept and shown exactly as read (decided 28 Sep 2026) | Replaces the earlier mask-at-capture rule; the masking code is removed |
 | Everything works with the AI off (`MODEL_ENABLED=false`) | The laptop and CI run without models; a model that's down only loses meaning search |
+| The design is this chat product plus the pipeline upgrades in PRDs 1 to 3 (29 Sep 2026). The NL-to-SQL agent and AWS hosting come after handover | Settles the chat product versus Document-to-SQL question: the pipeline's typed tables and reader are built into this product |
+| Documents in English, Hindi and Marathi; answers in English only (29 Sep 2026) | Customers' papers include Hindi and Marathi; one answer language keeps checking simple |
+| Scans are read by PaddleOCR-VL, in its own container; RapidOCR stays as the fallback engine (`OCR_ENGINE`) | Reads the three languages with layout and tables; the fallback runs on weak laptops |
+| The second reading of a scanned value is Qwen vision on that value's cropped box | Independent of the OCR engine, and only as costly as the number of values |
+| Models: Qwen3.5 4B for chat, extraction and vision; Qwen3-Embedding-0.6B for meaning vectors, all through Ollama | Fits a 16 GB laptop next to the OCR model; 9B is a setting change for a demo machine |
+| The queue worker stays; Temporal isn't used | Retries, leases and a failure bin already work; Temporal pays off only for hosted workflows that wait days |
+| Vectors live in the same PostgreSQL (pgvector) | One place for customer separation, filters and backups; revisit past a few million pieces |
+| A job is tried 5 times (`JOB_MAX_ATTEMPTS`), and each try shows in the file list (29 Sep 2026) | The queue's own limit (10) leaves spare deliveries to mark a document failed even if the database is down |
+| When two versions of a document finish reading, the highest version number is current (29 Sep 2026) | An older upload finishing late never replaces a newer one |
+| Trash means deleted: a document there can't be renamed, moved, tagged, downloaded or given a new version (29 Sep 2026) | Only Restore or Delete forever |
+| Deleting forever and deleting a tag need an admin session, not only the admin role (29 Sep 2026) | Both can't be undone; the admin sign-in with its code is for exactly this |
+| A PDF or TIFF over 100 pages is refused in the browser before upload, after counting its pages (29 Sep 2026) | Nothing is uploaded that can't be read; the worker still checks |
+| Dependencies approved in the PRDs: `cryptography` (PRD 1); `paddleocr`, `paddlepaddle` (in the OCR image only) and `indic-transliteration` (PRD 2) | Everything else still needs approval |
 
 **Open**
 
 | Decision | Blocks |
 |---|---|
-| Which design is current: this chat product, or the Document-to-SQL pipeline plan (Temporal, PaddleOCR, typed invoice tables, a search tool for an NL-to-SQL agent) | Which gaps get built next |
-| The AI that reads scans, and the second independent reader (today RapidOCR, and an optional `MODEL_VISION`) | Scan and handwriting quality |
 | What "verified" promises, in writing | The labels users see |
-| The chat and embedding models (`MODEL_CHAT`, `MODEL_EMBED`) | Answer quality and speed |
 | The virus scanner and upload limits in AWS (values marked PROVISIONAL in `.env.example`) | Hosting |
 | The go or no-go bar for launch, as a number | Launch |
 
