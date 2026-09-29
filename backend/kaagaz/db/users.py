@@ -38,7 +38,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import IntegrityError
 
-_UNIQUE_VIOLATION = "23505"
+from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
 
 
 class EmailTaken(Exception):
@@ -100,7 +100,7 @@ def create_customer(
             {"name": name, "email": admin_email.lower(), "admin_name": admin_name, "hash": password_hash},
         ).scalar_one()
     except IntegrityError as error:
-        if _sqlstate(error) == _UNIQUE_VIOLATION:
+        if sqlstate(error) == UNIQUE_VIOLATION:
             raise EmailTaken from None
         raise
     return str(customer_id)
@@ -390,7 +390,7 @@ def create_user(
             .one()
         )
     except IntegrityError as error:
-        if _sqlstate(error) == _UNIQUE_VIOLATION:
+        if sqlstate(error) == UNIQUE_VIOLATION:
             raise EmailTaken from None
         raise
 
@@ -435,8 +435,3 @@ def update_user(
         .mappings()
         .first()
     )
-
-
-def _sqlstate(error: IntegrityError) -> str | None:
-    state = getattr(error.orig, "sqlstate", None)
-    return state if isinstance(state, str) else None

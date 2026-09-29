@@ -26,9 +26,8 @@ from typing import Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
+from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
 from kaagaz.db.trash import lock_family
-
-_UNIQUE_VIOLATION = "23505"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +107,7 @@ def create_tag(conn: Connection, customer_id: str, *, name: str, created_by: str
     try:
         row = conn.execute(text(_INSERT), {"c": customer_id, "name": name, "u": created_by}).one()
     except IntegrityError as error:
-        if _sqlstate(error) == _UNIQUE_VIOLATION:
+        if sqlstate(error) == UNIQUE_VIOLATION:
             raise TagNameTaken() from None
         raise
     return _tag(row)
@@ -162,8 +161,3 @@ def tags_for_documents(
 
 def _tag(row: Sequence[Any]) -> TagRow:
     return TagRow(id=str(row[0]), name=str(row[1]), created_at=row[2])
-
-
-def _sqlstate(error: IntegrityError) -> str | None:
-    state = getattr(error.orig, "sqlstate", None)
-    return state if isinstance(state, str) else None

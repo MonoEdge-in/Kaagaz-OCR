@@ -30,6 +30,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from kaagaz.db.engine import Database
+from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, sqlstate
 from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, UnknownFolder
@@ -156,7 +157,7 @@ def folder_missing(error: IntegrityError) -> bool:
     """True when ``error`` is ``documents_folder_fk`` refusing a folder id (23503)."""
     diag = getattr(error.orig, "diag", None)
     return (
-        getattr(error.orig, "sqlstate", None) == "23503"
+        sqlstate(error) == FOREIGN_KEY_VIOLATION
         and getattr(diag, "constraint_name", None) == "documents_folder_fk"
     )
 

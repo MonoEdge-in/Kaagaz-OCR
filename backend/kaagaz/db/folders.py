@@ -33,8 +33,8 @@ from typing import Any
 from sqlalchemy import Connection, CursorResult, text
 from sqlalchemy.exc import IntegrityError
 
-_UNIQUE_VIOLATION = "23505"
-_FOREIGN_KEY_VIOLATION = "23503"
+from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, sqlstate
+
 _MAX_DEPTH = 5
 
 
@@ -260,7 +260,7 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str) -> None:
     try:
         deleted = conn.execute(text(_DELETE), params).first()
     except IntegrityError as error:
-        if _sqlstate(error) == _FOREIGN_KEY_VIOLATION:
+        if sqlstate(error) == FOREIGN_KEY_VIOLATION:
             raise FolderNotEmpty() from None
         raise
     if deleted is None:
@@ -287,7 +287,7 @@ def _write_named(conn: Connection, statement: str, params: dict[str, Any]) -> Cu
     try:
         return conn.execute(text(statement), params)
     except IntegrityError as error:
-        if _sqlstate(error) == _UNIQUE_VIOLATION:
+        if sqlstate(error) == UNIQUE_VIOLATION:
             raise FolderNameTaken() from None
         raise
 
@@ -299,8 +299,3 @@ def _folder(row: Sequence[Any]) -> FolderRow:
         name=str(row[2]),
         created_at=row[3],
     )
-
-
-def _sqlstate(error: IntegrityError) -> str | None:
-    state = getattr(error.orig, "sqlstate", None)
-    return state if isinstance(state, str) else None
