@@ -205,3 +205,19 @@ def test_tags_need_a_session_and_writes_need_the_csrf_header(db: Database) -> No
     reply = signed.client.post("/api/tags", json={"name": "X"})
     assert reply.status_code == 403
     assert reply.json()["error"]["code"] == "csrf"
+
+
+def test_deleting_a_tag_needs_an_admin_with_two_step_sign_in_on(db: Database) -> None:
+    api = Api(db)
+    customer_id, _ = api.customer()
+    _, email = api.add_user(customer_id, "admin")
+    client = api.client()
+    assert api.admin_login(client, email).status_code == 200  # password only: 2FA is off
+    made = client.post("/api/tags", json={"name": "GST"}, headers=CSRF)
+    assert made.status_code == 201
+
+    reply = client.delete(f"/api/tags/{made.json()['id']}", headers=CSRF)
+
+    assert reply.status_code == 403
+    assert reply.json()["error"]["code"] == "two_step_required"
+    assert [tag["name"] for tag in client.get("/api/tags").json()["items"]] == ["GST"]

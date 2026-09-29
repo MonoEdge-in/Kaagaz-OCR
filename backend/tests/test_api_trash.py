@@ -315,3 +315,23 @@ def test_a_family_in_trash_cannot_be_renamed_moved_tagged_or_given_a_version(db:
     assert _restore(uploader, first) == 200
     renamed = client.patch(f"/api/documents/{second}", json={"display_name": "renamed.pdf"}, headers=CSRF)
     assert renamed.status_code == 200
+
+
+def test_delete_forever_needs_an_admin_with_two_step_sign_in_on(db: Database) -> None:
+    """2FA is each admin's choice, but deleting forever is not password-only: an
+    admin session without two-step sign-in gets 403 two_step_required."""
+    api = Api(db)
+    customer_id, _ = api.customer()
+    _, email = api.add_user(customer_id, "admin")
+    client = api.client()
+    assert api.admin_login(client, email).status_code == 200  # password only: 2FA is off
+    document = api.add_document(customer_id, deleted_at=api.clock())
+
+    reply = client.delete(f"/api/documents/{document}/permanent", headers=CSRF)
+
+    assert reply.status_code == 403
+    assert reply.json()["error"]["code"] == "two_step_required"
+    with_two_step = api.new_admin_of(customer_id)  # the same customer's admin, 2FA on
+    assert (
+        with_two_step.client.delete(f"/api/documents/{document}/permanent", headers=CSRF).status_code == 204
+    )

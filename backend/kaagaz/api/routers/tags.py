@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection
 
-from kaagaz.api.auth import AdminSession, CurrentUser, User
+from kaagaz.api.auth import AdminWithTwoStep, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import TAG_NAME_MAX, clean_name
@@ -99,7 +99,7 @@ def create_tag(body: NewTagBody, user: User, context: Context) -> dict[str, Any]
 
 
 @router.delete("/tags/{tag_id}", status_code=204)
-def delete_tag(tag_id: uuid.UUID, user: AdminSession, context: Context) -> Response:
+def delete_tag(tag_id: uuid.UUID, user: AdminWithTwoStep, context: Context) -> Response:
     target = str(tag_id)
     with context.db.customer(user.customer_id) as conn:
         if not tags_sql.delete_tag(conn, user.customer_id, target):

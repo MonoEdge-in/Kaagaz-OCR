@@ -37,7 +37,7 @@ import {
   shouldPoll,
   shouldReloadAfterUploads,
 } from "./logic";
-import { foreverNeedsAdminSignIn } from "./trash";
+import { foreverNeeds } from "./trash";
 import { Dropzone, UploadList, useUploads } from "./UploadArea";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
@@ -360,9 +360,14 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   Documents in Trash are left out of search and chat. Restore one to use it again.
                 </p>
               )}
-              {library.trash && foreverNeedsAdminSignIn(me) && (
+              {library.trash && foreverNeeds(me) === "admin_sign_in" && (
                 <p className={libraryStyles.placeHint}>
                   To delete forever, <Link href="/admin/login">sign in on the admin sign-in screen</Link>.
+                </p>
+              )}
+              {library.trash && foreverNeeds(me) === "two_step" && (
+                <p className={libraryStyles.placeHint}>
+                  To delete forever, turn on two-step sign-in in <Link href="/admin">Admin, Settings</Link>.
                 </p>
               )}
             </div>

@@ -422,6 +422,19 @@ def require_admin_session(user: User) -> CurrentUser:
 AdminSession = Annotated[CurrentUser, Depends(require_admin_session)]
 
 
+def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
+    """For what can't be undone (deleting a document forever, deleting a tag): an
+    admin session whose admin has two-step sign-in on, else 403
+    ``two_step_required``. Two-step sign-in is each admin's choice, so an admin
+    session alone may rest on a password; these actions must not."""
+    if not user.totp_enabled:
+        raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Admin, Settings to do this.")
+    return user
+
+
+AdminWithTwoStep = Annotated[CurrentUser, Depends(require_admin_with_two_step)]
+
+
 def require_role(*roles: str) -> Callable[[CurrentUser], CurrentUser]:
     """A dependency that lets only these roles through (403 ``forbidden``)."""
     allowed = frozenset(roles)

@@ -257,6 +257,10 @@ class Api:
         assert reply.status_code == 200, reply.text
         return Signed(client, customer_id, admin.user_id, admin.email, "admin", admin.secret)
 
+    def new_admin_of(self, customer_id: str) -> Signed:
+        """Another admin of this customer, with 2FA on, signed in on the admin screen."""
+        return self.admin_sign_in(customer_id)
+
     def new_admin(self, name: str = "Test customer") -> Signed:
         """A new customer and an admin signed in on the admin screen."""
         customer_id, _ = self.customer(name)
