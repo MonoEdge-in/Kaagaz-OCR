@@ -688,7 +688,8 @@ def test_sheet_cells_come_from_the_first_reader_output(db: Database) -> None:
 
 
 @pytest.mark.db
-def test_uploader_can_delete_and_everything_goes(db: Database) -> None:
+def test_uploader_can_delete_and_it_goes_to_trash_with_everything_kept(db: Database) -> None:
+    # PRD 1 F5: a delete now moves to Trash; "delete forever" is tests/test_api_trash.py.
     api = Api(db)
     signed = api.new_signed()
     document_id = api.add_document(signed.customer_id, uploaded_by=signed.user_id)
@@ -699,12 +700,13 @@ def test_uploader_can_delete_and_everything_goes(db: Database) -> None:
     reply = signed.client.delete(f"/api/documents/{document_id}", headers=CSRF)
 
     assert reply.status_code == 204
-    assert signed.client.get(f"/api/documents/{document_id}").status_code == 404
-    assert not api.storage.has(signed.customer_id, document_id)
-    assert api.storage.page_images == {}
+    assert signed.client.get(f"/api/documents/{document_id}").status_code == 200
+    assert api.storage.has(signed.customer_id, document_id)
+    assert (signed.customer_id, document_id, 1) in api.storage.page_images
     with db.customer(signed.customer_id) as conn:
-        assert conn.execute(text("SELECT count(*) FROM extracted_values")).scalar_one() == 0
-    assert api.audit_actions(signed.customer_id)[-1] == "document.delete"
+        assert conn.execute(text("SELECT count(*) FROM extracted_values")).scalar_one() == 1
+        assert conn.execute(text("SELECT deleted_at FROM documents")).scalar_one() == api.clock()
+    assert api.audit_actions(signed.customer_id)[-1] == "document.trash"
 
 
 @pytest.mark.db
@@ -722,13 +724,14 @@ def test_another_member_cannot_delete_but_an_admin_can(db: Database) -> None:
 
 
 @pytest.mark.db
-def test_delete_keeps_the_row_when_storage_is_down(db: Database) -> None:
+def test_delete_to_trash_does_not_need_storage(db: Database) -> None:
+    # PRD 1 F5: only "delete forever" touches storage (tests/test_api_trash.py covers it being down).
     api = Api(db)
     admin = api.new_signed("admin")
     document_id = api.add_document(admin.customer_id)
     api.storage.fail_delete = True
-    assert admin.client.delete(f"/api/documents/{document_id}", headers=CSRF).status_code == 503
-    assert admin.client.get(f"/api/documents/{document_id}").status_code == 200
+    assert admin.client.delete(f"/api/documents/{document_id}", headers=CSRF).status_code == 204
+    assert api.storage.has(admin.customer_id, document_id)
     assert "document.delete" not in api.audit_actions(admin.customer_id)
 
 
