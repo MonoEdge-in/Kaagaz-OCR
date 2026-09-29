@@ -46,6 +46,30 @@ export interface DocumentSummary {
   page_count: number | null;
   created_at: string; // ISO 8601
   uploaded_by_name: string | null;
+  folder_id: string | null; // null: at the top level, in no folder
+  tags: Tag[];
+}
+
+// A folder of this customer. The API sends the flat list; the screen builds the
+// tree (components/documents/folderTree.ts). Folder and tags belong to the
+// document's family: every version shares them.
+export interface Folder {
+  id: string;
+  name: string;
+  parent_id: string | null; // null: at the top level
+  created_at: string;
+}
+
+export interface Tag {
+  id: string;
+  name: string;
+}
+
+/** Where a document is filed: its folder, and the folders from the top down (`path`). */
+export interface DocumentFolder {
+  id: string;
+  name: string;
+  path: { id: string; name: string }[];
 }
 
 export interface PageSummary {
@@ -74,6 +98,7 @@ export interface ExtractedValue {
 export interface DocumentDetail extends DocumentSummary {
   pages: PageSummary[];
   values: ExtractedValue[];
+  folder: DocumentFolder | null; // null: at the top level
 }
 
 export interface DocumentList {
