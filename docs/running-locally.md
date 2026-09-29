@@ -207,7 +207,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **8. Virus scan**
 - Check: make the harmless EICAR test file `eicar.txt` (its text is on the EICAR website; your own antivirus may grab it) and `up eicar.txt`. Then stop `clamav` and upload another new file.
-- Expect: `SQL "SELECT status,failure_code FROM documents WHERE display_name='eicar.txt'"` shows `rejected | virus_found`; the screen says "This file failed the virus check and was not processed."; `GET $API/documents/<id>/file` gives `404`; rejected is final. With the scanner down, the worker logs `"job retry"` with code `scanner_unavailable`, and the file stays `received` without being opened.
+- Expect: `SQL "SELECT status,failure_code FROM documents WHERE display_name='eicar.txt'"` shows `rejected | virus_found`; the screen says "This file failed the virus check and was not processed."; `GET $API/documents/<id>/file` gives `404`; rejected is final. With the scanner down, the worker logs `"job retry"` with code `scanner_unavailable`, and the file stays `received` without being opened. If it is still down at the queue's last delivery (the 5th, about 20 minutes on), the file ends `failed | retries_exhausted`.
 - Tests: `test_scan_gate.py`, `test_adapter_scanner.py`, `test_pipeline.py` (`test_an_infected_file_stays_rejected_and_keeps_its_reason`).
 
 **9. Page preparation and page pictures**

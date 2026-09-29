@@ -23,6 +23,7 @@ from tests.settings_factory import make_settings
 
 URL = "http://localhost:9324/000000000000/kaagaz-jobs"
 FAILED_URL = URL + "-failed"
+FAILED_ARN = "arn:aws:sqs:us-east-1:000000000000:kaagaz-jobs-failed"
 LEASE, WAIT = 60, 1
 JOB = Job("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 BODY = json.dumps({"customer_id": JOB.customer_id, "document_id": JOB.document_id})
@@ -200,6 +201,69 @@ class StubbedQueueTest(unittest.TestCase):
         with self.assertRaises(BackendUnavailable):
             self.queue.ping()
 
+    def redrive_policy(self, attributes: dict[str, str]) -> None:
+        self.stub.add_response(
+            "get_queue_attributes",
+            {"Attributes": attributes},
+            {"QueueUrl": URL, "AttributeNames": ["RedrivePolicy"]},
+        )
+
+    def test_max_receives_is_read_from_the_redrive_policy(self) -> None:
+        # SQS writes maxReceiveCount as a number; some replies carry it as a string.
+        for count in (5, "5"):
+            with self.subTest(count=count):
+                policy = {"deadLetterTargetArn": FAILED_ARN, "maxReceiveCount": count}
+                self.redrive_policy({"RedrivePolicy": json.dumps(policy)})
+                self.assertEqual(self.queue.max_receives(), 5)
+
+    def test_a_queue_without_a_redrive_policy_refuses_to_start(self) -> None:
+        for name, attributes in {
+            "no redrive policy": {},
+            "no maxReceiveCount": {"RedrivePolicy": json.dumps({"deadLetterTargetArn": FAILED_ARN})},
+            "not json": {"RedrivePolicy": "not json"},
+            "not an object": {"RedrivePolicy": "[5]"},
+            "not a number": {"RedrivePolicy": json.dumps({"maxReceiveCount": "five"})},
+            "zero": {"RedrivePolicy": json.dumps({"maxReceiveCount": 0})},
+            "not whole": {"RedrivePolicy": json.dumps({"maxReceiveCount": 5.5})},
+            "a boolean": {"RedrivePolicy": json.dumps({"maxReceiveCount": True})},
+        }.items():
+            with self.subTest(name):
+                self.redrive_policy(attributes)
+                with self.assertRaises(ValueError) as ctx:
+                    self.queue.max_receives()
+                self.assertIn("maxReceiveCount", str(ctx.exception))
+
+    def test_worker_buries_the_last_delivery_as_retries_exhausted_through_the_adapter(self) -> None:
+        """The real Worker against this adapter: at the queue's maximum receive count
+        the document is marked, the job is buried with its code, and the handler is
+        not run."""
+        self.receive_one(receipt="r-5", count="5")
+        self.stub.add_response(
+            "change_message_visibility",
+            {},
+            {"QueueUrl": URL, "ReceiptHandle": "r-5", "VisibilityTimeout": LEASE},
+        )
+        self.stub.add_response(
+            "send_message",
+            {"MessageId": "m-5"},
+            {
+                "QueueUrl": FAILED_URL,
+                "MessageBody": BODY,
+                "MessageAttributes": {
+                    "failure_code": {"DataType": "String", "StringValue": "retries_exhausted"}
+                },
+            },
+        )
+        self.stub.add_response("delete_message", {}, {"QueueUrl": URL, "ReceiptHandle": "r-5"})
+        marked: list[Job] = []
+        ran: list[Job] = []
+        worker = Worker(
+            self.queue, lambda job, beat: ran.append(job), max_receives=5, on_exhausted=marked.append
+        )
+
+        self.assertTrue(worker.run_once())
+        self.assertEqual((marked, ran), ([JOB], []))
+
     def test_worker_buries_a_permanent_failure_through_the_adapter(self) -> None:
         """The real Worker against this adapter: a non-retryable failure is buried."""
         self.receive_one(receipt="r-9")
@@ -224,7 +288,9 @@ class StubbedQueueTest(unittest.TestCase):
         def handler(job: Job, heartbeat: Any) -> None:
             raise JobFailed("too_many_pages", retryable=False)
 
-        self.assertTrue(Worker(self.queue, handler).run_once())
+        marked: list[Job] = []
+        self.assertTrue(Worker(self.queue, handler, max_receives=5, on_exhausted=marked.append).run_once())
+        self.assertEqual(marked, [])  # a failure for good keeps its own code
 
 
 class QueueSettingsTest(unittest.TestCase):
@@ -256,6 +322,7 @@ class UnreachableQueueTest(unittest.TestCase):
             "ack": lambda: queue.ack("r-1"),
             "extend": lambda: queue.extend("r-1"),
             "ping": queue.ping,
+            "max_receives": queue.max_receives,
         }
         for name, call in calls.items():
             with self.subTest(call=name), self.assertRaises(BackendUnavailable):

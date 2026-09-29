@@ -172,6 +172,25 @@ class PgDocuments:
                 {"n": page_count, "c": customer_id, "d": document_id},
             )
 
+    # --- used by the worker ---------------------------------------------------
+
+    def mark_exhausted(self, customer_id: str, document_id: str) -> None:
+        """The queue's last delivery of this document's job came: mark it failed
+        with ``retries_exhausted``, so it does not show "Reading…" for good.
+
+        Only a document still in progress (received or clean) changes, in the
+        one conditional statement: a rejected one keeps its reason, and a ready,
+        needs_reader or failed one keeps its state and code.
+        """
+        with _unavailable(), self._db.customer(customer_id) as conn:
+            conn.execute(
+                text(
+                    "UPDATE documents SET status = 'failed', failure_code = 'retries_exhausted'"
+                    " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
+                ),
+                {"c": customer_id, "d": document_id},
+            )
+
 
 @contextmanager
 def _unavailable() -> Iterator[None]:

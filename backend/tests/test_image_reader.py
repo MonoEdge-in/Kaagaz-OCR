@@ -73,6 +73,18 @@ class ImageReaderTest(unittest.TestCase):
         self.assertEqual([s.location.page for s in spans], [1, 2, 3])
         self.assertEqual([i.width for i in ocr.seen], [30, 31, 32])
 
+    def test_on_page_is_called_after_each_page_in_order(self) -> None:
+        frames = [Image.new("RGB", (30 + i, 20), "white") for i in range(3)]
+        ocr = FakeOcr([OcrLine("x", 0, 0, 10, 10, 0.5)])
+        widths_read_at_each_call: list[list[int]] = []
+        reader = ImageReader(ocr, max_pages=10, max_image_pixels=1_000_000)
+
+        reader.read(
+            encode(frames[0], "TIFF", save_all=True, append_images=frames[1:]),
+            on_page=lambda: widths_read_at_each_call.append([i.width for i in ocr.seen]),
+        )
+        self.assertEqual(widths_read_at_each_call, [[30], [30, 31], [30, 31, 32]])
+
     def test_transparent_parts_are_read_on_white(self) -> None:
         clear = Image.new("RGBA", (200, 100), (0, 0, 0, 0))
         ocr = FakeOcr()

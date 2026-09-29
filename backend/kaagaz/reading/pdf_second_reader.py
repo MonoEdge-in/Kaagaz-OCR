@@ -27,6 +27,7 @@ Refusals are the same short codes as the first reader (``encrypted``,
 Time is O(characters). Memory is one page's text page at a time.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,7 +49,8 @@ class PdfiumReader:
         self._max_pages = max_pages
         self.version = f"{pdfium.PYPDFIUM_INFO}+pdfium-{pdfium.PDFIUM_INFO.build}"
 
-    def read(self, data: bytes) -> list[Span]:
+    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
+        # on_page is ignored: text layers only, no OCR, so each page is quick (kaagaz/reading/socket.py).
         spans: list[Span] = []
         failed = False
         document = open_pdf(data)

@@ -140,6 +140,17 @@ class PagesWithoutTextTest(unittest.TestCase):
             read(make_pdf([Page()]), FakeOcr([]))
         self.assertEqual(ctx.exception.code, "no_text")
 
+    def test_on_page_is_called_after_each_scanned_page_in_order(self) -> None:
+        ocr = FakeOcr([OcrLine("scan", 10, 10, 100, 30, 0.9)])
+        pages_read_at_each_call: list[int] = []
+        reader = PdfReader(ocr, max_pages=10, dpi=72, max_image_pixels=10_000_000)
+        data = make_pdf([Page(), Page(texts=[Text(72, 700, "typed")]), Page()])
+
+        reader.read(data, on_page=lambda: pages_read_at_each_call.append(len(ocr.seen)))
+        # Pages 1 and 3 are drawn and read; each call comes right after one of them.
+        # The typed page is read directly, which is quick, and gives no call.
+        self.assertEqual(pages_read_at_each_call, [1, 2])
+
     def test_page_too_large_to_draw_is_refused_before_drawing(self) -> None:
         ocr = FakeOcr([OcrLine("scan", 10, 10, 100, 30, 0.9)])
         pixels = math.ceil(WIDTH) * math.ceil(HEIGHT)

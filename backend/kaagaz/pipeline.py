@@ -12,7 +12,9 @@ The steps, in order, for one (customer, document):
    vision crops. Spreadsheets get one page per sheet after reading.
 5. Read the bytes through the reader socket, then read them again with the
    second reader if the type has one. A type with no reader is marked "needs
-   a reader" (its pages are kept) and the job ends normally.
+   a reader" (its pages are kept) and the job ends normally. A reader that
+   reads page by page (OCR) beats the heartbeat after each page, so a long
+   scan keeps its lease.
 6. Pieces for search (kaagaz.chunking) and values for fixed queries
    (kaagaz.extraction), each labelled verified or needs review. For scans,
    when a vision model is set, it reads each value's box again as the second
@@ -137,7 +139,9 @@ class DocumentStore(Protocol):
 class ReadingSocket(Protocol):
     """kaagaz.reading.socket.ReaderSocket in production."""
 
-    def read(self, detected_type: str, data: bytes) -> list[Span]: ...
+    def read(
+        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+    ) -> list[Span]: ...
 
     def read_second(self, detected_type: str, data: bytes) -> list[Span] | None: ...
 
@@ -240,7 +244,7 @@ class DocumentProcessor:
         pages = [PageRecord(info, info.page in prepared.images) for info in prepared.pages]
 
         try:
-            spans = _or_fail(lambda: self._socket.read(record.detected_type, data))
+            spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=heartbeat))
         except NoReader:
             require_clean(self._statuses, job)
             self._store.save(DocumentContent(customer_id, document_id, pages, [], [], [], reader=""))

@@ -58,7 +58,7 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from kaagaz.ingestion import sniff
@@ -132,7 +132,8 @@ class XlsxReader:
     def __init__(self, limits: XlsxLimits) -> None:
         self._limits = limits
 
-    def read(self, data: bytes) -> Iterator[Span]:
+    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> Iterator[Span]:
+        # on_page is ignored: a workbook is read in one quick pass (kaagaz/reading/socket.py).
         code = None
         spans: list[Span] = []
         try:

@@ -12,11 +12,18 @@
   already been handed to another delivery, so this worker leaves it alone.
   That is normal, not an error.
 * anything else is a bug and propagates. The job is not acked, so the queue
-  hands it out again, and after the maximum attempts it lands in the failure
-  bin. There is no blanket ``except Exception`` here on purpose.
+  hands it out again. There is no blanket ``except Exception`` here on purpose.
+* the queue's last delivery of a job (its attempt reached ``max_receives``,
+  the queue's own maximum): the handler is not run. ``on_exhausted(job)``
+  marks the document failed, then the job is buried as ``retries_exhausted``.
+  Without this, the queue would move the job to the failure bin by itself and
+  nothing would mark the document, which would show "Reading…" for good. It
+  covers retryable failures and crashes alike.
 
 PROVISIONAL: the retry back-off is the fixed lease length. Exponential
 back-off with jitter needs the queue settings, which are Vrushit's.
+PROVISIONAL (plan 7.4): the last delivery only marks and buries, so with the
+queue's maximum of 5 receives the handler runs at most 4 times.
 
 Why one bad job cannot block the others: while a job is leased it is hidden,
 and each ``run_once`` handles exactly one job, so the jobs behind a failing one
@@ -35,6 +42,8 @@ from kaagaz.jobs.ports import LeaseLost, WorkQueue
 Heartbeat = Callable[[], None]
 Handler = Callable[[Job, Heartbeat], None]
 
+RETRIES_EXHAUSTED = "retries_exhausted"
+
 
 class JobFailed(Exception):
     """A handler's way to report a failure. ``code`` is short and safe to log."""
@@ -46,12 +55,29 @@ class JobFailed(Exception):
 
 
 class Worker:
-    def __init__(self, queue: WorkQueue, handler: Handler) -> None:
+    def __init__(
+        self,
+        queue: WorkQueue,
+        handler: Handler,
+        *,
+        max_receives: int,
+        on_exhausted: Callable[[Job], None],
+    ) -> None:
+        """``max_receives`` is the queue's maximum receives (SqsQueue.max_receives);
+        ``on_exhausted`` marks a job's document when its last delivery comes."""
+        if max_receives < 2:
+            # The last delivery never runs the handler, so 1 would read nothing.
+            raise ValueError("max_receives must be at least 2")
         self._queue = queue
         self._handler = handler
+        self._max_receives = max_receives
+        self._on_exhausted = on_exhausted
 
     def run_once(self) -> bool:
-        """Process one job. Returns False when the queue had nothing ready."""
+        """Process one job. Returns False when the queue had nothing ready.
+
+        O(1) queue calls, plus the handler's own time (or ``on_exhausted``'s).
+        """
         delivery = self._queue.receive()
         if delivery is None:
             return False
@@ -60,6 +86,10 @@ class Worker:
             self._queue.extend(delivery.receipt)
 
         try:
+            if delivery.attempt >= self._max_receives:
+                self._on_exhausted(delivery.job)
+                self._queue.bury(delivery.receipt, RETRIES_EXHAUSTED)
+                return True
             try:
                 self._handler(delivery.job, heartbeat)
             except JobFailed as failure:
