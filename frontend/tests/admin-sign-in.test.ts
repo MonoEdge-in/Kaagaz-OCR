@@ -291,9 +291,14 @@ describe("admin sign-in markup", () => {
     expect(enrol.split("enrol.otpauth_uri")).toHaveLength(2);
   });
 
-  it("turns 2FA on with the set-up step, and off with the current password", () => {
+  it("asks for the current password, masked again on submit, to turn 2FA on or off", () => {
     expect(panel).toContain("<EnrolStep");
-    expect(panel).toContain("<PasswordField");
+    expect(panel).toContain("startTwoStep(password)");
+    expect(panel).toContain("turnOffTwoStep(password)");
+    expect(panel.match(/<PasswordField\b/g)).toHaveLength(1);
+    const submit = panel.slice(panel.indexOf("async function submit"));
+    expect(submit.indexOf("setMasked(true)")).toBeGreaterThan(-1);
+    expect(submit.indexOf("setMasked(true)")).toBeLessThan(submit.indexOf("currentPasswordError("));
     expect(panel).toContain("disabled={!hydrated || busy}");
   });
 

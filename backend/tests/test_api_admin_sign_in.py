@@ -44,13 +44,18 @@ def _secret_from(grouped: str) -> bytes:
     return base64.b32decode(grouped.replace(" ", ""))
 
 
+def _turn_on(client: TestClient, password: str = PASSWORD) -> httpx.Response:
+    return client.post("/api/auth/admin/2fa/start", json={"password": password}, headers=CSRF)
+
+
 def _turn_off(client: TestClient, password: str = PASSWORD) -> httpx.Response:
     return client.post("/api/auth/admin/2fa/off", json={"password": password}, headers=CSRF)
 
 
 class _Enrolling:
     """An admin with 2FA off, signed in on the admin screen with the password
-    alone, who has pressed "Turn on" (``/2fa/start``) and holds the new key."""
+    alone, who has pressed "Turn on" (``/2fa/start`` with the current password)
+    and holds the new key."""
 
     def __init__(self, api: Api) -> None:
         self.api = api
@@ -59,7 +64,7 @@ class _Enrolling:
         self.client = api.client()
         signed_in = api.admin_login(self.client, self.email)
         assert signed_in.status_code == 200, signed_in.text
-        self.reply = self.client.post("/api/auth/admin/2fa/start", headers=CSRF)
+        self.reply = _turn_on(self.client)
         assert self.reply.status_code == 200, self.reply.text
         body = self.reply.json()
         self.token: str = body["enrol_token"]
@@ -113,6 +118,34 @@ def test_turn_on_shows_a_new_key_and_stores_nothing_yet(db: Database) -> None:
     state = api.user_state(enrolling.customer_id, enrolling.user_id)
     assert state["totp_secret_enc"] is None
     assert state["totp_enabled_at"] is None
+    assert state["failed_logins"] == 0  # the right password clears the count
+
+
+def test_turn_on_with_a_wrong_or_no_password_shows_no_key(db: Database) -> None:
+    api = Api(db)
+    customer_id, _ = api.customer()
+    user_id, email = api.add_user(customer_id, "admin")
+    client = api.client()
+    assert api.admin_login(client, email).status_code == 200
+
+    wrong = _turn_on(client, WRONG)
+    missing = client.post("/api/auth/admin/2fa/start", headers=CSRF)
+
+    assert wrong.status_code == 400
+    assert wrong.json()["error"] == {"code": "bad_request", "message": "Your current password is not right."}
+    assert missing.status_code == 400
+    for reply in (wrong, missing):
+        assert "secret" not in reply.text
+        assert "enrol_token" not in reply.text
+    assert api.user_state(customer_id, user_id)["failed_logins"] == 1  # the wrong one, counted
+    assert api.audit_rows(customer_id)[-1][3] == {"reason": "wrong_password"}
+
+    for _ in range(api.settings.login_max_failures - 1):
+        assert _turn_on(client, WRONG).status_code == 400
+    locked = _turn_on(client)
+    assert locked.status_code == 400
+    assert locked.json()["error"]["message"] == "Too many wrong passwords. Try again in 15 minutes."
+    assert "secret" not in locked.text
 
 
 def test_turning_on_with_the_code_means_the_code_is_needed_from_then_on(db: Database) -> None:
@@ -157,11 +190,12 @@ def test_turn_on_when_2fa_is_already_on_is_409(db: Database) -> None:
     api = Api(db)
     signed = api.new_admin()
 
-    reply = signed.client.post("/api/auth/admin/2fa/start", headers=CSRF)
+    reply = _turn_on(signed.client, WRONG)  # 409 comes before the password check
 
     assert reply.status_code == 409
     assert reply.json()["error"]["code"] == "conflict"
     assert "secret" not in reply.text
+    assert api.user_state(signed.customer_id, signed.user_id)["failed_logins"] == 0
 
 
 def test_enrol_sign_out_and_sign_in_again_with_the_code(db: Database) -> None:
@@ -359,10 +393,8 @@ def test_turn_on_and_off_need_an_admin_session(db: Database) -> None:
     app_session = api.new_signed("admin")  # an admin, signed in on the normal screen
     before = api.user_state(app_session.customer_id, app_session.user_id)
 
-    for path, body in (
-        ("/api/auth/admin/2fa/start", None),
-        ("/api/auth/admin/2fa/off", {"password": PASSWORD}),
-    ):
+    for path in ("/api/auth/admin/2fa/start", "/api/auth/admin/2fa/off"):
+        body = {"password": PASSWORD}
         refused = app_session.client.post(path, json=body, headers=CSRF)
         assert refused.status_code == 403, path
         assert refused.json() == ADMIN_SESSION_REFUSED, path

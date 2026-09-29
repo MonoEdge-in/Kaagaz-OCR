@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { NETWORK_FAILURE, TOO_MANY_ATTEMPTS } from "@/app/login/signIn";
 import {
   PASSWORD_MISSING,
+  PASSWORD_STEP,
   SESSION_ENDED,
   TWO_STEP_FAILED,
   TWO_STEP_TEXT,
-  turnOffPasswordError,
+  currentPasswordError,
   twoStepError,
   twoStepState,
 } from "@/components/admin/twoStep";
@@ -35,10 +36,14 @@ describe("the admin's own two-step sign-in", () => {
     expect(TWO_STEP_TEXT.off.meaning).toMatch(/password only/);
   });
 
-  it("asks for the current password to turn it off, and never trims it", () => {
-    expect(turnOffPasswordError("")).toBe(PASSWORD_MISSING);
-    expect(turnOffPasswordError(" ")).toBeNull();
-    expect(turnOffPasswordError("a long password")).toBeNull();
+  it("asks for the current password to turn it on or off, and never trims it", () => {
+    expect(currentPasswordError("")).toBe(PASSWORD_MISSING);
+    expect(currentPasswordError(" ")).toBeNull();
+    expect(currentPasswordError("a long password")).toBeNull();
+    expect(PASSWORD_STEP.on.question).toMatch(/current password.*key/);
+    expect(PASSWORD_STEP.on.button).toBe("Show my key");
+    expect(PASSWORD_STEP.off.question).toMatch(/^Turn off two-step sign-in\?/);
+    expect(PASSWORD_STEP.off.button).toBe("Yes, turn off");
   });
 });
 

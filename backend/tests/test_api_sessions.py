@@ -321,7 +321,7 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
     enrolling_id, enrolling_email = api.add_user(admin.customer_id, "admin")
     enrolling = api.client()
     assert api.admin_login(enrolling, enrolling_email).status_code == 200  # 2FA off: the password alone
-    offer = enrolling.post("/api/auth/admin/2fa/start", headers=CSRF).json()
+    offer = enrolling.post("/api/auth/admin/2fa/start", json={"password": PASSWORD}, headers=CSRF).json()
     secret = base64.b32decode(offer["secret"].replace(" ", ""))
     enrolled = enrolling.post(
         "/api/auth/admin/enrol",

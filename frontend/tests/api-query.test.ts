@@ -121,16 +121,16 @@ describe("sign-in and admin calls", () => {
     expect(sent(1).body).toEqual({ email: "asha@sharma.in", password: "a long password" });
   });
 
-  it("starts turning 2FA on with an empty body and returns the set-up as it is", async () => {
+  it("starts turning 2FA on with the current password and returns the set-up as it is", async () => {
     const setup = { enrol_token: "tok", secret: "JBSW Y3DP", otpauth_uri: "otpauth://totp/x" };
     reply(200, setup);
-    expect(await startTwoStep()).toEqual(setup);
+    expect(await startTwoStep("a long password")).toEqual(setup);
     expect(sent(0)).toMatchObject({
       url: "/api/auth/admin/2fa/start",
       method: "POST",
       headers: { "X-Requested-With": "kaagaz" },
+      body: { password: "a long password" },
     });
-    expect(sent(0).body).toBeUndefined();
   });
 
   it("turns 2FA off with the current password", async () => {

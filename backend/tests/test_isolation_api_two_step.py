@@ -26,7 +26,7 @@ def test_b_turning_2fa_off_and_on_never_touches_a(db: Database) -> None:
 
     off = b.client.post("/api/auth/admin/2fa/off", json={"password": PASSWORD}, headers=CSRF)
     assert off.status_code == 200, off.text
-    start = b.client.post("/api/auth/admin/2fa/start", headers=CSRF)
+    start = b.client.post("/api/auth/admin/2fa/start", json={"password": PASSWORD}, headers=CSRF)
     assert start.status_code == 200, start.text
     secret = base64.b32decode(start.json()["secret"].replace(" ", ""))
     on = b.client.post(
