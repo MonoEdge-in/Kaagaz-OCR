@@ -14,8 +14,8 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   that role and still has that session version. Raising the version (a new
   password, "sign out everywhere", disabling, a 2FA reset) ends every other
   session at its next request.
-* **The enrol token** carries a pending TOTP secret between an admin's first
-  sign-in and their first code: ``{"uid","cid","ver","sec","exp"}``, MAC over
+* **The enrol token** carries a pending TOTP secret between an admin pressing
+  "Turn on" (/auth/admin/2fa/start) and their first code: ``{"uid","cid","ver","sec","exp"}``, MAC over
   ``b"enrol\\x00" + body``, 10 minutes. The two purposes have different MAC
   inputs and different fields, so neither token ever reads as the other.
 * **Strict claims**: a token with a missing, extra or wrongly typed field is
@@ -353,6 +353,7 @@ class CurrentUser:
     scope: str  # the session's: "app" or "admin"
     session_version: int
     must_change_password: bool
+    totp_enabled: bool  # two-step sign-in is on (each admin chooses)
 
 
 def current_user(request: Request) -> CurrentUser:
@@ -402,6 +403,7 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         scope=scope,
         session_version=int(row["session_version"]),
         must_change_password=bool(row["must_change_password"]),
+        totp_enabled=bool(row["totp_enabled"]),
     )
 
 

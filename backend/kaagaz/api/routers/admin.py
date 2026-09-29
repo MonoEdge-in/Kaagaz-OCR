@@ -1,7 +1,7 @@
 """The admin routes: users, the customer's settings, the audit log and the numbers.
 
 Why the admin session: every route here needs a session started on the admin
-screen (/admin/login, with the two-step code). The check sits on the router
+screen (/admin/login, with the two-step code when it is on). The check sits on the router
 itself (``require_admin_session``), so a route added later cannot forget it;
 an admin's own app session from /login gets 403 ``admin_session_required``.
 
@@ -187,7 +187,7 @@ def reset_password(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
 
 @router.post("/admin/users/{user_id}/reset-2fa")
 def reset_two_step(user_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
-    """Turn a user's two-step code off, so their next admin sign-in enrols again."""
+    """Turn a user's two-step code off, so their password alone signs in again."""
     target = str(user_id)
     if target == user.user_id:
         raise ApiError(

@@ -10,6 +10,9 @@ Why these rules:
 * **Replays are refused**: ``matching_step`` only accepts a step later than the
   last accepted one; the caller stores the step it returns with a conditional
   UPDATE (``db.users.accept_totp_step``), so two requests cannot both use it.
+* **The otpauth link** (``otpauth_uri``) is the key in the "Key Uri Format"
+  that Google Authenticator reads from a QR code. It holds the secret, so it
+  is only ever sent to the admin turning 2FA on: never logged or audited.
 * **Only ASCII 0 to 9, exactly 6 of them** is a code. ``int()`` and ``\\d``
   would accept Devanagari or fullwidth digits, so neither is used; the compare
   is ``hmac.compare_digest`` on ASCII bytes.
@@ -25,11 +28,13 @@ import hmac
 import re
 import secrets
 import struct
+from urllib.parse import quote
 
 STEP_SECONDS = 30
 DIGITS = 6
 SECRET_BYTES = 20  # 160 bits, the RFC 4226 recommendation for SHA-1
 WINDOW = 1  # steps accepted either side of now
+ISSUER = "Kaagaz"  # the name the authenticator app shows above the code
 
 _CODE = re.compile(r"[0-9]{6}")  # a character range, so ASCII digits only
 _MAX_STEP = 2**64 - 1
@@ -48,6 +53,15 @@ def b32(secret: bytes) -> str:
 def grouped(b32: str) -> str:
     """Base32 text in groups of 4 separated by spaces, for typing by hand."""
     return " ".join(b32[start : start + 4] for start in range(0, len(b32), 4))
+
+
+def otpauth_uri(secret: bytes, account: str) -> str:
+    """The key as an ``otpauth://totp/`` link, for a QR code. The account (the
+    e-mail) is percent-encoded, ``@`` included; the secret is ``b32``. O(length)."""
+    return (
+        f"otpauth://totp/{ISSUER}:{quote(account, safe='')}?secret={b32(secret)}"
+        f"&issuer={ISSUER}&algorithm=SHA1&digits={DIGITS}&period={STEP_SECONDS}"
+    )
 
 
 def code_at(secret: bytes, step: int, digits: int = DIGITS) -> str:
