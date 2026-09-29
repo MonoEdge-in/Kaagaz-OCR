@@ -76,7 +76,7 @@ export const ENROL_ISSUER = "Kaagaz";
 
 export const ENROL_STEPS: readonly string[] = [
   "Open Google Authenticator or Microsoft Authenticator on your phone and add an account.",
-  "Choose to enter a setup key, then type the account and the key shown here.",
+  "Scan the QR code, or choose to enter a setup key and type the account and key shown here.",
   "Type the 6-digit code the app now shows, then press Finish setup.",
 ];
 

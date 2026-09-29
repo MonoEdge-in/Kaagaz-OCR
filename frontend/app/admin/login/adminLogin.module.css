@@ -89,6 +89,12 @@
   gap: var(--space-3);
 }
 
+/* The QR code keeps its own white quiet zone, so it sits on the card as it is. */
+.qr {
+  align-self: center;
+  line-height: 0;
+}
+
 .details {
   display: flex;
   flex-direction: column;
