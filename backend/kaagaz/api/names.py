@@ -16,13 +16,13 @@ FOLDER_NAME_MAX = 100
 TAG_NAME_MAX = 40
 DOCUMENT_NAME_MAX = 255
 
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def clean_name(name: str, *, max_length: int) -> str | None:
     """``name`` without control characters and trimmed; None when that leaves
     nothing or more than ``max_length`` characters. O(len(name))."""
-    cleaned = _CONTROL.sub("", name).strip()
+    cleaned = CONTROL_CHARACTERS.sub("", name).strip()
     return cleaned if 1 <= len(cleaned) <= max_length else None
 
 

@@ -42,7 +42,6 @@ Why some choices:
   by id, any version opens. A duplicate in Trash says ``in_trash: true``.
 """
 
-import re
 import uuid
 from collections.abc import Mapping
 from datetime import date, datetime, time
@@ -59,7 +58,7 @@ from starlette.datastructures import UploadFile
 from kaagaz.api.auth import Admin, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.names import DOCUMENT_NAME_MAX, clean_document_name
+from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name
 from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
     document_folder,
@@ -86,7 +85,6 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MIB = 1024 * 1024
 MAX_SHEET_ROWS = 500
-MAX_NAME = 255
 MAX_TAG_FILTERS = 50
 
 DocumentStatusParam = Literal["received", "clean", "rejected", "needs_reader", "ready", "failed"]
@@ -108,14 +106,13 @@ _REJECT_STATUS = {
     RejectCode.UNSUPPORTED_TYPE: 400,
     RejectCode.TOO_LARGE: 413,
 }
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def display_name(filename: str | None) -> str:
     """The name shown for an upload: path stripped, control characters removed,
     at most 255 characters, "document" if nothing is left."""
     name = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
-    name = _CONTROL.sub("", name).strip()[:MAX_NAME].strip()
+    name = CONTROL_CHARACTERS.sub("", name).strip()[:DOCUMENT_NAME_MAX].strip()
     return name or "document"
 
 
