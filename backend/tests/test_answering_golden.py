@@ -629,11 +629,18 @@ def test_a_reply_of_the_wrong_shape_falls_back_to_quoting() -> None:
     assert "Grand Total: Rs. 1,20,000" in [s.text for s in answer.sentences]
 
 
-def test_search_still_works_when_embedding_fails() -> None:
-    answer_service, retriever, _ = service(model=FakeModel(embed_error=ModelUnavailable("unreachable")))
+@pytest.mark.parametrize(
+    "error",
+    [ModelUnavailable("unreachable"), ModelOutputError("embedding_dim")],
+    ids=["down", "bad vectors"],
+)
+def test_search_still_works_when_embedding_fails(error: Exception) -> None:
+    answer_service, retriever, _ = service(model=FakeModel(embed_error=error))
     answer = answer_service.answer(A, "What is the grand total of INV-1042?")
+    assert_well_formed(answer)
     assert answer.status == "answered"
-    assert retriever.calls[0][2] is None
+    assert [c.ref_id for c in answer.citations] == [INVOICE.piece_id]
+    assert retriever.calls[0][2] is None  # word and fuzzy search only
 
 
 def test_links_and_markup_from_the_model_never_reach_the_answer() -> None:
