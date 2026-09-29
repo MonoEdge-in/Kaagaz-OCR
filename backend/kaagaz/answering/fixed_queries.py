@@ -22,8 +22,9 @@ Rules shared by every query (never a guess, CLAUDE.md never-do 6):
   left out. The metric must have a number.
 * A labelled document (an invoice) counts once: its ``document`` record is
   used, and the ``page:{p}:line:{n}`` records (a field printed again further
-  on, kaagaz/extraction/labelled.py) are left out of the total, the top party
-  and the extreme value. Spreadsheet rows (``sheet:...``) are unchanged.
+  on, kaagaz/extraction/labelled.py) are left out of the total, the top party,
+  the extreme value and the document count. Spreadsheet rows (``sheet:...``)
+  are unchanged.
 * The date filter is ``[start, end)`` on the record's own date value. No
   date candidates means no date filter.
 * Party names are grouped ignoring case and repeated spaces; the name shown
@@ -258,7 +259,7 @@ _COUNT_DOCUMENTS = text(
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.status = 'ready'
-          AND v.field = ANY(CAST(:date_fields AS text[]))
+          AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
