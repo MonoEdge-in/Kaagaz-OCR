@@ -20,7 +20,8 @@ Each partial failure is undone in reverse order:
 
 * storing fails: nothing was recorded, the error propagates.
 * recording fails: the stored file is deleted, the error propagates. That
-  includes a folder deleted since the API checked it (UnknownFolder).
+  includes a folder deleted since the API checked it (UnknownFolder), and for
+  a new version, a family gone or moved to Trash since then (UnknownFamily).
 * lost a race (another identical upload was recorded first): our stored file
   is deleted and the winner's document is returned as a duplicate.
 * queueing fails: the record and the file are removed, so the customer can
@@ -39,6 +40,10 @@ outbox, or re-queueing records that never ran) is database and queue design,
 so it is PROVISIONAL and Vrushit's (#1, #16). Also rare: a race loser is told
 "duplicate" of a winner that then fails to queue and is rolled back.
 
+A new version (``accept_version``, PRD 1 F6) takes the same steps. Only
+recording differs: the repository adds the record to the family, under the
+family lock (plan 9.4).
+
 PROVISIONAL: document ids are random UUID4 here; the id format belongs to the
 database design (#1).
 """
@@ -55,6 +60,7 @@ from kaagaz.ingestion.ports import (
     DocumentRepository,
     Job,
     JobQueue,
+    UnknownFamily,
     UnknownFolder,
 )
 from kaagaz.ingestion.sniff import detect_type
@@ -99,6 +105,56 @@ class UploadService:
         """``display_name`` must already be cleaned by the caller (the API).
         ``folder_id`` files a new document there (None: the top level); a
         duplicate stays where it is."""
+        return self._accept(
+            customer_id,
+            stream,
+            display_name=display_name,
+            uploaded_by=uploaded_by,
+            folder_id=folder_id,
+            add=self._repository.add_if_absent,
+        )
+
+    def accept_version(
+        self,
+        customer_id: str,
+        stream: ByteSource,
+        *,
+        of_document_id: str,
+        display_name: str,
+        uploaded_by: str | None,
+    ) -> UploadResult:
+        """A new version of ``of_document_id``'s family: the checks, duplicate
+        rule and undo steps of ``accept``. The repository gives it the family's
+        folder, tags and next version_no. Raises UnknownFamily when the document
+        is not this customer's or its family is in Trash; the stored file is
+        deleted again and nothing is queued."""
+
+        def add_version(record: DocumentRecord) -> tuple[DocumentRecord, bool]:
+            added = self._repository.add_version_if_absent(record, of_document_id=of_document_id)
+            if added is None:
+                raise UnknownFamily(of_document_id)
+            return added
+
+        return self._accept(
+            customer_id,
+            stream,
+            display_name=display_name,
+            uploaded_by=uploaded_by,
+            folder_id=None,
+            add=add_version,
+        )
+
+    def _accept(
+        self,
+        customer_id: str,
+        stream: ByteSource,
+        *,
+        display_name: str,
+        uploaded_by: str | None,
+        folder_id: str | None,
+        add: Callable[[DocumentRecord], tuple[DocumentRecord, bool]],
+    ) -> UploadResult:
+        """The steps in the module docstring; ``add`` records the new document."""
         if not isinstance(customer_id, str) or not customer_id:
             raise ValueError("customer_id is required")
 
@@ -140,8 +196,8 @@ class UploadService:
             self._repository.remove(record)
 
         try:
-            stored, created = self._repository.add_if_absent(record)
-        except (BackendUnavailable, UnknownFolder) as error:
+            stored, created = add(record)
+        except (BackendUnavailable, UnknownFolder, UnknownFamily) as error:
             _undo(error, delete_file)
             raise
 

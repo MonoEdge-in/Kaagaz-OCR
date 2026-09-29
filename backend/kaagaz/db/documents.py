@@ -14,16 +14,19 @@ customer's folder fails the same way), and ``add_if_absent`` raises
 UnknownFolder.
 
 Each call is one indexed statement: O(log n) in the number of documents.
+``add_version`` is the exception: it takes the family lock first (below).
 """
 
+import dataclasses
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from kaagaz.db.engine import Database
+from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import DocumentRecord, UnknownFolder
 from kaagaz.scanning.gate import DocumentStatus
@@ -57,6 +60,75 @@ def folder_missing(error: IntegrityError) -> bool:
         getattr(error.orig, "sqlstate", None) == "23503"
         and getattr(diag, "constraint_name", None) == "documents_folder_fk"
     )
+
+
+# --- new versions (PRD 1 F6) -------------------------------------------------
+
+# The family's folder and next number, read through the document the version
+# is for, unless its family is in Trash (the whole family moves together).
+_NEXT_VERSION = (
+    "SELECT d.folder_id, (SELECT max(v.version_no) FROM documents v"
+    " WHERE v.customer_id = :c AND v.family_id = :f) + 1 AS version_no"
+    " FROM documents d WHERE d.customer_id = :c AND d.id = :of AND d.deleted_at IS NULL"
+)
+
+_INSERT_VERSION = (
+    "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
+    " uploaded_by, folder_id, family_id, version_no, is_current)"
+    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false)"
+    " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
+)
+
+# Every version holds the family's tag set (tags.set_document_tags), so the
+# document the version is for has the whole set.
+_COPY_TAGS = (
+    "INSERT INTO document_tags (customer_id, document_id, tag_id)"
+    " SELECT dt.customer_id, :d, dt.tag_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.document_id = :of"
+)
+
+
+def add_version(
+    conn: Connection, record: DocumentRecord, *, of_document_id: str
+) -> tuple[DocumentRecord, bool] | None:
+    """``DocumentRepository.add_version_if_absent`` on a connection from
+    ``Database.customer(record.customer_id)``.
+
+    The family lock (``trash.lock_family``) comes first, so a second new version
+    waits, then sees this one and takes the next number (the unique index
+    ``documents_family_version`` refuses a repeat anyway). 4 statements for a
+    new version (lock, family, insert, tags); O(v log D + t log N) time and
+    O(v + t) space for the family's v versions and t tags.
+    """
+    customer_id = record.customer_id
+    family_id = lock_family(conn, customer_id, of_document_id)
+    if family_id is None:
+        return None
+    params: dict[str, Any] = {"c": customer_id, "f": family_id, "of": of_document_id}
+    family = conn.execute(text(_NEXT_VERSION), params).first()
+    if family is None:  # the family is in Trash
+        return None
+    stored = dataclasses.replace(
+        record,
+        folder_id=None if family[0] is None else str(family[0]),
+        family_id=family_id,
+        version_no=int(family[1]),
+    )
+    params.update(
+        d=stored.document_id,
+        name=stored.display_name,
+        h=stored.sha256,
+        size=stored.size,
+        type=stored.detected_type,
+        by=stored.uploaded_by,
+        folder=stored.folder_id,
+        version=stored.version_no,
+    )
+    if conn.execute(text(_INSERT_VERSION), params).first() is None:  # this customer has these bytes
+        row = conn.execute(text(_SELECT + " AND sha256 = :h"), params).one()
+        return _record(row), False
+    conn.execute(text(_COPY_TAGS), params)
+    return stored, True
 
 
 class PgDocuments:
@@ -118,6 +190,13 @@ class PgDocuments:
                 {"c": record.customer_id, "h": record.sha256},
             ).one()
         return _record(row), False
+
+    def add_version_if_absent(
+        self, record: DocumentRecord, *, of_document_id: str
+    ) -> tuple[DocumentRecord, bool] | None:
+        """``add_version`` in its own transaction."""
+        with _unavailable(), self._db.customer(record.customer_id) as conn:
+            return add_version(conn, record, of_document_id=of_document_id)
 
     def remove(self, record: DocumentRecord) -> None:
         with _unavailable(), self._db.customer(record.customer_id) as conn:

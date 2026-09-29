@@ -1,5 +1,5 @@
-"""The document routes: list, upload, detail, rename or move, the original
-file, page images, spreadsheet cells and delete.
+"""The document routes: list, upload, a new version, detail, rename or move,
+the original file, page images, spreadsheet cells and delete.
 
 Why some choices:
 
@@ -28,6 +28,10 @@ Why some choices:
   An unknown folder is 404; an unknown tag simply matches nothing. Upload days
   are read in the customer's timezone (TIMEZONE), and the end day is not
   included.
+* **Versions** (PRD 1 F6) have the checks and replies of upload. A family in
+  Trash or not there is 404, checked before storing and again under the lock.
+  The list shows each family's newest version (Trash with ``trashed=true``);
+  by id, any version opens. A duplicate in Trash says ``in_trash: true``.
 """
 
 import re
@@ -48,7 +52,13 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import DOCUMENT_NAME_MAX, clean_document_name
 from kaagaz.api.upload_guard import check_upload_request
-from kaagaz.api.views import document_folder, document_summary, extracted_value, page_summary
+from kaagaz.api.views import (
+    document_folder,
+    document_summary,
+    document_version,
+    extracted_value,
+    page_summary,
+)
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, listing, trash
 from kaagaz.db import folders as folders_sql
@@ -57,7 +67,7 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
-from kaagaz.ingestion.ports import BlobNotFound, UnknownFolder
+from kaagaz.ingestion.ports import BlobNotFound, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadService
 from kaagaz.settings import Settings
 
@@ -135,6 +145,7 @@ def list_documents(
     detected_type: DetectedTypeParam | None = None,
     uploaded_from: IsoDay = None,
     uploaded_to: IsoDay = None,
+    trashed: bool = False,
 ) -> dict[str, Any]:
     """One page and its total. The top level with its subfolders is everything,
     so it filters nothing. At most four data queries, whatever the page size:
@@ -161,6 +172,7 @@ def list_documents(
             detected_type=detected_type,
             uploaded_from=start,
             uploaded_to=end,
+            trashed=trashed,
         )
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
     max_pages = context.settings.max_pages
@@ -247,7 +259,8 @@ def _accept(
     if row is None:  # deleted in the moment since; nothing to show
         raise ApiError(404, "not_found")
     summary = document_summary(row, max_pages=context.settings.max_pages, tags=tags[result.document_id])
-    return {"document": summary, "duplicate": result.duplicate}
+    in_trash = result.duplicate and row["deleted_at"] is not None
+    return {"document": summary, "duplicate": result.duplicate, "in_trash": in_trash}
 
 
 @router.post("/documents")
@@ -260,6 +273,63 @@ async def upload_document(request: Request, user: User, context: Context) -> JSO
             raise ApiError(400, "bad_request", "Choose a file to upload.")
         folder_id = _form_folder_id(form.get("folder_id"))
         body = await run_in_threadpool(_accept, context, user, upload, policy, folder_id)
+    return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
+
+
+def _accept_version(
+    context: AppContext, user: CurrentUser, upload: UploadFile, policy: UploadPolicy, of_document_id: str
+) -> dict[str, Any]:
+    customer_id = user.customer_id
+    with context.db.customer(customer_id) as conn:
+        target = listing.get_document(conn, customer_id, of_document_id)
+    if target is None or target["deleted_at"] is not None:
+        raise ApiError(404, "not_found")  # before anything is stored or queued
+    service = UploadService(policy, PgDocuments(context.db), context.storage, context.queue)
+    try:
+        result = service.accept_version(
+            customer_id,
+            upload.file,
+            of_document_id=of_document_id,
+            display_name=display_name(upload.filename),
+            uploaded_by=user.user_id,
+        )
+    except UploadRejected as rejected:
+        message = _refusal_message(rejected, policy)
+        raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
+    except UnknownFamily:  # gone or moved to Trash since the check; the service removed the stored file
+        raise ApiError(404, "not_found") from None
+    with context.db.customer(customer_id) as conn:
+        if not result.duplicate:
+            audit.record(
+                conn,
+                customer_id,
+                actor_user_id=user.user_id,
+                action="document.version",
+                target_type="document",
+                target_id=result.document_id,
+                details={"family_id": str(target["family_id"])},
+            )
+        row = listing.get_document(conn, customer_id, result.document_id)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [result.document_id])
+    if row is None:  # deleted in the moment since; nothing to show
+        raise ApiError(404, "not_found")
+    summary = document_summary(row, max_pages=context.settings.max_pages, tags=tags[result.document_id])
+    in_trash = result.duplicate and row["deleted_at"] is not None
+    return {"document": summary, "duplicate": result.duplicate, "in_trash": in_trash}
+
+
+@router.post("/documents/{document_id}/versions")
+async def upload_version(
+    document_id: uuid.UUID, request: Request, user: User, context: Context
+) -> JSONResponse:
+    """A new version of the document's family (PRD 1 F6). Any user of the customer."""
+    policy = await run_in_threadpool(_upload_policy, context, user)
+    check_upload_request(request, policy)
+    async with request.form(max_files=1, max_fields=10) as form:
+        upload = form.get("file")
+        if not isinstance(upload, UploadFile):
+            raise ApiError(400, "bad_request", "Choose a file to upload.")
+        body = await run_in_threadpool(_accept_version, context, user, upload, policy, str(document_id))
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
 
@@ -280,11 +350,13 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
         folder = row["folder_id"]
         path = [] if folder is None else folders_sql.folder_path(conn, customer_id, str(folder))
+        versions = listing.family_versions(conn, customer_id, str(row["family_id"]))
     return {
         **document_summary(row, max_pages=context.settings.max_pages, tags=tags),
         "pages": [page_summary(page) for page in pages],
         "values": [extracted_value(value) for value in values],
         "folder": document_folder(path),
+        "versions": [document_version(version) for version in versions],
     }
 
 
