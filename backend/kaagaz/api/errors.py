@@ -27,6 +27,7 @@ MESSAGES = {
     "folder_cycle": "A folder can't go inside itself or one of its own folders.",
     "folder_too_deep": "Folders can be at most 5 levels deep.",
     "folder_not_empty": "This folder isn't empty. Move or delete what is inside it first.",
+    "not_needs_review": "This value doesn't need review any more.",
     "too_large": "This file is too large.",
     "empty_file": "This file is empty.",
     "unsupported_type": "This kind of file is not supported.",
@@ -87,15 +88,11 @@ async def _unavailable(request: Request, exc: Exception) -> Response:
     return error_response(503, "backend_unavailable")
 
 
-async def _internal(request: Request, exc: Exception) -> Response:
-    # The last resort for a bug: the same JSON shape, and nothing from the error.
-    return error_response(500, "internal_error")
-
-
 def install(app: FastAPI) -> None:
+    # The last resort for a bug is kaagaz.api.middleware.ErrorMiddleware: the same
+    # JSON shape, and only the error's type in the log.
     app.add_exception_handler(ApiError, _api_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(BackendUnavailable, _unavailable)
     app.add_exception_handler(OperationalError, _unavailable)
-    app.add_exception_handler(500, _internal)

@@ -2,15 +2,14 @@
 
 Why at import: uvicorn imports this module and takes ``app``. Settings come
 from the environment (``.env.example`` lists them); a missing one stops the
-process here with its name. Log lines are the JSON the middleware writes,
-one per line, at ``LOG_LEVEL``.
+process here with its name. Log lines are JSON, one per line, at
+``LOG_LEVEL``, in the worker's format (``configure_logging``): an error is
+logged by its type, never its message or traceback.
 """
 
-import logging
-
-from kaagaz.api.app import create_app
+from kaagaz.api.app import configure_logging, create_app
 from kaagaz.settings import Settings
 
 settings = Settings.from_env()
-logging.basicConfig(level=settings.log_level.upper(), format="%(message)s")
+configure_logging(settings.log_level)
 app = create_app(settings)

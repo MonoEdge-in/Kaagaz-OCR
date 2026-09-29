@@ -265,11 +265,13 @@ class AnswerService:
         )
 
     def _embed(self, english: str) -> list[float] | None:
+        """The question's vector, or None (no model, model down, or unusable
+        vectors), so search falls back to word and fuzzy matching. One model call."""
         if self._model is None or not english:
             return None
         try:
             vectors = self._model.embed([english])
-        except ModelUnavailable:
+        except (ModelUnavailable, ModelOutputError):
             return None
         return vectors[0] if vectors else None
 

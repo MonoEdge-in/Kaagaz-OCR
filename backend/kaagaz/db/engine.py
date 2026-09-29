@@ -37,7 +37,9 @@ def normalise_url(url: str) -> str:
 
 
 def make_engine(database_url: str) -> Engine:
-    return create_engine(normalise_url(database_url), pool_pre_ping=True, future=True)
+    """``hide_parameters``: a failing statement's error and the engine's log lines
+    never show the bound values, which can be row values or document text."""
+    return create_engine(normalise_url(database_url), pool_pre_ping=True, future=True, hide_parameters=True)
 
 
 def _is_role_name(name: str) -> bool:

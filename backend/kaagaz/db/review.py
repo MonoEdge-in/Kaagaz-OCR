@@ -66,11 +66,12 @@ def get_item(conn: Connection, customer_id: str, value_id: str) -> RowMapping | 
 
 def lock_value(conn: Connection, customer_id: str, value_id: str) -> RowMapping | None:
     """The value, locked until the transaction ends, so two reviewers cannot
-    resolve it at the same moment."""
+    resolve it at the same moment. The label is read under the lock: the second
+    reviewer sees the first one's ``verified`` and is refused. O(1), by primary key."""
     return (
         conn.execute(
             text(
-                "SELECT id, document_id, field, value_text, value_raw, second_reading"
+                "SELECT id, document_id, field, value_text, value_raw, second_reading, label"
                 " FROM extracted_values WHERE customer_id = :c AND id = :v FOR UPDATE"
             ),
             {"c": customer_id, "v": value_id},
