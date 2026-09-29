@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPT_ATTRIBUTE,
   MAX_UPLOAD_BYTES,
@@ -18,6 +18,7 @@ import {
   uploadStateText,
   validateUpload,
 } from "@/components/documents/logic";
+import { uploadDocument } from "@/lib/api";
 import type { DocumentStatus, Me, Role } from "@/lib/types";
 
 const MB = 1024 * 1024;
@@ -269,5 +270,73 @@ describe("formatProgressPercent", () => {
 describe("deletedMessage", () => {
   it("names the document, as plain text", () => {
     expect(deletedMessage("Bill <1>.pdf")).toBe("Deleted Bill <1>.pdf.");
+  });
+});
+
+// --- WP1.5: folders, tags, filters and downloads ----------------------------------
+
+describe("uploadDocument into a folder", () => {
+  const FOLDER = "0b4f7a8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
+
+  // Stands in for the browser's XMLHttpRequest and keeps what was sent.
+  class FakeXhr {
+    static sent: FakeXhr[] = [];
+    method = "";
+    url = "";
+    body: unknown = null;
+    status = 0;
+    responseText = "";
+    withCredentials = false;
+    headers: Record<string, string> = {};
+    upload: { onprogress: ((event: ProgressEvent) => void) | null } = { onprogress: null };
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    open(method: string, url: string) {
+      this.method = method;
+      this.url = url;
+    }
+    setRequestHeader(name: string, value: string) {
+      this.headers[name] = value;
+    }
+    send(body: unknown) {
+      this.body = body;
+      FakeXhr.sent.push(this);
+    }
+    reply(status: number, body: unknown) {
+      this.status = status;
+      this.responseText = JSON.stringify(body);
+      this.onload?.();
+    }
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    FakeXhr.sent = [];
+  });
+
+  function lastForm(): FormData {
+    const xhr = FakeXhr.sent.at(-1);
+    if (!xhr || !(xhr.body instanceof FormData)) throw new Error("nothing was uploaded");
+    return xhr.body;
+  }
+
+  it("sends the folder being viewed as the form field folder_id, with the file", async () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    const file = new File(["%PDF-1.7"], "bill.pdf", { type: "application/pdf" });
+    const done = uploadDocument(file, () => {}, FOLDER);
+    const form = lastForm();
+    expect(form.get("folder_id")).toBe(FOLDER);
+    expect(form.get("file")).toBeInstanceOf(File);
+    expect(FakeXhr.sent[0]?.url).toBe("/api/documents");
+    FakeXhr.sent[0]?.reply(201, { document: { id: "d1" }, duplicate: false });
+    await expect(done).resolves.toMatchObject({ duplicate: false });
+  });
+
+  it("sends no folder_id when uploading at the top level", async () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    const done = uploadDocument(new File(["a,b"], "rates.csv"), () => {});
+    expect(lastForm().has("folder_id")).toBe(false);
+    FakeXhr.sent[0]?.reply(201, { document: { id: "d2" }, duplicate: false });
+    await done;
   });
 });
