@@ -1,7 +1,7 @@
 "use client";
 
 // The list of this customer's documents: one table, reflowed into cards when
-// the list is narrower than 44rem (Documents.module.css). Names and status
+// the list is narrower than 48rem (Documents.module.css). Names and status
 // messages are shown as plain text. Delete asks "Delete this document for
 // everyone?" before anything is removed; focus goes to Cancel, and back to
 // Delete if it is cancelled.
