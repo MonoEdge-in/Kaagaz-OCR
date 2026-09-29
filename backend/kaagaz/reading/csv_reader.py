@@ -23,7 +23,7 @@ decoded at once; it is bounded by the upload size limit.
 
 import csv
 import io
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from kaagaz.ingestion.sniff import FORBIDDEN_CONTROL
 from kaagaz.reading.spans import CellLocation, ReadError, Span
@@ -41,7 +41,8 @@ class CsvReader:
             raise ValueError("max_cells must be at least 1")
         self._max_cells = max_cells
 
-    def read(self, data: bytes) -> Iterator[Span]:
+    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> Iterator[Span]:
+        # on_page is ignored: a CSV has no pages to read one by one (kaagaz/reading/socket.py).
         text = _decode_utf8(data)
         if text is None:
             raise ReadError("not_utf8")

@@ -45,6 +45,7 @@ from tests.xlsx_builder import make_xlsx, make_zip, sheet_xml
 
 CUSTOMER = "cust-demo"
 FAKE_VIRUS_MARKER = b"FAKE-VIRUS-FOR-TESTING"
+MAX_RECEIVES = 3  # the stand-in queue's maximum, which the worker must know
 
 # What each outcome means, for the report.
 EXPLAIN = {
@@ -113,7 +114,7 @@ def percentile(values: list[float], fraction: float) -> float:
 def main() -> None:
     out = sys.stdout  # a command line report, so it writes to stdout rather than the log
     clock = FakeClock()
-    queue = LeaseQueue(clock, lease_seconds=30, max_attempts=3)
+    queue = LeaseQueue(clock, lease_seconds=30, max_attempts=MAX_RECEIVES)
     statuses, storage, store = MemoryStatuses(), MemoryStorage(), MemoryPipelineStore()
     repo = MemoryDocuments(statuses)
     policy = UploadPolicy(max_bytes=100_000, allowed_types=frozenset(sniff.KNOWN_TYPES))
@@ -137,7 +138,12 @@ def main() -> None:
         page_images=MemoryPageImages(),
         store=store,
     )
-    worker = Worker(queue, processor)
+    worker = Worker(
+        queue,
+        processor,
+        max_receives=MAX_RECEIVES,
+        on_exhausted=lambda job: repo.mark_exhausted(job.customer_id, job.document_id),
+    )
 
     samples = make_samples()
     outcomes: dict[str, str] = {}

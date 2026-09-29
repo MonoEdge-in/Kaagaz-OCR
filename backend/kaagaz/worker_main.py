@@ -12,8 +12,10 @@ until it is told to stop:
   it out again once its lease runs out.
 * Anything else is a bug and ends the process on purpose (no blanket
   ``except Exception``, as in kaagaz/jobs/worker.py). docker-compose.yml
-  restarts it; the job goes back to the queue and, after the maximum number
-  of receives, to the failure bin.
+  restarts it; the job goes back to the queue, and its last delivery marks
+  the document failed (``retries_exhausted``) and buries the job.
+* The queue's maximum receives is read from the queue once, at start-up. A
+  queue without a redrive policy stops the worker before it takes any job.
 
 Logs are JSON lines holding ids, codes and counts only: never file names,
 document text or an exception's message (it could quote a document). An
@@ -28,6 +30,7 @@ import logging
 import signal
 import sys
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 from types import FrameType
 from typing import Protocol
@@ -35,10 +38,11 @@ from typing import Protocol
 from kaagaz.adapters.queue import SqsQueue
 from kaagaz.adapters.scanner import build_scanner
 from kaagaz.adapters.storage import S3Storage
+from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
+from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
 from kaagaz.settings import Settings
 
 logger = logging.getLogger("kaagaz.worker")
@@ -93,6 +97,27 @@ class LoggedHandler:
         logger.info("job done", extra={**ids, "outcome": "done"})
 
 
+class MarkExhausted:
+    """The worker's ``on_exhausted``: marks the job's document (``mark`` is
+    PgDocuments.mark_exhausted) and logs it, with ids and the code only."""
+
+    def __init__(self, mark: Callable[[str, str], None]) -> None:
+        self._mark = mark
+
+    def __call__(self, job: Job) -> None:
+        self._mark(job.customer_id, job.document_id)
+        logger.warning(
+            "job %s",
+            "failed",
+            extra={
+                "customer_id": job.customer_id,
+                "document_id": job.document_id,
+                "outcome": "failed",
+                "code": RETRIES_EXHAUSTED,
+            },
+        )
+
+
 class RunsJobs(Protocol):
     def run_once(self) -> bool: ...
 
@@ -136,6 +161,7 @@ def main() -> None:
     db = Database(make_engine(settings.database_url), settings.db_app_role)
     storage = S3Storage(settings)
     queue = SqsQueue(settings)
+    max_receives = queue.max_receives()  # once; no redrive policy stops the worker here
     scanner = build_scanner(settings)
     model = build_model_client(settings)
     processor = build_processor(settings=settings, db=db, storage=storage, scanner=scanner, model=model)
@@ -144,11 +170,13 @@ def main() -> None:
     install_stop_handlers(stop)
     storage.ensure_bucket()  # the laptop's first start; in AWS it only checks
     logger.info("worker started")
-    run_until_stopped(
-        Worker(queue, LoggedHandler(processor)),
-        stop,
-        pause_seconds=settings.queue_wait_seconds,
+    worker = Worker(
+        queue,
+        LoggedHandler(processor),
+        max_receives=max_receives,
+        on_exhausted=MarkExhausted(PgDocuments(db).mark_exhausted),
     )
+    run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
     db.engine.dispose()
     logger.info("worker stopped")
 
