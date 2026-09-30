@@ -183,16 +183,33 @@ export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
   sheet: 3.2,
 };
 
-/** Pages to expect: a PDF's MB ÷ MB_PER_PDF_PAGE, rounded up; a photo or a sheet is 1. Never below 1. */
-export function estimatePages(kind: UploadKind, sizeBytes: number): number {
-  if (kind !== "pdf" || !(sizeBytes > 0)) return 1;
+/**
+ * Pages to expect, rounded up and never below 1. A photo or a sheet is 1.
+ * For a PDF, `counted` is the page count the upload flow found before sending
+ * (pageCount.ts), or null when it could not count them. PROVISIONAL: the PRD
+ * (X4) says MB ÷ MB_PER_PDF_PAGE, but the real count is more accurate, so it
+ * wins; MB ÷ MB_PER_PDF_PAGE is used only when the count is not known.
+ */
+export function estimatePages(kind: UploadKind, sizeBytes: number, counted: number | null = null): number {
+  if (kind !== "pdf") return 1;
+  if (counted !== null && Number.isFinite(counted)) return Math.max(1, Math.ceil(counted));
+  if (!(sizeBytes > 0)) return 1;
   return Math.max(1, Math.ceil(sizeBytes / (MB_PER_PDF_PAGE * MB)));
 }
 
-/** Rough but useful estimate for how long ingest will take after the file is received. */
-export function estimateIngestSeconds(kind: UploadKind, sizeBytes: number, filesCount = 1): number {
+/**
+ * Rough but useful estimate for how long ingest will take after the file is
+ * received. `counted`: a PDF's real page count when known (estimatePages).
+ */
+export function estimateIngestSeconds(
+  kind: UploadKind,
+  sizeBytes: number,
+  filesCount = 1,
+  counted: number | null = null,
+): number {
   const estimate =
-    estimatePages(kind, sizeBytes) * SECONDS_PER_PAGE[kind] + Math.max(filesCount - 1, 0) * 12;
+    estimatePages(kind, sizeBytes, counted) * SECONDS_PER_PAGE[kind] +
+    Math.max(filesCount - 1, 0) * 12;
   return Math.max(4, Math.round(estimate));
 }
 

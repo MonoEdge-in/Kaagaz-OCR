@@ -33,7 +33,7 @@ import {
   validateUpload,
 } from "./logic";
 import type { UploadState } from "./logic";
-import { pageProblem } from "./pageCount";
+import { checkPages } from "./pageCount";
 import styles from "./Documents.module.css";
 
 export interface UploadEntry {
@@ -41,6 +41,7 @@ export interface UploadEntry {
   name: string;
   size: number;
   versionOf?: string; // for a new version: the name of the document it updates
+  pages?: number | null; // a PDF's or TIFF's pages, counted just before sending; null when not known
   state: UploadState;
 }
 
@@ -103,9 +104,12 @@ export function useUploads(onUploaded: () => void) {
     }
   }
 
-  /** Count a PDF's or TIFF's pages, then send it, unless it has too many. */
+  /** Count a PDF's or TIFF's pages (kept for the time estimate), then send it, unless it has too many. */
   async function checkThenSend(key: string, file: File, start: Start) {
-    const problem = await pageProblem(file, limits.max_pages);
+    const { pages, problem } = await checkPages(file, limits.max_pages);
+    setEntries((current) =>
+      current.map((entry) => (entry.key === key ? { ...entry, pages } : entry)),
+    );
     if (problem) update(key, { kind: "error", message: problem });
     else await send(key, start);
   }
@@ -301,11 +305,15 @@ function UploadRow({
     element?.focus();
   }, []);
   const failed = state.kind === "error";
-  // Only a file of an accepted type is ever sent, so its type is known while it uploads.
+  // Only a file of an accepted type is ever sent, so its type is known while it
+  // uploads; a PDF's pages were counted just before (null when they could not be).
   const kind = uploadKind(entry.name);
   const etaText =
     state.kind === "uploading" && kind !== null
-      ? estimateText(kind, Math.max(0, estimateIngestSeconds(kind, entry.size) * (1 - state.fraction)))
+      ? estimateText(
+          kind,
+          Math.max(0, estimateIngestSeconds(kind, entry.size, 1, entry.pages ?? null) * (1 - state.fraction)),
+        )
       : null;
 
   return (
