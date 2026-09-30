@@ -37,13 +37,19 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 `MODEL_ENABLED=false` (the default) runs everything with no AI. To use
 Ollama, pull `MODEL_CHAT` and `MODEL_EMBED` first, then set it to `true`.
+With the model on, the worker reads each document's card with `MODEL_CHAT`
+(PRD 2): a reply may take up to `MODEL_CARD_MAX_TOKENS` tokens, in a window of
+`MODEL_NUM_CTX`, and one card call times out after
+`MODEL_EXTRACT_TIMEOUT_SECONDS` (twice that plus 60 must fit
+`QUEUE_LEASE_SECONDS`, or nothing starts).
 
 An older `.env` needs these added from `.env.example` (a missing setting stops
 the start with its name): `TOTP_ENCRYPTION_KEY`, `LOGIN_MAX_FAILURES`,
 `LOGIN_LOCK_MINUTES`, `ADMIN_SESSION_MINUTES`, `MAX_IMAGE_MB`, `MAX_SHEET_MB`,
 `TRASH_DAYS`, `JOB_MAX_ATTEMPTS`, `OCR_URL`, `OCR_TIMEOUT_SECONDS` and
-`OCR_DPI`, plus the new `MAX_PAGES`, `MAX_IMAGE_PIXELS` and
-`QUEUE_LEASE_SECONDS` values. Recreate the queue too (`docker compose up -d
+`OCR_DPI`, the model budgets `MODEL_NUM_CTX`, `MODEL_CARD_MAX_TOKENS`,
+`MODEL_WINDOW_MAX_TOKENS`, `MODEL_EXTRACT_TIMEOUT_SECONDS` and `CARD_MAX_CHARS`,
+plus the new `MAX_PAGES`, `MAX_IMAGE_PIXELS` and `QUEUE_LEASE_SECONDS` values. Recreate the queue too (`docker compose up -d
 --force-recreate elasticmq`): its failure-bin limit is now 10.
 
 ## 2a. Everything in Docker
