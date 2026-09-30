@@ -79,7 +79,21 @@ export interface DocumentSummary {
   max_attempts: number | null;
   newer_version: NewerVersion | null; // a later version still being read, or one that failed
   progress: DocumentProgress | null; // null unless it is being checked or read; status_message already says it
+  doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
+  languages: string[]; // "en", "hi", "mr", "other"; [] when not known
 }
+
+/** What kind of document the AI model's card says it is (PRD 2, D1). */
+export type DocType =
+  | "invoice"
+  | "receipt"
+  | "bank_statement"
+  | "land_record"
+  | "contract"
+  | "register"
+  | "form"
+  | "letter"
+  | "other";
 
 /** How far the worker has got (PRD 2, X3), e.g. step "reading", done 3, total 40. */
 export interface DocumentProgress {
@@ -163,6 +177,7 @@ export interface DocumentDetail extends DocumentSummary {
   folder: DocumentFolder | null; // null: at the top level
   versions: DocumentVersion[]; // every version of the family, this one included
   reviewer_fixes: number; // corrections on this document's values; said before "Read again" (PRD 2, X1)
+  summary: string | null; // the AI model's own words, plain text (PRD 3 labels it); null without a card
 }
 
 export interface DocumentList {

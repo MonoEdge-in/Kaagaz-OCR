@@ -455,6 +455,12 @@ table.docs th {
   font-size: var(--fs-sm);
 }
 
+/* What kind of document it is (PRD 2, D6), under its file type. */
+.docType {
+  display: block;
+  color: var(--fg-muted);
+}
+
 .statusCell {
   vertical-align: middle;
 }
@@ -710,10 +716,16 @@ table.docs th {
     color: var(--fg-muted);
   }
 
-  .meta + .meta::before {
+  .meta + .meta::before,
+  .docType::before {
     content: "·";
     content: "·" / "";
     margin-inline: var(--space-2);
+  }
+
+  /* On a card it joins the one meta line: "PDF · Invoice · 1.2 MB". */
+  .docType {
+    display: inline;
   }
 
   .meta[data-empty] {

@@ -2,7 +2,7 @@
 // and the words and tone for each document status. Pure functions, so
 // they are unit tested in node (tests/format.test.ts).
 
-import type { DetectedType, DocumentStatus } from "./types";
+import type { DetectedType, DocType, DocumentStatus } from "./types";
 
 // The product is for Indian businesses, so times are shown in India time
 // whatever the browser's own zone is. This also keeps the tests stable.
@@ -93,6 +93,23 @@ const TYPE_LABELS: Record<DetectedType, string> = {
 /** The file kind in words, from the type the server detected from the bytes. */
 export function typeLabel(type: DetectedType): string {
   return TYPE_LABELS[type];
+}
+
+const DOC_TYPE_LABELS: Record<DocType, string> = {
+  invoice: "Invoice",
+  receipt: "Receipt",
+  bank_statement: "Bank statement",
+  land_record: "Land record",
+  contract: "Contract",
+  register: "Register",
+  form: "Form",
+  letter: "Letter",
+  other: "Other",
+};
+
+/** What kind of document it is, in words; "Unknown" without a type, as with the model off (PRD 2, D6). */
+export function docTypeLabel(type: DocType | null): string {
+  return type === null ? "Unknown" : DOC_TYPE_LABELS[type];
 }
 
 /**
