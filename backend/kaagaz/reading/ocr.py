@@ -70,7 +70,9 @@ _REFUSALS = {422: "corrupt_file", 413: "image_too_large"}
 _VERSION = re.compile(r"[A-Za-z0-9._+;=@ -]{1,200}")
 # C0 and C1 controls and the bidirectional overrides and isolates, as
 # kaagaz/answering/sanitize.py strips them.
-_CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f‪-‮⁦-⁩]")
+_CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+# Lone surrogates: JSON can carry them, but no database or UTF-8 file can hold them.
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 _log = logging.getLogger(__name__)
 
@@ -223,7 +225,9 @@ def _line(block: object, width: int, height: int) -> tuple[int, OcrLine] | None:
     if not isinstance(block, dict):
         _invalid()
     kind, text, order, box = block.get("kind"), block.get("text"), block.get("order"), block.get("box")
-    if not (kind in BLOCK_KINDS and isinstance(text, str) and text and _is_whole(order) and _is_box(box)):
+    if not (isinstance(kind, str) and kind in BLOCK_KINDS and isinstance(text, str) and text):
+        _invalid()  # kind is checked to be a str first: a list or dict is not even hashable
+    if _SURROGATE.search(text) or not (_is_whole(order) and _is_box(box)):
         _invalid()
     table = _table(block.get("table"))
     if len(text) > MAX_BLOCK_CHARS or (table is not None and max(table.row, table.col) >= MAX_TABLE_INDEX):
@@ -269,10 +273,15 @@ def _is_box(value: object) -> TypeGuard[list[float]]:
     """[x0, y0, x1, y1] as page fractions: 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1 (NaN fails)."""
     if not (isinstance(value, list) and len(value) == 4):
         return False
-    if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in value):
+    if not all(_is_finite(v) for v in value):
         return False
     x0, y0, x1, y1 = value
     return bool(0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1)
+
+
+def _is_finite(value: object) -> bool:
+    """A whole number, or a finite float (bool refused). A huge int stays exact."""
+    return _is_whole(value) or (isinstance(value, float) and math.isfinite(value))
 
 
 def _invalid() -> NoReturn:

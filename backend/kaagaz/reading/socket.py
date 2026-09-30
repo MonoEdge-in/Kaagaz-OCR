@@ -117,9 +117,7 @@ def _is_valid(span: Span) -> bool:
 
 
 def _is_valid_layout(span: Span) -> bool:
-    if (span.kind is not None and span.kind not in BLOCK_KINDS) or (
-        span.origin is not None and span.origin not in ORIGINS
-    ):
+    if not (_is_one_of(span.kind, BLOCK_KINDS) and _is_one_of(span.origin, ORIGINS)):
         return False
     table = (span.table_id, span.row, span.col, span.header)
     if isinstance(span.location, CellLocation):
@@ -134,6 +132,11 @@ def _is_valid_layout(span: Span) -> bool:
         and _is_index(span.col)
         and isinstance(span.header, bool)
     )
+
+
+def _is_one_of(value: object, allowed: frozenset[str]) -> bool:
+    """None, or a str in ``allowed`` (checked as a str first: a list is not even hashable)."""
+    return value is None or (isinstance(value, str) and value in allowed)
 
 
 def _is_index(value: object) -> bool:
