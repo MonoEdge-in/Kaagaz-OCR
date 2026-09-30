@@ -12,10 +12,11 @@ stale delivery after a read again. The order is forced with events and
 
 import functools
 import io
+import itertools
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -211,6 +212,14 @@ def test_a_new_version_takes_over_once_ready_and_a_failed_one_changes_nothing(db
 # --- PRD 2: runs, the run fence and a read again (test-engineer 2) --------------------
 
 T0 = datetime(2026, 9, 30, 10, 0, tzinfo=UTC)
+_TICKS = itertools.count()
+
+
+def moving_clock() -> datetime:
+    """The deliveries' clock: a second later on every call, so runs sort in the order they started."""
+    return T0 + timedelta(seconds=next(_TICKS))
+
+
 RUNS = "SELECT status, error_code FROM processing_runs WHERE document_id = :d ORDER BY started_at, id"
 
 
@@ -233,7 +242,7 @@ def with_runs(
         store=PgPipelineStore(db),
         runs=PgRuns(db),
         progress=documents,
-        clock=lambda: T0,
+        clock=moving_clock,
         timer=Timer(),
         ocr_on=ocr_on,
     )

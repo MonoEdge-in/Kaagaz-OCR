@@ -286,10 +286,25 @@ def test_stats_count_each_family_by_its_current_version_and_older_versions_and_t
 # --- pages read this month, by route (PRD 2 R6) ------------------------------------------------
 
 
-def _run(api: Api, customer_id: str, document_id: str, started: datetime, **pages: int) -> None:
+def _run(
+    api: Api,
+    customer_id: str,
+    document_id: str,
+    started: datetime,
+    *,
+    pages_cells: int = 0,
+    pages_text_layer: int = 0,
+    pages_ocr: int = 0,
+    pages_blank: int = 0,
+) -> None:
     run = PgRuns(api.db).start(customer_id, document_id, now=started)
-    counts = {"pages_cells": 0, "pages_text_layer": 0, "pages_ocr": 0, "pages_blank": 0, **pages}
-    PgRuns(api.db).finish(customer_id, FinishedRun(run, totals(**counts), started))
+    done = totals(
+        pages_cells=pages_cells,
+        pages_text_layer=pages_text_layer,
+        pages_ocr=pages_ocr,
+        pages_blank=pages_blank,
+    )
+    PgRuns(api.db).finish(customer_id, FinishedRun(run, done, started))
 
 
 def test_the_month_is_worked_out_in_the_customers_timezone() -> None:
