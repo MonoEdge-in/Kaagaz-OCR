@@ -28,6 +28,9 @@ Rules shared by every query (never a guess, CLAUDE.md never-do 6):
   on, kaagaz/extraction/labelled.py) are left out of the total, the top party,
   the extreme value and the document count. Spreadsheet rows (``sheet:...``)
   are unchanged.
+* The document card's values (record ``card``, PRD 2 D3) never take part, nor
+  count as available fields: the model chose their fields (security amendment
+  A1, council fix 9).
 * The date filter is ``[start, end)`` on the record's own date value. No
   date candidates means no date filter.
 * Party names are grouped ignoring case and repeated spaces; the name shown
@@ -120,6 +123,7 @@ _AVAILABLE_FIELDS = text(
     FROM extracted_values v
     JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+      AND v.record_key <> 'card'
     """
 )
 
@@ -132,6 +136,7 @@ _TOP_GROUP = text(
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
+          AND v.record_key <> 'card'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), grp AS (
@@ -141,6 +146,7 @@ _TOP_GROUP = text(
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:group_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
+          AND v.record_key <> 'card'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(btrim(v.value_text) <> '')
     ), dated AS (
@@ -150,6 +156,7 @@ _TOP_GROUP = text(
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
+          AND v.record_key <> 'card'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
@@ -188,6 +195,7 @@ _TOTAL = text(
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
+          AND v.record_key <> 'card'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), dated AS (
@@ -197,6 +205,7 @@ _TOTAL = text(
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
+          AND v.record_key <> 'card'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
@@ -227,6 +236,7 @@ _EXTREME_VALUE = text(
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
+          AND v.record_key <> 'card'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), dated AS (
@@ -236,6 +246,7 @@ _EXTREME_VALUE = text(
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
+          AND v.record_key <> 'card'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
@@ -263,6 +274,7 @@ _COUNT_DOCUMENTS = text(
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
+          AND v.record_key <> 'card'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
