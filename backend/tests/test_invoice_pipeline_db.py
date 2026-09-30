@@ -21,8 +21,8 @@ from kaagaz.ingestion.ports import DocumentRecord
 from kaagaz.pipeline import DocumentContent, PageRecord
 from kaagaz.reading.spans import PageInfo
 from tests.db_support import new_customer
-from tests.exit_fixtures import SELLER_GSTIN, TEXTILE_FIELDS, QuotingChat, textile_lines, textile_spans
-from tests.test_extraction_invoice import with_model
+from tests.exit_fixtures import SELLER_GSTIN, TEXTILE_FIELDS, QuotingChat, textile_lines
+from tests.test_extraction_invoice import textile
 
 pytestmark = pytest.mark.db
 
@@ -39,7 +39,7 @@ def save_textile(db: Database, customer_id: str, *, silk_amount: str = "3,000.00
     """A new document holding the textile invoice (or its mismatched copy), saved."""
     document_id = new_document(db, customer_id)
     chat = QuotingChat(TEXTILE_FIELDS, textile_lines(silk_amount=silk_amount))
-    result = with_model(textile_spans(silk_amount=silk_amount), chat)
+    result = textile(chat, silk_amount=silk_amount)
     pages = [PageRecord(PageInfo(page, 612.0, 792.0, "pt"), False) for page in (1, 2, 3)]
     content = DocumentContent(
         customer_id, document_id, pages, [], [], result.values, "pdfplumber", invoice=result.invoice
@@ -99,8 +99,9 @@ def test_the_textile_invoice_row_and_its_lines_are_saved_and_read_back(db: Datab
     # Each line hangs under this invoice and this document (AR13's one foreign key).
     assert {(row.invoice_id, str(row.document_id)) for row in lines} == {(invoice_id, document)}
     assert [tuple(row)[2:] for row in lines] == [
-        (1, "Cotton Poplin", "5208", Decimal(120), "m", Decimal("25.00"), Decimal("3000.00"), "verified"),
-        (2, "Rayon Print", "5407", Decimal(80), "m", Decimal("37.50"), Decimal("3000.00"), "verified"),
+        # Needs review: a text line's values share its box (the lead's A2 decision, PROVISIONAL).
+        (1, "Cotton Poplin", "5208", Decimal(120), "m", Decimal("25.00"), Decimal("3000.00"), "needs_review"),
+        (2, "Rayon Print", "5407", Decimal(80), "m", Decimal("37.50"), Decimal("3000.00"), "needs_review"),
         (
             3,
             "Sub/Fabric Lining (cotton twill)",
@@ -109,9 +110,9 @@ def test_the_textile_invoice_row_and_its_lines_are_saved_and_read_back(db: Datab
             "m",
             Decimal("20.00"),
             Decimal("1000.00"),
-            "verified",
+            "needs_review",
         ),
-        (4, "Silk Blend", "5007", Decimal(20), "m", Decimal("150.00"), Decimal("3000.00"), "verified"),
+        (4, "Silk Blend", "5007", Decimal(20), "m", Decimal("150.00"), Decimal("3000.00"), "needs_review"),
     ]
     assert line_values == 24  # 4 lines of 6 fields: the lineage of every typed cell (E5)
 

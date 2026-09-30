@@ -15,7 +15,10 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from kaagaz.answering.dates import date_range, mentions_date
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, PgFixedQueries
+from kaagaz.answering.hinglish import normalise
+from kaagaz.answering.intent import FixedPlan, plan_fixed
 from kaagaz.db.engine import Database
 from kaagaz.extraction.labelled import values_from_lines
 from kaagaz.extraction.parsing import parse_amount, parse_date
@@ -451,3 +454,37 @@ def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> N
     )
     assert after == before
     assert "net_worth" not in after[0]
+
+
+# --- invoice lines are never used by a fixed query (PRD 2 plan conflict 1) ----------------------------
+
+
+def test_invoice_line_amounts_are_never_used_and_total_amount_still_plans(db: Database) -> None:
+    """Plan conflict 1: a line's amount would make intent's "amount" (total_amount or amount)
+    ambiguous for every customer with invoices, so line records stay out, like page records."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer, "bill-17.pdf", detected_type="pdf")
+    spans = [
+        Span(text=line, raw=line, location=BoxLocation(page, 0.1, 0.1 * n, 0.9, 0.1 * n + 0.05))
+        for n, (page, line) in enumerate(INVOICE_LINES, start=1)
+    ]
+    box = BoxLocation(1, 0.1, 0.6, 0.9, 0.62)
+    lines = [
+        ExtractedValue("line:1", "description", "Cotton cloth", "Cotton cloth", box),
+        ExtractedValue("line:1", "amount", "1,000.00", "1,000.00", box),
+        ExtractedValue("line:2", "amount", "180.00", "180.00", box),
+    ]
+    add_values(db, customer, document, as_stored([*values_from_lines(spans), *lines]))
+    fixed = PgFixedQueries(db)
+
+    available = fixed.available_fields(customer)
+    assert available == {"party_name", "invoice_number", "invoice_date", "total_amount"}
+    assert fixed.total(customer, "amount", (), None, None) == []
+    assert fixed.extreme_value(customer, "amount", (), None, None, True) == []
+    [august] = fixed.total(customer, "total_amount", DATES, *AUGUST)
+    assert (august.number, august.records) == (Decimal(1180), 1)
+    normalised = normalise("Total amount in August 2026?")
+    plan = plan_fixed(
+        normalised, date_range(normalised, date(2026, 9, 30)), mentions_date(normalised), available
+    )
+    assert plan == FixedPlan("total", "total_amount", (), ("invoice_date",), *AUGUST)
