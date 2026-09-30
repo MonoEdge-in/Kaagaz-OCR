@@ -52,6 +52,15 @@ def _turn_off(client: TestClient, password: str = PASSWORD) -> httpx.Response:
     return client.post("/api/auth/admin/2fa/off", json={"password": password}, headers=CSRF)
 
 
+def _locked_message(api: Api) -> str:
+    """The lockout message a password check gives while the account is locked (#39)."""
+    minutes = api.settings.login_lock_minutes
+    return (
+        f"Too many wrong passwords were tried on this account. Try again in {minutes} minutes,"
+        " or ask an admin to unlock it."
+    )
+
+
 class _Enrolling:
     """An admin with 2FA off, signed in on the admin screen with the password
     alone, who has pressed "Turn on" (``/2fa/start`` with the current password)
@@ -144,7 +153,7 @@ def test_turn_on_with_a_wrong_or_no_password_shows_no_key(db: Database) -> None:
         assert _turn_on(client, WRONG).status_code == 400
     locked = _turn_on(client)
     assert locked.status_code == 400
-    assert locked.json()["error"]["message"] == "Too many wrong passwords. Try again in 15 minutes."
+    assert locked.json()["error"]["message"] == _locked_message(api)
     assert "secret" not in locked.text
 
 
@@ -346,7 +355,7 @@ def test_turn_off_with_a_wrong_password_is_400_and_counts_toward_the_lockout(db:
         assert _turn_off(signed.client, WRONG).status_code == 400
     locked = _turn_off(signed.client)
     assert locked.status_code == 400
-    assert locked.json()["error"]["message"] == "Too many wrong passwords. Try again in 15 minutes."
+    assert locked.json()["error"]["message"] == _locked_message(api)
     assert api.user_state(signed.customer_id, signed.user_id)["totp_enabled_at"] is not None
 
 
