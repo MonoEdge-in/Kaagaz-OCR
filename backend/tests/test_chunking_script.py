@@ -7,15 +7,18 @@ under test.
 
 import unittest
 
+from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.script import (
     devanagari_share,
     fold_digits,
     has_devanagari_letters,
     is_devanagari,
+    languages_without_model,
     latin_spelling,
     malformed_devanagari,
     ocr_script_suspect,
 )
+from kaagaz.reading.spans import BoxLocation
 
 ZWJ, ZWNJ = "\u200d", "\u200c"
 NUKTA = "\u093c"
@@ -170,6 +173,45 @@ class LatinSpellingTest(unittest.TestCase):
 
     def test_empty_text(self) -> None:
         self.assertEqual(latin_spelling(""), "")
+
+    def test_candra_vowels_are_spelled_and_the_abbreviation_sign_dropped(self) -> None:
+        # PROVISIONAL: IAST has no letter for these, so they leaked into the Latin text.
+        cases = {
+            "कॉपी": "kopi",  # U+0949, the candra o sign
+            "बॅट": "bet",  # U+0945, the candra e sign
+            "ऑफिस": "ophis",  # U+0911, candra o
+            "ॲप": "ap",  # U+0972, candra a (Marathi)
+            "ऍ": "e",  # U+090D, candra e
+            "डॉ॰ शिंदे": "do shinde",  # U+0970, the abbreviation sign, is dropped
+        }
+        for word, latin in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(latin_spelling(word), latin)
+
+
+def piece(text: str) -> Piece:
+    return Piece("cust-a", "doc-1", text, (BoxLocation(1, 0.1, 0.1, 0.9, 0.12),), "verified")
+
+
+class LanguagesWithoutModelTest(unittest.TestCase):
+    """L2: with no model, Latin text is "en"; Hindi and Marathi cannot be told apart, so "other"."""
+
+    def test_latin_pieces_are_en_and_devanagari_pieces_other(self) -> None:
+        self.assertEqual(languages_without_model([piece("Total 1,180.00")]), ("en",))
+        self.assertEqual(languages_without_model([piece("पाटील ट्रेडर्स")]), ("other",))
+
+    def test_both_are_listed_once_en_first(self) -> None:
+        pieces = [piece("शिंदे"), piece("Invoice"), piece("पाटील"), piece("Total")]
+        self.assertEqual(languages_without_model(pieces), ("en", "other"))
+
+    def test_each_piece_counts_by_its_own_share(self) -> None:
+        # One piece, mostly Devanagari, with a Latin word inside: only "other".
+        self.assertEqual(languages_without_model([piece("पाटील ट्रेडर्स INV")]), ("other",))
+
+    def test_another_script_is_other_and_no_letters_is_nothing(self) -> None:
+        self.assertEqual(languages_without_model([piece("محمد")]), ("other",))  # Arabic
+        self.assertEqual(languages_without_model([piece("1,180.00 | 12/08/2026")]), ())
+        self.assertEqual(languages_without_model([]), ())
 
 
 if __name__ == "__main__":

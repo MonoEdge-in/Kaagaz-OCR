@@ -484,6 +484,66 @@ class SavedContentTest(unittest.TestCase):
         self.assertEqual(str(by_key[("sheet:1:row:3", "amount")].value_number), "2500.00")
 
 
+class ContextAndScriptTest(unittest.TestCase):
+    """C4, L2, L3 and L4 in the pipeline, with no model (no card, so no type or date)."""
+
+    def test_pieces_get_headers_and_latin_spellings_and_the_languages_come_from_them(self) -> None:
+        spans = [
+            _direct("Sharma Traders", page=1, top=0.1),
+            _direct("पाटील शिंदे", page=1, top=0.5),  # a gap: a new piece...
+            _direct("शिंदे", page=2, top=0.05),  # ...that runs on to page 2 (C1)
+        ]
+        system = build(socket=PresetSocket({sniff.PDF: spans}))
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES), display_name="report.pdf").document_id
+        system.worker.run_once()
+
+        content = system.store.content(CUSTOMER, doc)
+        assert content is not None
+        self.assertEqual(
+            [(p.text, p.context_header, p.text_latin) for p in content.pieces],
+            [
+                ("Sharma Traders", "Document: report.pdf | Page 1", None),
+                (
+                    "पाटील शिंदे\nशिंदे",
+                    "Document: report.pdf | Pages 1-2 | Before: Sharma Traders",
+                    "patil shinde\nshinde",
+                ),
+            ],
+        )
+        self.assertEqual(content.facts.languages, ("en", "other"))
+        self.assertIsNone(content.facts.doc_type)
+
+    def test_devanagari_digits_are_read_as_numbers_and_the_text_is_kept_as_printed(self) -> None:
+        system = build(socket=PresetSocket({sniff.PDF: [_direct("Total: ₹ १,१८०.५०", page=1, top=0.1)]}))
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
+        system.worker.run_once()
+        (value,) = system.store.values_for(CUSTOMER, doc)
+        self.assertEqual(
+            (value.field, value.value_text, str(value.value_number)),
+            ("total_amount", "₹ १,१८०.५०", "1180.50"),
+        )
+
+    def test_a_sheet_is_en_and_its_rows_name_the_sheet(self) -> None:
+        system = build()
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV), display_name="sales.csv").document_id
+        system.worker.run_once()
+        content = system.store.content(CUSTOMER, doc)
+        assert content is not None
+        self.assertEqual(content.facts.languages, ("en",))
+        self.assertEqual(
+            [p.context_header for p in content.pieces][:2],
+            [
+                "Document: sales.csv | Sheet 1",
+                "Document: sales.csv | Sheet 1 | Before: A: invoice | B: amount",
+            ],
+        )
+
+
+def _direct(text: str, *, page: int, top: float) -> Span:
+    """A line read straight from a PDF's text layer."""
+    return Span(text, text, BoxLocation(page, 0.1, top, 0.9, top + 0.02), origin="text_layer")
+
+
 def _prepared(*, pages: int) -> FakePrepared:
     return FakePrepared([PageInfo(n, 612.0, 792.0, "pt") for n in range(1, pages + 1)], {})
 

@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from kaagaz.chunking.context import context_header
+from kaagaz.chunking.context import context_header, with_context
 from kaagaz.chunking.piece import Piece
 from kaagaz.reading.spans import BoxLocation, CellLocation, Location
 
@@ -70,6 +70,51 @@ class ContextHeaderTest(unittest.TestCase):
     def test_line_breaks_and_runs_of_spaces_become_one_space(self) -> None:
         text = header(piece(1, section=("Monthly\nresults",)), name="Sept  report.pdf", before="a\n b")
         self.assertEqual(text, "Document: Sept report.pdf | Section: Monthly results | Page 1 | Before: a b")
+
+
+class WithContextTest(unittest.TestCase):
+    def test_each_piece_gets_its_header_with_the_line_before_it(self) -> None:
+        first = Piece(
+            "cust-a", "doc-1", "Sales were steady.\nCosts were checked.", (BOX_1, BOX_1), "verified"
+        )
+        second = Piece("cust-a", "doc-1", "Profit rose.", (BOX_1, BOX_2), "verified", section=("Profit",))
+        done = with_context(
+            [first, second], document_name="Sept report.pdf", doc_type=None, document_date=None
+        )
+        self.assertEqual(
+            [p.context_header for p in done],
+            [
+                "Document: Sept report.pdf | Page 1",
+                "Document: Sept report.pdf | Section: Profit | Pages 1-2 | Before: Costs were checked.",
+            ],
+        )
+        self.assertEqual([p.text for p in done], [first.text, second.text])  # nothing else changes
+
+    def test_the_type_and_date_are_in_the_header_when_known(self) -> None:
+        (done,) = with_context(
+            [piece(3)], document_name="bill.pdf", doc_type="invoice", document_date=date(2026, 8, 12)
+        )
+        self.assertEqual(
+            done.context_header, "Document: bill.pdf | Type: invoice | Date: 2026-08-12 | Page 3"
+        )
+
+    def test_a_sheet_row_names_its_sheet(self) -> None:
+        rows = [Piece("cust-a", "doc-1", f"A: {n}", (CellLocation(2, n, 1),), "verified") for n in (1, 2)]
+        done = with_context(rows, document_name="sales.xlsx", doc_type=None, document_date=None)
+        self.assertEqual(
+            [p.context_header for p in done],
+            ["Document: sales.xlsx | Sheet 2", "Document: sales.xlsx | Sheet 2 | Before: A: 1"],
+        )
+
+    def test_only_devanagari_pieces_get_a_latin_spelling(self) -> None:
+        texts = ["पाटील\nशिंदे", "Sharma Traders", "पाटील शिंदे INV", "Total पाटील Invoice Sharma"]
+        pieces = [Piece("cust-a", "doc-1", t, (BOX_1,), "verified") for t in texts]
+        done = with_context(pieces, document_name="d.pdf", doc_type=None, document_date=None)
+        # The last piece is mostly Latin letters, so it is not Devanagari (L2) and gets none.
+        self.assertEqual([p.text_latin for p in done], ["patil\nshinde", None, "patil shinde inv", None])
+
+
+BOX_1, BOX_2 = BoxLocation(1, 0.1, 0.1, 0.9, 0.12), BoxLocation(2, 0.1, 0.1, 0.9, 0.12)
 
 
 if __name__ == "__main__":
