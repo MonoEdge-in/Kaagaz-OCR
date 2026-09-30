@@ -26,6 +26,7 @@ from kaagaz.reading.ocr import MeteredOcrEngine, OcrLine
 from kaagaz.reading.spans import Span
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
+from kaagaz.settings import Settings
 from tests.fakes import (
     FakeEmbedder,
     FakePreparer,
@@ -188,6 +189,7 @@ def rig(
     embed: FakeEmbedder | None = None,
     log: list[str] | None = None,
     max_vision_crops: int = 200,
+    settings: Settings = SETTINGS,
 ) -> Rig:
     timer = Timer()
     statuses, storage = MemoryStatuses(), MemoryStorage()
@@ -213,7 +215,7 @@ def rig(
             gate=ScanGate(storage, scanner, storage, statuses),
             statuses=statuses,
             documents=repo,
-            socket=with_socket or socket or build_reader_socket(SETTINGS, meter),
+            socket=with_socket or socket or build_reader_socket(settings, meter),
             prepare=preparer.prepare if preparer is not None else prepare,
             sheet_pages=fake_sheet_pages,
             page_images=MemoryPageImages(),
@@ -394,6 +396,19 @@ class RunTotalsTest(unittest.TestCase):
         self.assertEqual((totals.pages_ocr, totals.seconds_ocr, totals.seconds_total), (2, 5.0, 5.0))
         self.assertEqual((totals.vision_crops, totals.model_vision), (2, "qwen-vision"))
         self.assertEqual((totals.values_verified, totals.values_needs_review), (2, 0))  # the crops agree
+
+    def test_a_run_records_the_lowest_ocr_dpi_a_page_was_drawn_at(self) -> None:
+        """PR 2 draws a page too big for the OCR budget at a lower DPI (the reader's
+        version says ";ocr_dpi=164"); the run's set-up records it (ML 10)."""
+        a1 = Page(width=1684, height=2384, picture=Picture(text_like_picture(153, 198), 0, 0, 1684, 2384))
+        system = rig(ocr=TimedOcr, settings=make_settings(page_image_dpi=72, ocr_dpi=300))
+        job = system.job(make_pdf([SCANNED, a1]))
+        system.processor(job, beat)
+        self.assertEqual(system.totals(job).config, {**CONFIG, "ocr_dpi_lowest": 164})
+
+        letter_only = system.job(make_pdf([SCANNED, SCANNED]))
+        system.processor(letter_only, beat)
+        self.assertEqual(system.totals(letter_only).config, CONFIG)  # nothing was drawn lower
 
     def test_the_ocr_meter_starts_each_run_from_zero(self) -> None:
         """AR11: a page counted before the run (or by an earlier one) is not this run's."""
