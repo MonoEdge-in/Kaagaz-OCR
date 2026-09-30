@@ -35,6 +35,7 @@ from kaagaz.pipeline import (
     Superseded,
 )
 from kaagaz.preparing.page_checks import PageCheck
+from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import CellLocation, PageInfo, ReadError, Span
 from kaagaz.scanning.gate import DocumentStatus, ScannerError
@@ -509,7 +510,11 @@ class PresetSocket:
         self._second = second or {}
 
     def read(
-        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+        self,
+        detected_type: str,
+        data: bytes,
+        *,
+        on_page: Callable[[RouteDecision | None], None] | None = None,
     ) -> list[Span]:
         if detected_type not in self._first:
             raise NoReader(detected_type)

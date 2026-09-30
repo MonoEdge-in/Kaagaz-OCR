@@ -34,6 +34,7 @@ from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import DocumentProcessor, ReadingSocket
 from kaagaz.preparing.pages import prepare_pages
 from kaagaz.reading.ocr import MeteredOcrEngine
+from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.spans import Span
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
@@ -264,7 +265,11 @@ class GatedSocket:
         self.entered, self.release = threading.Event(), threading.Event()
 
     def read(
-        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+        self,
+        detected_type: str,
+        data: bytes,
+        *,
+        on_page: Callable[[RouteDecision | None], None] | None = None,
     ) -> list[Span]:
         self.entered.set()
         assert self.release.wait(timeout=10), "the test never released the delivery"

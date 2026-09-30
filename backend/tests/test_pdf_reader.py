@@ -7,6 +7,7 @@ from PIL import Image
 from kaagaz.ingestion import sniff
 from kaagaz.reading.ocr import OcrLine
 from kaagaz.reading.pdf_reader import PdfReader
+from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import BoxLocation, ReadError, Span
 from kaagaz.reading.text_quality import TextLayerRules
@@ -185,7 +186,7 @@ class PagesWithoutTextTest(unittest.TestCase):
         reader = reader_of(ocr)
         data = make_pdf([SCANNED, Page(texts=[Text(72, 700, "typed")]), SCANNED])
 
-        reader.read(data, on_page=lambda: pages_read_at_each_call.append(len(ocr.seen)))
+        reader.read(data, on_page=lambda _read: pages_read_at_each_call.append(len(ocr.seen)))
         self.assertEqual(pages_read_at_each_call, [1, 1, 2])
 
     def test_page_too_large_to_draw_is_refused_before_drawing(self) -> None:
@@ -320,6 +321,29 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(mode, "RGB")
         self.assertLessEqual(abs(width - 2550), 1)  # 612 pt x 300 / 72, pdfium's rounding either way
         self.assertLessEqual(abs(height - 3300), 1)
+
+    def test_each_page_says_how_it_was_read(self) -> None:
+        """Council PR 3 review, low 7: on_page carries each page's route and reason,
+        the text layer kept as the fallback included."""
+        white = Page(picture=Picture(Image.new("RGB", (153, 198), "white"), 0, 0, WIDTH, HEIGHT))
+        short = Page(texts=[Text(72, 700, "Total 1,180.00 paid")])
+        data = make_pdf([Page(texts=[Text(72, 700, LONG_LINE)]), SCANNED, white, short])
+        reads: list[RouteDecision | None] = []
+        self.reader(FakeOcr([])).read(data, on_page=reads.append)  # the engine finds nothing
+        self.assertEqual(
+            reads,
+            [
+                RouteDecision("text_layer", "ok"),
+                RouteDecision("ocr", "few_chars"),
+                RouteDecision("blank", "blank"),
+                RouteDecision("text_layer", "few_chars"),
+            ],
+        )
+        without_engine: list[RouteDecision | None] = []
+        self.reader(None).read(
+            make_pdf([Page(texts=[Text(72, 700, LONG_LINE)]), SCANNED]), on_page=without_engine.append
+        )
+        self.assertEqual(without_engine, [RouteDecision("text_layer", "ok"), None])  # page 2 was not read
 
     def test_a_mixed_pdf_is_judged_page_by_page(self) -> None:
         ocr = FakeOcr(list(self.OCR_LINES))

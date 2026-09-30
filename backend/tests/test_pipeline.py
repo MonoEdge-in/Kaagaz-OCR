@@ -18,6 +18,7 @@ from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import Handler, JobFailed, Worker
 from kaagaz.pipeline import DocumentProcessor, ReadingSocket
 from kaagaz.reading.csv_reader import CsvReader
+from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import ReaderSocket
 from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, Span, TooManyPages
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
@@ -248,7 +249,11 @@ class PipelineTest(unittest.TestCase):
         class RejectingSocket(ReaderSocket):
             # Simulates an overlapping delivery rejecting the file mid-run.
             def read(
-                self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+                self,
+                detected_type: str,
+                data: bytes,
+                *,
+                on_page: Callable[[RouteDecision | None], None] | None = None,
             ) -> list[Span]:
                 system.statuses.set_status(CUSTOMER, doc, DocumentStatus.REJECTED)
                 return super().read(detected_type, data, on_page=on_page)

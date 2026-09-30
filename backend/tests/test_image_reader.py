@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw
 from kaagaz.reading import image_reader
 from kaagaz.reading.image_reader import ImageReader
 from kaagaz.reading.ocr import OcrLine
+from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.spans import BoxLocation, ReadError, Span
 from tests.picture_support import INK, text_like_bars, text_like_picture
 
@@ -98,7 +99,7 @@ class ImageReaderTest(unittest.TestCase):
 
         reader.read(
             encode(frames[0], "TIFF", save_all=True, append_images=frames[1:]),
-            on_page=lambda: widths_read_at_each_call.append([i.width for i in ocr.seen]),
+            on_page=lambda _read: widths_read_at_each_call.append([i.width for i in ocr.seen]),
         )
         self.assertEqual(widths_read_at_each_call, [[30], [30, 31], [30, 31, 32]])
 
@@ -168,11 +169,20 @@ class ImageReaderTest(unittest.TestCase):
         calls: list[int] = []
         with self.assertRaises(ReadError) as ctx:
             reader_of(ocr).read(
-                encode(Image.new("RGB", (200, 100), "white"), "PNG"), on_page=lambda: calls.append(1)
+                encode(Image.new("RGB", (200, 100), "white"), "PNG"), on_page=lambda _read: calls.append(1)
             )
         self.assertEqual(ctx.exception.code, "no_text")
         self.assertEqual(ocr.seen, [])
         self.assertEqual(calls, [1])
+
+    def test_each_page_says_how_it_was_read(self) -> None:
+        """Council PR 3 review, low 7: on_page carries the page's route and reason."""
+        frames = [text_like_picture(40, 30), Image.new("RGB", (40, 30), "white")]
+        reads: list[RouteDecision | None] = []
+        reader_of(FakeOcr()).read(
+            encode(frames[0], "TIFF", save_all=True, append_images=frames[1:]), on_page=reads.append
+        )
+        self.assertEqual(reads, [RouteDecision("ocr", "few_chars"), RouteDecision("blank", "blank")])
 
     def test_only_the_blank_frame_of_a_tiff_is_skipped(self) -> None:
         frames = [text_like_picture(40, 30), Image.new("RGB", (40, 30), "white"), text_like_picture(40, 30)]

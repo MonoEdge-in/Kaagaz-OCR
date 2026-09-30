@@ -16,19 +16,23 @@ from datetime import UTC, datetime
 
 from PIL import Image
 
+from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import DocumentContent, DocumentProcessor, Progress, ReadingSocket, RunTotals
+from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.preparing.pages import prepare_pages
 from kaagaz.reading.ocr import MeteredOcrEngine, OcrLine
-from kaagaz.reading.spans import Span
+from kaagaz.reading.route import RouteDecision
+from kaagaz.reading.spans import PageInfo, Span
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from kaagaz.settings import Settings
 from tests.fakes import (
     FakeEmbedder,
+    FakePrepared,
     FakePreparer,
     FakeScanner,
     FakeVision,
@@ -111,7 +115,11 @@ class CallbackSocket:
         self._during: Callable[[], None] | None = during
 
     def read(
-        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+        self,
+        detected_type: str,
+        data: bytes,
+        *,
+        on_page: Callable[[RouteDecision | None], None] | None = None,
     ) -> list[Span]:
         if self._during is not None:
             during, self._during = self._during, None
@@ -249,6 +257,21 @@ def statuses_of(runs: list[MemoryRun]) -> list[tuple[str, str | None]]:
 
 
 class RoutesTest(unittest.TestCase):
+    def test_the_stored_route_is_the_one_the_reader_read_by(self) -> None:
+        """Council PR 3 review, low 7: the preparer's picture (PAGE_IMAGE_DPI) and the
+        reader's OCR render (OCR_DPI) can judge blank differently; the route stored
+        is the reader's, so a page never sent to OCR is never stored as ocr."""
+        engine = TimedOcr(Timer())
+        pages = [PageInfo(1, 612.0, 792.0, "pt"), PageInfo(2, 612.0, 792.0, "pt")]
+        not_blank_here = {n: PageCheck(None, False, blank=False) for n in (1, 2)}
+        preparer = FakePreparer({sniff.PDF: FakePrepared(pages, {}, not_blank_here)})
+        system = rig(ocr=engine, preparer=preparer)
+        job = system.job(make_pdf([Page(texts=[Text(72, 700, LONG_LINE)]), WHITE]))
+        system.processor(job, beat)
+        routes = [p.route for p in system.store.pages_for(CUSTOMER, job.document_id)]
+        self.assertEqual(routes, ["text_layer", "blank"])
+        self.assertEqual(engine.calls, 0)
+
     def test_a_pdf_mixing_text_and_scanned_pages_routes_each_page(self) -> None:
         """PRD 2 edge case: each page is judged on its own; its route, DPI and
         low-resolution flag are saved with it, and the run counts pages by route."""
@@ -398,7 +421,11 @@ class RunTotalsTest(unittest.TestCase):
 
         class SlowCsv(CallbackSocket):
             def read(
-                self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+                self,
+                detected_type: str,
+                data: bytes,
+                *,
+                on_page: Callable[[RouteDecision | None], None] | None = None,
             ) -> list[Span]:
                 system.timer.advance(4.0)
                 return super().read(detected_type, data, on_page=on_page)
@@ -568,7 +595,11 @@ class EveryPathClosesItsRunTest(unittest.TestCase):
 
         class CrashingSocket(CallbackSocket):
             def read(
-                self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+                self,
+                detected_type: str,
+                data: bytes,
+                *,
+                on_page: Callable[[RouteDecision | None], None] | None = None,
             ) -> list[Span]:
                 raise RuntimeError("a bug")
 
