@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import Connection, TextClause, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
@@ -180,8 +180,8 @@ _INVOICE = "INSERT INTO invoices (customer_id, document_id, label, check_status{
 _INVOICE += " VALUES (:c, :d, 'needs_review', {})"
 _RUN = "INSERT INTO processing_runs (customer_id, document_id, started_at, status, finished_at{})"
 _RUN += " VALUES (:c, :d, :t, {})"
-_LINE = "INSERT INTO invoice_lines (customer_id, invoice_id, document_id, line_no, label, description)"
-_LINE += " VALUES (:c, :i, :d, 1, 'verified', repeat('x', 1001))"
+_LINE = "INSERT INTO invoice_lines (customer_id, invoice_id, document_id, line_no, label, {})"
+_LINE += " VALUES (:c, :i, :d, 1, 'verified', {})"
 _LINK = "INSERT INTO document_links (customer_id, document_id, linked_document_id, identifier_kind,"
 _LINK += " identifier_value) VALUES (:c, :d, :d, 'invoice_number', 'x')"
 BAD_ROWS = [
@@ -214,7 +214,16 @@ BAD_ROWS = [
     ("invoices_check", _INVOICE.format("", "'failed'")),
     ("invoices_currency_check", _INVOICE.format(", currency", "'not_checked', 'inr'")),
     ("invoices_seller_name_check", _INVOICE.format(", seller_name", "'not_checked', repeat('x', 201)")),
-    ("invoice_lines_description_check", _LINE),
+    ("invoice_lines_description_check", _LINE.format("description", "repeat('x', 1001)")),
+    ("invoice_lines_quantity_check", _LINE.format("quantity", "'NaN'")),
+    ("invoice_lines_quantity_check", _LINE.format("quantity", "'Infinity'")),
+    ("invoice_lines_quantity_check", _LINE.format("quantity", "'-Infinity'")),
+    ("invoice_lines_quantity_check", _LINE.format("quantity", "1e12 + 1")),
+    ("invoice_lines_rate_check", _LINE.format("rate", "'NaN'")),
+    ("invoice_lines_amount_check", _LINE.format("amount", "'NaN'")),
+    ("invoices_subtotal_check", _INVOICE.format(", subtotal", "'not_checked', 'NaN'")),
+    ("invoices_tax_total_check", _INVOICE.format(", tax_total", "'not_checked', 'NaN'")),
+    ("invoices_total_check", _INVOICE.format(", total", "'not_checked', 'NaN'")),
     ("document_links_check", _LINK),
     ("processing_runs_status_check", _RUN.format("", "'paused', :t")),
     ("processing_runs_check", _RUN.format("", "'running', :t")),
@@ -291,3 +300,13 @@ def test_a_document_has_at_most_one_running_run(db: Database) -> None:
     with pytest.raises(IntegrityError) as refused, db.customer(customer) as conn:
         conn.execute(running, {"c": customer, "d": doc, "t": T0})
     assert violation(refused.value) == ("23505", "processing_runs_one_running")
+
+
+def test_an_infinite_amount_is_refused_by_its_type(db: Database) -> None:
+    """numeric(14,2) holds no Infinity (22003); NaN it does hold, so the CHECKs above refuse it."""
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        doc = insert_document(conn, customer)
+    with pytest.raises(DBAPIError) as refused, db.customer(customer) as conn:
+        conn.execute(text(_INVOICE.format(", total", "'not_checked', 'Infinity'")), {"c": customer, "d": doc})
+    assert violation(refused.value)[0] == "22003"
