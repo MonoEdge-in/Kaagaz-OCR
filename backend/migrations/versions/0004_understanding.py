@@ -25,7 +25,9 @@ PROVISIONAL additions beyond PRD 2 section 7 (for Vrushit to confirm):
   label pair, the run times, and the text lengths (A7).
 * The label reasons ``check_failed`` (K3), ``model_chosen`` (A1) and ``ocr_script`` (ML1).
 * The grants: runs are never deleted and lines are only inserted by the app (A9).
-* The indexes ``document_links_linked`` and ``processing_runs_document``.
+* The indexes ``document_links_linked`` and ``processing_runs_document``, and the
+  partial unique index ``processing_runs_one_running``: at most one running run
+  per document, the backstop behind start_run's lock.
 * The downgrade refuses while values carry a label reason 0003 does not have,
   or documents a failure code 0003 does not allow.
 
@@ -236,6 +238,10 @@ UPGRADE = [
     """
     CREATE INDEX processing_runs_document
     ON processing_runs (customer_id, document_id, started_at DESC)
+    """,
+    """
+    CREATE UNIQUE INDEX processing_runs_one_running
+    ON processing_runs (customer_id, document_id) WHERE status = 'running'
     """,
     # --- what the app role may do, and row level security ---------------------------------
     f"GRANT SELECT, INSERT, UPDATE, DELETE ON invoices, document_links TO {APP_ROLE}",

@@ -14,9 +14,13 @@ started last, so a worker whose clock runs ahead can't win it with a stale run.
 A run superseded just after its save passed the fence still commits that save;
 the newer run replaces it, as every save replaces the one before.
 
-Lock order (AR8): ``start_run`` locks the parent documents row FOR KEY SHARE
-first, which does not wait for the family lock (FOR NO KEY UPDATE), so a new
-delivery can start while an older one holds the family in its save. A run row
+Lock order: ``start_run`` first takes the document's run lock (a transaction
+advisory lock on the document id), so two starts of one document run one after
+the other and the second supersedes the first; a partial unique index
+(``processing_runs_one_running``) is the backstop. Then it locks the parent
+documents row FOR KEY SHARE (AR8), which does not wait for the family lock
+(FOR NO KEY UPDATE), so a new delivery can start while an older one holds the
+family in its save. A run row
 keeps its runs when its document is deleted, with ``document_id`` set NULL (AR12).
 
 Times are passed in from the injected clock (``now``), never read with SQL
@@ -40,6 +44,9 @@ from kaagaz.jobs.worker import JobFailed
 if TYPE_CHECKING:
     from kaagaz.pipeline import FinishedRun
 
+_RUN_LOCK = (
+    "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.processing_runs:' || CAST(:d AS uuid)::text, 0))"
+)
 _LOCK_DOCUMENT = "SELECT id FROM documents WHERE customer_id = :c AND id = :d FOR KEY SHARE"
 
 _SUPERSEDE_RUNNING = (
@@ -75,8 +82,9 @@ def start_run(conn: Connection, customer_id: str, document_id: str, *, now: date
     """Mark this document's runs still ``running`` as superseded, then insert a
     ``running`` run started at ``now`` and return its id. Raises
     JobFailed("document_missing") when this customer has no such document.
-    3 statements on the index processing_runs_document: O(log R + k) for k open runs."""
+    4 statements on the index processing_runs_document: O(log R + k) for k open runs."""
     params = {"c": customer_id, "d": document_id, "now": now}
+    conn.execute(text(_RUN_LOCK), params)
     if conn.execute(text(_LOCK_DOCUMENT), params).first() is None:
         raise JobFailed("document_missing", retryable=False)
     conn.execute(text(_SUPERSEDE_RUNNING), params)
