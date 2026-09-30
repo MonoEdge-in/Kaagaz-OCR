@@ -179,6 +179,9 @@ def test_a_customer_may_send_reprocess_per_hour_documents_in_an_hour(db: Databas
     reply = reprocess(reviewer, docs[2])
 
     assert (reply.status_code, reply.json()["error"]["code"]) == (429, "rate_limited")
+    assert reply.json()["error"]["message"] == (
+        "Too many documents were sent to be read again in the last hour. Please try again later."
+    )
     assert stored(api, c, docs[2])[0] == "ready"
     assert len(api.queue.jobs) == 2
 
@@ -198,6 +201,9 @@ def test_one_document_is_read_again_at_most_once_in_10_minutes(db: Database) -> 
     reply = reprocess(reviewer, doc)
 
     assert (reply.status_code, reply.json()["error"]["code"]) == (429, "rate_limited")
+    assert reply.json()["error"]["message"] == (
+        "This document was sent to be read again less than 10 minutes ago. Please wait and try again."
+    )
     assert len(api.queue.jobs) == 1
 
 
@@ -333,3 +339,34 @@ def test_the_cooldown_is_per_document(db: Database) -> None:
     c = reviewer.customer_id
     first, second = api.add_document(c), api.add_document(c)
     assert [reprocess(reviewer, doc).status_code for doc in (first, second)] == [200, 200]
+
+
+def test_the_hourly_limit_holds_for_two_requests_at_once(db: Database) -> None:
+    """Council PR 3 review, medium 4: the count is taken under a per-customer lock, so
+    two documents sent at the same moment cannot both pass a limit of 1."""
+    session = new_session()
+    second_db = _named_database(session)
+    try:
+        settings = make_settings(reprocess_per_hour=1)
+        queue = HeldQueue()
+        first_api, second_api = Api(db, settings=settings, queue=queue), Api(second_db, settings=settings)
+        reviewer = first_api.new_signed("reviewer")
+        c = reviewer.customer_id
+        other = second_api.sign_in(c, "reviewer")
+        docs = [first_api.add_document(c), first_api.add_document(c)]
+        replies: dict[str, Any] = {}
+        first = threading.Thread(target=lambda: replies.setdefault("first", reprocess(reviewer, docs[0])))
+        second = threading.Thread(target=lambda: replies.setdefault("second", reprocess(other, docs[1])))
+        first.start()
+        assert queue.entered.wait(timeout=10)  # held inside its transaction, the count taken
+        second.start()
+        wait_until_blocked(db, application_name=session)
+        queue.release.set()
+        first.join(timeout=10)
+        second.join(timeout=10)
+
+        assert (replies["first"].status_code, replies["second"].status_code) == (200, 429)
+        assert len(queue.jobs) + len(second_api.queue.jobs) == 1
+        assert first_api.audit_actions(c).count("document.reprocess") == 1
+    finally:
+        second_db.engine.dispose()
