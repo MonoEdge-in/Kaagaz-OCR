@@ -11,7 +11,15 @@ import {
   stepZoom,
 } from "@/components/viewer/viewer";
 import { encodeRegion } from "@/lib/regions";
-import type { DocumentCard, DocumentDetail, ExtractedValue, PageSummary, Region } from "@/lib/types";
+import type {
+  DocumentCard,
+  DocumentDetail,
+  ExtractedValue,
+  Invoice,
+  InvoiceLine,
+  PageSummary,
+  Region,
+} from "@/lib/types";
 
 const pdfPage: PageSummary = {
   page_no: 1,
@@ -267,5 +275,40 @@ describe("the document card's reply shape (PRD 2 D3)", () => {
     };
     expect(facts.card?.parties[0]?.name_latin).toBe("suresh patil");
     expect(labelled.label_page_no).not.toBe(card.key_facts[0]?.page);
+  });
+});
+
+describe("the detail's invoice (PRD 2 E5)", () => {
+  it("carries the invoice row and its lines, amounts as strings, or null", () => {
+    const line: InvoiceLine = {
+      line_no: 1,
+      description: "Cotton Poplin",
+      hsn: "5208",
+      quantity: "120",
+      unit: "m",
+      rate: "25.00",
+      amount: "3000.00",
+      label: "needs_review",
+    };
+    const invoice: Invoice = {
+      invoice_number: "TX-2026-118",
+      invoice_date: "2026-08-12",
+      seller_name: "Shree Ganesh Textiles",
+      seller_gstin: "24ABCDE1234F1Z6",
+      buyer_name: "Patil Garments",
+      buyer_gstin: null,
+      subtotal: "3000.00",
+      tax_total: null,
+      total: "3000.00",
+      currency: "INR",
+      label: "needs_review",
+      check_status: "passed",
+      check_reasons: [],
+      lines: [line],
+    };
+    const detail: Pick<DocumentDetail, "invoice"> = { invoice };
+    const none: Pick<DocumentDetail, "invoice"> = { invoice: null };
+    expect(detail.invoice?.lines[0]?.amount).toBe("3000.00");
+    expect(none.invoice).toBeNull();
   });
 });

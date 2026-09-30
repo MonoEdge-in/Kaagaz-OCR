@@ -161,13 +161,14 @@ def textile_lines(*, silk_amount: str = "3,000.00") -> list[dict[str, str | None
 
 # --- 2. the scanned Hindi retail bill -------------------------------------------------------
 
+# Its numbers are in Devanagari digits, as many Hindi bills print them (L4).
 HINDI_BILL_LINES = (
     "शर्मा किराना स्टोर",
-    "बिल नं. 245",
-    "दिनांक 05/09/2026",
-    "चावल 5 किलो 300.00",
-    "दाल 2 किलो 150.00",
-    "कुल ₹ 450.00",
+    "बिल नं. २४५",
+    "दिनांक ०५/०९/२०२६",
+    "चावल ५ किलो ३००.००",  # noqa: RUF001 - Devanagari digit zero, on purpose
+    "दाल २ किलो १५०.००",  # noqa: RUF001 - Devanagari digit zero, on purpose
+    "कुल ₹ ४५०.००",  # noqa: RUF001 - Devanagari digit zero, on purpose
 )
 
 

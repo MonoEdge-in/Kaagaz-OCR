@@ -1337,3 +1337,83 @@ def test_detail_shows_the_folder_path_from_the_top_and_the_tags(db: Database) ->
     assert detail["tags"] == [{"id": gst, "name": "GST"}]
     top_level = signed.client.get(f"/api/documents/{loose}").json()
     assert (top_level["folder"], top_level["tags"]) == (None, [])
+
+
+_INVOICE_ROW = text(
+    "INSERT INTO invoices (customer_id, document_id, invoice_number, invoice_date, seller_name, seller_gstin,"
+    " buyer_name, buyer_gstin, subtotal, tax_total, total, currency, label, check_status, check_reasons)"
+    " VALUES (:c, :d, 'INV-17', '2026-08-12', 'Sharma Traders', '24ABCDE1234F1Z6', 'Patil Stores', NULL,"
+    " 10000, NULL, 11800, 'INR', 'needs_review', 'failed', ARRAY['lines_sum_mismatch']) RETURNING id"
+)
+_INVOICE_LINE = text(
+    "INSERT INTO invoice_lines (customer_id, invoice_id, document_id, line_no, description, hsn, quantity,"
+    " unit, rate, amount, label) VALUES (:c, :i, :d, :n, :description, :hsn, :quantity, 'm', :rate, :amount,"
+    " 'needs_review')"
+)
+
+
+@pytest.mark.db
+def test_the_detail_shows_the_invoice_row_and_its_lines_in_order(db: Database) -> None:
+    """PRD 2 E5 (plan 3.8): the detail's ``invoice``, amounts as strings, lines by line_no;
+    null for a document with no invoices row."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    doc = api.add_document(c, name="bill.pdf")
+    plain = api.add_document(c, name="plain.pdf")
+    for each in (doc, plain):
+        api.add_page(c, each)
+    with db.customer(c) as conn:
+        invoice_id = conn.execute(_INVOICE_ROW, {"c": c, "d": doc}).scalar_one()
+        lines = [
+            {"n": 2, "description": "Silk", "hsn": None, "quantity": None, "rate": None, "amount": 1800},
+            {
+                "n": 1,
+                "description": "Cotton cloth",
+                "hsn": "5208",
+                "quantity": 12.5,
+                "rate": 250,
+                "amount": 3125,
+            },
+        ]
+        conn.execute(_INVOICE_LINE, [{"c": c, "i": invoice_id, "d": doc, **line} for line in lines])
+
+    detail = signed.client.get(f"/api/documents/{doc}").json()
+    assert detail["invoice"] == {
+        "invoice_number": "INV-17",
+        "invoice_date": "2026-08-12",
+        "seller_name": "Sharma Traders",
+        "seller_gstin": "24ABCDE1234F1Z6",
+        "buyer_name": "Patil Stores",
+        "buyer_gstin": None,
+        "subtotal": "10000.00",
+        "tax_total": None,
+        "total": "11800.00",
+        "currency": "INR",
+        "label": "needs_review",
+        "check_status": "failed",
+        "check_reasons": ["lines_sum_mismatch"],
+        "lines": [
+            {
+                "line_no": 1,
+                "description": "Cotton cloth",
+                "hsn": "5208",
+                "quantity": "12.5",
+                "unit": "m",
+                "rate": "250.00",
+                "amount": "3125.00",
+                "label": "needs_review",
+            },
+            {
+                "line_no": 2,
+                "description": "Silk",
+                "hsn": None,
+                "quantity": None,
+                "unit": "m",
+                "rate": None,
+                "amount": "1800.00",
+                "label": "needs_review",
+            },
+        ],
+    }
+    assert signed.client.get(f"/api/documents/{plain}").json()["invoice"] is None

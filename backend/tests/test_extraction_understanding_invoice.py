@@ -6,10 +6,18 @@ go to label_quoted with the card's (ML 2), and their calls and quote counts go
 into the run's numbers (ML 10).
 """
 
+import hashlib
+import json
 import unittest
 
 from kaagaz.ai.client import ModelUnavailable
-from kaagaz.extraction.invoice import INVOICE_SYSTEM_PROMPT, WindowSettings, rule_values_left
+from kaagaz.extraction.invoice import (
+    INVOICE_PROMPT_HASH,
+    INVOICE_SCHEMA,
+    INVOICE_SYSTEM_PROMPT,
+    WindowSettings,
+    rule_values_left,
+)
 from kaagaz.extraction.labelled import values_from_lines
 from kaagaz.extraction.quotes import reader_text
 from kaagaz.extraction.understanding import Understanding, understand
@@ -161,3 +169,10 @@ class WindowSettingsTest(unittest.TestCase):
             model_window_max_tokens=1500,
         )
         self.assertEqual(WindowSettings.from_settings(settings), WindowSettings(5000, 500, 4, 1500))
+
+
+class PromptHashTest(unittest.TestCase):
+    def test_the_prompt_hash_pins_the_system_prompt_and_the_schema(self) -> None:
+        """ML 10: a run records which invoice prompt and schema read its windows."""
+        pinned = INVOICE_SYSTEM_PROMPT + "\n" + json.dumps(INVOICE_SCHEMA, sort_keys=True)
+        self.assertEqual(INVOICE_PROMPT_HASH, hashlib.sha256(pinned.encode("utf-8")).hexdigest())

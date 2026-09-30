@@ -22,6 +22,7 @@ from kaagaz.extraction.invoice import (
     INVOICE_SYSTEM_PROMPT,
     LINE_FIELDS,
     MAX_LINES,
+    MAX_WINDOW_CHECKS,
     MAX_WINDOW_LINES,
     STORED_FIELD,
     InvoiceExtraction,
@@ -1377,6 +1378,54 @@ class ReviewFixesTest(unittest.TestCase):
             finish_invoice(
                 both, extraction=extraction, labelled=both, components=[], today=TODAY, fallback=True
             )
+
+
+class LocatedValuesTest(unittest.TestCase):
+    """E4 values are built like the card's (quotes.located_value): the reader's text at the
+    spot, how the quote was found, and the origin of its spans (PR 2)."""
+
+    def test_e4_values_carry_their_spans_origin_and_how_the_quote_was_found(self) -> None:
+        spans = [
+            Span(
+                "Grand Total: 1,180.00",
+                "Grand Total: 1,180.00",
+                BoxLocation(1, 0.1, 0.1, 0.9, 0.12),
+                0.9,
+                "ocr",
+            ),
+            Span(
+                "Invoice No: INV-17",
+                "Invoice No: INV-17",
+                BoxLocation(1, 0.1, 0.2, 0.9, 0.22),
+                None,
+                "text_layer",
+            ),
+        ]
+        chat = FakeChat(
+            reply({"total": ("Grand Total", "1,180.00"), "invoice_number": ("Invoice No", "INV-17")})
+        )
+        by_field = {value.field: value for value in read(spans, chat).values}
+        self.assertEqual(
+            (by_field["total_amount"].origin, by_field["invoice_number"].origin), ("ocr", "text_layer")
+        )
+        quote = by_field["total_amount"].quote
+        assert quote is not None
+        self.assertEqual((quote.spans, quote.pages, quote.whole, quote.ambiguous), (1, 1, False, False))
+
+    def test_a_label_on_the_values_own_line_is_not_a_second_spot(self) -> None:
+        spans = page_lines("Grand Total: 1,180.00")
+        (total,) = read(spans, FakeChat(reply({"total": ("Grand Total", "1,180.00")}))).values
+        self.assertIsNone(total.label_location)
+
+    def test_one_windows_searches_share_a_check_budget(self) -> None:
+        # Council fix 8 (PR 5): 200 lines whose amount appears 2,000 times on its own row. Each
+        # search stops at its own budget, and all of one window's stop at the window's.
+        row = "Item " + " ".join(["5.00"] * 2000)
+        spans = page_lines(row)
+        chat = FakeChat(reply(lines=[item("Item", "5.00") for _ in range(200)]))
+        extraction = read(spans, chat, chars=20000, num_ctx=65536)
+        self.assertEqual(MAX_WINDOW_CHECKS, 8192)
+        self.assertEqual(len({value.record_key for value in extraction.values}), 1)
 
 
 class InvoiceRowTest(unittest.TestCase):
