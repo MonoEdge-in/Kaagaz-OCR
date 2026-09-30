@@ -57,6 +57,9 @@ from kaagaz.reading.wiring import PdfPageCheck, build_reader_socket, pdf_text_la
 from kaagaz.settings import Settings, SettingsError
 
 MIN_PASSWORD = 12
+# measure --truth: each page's texts are cut to these before the edit distance (council PR 3, low 10).
+MAX_TRUTH_CHARS = 5000
+MAX_TRUTH_WORDS = 1000
 ADMIN_ENV_VAR = "KAAGAZ_ADMIN_PASSWORD"
 DEMO_ENV_VAR = "KAAGAZ_DEMO_PASSWORD"
 
@@ -322,16 +325,22 @@ def _script_shares(text: str) -> tuple[float, float]:
 
 
 def _truth_scores(truth_file: Path, read: str) -> str:
-    """ " cer X wer Y" against the page's truth, or " truth none" without a file."""
+    """ " cer X wer Y" against the page's truth, or " truth none" without a file.
+    Both texts are cut at MAX_TRUTH_CHARS characters and MAX_TRUTH_WORDS words
+    first (" truth_cut yes"), so one page costs at most MAX_TRUTH_CHARS squared."""
     try:
         truth = truth_file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return " truth none"
     truth_words, read_words = truth.split(), read.split()
     truth_chars, read_chars = " ".join(truth_words), " ".join(read_words)
+    cut = max(len(truth_chars), len(read_chars)) > MAX_TRUTH_CHARS
+    cut = cut or max(len(truth_words), len(read_words)) > MAX_TRUTH_WORDS
+    truth_chars, read_chars = truth_chars[:MAX_TRUTH_CHARS], read_chars[:MAX_TRUTH_CHARS]
+    truth_words, read_words = truth_words[:MAX_TRUTH_WORDS], read_words[:MAX_TRUTH_WORDS]
     cer = _edits(read_chars, truth_chars) / max(1, len(truth_chars))
     wer = _edits(read_words, truth_words) / max(1, len(truth_words))
-    return f" cer {cer:.3f} wer {wer:.3f}"
+    return f" cer {cer:.3f} wer {wer:.3f}" + (" truth_cut yes" if cut else "")
 
 
 def _edits(a: Sequence[str], b: Sequence[str]) -> int:
