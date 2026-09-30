@@ -154,6 +154,12 @@ describe("reasons for values the AI model or OCR read (PRD 2)", () => {
   });
 });
 
+describe("the reason for a value an invoice check flagged (PRD 2, K3)", () => {
+  it("asks to check the numbers", () => {
+    expect(reasonText("check_failed")).toBe("A check on this invoice failed. Check the numbers.");
+  });
+});
+
 describe("document selection", () => {
   const region: Region = { kind: "box", page: 2, box: [0.1, 0.1, 0.2, 0.2] };
   const value: ExtractedValue = {
