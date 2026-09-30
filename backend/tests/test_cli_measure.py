@@ -135,6 +135,22 @@ def test_truth_adds_each_pages_cer_and_wer(clock: Clock) -> None:
     assert (pages[2]["cer"], pages[2]["wer"]) == ("0.333", "0.333")  # "TOTAL 1180" for "TOTAL 1180 PAID"
 
 
+def test_a_long_truth_is_cut_so_the_distance_stays_quick(clock: Clock) -> None:
+    """Council PR 3 review, low 10: the edit distance is O(page x truth), so both are
+    cut at MAX_TRUTH_CHARS characters, and the line says so."""
+    data = make_pdf([Page(texts=[Text(72, 700, LONG_LINE)])])
+    with tempfile.TemporaryDirectory() as folder:
+        path, truth = Path(folder) / "a.pdf", Path(folder) / "truth"
+        path.write_bytes(data)
+        truth.mkdir()
+        (truth / "1.txt").write_text("x" * 20_000, encoding="utf-8")
+        out = io.StringIO()
+        args = ["measure", "--file", str(path), "--truth", str(truth)]
+        assert main(args, environ=shipped(), out=out, timer=clock) == 0
+    page = page_lines(out.getvalue())[1]
+    assert (page.get("truth_cut"), page["cer"]) == ("yes", "1.000")
+
+
 def test_measure_prints_no_text_and_no_file_name(clock: Clock) -> None:
     output = measure(clock, make_pdf([Page(texts=[Text(72, 700, LONG_LINE)]), SCANNED]))
     for secret in ("Sharma", "INV-17", "TOTAL", "ABCDE1234F", ".pdf"):
