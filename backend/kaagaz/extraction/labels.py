@@ -29,21 +29,25 @@ Two labellers (ML amendment 2):
   first; a box that holds more than one value is ``single_reader`` (its reading
   is not this value's own); and the reading must equal the value after the D2
   normalising too (``quotes.normalise_quote``: NFKC, Devanagari digits), never
-  just contain it. The pipeline asks the vision model only about a value's own
-  box (ML 1(c)), so an OCR value with no reading is ``single_reader``.
+  just contain it. An OCR value's only second reading is the vision reading of
+  its box, never a second-reader line (council fix 1: a hidden text layer under
+  a scan could agree with anything). The pipeline asks the vision model only
+  about a value's own box (ML 1(c)), so an OCR value with no reading is
+  ``single_reader`` (``low_confidence`` when the engine was unsure).
 * ``label_quoted``, for the values the model located by quoting (the card,
   and PR 6's invoice values), with security amendment A2's stricter rules:
 
   1. a card value is ``model_chosen``;
   2. a cell is ``direct_cell``;
-  3. an OCR value is checked for ``ocr_script`` as above;
+  3. an OCR value is labelled as ``label_values`` labels one (``ocr_script``, a
+     shared box, then equality with its vision reading only);
   4. a box that holds more than one located value (the table's box given to
      each cell, a line or paragraph holding several values) is ``single_reader``;
   5. a vision reading must equal the value (after its label), never contain it;
   6. otherwise the value agrees when its comparable text is a whole-token run
      inside the second reader's line (``quotes.find_quote``), and
      ``second_reading`` is the matched part of that line, or the whole line when
-     it is not there. An OCR value is compared by equality, never containment.
+     it is not there.
 
 "More than one value" counts different texts: the same text twice at one box
 is one value located twice.
@@ -106,18 +110,13 @@ def label_values(
     shared = _shared_boxes(values)
     labelled = []
     for value in values:
-        if not isinstance(value.location, BoxLocation):
+        box = value.location
+        if not isinstance(box, BoxLocation):
             labelled.append(replace(value, label=VERIFIED, label_reason="direct_cell"))
-            continue
-        reading = _reading(value.location, lines, readings)
-        if not _is_ocr(value):
-            labelled.append(_label_box(value, reading))
-        elif _script_unsound(value.value_text):
-            labelled.append(_needs_review(value, "ocr_script", _after_label(value, reading)))
-        elif value.location in shared:
-            labelled.append(_needs_review(value, "single_reader", None))
+        elif _is_ocr(value):
+            labelled.append(_label_ocr(value, box, shared, readings))
         else:
-            labelled.append(_compare(value, reading))
+            labelled.append(_label_box(value, _reading(box, lines, readings)))
     return labelled
 
 
@@ -137,16 +136,28 @@ def label_quoted(
             labelled.append(_needs_review(value, "model_chosen", None))
         elif not isinstance(box, BoxLocation):
             labelled.append(replace(value, label=VERIFIED, label_reason="direct_cell"))
-        elif _is_ocr(value) and _script_unsound(value.value_text):
-            reading = _reading(box, lines, readings)
-            labelled.append(_needs_review(value, "ocr_script", _after_label(value, reading)))
+        elif _is_ocr(value):
+            labelled.append(_label_ocr(value, box, shared, readings))
         elif box in shared:
             labelled.append(_needs_review(value, "single_reader", None))
-        elif (readings or {}).get(box) is not None or _is_ocr(value):
-            labelled.append(_compare(value, _reading(box, lines, readings)))
+        elif (readings or {}).get(box) is not None:
+            labelled.append(_compare(value, (readings or {}).get(box)))
         else:
             labelled.append(_contained(value, _best_line(box, lines.get(box.page, []))))
     return labelled
+
+
+def _label_ocr(
+    value: ExtractedValue, box: BoxLocation, shared: set[Location], readings: Mapping[Location, str] | None
+) -> ExtractedValue:
+    """ML amendment 1 for a value read by OCR: its only second reading is the vision
+    reading of its box (council fix 1)."""
+    vision = (readings or {}).get(box)
+    if _script_unsound(value.value_text):
+        return _needs_review(value, "ocr_script", _after_label(value, vision))
+    if box in shared:
+        return _needs_review(value, "single_reader", None)
+    return _compare(value, vision)
 
 
 def _lines_by_page(second: Sequence[Span] | None) -> _Lines:
