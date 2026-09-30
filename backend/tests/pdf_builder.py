@@ -36,6 +36,11 @@ class Text:
     # The fill colour (r, g, b from 0 to 1), for example white text that shows
     # nothing on white paper; None is the default black.
     color: tuple[float, float, float] | None = None
+    # Written with a Type0 font (Identity-H, a ToUnicode map for ASCII and
+    # U+0900 to U+097F, no font file) as hex code points, so the readers get
+    # Devanagari back exactly. It draws almost blank, so never use it where
+    # OCR must read the page (council test-engineer 9).
+    devanagari: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,7 +88,10 @@ def make_pdf(pages: list[Page], *, password_protected: bool = False) -> bytes:
     kids = []
     for page in pages:
         font = 3 if page.font_name is None else _named_font(objects, page.font_name)
-        resources = b"/Font << /F1 %d 0 R >>" % font
+        resources = b"/Font << /F1 %d 0 R" % font
+        if any(item.devanagari for item in page.texts):
+            resources += b" /F2 %d 0 R" % _devanagari_font(objects)
+        resources += b" >>"
         content = _text_content(page.texts)
         drawn = ([] if page.picture is None else [page.picture]) + page.pictures
         images = b""
@@ -123,18 +131,53 @@ def _text_content(texts: list[Text]) -> bytes:
     parts = []
     for item in texts:
         escaped = item.text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        font, shown = ("F2", _hex_code_points(item.text)) if item.devanagari else ("F1", f"({escaped})")
         matrix = "0 1 -1 0" if item.turned else "1 0 0 1"
         if item.color is not None:
             red, green, blue = item.color
-            shown = f"BT /F1 {item.size} Tf {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET"
-            parts.append(f"q {red} {green} {blue} rg {shown} Q\n")
+            drawn = f"BT /{font} {item.size} Tf {matrix} {item.x} {item.y} Tm {shown} Tj ET"
+            parts.append(f"q {red} {green} {blue} rg {drawn} Q\n")
         elif item.invisible:
             # The render mode is part of the graphics state and outlives ET,
             # so q ... Q keeps it to this text only.
-            parts.append(f"q BT /F1 {item.size} Tf 3 Tr {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET Q\n")
+            parts.append(f"q BT /{font} {item.size} Tf 3 Tr {matrix} {item.x} {item.y} Tm {shown} Tj ET Q\n")
         else:
-            parts.append(f"BT /F1 {item.size} Tf {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET\n")
+            parts.append(f"BT /{font} {item.size} Tf {matrix} {item.x} {item.y} Tm {shown} Tj ET\n")
     return "".join(parts).encode("cp1252")
+
+
+def _hex_code_points(text: str) -> str:
+    """``text`` as 2-byte codes for the Identity-H font: each code is the code point."""
+    if not all(" " <= ch <= "~" or "\u0900" <= ch <= "\u097f" for ch in text):
+        raise ValueError("Devanagari text here is ASCII and U+0900 to U+097F only")
+    return "<" + "".join(f"{ord(ch):04X}" for ch in text) + ">"
+
+
+def _devanagari_font(objects: list[bytes]) -> int:
+    """Add the Type0 font for ``Text(devanagari=True)``; return its object number."""
+    cmap = (
+        b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n"
+        b"/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n"
+        b"/CMapName /Adobe-Identity-UCS def /CMapType 2 def\n"
+        b"1 begincodespacerange <0000> <FFFF> endcodespacerange\n"
+        b"2 beginbfrange <0020> <007E> <0020> <0900> <097F> <0900> endbfrange\n"
+        b"endcmap CMapName currentdict /CMap defineresource pop end end"
+    )
+    objects.append(_stream(b"", cmap))
+    objects.append(
+        b"<< /Type /FontDescriptor /FontName /KaagazDevanagari /Flags 4 /FontBBox [0 -200 1000 900] "
+        b"/ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>"
+    )
+    objects.append(
+        b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /KaagazDevanagari "
+        b"/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> "
+        b"/FontDescriptor %d 0 R /CIDToGIDMap /Identity /DW 600 >>" % len(objects)
+    )
+    objects.append(
+        b"<< /Type /Font /Subtype /Type0 /BaseFont /KaagazDevanagari /Encoding /Identity-H "
+        b"/DescendantFonts [%d 0 R] /ToUnicode %d 0 R >>" % (len(objects), len(objects) - 2)
+    )
+    return len(objects)
 
 
 def _named_font(objects: list[bytes], name: str) -> int:

@@ -25,7 +25,11 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.trash import lock_family
+from kaagaz.extraction.card import read_card
+from kaagaz.extraction.labels import label_quoted
 from kaagaz.extraction.learned import LearnedCorrection
+from kaagaz.extraction.quotes import reader_text
+from kaagaz.extraction.understanding import document_links
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import DocumentRecord
@@ -40,7 +44,11 @@ from kaagaz.pipeline import (
 )
 from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, Span
 from tests.db_support import insert_document, new_customer, wait_until_blocked
+from tests.fakes import FakeChat
 from tests.test_api_review import _named_database
+from tests.test_extraction_card import fact as card_fact
+from tests.test_extraction_card import line as card_line
+from tests.test_extraction_card import reply as card_reply
 
 pytestmark = pytest.mark.db
 
@@ -269,6 +277,19 @@ def test_a_failing_save_keeps_the_earlier_rows(db: Database) -> None:
     assert counts(db, customer, doc) == FULL
     texts = rows(db, customer, "SELECT text FROM pieces WHERE document_id = :d ORDER BY seq", doc)
     assert texts[1]["text"] == "Total: 1,180.00"
+
+
+def test_a_verified_card_value_is_refused_before_anything_is_written(db: Database) -> None:
+    """Council fix 4: the store is the last check that no card value is ever verified."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    base = content(customer, doc)
+    card = ExtractedValue(
+        "card", "profit", "12,000", "12,000", BOX, label="verified", label_reason="readers_agree"
+    )
+    with pytest.raises(ValueError, match="card"):
+        PgPipelineStore(db).save(replace(base, values=[*base.values, card]))
+    assert counts(db, customer, doc) == EMPTY
 
 
 def test_clear_removes_everything_for_the_document_only(db: Database) -> None:
@@ -677,3 +698,131 @@ def test_only_a_deadlock_is_retried(db: Database, monkeypatch: pytest.MonkeyPatc
 
     assert len(calls) == 1
     assert counts(db, customer, doc) == EMPTY
+
+
+# --- PRD 2 (WP2.5): the card through the store ----------------------------------
+
+
+def card_content(
+    customer_id: str, document_id: str, spans: list[Span], answer: dict[str, Any]
+) -> DocumentContent:
+    """What a card run saves: the card's facts, its values labelled, and its links
+    (read_card, label_quoted and document_links, as the understanding stage does)."""
+    reader = reader_text(spans)
+    result = read_card(
+        FakeChat(answer), reader, max_chars=12000, max_tokens=1024, num_ctx=8192, run_id=str(uuid.uuid4())
+    )
+    assert result is not None
+    values = label_quoted(result.values, spans)
+    return DocumentContent(
+        customer_id=customer_id,
+        document_id=document_id,
+        pages=[PageRecord(PageInfo(1, 612.0, 792.0, "pt"), True)],
+        outputs=[ReaderOutput("first", "pdfplumber", "0.11", tuple(spans))],
+        pieces=[],
+        values=values,
+        reader="pdfplumber",
+        facts=result.facts,
+        links=document_links(result.facts, values),
+    )
+
+
+def test_worst_case_card_output_saves(db: Database) -> None:
+    """Test-engineer amendment 2: a 700-character summary with no space, more than 20 key
+    facts with one repeated name, 20 Devanagari owners at the quote cap, 31 identifiers
+    (one of 250 characters) and Devanagari labels. Nothing reaches a CHECK."""
+    names = [("पाटील " * 46) + f"{n:02d}" for n in range(1, 21)]
+    numbers = ["A" * 250] + [f"REF-{n:02d}" for n in range(1, 31)]
+    labels = [("नफा " * 70) + f"{n:02d}" for n in range(1, 26)]
+    amounts = [("रुपये " * 46) + f"{n:02d}" for n in range(1, 26)]
+    spans = [card_line(text, y=0.1) for text in names + numbers]
+    for label, amount in zip(labels, amounts, strict=True):
+        spans += [card_line(label, y=0.5), card_line(amount, y=0.6)]
+    answer = card_reply(
+        languages=["mr", "hi", "mr"],
+        parties=[{"role": "owner", "name_quote": name} for name in names],
+        identifiers=[{"kind": "reference_number", "value_quote": number} for number in numbers],
+        key_facts=[card_fact("profit", amount, label) for label, amount in zip(labels, amounts, strict=True)],
+        title="A land record",
+        summary="a" * 700,
+    )
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    saved = card_content(customer, doc, spans, answer)
+    PgPipelineStore(db).save(saved)
+
+    [row] = rows(
+        db,
+        customer,
+        "SELECT length(summary) AS summary, octet_length(card::text) AS card_bytes, languages"
+        " FROM documents WHERE id = :d",
+        doc,
+    )
+    assert (row["summary"], row["languages"]) == (600, ["hi", "mr"])
+    assert row["card_bytes"] <= 65536
+    values = rows(
+        db,
+        customer,
+        "SELECT record_key, field, label, label_reason, label_page_no FROM extracted_values"
+        " WHERE document_id = :d",
+        doc,
+    )
+    assert len(values) == len(saved.values) > 40
+    assert {(v["record_key"], v["label"], v["label_reason"]) for v in values} == {
+        ("card", "needs_review", "model_chosen")
+    }
+    card = saved.facts.card
+    assert card is not None
+    named = [v["field"] for v in values if v["field"] != "reference_number"]  # identifiers keep their kind
+    assert len(set(named)) == len(named) == len(card["parties"]) + len(card["key_facts"])
+    assert {"owner_name_20", "profit_2"} <= set(named)  # repeated owners and profits are numbered
+    assert all(v["label_page_no"] == 1 for v in values if v["field"].startswith("profit"))
+    assert len(saved.links) == 29  # the 250-character one is dropped, the 31st is past the cap
+
+
+def test_links_from_card_identifiers_end_to_end(db: Database) -> None:
+    """D5: two documents whose cards hold the same challan number, written differently, link
+    both ways; the GSTIN they share never links them."""
+    customer, _ = new_customer(db)
+    first, second = new_document(db, customer), new_document(db, customer)
+    gstin = {"kind": "gstin", "value_quote": "27AAPFU0939F1ZV"}
+    store = PgPipelineStore(db)
+    store.save(
+        card_content(
+            customer,
+            first,
+            [card_line("Challan No: CH 4417 GSTIN 27AAPFU0939F1ZV", y=0.1)],
+            card_reply(identifiers=[{"kind": "challan_number", "value_quote": "CH 4417"}, gstin]),
+        )
+    )
+    store.save(
+        card_content(
+            customer,
+            second,
+            [card_line("Against challan ch4417, GSTIN 27AAPFU0939F1ZV", y=0.1)],
+            card_reply(identifiers=[{"kind": "challan_number", "value_quote": "ch4417"}, gstin]),
+        )
+    )
+
+    assert links(db, customer, first) == {
+        (first, second, "challan_number", "ch4417"),
+        (second, first, "challan_number", "ch4417"),
+    }
+
+
+def test_devanagari_and_ascii_digits_of_one_number_link(db: Database) -> None:
+    """Council fix 10: the store's SQL folds Devanagari digits the way normalise_identifier
+    does, so a survey number read as ४५/२ on one record and 45/2 on another links, in
+    either order."""
+    customer, _ = new_customer(db)
+    first, second = new_document(db, customer), new_document(db, customer)
+    store = PgPipelineStore(db)
+    for doc, printed in ((first, "गट नं. ४५/२"), (second, "Gat No. 45/2")):
+        number = printed.split()[-1]
+        answer = card_reply(identifiers=[{"kind": "survey_number", "value_quote": number}])
+        store.save(card_content(customer, doc, [card_line(printed, y=0.1)], answer))
+
+    assert links(db, customer, first) == {
+        (first, second, "survey_number", "45/2"),
+        (second, first, "survey_number", "45/2"),
+    }

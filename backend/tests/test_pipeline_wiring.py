@@ -3,6 +3,8 @@
 import unittest
 
 from kaagaz.db.engine import Database, make_engine
+from kaagaz.extraction.card import CARD_PROMPT_HASH
+from kaagaz.extraction.understanding import model_config
 from kaagaz.pipeline import DocumentProcessor, build_processor
 from kaagaz.reading.wiring import reader_config
 from kaagaz.scanning.gate import Verdict
@@ -44,6 +46,23 @@ class RunConfigTest(unittest.TestCase):
             {"ocr_engine": "rapidocr", "ocr_dpi": 300, "text_layer_min_chars": 41, "blank_page_stddev": 3.0},
         )
         self.assertEqual((config["hidden_text_max_share"], config["blank_dark_pixels"]), (0.05, 20))
+
+    def test_a_run_records_the_card_prompt_and_the_model_budgets(self) -> None:
+        """ML 10: which prompt made the card, and the budgets the calls ran with."""
+        settings = make_settings(model_num_ctx=6000, model_card_max_tokens=900, card_max_chars=9000)
+        self.assertEqual(
+            model_config(settings),
+            {
+                "card_prompt": CARD_PROMPT_HASH,
+                "model_num_ctx": 6000,
+                "card_max_chars": 9000,
+                "card_max_tokens": 900,
+                "extract_window_chars": settings.extract_window_chars,
+                "extract_window_overlap": settings.extract_window_overlap,
+                "extract_max_windows": settings.extract_max_windows,
+                "window_max_tokens": settings.model_window_max_tokens,
+            },
+        )
 
 
 if __name__ == "__main__":

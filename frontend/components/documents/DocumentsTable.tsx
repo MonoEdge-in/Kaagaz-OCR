@@ -8,14 +8,16 @@
 // needs no question: nothing is lost. In Trash the list shows when each
 // document was trashed, and has no selection bar. Each row is the family's
 // current version; a newer one still being read, or one that failed, gets a
-// line under the name ("Version 3: ..."), linking to it.
+// line under the name ("Version 3: ..."), linking to it. The Type column
+// gives the file type, and under it what kind of document it is ("Invoice",
+// or "Unknown" without the AI model's card: PRD 2, D6).
 
 import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { newerVersionText } from "@/components/viewer/versions";
 import { ApiError, deleteDocument, deleteDocumentForever, restoreDocument } from "@/lib/api";
-import { formatBytes, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
+import { docTypeLabel, formatBytes, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { EditDialog, RowMenu } from "./DocumentActions";
 import type { FolderTree } from "./folderTree";
@@ -392,6 +394,7 @@ function DocumentRow({
       </td>
       <td role="cell" className={styles.meta}>
         {typeLabel(document.detected_type)}
+        <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>
       </td>
       <td role="cell" className={`${styles.meta} ${styles.nowrap} tabular`}>
         {formatBytes(document.size_bytes)}

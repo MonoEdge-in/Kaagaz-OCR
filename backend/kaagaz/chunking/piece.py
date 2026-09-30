@@ -27,6 +27,7 @@ class Piece:
     label: str  # VERIFIED or NEEDS_REVIEW
     context_header: str = ""  # the document's type, date and section, for search (C4)
     text_latin: str | None = None  # Devanagari text spelt in Latin letters (L3)
+    section: tuple[str, ...] = ()  # the title, then the heading above the text (C3); not stored
 
     @property
     def page_from(self) -> int:

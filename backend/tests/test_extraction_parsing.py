@@ -42,6 +42,8 @@ class ParseAmountTest(unittest.TestCase):
             "0.50": "0.50",
             "  250  ": "250",
             "10,00,00,000.00": "100000000.00",
+            "₹ १,२३,४५६.७८": "123456.78",  # Devanagari digits (L4)
+            "१२,३४५": "12345",
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
@@ -74,7 +76,10 @@ class ParseAmountTest(unittest.TestCase):
             "(1,234) Dr",
             "12/08/2026",
             "Aug 2026",
-            "١٢٣",  # Arabic-Indic digits: only ASCII digits count
+            "١٢٣",  # Arabic-Indic digits: only ASCII and Devanagari digits count
+            "१2,3४5",  # ASCII and Devanagari digits mixed: never guessed (council)
+            "1२,345",
+            "12३.5४",
             "1" * 70,  # longer than any single amount
             "1,234 only",
         ]
@@ -107,6 +112,8 @@ class ParseDateTest(unittest.TestCase):
             "March 2026": date(2026, 3, 1),
             "29/02/2028": date(2028, 2, 29),
             " 12/08/2026 ": date(2026, 8, 12),
+            "१२/०८/२०२६": date(2026, 8, 12),  # Devanagari digits (L4)
+            "१२ Aug २०२६": date(2026, 8, 12),
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
@@ -126,6 +133,7 @@ class ParseDateTest(unittest.TestCase):
             "Foo 2026",
             "2026",
             "12/08/1850",
+            "1२/08/2026",  # ASCII and Devanagari digits mixed: never guessed (council)
             "12/08/2150",
             "2026-13-01",
             "12 Aug",

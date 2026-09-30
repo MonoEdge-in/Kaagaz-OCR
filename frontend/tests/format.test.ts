@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  docTypeLabel,
   formatBytes,
   formatDate,
   formatDateTime,
@@ -8,7 +9,7 @@ import {
   statusChip,
   typeLabel,
 } from "@/lib/format";
-import type { DocumentStatus } from "@/lib/types";
+import type { DocType, DocumentStatus } from "@/lib/types";
 
 describe("formatBytes", () => {
   it("shows bytes as whole numbers", () => {
@@ -79,6 +80,37 @@ describe("typeLabel", () => {
     expect(typeLabel("pdf")).toBe("PDF");
     expect(typeLabel("zip")).toBe("Spreadsheet");
     expect(typeLabel("text")).toBe("CSV");
+  });
+});
+
+describe("docTypeLabel (PRD 2, D6)", () => {
+  it("says Unknown when there is no type, as with the model off", () => {
+    expect(docTypeLabel(null)).toBe("Unknown");
+  });
+
+  it("names each type the document card can give, in words", () => {
+    const all: DocType[] = [
+      "invoice",
+      "receipt",
+      "bank_statement",
+      "land_record",
+      "contract",
+      "register",
+      "form",
+      "letter",
+      "other",
+    ];
+    expect(all.map(docTypeLabel)).toEqual([
+      "Invoice",
+      "Receipt",
+      "Bank statement",
+      "Land record",
+      "Contract",
+      "Register",
+      "Form",
+      "Letter",
+      "Other",
+    ]);
   });
 });
 

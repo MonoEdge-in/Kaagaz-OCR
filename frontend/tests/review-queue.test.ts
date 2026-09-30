@@ -22,6 +22,8 @@ const item = (id: string, overrides: Partial<ReviewItem["value"]> = {}): ReviewI
     label: "needs_review",
     label_reason: "readers_disagree",
     confidence: null,
+    label_page_no: null,
+    label_region: null,
     ...overrides,
   },
   document_id: "d1",

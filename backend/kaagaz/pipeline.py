@@ -18,10 +18,22 @@ The steps, in order, for one (customer, document):
    ``kaagaz.reading.route``), and the second reading of a page read by OCR, or
    blank, is left out: a scan's hidden text layer must never agree with itself
    (the council's ML 4).
-6. Pieces for search (kaagaz.chunking) and values for fixed queries
-   (kaagaz.extraction), each labelled verified or needs review. For scans,
-   when a vision model is set, it reads each value's box again as the second
-   reading. This customer's remembered corrections are applied last.
+6. Pieces for search (kaagaz.chunking) and the rule values for fixed queries
+   (kaagaz.extraction). Then the model stage (PRD 2 D1 to D6,
+   ``extraction.understanding``), when a chat model is set: the document card
+   (and PR 6's invoice windows), with the heartbeat and progress
+   "understanding i of n" after each call and after its searches. The card
+   gives the document's type, languages, summary, date and card JSON; with the
+   model off or down there is none, the languages come from the pieces (L2),
+   and the document is saved exactly as with no model (the run keeps the
+   error code, ``model_<code>``). Each piece gets its context header (with the
+   card's type and date, C4), and a Latin spelling when it is Devanagari. For
+   scans, when a vision model is set, it reads each value's box again as the
+   second reading. The rule values are labelled by ``label_values`` and the
+   values the model located by ``label_quoted`` (ML 2), each counting the
+   other's boxes (council fix 2); a card value is never verified. This
+   customer's remembered corrections are applied last, then the link
+   identifiers (D5), only with a card.
 7. Just before saving, the document must still be clean. Everything is saved
    in one transaction that replaces what an earlier run saved, so running the
    same job twice is safe (queues deliver at least once).
@@ -76,15 +88,18 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from PIL import Image
 
+from kaagaz.chunking.context import with_context
 from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
+from kaagaz.chunking.script import languages_without_model
 from kaagaz.extraction.labelled import values_from_lines
-from kaagaz.extraction.labels import label_values
+from kaagaz.extraction.labels import label_quoted, label_values
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
 from kaagaz.extraction.parsing import parse_amount, parse_date
+from kaagaz.extraction.quotes import reader_text
 from kaagaz.extraction.spreadsheet import values_from_cells
-from kaagaz.extraction.values import ExtractedValue
+from kaagaz.extraction.values import CARD_RECORD, ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.ports import LeaseLost
@@ -115,6 +130,8 @@ from kaagaz.scanning.gate import (
 if TYPE_CHECKING:
     from kaagaz.ai.client import ModelClient
     from kaagaz.db.engine import Database
+    from kaagaz.extraction.card import ChatModel
+    from kaagaz.extraction.understanding import ModelBudget, Understanding
     from kaagaz.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -401,6 +418,11 @@ class _Run:
     values_needs_review: int = 0
     embedded: bool = False
     lowest_ocr_dpi: int | None = None  # when a page was drawn for OCR below OCR_DPI
+    model_calls: int = 0  # the card and the invoice windows called (PRD 2 D1, E2)
+    model_error: str | None = None  # "model_<code>" when a call failed; the document still ends ready
+    quotes_returned: int = 0
+    dropped_quotes: int = 0
+    quote_config: dict[str, int] = field(default_factory=dict)  # loose, ambiguous, summary_dropped (ML 10)
 
 
 class DocumentProcessor:
@@ -428,6 +450,9 @@ class DocumentProcessor:
         run_config: Mapping[str, Any] | None = None,
         vision_model: str | None = None,
         embed_model: str | None = None,
+        chat: "ChatModel | None" = None,
+        chat_model: str | None = None,
+        model_budget: "ModelBudget | None" = None,
     ) -> None:
         """``embed(customer_id, document_id)`` gives the saved pieces their vectors;
         ``vision`` reads scanned boxes again. Either failing with one of
@@ -439,11 +464,15 @@ class DocumentProcessor:
         engine the readers use, counted; ``ocr_on`` says an engine is set, so a page
         with no text went to OCR; ``run_config`` is the run's plain JSON set-up
         (ML 10); ``vision_model`` and ``embed_model`` are the tags a run records
-        when it used them."""
+        when it used them. ``chat`` is the model stage's chat model (PRD 2 D1, E2),
+        with its ``model_budget``; ``chat_model`` is the tag a run records when a
+        chat call was made."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_vision_crops < 0:
             raise ValueError("max_vision_crops must be 0 or more")
+        if chat is not None and model_budget is None:
+            raise ValueError("a chat model needs its model_budget")
         self._gate = gate
         self._statuses = statuses
         self._documents = documents
@@ -465,6 +494,9 @@ class DocumentProcessor:
         self._run_config = dict(run_config or {})
         self._vision_model = vision_model
         self._embed_model = embed_model
+        self._chat = chat
+        self._chat_model = chat_model
+        self._model_budget = model_budget
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -545,12 +577,29 @@ class DocumentProcessor:
         compared = None if second is None else _without_unread_pages(second, pages)
         pieces = pieces_from_rows(customer_id, document_id, usable)
         pieces += pieces_from_lines(customer_id, document_id, usable)
-        values = values_from_cells(usable) + values_from_lines(usable)
-        readings = self._vision_readings(job, values, prepared.images, heartbeat, run)
-        values = label_values(values, compared, readings)
+        understanding = self._understand(
+            job, run, heartbeat, usable, values_from_cells(usable) + values_from_lines(usable)
+        )
+        facts = understanding.facts
+        # L2: the card says the languages; with no card (the model off or down) the pieces do.
+        facts = replace(facts, languages=facts.languages or languages_without_model(pieces))
+        # C4: the card's type and date go in every piece's context header.
+        pieces = with_context(
+            pieces,
+            document_name=record.display_name,
+            doc_type=facts.doc_type,
+            document_date=facts.document_date,
+        )
+        rule, quoted = understanding.rule_values, understanding.quoted_values
+        # A card value is never verified, so its box is never cropped for the vision model.
+        cropped = rule + [value for value in quoted if value.record_key != CARD_RECORD]
+        readings = self._vision_readings(job, cropped, prepared.images, heartbeat, run)
+        values = label_values(rule, compared, readings, also_located=quoted)
+        values += label_quoted(quoted, compared, readings, also_located=rule)
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
             values = [_with_parsed(value) for value in apply_learned(values, learned)]
+        links = _document_links(facts, values)
         run.values_verified = sum(1 for value in values if value.label == "verified")
         run.values_needs_review = len(values) - run.values_verified
 
@@ -563,13 +612,51 @@ class DocumentProcessor:
             outputs.append(ReaderOutput("second", second_reader, second_version, tuple(second)))
 
         require_clean(self._statuses, job)  # still clean just before writing
-        content = DocumentContent(customer_id, document_id, pages, outputs, pieces, values, reader)
+        content = DocumentContent(
+            customer_id, document_id, pages, outputs, pieces, values, reader, facts=facts, links=links
+        )
         self._store.save(content, run_id=run.run_id)
         heartbeat()
         self._progress(job, "indexing", 0, 1)
         run.embedded = self._index(job)
-        finished = self._finished(run, "ready", None)
+        finished = self._finished(run, "ready", run.model_error)
         self._documents.mark_ready(customer_id, document_id, len(pages), run=finished)
+
+    def _understand(
+        self, job: Job, run: _Run, heartbeat: Heartbeat, spans: list[Span], values: list[ExtractedValue]
+    ) -> "Understanding":
+        """The model stage (``extraction.understanding``), and its numbers on the run.
+        With no chat model it is today's result: no card, and the rule values as they are."""
+        from kaagaz.extraction.understanding import understand  # it imports this module
+
+        def beat(done: int, total: int) -> None:
+            heartbeat()
+            self._progress(job, "understanding", done, total)
+
+        budget = self._model_budget
+        chat = self._chat if budget is not None else None
+        understanding = understand(
+            chat,
+            reader_text(spans if chat is not None else []),
+            values,
+            card_max_chars=0 if budget is None else budget.card_max_chars,
+            card_max_tokens=0 if budget is None else budget.card_max_tokens,
+            num_ctx=0 if budget is None else budget.num_ctx,
+            run_id=run.run_id,
+            beat=beat,
+            invoice_windows=None if budget is None else budget.invoice_windows,
+        )
+        run.model_calls = understanding.model_calls
+        run.model_error = understanding.error_code
+        run.quotes_returned = understanding.quotes_returned
+        run.dropped_quotes = understanding.dropped_quotes
+        if understanding.counts is not None:
+            run.quote_config = {
+                "loose_quotes": understanding.loose_quotes,
+                "ambiguous_quotes": understanding.ambiguous_quotes,
+                "summary_dropped": understanding.counts.summary_dropped,
+            }
+        return understanding
 
     def _prepare_or_count(self, job: Job, detected_type: str, data: bytes) -> Prepared:
         """``prepare``; a file with too many pages keeps its real page count before
@@ -700,7 +787,7 @@ class DocumentProcessor:
             status=status,
             error_code=error_code,
             ocr_engine=f"{meter.name} {meter.version}"[:100] if meter is not None and pages_sent else None,
-            model_chat=None,  # no chat model call yet (PRD 2 D1, E4)
+            model_chat=self._chat_model if run.model_calls else None,
             model_vision=self._vision_model if run.vision_crops else None,
             model_embed=self._embed_model if run.embedded else None,
             pages_cells=run.routes["cells"],
@@ -708,15 +795,18 @@ class DocumentProcessor:
             pages_ocr=run.routes["ocr"],
             pages_blank=run.routes["blank"],
             vision_crops=run.vision_crops,
-            model_calls=0,
-            dropped_quotes=0,
+            model_calls=run.model_calls,
+            dropped_quotes=run.dropped_quotes,
+            quotes_returned=run.quotes_returned,
             seconds_total=max(0.0, self._timer() - run.started),
             seconds_ocr=ocr_seconds if meter is not None else None,
             values_verified=run.values_verified,
             values_needs_review=run.values_needs_review,
-            config=self._run_config
-            if run.lowest_ocr_dpi is None
-            else {**self._run_config, "ocr_dpi_lowest": run.lowest_ocr_dpi},
+            config={
+                **self._run_config,
+                **run.quote_config,
+                **({} if run.lowest_ocr_dpi is None else {"ocr_dpi_lowest": run.lowest_ocr_dpi}),
+            },
         )
         return FinishedRun(run.run_id, totals, self._clock())
 
@@ -809,6 +899,13 @@ def _without_unread_pages(second: list[Span], pages: Sequence[PageRecord]) -> li
     return [span for span in second if span.location.page not in left_out]
 
 
+def _document_links(facts: DocumentFacts, values: list[ExtractedValue]) -> tuple[LinkIdentifier, ...]:
+    """D5: the link identifiers of the final values, only with a card (D6)."""
+    from kaagaz.extraction.understanding import document_links  # it imports this module
+
+    return document_links(facts, values)
+
+
 def _unavailable_code(error: BackendUnavailable) -> str:
     """The run's error code for a backend that is down: ``ocr_unavailable`` and so on."""
     name = str(error)
@@ -888,6 +985,7 @@ def build_processor(
     from kaagaz.db.documents import PgDocuments
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
+    from kaagaz.extraction.understanding import ModelBudget, model_config
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
     from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
     from kaagaz.reading.wiring import build_reader_socket, reader_config
@@ -931,9 +1029,17 @@ def build_processor(
         clock=_utc_now,
         timer=time.perf_counter,
         ocr_on=meter is not None,
-        run_config={"build": _build(), **reader_config(settings), "max_vision_crops": MAX_VISION_CROPS},
+        run_config={
+            "build": _build(),
+            **reader_config(settings),
+            "max_vision_crops": MAX_VISION_CROPS,
+            **(model_config(settings) if model is not None else {}),
+        },
         vision_model=settings.model_vision if vision is not None else None,
         embed_model=settings.model_embed if embed is not None else None,
+        chat=model,
+        chat_model=settings.model_chat if model is not None else None,
+        model_budget=ModelBudget.from_settings(settings) if model is not None else None,
     )
 
 

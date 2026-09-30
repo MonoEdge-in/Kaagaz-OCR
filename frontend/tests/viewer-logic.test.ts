@@ -11,7 +11,7 @@ import {
   stepZoom,
 } from "@/components/viewer/viewer";
 import { encodeRegion } from "@/lib/regions";
-import type { ExtractedValue, PageSummary, Region } from "@/lib/types";
+import type { DocumentCard, DocumentDetail, ExtractedValue, PageSummary, Region } from "@/lib/types";
 
 const pdfPage: PageSummary = {
   page_no: 1,
@@ -142,6 +142,18 @@ describe("labels in words", () => {
   });
 });
 
+describe("reasons for values the AI model or OCR read (PRD 2)", () => {
+  it("asks to check a value whose field the AI model chose (council A1)", () => {
+    expect(reasonText("model_chosen")).toBe("Found by the AI model. Check it against the page.");
+  });
+
+  it("asks to check a value OCR read from Devanagari or mixed script (council ML 1)", () => {
+    expect(reasonText("ocr_script")).toBe(
+      "Read by OCR from Hindi, Marathi or mixed-script text. Check it against the page.",
+    );
+  });
+});
+
 describe("document selection", () => {
   const region: Region = { kind: "box", page: 2, box: [0.1, 0.1, 0.2, 0.2] };
   const value: ExtractedValue = {
@@ -157,6 +169,8 @@ describe("document selection", () => {
     label: "needs_review",
     label_reason: "single_reader",
     confidence: null,
+    label_page_no: null, // PRD 2 D3: no label spot of its own
+    label_region: null,
   };
   const detail = {
     pages: [pdfPage, { ...pdfPage, page_no: 2 }],
@@ -197,5 +211,55 @@ describe("document selection", () => {
   it("selects a clicked value on its own page", () => {
     expect(selectValue(value)).toEqual({ pageNo: 2, region, valueId: "v1" });
     expect(sameRegion(region, { kind: "cell", page: 2, row: 1, column: 1 })).toBe(false);
+  });
+});
+
+describe("the document card's reply shape (PRD 2 D3)", () => {
+  it("carries the card, its date and each value's label spot as the API sends them", () => {
+    const card: DocumentCard = {
+      version: 1,
+      run_id: "r1",
+      model: "qwen3:4b",
+      prompt: "f376d271",
+      doc_type: "land_record",
+      languages: ["mr"],
+      title: "A land record",
+      summary: null,
+      document_date: null,
+      parties: [
+        {
+          role: "owner",
+          field: "owner_name",
+          name: "सुरेश पाटील",
+          name_latin: "suresh patil",
+          page: 1,
+          region: { kind: "box", page: 1, box: [0.1, 0.2, 0.9, 0.22] },
+        },
+      ],
+      identifiers: [],
+      key_facts: [
+        {
+          field: "profit",
+          value: "$12,000",
+          page: 16,
+          region: { kind: "box", page: 16, box: [0.1, 0.05, 0.9, 0.07] },
+          label: "Profit of the month Sept is",
+          label_page: 15,
+          label_region: { kind: "box", page: 15, box: [0.1, 0.9, 0.9, 0.92] },
+        },
+      ],
+      dropped_quotes: 0,
+    };
+    const facts: Pick<DocumentDetail, "summary" | "document_date" | "card"> = {
+      summary: null,
+      document_date: "2026-08-12",
+      card,
+    };
+    const labelled: Pick<ExtractedValue, "label_page_no" | "label_region"> = {
+      label_page_no: 15,
+      label_region: { kind: "box", page: 15, box: [0.1, 0.9, 0.9, 0.92] },
+    };
+    expect(facts.card?.parties[0]?.name_latin).toBe("suresh patil");
+    expect(labelled.label_page_no).not.toBe(card.key_facts[0]?.page);
   });
 });

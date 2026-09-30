@@ -22,7 +22,9 @@ export type LabelReason =
   | "single_reader"
   | "low_confidence"
   | "corrected"
-  | "learned_correction";
+  | "learned_correction"
+  | "model_chosen" // PRD 2: the AI model chose its field (card and invoice values)
+  | "ocr_script"; // PRD 2: OCR read it from Devanagari or mixed-script text
 
 /** "admin" only for a session started at /admin/login (PRD A1). */
 export type SessionScope = "app" | "admin";
@@ -77,7 +79,21 @@ export interface DocumentSummary {
   max_attempts: number | null;
   newer_version: NewerVersion | null; // a later version still being read, or one that failed
   progress: DocumentProgress | null; // null unless it is being checked or read; status_message already says it
+  doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
+  languages: string[]; // "en", "hi", "mr", "other"; [] when not known
 }
+
+/** What kind of document the AI model's card says it is (PRD 2, D1). */
+export type DocType =
+  | "invoice"
+  | "receipt"
+  | "bank_statement"
+  | "land_record"
+  | "contract"
+  | "register"
+  | "form"
+  | "letter"
+  | "other";
 
 /** How far the worker has got (PRD 2, X3), e.g. step "reading", done 3, total 40. */
 export interface DocumentProgress {
@@ -153,6 +169,43 @@ export interface ExtractedValue {
   label: Label;
   label_reason: LabelReason;
   confidence: number | null;
+  label_page_no: number | null; // the value's label spot, which can be on another page (PRD 2 D3); null without one
+  label_region: Region | null;
+}
+
+/** The AI model's document card (PRD 2 D1, D3): what the document is, and where each
+ *  party, identifier, date and key fact sits. The title and summary are the model's own
+ *  words (PRD 3 labels them "AI summary, check the pages"); every other text is the
+ *  reader's text at its spot. */
+export interface DocumentCard {
+  version: number;
+  run_id: string | null;
+  model: string;
+  prompt: string; // which prompt and schema made the card (a hash)
+  doc_type: DocType;
+  languages: string[];
+  title: string | null;
+  summary: string | null;
+  document_date: { value: string; date: string | null; page: number; region: Region } | null;
+  parties: {
+    role: string;
+    field: string;
+    name: string;
+    name_latin: string | null; // a Latin spelling of a Devanagari name (PRD 2 D4)
+    page: number;
+    region: Region;
+  }[];
+  identifiers: { kind: string; field: string; value: string; page: number; region: Region }[];
+  key_facts: {
+    field: string;
+    value: string;
+    page: number;
+    region: Region;
+    label: string | null;
+    label_page: number | null;
+    label_region: Region | null;
+  }[];
+  dropped_quotes: number;
 }
 
 export interface DocumentDetail extends DocumentSummary {
@@ -161,6 +214,9 @@ export interface DocumentDetail extends DocumentSummary {
   folder: DocumentFolder | null; // null: at the top level
   versions: DocumentVersion[]; // every version of the family, this one included
   reviewer_fixes: number; // corrections on this document's values; said before "Read again" (PRD 2, X1)
+  summary: string | null; // the AI model's own words, plain text (PRD 3 labels it); null without a card
+  document_date: string | null; // YYYY-MM-DD, from the card; null without one
+  card: DocumentCard | null; // null without a card (the model off or down)
 }
 
 export interface DocumentList {

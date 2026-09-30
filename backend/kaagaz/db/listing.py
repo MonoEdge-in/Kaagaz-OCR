@@ -38,6 +38,7 @@ from typing import Any
 from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import IntegrityError
 
+from kaagaz.chunking.context import document_part
 from kaagaz.db.documents import folder_missing
 from kaagaz.db.folders import FolderNotFound
 
@@ -107,6 +108,17 @@ _UPLOADED_FROM = " AND d.created_at >= :uploaded_from"
 _UPLOADED_TO = " AND d.created_at < :uploaded_to"
 
 _RENAME = "UPDATE documents SET display_name = :name WHERE customer_id = :c AND id = :d"
+_NAME_OF = "SELECT display_name FROM documents WHERE customer_id = :c AND id = :d"
+# The context header's first part is "Document: {name}" (PRD 2 C4), followed by
+# " | " or nothing; a rename swaps it for the new name in each of the document's pieces.
+_RENAME_HEADERS = (
+    "UPDATE pieces SET context_header = CASE"
+    " WHEN context_header = :old THEN :new"
+    " WHEN :new = '' THEN substr(context_header, length(:old) + 4)"
+    " ELSE :new || substr(context_header, length(:old) + 1) END"
+    " WHERE customer_id = :c AND document_id = :d AND :old <> ''"
+    " AND (context_header = :old OR left(context_header, length(:old) + 3) = :old || ' | ')"
+)
 
 _MOVE_FAMILY = (
     "UPDATE documents SET folder_id = :f WHERE customer_id = :c"
@@ -251,13 +263,26 @@ def reviewer_fix_count(conn: Connection, customer_id: str, document_id: str) -> 
     )
 
 
+def document_facts(conn: Connection, customer_id: str, document_id: str) -> RowMapping | None:
+    """The detail's document card columns (PRD 2 D3): its date and card JSON. Kept out of
+    ``_COLUMNS`` so the list stays small. One query by primary key."""
+    return (
+        conn.execute(
+            text("SELECT document_date, card FROM documents WHERE customer_id = :c AND id = :d"),
+            {"c": customer_id, "d": document_id},
+        )
+        .mappings()
+        .one_or_none()
+    )
+
+
 def list_values(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:
     """Every value of one document, by page, record and field. O(v log v)."""
     return (
         conn.execute(
             text(
                 "SELECT id, document_id, record_key, field, value_text, value_raw, second_reading,"
-                " page_no, region, label, label_reason, confidence"
+                " page_no, region, label, label_reason, confidence, label_page_no, label_region"
                 " FROM extracted_values WHERE customer_id = :c AND document_id = :d"
                 " ORDER BY page_no, record_key, field, id"
             ),
@@ -300,8 +325,15 @@ def sheet_cells(
 
 
 def rename_document(conn: Connection, customer_id: str, document_id: str, *, name: str) -> None:
-    """Give this one version a new display name, already cleaned by the caller. O(log D)."""
-    conn.execute(text(_RENAME), {"c": customer_id, "d": document_id, "name": name})
+    """Give this one version a new display name, already cleaned by the caller, and
+    put it in its pieces' context headers too, so search never shows the old name.
+    O(log D + P) for the document's P pieces."""
+    params = {"c": customer_id, "d": document_id}
+    old = conn.execute(text(_NAME_OF), params).scalar_one_or_none()
+    conn.execute(text(_RENAME), {**params, "name": name})
+    if old is not None:
+        headers = {"old": document_part(old), "new": document_part(name)}
+        conn.execute(text(_RENAME_HEADERS), {**params, **headers})
 
 
 def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_id: str | None) -> None:

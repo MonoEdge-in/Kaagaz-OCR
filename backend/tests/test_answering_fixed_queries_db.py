@@ -15,7 +15,10 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from kaagaz.answering.dates import date_range, mentions_date
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, PgFixedQueries
+from kaagaz.answering.hinglish import normalise
+from kaagaz.answering.intent import FixedPlan, plan_fixed
 from kaagaz.db.engine import Database
 from kaagaz.extraction.labelled import values_from_lines
 from kaagaz.extraction.parsing import parse_amount, parse_date
@@ -416,3 +419,72 @@ def test_a_register_column_named_total_amount_still_sums_every_row(db: Database)
         ("Sharma Traders", Decimal(6180), 3),
         ("Mehta Textiles", Decimal(2500), 1),
     ]
+
+
+def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> None:
+    """Council fix 9 (security amendment A1): the model chose a card value's field, so
+    no total, group, extreme, count or list of fields ever uses one."""
+    customer, document, _ = register
+    fixed = PgFixedQueries(db)
+    before = (
+        fixed.available_fields(customer),
+        fixed.total(customer, "profit", (), None, None),
+        fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
+        fixed.extreme_value(customer, "profit", (), None, None, True),
+        fixed.count_documents(customer, None, None, date_fields=DATES),
+    )
+    card = [
+        cell("card", "profit", "999999", number=999999, label="needs_review"),
+        cell("card", "party_name", "Card Party", column=5, label="needs_review"),
+        cell("card", "date", "2026-08-10", column=6, day=date(2026, 8, 10), label="needs_review"),
+        cell("card", "net_worth", "5", column=7, number=5, label="needs_review"),
+    ]
+    for value in card:
+        value["reason"] = "model_chosen"
+    add_values(db, customer, document, card)
+    card_only = add_document(db, customer, "card-only.pdf", detected_type="pdf")
+    add_values(db, customer, card_only, [{**value, "id": str(uuid.uuid4())} for value in card])
+
+    after = (
+        fixed.available_fields(customer),
+        fixed.total(customer, "profit", (), None, None),
+        fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
+        fixed.extreme_value(customer, "profit", (), None, None, True),
+        fixed.count_documents(customer, None, None, date_fields=DATES),
+    )
+    assert after == before
+    assert "net_worth" not in after[0]
+
+
+# --- invoice lines are never used by a fixed query (PRD 2 plan conflict 1) ----------------------------
+
+
+def test_invoice_line_amounts_are_never_used_and_total_amount_still_plans(db: Database) -> None:
+    """Plan conflict 1: a line's amount would make intent's "amount" (total_amount or amount)
+    ambiguous for every customer with invoices, so line records stay out, like page records."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer, "bill-17.pdf", detected_type="pdf")
+    spans = [
+        Span(text=line, raw=line, location=BoxLocation(page, 0.1, 0.1 * n, 0.9, 0.1 * n + 0.05))
+        for n, (page, line) in enumerate(INVOICE_LINES, start=1)
+    ]
+    box = BoxLocation(1, 0.1, 0.6, 0.9, 0.62)
+    lines = [
+        ExtractedValue("line:1", "description", "Cotton cloth", "Cotton cloth", box),
+        ExtractedValue("line:1", "amount", "1,000.00", "1,000.00", box),
+        ExtractedValue("line:2", "amount", "180.00", "180.00", box),
+    ]
+    add_values(db, customer, document, as_stored([*values_from_lines(spans), *lines]))
+    fixed = PgFixedQueries(db)
+
+    available = fixed.available_fields(customer)
+    assert available == {"party_name", "invoice_number", "invoice_date", "total_amount"}
+    assert fixed.total(customer, "amount", (), None, None) == []
+    assert fixed.extreme_value(customer, "amount", (), None, None, True) == []
+    [august] = fixed.total(customer, "total_amount", DATES, *AUGUST)
+    assert (august.number, august.records) == (Decimal(1180), 1)
+    normalised = normalise("Total amount in August 2026?")
+    plan = plan_fixed(
+        normalised, date_range(normalised, date(2026, 9, 30)), mentions_date(normalised), available
+    )
+    assert plan == FixedPlan("total", "total_amount", (), ("invoice_date",), *AUGUST)

@@ -16,7 +16,7 @@ import itertools
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -27,6 +27,8 @@ from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns
 from kaagaz.db.trash import lock_family
+from kaagaz.extraction.card import CARD_PROMPT_HASH
+from kaagaz.extraction.understanding import ModelBudget
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
@@ -40,6 +42,7 @@ from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from tests.db_support import new_customer, wait_until_blocked
 from tests.fakes import (
+    FakeChat,
     FakePreparer,
     FakeScanner,
     MemoryPageImages,
@@ -47,8 +50,10 @@ from tests.fakes import (
     MemoryStorage,
     fake_sheet_pages,
 )
-from tests.pdf_builder import make_pdf
+from tests.pdf_builder import Page, Text, make_pdf
 from tests.test_api_review import _named_database
+from tests.test_extraction_card import fact as card_fact
+from tests.test_extraction_card import reply as card_reply
 from tests.test_pipeline import PIPELINE_POLICY, real_socket
 from tests.test_pipeline_runs import SCANNED, SETTINGS, TimedOcr, Timer
 from tests.test_pipeline_store_db import counts, new_session
@@ -232,8 +237,11 @@ def with_runs(
     *,
     ocr_on: bool = False,
     scanner: FakeScanner | None = None,
+    chat: FakeChat | None = None,
+    model_budget: ModelBudget | None = None,
 ) -> DocumentProcessor:
-    """A processor on ``db`` with the real runs, progress and run fence."""
+    """A processor on ``db`` with the real runs, progress and run fence, and the model
+    stage when ``chat`` and its ``model_budget`` are given."""
     documents = PgDocuments(db)
     prepare = functools.partial(
         prepare_pages, dpi=72, max_pages=10, max_image_pixels=10_000_000, blank_stddev=3.0, low_res_dpi=150
@@ -252,6 +260,9 @@ def with_runs(
         clock=moving_clock,
         timer=Timer(),
         ocr_on=ocr_on,
+        chat=chat,
+        chat_model=None if chat is None else chat.chat_model,
+        model_budget=model_budget,
     )
 
 
@@ -358,11 +369,12 @@ def test_ocr_down_on_page_2_then_retry_leaves_one_set_and_two_runs(db: Database)
     processor(Job(customer, doc), lambda: None)  # the job came back after its lease
 
     # One set: 2 pages, the first reading and the second (PDFium's, empty on scans),
-    # one piece and one value per scanned page, and 2 runs.
+    # one value per scanned page, and 2 runs. The two pages' lines are one piece:
+    # a page break no longer starts a piece (PRD 2 C1).
     assert counts(db, customer, doc) == {
         "pages": 2,
         "reader_outputs": 2,
-        "pieces": 2,
+        "pieces": 1,
         "extracted_values": 2,
         "invoices": 0,
         "invoice_lines": 0,
@@ -481,3 +493,124 @@ def test_a_stale_scan_never_moves_a_ready_document_back_to_clean(db: Database) -
         None,
     )
     assert runs_of(db, customer, doc) == [("superseded", None), ("ready", None)]
+
+
+# --- PRD 2 D1 to D6: the model stage against PostgreSQL ---------------------------------
+
+
+def _receipt(delivery: str) -> bytes:
+    """A one-page digital PDF receipt; ``delivery`` makes each file's bytes its own."""
+    lines = [
+        "Sharma Traders",
+        "Invoice No: INV 17",
+        "Date: 12/08/2026",
+        delivery,
+        "Grand Total: Rs. 1,180.00",
+    ]
+    return make_pdf([Page(texts=[Text(72, 740 - 24 * n, text) for n, text in enumerate(lines)])])
+
+
+RECEIPT_CARD = card_reply(
+    doc_type="receipt",
+    parties=[{"role": "seller", "name_quote": "Sharma Traders"}],
+    document_date={"value_quote": "12/08/2026"},
+    key_facts=[card_fact("net_payable", "Rs. 1,180.00", "Grand Total:")],
+    summary="Sharma Traders was paid Rs. 1,180.00.",
+)
+
+
+def test_a_card_its_facts_and_its_links_are_saved_with_a_fake_model(db: Database) -> None:
+    """Two receipts with the same invoice number, read with a fake model: each gets its
+    card and facts, their card values are needs review, they link both ways, and each
+    run records the chat model and its quotes."""
+    customer, _ = new_customer(db)
+    storage = MemoryStorage()
+    documents = PgDocuments(db)
+    upload = UploadService(PIPELINE_POLICY, documents, storage, MemoryQueue())
+    budget = ModelBudget(card_max_chars=12000, card_max_tokens=1024, num_ctx=8192, invoice_windows=None)
+    docs = []
+    for delivery in ("Cotton cloth delivered to the Pune shop in August", "Silk delivered in August too"):
+        doc = upload.accept(customer, io.BytesIO(_receipt(delivery))).document_id
+        processor = with_runs(
+            db, storage, build_reader_socket(SETTINGS, None), chat=FakeChat(RECEIPT_CARD), model_budget=budget
+        )
+        processor(Job(customer, doc), lambda: None)
+        docs.append(doc)
+    first, second = docs
+
+    facts = one(
+        db,
+        customer,
+        "SELECT status, doc_type, languages, summary, document_date, card->>'prompt' FROM documents"
+        " WHERE id = :d",
+        first,
+    )
+    assert facts == (
+        "ready",
+        "receipt",
+        ["en"],
+        "Sharma Traders was paid Rs. 1,180.00.",
+        date(2026, 8, 12),
+        CARD_PROMPT_HASH,
+    )
+    with db.customer(customer) as conn:
+        card_labels = conn.execute(
+            text(
+                "SELECT DISTINCT label, label_reason FROM extracted_values"
+                " WHERE document_id = :d AND record_key = 'card'"
+            ),
+            {"d": first},
+        ).all()
+        headers = conn.execute(
+            text("SELECT context_header FROM pieces WHERE document_id = :d"), {"d": first}
+        ).all()
+        linked = conn.execute(
+            text(
+                "SELECT document_id::text, linked_document_id::text, identifier_kind, identifier_value"
+                " FROM document_links WHERE document_id = :d OR linked_document_id = :d"
+            ),
+            {"d": first},
+        ).all()
+        run = conn.execute(
+            text(
+                "SELECT status, model_chat, model_calls, quotes_returned FROM processing_runs"
+                " WHERE document_id = :d"
+            ),
+            {"d": first},
+        ).one()
+    assert [tuple(row) for row in card_labels] == [("needs_review", "model_chosen")]
+    assert headers and all("Type: receipt | Date: 2026-08-12" in row[0] for row in headers)
+    assert {tuple(row) for row in linked} == {
+        (first, second, "invoice_number", "inv17"),
+        (second, first, "invoice_number", "inv17"),
+    }
+    assert tuple(run) == ("ready", "qwen3:4b", 1, 3)
+
+
+def test_the_model_off_twin_saves_no_card_and_no_links(db: Database) -> None:
+    customer, _ = new_customer(db)
+    storage = MemoryStorage()
+    upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
+    docs = [
+        upload.accept(customer, io.BytesIO(_receipt(delivery))).document_id
+        for delivery in ("Cotton cloth delivered to the Pune shop in August", "Silk delivered in August too")
+    ]
+    for doc in docs:
+        with_runs(db, storage, build_reader_socket(SETTINGS, None))(Job(customer, doc), lambda: None)
+
+    assert one(
+        db,
+        customer,
+        "SELECT status, doc_type, languages, summary, card FROM documents WHERE id = :d",
+        docs[0],
+    ) == ("ready", None, ["en"], None, None)
+    assert one(db, customer, "SELECT count(*) FROM document_links WHERE document_id = :d", docs[0]) == (0,)
+    assert one(
+        db,
+        customer,
+        "SELECT count(*) FROM extracted_values WHERE document_id = :d AND record_key = 'card'",
+        docs[0],
+    ) == (0,)
+    assert one(
+        db, customer, "SELECT model_chat, model_calls FROM processing_runs WHERE document_id = :d", docs[0]
+    ) == (None, 0)

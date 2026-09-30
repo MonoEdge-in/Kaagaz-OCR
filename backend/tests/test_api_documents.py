@@ -5,6 +5,7 @@ are tested first, without a database.
 """
 
 import io
+import json
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -744,7 +745,67 @@ def test_detail_has_pages_and_values_in_order(db: Database) -> None:
         "label": "needs_review",
         "label_reason": "readers_disagree",
         "confidence": None,
+        "label_page_no": None,  # PRD 2 D3: the label's own spot, when it has one
+        "label_region": None,
     }
+
+
+CARD = {"version": 1, "doc_type": "invoice", "title": "Bill from Sharma Traders", "parties": []}
+
+
+@pytest.mark.db
+def test_the_list_and_detail_show_the_card_and_each_values_label_spot(db: Database) -> None:
+    """PRD 2 D3: the card's type and languages in the list; its summary, date and JSON in
+    the detail; and each value's label spot, which can be on another page."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    doc = api.add_document(c, name="bill.pdf")
+    plain = api.add_document(c, name="plain.pdf")
+    for each in (doc, plain):
+        api.add_page(c, each)
+    value = api.add_value(c, doc)
+    api.add_value(c, plain)
+    with db.customer(c) as conn:
+        conn.execute(
+            text(
+                "UPDATE documents SET doc_type = 'invoice', languages = ARRAY['en', 'hi'], summary = :s,"
+                " document_date = '2026-08-12', card = CAST(:card AS jsonb)"
+                " WHERE customer_id = :c AND id = :d"
+            ),
+            {"c": c, "d": doc, "s": "A bill from Sharma Traders.", "card": json.dumps(CARD)},
+        )
+        conn.execute(
+            text(
+                "UPDATE extracted_values SET label_page_no = 1, label_region = CAST(:r AS jsonb)"
+                " WHERE customer_id = :c AND id = :v"
+            ),
+            {"c": c, "v": value, "r": json.dumps({"kind": "box", "page": 1, "box": [0.1, 0.1, 0.3, 0.12]})},
+        )
+
+    items = {item["id"]: item for item in signed.client.get("/api/documents").json()["items"]}
+    assert (items[doc]["doc_type"], items[doc]["languages"]) == ("invoice", ["en", "hi"])
+    assert (items[plain]["doc_type"], items[plain]["languages"]) == (None, [])
+    assert "card" not in items[doc] and "summary" not in items[doc]  # the list stays small
+
+    detail = signed.client.get(f"/api/documents/{doc}").json()
+    assert (detail["summary"], detail["document_date"], detail["card"]) == (
+        "A bill from Sharma Traders.",
+        "2026-08-12",
+        CARD,
+    )
+    assert (detail["values"][0]["label_page_no"], detail["values"][0]["label_region"]) == (
+        1,
+        {"kind": "box", "page": 1, "box": [0.1, 0.1, 0.3, 0.12]},
+    )
+    bare = signed.client.get(f"/api/documents/{plain}").json()
+    bare_facts = (bare["summary"], bare["document_date"], bare["card"], bare["doc_type"])
+    assert bare_facts == (
+        None,
+        None,
+        None,
+        None,
+    )
 
 
 @pytest.mark.db

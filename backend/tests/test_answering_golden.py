@@ -368,7 +368,9 @@ class FakeModel:
             raise self.embed_error
         return [[0.25, 0.5, 0.25] for _ in texts]
 
-    def chat_json(self, *, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+    def chat_json(
+        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+    ) -> dict[str, Any]:
         self.prompts.append((system, user))
         if self.chat_error is not None:
             raise self.chat_error

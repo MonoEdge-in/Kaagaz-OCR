@@ -46,7 +46,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from types import FrameType
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -61,6 +61,9 @@ from kaagaz.jobs.ports import QueueSetupError
 from kaagaz.jobs.purge import purge_expired
 from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
 from kaagaz.settings import Settings
+
+if TYPE_CHECKING:
+    from kaagaz.ai.client import ModelClient
 
 logger = logging.getLogger("kaagaz.worker")
 
@@ -226,6 +229,15 @@ def run_until_stopped(worker: RunsJobs, stop: threading.Event, *, pause_seconds:
             stop.wait(pause_seconds)
 
 
+def worker_model(settings: Settings) -> "ModelClient | None":
+    """The worker's model client, or None with the model off. Its chat calls (the card
+    and the invoice windows) time out after MODEL_EXTRACT_TIMEOUT_SECONDS, which the
+    lease allows twice over (settings, AR1); the rest after MODEL_TIMEOUT_SECONDS."""
+    from kaagaz.ai.client import build_model_client
+
+    return build_model_client(settings, chat_timeout_seconds=settings.model_extract_timeout_seconds)
+
+
 def main() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
@@ -247,7 +259,6 @@ def _serve(settings: Settings) -> None:
     """Build the worker and run jobs until it is told to stop."""
     # Imported here, not at the top: these modules pull in every reader, the
     # OCR engine and the AI client, and the loop above is tested without them.
-    from kaagaz.ai.client import build_model_client
     from kaagaz.pipeline import build_processor
 
     db = Database(make_engine(settings.database_url), settings.db_app_role)
@@ -256,7 +267,7 @@ def _serve(settings: Settings) -> None:
     max_receives = queue.max_receives()  # once; no redrive policy stops the worker here
     check_queue_redrive(max_receives, settings.job_max_attempts)
     scanner = build_scanner(settings)
-    model = build_model_client(settings)
+    model = worker_model(settings)
     processor = build_processor(settings=settings, db=db, storage=storage, scanner=scanner, model=model)
 
     stop = threading.Event()

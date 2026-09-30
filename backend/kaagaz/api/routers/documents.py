@@ -407,6 +407,8 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         path = [] if folder is None else folders_sql.folder_path(conn, customer_id, str(folder))
         versions = listing.family_versions(conn, customer_id, str(row["family_id"]))
         fixes = listing.reviewer_fix_count(conn, customer_id, target)
+        facts = listing.document_facts(conn, customer_id, target)
+    document_date = None if facts is None else facts["document_date"]
     return {
         **document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user),
         "pages": [page_summary(page) for page in pages],
@@ -414,7 +416,11 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         "folder": document_folder(path),
         "versions": [document_version(version) for version in versions],
         "reviewer_fixes": fixes,
-        "summary": row["summary"],  # PRD 2 D3: the card's summary (PR 5); null until then
+        # PRD 2 D3: the document card, in the model's own words (summary) and with each
+        # item's spot (card); null without a card. PRD 3 shows them, labelled as AI.
+        "summary": row["summary"],
+        "document_date": None if document_date is None else document_date.isoformat(),
+        "card": None if facts is None else facts["card"],
     }
 
 

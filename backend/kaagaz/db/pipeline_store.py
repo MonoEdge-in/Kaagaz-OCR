@@ -65,7 +65,7 @@ from kaagaz.db.runs import is_run_open
 from kaagaz.db.sqlstate import retry_on_deadlock
 from kaagaz.db.trash import lock_family
 from kaagaz.extraction.learned import LearnedCorrection
-from kaagaz.extraction.values import ExtractedValue
+from kaagaz.extraction.values import CARD_RECORD, NEEDS_REVIEW, ExtractedValue
 from kaagaz.pipeline import DocumentContent, DocumentFacts, InvoiceRow, LinkIdentifier, Superseded
 from kaagaz.reading.spans import Span, location_from_json, location_to_json
 
@@ -127,12 +127,16 @@ _LEARNED = text(
 _LINK_LOCK = text(
     "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.document_links:' || CAST(:c AS uuid)::text, 0))"
 )
+# An identifier is compared as links.normalise_identifier writes it: no spaces, lower
+# case, and Devanagari digits as ASCII digits (council fix 10).
 _LINK_TARGETS = text(
-    r"SELECT DISTINCT v.document_id, v.field, lower(regexp_replace(v.value_text, '\s', '', 'g'))"
+    "SELECT DISTINCT v.document_id, v.field,"
+    r" translate(lower(regexp_replace(v.value_text, '\s', '', 'g')), '०१२३४५६७८९', '0123456789')"
     " FROM extracted_values v JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " WHERE v.customer_id = :c AND v.field = ANY(CAST(:kinds AS text[]))"
     " AND v.record_key IN ('card', 'document')"
-    r" AND lower(regexp_replace(v.value_text, '\s', '', 'g')) = ANY(CAST(:values AS text[]))"
+    r" AND translate(lower(regexp_replace(v.value_text, '\s', '', 'g')), '०१२३४५६७८९', '0123456789')"
+    " = ANY(CAST(:values AS text[]))"
     " AND d.id <> :d AND d.family_id <> :f AND d.deleted_at IS NULL"
 )
 _LINK_PARTNERS = text(
@@ -361,6 +365,10 @@ def _link_targets(
 
 
 def _value_row(ids: dict[str, str], value: ExtractedValue, reader: str) -> dict[str, Any]:
+    if value.record_key == CARD_RECORD and value.label != NEEDS_REVIEW:
+        # The last check (council fix 4): the model chose a card value's field, so it is
+        # never verified. A bug upstream stops the save before anything is written.
+        raise ValueError("a card value must be needs_review")
     label = value.label_location
     return {
         **ids,
