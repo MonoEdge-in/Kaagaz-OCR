@@ -44,7 +44,7 @@ A reader output is stored as a JSON array of spans, each
 kaagaz.reading.spans.location_to_json.
 
 Cost per save: one family lock, 1 update, 5 deletes, at most 6 batched inserts
-and 2 to 5 small link statements; O(rows) data sent. The link lookup reads this
+and 3 to 7 small link statements; O(rows) data sent. The link lookup reads this
 customer's values of the link fields, O(V) for V of them (plan 12, risk 12).
 One indexed query for ``load_learned``.
 """

@@ -349,10 +349,16 @@ class PgDocuments:
 
     # --- used by the pipeline -----------------------------------------------
 
-    def set_failed(self, customer_id: str, document_id: str, code: str) -> None:
+    def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
         """Mark a document failed for good with a short code. Rejected stays rejected,
-        but keeps its code so the file list can say why."""
+        but keeps its code so the file list can say why. With ``run_id``, raise
+        Superseded and change nothing unless that run is still open (the run fence,
+        read under the family lock)."""
         with unavailable(), self._db.customer(customer_id) as conn:
+            if run_id is not None:
+                lock_family(conn, customer_id, document_id)
+                if not is_run_open(conn, customer_id, document_id, run_id):
+                    raise Superseded(run_id)
             conn.execute(
                 text(
                     "UPDATE documents"

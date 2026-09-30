@@ -3,8 +3,8 @@
 A run records what one delivery did: its routes per page, its models, its
 counts and its outcome. ``start_run`` marks the document's other runs that are
 still ``running`` (a delivery that died, or one still going that this delivery
-replaces) as ``superseded``. ``finish_run`` writes the outcome; a later finish
-of the same run overwrites an earlier close, so runs stay truthful.
+replaces) as ``superseded``. ``finish_run`` writes the outcome of a run still
+``running`` only: a run superseded, or finished already, stays as it is.
 
 The run fence (Lead's resolution 2): only a run that is still ``running`` may
 save results or mark the document ready. ``is_run_open`` is read under the
@@ -69,7 +69,7 @@ _FINISH = (
     " values_verified = :values_verified, values_needs_review = :values_needs_review,"
     " seconds_total = :seconds_total, seconds_ocr = :seconds_ocr, config = CAST(:config AS jsonb),"
     " finished_at = GREATEST(CAST(:now AS timestamptz), started_at)"
-    " WHERE customer_id = :c AND id = :id"
+    " WHERE customer_id = :c AND id = :id AND status = 'running'"
 )
 
 _OPEN = (
@@ -92,8 +92,9 @@ def start_run(conn: Connection, customer_id: str, document_id: str, *, now: date
 
 
 def finish_run(conn: Connection, customer_id: str, run: "FinishedRun") -> None:
-    """Write the run's outcome and totals, and its finish time. A run of another
-    customer, or no run, changes nothing. One statement by primary key: O(log R)."""
+    """Write the run's outcome and totals, and its finish time, while it is still
+    running. A superseded or finished run, a run of another customer, or no run,
+    changes nothing. One statement by primary key: O(log R)."""
     totals: dict[str, Any] = {item.name: getattr(run.totals, item.name) for item in fields(run.totals)}
     totals["config"] = json.dumps(dict(run.totals.config))
     conn.execute(text(_FINISH), {**totals, "c": customer_id, "id": run.run_id, "now": run.now})
