@@ -180,12 +180,17 @@ class MemoryStatuses:
 
     def __init__(self) -> None:
         self._statuses: dict[tuple[str, str], DocumentStatus] = {}
+        self.runs: MemoryRuns | None = None  # the run fence, when set
 
     def get_status(self, customer_id: str, document_id: str) -> DocumentStatus | None:
         return self._statuses.get((customer_id, document_id))
 
-    def set_status(self, customer_id: str, document_id: str, status: DocumentStatus) -> None:
+    def set_status(
+        self, customer_id: str, document_id: str, status: DocumentStatus, *, run_id: str | None = None
+    ) -> None:
         key = (customer_id, document_id)
+        if run_id is not None and self.runs is not None and not self.runs.is_open(*key, run_id):
+            raise Superseded(run_id)
         if self._statuses.get(key) is DocumentStatus.REJECTED:
             return  # final
         self._statuses[key] = status

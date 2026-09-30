@@ -196,6 +196,7 @@ def rig(
     repo = MemoryDocuments(statuses)
     runs = MemoryRuns(repo)
     repo.runs = runs
+    statuses.runs = runs
     store = MemoryPipelineStore(runs) if log is None else RecordingStore(runs, log)
     progress = MemoryProgress(repo, statuses) if log is None else RecordingProgress(repo, statuses, log)
     engine = ocr(timer) if callable(ocr) else ocr

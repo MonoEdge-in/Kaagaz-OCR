@@ -495,7 +495,7 @@ class DocumentProcessor:
     def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
         self._progress(job, "scanning", 0, 1)
-        data = self._scan(job)
+        data = self._scan(job, run)
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
         heartbeat()
@@ -570,9 +570,9 @@ class DocumentProcessor:
             self._documents.set_page_count(job.customer_id, job.document_id, error.pages)
             raise
 
-    def _scan(self, job: Job) -> bytes:
+    def _scan(self, job: Job, run: _Run) -> bytes:
         try:
-            return self._gate.check(job)
+            return self._gate.check(job, run_id=run.run_id)
         except JobFailed as failure:
             if failure.code in REJECTION_CODES:
                 # A file rejected on a later scan (new signatures) must not

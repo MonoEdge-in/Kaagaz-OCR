@@ -72,7 +72,12 @@ class Quarantine(Protocol):
 class StatusStore(Protocol):
     def get_status(self, customer_id: str, document_id: str) -> DocumentStatus | None: ...
 
-    def set_status(self, customer_id: str, document_id: str, status: DocumentStatus) -> None: ...
+    def set_status(
+        self, customer_id: str, document_id: str, status: DocumentStatus, *, run_id: str | None = None
+    ) -> None:
+        """With ``run_id`` (PRD 2's run fence), raise kaagaz.pipeline.Superseded and
+        change nothing unless that run is still open."""
+        ...
 
 
 # Codes that mean the file failed the scan (now or earlier). Anything made
@@ -103,8 +108,10 @@ class ScanGate:
         self._quarantine = quarantine
         self._statuses = statuses
 
-    def check(self, job: Job) -> bytes:
-        """Scan the job's file and return the scanned bytes, only if clean."""
+    def check(self, job: Job, *, run_id: str | None = None) -> bytes:
+        """Scan the job's file and return the scanned bytes, only if clean. With
+        ``run_id``, the CLEAN write is fenced by that run: a stale delivery's scan
+        can never move a document read since back to clean."""
         customer_id, document_id = job.customer_id, job.document_id
         if self._statuses.get_status(customer_id, document_id) is DocumentStatus.REJECTED:
             raise JobFailed("rejected", retryable=False)
@@ -120,7 +127,7 @@ class ScanGate:
             raise JobFailed("scanner_unavailable", retryable=True)
 
         if verdict is Verdict.CLEAN:
-            self._statuses.set_status(customer_id, document_id, DocumentStatus.CLEAN)
+            self._statuses.set_status(customer_id, document_id, DocumentStatus.CLEAN, run_id=run_id)
             return data
 
         codes = {Verdict.INFECTED: "virus_found", Verdict.BLOCKED: "blocked_content"}

@@ -424,8 +424,16 @@ class PgDocuments:
             return None
         return DocumentStatus(status)
 
-    def set_status(self, customer_id: str, document_id: str, status: DocumentStatus) -> None:
+    def set_status(
+        self, customer_id: str, document_id: str, status: DocumentStatus, *, run_id: str | None = None
+    ) -> None:
+        """With ``run_id``, the run fence, as ``set_failed``: under the family lock,
+        raise Superseded and change nothing unless that run is still open."""
         with unavailable(), self._db.customer(customer_id) as conn:
+            if run_id is not None:
+                lock_family(conn, customer_id, document_id)
+                if not is_run_open(conn, customer_id, document_id, run_id):
+                    raise Superseded(run_id)
             conn.execute(
                 text(
                     "UPDATE documents SET status = :s, failure_code = NULL"
