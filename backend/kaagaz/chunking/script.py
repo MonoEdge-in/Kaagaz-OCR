@@ -27,6 +27,12 @@ of it looks sound, and a Latin spelling of it for search.
   Last, NFKD, drop the marks (Mn) and format characters (Cf, the joiners),
   and lower-case the whole text. Middle vowels are never dropped (kulakarni),
   so name matching must stay fuzzy. Other text is kept as it is.
+  PROVISIONAL: IAST has no letters for the candra vowels of English words, so
+  before it they become plain vowels (ॉ and ऑ as o, ॅ and ऍ as e, ॲ as a) and
+  the abbreviation sign ॰ is dropped. So कॉपी gives "kopi".
+* ``languages_without_model`` (L2). With no model, a Devanagari piece means
+  "other" (Hindi and Marathi cannot be told apart), a piece whose letters are
+  mostly ASCII means "en", and any other script means "other".
 
 Every function is O(n) time in the characters of the text; ``latin_spelling``
 takes O(n) memory, the others O(1).
@@ -34,6 +40,9 @@ takes O(n) memory, the others O(1).
 
 import re
 import unicodedata
+from collections.abc import Sequence
+
+from kaagaz.chunking.piece import Piece
 
 DEVANAGARI_MIN_SHARE = 0.5  # L2: "at least half its letters"
 
@@ -52,6 +61,8 @@ _VIRAMA = "\u094d"
 _JOINERS = "\u200c\u200d"  # ZWNJ and ZWJ
 
 _DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+# PROVISIONAL: the candra vowels as the plain vowels IAST can spell; the abbreviation sign dropped.
+_CANDRA = str.maketrans({"ॉ": "ो", "ऑ": "ओ", "ॅ": "े", "ऍ": "ए", "ॲ": "अ", "॰": None})
 
 # A run of Devanagari letters and signs (with the joiners), or a run of the
 # block's other characters: the danda, the digits and the abbreviation sign.
@@ -112,7 +123,7 @@ def latin_spelling(text: str) -> str:
     from indic_transliteration import sanscript
 
     def spell(match: re.Match[str]) -> str:
-        run = unicodedata.normalize("NFC", match[0])
+        run = unicodedata.normalize("NFC", match[0]).translate(_CANDRA)
         latin = str(sanscript.transliterate(run, sanscript.DEVANAGARI, sanscript.IAST))
         if match["letters"] is not None:
             latin = _letters_to_latin(run, latin)
@@ -121,6 +132,21 @@ def latin_spelling(text: str) -> str:
         )
 
     return _RUN.sub(spell, text).lower()
+
+
+def languages_without_model(pieces: Sequence[Piece]) -> tuple[str, ...]:
+    """L2 with no model: ("en",) and/or ("other",), in that order; () when no piece has letters.
+    O(n) in the characters of the pieces."""
+    found = set()
+    for piece in pieces:
+        letters = ascii_letters = 0
+        for ch in piece.text:
+            if unicodedata.category(ch)[0] in "LM":
+                letters += 1
+                ascii_letters += ch.isascii()
+        if letters:
+            found.add("en" if not is_devanagari(piece.text) and 2 * ascii_letters >= letters else "other")
+    return tuple(language for language in ("en", "other") if language in found)
 
 
 def _letters_to_latin(run: str, iast: str) -> str:

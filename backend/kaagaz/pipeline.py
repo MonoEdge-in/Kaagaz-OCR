@@ -19,9 +19,11 @@ The steps, in order, for one (customer, document):
    blank, is left out: a scan's hidden text layer must never agree with itself
    (the council's ML 4).
 6. Pieces for search (kaagaz.chunking) and values for fixed queries
-   (kaagaz.extraction), each labelled verified or needs review. For scans,
-   when a vision model is set, it reads each value's box again as the second
-   reading. This customer's remembered corrections are applied last.
+   (kaagaz.extraction), each labelled verified or needs review. Each piece
+   gets its context header, and a Latin spelling when it is Devanagari; with
+   no document card yet, the languages come from the pieces (PRD 2 L2). For
+   scans, when a vision model is set, it reads each value's box again as the
+   second reading. This customer's remembered corrections are applied last.
 7. Just before saving, the document must still be clean. Everything is saved
    in one transaction that replaces what an earlier run saved, so running the
    same job twice is safe (queues deliver at least once).
@@ -76,9 +78,11 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from PIL import Image
 
+from kaagaz.chunking.context import with_context
 from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
+from kaagaz.chunking.script import languages_without_model
 from kaagaz.extraction.labelled import values_from_lines
 from kaagaz.extraction.labels import label_values
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
@@ -545,6 +549,9 @@ class DocumentProcessor:
         compared = None if second is None else _without_unread_pages(second, pages)
         pieces = pieces_from_rows(customer_id, document_id, usable)
         pieces += pieces_from_lines(customer_id, document_id, usable)
+        # C4: the type and date come with the document card (PRD 2 D1); until then they are left out.
+        pieces = with_context(pieces, document_name=record.display_name, doc_type=None, document_date=None)
+        facts = DocumentFacts(languages=languages_without_model(pieces))  # L2 with no model
         values = values_from_cells(usable) + values_from_lines(usable)
         readings = self._vision_readings(job, values, prepared.images, heartbeat, run)
         values = label_values(values, compared, readings)
@@ -563,7 +570,9 @@ class DocumentProcessor:
             outputs.append(ReaderOutput("second", second_reader, second_version, tuple(second)))
 
         require_clean(self._statuses, job)  # still clean just before writing
-        content = DocumentContent(customer_id, document_id, pages, outputs, pieces, values, reader)
+        content = DocumentContent(
+            customer_id, document_id, pages, outputs, pieces, values, reader, facts=facts
+        )
         self._store.save(content, run_id=run.run_id)
         heartbeat()
         self._progress(job, "indexing", 0, 1)

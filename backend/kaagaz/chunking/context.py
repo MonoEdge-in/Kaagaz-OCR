@@ -19,15 +19,22 @@ shown as cited text. For example:
   by its number: its name is typed by the customer and is never stored.
 * Line breaks and runs of spaces inside a part become one space.
 
+``with_context`` fills every piece's header, in document order, and its
+``text_latin`` (L3) when the piece is Devanagari (L2).
+
 Note for PRD 3 (council A9): the header holds document text (the file name,
 the headings and a line of the text), so it must be fenced like any other
 document text before it reaches a model.
 """
 
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date
 
 from kaagaz.chunking.lines import BEFORE_MAX
 from kaagaz.chunking.piece import Piece
+from kaagaz.chunking.script import is_devanagari, latin_spelling
+from kaagaz.reading.spans import CellLocation
 
 SECTION_MAX = 120  # council A7: the whole "Section: …" part
 _ELLIPSIS = "…"
@@ -62,6 +69,30 @@ def context_header(
     if text:
         parts.append(f"Before: {text if len(text) <= BEFORE_MAX else _ELLIPSIS + text[-BEFORE_MAX:]}")
     return " | ".join(parts)
+
+
+def with_context(
+    pieces: Sequence[Piece], *, document_name: str, doc_type: str | None, document_date: date | None
+) -> list[Piece]:
+    """``pieces`` in the same order, each with its context header and, when it is
+    Devanagari (L2), its Latin spelling (L3). The type and date are None until the
+    document card (PR 5) knows them. O(n) in the characters of the pieces."""
+    done = []
+    before: str | None = None
+    for piece in pieces:
+        sheet = piece.page_from if isinstance(piece.locations[0], CellLocation) else None
+        header = context_header(
+            piece,
+            document_name=document_name,
+            doc_type=doc_type,
+            document_date=document_date,
+            before=before,
+            sheet=sheet,
+        )
+        latin = latin_spelling(piece.text) if is_devanagari(piece.text) else None
+        done.append(replace(piece, context_header=header, text_latin=latin))
+        before = piece.text.rsplit("\n", 1)[-1]
+    return done
 
 
 def _one_line(text: str) -> str:
