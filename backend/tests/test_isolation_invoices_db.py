@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from kaagaz.db import listing
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.pipeline import DocumentContent, LinkIdentifier, PageRecord
@@ -160,3 +161,18 @@ def test_b_never_sees_a_invoice_through_the_api(db: Database) -> None:
     assert own.status_code == 200 and own.json()["invoice"] is None
     for reply_text in (detail.text, own.text):
         assert "ZENITH" not in reply_text
+
+
+def test_the_detail_queries_filter_by_customer_even_without_row_security(db: Database) -> None:
+    """Final council 5: listing.invoice_for and document_facts give B nothing for A's
+    document, as B (row level security) and on the owner's connection, which skips the
+    policy (the app role never owns a table), so each query's own customer_id = :c does it."""
+    a, b, a_doc, _ = a_with_an_invoice(db)
+    with db.customer(b) as conn:
+        assert listing.invoice_for(conn, b, a_doc) is None
+        assert listing.document_facts(conn, b, a_doc) is None
+    with db.engine.begin() as conn:  # no SET ROLE: the tables' owner, which RLS does not stop
+        assert listing.invoice_for(conn, b, a_doc) is None
+        assert listing.document_facts(conn, b, a_doc) is None
+        found = listing.invoice_for(conn, a, a_doc)
+        assert found is not None and len(found[1]) == 4  # the same query does find A's own

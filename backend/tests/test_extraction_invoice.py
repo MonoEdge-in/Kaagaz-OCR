@@ -731,6 +731,8 @@ class ModelCallsTest(unittest.TestCase):
                 extraction = read(spans, chat, beats=beats, **one_window_each(spans))
                 self.assertEqual((extraction.values, extraction.error_code), ([], code))
                 self.assertEqual((extraction.model_calls, len(chat.calls)), (2, 2))
+                # Window 1's quotes were thrown away with its values: none are counted.
+                self.assertEqual((extraction.quotes.returned, extraction.dropped), (0, 0))
                 self.assertEqual(beats, [(1, 3), (2, 3)])
 
     def test_no_text_means_no_call(self) -> None:
@@ -832,10 +834,16 @@ class TextileInvoiceTest(unittest.TestCase):
                 ("line:3", "amount"),
                 ("line:4", "amount"),
                 ("document", "subtotal"),
+                ("document", "tax_amount"),  # labelled.py's CGST, left by E4 (PROVISIONAL)
             },
         )
         self.assertEqual(reasons(result)[("document", "invoice_number")], "model_chosen")
         self.assertEqual(reasons(result)[("line:1", "description")], "model_chosen")
+        # PROVISIONAL (final council 2): a failed check leaves no value of the invoice's
+        # document record verified, labelled.py's CGST and SGST left by E4 included.
+        document = [value for value in result.values if value.record_key == "document"]
+        self.assertEqual({value.label for value in document}, {NEEDS_REVIEW})
+        self.assertEqual(reasons(result)[("document", "tax_amount")], "check_failed")
 
     def test_cgst_and_sgst_with_no_tax_total_pass_on_their_sum(self) -> None:
         result = textile(QuotingChat(TEXTILE_FIELDS, textile_lines()))

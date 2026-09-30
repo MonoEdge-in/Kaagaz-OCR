@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from kaagaz.ai.client import ModelUnavailable
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
@@ -27,6 +28,7 @@ from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.pipeline import DocumentProcessor
 from kaagaz.preparing.pages import prepare_pages
+from kaagaz.reading.ocr import MeteredOcrEngine, OcrEngine, OcrLine
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import ScanGate, Verdict
 from tests.db_support import new_customer
@@ -38,12 +40,22 @@ from tests.exit_fixtures import (
     textile_invoice_pdf,
     textile_lines,
 )
-from tests.fakes import FakeScanner, MemoryPageImages, MemoryQueue, MemoryStorage, fake_sheet_pages
+from tests.fakes import (
+    FakeScanner,
+    FakeVision,
+    MemoryPageImages,
+    MemoryQueue,
+    MemoryStorage,
+    ModelDown,
+    fake_sheet_pages,
+)
 from tests.pdf_builder import Page, Text, make_pdf
 from tests.test_extraction_card import reply as card_reply
+from tests.test_extraction_invoice import item
 from tests.test_pipeline import PIPELINE_POLICY
 from tests.test_pipeline_db import moving_clock
-from tests.test_pipeline_runs import SETTINGS, Timer
+from tests.test_pipeline_runs import SCANNED, SETTINGS, TimedOcr, Timer
+from tests.xlsx_builder import make_xlsx, sheet_xml
 
 pytestmark = pytest.mark.db
 
@@ -80,8 +92,11 @@ def processor(
     *,
     clock: Callable[[], datetime] = moving_clock,
     timezone: str = "Asia/Kolkata",
+    ocr: OcrEngine | None = None,
+    vision: FakeVision | None = None,
 ) -> DocumentProcessor:
-    """The pipeline with the real PDF readers, runs and stores; the model stage when ``chat``."""
+    """The pipeline with the real PDF readers, runs and stores; the model stage when ``chat``,
+    an OCR engine and a vision model when given."""
     documents = PgDocuments(db)
     prepare = functools.partial(
         prepare_pages, dpi=72, max_pages=10, max_image_pixels=10_000_000, blank_stddev=3.0, low_res_dpi=150
@@ -90,7 +105,7 @@ def processor(
         gate=ScanGate(storage, FakeScanner(Verdict.CLEAN), storage, documents),
         statuses=documents,
         documents=documents,
-        socket=build_reader_socket(SETTINGS, None),
+        socket=build_reader_socket(SETTINGS, None if ocr is None else MeteredOcrEngine(ocr, timer=Timer())),
         prepare=prepare,
         sheet_pages=fake_sheet_pages,
         page_images=MemoryPageImages(),
@@ -99,6 +114,10 @@ def processor(
         progress=documents,
         clock=clock,
         timer=Timer(),
+        ocr_on=ocr is not None,
+        vision=vision,
+        model_errors=(ModelDown,),
+        vision_model=None if vision is None else "qwen-vision",
         chat=chat,
         chat_model=None if chat is None else chat.chat_model,
         model_budget=None if chat is None else BUDGET,
@@ -217,6 +236,7 @@ def test_mismatched_copy_values_are_in_review_list_queue_with_check_failed(db: D
         ("line:3", "amount"),
         ("line:4", "amount"),
         ("document", "subtotal"),
+        ("document", "tax_amount"),  # labelled.py's CGST, left by E4 (PROVISIONAL, final council 2)
     }
 
 
@@ -266,3 +286,84 @@ def test_today_is_the_worker_clock_in_the_time_zone(db: Database) -> None:
     assert rows(db, customer, reasons, doc) == [([],)]
     customer, doc = read(db, dated_invoice("02/10/2026"), None, clock=lambda: late, timezone="UTC")
     assert rows(db, customer, reasons, doc) == [(["bad_date"],)]
+
+
+def test_the_model_down_on_a_window_keeps_the_card_and_the_model_off_row(db: Database) -> None:
+    """The card call works and the invoice window fails: the card stays, the invoice falls
+    back to labelled.py's row (as with the model off), and the run records the error."""
+    chat = QuotingChat(
+        TEXTILE_FIELDS, textile_lines(), card=INVOICE_CARD, fail_at=2, error=ModelUnavailable("timeout")
+    )
+    customer, doc = read(db, textile_invoice_pdf(), chat)
+    off_customer, off_doc = read(db, textile_invoice_pdf(), None)
+
+    card = rows(db, customer, "SELECT doc_type, card IS NOT NULL FROM documents WHERE id = :d", doc)
+    assert card == [("invoice", True)]
+    assert rows(db, customer, ROW, doc) == rows(db, off_customer, ROW, off_doc)
+    assert rows(db, customer, LINES, doc) == []
+    no_lines = "SELECT count(*) FROM extracted_values WHERE document_id = :d AND record_key LIKE 'line:%'"
+    assert rows(db, customer, no_lines, doc) == [(0,)]
+    run = "SELECT status, error_code, model_calls FROM processing_runs WHERE document_id = :d"
+    assert rows(db, customer, run, doc) == [("ready", "model_timeout", 2)]
+    # The failed windows' quotes were thrown away, so the run counts the card's only.
+    quotes = "SELECT quotes_returned FROM processing_runs WHERE document_id = :d"
+    card_only = QuotingChat({}, [], card=INVOICE_CARD)
+    receipt_customer, receipt_doc = read(db, textile_invoice_pdf(), card_only)
+    assert rows(db, customer, quotes, doc) == rows(db, receipt_customer, quotes, receipt_doc)
+
+
+def test_an_unsure_e4_value_uses_no_vision_crop(db: Database) -> None:
+    """Security A8's vision budget: an E4 value whose quote is ambiguous (the seller's name,
+    printed twice) is never verified, so its box is never cropped (final council 4)."""
+    lines = [
+        OcrLine("Sharma Traders", 60, 60, 400, 80, None, "paragraph"),
+        OcrLine("Invoice No: A-1", 60, 160, 400, 180, None, "paragraph"),
+        OcrLine("Grand Total: 100.00", 60, 260, 400, 280, None, "paragraph"),
+        OcrLine("Sharma Traders", 60, 360, 400, 380, None, "paragraph"),
+    ]
+    fields = {
+        "seller_name": (None, "Sharma Traders"),
+        "invoice_number": ("Invoice No", "A-1"),
+        "total": ("Grand Total", "100.00"),
+    }
+    chat = QuotingChat(fields, [], card=card_reply(doc_type="invoice"))
+    vision = FakeVision("same text")
+    customer, doc = read(db, make_pdf([SCANNED]), chat, ocr=TimedOcr(Timer(), lines=lines), vision=vision)
+    crops = "SELECT vision_crops FROM processing_runs WHERE document_id = :d"
+    assert rows(db, customer, crops, doc) == [(2,)]  # the invoice number's and the total's boxes
+    assert len(vision.pictures) == 2
+    seller = "SELECT label_reason FROM extracted_values WHERE document_id = :d AND field = 'party_name'"
+    assert rows(db, customer, seller, doc) == [("model_chosen",)]
+
+
+def invoice_sheet(silk: str) -> bytes:
+    """A spreadsheet invoice, every cell text: its number, two items and the total."""
+    table = [("Invoice No", "INV-9"), ("Description", "Amount"), ("Cotton", "600.00"), ("Silk", silk)]
+    table.append(("Total", "1,000.00"))
+    xml = "".join(
+        f'<row r="{r}"><c r="A{r}" t="inlineStr"><is><t>{a}</t></is></c>'
+        f'<c r="B{r}" t="inlineStr"><is><t>{b}</t></is></c></row>'
+        for r, (a, b) in enumerate(table, start=1)
+    )
+    return make_xlsx([("Invoice", sheet_xml(xml))])
+
+
+def test_a_spreadsheet_invoices_total_is_verified_only_when_its_check_passes(db: Database) -> None:
+    """The lead's decision (PROVISIONAL, Vrushit): resolution 1(ii) applies only when
+    labelled.py finds the field, and it reads no cells, so a whole-cell E4 total is
+    direct_cell and stays verified when the check passes; a failed check puts it in review."""
+    fields = {"invoice_number": ("Invoice No", "INV-9"), "total": ("Total", "1,000.00")}
+    total = (
+        "SELECT label, label_reason FROM extracted_values"
+        " WHERE document_id = :d AND record_key = 'document' AND field = 'total_amount'"
+    )
+    for silk, check, label in (
+        ("400.00", ("passed", []), ("verified", "direct_cell")),
+        ("500.00", ("failed", ["lines_sum_mismatch"]), ("needs_review", "check_failed")),
+    ):
+        lines = [item("Cotton", "600.00"), item("Silk", silk)]
+        chat = QuotingChat(fields, lines, card=card_reply(doc_type="invoice"))
+        customer, doc = read(db, invoice_sheet(silk), chat)
+        checked = "SELECT check_status, check_reasons FROM invoices WHERE document_id = :d"
+        assert rows(db, customer, checked, doc) == [check], silk
+        assert rows(db, customer, total, doc) == [label], silk

@@ -7,6 +7,7 @@ twin runs the same six with MODEL_ENABLED=false.
 
 import functools
 import io
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -14,7 +15,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
-from kaagaz.db.documents import PgDocuments
+from kaagaz.db.documents import PgDocuments, mark_for_reprocess
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.review import list_queue
@@ -35,6 +36,7 @@ from tests.exit_fixtures import (
     PROFIT_LABEL,
     PROFIT_VALUE,
     TEXTILE_FIELDS,
+    ExitFile,
     QuotingChat,
     ScriptedOcr,
     exit_files,
@@ -48,6 +50,7 @@ from tests.test_extraction_invoice import item
 from tests.test_invoice_pipeline_db import INVOICE_CARD
 from tests.test_pipeline_db import moving_clock
 from tests.test_pipeline_runs import Timer
+from tests.test_pipeline_store_db import counts
 
 pytestmark = pytest.mark.db
 
@@ -118,8 +121,36 @@ def chat_for(key: str) -> QuotingChat:
     return QuotingChat({}, [], card=CARDS[key])
 
 
+class Read:
+    """Every exit file uploaded and read to the end, for one new customer."""
+
+    def __init__(
+        self, customer: str, ids: dict[str, str], makers: dict[str, Callable[[], DocumentProcessor]]
+    ) -> None:
+        self.customer, self.ids, self.makers = customer, ids, makers
+
+    def again(self, db: Database, key: str) -> None:
+        """PRD 2 X1: read one file again (reprocess), with new readers (the scripted OCR
+        starts over) and the same fake model answers."""
+        with db.customer(self.customer) as conn:
+            assert mark_for_reprocess(conn, self.customer, self.ids[key], per_hour=20) is not None
+        self.makers[key]()(Job(self.customer, self.ids[key]), lambda: None)
+
+
+def read_files(db: Database, *, model: bool) -> Read:
+    customer, ids, makers = _read(db, model=model)
+    return Read(customer, ids, makers)
+
+
 def read_all(db: Database, *, model: bool) -> tuple[str, dict[str, str]]:
     """(customer, document id by file key): every exit file uploaded and read to the end."""
+    customer, ids, _ = _read(db, model=model)
+    return customer, ids
+
+
+def _read(
+    db: Database, *, model: bool
+) -> tuple[str, dict[str, str], dict[str, Callable[[], DocumentProcessor]]]:
     customer, _ = new_customer(db)
     storage = MemoryStorage()
     documents = PgDocuments(db)
@@ -127,33 +158,47 @@ def read_all(db: Database, *, model: bool) -> tuple[str, dict[str, str]]:
     prepare = functools.partial(
         prepare_pages, dpi=72, max_pages=30, max_image_pixels=10_000_000, blank_stddev=3.0, low_res_dpi=150
     )
-    ids = {}
+    ids: dict[str, str] = {}
+    makers: dict[str, Callable[[], DocumentProcessor]] = {}
     for key, file in exit_files().items():
         doc = upload.accept(customer, io.BytesIO(file.data)).document_id
-        chat = chat_for(key) if model else None
-        timer = Timer()
-        processor = DocumentProcessor(
-            gate=ScanGate(storage, FakeScanner(Verdict.CLEAN), storage, documents),
-            statuses=documents,
-            documents=documents,
-            socket=build_reader_socket(SETTINGS, MeteredOcrEngine(ScriptedOcr(file.ocr_pages), timer=timer)),
-            prepare=prepare,
-            sheet_pages=fake_sheet_pages,
-            page_images=MemoryPageImages(),
-            store=PgPipelineStore(db),
-            runs=PgRuns(db),
-            progress=documents,
-            clock=moving_clock,
-            timer=timer,
-            ocr_on=True,
-            chat=chat,
-            chat_model=None if chat is None else chat.chat_model,
-            model_budget=None if chat is None else BUDGET,
-            timezone="Asia/Kolkata",
-        )
-        processor(Job(customer, doc), lambda: None)
+        makers[key] = functools.partial(_processor, db, storage, documents, prepare, key, file, model)
+        makers[key]()(Job(customer, doc), lambda: None)
         ids[key] = doc
-    return customer, ids
+    return customer, ids, makers
+
+
+def _processor(
+    db: Database,
+    storage: MemoryStorage,
+    documents: PgDocuments,
+    prepare: Callable[[str, bytes], Any],
+    key: str,
+    file: ExitFile,
+    model: bool,
+) -> DocumentProcessor:
+    """A processor for one exit file: its scripted OCR, and its fake model when ``model``."""
+    chat = chat_for(key) if model else None
+    timer = Timer()
+    return DocumentProcessor(
+        gate=ScanGate(storage, FakeScanner(Verdict.CLEAN), storage, documents),
+        statuses=documents,
+        documents=documents,
+        socket=build_reader_socket(SETTINGS, MeteredOcrEngine(ScriptedOcr(file.ocr_pages), timer=timer)),
+        prepare=prepare,
+        sheet_pages=fake_sheet_pages,
+        page_images=MemoryPageImages(),
+        store=PgPipelineStore(db),
+        runs=PgRuns(db),
+        progress=documents,
+        clock=moving_clock,
+        timer=timer,
+        ocr_on=True,
+        chat=chat,
+        chat_model=None if chat is None else chat.chat_model,
+        model_budget=None if chat is None else BUDGET,
+        timezone="Asia/Kolkata",
+    )
 
 
 def rows(db: Database, customer: str, sql: str, doc: str) -> list[tuple[Any, ...]]:
@@ -205,7 +250,8 @@ def assert_the_report_joins_pages_15_and_16(db: Database, customer: str, doc: st
 
 
 def test_all_six_files_with_a_fake_model(db: Database) -> None:
-    customer, ids = read_all(db, model=True)
+    files = read_files(db, model=True)
+    customer, ids = files.customer, files.ids
     assert_every_file_is_ready_with_its_routes(db, customer, ids)
 
     # The textile invoice: one row, one row per item, the check passes.
@@ -232,7 +278,11 @@ def test_all_six_files_with_a_fake_model(db: Database) -> None:
     ) == [("failed", ["lines_sum_mismatch"])]
     with db.customer(customer) as conn:
         queued, _ = list_queue(conn, customer, limit=500, offset=0, document_id=copy)
-    assert {row["field"] for row in queued if row["label_reason"] == "check_failed"} == {"amount", "subtotal"}
+    assert {row["field"] for row in queued if row["label_reason"] == "check_failed"} == {
+        "amount",
+        "subtotal",
+        "tax_amount",
+    }
 
     # The Hindi bill: its language, typed values from Devanagari digits, and OCR script labels.
     bill = ids["hindi_retail_bill"]
@@ -319,6 +369,10 @@ def test_all_six_files_reach_ready_with_the_model_off(db: Database) -> None:
         ("TX-2026-118", date(2026, 8, 12), Decimal("11800.00"), "passed", [])
     ]
     assert rows(db, customer, "SELECT count(*) FROM invoice_lines WHERE document_id = :d", textile) == [(0,)]
+    # With no card, the languages come from the pieces: Devanagari is "other" (L2).
+    for key in ("hindi_retail_bill", "marathi_land_record", "broken_font_pdf"):
+        languages = rows(db, customer, "SELECT languages FROM documents WHERE id = :d", ids[key])
+        assert languages == [(["other"],)], key
     # No label rule reads the Hindi bill, so it has no row.
     assert rows(db, customer, INVOICE, ids["hindi_retail_bill"]) == []
     for key in ("hindi_retail_bill", "marathi_land_record", "broken_font_pdf"):
@@ -337,3 +391,63 @@ def test_all_six_files_reach_ready_with_the_model_off(db: Database) -> None:
         ids["report"],
     )
     assert runs == [(20, 0, 0)]
+
+
+VERIFIED = "SELECT count(*) FROM extracted_values WHERE document_id = :d AND label = 'verified'"
+
+
+def test_what_the_model_chose_or_ocr_read_from_devanagari_is_never_verified(db: Database) -> None:
+    """Security A1 and ML 1 across the exit files (final council 2): no card value is
+    verified anywhere; nothing read by OCR from Hindi or Marathi, or from the broken font,
+    is verified; and the mismatched copy's document values are all in review."""
+    files = read_files(db, model=True)
+    customer, ids = files.customer, files.ids
+    with db.customer(customer) as conn:
+        cards: int = conn.execute(
+            text(
+                "SELECT count(*) FROM extracted_values WHERE customer_id = :c AND record_key = 'card'"
+                " AND label = 'verified'"
+            ),
+            {"c": customer},
+        ).scalar_one()
+    assert cards == 0
+    for key in ("hindi_retail_bill", "marathi_land_record", "broken_font_pdf"):
+        assert rows(db, customer, VERIFIED, ids[key]) == [(0,)], key
+    copy_verified = (
+        "SELECT count(*) FROM extracted_values WHERE document_id = :d AND record_key = 'document'"
+        " AND label = 'verified'"
+    )
+    assert rows(db, customer, copy_verified, ids["textile_invoice_mismatched"]) == [(0,)]
+    land_card = rows(db, customer, "SELECT card FROM documents WHERE id = :d", ids["marathi_land_record"])[0][
+        0
+    ]
+    for party in land_card["parties"]:
+        assert party["page"] == 1 and party["region"]["kind"] == "box", party["name"]
+
+
+def test_reprocessing_replaces_the_results_and_keeps_one_set(db: Database) -> None:
+    """PRD 2 X1 and the exit test: reading the land record and the textile invoice again
+    makes a second run, and every table (the PRD 2 ones included) holds the same counts."""
+    files = read_files(db, model=True)
+    card_values = "SELECT count(*) FROM extracted_values WHERE document_id = :d AND record_key = 'card'"
+    before = {
+        key: (
+            counts(db, files.customer, files.ids[key]),
+            rows(db, files.customer, card_values, files.ids[key]),
+        )
+        for key in ("marathi_land_record", "textile_invoice")
+    }
+    textile_counts = before["textile_invoice"][0]
+    assert (textile_counts["invoices"], textile_counts["invoice_lines"]) == (1, 4)
+    assert textile_counts["document_links"] == 2  # both ways with the copy (the same invoice number)
+    assert before["marathi_land_record"][1] != [(0,)]
+
+    for key in ("marathi_land_record", "textile_invoice"):
+        files.again(db, key)
+
+    for key, (table_counts, card_count) in before.items():
+        doc = files.ids[key]
+        assert counts(db, files.customer, doc) == {**table_counts, "processing_runs": 2}, key
+        assert rows(db, files.customer, card_values, doc) == card_count, key
+        runs = "SELECT status FROM processing_runs WHERE document_id = :d"
+        assert rows(db, files.customer, runs, doc) == [("ready",), ("ready",)], key
