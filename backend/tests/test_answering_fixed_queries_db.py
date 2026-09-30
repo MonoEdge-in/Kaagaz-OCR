@@ -416,3 +416,38 @@ def test_a_register_column_named_total_amount_still_sums_every_row(db: Database)
         ("Sharma Traders", Decimal(6180), 3),
         ("Mehta Textiles", Decimal(2500), 1),
     ]
+
+
+def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> None:
+    """Council fix 9 (security amendment A1): the model chose a card value's field, so
+    no total, group, extreme, count or list of fields ever uses one."""
+    customer, document, _ = register
+    fixed = PgFixedQueries(db)
+    before = (
+        fixed.available_fields(customer),
+        fixed.total(customer, "profit", (), None, None),
+        fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
+        fixed.extreme_value(customer, "profit", (), None, None, True),
+        fixed.count_documents(customer, None, None, date_fields=DATES),
+    )
+    card = [
+        cell("card", "profit", "999999", number=999999, label="needs_review"),
+        cell("card", "party_name", "Card Party", column=5, label="needs_review"),
+        cell("card", "date", "2026-08-10", column=6, day=date(2026, 8, 10), label="needs_review"),
+        cell("card", "net_worth", "5", column=7, number=5, label="needs_review"),
+    ]
+    for value in card:
+        value["reason"] = "model_chosen"
+    add_values(db, customer, document, card)
+    card_only = add_document(db, customer, "card-only.pdf", detected_type="pdf")
+    add_values(db, customer, card_only, [{**value, "id": str(uuid.uuid4())} for value in card])
+
+    after = (
+        fixed.available_fields(customer),
+        fixed.total(customer, "profit", (), None, None),
+        fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
+        fixed.extreme_value(customer, "profit", (), None, None, True),
+        fixed.count_documents(customer, None, None, date_fields=DATES),
+    )
+    assert after == before
+    assert "net_worth" not in after[0]
