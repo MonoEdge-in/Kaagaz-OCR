@@ -117,11 +117,12 @@ class InvoiceWindowsTest(unittest.TestCase):
         understanding, _ = run(FakeChat(CARD, INVOICE))
         card = understanding.counts
         assert card is not None
-        # The windows: 4 fields and 1 line searched for, the made-up buyer dropped, and the
-        # line's amount also found later (the subtotal and total lines), so ambiguous.
+        # The windows: 4 fields and 1 line searched for, and the made-up buyer dropped. The
+        # line's amount is printed again later (the subtotal and total), but once on its own
+        # row, so it is not ambiguous.
         self.assertEqual(understanding.quotes_returned, card.quotes_returned + 5)
         self.assertEqual(understanding.dropped_quotes, card.dropped_quotes + 1)
-        self.assertEqual(understanding.ambiguous_quotes, card.ambiguous_quotes + 1)
+        self.assertEqual(understanding.ambiguous_quotes, card.ambiguous_quotes)
         self.assertEqual(understanding.loose_quotes, card.loose_quotes)
 
     def test_a_card_of_another_type_reads_no_windows(self) -> None:

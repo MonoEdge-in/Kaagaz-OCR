@@ -53,7 +53,13 @@ from kaagaz.extraction.card import (
     locate_card,
     without_fields,
 )
-from kaagaz.extraction.invoice import InvoiceExtraction, WindowSettings, read_invoice, rule_values_left
+from kaagaz.extraction.invoice import (
+    INVOICE_PROMPT_HASH,
+    InvoiceExtraction,
+    WindowSettings,
+    read_invoice,
+    rule_values_left,
+)
 from kaagaz.extraction.links import link_identifiers
 from kaagaz.extraction.quotes import ReaderText
 from kaagaz.extraction.values import ExtractedValue
@@ -88,6 +94,7 @@ def model_config(settings: "Settings") -> dict[str, Any]:
     and schema were used (their hash), and the budgets the calls ran with."""
     return {
         "card_prompt": CARD_PROMPT_HASH,
+        "invoice_prompt": INVOICE_PROMPT_HASH,
         "model_num_ctx": settings.model_num_ctx,
         "card_max_chars": settings.card_max_chars,
         "card_max_tokens": settings.model_card_max_tokens,

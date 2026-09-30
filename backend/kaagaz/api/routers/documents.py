@@ -79,6 +79,7 @@ from kaagaz.api.views import (
     document_summary,
     document_version,
     extracted_value,
+    invoice,
     page_summary,
 )
 from kaagaz.db import admin as admin_sql
@@ -408,6 +409,7 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         versions = listing.family_versions(conn, customer_id, str(row["family_id"]))
         fixes = listing.reviewer_fix_count(conn, customer_id, target)
         facts = listing.document_facts(conn, customer_id, target)
+        typed = listing.invoice_for(conn, customer_id, target)
     document_date = None if facts is None else facts["document_date"]
     return {
         **document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user),
@@ -421,6 +423,10 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         "summary": row["summary"],
         "document_date": None if document_date is None else document_date.isoformat(),
         "card": None if facts is None else facts["card"],
+        # PRD 2 E5: the invoice as a typed row with its lines; null for other documents.
+        # A reviewer's fix to a value does not change it: it is rebuilt when the
+        # document is read again (architect AR14).
+        "invoice": None if typed is None else invoice(*typed),
     }
 
 

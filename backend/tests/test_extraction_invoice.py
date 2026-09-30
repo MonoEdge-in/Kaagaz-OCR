@@ -183,6 +183,8 @@ def reasons(result: InvoiceResult) -> dict[tuple[str, str], str]:
 # The lead's decision (A2 over ML 2's test, PROVISIONAL): on a text-layer line, the line's
 # values share the line's box, so label_quoted gives single_reader and the invoice stage
 # model_chosen. Each line row is needs review; the header fields have lines of their own.
+# The row is needs review too (PR 5's labeller): the seller's name is printed on page 2
+# as well, so its quote is ambiguous and never verified.
 TEXTILE_ROW = InvoiceRow(
     invoice_number="TX-2026-118",
     invoice_date=date(2026, 8, 12),
@@ -193,7 +195,7 @@ TEXTILE_ROW = InvoiceRow(
     subtotal=Decimal("10000.00"),
     tax_total=None,
     total=Decimal("11800.00"),
-    label="verified",
+    label="needs_review",
     check_status="passed",
     check_reasons=(),
     lines=(
@@ -770,7 +772,9 @@ class TextileInvoiceTest(unittest.TestCase):
         ]
         self.assertEqual(len(chat.calls), 5)
         self.assertEqual(len(returned), 8)  # each of the 4 items from two overlapping windows
-        self.assertEqual(result.invoice, TEXTILE_ROW)
+        # PROVISIONAL: a quote is ambiguous within its own window, and here the seller's
+        # repeat on page 2 is in another window, so the seller's name is verified.
+        self.assertEqual(result.invoice, replace(TEXTILE_ROW, label="verified"))
 
     def test_e4_values_replace_the_labelled_ones_field_by_field(self) -> None:
         result = textile(QuotingChat(TEXTILE_FIELDS, textile_lines()))
@@ -796,7 +800,10 @@ class TextileInvoiceTest(unittest.TestCase):
             ],
         )
         by_record = {(value.record_key.startswith("line:"), value.label_reason) for value in result.values}
-        self.assertEqual(by_record, {(False, "readers_agree"), (True, "model_chosen")})
+        self.assertEqual(
+            by_record, {(False, "readers_agree"), (False, "model_chosen"), (True, "model_chosen")}
+        )
+        self.assertEqual(reasons(result)[("document", "party_name")], "model_chosen")  # ambiguous
 
     def test_the_brought_forward_rows_the_model_returns_are_not_lines(self) -> None:
         lines = [
@@ -868,7 +875,10 @@ class QuotedLabelsTest(unittest.TestCase):
         extraction = read(textile_spans(), QuotingChat(TEXTILE_FIELDS, textile_lines()))
         quoted = label_quoted(extraction.values, textile_second_spans())
         on_lines = {value.label_reason for value in quoted if value.record_key.startswith("line:")}
-        self.assertEqual(on_lines, {"single_reader"})
+        # PR 5's labeller: a quote over two spans (item 3's wrapped description) is model_chosen.
+        self.assertEqual(on_lines, {"single_reader", "model_chosen"})
+        wrapped = [v for v in quoted if (v.record_key, v.field) == ("line:3", "description")]
+        self.assertEqual([v.label_reason for v in wrapped], ["model_chosen"])
         result = textile(QuotingChat(TEXTILE_FIELDS, textile_lines()))
         line_values = [value for value in result.values if value.record_key.startswith("line:")]
         self.assertEqual(len(line_values), 24)
@@ -883,7 +893,9 @@ class QuotedLabelsTest(unittest.TestCase):
 
     def test_a_line_value_with_its_own_box_a_table_cell_is_readers_agree(self) -> None:
         def cell(text: str, x0: float) -> Span:
-            return Span(text, text, BoxLocation(1, x0, 0.2, x0 + 0.1, 0.22))
+            # An OCR table's cell (PR 2's table fields), read as a text layer here.
+            box = BoxLocation(1, x0, 0.2, x0 + 0.1, 0.22)
+            return Span(text, text, box, table_id="t1", row=1, col=round(x0 * 100), header=False)
 
         texts = ("Cotton Poplin", "5208", "3,000.00")
         spans = [
@@ -1391,14 +1403,13 @@ class LocatedValuesTest(unittest.TestCase):
                 "Grand Total: 1,180.00",
                 BoxLocation(1, 0.1, 0.1, 0.9, 0.12),
                 0.9,
-                "ocr",
+                origin="ocr",
             ),
             Span(
                 "Invoice No: INV-17",
                 "Invoice No: INV-17",
                 BoxLocation(1, 0.1, 0.2, 0.9, 0.22),
-                None,
-                "text_layer",
+                origin="text_layer",
             ),
         ]
         chat = FakeChat(

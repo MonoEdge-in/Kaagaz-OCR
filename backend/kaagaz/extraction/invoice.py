@@ -9,6 +9,9 @@ starts at the first span that begins at or after the window's end minus
 ``overlap``, and always after the previous start, so the windows move forward.
 At most ``max_windows``; ``truncated`` when spans are left after the last one.
 
+All of one window reply's searches share ``MAX_WINDOW_CHECKS`` candidate spots (PR 5's
+council fix 8), and ``INVOICE_PROMPT_HASH`` names the prompt and schema for the run.
+
 **One model call per window** (``read_invoice``), with ``max_tokens`` for the
 reply (``MODEL_WINDOW_MAX_TOKENS``). The input budget is what
 ``ai.client.input_token_budget`` leaves in ``num_ctx`` for the user message, less
@@ -104,6 +107,8 @@ values and f labelled.py values of the same field (a few), and ``invoice_row``
 O(v). Memory O(v).
 """
 
+import hashlib
+import json
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -129,11 +134,13 @@ from kaagaz.extraction.labels import comparable, overlap
 from kaagaz.extraction.parsing import parse_amount, parse_date
 from kaagaz.extraction.quotes import (
     MAX_QUOTE_CHARS,
+    Checks,
     Found,
     QuoteCounts,
     ReaderText,
     find_labelled,
     find_quote,
+    located_value,
     normalise_quote,
 )
 from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue
@@ -164,6 +171,9 @@ LINE_FIELDS = ("description", "hsn", "quantity", "unit", "rate", "amount")
 LINE_PREFIX = "line:"
 
 MAX_LINES = 1000  # security A7: lines per invoice; the rest are dropped and counted
+# PR 5's council fix 8, PROVISIONAL: candidate spots all of one window reply's searches
+# may check (each search also has quotes.MAX_CHECKS of its own); past it, items are not found.
+MAX_WINDOW_CHECKS = 8192
 MAX_WINDOW_LINES = 100  # per reply: the schema's limit, and the rest are counted (PROVISIONAL)
 MAX_TEXT_CHARS = 200  # 0004's CHECK on the invoices and invoice_lines text columns
 MAX_DESCRIPTION_CHARS = 1000  # and on invoice_lines.description
@@ -236,6 +246,11 @@ carried-forward, subtotal, tax, total or HSN/SAC summary rows as lines, \
 nor round-off, discount or freight rows printed after the subtotal.
 7. For amounts, rates and quantities, quote only the number as it is printed.
 Reply with JSON only, following the schema."""
+
+# Which prompt and schema read the windows, kept with every run (ML amendment 10).
+INVOICE_PROMPT_HASH = hashlib.sha256(
+    (INVOICE_SYSTEM_PROMPT + "\n" + json.dumps(INVOICE_SCHEMA, sort_keys=True)).encode("utf-8")
+).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,6 +513,7 @@ class _Merge:
         self.taken: set[tuple[str, int]] = set()  # ("description" or "amount", norm start)
         self.quotes = QuoteCounts()
         self.over_limit = 0
+        self.window_checks = Checks(MAX_WINDOW_CHECKS)
         # Council 2: each span's row, the spans joined by " | " around it. O(S).
         count = len(reader.spans)
         joined = [k > 0 and _join_before(reader, k) == _ROW_JOIN for k in range(count)]
@@ -511,6 +527,7 @@ class _Merge:
                 self.row_last[k] = self.row_last[k + 1]
 
     def add(self, window: Window, answer: Mapping[str, Any]) -> None:
+        self.window_checks = Checks(MAX_WINDOW_CHECKS)  # this reply's budget
         fields = answer.get("fields")
         if isinstance(fields, dict):
             for name in INVOICE_FIELDS:
@@ -547,7 +564,7 @@ class _Merge:
 
     def _field(self, window: Window, name: str, label_quote: str | None, value_quote: str) -> None:
         label, value = find_labelled(
-            self.reader, label_quote, value_quote, start=window.start, end=window.end
+            self.reader, label_quote, value_quote, start=window.start, end=window.end, checks=self._checks()
         )
         kept = self._field_kept(name, label, value)
         first = self.fields.get(name)
@@ -580,10 +597,13 @@ class _Merge:
             if quotes is None:
                 self.quotes.add(None)
                 continue
-            description = find_quote(self.reader, quotes["description"], start=cursor, end=window.end)
+            checks = self._checks()
+            description = find_quote(
+                self.reader, quotes["description"], start=cursor, end=window.end, checks=checks
+            )
             if description is None:  # listed out of order
                 description = find_quote(
-                    self.reader, quotes["description"], start=window.start, end=window.end
+                    self.reader, quotes["description"], start=window.start, end=window.end, checks=checks
                 )
             if description is None:
                 self.quotes.add(None)
@@ -636,26 +656,32 @@ class _Merge:
 
     def _amount(self, quote: str, description: Found, bound: int) -> Found | None:
         """The line's amount in [description.end, bound): the last kept match on the
-        description's own row, else the first kept match (council 4)."""
+        description's own row, else the first kept match (council 4). One on the row is
+        ambiguous only when the row holds it twice: the same number printed later (a
+        subtotal equal to the one line) is not this line's (PROVISIONAL)."""
         row_end = self._row_end(description)
         first: Found | None = None
         on_row: Found | None = None
-        start = description.end
-        while (hit := find_quote(self.reader, quote, start=start, end=bound)) is not None:
+        seen_on_row = 0
+        start, checks = description.end, self._checks()
+        while (hit := find_quote(self.reader, quote, start=start, end=bound, checks=checks)) is not None:
             kept = self._line_field_kept("amount", hit)
             if kept is not None:
                 first = first or kept
                 if kept.end > row_end:
                     break
-                on_row = kept
+                on_row, seen_on_row = kept, seen_on_row + 1
             start = hit.end
-        return on_row or first
+        if on_row is not None:
+            return replace(on_row, ambiguous=seen_on_row > 1)
+        return first
 
     def _free(
         self, name: str, quote: str, start: int, end: int, taken: list[tuple[int, int]]
     ) -> Found | None:
         """The first kept match of a line field in [start, end) on no spot another field took."""
-        while (hit := find_quote(self.reader, quote, start=start, end=end)) is not None:
+        checks = self._checks()
+        while (hit := find_quote(self.reader, quote, start=start, end=end, checks=checks)) is not None:
             free = all(hit.end <= a or hit.start >= b for a, b in taken)
             kept = self._line_field_kept(name, hit)
             if free and kept is not None:
@@ -675,6 +701,10 @@ class _Merge:
         if name in _NOT_NEGATIVE and (number := parse_amount(hit.text)) is not None and number < 0:
             return None
         return hit if len(hit.text) <= MAX_TEXT_CHARS else None
+
+    def _checks(self) -> Checks:
+        """One search's budget, drawing on the window reply's (PR 5's council fix 8)."""
+        return Checks(shared=self.window_checks)
 
     def _spans(self, found: Found) -> tuple[int, int]:
         """The first and last span a match touches."""
@@ -726,17 +756,11 @@ def _same_value(name: str, first: str, later: str) -> bool:
 
 
 def _value(record_key: str, field: str, found: Found, label: Found | None = None) -> ExtractedValue:
-    # PR 2 adds ExtractedValue.origin; it is set from found.origin once that field exists.
-    label_location = None if label is None or label.location == found.location else label.location
-    return ExtractedValue(
-        record_key,
-        field,
-        found.text,
-        found.text,
-        found.location,
-        found.confidence,
-        label_location=label_location,
-    )
+    """An E4 value, built as the card's are (``quotes.located_value``): the reader's text,
+    its spans' origin and how the quote was found. A label on the value's own spot is not
+    kept as a second spot."""
+    elsewhere = None if label is None or label.location == found.location else label
+    return located_value(found, record_key=record_key, field=field, label=elsewhere)
 
 
 def _span_end(reader: ReaderText, k: int) -> int:

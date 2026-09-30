@@ -93,7 +93,7 @@ from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
-from kaagaz.extraction.labelled import values_from_lines
+from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import label_quoted, label_values
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
 from kaagaz.extraction.parsing import parse_amount, parse_date
@@ -453,6 +453,7 @@ class DocumentProcessor:
         chat: "ChatModel | None" = None,
         chat_model: str | None = None,
         model_budget: "ModelBudget | None" = None,
+        timezone: str = "UTC",
     ) -> None:
         """``embed(customer_id, document_id)`` gives the saved pieces their vectors;
         ``vision`` reads scanned boxes again. Either failing with one of
@@ -466,7 +467,8 @@ class DocumentProcessor:
         (ML 10); ``vision_model`` and ``embed_model`` are the tags a run records
         when it used them. ``chat`` is the model stage's chat model (PRD 2 D1, E2),
         with its ``model_budget``; ``chat_model`` is the tag a run records when a
-        chat call was made."""
+        chat call was made. ``timezone`` (settings.timezone) says which day it is for
+        the invoice checks (PRD 2 ML 6(j)): today is the clock's date there."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_vision_crops < 0:
@@ -497,6 +499,7 @@ class DocumentProcessor:
         self._chat = chat
         self._chat_model = chat_model
         self._model_budget = model_budget
+        self._timezone = timezone
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -599,6 +602,7 @@ class DocumentProcessor:
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
             values = [_with_parsed(value) for value in apply_learned(values, learned)]
+        values, invoice = self._invoice(understanding, facts, usable, values)
         links = _document_links(facts, values)
         run.values_verified = sum(1 for value in values if value.label == "verified")
         run.values_needs_review = len(values) - run.values_verified
@@ -613,7 +617,16 @@ class DocumentProcessor:
 
         require_clean(self._statuses, job)  # still clean just before writing
         content = DocumentContent(
-            customer_id, document_id, pages, outputs, pieces, values, reader, facts=facts, links=links
+            customer_id,
+            document_id,
+            pages,
+            outputs,
+            pieces,
+            values,
+            reader,
+            facts=facts,
+            invoice=invoice,
+            links=links,
         )
         self._store.save(content, run_id=run.run_id)
         heartbeat()
@@ -621,6 +634,29 @@ class DocumentProcessor:
         run.embedded = self._index(job)
         finished = self._finished(run, "ready", run.model_error)
         self._documents.mark_ready(customer_id, document_id, len(pages), run=finished)
+
+    def _invoice(
+        self,
+        understanding: "Understanding",
+        facts: DocumentFacts,
+        spans: list[Span],
+        values: list[ExtractedValue],
+    ) -> tuple[list[ExtractedValue], InvoiceRow | None]:
+        """PRD 2 E5 and K1 to K3 (``extraction.invoice.finish_invoice``): the invoice row
+        and its checks, on the labelled values. A row comes from the E4 values, or with no
+        type or an invoice type (the model off, down or silent) from labelled.py's values
+        (PROVISIONAL). O(v) plus labelled.py's pass over the spans."""
+        from kaagaz.extraction.invoice import finish_invoice, local_today  # it imports this module
+
+        result = finish_invoice(
+            values,
+            extraction=understanding.invoice,
+            labelled=values_from_lines(spans),
+            components=tax_components(spans),
+            today=local_today(self._clock(), self._timezone),
+            fallback=facts.doc_type in (None, "invoice"),
+        )
+        return result.values, result.invoice
 
     def _understand(
         self, job: Job, run: _Run, heartbeat: Heartbeat, spans: list[Span], values: list[ExtractedValue]
@@ -1040,6 +1076,7 @@ def build_processor(
         chat=model,
         chat_model=settings.model_chat if model is not None else None,
         model_budget=ModelBudget.from_settings(settings) if model is not None else None,
+        timezone=settings.timezone,
     )
 
 

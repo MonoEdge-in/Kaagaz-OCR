@@ -209,6 +209,38 @@ export interface DocumentCard {
   dropped_quotes: number;
 }
 
+/** One line item of an invoice (PRD 2 E5). Numbers are strings, as the API sends them,
+ *  so no float rounding happens. */
+export interface InvoiceLine {
+  line_no: number;
+  description: string | null;
+  hsn: string | null;
+  quantity: string | null;
+  unit: string | null;
+  rate: string | null;
+  amount: string | null;
+  label: Label;
+}
+
+/** A document's invoice as a typed row (PRD 2 E5, K2), with its check. Every value in it
+ *  is also an ExtractedValue with its spot, so it can be shown on its page. */
+export interface Invoice {
+  invoice_number: string | null;
+  invoice_date: string | null; // YYYY-MM-DD
+  seller_name: string | null;
+  seller_gstin: string | null;
+  buyer_name: string | null;
+  buyer_gstin: string | null;
+  subtotal: string | null;
+  tax_total: string | null;
+  total: string | null;
+  currency: string;
+  label: Label;
+  check_status: "passed" | "failed" | "not_checked";
+  check_reasons: string[];
+  lines: InvoiceLine[];
+}
+
 export interface DocumentDetail extends DocumentSummary {
   pages: PageSummary[];
   values: ExtractedValue[];
@@ -218,6 +250,7 @@ export interface DocumentDetail extends DocumentSummary {
   summary: string | null; // the AI model's own words, plain text (PRD 3 labels it); null without a card
   document_date: string | null; // YYYY-MM-DD, from the card; null without one
   card: DocumentCard | null; // null without a card (the model off or down)
+  invoice: Invoice | null; // null for a document with no invoices row
 }
 
 export interface DocumentList {

@@ -20,9 +20,9 @@ PRD 2 §2 lists them:
    PR 3's ``pdf_builder.Page.font_name`` writes one. PR 3 is not in this branch
    yet, so ``broken_font_pdf`` writes the objects itself; it switches to
    ``Page(font_name=...)`` once PR 3 is merged below it.
-6. **The 20-page report (C7)**: a "Page n of 20" footer on every page, page 15
-   ends with "Profit of the month Sept is" and page 16 starts with "$12,000".
-   Every page has at least 40 letters and digits, so it stays text_layer
+6. **The 20-page report (C7)**: PR 4's fixture. A "Page n of 20" footer on every
+   page, page 15 ends with "Profit of the month Sept is" and page 16 starts with
+   "$12,000". Every page has at least 40 letters and digits, so it stays text_layer
    (test-engineer amendment 15).
 
 The scans carry no readable text, so their pictures are dark bars where the
@@ -54,6 +54,8 @@ from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.pdf_second_reader import PdfiumReader
 from kaagaz.reading.spans import Span
 from tests.pdf_builder import Page, Picture, Text, _assemble, _stream, make_pdf
+from tests.test_cross_page_pieces import AMOUNT, PROFIT
+from tests.test_cross_page_pieces import report_pdf as c7_report_pdf
 from tests.test_pdf_reader import BLANK_PAGE_STDDEV, RULES
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
@@ -273,34 +275,8 @@ def broken_font_pdf() -> bytes:
 
 # --- 6. the 20-page report (C7) -----------------------------------------------------------------
 
-REPORT_PAGES = 20
-PROFIT_LABEL = "Profit of the month Sept is"
-PROFIT_VALUE = "$12,000"
-
-
-def report_pages() -> list[list[str]]:
-    """Each page's body lines, top to bottom; the footer is added by ``report_pdf``."""
-    pages: list[list[str]] = []
-    for n in range(1, REPORT_PAGES + 1):
-        body = [f"Section {n}: sales and operations for the month, with notes on stock and staff."]
-        if n == 1:
-            body.insert(0, "Monthly Operations Report 2026")
-        if n == 15:
-            body += ["Costs stayed close to the plan through the quarter.", PROFIT_LABEL]
-        if n == 16:
-            body = [PROFIT_VALUE, *body]
-        pages.append(body)
-    return pages
-
-
-def report_pdf() -> bytes:
-    """The report as a digital PDF: the body lines from the top, the footer near the bottom."""
-    pages = []
-    for n, body in enumerate(report_pages(), start=1):
-        texts = [Text(50, 760 - 22 * i, line, 10) for i, line in enumerate(body)]
-        texts.append(Text(50, 30, f"Page {n} of {REPORT_PAGES}", 8))
-        pages.append(Page(texts=texts))
-    return make_pdf(pages)
+# PR 4's C7 fixture (tests/test_cross_page_pieces.py), the one its piece rule was built on.
+PROFIT_LABEL, PROFIT_VALUE = PROFIT, AMOUNT
 
 
 # --- all six ------------------------------------------------------------------------------------
@@ -331,7 +307,7 @@ def exit_files() -> dict[str, ExitFile]:
         "broken_font_pdf": ExitFile(
             "office-order.pdf", sniff.PDF, broken_font_pdf(), (_lines_on_page(BROKEN_FONT_OCR),)
         ),
-        "report": ExitFile("monthly-report.pdf", sniff.PDF, report_pdf()),
+        "report": ExitFile("monthly-report.pdf", sniff.PDF, c7_report_pdf()),
     }
 
 

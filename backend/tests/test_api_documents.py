@@ -1364,7 +1364,7 @@ def test_the_detail_shows_the_invoice_row_and_its_lines_in_order(db: Database) -
     for each in (doc, plain):
         api.add_page(c, each)
     with db.customer(c) as conn:
-        invoice_id = conn.execute(_INVOICE_ROW, {"c": c, "d": doc}).scalar_one()
+        invoice_id: str = conn.execute(_INVOICE_ROW, {"c": c, "d": doc}).scalar_one()
         lines = [
             {"n": 2, "description": "Silk", "hsn": None, "quantity": None, "rate": None, "amount": 1800},
             {
