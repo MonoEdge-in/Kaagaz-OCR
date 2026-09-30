@@ -22,7 +22,9 @@ PROVISIONAL additions beyond PRD 2 section 7 (for Vrushit to confirm):
 * The composite foreign keys; lines point at their invoice with
   (customer_id, document_id, invoice_id), so a line's document is its invoice's (AR13).
 * The CHECKs on languages, card (at most 64 KiB), progress, check_reasons, the
-  label pair, the run times, and the text lengths (A7).
+  label pair, the run times, the text lengths (A7), and the number ranges: every
+  amount and quantity within plus or minus 1e12, which also refuses NaN and
+  Infinity (numeric orders NaN above every number).
 * The label reasons ``check_failed`` (K3), ``model_chosen`` (A1) and ``ocr_script`` (ML1).
 * The grants, the least each table needs (A9 and the council's review): invoices
   and links are deleted and inserted, never updated (so ``invoices`` has no touch
@@ -129,9 +131,9 @@ UPGRADE = [
         seller_gstin text NULL CHECK (length(seller_gstin) <= 200),
         buyer_name text NULL CHECK (length(buyer_name) <= 200),
         buyer_gstin text NULL CHECK (length(buyer_gstin) <= 200),
-        subtotal numeric(14,2) NULL,
-        tax_total numeric(14,2) NULL,
-        total numeric(14,2) NULL,
+        subtotal numeric(14,2) NULL CHECK (subtotal > -1e12 AND subtotal < 1e12),
+        tax_total numeric(14,2) NULL CHECK (tax_total > -1e12 AND tax_total < 1e12),
+        total numeric(14,2) NULL CHECK (total > -1e12 AND total < 1e12),
         currency text NOT NULL DEFAULT 'INR' CHECK (currency ~ '^[A-Z]{3}$'),
         label text NOT NULL CHECK (label IN ('verified', 'needs_review')),
         check_status text NOT NULL CHECK (check_status IN ('passed', 'failed', 'not_checked')),
@@ -161,10 +163,10 @@ UPGRADE = [
         line_no integer NOT NULL CHECK (line_no >= 1),
         description text NULL CHECK (length(description) <= 1000),
         hsn text NULL CHECK (length(hsn) <= 200),
-        quantity numeric NULL,
+        quantity numeric NULL CHECK (quantity BETWEEN -1e12 AND 1e12),
         unit text NULL CHECK (length(unit) <= 200),
-        rate numeric(14,2) NULL,
-        amount numeric(14,2) NULL,
+        rate numeric(14,2) NULL CHECK (rate > -1e12 AND rate < 1e12),
+        amount numeric(14,2) NULL CHECK (amount > -1e12 AND amount < 1e12),
         label text NOT NULL CHECK (label IN ('verified', 'needs_review')),
         created_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE (customer_id, id),
