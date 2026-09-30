@@ -119,7 +119,10 @@ _LEARNED = text(
 
 # --- links (D5) ---------------------------------------------------------------
 
-_LINK_LOCK = text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))")
+# The key is built from the canonical id, so any spelling of it takes the same lock.
+_LINK_LOCK = text(
+    "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.document_links:' || CAST(:c AS uuid)::text, 0))"
+)
 _LINK_TARGETS = text(
     r"SELECT DISTINCT v.document_id, v.field, lower(regexp_replace(v.value_text, '\s', '', 'g'))"
     " FROM extracted_values v JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
@@ -286,7 +289,7 @@ def _replace_links(
     """Replace this document's links, both ways, under the customer's link lock.
     Every document a link goes to, or went to, is locked first (the lock order
     above). No family (no such document for this customer) finds no targets."""
-    conn.execute(_LINK_LOCK, {"key": f"kaagaz.document_links:{ids['c']}"})
+    conn.execute(_LINK_LOCK, ids)
     targets = _link_targets(conn, ids, family_id, identifiers) if family_id and identifiers else []
     partners: Sequence[object] = conn.execute(_LINK_PARTNERS, ids).scalars().all()
     linked = sorted({target for target, _, _ in targets} | {str(partner) for partner in partners})
