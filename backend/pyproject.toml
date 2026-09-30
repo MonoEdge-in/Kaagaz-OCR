@@ -19,6 +19,7 @@ dependencies = [
     "pypdfium2>=5.13",         # Apache-2.0 / BSD-3-Clause, PDF page images and second reader
     "pillow>=12.3",            # MIT-CMU, page images
     "cryptography>=46",        # Apache-2.0 OR BSD-3-Clause, approved in PRD 1 section 9
+    "indic-transliteration==2.3.82",  # MIT, Latin spellings of Devanagari text (PRD 2 L3)
 ]
 
 [project.optional-dependencies]
@@ -86,6 +87,8 @@ module = [
     "pdfplumber", "pdfplumber.*", "pypdfium2", "pypdfium2.*",
     "rapidocr", "rapidocr.*",
     "paddleocr", "paddleocr.*",
+    # PROVISIONAL (PRD 2 L3): it has no py.typed; this entry needs Vrushit's OK.
+    "indic_transliteration", "indic_transliteration.*",
 ]
 ignore_missing_imports = true
 
