@@ -42,7 +42,8 @@ def webp_size(data: bytes) -> tuple[int, int]:
 
 
 def line(text: str, top: float, *, confidence: float | None = None, page: int = 1) -> Span:
-    return Span(text, text, BoxLocation(page, 0.1, top, 0.9, top + 0.02), confidence)
+    origin = "text_layer" if confidence is None else "ocr"  # as the readers set it
+    return Span(text, text, BoxLocation(page, 0.1, top, 0.9, top + 0.02), confidence, origin=origin)
 
 
 INVOICE = [

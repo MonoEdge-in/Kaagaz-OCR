@@ -7,7 +7,8 @@ from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 def line(
     text: str, top: float, *, page: int = 1, height: float = 0.02, confidence: float | None = None
 ) -> Span:
-    return Span(text, text, BoxLocation(page, 0.1, top, 0.9, top + height), confidence)
+    origin = "text_layer" if confidence is None else "ocr"  # as the readers set it
+    return Span(text, text, BoxLocation(page, 0.1, top, 0.9, top + height), confidence, origin=origin)
 
 
 def texts(spans: list[Span], **kwargs: int) -> list[str]:

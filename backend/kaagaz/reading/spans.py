@@ -47,6 +47,8 @@ BLOCK_KINDS = frozenset(
     }
 )
 ORIGINS = frozenset({"cell", "text_layer", "ocr"})
+# Direct reads: exactly what the file holds. A span with no origin is not one (fail closed).
+DIRECT_ORIGINS = frozenset({"cell", "text_layer"})
 TABLE_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")  # a table's id on its page, such as "t1"
 
 

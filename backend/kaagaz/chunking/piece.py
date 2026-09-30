@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from kaagaz.reading.spans import Location, Span, location_to_json
+from kaagaz.reading.spans import DIRECT_ORIGINS, Location, Span, location_to_json
 
 VERIFIED = "verified"
 NEEDS_REVIEW = "needs_review"
@@ -42,7 +42,8 @@ class Piece:
 
 
 def piece_label(spans: Iterable[Span]) -> str:
-    """Verified only if every span is a direct read: no engine's confidence, and not
-    read by OCR (PaddleOCR-VL gives no confidence, so origin says it was a scan)."""
-    direct = all(span.confidence is None and span.origin != "ocr" for span in spans)
+    """Verified only if every span is a direct read: no engine's confidence, and an
+    origin of "cell" or "text_layer". OCR (PaddleOCR-VL gives no confidence) and a
+    span that does not say how it was read are not (fail closed)."""
+    direct = all(span.confidence is None and span.origin in DIRECT_ORIGINS for span in spans)
     return VERIFIED if direct else NEEDS_REVIEW

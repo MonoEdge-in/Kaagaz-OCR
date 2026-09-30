@@ -7,7 +7,7 @@ from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 
 
 def span(text: str, sheet: int, row: int, column: int, confidence: float | None = None) -> Span:
-    return Span(text, text, CellLocation(sheet, row, column), confidence)
+    return Span(text, text, CellLocation(sheet, row, column), confidence, origin="cell")
 
 
 def cells(piece: Piece) -> list[CellLocation]:

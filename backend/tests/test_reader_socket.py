@@ -46,7 +46,7 @@ class TwoPageReader:
         spans = []
         for page in (1, 2):
             self._events.append(f"read page {page}")
-            spans.append(Span("x", "x", BoxLocation(page, 0.1, 0.1, 0.5, 0.2)))
+            spans.append(Span("x", "x", BoxLocation(page, 0.1, 0.1, 0.5, 0.2), origin="ocr"))
             if on_page is not None:
                 on_page()
         return spans
@@ -135,7 +135,7 @@ class ReaderSocketTest(unittest.TestCase):
 
 class SecondReaderTest(unittest.TestCase):
     def test_second_reader_output_comes_back_checked(self) -> None:
-        span = Span("INV-1", "INV-1", box())
+        span = Span("INV-1", "INV-1", box(), origin="text_layer")
         socket = ReaderSocket({sniff.PDF: FixedReader(span)}, {sniff.PDF: FixedReader(span)})
         self.assertEqual(socket.read_second(sniff.PDF, b""), [span])
 
@@ -145,7 +145,8 @@ class SecondReaderTest(unittest.TestCase):
         self.assertIsNone(socket.read_second(sniff.PDF, b"%PDF-1.7"))
 
     def test_invalid_second_reader_output_is_refused_for_good(self) -> None:
-        socket = ReaderSocket({}, {sniff.PDF: FixedReader(Span("x", "x", box(x0=0.6, x1=0.5)))})
+        upside_down = Span("x", "x", box(x0=0.6, x1=0.5), origin="text_layer")
+        socket = ReaderSocket({}, {sniff.PDF: FixedReader(upside_down)})
         with self.assertRaises(ReadError) as ctx:
             socket.read_second(sniff.PDF, b"")
         self.assertEqual(ctx.exception.code, "invalid_reader_output")
@@ -187,10 +188,10 @@ class SpanValidationTest(unittest.TestCase):
 
     def test_valid_boxes_and_confidences_pass(self) -> None:
         good = [
-            Span("a", "a", box()),
-            Span("a", "a", box(x0=0.0, y0=0.0, x1=1.0, y1=1.0)),  # the whole page
-            Span("a", "a", box(page=3), confidence=0.0),
-            Span("a", "a", box(), confidence=1.0),
+            Span("a", "a", box(), origin="text_layer"),
+            Span("a", "a", box(x0=0.0, y0=0.0, x1=1.0, y1=1.0), origin="text_layer"),  # the whole page
+            Span("a", "a", box(page=3), confidence=0.0, origin="ocr"),
+            Span("a", "a", box(), confidence=1.0, origin="ocr"),
             Span("a", "a", CellLocation(1, 1, 1), confidence=0.42),
         ]
         for span in good:
@@ -211,7 +212,10 @@ class SpanValidationTest(unittest.TestCase):
         }
         for name, location in bad_locations.items():
             with self.subTest(name), self.assertRaises(ReadError) as ctx:
-                self.read_one(Span("a", "a", location))
+                origin = (
+                    None if isinstance(location, CellLocation) else "text_layer"
+                )  # only the place is wrong
+                self.read_one(Span("a", "a", location, origin=origin))
             self.assertEqual(ctx.exception.code, "invalid_reader_output")
 
     def test_kind_origin_and_table_fields_are_checked(self) -> None:
@@ -251,7 +255,7 @@ class SpanValidationTest(unittest.TestCase):
     def test_confidence_outside_zero_to_one_is_refused(self) -> None:
         for confidence in (-0.01, 1.01, float("nan"), float("inf"), cast(float, True), cast(float, "0.5")):
             with self.subTest(confidence=confidence), self.assertRaises(ReadError) as ctx:
-                self.read_one(Span("a", "a", box(), confidence=confidence))
+                self.read_one(Span("a", "a", box(), confidence=confidence, origin="ocr"))
             self.assertEqual(ctx.exception.code, "invalid_reader_output")
 
 

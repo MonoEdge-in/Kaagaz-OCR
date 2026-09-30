@@ -120,6 +120,8 @@ def _is_valid_layout(span: Span) -> bool:
     if not (_is_one_of(span.kind, BLOCK_KINDS) and _is_one_of(span.origin, ORIGINS)):
         return False
     table = (span.table_id, span.row, span.col, span.header)
+    if isinstance(span.location, BoxLocation) and span.origin is None:
+        return False  # a box must say how it was read (fail closed)
     if isinstance(span.location, CellLocation):
         return span.origin in {None, "cell"} and span.kind is None and table == (None, None, None, None)
     if table == (None, None, None, None):
