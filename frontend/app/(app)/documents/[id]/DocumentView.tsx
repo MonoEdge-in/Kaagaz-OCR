@@ -4,7 +4,8 @@
 // its tags, Download original), its versions ("Version 2 of 2", each a link to
 // that version's own id), the page viewer and the values table (side by side
 // from 1024 px, stacked below). A newer version still being read, or one that
-// failed, gets a line linking to it. A document in Trash says so. Clicking a
+// failed, gets a line linking to it. A document in Trash says so. A reviewer
+// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1). Clicking a
 // value jumps to its page and highlights its spot. Every value is shown as
 // plain text; it came from the document.
 
@@ -25,11 +26,14 @@ import {
 } from "@/components/viewer/versions";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { fieldText, reasonText } from "@/components/viewer/labels";
+import { canReprocess } from "@/components/viewer/reprocess";
 import { initialSelection, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { ApiError, getDocument } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
+import { useSession } from "@/lib/session";
 import type { DocumentDetail, ExtractedValue } from "@/lib/types";
+import { ReadAgain } from "./ReadAgain";
 import styles from "./DocumentView.module.css";
 
 export interface DocumentViewProps {
@@ -50,7 +54,10 @@ function BackLink() {
 }
 
 export function DocumentView({ documentId, pageParam, regionParam }: DocumentViewProps) {
+  const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
+  // Asks again but keeps showing what is loaded until the answer comes (after Read again).
+  const [reloads, setReloads] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   // A choice made on this screen, remembered with the link it was made under,
   // so following a new link (new ?page / ?region) shows that link's spot.
@@ -75,7 +82,7 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
     return () => {
       cancelled = true;
     };
-  }, [documentId, attempt]);
+  }, [documentId, attempt, reloads]);
 
   // A retry shows the loading state again until its own answer arrives.
   const current = loaded && loaded.attempt === attempt ? loaded : null;
@@ -159,6 +166,12 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
             {typeLabel(detail.detected_type)}
             {pagesText}
           </span>
+          <ReadAgain
+            documentId={detail.id}
+            fixes={detail.reviewer_fixes}
+            offered={canReprocess(me.user.role, detail)}
+            onStarted={() => setReloads((n) => n + 1)}
+          />
         </div>
         <div className={styles.place}>
           <nav aria-label="Folder" className={`${libraryStyles.crumbs} ${styles.placeItem}`}>

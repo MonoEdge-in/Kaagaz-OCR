@@ -160,6 +160,7 @@ export interface DocumentDetail extends DocumentSummary {
   values: ExtractedValue[];
   folder: DocumentFolder | null; // null: at the top level
   versions: DocumentVersion[]; // every version of the family, this one included
+  reviewer_fixes: number; // corrections on this document's values; said before "Read again" (PRD 2, X1)
 }
 
 export interface DocumentList {
