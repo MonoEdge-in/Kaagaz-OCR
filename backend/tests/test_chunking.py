@@ -27,8 +27,14 @@ class PieceLabelTest(unittest.TestCase):
         box = BoxLocation(1, 0.1, 0.1, 0.5, 0.2)
         self.assertEqual(piece_label([Span("x", "x", box, origin="ocr")]), NEEDS_REVIEW)  # PaddleOCR-VL
         self.assertEqual(piece_label([Span("x", "x", box, origin="text_layer")]), VERIFIED)
-        self.assertEqual(piece_label([Span("x", "x", box)]), VERIFIED)  # a reader that sets no origin
+        self.assertEqual(piece_label([Span("x", "x", CellLocation(1, 1, 1), origin="cell")]), VERIFIED)
         self.assertEqual(piece_label([Span("x", "x", box, 0.99, origin="ocr")]), NEEDS_REVIEW)  # RapidOCR
+
+    def test_a_span_that_does_not_say_how_it_was_read_is_never_a_direct_read(self) -> None:
+        # Fail closed (council): only origin "cell" or "text_layer" counts as a direct read.
+        for location in (BoxLocation(1, 0.1, 0.1, 0.5, 0.2), CellLocation(1, 1, 1)):
+            with self.subTest(location=location):
+                self.assertEqual(piece_label([Span("x", "x", location)]), NEEDS_REVIEW)
 
 
 class ColumnLetterTest(unittest.TestCase):

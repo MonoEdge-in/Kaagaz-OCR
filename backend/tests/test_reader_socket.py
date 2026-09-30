@@ -227,12 +227,13 @@ class SpanValidationTest(unittest.TestCase):
             with self.subTest(span=span):
                 self.assertEqual(self.read_one(span), [span])
         bad = {
-            "unknown kind": Span("a", "a", box(), kind="banner"),
+            "a box that does not say how it was read": Span("a", "a", box()),  # fail closed (council)
+            "unknown kind": Span("a", "a", box(), kind="banner", origin="ocr"),
             "unknown origin": Span("a", "a", box(), origin="scan"),
             "a cell with a kind": Span("a", "a", cell, kind="paragraph"),
             "a cell read by ocr": Span("a", "a", cell, origin="ocr"),
             "a cell with table fields": Span("a", "a", cell, None, None, "cell", "t1", 0, 0, False),
-            "a table cell without its table": Span("a", "a", box(), kind="table_cell"),
+            "a table cell without its table": Span("a", "a", box(), kind="table_cell", origin="ocr"),
             "table fields on a heading": Span("a", "a", box(), None, "heading", "ocr", "t1", 0, 0, False),
             "only some table fields": Span("a", "a", box(), None, "table_cell", "ocr", table_id="t1"),
             "a table id with a space": Span("a", "a", box(), None, "table_cell", "ocr", "t 1", 0, 0, False),

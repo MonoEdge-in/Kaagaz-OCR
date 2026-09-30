@@ -279,6 +279,17 @@ class PaddleOcrVlScanTest(unittest.TestCase):
         self.assertEqual(len(vision.pictures), 1)  # the text-layer line is a direct read: no crop
         self.assertEqual(values["invoice_number"].label_reason, "single_reader")
 
+    def test_a_value_that_does_not_say_how_it_was_read_gets_a_vision_reading(self) -> None:
+        # Fail closed (council): no origin and no confidence is not taken as a direct read.
+        spans = [Span("Total: 1,180.00", "Total: 1,180.00", BoxLocation(1, 0.1, 0.4, 0.9, 0.42))]
+        vision = FakeVision("Total: 1,180.00")
+        system = build(socket=PresetSocket({sniff.PDF: spans}), preparer=scan_preparer(), vision=vision)
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
+        system.worker.run_once()
+
+        self.assertEqual(len(vision.pictures), 1)
+        self.assertEqual({p.label for p in system.store.for_document(CUSTOMER, doc)}, {"needs_review"})
+
 
 def checkerboard(width: int, height: int) -> Image.Image:
     """One-pixel black and white squares: any lossy step blurs them into greys."""
