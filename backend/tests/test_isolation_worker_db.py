@@ -24,7 +24,10 @@ def test_another_customer_cannot_mark_a_document_exhausted(db: Database) -> None
     documents = PgDocuments(db)
     record, _ = documents.add_if_absent(DocumentRecord(a, str(uuid.uuid4()), "b" * 64, 10, "pdf"))
 
-    documents.mark_exhausted(b, record.document_id, now=datetime(2026, 9, 30, 12, 0, tzinfo=UTC))
+    documents.record_attempt(a, record.document_id, 5, 5)
+    documents.mark_exhausted(
+        b, record.document_id, now=datetime(2026, 9, 30, 12, 0, tzinfo=UTC), max_attempts=5
+    )
 
     assert documents.get_status(a, record.document_id) is None  # still received, not failed
     assert documents.get(b, record.document_id) is None

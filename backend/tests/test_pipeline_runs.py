@@ -546,7 +546,8 @@ class EveryPathClosesItsRunTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             system.make(CrashingSocket(build_reader_socket(SETTINGS, None), beat))(job, beat)
         self.assertEqual(statuses_of(system.runs_of(job)), [("running", None)])
-        system.repo.mark_exhausted(CUSTOMER, job.document_id, now=T0)
+        system.repo.record_attempt(CUSTOMER, job.document_id, 5, 5)
+        system.repo.mark_exhausted(CUSTOMER, job.document_id, now=T0, max_attempts=5)
         self.assertEqual(self.closed(system, job), [("failed", "retries_exhausted")])
 
 

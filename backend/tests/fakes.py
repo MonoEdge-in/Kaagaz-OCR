@@ -291,13 +291,16 @@ class MemoryDocuments(MemoryRepository):
         if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
             self.attempts[(customer_id, document_id)] = (attempt, max_attempts)
 
-    def mark_exhausted(self, customer_id: str, document_id: str, *, now: datetime) -> None:
+    def mark_exhausted(self, customer_id: str, document_id: str, *, now: datetime, max_attempts: int) -> None:
         """The worker's last delivery, like PgDocuments.mark_exhausted: only a document
-        still in progress (received or clean) becomes failed with retries_exhausted,
-        and then its runs still running end failed with retries_exhausted at ``now``."""
+        still in progress (received or clean) whose recorded try reached
+        ``max_attempts`` becomes failed with retries_exhausted, and then its runs
+        still running end failed with retries_exhausted at ``now``."""
         if self.get(customer_id, document_id) is None:
             return
-        if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
+        tried, _ = self.attempts.get((customer_id, document_id), (0, 0))
+        in_progress = self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN)
+        if in_progress and tried >= max_attempts:
             self.set_failed(customer_id, document_id, "retries_exhausted")
             if self.runs is not None:
                 self.runs.close_running(

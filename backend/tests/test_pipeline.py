@@ -87,7 +87,12 @@ def make_worker(queue: LeaseQueue, handler: Handler, repo: MemoryDocuments) -> W
         queue,
         handler,
         max_attempts=MAX_ATTEMPTS,
-        on_exhausted=lambda job: repo.mark_exhausted(job.customer_id, job.document_id, now=EXHAUSTED_AT),
+        on_exhausted=lambda job: repo.mark_exhausted(
+            job.customer_id, job.document_id, now=EXHAUSTED_AT, max_attempts=MAX_ATTEMPTS
+        ),
+        on_attempt=lambda job, attempt: repo.record_attempt(
+            job.customer_id, job.document_id, attempt, MAX_ATTEMPTS
+        ),
     )
 
 
