@@ -48,6 +48,29 @@ def _stored(
 
 
 @pytest.mark.db
+def test_a_queued_value_carries_its_label_spot(db: Database) -> None:
+    """PRD 2 D3: the review queue shows a value as the detail does, with its label's spot."""
+    _, reviewer, _, first = _setup(db)
+    with db.customer(reviewer.customer_id) as conn:
+        conn.execute(
+            text(
+                "UPDATE extracted_values SET label_page_no = 1, label_region = CAST(:r AS jsonb)"
+                " WHERE customer_id = :c AND id = :v"
+            ),
+            {
+                "c": reviewer.customer_id,
+                "v": first,
+                "r": '{"kind": "box", "page": 1, "box": [0.1, 0.1, 0.3, 0.12]}',
+            },
+        )
+    (item,) = reviewer.client.get("/api/review").json()["items"]
+    assert (item["value"]["label_page_no"], item["value"]["label_region"]) == (
+        1,
+        {"kind": "box", "page": 1, "box": [0.1, 0.1, 0.3, 0.12]},
+    )
+
+
+@pytest.mark.db
 def test_queue_lists_needs_review_values_oldest_first_with_their_page(db: Database) -> None:
     api, reviewer, document_id, first = _setup(db)
     second = api.add_value(reviewer.customer_id, document_id, field_name="gstin", value="27X")
