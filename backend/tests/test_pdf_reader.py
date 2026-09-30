@@ -200,14 +200,16 @@ class PagesWithoutTextTest(unittest.TestCase):
         # A1 is 1684 x 2384 points: 69.7M pixels at 300 dpi, over MAX_IMAGE_PIXELS (40M) and the
         # OCR budget (21M). 164 dpi is the highest that fits: 3836 x 5431 = 20.8M (165 gives 21.09M).
         ocr = FakeOcr([OcrLine("scan", 10, 10, 100, 30, 0.9)])
-        reader = PdfReader(ocr, max_pages=1, dpi=300, max_image_pixels=40_000_000)
+        reader = reader_of(ocr, max_pages=1, dpi=300, max_image_pixels=40_000_000)
+        # A scan, not a blank page: a blank one never reaches the engine (R3).
+        a1 = Page(width=1684, height=2384, picture=Picture(text_like_picture(153, 198), 0, 0, 1684, 2384))
 
-        reader.read(make_pdf([Page(width=1684, height=2384)]))
+        reader.read(make_pdf([a1]))
 
         ((width, height, _),) = ocr.seen
         self.assertTrue(abs(width - 3836) <= 1 and abs(height - 5431) <= 1)  # pdfium may round a pixel up
         self.assertEqual(reader.version, f"{pdfplumber.__version__}+fake-ocr-7;ocr_dpi=164")  # recorded
-        reader.read(make_pdf([Page()]))  # a letter page fits at 300 dpi: nothing lowered this time
+        reader.read(make_pdf([SCANNED]))  # a letter page fits at 300 dpi: nothing lowered this time
         self.assertEqual(reader.version, f"{pdfplumber.__version__}+fake-ocr-7")
 
 
