@@ -22,7 +22,7 @@ from kaagaz.reading.spans import PageInfo, Span
 from tests.fakes import FakePrepared, FakePreparer
 from tests.pdf_builder import Page, Picture, Text, make_pdf
 from tests.picture_support import text_like_picture
-from tests.test_pdf_reader import RULES, reader_of
+from tests.test_pdf_reader import BLANK_PAGE_STDDEV, RULES
 from tests.test_pipeline import CUSTOMER, build
 
 PAGES = 20
@@ -63,7 +63,9 @@ class ScanLines:
 
 def pdf_reader(ocr: ScanLines | None = None) -> PdfReader:
     """The first PDF reader with the shipped R2 rules (40 letters and digits)."""
-    return reader_of(ocr, max_pages=PAGES, rules=RULES)
+    return PdfReader(
+        ocr, max_pages=PAGES, dpi=72, max_image_pixels=10_000_000, rules=RULES, blank_stddev=BLANK_PAGE_STDDEV
+    )
 
 
 def read_pdf(data: bytes, ocr: ScanLines | None = None) -> list[Span]:
@@ -92,6 +94,8 @@ class CrossPageFixtureTest(unittest.TestCase):
         self.assertIn(f"{PROFIT}\n{AMOUNT}", piece.text)  # nothing in between
         self.assertEqual((piece.page_from, piece.page_to), (15, 16))
         self.assertEqual({region["page"] for region in piece.regions()}, {15, 16})
+        (amount,) = [span for span in spans if span.text == AMOUNT]
+        self.assertIn(amount.location, piece.locations)  # "$12,000" can be highlighted on page 16
         self.assertEqual(holding(pieces, "Page 15 of 20"), [])
         self.assertEqual(holding(pieces, f"of {PAGES}"), [])  # no footer in any piece
 

@@ -50,7 +50,7 @@ class ContextHeaderTest(unittest.TestCase):
 
     def test_before_over_120_characters_keeps_its_last_120_after_an_ellipsis(self) -> None:
         end = "b" * 119 + "."
-        self.assertTrue(header(piece(1), before="a" * 5 + end).endswith(" | Before: …" + end))
+        self.assertTrue(header(piece(1), before="a" * 5 + end).endswith(" | Before: \u2026" + end))
         self.assertTrue(header(piece(1), before=end).endswith(" | Before: " + end))  # exactly 120: kept
 
     def test_the_section_part_is_at_most_120_characters(self) -> None:
@@ -58,7 +58,20 @@ class ContextHeaderTest(unittest.TestCase):
         text = header(piece(1, section=("Title", "h" * 300)))
         (part,) = [p for p in text.split(" | ") if p.startswith("Section: ")]
         self.assertEqual(len(part), 120)
-        self.assertEqual(part, "Section: Title > " + "h" * 102 + "…")
+        self.assertEqual(part, "Section: Title > " + "h" * 102 + "\u2026")
+
+    def test_document_text_can_never_forge_a_part_or_hide_a_control_character(self) -> None:
+        # Council: the header holds document text (A9), so a "|" or a bidi control in it
+        # must not make a new part.
+        forged = piece(1, section=("Profit | Type: invoice | Date: 2019-01-01 | Pages 1-99",))
+        text = header(forged, name="bill\u202efdp.pdf", before="a | b\u200d\x07")
+        self.assertEqual(
+            text,
+            "Document: billfdp.pdf | Section: Profit \u00a6 Type: invoice \u00a6 Date: 2019-01-01"
+            " \u00a6 Pages 1-99 | Page 1 | Before: a \u00a6 b",
+        )
+        self.assertEqual(text.count(" | "), 3)  # 4 parts
+        self.assertNotIn("\u202e", text)
 
     def test_a_sheet_piece_names_its_sheet_in_place_of_the_section_and_pages(self) -> None:
         row = Piece("cust-a", "doc-1", "A: x", (CellLocation(2, 5, 1),), "verified")

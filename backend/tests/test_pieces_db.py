@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from kaagaz.db import listing
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
@@ -89,6 +90,8 @@ def test_the_c7_report_is_saved_with_one_piece_across_pages_15_and_16(db: Databa
     assert [p["seq"] for p in pieces] == list(range(len(pieces)))  # C6: one document-wide order
     assert [p["page_from"] for p in pieces] == sorted(p["page_from"] for p in pieces)
     (piece,) = [p for p in pieces if PROFIT in p["text"]]
+    (expenses,) = [p for p in pieces if "Expenses of the month" in p["text"]]
+    assert piece["seq"] == expenses["seq"] + 1  # PRD 3 fetches neighbours with seq +- 1
     assert [p for p in pieces if AMOUNT in p["text"]] == [piece]
     assert (piece["page_from"], piece["page_to"], piece["text_latin"]) == (15, 16, None)
     assert piece["context_header"] == (
@@ -127,3 +130,15 @@ def test_headers_latin_spellings_and_languages_are_saved_and_read_back(db: Datab
     ]
     languages = rows(db, customer, "SELECT languages FROM documents WHERE id = :d", doc)
     assert languages == [{"languages": ["en", "other"]}]
+
+
+def test_a_rename_rewrites_the_document_part_of_every_header(db: Database) -> None:
+    customer, _ = new_customer(db)
+    doc = process(db, customer, PDF_BYTES, PresetSocket({sniff.PDF: devanagari_spans()}), name="bill.pdf")
+    with db.customer(customer) as conn:
+        listing.rename_document(conn, customer, doc, name="Sharma bill | 2026.pdf")
+    headers = [p["context_header"] for p in rows(db, customer, PIECES, doc)]
+    assert headers == [
+        "Document: Sharma bill \u00a6 2026.pdf | Page 1",
+        "Document: Sharma bill \u00a6 2026.pdf | Section: खरेदीदार | Pages 1-2 | Before: Sharma Traders",
+    ]

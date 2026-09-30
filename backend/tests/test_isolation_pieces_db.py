@@ -3,14 +3,20 @@ context header (which holds the file name and document text), the Latin
 spelling and the languages. Customer B uses A's exact ids and sees nothing.
 """
 
-import pytest
+from dataclasses import replace
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from kaagaz.db import listing
 from kaagaz.db.engine import Database
+from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.ingestion import sniff
 from tests.db_support import new_customer
 from tests.fakes import PresetSocket
 from tests.support import PDF_BYTES
 from tests.test_pieces_db import PIECES, devanagari_spans, process, rows
+from tests.test_pipeline_store_db import content
 
 pytestmark = pytest.mark.db
 
@@ -30,3 +36,21 @@ def test_b_never_sees_a_headers_latin_spellings_or_languages(db: Database) -> No
     assert not any("a-private" in h for h in b_headers)
     assert rows(db, a, PIECES, doc_a) == before  # A is unchanged
     assert all(p["context_header"].startswith("Document: a-private.pdf |") for p in before)
+
+
+def test_b_can_never_write_or_rename_the_headers_of_a_document(db: Database) -> None:
+    a, _ = new_customer(db, name="Customer A")
+    b, _ = new_customer(db, name="Customer B")
+    doc_a = process(db, a, PDF_BYTES, PresetSocket({sniff.PDF: devanagari_spans()}), name="a-private.pdf")
+    before = rows(db, a, PIECES, doc_a)
+
+    forged = content(b, doc_a)  # B names A's document id
+    forged = replace(
+        forged, pieces=[replace(p, context_header="Document: forged", text_latin="x") for p in forged.pieces]
+    )
+    with pytest.raises(IntegrityError):  # the (customer, document) foreign key refuses it
+        PgPipelineStore(db).save(forged)
+    with db.customer(b) as conn:
+        listing.rename_document(conn, b, doc_a, name="stolen.pdf")  # matches nothing of A's
+    assert rows(db, a, PIECES, doc_a) == before
+    assert rows(db, b, PIECES, doc_a) == []

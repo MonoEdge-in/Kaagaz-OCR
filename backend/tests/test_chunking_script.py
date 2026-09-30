@@ -174,6 +174,10 @@ class LatinSpellingTest(unittest.TestCase):
     def test_empty_text(self) -> None:
         self.assertEqual(latin_spelling(""), "")
 
+    def test_the_danda_and_double_danda_become_full_stops(self) -> None:
+        self.assertEqual(latin_spelling("राम।"), "ram.")
+        self.assertEqual(latin_spelling("राम॥ शिंदे"), "ram. shinde")
+
     def test_candra_vowels_are_spelled_and_the_abbreviation_sign_dropped(self) -> None:
         # PROVISIONAL: IAST has no letter for these, so they leaked into the Latin text.
         cases = {

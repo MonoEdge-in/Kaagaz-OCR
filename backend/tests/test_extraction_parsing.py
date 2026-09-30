@@ -77,6 +77,9 @@ class ParseAmountTest(unittest.TestCase):
             "12/08/2026",
             "Aug 2026",
             "١٢٣",  # Arabic-Indic digits: only ASCII and Devanagari digits count
+            "१2,3४5",  # ASCII and Devanagari digits mixed: never guessed (council)
+            "1२,345",
+            "12३.5४",
             "1" * 70,  # longer than any single amount
             "1,234 only",
         ]
@@ -130,6 +133,7 @@ class ParseDateTest(unittest.TestCase):
             "Foo 2026",
             "2026",
             "12/08/1850",
+            "1२/08/2026",  # ASCII and Devanagari digits mixed: never guessed (council)
             "12/08/2150",
             "2026-13-01",
             "12 Aug",
