@@ -66,6 +66,10 @@ MAX_OCR_REPLY_BYTES = 16 * 1024 * 1024
 MAX_BLOCKS_PER_PAGE = 5000
 MAX_BLOCK_CHARS = 20_000
 MAX_TABLE_INDEX = 1000
+# The most pixels a page is drawn at for OCR. A PNG that cannot compress is 3 bytes
+# a pixel, so any page stays under the ocr server's 64 MiB body cap (MAX_BODY_BYTES
+# in kaagaz/ocr_server/app.py). Readers lower the DPI to fit it, never refuse.
+MAX_OCR_PIXELS = 21_000_000
 _READ_CHUNK = 64 * 1024
 _REFUSALS = {422: "corrupt_file", 413: "image_too_large"}
 _VERSION = re.compile(r"[A-Za-z0-9._+;=@ -]{1,200}")

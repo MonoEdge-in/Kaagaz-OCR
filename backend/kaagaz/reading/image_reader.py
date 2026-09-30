@@ -17,7 +17,8 @@ its lease between pages.
 PROVISIONAL (PRD 2 R5 for photos): a frame whose short side is more than
 ``ocr_dpi`` x 8.27 in (A4's short side) is shrunk to that for the engine only,
 never enlarged; the stored picture is not changed, and boxes are fractions, so
-they still fit it.
+they still fit it. A frame still over ``MAX_OCR_PIXELS`` is shrunk to fit it,
+so its PNG stays under the ocr server's body cap.
 
 Refusals are short codes raised outside any ``except`` block:
 ``corrupt_file``, ``too_many_pages`` (more than ``max_pages`` frames) and
@@ -27,12 +28,13 @@ header before its pixels are decoded).
 Time is the engine's time per page. Memory is one decoded page at a time.
 """
 
+import math
 from collections.abc import Callable
 
 from PIL import Image
 
 from kaagaz.preparing.pages import image_pages
-from kaagaz.reading.ocr import OcrEngine, ocr_spans
+from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
 from kaagaz.reading.spans import ReadError, Span
 
 _A4_SHORT_SIDE_INCHES = 8.27
@@ -47,6 +49,7 @@ class ImageReader:
         self._max_pages = max_pages
         self._max_image_pixels = max_image_pixels
         self._max_short_side = max(1, round(ocr_dpi * _A4_SHORT_SIDE_INCHES))
+        self._max_ocr_pixels = MAX_OCR_PIXELS
         self.name = ocr.name  # "paddleocr-vl" or "rapidocr" in the product
 
     @property
@@ -57,7 +60,7 @@ class ImageReader:
         spans: list[Span] = []
         pages = image_pages(data, max_pages=self._max_pages, max_image_pixels=self._max_image_pixels)
         for number, image in enumerate(pages, start=1):
-            page = _at_most(image, self._max_short_side)
+            page = _for_ocr(image, self._max_short_side, self._max_ocr_pixels)
             spans.extend(ocr_spans(self._ocr.read(page), number, page.width, page.height))
             page.close()
             image.close()
@@ -68,10 +71,16 @@ class ImageReader:
         return spans
 
 
-def _at_most(image: Image.Image, short_side: int) -> Image.Image:
-    """The image with its short side at most ``short_side`` pixels (LANCZOS), never enlarged."""
-    scale = short_side / min(image.size)
-    if scale >= 1:
+def _for_ocr(image: Image.Image, short_side: int, max_pixels: int) -> Image.Image:
+    """The image with its short side at most ``short_side`` and at most ``max_pixels``
+    in all (LANCZOS), never enlarged."""
+    width, height = image.size
+    short = min(width, height)
+    if short > short_side:
+        width, height = round(width * short_side / short), round(height * short_side / short)
+    if width * height > max_pixels:
+        scale = math.sqrt(max_pixels / (width * height))
+        width, height = math.floor(width * scale), math.floor(height * scale)
+    if (width, height) == image.size:
         return image
-    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
-    return image.resize(size, Image.Resampling.LANCZOS)
+    return image.resize((max(1, width), max(1, height)), Image.Resampling.LANCZOS)
