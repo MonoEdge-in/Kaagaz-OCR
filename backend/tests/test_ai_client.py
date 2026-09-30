@@ -238,6 +238,25 @@ def test_the_repair_retry_is_guarded_too(ollama: FakeOllama) -> None:
     assert len(ollama.requests) == 2
 
 
+def test_a_reply_with_a_lone_surrogate_is_repaired_once_then_refused(ollama: FakeOllama) -> None:
+    """Council fix 3: JSON may escape half a character (\\ud800); such text cannot be
+    stored or shown, so it is a bad reply like any other."""
+    broken = '{"a": "Bill \\ud800"}'
+    ollama.chat(broken)
+    ollama.chat(broken)
+    with pytest.raises(ModelOutputError) as caught:
+        OllamaClient(_settings(ollama)).chat_json(system="s", user="u", schema={"type": "object"})
+    assert caught.value.code == "invalid_output"
+    assert len(ollama.requests) == 2
+    assert "not valid text" in ollama.requests[1][1]["messages"][3]["content"]
+
+    ollama.chat(broken)
+    ollama.chat('{"a": "Bill"}')
+    assert OllamaClient(_settings(ollama)).chat_json(system="s", user="u", schema={"type": "object"}) == {
+        "a": "Bill"
+    }
+
+
 def test_the_worker_chat_timeout_is_used_for_chat_only(ollama: FakeOllama) -> None:
     """MODEL_EXTRACT_TIMEOUT_SECONDS is for the worker's chat calls; embedding keeps
     MODEL_TIMEOUT_SECONDS. The fake answers after 5 seconds, inside the 30 second one, so a reply here

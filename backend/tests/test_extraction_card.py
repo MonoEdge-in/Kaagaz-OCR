@@ -647,6 +647,16 @@ class ReadCardTest(unittest.TestCase):
                 self.assertEqual((result.facts.card["title"], result.facts.summary), (None, None))
                 self.assertEqual(result.counts.summary_dropped, 2)
 
+    def test_a_title_with_a_lone_surrogate_is_dropped_and_the_card_still_encodes(self) -> None:
+        """Council fix 3: half a character (a lone surrogate) crashed the size check."""
+        answer = reply(title="Bill \ud800", parties=[{"role": "seller", "name_quote": "Sharma Traders"}])
+        result = read(INVOICE, answer)
+        card = result.facts.card
+        assert card is not None
+        self.assertEqual((card["title"], result.counts.summary_dropped), (None, 1))
+        self.assertEqual([party["name"] for party in card["parties"]], ["Sharma Traders"])
+        self.assertTrue(json.dumps(card, ensure_ascii=False).encode("utf-8"))
+
     def test_a_reply_of_the_wrong_shape_is_a_model_output_error(self) -> None:
         for bad in ({"doc_type": "invoice"}, reply(parties="Sharma"), reply(doc_type="novel")):
             with self.subTest(bad=bad):
