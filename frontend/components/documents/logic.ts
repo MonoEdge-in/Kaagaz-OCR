@@ -167,11 +167,40 @@ export function offsetAfterDelete(offset: number, shownBefore: number, pageSize:
   return shownBefore <= 1 && offset > 0 ? Math.max(0, offset - pageSize) : offset;
 }
 
+/** A PDF is estimated at this many MB a page (PRD 2, X4). */
+export const MB_PER_PDF_PAGE = 0.4;
+
+/**
+ * Seconds to read one page, by file type (PRD 2, X4). PLACEHOLDER numbers:
+ * `python -m kaagaz.cli measure --file <path>` on the reference laptop sets
+ * the measured ones, which go here and in docs/architecture.md (Decisions).
+ * Until it has run with a real OCR (NOT RUN), every type keeps today's rate
+ * of 8 seconds per MB, at MB_PER_PDF_PAGE MB a page: 8 × 0.4 = 3.2 seconds.
+ */
+export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
+  pdf: 3.2,
+  image: 3.2,
+  sheet: 3.2,
+};
+
+/** Pages to expect: a PDF's MB ÷ MB_PER_PDF_PAGE, rounded up; a photo or a sheet is 1. Never below 1. */
+export function estimatePages(kind: UploadKind, sizeBytes: number): number {
+  if (kind !== "pdf" || !(sizeBytes > 0)) return 1;
+  return Math.max(1, Math.ceil(sizeBytes / (MB_PER_PDF_PAGE * MB)));
+}
+
 /** Rough but useful estimate for how long ingest will take after the file is received. */
-export function estimateIngestSeconds(sizeBytes: number, filesCount = 1): number {
-  const megabytes = Math.max(sizeBytes / (1024 * 1024), 0.1);
-  const estimate = megabytes * 8 + Math.max(filesCount - 1, 0) * 12;
+export function estimateIngestSeconds(kind: UploadKind, sizeBytes: number, filesCount = 1): number {
+  const estimate =
+    estimatePages(kind, sizeBytes) * SECONDS_PER_PAGE[kind] + Math.max(filesCount - 1, 0) * 12;
   return Math.max(4, Math.round(estimate));
+}
+
+/** The estimate in words: "Up to N minutes" for a PDF (rounded up, at least 1), else formatEtaText. */
+export function estimateText(kind: UploadKind, seconds: number): string {
+  if (kind !== "pdf") return formatEtaText(seconds);
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  return `Up to ${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
 export function formatEtaText(seconds: number): string {

@@ -26,7 +26,8 @@ import type { UploadLimits, UploadResult } from "@/lib/types";
 import {
   FALLBACK_UPLOAD_LIMITS,
   estimateIngestSeconds,
-  formatEtaText,
+  estimateText,
+  uploadKind,
   uploadLimitsHint,
   uploadStateText,
   validateUpload,
@@ -300,11 +301,12 @@ function UploadRow({
     element?.focus();
   }, []);
   const failed = state.kind === "error";
-  const estimateSeconds = estimateIngestSeconds(entry.size);
+  // Only a file of an accepted type is ever sent, so its type is known while it uploads.
+  const kind = uploadKind(entry.name);
   const etaText =
-    state.kind === "uploading"
-      ? formatEtaText(Math.max(0, estimateSeconds * (1 - state.fraction)))
-      : formatEtaText(estimateSeconds);
+    state.kind === "uploading" && kind !== null
+      ? estimateText(kind, Math.max(0, estimateIngestSeconds(kind, entry.size) * (1 - state.fraction)))
+      : null;
 
   return (
     <li className={styles.upload} data-state={state.kind}>
@@ -335,7 +337,7 @@ function UploadRow({
                 {Math.round(state.fraction * 100)}%
               </span>
             </div>
-            <p className={`muted ${styles.small}`}>ETA: {etaText}</p>
+            {etaText !== null && <p className={`muted ${styles.small}`}>ETA: {etaText}</p>}
           </>
         )}
         {state.kind === "done" && (
