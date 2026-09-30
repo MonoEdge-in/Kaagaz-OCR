@@ -57,7 +57,8 @@ from tests.pdf_builder import Page, Picture, Text, _assemble, _stream, make_pdf
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
 SELLER_GSTIN = "24ABCDE1234F1Z6"
-BUYER_GSTIN = "27PQRST5678K1Z2"
+# Both in state 24 (Gujarat): the invoice charges CGST and SGST, so it is a sale within one state.
+BUYER_GSTIN = "24PQRST5678K1Z8"
 
 Box = tuple[float, float, float, float]  # x0, y0, x1, y1 as fractions of the page, top left origin
 

@@ -22,6 +22,7 @@ from kaagaz.extraction.invoice import (
     INVOICE_SYSTEM_PROMPT,
     LINE_FIELDS,
     MAX_LINES,
+    MAX_WINDOW_LINES,
     STORED_FIELD,
     InvoiceExtraction,
     InvoiceResult,
@@ -35,7 +36,7 @@ from kaagaz.extraction.invoice import (
 )
 from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import label_quoted, label_values
-from kaagaz.extraction.quotes import MAX_QUOTE_CHARS, find_quote, reader_text
+from kaagaz.extraction.quotes import MAX_QUOTE_CHARS, QuoteCounts, find_quote, reader_text
 from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue
 from kaagaz.pipeline import InvoiceLineRow, InvoiceRow
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
@@ -85,7 +86,7 @@ def item(description: str, amount: str, **quotes: str) -> dict[str, Any]:
 
 class Sizes(TypedDict, total=False):
     """Window sizes and model budgets; the settings' starting values when left out
-    (6000, 1000 and 10; MODEL_WINDOW_MAX_TOKENS 2048 and MODEL_NUM_CTX 8192)."""
+    (1700, 400 and 10; MODEL_WINDOW_MAX_TOKENS 2048 and MODEL_NUM_CTX 8192)."""
 
     chars: int
     overlap: int
@@ -104,8 +105,8 @@ def read(
     return read_invoice(
         chat,
         reader_text(spans),
-        chars=sizes.get("chars", 6000),
-        overlap=sizes.get("overlap", 1000),
+        chars=sizes.get("chars", 1700),
+        overlap=sizes.get("overlap", 400),
         max_windows=sizes.get("max_windows", 10),
         max_tokens=sizes.get("max_tokens", 2048),
         num_ctx=sizes.get("num_ctx", 8192),
@@ -187,7 +188,7 @@ TEXTILE_ROW = InvoiceRow(
     seller_name="Shree Ganesh Textiles",
     seller_gstin="24ABCDE1234F1Z6",
     buyer_name="Patil Garments",
-    buyer_gstin="27PQRST5678K1Z2",
+    buyer_gstin="24PQRST5678K1Z8",
     subtotal=Decimal("10000.00"),
     tax_total=None,
     total=Decimal("11800.00"),
@@ -346,7 +347,8 @@ class PromptAndSchemaTest(unittest.TestCase):
             "copied exactly, character for character",
             "The label comes before its value",
             "tax_total only from a line that states the total tax",
-            "Never return brought-forward, carried-forward, subtotal, tax or total rows as lines",
+            "Never return brought-forward, carried-forward, subtotal, tax, total or HSN/SAC summary rows",
+            "nor round-off, discount or freight rows printed after the subtotal",
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, INVOICE_SYSTEM_PROMPT)
@@ -608,6 +610,8 @@ class LinesTest(unittest.TestCase):
                 ("line:1", "amount"): "3,000.00",
             },
         )
+        # Council 10: the repeat is not counted again (the line and its quantity, once).
+        self.assertEqual((extraction.quotes.returned, extraction.dropped), (2, 0))
 
     def test_a_line_whose_description_or_amount_spot_is_taken_is_a_repeat(self) -> None:
         spans = page_lines("Header row", "1 Cotton Poplin 120 3,000.00", "Footer row")
@@ -671,12 +675,15 @@ class LinesTest(unittest.TestCase):
         self.assertEqual((extraction.values, extraction.dropped), ([], 1))
 
     def test_at_most_1000_lines_and_the_rest_are_dropped_and_counted(self) -> None:
-        spans = page_lines(*[f"Item {k} {k}.00" for k in range(1, MAX_LINES + 2)])
-        chat = FakeChat(reply(lines=[item(f"Item {k}", f"{k}.00") for k in range(1, MAX_LINES + 2)]))
-        extraction = read(spans, chat, chars=50000, overlap=0, max_windows=1, num_ctx=65536)
-        self.assertEqual(MAX_LINES, 1000)
+        # 1,001 lines of 17 characters, 91 to a window (91 * 18 - 1 = 1,637 characters), so
+        # 11 windows; each reply holds its window's 91 lines (under MAX_WINDOW_LINES).
+        texts = [(f"Item {k:04d}", f"{k + 1000}.00") for k in range(1, MAX_LINES + 2)]
+        spans = page_lines(*[f"{description} {amount}" for description, amount in texts])
+        chat = QuotingChat({}, [item(description, amount) for description, amount in texts])
+        extraction = read(spans, chat, chars=1637, overlap=0, max_windows=11)
+        self.assertEqual((MAX_LINES, len(chat.calls)), (1000, 11))
         self.assertEqual(len({value.record_key for value in extraction.values}), 1000)
-        self.assertEqual(found(extraction.values)[("line:1000", "amount")], "1000.00")
+        self.assertEqual(found(extraction.values)[("line:1000", "amount")], "2000.00")
         self.assertEqual(extraction.over_limit, 1)
 
 
@@ -700,7 +707,7 @@ class ModelCallsTest(unittest.TestCase):
         # about 1,350 estimated tokens against a budget of about 550 (ML amendment 5).
         spans = page_lines(*[f"{k:02d} " + "\u0915" * 100 for k in range(20)])
         chat = FakeChat(*[reply() for _ in range(20)])
-        extraction = read(spans, chat, max_tokens=512, num_ctx=2048)
+        extraction = read(spans, chat, chars=6000, overlap=1000, max_tokens=512, num_ctx=2048)
         budget = input_token_budget(num_ctx=2048, max_tokens=512, system=INVOICE_SYSTEM_PROMPT)
         self.assertGreaterEqual(len(chat.calls), 3)
         self.assertEqual(extraction.model_calls, len(chat.calls))
@@ -917,16 +924,17 @@ class WithoutModelTest(unittest.TestCase):
 
     def test_the_textile_row_without_the_model_is_pinned(self) -> None:
         result = without_model(textile_spans())
-        # PROVISIONAL: labelled.py has no seller label on this invoice and one GSTIN field, so
-        # the seller name and the buyer GSTIN are empty; its first tax value is the CGST line,
-        # a component, so the tax total is empty and the check adds CGST and SGST (ML 6(a)).
+        # PROVISIONAL: labelled.py has no seller label on this invoice, and its one GSTIN field
+        # holds two numbers here (the seller's and the buyer's), so the seller name and both
+        # GSTINs are empty (council 1); its first tax value is the CGST line, a component, so
+        # the tax total is empty and the check adds CGST and SGST (ML 6(a)).
         self.assertEqual(
             result.invoice,
             InvoiceRow(
                 invoice_number="TX-2026-118",
                 invoice_date=date(2026, 8, 12),
                 seller_name=None,
-                seller_gstin="24ABCDE1234F1Z6",
+                seller_gstin=None,
                 buyer_name="Patil Garments",
                 buyer_gstin=None,
                 subtotal=Decimal("10000.00"),
@@ -1057,8 +1065,9 @@ class ModelChosenTest(unittest.TestCase):
         self.assertEqual(result.check.status, NOT_CHECKED)
         self.assertEqual(set(reasons(result).values()), {"model_chosen"})
 
-    def test_a_value_the_readers_disagree_on_is_model_chosen_and_keeps_the_reading(self) -> None:
-        # Resolution 1: "Otherwise needs_review model_chosen". The second reading stays for the reviewer.
+    def test_a_value_the_readers_disagree_on_keeps_that_reason_and_its_reading(self) -> None:
+        # Council 3 (PROVISIONAL): readers_disagree and ocr_script are more specific than
+        # model_chosen, so they stay the reason. The second reading stays for the reviewer.
         second = [
             Span("Total Tax: 1,80O.00", "Total Tax: 1,80O.00", span.location)
             if span.text.startswith("Total Tax")
@@ -1077,7 +1086,7 @@ class ModelChosenTest(unittest.TestCase):
         tax = next(value for value in result.values if value.field == "tax_amount")
         self.assertEqual(
             (tax.label, tax.label_reason, tax.second_reading),
-            (NEEDS_REVIEW, "model_chosen", "Total Tax: 1,80O.00"),
+            (NEEDS_REVIEW, "readers_disagree", "Total Tax: 1,80O.00"),
         )
 
     def test_a_remembered_fix_stays_verified(self) -> None:
@@ -1109,6 +1118,265 @@ class ModelChosenTest(unittest.TestCase):
             ExtractedValue("document", "total_amount", "8.00", "8.00", line("Grand Total: 8.00").location)
         ]
         self.assertEqual(rule_values_left(rule, quoted), [rule[2], rule[3]])
+
+
+def cells(row: int, *texts: str) -> list[Span]:
+    """One spreadsheet row: its cells are joined by " | " in the reader text."""
+    return [Span(text, text, CellLocation(1, row, column)) for column, text in enumerate(texts, start=1)]
+
+
+class Truncating:
+    """The model on invoice windows, whose reply is cut at its budget (output_truncated) when a
+    window holds more than ``most`` of ``lines``; otherwise it returns the lines the window holds."""
+
+    chat_model = "fake-chat"
+
+    def __init__(self, lines: list[dict[str, Any]], most: int) -> None:
+        self.lines = lines
+        self.most = most
+        self.calls: list[str] = []
+
+    def chat_json(
+        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+    ) -> dict[str, Any]:
+        text = window_text(user)
+        self.calls.append(text)
+        held = [line for line in self.lines if holds(text, line["description_quote"])]
+        if len(held) > self.most:
+            raise ModelOutputError("output_truncated")
+        return reply(lines=held)
+
+
+class ReviewFixesTest(unittest.TestCase):
+    """The council's review of phase A (30 Sep): each case the reviewer reproduced."""
+
+    def test_without_the_model_two_gstins_leave_the_seller_gstin_empty(self) -> None:
+        # Council 1 (high): labelled.py's one GSTIN field cannot tell the seller's from the buyer's.
+        spans = page_lines(
+            "Invoice No: A-1",
+            "Bill To: Patil Garments",
+            "GSTIN: 27PQRST5678K1Z2",
+            "Seller: Shree Ganesh Textiles",
+            "GSTIN: 24ABCDE1234F1Z6",
+            "Grand Total: 100.00",
+        )
+        result = without_model(spans)
+        assert result.invoice is not None
+        self.assertEqual(
+            (result.invoice.seller_name, result.invoice.seller_gstin), ("Shree Ganesh Textiles", None)
+        )
+
+    def test_without_the_model_one_gstin_written_twice_is_the_seller_gstin(self) -> None:
+        spans = page_lines(
+            "Invoice No: A-1", "GSTIN: 24ABCDE1234F1Z6", "Grand Total: 100.00", "GSTIN: 24abcde 1234f1z6"
+        )
+        result = without_model(spans)
+        assert result.invoice is not None
+        self.assertEqual(result.invoice.seller_gstin, "24ABCDE1234F1Z6")
+
+    def test_a_field_in_a_carried_forward_table_row_is_rejected(self) -> None:
+        # Council 2: ML 6(b) looks at the whole row the match is in, not only its own cell.
+        spans = [
+            *cells(1, "Description", "Amount"),
+            *cells(2, "Carried forward", "7,000.00"),
+            *cells(3, "Freight", "500.00"),
+            *cells(4, "Sub Total", "7,500.00"),
+        ]
+        chat = FakeChat(
+            reply(
+                {"subtotal": (None, "7,000.00"), "total": ("Sub Total", "7,500.00")},
+                lines=[item("Freight", "500.00"), item("Opening", "7,000.00")],
+            )
+        )
+        extraction = read(spans, chat)
+        self.assertEqual(
+            found(extraction.values),
+            {
+                ("document", "total_amount"): "7,500.00",
+                ("line:1", "description"): "Freight",
+                ("line:1", "amount"): "500.00",
+            },
+        )
+        self.assertEqual(extraction.dropped, 2)  # the carried forward subtotal; "Opening" is not in the text
+
+    def test_a_line_whose_amount_sits_in_a_carried_forward_row_is_rejected(self) -> None:
+        spans = [*cells(1, "Silk"), *cells(2, "Carried forward", "7,000.00")]
+        extraction = read(spans, FakeChat(reply(lines=[item("Silk", "7,000.00")])))
+        self.assertEqual((extraction.values, extraction.dropped), ([], 1))
+
+    def test_a_rate_equal_to_the_amount_is_kept_and_the_amount_is_the_last_on_its_row(self) -> None:
+        # Council 4: the amount first, preferring the last match on the description's row; the
+        # other fields then only before it. Before, the rate took the amount's spot and the
+        # amount the subtotal's.
+        spans = page_lines("1 Consulting services 998314 1 250.00 Nos 250.00", "Sub Total: 250.00")
+        quotes = {"hsn": "998314", "quantity": "1", "unit": "Nos", "rate": "250.00"}
+        extraction = read(spans, FakeChat(reply(lines=[item("Consulting services", "250.00", **quotes)])))
+        self.assertEqual(
+            found(extraction.values),
+            {
+                ("line:1", "description"): "Consulting services",
+                ("line:1", "hsn"): "998314",
+                ("line:1", "quantity"): "1",
+                ("line:1", "unit"): "Nos",
+                ("line:1", "rate"): "250.00",
+                ("line:1", "amount"): "250.00",
+            },
+        )
+        amount = next(value for value in extraction.values if value.field == "amount")
+        self.assertEqual(amount.location, spans[0].location)
+
+    def test_a_window_whose_reply_is_cut_is_asked_again_in_halves(self) -> None:
+        # Council 5: 16 lines in one window, and the model can answer at most 5 at a time:
+        # 16, then 8 + 8, then 4 + 4 + 4 + 4. Seven calls, within 2 * EXTRACT_MAX_WINDOWS.
+        texts = [(f"Item {k:02d}", f"{k}.00") for k in range(1, 17)]
+        spans = page_lines(*[f"{description} {amount}" for description, amount in texts])
+        chat = Truncating([item(description, amount) for description, amount in texts], most=5)
+        extraction = read(spans, chat, max_windows=10)
+        self.assertEqual((len(chat.calls), extraction.model_calls, extraction.error_code), (7, 7, None))
+        amounts = [value.value_text for value in extraction.values if value.field == "amount"]
+        self.assertEqual(amounts, [amount for _, amount in texts])
+
+    def test_the_halving_stops_at_twice_the_window_limit_and_the_reading_fails(self) -> None:
+        texts = [(f"Item {k:02d}", f"{k}.00") for k in range(1, 17)]
+        spans = page_lines(*[f"{description} {amount}" for description, amount in texts])
+        chat = Truncating([item(description, amount) for description, amount in texts], most=0)
+        extraction = read(spans, chat, max_windows=2)
+        self.assertEqual(len(chat.calls), 4)
+        self.assertEqual((extraction.values, extraction.error_code), ([], "model_output_truncated"))
+
+    def test_a_one_span_window_whose_reply_is_cut_fails_the_reading(self) -> None:
+        chat = Truncating([item("Item 01", "1.00")], most=0)
+        extraction = read(page_lines("Item 01 1.00"), chat)
+        self.assertEqual((len(chat.calls), extraction.error_code), (1, "model_output_truncated"))
+
+    def test_at_most_100_lines_from_one_reply_and_the_rest_are_counted(self) -> None:
+        texts = [(f"Item {k:03d}", f"{k}.00") for k in range(1, 103)]
+        spans = page_lines(*[f"{description} {amount}" for description, amount in texts])
+        chat = FakeChat(reply(lines=[item(description, amount) for description, amount in texts]))
+        extraction = read(spans, chat)
+        self.assertEqual(len({value.record_key for value in extraction.values}), MAX_WINDOW_LINES)
+        self.assertEqual((MAX_WINDOW_LINES, extraction.over_limit), (100, 2))
+
+    def test_an_amount_over_numeric_14_2_is_dropped_before_it_is_stored(self) -> None:
+        # Council 6 and security A7: rounded to 0.01 first, then |x| < 10^12.
+        spans = page_lines(
+            "Grand Total: 999999999999.995", "Sub Total: 999999999999.99", "1 Cotton 1,00,00,00,00,00,000.00"
+        )
+        chat = FakeChat(
+            reply(
+                {"total": ("Grand Total", "999999999999.995"), "subtotal": ("Sub Total", "999999999999.99")},
+                lines=[item("Cotton", "1,00,00,00,00,00,000.00")],
+            )
+        )
+        extraction = read(spans, chat)
+        self.assertEqual(found(extraction.values), {("document", "subtotal"): "999999999999.99"})
+        self.assertEqual(extraction.dropped, 2)
+
+    def test_a_rate_over_numeric_14_2_is_dropped(self) -> None:
+        spans = page_lines("1 Cotton 1000000000000.00 5.00")
+        extraction = read(spans, FakeChat(reply(lines=[item("Cotton", "5.00", rate="1000000000000.00")])))
+        self.assertEqual(
+            found(extraction.values), {("line:1", "description"): "Cotton", ("line:1", "amount"): "5.00"}
+        )
+        self.assertEqual(extraction.dropped, 1)
+
+    def test_negative_quantities_and_rates_are_dropped_and_counted(self) -> None:
+        # Council 10. PROVISIONAL: a line's amount may be negative (a discount line); its
+        # quantity and rate may not.
+        spans = page_lines("1 Returned cloth 5208 -2 m -25.00 50.00")
+        quotes = {"hsn": "5208", "quantity": "-2", "unit": "m", "rate": "-25.00"}
+        extraction = read(spans, FakeChat(reply(lines=[item("Returned cloth", "50.00", **quotes)])))
+        self.assertEqual(
+            found(extraction.values),
+            {
+                ("line:1", "description"): "Returned cloth",
+                ("line:1", "hsn"): "5208",
+                ("line:1", "unit"): "m",
+                ("line:1", "amount"): "50.00",
+            },
+        )
+        self.assertEqual(extraction.dropped, 2)
+
+    def test_a_remembered_fix_on_an_invoice_that_fails_its_check_is_needs_review(self) -> None:
+        # Council 7: a learned E4 value stays verified only when the check passed.
+        spans = [*ModelChosenTest.SPANS, line("Invoice Date: 12/08/1999", y=0.5)]
+        fields = {**ModelChosenTest.FIELDS, "invoice_date": ("Invoice Date", "12/08/1999")}
+        extraction = read(spans, FakeChat(reply(fields)))
+        values = [
+            replace(value, label=VERIFIED, label_reason="learned_correction")
+            if value.field == "total_amount"
+            else value
+            for value in labelled_stage(spans, extraction)
+        ]
+        result = finish_invoice(
+            values,
+            extraction=extraction,
+            labelled=values_from_lines(spans),
+            components=[],
+            today=TODAY,
+            fallback=True,
+        )
+        assert result.check is not None
+        self.assertEqual(result.check.reasons, ("bad_date",))
+        total = next(value for value in result.values if value.field == "total_amount")
+        self.assertEqual((total.label, total.label_reason), (NEEDS_REVIEW, "model_chosen"))
+
+    def test_the_gstin_columns_are_stored_without_spaces_in_capitals(self) -> None:
+        # Council 8.
+        box = BoxLocation(1, 0.1, 0.1, 0.9, 0.12)
+        values = [
+            ExtractedValue("document", "gstin", "24abcde 1234f1z6", "24abcde 1234f1z6", box, label=VERIFIED),
+            ExtractedValue(
+                "document", "buyer_gstin", " 24pqrst5678k1z8", " 24pqrst5678k1z8", box, label=VERIFIED
+            ),
+        ]
+        row = invoice_row(values, CheckResult(PASSED, (), frozenset()))
+        self.assertEqual((row.seller_gstin, row.buyer_gstin), ("24ABCDE1234F1Z6", "24PQRST5678K1Z8"))
+
+    def test_a_labelled_value_at_the_same_spot_with_other_text_is_model_chosen(self) -> None:
+        # Council 9, security A1(c): the same spot is not enough; the text must be the same too.
+        spans = [
+            *page_lines("Invoice No: INV-17", "Sub Total: 10,000.00", "Total Tax: 1,800.00"),
+            line("Grand Total: Rs. 11,800.00/-", y=0.2),
+        ]
+        fields = {**ModelChosenTest.FIELDS, "total": ("Grand Total", "11,800.00")}
+        del fields["buyer_gstin"]
+        result = with_model(spans, FakeChat(reply(fields)))
+        self.assertEqual(reasons(result)[("document", "total_amount")], "model_chosen")
+        self.assertEqual(reasons(result)[("document", "subtotal")], "readers_agree")
+
+    def test_a_labelled_value_at_the_same_box_on_another_page_is_not_the_same_spot(self) -> None:
+        # Council 9: _same_spot compares pages as well as boxes.
+        def value(field: str, text: str, page: int = 1, y: float = 0.1) -> ExtractedValue:
+            box = BoxLocation(page, 0.1, y, 0.9, y + 0.02)
+            return ExtractedValue(
+                "document", field, text, text, box, label=VERIFIED, label_reason="readers_agree"
+            )
+
+        quoted = [
+            value("invoice_number", "INV-17"),
+            value("subtotal", "10,000.00", y=0.2),
+            value("tax_amount", "1,800.00", y=0.3),
+            value("total_amount", "11,800.00", page=2, y=0.4),
+        ]
+        extraction = InvoiceExtraction(quoted, frozenset(), False, QuoteCounts(), 1)
+        labelled = [value("total_amount", "11,800.00", page=1, y=0.4)]
+        result = finish_invoice(
+            quoted, extraction=extraction, labelled=labelled, components=[], today=TODAY, fallback=True
+        )
+        self.assertEqual(reasons(result)[("document", "total_amount")], "model_chosen")
+        self.assertEqual(reasons(result)[("document", "subtotal")], "readers_agree")
+
+    def test_the_invoice_stage_refuses_a_field_stored_twice(self) -> None:
+        # Council 10: labelled.py's values must be reduced by rule_values_left first (bug B2).
+        extraction = read(ModelChosenTest.SPANS, FakeChat(reply(ModelChosenTest.FIELDS)))
+        both = label_values(values_from_lines(ModelChosenTest.SPANS), ModelChosenTest.SPANS) + list(
+            extraction.values
+        )
+        with self.assertRaises(ValueError):
+            finish_invoice(
+                both, extraction=extraction, labelled=both, components=[], today=TODAY, fallback=True
+            )
 
 
 class InvoiceRowTest(unittest.TestCase):

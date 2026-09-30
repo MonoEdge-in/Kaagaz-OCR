@@ -36,7 +36,10 @@ CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 #   1x2=2;  2;  3x2=6;  4;  Fx2=30;  1;  Zx2=70 -> 1 + 34 = 35.
 # The sum is 184; 184 % 36 = 4; (36 - 4) % 36 = 32, which is W.
 HAND_WORKED = "29ABCDE1234F1ZW"
-# From the reference below (and 10AAAAA0000A1ZH also by hand: sum 127, 36 - 19 = 17, H).
+# From the reference below. Also by hand (council 9), each sum as above, then (36 - sum % 36) % 36:
+#   27AAPFU0939F1Z (the published example) sums to 221: 221 % 36 = 5, 36 - 5 = 31, V;
+#   29ABCDE1234F1Z sums to 184: W (worked above);
+#   10AAAAA0000A1Z sums to 127: 127 % 36 = 19, 36 - 19 = 17, H.
 KNOWN = [
     "29ABCDE1234F1ZW",
     "27ABCDE1234F1Z0",
@@ -365,6 +368,42 @@ class GstinCheckTest(unittest.TestCase):
         self.assertEqual(result.flagged, frozenset({("document", "buyer_gstin")}))
         seller = check(replaced(invoice(), "document", "gstin", "29ABCDE1234F1ZX"))
         self.assertEqual(seller.flagged, frozenset({("document", "gstin")}))
+
+    def test_the_same_gstin_for_seller_and_buyer_is_bad_and_flags_both(self) -> None:
+        """Council 8: after spaces and case, a buyer GSTIN equal to the seller's is a misread.
+        PROVISIONAL: the state codes are not compared (the place of supply can differ)."""
+        result = check(invoice(doc("buyer_gstin", "29abcde 1234f1zw")))
+        self.assertEqual(result.reasons, ("bad_gstin",))
+        self.assertEqual(result.flagged, frozenset({("document", "gstin"), ("document", "buyer_gstin")}))
+        other_state = check(invoice(doc("buyer_gstin", "27ABCDE1234F1Z0")))
+        self.assertEqual(other_state.reasons, ())
+
+
+class AmountRangeTest(unittest.TestCase):
+    """Council 6 and security A7: an amount that does not fit numeric(14,2) after rounding to
+    0.01 cannot be read, so a check never runs on it (Decimal's 28 digits would lose the 3)."""
+
+    def test_lines_of_10_to_the_30_and_3_against_that_subtotal_do_not_pass(self) -> None:
+        huge = "1" + "0" * 30
+        values = [
+            doc("invoice_number", "INV-17"),
+            doc("subtotal", huge),
+            doc("total_amount", huge),
+            *item(1, "Cotton fabric", huge),
+            *item(2, "Silk", "3"),
+        ]
+        self.assertNotEqual(check(values).status, "passed")
+
+    def test_the_largest_amount_that_fits_is_read_and_one_cent_more_is_not(self) -> None:
+        values = [
+            doc("invoice_number", "INV-17"),
+            doc("subtotal", "999999999999.99"),
+            doc("total_amount", "999999999999.99"),
+            *item(1, "Cotton fabric", "999999999999.99"),
+        ]
+        self.assertEqual(check(values).status, "passed")
+        over = replaced(values, "line:1", "amount", "999999999999.995")  # rounds to 10^12
+        self.assertEqual(check(over).status, "not_checked")
 
 
 class ConflictsAndTruncatedTest(unittest.TestCase):

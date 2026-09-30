@@ -21,7 +21,7 @@ from kaagaz.ingestion.ports import DocumentRecord
 from kaagaz.pipeline import DocumentContent, PageRecord
 from kaagaz.reading.spans import PageInfo
 from tests.db_support import new_customer
-from tests.exit_fixtures import SELLER_GSTIN, TEXTILE_FIELDS, QuotingChat, textile_lines
+from tests.exit_fixtures import BUYER_GSTIN, SELLER_GSTIN, TEXTILE_FIELDS, QuotingChat, textile_lines
 from tests.test_extraction_invoice import textile
 
 pytestmark = pytest.mark.db
@@ -87,7 +87,7 @@ def test_the_textile_invoice_row_and_its_lines_are_saved_and_read_back(db: Datab
         "seller_name": "Shree Ganesh Textiles",
         "seller_gstin": SELLER_GSTIN,
         "buyer_name": "Patil Garments",
-        "buyer_gstin": "27PQRST5678K1Z2",
+        "buyer_gstin": BUYER_GSTIN,
         "subtotal": Decimal("10000.00"),
         "tax_total": None,
         "total": Decimal("11800.00"),
