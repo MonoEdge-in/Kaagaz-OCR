@@ -1,6 +1,6 @@
 import unittest
 
-from kaagaz.chunking.piece import Piece
+from kaagaz.chunking.piece import NEEDS_REVIEW, VERIFIED, Piece, piece_label
 from kaagaz.chunking.rows import column_letter, pieces_from_rows
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
@@ -20,6 +20,15 @@ def cells(piece: Piece) -> list[CellLocation]:
 def sheet_and_row(piece: Piece) -> tuple[int, int]:
     first = cells(piece)[0]
     return first.sheet, first.row
+
+
+class PieceLabelTest(unittest.TestCase):
+    def test_an_ocr_span_is_never_a_direct_read_even_with_no_confidence(self) -> None:
+        box = BoxLocation(1, 0.1, 0.1, 0.5, 0.2)
+        self.assertEqual(piece_label([Span("x", "x", box, origin="ocr")]), NEEDS_REVIEW)  # PaddleOCR-VL
+        self.assertEqual(piece_label([Span("x", "x", box, origin="text_layer")]), VERIFIED)
+        self.assertEqual(piece_label([Span("x", "x", box)]), VERIFIED)  # a reader that sets no origin
+        self.assertEqual(piece_label([Span("x", "x", box, 0.99, origin="ocr")]), NEEDS_REVIEW)  # RapidOCR
 
 
 class ColumnLetterTest(unittest.TestCase):
