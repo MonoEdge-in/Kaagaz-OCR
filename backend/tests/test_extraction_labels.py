@@ -151,6 +151,16 @@ class LabelValuesOcrTest(unittest.TestCase):
         labelled = label_values([number, when], None, {BOX: "Bill No: 17 Date: 12/08/2026"})
         self.assertEqual([reason(value) for value in labelled], [("needs_review", "single_reader", None)] * 2)
 
+    def test_two_ocr_values_with_the_same_text_in_one_box_are_single_reader(self) -> None:
+        """Council fix 2: the box's vision reading is not either value's own."""
+        subtotal = OcrValue("document", "subtotal", "500", "500", BOX, origin="ocr")
+        total = OcrValue("document", "total_amount", "500", "500", BOX, origin="ocr")
+        labelled = label_values([subtotal, total], None, {BOX: "500"})
+        self.assertEqual([reason(value) for value in labelled], [("needs_review", "single_reader", None)] * 2)
+        other = ExtractedValue("card", "profit", "12,000", "12,000", BOX)
+        (with_card,) = label_values([ocr_value("1,180.00")], None, {BOX: "1,180.00"}, also_located=[other])
+        self.assertEqual(reason(with_card), ("needs_review", "single_reader", None))
+
     def test_an_ocr_value_without_a_reading_is_single_reader(self) -> None:
         (labelled,) = label_values([ocr_value("1,180.00")], None)
         self.assertEqual(reason(labelled), ("needs_review", "single_reader", None))
@@ -221,6 +231,27 @@ class LabelQuotedTest(unittest.TestCase):
         rate, amount = quoted("100.00", field="rate"), quoted("1,000.00")
         labelled = label_quoted([rate, amount], [second_line("Cotton 10 m 100.00 1,000.00", LINE_BOX)])
         self.assertEqual([reason(value) for value in labelled], [("needs_review", "single_reader", None)] * 2)
+
+    def test_two_values_with_the_same_text_in_one_box_are_single_reader(self) -> None:
+        """Council fix 2: "Subtotal 500 Total 500" holds two values, whose texts are the same."""
+        subtotal = quoted("500", field="subtotal", record_key="document")
+        total = quoted("500", field="total_amount", record_key="document")
+        labelled = label_quoted([subtotal, total], [second_line("Subtotal 500 Total 500", LINE_BOX)])
+        self.assertEqual([reason(value) for value in labelled], [("needs_review", "single_reader", None)] * 2)
+
+    def test_the_same_value_located_twice_is_one_value(self) -> None:
+        twice = [quoted("1,000.00"), quoted("1,000.00")]
+        labelled = label_quoted(twice, [second_line("Cotton 1,000.00", LINE_BOX)])
+        self.assertEqual([reason(value) for value in labelled], [("verified", "readers_agree", "1,000.00")] * 2)
+
+    def test_a_value_located_elsewhere_in_the_same_box_counts_too(self) -> None:
+        """Council fix 2: rule values and quoted values on one page are counted together."""
+        rate = ExtractedValue("page:1:line:4", "rate", "100.00", "100.00", LINE_BOX)
+        line = [second_line("Cotton 10 m 100.00 1,000.00", LINE_BOX)]
+        (alone,) = label_quoted([quoted("1,000.00")], line)
+        self.assertEqual(reason(alone), ("verified", "readers_agree", "1,000.00"))
+        (shared,) = label_quoted([quoted("1,000.00")], line, also_located=[rate])
+        self.assertEqual(reason(shared), ("needs_review", "single_reader", None))
 
     def test_an_ocr_value_ignores_the_second_line_and_needs_an_equal_vision_reading(self) -> None:
         """Council fix 1 (was ..._is_compared_by_equality_even_with_a_second_line, which
