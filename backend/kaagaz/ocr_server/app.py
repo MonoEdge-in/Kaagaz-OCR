@@ -23,11 +23,17 @@ chunked), 413 ``too_large``, 422 ``unreadable_image`` (not a PNG, damaged,
 over ``MAX_PIXELS`` from its header, or more than one frame), 503
 ``not_ready``, and 503 ``busy``: one page is read at a time, and the lock is
 taken without waiting before the body is read, so a second caller hears
-``busy`` at once and tries again later instead of queueing (AR2). One ``ocr``
-container serves one worker.
+``busy`` at once and asks again, within its own deadline, instead of queueing
+(AR2). One ``ocr`` container serves one worker.
 
-Nothing read is ever logged, and ``res.save_to_*`` is never called. An error
-nothing else handled is a 500 and one log line with its type name only.
+Failures: the model raising on a page is a 500 ``read_failed`` (that page's
+own failure, so the worker does not retry it). Any other error nothing else
+handled is a 500 ``internal_error``. Each is one log line with the error's
+type name only. A model that fails to load ends the process (exit code 1), so
+compose's ``restart: unless-stopped`` starts it again rather than leaving it
+up and never ready.
+
+Nothing read is ever logged, and ``res.save_to_*`` is never called.
 Inference cannot be cut off inside the server; a reply the worker gave up on
 is thrown away.
 
@@ -38,12 +44,13 @@ table HTML). Memory: one page, plus the model (GBs, docs/running-locally.md).
 import html.parser
 import io
 import logging
+import os
 import struct
 import tempfile
 import threading
 import warnings
 import zlib
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from importlib import metadata
@@ -364,9 +371,13 @@ def _answer(model: PageModel, body: bytes) -> JSONResponse:
     if image is None:
         return _error(422, "unreadable_image")
     with image:
-        result = model.predict(image)
+        try:
+            blocks = blocks_json(model.predict(image))
+        except Exception as error:  # noqa: BLE001 - this page's own failure, see the module notes
+            _log.error("read failed: %s", type(error).__name__)
+            return _error(500, "read_failed")
         reply = {"engine": "paddleocr-vl", "version": model.version(), "width": image.width}
-        reply |= {"height": image.height, "blocks": blocks_json(result)}
+        reply |= {"height": image.height, "blocks": blocks}
     return JSONResponse(reply)
 
 
@@ -397,12 +408,20 @@ class _ErrorBoundary:
                 await _error(500, "internal_error")(scope, receive, send)
 
 
-def create_app(model: PageModel) -> FastAPI:
+def create_app(model: PageModel, *, exit_process: Callable[[int], None] = os._exit) -> FastAPI:
+    """``exit_process`` ends the process when the model fails to load; tests pass a fake."""
     lock = threading.Lock()
+
+    def load() -> None:
+        try:
+            model.load()
+        except Exception as error:  # noqa: BLE001 - the load thread's boundary: the process ends
+            _log.error("model load failed: %s", type(error).__name__)
+            exit_process(1)  # os._exit: sys.exit here would end only this thread
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        threading.Thread(target=model.load, name="ocr-model-load", daemon=True).start()
+        threading.Thread(target=load, name="ocr-model-load", daemon=True).start()
         yield
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)

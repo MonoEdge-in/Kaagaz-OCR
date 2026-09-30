@@ -70,6 +70,11 @@ Runs and progress (PRD 2 R6, X2, X3), when the processor is given them:
 * How far it has got (``ProgressStore.set_progress``) is written in its own
   short transaction between steps, never inside the save, and best effort
   (AR10): a database that is down only means no progress (``progress_not_saved``).
+  It is fenced too, so a superseded delivery never overwrites the newer run's
+  progress: it ends there, quietly, as above.
+* The pages are counted by route as each is read (``on_page``), so a run that
+  fails part way records the pages it read; once every page has its route, the
+  counts are those of the stored routes.
 
 Memory: the file's bytes, its spans and one decoded page picture at a time
 (vision readings). Time is linear in the spans apart from the sorts in the
@@ -333,13 +338,21 @@ class RunStore(Protocol):
 
     def start(self, customer_id: str, document_id: str, *, now: datetime) -> str: ...
 
-    def finish(self, customer_id: str, run: FinishedRun) -> None: ...
+    def finish(self, customer_id: str, run: FinishedRun) -> None:
+        """Write the run's outcome and counts. A run superseded meanwhile keeps its status
+        and gets its counts only."""
+        ...
 
 
 class ProgressStore(Protocol):
     """kaagaz.db.documents.PgDocuments in production."""
 
-    def set_progress(self, customer_id: str, document_id: str, progress: Progress) -> None: ...
+    def set_progress(
+        self, customer_id: str, document_id: str, progress: Progress, *, run_id: str | None = None
+    ) -> None:
+        """With ``run_id``, raise Superseded and change nothing unless that run is still
+        open (the run fence)."""
+        ...
 
 
 class OcrMeter(Protocol):
@@ -542,7 +555,7 @@ class DocumentProcessor:
 
     def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
-        self._progress(job, "scanning", 0, 1)
+        self._progress(job, run, "scanning", 0, 1)
         data = self._scan(job, run)
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
@@ -552,16 +565,18 @@ class DocumentProcessor:
         for done, (page_no, png) in enumerate(prepared.images.items(), start=1):
             self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(png))
             heartbeat()
-            self._progress(job, "preparing", done, len(prepared.images))
+            self._progress(job, run, "preparing", done, len(prepared.images))
         pages = [_page_record(info, prepared) for info in prepared.pages]
 
-        self._progress(job, "reading", 0, len(pages))
+        self._progress(job, run, "reading", 0, len(pages))
         reads: list[RouteDecision | None] = []  # how each page was read, as the reader said
-        on_page = self._reading_beat(job, heartbeat, len(pages), reads)
+        on_page = self._reading_beat(job, run, heartbeat, len(pages), reads)
         try:
             spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=on_page))
         except NoReader:
             require_clean(self._statuses, job)
+            pages = _with_routes(pages, reads, prepared.checks)  # a blank page is blank still
+            run.routes = Counter(page.route for page in pages if page.route is not None)
             content = DocumentContent(customer_id, document_id, pages, [], [], [], reader="")
             self._store.save(content, run_id=run.run_id)
             self._documents.set_page_count(customer_id, document_id, len(pages))
@@ -578,7 +593,7 @@ class DocumentProcessor:
         # The socket already refuses spans without a real location; this keeps the
         # rule here too, so no piece or value can be saved without one.
         usable = [span for span in spans if _points_at(span.location)]
-        pages = _with_routes(pages, reads)
+        pages = _with_routes(pages, reads, prepared.checks)
         run.routes = Counter(page.route for page in pages if page.route is not None)
         # The raw second reading is kept as read; only the labels leave pages out.
         compared = None if second is None else _without_unread_pages(second, pages)
@@ -637,7 +652,7 @@ class DocumentProcessor:
         )
         self._store.save(content, run_id=run.run_id)
         heartbeat()
-        self._progress(job, "indexing", 0, 1)
+        self._progress(job, run, "indexing", 0, 1)
         run.embedded = self._index(job)
         finished = self._finished(run, "ready", run.model_error)
         self._documents.mark_ready(customer_id, document_id, len(pages), run=finished)
@@ -674,7 +689,7 @@ class DocumentProcessor:
 
         def beat(done: int, total: int) -> None:
             heartbeat()
-            self._progress(job, "understanding", done, total)
+            self._progress(job, run, "understanding", done, total)
 
         budget = self._model_budget
         chat = self._chat if budget is not None else None
@@ -687,6 +702,7 @@ class DocumentProcessor:
             num_ctx=0 if budget is None else budget.num_ctx,
             run_id=run.run_id,
             beat=beat,
+            spans=spans,
             invoice_windows=None if budget is None else budget.invoice_windows,
         )
         run.model_calls = understanding.model_calls
@@ -867,12 +883,15 @@ class DocumentProcessor:
                 extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": status},
             )
 
-    def _progress(self, job: Job, step: Step, done: int, total: int) -> None:
-        """Show how far it has got, in its own short transaction. Best effort (AR10)."""
+    def _progress(self, job: Job, run: _Run, step: Step, done: int, total: int) -> None:
+        """Show how far it has got, in its own short transaction. Best effort (AR10), but
+        fenced: the Superseded of a run no longer open goes on up."""
         if self._progress_store is None:
             return
         try:
-            self._progress_store.set_progress(job.customer_id, job.document_id, Progress(step, done, total))
+            self._progress_store.set_progress(
+                job.customer_id, job.document_id, Progress(step, done, total), run_id=run.run_id
+            )
         except BackendUnavailable:
             _log.warning(
                 "progress_not_saved",
@@ -880,18 +899,20 @@ class DocumentProcessor:
             )
 
     def _reading_beat(
-        self, job: Job, heartbeat: Heartbeat, total: int, reads: list[RouteDecision | None]
+        self, job: Job, run: _Run, heartbeat: Heartbeat, total: int, reads: list[RouteDecision | None]
     ) -> OnPage:
-        """The readers' ``on_page``: keep how the page was read, the heartbeat, then
-        "reading i of total"."""
+        """The readers' ``on_page``: keep how the page was read and count it by its route
+        (R6), the heartbeat, then "reading i of total"."""
         done = 0
 
         def on_page(read: RouteDecision | None) -> None:
             nonlocal done
             done += 1
             reads.append(read)
+            if read is not None:
+                run.routes[read.route] += 1
             heartbeat()
-            self._progress(job, "reading", min(done, total), total)
+            self._progress(job, run, "reading", min(done, total), total)
 
         return on_page
 
@@ -916,11 +937,19 @@ def _page_record(info: PageInfo, prepared: Prepared) -> PageRecord:
     return replace(record, effective_dpi=check.effective_dpi, low_resolution=check.low_resolution)
 
 
-def _with_routes(pages: list[PageRecord], reads: Sequence[RouteDecision | None]) -> list[PageRecord]:
+def _with_routes(
+    pages: list[PageRecord], reads: Sequence[RouteDecision | None], checks: Mapping[int, PageCheck]
+) -> list[PageRecord]:
     """Each page with its route (R1): a sheet's page is cells; any other page's is
     the one its reader said it read it by (``on_page``, in page order), so a stored
-    route never disagrees with what was read (council PR 3 review, low 7); a page
-    the reader did not report was not read (None). O(pages)."""
+    route never disagrees with what was read (council PR 3 review, low 7).
+
+    A page its reader gave no route (with OCR_ENGINE=none, a PDF page with no text
+    layer: nothing read it) is ``blank`` when its picture is blank (R3, ``checks``),
+    which needs no reader; any other stays None, "not read", and is never ``ocr``,
+    since nothing went to OCR. A document none of whose pages could be read is
+    needs_reader (the PDF reader raises NoReader), so on a ready document a None
+    route names the pages that alone were not read. O(pages)."""
     routed = []
     for page in pages:
         index = page.info.page - 1
@@ -928,7 +957,9 @@ def _with_routes(pages: list[PageRecord], reads: Sequence[RouteDecision | None])
             route: str | None = "cells"
         else:
             read = reads[index] if 0 <= index < len(reads) else None
-            route = None if read is None else read.route
+            check = checks.get(page.info.page)
+            blank = check is not None and check.blank
+            route = read.route if read is not None else ("blank" if blank else None)
         routed.append(replace(page, route=route))
     return routed
 

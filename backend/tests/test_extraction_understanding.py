@@ -47,6 +47,7 @@ def run(
         num_ctx=8192,
         run_id=RUN,
         beat=beat,
+        spans=spans,
     )
     return understanding, beats
 
@@ -129,6 +130,7 @@ class ModelOnTest(unittest.TestCase):
             num_ctx=8192,
             run_id=RUN,
             beat=lambda done, total: beats.append((done, total)),
+            spans=INVOICE,
         )
         self.assertEqual((chat.calls, beats, understanding.model_calls), ([], [], 0))
         self.assertEqual((understanding.facts, understanding.error_code), (DocumentFacts(), None))

@@ -342,6 +342,33 @@ class FindLabelledTest(unittest.TestCase):
         self.assertEqual((label.location.page, value.location.page), (15, 16))
         self.assertEqual(value.text, "$12,000")
 
+    def test_a_running_footer_between_the_label_and_the_value_is_left_out(self) -> None:
+        spans = [
+            line("Profit of the month Sept is", 15, 0.90),
+            line("Page 15 of 20", 15, 0.97),
+            line("$12,000", 16, 0.05),
+            line("Page 16 of 20", 16, 0.97),
+        ]
+        reader = reader_text(spans)
+        self.assertNotIn("Page 15", reader.text)
+        label, value = find_labelled(reader, "Sept is", "$12,000")
+        assert label is not None and value is not None
+        self.assertEqual((label.location, value.location), (spans[0].location, spans[2].location))
+        across = find_quote(reader, "Profit of the month Sept is $12,000")
+        assert across is not None
+        self.assertEqual((across.text, across.pages), ("Profit of the month Sept is $12,000", 2))
+        self.assertEqual(across.location, spans[0].location)  # the box on the first matched page
+
+    def test_the_first_copy_of_a_letterhead_and_a_one_off_header_block_can_be_quoted(self) -> None:
+        spans = [line("Sharma Traders", page, 0.02) for page in (1, 2, 3)]
+        spans.append(Span("12 Pune Road, Kothrud", "12 Pune Road, Kothrud", spans[0].location, kind="header"))
+        reader = reader_text(spans)
+        self.assertEqual(reader.text, "Sharma Traders\n12 Pune Road, Kothrud")
+        found = find_quote(reader, "Sharma Traders")
+        assert found is not None
+        self.assertEqual(found.location.page, 1)
+        self.assertEqual(only(reader, "pune road"), "Pune Road")
+
     def test_the_value_is_found_up_to_300_characters_after_its_label(self) -> None:
         self.assertEqual(LABEL_WINDOW, 300)
         for gap, found in ((LABEL_WINDOW, True), (LABEL_WINDOW + 1, False)):

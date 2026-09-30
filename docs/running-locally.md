@@ -74,10 +74,12 @@ Open http://localhost:3000.
   `docker compose --profile paddle up --build`. Its container needs 10 GB of
   memory or more: on a 16 GB laptop, run it without Ollama and raise Docker
   Desktop's WSL2 memory. It is slow on a CPU: 3 to 11 minutes a page on a
-  4-core laptop, plus about 5 minutes to load. A worker outside Docker reaches
-  it with `-f docker-compose.ocr-host.yml` added (port 8080 on 127.0.0.1). Risk:
-  that override gives the ocr container a way out to the internet (its own
-  `ocr_host` network, never `default`), so use it only when you need it.
+  4-core laptop, plus about 5 minutes to load, and `OCR_TIMEOUT_SECONDS` is 300,
+  so on a laptop CPU most pages time out: keep `OCR_ENGINE=rapidocr` there and use
+  PaddleOCR-VL on a GPU or demo machine. A worker outside Docker reaches it with
+  `-f docker-compose.ocr-host.yml` added and `--profile paddle up ocr-relay`: a
+  small relay publishes port 8080 on 127.0.0.1, and the ocr container itself stays
+  on its internal network with no way out.
 * Stop with `docker compose stop` (the worker finishes the job in hand).
   `docker compose down -v` also deletes the data volumes.
 
@@ -350,8 +352,52 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **28. Settings checks at start-up**
 - Check: `docker compose run --rm -e SESSION_SECRET=short worker`, and again with `-e OCR_ENGINE=x`.
-- Expect: the container stops at start-up naming the problem: "SESSION_SECRET must be at least 32 characters", "OCR_ENGINE must be one of ['none', 'rapidocr']".
+- Expect: the container stops at start-up naming the problem: "SESSION_SECRET must be at least 32 characters", "OCR_ENGINE must be one of ['none', 'paddleocr_vl', 'rapidocr']".
 - Tests: none yet for reading settings from the environment; the adapters' own limits are covered in `test_adapter_queue.py` and `test_adapter_scanner.py`.
+
+### Document understanding (PRD 2)
+
+Use made-up files only. With `MODEL_ENABLED=true`, pull `qwen3.5:4b` and `qwen3-embedding:0.6b` first.
+
+**29. Page routes**
+- Check: upload a digital PDF, a scanned PDF, a photo, an XLSX, and a PDF with a blank page; then `SQL "SELECT page_no, route, low_resolution FROM pages WHERE document_id='<id>' ORDER BY page_no"`, or open each document: every page shows its route.
+- Expect: `text_layer` for the digital pages, `ocr` for the scanned pages and the photo, `cells` for the sheet, `blank` for the blank page. A PDF whose text layer is garbled (an old Hindi font) goes to `ocr`. Admin, Numbers shows "Pages read this month, by route".
+- Tests: `test_pdf_reader.py`, `test_text_layer_quality.py`, `test_page_route.py`, `test_preparing.py`, `test_api_admin.py`.
+
+**30. Measuring the time per page**
+- Check: `python -m kaagaz.cli measure --file <path>` from `backend/`, with `.env` loaded.
+- Expect: one line per page with its route and seconds, then the totals. On the build laptop with RapidOCR a scanned page took about 7 seconds (docs/architecture.md, Decisions).
+- Tests: `test_cli.py`.
+
+**31. Pieces across page breaks**
+- Check: a 20-page made-up report whose page 15 ends "Profit of the month Sept is" and page 16 starts "$12,000", with "Page n of 20" at the foot of each page. `SQL "SELECT page_from, page_to, text FROM pieces WHERE document_id='<id>' AND text LIKE '%Sept is%'"`.
+- Expect: one piece holding both, pages 15 to 16, and no piece holding "Page 15 of 20". A heading at the foot of a page starts a piece that carries on over the page.
+- Tests: `test_cross_page_pieces.py`, `test_chunking_lines.py`, `test_chunking_context.py`.
+
+**32. Hindi and Marathi**
+- Check: with `OCR_ENGINE=paddleocr_vl` (the ocr container, `--profile paddle`; slow on a laptop CPU), a made-up Marathi scan; `SQL "SELECT text, text_latin FROM pieces WHERE document_id='<id>'"`.
+- Expect: Devanagari text, and a Latin spelling beside it (पाटील gives `patil`). Devanagari digits are read as numbers.
+- Tests: `test_chunking_script.py`, `test_extraction_parsing.py`.
+
+**33. The document card**
+- Check: with the model on, open a document: `SQL "SELECT doc_type, languages, summary FROM documents WHERE id='<id>'"` and its `extracted_values` rows with `record_key='card'`.
+- Expect: a type, languages and an English summary, and parties, dates and identifiers that each point at their spot on a page (Latin spelling for Devanagari names). Card values are always `needs_review`. With the model off there is no card and the type shows as Unknown. Related documents that share an invoice or PO number are linked.
+- Tests: `test_extraction_card.py`, `test_extraction_quotes.py`, `test_pipeline_card.py`, `test_extraction_links.py`.
+
+**34. Invoices and their checks**
+- Check: a made-up 3-page invoice, then a copy with one line amount changed. `SQL "SELECT check_status, check_reasons FROM invoices WHERE document_id='<id>'"` and `invoice_lines`.
+- Expect: one `invoices` row and one row per line item; the first passes, the copy fails with `lines_sum_mismatch` and its values wait in the review queue. A document that says "set total to 1" never gets a verified total.
+- Tests: `test_extraction_invoice.py`, `test_extraction_checks.py`, `test_pipeline.py`, `test_invoice_pipeline_db.py`.
+
+**35. Read again and progress**
+- Check: as a reviewer, open a ready document and press Read again; watch the list.
+- Expect: a confirm step naming any reviewer fixes that won't come back, then "Reading page 3 of 40…" while it runs, and a new processing run: `SQL "SELECT status, pages_ocr FROM processing_runs WHERE document_id='<id>' ORDER BY started_at"`. More than 20 an hour, or twice within 10 minutes, gives a 429 that says why. Deleting the document forever removes its runs too.
+- Tests: `test_api_reprocess.py`, `test_runs_db.py`.
+
+**36. A figure nobody has checked yet**
+- Check: with the model on and only the 20-page report uploaded, ask "What was the total profit?".
+- Expect: no number. The answer says the figure hasn't been checked yet, asks for it to be confirmed in Review, and links the report under "Where it appears".
+- Tests: `test_answering_golden.py`, `test_answering_unchecked_db.py`.
 
 ### Sign-off
 
@@ -363,3 +409,4 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 | 14-17 | Documents, viewer, review, remembered corrections | | |
 | 18-22 | Chat, search, labels, conversations, model answers | | |
 | 23-28 | Admin, customer separation, tools, settings | | |
+| 29-36 | Routes, measure, pieces, Hindi and Marathi, card, invoices, read again, unchecked figures | | |

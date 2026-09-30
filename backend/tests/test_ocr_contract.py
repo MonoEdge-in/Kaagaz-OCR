@@ -19,7 +19,9 @@ from PIL import Image, PngImagePlugin
 
 from kaagaz.ingestion import sniff
 from kaagaz.ocr_server.app import RawBlock, create_app
+from kaagaz.reading import ocr
 from kaagaz.reading.ocr import OcrLine, OcrTable, PaddleVlEngine
+from kaagaz.reading.spans import ReadError
 from kaagaz.reading.wiring import build_reader_socket
 from tests.pdf_builder import Page, Picture, make_pdf
 from tests.picture_support import text_like_picture
@@ -32,6 +34,7 @@ class Bridge:
     model: FakePageModel
     url: str = ""
     bodies: list[bytes] = field(default_factory=list)  # what the engine sent, as it arrived
+    busy: threading.Event = field(default_factory=threading.Event)  # set at the first 503
 
 
 @pytest.fixture
@@ -52,6 +55,8 @@ def bridge() -> Iterator[Bridge]:
                 self.send_header("Content-Length", str(len(reply.content)))
                 self.end_headers()
                 self.wfile.write(reply.content)
+                if reply.status_code == 503:
+                    link.busy.set()
 
             def log_message(self, format: str, *args: Any) -> None:
                 pass
@@ -118,3 +123,38 @@ def test_the_worker_sends_only_a_png_it_encoded_itself(bridge: Bridge) -> None:
     assert b"kaagaz-marker" not in sent
     with Image.open(io.BytesIO(sent)) as picture:
         assert (picture.format, picture.size, picture.mode) == ("PNG", (120, 80), "RGB")
+
+
+def test_a_page_the_model_fails_on_fails_the_document(bridge: Bridge) -> None:
+    bridge.model.failure = RuntimeError("paddle")
+    with pytest.raises(ReadError) as caught:
+        PaddleVlEngine(bridge.url, timeout_seconds=5).read(Image.new("RGB", (200, 100), "white"))
+    assert caught.value.code == "ocr_failed"
+    assert len(bridge.bodies) == 1
+
+
+def test_a_page_sent_while_another_is_read_waits_for_it(
+    bridge: Bridge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The busy cascade: the server is still on a page (say one a worker gave up on).
+    The next page waits inside its own call and is read, using up no attempt."""
+    monkeypatch.setattr(ocr, "_BUSY_WAIT_SECONDS", 0.05)
+    bridge.model.release.clear()
+    page = Image.new("RGB", (200, 100), "white")
+    first = threading.Thread(target=PaddleVlEngine(bridge.url, timeout_seconds=5).read, args=(page,))
+    first.start()
+    assert bridge.model.started.wait(5)
+
+    def release_once_refused() -> None:
+        bridge.busy.wait(5)
+        bridge.model.release.set()
+
+    releaser = threading.Thread(target=release_once_refused)
+    releaser.start()
+    lines = PaddleVlEngine(bridge.url, timeout_seconds=5).read(page)
+    first.join(10)
+    releaser.join(10)
+
+    assert bridge.busy.is_set()
+    assert [line.text for line in lines] == ["Total 500"]
+    assert len(bridge.model.images) == 2

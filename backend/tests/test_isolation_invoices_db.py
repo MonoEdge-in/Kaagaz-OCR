@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from kaagaz.db import listing
+from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.pipeline import DocumentContent, LinkIdentifier, PageRecord
@@ -20,7 +21,7 @@ from tests.db_support import new_customer
 from tests.exit_fixtures import TEXTILE_FIELDS, QuotingChat, textile_lines
 from tests.test_api_support import Api
 from tests.test_extraction_invoice import textile
-from tests.test_pipeline_store_db import links, new_document, rows
+from tests.test_pipeline_store_db import links, new_document, read, rows
 
 pytestmark = pytest.mark.db
 
@@ -123,10 +124,10 @@ def test_b_adding_a_line_to_a_invoice_is_refused(db: Database) -> None:
 
 def test_the_same_invoice_number_at_b_never_links_to_a(db: Database) -> None:
     a, b, a_doc, _ = a_with_an_invoice(db)
+    PgDocuments(db).mark_ready(a, a_doc, 3)  # a link target is ready
     a_copy, b_doc = new_document(db, a), new_document(db, b)
-    store = PgPipelineStore(db)
-    store.save(textile_content(a, a_copy))
-    store.save(textile_content(b, b_doc))
+    read(db, textile_content(a, a_copy))
+    PgPipelineStore(db).save(textile_content(b, b_doc))
 
     assert links(db, a, a_doc) == {
         (a_doc, a_copy, "invoice_number", "tx-2026-118"),

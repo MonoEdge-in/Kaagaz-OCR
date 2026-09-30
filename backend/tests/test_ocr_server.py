@@ -79,9 +79,12 @@ class FakePageModel:
         self.release.set()
         self.images: list[tuple[tuple[int, int], str]] = []
         self.failure: Exception | None = None
+        self.load_failure: Exception | None = None
 
     def load(self) -> None:
         self.may_load.wait(10)
+        if self.load_failure is not None:
+            raise self.load_failure
         self.loaded.set()
 
     def ready(self) -> bool:
@@ -315,18 +318,54 @@ def test_the_docs_routes_are_off(client: TestClient) -> None:
         assert client.get(path).status_code == 404
 
 
-def test_an_error_is_logged_by_its_type_only(
+def test_a_page_the_model_fails_on_is_read_failed_logged_by_its_type_only(
     client: TestClient, model: FakePageModel, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG)
     model.failure = ValueError("Sunil Patil 27AABCS1234K1Z5")
     reply = client.post("/read", content=png(), headers=PNG)
-    assert (reply.status_code, reply.json()) == (500, {"error": "internal_error"})
+    assert (reply.status_code, reply.json()) == (500, {"error": "read_failed"})  # the worker fails the page
     assert "ValueError" in caplog.text
     assert "Sunil" not in caplog.text
     model.failure = None
     assert client.post("/read", content=png(), headers=PNG).status_code == 200  # the lock was let go
     assert "Total 500" not in caplog.text  # nothing read is ever logged
+
+
+def test_an_error_outside_the_model_is_internal_error(
+    client: TestClient,
+    model: FakePageModel,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def broken() -> str:
+        raise KeyError("Sunil Patil")
+
+    monkeypatch.setattr(model, "version", broken)
+    reply = client.post("/read", content=png(), headers=PNG)
+    assert (reply.status_code, reply.json()) == (500, {"error": "internal_error"})  # retried by the worker
+    assert "KeyError" in caplog.text
+    assert "Sunil" not in caplog.text
+
+
+def test_a_model_that_fails_to_load_ends_the_process(caplog: pytest.LogCaptureFixture) -> None:
+    """So compose's restart policy starts it again, instead of a server that stays up and
+    never ready while every scan uses up its tries. The exit is a fake here."""
+    model = FakePageModel()
+    model.load_failure = OSError("/opt/models/PaddleOCR-VL-1.6 Sunil Patil")
+    codes: list[int] = []
+    exited = threading.Event()
+
+    def exit_process(code: int) -> None:
+        codes.append(code)
+        exited.set()
+
+    with TestClient(create_app(model, exit_process=exit_process), base_url=URL) as client:
+        assert exited.wait(5)
+        assert client.get("/health").status_code == 503
+    assert codes == [1]
+    assert "model load failed: OSError" in caplog.text
+    assert "Sunil" not in caplog.text
 
 
 def test_table_cells_headers_spans_and_empty_cells() -> None:

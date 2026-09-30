@@ -27,7 +27,10 @@ Rules shared by every query (never a guess, CLAUDE.md never-do 6):
   used, and the ``page:{p}:line:{n}`` records (a field printed again further
   on, kaagaz/extraction/labelled.py) are left out of the total, the top party,
   the extreme value and the document count. Spreadsheet rows (``sheet:...``)
-  are unchanged.
+  count as records of their own, except the rows of a field the document also
+  has in its ``document`` record (a spreadsheet read as an invoice, PRD 2 E4):
+  those rows are left out of the same four, so the invoice's total is counted
+  once, never beside its cells.
 * The document card's values (record ``card``, PRD 2 D3) never take part, nor
   count as available fields: the model chose their fields (security amendment
   A1, council fix 9).
@@ -145,6 +148,10 @@ _TOP_GROUP = text(
           AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
           AND v.record_key NOT LIKE 'line:%'
+          AND NOT (v.record_key LIKE 'sheet:%' AND EXISTS (
+              SELECT 1 FROM extracted_values o
+              WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
+                AND o.field = v.field AND o.record_key = 'document'))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), grp AS (
@@ -156,6 +163,10 @@ _TOP_GROUP = text(
           AND v.field = ANY(CAST(:group_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
           AND v.record_key NOT LIKE 'line:%'
+          AND NOT (v.record_key LIKE 'sheet:%' AND EXISTS (
+              SELECT 1 FROM extracted_values o
+              WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
+                AND o.field = v.field AND o.record_key = 'document'))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(btrim(v.value_text) <> '')
     ), dated AS (
@@ -167,6 +178,10 @@ _TOP_GROUP = text(
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
           AND v.record_key NOT LIKE 'line:%'
+          AND NOT (v.record_key LIKE 'sheet:%' AND EXISTS (
+              SELECT 1 FROM extracted_values o
+              WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
+                AND o.field = v.field AND o.record_key = 'document'))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
@@ -207,6 +222,10 @@ _TOTAL = text(
           AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
           AND v.record_key NOT LIKE 'line:%'
+          AND NOT (v.record_key LIKE 'sheet:%' AND EXISTS (
+              SELECT 1 FROM extracted_values o
+              WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
+                AND o.field = v.field AND o.record_key = 'document'))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), dated AS (
@@ -218,6 +237,10 @@ _TOTAL = text(
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
           AND v.record_key NOT LIKE 'line:%'
+          AND NOT (v.record_key LIKE 'sheet:%' AND EXISTS (
+              SELECT 1 FROM extracted_values o
+              WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
+                AND o.field = v.field AND o.record_key = 'document'))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
@@ -250,6 +273,10 @@ _EXTREME_VALUE = text(
           AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
           AND v.record_key NOT LIKE 'line:%'
+          AND NOT (v.record_key LIKE 'sheet:%' AND EXISTS (
+              SELECT 1 FROM extracted_values o
+              WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
+                AND o.field = v.field AND o.record_key = 'document'))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), dated AS (
@@ -261,6 +288,10 @@ _EXTREME_VALUE = text(
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
           AND v.record_key NOT LIKE 'line:%'
+          AND NOT (v.record_key LIKE 'sheet:%' AND EXISTS (
+              SELECT 1 FROM extracted_values o
+              WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
+                AND o.field = v.field AND o.record_key = 'document'))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
@@ -290,6 +321,10 @@ _COUNT_DOCUMENTS = text(
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
           AND v.record_key NOT LIKE 'line:%'
+          AND NOT (v.record_key LIKE 'sheet:%' AND EXISTS (
+              SELECT 1 FROM extracted_values o
+              WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
+                AND o.field = v.field AND o.record_key = 'document'))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL

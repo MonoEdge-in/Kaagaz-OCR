@@ -194,23 +194,37 @@ class SectionTest(unittest.TestCase):
 
 
 class RunningLinesTest(unittest.TestCase):
-    """C2: running headers and footers are left out of pieces. PROVISIONAL (council):
-    a repeated line keeps its first copy; a page counter is left out on every page."""
+    """C2: running headers and footers are left out of pieces: every span of kind header or
+    footer, and every copy of a text repeated in the band, the first too. The council's
+    PROVISIONAL "keep the first copy" read C2 as "remove the repeats"; the PRD says these
+    lines are left out, so no copy stays (the quote finder still keeps one, ``keep_first``)."""
 
-    def test_header_and_footer_kinds_are_left_out_when_they_repeat(self) -> None:
+    def test_header_and_footer_kinds_are_left_out_even_on_one_page(self) -> None:
         one_page = [line("Sharma Traders", 0.02, kind="header"), line("Body text.", 0.3)]
-        self.assertEqual(running_spans(one_page), set())  # a letterhead on one page is kept
+        self.assertEqual(running_spans(one_page), {0})
+        self.assertEqual(texts(one_page), ["Body text."])
         spans = []
         for page in (1, 2):
             spans += [
                 line("Sharma Traders", 0.02, page=page, kind="header"),
                 line(f"Body {page}.", 0.3, page=page),
             ]
-            spans.append(line(f"Page {page}", 0.5, page=page, kind="footer"))  # wherever it sits
-        self.assertEqual(running_spans(spans), {2, 3, 5})  # page 2's header, and both counters
-        self.assertEqual(texts(spans), ["Sharma Traders", "Body 1.\nBody 2."])
+            spans.append(line(f"Continued {page}", 0.5, page=page, kind="footer"))  # wherever it sits
+        self.assertEqual(running_spans(spans), {0, 2, 3, 5})
+        self.assertEqual(texts(spans), ["Body 1.\nBody 2."])
 
-    def test_a_line_repeated_in_the_band_on_3_pages_keeps_only_its_first_copy(self) -> None:
+    def test_keep_first_keeps_a_one_off_header_and_the_first_copy_of_a_repeat(self) -> None:
+        spans = []
+        for page in (1, 2):
+            spans += [
+                line("Sharma Traders", 0.02, page=page, kind="header"),
+                line(f"Body {page}.", 0.3, page=page),
+                line(f"Page {page}", 0.5, page=page, kind="footer"),  # a counter: every copy
+            ]
+        spans.append(line("Signed by the accountant", 0.5, page=2, kind="footer"))
+        self.assertEqual(running_spans(spans, keep_first=True), {2, 3, 5})
+
+    def test_a_line_repeated_in_the_band_on_3_pages_is_left_out_on_every_page(self) -> None:
         def pages(count: int) -> list[Span]:
             spans = []
             for page in range(1, count + 1):
@@ -223,14 +237,15 @@ class RunningLinesTest(unittest.TestCase):
             return spans
 
         three = texts(pages(3))
-        self.assertEqual(three, ["Sharma Traders Pvt Ltd", "Body 1.\nTotal\nBody 2.\nTotal\nBody 3.\nTotal"])
+        self.assertEqual(three, ["Body 1.\nTotal\nBody 2.\nTotal\nBody 3.\nTotal"])
         two = texts(pages(2))  # a line on 2 pages is kept; a page counter is not
         self.assertEqual(
             two, ["Sharma Traders Pvt Ltd", "Body 1.\nTotal\nSharma Traders Pvt Ltd", "Body 2.\nTotal"]
         )
 
     def test_page_counters_are_left_out_on_every_page(self) -> None:
-        for counter in ("Page {n} of 20", "- {n} -", "{n}/20", "Page {printed}"):  # printed: an offset of 4
+        counters = ("Page {n} of 20", "- {n} -", "{n}/20", "Page {printed}", "{n}", "p. {n}", "PAGE {n} / 20")
+        for counter in counters:  # printed: an offset of 4
             with self.subTest(counter=counter):
                 spans = []
                 for n in (1, 2, 3):
@@ -246,6 +261,17 @@ class RunningLinesTest(unittest.TestCase):
         kept = "\n".join(texts(spans))
         for text in ("101", "205", "318", "12,000", "24,500", "31,750"):
             self.assertIn(text, kept)
+
+    def test_a_line_with_a_number_near_the_page_number_is_not_a_counter(self) -> None:
+        # The audit's case: "carried forward 8" on page 5 and "9" on page 6 is offset 3 on
+        # 2 pages, but it is not shaped like a page counter, so both are kept.
+        spans = [
+            line("Balance carried forward 8", 0.95, page=5),
+            line("Balance carried forward 9", 0.95, page=6),
+            line("Invoice 7 of Sharma", 0.02, page=5),
+            line("Invoice 8 of Sharma", 0.02, page=6),
+        ]
+        self.assertEqual(running_spans(spans), set())
 
     def test_an_invoice_number_rising_one_a_page_is_kept_but_a_small_page_offset_is_not(self) -> None:
         # PROVISIONAL (lead): a page counter's offset from the page number is at most 10,
@@ -264,14 +290,19 @@ class RunningLinesTest(unittest.TestCase):
         (piece,) = [p for p in pieces_from_lines("cust-a", "doc-1", spans) if "Profit" in p.text]
         self.assertTrue(piece.text.startswith("Profit of the month Sept is\n$12,000"))
 
-    def test_a_triplicate_invoice_keeps_one_copy_of_its_repeated_lines(self) -> None:
+    def test_a_triplicate_invoice_keeps_none_of_its_banded_repeats_in_pieces(self) -> None:
+        # C2 leaves the letterhead out; its body lines stay in every copy. The reader
+        # text for quotes keeps the first copy (running_spans with keep_first).
         spans = []
         for page, copy in enumerate(("Original", "Duplicate", "Triplicate"), 1):
             spans += [line("Sharma Traders", 0.02, page=page), line(copy, 0.2, page=page)]
             spans += [line("Invoice INV-7", 0.3, page=page), line("Grand Total: 1,180.00", 0.95, page=page)]
         pieces = texts(spans)
-        self.assertEqual(sum("Sharma Traders" in p for p in pieces), 1)
-        self.assertEqual(sum("Grand Total" in p for p in pieces), 1)
+        self.assertEqual(sum("Sharma Traders" in p for p in pieces), 0)
+        self.assertEqual(sum("Grand Total" in p for p in pieces), 0)
+        self.assertEqual(sum("Invoice INV-7" in p for p in pieces), 3)
+        kept = [spans[i].text for i in sorted(running_spans(spans, keep_first=True))]
+        self.assertEqual(kept, ["Sharma Traders", "Grand Total: 1,180.00"] * 2)  # pages 2 and 3
 
     def test_the_band_is_the_top_and_bottom_8_percent(self) -> None:
         spans = []
@@ -284,8 +315,8 @@ class RunningLinesTest(unittest.TestCase):
 
     def test_a_table_header_row_repeated_at_the_top_of_pages_is_not_running(self) -> None:
         spans = [cell("Item", page, 0, 0, table=f"t{page}", header=True) for page in (1, 2, 3)]
-        # Only the repeats of the line "x" (pages 2 and 3) are running; no cell is.
-        self.assertEqual(running_spans([*spans, *(line("x", 0.02, page=p) for p in (1, 2, 3))]), {4, 5})
+        # Only the line "x" (on all 3 pages) is running; no cell is.
+        self.assertEqual(running_spans([*spans, *(line("x", 0.02, page=p) for p in (1, 2, 3))]), {3, 4, 5})
 
 
 class TableTest(unittest.TestCase):

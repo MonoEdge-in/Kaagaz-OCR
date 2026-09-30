@@ -161,6 +161,12 @@ class LatinSpellingTest(unittest.TestCase):
         # The conjunct is kept as written, even with a joiner inside it.
         self.assertEqual(latin_spelling("क्" + ZWJ + "ष"), "ksha")
 
+    def test_a_final_visarga_drops_the_a_as_the_bare_consonant_does(self) -> None:
+        self.assertEqual(latin_spelling("रामः"), latin_spelling("राम"))
+        self.assertEqual(latin_spelling("रामः"), "ram")
+        self.assertEqual(latin_spelling("रामाः"), "rama")  # a long a is kept
+        self.assertEqual(latin_spelling("दुःख"), "dukh")  # a visarga inside a word is dropped
+
     def test_a_nukta_consonant_at_the_end_drops_its_a(self) -> None:
         self.assertEqual(latin_spelling("सफ़"), "saf")
 

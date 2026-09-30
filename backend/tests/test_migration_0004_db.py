@@ -151,7 +151,7 @@ def test_downgrade_refuses_while_rows_use_what_0003_cannot_hold(
         m0002._downgrade(url, "0003")
 
     assert message in refused.value.stderr
-    assert "0004 (head)" in _current(url)
+    assert "0005 (head)" in _current(url)  # the whole downgrade is one transaction
     assert m0002._schema(database) == at_head
 
 

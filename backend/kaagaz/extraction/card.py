@@ -440,7 +440,7 @@ def _card_lines(reader: ReaderText) -> Iterator[tuple[int, str]]:
     kept = -2
     for k, span in enumerate(spans):
         page = span.location.page
-        # PR 2 adds Span.kind (the block kind from PaddleOCR-VL); before it, this reads None.
+        # Span.kind: the block kind from PaddleOCR-VL, or a text layer's headings (pdf_reader).
         if not (page <= 2 or page == last or span.kind in _HEADINGS):
             continue
         if line and kept == k - 1 and _join_before(reader, k) == " | ":

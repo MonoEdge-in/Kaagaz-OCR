@@ -16,7 +16,7 @@ from kaagaz.db.pipeline_store import PgPipelineStore
 from tests.db_support import new_customer
 from tests.test_api_support import Api
 from tests.test_extraction_card import line, reply
-from tests.test_pipeline_store_db import FACT_COLUMNS, card_content, links, new_document, rows
+from tests.test_pipeline_store_db import FACT_COLUMNS, card_content, links, new_document, read, rows
 
 pytestmark = pytest.mark.db
 
@@ -37,9 +37,8 @@ def test_the_same_card_invoice_number_at_two_customers_never_links(db: Database)
     a, _ = new_customer(db)
     b, _ = new_customer(db)
     a_doc, b_doc = new_document(db, a), new_document(db, b)
-    store = PgPipelineStore(db)
-    store.save(card_content(a, a_doc, SPANS, CARD))
-    store.save(card_content(b, b_doc, SPANS, CARD))
+    read(db, card_content(a, a_doc, SPANS, CARD))  # ready, so it would be a link target for A
+    PgPipelineStore(db).save(card_content(b, b_doc, SPANS, CARD))
 
     assert card_content(b, b_doc, SPANS, CARD).links  # B's card does carry the number
     assert links(db, a, a_doc) == set()

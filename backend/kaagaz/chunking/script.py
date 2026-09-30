@@ -21,9 +21,10 @@ of it looks sound, and a Latin spelling of it for search.
   of Devanagari letters: NFC, then IAST with indic-transliteration. The final
   "a" is dropped only when the run ends in a bare consonant (a nukta is
   allowed) that does not follow a virama, decided on the Devanagari side, so
-  पाटील gives patil and कृष्ण keeps krishna. Then, in this order: "ch" to
-  "chh" (through a placeholder) and "c" to "ch"; ś and ṣ to "sh"; ṛ and ṝ to
-  "ri"; ṃ to "m" before p, b or m, else "n"; "~" and m̐ to "n"; ḥ dropped.
+  पाटील gives patil and कृष्ण keeps krishna. A final visarga is left aside
+  for this (PROVISIONAL), so रामः gives ram, as राम does. Then, in this
+  order: "ch" to "chh" (through a placeholder) and "c" to "ch"; ś and ṣ to
+  "sh"; ṛ and ṝ to "ri"; ṃ to "m" before p, b or m, else "n"; "~" and m̐ to "n"; ḥ dropped.
   Last, NFKD, drop the marks (Mn) and format characters (Cf, the joiners),
   and lower-case the whole text. Middle vowels are never dropped (kulakarni),
   so name matching must stay fuzzy. Other text is kept as it is.
@@ -59,6 +60,7 @@ _VOWEL_SIGNS = frozenset(
 )
 _NUKTA = "\u093c"
 _VIRAMA = "\u094d"
+_VISARGA = "\u0903"
 _JOINERS = "\u200c\u200d"  # ZWNJ and ZWJ
 
 _DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
@@ -79,7 +81,8 @@ _BEFORE_IAST = str.maketrans(
 # A run of Devanagari letters and signs (with the joiners), or a run of the
 # block's other characters: the danda, the digits and the abbreviation sign.
 _RUN = re.compile(r"(?P<letters>[\u0900-\u0963\u0971-\u097f\u200c\u200d]+)|[\u0964-\u0970]+")
-_FINAL_A = re.compile(r"a([\u093c\u200c\u200d]*)\Z")  # the inherent "a", maybe before a nukta or joiner
+# The inherent "a", maybe before a nukta or joiner, and before a final visarga (dropped later).
+_FINAL_A = re.compile(r"a([\u093c\u200c\u200d]*)(?=\u1e25?\Z)")
 _ANUSVARA_BEFORE_LIP = re.compile("\N{LATIN SMALL LETTER M WITH DOT BELOW}(?=[pbm])")
 _PLACEHOLDER = "\x00"  # never in the IAST spelling of a Devanagari run
 
@@ -176,8 +179,9 @@ def _letters_to_latin(run: str, iast: str) -> str:
 
 
 def _ends_in_bare_consonant(run: str) -> bool:
-    """The run's last letter is a consonant (a nukta may follow it) that does not follow a virama."""
-    letters = run.rstrip(_JOINERS)
+    """The run's last letter is a consonant (a nukta or a visarga may follow it) that does not
+    follow a virama."""
+    letters = run.rstrip(_JOINERS).removesuffix(_VISARGA).rstrip(_JOINERS)
     if letters.endswith(_NUKTA):
         letters = letters[:-1]
     if not letters or letters[-1] not in _CONSONANTS:

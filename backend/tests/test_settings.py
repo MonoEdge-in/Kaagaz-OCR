@@ -33,7 +33,7 @@ def test_the_shipped_env_example_parses_with_the_scan_reader_defaults() -> None:
     assert (settings.ocr_engine, settings.ocr_url, settings.ocr_timeout_seconds, settings.ocr_dpi) == (
         "rapidocr",
         "http://localhost:8080",
-        900.0,
+        300.0,  # 5 minutes a page (decided 30 Sep 2026)
         300,
     )
     assert (settings.queue_lease_seconds, settings.page_image_dpi) == (1200, 150)

@@ -477,11 +477,20 @@ class PgDocuments:
         with unavailable():
             retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
 
-    def set_progress(self, customer_id: str, document_id: str, progress: Progress) -> None:
+    def set_progress(
+        self, customer_id: str, document_id: str, progress: Progress, *, run_id: str | None = None
+    ) -> None:
         """Show how far the reading has got (X3), on a document still in progress
-        (received or clean) only. Its own short transaction, one indexed statement;
-        never called while this process holds another transaction."""
+        (received or clean) only. With ``run_id``, the run fence, as ``set_failed``:
+        under the family lock, raise Superseded and change nothing unless that run is
+        still open, so a stale delivery never overwrites the newer run's progress. Its
+        own short transaction, one indexed statement (three with the fence); never
+        called while this process holds another transaction."""
         with unavailable(), self._db.customer(customer_id) as conn:
+            if run_id is not None:
+                lock_family(conn, customer_id, document_id)
+                if not is_run_open(conn, customer_id, document_id, run_id):
+                    raise Superseded(run_id)
             conn.execute(
                 text(
                     "UPDATE documents SET progress = CAST(:p AS jsonb)"

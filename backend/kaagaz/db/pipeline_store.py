@@ -32,12 +32,13 @@ open (``runs.is_run_open``, read under the family lock);
 otherwise it raises Superseded and writes nothing. A deadlock that PostgreSQL
 breaks (40P01) runs the whole transaction again (AR7).
 
-A document links to this customer's live documents of other families whose
-card or document values hold one of its identifiers, whatever their state
-(AR5, PROVISIONAL), so two documents read at once still link. PRD 3's reader of
-the links filters both ends with LIVE_CURRENT. The ``LIVE`` fragment
-(kaagaz.db.visibility) is written literally in the two statements that join
-``documents d``.
+A document links to this customer's documents of other families whose card or
+document values hold one of its identifiers, when they are current, out of Trash
+and ready: the ``LIVE_CURRENT`` fragment (kaagaz.db.visibility), written literally
+in the two statements that join ``documents d``, so no link ever points at an
+older version or a document still being read. PROVISIONAL: this replaces AR5
+(any state), so of two documents read at once the one saved first links only
+when the other is read after it is ready, or read again.
 
 A reader output is stored as a JSON array of spans, each
 ``{"text", "raw", "region", "confidence"}`` with ``region`` as in
@@ -137,7 +138,8 @@ _LINK_TARGETS = text(
     " AND v.record_key IN ('card', 'document')"
     r" AND translate(lower(regexp_replace(v.value_text, '\s', '', 'g')), '०१२३४५६७८९', '0123456789')"
     " = ANY(CAST(:values AS text[]))"
-    " AND d.id <> :d AND d.family_id <> :f AND d.deleted_at IS NULL"
+    " AND d.id <> :d AND d.family_id <> :f"
+    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
 )
 _LINK_PARTNERS = text(
     "SELECT linked_document_id FROM document_links WHERE customer_id = :c AND document_id = :d"
@@ -149,7 +151,8 @@ _LOCK_LINKED = text(
 )
 _LIVE_TARGETS = text(
     "SELECT d.id FROM documents d WHERE d.customer_id = :c AND d.id = ANY(CAST(:ids AS uuid[]))"
-    " AND d.id <> :d AND d.family_id <> :f AND d.deleted_at IS NULL"
+    " AND d.id <> :d AND d.family_id <> :f"
+    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
 )
 _DELETE_LINKS = text(
     "DELETE FROM document_links WHERE customer_id = :c AND (document_id = :d OR linked_document_id = :d)"

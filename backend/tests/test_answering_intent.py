@@ -4,7 +4,7 @@ from datetime import date
 
 from kaagaz.answering.dates import date_range, mentions_date
 from kaagaz.answering.hinglish import normalise
-from kaagaz.answering.intent import FixedPlan, plan_fixed
+from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 
 TODAY = date(2026, 9, 27)
 AUGUST = (date(2026, 8, 1), date(2026, 9, 1))
@@ -92,3 +92,13 @@ def test_two_metrics_take_the_search_route() -> None:
 
 def test_whose_total_is_not_a_single_total() -> None:
     assert _plan("whose total profit", REGISTER) is None
+
+
+def test_metric_asked_names_the_one_metric_of_a_ranking_or_total_question() -> None:
+    """What the unchecked-card answer looks for when no checked value holds the metric."""
+    assert metric_asked(normalise("What was the total profit?")) == ("profit", ("profit", "net_profit"))
+    assert metric_asked(normalise("Kiska profit sabse jyada tha?")) == ("profit", ("profit", "net_profit"))
+    assert metric_asked(normalise("kul kitna tha")) == ("amount", ("total_amount", "amount"))
+    assert metric_asked(normalise("How many invoices?")) is None  # a count, not a figure
+    assert metric_asked(normalise("profit and sales total")) is None  # two metrics
+    assert metric_asked(normalise("Tell me about the report")) is None

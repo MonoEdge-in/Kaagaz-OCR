@@ -19,7 +19,9 @@ only titles and headings, the next line joins it even across a gap (headings
 usually have space below them), and a heading under a title joins the title.
 
 C2: running headers and footers (``running_spans``) are left out of pieces.
-They stay in the reader output and in values.
+They stay in the reader output and in values. The quote finder's reader text
+leaves out the same lines, except the first copy of a repeated text and a
+header or footer span that does not repeat (``keep_first``).
 
 C3: each piece keeps its section, the last title and then the last heading,
 carried across pages until a new one replaces them.
@@ -70,6 +72,11 @@ BEFORE_MAX = 120  # C4: the "Before" part of a context header (kaagaz/chunking/c
 
 _RUNNING_KINDS = frozenset({"header", "footer"})
 _DIGITS = re.compile(r"\d+")
+# A page counter once its page number is "#" (case folded): "Page # of 20", "- # -", "#/20",
+# "p. #", "पृष्ठ #" or "#" alone (PROVISIONAL), so "carried forward #" is never one.
+_COUNTER = re.compile(
+    r"[-\u2013\u2014(\[]?\s*(?:(?:page|pg\.?|p\.|पृष्ठ)\s*)?#(?:\s*(?:of|/)\s*\d+)?\s*[-\u2013\u2014)\]]?"
+)
 _COUNTER_DIGITS = 6  # a longer run is never a page number
 _COUNTER_OFFSET = 10  # PROVISIONAL (lead): a printed page number is at most 10 from the real one
 
@@ -83,38 +90,47 @@ class _Seen:
     kind: bool = False  # a span of kind header or footer is among them
 
 
-def running_spans(spans: Sequence[Span]) -> set[int]:
+def running_spans(spans: Sequence[Span], *, keep_first: bool = False) -> set[int]:
     """The indexes of the running headers and footers in ``spans`` (C2).
 
-    Only a line in the top or bottom ``BAND`` of its page, or a span of kind
-    ``header`` or ``footer`` wherever it sits, can be one. Table cells never
-    are, so a table's header row at the top of each page is kept. Texts are
-    compared case folded, with spaces collapsed. Two kinds of repeat:
+    Every span of kind ``header`` or ``footer`` is one, wherever it sits and
+    even on one page (C2: "spans of kind header or footer"). Otherwise only a
+    line in the top or bottom ``BAND`` of its page can be one. Table cells
+    never are, so a table's header row at the top of each page is kept. Texts
+    are compared case folded, with spaces collapsed. Two kinds of repeat:
 
-    * A page counter: one run of digits is the page number plus the same
-      offset, at most 10 either way (PROVISIONAL: covers and front matter), on
-      every page, and the rest of the text is the same ("Page 15 of 20", "- 15
-      -", "15/20", or "Page 17" printed on page 15). On ``COUNTER_PAGES`` or
-      more pages, every copy is left out.
+    * A page counter: shaped like one (``_COUNTER``), with its run of digits
+      the page number plus the same offset, at most 10 either way
+      (PROVISIONAL: covers and front matter), on every page, and the rest of
+      the text the same ("Page 15 of 20", "- 15 -", "15/20", or "Page 17"
+      printed on page 15). On ``COUNTER_PAGES`` or more pages, every copy.
     * The same text on ``REPEAT_PAGES`` or more pages (a letterhead), or on 2
-      or more for a span of kind header or footer. PROVISIONAL (council, C2
-      read as "remove the repeats"): the first page's copy is kept, so a GST
-      invoice printed as original, duplicate and triplicate keeps one.
+      or more for a span of kind header or footer: every copy, the first
+      page's too (C2 says they are left out, so a GST invoice printed as
+      original, duplicate and triplicate keeps none of its banded repeats).
 
-    So a line that differs per page (a carried amount, an invoice number) is
-    kept, even one that rises by one per page like invoice 101 on page 1 and
-    102 on page 2 (offset 100). One within 10 of the page number would not be.
+    So a line that differs per page (a carried amount, an invoice number, a
+    "carried forward 8" on page 5) is kept, even one that rises by one per page
+    like invoice 101 on page 1 and 102 on page 2 (offset 100).
+
+    ``keep_first`` (for the quote finder, ``kaagaz/extraction/quotes.py``):
+    only page counters and the later copies of a repeated text, so a value
+    printed only in a letterhead or a one-off header block can still be
+    quoted, while a repeat between two pages never splits a quote.
 
     Time O(S x R) for S spans with at most R digit runs each; memory O(B x R)
     for the B lines that can be running.
     """
     same: dict[tuple[str, str], _Seen] = {}
     counters: dict[tuple[str, str, int], _Seen] = {}
+    running: set[int] = set()
     for index, span in enumerate(spans):
         box = span.location
         kind = span.kind in _RUNNING_KINDS
         if not isinstance(box, BoxLocation) or span.table_id is not None:
             continue
+        if kind and not keep_first:
+            running.add(index)
         place = "top" if box.y1 <= BAND else "bottom" if box.y0 >= 1 - BAND else "kind"
         if place == "kind" and not kind:
             continue
@@ -122,16 +138,15 @@ def running_spans(spans: Sequence[Span]) -> set[int]:
         _seen(same, (place, text), box.page, index, kind)
         for run in _DIGITS.finditer(text):
             offset = int(run[0]) - box.page if len(run[0]) <= _COUNTER_DIGITS else _COUNTER_OFFSET + 1
-            if abs(offset) <= _COUNTER_OFFSET:
-                template = text[: run.start()] + "#" + text[run.end() :]
+            template = text[: run.start()] + "#" + text[run.end() :]
+            if abs(offset) <= _COUNTER_OFFSET and _COUNTER.fullmatch(template):
                 _seen(counters, (place, template, offset), box.page, index, kind)
-    running: set[int] = set()
     for seen in counters.values():
         if len(seen.pages) >= COUNTER_PAGES:
             running.update(index for index, _ in seen.places)
     for seen in same.values():
         if len(seen.pages) >= (2 if seen.kind else REPEAT_PAGES):
-            first = min(seen.pages)
+            first = min(seen.pages) if keep_first else 0
             running.update(index for index, page in seen.places if page != first)
     return running
 

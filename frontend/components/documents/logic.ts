@@ -171,16 +171,19 @@ export function offsetAfterDelete(offset: number, shownBefore: number, pageSize:
 export const MB_PER_PDF_PAGE = 0.4;
 
 /**
- * Seconds to read one page, by file type (PRD 2, X4). PLACEHOLDER numbers:
- * `python -m kaagaz.cli measure --file <path>` on the reference laptop sets
- * the measured ones, which go here and in docs/architecture.md (Decisions).
- * Until it has run with a real OCR (NOT RUN), every type keeps today's rate
- * of 8 seconds per MB, at MB_PER_PDF_PAGE MB a page: 8 × 0.4 = 3.2 seconds.
+ * Seconds to read one page, by file type (PRD 2, X4), measured on 30 Sep 2026
+ * with `python -m kaagaz.cli measure --file <path>` on the build laptop, with
+ * OCR_ENGINE=rapidocr and made-up files (docs/architecture.md, Decisions):
+ * a scanned page took 5.4 to 10.1 s (6.9 on average), a photo 6.6 s, a text-layer
+ * PDF page 0.05 s, and a 200-row sheet 0.01 s. A PDF can't be told apart before
+ * it is read, so it is estimated as a scan: the text "Up to N minutes" is then
+ * true for both. With the model on, the card and invoice calls add time these
+ * numbers don't include; PaddleOCR-VL on a laptop CPU takes 3 to 11 minutes a page.
  */
 export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
-  pdf: 3.2,
-  image: 3.2,
-  sheet: 3.2,
+  pdf: 7,
+  image: 7,
+  sheet: 1,
 };
 
 /**

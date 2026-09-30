@@ -2,11 +2,9 @@
 
 import pytest
 
-from kaagaz.settings import Settings, SettingsError
+from kaagaz.settings import Settings, SettingsError, window_for_reply_tokens
 from tests.settings_factory import make_settings
 from tests.test_model_settings import shipped
-
-WINDOW_SETTINGS = ["EXTRACT_WINDOW_CHARS", "EXTRACT_WINDOW_OVERLAP", "EXTRACT_MAX_WINDOWS"]
 
 
 def test_the_shipped_env_example_has_the_starting_values() -> None:
@@ -21,10 +19,35 @@ def test_the_test_settings_use_the_same_starting_values() -> None:
     assert windows == (1700, 400, 10)
 
 
-@pytest.mark.parametrize("name", WINDOW_SETTINGS)
-def test_each_missing_setting_stops_start_up_by_name(name: str) -> None:
-    with pytest.raises(SettingsError, match=name):
-        Settings.from_env(shipped(**{name: None}))
+def test_a_missing_max_windows_stops_start_up_by_name() -> None:
+    with pytest.raises(SettingsError, match="EXTRACT_MAX_WINDOWS"):
+        Settings.from_env(shipped(EXTRACT_MAX_WINDOWS=None))
+
+
+@pytest.mark.parametrize("name", ["EXTRACT_WINDOW_CHARS", "EXTRACT_WINDOW_OVERLAP"])
+def test_an_empty_or_missing_window_size_follows_the_reply_budget(name: str) -> None:
+    """Decided 30 Sep 2026: the window follows MODEL_WINDOW_MAX_TOKENS, so a bigger
+    model is one setting. 2048 gives the starting 1700 and 400."""
+    for value in (None, ""):
+        settings = Settings.from_env(shipped(**{name: value}))
+        assert (settings.extract_window_chars, settings.extract_window_overlap) == (1700, 400)
+
+
+def test_a_bigger_reply_budget_gives_bigger_windows() -> None:
+    bigger = Settings.from_env(shipped(MODEL_NUM_CTX="16384", MODEL_WINDOW_MAX_TOKENS="4096"))
+    assert (bigger.extract_window_chars, bigger.extract_window_overlap) == (3750, 900)  # 75 lines, a quarter
+
+
+@pytest.mark.parametrize(
+    ("max_tokens", "window"), [(2048, (1700, 400)), (4096, (3750, 900)), (349, (0, 0)), (1, (0, 0))]
+)
+def test_window_for_reply_tokens(max_tokens: int, window: tuple[int, int]) -> None:
+    assert window_for_reply_tokens(max_tokens) == window
+
+
+def test_a_reply_budget_too_small_for_one_line_stops_start_up() -> None:
+    with pytest.raises(SettingsError, match="EXTRACT_WINDOW_CHARS must be at least 1"):
+        Settings.from_env(shipped(MODEL_WINDOW_MAX_TOKENS="300"))
 
 
 def test_an_overlap_as_large_as_the_window_is_refused() -> None:

@@ -12,9 +12,13 @@ page ever leaves the machine and nothing is downloaded at run time.
   A7). It gives no confidence (PaddleOCR-VL has none), so a scan is known by
   its spans' origin "ocr", never by a made-up number. Failures (P5):
 
-  * down, refused, a 5xx (``not_ready``, ``busy``), a 421, cut off, or past
-    ``OCR_TIMEOUT_SECONDS``: ``BackendUnavailable("ocr")``, retried later;
-  * 422: ``corrupt_file``; 413: ``image_too_large``; a 3xx (never followed),
+  * 503 ``busy``: the server is still on another page (one it cannot stop
+    after a worker gave up on it), so the call waits and asks again, backing
+    off, until its deadline; only then is it ``BackendUnavailable``;
+  * down, refused, another 5xx (``not_ready``, ``internal_error``), a 421, cut
+    off, or past ``OCR_TIMEOUT_SECONDS``: ``BackendUnavailable("ocr")``, retried later;
+  * 500 ``read_failed`` (the model raised on this page): ``ocr_failed``; 422:
+    ``corrupt_file``; 413: ``image_too_large``; a 3xx (never followed),
     another 4xx, a malformed reply or one over ``MAX_OCR_REPLY_BYTES``:
     ``invalid_reader_output``. The document fails; these are not retried.
 
@@ -75,6 +79,9 @@ MAX_TABLE_INDEX = 1000
 MAX_OCR_PIXELS = 21_000_000
 _READ_CHUNK = 64 * 1024
 _REFUSALS = {422: "corrupt_file", 413: "image_too_large"}
+# The first wait after a busy reply, doubled after each one up to the most.
+_BUSY_WAIT_SECONDS = 1.0
+_BUSY_WAIT_MAX_SECONDS = 15.0
 _VERSION = re.compile(r"[A-Za-z0-9._+;=@ -]{1,200}")
 # C0 and C1 controls and the bidirectional overrides and isolates, as
 # kaagaz/answering/sanitize.py strips them.
@@ -144,24 +151,36 @@ class PaddleVlEngine:
         return self._version
 
     def read(self, image: Image.Image) -> list[OcrLine]:
-        """One request per page; the time is the server's (minutes on a CPU)."""
+        """One request per page, asked again while the server is busy, all within one
+        deadline; the time is the server's (minutes on a CPU)."""
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")  # our own PNG, never the uploaded bytes (security A5)
-        status, body = self._post(buffer.getvalue())
+        deadline = time.monotonic() + self._timeout
+        wait = _BUSY_WAIT_SECONDS
+        status, body = self._post(buffer.getvalue(), deadline)
+        while status == 503 and _error_code(body) == "busy":
+            # Still on another page, often one a worker gave up on: nothing is wrong with
+            # this one, so it waits here rather than use up one of the job's attempts.
+            if time.monotonic() + wait >= deadline:
+                raise BackendUnavailable("ocr")
+            time.sleep(wait)
+            wait = min(2 * wait, _BUSY_WAIT_MAX_SECONDS)
+            status, body = self._post(buffer.getvalue(), deadline)
+        if status == 500 and _error_code(body) == "read_failed":
+            raise ReadError("ocr_failed")  # the model raised on this page: asking again fails again
         if status >= 500 or status == 421:
-            # Down, still loading or busy; or 421, a Host the server refuses, which is this
-            # set-up's fault, not the file's. Retried later either way.
+            # Down, still loading, or an error outside the model; or 421, a Host the server
+            # refuses, which is this set-up's fault, not the file's. Retried later either way.
             raise BackendUnavailable("ocr")
         if status != 200:
             raise ReadError(_REFUSALS.get(status, "invalid_reader_output"))
         self._version, lines = _reply_lines(body, image.width, image.height)
         return lines
 
-    def _post(self, png: bytes) -> tuple[int, bytes]:
+    def _post(self, png: bytes, deadline: float) -> tuple[int, bytes]:
         """One deadline for the whole call: connecting waits at most the time left, and a
         timer shuts the socket down at the deadline, so even a server that sends its
         headers a byte at a time cannot hold the worker past OCR_TIMEOUT_SECONDS."""
-        deadline = time.monotonic() + self._timeout
         connection = self._connection(self._host, self._port, timeout=self._timeout)
         expired = threading.Event()
         timer: threading.Timer | None = None
@@ -217,6 +236,12 @@ def _body(response: HTTPResponse) -> bytes:
     if expected is not None and size < expected and size <= MAX_OCR_REPLY_BYTES:
         raise IncompleteRead(b"", expected - size)
     return b"".join(chunks)
+
+
+def _error_code(body: bytes) -> object:
+    """The ``error`` of a refusal's ``{"error": code}`` body; None for any other body."""
+    reply = _json(body)
+    return reply.get("error") if isinstance(reply, dict) else None
 
 
 def _reply_lines(body: bytes, width: int, height: int) -> tuple[str, list[OcrLine]]:

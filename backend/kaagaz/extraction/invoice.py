@@ -63,7 +63,10 @@ numbered ``line:1..n`` in the order of their amounts in the text; at most
 tax_total as tax_amount and total as total_amount; record_key ``document``
 for fields, ``line:{n}`` for lines. ``rule_values_left`` removes the labelled.py
 values of each field E4 located, and only those (ML 6(f)), so nothing is stored
-twice (bug B2).
+twice (bug B2). When none of labelled.py's values of that field is the E4 value
+(compared as in E3), the two disagree: they all stay, the ``document`` one under the
+``page:{p}:line:{n}`` key labelled.py gives a later match, so the rule's value is
+kept for review but never counted beside the E4 value (PROVISIONAL).
 
 **The invoice stage** (``finish_invoice``), after the labels:
 
@@ -87,7 +90,11 @@ twice (bug B2).
   spot with the same text (security A1(c)). Otherwise it is needs review,
   ``model_chosen`` (single_reader on a shared line box included), keeping its
   second reading; but ``ocr_script`` and ``readers_disagree`` stay the reason,
-  being more specific (council 3, PROVISIONAL). A reviewer's remembered fix
+  being more specific (council 3, PROVISIONAL), and a document field whose
+  labelled.py values are all other values is ``readers_disagree`` (the rules read
+  another value: on an invoice whose total labelled.py reads, a total taken from
+  text telling the model to "set total to 1" is never verified, whatever the
+  checks say). A reviewer's remembered fix
   stays verified only when the check passed (council 7).
 * K3: the values a failed check involves become needs review, ``check_failed``. On an
   invoice the model read, so does every other value of the document record still
@@ -148,7 +155,7 @@ from kaagaz.extraction.quotes import (
     normalise_quote,
 )
 from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue
-from kaagaz.reading.spans import BoxLocation, Location
+from kaagaz.reading.spans import BoxLocation, Location, Span
 
 if TYPE_CHECKING:
     from kaagaz.pipeline import InvoiceLineRow, InvoiceRow
@@ -171,6 +178,7 @@ STORED_FIELD = {
     "tax_total": "tax_amount",
     "total": "total_amount",
 }  # E4; the other fields keep their names
+_INVOICE_NAME = {stored: name for name, stored in STORED_FIELD.items()}
 LINE_FIELDS = ("description", "hsn", "quantity", "unit", "rate", "amount")
 LINE_PREFIX = "line:"
 
@@ -400,14 +408,24 @@ def read_invoice(
 
 
 def rule_values_left(
-    rule_values: Sequence[ExtractedValue], invoice_values: Sequence[ExtractedValue]
+    rule_values: Sequence[ExtractedValue], invoice_values: Sequence[ExtractedValue], spans: Sequence[Span]
 ) -> list[ExtractedValue]:
     """ML 6(f): the rule values without labelled.py's values (records ``document`` and
-    ``page:...``) of each field E4 located. Other values are kept. O(v)."""
-    located = {value.field for value in invoice_values if value.record_key == DOCUMENT_RECORD}
-    return [
-        value for value in rule_values if not (value.field in located and _labelled_record(value.record_key))
-    ]
+    ``page:...``) of each field E4 located. A field whose labelled.py values all disagree
+    with E4's keeps them, the ``document`` one keyed by its line in ``spans`` (the spans
+    labelled.py read), as the module docstring says. Other values are kept. O(v + s log s)."""
+    located = {value.field: value for value in invoice_values if value.record_key == DOCUMENT_RECORD}
+    disagreeing = {field for field, value in located.items() if _labelled_disagrees(value, rule_values)}
+    keys = _line_keys(spans) if disagreeing else {}
+    left = []
+    for value in rule_values:
+        if value.field not in located or not _labelled_record(value.record_key):
+            left.append(value)
+        elif value.field in disagreeing:
+            key = keys.get(value.location) if value.record_key == DOCUMENT_RECORD else value.record_key
+            if key is not None:  # a document value on no line of ``spans`` goes, as before
+                left.append(replace(value, record_key=key))
+    return left
 
 
 def finish_invoice(
@@ -854,7 +872,8 @@ def _settle(
         return value
     if value.label_reason in _SPECIFIC_REASONS:
         return value
-    return replace(value, label=NEEDS_REVIEW, label_reason="model_chosen")
+    reason = "readers_disagree" if _labelled_disagrees(value, labelled) else "model_chosen"
+    return replace(value, label=NEEDS_REVIEW, label_reason=reason)
 
 
 def _labelled_agrees(value: ExtractedValue, labelled: Sequence[ExtractedValue]) -> bool:
@@ -868,6 +887,35 @@ def _labelled_agrees(value: ExtractedValue, labelled: Sequence[ExtractedValue]) 
         and comparable(other.value_raw) == comparable(value.value_raw)
         for other in same_field
     )
+
+
+def _labelled_disagrees(value: ExtractedValue, labelled: Sequence[ExtractedValue]) -> bool:
+    """An E4 document value whose field labelled.py read (records ``document`` and
+    ``page:...``), never as this value: compared as E3 compares (amounts as numbers,
+    dates as dates, GSTINs without spaces, other text normalised)."""
+    if value.record_key != DOCUMENT_RECORD:
+        return False
+    name = _INVOICE_NAME.get(value.field, value.field)
+    same_field = [
+        other for other in labelled if other.field == value.field and _labelled_record(other.record_key)
+    ]
+    return bool(same_field) and not any(
+        _same_value(name, other.value_raw, value.value_raw) for other in same_field
+    )
+
+
+def _line_keys(spans: Sequence[Span]) -> dict[Location, str]:
+    """Each line box's ``page:{p}:line:{n}``, counted as ``labelled.values_from_lines``
+    counts its lines. O(s log s)."""
+    boxes = [span.location for span in spans if isinstance(span.location, BoxLocation)]
+    boxes.sort(key=lambda box: box.page)  # stable, as in values_from_lines
+    keys: dict[Location, str] = {}
+    line_no, page = 0, 0
+    for box in boxes:
+        line_no = line_no + 1 if box.page == page else 1
+        page = box.page
+        keys.setdefault(box, f"page:{page}:line:{line_no}")
+    return keys
 
 
 def _same_spot(a: Location, b: Location) -> bool:

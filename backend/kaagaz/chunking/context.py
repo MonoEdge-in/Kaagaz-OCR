@@ -10,8 +10,8 @@ shown as cited text. For example:
 * ``Section`` is the piece's title, then its heading. It is at most
   ``SECTION_MAX`` characters with its label (council A7), because a layout
   reader can call a whole paragraph a heading.
-* ``Before`` is the last line of the piece before it. Over ``BEFORE_MAX``
-  characters it becomes "…" and its last ``BEFORE_MAX`` characters.
+* ``Before`` is the last line of the piece before it, at most ``BEFORE_MAX``
+  characters: a longer one becomes "…" and its last ``BEFORE_MAX - 1``.
 * A part with no value is left out (PROVISIONAL, plan section 13, conflict
   13): before the document card (PR 5) there is no type or date.
 * A sheet piece names its sheet in place of the section and the pages
@@ -71,7 +71,7 @@ def context_header(
         parts.append(f"Page {first}" if first == last else f"Pages {first}-{last}")
     text = _one_line(before or "")
     if text:
-        parts.append(f"Before: {text if len(text) <= BEFORE_MAX else _ELLIPSIS + text[-BEFORE_MAX:]}")
+        parts.append(f"Before: {text if len(text) <= BEFORE_MAX else _ELLIPSIS + text[1 - BEFORE_MAX :]}")
     return " | ".join(parts)
 
 

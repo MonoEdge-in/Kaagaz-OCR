@@ -4,7 +4,10 @@ A run records what one delivery did: its routes per page, its models, its
 counts and its outcome. ``start_run`` marks the document's other runs that are
 still ``running`` (a delivery that died, or one still going that this delivery
 replaces) as ``superseded``. ``finish_run`` writes the outcome of a run still
-``running`` only: a run superseded, or finished already, stays as it is.
+``running``. A superseded run gets only the counts of its own delivery's finish,
+once (its ``seconds_total`` is still empty until then), and keeps its status,
+code and finish time, so the pages it read still count; a run finished already
+stays as it is.
 
 The run fence (Lead's resolution 2): only a run that is still ``running`` may
 save results or mark the document ready. ``is_run_open`` is read under the
@@ -20,8 +23,11 @@ the other and the second supersedes the first; a partial unique index
 (``processing_runs_one_running``) is the backstop. Then it locks the parent
 documents row FOR KEY SHARE (AR8), which does not wait for the family lock
 (FOR NO KEY UPDATE), so a new delivery can start while an older one holds the
-family in its save. A run row
-keeps its runs when its document is deleted, with ``document_id`` set NULL (AR12).
+family in its save.
+
+A document's runs go with it: deleting the document deletes them (0005, ON
+DELETE CASCADE), so nothing of a deleted document is kept (Vrushit's decision:
+"if a document is deleted, instantly forget everything about it"; AR12 kept them).
 
 Times are passed in from the injected clock (``now``), never read with SQL
 ``now()``. A run never ends before it started: another worker's clock may be
@@ -30,7 +36,7 @@ ahead, so the finish time is the later of ``now`` and the start (AR11).
 ``close_running`` ends a document's runs still ``running`` with a status of its
 own: the worker's last delivery marks them failed with ``retries_exhausted``
 (AR11). ``pages_by_route`` counts the pages of the runs started in a window, for
-the admin numbers.
+the admin numbers: the runs of documents still kept, never a deleted one's.
 
 Module functions take a connection from ``Database.customer(customer_id)``, in
 the ``db/trash.py`` style; ``PgRuns`` opens its own transactions.
@@ -65,16 +71,21 @@ _INSERT = (
     " VALUES (:c, :d, :now, 'running') RETURNING id"
 )
 
+# A superseded run keeps its status, code and finish time; the CASEs read the row as it was.
 _FINISH = (
-    "UPDATE processing_runs SET status = :status, error_code = :error_code, ocr_engine = :ocr_engine,"
+    "UPDATE processing_runs SET status = CASE WHEN status = 'running' THEN :status ELSE status END,"
+    " error_code = CASE WHEN status = 'running' THEN :error_code ELSE error_code END,"
+    " ocr_engine = :ocr_engine,"
     " model_chat = :model_chat, model_vision = :model_vision, model_embed = :model_embed,"
     " pages_cells = :pages_cells, pages_text_layer = :pages_text_layer, pages_ocr = :pages_ocr,"
     " pages_blank = :pages_blank, vision_crops = :vision_crops, model_calls = :model_calls,"
     " dropped_quotes = :dropped_quotes, quotes_returned = :quotes_returned,"
     " values_verified = :values_verified, values_needs_review = :values_needs_review,"
     " seconds_total = :seconds_total, seconds_ocr = :seconds_ocr, config = CAST(:config AS jsonb),"
-    " finished_at = GREATEST(CAST(:now AS timestamptz), started_at)"
-    " WHERE customer_id = :c AND id = :id AND status = 'running'"
+    " finished_at = CASE WHEN status = 'running'"
+    " THEN GREATEST(CAST(:now AS timestamptz), started_at) ELSE finished_at END"
+    " WHERE customer_id = :c AND id = :id"
+    " AND (status = 'running' OR (status = 'superseded' AND seconds_total IS NULL))"
 )
 
 # The column limits of the run's text values (0004). finish_run cuts each to its
@@ -120,9 +131,9 @@ def start_run(conn: Connection, customer_id: str, document_id: str, *, now: date
 
 def finish_run(conn: Connection, customer_id: str, run: "FinishedRun") -> None:
     """Write the run's outcome and totals, and its finish time, while it is still
-    running. Text values are cut to their column limits. A superseded or finished
-    run, a run of another customer, or no run, changes nothing. One statement by
-    primary key: O(log R)."""
+    running; a superseded run gets its totals only, once (the module docstring). Text
+    values are cut to their column limits. A finished run, a run of another customer,
+    or no run, changes nothing. One statement by primary key: O(log R)."""
     totals: dict[str, Any] = {item.name: getattr(run.totals, item.name) for item in fields(run.totals)}
     for name, limit in _TEXT_LIMITS.items():
         if totals[name] is not None:
@@ -152,7 +163,8 @@ def close_running(
 def pages_by_route(conn: Connection, customer_id: str, *, start: datetime, end: datetime) -> dict[str, int]:
     """The pages read by each route (cells, text_layer, ocr, blank) in this
     customer's runs started in [start, end), 0 for a route with none. Every run
-    counts, a superseded or failed one too: its pages were read. One query on the
+    counts, a superseded or failed one too: its pages were read. A deleted document's
+    runs were deleted with it (0005), so its pages no longer count. One query on the
     index processing_runs_started: O(log R + runs in the window)."""
     row = conn.execute(text(_PAGES_BY_ROUTE), {"c": customer_id, "start": start, "end": end}).mappings().one()
     return {route: int(row[route]) for route in ("cells", "text_layer", "ocr", "blank")}

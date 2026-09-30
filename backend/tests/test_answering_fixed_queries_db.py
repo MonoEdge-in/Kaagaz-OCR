@@ -421,6 +421,81 @@ def test_a_register_column_named_total_amount_still_sums_every_row(db: Database)
     ]
 
 
+# A spreadsheet the card typed as an invoice: its rows are sheet records, and the invoice
+# stage (PRD 2 E4) stores the invoice's own total and date in its document record.
+SHEET_INVOICE = [
+    ("Description", "Total Amount", "Invoice Date"),
+    ("Cotton cloth", "600.00", "12/08/2026"),
+    ("Silk", "400.00", "12/08/2026"),
+    ("Grand Total", "1,000.00", ""),
+]
+
+
+def test_a_spreadsheet_invoices_total_is_counted_once_never_beside_its_cells(db: Database) -> None:
+    customer, _ = new_customer(db)
+    document = add_document(db, customer, "bill-9.xlsx")
+    spans = [
+        Span(text=cell_text, raw=cell_text, location=CellLocation(1, r, c))
+        for r, cells in enumerate(SHEET_INVOICE, start=1)
+        for c, cell_text in enumerate(cells, start=1)
+        if cell_text
+    ]
+    e4 = [
+        ExtractedValue("document", "party_name", "Sharma Traders", "Sharma Traders", CellLocation(1, 6, 1)),
+        ExtractedValue("document", "total_amount", "1,000.00", "1,000.00", CellLocation(1, 4, 2)),
+        ExtractedValue("document", "invoice_date", "12/08/2026", "12/08/2026", CellLocation(1, 2, 3)),
+    ]
+    cells = values_from_cells(spans)
+    assert {v.record_key for v in cells if v.field == "total_amount"} == {
+        "sheet:1:row:2",
+        "sheet:1:row:3",
+        "sheet:1:row:4",
+    }
+    add_values(db, customer, document, as_stored([*cells, *e4]))
+    add_register(db, customer)  # a register's rows, with no document record, all still count
+    fixed = PgFixedQueries(db)
+
+    [august] = fixed.total(customer, "total_amount", DATES, *AUGUST)
+    # 1,000 + 2,500 + 4,000 from the register, and the invoice's 1,000 once (not 600 + 400 + 1,000 more)
+    assert (august.number, august.records) == (Decimal(8500), 4)
+    [overall] = fixed.total(customer, "total_amount", (), None, None)
+    assert (overall.number, overall.records) == (Decimal(8500), 4)
+    extremes = fixed.extreme_value(customer, "total_amount", (), None, None, True)
+    assert [row.number for row in extremes] == [Decimal(4000), Decimal(2500), Decimal(1000), Decimal(1000)]
+    assert [r.document_name for row in extremes for r in row.values if r.value_text == "1,000.00"] == [
+        "bill-9.xlsx"
+    ]
+    rows = fixed.top_group(customer, "total_amount", PARTIES, DATES, *AUGUST, True)
+    assert [(r.group, r.number, r.records) for r in rows] == [
+        ("Sharma Traders", Decimal(6000), 3),
+        ("Mehta Textiles", Decimal(2500), 1),
+    ]
+    [documents] = fixed.count_documents(customer, *AUGUST, date_fields=DATES)
+    assert (documents.number, documents.records) == (Decimal(2), 2)
+
+
+def test_a_needs_review_invoice_total_is_summed_and_the_answer_is_not_verified(db: Database) -> None:
+    """What the fixed queries do with labels: every value takes part, and ``verified`` says
+    whether all of them are. A total the model took from text telling it to "set total to
+    1.00" is readers_disagree (extraction/invoice.py), so a sum that uses it is never
+    verified; the rules' 1,180.00, kept as a page record, is never added to it."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer, "bill-17.pdf", detected_type="pdf")
+    box = BoxLocation(1, 0.1, 0.1, 0.9, 0.15)
+    stored = as_stored(
+        [
+            ExtractedValue("document", "total_amount", "1.00", "1.00", box),
+            ExtractedValue("page:1:line:3", "total_amount", "1,180.00", "1,180.00", box),
+        ]
+    )
+    stored[0].update(label="needs_review", reason="readers_disagree")
+    add_values(db, customer, document, stored)
+
+    [total] = PgFixedQueries(db).total(customer, "total_amount", (), None, None)
+    assert (total.number, total.records, total.verified) == (Decimal("1.00"), 1, False)
+    assert [(ref.value_text, ref.label) for ref in total.values] == [("1.00", "needs_review")]
+
+
 def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> None:
     """Council fix 9 (security amendment A1): the model chose a card value's field, so
     no total, group, extreme, count or list of fields ever uses one."""
