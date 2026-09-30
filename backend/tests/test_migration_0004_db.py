@@ -228,7 +228,7 @@ BAD_ROWS = [
     ("processing_runs_status_check", _RUN.format("", "'paused', :t")),
     ("processing_runs_check", _RUN.format("", "'running', :t")),
     ("processing_runs_check1", _RUN.format("", "'ready', :t - interval '1 second'")),
-    ("processing_runs_ocr_engine_check", _RUN.format(", ocr_engine", "'ready', :t, repeat('x', 101)")),
+    ("processing_runs_ocr_engine_check", _RUN.format(", ocr_engine", "'ready', :t, repeat('x', 301)")),
     ("processing_runs_config_check", _RUN.format(", config", "'ready', :t, '[]'")),
 ]
 

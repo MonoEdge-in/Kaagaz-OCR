@@ -140,6 +140,23 @@ def test_finish_run_writes_every_total_and_never_ends_before_it_started(db: Data
     ]
 
 
+def test_finish_run_keeps_a_long_engine_name_and_cuts_a_longer_one(db: Database) -> None:
+    """PR 2's engine version alone is 100 characters. 290 are kept; 400 are cut to the
+    300 the column holds, never refused (a refused finish would stop the worker)."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    kept = PgRuns(db).start(customer, doc, now=T0)
+    PgRuns(db).finish(customer, FinishedRun(kept, totals(ocr_engine="p" * 290), T1))
+    cut = PgRuns(db).start(customer, doc, now=T1)
+    long = {name: name[0] * 400 for name in ("ocr_engine", "model_chat", "model_vision", "model_embed")}
+    PgRuns(db).finish(customer, FinishedRun(cut, totals(**long), T2))
+
+    sql = "SELECT id::text, ocr_engine, model_chat, model_vision, model_embed FROM processing_runs"
+    stored = {row["id"]: row for row in rows(db, customer, sql + " WHERE document_id = :d", doc)}
+    assert stored[kept]["ocr_engine"] == "p" * 290
+    assert {name: stored[cut][name] for name in long} == {name: value[:300] for name, value in long.items()}
+
+
 _CODE = re.compile(
     r'(?:ReadError|JobFailed|ScannerError|ModelUnavailable|ModelOutputError)\("([a-z0-9_]+)"'
     r'|\bcode = "([a-z0-9_]+)"|BackendUnavailable\("([a-z0-9_]+)"\)'
