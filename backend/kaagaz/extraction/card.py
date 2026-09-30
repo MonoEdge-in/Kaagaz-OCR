@@ -439,7 +439,7 @@ def _card_lines(reader: ReaderText) -> Iterator[tuple[int, str]]:
     for k, span in enumerate(spans):
         page = span.location.page
         # PR 2 adds Span.kind (the block kind from PaddleOCR-VL); before it, this reads None.
-        if not (page <= 2 or page == last or getattr(span, "kind", None) in _HEADINGS):
+        if not (page <= 2 or page == last or span.kind in _HEADINGS):
             continue
         if line and kept == k - 1 and _join_before(reader, k) == " | ":
             line.append(span.text)

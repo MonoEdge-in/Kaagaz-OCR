@@ -48,15 +48,6 @@ def cell(text: str, row: int, column: int) -> Span:
     return Span(text, text, CellLocation(1, row, column))
 
 
-@dataclass(frozen=True, slots=True)
-class OcrSpan(Span):
-    """A span with the fields PR 2 adds to Span (origin, table_id, row), for these tests only."""
-
-    origin: str | None = None
-    table_id: str | None = None
-    row: int | None = None
-
-
 def only(reader: ReaderText, quote: str) -> str:
     found = find_quote(reader, quote)
     assert found is not None, quote
@@ -253,8 +244,8 @@ class FindQuoteTest(unittest.TestCase):
 
     def test_the_origin_comes_from_the_spans_and_ocr_wins(self) -> None:
         box = BoxLocation(1, 0.1, 0.1, 0.9, 0.12)
-        text_layer = OcrSpan("Net", "Net", box, origin="text_layer")
-        ocr = OcrSpan("Amount", "Amount", BoxLocation(1, 0.1, 0.2, 0.9, 0.22), origin="ocr")
+        text_layer = Span("Net", "Net", box, origin="text_layer")
+        ocr = Span("Amount", "Amount", BoxLocation(1, 0.1, 0.2, 0.9, 0.22), origin="ocr")
         reader = reader_text([text_layer, ocr])
         both, first = find_quote(reader, "Net Amount"), find_quote(reader, "Net")
         assert both is not None and first is not None
@@ -266,9 +257,9 @@ class FindQuoteTest(unittest.TestCase):
     def test_ocr_table_cells_of_one_row_are_joined_with_a_bar(self) -> None:
         box = BoxLocation(1, 0.1, 0.3, 0.9, 0.6)
         cells = [
-            OcrSpan("Cotton", "Cotton", box, origin="ocr", table_id="t1", row=1),
-            OcrSpan("12", "12", box, origin="ocr", table_id="t1", row=1),
-            OcrSpan("Silk", "Silk", box, origin="ocr", table_id="t1", row=2),
+            Span("Cotton", "Cotton", box, origin="ocr", table_id="t1", row=1),
+            Span("12", "12", box, origin="ocr", table_id="t1", row=1),
+            Span("Silk", "Silk", box, origin="ocr", table_id="t1", row=2),
         ]
         self.assertEqual(reader_text(cells).text, "Cotton | 12\nSilk")
 

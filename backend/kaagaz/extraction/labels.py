@@ -221,8 +221,7 @@ def _spot_unsure(value: ExtractedValue) -> bool:
 
 
 def _is_ocr(value: ExtractedValue) -> bool:
-    # PR 2 adds ExtractedValue.origin ("cell", "text_layer" or "ocr"); before it, this is None.
-    return getattr(value, "origin", None) == "ocr"
+    return value.origin == "ocr"
 
 
 def _script_unsound(text: str) -> bool:

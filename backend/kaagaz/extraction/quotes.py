@@ -492,17 +492,13 @@ def _row_key(span: Span) -> tuple[object, ...] | None:
     """Spans with the same key are cells of one table row, joined by " | "."""
     if isinstance(span.location, CellLocation):
         return ("sheet", span.location.sheet, span.location.row)
-    # PR 2 adds Span.table_id and Span.row for OCR table cells; before it, these read None.
-    table_id, row = getattr(span, "table_id", None), getattr(span, "row", None)
-    if table_id is not None and row is not None:
-        return ("table", span.location.page, table_id, row)
+    if span.table_id is not None and span.row is not None:
+        return ("table", span.location.page, span.table_id, span.row)
     return None
 
 
 def _origin(span: Span) -> str | None:
-    # PR 2 adds Span.origin ("cell", "text_layer" or "ocr"); before it, this reads None.
-    origin = getattr(span, "origin", None)
-    return origin if isinstance(origin, str) else None
+    return span.origin
 
 
 def _is_word(ch: str) -> bool:

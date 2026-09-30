@@ -8,7 +8,7 @@ reader's text at that spot. Expected values are literals written by hand.
 import hashlib
 import json
 import unittest
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
@@ -49,13 +49,6 @@ def line(text: str, page: int = 1, y: float = 0.1) -> Span:
 def box(y: float, page: int = 1) -> dict[str, Any]:
     """The JSON region of ``line(..., page, y)``."""
     return {"kind": "box", "page": page, "box": [0.1, y, 0.9, round(y + 0.02, 6)]}
-
-
-@dataclass(frozen=True, slots=True)
-class KindSpan(Span):
-    """A span with the block kind PR 2 adds to Span, for these tests only."""
-
-    kind: str | None = None
 
 
 INVOICE = [
@@ -103,10 +96,10 @@ class CardInputTest(unittest.TestCase):
 
     def test_pages_1_and_2_every_heading_and_the_last_page_in_reading_order(self) -> None:
         spans = [
-            KindSpan("Monthly report", "Monthly report", BoxLocation(1, 0.1, 0.1, 0.9, 0.12), kind="title"),
+            Span("Monthly report", "Monthly report", BoxLocation(1, 0.1, 0.1, 0.9, 0.12), kind="title"),
             line("Sales rose.", 1, 0.2),
             line("Costs fell.", 2),
-            KindSpan("Profit", "Profit", BoxLocation(3, 0.1, 0.1, 0.9, 0.12), kind="heading"),
+            Span("Profit", "Profit", BoxLocation(3, 0.1, 0.1, 0.9, 0.12), kind="heading"),
             line("Body of page three.", 3, 0.2),
             line("Body of page four.", 4),
             line("Signed, the owner", 5),

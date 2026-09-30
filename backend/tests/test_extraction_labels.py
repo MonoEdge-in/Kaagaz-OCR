@@ -1,7 +1,6 @@
 """Verified or needs review, and why, for every kind of value."""
 
 import unittest
-from dataclasses import dataclass
 
 from kaagaz.extraction.labels import comparable, label_quoted, label_values, overlap
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
@@ -13,15 +12,8 @@ BOX = BoxLocation(1, 0.1, 0.40, 0.9, 0.42)
 LINE_BOX = BoxLocation(1, 0.1, 0.50, 0.9, 0.52)
 
 
-@dataclass(frozen=True, slots=True)
-class OcrValue(ExtractedValue):
-    """A value with the origin PR 2 adds to ExtractedValue, for these tests only."""
-
-    origin: str | None = None
-
-
-def ocr_value(text: str, *, field: str = "total_amount", box: BoxLocation = BOX) -> OcrValue:
-    return OcrValue("document", field, text, text, box, origin="ocr")
+def ocr_value(text: str, *, field: str = "total_amount", box: BoxLocation = BOX) -> ExtractedValue:
+    return ExtractedValue("document", field, text, text, box, origin="ocr")
 
 
 def quoted(text: str, *, field: str = "amount", record_key: str = "line:1") -> ExtractedValue:
@@ -154,15 +146,15 @@ class LabelValuesOcrTest(unittest.TestCase):
         self.assertEqual(reason(labelled), ("verified", "readers_agree", "१,१८०।"))
 
     def test_two_ocr_values_in_one_box_are_single_reader(self) -> None:
-        number = OcrValue("document", "invoice_number", "17", "17", BOX, origin="ocr")
-        when = OcrValue("document", "invoice_date", "12/08/2026", "12/08/2026", BOX, origin="ocr")
+        number = ExtractedValue("document", "invoice_number", "17", "17", BOX, origin="ocr")
+        when = ExtractedValue("document", "invoice_date", "12/08/2026", "12/08/2026", BOX, origin="ocr")
         labelled = label_values([number, when], None, {BOX: "Bill No: 17 Date: 12/08/2026"})
         self.assertEqual([reason(value) for value in labelled], [("needs_review", "single_reader", None)] * 2)
 
     def test_two_ocr_values_with_the_same_text_in_one_box_are_single_reader(self) -> None:
         """Council fix 2: the box's vision reading is not either value's own."""
-        subtotal = OcrValue("document", "subtotal", "500", "500", BOX, origin="ocr")
-        total = OcrValue("document", "total_amount", "500", "500", BOX, origin="ocr")
+        subtotal = ExtractedValue("document", "subtotal", "500", "500", BOX, origin="ocr")
+        total = ExtractedValue("document", "total_amount", "500", "500", BOX, origin="ocr")
         labelled = label_values([subtotal, total], None, {BOX: "500"})
         self.assertEqual([reason(value) for value in labelled], [("needs_review", "single_reader", None)] * 2)
         other = ExtractedValue("card", "profit", "12,000", "12,000", BOX)
@@ -316,22 +308,22 @@ class LabelQuotedTest(unittest.TestCase):
     def test_an_ocr_value_ignores_the_second_line_and_needs_an_equal_vision_reading(self) -> None:
         """Council fix 1 (was ..._is_compared_by_equality_even_with_a_second_line, which
         pinned the bug): a text-layer line is never an OCR value's second reading."""
-        value = OcrValue("line:1", "amount", "1,000.00", "1,000.00", LINE_BOX, origin="ocr")
+        value = ExtractedValue("line:1", "amount", "1,000.00", "1,000.00", LINE_BOX, origin="ocr")
         (labelled,) = label_quoted([value], [second_line("Cotton 1,000.00", LINE_BOX)])
         self.assertEqual(reason(labelled), ("needs_review", "single_reader", None))
         (agree,) = label_quoted([value], None, {LINE_BOX: "1,000.00"})
         self.assertEqual(reason(agree), ("verified", "readers_agree", "1,000.00"))
 
     def test_an_ocr_value_with_only_a_matching_second_reader_line_is_single_reader(self) -> None:
-        value = OcrValue("line:1", "amount", "1,000.00", "1,000.00", LINE_BOX, origin="ocr")
+        value = ExtractedValue("line:1", "amount", "1,000.00", "1,000.00", LINE_BOX, origin="ocr")
         (labelled,) = label_quoted([value], [second_line("1,000.00", LINE_BOX)])
         self.assertEqual(reason(labelled), ("needs_review", "single_reader", None))
-        script = OcrValue("document", "buyer_name", "पाटील", "पाटील", LINE_BOX, origin="ocr")
+        script = ExtractedValue("document", "buyer_name", "पाटील", "पाटील", LINE_BOX, origin="ocr")
         (unsound,) = label_quoted([script], [second_line("पाटील", LINE_BOX)])
         self.assertEqual(reason(unsound), ("needs_review", "ocr_script", None))
 
     def test_an_ocr_value_in_devanagari_is_ocr_script(self) -> None:
-        value = OcrValue("document", "buyer_name", "पाटील", "पाटील", LINE_BOX, origin="ocr")
+        value = ExtractedValue("document", "buyer_name", "पाटील", "पाटील", LINE_BOX, origin="ocr")
         (labelled,) = label_quoted([value], None, {LINE_BOX: "पाटील"})
         self.assertEqual(reason(labelled), ("needs_review", "ocr_script", "पाटील"))
 
