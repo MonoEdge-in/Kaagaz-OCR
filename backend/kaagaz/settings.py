@@ -19,6 +19,9 @@ from dataclasses import dataclass
 # heartbeat) and the job's lease, or a slow page outlives the lease and a second
 # worker starts the same document.
 _OCR_LEASE_MARGIN_SECONDS = 120
+# The Host values the ocr server accepts (ALLOWED_HOSTS in kaagaz/ocr_server/app.py,
+# which must never import this module; a test keeps the two the same).
+OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
 
 
 class SettingsError(Exception):
@@ -127,6 +130,15 @@ class Settings:
             raise SettingsError("OCR_TIMEOUT_SECONDS must be a number above 0")
         if ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
             raise SettingsError("OCR_TIMEOUT_SECONDS + 120 must not be more than QUEUE_LEASE_SECONDS")
+        ocr_engine = env.choice("OCR_ENGINE", {"paddleocr_vl", "rapidocr", "none"})
+        ocr_url = env.url("OCR_URL")
+        if (
+            ocr_engine == "paddleocr_vl"
+            and urllib.parse.urlsplit(ocr_url).netloc.lower() not in OCR_SERVER_HOSTS
+        ):
+            raise SettingsError(
+                "OCR_URL must name ocr:8080, localhost:8080 or 127.0.0.1:8080 (the ocr server's hosts)"
+            )
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -158,8 +170,8 @@ class Settings:
             max_pages=env.integer("MAX_PAGES"),
             page_image_dpi=env.integer("PAGE_IMAGE_DPI"),
             max_image_pixels=env.integer("MAX_IMAGE_PIXELS"),
-            ocr_engine=env.choice("OCR_ENGINE", {"paddleocr_vl", "rapidocr", "none"}),
-            ocr_url=env.url("OCR_URL"),
+            ocr_engine=ocr_engine,
+            ocr_url=ocr_url,
             ocr_timeout_seconds=ocr_timeout_seconds,
             ocr_dpi=env.positive("OCR_DPI"),
             model_enabled=env.boolean("MODEL_ENABLED"),

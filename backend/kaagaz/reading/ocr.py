@@ -12,7 +12,7 @@ page ever leaves the machine and nothing is downloaded at run time.
   A7). It gives no confidence (PaddleOCR-VL has none), so a scan is known by
   its spans' origin "ocr", never by a made-up number. Failures (P5):
 
-  * down, refused, a 5xx (``not_ready``, ``busy``), cut off, or past
+  * down, refused, a 5xx (``not_ready``, ``busy``), a 421, cut off, or past
     ``OCR_TIMEOUT_SECONDS``: ``BackendUnavailable("ocr")``, retried later;
   * 422: ``corrupt_file``; 413: ``image_too_large``; a 3xx (never followed),
     another 4xx, a malformed reply or one over ``MAX_OCR_REPLY_BYTES``:
@@ -145,8 +145,10 @@ class PaddleVlEngine:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")  # our own PNG, never the uploaded bytes (security A5)
         status, body = self._post(buffer.getvalue())
-        if status >= 500:
-            raise BackendUnavailable("ocr")  # down, still loading, or busy: retried later
+        if status >= 500 or status == 421:
+            # Down, still loading or busy; or 421, a Host the server refuses, which is this
+            # set-up's fault, not the file's. Retried later either way.
+            raise BackendUnavailable("ocr")
         if status != 200:
             raise ReadError(_REFUSALS.get(status, "invalid_reader_output"))
         self._version, lines = _reply_lines(body, image.width, image.height)
