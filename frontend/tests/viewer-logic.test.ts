@@ -142,6 +142,18 @@ describe("labels in words", () => {
   });
 });
 
+describe("reasons for values the AI model or OCR read (PRD 2)", () => {
+  it("asks to check a value whose field the AI model chose (council A1)", () => {
+    expect(reasonText("model_chosen")).toBe("Found by the AI model. Check it against the page.");
+  });
+
+  it("asks to check a value OCR read from Devanagari or mixed script (council ML 1)", () => {
+    expect(reasonText("ocr_script")).toBe(
+      "Read by OCR from Hindi, Marathi or mixed-script text. Check it against the page.",
+    );
+  });
+});
+
 describe("document selection", () => {
   const region: Region = { kind: "box", page: 2, box: [0.1, 0.1, 0.2, 0.2] };
   const value: ExtractedValue = {
