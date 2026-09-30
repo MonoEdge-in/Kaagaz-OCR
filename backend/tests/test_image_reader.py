@@ -1,8 +1,10 @@
 import io
 import unittest
+from unittest import mock
 
 from PIL import Image
 
+from kaagaz.reading import image_reader
 from kaagaz.reading.image_reader import ImageReader
 from kaagaz.reading.ocr import OcrLine
 from kaagaz.reading.spans import BoxLocation, ReadError, Span
@@ -120,6 +122,16 @@ class ImageReaderTest(unittest.TestCase):
                 (span,) = reader.read(encode(Image.new("RGB", size, "white"), "PNG"))
                 self.assertEqual([image.size for image in ocr.seen], [seen])
                 self.assertEqual(span.origin, "ocr")
+
+    def test_a_photo_over_the_ocr_pixel_budget_is_shrunk_to_fit_it(self) -> None:
+        # The budget keeps the PNG under the ocr server's body cap; 5000 here, 21M in the product.
+        ocr = FakeOcr()
+        with mock.patch.object(image_reader, "MAX_OCR_PIXELS", 5000):
+            reader = ImageReader(ocr, max_pages=1, max_image_pixels=1_000_000, ocr_dpi=300)
+            reader.read(encode(Image.new("RGB", (400, 100), "white"), "PNG"))
+        ((width, height),) = [image.size for image in ocr.seen]
+        self.assertLessEqual(width * height, 5000)
+        self.assertEqual((width, height), (141, 35))  # 400 x 100 scaled by sqrt(5000 / 40000), rounded down
 
 
 class RefusalsTest(unittest.TestCase):

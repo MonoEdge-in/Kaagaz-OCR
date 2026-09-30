@@ -27,6 +27,7 @@ from PIL import Image
 from kaagaz.ocr_server import app as server
 from kaagaz.ocr_server.app import PADDLE_LABELS, PageResult, RawBlock, blocks_json, create_app, paddle_page
 from kaagaz.ocr_server.app import table_cells as cells
+from kaagaz.reading import ocr
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 URL = "http://ocr:8080"
@@ -301,6 +302,12 @@ def test_the_server_needs_no_backend_settings_database_storage_or_paddle() -> No
         [sys.executable, "-c", code], capture_output=True, text=True, check=True, timeout=60, cwd=backend
     )
     assert result.stdout.strip() == "[]"
+
+
+def test_the_worker_never_draws_a_page_too_big_for_the_body_cap() -> None:
+    # A PNG that cannot compress is 3 bytes a pixel, plus a filter byte a row and
+    # zlib's framing: well under 1% more.
+    assert ocr.MAX_OCR_PIXELS * 3 * 1.01 < server.MAX_BODY_BYTES
 
 
 def test_the_docs_routes_are_off(client: TestClient) -> None:
