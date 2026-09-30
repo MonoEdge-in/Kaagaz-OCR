@@ -10,6 +10,14 @@
   the last admin of a customer, who has no other admin to do it. Their sessions
   end; they can turn it on again in Admin, Settings. It needs no password:
   whoever runs it already has the server.
+* ``measure --file PATH [--truth DIR]``: read one local file the way the worker
+  does and print, per page, its route and why, the route check's numbers, and
+  the time it took (PRD 2 X4, the council's ML 12), to set the thresholds and
+  timeouts from real numbers. It touches no database, file storage or queue, and
+  it does NOT run the virus scan: use it only on files you trust. ``--truth``
+  names a folder of the right text for each page (``1.txt``, ``2.txt``, ...,
+  UTF-8), and adds each page's character and word error rates (CER, WER). It
+  prints no text and no file name: only numbers and short codes.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -21,16 +29,31 @@ terminal instead of logging): ids and e-mails only, never a password.
 
 import argparse
 import getpass
+import io
 import os
 import sys
+import time
+import unicodedata
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import TextIO
+
+from PIL import Image
 
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.db import audit
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database, make_engine
+from kaagaz.ingestion import sniff
+from kaagaz.ingestion.spool import HEAD_SIZE
+from kaagaz.preparing.page_checks import measure_blank
+from kaagaz.preparing.pages import PreparedPages, prepare_pages
+from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
+from kaagaz.reading.route import route_for_page
+from kaagaz.reading.socket import NoReader
+from kaagaz.reading.spans import ReadError, Span
+from kaagaz.reading.wiring import PdfPageCheck, build_reader_socket, pdf_text_layer_checks
 from kaagaz.settings import Settings, SettingsError
 
 MIN_PASSWORD = 12
@@ -68,6 +91,14 @@ def _parser() -> argparse.ArgumentParser:
 
     reset = commands.add_parser("reset-admin-2fa", help="turn an admin's two-step code off")
     reset.add_argument("--email", required=True)
+
+    measure = commands.add_parser(
+        "measure", help="read one trusted local file and print each page's route and time (no virus scan)"
+    )
+    measure.add_argument("--file", required=True, type=Path)
+    measure.add_argument(
+        "--truth", type=Path, help="a folder of 1.txt, 2.txt, ...: the right text of each page"
+    )
     return parser
 
 
@@ -167,6 +198,153 @@ def _seed_demo(db: Database, password: str, out: TextIO) -> None:
             out.write(f"  {role}: {emails[role]}\n")
 
 
+# --- measure (PRD 2 X4) -----------------------------------------------------------
+
+
+def _measure(
+    settings: Settings, path: Path, truth: Path | None, out: TextIO, *, timer: Callable[[], float]
+) -> None:
+    """Read ``path`` as the worker would, and write one line per page, then the totals.
+
+    The route and its reason are worked out as the pipeline does
+    (``kaagaz.reading.route``); a PDF page's reason and numbers come from the route
+    check itself, through the wiring. Time: the reading's, plus O(p x t) per page
+    for ``--truth`` (p and t the page's and the truth's characters).
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        raise CliError("the file cannot be opened") from None
+    detected = sniff.detect_type(data[:HEAD_SIZE])
+    if detected is None:
+        raise CliError("this kind of file is not supported")
+    engine = build_ocr_engine(settings)
+    meter = None if engine is None else MeteredOcrEngine(engine, timer=timer)
+    started = timer()
+    try:
+        prepared = prepare_pages(
+            detected,
+            data,
+            dpi=settings.page_image_dpi,
+            max_pages=settings.max_pages,
+            max_image_pixels=settings.max_image_pixels,
+            blank_stddev=settings.blank_page_stddev,
+            low_res_dpi=settings.low_res_dpi,
+        )
+        prepared_at = timer()
+        stamps = [prepared_at]
+        spans = build_reader_socket(settings, meter).read(
+            detected, data, on_page=lambda: stamps.append(timer())
+        )
+        read_at = timer()
+        checks = pdf_text_layer_checks(settings, data) if detected == sniff.PDF else []
+    except NoReader:
+        raise CliError("no reader for this kind of file: set OCR_ENGINE for scans and photos") from None
+    except ReadError as error:
+        raise CliError(f"the file cannot be read ({error.code})") from None
+    pages = [(info.page, info.unit) for info in prepared.pages] or sorted(
+        {(span.location.page, "cells") for span in spans}
+    )
+    out.write(f"type {detected} size {len(data) / (1024 * 1024):.2f} MB pages {len(pages)}\n")
+    by_page: dict[int, list[Span]] = {}
+    for span in spans:
+        by_page.setdefault(span.location.page, []).append(span)
+    for index, (page, unit) in enumerate(pages):
+        page_spans = by_page.get(page, [])
+        check = checks[index] if index < len(checks) else None
+        line = _page_line(page, unit, page_spans, prepared, check, ocr_on=meter is not None)
+        if len(stamps) == len(pages) + 1:
+            line += f" seconds {stamps[index + 1] - stamps[index]:.2f}"
+        if truth is not None:
+            line += _truth_scores(truth / f"{page}.txt", " ".join(span.text for span in page_spans))
+        out.write(line + "\n")
+    ocr_pages, ocr_seconds = meter.take() if meter is not None else (0, 0.0)
+    per_page = ocr_seconds / ocr_pages if ocr_pages else 0.0
+    out.write(
+        f"prepare {prepared_at - started:.2f} s, read {read_at - prepared_at:.2f} s,"
+        f" OCR {ocr_pages} pages in {ocr_seconds:.2f} s, {per_page:.2f} s per page\n"
+    )
+
+
+def _page_line(
+    page: int,
+    unit: str,
+    spans: list[Span],
+    prepared: PreparedPages,
+    check: PdfPageCheck | None,
+    *,
+    ocr_on: bool,
+) -> str:
+    """One page's route, reason and numbers (ML 12), with no text from the page."""
+    found = prepared.checks.get(page)
+    decision = route_for_page(
+        unit=unit,
+        origins={span.origin for span in spans},
+        blank=found is not None and found.blank,
+        ocr_on=ocr_on,
+        check=None if check is None else check[0],
+    )
+    route, reason = ("none", "none") if decision is None else (decision.route, decision.reason)
+    text = " ".join(span.text for span in spans)
+    devanagari, foreign = _script_shares(text)
+    line = f"page {page} route {route} reason {reason} blocks {len(spans)} chars {len(text)}"
+    line += f" devanagari {devanagari:.2f} foreign {foreign:.2f}"
+    if check is not None:
+        signals = check[1]
+        line += f" coverage {signals.coverage:.2f} hidden {signals.hidden_share:.2f}"
+        line += f" legacy_font {signals.legacy_font_share:.2f} map_errors {signals.map_error_share:.2f}"
+    if found is not None:
+        dpi = "none" if found.effective_dpi is None else str(found.effective_dpi)
+        line += f" dpi {dpi} low_resolution {'yes' if found.low_resolution else 'no'}"
+    if page in prepared.images:
+        with Image.open(io.BytesIO(prepared.images[page])) as picture:
+            blank = measure_blank(picture)
+        line += f" blank_stddev {blank.stddev:.2f} dark_pixels {blank.dark_pixels}"
+    return line
+
+
+def _script_shares(text: str) -> tuple[float, float]:
+    """(Devanagari, other scripts) as shares of the letters and marks; digits and
+    punctuation are left out. Latin letters and their accents are neither. O(c)."""
+    letters = devanagari = foreign = 0
+    for char in text:
+        category = unicodedata.category(char)
+        if category[0] not in "LM":
+            continue
+        letters += 1
+        if "\u0900" <= char <= "\u097f":
+            devanagari += 1
+        elif not (
+            char.isascii() or "\u0300" <= char <= "\u036f" or unicodedata.name(char, "").startswith("LATIN")
+        ):
+            foreign += 1
+    return (devanagari / letters, foreign / letters) if letters else (0.0, 0.0)
+
+
+def _truth_scores(truth_file: Path, read: str) -> str:
+    """ " cer X wer Y" against the page's truth, or " truth none" without a file."""
+    try:
+        truth = truth_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return " truth none"
+    truth_words, read_words = truth.split(), read.split()
+    truth_chars, read_chars = " ".join(truth_words), " ".join(read_words)
+    cer = _edits(read_chars, truth_chars) / max(1, len(truth_chars))
+    wer = _edits(read_words, truth_words) / max(1, len(truth_words))
+    return f" cer {cer:.3f} wer {wer:.3f}"
+
+
+def _edits(a: Sequence[str], b: Sequence[str]) -> int:
+    """The Levenshtein distance: O(len(a) x len(b)) time, O(len(b)) space."""
+    previous = list(range(len(b) + 1))
+    for i, x in enumerate(a, start=1):
+        current = [i]
+        for j, y in enumerate(b, start=1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x != y)))
+        previous = current
+    return previous[-1]
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -174,12 +352,16 @@ def main(
     environ: Mapping[str, str] | None = None,
     out: TextIO | None = None,
     ask: Callable[[str], str] | None = getpass.getpass,
+    timer: Callable[[], float] = time.perf_counter,
 ) -> int:
-    """Run one command. Tests pass ``db``, ``environ``, ``out`` and ``ask``."""
+    """Run one command. Tests pass ``db``, ``environ``, ``out``, ``ask`` and ``timer``."""
     args = _parser().parse_args(argv)
     env = os.environ if environ is None else environ
     stdout = sys.stdout if out is None else out
     try:
+        if args.command == "measure":  # before any database is built: it never uses one
+            _measure(Settings.from_env(env), args.file, args.truth, stdout, timer=timer)
+            return 0
         if db is None:
             settings = Settings.from_env(env)
             db = Database(make_engine(settings.database_url), settings.db_app_role)

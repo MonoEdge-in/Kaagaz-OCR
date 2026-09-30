@@ -11,8 +11,12 @@ review. An image in which the engine finds no text at all fails with
 ``no_text``, the same as a scanned PDF: "unreadable" is a correct answer,
 never a guess.
 
-``on_page`` (if given) is called after each page, so a long TIFF can renew
-its lease between pages.
+A blank frame (PRD 2 R3: its grey spread under ``blank_stddev``, with almost
+no dark ink; ``kaagaz/preparing/page_checks.py``) is never sent to the engine
+and gives nothing.
+
+``on_page`` (if given) is called after each page, blank ones too, so a long
+TIFF can renew its lease between pages and the progress moves.
 
 PROVISIONAL (PRD 2 R5 for photos): a frame whose short side is more than
 ``ocr_dpi`` x 8.27 in (A4's short side) is shrunk to that for the engine only,
@@ -33,6 +37,7 @@ from collections.abc import Callable
 
 from PIL import Image
 
+from kaagaz.preparing.page_checks import is_blank
 from kaagaz.preparing.pages import image_pages
 from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
 from kaagaz.reading.spans import ReadError, Span
@@ -41,10 +46,15 @@ _A4_SHORT_SIDE_INCHES = 8.27
 
 
 class ImageReader:
-    def __init__(self, ocr: OcrEngine, *, max_pages: int, max_image_pixels: int, ocr_dpi: int) -> None:
+    def __init__(
+        self, ocr: OcrEngine, *, max_pages: int, max_image_pixels: int, ocr_dpi: int, blank_stddev: float
+    ) -> None:
         # No defaults: limits are Vrushit's decision (PRD section 6).
         if min(max_pages, max_image_pixels, ocr_dpi) < 1:
             raise ValueError("every limit must be at least 1")
+        if not blank_stddev >= 0:
+            raise ValueError("blank_stddev must be 0 or more")
+        self._blank_stddev = blank_stddev
         self._ocr = ocr
         self._max_pages = max_pages
         self._max_image_pixels = max_image_pixels
@@ -61,7 +71,8 @@ class ImageReader:
         pages = image_pages(data, max_pages=self._max_pages, max_image_pixels=self._max_image_pixels)
         for number, image in enumerate(pages, start=1):
             page = _for_ocr(image, self._max_short_side, self._max_ocr_pixels)
-            spans.extend(ocr_spans(self._ocr.read(page), number, page.width, page.height))
+            if not is_blank(page, self._blank_stddev):
+                spans.extend(ocr_spans(self._ocr.read(page), number, page.width, page.height))
             page.close()
             image.close()
             if on_page is not None:

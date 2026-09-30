@@ -26,6 +26,8 @@ page ever leaves the machine and nothing is downloaded at run time.
   is an optional extra (``pip install .[ocr]``): without it, the rest of the
   backend still starts, and ``OCR_ENGINE=none`` marks scans needs_reader.
   The model is loaded once, under a lock, and reused for every page.
+* ``MeteredOcrEngine`` wraps any engine and counts the pages sent to it and
+  the seconds they took (PRD 2 R6: the run's ``seconds_ocr``; ``cli measure``).
 * ``ocr_spans`` turns an engine's pixel boxes into spans with page fractions
   and origin "ocr". RapidOCR's boxes go through the same line rule as the PDF
   readers (``kaagaz/reading/lines.py``), so "INVOICE" and "1042" found as two
@@ -47,6 +49,7 @@ import socket
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass
 from http.client import HTTPConnection, HTTPException, HTTPResponse, HTTPSConnection, IncompleteRead
 from importlib import metadata
@@ -353,6 +356,39 @@ def _installed_version(package: str) -> str | None:
         return metadata.version(package)
     except metadata.PackageNotFoundError:
         return None
+
+
+class MeteredOcrEngine:
+    """An ``OcrEngine`` that passes each page to ``engine`` and counts the pages
+    sent and the seconds they took on ``timer`` (``time.perf_counter`` in the
+    product). A page whose read fails is counted too: it was sent. One job at a
+    time uses it, so there is no lock. O(1) per page beyond the engine's own time.
+    """
+
+    def __init__(self, engine: OcrEngine, *, timer: Callable[[], float]) -> None:
+        self._engine = engine
+        self._timer = timer
+        self.name = engine.name
+        self._pages = 0
+        self._seconds = 0.0
+
+    @property
+    def version(self) -> str:
+        return self._engine.version  # asked for late: PaddleOCR-VL's comes from its reply
+
+    def read(self, image: Image.Image) -> list[OcrLine]:
+        started = self._timer()
+        try:
+            return self._engine.read(image)
+        finally:
+            self._pages += 1
+            self._seconds += max(0.0, self._timer() - started)
+
+    def take(self) -> tuple[int, float]:
+        """(pages sent, seconds) since the last take, and start counting again from zero."""
+        counted = (self._pages, self._seconds)
+        self._pages, self._seconds = 0, 0.0
+        return counted
 
 
 def build_ocr_engine(settings: Settings) -> OcrEngine | None:

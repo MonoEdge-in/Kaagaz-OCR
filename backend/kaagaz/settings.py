@@ -83,6 +83,18 @@ class Settings:
     ocr_timeout_seconds: float
     ocr_dpi: int
 
+    # The page route (PRD 2 R2 to R4). A PDF page's text layer is kept when it has at
+    # least text_layer_min_chars letters and digits and text_layer_min_good_ratio good
+    # characters, and is not a scan (an image over scan_image_coverage of the page with
+    # little text); otherwise it goes to OCR. A picture whose grey spread is under
+    # blank_page_stddev (and with almost no dark ink) is blank, never sent to OCR. A
+    # page under low_res_dpi is flagged low resolution, never refused.
+    text_layer_min_chars: int
+    text_layer_min_good_ratio: float
+    scan_image_coverage: float
+    blank_page_stddev: float
+    low_res_dpi: int
+
     # Local AI through Ollama's HTTP API. model_enabled=false runs everything
     # without AI: search without meaning vectors, answers quote the evidence.
     model_enabled: bool
@@ -107,6 +119,9 @@ class Settings:
 
     # Trash (PRD 1 F5): days a document stays in Trash before the worker deletes it for good.
     trash_days: int
+
+    # Read again (PRD 2 X1, security A8): how many a customer may start in one hour.
+    reprocess_per_hour: int
 
     # Answers.
     answer_max_evidence: int
@@ -174,6 +189,11 @@ class Settings:
             ocr_url=ocr_url,
             ocr_timeout_seconds=ocr_timeout_seconds,
             ocr_dpi=env.positive("OCR_DPI"),
+            text_layer_min_chars=env.positive("TEXT_LAYER_MIN_CHARS"),
+            text_layer_min_good_ratio=env.share("TEXT_LAYER_MIN_GOOD_RATIO"),
+            scan_image_coverage=env.share("SCAN_IMAGE_COVERAGE"),
+            blank_page_stddev=env.not_negative("BLANK_PAGE_STDDEV"),
+            low_res_dpi=env.positive("LOW_RES_DPI"),
             model_enabled=env.boolean("MODEL_ENABLED"),
             model_base_url=env.text("MODEL_BASE_URL"),
             model_chat=env.text("MODEL_CHAT"),
@@ -189,6 +209,7 @@ class Settings:
             login_lock_minutes=env.positive("LOGIN_LOCK_MINUTES"),
             admin_session_minutes=env.positive("ADMIN_SESSION_MINUTES"),
             trash_days=env.integer("TRASH_DAYS"),
+            reprocess_per_hour=env.positive("REPROCESS_PER_HOUR"),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             timezone=env.text("TIMEZONE"),
@@ -248,6 +269,19 @@ class _Env:
             return float(value)
         except ValueError:
             raise SettingsError(f"{name} must be a number") from None
+
+    def share(self, name: str) -> float:
+        """A number above 0 and at most 1."""
+        value = self.number(name)
+        if not (math.isfinite(value) and 0 < value <= 1):
+            raise SettingsError(f"{name} must be a number above 0 and at most 1")
+        return value
+
+    def not_negative(self, name: str) -> float:
+        value = self.number(name)
+        if not (math.isfinite(value) and value >= 0):
+            raise SettingsError(f"{name} must be a number of 0 or more")
+        return value
 
     def boolean(self, name: str) -> bool:
         value = self.text(name).lower()

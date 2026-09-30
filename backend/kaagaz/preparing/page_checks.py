@@ -57,6 +57,15 @@ _INTEGER_MAX = 2**31 - 1  # pages.effective_dpi is a PostgreSQL integer
 
 
 @dataclass(frozen=True, slots=True)
+class PageCheck:
+    """What the preparer found about one page's picture, stored with the page."""
+
+    effective_dpi: int | None  # R4; None when the page has no image to measure
+    low_resolution: bool  # R4: effective_dpi under LOW_RES_DPI
+    blank: bool  # R3: the stored picture is blank
+
+
+@dataclass(frozen=True, slots=True)
 class BlankMeasure:
     """What the blank rule sees: printed by ``cli measure`` (ML 12)."""
 

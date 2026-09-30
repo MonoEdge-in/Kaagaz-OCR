@@ -39,6 +39,14 @@ Why some choices:
   reached every row stays and the admin can try again.
 * **Trash means deleted.** A family in Trash can't be renamed, moved, tagged
   or given a new version: 409 ``in_trash``, checked under the family lock.
+* **Read again** (PRD 2 X1) is for a reviewer or an admin: a ready, failed or
+  unreadable document out of Trash goes back to the start and its job is
+  queued, inside one transaction under the family lock, so a queue that is down
+  changes nothing (503). Anything else is 409 ``not_reprocessable``; another
+  customer's id is 404. A customer may start REPROCESS_PER_HOUR in an hour, and
+  one document once in 10 minutes (429 ``rate_limited``, security A8). The
+  pipeline reads it again from the scan on, and this customer's remembered fixes
+  are applied again; other fixes are lost, which the page says first.
 * **Versions** (PRD 1 F6) have the checks and replies of upload. A family not
   there is 404, and one in Trash 409, checked before storing. Under the lock it
   is checked again: one moved to Trash in the moment between is 404, and the
@@ -60,7 +68,7 @@ from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
-from kaagaz.api.auth import AdminWithTwoStep, CurrentUser, User
+from kaagaz.api.auth import AdminWithTwoStep, CurrentUser, Reviewer, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name
@@ -77,12 +85,19 @@ from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, listing, trash
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
-from kaagaz.db.documents import NotInTrash, PgDocuments, delete_family_forever
+from kaagaz.db.documents import (
+    NotInTrash,
+    NotReprocessable,
+    PgDocuments,
+    ReprocessLimited,
+    delete_family_forever,
+    mark_for_reprocess,
+)
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
-from kaagaz.ingestion.ports import BlobNotFound, UnknownFamily, UnknownFolder
+from kaagaz.ingestion.ports import BlobNotFound, Job, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.settings import Settings
 
@@ -108,6 +123,10 @@ _CONTENT_TYPES = {
     "ole2": ("application/octet-stream", "bin"),
     "text": ("text/plain; charset=utf-8", "csv"),
 }
+_REPROCESS_LIMITED = (
+    "Too many documents were sent to be read again. A document can be read again once in 10 minutes;"
+    " please wait and try again."
+)
 _REJECT_STATUS = {
     RejectCode.EMPTY_FILE: 400,
     RejectCode.UNSUPPORTED_TYPE: 400,
@@ -385,13 +404,49 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         folder = row["folder_id"]
         path = [] if folder is None else folders_sql.folder_path(conn, customer_id, str(folder))
         versions = listing.family_versions(conn, customer_id, str(row["family_id"]))
+        fixes = listing.reviewer_fix_count(conn, customer_id, target)
     return {
         **document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user),
         "pages": [page_summary(page) for page in pages],
         "values": [extracted_value(value) for value in values],
         "folder": document_folder(path),
         "versions": [document_version(version) for version in versions],
+        "reviewer_fixes": fixes,
+        "summary": row["summary"],  # PRD 2 D3: the card's summary (PR 5); null until then
     }
+
+
+@router.post("/documents/{document_id}/reprocess")
+def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context) -> dict[str, Any]:
+    """Read the document again (PRD 2 X1), and return its summary, now ``received``.
+    One transaction: the family lock, the change, the audit row, then the job."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        _document_or_404(conn, user, document_id)
+        try:
+            previous = mark_for_reprocess(
+                conn, customer_id, target, per_hour=context.settings.reprocess_per_hour
+            )
+        except NotReprocessable:
+            raise ApiError(409, "not_reprocessable") from None
+        except ReprocessLimited:
+            raise ApiError(429, "rate_limited", _REPROCESS_LIMITED) from None
+        if previous is None:  # deleted in the moment since
+            raise ApiError(404, "not_found")
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="document.reprocess",
+            target_type="document",
+            target_id=target,
+            details={"status": previous},
+        )
+        # Last, inside the transaction: a queue that is down rolls everything back (503).
+        context.queue.enqueue(Job(customer_id, target))
+        row = _document_or_404(conn, user, document_id)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+    return document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
 
 
 class DocumentChangesBody(BaseModel):

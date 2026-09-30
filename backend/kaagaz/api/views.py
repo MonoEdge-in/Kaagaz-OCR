@@ -21,6 +21,16 @@ _STATUS_MESSAGES = {
     "ready": "Ready. You can ask about it.",
     "needs_reader": "Stored safely. This kind of file can't be read yet.",
 }
+_IN_PROGRESS = ("received", "clean")
+
+# How far the worker has got (PRD 2 X3), by step. PROVISIONAL wording (plan 3.3).
+# "done" counts the pages finished, so the page being worked on is the next one.
+_STEP_MESSAGES = {
+    "scanning": "Checking for viruses…",
+    "understanding": "Understanding the document…",
+    "indexing": "Making it searchable…",
+}
+_PAGE_STEPS = {"preparing": "Preparing", "reading": "Reading"}
 
 
 def iso(value: datetime) -> str:
@@ -36,12 +46,15 @@ def status_message(
     page_count: int | None = None,
     attempts: int = 0,
     max_attempts: int | None = None,
+    progress: Mapping[str, Any] | None = None,
 ) -> str:
     """``max_pages`` is the MAX_PAGES setting, named when a file had too many pages
     (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it),
     with its real ``page_count`` when the worker stored it. ``attempts`` and
     ``max_attempts`` are the worker's tries: shown from the second try on, and
-    named when they ran out (``retries_exhausted``)."""
+    named when they ran out (``retries_exhausted``). ``progress`` is the worker's
+    ``{step, done, total}`` (PRD 2 X3), used only while the document is being
+    checked or read, so an old one on a finished document is ignored."""
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
@@ -58,9 +71,32 @@ def status_message(
     if status == "failed":
         return "This file could not be read." + (f" ({failure_code})" if failure_code else "")
     message = _STATUS_MESSAGES.get(status, "")
-    if status in ("received", "clean") and attempts >= 2 and max_attempts:
+    if status in _IN_PROGRESS and progress is not None:
+        message = progress_message(progress) or message
+    if status in _IN_PROGRESS and attempts >= 2 and max_attempts:
         message += f" Try {min(attempts, max_attempts)} of {max_attempts}."
     return message
+
+
+def progress_message(progress: Mapping[str, Any]) -> str | None:
+    """ "Reading page 3 of 40…" and the like, or None for a step it does not know.
+    A sheet is read as a whole (total 0), so it has no page number. O(1)."""
+    step, done, total = progress.get("step"), progress.get("done"), progress.get("total")
+    if step in _STEP_MESSAGES:
+        return _STEP_MESSAGES[step]
+    if step not in _PAGE_STEPS or not isinstance(done, int) or not isinstance(total, int):
+        return None
+    if total <= 0:
+        return "Reading the document…"
+    return f"{_PAGE_STEPS[step]} page {max(1, min(done + 1, total))} of {total}…"
+
+
+def in_progress(status: str, progress: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """``DocumentProgress``: the stored progress while the document is being
+    checked or read, else None (an old one left on a finished document)."""
+    if status not in _IN_PROGRESS or progress is None:
+        return None
+    return {"step": progress["step"], "done": int(progress["done"]), "total": int(progress["total"])}
 
 
 def can_delete(row: RowMapping, user: CurrentUser) -> bool:
@@ -93,6 +129,7 @@ def newer_version(newer: Mapping[str, Any] | None, *, max_pages: int) -> dict[st
             page_count=newer["page_count"],
             attempts=int(newer["attempts"] or 0),
             max_attempts=newer["max_attempts"],
+            progress=newer.get("progress"),
         ),
     }
 
@@ -118,7 +155,11 @@ def document_summary(
             page_count=row["page_count"],
             attempts=int(row["attempts"]),
             max_attempts=row["max_attempts"],
+            progress=row["progress"],
         ),
+        "progress": in_progress(row["status"], row["progress"]),
+        "doc_type": row["doc_type"],  # PRD 2 D3: set by the document card (PR 5); null until then
+        "languages": list(row["languages"] or []),
         "attempts": int(row["attempts"]),
         "max_attempts": row["max_attempts"],
         "can_delete": can_delete(row, user),
@@ -172,6 +213,9 @@ def page_summary(row: RowMapping) -> dict[str, Any]:
         "height": float(row["height"]),
         "unit": row["unit"],
         "has_image": bool(row["has_image"]),
+        "route": row["route"],  # PRD 2 R1; null when the page was not read
+        "effective_dpi": row["effective_dpi"],  # R4
+        "low_resolution": bool(row["low_resolution"]),
     }
 
 

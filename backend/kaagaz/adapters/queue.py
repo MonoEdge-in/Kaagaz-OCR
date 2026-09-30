@@ -34,6 +34,7 @@ from collections import OrderedDict
 from typing import Any
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError, HTTPClientError
 from botocore.exceptions import ConnectionError as BotoConnectionError
 
@@ -72,11 +73,33 @@ _MAX_LEASE_SECONDS = 12 * 60 * 60
 _REMEMBERED_DELIVERIES = 16
 
 
+# AR15b: a queue that does not answer fails fast. The read timeout leaves room
+# for the long poll (QUEUE_WAIT_SECONDS), and at most two retries (botocore's max_attempts
+# counts retries: three tries in all), so a "read again" or an upload never hangs on the queue.
+_CONNECT_TIMEOUT_SECONDS = 5
+_READ_TIMEOUT_MARGIN_SECONDS = 10
+_MAX_ATTEMPTS = 2
+
+
+def client_config(settings: Settings) -> Config:
+    """The SQS client's timeouts and retries (AR15b)."""
+    return Config(
+        connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+        read_timeout=settings.queue_wait_seconds + _READ_TIMEOUT_MARGIN_SECONDS,
+        retries={"max_attempts": _MAX_ATTEMPTS},
+    )
+
+
 def _make_client(settings: Settings) -> Any:
     # Credentials come from boto3's usual places: the task role in AWS, and the
     # laptop-only AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for ElasticMQ,
     # which accepts any values (.env.example).
-    return boto3.client("sqs", endpoint_url=settings.queue_endpoint_url, region_name=settings.queue_region)
+    return boto3.client(
+        "sqs",
+        endpoint_url=settings.queue_endpoint_url,
+        region_name=settings.queue_region,
+        config=client_config(settings),
+    )
 
 
 def _job_from_body(body: str) -> Job | None:

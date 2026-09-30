@@ -22,7 +22,9 @@ demoted and later promoted again must not get their old sessions back.
 import re
 import secrets
 import uuid
+from datetime import datetime
 from typing import Annotated, Any, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
@@ -35,6 +37,7 @@ from kaagaz.api.errors import ApiError
 from kaagaz.api.views import admin_user, audit_entry
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit
+from kaagaz.db import runs as runs_sql
 from kaagaz.db import users as users_sql
 
 router = APIRouter(dependencies=[Depends(require_admin_session)])
@@ -270,7 +273,24 @@ def list_audit(
     return {"items": [audit_entry(row) for row in rows], "total": total}
 
 
+def month_window(now: datetime, timezone: str) -> tuple[datetime, datetime]:
+    """The first instant of this month and of the next, in ``timezone`` (the
+    customer's TIMEZONE, never the server's), for ``now``. O(1)."""
+    local = now.astimezone(ZoneInfo(timezone))
+    start = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    following = (
+        start.replace(year=start.year + 1, month=1)
+        if start.month == 12
+        else start.replace(month=start.month + 1)
+    )
+    return start, following
+
+
 @router.get("/admin/stats")
 def get_stats(user: AdminSession, context: Context) -> dict[str, Any]:
+    """The admin numbers, with the pages read this month by route (PRD 2 R6)."""
+    start, end = month_window(context.clock(), context.settings.timezone)
     with context.db.customer(user.customer_id) as conn:
-        return admin_sql.stats(conn, user.customer_id)
+        numbers = admin_sql.stats(conn, user.customer_id)
+        numbers["pages_this_month"] = runs_sql.pages_by_route(conn, user.customer_id, start=start, end=end)
+    return numbers
