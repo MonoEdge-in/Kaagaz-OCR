@@ -9,16 +9,20 @@ digits, so the page router (R2) keeps it on the text layer.
 import io
 import unittest
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.ingestion import sniff
-from kaagaz.reading.ocr import OcrEngine, OcrLine
+from kaagaz.reading.ocr import OcrLine
 from kaagaz.reading.pdf_reader import PdfReader
+from kaagaz.reading.pdf_second_reader import PdfiumReader
 from kaagaz.reading.socket import ReaderSocket
-from kaagaz.reading.spans import Span
+from kaagaz.reading.spans import PageInfo, Span
+from tests.fakes import FakePrepared, FakePreparer
 from tests.pdf_builder import Page, Picture, Text, make_pdf
+from tests.picture_support import text_like_picture
+from tests.test_pdf_reader import RULES, reader_of
 from tests.test_pipeline import CUSTOMER, build
 
 PAGES = 20
@@ -42,12 +46,34 @@ def report_pdf() -> bytes:
     return make_pdf(pages)
 
 
-def pdf_reader(ocr: OcrEngine | None = None) -> PdfReader:
-    return PdfReader(ocr, max_pages=PAGES, dpi=72, max_image_pixels=10_000_000)
+class ScanLines:
+    """A fake OCR engine: the given lines, as fractions of whatever picture it is given."""
+
+    name, version = "fake-ocr", "1"
+
+    def __init__(self, lines: list[tuple[str, float]] | None = None) -> None:
+        self.lines = lines or []
+        self.calls = 0
+
+    def read(self, image: Image.Image) -> list[OcrLine]:
+        self.calls += 1
+        w, h = image.width, image.height
+        return [OcrLine(t, 0.1 * w, top * h, 0.9 * w, (top + 0.02) * h, 0.9) for t, top in self.lines]
 
 
-def read_pdf(data: bytes, ocr: OcrEngine | None = None) -> list[Span]:
+def pdf_reader(ocr: ScanLines | None = None) -> PdfReader:
+    """The first PDF reader with the shipped R2 rules (40 letters and digits)."""
+    return reader_of(ocr, max_pages=PAGES, rules=RULES)
+
+
+def read_pdf(data: bytes, ocr: ScanLines | None = None) -> list[Span]:
     return pdf_reader(ocr).read(data)
+
+
+def pdf_pages(count: int) -> FakePreparer:
+    return FakePreparer(
+        {sniff.PDF: FakePrepared([PageInfo(n, 612.0, 792.0, "pt") for n in range(1, count + 1)], {})}
+    )
 
 
 def holding(pieces: list[Piece], text: str) -> list[Piece]:
@@ -69,52 +95,35 @@ class CrossPageFixtureTest(unittest.TestCase):
         self.assertEqual(holding(pieces, "Page 15 of 20"), [])
         self.assertEqual(holding(pieces, f"of {PAGES}"), [])  # no footer in any piece
 
-    def test_every_page_has_40_letters_and_digits_so_it_stays_on_the_text_layer(self) -> None:
+    def test_every_page_has_40_letters_and_digits_and_stays_on_the_text_layer(self) -> None:
+        engine = ScanLines()  # with an engine set, a page that failed R2 would be read by OCR
+        spans = read_pdf(report_pdf(), engine)
+        self.assertEqual(engine.calls, 0)
+        self.assertEqual({span.origin for span in spans}, {"text_layer"})
         by_page: dict[int, int] = {}
-        for span in read_pdf(report_pdf()):
+        for span in spans:
             if not span.text.startswith("Page "):  # the footer alone must not be what counts
                 page = span.location.page
                 by_page[page] = by_page.get(page, 0) + sum(ch.isalnum() for ch in span.text)
         self.assertEqual(sorted(by_page), list(range(1, PAGES + 1)))
         self.assertGreaterEqual(min(by_page.values()), 40)
 
-    def test_through_the_pipeline_the_footers_stay_in_the_reader_output(self) -> None:
-        system = build(socket=ReaderSocket({sniff.PDF: pdf_reader()}))
+    def test_through_the_pipeline_all_20_pages_route_text_layer_and_the_footers_stay_in_the_output(
+        self,
+    ) -> None:
+        system = build(socket=ReaderSocket({sniff.PDF: pdf_reader(ScanLines())}), preparer=pdf_pages(PAGES))
         doc = system.upload.accept(CUSTOMER, io.BytesIO(report_pdf())).document_id
         system.worker.run_once()
 
         content = system.store.content(CUSTOMER, doc)
         assert content is not None
+        self.assertEqual([page.route for page in content.pages], ["text_layer"] * PAGES)
         (output,) = content.outputs
         footers = [span.text for span in output.spans if span.text.startswith("Page ")]
         self.assertEqual(footers, [f"Page {n} of {PAGES}" for n in range(1, PAGES + 1)])
         self.assertEqual(holding(content.pieces, f"of {PAGES}"), [])
         (piece,) = holding(content.pieces, PROFIT)
         self.assertEqual((piece.page_from, piece.page_to, holding(content.pieces, AMOUNT)), (15, 16, [piece]))
-
-
-class ScanLines:
-    """A fake OCR engine: the given lines, as fractions of whatever picture it is given."""
-
-    name, version = "fake-ocr", "1"
-
-    def __init__(self, lines: list[tuple[str, float]]) -> None:
-        self.lines = lines
-        self.calls = 0
-
-    def read(self, image: Image.Image) -> list[OcrLine]:
-        self.calls += 1
-        w, h = image.width, image.height
-        return [OcrLine(t, 0.1 * w, top * h, 0.9 * w, (top + 0.02) * h, 0.9) for t, top in self.lines]
-
-
-def scan_picture() -> Image.Image:
-    """Dark bars like lines of words on white paper, so the page is never blank (R3)."""
-    image = Image.new("RGB", (200, 260), "white")
-    draw = ImageDraw.Draw(image)
-    for top in range(20, 240, 12):
-        draw.rectangle((20, top, 180, top + 4), fill=(24, 24, 24))
-    return image
 
 
 class MixedPagesTest(unittest.TestCase):
@@ -125,17 +134,50 @@ class MixedPagesTest(unittest.TestCase):
                 Text(72, 80, "Closing stock of cotton bales was"),
             ]
         )
-        scanned = Page(picture=Picture(scan_picture(), 0, 0, 612, 792))  # no text layer
+        scanned = Page(picture=Picture(text_like_picture(200, 260), 0, 0, 612, 792))  # no text layer
         scan_lines = ["1,240 bales, counted on 30 April.", "Signed by the store keeper."]
         engine = ScanLines([(scan_lines[0], 0.05), (scan_lines[1], 0.08)])
         spans = read_pdf(make_pdf([text_page, scanned]), engine)
         pieces = pieces_from_lines("cust-a", "doc-1", spans)
 
         self.assertEqual(engine.calls, 1)  # only page 2 was read by OCR
+        origins = {(span.location.page, span.origin) for span in spans}
+        self.assertEqual(origins, {(1, "text_layer"), (2, "ocr")})  # the routes differ per page
         (piece,) = holding(pieces, "Closing stock")
         self.assertEqual(piece.text, "\n".join(["Closing stock of cotton bales was", *scan_lines]))
         self.assertEqual((piece.page_from, piece.page_to), (1, 2))
         self.assertEqual(piece.label, "needs_review")  # part of it was read by OCR
+
+
+HINDI = ["पाटील ट्रेडर्स", "बिल संख्या १७ दिनांक १२/०८/२०२६", "ग्राहक का नाम शर्मा", "Total: १,१८०.५०"]
+MARATHI = ["सातबारा उतारा", "गाव शिंदेवाडी तालुका हवेली", "क्षेत्र ७/१२ दिनांक", "खातेदार पाटील शिंदे"]
+
+
+class DevanagariTextLayerTest(unittest.TestCase):
+    def test_hindi_and_marathi_text_layers_stay_text_layer_and_both_readers_agree(self) -> None:
+        pages = [
+            Page(texts=[Text(72, 700 - 20 * i, t, devanagari=True) for i, t in enumerate(ts)])
+            for ts in (HINDI, MARATHI)
+        ]
+        data = make_pdf(pages)
+        engine = ScanLines()
+        first = read_pdf(data, engine)
+        self.assertEqual(engine.calls, 0)  # R2 kept both pages: Devanagari is good text
+        self.assertEqual([span.text for span in first], HINDI + MARATHI)  # read back exactly
+        self.assertEqual([span.text for span in PdfiumReader(max_pages=2).read(data)], HINDI + MARATHI)
+
+        socket = ReaderSocket({sniff.PDF: pdf_reader(ScanLines())}, {sniff.PDF: PdfiumReader(max_pages=2)})
+        system = build(socket=socket, preparer=pdf_pages(2))
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(data)).document_id
+        system.worker.run_once()
+        content = system.store.content(CUSTOMER, doc)
+        assert content is not None
+        self.assertEqual([page.route for page in content.pages], ["text_layer", "text_layer"])
+        (total,) = [v for v in content.values if v.field == "total_amount"]
+        self.assertEqual((total.value_text, str(total.value_number)), ("१,१८०.५०", "1180.50"))
+        self.assertEqual((total.label, total.label_reason), ("verified", "readers_agree"))
+        self.assertEqual(content.facts.languages, ("other",))
+        self.assertTrue(all(p.text_latin for p in content.pieces))
 
 
 if __name__ == "__main__":
