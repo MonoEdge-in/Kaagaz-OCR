@@ -24,6 +24,11 @@ The PDF opening, page drawing and image frame helpers are shared with the
 readers (``pdf_reader``, ``pdf_second_reader``, ``image_reader``), so the
 limits hold the same way for every path that decodes a page.
 
+Each page also gets its checks (PRD 2 R3, R4; ``page_checks.PageCheck``): whether
+its picture is blank (``blank_stddev`` is BLANK_PAGE_STDDEV), and its effective
+DPI, flagged under ``low_res_dpi`` (LOW_RES_DPI): a PDF page's from its largest
+image, a photo's from its short side. The pipeline stores them with the page.
+
 Time is O(total pixels) to draw and encode; memory is one page's picture at
 a time plus the PNGs kept (their total is what the caller stores anyway).
 """
@@ -33,7 +38,7 @@ import math
 import struct
 import zlib
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pypdfium2 as pdfium
@@ -41,6 +46,7 @@ import pypdfium2.raw as pdfium_c
 from PIL import Image, ImageOps
 
 from kaagaz.ingestion import sniff
+from kaagaz.preparing.page_checks import PageCheck, is_blank, largest_image_dpi, low_resolution, photo_dpi
 from kaagaz.reading.spans import CellLocation, PageInfo, ReadError, Span, TooManyPages
 
 _IMAGE_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF})
@@ -58,21 +64,39 @@ _IMAGE_BOMB = (Image.DecompressionBombError, Image.DecompressionBombWarning)
 class PreparedPages:
     pages: list[PageInfo]
     images: dict[int, bytes]  # page number -> PNG
+    checks: dict[int, PageCheck] = field(default_factory=dict)  # page number -> its checks
+
+
+@dataclass(frozen=True, slots=True)
+class _Limits:
+    dpi: int
+    max_pages: int
+    max_image_pixels: int
+    blank_stddev: float
+    low_res_dpi: int
 
 
 def prepare_pages(
-    detected_type: str, data: bytes, *, dpi: int, max_pages: int, max_image_pixels: int
+    detected_type: str,
+    data: bytes,
+    *,
+    dpi: int,
+    max_pages: int,
+    max_image_pixels: int,
+    blank_stddev: float,
+    low_res_dpi: int,
 ) -> PreparedPages:
+    limits = _Limits(dpi, max_pages, max_image_pixels, blank_stddev, low_res_dpi)
     if detected_type == sniff.PDF:
-        return _prepare_pdf(data, dpi=dpi, max_pages=max_pages, max_image_pixels=max_image_pixels)
+        return _prepare_pdf(data, limits)
     if detected_type in _IMAGE_TYPES:
-        pages: list[PageInfo] = []
-        images: dict[int, bytes] = {}
+        prepared = PreparedPages([], {})
         frames = image_pages(data, max_pages=max_pages, max_image_pixels=max_image_pixels)
         for number, image in enumerate(frames, start=1):
-            pages.append(PageInfo(number, float(image.width), float(image.height), "px"))
-            images[number] = png_bytes(image)
-        return PreparedPages(pages, images)
+            prepared.pages.append(PageInfo(number, float(image.width), float(image.height), "px"))
+            prepared.images[number] = png_bytes(image)
+            prepared.checks[number] = _check(image, photo_dpi(image.width, image.height), limits)
+        return prepared
     return PreparedPages([], {})
 
 
@@ -93,24 +117,29 @@ def sheet_pages(spans: Iterable[Span]) -> list[PageInfo]:
     ]
 
 
-def _prepare_pdf(data: bytes, *, dpi: int, max_pages: int, max_image_pixels: int) -> PreparedPages:
-    pages: list[PageInfo] = []
-    images: dict[int, bytes] = {}
+def _prepare_pdf(data: bytes, limits: _Limits) -> PreparedPages:
+    prepared = PreparedPages([], {})
     document = open_pdf(data)
     try:
-        check_page_count(len(document), max_pages)
+        check_page_count(len(document), limits.max_pages)
         for index in range(len(document)):
             page = document[index]
             try:
                 width, height = page.get_size()
-                image = render_pdf_page(page, dpi=dpi, max_image_pixels=max_image_pixels)
+                image = render_pdf_page(page, dpi=limits.dpi, max_image_pixels=limits.max_image_pixels)
+                dpi = largest_image_dpi(page)
             finally:
                 page.close()
-            pages.append(PageInfo(index + 1, float(width), float(height), "pt"))
-            images[index + 1] = png_bytes(image)
+            prepared.pages.append(PageInfo(index + 1, float(width), float(height), "pt"))
+            prepared.images[index + 1] = png_bytes(image)
+            prepared.checks[index + 1] = _check(image, dpi, limits)
     finally:
         document.close()
-    return PreparedPages(pages, images)
+    return prepared
+
+
+def _check(image: Image.Image, dpi: int | None, limits: _Limits) -> PageCheck:
+    return PageCheck(dpi, low_resolution(dpi, limits.low_res_dpi), is_blank(image, limits.blank_stddev))
 
 
 # -- shared with the readers --------------------------------------------------

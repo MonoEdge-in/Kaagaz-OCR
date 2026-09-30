@@ -152,6 +152,13 @@ export const deleteDocument = (id: string) => request<void>("DELETE", `/document
 export const restoreDocument = (id: string) =>
   request<DocumentSummary>("POST", `/documents/${id}/restore`);
 /**
+ * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
+ * for a ready, failed or unreadable document out of Trash (403 forbidden or
+ * 409 not_reprocessable otherwise). The reply has its new status, received.
+ */
+export const reprocessDocument = (id: string) =>
+  request<DocumentSummary>("POST", `/documents/${id}/reprocess`);
+/**
  * Only in an admin session (403 admin_session_required otherwise), and only
  * from Trash (409 not_in_trash otherwise). Every version goes.
  */

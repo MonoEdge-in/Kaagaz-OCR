@@ -1,17 +1,32 @@
 "use client";
 
 // The headline numbers for this customer: documents by status, questions and
-// how they were answered, feedback, and values waiting for review. Tiles in a
-// grid that fits the width; 0 shows as 0.
+// how they were answered, feedback, and values waiting for review, then the
+// pages read this month by route (PRD 2, R6). Tiles in a grid that fits the
+// width; 0 shows as 0.
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, getStats } from "@/lib/api";
 import type { Stats } from "@/lib/types";
-import { statTiles } from "./logic";
+import { pageRouteTiles, statTiles } from "./logic";
+import type { Tile } from "./logic";
 import styles from "./Admin.module.css";
 
 const SKELETON_TILES = [0, 1, 2, 3, 4, 5];
+
+function Tiles({ tiles, labelledBy }: { tiles: Tile[]; labelledBy?: string }) {
+  return (
+    <dl className={styles.tiles} aria-labelledby={labelledBy}>
+      {tiles.map((tile) => (
+        <div key={tile.label} className={styles.tile}>
+          <dt className={styles.tileLabel}>{tile.label}</dt>
+          <dd className={`${styles.tileValue} tabular`}>{tile.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 
 export function NumbersPanel() {
   const [attempt, setAttempt] = useState(0);
@@ -74,14 +89,13 @@ export function NumbersPanel() {
         </>
       )}
       {stats && (
-        <dl className={styles.tiles}>
-          {statTiles(stats).map((tile) => (
-            <div key={tile.label} className={styles.tile}>
-              <dt className={styles.tileLabel}>{tile.label}</dt>
-              <dd className={`${styles.tileValue} tabular`}>{tile.value}</dd>
-            </div>
-          ))}
-        </dl>
+        <>
+          <Tiles tiles={statTiles(stats)} />
+          <h3 id="pages-by-route-heading" className={styles.tilesHeading}>
+            Pages read this month, by route
+          </h3>
+          <Tiles tiles={pageRouteTiles(stats)} labelledBy="pages-by-route-heading" />
+        </>
       )}
     </section>
   );

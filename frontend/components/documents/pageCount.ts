@@ -1,4 +1,5 @@
-// Counting pages before upload, so a file over the page limit is never sent. A
+// Counting pages before upload, so a file over the page limit is never sent,
+// and a PDF's time estimate uses its real pages (PRD 2, X4). A
 // PDF is opened by PDF.js in the browser; a TIFF's pages (its IFDs) are counted
 // from its bytes here. Anything that cannot be counted here (a password, a
 // damaged file, a BigTIFF) is sent, and the server decides. The counting and
@@ -62,16 +63,23 @@ export function pageLimitProblem(
     : `This file has more than ${maxPages} pages. ${fix}`;
 }
 
-/** Why a PDF or TIFF will not be sent for its pages, or null. Runs in the browser only. */
-export async function pageProblem(file: File, maxPages: number): Promise<string | null> {
+/**
+ * A PDF's or TIFF's pages (null when not known here), and why it will not be
+ * sent for them (null when it may be). The upload queue keeps the pages for
+ * its time estimate. Runs in the browser only.
+ */
+export async function checkPages(
+  file: File,
+  maxPages: number,
+): Promise<{ pages: number | null; problem: string | null }> {
   const kind = countedKind(file.name);
-  if (kind === null) return null;
+  if (kind === null) return { pages: null, problem: null };
   try {
     const data = await file.arrayBuffer();
     const pages = kind === "pdf" ? await countPdfPages(data) : countTiffPages(data, maxPages);
-    return pageLimitProblem(kind, pages, maxPages);
+    return { pages, problem: pageLimitProblem(kind, pages, maxPages) };
   } catch {
     // PDF.js could not open it (a password, damage), or the file could not be read here.
-    return null;
+    return { pages: null, problem: null };
   }
 }

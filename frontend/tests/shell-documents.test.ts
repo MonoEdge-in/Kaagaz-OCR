@@ -2,8 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPT_ATTRIBUTE,
   FALLBACK_UPLOAD_LIMITS,
+  MB_PER_PDF_PAGE,
+  SECONDS_PER_PAGE,
   deletedMessage,
   estimateIngestSeconds,
+  estimatePages,
+  estimateText,
   formatEtaText,
   formatProgressPercent,
   limitFor,
@@ -195,6 +199,22 @@ describe("shouldPoll", () => {
     expect(shouldPoll(docs("ready", "needs_reader", "rejected", "failed"))).toBe(false);
     expect(shouldPoll([])).toBe(false);
   });
+
+  it("keeps polling while a document is read page by page (PRD 2, X3)", () => {
+    const reading = { status: "clean" as const, progress: { step: "reading", done: 3, total: 40 } };
+    expect(shouldPoll([reading])).toBe(true);
+  });
+
+  it("keeps polling while a newer version is still being read, so its line moves too", () => {
+    const withNewer = (status: DocumentStatus) => ({
+      status: "ready" as const,
+      newer_version: { status },
+    });
+    expect(shouldPoll([withNewer("received")])).toBe(true);
+    expect(shouldPoll([withNewer("clean")])).toBe(true);
+    expect(shouldPoll([withNewer("failed")])).toBe(false);
+    expect(shouldPoll([{ status: "ready", newer_version: null }])).toBe(false);
+  });
 });
 
 describe("menuEntries", () => {
@@ -288,10 +308,84 @@ describe("listView", () => {
 });
 
 describe("estimateIngestSeconds", () => {
+  // PRD 2 X4 adds the file type: the estimate is by pages now, not by MB.
   it("scales up for larger files and multiple files", () => {
-    expect(estimateIngestSeconds(1 * MB)).toBeGreaterThan(0);
-    expect(estimateIngestSeconds(5 * MB)).toBeGreaterThan(estimateIngestSeconds(1 * MB));
-    expect(estimateIngestSeconds(2 * MB, 3)).toBeGreaterThan(estimateIngestSeconds(2 * MB, 1));
+    expect(estimateIngestSeconds("pdf", 1 * MB)).toBeGreaterThan(0);
+    expect(estimateIngestSeconds("pdf", 5 * MB)).toBeGreaterThan(estimateIngestSeconds("pdf", 1 * MB));
+    expect(estimateIngestSeconds("pdf", 2 * MB, 3)).toBeGreaterThan(estimateIngestSeconds("pdf", 2 * MB, 1));
+  });
+
+  it("is the estimated pages times the seconds per page for that file type (PRD 2, X4)", () => {
+    expect(MB_PER_PDF_PAGE).toBe(0.4);
+    expect(estimateIngestSeconds("pdf", 40 * MB)).toBe(Math.round(100 * SECONDS_PER_PAGE.pdf));
+    const onePage = (kind: "image" | "sheet") => Math.max(4, Math.round(SECONDS_PER_PAGE[kind]));
+    expect(estimateIngestSeconds("image", 15 * MB)).toBe(onePage("image"));
+    expect(estimateIngestSeconds("image", 1 * MB)).toBe(onePage("image"));
+    expect(estimateIngestSeconds("sheet", 9 * MB)).toBe(onePage("sheet"));
+  });
+
+  it("uses a PDF's real page count when it is known, else MB divided by 0.4", () => {
+    const seconds = (pages: number) => Math.max(4, Math.round(pages * SECONDS_PER_PAGE.pdf));
+    expect(estimateIngestSeconds("pdf", 40 * MB, 1, 30)).toBe(seconds(30));
+    expect(estimateIngestSeconds("pdf", 40 * MB, 1, null)).toBe(seconds(100));
+    expect(estimateIngestSeconds("pdf", 40 * MB)).toBe(seconds(100));
+  });
+});
+
+describe("estimatePages (PRD 2, X4)", () => {
+  it("counts a PDF as its MB divided by 0.4, rounded up", () => {
+    expect(estimatePages("pdf", 0.4 * MB)).toBe(1);
+    expect(estimatePages("pdf", 0.41 * MB)).toBe(2);
+    expect(estimatePages("pdf", Math.floor(0.4 * MB))).toBe(1);
+    expect(estimatePages("pdf", Math.floor(0.4 * MB) + 1)).toBe(2);
+    expect(estimatePages("pdf", 4 * MB)).toBe(10);
+  });
+
+  it("gives at least 1 page, even for 0 bytes", () => {
+    expect(estimatePages("pdf", 0)).toBe(1);
+    expect(estimatePages("image", 0)).toBe(1);
+    expect(estimatePages("sheet", 0)).toBe(1);
+  });
+
+  it("counts a photo or a sheet as one page, whatever its size", () => {
+    expect(estimatePages("image", 15 * MB)).toBe(1);
+    expect(estimatePages("sheet", 9 * MB)).toBe(1);
+  });
+
+  it("uses a PDF's real page count once the upload flow has counted it (PROVISIONAL)", () => {
+    expect(estimatePages("pdf", 40 * MB, 3)).toBe(3);
+    expect(estimatePages("pdf", 0.1 * MB, 250)).toBe(250);
+  });
+
+  it("still rounds the count up, to at least 1", () => {
+    expect(estimatePages("pdf", 40 * MB, 2.5)).toBe(3);
+    expect(estimatePages("pdf", 40 * MB, 0)).toBe(1);
+  });
+
+  it("falls back to MB divided by 0.4 when the count is not known", () => {
+    expect(estimatePages("pdf", 0.41 * MB, null)).toBe(2);
+    expect(estimatePages("pdf", 4 * MB, null)).toBe(10);
+    expect(estimatePages("pdf", 0, null)).toBe(1);
+  });
+
+  it("leaves a photo or a sheet at one page, count or not", () => {
+    expect(estimatePages("image", 15 * MB, 7)).toBe(1);
+    expect(estimatePages("sheet", 9 * MB, 7)).toBe(1);
+  });
+});
+
+describe("estimateText (PRD 2, X4)", () => {
+  it("says up to N minutes for a PDF, rounded up, and 1 minute in the singular", () => {
+    expect(estimateText("pdf", 0)).toBe("Up to 1 minute");
+    expect(estimateText("pdf", 4)).toBe("Up to 1 minute");
+    expect(estimateText("pdf", 60)).toBe("Up to 1 minute");
+    expect(estimateText("pdf", 61)).toBe("Up to 2 minutes");
+    expect(estimateText("pdf", 600)).toBe("Up to 10 minutes");
+  });
+
+  it("keeps the About wording for photos and sheets", () => {
+    expect(estimateText("image", 5)).toBe("About 5 seconds");
+    expect(estimateText("sheet", 90)).toBe("About 1 minute 30 seconds");
   });
 });
 

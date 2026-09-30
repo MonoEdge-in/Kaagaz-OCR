@@ -268,7 +268,12 @@ def _serve(settings: Settings) -> None:
         queue,
         LoggedHandler(processor),
         max_attempts=settings.job_max_attempts,
-        on_exhausted=MarkExhausted(documents.mark_exhausted),
+        # The last delivery also ends the document's runs still running (AR11), on the worker's clock.
+        on_exhausted=MarkExhausted(
+            lambda customer, document: documents.mark_exhausted(
+                customer, document, now=_utc_now(), max_attempts=settings.job_max_attempts
+            )
+        ),
         on_attempt=RecordAttempt(documents.record_attempt, settings.job_max_attempts),
     )
     purge = functools.partial(purge_expired, db, storage, _utc_now, settings.trash_days)

@@ -34,6 +34,44 @@
   font-size: var(--fs-sm);
 }
 
+/* "Read again" (ReadAgain.tsx): the button ends the status line; its
+   question, its error and its note each take a line of their own. */
+.readAgain {
+  margin-inline-start: auto;
+}
+
+.readAgainLine {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.readAgainConfirm {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  font-size: var(--fs-sm);
+}
+
+.readAgainConfirm p {
+  margin: 0;
+}
+
+.readAgainQuestion {
+  font-weight: 600;
+}
+
+.readAgainButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 /* Where it is filed: the folder path, the tags, and Download original. */
 .place {
   display: flex;

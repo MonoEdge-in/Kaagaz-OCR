@@ -271,6 +271,12 @@
   overflow-wrap: anywhere;
 }
 
+/* A second row of tiles under its own heading (the pages read by route). */
+.tilesHeading {
+  margin: var(--space-3) 0 0;
+  font-size: var(--fs-base);
+}
+
 /* --- Loading and errors ------------------------------------------------------- */
 
 .skeletons {

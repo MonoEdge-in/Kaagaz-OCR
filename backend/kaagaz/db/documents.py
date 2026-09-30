@@ -20,18 +20,24 @@ PostgreSQL breaks a deadlock (AR7).
 
 ``delete_forever`` is today's full delete of one document, shared by the trash
 purge (kaagaz/jobs/purge.py) and ``delete_family_forever`` (the permanent delete).
+
+``mark_for_reprocess`` is "Read again" (PRD 2 X1): under the family lock, a
+ready, failed or unreadable document out of Trash goes back to ``received`` with
+its tries reset, within the customer's hourly limit and one document's cooldown
+(security A8). The caller audits it and queues the job in the same transaction.
 """
 
 import dataclasses
 import json
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.db.engine import Database, unavailable
-from kaagaz.db.runs import finish_run, is_run_open
+from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
 from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, UnknownFolder
@@ -121,6 +127,87 @@ def delete_forever(conn: Connection, storage: BlobStorage, customer_id: str, doc
         {"c": customer_id, "d": document_id},
     )
     storage.delete(customer_id, document_id)
+
+
+# --- read again (PRD 2 X1) ----------------------------------------------------
+
+REPROCESSABLE = ("ready", "failed", "needs_reader")
+# Security A8 (PROVISIONAL): one document is read again at most once in this time.
+REPROCESS_COOLDOWN_MINUTES = 10
+
+
+class NotReprocessable(Exception):
+    """The document is being read, was rejected, or is in Trash."""
+
+
+class ReprocessLimited(Exception):
+    """Too many "read again" requests. ``reason`` is ``hourly`` (the customer's
+    REPROCESS_PER_HOUR) or ``cooldown`` (this document, within the cooldown)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+_REPROCESS_STATE = (
+    "SELECT status, deleted_at IS NOT NULL AS in_trash FROM documents WHERE customer_id = :c AND id = :d"
+)
+
+# One customer's "read again" requests take their counts one after the other
+# (council PR 3 review, medium 4), so two at once can't both pass the hourly limit.
+_REPROCESS_LOCK = (
+    "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.reprocess:' || CAST(:c AS uuid)::text, 0))"
+)
+
+# The audit rows are the record of each "read again", so they are what is counted.
+# Their times come from the database's clock, so the windows are measured on it too.
+# Both use the index audit_log_listing (customer_id, created_at DESC).
+_REPROCESSED_THIS_HOUR = (
+    "SELECT count(*) FROM audit_log WHERE customer_id = :c AND action = 'document.reprocess'"
+    " AND created_at > now() - interval '1 hour'"
+)
+_REPROCESSED_LATELY = (
+    "SELECT EXISTS (SELECT 1 FROM audit_log WHERE customer_id = :c AND action = 'document.reprocess'"
+    " AND target_id = :target AND created_at > now() - make_interval(mins => :minutes))"
+)
+
+_REPROCESS = (
+    "UPDATE documents SET status = 'received', failure_code = NULL, attempts = 0, max_attempts = NULL,"
+    " progress = NULL"
+    " WHERE customer_id = :c AND id = :d AND status IN ('ready', 'failed', 'needs_reader')"
+    " AND deleted_at IS NULL"
+)
+
+
+def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, per_hour: int) -> str | None:
+    """Set the document to be read again (X1), and return the status it had; None
+    when this customer has no such document.
+
+    ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes
+    first, and is waited for, never skipped: a family being moved to Trash is
+    waited for, then seen. Then the customer's reprocess lock (a transaction
+    advisory lock), so the hourly count is exact. Raises NotReprocessable unless the status is ready,
+    failed or needs_reader and it is out of Trash, and ReprocessLimited when the
+    customer already started ``per_hour`` in the last hour, or this document one
+    in the last REPROCESS_COOLDOWN_MINUTES. Nothing is changed when it raises.
+    ``is_current`` is kept, so an older version never takes its place.
+    6 statements; O(v log D) for the family's v versions, plus the audit rows of
+    the last hour.
+    """
+    if lock_family(conn, customer_id, document_id) is None:
+        return None
+    params: dict[str, Any] = {"c": customer_id, "d": document_id}
+    state = conn.execute(text(_REPROCESS_STATE), params).one()
+    if state.in_trash or state.status not in REPROCESSABLE:
+        raise NotReprocessable(document_id)
+    conn.execute(text(_REPROCESS_LOCK), params)  # held to the end of the transaction
+    if int(conn.execute(text(_REPROCESSED_THIS_HOUR), params).scalar_one()) >= per_hour:
+        raise ReprocessLimited("hourly")
+    lately = {**params, "target": document_id, "minutes": REPROCESS_COOLDOWN_MINUTES}
+    if conn.execute(text(_REPROCESSED_LATELY), lately).scalar_one():
+        raise ReprocessLimited("cooldown")
+    conn.execute(text(_REPROCESS), params)
+    return str(state.status)
 
 
 class NotInTrash(Exception):
@@ -337,8 +424,16 @@ class PgDocuments:
             return None
         return DocumentStatus(status)
 
-    def set_status(self, customer_id: str, document_id: str, status: DocumentStatus) -> None:
+    def set_status(
+        self, customer_id: str, document_id: str, status: DocumentStatus, *, run_id: str | None = None
+    ) -> None:
+        """With ``run_id``, the run fence, as ``set_failed``: under the family lock,
+        raise Superseded and change nothing unless that run is still open."""
         with unavailable(), self._db.customer(customer_id) as conn:
+            if run_id is not None:
+                lock_family(conn, customer_id, document_id)
+                if not is_run_open(conn, customer_id, document_id, run_id):
+                    raise Superseded(run_id)
             conn.execute(
                 text(
                     "UPDATE documents SET status = :s, failure_code = NULL"
@@ -353,7 +448,8 @@ class PgDocuments:
         """Mark a document failed for good with a short code. Rejected stays rejected,
         but keeps its code so the file list can say why. With ``run_id``, raise
         Superseded and change nothing unless that run is still open (the run fence,
-        read under the family lock)."""
+        read under the family lock), so a stale delivery (a newer run has started,
+        after a "read again", say) never fails the document."""
         with unavailable(), self._db.customer(customer_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
@@ -416,19 +512,28 @@ class PgDocuments:
                 {"a": attempt, "m": max_attempts, "c": customer_id, "d": document_id},
             )
 
-    def mark_exhausted(self, customer_id: str, document_id: str) -> None:
+    def mark_exhausted(self, customer_id: str, document_id: str, *, now: datetime, max_attempts: int) -> None:
         """The queue's last delivery of this document's job came: mark it failed
         with ``retries_exhausted``, so it does not show "Reading…" for good.
 
-        Only a document still in progress (received or clean) changes, in the
-        one conditional statement: a rejected one keeps its reason, and a ready,
-        needs_reader or failed one keeps its state and code.
+        Only a document still in progress (received or clean) changes, in one
+        conditional statement: a rejected one keeps its reason, and a ready,
+        needs_reader or failed one keeps its state and code, and so does one whose
+        recorded try is under ``max_attempts``: after "read again" the tries start
+        again, so an old job's last delivery must not fail the new one. When it changes,
+        its runs still ``running`` end failed with ``retries_exhausted`` at
+        ``now`` (AR11), in the same transaction.
         """
         with unavailable(), self._db.customer(customer_id) as conn:
-            conn.execute(
+            marked = conn.execute(
                 text(
                     "UPDATE documents SET status = 'failed', failure_code = 'retries_exhausted'"
                     " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
+                    " AND attempts >= :max RETURNING id"
                 ),
-                {"c": customer_id, "d": document_id},
-            )
+                {"c": customer_id, "d": document_id, "max": max_attempts},
+            ).first()
+            if marked is not None:
+                close_running(
+                    conn, customer_id, document_id, status="failed", error_code="retries_exhausted", now=now
+                )

@@ -5,7 +5,7 @@
 import { sessionScope } from "@/components/shell/gate";
 import { formatNumber } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import type { AdminUser, DocumentStatus, Me, Role, Stats } from "@/lib/types";
+import type { AdminUser, DocumentStatus, Me, PageRoute, Role, Stats } from "@/lib/types";
 
 /**
  * "allow" only for an admin with an admin session (PRD A1); anyone else is
@@ -227,6 +227,27 @@ export function statTiles(stats: Stats): Tile[] {
     { label: "Values waiting for review", value: formatNumber(stats.open_review_items) },
   );
   return tiles;
+}
+
+const ROUTE_ORDER: readonly PageRoute[] = ["cells", "text_layer", "ocr", "blank"];
+
+const ROUTE_TILE_WORDS: Record<PageRoute, string> = {
+  cells: "Spreadsheet cells",
+  text_layer: "PDF text",
+  ocr: "OCR",
+  blank: "Blank pages",
+};
+
+/**
+ * The Numbers tab's row "Pages read this month, by route" (PRD 2, R6): the
+ * usage meter for pricing later. Always the same 4 tiles in the same order,
+ * with 0 for a route that read nothing.
+ */
+export function pageRouteTiles(stats: Pick<Stats, "pages_this_month">): Tile[] {
+  return ROUTE_ORDER.map((route) => ({
+    label: ROUTE_TILE_WORDS[route],
+    value: formatNumber(stats.pages_this_month[route] ?? 0),
+  }));
 }
 
 /**

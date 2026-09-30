@@ -1,7 +1,7 @@
 // The decisions behind the documents screen, kept out of the components so
 // they are unit tested in node (tests/shell-documents.test.ts).
 
-import type { DocumentStatus, DocumentSummary, UploadLimits } from "@/lib/types";
+import type { DocumentStatus, UploadLimits } from "@/lib/types";
 
 /** File name endings the backend can take. The server checks the bytes again. */
 export const ACCEPTED_EXTENSIONS = [
@@ -129,9 +129,21 @@ export function validateUpload(
 
 const SETTLING: readonly DocumentStatus[] = ["received", "clean"];
 
-/** Keep asking the server only while something is still being checked or read. */
-export function shouldPoll(items: readonly Pick<DocumentSummary, "status">[]): boolean {
-  return items.some((item) => SETTLING.includes(item.status));
+interface Polled {
+  status: DocumentStatus;
+  newer_version?: { status: DocumentStatus } | null;
+}
+
+/**
+ * Keep asking the server only while something is still being checked or read,
+ * a newer version included, so the status_message the server writes as it
+ * goes ("Reading page 3 of 40…", PRD 2 X3) keeps moving.
+ */
+export function shouldPoll(items: readonly Polled[]): boolean {
+  return items.some((item) => {
+    const newer = item.newer_version?.status;
+    return SETTLING.includes(item.status) || (newer !== undefined && SETTLING.includes(newer));
+  });
 }
 
 export interface PageInfo {
@@ -155,11 +167,57 @@ export function offsetAfterDelete(offset: number, shownBefore: number, pageSize:
   return shownBefore <= 1 && offset > 0 ? Math.max(0, offset - pageSize) : offset;
 }
 
-/** Rough but useful estimate for how long ingest will take after the file is received. */
-export function estimateIngestSeconds(sizeBytes: number, filesCount = 1): number {
-  const megabytes = Math.max(sizeBytes / (1024 * 1024), 0.1);
-  const estimate = megabytes * 8 + Math.max(filesCount - 1, 0) * 12;
+/** A PDF is estimated at this many MB a page (PRD 2, X4). */
+export const MB_PER_PDF_PAGE = 0.4;
+
+/**
+ * Seconds to read one page, by file type (PRD 2, X4). PLACEHOLDER numbers:
+ * `python -m kaagaz.cli measure --file <path>` on the reference laptop sets
+ * the measured ones, which go here and in docs/architecture.md (Decisions).
+ * Until it has run with a real OCR (NOT RUN), every type keeps today's rate
+ * of 8 seconds per MB, at MB_PER_PDF_PAGE MB a page: 8 × 0.4 = 3.2 seconds.
+ */
+export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
+  pdf: 3.2,
+  image: 3.2,
+  sheet: 3.2,
+};
+
+/**
+ * Pages to expect, rounded up and never below 1. A photo or a sheet is 1.
+ * For a PDF, `counted` is the page count the upload flow found before sending
+ * (pageCount.ts), or null when it could not count them. PROVISIONAL: the PRD
+ * (X4) says MB ÷ MB_PER_PDF_PAGE, but the real count is more accurate, so it
+ * wins; MB ÷ MB_PER_PDF_PAGE is used only when the count is not known.
+ */
+export function estimatePages(kind: UploadKind, sizeBytes: number, counted: number | null = null): number {
+  if (kind !== "pdf") return 1;
+  if (counted !== null && Number.isFinite(counted)) return Math.max(1, Math.ceil(counted));
+  if (!(sizeBytes > 0)) return 1;
+  return Math.max(1, Math.ceil(sizeBytes / (MB_PER_PDF_PAGE * MB)));
+}
+
+/**
+ * Rough but useful estimate for how long ingest will take after the file is
+ * received. `counted`: a PDF's real page count when known (estimatePages).
+ */
+export function estimateIngestSeconds(
+  kind: UploadKind,
+  sizeBytes: number,
+  filesCount = 1,
+  counted: number | null = null,
+): number {
+  const estimate =
+    estimatePages(kind, sizeBytes, counted) * SECONDS_PER_PAGE[kind] +
+    Math.max(filesCount - 1, 0) * 12;
   return Math.max(4, Math.round(estimate));
+}
+
+/** The estimate in words: "Up to N minutes" for a PDF (rounded up, at least 1), else formatEtaText. */
+export function estimateText(kind: UploadKind, seconds: number): string {
+  if (kind !== "pdf") return formatEtaText(seconds);
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  return `Up to ${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
 export function formatEtaText(seconds: number): string {

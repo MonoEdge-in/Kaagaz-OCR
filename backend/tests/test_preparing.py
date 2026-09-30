@@ -5,15 +5,28 @@ import unittest
 from PIL import Image
 
 from kaagaz.ingestion import sniff
+from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.preparing.pages import PreparedPages, prepare_pages, sheet_pages
 from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, ReadError, Span
 from tests.pdf_builder import Page, Picture, Text, make_pdf
+from tests.picture_support import text_like_picture
+
+BLANK_PAGE_STDDEV = 3.0  # the PRD's values
+LOW_RES_DPI = 150
 
 
 def prepare(
     kind: str, data: bytes, *, dpi: int = 72, max_pages: int = 10, max_image_pixels: int = 5_000_000
 ) -> PreparedPages:
-    return prepare_pages(kind, data, dpi=dpi, max_pages=max_pages, max_image_pixels=max_image_pixels)
+    return prepare_pages(
+        kind,
+        data,
+        dpi=dpi,
+        max_pages=max_pages,
+        max_image_pixels=max_image_pixels,
+        blank_stddev=BLANK_PAGE_STDDEV,
+        low_res_dpi=LOW_RES_DPI,
+    )
 
 
 def encode(image: Image.Image, fmt: str, **options: object) -> bytes:
@@ -119,6 +132,52 @@ class SheetPagesTest(unittest.TestCase):
     def test_boxes_and_empty_input_give_no_sheets(self) -> None:
         self.assertEqual(sheet_pages([]), [])
         self.assertEqual(sheet_pages([Span("x", "x", BoxLocation(1, 0.1, 0.1, 0.2, 0.2))]), [])
+
+
+class PageChecksTest(unittest.TestCase):
+    """PRD 2 R3 and R4: each page's blank flag and effective DPI, filled by the preparer."""
+
+    def check_of(self, kind: str, data: bytes, page: int = 1, dpi: int = 72) -> PageCheck:
+        return prepare(kind, data, dpi=dpi).checks[page]
+
+    def test_a_600px_image_placed_540pt_wide_is_80_dpi_and_low_resolution(self) -> None:
+        data = make_pdf([Page(picture=Picture(text_like_picture(600, 800), 36, 72, 540, 720))])
+        check = self.check_of(sniff.PDF, data)
+        self.assertEqual((check.effective_dpi, check.low_resolution), (80, True))
+
+    def test_a_2000px_image_placed_540pt_wide_is_267_dpi_and_not_low(self) -> None:
+        data = make_pdf([Page(picture=Picture(text_like_picture(2000, 2667), 36, 72, 540, 720))])
+        check = self.check_of(sniff.PDF, data)
+        self.assertEqual((check.effective_dpi, check.low_resolution), (267, False))
+
+    def test_a_photo_is_its_short_side_over_a4s_short_side(self) -> None:
+        check = self.check_of(sniff.PNG, encode(text_like_picture(827, 1169), "PNG"))
+        self.assertEqual((check.effective_dpi, check.low_resolution), (100, True))  # 827 px / 8.27 in
+
+    def test_a_page_with_no_image_has_no_dpi(self) -> None:
+        check = self.check_of(sniff.PDF, make_pdf([Page(texts=[Text(72, 700, "Invoice total 1,180.00")])]))
+        self.assertEqual((check.effective_dpi, check.low_resolution), (None, False))
+
+    def test_the_blank_flag_is_set_for_an_empty_page_only(self) -> None:
+        data = make_pdf([Page(), Page(texts=[Text(72, 700, "Invoice total 1,180.00")])])
+        checks = prepare(sniff.PDF, data).checks
+        self.assertEqual((checks[1].blank, checks[2].blank), (True, False))
+        self.assertTrue(self.check_of(sniff.PNG, encode(Image.new("RGB", (60, 40), "white"), "PNG")).blank)
+
+    def test_one_line_page_and_footer_only_page_are_not_blank(self) -> None:
+        """The lead's R3 decision (ML 13's dark-pixel rule, PROVISIONAL): any dark ink,
+        a footer alone included, keeps a page from blank, so it goes to OCR and
+        nothing is lost. Test-engineer 15 planned this as "..._and_footer_only_page_is"
+        (blank); the lead ruled the other way, so the name says what it asserts."""
+        one_line = make_pdf([Page(texts=[Text(72, 700, "Invoice total 1,180.00")])])
+        footer_only = make_pdf([Page(texts=[Text(260, 30, "Page 1 of 1", size=8)])])
+        for data in (one_line, footer_only):
+            with self.subTest(data=len(data)):
+                self.assertFalse(self.check_of(sniff.PDF, data, dpi=150).blank)
+        self.assertTrue(self.check_of(sniff.PDF, make_pdf([Page()]), dpi=150).blank)
+
+    def test_spreadsheets_have_no_checks(self) -> None:
+        self.assertEqual(prepare(sniff.TEXT, b"a,b\n").checks, {})
 
 
 if __name__ == "__main__":

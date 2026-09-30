@@ -9,6 +9,7 @@ from PIL import Image
 from kaagaz.ingestion import sniff
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.ocr import OcrLine
+from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, ReaderSocket
 from kaagaz.reading.spans import BoxLocation, CellLocation, Location, ReadError, Span
 from kaagaz.reading.wiring import build_reader_socket
@@ -29,7 +30,9 @@ class FixedReader:
     def __init__(self, *spans: Span) -> None:
         self._spans = list(spans)
 
-    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
+    def read(
+        self, data: bytes, *, on_page: Callable[[RouteDecision | None], None] | None = None
+    ) -> list[Span]:
         return self._spans
 
 
@@ -42,13 +45,15 @@ class TwoPageReader:
     def __init__(self, events: list[str]) -> None:
         self._events = events
 
-    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
+    def read(
+        self, data: bytes, *, on_page: Callable[[RouteDecision | None], None] | None = None
+    ) -> list[Span]:
         spans = []
         for page in (1, 2):
             self._events.append(f"read page {page}")
             spans.append(Span("x", "x", BoxLocation(page, 0.1, 0.1, 0.5, 0.2), origin="ocr"))
             if on_page is not None:
-                on_page()
+                on_page(None)
         return spans
 
 
@@ -81,7 +86,9 @@ class ReaderSocketTest(unittest.TestCase):
             name = "one-cell"
             version = "1"
 
-            def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> Iterator[Span]:
+            def read(
+                self, data: bytes, *, on_page: Callable[[RouteDecision | None], None] | None = None
+            ) -> Iterator[Span]:
                 yield Span("hello", "hello", CellLocation(1, 1, 1))
 
         socket = ReaderSocket({sniff.TEXT: CsvReader(max_cells=100), "fake": OneCellReader()})
@@ -101,7 +108,9 @@ class ReaderSocketTest(unittest.TestCase):
             def __init__(self, span: Span) -> None:
                 self._span = span
 
-            def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
+            def read(
+                self, data: bytes, *, on_page: Callable[[RouteDecision | None], None] | None = None
+            ) -> list[Span]:
                 return [self._span]
 
         for name, bad in bad_spans.items():
@@ -118,7 +127,7 @@ class ReaderSocketTest(unittest.TestCase):
     def test_on_page_reaches_the_reader_and_is_called_after_each_page(self) -> None:
         events: list[str] = []
         socket = ReaderSocket({sniff.PDF: TwoPageReader(events)})
-        spans = socket.read(sniff.PDF, b"", on_page=lambda: events.append("on_page"))
+        spans = socket.read(sniff.PDF, b"", on_page=lambda _read: events.append("on_page"))
         self.assertEqual(events, ["read page 1", "on_page", "read page 2", "on_page"])
         self.assertEqual(len(spans), 2)
 
@@ -130,7 +139,7 @@ class ReaderSocketTest(unittest.TestCase):
         pdf = make_pdf([Page(texts=[Text(72, 700, "typed")])])
         for kind, data in ((sniff.TEXT, b"a,b\n"), (sniff.ZIP, workbook), (sniff.PDF, pdf)):
             with self.subTest(kind):
-                self.assertEqual(socket.read(kind, data, on_page=lambda: None), socket.read(kind, data))
+                self.assertEqual(socket.read(kind, data, on_page=lambda _read: None), socket.read(kind, data))
 
 
 class SecondReaderTest(unittest.TestCase):
@@ -303,10 +312,11 @@ class NoDirectReaderCallsTest(unittest.TestCase):
     """CLAUDE.md: application code never calls a reader directly."""
 
     # Every module in kaagaz/reading is a reader, except the socket and the
-    # span types, which everyone may use, and the wiring and the OCR engine
-    # interface, which the pipeline uses to build the socket. New readers are
-    # covered automatically.
-    ALLOWED: ClassVar[set[str]] = {"__init__", "socket", "spans", "wiring", "ocr"}
+    # span types, which everyone may use, the wiring and the OCR engine
+    # interface, which the pipeline uses to build the socket, and the page
+    # route, which the pipeline works out from the spans after reading
+    # (PRD 2 R1). New readers are covered automatically.
+    ALLOWED: ClassVar[set[str]] = {"__init__", "socket", "spans", "wiring", "ocr", "route"}
 
     def reader_modules(self) -> set[str]:
         return {

@@ -48,12 +48,13 @@ from kaagaz.db.folders import FolderNotFound
 _COLUMNS = (
     "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"
     " d.page_count, d.created_at, d.uploaded_by, d.folder_id, d.deleted_at, d.family_id, d.version_no,"
-    " d.attempts, d.max_attempts, u.display_name AS uploaded_by_name,"
+    " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary,"
+    " u.display_name AS uploaded_by_name,"
     " (SELECT array_agg(o.uploaded_by) FROM documents o"
     " WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id) AS family_uploaders,"
     " (SELECT json_build_object('id', n.id, 'version_no', n.version_no, 'status', n.status,"
     " 'failure_code', n.failure_code, 'detected_type', n.detected_type, 'page_count', n.page_count,"
-    " 'attempts', n.attempts, 'max_attempts', n.max_attempts)"
+    " 'attempts', n.attempts, 'max_attempts', n.max_attempts, 'progress', n.progress)"
     " FROM documents n WHERE n.customer_id = d.customer_id AND n.family_id = d.family_id"
     " AND n.version_no > d.version_no AND n.deleted_at IS NULL"
     " ORDER BY n.version_no DESC LIMIT 1) AS newer"
@@ -208,7 +209,8 @@ def list_pages(conn: Connection, customer_id: str, document_id: str) -> Sequence
     return (
         conn.execute(
             text(
-                "SELECT page_no, width, height, unit, has_image FROM pages"
+                "SELECT page_no, width, height, unit, has_image, route, effective_dpi, low_resolution"
+                " FROM pages"
                 " WHERE customer_id = :c AND document_id = :d ORDER BY page_no"
             ),
             {"c": customer_id, "d": document_id},
@@ -222,13 +224,30 @@ def get_page(conn: Connection, customer_id: str, document_id: str, page_no: int)
     return (
         conn.execute(
             text(
-                "SELECT page_no, width, height, unit, has_image FROM pages"
+                "SELECT page_no, width, height, unit, has_image, route, effective_dpi, low_resolution"
+                " FROM pages"
                 " WHERE customer_id = :c AND document_id = :d AND page_no = :n"
             ),
             {"c": customer_id, "d": document_id, "n": page_no},
         )
         .mappings()
         .first()
+    )
+
+
+def reviewer_fix_count(conn: Connection, customer_id: str, document_id: str) -> int:
+    """How many of this document's values a reviewer fixed (PRD 2 X1, said before
+    "Read again"). A fix whose value a later read replaced has no value any more
+    (``value_id`` NULL), and is not counted (AR15c). One query on the index
+    corrections_document: O(log C + fixes)."""
+    return int(
+        conn.execute(
+            text(
+                "SELECT count(*) FROM corrections"
+                " WHERE customer_id = :c AND document_id = :d AND value_id IS NOT NULL"
+            ),
+            {"c": customer_id, "d": document_id},
+        ).scalar_one()
     )
 
 

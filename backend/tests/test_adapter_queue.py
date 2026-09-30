@@ -328,5 +328,17 @@ class UnreachableQueueTest(unittest.TestCase):
                 call()
 
 
+class ClientConfigTest(unittest.TestCase):
+    """AR15b: the SQS client gives up fast, leaving room for the long poll."""
+
+    def test_the_client_has_short_timeouts_and_two_retries(self) -> None:
+        queue = SqsQueue(make_settings(queue_wait_seconds=20))  # builds the real client; nothing is sent
+        config = queue._client.meta.config
+        self.assertEqual((config.connect_timeout, config.read_timeout), (5, 30))
+        self.assertEqual(
+            config.retries["total_max_attempts"], 3
+        )  # max_attempts 2 is two retries after the first try
+
+
 if __name__ == "__main__":
     unittest.main()

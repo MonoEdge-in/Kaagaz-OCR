@@ -7,10 +7,13 @@ calls, and a hand-written file also lets tests build what no library writes on
 purpose: a password-protected file and a page with no text layer.
 
 Coordinates here are PDF-native: points, origin at the bottom left, and a
-text's ``y`` is its baseline. Only the standard Helvetica font is used, so
-text must be ASCII.
+text's ``y`` is its baseline. Text uses the standard Helvetica font, or the
+page's ``font_name`` (a font that is named but not embedded, with the same
+WinAnsi codes), so text is written in cp1252: ASCII, plus the Latin-1
+symbols a garbled text layer holds (PRD 2 R2).
 """
 
+import re
 import zlib
 from dataclasses import dataclass, field
 
@@ -26,6 +29,13 @@ class Text:
     # Drawn a quarter turn anticlockwise, so it reads upright on a page with
     # /Rotate 90 (how a landscape page is often stored).
     turned: bool = False
+    # Drawn with text render mode 3 (neither filled nor stroked), as the hidden
+    # OCR layer of a searchable scan is: nothing shows, but readers still
+    # extract it (PRD 2, the council's ML 4).
+    invisible: bool = False
+    # The fill colour (r, g, b from 0 to 1), for example white text that shows
+    # nothing on white paper; None is the default black.
+    color: tuple[float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -45,7 +55,18 @@ class Page:
     height: float = 792.0
     texts: list[Text] = field(default_factory=list)
     picture: Picture | None = None
+    # More pictures after ``picture``, for example the strips of a tiled scan.
+    pictures: list[Picture] = field(default_factory=list)
     rotate: int = 0
+    # The page's font by name instead of Helvetica, for example "KrutiDev010"
+    # (an old Hindi font that stores Devanagari on Latin codes): the name goes
+    # in /BaseFont and in its descriptor's /FontName, and no font file is
+    # embedded, so a viewer draws it with a stand-in font (PRD 2, ML 3).
+    font_name: str | None = None
+
+
+# Letters, digits, "+", "-" and "_": a PDF name with nothing to escape.
+_FONT_NAME = re.compile(r"[A-Za-z0-9+_-]{1,64}")
 
 
 def make_pdf(pages: list[Page], *, password_protected: bool = False) -> bytes:
@@ -61,16 +82,20 @@ def make_pdf(pages: list[Page], *, password_protected: bool = False) -> bytes:
     ]
     kids = []
     for page in pages:
-        resources = b"/Font << /F1 3 0 R >>"
+        font = 3 if page.font_name is None else _named_font(objects, page.font_name)
+        resources = b"/Font << /F1 %d 0 R >>" % font
         content = _text_content(page.texts)
-        if page.picture is not None:
-            objects.append(_image_object(page.picture.image))
-            resources += b" /XObject << /Im1 %d 0 R >>" % len(objects)
-            picture = page.picture
-            content = (
-                f"q {picture.width} 0 0 {picture.height} {picture.x} {picture.y} cm /Im1 Do Q\n".encode()
-                + content
-            )
+        drawn = ([] if page.picture is None else [page.picture]) + page.pictures
+        images = b""
+        pictures = b""
+        for number, picture in enumerate(drawn, start=1):
+            objects.append(_image_object(picture.image))
+            images += b" /Im%d %d 0 R" % (number, len(objects))
+            placed = f"{picture.width} 0 0 {picture.height} {picture.x} {picture.y}"
+            pictures += f"q {placed} cm /Im{number} Do Q\n".encode()
+        if drawn:
+            resources += b" /XObject <<" + images + b" >>"
+            content = pictures + content
         objects.append(_stream(b"", content))
         content_number = len(objects)
         objects.append(
@@ -99,8 +124,33 @@ def _text_content(texts: list[Text]) -> bytes:
     for item in texts:
         escaped = item.text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
         matrix = "0 1 -1 0" if item.turned else "1 0 0 1"
-        parts.append(f"BT /F1 {item.size} Tf {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET\n")
-    return "".join(parts).encode("ascii")
+        if item.color is not None:
+            red, green, blue = item.color
+            shown = f"BT /F1 {item.size} Tf {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET"
+            parts.append(f"q {red} {green} {blue} rg {shown} Q\n")
+        elif item.invisible:
+            # The render mode is part of the graphics state and outlives ET,
+            # so q ... Q keeps it to this text only.
+            parts.append(f"q BT /F1 {item.size} Tf 3 Tr {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET Q\n")
+        else:
+            parts.append(f"BT /F1 {item.size} Tf {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET\n")
+    return "".join(parts).encode("cp1252")
+
+
+def _named_font(objects: list[bytes], name: str) -> int:
+    """Add a named, not embedded TrueType font with WinAnsi codes; return its object number."""
+    if not _FONT_NAME.fullmatch(name):
+        raise ValueError("a font name here is 1 to 64 letters, digits, '+', '-' or '_'")
+    objects.append(
+        b"<< /Type /FontDescriptor /FontName /%s /Flags 32 /FontBBox [0 -200 1000 900] "
+        b"/ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>" % name.encode()
+    )
+    widths = b" ".join([b"500"] * 95)  # every code from 32 to 126, half an em wide
+    objects.append(
+        b"<< /Type /Font /Subtype /TrueType /BaseFont /%s /FirstChar 32 /LastChar 126 /Widths [%s] "
+        b"/FontDescriptor %d 0 R /Encoding /WinAnsiEncoding >>" % (name.encode(), widths, len(objects))
+    )
+    return len(objects)
 
 
 def _image_object(image: Image.Image) -> bytes:

@@ -16,10 +16,12 @@ from kaagaz.reading.ocr import OcrLine
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.socket import ReaderSocket
 from kaagaz.reading.spans import BoxLocation, PageInfo, ReadError, Span
+from kaagaz.reading.text_quality import TextLayerRules
 from kaagaz.scanning.gate import DocumentStatus
 from tests.fakes import FakeEmbedder, FakePrepared, FakePreparer, FakeVision, PresetSocket
 from tests.lease_queue import FakeClock
-from tests.pdf_builder import Page, make_pdf
+from tests.pdf_builder import Page, Picture, make_pdf
+from tests.picture_support import text_like_picture
 from tests.support import PDF_BYTES
 from tests.test_pipeline import CUSTOMER, LEASE_SECONDS, build, make_worker, processor_with
 
@@ -398,10 +400,15 @@ class LongReadingTest(unittest.TestCase):
         system = build()
         ocr = SlowOcr(system.clock, seconds=20)
         self.assertEqual(LEASE_SECONDS, 30)  # one page fits in a lease; three pages (60 s) do not
-        reader = PdfReader(ocr, max_pages=10, dpi=72, max_image_pixels=10_000_000)
+        rules = TextLayerRules(min_chars=40, min_good_ratio=0.9, scan_image_coverage=0.5)
+        reader = PdfReader(
+            ocr, max_pages=10, dpi=72, max_image_pixels=10_000_000, rules=rules, blank_stddev=3.0
+        )
         processor = processor_with(system, ReaderSocket({sniff.PDF: reader}))
         worker = make_worker(system.queue, processor, system.repo)
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(make_pdf([Page(), Page(), Page()]))).document_id
+        # Three scanned pages (pictures of text): blank pages would never reach the engine (R3).
+        scan = Page(picture=Picture(text_like_picture(153, 198), 0, 0, 612, 792))
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(make_pdf([scan, scan, scan]))).document_id
 
         self.assertTrue(worker.run_once())
         self.assertEqual(ocr.pages, 3)

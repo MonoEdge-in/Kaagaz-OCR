@@ -21,7 +21,8 @@ from kaagaz.ingestion import sniff
 from kaagaz.ocr_server.app import RawBlock, create_app
 from kaagaz.reading.ocr import OcrLine, OcrTable, PaddleVlEngine
 from kaagaz.reading.wiring import build_reader_socket
-from tests.pdf_builder import Page, make_pdf
+from tests.pdf_builder import Page, Picture, make_pdf
+from tests.picture_support import text_like_picture
 from tests.settings_factory import make_settings
 from tests.test_ocr_server import TABLE, VERSION, FakePageModel
 
@@ -89,7 +90,8 @@ def test_the_request_is_a_png_of_the_page_at_ocr_dpi(bridge: Bridge) -> None:
     settings = make_settings(ocr_engine="paddleocr_vl", ocr_url=bridge.url, ocr_dpi=300, page_image_dpi=150)
     socket = build_reader_socket(settings, PaddleVlEngine(settings.ocr_url, timeout_seconds=5))
 
-    spans = socket.read(sniff.PDF, make_pdf([Page()]))  # a US letter page, 612 x 792 points, no text layer
+    scan = Page(picture=Picture(text_like_picture(153, 198), 0, 0, 612, 792))
+    spans = socket.read(sniff.PDF, make_pdf([scan]))  # a US letter page, 612 x 792 points, no text layer
 
     # 612 and 792 points x 300 / 72 = 2550 x 3300 (not PAGE_IMAGE_DPI's 1275 x 1650); pdfium
     # rounds 792 x (300 / 72) = 3300.0000000000005 up, so one pixel either way is its rounding.
@@ -105,7 +107,7 @@ def test_the_worker_sends_only_a_png_it_encoded_itself(bridge: Bridge) -> None:
     info = PngImagePlugin.PngInfo()
     info.add_text("Comment", "kaagaz-marker-from-the-upload")
     upload = io.BytesIO()
-    Image.new("RGB", (120, 80), "white").save(upload, format="PNG", pnginfo=info)
+    text_like_picture(120, 80).save(upload, format="PNG", pnginfo=info)
     settings = make_settings(ocr_engine="paddleocr_vl", ocr_url=bridge.url)
     socket = build_reader_socket(settings, PaddleVlEngine(settings.ocr_url, timeout_seconds=5))
 

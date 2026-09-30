@@ -35,6 +35,11 @@ MESSAGES = {
     "folder_not_empty": "This folder isn't empty. Move or delete what is inside it first.",
     "not_needs_review": "This value doesn't need review any more.",
     "not_in_trash": "Only a document in Trash can be deleted forever.",
+    # PRD 2 X1 (PROVISIONAL wording).
+    "not_reprocessable": (
+        "This document can't be read again right now. Only a ready, failed or unreadable document"
+        " that is not in Trash can be."
+    ),
     "too_large": "This file is too large.",
     "empty_file": "This file is empty.",
     "unsupported_type": "This kind of file is not supported.",

@@ -16,8 +16,10 @@ import {
 } from "@/lib/regions";
 import type { PageSummary, Region } from "@/lib/types";
 
-const a4: PageSummary = { page_no: 1, width: 595, height: 842, unit: "pt", has_image: true };
-const wide: PageSummary = { page_no: 1, width: 1000, height: 500, unit: "px", has_image: true };
+// How the page was read does not matter to where a spot sits on it.
+const read = { route: "text_layer", effective_dpi: null, low_resolution: false } as const;
+const a4: PageSummary = { page_no: 1, width: 595, height: 842, unit: "pt", has_image: true, ...read };
+const wide: PageSummary = { page_no: 1, width: 1000, height: 500, unit: "px", has_image: true, ...read };
 
 const b64url = (text: string) =>
   btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

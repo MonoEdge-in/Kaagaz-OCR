@@ -8,6 +8,7 @@ state and its code.
 """
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -17,6 +18,8 @@ from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import DocumentRecord
 from kaagaz.scanning.gate import DocumentStatus
 from tests.db_support import new_customer
+
+NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 
 pytestmark = pytest.mark.db
 
@@ -44,7 +47,8 @@ def test_a_document_still_in_progress_is_stored_as_failed_retries_exhausted(db: 
     documents.set_status(customer, clean, DocumentStatus.CLEAN)
 
     for document_id in (received, clean):
-        documents.mark_exhausted(customer, document_id)
+        documents.record_attempt(customer, document_id, 5, 5)  # the last try, as the worker records it
+        documents.mark_exhausted(customer, document_id, now=NOW, max_attempts=5)
         assert stored_state(db, customer, document_id) == ("failed", "retries_exhausted")
 
 
@@ -55,7 +59,7 @@ def test_retries_exhausted_never_overwrites_a_rejection(db: Database) -> None:
     documents.set_status(customer, rejected, DocumentStatus.REJECTED)
     documents.set_failed(customer, rejected, "virus_found")  # as the pipeline records it
 
-    documents.mark_exhausted(customer, rejected)
+    documents.mark_exhausted(customer, rejected, now=NOW, max_attempts=5)
     assert stored_state(db, customer, rejected) == ("rejected", "virus_found")
 
 
@@ -70,7 +74,7 @@ def test_retries_exhausted_never_fails_a_finished_document(db: Database) -> None
     documents.set_failed(customer, failed, "corrupt_file")  # a failure for good keeps its own code
 
     for document_id in (ready, needs_reader, failed):
-        documents.mark_exhausted(customer, document_id)
+        documents.mark_exhausted(customer, document_id, now=NOW, max_attempts=5)
     assert stored_state(db, customer, ready) == ("ready", None)
     assert stored_state(db, customer, needs_reader) == ("needs_reader", None)
     assert stored_state(db, customer, failed) == ("failed", "corrupt_file")
@@ -109,3 +113,20 @@ def test_the_try_number_is_stored_only_on_a_document_still_in_progress(db: Datab
     for document_id in finished.values():
         documents.record_attempt(customer, document_id, 2, 5)
         assert stored_attempts(db, customer, document_id) == (0, None)
+
+
+def test_the_last_delivery_of_an_old_job_leaves_a_read_again_alone(db: Database) -> None:
+    """Council PR 3 review, medium 3: after "read again" the document's tries start
+    again from 0, so the old job's last delivery (attempt 6) must not fail it while
+    the new job (J2) is reading it."""
+    customer, _ = new_customer(db)
+    documents = PgDocuments(db)
+    document_id = add_document(documents, customer)
+    documents.set_status(customer, document_id, DocumentStatus.CLEAN)
+    documents.record_attempt(customer, document_id, 1, 5)  # J2's first try, after the read again
+
+    documents.mark_exhausted(customer, document_id, now=NOW, max_attempts=5)  # J1's attempt 6
+
+    assert stored_state(db, customer, document_id) == ("clean", None)
+    documents.mark_ready(customer, document_id, 1)  # J2 finishes
+    assert stored_state(db, customer, document_id) == ("ready", None)

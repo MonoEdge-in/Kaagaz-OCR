@@ -27,6 +27,11 @@ Times are passed in from the injected clock (``now``), never read with SQL
 ``now()``. A run never ends before it started: another worker's clock may be
 ahead, so the finish time is the later of ``now`` and the start (AR11).
 
+``close_running`` ends a document's runs still ``running`` with a status of its
+own: the worker's last delivery marks them failed with ``retries_exhausted``
+(AR11). ``pages_by_route`` counts the pages of the runs started in a window, for
+the admin numbers.
+
 Module functions take a connection from ``Database.customer(customer_id)``, in
 the ``db/trash.py`` style; ``PgRuns`` opens its own transactions.
 """
@@ -82,6 +87,18 @@ _TEXT_LIMITS = {
     "model_embed": 300,
 }
 
+_CLOSE_RUNNING = (
+    "UPDATE processing_runs SET status = :status, error_code = :error_code,"
+    " finished_at = GREATEST(CAST(:now AS timestamptz), started_at)"
+    " WHERE customer_id = :c AND document_id = :d AND status = 'running'"
+)
+
+_PAGES_BY_ROUTE = (
+    "SELECT coalesce(sum(pages_cells), 0) AS cells, coalesce(sum(pages_text_layer), 0) AS text_layer,"
+    " coalesce(sum(pages_ocr), 0) AS ocr, coalesce(sum(pages_blank), 0) AS blank"
+    " FROM processing_runs WHERE customer_id = :c AND started_at >= :start AND started_at < :end"
+)
+
 _OPEN = (
     "SELECT EXISTS (SELECT 1 FROM processing_runs WHERE customer_id = :c AND document_id = :d"
     " AND id = :r AND status = 'running')"
@@ -120,6 +137,25 @@ def is_run_open(conn: Connection, customer_id: str, document_id: str, run_id: st
     primary key: O(log R)."""
     params = {"c": customer_id, "d": document_id, "r": run_id}
     return bool(conn.execute(text(_OPEN), params).scalar())
+
+
+def close_running(
+    conn: Connection, customer_id: str, document_id: str, *, status: str, error_code: str, now: datetime
+) -> None:
+    """End this document's runs still ``running`` with ``status`` and ``error_code``,
+    at ``now`` (never before each started). One statement on the index
+    processing_runs_document: O(log R + k) for k open runs."""
+    params = {"c": customer_id, "d": document_id, "status": status, "error_code": error_code, "now": now}
+    conn.execute(text(_CLOSE_RUNNING), params)
+
+
+def pages_by_route(conn: Connection, customer_id: str, *, start: datetime, end: datetime) -> dict[str, int]:
+    """The pages read by each route (cells, text_layer, ocr, blank) in this
+    customer's runs started in [start, end), 0 for a route with none. Every run
+    counts, a superseded or failed one too: its pages were read. One query on the
+    index processing_runs_started: O(log R + runs in the window)."""
+    row = conn.execute(text(_PAGES_BY_ROUTE), {"c": customer_id, "start": start, "end": end}).mappings().one()
+    return {route: int(row[route]) for route in ("cells", "text_layer", "ocr", "blank")}
 
 
 class PgRuns:

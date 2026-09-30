@@ -26,13 +26,14 @@ import type { UploadLimits, UploadResult } from "@/lib/types";
 import {
   FALLBACK_UPLOAD_LIMITS,
   estimateIngestSeconds,
-  formatEtaText,
+  estimateText,
+  uploadKind,
   uploadLimitsHint,
   uploadStateText,
   validateUpload,
 } from "./logic";
 import type { UploadState } from "./logic";
-import { pageProblem } from "./pageCount";
+import { checkPages } from "./pageCount";
 import styles from "./Documents.module.css";
 
 export interface UploadEntry {
@@ -40,6 +41,7 @@ export interface UploadEntry {
   name: string;
   size: number;
   versionOf?: string; // for a new version: the name of the document it updates
+  pages?: number | null; // a PDF's or TIFF's pages, counted just before sending; null when not known
   state: UploadState;
 }
 
@@ -102,9 +104,12 @@ export function useUploads(onUploaded: () => void) {
     }
   }
 
-  /** Count a PDF's or TIFF's pages, then send it, unless it has too many. */
+  /** Count a PDF's or TIFF's pages (kept for the time estimate), then send it, unless it has too many. */
   async function checkThenSend(key: string, file: File, start: Start) {
-    const problem = await pageProblem(file, limits.max_pages);
+    const { pages, problem } = await checkPages(file, limits.max_pages);
+    setEntries((current) =>
+      current.map((entry) => (entry.key === key ? { ...entry, pages } : entry)),
+    );
     if (problem) update(key, { kind: "error", message: problem });
     else await send(key, start);
   }
@@ -300,11 +305,16 @@ function UploadRow({
     element?.focus();
   }, []);
   const failed = state.kind === "error";
-  const estimateSeconds = estimateIngestSeconds(entry.size);
+  // Only a file of an accepted type is ever sent, so its type is known while it
+  // uploads; a PDF's pages were counted just before (null when they could not be).
+  const kind = uploadKind(entry.name);
   const etaText =
-    state.kind === "uploading"
-      ? formatEtaText(Math.max(0, estimateSeconds * (1 - state.fraction)))
-      : formatEtaText(estimateSeconds);
+    state.kind === "uploading" && kind !== null
+      ? estimateText(
+          kind,
+          Math.max(0, estimateIngestSeconds(kind, entry.size, 1, entry.pages ?? null) * (1 - state.fraction)),
+        )
+      : null;
 
   return (
     <li className={styles.upload} data-state={state.kind}>
@@ -335,7 +345,7 @@ function UploadRow({
                 {Math.round(state.fraction * 100)}%
               </span>
             </div>
-            <p className={`muted ${styles.small}`}>ETA: {etaText}</p>
+            {etaText !== null && <p className={`muted ${styles.small}`}>ETA: {etaText}</p>}
           </>
         )}
         {state.kind === "done" && (

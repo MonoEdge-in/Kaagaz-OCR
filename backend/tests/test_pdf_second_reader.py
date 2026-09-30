@@ -5,6 +5,7 @@ import pypdfium2 as pdfium
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.pdf_second_reader import PdfiumReader
 from kaagaz.reading.spans import BoxLocation, ReadError, Span
+from kaagaz.reading.text_quality import TextLayerRules
 from tests.pdf_builder import Page, Text, make_pdf
 
 
@@ -13,7 +14,10 @@ def second(data: bytes, max_pages: int = 10) -> list[Span]:
 
 
 def first(data: bytes) -> list[Span]:
-    return PdfReader(None, max_pages=10, dpi=72, max_image_pixels=10_000_000).read(data)
+    rules = TextLayerRules(min_chars=40, min_good_ratio=0.9, scan_image_coverage=0.5)
+    return PdfReader(
+        None, max_pages=10, dpi=72, max_image_pixels=10_000_000, rules=rules, blank_stddev=3.0
+    ).read(data)
 
 
 def box_of(span: Span) -> BoxLocation:
@@ -95,6 +99,18 @@ class SecondReaderTest(unittest.TestCase):
                 second(data, max_pages)
             self.assertEqual(ctx.exception.code, code)
             self.assertIsNone(ctx.exception.__context__)
+
+    def test_hidden_text_is_not_read(self) -> None:
+        """Council PR 3 review, high 1: render mode 3, white fill and a size under 1 pt
+        are all left out, so hidden text never agrees with itself."""
+        texts = [
+            Text(72, 700, "Seen line one"),
+            Text(72, 650, "Total: 1.00", invisible=True),
+            Text(72, 600, "White words", color=(1, 1, 1)),
+            Text(72, 550, "Tiny words", size=0.5),
+        ]
+        spans = PdfiumReader(max_pages=10).read(make_pdf([Page(texts=texts)]))
+        self.assertEqual([span.text for span in spans], ["Seen line one"])
 
     def test_name_and_version(self) -> None:
         reader = PdfiumReader(max_pages=1)

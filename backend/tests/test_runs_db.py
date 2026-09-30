@@ -20,12 +20,14 @@ import kaagaz
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
-from kaagaz.db.runs import PgRuns, finish_run, start_run
+from kaagaz.db.runs import PgRuns, finish_run, is_run_open, pages_by_route, start_run
 from kaagaz.db.trash import lock_family
+from kaagaz.ingestion.ports import DocumentRecord
 from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import FinishedRun, Progress, RunTotals, Superseded
-from kaagaz.scanning.gate import REJECTION_CODES
+from kaagaz.scanning.gate import REJECTION_CODES, DocumentStatus
 from tests.db_support import insert_document, new_customer, violation, wait_until_blocked
+from tests.fakes import MemoryDocuments, MemoryProgress, MemoryRuns, MemoryStatuses
 from tests.test_api_review import _named_database
 from tests.test_ocr_server import VERSION as OCR_VERSION
 from tests.test_pipeline_store_db import EMPTY, content, counts, new_document, new_session, rows
@@ -365,3 +367,166 @@ def test_mark_ready_on_a_rejected_or_deleted_document_still_finishes_its_run(db:
         ).one()
     assert tuple(closed) == ("failed", "document_missing", T1)
     assert counts(db, customer, rejected) == {**EMPTY, "processing_runs": 1}
+
+
+# --- the month's pages by route, the last delivery, and the fence on failures ----------
+
+
+def test_pages_by_route_counts_only_the_runs_started_in_the_window(db: Database) -> None:
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    start, end = T0, T0 + timedelta(days=31)
+    for started in (start - timedelta(seconds=1), start, end - timedelta(seconds=1), end):
+        run = PgRuns(db).start(customer, doc, now=started)
+        PgRuns(db).finish(customer, FinishedRun(run, totals(), started))
+
+    with db.customer(customer) as conn:
+        counted = pages_by_route(conn, customer, start=start, end=end)
+        nothing = pages_by_route(conn, customer, start=end + timedelta(days=1), end=end + timedelta(days=2))
+    # totals() has pages_cells 1, text_layer 2, ocr 3, blank 4; two runs are in [start, end).
+    assert counted == {"cells": 2, "text_layer": 4, "ocr": 6, "blank": 8}
+    assert nothing == {"cells": 0, "text_layer": 0, "ocr": 0, "blank": 0}
+
+
+def test_the_last_delivery_ends_the_runs_still_running(db: Database) -> None:
+    """AR11: mark_exhausted ends them failed with retries_exhausted, on the injected clock."""
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        reading, ready = insert_document(conn, customer, status="clean"), insert_document(conn, customer)
+    for doc in (reading, ready):
+        PgRuns(db).start(customer, doc, now=T0)
+    for doc in (reading, ready):
+        PgDocuments(db).record_attempt(customer, doc, 5, 5)
+        PgDocuments(db).mark_exhausted(customer, doc, now=T1, max_attempts=5)
+
+    assert [row[1:] for row in runs(db, customer, reading)] == [("failed", "retries_exhausted", T0, T1)]
+    assert rows(db, customer, "SELECT status, failure_code FROM documents WHERE id = :d", reading) == [
+        {"status": "failed", "failure_code": "retries_exhausted"}
+    ]
+    # A ready document keeps its state, and so does its run: its job was not this one.
+    assert [row[1:] for row in runs(db, customer, ready)] == [("running", None, T0, None)]
+
+
+def test_a_superseded_run_cannot_mark_the_document_failed(db: Database) -> None:
+    """Lead's resolution 2: the fence covers set_failed, read under the family lock."""
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        doc = insert_document(conn, customer, status="received")
+    old = PgRuns(db).start(customer, doc, now=T0)
+    new = PgRuns(db).start(customer, doc, now=T1)
+
+    with pytest.raises(Superseded):
+        PgDocuments(db).set_failed(customer, doc, "not_scanned", run_id=old)
+    assert rows(db, customer, "SELECT status, failure_code FROM documents WHERE id = :d", doc) == [
+        {"status": "received", "failure_code": None}
+    ]
+    PgDocuments(db).set_failed(customer, doc, "corrupt_file", run_id=new)
+    assert rows(db, customer, "SELECT status, failure_code FROM documents WHERE id = :d", doc) == [
+        {"status": "failed", "failure_code": "corrupt_file"}
+    ]
+
+
+def _scenario(
+    *,
+    start: Any,
+    finish: Any,
+    is_open: Any,
+    set_progress: Any,
+    progress_of: Any,
+    customer: str,
+    other: str,
+    reading: str,
+    ready: str,
+    missing: str,
+) -> list[object]:
+    """One scenario of runs and progress, told as what each step gave (test-engineer 13)."""
+    seen: list[object] = []
+    first = start(customer, reading, T0)
+    second = start(customer, reading, T1)
+    seen.append((is_open(customer, reading, first), is_open(customer, reading, second)))
+    finish(other, FinishedRun(second, totals(), T2))  # another customer's finish changes nothing
+    seen.append(is_open(customer, reading, second))
+    finish(customer, FinishedRun(second, totals("failed", error_code="corrupt_file"), T2))
+    seen.append(is_open(customer, reading, second))
+    try:
+        start(customer, missing, T0)
+    except JobFailed as failed:
+        seen.append(failed.code)
+    try:
+        start(other, reading, T0)  # another customer's document is missing for it
+    except JobFailed as failed:
+        seen.append(failed.code)
+    for who, doc in ((customer, reading), (customer, ready), (other, reading)):
+        set_progress(who, doc, Progress("reading", 2, 5))
+    seen.append((progress_of(reading), progress_of(ready)))
+    return seen
+
+
+def test_memory_and_postgresql_runs_and_progress_agree(db: Database) -> None:
+    """The fakes mirror the SQL WHERE conditions: the same scenario, the same answers."""
+    customer, _ = new_customer(db)
+    other, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        reading, ready = insert_document(conn, customer, status="clean"), insert_document(conn, customer)
+    missing = str(uuid.uuid4())
+    pg_runs, pg_documents = PgRuns(db), PgDocuments(db)
+
+    def pg_open(c: str, d: str, r: str) -> bool:
+        with db.customer(c) as conn:
+            return is_run_open(conn, c, d, r)
+
+    def pg_progress(d: str) -> object:
+        return rows(db, customer, PROGRESS, d)[0]["progress"]
+
+    on_postgresql = _scenario(
+        start=lambda c, d, now: pg_runs.start(c, d, now=now),
+        finish=pg_runs.finish,
+        is_open=pg_open,
+        set_progress=pg_documents.set_progress,
+        progress_of=pg_progress,
+        customer=customer,
+        other=other,
+        reading=reading,
+        ready=ready,
+        missing=missing,
+    )
+
+    statuses = MemoryStatuses()
+    documents = MemoryDocuments(statuses)
+    for doc, status in ((reading, DocumentStatus.CLEAN), (ready, DocumentStatus.READY)):
+        documents.add_if_absent(DocumentRecord(customer, doc, uuid.uuid4().hex, 10, "pdf"))
+        statuses.set_status(customer, doc, status)
+    memory_runs, memory_progress = MemoryRuns(documents), MemoryProgress(documents, statuses)
+
+    def memory_progress_of(d: str) -> object:
+        found = memory_progress.progress.get((customer, d))
+        return None if found is None else found.to_json()
+
+    in_memory = _scenario(
+        start=lambda c, d, now: memory_runs.start(c, d, now=now),
+        finish=memory_runs.finish,
+        is_open=memory_runs.is_open,
+        set_progress=memory_progress.set_progress,
+        progress_of=memory_progress_of,
+        customer=customer,
+        other=other,
+        reading=reading,
+        ready=ready,
+        missing=missing,
+    )
+
+    assert (
+        on_postgresql
+        == in_memory
+        == [
+            (False, True),
+            True,
+            False,
+            "document_missing",
+            "document_missing",
+            ({"step": "reading", "done": 2, "total": 5}, None),
+        ]
+    )
+    assert [row[1] for row in runs(db, customer, reading)] == [
+        row.status for row in memory_runs.for_document(customer, reading)
+    ]

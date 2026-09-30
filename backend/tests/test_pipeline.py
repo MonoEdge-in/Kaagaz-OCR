@@ -8,6 +8,7 @@ import io
 import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.ingestion import sniff
@@ -17,6 +18,7 @@ from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import Handler, JobFailed, Worker
 from kaagaz.pipeline import DocumentProcessor, ReadingSocket
 from kaagaz.reading.csv_reader import CsvReader
+from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import ReaderSocket
 from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, Span, TooManyPages
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
@@ -57,6 +59,7 @@ XLSX_LIMITS = XlsxLimits(
 )
 LEASE_SECONDS = 30
 MAX_ATTEMPTS = 3
+EXHAUSTED_AT = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 
 
 @dataclass
@@ -85,7 +88,12 @@ def make_worker(queue: LeaseQueue, handler: Handler, repo: MemoryDocuments) -> W
         queue,
         handler,
         max_attempts=MAX_ATTEMPTS,
-        on_exhausted=lambda job: repo.mark_exhausted(job.customer_id, job.document_id),
+        on_exhausted=lambda job: repo.mark_exhausted(
+            job.customer_id, job.document_id, now=EXHAUSTED_AT, max_attempts=MAX_ATTEMPTS
+        ),
+        on_attempt=lambda job, attempt: repo.record_attempt(
+            job.customer_id, job.document_id, attempt, MAX_ATTEMPTS
+        ),
     )
 
 
@@ -241,7 +249,11 @@ class PipelineTest(unittest.TestCase):
         class RejectingSocket(ReaderSocket):
             # Simulates an overlapping delivery rejecting the file mid-run.
             def read(
-                self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
+                self,
+                detected_type: str,
+                data: bytes,
+                *,
+                on_page: Callable[[RouteDecision | None], None] | None = None,
             ) -> list[Span]:
                 system.statuses.set_status(CUSTOMER, doc, DocumentStatus.REJECTED)
                 return super().read(detected_type, data, on_page=on_page)

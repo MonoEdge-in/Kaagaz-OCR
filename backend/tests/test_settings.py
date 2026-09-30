@@ -107,3 +107,51 @@ def test_the_host_is_checked_only_for_paddleocr_vl_and_matches_the_server() -> N
         == "rapidocr"
     )
     assert settings_module.OCR_SERVER_HOSTS == ALLOWED_HOSTS
+
+
+ROUTE_SETTINGS = [
+    "TEXT_LAYER_MIN_CHARS",
+    "TEXT_LAYER_MIN_GOOD_RATIO",
+    "SCAN_IMAGE_COVERAGE",
+    "BLANK_PAGE_STDDEV",
+    "LOW_RES_DPI",
+    "REPROCESS_PER_HOUR",
+]
+
+
+def test_the_shipped_env_example_has_the_page_route_starting_values() -> None:
+    settings = Settings.from_env(shipped())
+    assert (
+        settings.text_layer_min_chars,
+        settings.text_layer_min_good_ratio,
+        settings.scan_image_coverage,
+        settings.blank_page_stddev,
+        settings.low_res_dpi,
+        settings.reprocess_per_hour,
+    ) == (40, 0.9, 0.5, 3.0, 150, 20)
+
+
+@pytest.mark.parametrize("name", ROUTE_SETTINGS)
+def test_a_missing_page_route_setting_stops_start_up_by_name(name: str) -> None:
+    with pytest.raises(SettingsError, match=name):
+        Settings.from_env(shipped(**{name: None}))
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("TEXT_LAYER_MIN_CHARS", "0"),
+        ("TEXT_LAYER_MIN_GOOD_RATIO", "0"),
+        ("TEXT_LAYER_MIN_GOOD_RATIO", "1.5"),
+        ("TEXT_LAYER_MIN_GOOD_RATIO", "nan"),
+        ("SCAN_IMAGE_COVERAGE", "-0.1"),
+        ("SCAN_IMAGE_COVERAGE", "inf"),
+        ("BLANK_PAGE_STDDEV", "-1"),
+        ("BLANK_PAGE_STDDEV", "nan"),
+        ("LOW_RES_DPI", "0"),
+        ("REPROCESS_PER_HOUR", "0"),
+    ],
+)
+def test_a_bad_page_route_setting_stops_start_up_by_name(name: str, value: str) -> None:
+    with pytest.raises(SettingsError, match=name):
+        Settings.from_env(shipped(**{name: value}))

@@ -13,8 +13,11 @@ The steps, in order, for one (customer, document):
 5. Read the bytes through the reader socket, then read them again with the
    second reader if the type has one. A type with no reader is marked "needs
    a reader" (its pages are kept) and the job ends normally. A reader that
-   reads page by page (OCR) beats the heartbeat after each page, so a long
-   scan keeps its lease.
+   reads page by page (PDFs, photos) beats the heartbeat after each page, so a
+   long scan keeps its lease. Each page then gets its route (PRD 2 R1:
+   ``kaagaz.reading.route``), and the second reading of a page read by OCR, or
+   blank, is left out: a scan's hidden text layer must never agree with itself
+   (the council's ML 4).
 6. Pieces for search (kaagaz.chunking) and values for fixed queries
    (kaagaz.extraction), each labelled verified or needs review. For scans,
    when a vision model is set, it reads each value's box again as the second
@@ -36,6 +39,22 @@ and anything saved from an earlier clean run is removed.
 Every value keeps its page and region; one without a valid one is dropped
 (CLAUDE.md never-do 5).
 
+Runs and progress (PRD 2 R6, X2, X3), when the processor is given them:
+
+* Each delivery starts a run (``RunStore.start``), which marks an older run
+  still going as superseded, and finishes it on every path: ready, needs a
+  reader, failed or rejected with its code, a backend that is down
+  (``<backend>_unavailable``), and superseded. A run finished on a failure path
+  is best effort: a database that is down is logged (``run_not_closed``) and the
+  first error is raised; the next start closes the run.
+* The run fence (Lead's resolution 2): the save, ``mark_ready`` and marking a
+  document failed go ahead only while this run is still open. A superseded
+  delivery ends quietly (the job is acked, the newer run does the work), so a
+  stale delivery after a "read again" never fails the document.
+* How far it has got (``ProgressStore.set_progress``) is written in its own
+  short transaction between steps, never inside the save, and best effort
+  (AR10): a database that is down only means no progress (``progress_not_saved``).
+
 Memory: the file's bytes, its spans and one decoded page picture at a time
 (vision readings). Time is linear in the spans apart from the sorts in the
 chunkers and extractors (O(n log n)).
@@ -45,10 +64,14 @@ import functools
 import hashlib
 import io
 import logging
+import re
+import time
+from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from importlib import metadata
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from PIL import Image
@@ -62,9 +85,13 @@ from kaagaz.extraction.learned import LearnedCorrection, apply_learned
 from kaagaz.extraction.parsing import parse_amount, parse_date
 from kaagaz.extraction.spreadsheet import values_from_cells
 from kaagaz.extraction.values import ExtractedValue
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
+from kaagaz.jobs.ports import LeaseLost
 from kaagaz.jobs.worker import Heartbeat, JobFailed
-from kaagaz.reading.socket import NoReader
+from kaagaz.preparing.page_checks import PageCheck
+from kaagaz.reading.route import RouteDecision
+from kaagaz.reading.socket import NoReader, OnPage
 from kaagaz.reading.spans import (
     DIRECT_ORIGINS,
     BoxLocation,
@@ -105,6 +132,13 @@ _CROP_PADDING = 0.005  # a little of the page around a box, as a fraction of the
 _WEBP_QUALITY = 80
 _WEBP_METHOD = 4
 _WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
+
+# Security A8 (PROVISIONAL): at most this many value boxes of one document are
+# sent to the vision model; the values past it stay single_reader.
+MAX_VISION_CROPS = 200
+_BACKEND_NAME = re.compile(r"[a-z]{1,32}")  # "ocr", "storage", ...: a run's <backend>_unavailable
+# The PDF reader adds ";ocr_dpi=N" to its version when a page was drawn below OCR_DPI.
+_LOWERED_OCR_DPI = re.compile(r";ocr_dpi=([0-9]{1,5})\b")
 
 
 # --- what is saved ------------------------------------------------------------
@@ -257,22 +291,53 @@ class DocumentStore(Protocol):
 
     def get(self, customer_id: str, document_id: str) -> DocumentRecord | None: ...
 
-    def set_failed(self, customer_id: str, document_id: str, code: str) -> None: ...
+    def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
+        """Failed with ``code``. With ``run_id``, raise Superseded and change nothing
+        unless that run is still open (the run fence)."""
+        ...
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None: ...
 
-    def mark_ready(self, customer_id: str, document_id: str, page_count: int) -> None:
+    def mark_ready(
+        self, customer_id: str, document_id: str, page_count: int, *, run: FinishedRun | None = None
+    ) -> None:
         """Ready with its page count, and current unless a newer version is ready.
-        Never moves a document out of rejected."""
+        Never moves a document out of rejected. With ``run``, finish that run in the
+        same transaction, or raise Superseded when it is no longer open."""
+        ...
+
+
+class RunStore(Protocol):
+    """kaagaz.db.runs.PgRuns in production."""
+
+    def start(self, customer_id: str, document_id: str, *, now: datetime) -> str: ...
+
+    def finish(self, customer_id: str, run: FinishedRun) -> None: ...
+
+
+class ProgressStore(Protocol):
+    """kaagaz.db.documents.PgDocuments in production."""
+
+    def set_progress(self, customer_id: str, document_id: str, progress: Progress) -> None: ...
+
+
+class OcrMeter(Protocol):
+    """kaagaz.reading.ocr.MeteredOcrEngine in production: the engine the readers use."""
+
+    name: str
+
+    @property
+    def version(self) -> str: ...
+
+    def take(self) -> tuple[int, float]:
+        """(pages sent to OCR, seconds) since the last take, then zero again."""
         ...
 
 
 class ReadingSocket(Protocol):
     """kaagaz.reading.socket.ReaderSocket in production."""
 
-    def read(
-        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
-    ) -> list[Span]: ...
+    def read(self, detected_type: str, data: bytes, *, on_page: OnPage | None = None) -> list[Span]: ...
 
     def read_second(self, detected_type: str, data: bytes) -> list[Span] | None: ...
 
@@ -288,6 +353,9 @@ class Prepared(Protocol):
     @property
     def images(self) -> Mapping[int, bytes]: ...  # page number -> PNG
 
+    @property
+    def checks(self) -> Mapping[int, PageCheck]: ...  # page number -> blank, effective DPI (R3, R4)
+
 
 class PageImageStore(Protocol):
     def put_page_image(self, customer_id: str, document_id: str, page_no: int, image: bytes) -> None: ...
@@ -296,8 +364,10 @@ class PageImageStore(Protocol):
 class PipelineStore(Protocol):
     """kaagaz.db.pipeline_store.PgPipelineStore in production."""
 
-    def save(self, content: DocumentContent) -> None:
-        """Replace everything saved for this document with ``content``, atomically."""
+    def save(self, content: DocumentContent, *, run_id: str | None = None) -> None:
+        """Replace everything saved for this document with ``content``, atomically.
+        With ``run_id``, raise Superseded and write nothing unless that run is still
+        open (the run fence)."""
         ...
 
     def clear(self, customer_id: str, document_id: str) -> None:
@@ -318,6 +388,21 @@ class ProcessorStorage(BlobStorage, Quarantine, PageImageStore, Protocol):
 # --- the processor ------------------------------------------------------------
 
 
+@dataclass
+class _Run:
+    """One delivery's run (R6) and what it has counted so far. ``run_id`` is None
+    when the processor keeps no runs."""
+
+    run_id: str | None
+    started: float
+    routes: Counter[str] = field(default_factory=Counter)
+    vision_crops: int = 0
+    values_verified: int = 0
+    values_needs_review: int = 0
+    embedded: bool = False
+    lowest_ocr_dpi: int | None = None  # when a page was drawn for OCR below OCR_DPI
+
+
 class DocumentProcessor:
     def __init__(
         self,
@@ -333,10 +418,32 @@ class DocumentProcessor:
         embed: Callable[[str, str], object] | None = None,
         vision: VisionModel | None = None,
         model_errors: tuple[type[Exception], ...] = (),
+        runs: RunStore | None = None,
+        progress: ProgressStore | None = None,
+        ocr_meter: OcrMeter | None = None,
+        clock: Callable[[], datetime] | None = None,
+        timer: Callable[[], float] | None = None,
+        ocr_on: bool = False,
+        max_vision_crops: int = MAX_VISION_CROPS,
+        run_config: Mapping[str, Any] | None = None,
+        vision_model: str | None = None,
+        embed_model: str | None = None,
     ) -> None:
         """``embed(customer_id, document_id)`` gives the saved pieces their vectors;
         ``vision`` reads scanned boxes again. Either failing with one of
-        ``model_errors`` is logged and skipped, never a failed document."""
+        ``model_errors`` is logged and skipped, never a failed document.
+
+        The rest are for PRD 2 and all optional: ``runs`` keeps one run per delivery
+        (it needs ``clock`` for its times and ``timer`` for its seconds);
+        ``progress`` shows how far a document has got; ``ocr_meter`` is the OCR
+        engine the readers use, counted; ``ocr_on`` says an engine is set, so a page
+        with no text went to OCR; ``run_config`` is the run's plain JSON set-up
+        (ML 10); ``vision_model`` and ``embed_model`` are the tags a run records
+        when it used them."""
+        if runs is not None and (clock is None or timer is None):
+            raise ValueError("runs need a clock and a timer")
+        if max_vision_crops < 0:
+            raise ValueError("max_vision_crops must be 0 or more")
         self._gate = gate
         self._statuses = statuses
         self._documents = documents
@@ -348,39 +455,79 @@ class DocumentProcessor:
         self._embed = embed
         self._vision = vision
         self._model_errors = model_errors
+        self._runs = runs
+        self._progress_store = progress
+        self._ocr_meter = ocr_meter
+        self._clock = clock or _utc_now
+        self._timer = timer or time.perf_counter
+        self._ocr_on = ocr_on
+        self._max_vision_crops = max_vision_crops
+        self._run_config = dict(run_config or {})
+        self._vision_model = vision_model
+        self._embed_model = embed_model
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
         if record is None:
             # No record for this customer: nothing to mark, nothing read.
             raise JobFailed("document_missing", retryable=False)
+        run = self._start_run(job)
+        settled = False  # the run was finished, or is being, on a known path
         try:
-            self._process(job, record, heartbeat)
-        except JobFailed as failure:
-            if not failure.retryable:
-                self._record_failure(job, failure.code)
+            self._process(job, record, heartbeat, run)
+            settled = True
+        except Superseded:
+            settled = True
+            self._close_run(job, run, "superseded", None)  # acked: the newer run does the work
+        except LeaseLost:
+            settled = True
+            self._close_run(job, run, "superseded", None)  # another delivery owns the job now
             raise
+        except JobFailed as failure:
+            settled = True
+            if not failure.retryable and not self._record_failure(job, failure.code, run):
+                self._close_run(job, run, "superseded", None)
+                return  # a newer run has started: this stale delivery fails nothing
+            status = "rejected" if failure.code in REJECTION_CODES else "failed"
+            self._close_run(job, run, status, failure.code)
+            raise
+        except BackendUnavailable as error:
+            settled = True
+            self._close_run(job, run, "failed", _unavailable_code(error))
+            raise
+        finally:
+            if not settled:
+                # Anything else is a bug: it is not caught (no blanket except) and goes on
+                # up to the worker, but its run ends failed rather than staying open.
+                self._close_run(job, run, "failed", "internal_error")
 
-    def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat) -> None:
+    def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
-        data = self._scan(job)
+        self._progress(job, "scanning", 0, 1)
+        data = self._scan(job, run)
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
         heartbeat()
 
         prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data))
-        for page_no, png in prepared.images.items():
+        for done, (page_no, png) in enumerate(prepared.images.items(), start=1):
             self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(png))
             heartbeat()
-        pages = [PageRecord(info, info.page in prepared.images) for info in prepared.pages]
+            self._progress(job, "preparing", done, len(prepared.images))
+        pages = [_page_record(info, prepared) for info in prepared.pages]
 
+        self._progress(job, "reading", 0, len(pages))
+        reads: list[RouteDecision | None] = []  # how each page was read, as the reader said
+        on_page = self._reading_beat(job, heartbeat, len(pages), reads)
         try:
-            spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=heartbeat))
+            spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=on_page))
         except NoReader:
             require_clean(self._statuses, job)
-            self._store.save(DocumentContent(customer_id, document_id, pages, [], [], [], reader=""))
+            content = DocumentContent(customer_id, document_id, pages, [], [], [], reader="")
+            self._store.save(content, run_id=run.run_id)
             self._documents.set_page_count(customer_id, document_id, len(pages))
             self._statuses.set_status(customer_id, document_id, DocumentStatus.NEEDS_READER)
+            self._close_run(job, run, "needs_reader", None)
             return
         second = self._read_second(job, record.detected_type, data)
         heartbeat()
@@ -392,26 +539,37 @@ class DocumentProcessor:
         # The socket already refuses spans without a real location; this keeps the
         # rule here too, so no piece or value can be saved without one.
         usable = [span for span in spans if _points_at(span.location)]
+        pages = _with_routes(pages, reads)
+        run.routes = Counter(page.route for page in pages if page.route is not None)
+        # The raw second reading is kept as read; only the labels leave pages out.
+        compared = None if second is None else _without_unread_pages(second, pages)
         pieces = pieces_from_rows(customer_id, document_id, usable)
         pieces += pieces_from_lines(customer_id, document_id, usable)
         values = values_from_cells(usable) + values_from_lines(usable)
-        readings = self._vision_readings(job, values, prepared.images, heartbeat)
-        values = label_values(values, second, readings)
+        readings = self._vision_readings(job, values, prepared.images, heartbeat, run)
+        values = label_values(values, compared, readings)
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
             values = [_with_parsed(value) for value in apply_learned(values, learned)]
+        run.values_verified = sum(1 for value in values if value.label == "verified")
+        run.values_needs_review = len(values) - run.values_verified
 
         reader, version = self._socket.reader_id(record.detected_type)
+        lowered = _LOWERED_OCR_DPI.search(version)
+        run.lowest_ocr_dpi = None if lowered is None else int(lowered.group(1))
         outputs = [ReaderOutput("first", reader, version, tuple(spans))]
         if second is not None:
             second_reader, second_version = self._socket.reader_id(record.detected_type, second=True)
             outputs.append(ReaderOutput("second", second_reader, second_version, tuple(second)))
 
         require_clean(self._statuses, job)  # still clean just before writing
-        self._store.save(DocumentContent(customer_id, document_id, pages, outputs, pieces, values, reader))
+        content = DocumentContent(customer_id, document_id, pages, outputs, pieces, values, reader)
+        self._store.save(content, run_id=run.run_id)
         heartbeat()
-        self._index(job)
-        self._documents.mark_ready(customer_id, document_id, len(pages))
+        self._progress(job, "indexing", 0, 1)
+        run.embedded = self._index(job)
+        finished = self._finished(run, "ready", None)
+        self._documents.mark_ready(customer_id, document_id, len(pages), run=finished)
 
     def _prepare_or_count(self, job: Job, detected_type: str, data: bytes) -> Prepared:
         """``prepare``; a file with too many pages keeps its real page count before
@@ -422,9 +580,9 @@ class DocumentProcessor:
             self._documents.set_page_count(job.customer_id, job.document_id, error.pages)
             raise
 
-    def _scan(self, job: Job) -> bytes:
+    def _scan(self, job: Job, run: _Run) -> bytes:
         try:
-            return self._gate.check(job)
+            return self._gate.check(job, run_id=run.run_id)
         except JobFailed as failure:
             if failure.code in REJECTION_CODES:
                 # A file rejected on a later scan (new signatures) must not
@@ -444,18 +602,24 @@ class DocumentProcessor:
             )
             return None
 
-    def _record_failure(self, job: Job, code: str) -> None:
-        """Mark the document failed with ``code``. A document that is already
-        rejected keeps the reason it was rejected for (only the scan's own
-        verdict is recorded on it)."""
+    def _record_failure(self, job: Job, code: str, run: _Run) -> bool:
+        """Mark the document failed with ``code``, and return True. A document that
+        is already rejected keeps the reason it was rejected for (only the scan's
+        own verdict is recorded on it). False, with nothing changed, when this run
+        is no longer open: a newer run has started (the run fence)."""
         rejected = self._statuses.get_status(job.customer_id, job.document_id) is DocumentStatus.REJECTED
         if rejected and code not in _VERDICT_CODES:
-            return
-        self._documents.set_failed(job.customer_id, job.document_id, code)
+            return True
+        try:
+            self._documents.set_failed(job.customer_id, job.document_id, code, run_id=run.run_id)
+        except Superseded:
+            return False
+        return True
 
-    def _index(self, job: Job) -> None:
+    def _index(self, job: Job) -> bool:
+        """Make the pieces' meaning vectors; True if it ran."""
         if self._embed is None:
-            return
+            return False
         try:
             self._embed(job.customer_id, job.document_id)
         except self._model_errors as error:
@@ -463,6 +627,8 @@ class DocumentProcessor:
                 "pieces saved without meaning vectors",
                 extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": _code(error)},
             )
+            return False
+        return True
 
     def _vision_readings(
         self,
@@ -470,10 +636,12 @@ class DocumentProcessor:
         values: list[ExtractedValue],
         images: Mapping[int, bytes],
         heartbeat: Heartbeat,
+        run: _Run,
     ) -> dict[Location, str]:
-        """A vision model's reading of each scanned value's box, by box. Stops at the
-        first model error (those values stay single reader). One page picture decoded
-        at a time."""
+        """A vision model's reading of each scanned value's box, by box, with a
+        heartbeat after each (security A8). Stops at the first model error, and
+        after ``max_vision_crops`` boxes; the values left stay single reader. One
+        page picture decoded at a time."""
         if self._vision is None:
             return {}
         wanted: dict[int, dict[BoxLocation, None]] = {}  # page -> boxes, in order, once each
@@ -489,6 +657,9 @@ class DocumentProcessor:
         for page_no, boxes in wanted.items():
             with Image.open(io.BytesIO(images[page_no])) as page:
                 for box in boxes:
+                    if run.vision_crops >= self._max_vision_crops:
+                        return readings
+                    run.vision_crops += 1
                     try:
                         text = self._vision.read_image(png=_crop(page, box), instruction=VISION_INSTRUCTION)
                     except self._model_errors as error:
@@ -501,11 +672,95 @@ class DocumentProcessor:
                             },
                         )
                         return readings
+                    heartbeat()
                     text = text.strip()
                     if text:
                         readings[box] = text
-            heartbeat()
         return readings
+
+    # --- runs and progress (R6, X2, X3) -----------------------------------------
+
+    def _start_run(self, job: Job) -> _Run:
+        """A new run of this delivery, started now. The OCR meter starts from zero (AR11)."""
+        if self._ocr_meter is not None:
+            self._ocr_meter.take()
+        run_id = None
+        if self._runs is not None:
+            run_id = self._runs.start(job.customer_id, job.document_id, now=self._clock())
+        return _Run(run_id, self._timer())
+
+    def _finished(self, run: _Run, status: str, error_code: str | None) -> FinishedRun | None:
+        """The run as it ends now, with everything it counted; None without runs.
+        The OCR meter is read and set back to zero either way (AR11)."""
+        meter = self._ocr_meter
+        pages_sent, ocr_seconds = meter.take() if meter is not None else (0, 0.0)
+        if run.run_id is None:
+            return None
+        totals = RunTotals(
+            status=status,
+            error_code=error_code,
+            ocr_engine=f"{meter.name} {meter.version}"[:100] if meter is not None and pages_sent else None,
+            model_chat=None,  # no chat model call yet (PRD 2 D1, E4)
+            model_vision=self._vision_model if run.vision_crops else None,
+            model_embed=self._embed_model if run.embedded else None,
+            pages_cells=run.routes["cells"],
+            pages_text_layer=run.routes["text_layer"],
+            pages_ocr=run.routes["ocr"],
+            pages_blank=run.routes["blank"],
+            vision_crops=run.vision_crops,
+            model_calls=0,
+            dropped_quotes=0,
+            seconds_total=max(0.0, self._timer() - run.started),
+            seconds_ocr=ocr_seconds if meter is not None else None,
+            values_verified=run.values_verified,
+            values_needs_review=run.values_needs_review,
+            config=self._run_config
+            if run.lowest_ocr_dpi is None
+            else {**self._run_config, "ocr_dpi_lowest": run.lowest_ocr_dpi},
+        )
+        return FinishedRun(run.run_id, totals, self._clock())
+
+    def _close_run(self, job: Job, run: _Run, status: str, error_code: str | None) -> None:
+        """Finish the run on a path that does not mark the document ready. Best
+        effort: a database that is down is logged, and the next start closes it."""
+        finished = self._finished(run, status, error_code)
+        if finished is None or self._runs is None:
+            return
+        try:
+            self._runs.finish(job.customer_id, finished)
+        except BackendUnavailable:
+            _log.warning(
+                "run_not_closed",
+                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": status},
+            )
+
+    def _progress(self, job: Job, step: Step, done: int, total: int) -> None:
+        """Show how far it has got, in its own short transaction. Best effort (AR10)."""
+        if self._progress_store is None:
+            return
+        try:
+            self._progress_store.set_progress(job.customer_id, job.document_id, Progress(step, done, total))
+        except BackendUnavailable:
+            _log.warning(
+                "progress_not_saved",
+                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": step},
+            )
+
+    def _reading_beat(
+        self, job: Job, heartbeat: Heartbeat, total: int, reads: list[RouteDecision | None]
+    ) -> OnPage:
+        """The readers' ``on_page``: keep how the page was read, the heartbeat, then
+        "reading i of total"."""
+        done = 0
+
+        def on_page(read: RouteDecision | None) -> None:
+            nonlocal done
+            done += 1
+            reads.append(read)
+            heartbeat()
+            self._progress(job, "reading", min(done, total), total)
+
+        return on_page
 
 
 def _or_fail[T](call: Callable[[], T]) -> T:
@@ -517,6 +772,51 @@ def _or_fail[T](call: Callable[[], T]) -> T:
     except ReadError as error:
         code = error.code
     raise JobFailed(code, retryable=False)
+
+
+def _page_record(info: PageInfo, prepared: Prepared) -> PageRecord:
+    """The page as saved, with its effective DPI and low-resolution flag (R4)."""
+    check = prepared.checks.get(info.page)
+    record = PageRecord(info, info.page in prepared.images)
+    if check is None:
+        return record
+    return replace(record, effective_dpi=check.effective_dpi, low_resolution=check.low_resolution)
+
+
+def _with_routes(pages: list[PageRecord], reads: Sequence[RouteDecision | None]) -> list[PageRecord]:
+    """Each page with its route (R1): a sheet's page is cells; any other page's is
+    the one its reader said it read it by (``on_page``, in page order), so a stored
+    route never disagrees with what was read (council PR 3 review, low 7); a page
+    the reader did not report was not read (None). O(pages)."""
+    routed = []
+    for page in pages:
+        index = page.info.page - 1
+        if page.info.unit == "cells":
+            route: str | None = "cells"
+        else:
+            read = reads[index] if 0 <= index < len(reads) else None
+            route = None if read is None else read.route
+        routed.append(replace(page, route=route))
+    return routed
+
+
+def _without_unread_pages(second: list[Span], pages: Sequence[PageRecord]) -> list[Span]:
+    """The second reading without the pages that were read by OCR or are blank: a
+    second reader reads text layers only, so there it could only agree with a
+    text layer the route check threw out, such as a scan's hidden OCR layer
+    (ML 4). PROVISIONAL (plan 4.1, step 7). O(spans + pages)."""
+    left_out = {page.info.page for page in pages if page.route in ("ocr", "blank")}
+    return [span for span in second if span.location.page not in left_out]
+
+
+def _unavailable_code(error: BackendUnavailable) -> str:
+    """The run's error code for a backend that is down: ``ocr_unavailable`` and so on."""
+    name = str(error)
+    return f"{name}_unavailable" if _BACKEND_NAME.fullmatch(name) else "backend_unavailable"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def _points_at(location: Location) -> bool:
@@ -587,9 +887,10 @@ def build_processor(
     from kaagaz.ai.client import ModelOutputError, ModelUnavailable
     from kaagaz.db.documents import PgDocuments
     from kaagaz.db.pipeline_store import PgPipelineStore
+    from kaagaz.db.runs import PgRuns
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
-    from kaagaz.reading.ocr import build_ocr_engine
-    from kaagaz.reading.wiring import build_reader_socket
+    from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
+    from kaagaz.reading.wiring import build_reader_socket, reader_config
     from kaagaz.search.indexing import embed_pieces
 
     documents = PgDocuments(db)
@@ -601,22 +902,45 @@ def build_processor(
             dpi=settings.page_image_dpi,
             max_pages=settings.max_pages,
             max_image_pixels=settings.max_image_pixels,
+            blank_stddev=settings.blank_page_stddev,
+            low_res_dpi=settings.low_res_dpi,
         )
 
     embed: Callable[[str, str], object] | None = None
     if model is not None:
         embed = functools.partial(embed_pieces, db, model=model)
+    engine = build_ocr_engine(settings)
+    meter = None if engine is None else MeteredOcrEngine(engine, timer=time.perf_counter)
+    vision = model if model is not None and settings.model_vision else None
 
     return DocumentProcessor(
         gate=ScanGate(storage, scanner, storage, documents),
         statuses=documents,
         documents=documents,
-        socket=build_reader_socket(settings, build_ocr_engine(settings)),
+        socket=build_reader_socket(settings, meter),
         prepare=prepare,
         sheet_pages=sheet_pages,
         page_images=storage,
         store=PgPipelineStore(db),
         embed=embed,
-        vision=model if model is not None and settings.model_vision else None,
+        vision=vision,
         model_errors=(ModelUnavailable, ModelOutputError),
+        runs=PgRuns(db),
+        progress=documents,
+        ocr_meter=meter,
+        clock=_utc_now,
+        timer=time.perf_counter,
+        ocr_on=meter is not None,
+        run_config={"build": _build(), **reader_config(settings), "max_vision_crops": MAX_VISION_CROPS},
+        vision_model=settings.model_vision if vision is not None else None,
+        embed_model=settings.model_embed if embed is not None else None,
     )
+
+
+def _build() -> str:
+    """The backend's version, as installed (ML 10's build). PROVISIONAL: a build's
+    commit id needs the image to carry it, which is Vrushit's CI."""
+    try:
+        return metadata.version("kaagaz-backend")
+    except metadata.PackageNotFoundError:
+        return "unknown"

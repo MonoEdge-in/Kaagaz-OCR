@@ -30,7 +30,7 @@ _ITEM = (
     "SELECT v.id, v.document_id, v.record_key, v.field, v.value_text, v.value_raw,"
     " v.second_reading, v.page_no, v.region, v.label, v.label_reason, v.confidence,"
     " d.display_name AS document_name, d.detected_type,"
-    " p.width, p.height, p.unit, p.has_image"
+    " p.width, p.height, p.unit, p.has_image, p.route, p.effective_dpi, p.low_resolution"
     " FROM extracted_values v"
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
