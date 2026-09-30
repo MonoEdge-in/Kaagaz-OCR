@@ -279,6 +279,19 @@ def test_a_failing_save_keeps_the_earlier_rows(db: Database) -> None:
     assert texts[1]["text"] == "Total: 1,180.00"
 
 
+def test_a_verified_card_value_is_refused_before_anything_is_written(db: Database) -> None:
+    """Council fix 4: the store is the last check that no card value is ever verified."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    base = content(customer, doc)
+    card = ExtractedValue(
+        "card", "profit", "12,000", "12,000", BOX, label="verified", label_reason="readers_agree"
+    )
+    with pytest.raises(ValueError, match="card"):
+        PgPipelineStore(db).save(replace(base, values=[*base.values, card]))
+    assert counts(db, customer, doc) == EMPTY
+
+
 def test_clear_removes_everything_for_the_document_only(db: Database) -> None:
     customer, _ = new_customer(db)
     doc, other = new_document(db, customer), new_document(db, customer)

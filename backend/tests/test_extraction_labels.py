@@ -106,6 +106,13 @@ class LabelValuesTest(unittest.TestCase):
         (labelled,) = label_values([box_value()], [])
         self.assertEqual(reason(labelled), ("needs_review", "single_reader", None))
 
+    def test_a_card_value_given_to_this_labeller_is_still_model_chosen(self) -> None:
+        """Council fix 4: no path verifies a value whose field the model chose."""
+        in_a_cell = ExtractedValue("card", "profit", "12000", "12000", CellLocation(1, 2, 2))
+        in_a_line = ExtractedValue("card", "total_due", "1,180.00", "1,180.00", BOX)
+        labelled = label_values([in_a_cell, in_a_line], [second_line("1,180.00")])
+        self.assertEqual([reason(value) for value in labelled], [("needs_review", "model_chosen", None)] * 2)
+
     def test_a_reading_by_box_wins_over_the_second_reader(self) -> None:
         values = [box_value(confidence=0.5)]
         (labelled,) = label_values(values, [second_line("Total: 1,130.00")], {BOX: "Total: 1,180.00"})
@@ -302,6 +309,21 @@ class LearnedTest(unittest.TestCase):
             LearnedCorrection("total_amount", "1,13O.00 ", "x"),  # a trailing space
         ]
         self.assertEqual(apply_learned([value], learned), [value])
+
+    def test_a_card_value_is_never_corrected_into_verified(self) -> None:
+        """Council fix 4: a remembered fix is for values the rules found; a card value keeps
+        its model_chosen label, and its text stays the reader's."""
+        card = ExtractedValue(
+            "card",
+            "total_amount",
+            "1,13O.00",
+            "1,13O.00",
+            BOX,
+            label="needs_review",
+            label_reason="model_chosen",
+        )
+        fixes = [LearnedCorrection("total_amount", "1,13O.00", "1,130.00")]
+        self.assertEqual(apply_learned([card], fixes), [card])
 
 
 if __name__ == "__main__":
