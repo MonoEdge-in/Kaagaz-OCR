@@ -13,8 +13,9 @@
   model is down halfway"), after ``beat(1, 2)``.
 * A card value whose field the rule values already have is dropped
   (PROVISIONAL, plan conflict 15), so nothing is counted twice (bug B2 of
-  PRD 1); with the reserved key-fact names (``card.RESERVED_KEY_FACT_FIELDS``) a
-  card key fact never adds a second total either.
+  PRD 1), and its item leaves the card JSON too (council fix 10); with the
+  reserved key-fact names (``card.RESERVED_KEY_FACT_FIELDS``) a card key fact
+  never adds a second total either.
 
 The two value lists go to their own labeller (ML amendment 2): ``rule_values``
 (cells and labelled.py) to ``labels.label_values``, ``quoted_values`` (the
@@ -31,7 +32,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
-from kaagaz.extraction.card import CardCounts, ChatModel, ask_card, locate_card
+from kaagaz.extraction.card import CardCounts, ChatModel, ask_card, locate_card, without_fields
 from kaagaz.extraction.links import link_identifiers
 from kaagaz.extraction.quotes import ReaderText
 from kaagaz.extraction.values import ExtractedValue
@@ -73,9 +74,8 @@ def understand(
     beat(1, 2)
     card = locate_card(reply, reader, model=chat.chat_model, run_id=run_id)
     beat(2, 2)
-    known = {value.field for value in rules}
-    quoted = [value for value in card.values if value.field not in known]
-    return Understanding(card.facts, rules, quoted, card.counts, 1, None)
+    card = without_fields(card, {value.field for value in rules})
+    return Understanding(card.facts, rules, card.values, card.counts, 1, None)
 
 
 def document_links(facts: DocumentFacts, values: Sequence[ExtractedValue]) -> tuple[LinkIdentifier, ...]:

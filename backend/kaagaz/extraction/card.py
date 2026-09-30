@@ -67,8 +67,8 @@ import hashlib
 import json
 import re
 import unicodedata
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any, Protocol
 
@@ -378,6 +378,22 @@ def ask_card(
     if schema_problem(reply, CARD_SCHEMA) is not None:
         raise ModelOutputError("card_shape")
     return reply
+
+
+def without_fields(result: CardResult, fields: Collection[str]) -> CardResult:
+    """``result`` without the values whose field is in ``fields``, and without their items in
+    the card JSON, so the card shows only what is stored as its own values (council fix 10).
+    The counts are kept: the items were found. O(items)."""
+    card = result.facts.card
+    if card is None or not any(value.field in fields for value in result.values):
+        return result
+    kept = dict(card)
+    for section in ("parties", "identifiers", "key_facts"):
+        kept[section] = [item for item in card[section] if item["field"] not in fields]
+    if "document_date" in fields:
+        kept["document_date"] = None
+    values = [value for value in result.values if value.field not in fields]
+    return CardResult(replace(result.facts, card=kept), values, result.counts)
 
 
 def locate_card(reply: Mapping[str, Any], reader: ReaderText, *, model: str, run_id: str) -> CardResult:

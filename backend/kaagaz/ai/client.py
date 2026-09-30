@@ -40,7 +40,7 @@ its token counts, two guards run before the reply is read:
 * ``context_overflow``: prompt and reply together filled the window, so Ollama
   cut the prompt or shifted it out (``prompt_eval_count + eval_count >= num_ctx``);
 * ``output_truncated``: the reply stopped at its budget (``eval_count >=
-  max_tokens``).
+  max_tokens``, or the reply says ``"done_reason": "length"``, council fix 10).
 
 Either raises ``ModelOutputError`` with no repair retry: a cut reply would be
 cut again. UNVERIFIED: that Ollama 0.34.4 sends both counts on a
@@ -294,7 +294,8 @@ class OllamaClient:
             and prompt_tokens + reply_tokens >= self._num_ctx
         ):
             raise ModelOutputError("context_overflow")
-        if max_tokens is not None and reply_tokens is not None and reply_tokens >= max_tokens:
+        at_budget = max_tokens is not None and reply_tokens is not None and reply_tokens >= max_tokens
+        if at_budget or reply.get("done_reason") == "length":
             raise ModelOutputError("output_truncated")
         return content
 

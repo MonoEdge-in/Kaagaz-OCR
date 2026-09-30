@@ -127,12 +127,16 @@ _LEARNED = text(
 _LINK_LOCK = text(
     "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.document_links:' || CAST(:c AS uuid)::text, 0))"
 )
+# An identifier is compared as links.normalise_identifier writes it: no spaces, lower
+# case, and Devanagari digits as ASCII digits (council fix 10).
 _LINK_TARGETS = text(
-    r"SELECT DISTINCT v.document_id, v.field, lower(regexp_replace(v.value_text, '\s', '', 'g'))"
+    "SELECT DISTINCT v.document_id, v.field,"
+    r" translate(lower(regexp_replace(v.value_text, '\s', '', 'g')), '०१२३४५६७८९', '0123456789')"
     " FROM extracted_values v JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " WHERE v.customer_id = :c AND v.field = ANY(CAST(:kinds AS text[]))"
     " AND v.record_key IN ('card', 'document')"
-    r" AND lower(regexp_replace(v.value_text, '\s', '', 'g')) = ANY(CAST(:values AS text[]))"
+    r" AND translate(lower(regexp_replace(v.value_text, '\s', '', 'g')), '०१२३४५६७८९', '0123456789')"
+    " = ANY(CAST(:values AS text[]))"
     " AND d.id <> :d AND d.family_id <> :f AND d.deleted_at IS NULL"
 )
 _LINK_PARTNERS = text(
