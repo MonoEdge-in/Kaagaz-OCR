@@ -808,3 +808,21 @@ def test_links_from_card_identifiers_end_to_end(db: Database) -> None:
         (first, second, "challan_number", "ch4417"),
         (second, first, "challan_number", "ch4417"),
     }
+
+
+def test_devanagari_and_ascii_digits_of_one_number_link(db: Database) -> None:
+    """Council fix 10: the store's SQL folds Devanagari digits the way normalise_identifier
+    does, so a survey number read as ४५/२ on one record and 45/2 on another links, in
+    either order."""
+    customer, _ = new_customer(db)
+    first, second = new_document(db, customer), new_document(db, customer)
+    store = PgPipelineStore(db)
+    for doc, printed in ((first, "गट नं. ४५/२"), (second, "Gat No. 45/2")):
+        number = printed.split()[-1]
+        answer = card_reply(identifiers=[{"kind": "survey_number", "value_quote": number}])
+        store.save(card_content(customer, doc, [card_line(printed, y=0.1)], answer))
+
+    assert links(db, customer, first) == {
+        (first, second, "survey_number", "45/2"),
+        (second, first, "survey_number", "45/2"),
+    }

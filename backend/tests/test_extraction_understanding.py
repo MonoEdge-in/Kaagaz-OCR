@@ -86,6 +86,14 @@ class ModelOnTest(unittest.TestCase):
         assert understanding.counts is not None
         self.assertEqual(understanding.counts.reserved_fields, 1)
 
+    def test_the_card_json_drops_the_items_whose_values_were_duplicates(self) -> None:
+        """Council fix 10: the card shows only what is stored as its own values."""
+        understanding, _ = run(FakeChat(CARD))
+        card = understanding.facts.card
+        assert card is not None
+        self.assertEqual([item["field"] for item in card["identifiers"]], ["gstin"])
+        self.assertEqual([item["field"] for item in card["parties"]], ["party_name"])
+
     def test_a_total_amount_key_fact_on_an_invoice_is_never_counted_twice(self) -> None:
         """PRD edge case: the rule (later E4) value wins, and the card adds no second one."""
         understanding, _ = run(FakeChat(CARD))

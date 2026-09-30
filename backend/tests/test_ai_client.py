@@ -237,6 +237,20 @@ def test_the_repair_retry_is_guarded_too(ollama: FakeOllama) -> None:
     assert len(ollama.requests) == 2
 
 
+def test_a_reply_that_stopped_at_its_length_is_truncated(ollama: FakeOllama) -> None:
+    """Council fix 10: Ollama's done_reason "length" says the reply hit num_predict, even
+    when the counts are missing."""
+    body = {"message": {"role": "assistant", "content": json.dumps(GOOD)}, "done_reason": "length"}
+    ollama.replies.append((200, body, False))
+    ollama.replies.append((200, {**body, "done_reason": "stop"}, False))
+    client = OllamaClient(_settings(ollama))
+    with pytest.raises(ModelOutputError) as caught:
+        client.chat_json(system="s", user="u", schema=SCHEMA, max_tokens=512)
+    assert caught.value.code == "output_truncated"
+    assert len(ollama.requests) == 1
+    assert client.chat_json(system="s", user="u", schema=SCHEMA, max_tokens=512) == GOOD
+
+
 def test_a_reply_with_a_lone_surrogate_is_repaired_once_then_refused(ollama: FakeOllama) -> None:
     """Council fix 3: JSON may escape half a character (\\ud800); such text cannot be
     stored or shown, so it is a bad reply like any other."""

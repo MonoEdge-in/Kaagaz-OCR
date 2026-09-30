@@ -26,6 +26,11 @@ class NormaliseIdentifierTest(unittest.TestCase):
         self.assertEqual(normalise_identifier("INV\N{NO-BREAK SPACE}17"), "inv17")
         self.assertEqual(normalise_identifier("PO/2026/0009"), "po/2026/0009")
 
+    def test_devanagari_digits_become_ascii_digits(self) -> None:
+        """Council fix 10: ४५/२ and 45/2 are one survey number."""
+        self.assertEqual(normalise_identifier("गट नं. ४५/२"), normalise_identifier("गट नं. 45/2"))
+        self.assertEqual(normalise_identifier("४५/२"), "45/2")
+
 
 class LinkIdentifiersTest(unittest.TestCase):
     def test_only_the_seven_kinds_from_the_card_and_document_records(self) -> None:
@@ -33,7 +38,7 @@ class LinkIdentifiersTest(unittest.TestCase):
             value("invoice_number", "INV 17"),
             value("po_number", "PO-9", record_key="document"),
             value("challan_number", "CH 4"),
-            value("survey_number", "७/१२"),
+            value("survey_number", "४५/२"),
             value("khata_number", "K 88"),
             value("account_number", "0012 3456"),
             value("reference_number", "Ref 5"),
@@ -52,7 +57,7 @@ class LinkIdentifiersTest(unittest.TestCase):
                 LinkIdentifier("khata_number", "k88"),
                 LinkIdentifier("po_number", "po-9"),
                 LinkIdentifier("reference_number", "ref5"),
-                LinkIdentifier("survey_number", "७/१२"),
+                LinkIdentifier("survey_number", "45/2"),
             ),
         )
 
@@ -83,6 +88,16 @@ class LinkIdentifiersTest(unittest.TestCase):
         self.assertEqual(MAX_LINK_IDENTIFIERS, 30)
         self.assertEqual(len(links), 30)
         self.assertEqual((links[0].value, links[-1].value), ("r01", "r30"))
+
+    def test_a_form_name_is_never_a_link(self) -> None:
+        """Council fix 10 (PROVISIONAL list): "7/12" names the land record form itself, so as a
+        survey number it would link every land record to every other."""
+        values = [
+            value("survey_number", "७/१२"),
+            value("survey_number", "7 / 12"),
+            value("khata_number", "8-A"),
+        ]
+        self.assertEqual(link_identifiers(values), ())
 
     def test_no_values_no_links(self) -> None:
         self.assertEqual(link_identifiers([]), ())
