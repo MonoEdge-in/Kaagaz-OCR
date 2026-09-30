@@ -32,6 +32,8 @@ class QuoteMatch:
     spans: int  # the reader spans the match covers
     pages: int  # the pages those spans are on
     whole: bool  # the match is exactly one span's whole text
+    loose: bool = False  # found only by the loose pass (ML 9(c))
+    ambiguous: bool = False  # a later spot fitted the quote too (ML 9(e))
 
 
 @dataclass(frozen=True, slots=True)

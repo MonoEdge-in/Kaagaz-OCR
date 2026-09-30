@@ -39,8 +39,9 @@ Two labellers (ML amendment 2):
 
   1. a card value is ``model_chosen``;
   2. a value whose quote covers more than one span (two cells, two lines, two
-     pages) or only part of a cell is ``model_chosen``: no one reading of its
-     spot can confirm it (council fix 5, from ``ExtractedValue.quote``);
+     pages) or only part of a cell, was found only by the loose pass, or fits a
+     later spot too, is ``model_chosen``: no reading of its spot can confirm it
+     (council fixes 5 and 6, from ``ExtractedValue.quote``);
   3. a cell is ``direct_cell``;
   4. an OCR value is labelled as ``label_values`` labels one (``ocr_script``, a
      shared box, then equality with its vision reading only);
@@ -209,13 +210,14 @@ def _best_line(box: BoxLocation, lines: list[tuple[Span, BoxLocation]]) -> Span 
 
 
 def _spot_unsure(value: ExtractedValue) -> bool:
-    """Rule 2 of ``label_quoted``: the quote is not one span, or is only part of a cell."""
+    """Rule 2 of ``label_quoted``: the quote is not one span, is only part of a cell, was
+    found only by the loose pass, or fits a later spot too."""
     quote = value.quote
     if quote is None:
         return False
-    return (
-        quote.spans > 1 or quote.pages > 1 or (isinstance(value.location, CellLocation) and not quote.whole)
-    )
+    if quote.loose or quote.ambiguous or quote.spans > 1 or quote.pages > 1:
+        return True
+    return isinstance(value.location, CellLocation) and not quote.whole
 
 
 def _is_ocr(value: ExtractedValue) -> bool:

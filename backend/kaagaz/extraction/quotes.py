@@ -47,8 +47,9 @@ the first pair wins. With no label, the first match in the range wins.
 Devanagari letter, and only when the exact pass finds nothing. On both sides
 ळ becomes ल, ी becomes ि, ू becomes ु and ऱ becomes र, and the anusvara,
 candrabindu and nukta are dropped. The rules above still hold, and the stored
-text is still the reader's. The nukta follows ML 9(c) (the lead's decision): a
-loose match is OCR Devanagari, which is needs review anyway.
+text is still the reader's. The nukta follows ML 9(c) (the lead's decision).
+The loose pass runs on any Devanagari text, a PDF's text layer too, so a value
+a loose match locates is never verified (``labels.label_quoted``, council fix 6).
 
 **Counts** (``QuoteCounts``, ML amendment 9(d) and (e)), per item:
 ``returned`` items searched for; ``dropped`` not found (or over a cap);
@@ -158,7 +159,7 @@ def located_value(found: Found, *, record_key: str, field: str, label: Found | N
         location=found.location,
         confidence=found.confidence,
         label_location=None if label is None else label.location,
-        quote=QuoteMatch(spans=found.spans, pages=found.pages, whole=found.whole),
+        quote=QuoteMatch(found.spans, found.pages, found.whole, found.loose, found.ambiguous),
     )
 
 
