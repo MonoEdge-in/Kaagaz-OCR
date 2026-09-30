@@ -360,13 +360,19 @@ class LoosePassTest(unittest.TestCase):
         self.assertEqual(value.text, "पाटिल")
         self.assertTrue(value.loose)
 
-    def test_quote_with_nukta_against_ocr_without_it_is_dropped_and_counted(self) -> None:
+    def test_quote_with_nukta_against_ocr_without_it_is_found_loosely_and_counted(self) -> None:
+        """ML 9(c) drops the nukta in the loose pass (the lead's decision, PRD2-BUILD-LEDGER).
+        A loose match is OCR Devanagari, so its value is needs review anyway."""
         counts = QuoteCounts()
         ocr = reader_text([line("जिला नाशिक")])
-        self.assertIsNone(counts.add(find_quote(ocr, "ज" + NUKTA + "िला")))
+        found = counts.add(find_quote(ocr, "ज" + NUKTA + "िला"))
+        assert found is not None
+        self.assertEqual((found.text, found.loose), ("जिला", True))
         with_nukta = reader_text([line("ज" + NUKTA + "िला नाशिक")])
-        self.assertIsNone(counts.add(find_quote(with_nukta, "जिला")))
-        self.assertEqual((counts.returned, counts.dropped, counts.loose), (2, 2, 0))
+        found = counts.add(find_quote(with_nukta, "जिला"))
+        assert found is not None
+        self.assertEqual((found.text, found.loose), ("ज" + NUKTA + "िला", True))
+        self.assertEqual((counts.returned, counts.dropped, counts.loose), (2, 0, 2))
 
 
 class QuoteCountsTest(unittest.TestCase):

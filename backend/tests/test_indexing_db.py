@@ -34,7 +34,9 @@ class FakeModel:
         self._seen += len(texts)
         return vectors[1:] if self._drop_one else vectors
 
-    def chat_json(self, *, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+    def chat_json(
+        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+    ) -> dict[str, Any]:
         raise AssertionError("indexing never chats")
 
     def read_image(self, *, png: bytes, instruction: str) -> str:

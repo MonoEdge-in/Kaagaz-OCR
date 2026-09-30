@@ -557,6 +557,27 @@ class FakeVision:
         return self.text
 
 
+class FakeChat:
+    """A chat model (kaagaz.extraction.card.ChatModel): gives its preset replies in
+    order, one per call; an exception in the list is raised at that call instead.
+    Records every call's system prompt, user message, schema and reply budget."""
+
+    chat_model = "qwen3:4b"
+
+    def __init__(self, *replies: dict[str, Any] | Exception) -> None:
+        self.replies = list(replies)
+        self.calls: list[dict[str, Any]] = []
+
+    def chat_json(
+        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+    ) -> dict[str, Any]:
+        self.calls.append({"system": system, "user": user, "schema": schema, "max_tokens": max_tokens})
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
 class FakeEmbedder:
     """Records (customer_id, document_id) for each call; raises ModelDown if down."""
 
