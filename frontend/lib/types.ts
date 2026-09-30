@@ -24,7 +24,8 @@ export type LabelReason =
   | "corrected"
   | "learned_correction"
   | "model_chosen" // PRD 2: the AI model chose its field (card and invoice values)
-  | "ocr_script"; // PRD 2: OCR read it from Devanagari or mixed-script text
+  | "ocr_script" // PRD 2: OCR read it from Devanagari or mixed-script text
+  | "check_failed"; // PRD 2, K3: a check on its invoice failed, even if the readers agreed
 
 /** "admin" only for a session started at /admin/login (PRD A1). */
 export type SessionScope = "app" | "admin";
