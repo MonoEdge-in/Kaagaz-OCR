@@ -71,6 +71,7 @@ BEFORE_MAX = 120  # C4: the "Before" part of a context header (kaagaz/chunking/c
 _RUNNING_KINDS = frozenset({"header", "footer"})
 _DIGITS = re.compile(r"\d+")
 _COUNTER_DIGITS = 6  # a longer run is never a page number
+_COUNTER_OFFSET = 10  # PROVISIONAL (lead): a printed page number is at most 10 from the real one
 
 Line = tuple[Span, BoxLocation]
 
@@ -91,17 +92,18 @@ def running_spans(spans: Sequence[Span]) -> set[int]:
     compared case folded, with spaces collapsed. Two kinds of repeat:
 
     * A page counter: one run of digits is the page number plus the same
-      offset on every page, and the rest of the text is the same ("Page 15 of
-      20", "- 15 -", "15/20", or "Page 17" printed on page 15). On
-      ``COUNTER_PAGES`` or more pages, every copy is left out.
+      offset, at most 10 either way (PROVISIONAL: covers and front matter), on
+      every page, and the rest of the text is the same ("Page 15 of 20", "- 15
+      -", "15/20", or "Page 17" printed on page 15). On ``COUNTER_PAGES`` or
+      more pages, every copy is left out.
     * The same text on ``REPEAT_PAGES`` or more pages (a letterhead), or on 2
       or more for a span of kind header or footer. PROVISIONAL (council, C2
       read as "remove the repeats"): the first page's copy is kept, so a GST
       invoice printed as original, duplicate and triplicate keeps one.
 
     So a line that differs per page (a carried amount, an invoice number) is
-    kept. A page-specific number that happens to rise by one per page, like
-    invoice 101 on page 1 and 102 on page 2, reads as a page counter.
+    kept, even one that rises by one per page like invoice 101 on page 1 and
+    102 on page 2 (offset 100). One within 10 of the page number would not be.
 
     Time O(S x R) for S spans with at most R digit runs each; memory O(B x R)
     for the B lines that can be running.
@@ -119,9 +121,10 @@ def running_spans(spans: Sequence[Span]) -> set[int]:
         text = " ".join(span.text.casefold().split())
         _seen(same, (place, text), box.page, index, kind)
         for run in _DIGITS.finditer(text):
-            if len(run[0]) <= _COUNTER_DIGITS:
+            offset = int(run[0]) - box.page if len(run[0]) <= _COUNTER_DIGITS else _COUNTER_OFFSET + 1
+            if abs(offset) <= _COUNTER_OFFSET:
                 template = text[: run.start()] + "#" + text[run.end() :]
-                _seen(counters, (place, template, int(run[0]) - box.page), box.page, index, kind)
+                _seen(counters, (place, template, offset), box.page, index, kind)
     running: set[int] = set()
     for seen in counters.values():
         if len(seen.pages) >= COUNTER_PAGES:
