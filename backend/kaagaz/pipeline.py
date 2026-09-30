@@ -470,8 +470,8 @@ class DocumentProcessor:
         wanted: dict[int, dict[BoxLocation, None]] = {}  # page -> boxes, in order, once each
         for value in values:
             box = value.location
-            if not isinstance(box, BoxLocation) or value.confidence is None:
-                continue  # read directly, not scanned
+            if not isinstance(box, BoxLocation) or (value.confidence is None and value.origin != "ocr"):
+                continue  # read directly, not scanned (PaddleOCR-VL scans have no confidence)
             if box.page in images:
                 wanted.setdefault(box.page, {})[box] = None
         readings: dict[Location, str] = {}
