@@ -20,6 +20,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import UploadRejected
@@ -147,7 +148,13 @@ def main() -> None:
         queue,
         processor,
         max_attempts=MAX_ATTEMPTS,
-        on_exhausted=lambda job: repo.mark_exhausted(job.customer_id, job.document_id),
+        on_exhausted=lambda job: repo.mark_exhausted(
+            job.customer_id, job.document_id, now=datetime.now(UTC), max_attempts=MAX_ATTEMPTS
+        ),
+        # Record each try, as worker_main does, so the last delivery's guard can see it.
+        on_attempt=lambda job, attempt: repo.record_attempt(
+            job.customer_id, job.document_id, attempt, MAX_ATTEMPTS
+        ),
     )
 
     samples = make_samples()
