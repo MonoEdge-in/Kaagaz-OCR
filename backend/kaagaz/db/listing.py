@@ -263,13 +263,26 @@ def reviewer_fix_count(conn: Connection, customer_id: str, document_id: str) -> 
     )
 
 
+def document_facts(conn: Connection, customer_id: str, document_id: str) -> RowMapping | None:
+    """The detail's document card columns (PRD 2 D3): its date and card JSON. Kept out of
+    ``_COLUMNS`` so the list stays small. One query by primary key."""
+    return (
+        conn.execute(
+            text("SELECT document_date, card FROM documents WHERE customer_id = :c AND id = :d"),
+            {"c": customer_id, "d": document_id},
+        )
+        .mappings()
+        .one_or_none()
+    )
+
+
 def list_values(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:
     """Every value of one document, by page, record and field. O(v log v)."""
     return (
         conn.execute(
             text(
                 "SELECT id, document_id, record_key, field, value_text, value_raw, second_reading,"
-                " page_no, region, label, label_reason, confidence"
+                " page_no, region, label, label_reason, confidence, label_page_no, label_region"
                 " FROM extracted_values WHERE customer_id = :c AND document_id = :d"
                 " ORDER BY page_no, record_key, field, id"
             ),

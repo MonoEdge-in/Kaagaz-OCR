@@ -42,14 +42,60 @@ de-duplication.
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
-from kaagaz.extraction.card import CardCounts, ChatModel, ask_card, locate_card, without_fields
+from kaagaz.extraction.card import (
+    CARD_PROMPT_HASH,
+    CardCounts,
+    ChatModel,
+    ask_card,
+    locate_card,
+    without_fields,
+)
 from kaagaz.extraction.invoice import InvoiceExtraction, WindowSettings, read_invoice, rule_values_left
 from kaagaz.extraction.links import link_identifiers
 from kaagaz.extraction.quotes import ReaderText
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.pipeline import DocumentFacts, LinkIdentifier
+
+if TYPE_CHECKING:
+    from kaagaz.settings import Settings
+
+
+@dataclass(frozen=True, slots=True)
+class ModelBudget:
+    """What ``understand`` may spend (ML amendment 5): the card's input and reply, the
+    context window, and the invoice windows (None: no invoice windows are read)."""
+
+    card_max_chars: int  # CARD_MAX_CHARS
+    card_max_tokens: int  # MODEL_CARD_MAX_TOKENS
+    num_ctx: int  # MODEL_NUM_CTX
+    invoice_windows: WindowSettings | None
+
+    @classmethod
+    def from_settings(cls, settings: "Settings") -> "ModelBudget":
+        return cls(
+            settings.card_max_chars,
+            settings.model_card_max_tokens,
+            settings.model_num_ctx,
+            WindowSettings.from_settings(settings),
+        )
+
+
+def model_config(settings: "Settings") -> dict[str, Any]:
+    """The model stage's set-up, kept with every run (ML amendment 10): which card prompt
+    and schema were used (their hash), and the budgets the calls ran with."""
+    return {
+        "card_prompt": CARD_PROMPT_HASH,
+        "model_num_ctx": settings.model_num_ctx,
+        "card_max_chars": settings.card_max_chars,
+        "card_max_tokens": settings.model_card_max_tokens,
+        "extract_window_chars": settings.extract_window_chars,
+        "extract_window_overlap": settings.extract_window_overlap,
+        "extract_max_windows": settings.extract_max_windows,
+        "window_max_tokens": settings.model_window_max_tokens,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +136,7 @@ def understand(
     card_max_chars: int,
     card_max_tokens: int,
     num_ctx: int,
-    run_id: str,
+    run_id: str | None,
     beat: Callable[[int, int], None],
     invoice_windows: WindowSettings | None = None,
 ) -> Understanding:

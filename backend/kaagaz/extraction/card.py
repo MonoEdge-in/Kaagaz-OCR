@@ -356,7 +356,7 @@ def card_input(reader: ReaderText, *, max_chars: int, max_input_tokens: int) -> 
 
 
 def read_card(
-    chat: ChatModel, reader: ReaderText, *, max_chars: int, max_tokens: int, num_ctx: int, run_id: str
+    chat: ChatModel, reader: ReaderText, *, max_chars: int, max_tokens: int, num_ctx: int, run_id: str | None
 ) -> CardResult | None:
     """``ask_card``, then ``locate_card``: one call, then the reply located. None, with no
     call, when not even part of a page fits the budget (council fix 7)."""
@@ -396,7 +396,9 @@ def without_fields(result: CardResult, fields: Collection[str]) -> CardResult:
     return CardResult(replace(result.facts, card=kept), values, result.counts)
 
 
-def locate_card(reply: Mapping[str, Any], reader: ReaderText, *, model: str, run_id: str) -> CardResult:
+def locate_card(
+    reply: Mapping[str, Any], reader: ReaderText, *, model: str, run_id: str | None
+) -> CardResult:
     """The checked reply's items located in the reader text (the module docstring). No call."""
     return _Card(reader).read(reply, model=model, run_id=run_id)
 
@@ -500,7 +502,7 @@ class _Card:
         self._used: set[str] = set()
         self._reserved = self._bad = self._over = self._dropped_words = 0
 
-    def read(self, reply: Mapping[str, Any], *, model: str, run_id: str) -> CardResult:
+    def read(self, reply: Mapping[str, Any], *, model: str, run_id: str | None) -> CardResult:
         parties = self._parties(reply["parties"])
         identifiers = self._identifiers(reply["identifiers"])
         dated = self._date(reply["document_date"])

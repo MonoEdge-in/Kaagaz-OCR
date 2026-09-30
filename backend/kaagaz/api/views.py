@@ -158,7 +158,7 @@ def document_summary(
             progress=row["progress"],
         ),
         "progress": in_progress(row["status"], row["progress"]),
-        "doc_type": row["doc_type"],  # PRD 2 D3: set by the document card (PR 5); null until then
+        "doc_type": row["doc_type"],  # PRD 2 D3: from the document card; null without one
         "languages": list(row["languages"] or []),
         "attempts": int(row["attempts"]),
         "max_attempts": row["max_attempts"],
@@ -235,6 +235,9 @@ def extracted_value(row: RowMapping) -> dict[str, Any]:
         "label": row["label"],
         "label_reason": row["label_reason"],
         "confidence": None if confidence is None else float(confidence),
+        # PRD 2 D3: the value's label spot, which can be on another page; null when it has none.
+        "label_page_no": row["label_page_no"],
+        "label_region": row["label_region"],
     }
 
 
