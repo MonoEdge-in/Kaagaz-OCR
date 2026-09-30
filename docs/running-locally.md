@@ -67,7 +67,9 @@ Open http://localhost:3000.
   memory or more: on a 16 GB laptop, run it without Ollama and raise Docker
   Desktop's WSL2 memory. It is slow on a CPU: 3 to 11 minutes a page on a
   4-core laptop, plus about 5 minutes to load. A worker outside Docker reaches
-  it with `-f docker-compose.ocr-host.yml` added (port 8080 on 127.0.0.1).
+  it with `-f docker-compose.ocr-host.yml` added (port 8080 on 127.0.0.1). Risk:
+  that override gives the ocr container a way out to the internet (its own
+  `ocr_host` network, never `default`), so use it only when you need it.
 * Stop with `docker compose stop` (the worker finishes the job in hand).
   `docker compose down -v` also deletes the data volumes.
 
