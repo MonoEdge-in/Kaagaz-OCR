@@ -5,6 +5,8 @@ read A's card or card values, and B saving a card under A's document id is
 refused and leaves A's card as it was.
 """
 
+import json
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -12,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from tests.db_support import new_customer
+from tests.test_api_support import Api
 from tests.test_extraction_card import line, reply
 from tests.test_pipeline_store_db import FACT_COLUMNS, card_content, links, new_document, rows
 
@@ -72,3 +75,32 @@ def test_b_saving_a_card_under_a_document_id_is_refused_and_a_keeps_its_card(db:
 
     assert (rows(db, a, FACT_COLUMNS, a_doc), rows(db, a, CARD_VALUES, a_doc)) == before
     assert before[0][0]["doc_type"] == "invoice"
+
+
+def test_b_never_sees_a_card_or_summary_through_the_api(db: Database) -> None:
+    """B uses A's document id on the detail and gets 404; neither the detail nor B's list
+    ever carries A's card, summary or type."""
+    api = Api(db)
+    a, b = api.new_signed(), api.new_signed()
+    doc = api.add_document(a.customer_id, name="bill.pdf")
+    api.add_page(a.customer_id, doc)
+    card = {"version": 1, "doc_type": "invoice", "title": "Zenith secret bill", "parties": []}
+    with db.customer(a.customer_id) as conn:
+        conn.execute(
+            text(
+                "UPDATE documents SET doc_type = 'invoice', summary = 'Zenith secret summary.',"
+                " card = CAST(:card AS jsonb) WHERE customer_id = :c AND id = :d"
+            ),
+            {"c": a.customer_id, "d": doc, "card": json.dumps(card)},
+        )
+    assert a.client.get(f"/api/documents/{doc}").json()["card"] == card
+
+    detail = b.client.get(f"/api/documents/{doc}")
+    assert detail.status_code == 404
+    assert detail.json()["error"]["code"] == "not_found"
+    listed = b.client.get("/api/documents")
+    assert listed.status_code == 200
+    for reply_text in (detail.text, listed.text):
+        assert "Zenith" not in reply_text
+        assert doc not in reply_text
+        assert "invoice" not in reply_text

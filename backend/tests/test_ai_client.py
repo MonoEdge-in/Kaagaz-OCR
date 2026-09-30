@@ -24,6 +24,7 @@ from kaagaz.ai.client import (
     schema_problem,
 )
 from kaagaz.settings import CHAT_OVERHEAD_TOKENS, Settings
+from kaagaz.worker_main import worker_model
 from tests.settings_factory import make_settings
 
 SCHEMA: dict[str, Any] = {
@@ -280,6 +281,19 @@ def test_the_worker_chat_timeout_is_used_for_chat_only(ollama: FakeOllama) -> No
     with pytest.raises(ModelUnavailable) as caught:
         client.chat_json(system="s", user="u", schema=SCHEMA)
     assert caught.value.code == "timeout"
+
+
+def test_the_worker_client_uses_model_extract_timeout_seconds_for_chat(ollama: FakeOllama) -> None:
+    """The worker's client (worker_main.worker_model) times its chat calls out after
+    MODEL_EXTRACT_TIMEOUT_SECONDS, not MODEL_TIMEOUT_SECONDS; off, it is None."""
+    ollama.replies.append((200, {"message": {"role": "assistant", "content": "{}"}}, True))
+    settings = _settings(ollama, model_timeout_seconds=30.0, model_extract_timeout_seconds=0.2)
+    client = worker_model(settings)
+    assert client is not None
+    with pytest.raises(ModelUnavailable) as caught:
+        client.chat_json(system="s", user="u", schema=SCHEMA)
+    assert caught.value.code == "timeout"
+    assert worker_model(make_settings(model_enabled=False)) is None
 
 
 def test_embedding_keeps_the_model_timeout_when_a_chat_timeout_is_set(ollama: FakeOllama) -> None:
