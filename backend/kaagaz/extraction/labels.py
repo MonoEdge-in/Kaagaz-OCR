@@ -145,7 +145,7 @@ def label_quoted(
     labelled = []
     for value in values:
         box = value.location
-        if value.record_key == CARD_RECORD or _spot_unsure(value):
+        if value.record_key == CARD_RECORD or spot_unsure(value):
             labelled.append(_needs_review(value, "model_chosen", None))
         elif not isinstance(box, BoxLocation):
             labelled.append(replace(value, label=VERIFIED, label_reason="direct_cell"))
@@ -209,7 +209,7 @@ def _best_line(box: BoxLocation, lines: list[tuple[Span, BoxLocation]]) -> Span 
     return best
 
 
-def _spot_unsure(value: ExtractedValue) -> bool:
+def spot_unsure(value: ExtractedValue) -> bool:
     """Rule 2 of ``label_quoted``: the quote is not one span, is only part of a cell, was
     found only by the loose pass, or fits a later spot too."""
     quote = value.quote

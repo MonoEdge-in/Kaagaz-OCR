@@ -31,8 +31,12 @@ The steps, in order, for one (customer, document):
    scans, when a vision model is set, it reads each value's box again as the
    second reading. The rule values are labelled by ``label_values`` and the
    values the model located by ``label_quoted`` (ML 2), each counting the
-   other's boxes (council fix 2); a card value is never verified. This
-   customer's remembered corrections are applied last, then the link
+   other's boxes (council fix 2); a card value is never verified, and no box is
+   cropped for a card value or an unsure quote. This customer's remembered
+   corrections are applied, then the invoice stage (PRD 2 E5, K1 to K3,
+   ``extraction.invoice.finish_invoice``): the invoice row and its checks, from
+   the E4 values or, with no type or an invoice type, from labelled.py's values
+   (the check's failures put their values in review). Last, the link
    identifiers (D5), only with a card.
 7. Just before saving, the document must still be clean. Everything is saved
    in one transaction that replaces what an earlier run saved, so running the
@@ -94,7 +98,7 @@ from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
 from kaagaz.extraction.labelled import tax_components, values_from_lines
-from kaagaz.extraction.labels import label_quoted, label_values
+from kaagaz.extraction.labels import label_quoted, label_values, spot_unsure
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
 from kaagaz.extraction.parsing import parse_amount, parse_date
 from kaagaz.extraction.quotes import reader_text
@@ -594,8 +598,11 @@ class DocumentProcessor:
             document_date=facts.document_date,
         )
         rule, quoted = understanding.rule_values, understanding.quoted_values
-        # A card value is never verified, so its box is never cropped for the vision model.
-        cropped = rule + [value for value in quoted if value.record_key != CARD_RECORD]
+        # A card value, or a located value whose spot is unsure (a loose, ambiguous or
+        # several-span quote), is never verified, so its box is never cropped (security A8).
+        cropped = rule + [
+            value for value in quoted if value.record_key != CARD_RECORD and not spot_unsure(value)
+        ]
         readings = self._vision_readings(job, cropped, prepared.images, heartbeat, run)
         values = label_values(rule, compared, readings, also_located=quoted)
         values += label_quoted(quoted, compared, readings, also_located=rule)

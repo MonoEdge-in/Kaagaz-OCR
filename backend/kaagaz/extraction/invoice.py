@@ -89,7 +89,11 @@ twice (bug B2).
   second reading; but ``ocr_script`` and ``readers_disagree`` stay the reason,
   being more specific (council 3, PROVISIONAL). A reviewer's remembered fix
   stays verified only when the check passed (council 7).
-* K3: the values a failed check involves become needs review, ``check_failed``.
+* K3: the values a failed check involves become needs review, ``check_failed``. On an
+  invoice the model read, so does every other value of the document record still
+  verified then (PROVISIONAL, final council 2), so it has no verified header value.
+* A model error on a window throws away every window's values and their quote counts
+  (the run counts the card's only), and the row falls back as with the model off.
 
 **Rows (E5, ``invoice_row``).** Typed through parsing.py. An amount is rounded
 to 0.01 first and then must fit numeric(14,2), else it is NULL (security A7);
@@ -386,7 +390,8 @@ def read_invoice(
                 continue
             beat(calls, planned)
             code = f"model_{error.code}"
-            return InvoiceExtraction([], frozenset(), truncated, merge.quotes, calls, merge.over_limit, code)
+            # The windows' values are thrown away, so their quotes are not counted either.
+            return InvoiceExtraction([], frozenset(), truncated, QuoteCounts(), calls, 0, code)
         beat(calls, planned)
         merge.add(window, answer)
     return InvoiceExtraction(
@@ -450,6 +455,16 @@ def finish_invoice(
         other_gstins=gstins,
     )
     final = apply_checks([_settle(value, quoted, labelled, check) for value in values], check)
+    if check.status == FAILED and quoted:
+        # PROVISIONAL (final council 2): a failed check on an invoice the model read leaves
+        # none of its own values verified, labelled.py's left by E4 (CGST, SGST) included.
+        # With the model off, only the values involved go to review (K3).
+        final = [
+            replace(value, label=NEEDS_REVIEW, label_reason="check_failed")
+            if value.record_key == DOCUMENT_RECORD and value.label == VERIFIED
+            else value
+            for value in final
+        ]
     row = invoice_row([value for value in final if (value.record_key, value.field) in keys], check)
     return InvoiceResult(final, row, check)
 

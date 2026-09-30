@@ -49,6 +49,8 @@ the start with its name): `TOTP_ENCRYPTION_KEY`, `LOGIN_MAX_FAILURES`,
 `TRASH_DAYS`, `JOB_MAX_ATTEMPTS`, `OCR_URL`, `OCR_TIMEOUT_SECONDS` and
 `OCR_DPI`, the model budgets `MODEL_NUM_CTX`, `MODEL_CARD_MAX_TOKENS`,
 `MODEL_WINDOW_MAX_TOKENS`, `MODEL_EXTRACT_TIMEOUT_SECONDS` and `CARD_MAX_CHARS`,
+the invoice windows `EXTRACT_WINDOW_CHARS`, `EXTRACT_WINDOW_OVERLAP` and
+`EXTRACT_MAX_WINDOWS`,
 plus the new `MAX_PAGES`, `MAX_IMAGE_PIXELS` and `QUEUE_LEASE_SECONDS` values. Recreate the queue too (`docker compose up -d
 --force-recreate elasticmq`): its failure-bin limit is now 10.
 
