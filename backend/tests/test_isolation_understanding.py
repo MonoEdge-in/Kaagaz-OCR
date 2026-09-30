@@ -15,7 +15,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
-from kaagaz.db.runs import PgRuns, is_latest_run
+from kaagaz.db.runs import PgRuns, is_run_open
 from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import DocumentContent, DocumentFacts, FinishedRun, LinkIdentifier, Progress, Superseded
 from tests.db_support import count_rows, new_customer, violation
@@ -175,7 +175,7 @@ def test_b_cannot_start_finish_fence_or_show_progress_on_a_document(db: Database
     PgDocuments(db).set_progress(b, doc, Progress("reading", 1, 2))
     PgDocuments(db).mark_ready(b, doc, 2, run=FinishedRun(run, totals(), T))
     with db.customer(b) as conn:
-        assert not is_latest_run(conn, b, doc, run)
+        assert not is_run_open(conn, b, doc, run)
     with pytest.raises(Superseded):
         PgPipelineStore(db).save(content(b, doc), run_id=run)
 

@@ -52,14 +52,14 @@ def runs(db: Database, customer_id: str, document_id: str) -> list[tuple[Any, ..
     return [tuple(row.values()) for row in rows(db, customer_id, RUNS, document_id)]
 
 
-def test_start_run_closes_the_earlier_running_run_as_interrupted(db: Database) -> None:
+def test_start_run_supersedes_the_earlier_running_run(db: Database) -> None:
     customer, _ = new_customer(db)
     doc = new_document(db, customer)
     first = PgRuns(db).start(customer, doc, now=T0)
     second = PgRuns(db).start(customer, doc, now=T1)
 
     assert runs(db, customer, doc) == [
-        (first, "failed", "interrupted", T0, T1),
+        (first, "superseded", None, T0, T1),
         (second, "running", None, T1, None),
     ]
 
@@ -73,7 +73,7 @@ def test_start_run_closes_a_stale_run_that_started_after_now(db: Database) -> No
 
     assert runs(db, customer, doc) == [
         (now, "running", None, T0, None),
-        (ahead, "failed", "interrupted", T1, T1),
+        (ahead, "superseded", None, T1, T1),
     ]
 
 
@@ -127,7 +127,7 @@ _CODE = re.compile(
 def emitted_codes() -> set[str]:
     """Every failure code in the source, as plan 3.9 turns it into a run's error_code:
     reader, job and scanner codes as they are, ``<backend>_unavailable``, and ``model_<code>``."""
-    codes = set(REJECTION_CODES) | {"interrupted", "retries_exhausted"}
+    codes = set(REJECTION_CODES) | {"retries_exhausted"}
     for path in Path(kaagaz.__file__).parent.rglob("*.py"):
         for plain, assigned, backend in _CODE.findall(path.read_text(encoding="utf-8")):
             codes |= {plain, assigned} if plain or assigned else {f"{backend}_unavailable"}
@@ -217,7 +217,25 @@ def test_a_save_or_ready_from_a_superseded_run_changes_nothing(db: Database) -> 
     store.save(content(customer, doc), run_id=new)
     documents.mark_ready(customer, doc, 2, run=FinishedRun(new, totals(), T2))
     assert rows(db, customer, "SELECT status FROM documents WHERE id = :d", doc) == [{"status": "ready"}]
-    assert runs(db, customer, doc) == [(old, "failed", "interrupted", T0, T1), (new, "ready", None, T1, T2)]
+    assert runs(db, customer, doc) == [(old, "superseded", None, T0, T1), (new, "ready", None, T1, T2)]
+
+
+def test_the_new_run_wins_the_fence_even_when_the_stale_run_started_later(db: Database) -> None:
+    """The stale delivery's worker clock ran ahead, so its run "started" after the new
+    one. The fence asks whether a run is still open, not which started last."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    stale = PgRuns(db).start(customer, doc, now=T1)
+    new = PgRuns(db).start(customer, doc, now=T0)
+    store, documents = PgPipelineStore(db), PgDocuments(db)
+
+    with pytest.raises(Superseded):
+        store.save(content(customer, doc), run_id=stale)
+    store.save(content(customer, doc), run_id=new)
+    documents.mark_ready(customer, doc, 2, run=FinishedRun(new, totals(), T2))
+
+    assert rows(db, customer, "SELECT status FROM documents WHERE id = :d", doc) == [{"status": "ready"}]
+    assert runs(db, customer, doc) == [(new, "ready", None, T0, T2), (stale, "superseded", None, T1, T1)]
 
 
 def test_a_save_waiting_on_the_family_lock_is_fenced_by_a_run_started_meanwhile(db: Database) -> None:
