@@ -72,6 +72,16 @@ _FINISH = (
     " WHERE customer_id = :c AND id = :id AND status = 'running'"
 )
 
+# The column limits of the run's text values (0004). finish_run cuts each to its
+# limit, so a long engine version can never make a finish fail.
+_TEXT_LIMITS = {
+    "error_code": 64,
+    "ocr_engine": 300,
+    "model_chat": 300,
+    "model_vision": 300,
+    "model_embed": 300,
+}
+
 _OPEN = (
     "SELECT EXISTS (SELECT 1 FROM processing_runs WHERE customer_id = :c AND document_id = :d"
     " AND id = :r AND status = 'running')"
@@ -93,9 +103,13 @@ def start_run(conn: Connection, customer_id: str, document_id: str, *, now: date
 
 def finish_run(conn: Connection, customer_id: str, run: "FinishedRun") -> None:
     """Write the run's outcome and totals, and its finish time, while it is still
-    running. A superseded or finished run, a run of another customer, or no run,
-    changes nothing. One statement by primary key: O(log R)."""
+    running. Text values are cut to their column limits. A superseded or finished
+    run, a run of another customer, or no run, changes nothing. One statement by
+    primary key: O(log R)."""
     totals: dict[str, Any] = {item.name: getattr(run.totals, item.name) for item in fields(run.totals)}
+    for name, limit in _TEXT_LIMITS.items():
+        if totals[name] is not None:
+            totals[name] = totals[name][:limit]
     totals["config"] = json.dumps(dict(run.totals.config))
     conn.execute(text(_FINISH), {**totals, "c": customer_id, "id": run.run_id, "now": run.now})
 
