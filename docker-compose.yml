@@ -4,6 +4,7 @@
 #   cp .env.example .env        (then set SESSION_SECRET and TOTP_ENCRYPTION_KEY)
 #   docker compose up --build
 #   docker compose --profile ollama up --build     (also runs Ollama in Docker)
+#   docker compose --profile paddle up --build     (also runs PaddleOCR-VL: needs 10 GB+ memory)
 #
 # Only the stand-ins, to run the API and worker on the laptop itself:
 #   docker compose up postgres seaweedfs elasticmq clamav
@@ -29,6 +30,7 @@ x-backend: &backend
     CLAMAV_PORT: "3310"
     # Ollama on the laptop by default; http://ollama:11434 with the profile.
     MODEL_BASE_URL: ${DOCKER_MODEL_BASE_URL:-http://host.docker.internal:11434}
+    OCR_URL: http://ocr:8080
   # Docker Desktop knows host.docker.internal; this adds it on Linux too.
   extra_hosts:
     - "host.docker.internal:host-gateway"
@@ -167,6 +169,9 @@ services:
     # SIGTERM lets the job in hand finish first. After this, Docker kills it
     # and the job is handed out again when its lease runs out.
     stop_grace_period: 60s
+    # ocr_net reaches the ocr service. No depends_on on ocr: without the paddle
+    # profile it does not exist, and while it loads a scan waits and is retried.
+    networks: [default, ocr_net]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -200,6 +205,42 @@ services:
       - "11434:11434"
     volumes:
       - ollama-data:/root/.ollama
+
+  # The scan reader for OCR_ENGINE=paddleocr_vl: PaddleOCR-VL behind our own
+  # /read contract (PRD 2 P1; backend/Dockerfile.ocr). Only with --profile
+  # paddle. It gets no .env, so no database, storage or queue settings reach
+  # it, and it sits on an internal network with no way out and no port on the
+  # laptop (docker-compose.ocr-host.yml adds 127.0.0.1:8080 when wanted).
+  ocr:
+    image: kaagaz-ocr:local
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.ocr
+    profiles: ["paddle"]
+    networks: [ocr_net]
+    environment:
+      HOME: /tmp
+      PADDLE_PDX_CACHE_HOME: /tmp/paddlex
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # PROVISIONAL (AR3): loading peaked at 8.9 GB on the build laptop, then 4.6 GB.
+    mem_limit: 12g
+    pids_limit: 256
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 10m # loading took about 5 minutes on a 4-core laptop
+
+networks:
+  ocr_net:
+    internal: true
 
 volumes:
   postgres-data:

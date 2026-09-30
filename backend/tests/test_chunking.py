@@ -1,13 +1,13 @@
 import unittest
 
-from kaagaz.chunking.piece import Piece
+from kaagaz.chunking.piece import NEEDS_REVIEW, VERIFIED, Piece, piece_label
 from kaagaz.chunking.rows import column_letter, pieces_from_rows
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 
 
 def span(text: str, sheet: int, row: int, column: int, confidence: float | None = None) -> Span:
-    return Span(text, text, CellLocation(sheet, row, column), confidence)
+    return Span(text, text, CellLocation(sheet, row, column), confidence, origin="cell")
 
 
 def cells(piece: Piece) -> list[CellLocation]:
@@ -20,6 +20,21 @@ def cells(piece: Piece) -> list[CellLocation]:
 def sheet_and_row(piece: Piece) -> tuple[int, int]:
     first = cells(piece)[0]
     return first.sheet, first.row
+
+
+class PieceLabelTest(unittest.TestCase):
+    def test_an_ocr_span_is_never_a_direct_read_even_with_no_confidence(self) -> None:
+        box = BoxLocation(1, 0.1, 0.1, 0.5, 0.2)
+        self.assertEqual(piece_label([Span("x", "x", box, origin="ocr")]), NEEDS_REVIEW)  # PaddleOCR-VL
+        self.assertEqual(piece_label([Span("x", "x", box, origin="text_layer")]), VERIFIED)
+        self.assertEqual(piece_label([Span("x", "x", CellLocation(1, 1, 1), origin="cell")]), VERIFIED)
+        self.assertEqual(piece_label([Span("x", "x", box, 0.99, origin="ocr")]), NEEDS_REVIEW)  # RapidOCR
+
+    def test_a_span_that_does_not_say_how_it_was_read_is_never_a_direct_read(self) -> None:
+        # Fail closed (council): only origin "cell" or "text_layer" counts as a direct read.
+        for location in (BoxLocation(1, 0.1, 0.1, 0.5, 0.2), CellLocation(1, 1, 1)):
+            with self.subTest(location=location):
+                self.assertEqual(piece_label([Span("x", "x", location)]), NEEDS_REVIEW)
 
 
 class ColumnLetterTest(unittest.TestCase):

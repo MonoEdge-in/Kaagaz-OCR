@@ -79,7 +79,7 @@ def _page_spans(page: Any, number: int) -> list[Span]:
         words = [frame.word(*run) for run in _runs(textpage)]
     finally:
         textpage.close()
-    return line_spans(words, number, PageFrame(0.0, 0.0, frame.width, frame.height))
+    return line_spans(words, number, PageFrame(0.0, 0.0, frame.width, frame.height), origin="text_layer")
 
 
 # A run of characters between spaces: (text, left, bottom, right, top) in PDF units.

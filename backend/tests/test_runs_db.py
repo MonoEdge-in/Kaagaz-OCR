@@ -27,6 +27,7 @@ from kaagaz.pipeline import FinishedRun, Progress, RunTotals, Superseded
 from kaagaz.scanning.gate import REJECTION_CODES
 from tests.db_support import insert_document, new_customer, violation, wait_until_blocked
 from tests.test_api_review import _named_database
+from tests.test_ocr_server import VERSION as OCR_VERSION
 from tests.test_pipeline_store_db import EMPTY, content, counts, new_document, new_session, rows
 
 pytestmark = pytest.mark.db
@@ -155,6 +156,18 @@ def test_finish_run_keeps_a_long_engine_name_and_cuts_a_longer_one(db: Database)
     stored = {row["id"]: row for row in rows(db, customer, sql + " WHERE document_id = :d", doc)}
     assert stored[kept]["ocr_engine"] == "p" * 290
     assert {name: stored[cut][name] for name in long} == {name: value[:300] for name, value in long.items()}
+
+
+def test_finish_run_keeps_the_real_paddleocr_vl_engine_name_untouched(db: Database) -> None:
+    """The name a PaddleOCR-VL run records: the engine, a space, and its reply's version."""
+    engine = "paddleocr-vl " + OCR_VERSION
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    run = PgRuns(db).start(customer, doc, now=T0)
+    PgRuns(db).finish(customer, FinishedRun(run, totals(ocr_engine=engine), T1))
+
+    (stored,) = rows(db, customer, "SELECT ocr_engine FROM processing_runs WHERE document_id = :d", doc)
+    assert stored["ocr_engine"] == engine
 
 
 _CODE = re.compile(

@@ -18,6 +18,7 @@ placeholder**, never a real secret.
 | `elasticmq` | 9324 | job queue `kaagaz-jobs` and its failure bin `kaagaz-jobs-failed`, SQS API | Amazon SQS |
 | `clamav` | 3310 | clamd virus scanner | ClamAV (PROVISIONAL) |
 | `ollama` | 11434 | local AI, optional (`--profile ollama`) | PROVISIONAL |
+| `ocr` | none | PaddleOCR-VL scan reader, optional (`--profile paddle`) | PROVISIONAL |
 
 ## 1. Settings
 
@@ -40,8 +41,9 @@ Ollama, pull `MODEL_CHAT` and `MODEL_EMBED` first, then set it to `true`.
 An older `.env` needs these added from `.env.example` (a missing setting stops
 the start with its name): `TOTP_ENCRYPTION_KEY`, `LOGIN_MAX_FAILURES`,
 `LOGIN_LOCK_MINUTES`, `ADMIN_SESSION_MINUTES`, `MAX_IMAGE_MB`, `MAX_SHEET_MB`,
-`TRASH_DAYS` and `JOB_MAX_ATTEMPTS`, plus the new `MAX_PAGES` and
-`MAX_IMAGE_PIXELS` values. Recreate the queue too (`docker compose up -d
+`TRASH_DAYS`, `JOB_MAX_ATTEMPTS`, `OCR_URL`, `OCR_TIMEOUT_SECONDS` and
+`OCR_DPI`, plus the new `MAX_PAGES`, `MAX_IMAGE_PIXELS` and
+`QUEUE_LEASE_SECONDS` values. Recreate the queue too (`docker compose up -d
 --force-recreate elasticmq`): its failure-bin limit is now 10.
 
 ## 2a. Everything in Docker
@@ -60,6 +62,14 @@ Open http://localhost:3000.
   To run Ollama in Docker instead, set `DOCKER_MODEL_BASE_URL=http://ollama:11434`
   in `.env` and run `docker compose --profile ollama up --build`, then pull the
   models once: `docker compose exec ollama ollama pull <model>`.
+* PaddleOCR-VL reads scans with `OCR_ENGINE=paddleocr_vl` and
+  `docker compose --profile paddle up --build`. Its container needs 10 GB of
+  memory or more: on a 16 GB laptop, run it without Ollama and raise Docker
+  Desktop's WSL2 memory. It is slow on a CPU: 3 to 11 minutes a page on a
+  4-core laptop, plus about 5 minutes to load. A worker outside Docker reaches
+  it with `-f docker-compose.ocr-host.yml` added (port 8080 on 127.0.0.1). Risk:
+  that override gives the ocr container a way out to the internet (its own
+  `ocr_host` network, never `default`), so use it only when you need it.
 * Stop with `docker compose stop` (the worker finishes the job in hand).
   `docker compose down -v` also deletes the data volumes.
 

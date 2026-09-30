@@ -18,10 +18,38 @@ As JSON (the ``regions`` and ``region`` columns, and the API), a location is:
 
 * ``{"kind": "cell", "page": sheet, "row": r, "column": c}``
 * ``{"kind": "box", "page": p, "box": [x0, y0, x1, y1]}``
+
+A span may also say what kind of block it is (``BLOCK_KINDS``, from a layout
+engine such as PaddleOCR-VL), how it was read (``ORIGINS``), and, for a table
+cell, its table, row and column from 0 (PRD 2 P4). All of them are optional.
+PROVISIONAL: P4 names ``table_id``, ``row`` and ``col``; ``header`` is added
+because the OCR contract (P2) already sends it and table pieces need it.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any
+
+BLOCK_KINDS = frozenset(
+    {
+        "title",
+        "heading",
+        "paragraph",
+        "list_item",
+        "table_cell",
+        "header",
+        "footer",
+        "stamp",
+        "signature",
+        "image",
+        "formula",
+        "other",
+    }
+)
+ORIGINS = frozenset({"cell", "text_layer", "ocr"})
+# Direct reads: exactly what the file holds. A span with no origin is not one (fail closed).
+DIRECT_ORIGINS = frozenset({"cell", "text_layer"})
+TABLE_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")  # a table's id on its page, such as "t1"
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -67,6 +95,12 @@ class Span:
     # None for a direct read (a cell, a PDF text layer). A number from 0 to 1 for a
     # reading an engine was unsure about (a scan), so it can be labelled needs review.
     confidence: float | None = None
+    kind: str | None = None  # one of BLOCK_KINDS, or None when the reader gives no layout
+    origin: str | None = None  # one of ORIGINS: a cell, a PDF text layer, or OCR
+    table_id: str | None = None  # the table fields: all set on a table cell, else all None
+    row: int | None = None
+    col: int | None = None
+    header: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)

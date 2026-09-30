@@ -42,7 +42,8 @@ def webp_size(data: bytes) -> tuple[int, int]:
 
 
 def line(text: str, top: float, *, confidence: float | None = None, page: int = 1) -> Span:
-    return Span(text, text, BoxLocation(page, 0.1, top, 0.9, top + 0.02), confidence)
+    origin = "text_layer" if confidence is None else "ocr"  # as the readers set it
+    return Span(text, text, BoxLocation(page, 0.1, top, 0.9, top + 0.02), confidence, origin=origin)
 
 
 INVOICE = [
@@ -248,6 +249,47 @@ class ScanTest(unittest.TestCase):
         (value,) = system.store.values_for(CUSTOMER, doc)
         self.assertEqual(value.second_reading, "Sharma Traders ABCDE1234F")
         self.assertEqual(value.label_reason, "readers_disagree")
+
+
+class PaddleOcrVlScanTest(unittest.TestCase):
+    """PaddleOCR-VL gives no confidence, so its spans are known as a scan by origin "ocr"."""
+
+    def test_a_paddle_piece_needs_review_and_its_value_gets_a_vision_reading(self) -> None:
+        typed = BoxLocation(1, 0.1, 0.1, 0.9, 0.12)
+        spans = [
+            Span(
+                "Total: 1,180.00",
+                "Total: 1,180.00",
+                BoxLocation(1, 0.1, 0.4, 0.9, 0.42),
+                None,
+                "paragraph",
+                "ocr",
+            ),
+            Span("Invoice No: INV-17", "Invoice No: INV-17", typed, origin="text_layer"),
+        ]
+        vision = FakeVision("Total: 1,180.00")
+        system = build(socket=PresetSocket({sniff.PDF: spans}), preparer=scan_preparer(), vision=vision)
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
+        system.worker.run_once()
+
+        pieces = system.store.for_document(CUSTOMER, doc)
+        self.assertEqual({p.label for p in pieces}, {"needs_review"})  # the scanned line is in every piece
+        values = {v.field: v for v in system.store.values_for(CUSTOMER, doc)}
+        total = values["total_amount"]
+        self.assertEqual((total.second_reading, total.label_reason), ("1,180.00", "readers_agree"))
+        self.assertEqual(len(vision.pictures), 1)  # the text-layer line is a direct read: no crop
+        self.assertEqual(values["invoice_number"].label_reason, "single_reader")
+
+    def test_a_value_that_does_not_say_how_it_was_read_gets_a_vision_reading(self) -> None:
+        # Fail closed (council): no origin and no confidence is not taken as a direct read.
+        spans = [Span("Total: 1,180.00", "Total: 1,180.00", BoxLocation(1, 0.1, 0.4, 0.9, 0.42))]
+        vision = FakeVision("Total: 1,180.00")
+        system = build(socket=PresetSocket({sniff.PDF: spans}), preparer=scan_preparer(), vision=vision)
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
+        system.worker.run_once()
+
+        self.assertEqual(len(vision.pictures), 1)
+        self.assertEqual({p.label for p in system.store.for_document(CUSTOMER, doc)}, {"needs_review"})
 
 
 def checkerboard(width: int, height: int) -> Image.Image:

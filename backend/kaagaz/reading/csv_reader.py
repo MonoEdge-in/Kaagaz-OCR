@@ -66,6 +66,7 @@ class CsvReader:
                             text=cleaned,
                             raw=raw,
                             location=CellLocation(sheet=1, row=row_number, column=column_number),
+                            origin="cell",
                         )
         except csv.Error:
             malformed = True

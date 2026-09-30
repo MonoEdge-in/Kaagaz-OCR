@@ -90,6 +90,7 @@ def values_from_lines(spans: Iterable[Span]) -> list[ExtractedValue]:
                     value_raw=value,
                     location=box,
                     confidence=span.confidence,
+                    origin=span.origin,
                 )
             )
     return values

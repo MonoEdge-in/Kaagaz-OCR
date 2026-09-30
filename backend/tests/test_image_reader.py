@@ -1,8 +1,10 @@
 import io
 import unittest
+from unittest import mock
 
 from PIL import Image
 
+from kaagaz.reading import image_reader
 from kaagaz.reading.image_reader import ImageReader
 from kaagaz.reading.ocr import OcrLine
 from kaagaz.reading.spans import BoxLocation, ReadError, Span
@@ -33,7 +35,7 @@ def read(
     data: bytes, ocr: FakeOcr | None = None, *, max_pages: int = 10, max_image_pixels: int = 1_000_000
 ) -> list[Span]:
     engine = ocr if ocr is not None else FakeOcr()
-    return ImageReader(engine, max_pages=max_pages, max_image_pixels=max_image_pixels).read(data)
+    return ImageReader(engine, max_pages=max_pages, max_image_pixels=max_image_pixels, ocr_dpi=300).read(data)
 
 
 def refused_with(test: unittest.TestCase, data: bytes, code: str, **kwargs: int) -> None:
@@ -77,7 +79,7 @@ class ImageReaderTest(unittest.TestCase):
         frames = [Image.new("RGB", (30 + i, 20), "white") for i in range(3)]
         ocr = FakeOcr([OcrLine("x", 0, 0, 10, 10, 0.5)])
         widths_read_at_each_call: list[list[int]] = []
-        reader = ImageReader(ocr, max_pages=10, max_image_pixels=1_000_000)
+        reader = ImageReader(ocr, max_pages=10, max_image_pixels=1_000_000, ocr_dpi=300)
 
         reader.read(
             encode(frames[0], "TIFF", save_all=True, append_images=frames[1:]),
@@ -98,13 +100,38 @@ class ImageReaderTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "no_text")
 
     def test_name_and_version_are_the_engines(self) -> None:
-        reader = ImageReader(FakeOcr(), max_pages=1, max_image_pixels=1)
+        ocr = FakeOcr()
+        reader = ImageReader(ocr, max_pages=1, max_image_pixels=1, ocr_dpi=300)
         self.assertEqual((reader.name, reader.version), ("fake-ocr", "3"))
+        ocr.version = "4"  # PaddleOCR-VL's version comes from its reply, so it is read late
+        self.assertEqual(reader.version, "4")
 
     def test_limits_must_be_positive(self) -> None:
-        for max_pages, max_image_pixels in ((0, 1), (1, 0)):
+        for max_pages, max_image_pixels, ocr_dpi in ((0, 1, 1), (1, 0, 1), (1, 1, 0)):
             with self.subTest(max_pages=max_pages), self.assertRaises(ValueError):
-                ImageReader(FakeOcr(), max_pages=max_pages, max_image_pixels=max_image_pixels)
+                ImageReader(
+                    FakeOcr(), max_pages=max_pages, max_image_pixels=max_image_pixels, ocr_dpi=ocr_dpi
+                )
+
+    def test_a_photo_above_ocr_dpi_is_shrunk_for_ocr_and_never_enlarged(self) -> None:
+        # OCR_DPI 10 allows a short side of 83 px: 10 x 8.27 in, A4's short side (R5).
+        for size, seen in (((400, 200), (166, 83)), ((200, 400), (83, 166)), ((100, 50), (100, 50))):
+            ocr = FakeOcr()
+            reader = ImageReader(ocr, max_pages=1, max_image_pixels=1_000_000, ocr_dpi=10)
+            with self.subTest(size=size):
+                (span,) = reader.read(encode(Image.new("RGB", size, "white"), "PNG"))
+                self.assertEqual([image.size for image in ocr.seen], [seen])
+                self.assertEqual(span.origin, "ocr")
+
+    def test_a_photo_over_the_ocr_pixel_budget_is_shrunk_to_fit_it(self) -> None:
+        # The budget keeps the PNG under the ocr server's body cap; 5000 here, 21M in the product.
+        ocr = FakeOcr()
+        with mock.patch.object(image_reader, "MAX_OCR_PIXELS", 5000):
+            reader = ImageReader(ocr, max_pages=1, max_image_pixels=1_000_000, ocr_dpi=300)
+            reader.read(encode(Image.new("RGB", (400, 100), "white"), "PNG"))
+        ((width, height),) = [image.size for image in ocr.seen]
+        self.assertLessEqual(width * height, 5000)
+        self.assertEqual((width, height), (141, 35))  # 400 x 100 scaled by sqrt(5000 / 40000), rounded down
 
 
 class RefusalsTest(unittest.TestCase):

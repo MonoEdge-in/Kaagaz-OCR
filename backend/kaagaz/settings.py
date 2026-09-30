@@ -9,9 +9,19 @@ guess. Tests build ``Settings`` directly (``tests/settings_factory.py``).
 PROVISIONAL: every value marked so in ``.env.example`` waits for Vrushit.
 """
 
+import math
 import os
+import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
+
+# AR1: seconds to spare between one OCR request (the longest step without a
+# heartbeat) and the job's lease, or a slow page outlives the lease and a second
+# worker starts the same document.
+_OCR_LEASE_MARGIN_SECONDS = 120
+# The Host values the ocr server accepts (ALLOWED_HOSTS in kaagaz/ocr_server/app.py,
+# which must never import this module; a test keeps the two the same).
+OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
 
 
 class SettingsError(Exception):
@@ -65,8 +75,13 @@ class Settings:
     page_image_dpi: int
     max_image_pixels: int
 
-    # Scan reader engine: "rapidocr" or "none" (scans are marked needs_reader).
+    # Scan reader engine: "paddleocr_vl" (the ocr container at ocr_url), "rapidocr",
+    # or "none" (scans are marked needs_reader). OCR pages are drawn at ocr_dpi in
+    # memory, never stored; the stored page picture stays at page_image_dpi.
     ocr_engine: str
+    ocr_url: str
+    ocr_timeout_seconds: float
+    ocr_dpi: int
 
     # Local AI through Ollama's HTTP API. model_enabled=false runs everything
     # without AI: search without meaning vectors, answers quote the evidence.
@@ -109,6 +124,21 @@ class Settings:
         totp_encryption_key = env.secret("TOTP_ENCRYPTION_KEY")
         if totp_encryption_key == session_secret:
             raise SettingsError("TOTP_ENCRYPTION_KEY must differ from SESSION_SECRET")
+        queue_lease_seconds = env.integer("QUEUE_LEASE_SECONDS")
+        ocr_timeout_seconds = env.number("OCR_TIMEOUT_SECONDS")
+        if not (math.isfinite(ocr_timeout_seconds) and ocr_timeout_seconds > 0):
+            raise SettingsError("OCR_TIMEOUT_SECONDS must be a number above 0")
+        if ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
+            raise SettingsError("OCR_TIMEOUT_SECONDS + 120 must not be more than QUEUE_LEASE_SECONDS")
+        ocr_engine = env.choice("OCR_ENGINE", {"paddleocr_vl", "rapidocr", "none"})
+        ocr_url = env.url("OCR_URL")
+        if (
+            ocr_engine == "paddleocr_vl"
+            and urllib.parse.urlsplit(ocr_url).netloc.lower() not in OCR_SERVER_HOSTS
+        ):
+            raise SettingsError(
+                "OCR_URL must name ocr:8080, localhost:8080 or 127.0.0.1:8080 (the ocr server's hosts)"
+            )
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -120,7 +150,7 @@ class Settings:
             queue_endpoint_url=env.optional("QUEUE_ENDPOINT_URL"),
             queue_url=env.text("QUEUE_URL"),
             queue_region=env.text("QUEUE_REGION"),
-            queue_lease_seconds=env.integer("QUEUE_LEASE_SECONDS"),
+            queue_lease_seconds=queue_lease_seconds,
             queue_wait_seconds=env.integer("QUEUE_WAIT_SECONDS"),
             job_max_attempts=env.positive("JOB_MAX_ATTEMPTS"),
             scanner=env.choice("SCANNER", {"clamav", "eicar_dev"}),
@@ -140,7 +170,10 @@ class Settings:
             max_pages=env.integer("MAX_PAGES"),
             page_image_dpi=env.integer("PAGE_IMAGE_DPI"),
             max_image_pixels=env.integer("MAX_IMAGE_PIXELS"),
-            ocr_engine=env.choice("OCR_ENGINE", {"rapidocr", "none"}),
+            ocr_engine=ocr_engine,
+            ocr_url=ocr_url,
+            ocr_timeout_seconds=ocr_timeout_seconds,
+            ocr_dpi=env.positive("OCR_DPI"),
             model_enabled=env.boolean("MODEL_ENABLED"),
             model_base_url=env.text("MODEL_BASE_URL"),
             model_chat=env.text("MODEL_CHAT"),
@@ -176,6 +209,12 @@ class _Env:
         value = self.optional(name)
         if value is None:
             raise SettingsError(f"{name} is not set")
+        return value
+
+    def url(self, name: str) -> str:
+        value = self.text(name)
+        if urllib.parse.urlsplit(value).scheme not in {"http", "https"}:
+            raise SettingsError(f"{name} must be an http or https URL")
         return value
 
     def secret(self, name: str) -> str:

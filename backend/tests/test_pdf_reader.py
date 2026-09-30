@@ -135,6 +135,11 @@ class PagesWithoutTextTest(unittest.TestCase):
         spans = read(make_pdf([Page(), Page(texts=[Text(72, 700, "typed")])]), ocr)
         self.assertEqual([(s.text, box_of(s).page) for s in spans], [("scan", 1), ("typed", 2)])
 
+    def test_text_layer_and_scanned_spans_say_how_they_were_read(self) -> None:
+        ocr = FakeOcr([OcrLine("scan", 10, 10, 100, 30, 0.9)])
+        spans = read(make_pdf([Page(texts=[Text(72, 700, "typed")]), Page()]), ocr)
+        self.assertEqual([(s.text, s.origin) for s in spans], [("typed", "text_layer"), ("scan", "ocr")])
+
     def test_with_ocr_and_still_no_text_it_is_unreadable(self) -> None:
         with self.assertRaises(ReadError) as ctx:
             read(make_pdf([Page()]), FakeOcr([]))
@@ -157,7 +162,21 @@ class PagesWithoutTextTest(unittest.TestCase):
         with self.assertRaises(ReadError) as ctx:
             read(make_pdf([Page()]), ocr, max_image_pixels=pixels - 1)
         self.assertEqual(ctx.exception.code, "image_too_large")
-        self.assertEqual(ocr.seen, [])
+        self.assertEqual(ocr.seen, [])  # 72 dpi is the lowest it tries
+
+    def test_a_page_too_big_at_ocr_dpi_is_drawn_at_the_highest_dpi_that_fits(self) -> None:
+        # A1 is 1684 x 2384 points: 69.7M pixels at 300 dpi, over MAX_IMAGE_PIXELS (40M) and the
+        # OCR budget (21M). 164 dpi is the highest that fits: 3836 x 5431 = 20.8M (165 gives 21.09M).
+        ocr = FakeOcr([OcrLine("scan", 10, 10, 100, 30, 0.9)])
+        reader = PdfReader(ocr, max_pages=1, dpi=300, max_image_pixels=40_000_000)
+
+        reader.read(make_pdf([Page(width=1684, height=2384)]))
+
+        ((width, height, _),) = ocr.seen
+        self.assertTrue(abs(width - 3836) <= 1 and abs(height - 5431) <= 1)  # pdfium may round a pixel up
+        self.assertEqual(reader.version, f"{pdfplumber.__version__}+fake-ocr-7;ocr_dpi=164")  # recorded
+        reader.read(make_pdf([Page()]))  # a letter page fits at 300 dpi: nothing lowered this time
+        self.assertEqual(reader.version, f"{pdfplumber.__version__}+fake-ocr-7")
 
 
 class RefusalsTest(unittest.TestCase):
@@ -189,6 +208,12 @@ class NameTest(unittest.TestCase):
         self.assertEqual((without.name, with_ocr.name), ("pdfplumber", "pdfplumber"))
         self.assertEqual(without.version, pdfplumber.__version__)
         self.assertEqual(with_ocr.version, f"{pdfplumber.__version__}+fake-ocr-7")
+
+    def test_the_version_names_the_engine_as_it_is_after_reading(self) -> None:
+        ocr = FakeOcr()
+        reader = PdfReader(ocr, max_pages=1, dpi=72, max_image_pixels=1)
+        ocr.version = "8"  # PaddleOCR-VL's version comes from its reply
+        self.assertEqual(reader.version, f"{pdfplumber.__version__}+fake-ocr-8")
 
 
 if __name__ == "__main__":

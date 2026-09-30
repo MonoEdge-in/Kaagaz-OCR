@@ -18,6 +18,7 @@ The rule (PROVISIONAL, #3):
   page, clamped to 0..1. A span with nothing left inside the page is dropped:
   it cannot be pointed at on the page picture (CLAUDE.md never-do 5).
 * A span's confidence is the lowest of its words' (None if none has one).
+* Every span carries the ``origin`` its reader gives: how it was read.
 
 Time is O(n log n) for n words (one sort); memory is O(n).
 """
@@ -52,13 +53,13 @@ class PageFrame:
     height: float
 
 
-def line_spans(words: list[WordBox], page_no: int, frame: PageFrame) -> list[Span]:
+def line_spans(words: list[WordBox], page_no: int, frame: PageFrame, *, origin: str) -> list[Span]:
     if frame.width <= 0 or frame.height <= 0:
         return []
     spans: list[Span] = []
     for line in _lines(words):
         for group in _split_columns(line):
-            span = _span(group, page_no, frame)
+            span = _span(group, page_no, frame, origin)
             if span is not None:
                 spans.append(span)
     return spans
@@ -101,7 +102,7 @@ def _split_columns(line: list[WordBox]) -> list[list[WordBox]]:
     return groups
 
 
-def _span(group: list[WordBox], page_no: int, frame: PageFrame) -> Span | None:
+def _span(group: list[WordBox], page_no: int, frame: PageFrame, origin: str) -> Span | None:
     raw = " ".join(word.text for word in group)
     text = " ".join(raw.split())
     box = BoxLocation(
@@ -114,7 +115,8 @@ def _span(group: list[WordBox], page_no: int, frame: PageFrame) -> Span | None:
     if not text or not box.is_valid():
         return None
     confidences = [w.confidence for w in group if w.confidence is not None]
-    return Span(text=text, raw=raw, location=box, confidence=min(confidences) if confidences else None)
+    confidence = min(confidences) if confidences else None
+    return Span(text=text, raw=raw, location=box, confidence=confidence, origin=origin)
 
 
 def _fraction(value: float, start: float, size: float) -> float:

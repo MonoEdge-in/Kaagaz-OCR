@@ -6,7 +6,8 @@ from importlib import metadata
 
 from PIL import Image, ImageDraw, ImageFont
 
-from kaagaz.reading.ocr import OcrLine, RapidOcrEngine, build_ocr_engine, ocr_spans
+from kaagaz.reading import ocr
+from kaagaz.reading.ocr import OcrLine, OcrTable, RapidOcrEngine, build_ocr_engine, ocr_spans
 from kaagaz.reading.spans import BoxLocation, Span
 from tests.settings_factory import make_settings
 
@@ -36,6 +37,7 @@ class RapidOcrTest(unittest.TestCase):
         self.assertIn("INVOICE", " ".join(line.text for line in lines))
         for line in lines:
             self.assertTrue(0 <= line.x0 < line.x1 <= image.width and 0 <= line.y0 < line.y1 <= image.height)
+            assert line.confidence is not None  # RapidOCR always gives one
             self.assertTrue(0.0 <= line.confidence <= 1.0)
 
         # The engine's boxes, as one line span of page fractions.
@@ -85,6 +87,12 @@ class BuildOcrEngineTest(unittest.TestCase):
     def test_rapidocr_setting_builds_rapidocr(self) -> None:
         self.assertIsInstance(build_ocr_engine(make_settings(ocr_engine="rapidocr")), RapidOcrEngine)
 
+    def test_paddleocr_vl_setting_builds_the_paddle_engine_without_calling_it(self) -> None:
+        engine = build_ocr_engine(make_settings(ocr_engine="paddleocr_vl", ocr_url="http://ocr:8080"))
+        self.assertIsInstance(engine, ocr.PaddleVlEngine)
+        assert engine is not None
+        self.assertEqual((engine.name, engine.version), ("paddleocr-vl", "unknown"))
+
 
 class OcrSpansTest(unittest.TestCase):
     def test_pixels_become_page_fractions(self) -> None:
@@ -117,6 +125,47 @@ class OcrSpansTest(unittest.TestCase):
     def test_confidence_is_clamped_to_zero_to_one(self) -> None:
         (span,) = ocr_spans([OcrLine("x", 10, 10, 20, 20, 1.0000001)], 1, 100, 100)
         self.assertEqual(span.confidence, 1.0)
+
+    def test_every_line_span_says_it_was_read_by_ocr(self) -> None:
+        lines = [OcrLine("first", 10, 10, 90, 30, 0.9), OcrLine("second", 10, 50, 90, 70, None)]
+        spans = ocr_spans(lines, 1, 100, 100)
+        self.assertEqual(
+            [(s.origin, s.kind, s.confidence) for s in spans], [("ocr", None, 0.9), ("ocr", None, None)]
+        )
+
+
+class BlockModeTest(unittest.TestCase):
+    """A layout engine (PaddleOCR-VL) gives one line per block, already in reading order."""
+
+    def test_each_block_is_one_span_in_the_given_order_with_kind_table_and_origin(self) -> None:
+        lines = [
+            OcrLine("Tax   Invoice", 20, 5, 100, 15, None, "heading"),
+            OcrLine(
+                "Qty", 120, 5, 160, 15, None, "table_cell", OcrTable("t1", 0, 1, True)
+            ),  # same line: kept apart
+            OcrLine("higher up, read later", 0, 0, 10, 4, None, "footer"),  # never re-sorted
+        ]
+        spans = ocr_spans(lines, 3, 200, 100)
+        self.assertEqual(
+            [(s.text, s.raw, s.kind, s.origin, s.confidence) for s in spans],
+            [
+                ("Tax Invoice", "Tax   Invoice", "heading", "ocr", None),
+                ("Qty", "Qty", "table_cell", "ocr", None),
+                ("higher up, read later", "higher up, read later", "footer", "ocr", None),
+            ],
+        )
+        self.assertEqual(spans[0].location, BoxLocation(3, 0.1, 0.05, 0.5, 0.15))
+        self.assertEqual((spans[1].table_id, spans[1].row, spans[1].col, spans[1].header), ("t1", 0, 1, True))
+        self.assertEqual((spans[0].table_id, spans[0].row, spans[0].col, spans[0].header), (None,) * 4)
+
+    def test_blocks_with_nothing_to_point_at_are_left_out(self) -> None:
+        lines = [
+            OcrLine("  ", 10, 10, 50, 20, None, "paragraph"),
+            OcrLine("off page", 500, 500, 600, 600, None, "paragraph"),
+            OcrLine("nan", 10, 40, 50, 50, float("nan"), "paragraph"),
+            OcrLine("kept", 10, 60, 50, 70, 0.4, "paragraph"),
+        ]
+        self.assertEqual([(s.text, s.confidence) for s in ocr_spans(lines, 1, 100, 100)], [("kept", 0.4)])
 
 
 if __name__ == "__main__":

@@ -46,7 +46,7 @@ class TwoPageReader:
         spans = []
         for page in (1, 2):
             self._events.append(f"read page {page}")
-            spans.append(Span("x", "x", BoxLocation(page, 0.1, 0.1, 0.5, 0.2)))
+            spans.append(Span("x", "x", BoxLocation(page, 0.1, 0.1, 0.5, 0.2), origin="ocr"))
             if on_page is not None:
                 on_page()
         return spans
@@ -135,7 +135,7 @@ class ReaderSocketTest(unittest.TestCase):
 
 class SecondReaderTest(unittest.TestCase):
     def test_second_reader_output_comes_back_checked(self) -> None:
-        span = Span("INV-1", "INV-1", box())
+        span = Span("INV-1", "INV-1", box(), origin="text_layer")
         socket = ReaderSocket({sniff.PDF: FixedReader(span)}, {sniff.PDF: FixedReader(span)})
         self.assertEqual(socket.read_second(sniff.PDF, b""), [span])
 
@@ -145,7 +145,8 @@ class SecondReaderTest(unittest.TestCase):
         self.assertIsNone(socket.read_second(sniff.PDF, b"%PDF-1.7"))
 
     def test_invalid_second_reader_output_is_refused_for_good(self) -> None:
-        socket = ReaderSocket({}, {sniff.PDF: FixedReader(Span("x", "x", box(x0=0.6, x1=0.5)))})
+        upside_down = Span("x", "x", box(x0=0.6, x1=0.5), origin="text_layer")
+        socket = ReaderSocket({}, {sniff.PDF: FixedReader(upside_down)})
         with self.assertRaises(ReadError) as ctx:
             socket.read_second(sniff.PDF, b"")
         self.assertEqual(ctx.exception.code, "invalid_reader_output")
@@ -187,10 +188,10 @@ class SpanValidationTest(unittest.TestCase):
 
     def test_valid_boxes_and_confidences_pass(self) -> None:
         good = [
-            Span("a", "a", box()),
-            Span("a", "a", box(x0=0.0, y0=0.0, x1=1.0, y1=1.0)),  # the whole page
-            Span("a", "a", box(page=3), confidence=0.0),
-            Span("a", "a", box(), confidence=1.0),
+            Span("a", "a", box(), origin="text_layer"),
+            Span("a", "a", box(x0=0.0, y0=0.0, x1=1.0, y1=1.0), origin="text_layer"),  # the whole page
+            Span("a", "a", box(page=3), confidence=0.0, origin="ocr"),
+            Span("a", "a", box(), confidence=1.0, origin="ocr"),
             Span("a", "a", CellLocation(1, 1, 1), confidence=0.42),
         ]
         for span in good:
@@ -211,13 +212,50 @@ class SpanValidationTest(unittest.TestCase):
         }
         for name, location in bad_locations.items():
             with self.subTest(name), self.assertRaises(ReadError) as ctx:
-                self.read_one(Span("a", "a", location))
+                origin = (
+                    None if isinstance(location, CellLocation) else "text_layer"
+                )  # only the place is wrong
+                self.read_one(Span("a", "a", location, origin=origin))
+            self.assertEqual(ctx.exception.code, "invalid_reader_output")
+
+    def test_kind_origin_and_table_fields_are_checked(self) -> None:
+        cell = CellLocation(1, 1, 1)
+        good = [
+            Span("a", "a", box(), kind="heading", origin="ocr"),
+            Span("a", "a", box(), None, "table_cell", "ocr", "t1", 0, 0, False),
+            Span("a", "a", box(), None, "table_cell", "ocr", "T_2-b", 999, 3, True),
+            Span("a", "a", box(), origin="text_layer"),
+            Span("a", "a", cell, origin="cell"),
+        ]
+        for span in good:
+            with self.subTest(span=span):
+                self.assertEqual(self.read_one(span), [span])
+        bad = {
+            "a box that does not say how it was read": Span("a", "a", box()),  # fail closed (council)
+            "unknown kind": Span("a", "a", box(), kind="banner", origin="ocr"),
+            "unknown origin": Span("a", "a", box(), origin="scan"),
+            "a cell with a kind": Span("a", "a", cell, kind="paragraph"),
+            "a cell read by ocr": Span("a", "a", cell, origin="ocr"),
+            "a cell with table fields": Span("a", "a", cell, None, None, "cell", "t1", 0, 0, False),
+            "a table cell without its table": Span("a", "a", box(), kind="table_cell", origin="ocr"),
+            "table fields on a heading": Span("a", "a", box(), None, "heading", "ocr", "t1", 0, 0, False),
+            "only some table fields": Span("a", "a", box(), None, "table_cell", "ocr", table_id="t1"),
+            "a table id with a space": Span("a", "a", box(), None, "table_cell", "ocr", "t 1", 0, 0, False),
+            "a negative row": Span("a", "a", box(), None, "table_cell", "ocr", "t1", -1, 0, False),
+            "a column as a bool": Span("a", "a", box(), None, "table_cell", "ocr", "t1", 0, True, False),
+            "a header as a number": Span(
+                "a", "a", box(), None, "table_cell", "ocr", "t1", 0, 0, cast(bool, 1)
+            ),
+        }
+        for name, span in bad.items():
+            with self.subTest(name), self.assertRaises(ReadError) as ctx:
+                self.read_one(span)
             self.assertEqual(ctx.exception.code, "invalid_reader_output")
 
     def test_confidence_outside_zero_to_one_is_refused(self) -> None:
         for confidence in (-0.01, 1.01, float("nan"), float("inf"), cast(float, True), cast(float, "0.5")):
             with self.subTest(confidence=confidence), self.assertRaises(ReadError) as ctx:
-                self.read_one(Span("a", "a", box(), confidence=confidence))
+                self.read_one(Span("a", "a", box(), confidence=confidence, origin="ocr"))
             self.assertEqual(ctx.exception.code, "invalid_reader_output")
 
 
@@ -238,6 +276,15 @@ class WiringTest(unittest.TestCase):
             with self.subTest(kind):
                 self.assertEqual(socket.reader_id(kind), ("fake-ocr", "0"))
         self.assertTrue(socket.reader_id(sniff.PDF)[1].endswith("+fake-ocr-0"))
+
+    def test_every_reader_says_how_its_spans_were_read(self) -> None:
+        socket = build_reader_socket(make_settings(), None)
+        pdf = make_pdf([Page(texts=[Text(72, 700, "typed page")])])
+        workbook = make_xlsx([("S", sheet_xml('<row r="1"><c r="A1"><v>7</v></c></row>'))])
+        self.assertEqual([s.origin for s in socket.read(sniff.TEXT, b"a,b\n")], ["cell", "cell"])
+        self.assertEqual([s.origin for s in socket.read(sniff.ZIP, workbook)], ["cell"])
+        self.assertEqual([s.origin for s in socket.read(sniff.PDF, pdf)], ["text_layer"])
+        self.assertEqual([s.origin for s in socket.read_second(sniff.PDF, pdf) or []], ["text_layer"])
 
     def test_only_pdf_has_a_second_reader(self) -> None:
         socket = build_reader_socket(make_settings(), FakeOcr())

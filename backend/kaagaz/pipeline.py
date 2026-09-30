@@ -65,7 +65,16 @@ from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.worker import Heartbeat, JobFailed
 from kaagaz.reading.socket import NoReader
-from kaagaz.reading.spans import BoxLocation, CellLocation, Location, PageInfo, ReadError, Span, TooManyPages
+from kaagaz.reading.spans import (
+    DIRECT_ORIGINS,
+    BoxLocation,
+    CellLocation,
+    Location,
+    PageInfo,
+    ReadError,
+    Span,
+    TooManyPages,
+)
 from kaagaz.scanning.gate import (
     REJECTION_CODES,
     DocumentStatus,
@@ -470,8 +479,10 @@ class DocumentProcessor:
         wanted: dict[int, dict[BoxLocation, None]] = {}  # page -> boxes, in order, once each
         for value in values:
             box = value.location
-            if not isinstance(box, BoxLocation) or value.confidence is None:
-                continue  # read directly, not scanned
+            if not isinstance(box, BoxLocation) or (
+                value.confidence is None and value.origin in DIRECT_ORIGINS
+            ):
+                continue  # read directly, not scanned; no origin counts as scanned (fail closed)
             if box.page in images:
                 wanted.setdefault(box.page, {})[box] = None
         readings: dict[Location, str] = {}
