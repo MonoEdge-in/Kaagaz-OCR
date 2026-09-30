@@ -225,6 +225,25 @@ class LabelQuotedTest(unittest.TestCase):
             ],
         )
 
+    def test_a_loose_match_on_a_text_layer_line_is_not_verified(self) -> None:
+        """Council fix 6: the loose pass runs on text-layer Devanagari too (कूल found for कुल),
+        so the second reader agreeing with the text found proves nothing about the quote."""
+        span = Span("कूल", "कूल", LINE_BOX)
+        found = find_quote(reader_text([span]), "कुल")
+        assert found is not None and found.loose
+        value = located_value(found, record_key="document", field="description")
+        (labelled,) = label_quoted([value], [second_line("कूल", LINE_BOX)])
+        self.assertEqual(reason(labelled), ("needs_review", "model_chosen", None))
+
+    def test_an_ambiguous_match_is_not_verified(self) -> None:
+        """Council fix 6: the quote fits a later spot too, so the first spot is a guess."""
+        total, paid = Span("Total 500", "Total 500", LINE_BOX), Span("Paid 500", "Paid 500", BOX)
+        found = find_quote(reader_text([total, paid]), "500")
+        assert found is not None and found.ambiguous
+        value = located_value(found, record_key="line:1", field="amount")
+        (labelled,) = label_quoted([value], [second_line("Total 500", LINE_BOX)])
+        self.assertEqual(reason(labelled), ("needs_review", "model_chosen", None))
+
     def test_a_quote_across_two_pages_is_needs_review(self) -> None:
         """Council fix 5: the spot is only page 1's part, so no reading of it can confirm it."""
         spans = [

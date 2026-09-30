@@ -209,6 +209,20 @@ class FindQuoteTest(unittest.TestCase):
             ),
         )
 
+    def test_a_located_value_carries_loose_and_ambiguous(self) -> None:
+        """Council fix 6: the labeller needs both."""
+        loose = find_quote(reader_text([line("कूल 500")]), "कुल")
+        twice = find_quote(reader_text([line("Total 500"), line("Paid 500", y=0.2)]), "500")
+        assert loose is not None and twice is not None
+        self.assertEqual(
+            located_value(loose, record_key="document", field="description").quote,
+            QuoteMatch(spans=1, pages=1, whole=False, loose=True, ambiguous=False),
+        )
+        self.assertEqual(
+            located_value(twice, record_key="line:1", field="amount").quote,
+            QuoteMatch(spans=1, pages=1, whole=False, loose=False, ambiguous=True),
+        )
+
     def test_the_location_is_the_union_box_on_the_first_matched_page(self) -> None:
         reader = reader_text(
             [
