@@ -24,7 +24,10 @@ PROVISIONAL additions beyond PRD 2 section 7 (for Vrushit to confirm):
 * The CHECKs on languages, card (at most 64 KiB), progress, check_reasons, the
   label pair, the run times, and the text lengths (A7).
 * The label reasons ``check_failed`` (K3), ``model_chosen`` (A1) and ``ocr_script`` (ML1).
-* The grants: runs are never deleted and lines are only inserted by the app (A9).
+* The grants, the least each table needs (A9 and the council's review): invoices
+  and links are deleted and inserted, never updated (so ``invoices`` has no touch
+  trigger); lines are only inserted; runs are never deleted, and only their
+  outcome columns may be updated.
 * The indexes ``document_links_linked`` and ``processing_runs_document``, and the
   partial unique index ``processing_runs_one_running``: at most one running run
   per document, the backstop behind start_run's lock.
@@ -146,10 +149,6 @@ UPGRADE = [
             REFERENCES documents (customer_id, id) ON DELETE CASCADE
     )
     """,
-    """
-    CREATE TRIGGER invoices_touch BEFORE UPDATE ON invoices
-    FOR EACH ROW EXECUTE FUNCTION kaagaz_touch()
-    """,
     # --- invoice_lines (E5) --------------------------------------------------------------
     # One foreign key, through the invoice: deleting the document deletes the
     # invoice, and that deletes its lines (AR13).
@@ -244,9 +243,18 @@ UPGRADE = [
     ON processing_runs (customer_id, document_id) WHERE status = 'running'
     """,
     # --- what the app role may do, and row level security ---------------------------------
-    f"GRANT SELECT, INSERT, UPDATE, DELETE ON invoices, document_links TO {APP_ROLE}",
-    f"GRANT SELECT, INSERT, UPDATE ON processing_runs TO {APP_ROLE}",
+    # The least each needs: a save deletes and inserts invoices and links, never
+    # updates them; lines are only inserted; runs are never deleted, and only their
+    # outcome columns change.
+    f"GRANT SELECT, INSERT, DELETE ON invoices, document_links TO {APP_ROLE}",
     f"GRANT SELECT, INSERT ON invoice_lines TO {APP_ROLE}",
+    f"""
+    GRANT SELECT, INSERT, UPDATE (status, error_code, ocr_engine, model_chat, model_vision,
+        model_embed, config, pages_cells, pages_text_layer, pages_ocr, pages_blank, vision_crops,
+        model_calls, dropped_quotes, quotes_returned, values_verified, values_needs_review,
+        seconds_total, seconds_ocr, finished_at)
+    ON processing_runs TO {APP_ROLE}
+    """,
     *[f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY" for table in NEW_TABLES],
     *[
         f"""
