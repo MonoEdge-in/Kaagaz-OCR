@@ -528,18 +528,22 @@ def test_save_waits_for_the_family_lock(db: Database) -> None:
 
 
 def test_links_two_saves_complete_without_deadlock(db: Database) -> None:
-    """Both saves wait on the customer's link lock, then run one after the other."""
+    """Both saves wait on the customer's link lock, then run one after the other. The
+    key is built from the canonical id, so a customer id in capitals takes the same lock."""
     customer, first, second = linked_pair(db)
     sessions = [new_session(), new_session()]
     named = [_named_database(session) for session in sessions]
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             with db.customer(customer) as conn:
-                key = f"kaagaz.document_links:{customer}"
-                conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key})
+                lock = "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.document_links:'"
+                lock += " || CAST(:c AS uuid)::text, 0))"
+                conn.execute(text(lock), {"c": customer})
                 saving = [
-                    pool.submit(PgPipelineStore(database).save, numbered(customer, doc))
-                    for database, doc in zip(named, (first, second), strict=True)
+                    pool.submit(PgPipelineStore(database).save, numbered(who, doc))
+                    for database, who, doc in zip(
+                        named, (customer.upper(), customer), (first, second), strict=True
+                    )
                 ]
                 for session in sessions:
                     wait_until_blocked(db, application_name=session)
