@@ -29,7 +29,8 @@ of it looks sound, and a Latin spelling of it for search.
   so name matching must stay fuzzy. Other text is kept as it is.
   PROVISIONAL: IAST has no letters for the candra vowels of English words, so
   before it they become plain vowels (ॉ and ऑ as o, ॅ and ऍ as e, ॲ as a) and
-  the abbreviation sign ॰ is dropped. So कॉपी gives "kopi".
+  the abbreviation sign ॰ is dropped. So कॉपी gives "kopi". The danda and
+  double danda (। ॥) become ".".
 * ``languages_without_model`` (L2). With no model, a Devanagari piece means
   "other" (Hindi and Marathi cannot be told apart), a piece whose letters are
   mostly ASCII means "en", and any other script means "other".
@@ -61,8 +62,19 @@ _VIRAMA = "\u094d"
 _JOINERS = "\u200c\u200d"  # ZWNJ and ZWJ
 
 _DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
-# PROVISIONAL: the candra vowels as the plain vowels IAST can spell; the abbreviation sign dropped.
-_CANDRA = str.maketrans({"ॉ": "ो", "ऑ": "ओ", "ॅ": "े", "ऍ": "ए", "ॲ": "अ", "॰": None})
+# PROVISIONAL: the candra vowels as the plain vowels IAST can spell, ॰ dropped, । and ॥ as ".".
+_BEFORE_IAST = str.maketrans(
+    {
+        "\u0949": "\u094b",
+        "\u0911": "\u0913",
+        "\u0945": "\u0947",
+        "\u090d": "\u090f",
+        "\u0972": "\u0905",
+        "\u0970": None,
+        "\u0964": ".",  # the danda and double danda end a sentence (council)
+        "\u0965": ".",
+    }
+)
 
 # A run of Devanagari letters and signs (with the joiners), or a run of the
 # block's other characters: the danda, the digits and the abbreviation sign.
@@ -123,7 +135,7 @@ def latin_spelling(text: str) -> str:
     from indic_transliteration import sanscript
 
     def spell(match: re.Match[str]) -> str:
-        run = unicodedata.normalize("NFC", match[0]).translate(_CANDRA)
+        run = unicodedata.normalize("NFC", match[0]).translate(_BEFORE_IAST)
         latin = str(sanscript.transliterate(run, sanscript.DEVANAGARI, sanscript.IAST))
         if match["letters"] is not None:
             latin = _letters_to_latin(run, latin)

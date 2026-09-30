@@ -31,8 +31,9 @@ sheet row (``rows.py``). The names come from the table's header rows (rows
 where every cell is a header). A table with no header row, found right after
 a table on the previous page with the same number of columns, takes that
 table's names: it is the same table running on over the page. Otherwise the
-columns are named by letter. A piece's parts are its data cells; a header
-name is a label, like a column letter. A PDF text layer has no table cells,
+columns are named by letter. A name is at most ``NAME_MAX`` characters. A
+piece's parts are its data cells; a header name is a label, like a column
+letter. A PDF text layer has no table cells,
 so its tables stay lines (plan section 13, conflict 14).
 
 C6: the list is in document order, so ``pieces.seq`` is too.
@@ -62,44 +63,81 @@ MAX_CHARS = 800
 GAP_FACTOR = 1.5
 BAND = 0.08  # C2: the top and bottom 8% of a page
 REPEAT_PAGES = 3  # C2: a line repeated in a band on this many pages is running
+COUNTER_PAGES = 2  # C2: a page counter on this many pages is running (council)
 TABLE_MAX_ROWS = 20  # C5
+NAME_MAX = 60  # C5: a column name, "…" included (council: a header cell can be a paragraph)
 BEFORE_MAX = 120  # C4: the "Before" part of a context header (kaagaz/chunking/context.py)
 
 _RUNNING_KINDS = frozenset({"header", "footer"})
 _DIGITS = re.compile(r"\d+")
+_COUNTER_DIGITS = 6  # a longer run is never a page number
 
 Line = tuple[Span, BoxLocation]
+
+
+@dataclass(slots=True)
+class _Seen:
+    pages: set[int]
+    places: list[tuple[int, int]]  # (index, page)
+    kind: bool = False  # a span of kind header or footer is among them
 
 
 def running_spans(spans: Sequence[Span]) -> set[int]:
     """The indexes of the running headers and footers in ``spans`` (C2).
 
-    A span of kind ``header`` or ``footer`` is one, wherever it sits. So is a
-    line in the top or bottom ``BAND`` of its page whose text is found in the
-    same band on ``REPEAT_PAGES`` or more pages. The text is compared case
-    folded, with each run of digits as "#" and spaces collapsed, so "Page 15
-    of 20" and "Page 16 of 20" match. Table cells are never counted this way,
-    so a table's header row at the top of each page is kept.
+    Only a line in the top or bottom ``BAND`` of its page, or a span of kind
+    ``header`` or ``footer`` wherever it sits, can be one. Table cells never
+    are, so a table's header row at the top of each page is kept. Texts are
+    compared case folded, with spaces collapsed. Two kinds of repeat:
 
-    Time O(S) for S spans; memory O(B) for the B lines in the bands.
+    * A page counter: one run of digits is the page number plus the same
+      offset on every page, and the rest of the text is the same ("Page 15 of
+      20", "- 15 -", "15/20", or "Page 17" printed on page 15). On
+      ``COUNTER_PAGES`` or more pages, every copy is left out.
+    * The same text on ``REPEAT_PAGES`` or more pages (a letterhead), or on 2
+      or more for a span of kind header or footer. PROVISIONAL (council, C2
+      read as "remove the repeats"): the first page's copy is kept, so a GST
+      invoice printed as original, duplicate and triplicate keeps one.
+
+    So a line that differs per page (a carried amount, an invoice number) is
+    kept. A page-specific number that happens to rise by one per page, like
+    invoice 101 on page 1 and 102 on page 2, reads as a page counter.
+
+    Time O(S x R) for S spans with at most R digit runs each; memory O(B x R)
+    for the B lines that can be running.
     """
-    running: set[int] = set()
-    found: dict[tuple[bool, str], tuple[set[int], list[int]]] = {}  # (top?, text) -> (pages, indexes)
+    same: dict[tuple[str, str], _Seen] = {}
+    counters: dict[tuple[str, str, int], _Seen] = {}
     for index, span in enumerate(spans):
         box = span.location
-        if span.kind in _RUNNING_KINDS:
-            running.add(index)
-        elif (
-            isinstance(box, BoxLocation) and span.table_id is None and (box.y1 <= BAND or box.y0 >= 1 - BAND)
-        ):
-            key = (box.y1 <= BAND, " ".join(_DIGITS.sub("#", span.text.casefold()).split()))
-            pages, indexes = found.setdefault(key, (set(), []))
-            pages.add(box.page)
-            indexes.append(index)
-    for pages, indexes in found.values():
-        if len(pages) >= REPEAT_PAGES:
-            running.update(indexes)
+        kind = span.kind in _RUNNING_KINDS
+        if not isinstance(box, BoxLocation) or span.table_id is not None:
+            continue
+        place = "top" if box.y1 <= BAND else "bottom" if box.y0 >= 1 - BAND else "kind"
+        if place == "kind" and not kind:
+            continue
+        text = " ".join(span.text.casefold().split())
+        _seen(same, (place, text), box.page, index, kind)
+        for run in _DIGITS.finditer(text):
+            if len(run[0]) <= _COUNTER_DIGITS:
+                template = text[: run.start()] + "#" + text[run.end() :]
+                _seen(counters, (place, template, int(run[0]) - box.page), box.page, index, kind)
+    running: set[int] = set()
+    for seen in counters.values():
+        if len(seen.pages) >= COUNTER_PAGES:
+            running.update(index for index, _ in seen.places)
+    for seen in same.values():
+        if len(seen.pages) >= (2 if seen.kind else REPEAT_PAGES):
+            first = min(seen.pages)
+            running.update(index for index, page in seen.places if page != first)
     return running
+
+
+def _seen[K](found: dict[K, _Seen], key: K, page: int, index: int, kind: bool) -> None:
+    seen = found.setdefault(key, _Seen(set(), []))
+    seen.pages.add(page)
+    seen.places.append((index, page))
+    seen.kind = seen.kind or kind
 
 
 def pieces_from_lines(
@@ -241,6 +279,7 @@ class _Builder:
                 for span, _ in row:
                     col = _row_col(span)[1]
                     names[col] = f"{names[col]} {span.text}" if col in names else span.text
+            names = {col: _short(name) for col, name in names.items()}
             return _Names(page, columns, names, tuple(span for row in headers for span, _ in row))
         previous = self._table
         if previous is not None and previous.page == page - 1 and previous.columns == columns:
@@ -257,6 +296,11 @@ class _Builder:
         locations = tuple(box for _, box in located)
         label = piece_label(labelled)
         self.pieces.append(Piece(customer_id, document_id, text, locations, label, section=self._section))
+
+
+def _short(name: str) -> str:
+    """A column name of at most NAME_MAX characters: a longer one is cut, with "…"."""
+    return name if len(name) <= NAME_MAX else name[: NAME_MAX - 1] + "…"
 
 
 def _column_name(names: _Names, span: Span) -> str:

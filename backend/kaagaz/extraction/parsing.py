@@ -15,8 +15,9 @@ Amounts (``parse_amount``):
 * negative: a leading minus ("-1,234", "Rs. -1,234") or brackets ("(1,234)").
 * "Cr" (credit) is refused. PROVISIONAL: whether a credit counts as negative
   depends on the account, which is a guess, so it is left for Vrushit.
-* ASCII or Devanagari digits (०१२३४५६७८९, PRD 2 L4); no other digits. The
-  text itself is never changed, so ``value_text`` keeps what is printed.
+* ASCII or Devanagari digits (०१२३४५६७८९, PRD 2 L4); no other digits, and
+  never both in one text. The text itself is never changed, so ``value_text``
+  keeps what is printed.
 
 Dates (``parse_date``), day before month as India writes them:
 
@@ -40,6 +41,8 @@ from decimal import Decimal
 from kaagaz.chunking.script import fold_digits
 
 _MAX_LENGTH = 64  # longer text is not a single amount or date
+_ASCII_DIGIT = re.compile("[0-9]")
+_DEVANAGARI_DIGIT = re.compile("[\u0966-\u096f]")
 
 # U+20B9 is the rupee sign, U+2212 the minus sign (escaped for the linter).
 _AMOUNT = re.compile(
@@ -91,6 +94,8 @@ _NOT_FIELD_CHARS = re.compile(r"[^a-z0-9]+")
 
 def parse_amount(text: str) -> Decimal | None:
     """The amount ``text`` states, or None if it is not clearly one amount."""
+    if _mixed_digits(text):
+        return None
     text = fold_digits(text).strip()
     if not text or len(text) > _MAX_LENGTH:
         return None
@@ -113,6 +118,8 @@ def parse_amount(text: str) -> Decimal | None:
 
 def parse_date(text: str) -> date | None:
     """The calendar date ``text`` states (day first), or None if it is not clearly one."""
+    if _mixed_digits(text):
+        return None
     text = fold_digits(text).strip()
     if not text or len(text) > _MAX_LENGTH:
         return None
@@ -131,6 +138,11 @@ def parse_date(text: str) -> date | None:
         month = _MONTHS.get(match["mon"].lower())
         return None if month is None else _date(int(match["y"]), month, 1)
     return None
+
+
+def _mixed_digits(text: str) -> bool:
+    """ASCII and Devanagari digits in one text: which was meant is never guessed (council)."""
+    return _ASCII_DIGIT.search(text) is not None and _DEVANAGARI_DIGIT.search(text) is not None
 
 
 def _date(year: int, month: int, day: int) -> date | None:

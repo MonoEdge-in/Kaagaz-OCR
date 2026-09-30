@@ -1,0 +1,18 @@
+# Every package indic-transliteration (PRD 2 L3) brings in, pinned to the versions
+# verified on 30 Sep 2026 (Python 3.12.14), like constraints-ocr.txt does for the OCR
+# image. Use it with: pip install -c constraints.txt ".[ocr]"
+# Licences: MIT unless noted. None is GPL, AGPL or SSPL.
+indic-transliteration==2.3.82
+annotated-doc==0.0.5
+backports.functools-lru-cache==2.0.0
+colorama==0.4.6  # BSD-3-Clause; Windows only
+markdown-it-py==4.2.0
+mdurl==0.1.2
+pygments==2.21.0  # BSD-2-Clause
+regex==2026.9.29  # Apache-2.0 AND CNRI-Python
+rich==15.0.0
+roman==5.2  # ZPL-2.1
+shellingham==1.5.4  # ISC
+toml==0.10.2
+tqdm==4.70.1  # MPL-2.0 AND MIT
+typer==0.27.2
