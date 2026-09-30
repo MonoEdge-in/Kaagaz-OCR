@@ -370,13 +370,14 @@ def test_ocr_down_on_page_2_then_retry_leaves_one_set_and_two_runs(db: Database)
 
     # One set: 2 pages, the first reading and the second (PDFium's, empty on scans),
     # one value per scanned page, and 2 runs. The two pages' lines are one piece:
-    # a page break no longer starts a piece (PRD 2 C1).
+    # a page break no longer starts a piece (PRD 2 C1). With the model off and no type,
+    # the scan's "Total: 1,180.00" gives the one model-off invoice row (PRD 2 E5, fallback).
     assert counts(db, customer, doc) == {
         "pages": 2,
         "reader_outputs": 2,
         "pieces": 1,
         "extracted_values": 2,
-        "invoices": 0,
+        "invoices": 1,
         "invoice_lines": 0,
         "document_links": 0,
         "processing_runs": 2,
