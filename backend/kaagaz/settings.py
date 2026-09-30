@@ -14,6 +14,7 @@ import os
 import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # AR1: seconds to spare between one OCR request (the longest step without a
 # heartbeat) and the job's lease, or a slow page outlives the lease and a second
@@ -40,6 +41,15 @@ _WINDOW_FIELD_TOKENS = 300
 CHAT_OVERHEAD_TOKENS = 100
 MAX_SYSTEM_PROMPT_TOKENS = 1000
 MIN_INPUT_TOKENS = 1024
+
+
+def _time_zone(name: str) -> str:
+    """TIMEZONE, checked at start-up: the invoice checks' today is the date there (PRD 2 ML 6(j))."""
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise SettingsError("TIMEZONE must be a time zone name such as Asia/Kolkata") from None
+    return name
 
 
 class SettingsError(Exception):
@@ -282,7 +292,7 @@ class Settings:
             reprocess_per_hour=env.positive("REPROCESS_PER_HOUR"),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
-            timezone=env.text("TIMEZONE"),
+            timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             log_level=env.text("LOG_LEVEL"),
         )

@@ -6,10 +6,18 @@ go to label_quoted with the card's (ML 2), and their calls and quote counts go
 into the run's numbers (ML 10).
 """
 
+import hashlib
+import json
 import unittest
 
 from kaagaz.ai.client import ModelUnavailable
-from kaagaz.extraction.invoice import INVOICE_SYSTEM_PROMPT, WindowSettings, rule_values_left
+from kaagaz.extraction.invoice import (
+    INVOICE_PROMPT_HASH,
+    INVOICE_SCHEMA,
+    INVOICE_SYSTEM_PROMPT,
+    WindowSettings,
+    rule_values_left,
+)
 from kaagaz.extraction.labelled import values_from_lines
 from kaagaz.extraction.quotes import reader_text
 from kaagaz.extraction.understanding import Understanding, understand
@@ -109,11 +117,12 @@ class InvoiceWindowsTest(unittest.TestCase):
         understanding, _ = run(FakeChat(CARD, INVOICE))
         card = understanding.counts
         assert card is not None
-        # The windows: 4 fields and 1 line searched for, the made-up buyer dropped, and the
-        # line's amount also found later (the subtotal and total lines), so ambiguous.
+        # The windows: 4 fields and 1 line searched for, and the made-up buyer dropped. The
+        # line's amount is printed again later (the subtotal and total), but once on its own
+        # row, so it is not ambiguous.
         self.assertEqual(understanding.quotes_returned, card.quotes_returned + 5)
         self.assertEqual(understanding.dropped_quotes, card.dropped_quotes + 1)
-        self.assertEqual(understanding.ambiguous_quotes, card.ambiguous_quotes + 1)
+        self.assertEqual(understanding.ambiguous_quotes, card.ambiguous_quotes)
         self.assertEqual(understanding.loose_quotes, card.loose_quotes)
 
     def test_a_card_of_another_type_reads_no_windows(self) -> None:
@@ -161,3 +170,10 @@ class WindowSettingsTest(unittest.TestCase):
             model_window_max_tokens=1500,
         )
         self.assertEqual(WindowSettings.from_settings(settings), WindowSettings(5000, 500, 4, 1500))
+
+
+class PromptHashTest(unittest.TestCase):
+    def test_the_prompt_hash_pins_the_system_prompt_and_the_schema(self) -> None:
+        """ML 10: a run records which invoice prompt and schema read its windows."""
+        pinned = INVOICE_SYSTEM_PROMPT + "\n" + json.dumps(INVOICE_SCHEMA, sort_keys=True)
+        self.assertEqual(INVOICE_PROMPT_HASH, hashlib.sha256(pinned.encode("utf-8")).hexdigest())

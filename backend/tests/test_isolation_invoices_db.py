@@ -1,8 +1,8 @@
 """Customer isolation for invoices (PRD 2 E5), at the store level.
 
 Customer B can never read, write or link to customer A's invoice, its lines or
-their values, even with A's exact ids. The API detail's ``invoice`` is added
-later (``listing.invoice_for``), with its own 404 test.
+their values, even with A's exact ids, in the store or through the API detail's
+``invoice`` (``listing.invoice_for``).
 """
 
 from typing import Any
@@ -11,12 +11,14 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from kaagaz.db import listing
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.pipeline import DocumentContent, LinkIdentifier, PageRecord
 from kaagaz.reading.spans import PageInfo
 from tests.db_support import new_customer
 from tests.exit_fixtures import TEXTILE_FIELDS, QuotingChat, textile_lines
+from tests.test_api_support import Api
 from tests.test_extraction_invoice import textile
 from tests.test_pipeline_store_db import links, new_document, rows
 
@@ -132,3 +134,45 @@ def test_the_same_invoice_number_at_b_never_links_to_a(db: Database) -> None:
     }
     assert links(db, b, b_doc) == set()
     assert links(db, b, a_doc) == set()
+
+
+def test_b_never_sees_a_invoice_through_the_api(db: Database) -> None:
+    """B uses A's document id on the detail and gets 404; B's own detail never carries A's invoice."""
+    api = Api(db)
+    a, b = api.new_signed(), api.new_signed()
+    a_doc = api.add_document(a.customer_id, name="bill.pdf")
+    b_doc = api.add_document(b.customer_id, name="own.pdf")
+    api.add_page(a.customer_id, a_doc)
+    api.add_page(b.customer_id, b_doc)
+    with db.customer(a.customer_id) as conn:
+        conn.execute(
+            text(
+                "INSERT INTO invoices (customer_id, document_id, invoice_number, total, label, check_status)"
+                " VALUES (:c, :d, 'ZENITH-7', 999, 'verified', 'passed')"
+            ),
+            {"c": a.customer_id, "d": a_doc},
+        )
+    assert a.client.get(f"/api/documents/{a_doc}").json()["invoice"]["invoice_number"] == "ZENITH-7"
+
+    detail = b.client.get(f"/api/documents/{a_doc}")
+    assert detail.status_code == 404
+    assert detail.json()["error"]["code"] == "not_found"
+    own = b.client.get(f"/api/documents/{b_doc}")
+    assert own.status_code == 200 and own.json()["invoice"] is None
+    for reply_text in (detail.text, own.text):
+        assert "ZENITH" not in reply_text
+
+
+def test_the_detail_queries_filter_by_customer_even_without_row_security(db: Database) -> None:
+    """Final council 5: listing.invoice_for and document_facts give B nothing for A's
+    document, as B (row level security) and on the owner's connection, which skips the
+    policy (the app role never owns a table), so each query's own customer_id = :c does it."""
+    a, b, a_doc, _ = a_with_an_invoice(db)
+    with db.customer(b) as conn:
+        assert listing.invoice_for(conn, b, a_doc) is None
+        assert listing.document_facts(conn, b, a_doc) is None
+    with db.engine.begin() as conn:  # no SET ROLE: the tables' owner, which RLS does not stop
+        assert listing.invoice_for(conn, b, a_doc) is None
+        assert listing.document_facts(conn, b, a_doc) is None
+        found = listing.invoice_for(conn, a, a_doc)
+        assert found is not None and len(found[1]) == 4  # the same query does find A's own

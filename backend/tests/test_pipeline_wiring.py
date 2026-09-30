@@ -4,6 +4,7 @@ import unittest
 
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.extraction.card import CARD_PROMPT_HASH
+from kaagaz.extraction.invoice import INVOICE_PROMPT_HASH
 from kaagaz.extraction.understanding import model_config
 from kaagaz.pipeline import DocumentProcessor, build_processor
 from kaagaz.reading.wiring import reader_config
@@ -54,6 +55,7 @@ class RunConfigTest(unittest.TestCase):
             model_config(settings),
             {
                 "card_prompt": CARD_PROMPT_HASH,
+                "invoice_prompt": INVOICE_PROMPT_HASH,  # PR 6: which invoice prompt read the windows
                 "model_num_ctx": 6000,
                 "card_max_chars": 9000,
                 "card_max_tokens": 900,

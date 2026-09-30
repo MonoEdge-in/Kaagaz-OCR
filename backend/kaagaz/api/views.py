@@ -6,6 +6,7 @@ named after the type it builds, so a reviewer can hold the two side by side.
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import RowMapping
@@ -238,6 +239,44 @@ def extracted_value(row: RowMapping) -> dict[str, Any]:
         # PRD 2 D3: the value's label spot, which can be on another page; null when it has none.
         "label_page_no": row["label_page_no"],
         "label_region": row["label_region"],
+    }
+
+
+def _decimal(value: Decimal | None) -> str | None:
+    """A numeric column as a string, so no float rounding happens (PROVISIONAL, plan 3.8)."""
+    return None if value is None else str(value)
+
+
+def invoice(row: RowMapping, lines: Sequence[RowMapping]) -> dict[str, Any]:
+    """The detail's invoice (PRD 2 E5): the row, then its lines in line_no order."""
+    day = row["invoice_date"]
+    return {
+        "invoice_number": row["invoice_number"],
+        "invoice_date": None if day is None else day.isoformat(),
+        "seller_name": row["seller_name"],
+        "seller_gstin": row["seller_gstin"],
+        "buyer_name": row["buyer_name"],
+        "buyer_gstin": row["buyer_gstin"],
+        "subtotal": _decimal(row["subtotal"]),
+        "tax_total": _decimal(row["tax_total"]),
+        "total": _decimal(row["total"]),
+        "currency": row["currency"],
+        "label": row["label"],
+        "check_status": row["check_status"],
+        "check_reasons": list(row["check_reasons"]),
+        "lines": [
+            {
+                "line_no": line["line_no"],
+                "description": line["description"],
+                "hsn": line["hsn"],
+                "quantity": _decimal(line["quantity"]),
+                "unit": line["unit"],
+                "rate": _decimal(line["rate"]),
+                "amount": _decimal(line["amount"]),
+                "label": line["label"],
+            }
+            for line in lines
+        ],
     }
 
 

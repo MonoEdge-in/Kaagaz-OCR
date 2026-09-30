@@ -1,11 +1,12 @@
 """Verified or needs review, and why, for every kind of value."""
 
 import unittest
+from dataclasses import replace
 
-from kaagaz.extraction.labels import comparable, label_quoted, label_values, overlap
+from kaagaz.extraction.labels import comparable, label_quoted, label_values, overlap, spot_unsure
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
 from kaagaz.extraction.quotes import find_quote, located_value, reader_text
-from kaagaz.extraction.values import ExtractedValue
+from kaagaz.extraction.values import ExtractedValue, QuoteMatch
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 
 BOX = BoxLocation(1, 0.1, 0.40, 0.9, 0.42)
@@ -371,3 +372,19 @@ class LearnedTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpotUnsureTest(unittest.TestCase):
+    """labels.spot_unsure is public so the pipeline crops no box for such a value (final council 4)."""
+
+    def test_an_ambiguous_loose_or_multi_span_quote_is_unsure_and_a_whole_one_is_not(self) -> None:
+        box = BoxLocation(1, 0.1, 0.1, 0.9, 0.12)
+        value = ExtractedValue("document", "total_amount", "5.00", "5.00", box)
+        self.assertFalse(spot_unsure(replace(value, quote=QuoteMatch(1, 1, True))))
+        for quote in (
+            QuoteMatch(1, 1, True, ambiguous=True),
+            QuoteMatch(1, 1, True, loose=True),
+            QuoteMatch(2, 1, False),
+        ):
+            with self.subTest(quote=quote):
+                self.assertTrue(spot_unsure(replace(value, quote=quote)))

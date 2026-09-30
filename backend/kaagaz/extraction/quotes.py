@@ -184,7 +184,8 @@ class QuoteCounts:
 
 def located_value(found: Found, *, record_key: str, field: str, label: Found | None = None) -> ExtractedValue:
     """The value a located quote gives: the reader's text at its spot, with its label's
-    spot and how it was found, not labelled yet (the card, and PR 6's invoice values)."""
+    spot, how it was found and how its spans were read (their origin), not labelled yet
+    (the card, and PR 6's invoice values)."""
     return ExtractedValue(
         record_key=record_key,
         field=field,
@@ -193,6 +194,7 @@ def located_value(found: Found, *, record_key: str, field: str, label: Found | N
         location=found.location,
         confidence=found.confidence,
         label_location=None if label is None else label.location,
+        origin=found.origin,
         quote=QuoteMatch(found.spans, found.pages, found.whole, found.loose, found.ambiguous),
     )
 

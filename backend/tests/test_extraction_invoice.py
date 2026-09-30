@@ -22,6 +22,7 @@ from kaagaz.extraction.invoice import (
     INVOICE_SYSTEM_PROMPT,
     LINE_FIELDS,
     MAX_LINES,
+    MAX_WINDOW_CHECKS,
     MAX_WINDOW_LINES,
     STORED_FIELD,
     InvoiceExtraction,
@@ -182,6 +183,8 @@ def reasons(result: InvoiceResult) -> dict[tuple[str, str], str]:
 # The lead's decision (A2 over ML 2's test, PROVISIONAL): on a text-layer line, the line's
 # values share the line's box, so label_quoted gives single_reader and the invoice stage
 # model_chosen. Each line row is needs review; the header fields have lines of their own.
+# The row is needs review too (PR 5's labeller): the seller's name is printed on page 2
+# as well, so its quote is ambiguous and never verified.
 TEXTILE_ROW = InvoiceRow(
     invoice_number="TX-2026-118",
     invoice_date=date(2026, 8, 12),
@@ -192,7 +195,7 @@ TEXTILE_ROW = InvoiceRow(
     subtotal=Decimal("10000.00"),
     tax_total=None,
     total=Decimal("11800.00"),
-    label="verified",
+    label="needs_review",
     check_status="passed",
     check_reasons=(),
     lines=(
@@ -728,6 +731,8 @@ class ModelCallsTest(unittest.TestCase):
                 extraction = read(spans, chat, beats=beats, **one_window_each(spans))
                 self.assertEqual((extraction.values, extraction.error_code), ([], code))
                 self.assertEqual((extraction.model_calls, len(chat.calls)), (2, 2))
+                # Window 1's quotes were thrown away with its values: none are counted.
+                self.assertEqual((extraction.quotes.returned, extraction.dropped), (0, 0))
                 self.assertEqual(beats, [(1, 3), (2, 3)])
 
     def test_no_text_means_no_call(self) -> None:
@@ -769,7 +774,9 @@ class TextileInvoiceTest(unittest.TestCase):
         ]
         self.assertEqual(len(chat.calls), 5)
         self.assertEqual(len(returned), 8)  # each of the 4 items from two overlapping windows
-        self.assertEqual(result.invoice, TEXTILE_ROW)
+        # PROVISIONAL: a quote is ambiguous within its own window, and here the seller's
+        # repeat on page 2 is in another window, so the seller's name is verified.
+        self.assertEqual(result.invoice, replace(TEXTILE_ROW, label="verified"))
 
     def test_e4_values_replace_the_labelled_ones_field_by_field(self) -> None:
         result = textile(QuotingChat(TEXTILE_FIELDS, textile_lines()))
@@ -795,7 +802,10 @@ class TextileInvoiceTest(unittest.TestCase):
             ],
         )
         by_record = {(value.record_key.startswith("line:"), value.label_reason) for value in result.values}
-        self.assertEqual(by_record, {(False, "readers_agree"), (True, "model_chosen")})
+        self.assertEqual(
+            by_record, {(False, "readers_agree"), (False, "model_chosen"), (True, "model_chosen")}
+        )
+        self.assertEqual(reasons(result)[("document", "party_name")], "model_chosen")  # ambiguous
 
     def test_the_brought_forward_rows_the_model_returns_are_not_lines(self) -> None:
         lines = [
@@ -824,10 +834,16 @@ class TextileInvoiceTest(unittest.TestCase):
                 ("line:3", "amount"),
                 ("line:4", "amount"),
                 ("document", "subtotal"),
+                ("document", "tax_amount"),  # labelled.py's CGST, left by E4 (PROVISIONAL)
             },
         )
         self.assertEqual(reasons(result)[("document", "invoice_number")], "model_chosen")
         self.assertEqual(reasons(result)[("line:1", "description")], "model_chosen")
+        # PROVISIONAL (final council 2): a failed check leaves no value of the invoice's
+        # document record verified, labelled.py's CGST and SGST left by E4 included.
+        document = [value for value in result.values if value.record_key == "document"]
+        self.assertEqual({value.label for value in document}, {NEEDS_REVIEW})
+        self.assertEqual(reasons(result)[("document", "tax_amount")], "check_failed")
 
     def test_cgst_and_sgst_with_no_tax_total_pass_on_their_sum(self) -> None:
         result = textile(QuotingChat(TEXTILE_FIELDS, textile_lines()))
@@ -867,7 +883,10 @@ class QuotedLabelsTest(unittest.TestCase):
         extraction = read(textile_spans(), QuotingChat(TEXTILE_FIELDS, textile_lines()))
         quoted = label_quoted(extraction.values, textile_second_spans())
         on_lines = {value.label_reason for value in quoted if value.record_key.startswith("line:")}
-        self.assertEqual(on_lines, {"single_reader"})
+        # PR 5's labeller: a quote over two spans (item 3's wrapped description) is model_chosen.
+        self.assertEqual(on_lines, {"single_reader", "model_chosen"})
+        wrapped = [v for v in quoted if (v.record_key, v.field) == ("line:3", "description")]
+        self.assertEqual([v.label_reason for v in wrapped], ["model_chosen"])
         result = textile(QuotingChat(TEXTILE_FIELDS, textile_lines()))
         line_values = [value for value in result.values if value.record_key.startswith("line:")]
         self.assertEqual(len(line_values), 24)
@@ -882,7 +901,9 @@ class QuotedLabelsTest(unittest.TestCase):
 
     def test_a_line_value_with_its_own_box_a_table_cell_is_readers_agree(self) -> None:
         def cell(text: str, x0: float) -> Span:
-            return Span(text, text, BoxLocation(1, x0, 0.2, x0 + 0.1, 0.22))
+            # An OCR table's cell (PR 2's table fields), read as a text layer here.
+            box = BoxLocation(1, x0, 0.2, x0 + 0.1, 0.22)
+            return Span(text, text, box, table_id="t1", row=1, col=round(x0 * 100), header=False)
 
         texts = ("Cotton Poplin", "5208", "3,000.00")
         spans = [
@@ -1377,6 +1398,53 @@ class ReviewFixesTest(unittest.TestCase):
             finish_invoice(
                 both, extraction=extraction, labelled=both, components=[], today=TODAY, fallback=True
             )
+
+
+class LocatedValuesTest(unittest.TestCase):
+    """E4 values are built like the card's (quotes.located_value): the reader's text at the
+    spot, how the quote was found, and the origin of its spans (PR 2)."""
+
+    def test_e4_values_carry_their_spans_origin_and_how_the_quote_was_found(self) -> None:
+        spans = [
+            Span(
+                "Grand Total: 1,180.00",
+                "Grand Total: 1,180.00",
+                BoxLocation(1, 0.1, 0.1, 0.9, 0.12),
+                0.9,
+                origin="ocr",
+            ),
+            Span(
+                "Invoice No: INV-17",
+                "Invoice No: INV-17",
+                BoxLocation(1, 0.1, 0.2, 0.9, 0.22),
+                origin="text_layer",
+            ),
+        ]
+        chat = FakeChat(
+            reply({"total": ("Grand Total", "1,180.00"), "invoice_number": ("Invoice No", "INV-17")})
+        )
+        by_field = {value.field: value for value in read(spans, chat).values}
+        self.assertEqual(
+            (by_field["total_amount"].origin, by_field["invoice_number"].origin), ("ocr", "text_layer")
+        )
+        quote = by_field["total_amount"].quote
+        assert quote is not None
+        self.assertEqual((quote.spans, quote.pages, quote.whole, quote.ambiguous), (1, 1, False, False))
+
+    def test_a_label_on_the_values_own_line_is_not_a_second_spot(self) -> None:
+        spans = page_lines("Grand Total: 1,180.00")
+        (total,) = read(spans, FakeChat(reply({"total": ("Grand Total", "1,180.00")}))).values
+        self.assertIsNone(total.label_location)
+
+    def test_one_windows_searches_share_a_check_budget(self) -> None:
+        # Council fix 8 (PR 5): 200 lines whose amount appears 2,000 times on its own row. Each
+        # search stops at its own budget, and all of one window's stop at the window's.
+        row = "Item " + " ".join(["5.00"] * 2000)
+        spans = page_lines(row)
+        chat = FakeChat(reply(lines=[item("Item", "5.00") for _ in range(200)]))
+        extraction = read(spans, chat, chars=20000, num_ctx=65536)
+        self.assertEqual(MAX_WINDOW_CHECKS, 8192)
+        self.assertEqual(len({value.record_key for value in extraction.values}), 1)
 
 
 class InvoiceRowTest(unittest.TestCase):

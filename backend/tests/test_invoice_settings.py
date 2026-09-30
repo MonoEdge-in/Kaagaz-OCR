@@ -65,3 +65,10 @@ def test_bad_values_are_refused_by_name(name: str, value: str, message: str) -> 
 
 def test_no_overlap_is_allowed() -> None:
     assert Settings.from_env(shipped(EXTRACT_WINDOW_OVERLAP="0")).extract_window_overlap == 0
+
+
+def test_an_unknown_time_zone_stops_start_up_by_name() -> None:
+    """Final council 3: today for the invoice checks is the date in TIMEZONE (ML 6(j))."""
+    with pytest.raises(SettingsError, match="TIMEZONE"):
+        Settings.from_env(shipped(TIMEZONE="Asia/Kolkatta"))
+    assert Settings.from_env(shipped(TIMEZONE="Asia/Kolkata")).timezone == "Asia/Kolkata"

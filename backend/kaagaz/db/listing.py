@@ -276,6 +276,31 @@ def document_facts(conn: Connection, customer_id: str, document_id: str) -> RowM
     )
 
 
+_INVOICE = text(
+    "SELECT id, invoice_number, invoice_date, seller_name, seller_gstin, buyer_name, buyer_gstin,"
+    " subtotal, tax_total, total, currency, label, check_status, check_reasons"
+    " FROM invoices WHERE customer_id = :c AND document_id = :d"
+)
+_INVOICE_LINES = text(
+    "SELECT line_no, description, hsn, quantity, unit, rate, amount, label FROM invoice_lines"
+    " WHERE customer_id = :c AND invoice_id = :i ORDER BY line_no"
+)
+
+
+def invoice_for(
+    conn: Connection, customer_id: str, document_id: str
+) -> tuple[RowMapping, Sequence[RowMapping]] | None:
+    """The detail's invoice (PRD 2 E5): the document's invoices row and its lines in
+    line_no order, or None. Two indexed queries (the unique document_id, then the unique
+    (invoice_id, line_no)); O(lines)."""
+    params = {"c": customer_id, "d": document_id}
+    row = conn.execute(_INVOICE, params).mappings().one_or_none()
+    if row is None:
+        return None
+    lines = conn.execute(_INVOICE_LINES, {**params, "i": row["id"]}).mappings().all()
+    return row, lines
+
+
 def list_values(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:
     """Every value of one document, by page, record and field. O(v log v)."""
     return (
