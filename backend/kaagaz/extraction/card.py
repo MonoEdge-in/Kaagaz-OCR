@@ -41,8 +41,9 @@ Then (D2, D3, A1, A7, A9):
 * The title and summary are the model's own words: control characters
   removed, spaces collapsed, cut at the last space before 120 and 600
   characters (PROVISIONAL). Each is dropped (``summary_dropped``) when it holds
-  a link or markup (``://``, ``www.``, ``<``, ``](``; A9) or a run of digits
-  that is not a run of digits in the reader's text (ML amendment 5).
+  half a character (a lone surrogate, council fix 3), a link or markup
+  (``://``, ``www.``, ``<``, ``](``; A9) or a run of digits that is not a run
+  of digits in the reader's text (ML amendment 5).
 * The stored card must fit the database's 64 KiB limit: past
   ``MAX_CARD_BYTES``, key facts, then identifiers, then parties are dropped
   from the end, with their values, and counted (``over_cap``).
@@ -594,6 +595,9 @@ class _Card:
 
     def _own_words(self, text: str, limit: int, runs: set[str]) -> str | None:
         """A title or summary as stored, or None (the module docstring)."""
+        if any(unicodedata.category(ch) == "Cs" for ch in text):  # half a character (council fix 3)
+            self._dropped_words += 1
+            return None
         plain = "".join(ch for ch in text if ch.isspace() or unicodedata.category(ch) not in ("Cc", "Cf"))
         words = _cut(" ".join(plain.split()), limit)
         if not words:

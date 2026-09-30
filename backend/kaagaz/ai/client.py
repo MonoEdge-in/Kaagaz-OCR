@@ -192,6 +192,10 @@ def _parse_reply(content: str, schema: Mapping[str, Any]) -> tuple[dict[str, Any
         return None, "the reply is not JSON"
     if not isinstance(value, dict):
         return None, "the reply must be one JSON object"
+    try:
+        json.dumps(value, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:  # JSON can escape half a character (a lone surrogate, "\ud800")
+        return None, "the reply holds characters that are not valid text"
     problem = schema_problem(value, schema)
     if problem is not None:
         return None, problem
