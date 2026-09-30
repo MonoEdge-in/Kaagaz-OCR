@@ -2,7 +2,7 @@
 
 import unittest
 
-from kaagaz.extraction.labelled import value_after_label, values_from_lines
+from kaagaz.extraction.labelled import tax_components, value_after_label, values_from_lines
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 
 
@@ -132,6 +132,64 @@ class ValueAfterLabelTest(unittest.TestCase):
     def test_none_when_the_label_is_not_there(self) -> None:
         self.assertIsNone(value_after_label("total_amount", "1,180.00"))
         self.assertIsNone(value_after_label("gstin", "Total: 1,180.00"))
+
+
+class TaxComponentsTest(unittest.TestCase):
+    """ML amendment 6(a): CGST, SGST, UTGST, IGST and cess lines, for the invoice total check."""
+
+    def components(self, *texts: str) -> list[tuple[str, str]]:
+        spans = [line(t, 0.05 * (i + 1)) for i, t in enumerate(texts)]
+        return [(v.record_key, v.value_text) for v in tax_components(spans)]
+
+    def test_each_component_with_or_without_its_rate(self) -> None:
+        found = self.components(
+            "CGST: 900.00",
+            "SGST @ 9%: 900.00",
+            "UTGST 9% 450.00",
+            "IGST (18%) 1,800.00",
+            "Cess: 100.00",
+            "Add: CGST @ 2.5% Rs. 25.00",
+        )
+        self.assertEqual(
+            [text for _, text in found], ["900.00", "900.00", "450.00", "1,800.00", "100.00", "Rs. 25.00"]
+        )
+
+    def test_every_component_is_a_tax_amount_at_its_line(self) -> None:
+        span = line("IGST: 1,800.00", 0.3, confidence=0.91)
+        (value,) = tax_components([span])
+        self.assertEqual((value.field, value.location, value.confidence), ("tax_amount", span.location, 0.91))
+
+    def test_two_components_on_one_line_are_both_kept(self) -> None:
+        found = self.components("CGST 9% 900.00 SGST 9% 900.00")
+        self.assertEqual([text for _, text in found], ["900.00", "900.00"])
+
+    def test_the_same_component_at_the_same_spot_counts_once(self) -> None:
+        span = line("CGST: 900.00", 0.3)
+        self.assertEqual(len(tax_components([span, span])), 1)
+
+    def test_record_keys_are_those_of_the_stored_tax_values(self) -> None:
+        # The CGST and SGST lines are also labelled.py tax_amount values; the IGST line with a rate is not.
+        self.assertEqual(
+            self.components("CGST: 900.00", "SGST: 900.00", "IGST @ 18% 1,800.00"),
+            [("document", "900.00"), ("page:1:line:2", "900.00"), ("page:1:line:3", "1,800.00")],
+        )
+
+    def test_lines_that_are_not_a_component_amount_give_nothing(self) -> None:
+        self.assertEqual(
+            self.components(
+                "Carried forward CGST: 450.00",
+                "Brought forward SGST 450.00",
+                "CGST Rate 9%",
+                "HSN Taxable CGST SGST",
+                "5208 10,000.00 9% 900.00 9% 900.00",
+                "Access fee: 50.00",
+                "Total Tax: 1,800.00",
+            ),
+            [],
+        )
+
+    def test_cells_are_ignored(self) -> None:
+        self.assertEqual(tax_components([Span("CGST: 9", "CGST: 9", CellLocation(1, 1, 1))]), [])
 
 
 if __name__ == "__main__":
