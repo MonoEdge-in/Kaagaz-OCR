@@ -30,14 +30,22 @@ FROM_0001 = {
     "audit_log",
 }
 FROM_0002 = {"folders", "tags", "document_tags"}
-# (SELECT, INSERT, UPDATE, DELETE) for the app role. Lines are only inserted (the
-# invoice's delete cascades to them), and runs are never deleted (amendment A9).
+# (SELECT, INSERT, UPDATE, DELETE) for the app role, the least each needs: a save
+# deletes and inserts invoices and links, never updates them; lines are only
+# inserted (the invoice's delete cascades to them); runs are never deleted, and
+# only their outcome columns may be updated (RUN_OUTCOME below).
 FROM_0004 = {
-    "invoices": (True, True, True, True),
+    "invoices": (True, True, False, True),
     "invoice_lines": (True, True, False, False),
-    "document_links": (True, True, True, True),
-    "processing_runs": (True, True, True, False),
+    "document_links": (True, True, False, True),
+    "processing_runs": (True, True, False, False),
 }
+RUN_OUTCOME = {
+    "status", "error_code", "ocr_engine", "model_chat", "model_vision", "model_embed", "config",
+    "pages_cells", "pages_text_layer", "pages_ocr", "pages_blank", "vision_crops", "model_calls",
+    "dropped_quotes", "quotes_returned", "values_verified", "values_needs_review", "seconds_total",
+    "seconds_ocr", "finished_at",
+}  # fmt: skip
 # The only tables without customer_id: the customers themselves, and alembic's own.
 NO_CUSTOMER_ID = {"customers", "alembic_version"}
 
@@ -105,6 +113,20 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         assert granted[table] == (True, True, True, True), table
     for table, expected in FROM_0004.items():
         assert granted[table] == expected, table
+
+
+def test_the_app_may_update_only_the_outcome_columns_of_a_run(db: Database) -> None:
+    """Never its customer, document, start time or id."""
+    with db.system() as conn:
+        columns = conn.execute(
+            text(
+                "SELECT attname::text, has_column_privilege(:r, attrelid, attname, 'UPDATE')"
+                " FROM pg_attribute WHERE attrelid = 'processing_runs'::regclass"
+                " AND attnum > 0 AND NOT attisdropped"
+            ),
+            {"r": APP_ROLE},
+        ).all()
+    assert {name for name, may_update in columns if may_update} == RUN_OUTCOME
 
 
 _FOREIGN_KEYS = text(

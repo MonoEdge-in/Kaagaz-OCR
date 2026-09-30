@@ -176,7 +176,8 @@ def test_every_label_reason_and_the_superseded_status_are_accepted(db: Database)
 _PAGE = "INSERT INTO pages (customer_id, document_id, page_no, width, height, unit, {})"
 _PAGE += " VALUES (:c, :d, 1, 1, 1, 'pt', {})"
 _DOCUMENT = "UPDATE documents SET {} WHERE id = :d"
-_INVOICE = "UPDATE invoices SET {} WHERE id = :i"
+_INVOICE = "INSERT INTO invoices (customer_id, document_id, label, check_status{})"
+_INVOICE += " VALUES (:c, :d, 'needs_review', {})"
 _RUN = "INSERT INTO processing_runs (customer_id, document_id, started_at, status, finished_at{})"
 _RUN += " VALUES (:c, :d, :t, {})"
 _LINE = "INSERT INTO invoice_lines (customer_id, invoice_id, document_id, line_no, label, description)"
@@ -210,9 +211,9 @@ BAD_ROWS = [
     ("documents_progress_check", _DOCUMENT.format("""progress = '{"step": null, "done": 1, "total": 2}'""")),
     ("documents_progress_check", _DOCUMENT.format("progress = '[1, 2]'")),
     ("extracted_values_label_both", "UPDATE extracted_values SET label_page_no = 1 WHERE id = :v"),
-    ("invoices_check", _INVOICE.format("check_status = 'failed'")),
-    ("invoices_currency_check", _INVOICE.format("currency = 'inr'")),
-    ("invoices_seller_name_check", _INVOICE.format("seller_name = repeat('x', 201)")),
+    ("invoices_check", _INVOICE.format("", "'failed'")),
+    ("invoices_currency_check", _INVOICE.format(", currency", "'not_checked', 'inr'")),
+    ("invoices_seller_name_check", _INVOICE.format(", seller_name", "'not_checked', repeat('x', 201)")),
     ("invoice_lines_description_check", _LINE),
     ("document_links_check", _LINK),
     ("processing_runs_status_check", _RUN.format("", "'paused', :t")),
