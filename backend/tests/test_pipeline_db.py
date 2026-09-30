@@ -237,10 +237,11 @@ def with_runs(
     *,
     ocr_on: bool = False,
     scanner: FakeScanner | None = None,
-    **model: Any,
+    chat: FakeChat | None = None,
+    model_budget: ModelBudget | None = None,
 ) -> DocumentProcessor:
-    """A processor on ``db`` with the real runs, progress and run fence. ``model`` holds
-    the model stage's arguments (``chat``, ``model_budget``), when there is one."""
+    """A processor on ``db`` with the real runs, progress and run fence, and the model
+    stage when ``chat`` and its ``model_budget`` are given."""
     documents = PgDocuments(db)
     prepare = functools.partial(
         prepare_pages, dpi=72, max_pages=10, max_image_pixels=10_000_000, blank_stddev=3.0, low_res_dpi=150
@@ -259,8 +260,9 @@ def with_runs(
         clock=moving_clock,
         timer=Timer(),
         ocr_on=ocr_on,
-        **({"chat_model": "qwen3:4b"} if "chat" in model else {}),
-        **model,
+        chat=chat,
+        chat_model=None if chat is None else chat.chat_model,
+        model_budget=model_budget,
     )
 
 
