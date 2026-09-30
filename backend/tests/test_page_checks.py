@@ -25,7 +25,7 @@ from kaagaz.preparing.page_checks import (
     placed_size,
 )
 from tests.pdf_builder import Page, Picture, _assemble, _image_object, _stream, make_pdf
-from tests.picture_support import Bar, picture_with_bars
+from tests.picture_support import Bar, picture_with_bars, text_like_bars
 
 BLANK_PAGE_STDDEV = 3.0  # the PRD's BLANK_PAGE_STDDEV
 LOW_RES_DPI = 150  # the PRD's LOW_RES_DPI
@@ -96,6 +96,19 @@ class BlankTest(unittest.TestCase):
         self.assertTrue(stddev_only(image))
         self.assertGreaterEqual(measure.dark_pixels, BLANK_DARK_PIXELS)
         self.assertFalse(is_blank(image, BLANK_PAGE_STDDEV))
+
+    def test_a_faded_page_of_text_is_not_blank_by_its_spread_alone(self) -> None:
+        """Council PR 3 review, low 11 (the rule stays PROVISIONAL). Lines printed in
+        light grey (200 on white) have no dark pixels at all, but their spread (about
+        20) is far over BLANK_PAGE_STDDEV, so the page is not blank and goes to OCR,
+        at 72, 150 and 300 dpi alike."""
+        for width, height in ((612, 792), (1275, 1650), (2550, 3300)):
+            faded = picture_with_bars(width, height, text_like_bars(width, height), ink=(200, 200, 200))
+            measure = measure_blank(faded)
+            with self.subTest(size=(width, height)):
+                self.assertEqual(measure.dark_pixels, 0)
+                self.assertGreater(measure.stddev, 15.0)
+                self.assertFalse(is_blank(faded, BLANK_PAGE_STDDEV))
 
     def test_a_faint_mark_with_no_dark_ink_is_blank(self) -> None:
         # A light grey smudge: 30 below paper white, so never "dark" (48 below the mean).
