@@ -121,8 +121,8 @@ describe("routeText (PRD 2, R1)", () => {
     expect(routeText("blank")).toBe("Blank page");
   });
 
-  it("says Not read for a page with no route", () => {
-    expect(routeText(null)).toBe("Not read");
+  it("gives nothing for a page with no route, as for one read before PRD 2", () => {
+    expect(routeText(null)).toBeNull();
   });
 });
 
