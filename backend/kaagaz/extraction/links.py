@@ -22,8 +22,7 @@ Time O(v + i log i) for v values and i identifiers; memory O(i).
 from collections.abc import Sequence
 
 from kaagaz.extraction.labelled import DOCUMENT_RECORD
-from kaagaz.extraction.labels import CARD_RECORD
-from kaagaz.extraction.values import ExtractedValue
+from kaagaz.extraction.values import CARD_RECORD, ExtractedValue
 from kaagaz.pipeline import LINK_KINDS, LinkIdentifier
 
 MAX_IDENTIFIER_CHARS = 64  # A7: a normalised identifier

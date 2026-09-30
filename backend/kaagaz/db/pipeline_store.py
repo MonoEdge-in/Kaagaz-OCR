@@ -65,7 +65,7 @@ from kaagaz.db.runs import is_run_open
 from kaagaz.db.sqlstate import retry_on_deadlock
 from kaagaz.db.trash import lock_family
 from kaagaz.extraction.learned import LearnedCorrection
-from kaagaz.extraction.values import ExtractedValue
+from kaagaz.extraction.values import CARD_RECORD, NEEDS_REVIEW, ExtractedValue
 from kaagaz.pipeline import DocumentContent, DocumentFacts, InvoiceRow, LinkIdentifier, Superseded
 from kaagaz.reading.spans import Span, location_from_json, location_to_json
 
@@ -361,6 +361,10 @@ def _link_targets(
 
 
 def _value_row(ids: dict[str, str], value: ExtractedValue, reader: str) -> dict[str, Any]:
+    if value.record_key == CARD_RECORD and value.label != NEEDS_REVIEW:
+        # The last check (council fix 4): the model chose a card value's field, so it is
+        # never verified. A bug upstream stops the save before anything is written.
+        raise ValueError("a card value must be needs_review")
     label = value.label_location
     return {
         **ids,

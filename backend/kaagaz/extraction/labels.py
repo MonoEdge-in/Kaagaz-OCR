@@ -69,12 +69,11 @@ from dataclasses import replace
 from kaagaz.chunking.script import has_devanagari_letters, ocr_script_suspect
 from kaagaz.extraction.labelled import value_after_label
 from kaagaz.extraction.quotes import find_quote, normalise_quote, reader_text
-from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue
+from kaagaz.extraction.values import CARD_RECORD, NEEDS_REVIEW, VERIFIED, ExtractedValue
 from kaagaz.reading.spans import BoxLocation, Location, Span
 
 LOW_CONFIDENCE = 0.90
 MIN_OVERLAP = 0.5
-CARD_RECORD = "card"  # the record key of the document card's values (PRD 2 D3)
 
 # The rupee sign (U+20B9), and Rs / INR standing as words.
 _CURRENCY = re.compile(r"₹|(?<![a-z])(?:rs\.?|inr)(?![a-z])")
@@ -116,7 +115,9 @@ def label_values(
     labelled = []
     for value in values:
         box = value.location
-        if not isinstance(box, BoxLocation):
+        if value.record_key == CARD_RECORD:  # never verified, on any path (council fix 4)
+            labelled.append(_needs_review(value, "model_chosen", None))
+        elif not isinstance(box, BoxLocation):
             labelled.append(replace(value, label=VERIFIED, label_reason="direct_cell"))
         elif _is_ocr(value):
             labelled.append(_label_ocr(value, box, shared, readings))

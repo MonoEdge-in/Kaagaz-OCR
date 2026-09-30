@@ -8,6 +8,8 @@ be seen later.
 
 A new value starts as needs review (``single_reader``) until
 ``kaagaz.extraction.labels`` says otherwise: nothing is verified by default.
+A value of the document card (``CARD_RECORD``, PRD 2 D3) is never verified,
+whatever path it takes (Lead's resolution 1, council fix 4).
 """
 
 from dataclasses import dataclass
@@ -17,7 +19,9 @@ from decimal import Decimal
 from kaagaz.chunking.piece import NEEDS_REVIEW, VERIFIED
 from kaagaz.reading.spans import Location
 
-__all__ = ["NEEDS_REVIEW", "VERIFIED", "ExtractedValue"]
+__all__ = ["CARD_RECORD", "NEEDS_REVIEW", "VERIFIED", "ExtractedValue"]
+
+CARD_RECORD = "card"  # the record key of the document card's values (PRD 2 D3)
 
 
 @dataclass(frozen=True, slots=True)

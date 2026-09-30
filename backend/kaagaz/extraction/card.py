@@ -73,7 +73,6 @@ from typing import Any, Protocol
 from kaagaz.ai.client import ModelOutputError, input_token_budget, schema_problem
 from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling
 from kaagaz.extraction.labelled import LABELS
-from kaagaz.extraction.labels import CARD_RECORD
 from kaagaz.extraction.links import MAX_IDENTIFIER_CHARS, normalise_identifier
 from kaagaz.extraction.parsing import parse_date
 from kaagaz.extraction.quotes import (
@@ -85,7 +84,7 @@ from kaagaz.extraction.quotes import (
     find_quote,
     normalise_quote,
 )
-from kaagaz.extraction.values import ExtractedValue
+from kaagaz.extraction.values import CARD_RECORD, ExtractedValue
 from kaagaz.pipeline import LINK_KINDS, DocumentFacts
 from kaagaz.reading.spans import Location, location_to_json
 
