@@ -17,6 +17,7 @@ import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import text
@@ -224,7 +225,12 @@ RUNS = "SELECT status, error_code FROM processing_runs WHERE document_id = :d OR
 
 
 def with_runs(
-    db: Database, storage: MemoryStorage, socket: ReadingSocket | None = None, *, ocr_on: bool = False
+    db: Database,
+    storage: MemoryStorage,
+    socket: ReadingSocket | None = None,
+    *,
+    ocr_on: bool = False,
+    scanner: FakeScanner | None = None,
 ) -> DocumentProcessor:
     """A processor on ``db`` with the real runs, progress and run fence."""
     documents = PgDocuments(db)
@@ -232,7 +238,7 @@ def with_runs(
         prepare_pages, dpi=72, max_pages=10, max_image_pixels=10_000_000, blank_stddev=3.0, low_res_dpi=150
     )
     return DocumentProcessor(
-        gate=ScanGate(storage, FakeScanner(Verdict.CLEAN), storage, documents),
+        gate=ScanGate(storage, scanner or FakeScanner(Verdict.CLEAN), storage, documents),
         statuses=documents,
         documents=documents,
         socket=socket or real_socket(),
@@ -436,3 +442,37 @@ def test_a_stale_delivery_after_a_reprocess_does_not_fail_the_document(db: Datab
         None,
     )
     assert runs_of(db, customer, doc) == [("superseded", None), ("ready", None), ("ready", None)]
+
+
+class GatedScanner(FakeScanner):
+    """A clean verdict, given only once the test releases it: a delivery held in its scan."""
+
+    def __init__(self) -> None:
+        super().__init__(Verdict.CLEAN)
+        self.entered, self.release = threading.Event(), threading.Event()
+
+    def scan(self, data: bytes) -> Any:
+        self.entered.set()
+        assert self.release.wait(timeout=10), "the test never released the scan"
+        return super().scan(data)
+
+
+def test_a_stale_scan_never_moves_a_ready_document_back_to_clean(db: Database) -> None:
+    """Council PR 3 review, medium 2: the gate's CLEAN write is fenced by the run too."""
+    customer, _ = new_customer(db)
+    storage = MemoryStorage()
+    upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
+    doc = upload.accept(customer, io.BytesIO(CSV)).document_id
+    scanner = GatedScanner()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        stale = pool.submit(with_runs(db, storage, scanner=scanner), Job(customer, doc), lambda: None)
+        assert scanner.entered.wait(timeout=10)
+        with_runs(db, storage)(Job(customer, doc), lambda: None)  # the redelivery: ready
+        scanner.release.set()
+        stale.result(timeout=20)  # acked, not failed
+
+    assert one(db, customer, "SELECT status, failure_code FROM documents WHERE id = :d", doc) == (
+        "ready",
+        None,
+    )
+    assert runs_of(db, customer, doc) == [("superseded", None), ("ready", None)]
