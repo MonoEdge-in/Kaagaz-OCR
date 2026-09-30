@@ -195,6 +195,22 @@ describe("shouldPoll", () => {
     expect(shouldPoll(docs("ready", "needs_reader", "rejected", "failed"))).toBe(false);
     expect(shouldPoll([])).toBe(false);
   });
+
+  it("keeps polling while a document is read page by page (PRD 2, X3)", () => {
+    const reading = { status: "clean" as const, progress: { step: "reading", done: 3, total: 40 } };
+    expect(shouldPoll([reading])).toBe(true);
+  });
+
+  it("keeps polling while a newer version is still being read, so its line moves too", () => {
+    const withNewer = (status: DocumentStatus) => ({
+      status: "ready" as const,
+      newer_version: { status },
+    });
+    expect(shouldPoll([withNewer("received")])).toBe(true);
+    expect(shouldPoll([withNewer("clean")])).toBe(true);
+    expect(shouldPoll([withNewer("failed")])).toBe(false);
+    expect(shouldPoll([{ status: "ready", newer_version: null }])).toBe(false);
+  });
 });
 
 describe("menuEntries", () => {

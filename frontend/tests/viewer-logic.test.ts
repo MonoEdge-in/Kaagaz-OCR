@@ -6,14 +6,33 @@ import {
   cropRowWindow,
   fitPageSize,
   pageMode,
+  routeText,
   sheetRowWindow,
   stepZoom,
 } from "@/components/viewer/viewer";
 import { encodeRegion } from "@/lib/regions";
 import type { ExtractedValue, PageSummary, Region } from "@/lib/types";
 
-const pdfPage: PageSummary = { page_no: 1, width: 595, height: 842, unit: "pt", has_image: true };
-const sheetPage: PageSummary = { page_no: 1, width: 5, height: 40, unit: "cells", has_image: false };
+const pdfPage: PageSummary = {
+  page_no: 1,
+  width: 595,
+  height: 842,
+  unit: "pt",
+  has_image: true,
+  route: "text_layer",
+  effective_dpi: null,
+  low_resolution: false,
+};
+const sheetPage: PageSummary = {
+  page_no: 1,
+  width: 5,
+  height: 40,
+  unit: "cells",
+  has_image: false,
+  route: "cells",
+  effective_dpi: null,
+  low_resolution: false,
+};
 
 describe("stepZoom", () => {
   it("moves one step in and out", () => {
@@ -91,6 +110,19 @@ describe("sheet windows", () => {
     expect(grid.rows[0]?.cells.map((c) => c.text)).toEqual(["Name", "", "Total"]);
     expect(grid.rows[1]?.row).toBe(3);
     expect(buildGrid(sheet, { from: -1, to: 2 }).columns).toEqual([1, 2]);
+  });
+});
+
+describe("routeText (PRD 2, R1)", () => {
+  it("says in words how each page was read", () => {
+    expect(routeText("cells")).toBe("Read from spreadsheet cells");
+    expect(routeText("text_layer")).toBe("Read from the PDF text");
+    expect(routeText("ocr")).toBe("Read by OCR");
+    expect(routeText("blank")).toBe("Blank page");
+  });
+
+  it("says Not read for a page with no route", () => {
+    expect(routeText(null)).toBe("Not read");
   });
 });
 

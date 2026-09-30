@@ -7,6 +7,7 @@ import {
   firstInvalidField,
   isLocked,
   lockedUntilText,
+  pageRouteTiles,
   parseUploadLimit,
   statTiles,
   tabAfterKey,
@@ -238,6 +239,7 @@ describe("statTiles", () => {
     open_review_items: 3,
     older_versions: 12,
     in_trash: 4,
+    pages_this_month: { cells: 0, text_layer: 1200, ocr: 3, blank: 0 },
   };
 
   it("adds up documents and fills missing statuses with zero", () => {
@@ -257,6 +259,18 @@ describe("statTiles", () => {
     const labels = statTiles(stats).map((tile) => tile.label);
     expect(labels).toContain("Answers labelled Verified");
     expect(labels).toContain("Answers labelled Needs review");
+  });
+});
+
+describe("pageRouteTiles (PRD 2, R6)", () => {
+  it("shows the pages read this month by route, in a fixed order, zeros included", () => {
+    const pages_this_month = { ocr: 3, blank: 0, text_layer: 120000, cells: 0 };
+    expect(pageRouteTiles({ pages_this_month })).toEqual([
+      { label: "Spreadsheet cells", value: "0" },
+      { label: "PDF text", value: "1,20,000" },
+      { label: "OCR", value: "3" },
+      { label: "Blank pages", value: "0" },
+    ]);
   });
 });
 
