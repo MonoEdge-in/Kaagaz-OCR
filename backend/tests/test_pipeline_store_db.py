@@ -712,6 +712,7 @@ def card_content(
     result = read_card(
         FakeChat(answer), reader, max_chars=12000, max_tokens=1024, num_ctx=8192, run_id=str(uuid.uuid4())
     )
+    assert result is not None
     values = label_quoted(result.values, spans)
     return DocumentContent(
         customer_id=customer_id,

@@ -72,12 +72,22 @@ def test_a_bad_model_budget_stops_start_up_by_name(name: str, value: str) -> Non
 
 
 @pytest.mark.parametrize("name", ["MODEL_CARD_MAX_TOKENS", "MODEL_WINDOW_MAX_TOKENS"])
-def test_a_reply_budget_must_leave_room_for_the_document(name: str) -> None:
-    """A reply and its one repair retry must fit the context window with the input."""
-    assert Settings.from_env(shipped(MODEL_NUM_CTX="8192", **{name: "4095"}))
+def test_a_reply_budget_must_leave_1024_tokens_for_the_document(name: str) -> None:
+    """Council fix 7: after the system prompt (at most 1000 tokens), a reply and its one
+    repair retry, and 100 for the chat template, 1024 tokens stay for the document.
+    8192 - 2 x 3034 - 1000 - 100 = 1024."""
+    assert Settings.from_env(shipped(MODEL_NUM_CTX="8192", **{name: "3034"}))
     with pytest.raises(SettingsError, match=name) as caught:
-        Settings.from_env(shipped(MODEL_NUM_CTX="8192", **{name: "4096"}))
+        Settings.from_env(shipped(MODEL_NUM_CTX="8192", **{name: "3035"}))
     assert "MODEL_NUM_CTX" in str(caught.value)
+
+
+def test_a_4096_window_with_a_2047_token_reply_is_refused() -> None:
+    """It passes "under half the window", but leaves the document 2 tokens."""
+    with pytest.raises(SettingsError, match="MODEL_CARD_MAX_TOKENS"):
+        Settings.from_env(
+            shipped(MODEL_NUM_CTX="4096", MODEL_CARD_MAX_TOKENS="2047", MODEL_WINDOW_MAX_TOKENS="100")
+        )
 
 
 def test_a_card_call_and_its_repair_must_end_well_inside_the_lease() -> None:

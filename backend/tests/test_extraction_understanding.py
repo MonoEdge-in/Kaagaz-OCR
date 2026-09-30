@@ -105,6 +105,23 @@ class ModelOnTest(unittest.TestCase):
         links = document_links(understanding.facts, understanding.rule_values + understanding.quoted_values)
         self.assertEqual(links, (LinkIdentifier("invoice_number", "inv17"),))  # gstin is never a link
 
+    def test_no_page_fitting_the_budget_makes_no_call(self) -> None:
+        """Council fix 7: nothing to send, so no call, no beat and no card."""
+        chat = FakeChat(CARD)
+        beats: list[tuple[int, int]] = []
+        understanding = understand(
+            chat,
+            reader_text(INVOICE),
+            RULES,
+            card_max_chars=10,
+            card_max_tokens=1024,
+            num_ctx=8192,
+            run_id=RUN,
+            beat=lambda done, total: beats.append((done, total)),
+        )
+        self.assertEqual((chat.calls, beats, understanding.model_calls), ([], [], 0))
+        self.assertEqual((understanding.facts, understanding.error_code), (DocumentFacts(), None))
+
     def test_a_document_with_no_text_makes_no_call(self) -> None:
         chat = FakeChat()
         understanding, beats = run(chat, spans=[])

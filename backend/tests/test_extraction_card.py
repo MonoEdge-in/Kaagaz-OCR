@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any
 
+from kaagaz import settings as settings_module
 from kaagaz.ai.client import CHAT_OVERHEAD_TOKENS, ModelOutputError, estimate_tokens, input_token_budget
 from kaagaz.extraction.card import (
     CARD_PROMPT_HASH,
@@ -83,7 +84,9 @@ def fact(field: str, value: str, label: str = "") -> dict[str, str]:
 
 def read(spans: list[Span], answer: dict[str, Any], **budget: int) -> CardResult:
     limits = {"max_chars": 12000, "max_tokens": 1024, "num_ctx": 8192, **budget}
-    return read_card(FakeChat(answer), reader_text(spans), run_id=RUN, **limits)
+    result = read_card(FakeChat(answer), reader_text(spans), run_id=RUN, **limits)
+    assert result is not None
+    return result
 
 
 def fields(result: CardResult) -> list[str]:
@@ -301,6 +304,10 @@ class SchemaAndPromptTest(unittest.TestCase):
         self.assertEqual(CARD_PROMPT_HASH, hashlib.sha256(text.encode("utf-8")).hexdigest())
         self.assertEqual(CARD_PROMPT_HASH, "f376d2713bfd2b188c49f22ced263e805c286f8bc44ba7a6d4529d3408f9ba3a")
 
+    def test_the_prompt_fits_the_system_prompt_room_the_start_up_check_keeps(self) -> None:
+        """Council fix 7: settings keeps MAX_SYSTEM_PROMPT_TOKENS for the system prompt."""
+        self.assertLessEqual(estimate_tokens(CARD_SYSTEM_PROMPT), settings_module.MAX_SYSTEM_PROMPT_TOKENS)
+
 
 class ReadCardTest(unittest.TestCase):
     def test_one_call_with_the_prompt_the_schema_the_fenced_input_and_the_reply_budget(self) -> None:
@@ -321,6 +328,15 @@ class ReadCardTest(unittest.TestCase):
         num_ctx = 18 + 2 * 10 + estimate_tokens(CARD_SYSTEM_PROMPT) + CHAT_OVERHEAD_TOKENS
         read_card(chat, reader_text(spans), max_chars=12000, max_tokens=10, num_ctx=num_ctx, run_id=RUN)
         self.assertEqual(chat.calls[0]["user"], '<document>\n<page n="1">\nपाटील\nशिंदे\n</page>\n</document>')
+
+    def test_no_call_when_no_page_fits(self) -> None:
+        """Council fix 7: an empty fence tells the model nothing, so it is never sent."""
+        for budget in ({"num_ctx": 2000}, {"max_chars": 10}):  # no tokens left; no characters left
+            with self.subTest(budget=budget):
+                chat = FakeChat(reply())
+                limits = {"max_chars": 12000, "max_tokens": 1024, "num_ctx": 8192, **budget}
+                self.assertIsNone(read_card(chat, reader_text(INVOICE), run_id=RUN, **limits))
+                self.assertEqual(chat.calls, [])
 
     def test_the_card_its_facts_and_its_values(self) -> None:
         answer = reply(
@@ -717,6 +733,7 @@ class AdversarialTest(unittest.TestCase):
         result = read_card(
             chat, reader_text(spans), max_chars=12000, max_tokens=1024, num_ctx=8192, run_id=RUN
         )
+        assert result is not None
 
         user = chat.calls[0]["user"]
         self.assertNotIn(injection, chat.calls[0]["system"])
