@@ -474,14 +474,19 @@ class DocumentProcessor:
             # No record for this customer: nothing to mark, nothing read.
             raise JobFailed("document_missing", retryable=False)
         run = self._start_run(job)
+        settled = False  # the run was finished, or is being, on a known path
         try:
             self._process(job, record, heartbeat, run)
+            settled = True
         except Superseded:
+            settled = True
             self._close_run(job, run, "superseded", None)  # acked: the newer run does the work
         except LeaseLost:
+            settled = True
             self._close_run(job, run, "superseded", None)  # another delivery owns the job now
             raise
         except JobFailed as failure:
+            settled = True
             if not failure.retryable and not self._record_failure(job, failure.code, run):
                 self._close_run(job, run, "superseded", None)
                 return  # a newer run has started: this stale delivery fails nothing
@@ -489,8 +494,14 @@ class DocumentProcessor:
             self._close_run(job, run, status, failure.code)
             raise
         except BackendUnavailable as error:
+            settled = True
             self._close_run(job, run, "failed", _unavailable_code(error))
             raise
+        finally:
+            if not settled:
+                # Anything else is a bug: it is not caught (no blanket except) and goes on
+                # up to the worker, but its run ends failed rather than staying open.
+                self._close_run(job, run, "failed", "internal_error")
 
     def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
