@@ -324,7 +324,9 @@ def test_load_learned_returns_this_customers_corrections_for_the_fields_asked(db
 
 FACTS = DocumentFacts("invoice", ("en", "hi"), "A bill from Sharma.", date(2026, 8, 12), {"title": "Bill"})
 FACT_COLUMNS = "SELECT doc_type, languages, summary, document_date, card FROM documents WHERE id = :d"
-NO_FACTS = [{"doc_type": None, "languages": [], "summary": None, "document_date": None, "card": None}]
+NO_FACTS: list[dict[str, Any]] = [
+    {"doc_type": None, "languages": [], "summary": None, "document_date": None, "card": None}
+]
 LINKS = (
     "SELECT document_id::text, linked_document_id::text, identifier_kind, identifier_value"
     " FROM document_links WHERE document_id = :d OR linked_document_id = :d"

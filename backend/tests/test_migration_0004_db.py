@@ -73,7 +73,7 @@ _NEW_COLUMNS = (
     " FROM documents d JOIN pages p ON p.document_id = d.id JOIN pieces pc ON pc.document_id = d.id"
     " JOIN extracted_values v ON v.document_id = d.id WHERE d.id = :d"
 )
-DEFAULTS = (None, [], None, None, None, None, None, None, False, "", None, None, None)
+DEFAULTS: tuple[object, ...] = (None, [], None, None, None, None, None, None, False, "", None, None, None)
 
 
 def _read(database: Database, customer_id: str, statement: str, doc: str) -> tuple[object, ...]:
@@ -220,13 +220,15 @@ def test_new_checks_refuse_bad_rows(db: Database, constraint: str, statement: st
             ),
             {"v": value, "c": customer, "d": doc},
         )
-        invoice = conn.execute(
-            text(
-                "INSERT INTO invoices (customer_id, document_id, label, check_status)"
-                " VALUES (:c, :d, 'needs_review', 'not_checked') RETURNING id"
-            ),
-            {"c": customer, "d": doc},
-        ).scalar_one()
+        invoice = str(
+            conn.execute(
+                text(
+                    "INSERT INTO invoices (customer_id, document_id, label, check_status)"
+                    " VALUES (:c, :d, 'needs_review', 'not_checked') RETURNING id"
+                ),
+                {"c": customer, "d": doc},
+            ).scalar_one()
+        )
     params = {"c": customer, "d": doc, "v": value, "i": invoice, "t": T0}
 
     with pytest.raises(IntegrityError) as refused, db.customer(customer) as conn:

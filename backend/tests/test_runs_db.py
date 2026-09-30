@@ -101,9 +101,9 @@ def test_finish_run_writes_every_total_and_never_ends_before_it_started(db: Data
         "finished_at": T1,
         "config": {"ocr_dpi": 200},
     }
-    names = ("ocr_engine", "model_chat", "model_vision", "model_embed", "pages_cells", "pages_text_layer")
-    names += ("pages_ocr", "pages_blank", "vision_crops", "model_calls", "dropped_quotes", "seconds_total")
-    names += ("seconds_ocr", "quotes_returned", "values_verified", "values_needs_review")
+    names = ["ocr_engine", "model_chat", "model_vision", "model_embed", "pages_cells", "pages_text_layer"]
+    names += ["pages_ocr", "pages_blank", "vision_crops", "model_calls", "dropped_quotes", "seconds_total"]
+    names += ["seconds_ocr", "quotes_returned", "values_verified", "values_needs_review"]
     assert [row[name] for name in names] == [
         "rapidocr 3.4",
         "qwen3:4b",

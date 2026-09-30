@@ -33,3 +33,4 @@ class ExtractedValue:
     label_reason: str = "single_reader"
     value_number: Decimal | None = None
     value_date: date | None = None
+    label_location: Location | None = None  # the value's label, when it sits elsewhere (D3)

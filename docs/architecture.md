@@ -61,7 +61,7 @@ The review queue shows only values of each family's current, ready version, out 
 
 ## Data and customer separation
 
-Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`, `folders`, `tags`, `document_tags`. Every one of them except `customers` carries the customer.
+Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`, `folders`, `tags`, `document_tags`, `invoices`, `invoice_lines`, `document_links`, `processing_runs`. Every one of them except `customers` carries the customer. A document's invoice, lines and links are rebuilt by each run of the pipeline; `processing_runs` keeps one row per run, and outlives its document (PROVISIONAL).
 
 Customers are kept apart by two locks:
 

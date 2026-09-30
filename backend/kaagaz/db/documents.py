@@ -15,13 +15,15 @@ UnknownFolder.
 
 Each call is one indexed statement: O(log n) in the number of documents.
 ``mark_ready`` and ``add_version`` are the exceptions: each takes the family
-lock first (below).
+lock first (below). ``PgDocuments.mark_ready`` runs its transaction again when
+PostgreSQL breaks a deadlock (AR7).
 
 ``delete_forever`` is today's full delete of one document, shared by the trash
 purge (kaagaz/jobs/purge.py) and ``delete_family_forever`` (the permanent delete).
 """
 
 import dataclasses
+import json
 from collections.abc import Sequence
 from typing import Any
 
@@ -29,9 +31,11 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.db.engine import Database, unavailable
-from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, sqlstate
+from kaagaz.db.runs import finish_run, is_latest_run
+from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
 from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, UnknownFolder
+from kaagaz.pipeline import FinishedRun, Progress, Superseded
 from kaagaz.scanning.gate import DocumentStatus
 
 _SELECT = (
@@ -63,27 +67,44 @@ _READY = (
 )
 
 
-def mark_ready(conn: Connection, customer_id: str, document_id: str, page_count: int) -> None:
+def mark_ready(
+    conn: Connection, customer_id: str, document_id: str, page_count: int, *, run: FinishedRun | None = None
+) -> None:
     """The document is read: set it ready with its page count and, unless a newer
     version of its family is ready already, make it the family's one current version.
+    With ``run``, finish that run in the same transaction, so a ready document and
+    its finished run commit together.
 
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock
     (``trash.lock_family``) comes before any write, so two versions finishing at
     once queue, and trash, restore and the purge never deadlock with it. A
-    missing document, or a rejected one (final), is left as it is.
-    3 or 4 statements; O(v log D) time and O(v) space for the family's v versions.
+    missing document, or a rejected one (final), is left as it is, and ``run``
+    is still finished: failed with ``document_missing``, or rejected (AR11,
+    PROVISIONAL). Raises Superseded, and writes nothing, when ``run`` is not the
+    document's latest run (the run fence, read under the family lock).
+    3 to 6 statements; O(v log D) time and O(v) space for the family's v versions.
     """
     family_id = lock_family(conn, customer_id, document_id)
     if family_id is None:
+        if run is not None:
+            closed = dataclasses.replace(run.totals, status="failed", error_code="document_missing")
+            finish_run(conn, customer_id, dataclasses.replace(run, totals=closed))
         return
+    if run is not None and not is_latest_run(conn, customer_id, document_id, run.run_id):
+        raise Superseded(run.run_id)
     params = {"c": customer_id, "d": document_id, "f": family_id}
     state = conn.execute(text(_READY_STATE), params).one()
     if state.status == DocumentStatus.REJECTED.value:
+        if run is not None:
+            closed = dataclasses.replace(run.totals, status="rejected")
+            finish_run(conn, customer_id, dataclasses.replace(run, totals=closed))
         return
     current = not state.newer_ready
     if current:
         conn.execute(text(_OTHERS_NOT_CURRENT), params)
     conn.execute(text(_READY), {**params, "pages": page_count, "current": current})
+    if run is not None:
+        finish_run(conn, customer_id, run)
 
 
 def delete_forever(conn: Connection, storage: BlobStorage, customer_id: str, document_id: str) -> None:
@@ -342,10 +363,30 @@ class PgDocuments:
                 {"code": code, "c": customer_id, "d": document_id},
             )
 
-    def mark_ready(self, customer_id: str, document_id: str, page_count: int) -> None:
+    def mark_ready(
+        self, customer_id: str, document_id: str, page_count: int, *, run: FinishedRun | None = None
+    ) -> None:
         """``mark_ready`` in its own transaction: the pipeline's last step."""
+
+        def transaction() -> None:
+            with self._db.customer(customer_id) as conn:
+                mark_ready(conn, customer_id, document_id, page_count, run=run)
+
+        with unavailable():
+            retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
+
+    def set_progress(self, customer_id: str, document_id: str, progress: Progress) -> None:
+        """Show how far the reading has got (X3), on a document still in progress
+        (received or clean) only. Its own short transaction, one indexed statement;
+        never called while this process holds another transaction."""
         with unavailable(), self._db.customer(customer_id) as conn:
-            mark_ready(conn, customer_id, document_id, page_count)
+            conn.execute(
+                text(
+                    "UPDATE documents SET progress = CAST(:p AS jsonb)"
+                    " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
+                ),
+                {"p": json.dumps(progress.to_json()), "c": customer_id, "d": document_id},
+            )
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         with unavailable(), self._db.customer(customer_id) as conn:

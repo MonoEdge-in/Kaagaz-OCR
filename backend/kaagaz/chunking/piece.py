@@ -25,6 +25,8 @@ class Piece:
     text: str
     locations: tuple[Location, ...]  # one per cell or line of ``text``, same order; never empty
     label: str  # VERIFIED or NEEDS_REVIEW
+    context_header: str = ""  # the document's type, date and section, for search (C4)
+    text_latin: str | None = None  # Devanagari text spelt in Latin letters (L3)
 
     @property
     def page_from(self) -> int:
