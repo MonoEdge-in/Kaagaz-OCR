@@ -570,6 +570,37 @@ def test_save_skips_a_target_deleted_before_its_lock(db: Database) -> None:
     assert counts(db, customer, doc)["pieces"] == 2
 
 
+@pytest.mark.parametrize("step", ["save", "clear"])
+def test_links_wait_for_an_old_partner_being_deleted_before_any_link_is_touched(
+    db: Database, step: str
+) -> None:
+    """A delete forever or a purge of B locks B FOR UPDATE, then its cascade deletes
+    B's link rows. A's save or clear locks B FOR KEY SHARE before it touches a link
+    row, so it waits for that delete instead of holding rows the cascade needs."""
+    customer, first, second = linked_pair(db)
+    session = new_session()
+    named = _named_database(session)
+    store = PgPipelineStore(named)
+    steps = {
+        "save": lambda: store.save(content(customer, first)),
+        "clear": lambda: store.clear(customer, first),
+    }
+    ids = {"c": customer, "d": second}
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with db.customer(customer) as conn:
+                conn.execute(
+                    text("SELECT id FROM documents WHERE customer_id = :c AND id = :d FOR UPDATE"), ids
+                )
+                replacing = pool.submit(steps[step])
+                wait_until_blocked(db, application_name=session)
+                conn.execute(text("DELETE FROM documents WHERE customer_id = :c AND id = :d"), ids)
+            replacing.result(timeout=10)
+    finally:
+        named.engine.dispose()
+    assert links(db, customer, first) == set()
+
+
 def deadlock_first(monkeypatch: pytest.MonkeyPatch, module: ModuleType, times: int) -> list[str]:
     """Make ``module.lock_family`` fail its first ``times`` calls with a real 40P01 from
     the server, the error PostgreSQL gives when it breaks a deadlock. Returns the calls."""

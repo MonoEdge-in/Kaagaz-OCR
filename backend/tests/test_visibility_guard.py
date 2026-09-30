@@ -52,7 +52,7 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # two documents read at once still link (AR5, PROVISIONAL). PRD 3's reader of the
     # links filters both ends with LIVE_CURRENT.
     (pipeline_store, "_LINK_TARGETS"): LIVE,
-    (pipeline_store, "_LOCK_TARGETS"): LIVE,
+    (pipeline_store, "_LIVE_TARGETS"): LIVE,
 }
 
 # Statements that count every version on purpose, and why.
@@ -68,6 +68,10 @@ BY_ID: dict[tuple[ModuleType, str], str] = {
         "_SELECT",
     ): "get_document: the detail, the file and the pages open any version, in Trash or not",
     (listing, "_VERSIONS"): "family_versions: the detail lists every version of its family, in Trash or not",
+    (
+        pipeline_store,
+        "_LOCK_LINKED",
+    ): "locks the link targets and old partners by id in one order; filters nothing",
 }
 
 _JOINS_DOCUMENTS = re.compile(r"\bdocuments d\b")
