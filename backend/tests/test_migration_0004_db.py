@@ -1,5 +1,6 @@
 """Migration 0004 (PRD 2 WP2.1): rows survive upgrade, downgrade and upgrade again, the
-downgrade refuses while labels it can't keep exist, and every new CHECK refuses a bad row.
+downgrade refuses while rows use what 0003 can't hold, every new CHECK refuses a bad row,
+and a document can be marked failed with every code the pipeline emits.
 
 The fresh database and the schema snapshot come from test_migration_0002_db (a
 plain import). Rows are written through the app role with the customer set.
@@ -12,15 +13,17 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, TextClause, text
 from sqlalchemy.exc import IntegrityError
 
+from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns
 from tests import test_migration_0002_db as m0002
 from tests.db_support import BACKEND, insert_document, migrate, new_customer, violation
-from tests.test_pipeline_store_db import new_document, numbered
+from tests.test_pipeline_store_db import new_document, numbered, rows
+from tests.test_runs_db import emitted_codes
 
 pytestmark = pytest.mark.db
 
@@ -122,19 +125,32 @@ def _current(url: str) -> str:
     return done.stdout.decode()
 
 
-def test_downgrade_refuses_while_check_failed_values_exist(fresh: tuple[str, Database]) -> None:
+_FAILED_WITH = text("UPDATE documents SET status = 'failed', failure_code = :reason WHERE id = :d")
+
+
+@pytest.mark.parametrize(
+    ("statement", "reason", "message"),
+    [
+        (_INSERT_VALUE, "check_failed", b"values labelled check_failed"),
+        (_FAILED_WITH, "not_utf8", b"documents have failure codes 0003 does not allow"),
+    ],
+    ids=["check_failed", "not_utf8"],
+)
+def test_downgrade_refuses_while_rows_use_what_0003_cannot_hold(
+    fresh: tuple[str, Database], statement: TextClause, reason: str, message: bytes
+) -> None:
     url, database = fresh
     migrate(url, "head")
     at_head = m0002._schema(database)
     customer, _ = new_customer(database)
     with database.customer(customer) as conn:
         doc = insert_document(conn, customer)
-        conn.execute(_INSERT_VALUE, {"c": customer, "d": doc, "r": _BOX, "reason": "check_failed"})
+        conn.execute(statement, {"c": customer, "d": doc, "r": _BOX, "reason": reason})
 
     with pytest.raises(subprocess.CalledProcessError) as refused:
         m0002._downgrade(url, "0003")
 
-    assert b"values labelled check_failed" in refused.value.stderr
+    assert message in refused.value.stderr
     assert "0004 (head)" in _current(url)
     assert m0002._schema(database) == at_head
 
@@ -234,3 +250,29 @@ def test_new_checks_refuse_bad_rows(db: Database, constraint: str, statement: st
     with pytest.raises(IntegrityError) as refused, db.customer(customer) as conn:
         conn.execute(text(statement), params)
     assert violation(refused.value) == ("23514", constraint)
+
+
+FAILURE_CODES = sorted(emitted_codes())
+
+
+@pytest.mark.parametrize("code", FAILURE_CODES)
+def test_a_document_can_be_marked_failed_with_every_code_the_pipeline_emits(db: Database, code: str) -> None:
+    """0004 fixes a bug on main: 0001's pattern had no digits, so a CSV that is not
+    UTF-8 (``not_utf8``) could not be marked failed."""
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        doc = insert_document(conn, customer, status="clean")
+    PgDocuments(db).set_failed(customer, doc, code)
+    assert rows(db, customer, "SELECT status, failure_code FROM documents WHERE id = :d", doc) == [
+        {"status": "failed", "failure_code": code}
+    ]
+
+
+def test_a_failure_code_outside_the_pattern_is_refused(db: Database) -> None:
+    assert "not_utf8" in FAILURE_CODES
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        doc = insert_document(conn, customer, status="clean")
+    with pytest.raises(IntegrityError) as refused:
+        PgDocuments(db).set_failed(customer, doc, "Bad-Code")
+    assert violation(refused.value) == ("23514", "documents_failure_code_check")
