@@ -9,6 +9,7 @@ import json
 import logging
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,6 +49,7 @@ class Reply:
     headers: dict[str, str] = field(default_factory=dict)
     hold: bool = False  # wait for the test before answering at all
     cut: bool = False  # say the full length, send half, wait for the test, then close
+    trickle: str = ""  # "headers" or "body": one byte every 0.1 s, at most 60, then close
 
 
 class FakeOcrServer:
@@ -71,6 +73,15 @@ def fake() -> Iterator[FakeOcrServer]:
                 server_fake.let_go.wait(10)
             payload = reply.body if isinstance(reply.body, bytes) else json.dumps(reply.body).encode()
             try:
+                if reply.trickle:
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\n")
+                    if reply.trickle == "body":
+                        self.wfile.write(b"Content-Length: 1000\r\n\r\n")
+                    for _ in range(60):  # paced by the Event, which the test's end sets
+                        if server_fake.let_go.wait(0.1):
+                            return
+                        self.wfile.write(b"a")
+                    return
                 self.send_response(reply.status)
                 for name, value in reply.headers.items():
                     self.send_header(name, value)
@@ -178,6 +189,17 @@ def test_a_reply_past_the_deadline_is_unavailable(fake: FakeOcrServer, reply: Re
     fake.replies.append(reply)
     with pytest.raises(BackendUnavailable):
         engine(fake, timeout=0.3).read(page())
+
+
+@pytest.mark.parametrize("where", ["headers", "body"])
+def test_a_reply_that_trickles_in_is_cut_at_the_deadline(fake: FakeOcrServer, where: str) -> None:
+    """A byte every 0.1 s never trips a per-read timeout: only one deadline for the
+    whole call stops it, within the timeout and a small margin."""
+    fake.replies.append(Reply(trickle=where))
+    started = time.monotonic()
+    with pytest.raises(BackendUnavailable):
+        engine(fake, timeout=0.5).read(page())
+    assert time.monotonic() - started < 0.5 + 1.0
 
 
 def test_a_reply_cut_off_mid_body_is_unavailable(fake: FakeOcrServer) -> None:
