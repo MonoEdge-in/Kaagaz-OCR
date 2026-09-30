@@ -90,8 +90,8 @@ from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.ports import LeaseLost
 from kaagaz.jobs.worker import Heartbeat, JobFailed
 from kaagaz.preparing.page_checks import PageCheck
-from kaagaz.reading.route import route_for_page
-from kaagaz.reading.socket import NoReader
+from kaagaz.reading.route import RouteDecision
+from kaagaz.reading.socket import NoReader, OnPage
 from kaagaz.reading.spans import (
     DIRECT_ORIGINS,
     BoxLocation,
@@ -337,9 +337,7 @@ class OcrMeter(Protocol):
 class ReadingSocket(Protocol):
     """kaagaz.reading.socket.ReaderSocket in production."""
 
-    def read(
-        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
-    ) -> list[Span]: ...
+    def read(self, detected_type: str, data: bytes, *, on_page: OnPage | None = None) -> list[Span]: ...
 
     def read_second(self, detected_type: str, data: bytes) -> list[Span] | None: ...
 
@@ -519,7 +517,8 @@ class DocumentProcessor:
         pages = [_page_record(info, prepared) for info in prepared.pages]
 
         self._progress(job, "reading", 0, len(pages))
-        on_page = self._reading_beat(job, heartbeat, len(pages))
+        reads: list[RouteDecision | None] = []  # how each page was read, as the reader said
+        on_page = self._reading_beat(job, heartbeat, len(pages), reads)
         try:
             spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=on_page))
         except NoReader:
@@ -540,7 +539,7 @@ class DocumentProcessor:
         # The socket already refuses spans without a real location; this keeps the
         # rule here too, so no piece or value can be saved without one.
         usable = [span for span in spans if _points_at(span.location)]
-        pages = _with_routes(pages, prepared, usable, ocr_on=self._ocr_on)
+        pages = _with_routes(pages, reads)
         run.routes = Counter(page.route for page in pages if page.route is not None)
         # The raw second reading is kept as read; only the labels leave pages out.
         compared = None if second is None else _without_unread_pages(second, pages)
@@ -747,13 +746,17 @@ class DocumentProcessor:
                 extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": step},
             )
 
-    def _reading_beat(self, job: Job, heartbeat: Heartbeat, total: int) -> Callable[[], None]:
-        """The readers' ``on_page``: the heartbeat, then "reading i of total"."""
+    def _reading_beat(
+        self, job: Job, heartbeat: Heartbeat, total: int, reads: list[RouteDecision | None]
+    ) -> OnPage:
+        """The readers' ``on_page``: keep how the page was read, the heartbeat, then
+        "reading i of total"."""
         done = 0
 
-        def on_page() -> None:
+        def on_page(read: RouteDecision | None) -> None:
             nonlocal done
             done += 1
+            reads.append(read)
             heartbeat()
             self._progress(job, "reading", min(done, total), total)
 
@@ -780,24 +783,20 @@ def _page_record(info: PageInfo, prepared: Prepared) -> PageRecord:
     return replace(record, effective_dpi=check.effective_dpi, low_resolution=check.low_resolution)
 
 
-def _with_routes(
-    pages: list[PageRecord], prepared: Prepared, spans: Sequence[Span], *, ocr_on: bool
-) -> list[PageRecord]:
-    """Each page with its route (R1), from the origins of the first reader's spans
-    on it and whether its stored picture is blank (R3). O(spans + pages)."""
-    origins: dict[int, set[str | None]] = {}
-    for span in spans:
-        origins.setdefault(span.location.page, set()).add(span.origin)
+def _with_routes(pages: list[PageRecord], reads: Sequence[RouteDecision | None]) -> list[PageRecord]:
+    """Each page with its route (R1): a sheet's page is cells; any other page's is
+    the one its reader said it read it by (``on_page``, in page order), so a stored
+    route never disagrees with what was read (council PR 3 review, low 7); a page
+    the reader did not report was not read (None). O(pages)."""
     routed = []
     for page in pages:
-        check = prepared.checks.get(page.info.page)
-        decision = route_for_page(
-            unit=page.info.unit,
-            origins=origins.get(page.info.page, set()),
-            blank=check is not None and check.blank,
-            ocr_on=ocr_on,
-        )
-        routed.append(replace(page, route=None if decision is None else decision.route))
+        index = page.info.page - 1
+        if page.info.unit == "cells":
+            route: str | None = "cells"
+        else:
+            read = reads[index] if 0 <= index < len(reads) else None
+            route = None if read is None else read.route
+        routed.append(replace(page, route=route))
     return routed
 
 

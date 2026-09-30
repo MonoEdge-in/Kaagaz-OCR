@@ -66,7 +66,7 @@ from kaagaz.reading.lines import PageFrame, WordBox, line_spans
 from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
 from kaagaz.reading.pdf_signals import page_signals, words_left_visible
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.socket import NoReader
+from kaagaz.reading.socket import NoReader, OnPage
 from kaagaz.reading.spans import ReadError, Span
 from kaagaz.reading.text_quality import (
     PageSignals,
@@ -135,14 +135,15 @@ class PdfReader:
         lowered = "" if self._lowered_dpi is None else f";ocr_dpi={self._lowered_dpi}"
         return f"{version}+{self._ocr.name}-{self._ocr.version}{lowered}"
 
-    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
+    def read(self, data: bytes, *, on_page: OnPage | None = None) -> list[Span]:
         self._lowered_dpi = None
         spans: list[Span] = []
 
         def visit(pdf: Any, document: Any, number: int) -> None:
-            spans.extend(self._read_page(pdf, document, number))
+            page_spans, read = self._read_page(pdf, document, number)
+            spans.extend(page_spans)
             if on_page is not None:
-                on_page()
+                on_page(read)
 
         _for_each_page(data, self._max_pages, visit)
         if not spans:
@@ -151,14 +152,17 @@ class PdfReader:
             raise ReadError("no_text")
         return spans
 
-    def _read_page(self, pdf: Any, document: Any, number: int) -> list[Span]:
-        """One page's spans, by the rules in the module notes."""
+    def _read_page(self, pdf: Any, document: Any, number: int) -> tuple[list[Span], RouteDecision | None]:
+        """One page's spans, by the rules in the module notes, and how it was read
+        (its route and the check's reason), or None when it gave nothing unread."""
         pdfium_page = document[number - 1]
         try:
             rules = self._rules
             text_spans, decision, _signals = _parsed(lambda: _text_layer(pdf, pdfium_page, number, rules))
-            if decision.route == "text_layer" or self._ocr is None:
-                return text_spans
+            if decision.route == "text_layer":
+                return text_spans, decision
+            if self._ocr is None:  # kept as before; a page with no text was not read
+                return text_spans, _kept(decision) if text_spans else None
             dpi = _fitting_dpi(pdfium_page.get_size(), self._dpi, self._max_ocr_pixels)
             image = render_pdf_page(pdfium_page, dpi=dpi, max_image_pixels=self._max_ocr_pixels)
         finally:
@@ -167,12 +171,14 @@ class PdfReader:
             self._lowered_dpi = min(dpi, self._lowered_dpi or dpi)
         fallback = text_spans if text_layer_fallback_allowed(decision) else []
         try:
-            if is_blank(image, self._blank_stddev):
-                return fallback  # R3: a blank page is never sent to OCR
+            if is_blank(image, self._blank_stddev):  # R3: a blank page is never sent to OCR
+                return fallback, _kept(decision) if fallback else RouteDecision("blank", "blank")
             scanned = ocr_spans(self._ocr.read(image), number, image.width, image.height)
         finally:
             image.close()
-        return scanned or fallback
+        if scanned or not fallback:
+            return scanned, decision
+        return fallback, _kept(decision)
 
 
 def text_layer_checks(
@@ -226,6 +232,11 @@ def _text_layer(
     finally:
         page.close()  # release this page's parsed objects
     return spans, text_layer_ok(" ".join(span.text for span in spans), signals, rules), signals
+
+
+def _kept(decision: RouteDecision) -> RouteDecision:
+    """A page whose text layer failed the check but was kept: text_layer, with why."""
+    return RouteDecision("text_layer", decision.reason)
 
 
 def _fitting_dpi(size: tuple[float, float], dpi: int, max_pixels: int) -> int:

@@ -33,16 +33,20 @@ Time is the engine's time per page. Memory is one decoded page at a time.
 """
 
 import math
-from collections.abc import Callable
 
 from PIL import Image
 
 from kaagaz.preparing.page_checks import is_blank
 from kaagaz.preparing.pages import image_pages
 from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
+from kaagaz.reading.route import RouteDecision
+from kaagaz.reading.socket import OnPage
 from kaagaz.reading.spans import ReadError, Span
 
 _A4_SHORT_SIDE_INCHES = 8.27
+# A photo has no text layer (few_chars); a blank one is never sent (R3).
+_READ_BY_OCR = RouteDecision("ocr", "few_chars")
+_BLANK = RouteDecision("blank", "blank")
 
 
 class ImageReader:
@@ -66,17 +70,18 @@ class ImageReader:
     def version(self) -> str:
         return self._ocr.version  # asked for after reading: PaddleOCR-VL's comes from its reply
 
-    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
+    def read(self, data: bytes, *, on_page: OnPage | None = None) -> list[Span]:
         spans: list[Span] = []
         pages = image_pages(data, max_pages=self._max_pages, max_image_pixels=self._max_image_pixels)
         for number, image in enumerate(pages, start=1):
             page = _for_ocr(image, self._max_short_side, self._max_ocr_pixels)
-            if not is_blank(page, self._blank_stddev):
+            blank = is_blank(page, self._blank_stddev)
+            if not blank:
                 spans.extend(ocr_spans(self._ocr.read(page), number, page.width, page.height))
             page.close()
             image.close()
             if on_page is not None:
-                on_page()
+                on_page(_BLANK if blank else _READ_BY_OCR)
         if not spans:
             raise ReadError("no_text")
         return spans

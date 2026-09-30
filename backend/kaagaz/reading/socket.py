@@ -24,10 +24,12 @@ cell has no kind and no table; a table cell has all its table fields, and
 nothing else has any.
 
 ``read`` takes an optional ``on_page`` callback. A reader that reads page by
-page (OCR of scans and photos) calls it after each page, so a long reading
-can say "still working" (the worker's heartbeat renews the job's lease). It
-is keyword-only and optional, so a reader with nothing to beat for between
-pages accepts it and ignores it.
+page (PDFs, scans and photos) calls it after each page, so a long reading
+can say "still working" (the worker's heartbeat renews the job's lease), with
+how that page was read: its ``RouteDecision`` (PRD 2 R1, the route stored for
+it, so a stored route is always the reader's), or None for a page it did not
+read. It is keyword-only and optional, so a reader with nothing to beat for
+between pages accepts it and ignores it.
 
 PROVISIONAL until the reader contract (#3) is written. PROVISIONAL (plan
 7.4): ``on_page`` is part of that contract, for Vrushit and PRD 2 to agree.
@@ -37,7 +39,11 @@ import math
 from collections.abc import Callable, Iterable, Mapping
 from typing import Protocol
 
+from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.spans import BLOCK_KINDS, ORIGINS, TABLE_ID, BoxLocation, CellLocation, ReadError, Span
+
+# After each page: how it was read (its route and why), or None when it was not read.
+OnPage = Callable[[RouteDecision | None], None]
 
 
 class Reader(Protocol):
@@ -46,7 +52,7 @@ class Reader(Protocol):
     @property
     def version(self) -> str: ...  # read-only: asked for after reading
 
-    def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> Iterable[Span]: ...
+    def read(self, data: bytes, *, on_page: OnPage | None = None) -> Iterable[Span]: ...
 
 
 class NoReader(Exception):
@@ -65,9 +71,7 @@ class ReaderSocket:
         self._readers = dict(readers)
         self._second_readers = dict(second_readers or {})
 
-    def read(
-        self, detected_type: str, data: bytes, *, on_page: Callable[[], None] | None = None
-    ) -> list[Span]:
+    def read(self, detected_type: str, data: bytes, *, on_page: OnPage | None = None) -> list[Span]:
         """All spans of the document, or ReadError / NoReader.
 
         The socket checks every span has a real location and non-empty text,

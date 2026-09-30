@@ -50,7 +50,7 @@ from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.preparing.page_checks import measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
 from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
-from kaagaz.reading.route import route_for_page
+from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError, Span
 from kaagaz.reading.wiring import PdfPageCheck, build_reader_socket, pdf_text_layer_checks
@@ -236,9 +236,13 @@ def _measure(
         )
         prepared_at = timer()
         stamps = [prepared_at]
-        spans = build_reader_socket(settings, meter).read(
-            detected, data, on_page=lambda: stamps.append(timer())
-        )
+        reads: list[RouteDecision | None] = []  # how each page was read, as the reader said
+
+        def on_page(read: RouteDecision | None) -> None:
+            stamps.append(timer())
+            reads.append(read)
+
+        spans = build_reader_socket(settings, meter).read(detected, data, on_page=on_page)
         read_at = timer()
         checks = pdf_text_layer_checks(settings, data) if detected == sniff.PDF else []
     except NoReader:
@@ -255,7 +259,12 @@ def _measure(
     for index, (page, unit) in enumerate(pages):
         page_spans = by_page.get(page, [])
         check = checks[index] if index < len(checks) else None
-        line = _page_line(page, unit, page_spans, prepared, check, ocr_on=meter is not None)
+        read = (
+            RouteDecision("cells", "ok")
+            if unit == "cells"
+            else (reads[index] if index < len(reads) else None)
+        )
+        line = _page_line(page, read, page_spans, prepared, check)
         if len(stamps) == len(pages) + 1:
             line += f" seconds {stamps[index + 1] - stamps[index]:.2f}"
         if truth is not None:
@@ -271,22 +280,15 @@ def _measure(
 
 def _page_line(
     page: int,
-    unit: str,
+    read: RouteDecision | None,
     spans: list[Span],
     prepared: PreparedPages,
     check: PdfPageCheck | None,
-    *,
-    ocr_on: bool,
 ) -> str:
-    """One page's route, reason and numbers (ML 12), with no text from the page."""
+    """One page's route and reason as its reader read it, and the numbers (ML 12),
+    with no text from the page."""
     found = prepared.checks.get(page)
-    decision = route_for_page(
-        unit=unit,
-        origins={span.origin for span in spans},
-        blank=found is not None and found.blank,
-        ocr_on=ocr_on,
-        check=None if check is None else check[0],
-    )
+    decision = read
     route, reason = ("none", "none") if decision is None else (decision.route, decision.reason)
     text = " ".join(span.text for span in spans)
     devanagari, foreign = _script_shares(text)
