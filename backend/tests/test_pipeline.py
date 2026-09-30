@@ -534,7 +534,7 @@ class ContextAndScriptTest(unittest.TestCase):
             [p.context_header for p in content.pieces][:2],
             [
                 "Document: sales.csv | Sheet 1",
-                "Document: sales.csv | Sheet 1 | Before: A: invoice | B: amount",
+                "Document: sales.csv | Sheet 1 | Before: A: invoice ¦ B: amount",
             ],
         )
 
