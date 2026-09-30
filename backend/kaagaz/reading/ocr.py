@@ -34,15 +34,32 @@ from kaagaz.settings import Settings, SettingsError
 
 
 @dataclass(frozen=True, slots=True)
+class OcrTable:
+    """Where a table cell sits: its table on the page, and its row and column from 0."""
+
+    table_id: str
+    row: int
+    col: int
+    header: bool
+
+
+@dataclass(frozen=True, slots=True)
 class OcrLine:
-    """One piece of text an engine found, in pixels of the image it was given."""
+    """One piece of text an engine found, in pixels of the image it was given.
+
+    A layout engine (PaddleOCR-VL) gives one line per block, with its kind
+    (``spans.BLOCK_KINDS``) and, for a table cell, its table. It gives no
+    confidence, so that is None: never a made-up number.
+    """
 
     text: str
     x0: float
     y0: float
     x1: float
     y1: float
-    confidence: float
+    confidence: float | None
+    kind: str | None = None
+    table: OcrTable | None = None
 
 
 class OcrEngine(Protocol):
@@ -110,8 +127,12 @@ def ocr_spans(lines: list[OcrLine], page_no: int, width_px: int, height_px: int)
     (never guessed). Confidence is clamped to 0..1. O(n log n) for n lines.
     """
     words = [
-        WordBox(line.text, line.x0, line.y0, line.x1, line.y1, min(1.0, max(0.0, line.confidence)))
+        WordBox(line.text, line.x0, line.y0, line.x1, line.y1, _clamped(line.confidence))
         for line in lines
-        if line.text.strip() and math.isfinite(line.confidence)
+        if line.text.strip() and (line.confidence is None or math.isfinite(line.confidence))
     ]
     return line_spans(words, page_no, PageFrame(0.0, 0.0, float(width_px), float(height_px)))
+
+
+def _clamped(confidence: float | None) -> float | None:
+    return None if confidence is None else min(1.0, max(0.0, confidence))

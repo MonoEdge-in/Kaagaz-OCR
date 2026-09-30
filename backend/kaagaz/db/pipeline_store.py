@@ -41,7 +41,11 @@ the links filters both ends with LIVE_CURRENT. The ``LIVE`` fragment
 
 A reader output is stored as a JSON array of spans, each
 ``{"text", "raw", "region", "confidence"}`` with ``region`` as in
-kaagaz.reading.spans.location_to_json.
+kaagaz.reading.spans.location_to_json, plus ``"kind"``, ``"origin"``,
+``"table_id"``, ``"row"``, ``"col"`` and ``"header"`` only when they are set
+(PRD 2 P4). Outputs stored before PRD 2 have none of them and still load
+(``span_from_json``). A table ``row`` is a top-level key, so it never mixes
+with a cell's ``region.row``, which is all ``listing.sheet_cells`` reads.
 
 Cost per save: one family lock, 1 update, 5 deletes, at most 6 batched inserts
 and 3 to 7 small link statements; O(rows) data sent. The link lookup reads this
@@ -50,7 +54,7 @@ One indexed query for ``load_learned``.
 """
 
 import json
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict
 from typing import Any
 
@@ -63,7 +67,7 @@ from kaagaz.db.trash import lock_family
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.pipeline import DocumentContent, DocumentFacts, InvoiceRow, LinkIdentifier, Superseded
-from kaagaz.reading.spans import Span, location_to_json
+from kaagaz.reading.spans import Span, location_from_json, location_to_json
 
 _UPDATE_FACTS = text(
     "UPDATE documents SET doc_type = :doc_type, languages = CAST(:languages AS text[]),"
@@ -154,12 +158,38 @@ _INSERT_LINK = text(
 
 
 def span_to_json(span: Span) -> dict[str, Any]:
-    return {
+    data: dict[str, Any] = {
         "text": span.text,
         "raw": span.raw,
         "region": location_to_json(span.location),
         "confidence": span.confidence,
     }
+    optional = {
+        "kind": span.kind,
+        "origin": span.origin,
+        "table_id": span.table_id,
+        "row": span.row,
+        "col": span.col,
+        "header": span.header,
+    }
+    data.update({key: value for key, value in optional.items() if value is not None})
+    return data
+
+
+def span_from_json(data: Mapping[str, Any]) -> Span:
+    """A stored span back as a Span; a key that is not there loads as None."""
+    return Span(
+        text=data["text"],
+        raw=data["raw"],
+        location=location_from_json(data["region"]),
+        confidence=data["confidence"],
+        kind=data.get("kind"),
+        origin=data.get("origin"),
+        table_id=data.get("table_id"),
+        row=data.get("row"),
+        col=data.get("col"),
+        header=data.get("header"),
+    )
 
 
 class PgPipelineStore:

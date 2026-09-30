@@ -36,6 +36,7 @@ class RapidOcrTest(unittest.TestCase):
         self.assertIn("INVOICE", " ".join(line.text for line in lines))
         for line in lines:
             self.assertTrue(0 <= line.x0 < line.x1 <= image.width and 0 <= line.y0 < line.y1 <= image.height)
+            assert line.confidence is not None  # RapidOCR always gives one
             self.assertTrue(0.0 <= line.confidence <= 1.0)
 
         # The engine's boxes, as one line span of page fractions.
