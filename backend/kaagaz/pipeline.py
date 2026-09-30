@@ -137,6 +137,8 @@ _WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
 # sent to the vision model; the values past it stay single_reader.
 MAX_VISION_CROPS = 200
 _BACKEND_NAME = re.compile(r"[a-z]{1,32}")  # "ocr", "storage", ...: a run's <backend>_unavailable
+# The PDF reader adds ";ocr_dpi=N" to its version when a page was drawn below OCR_DPI.
+_LOWERED_OCR_DPI = re.compile(r";ocr_dpi=([0-9]{1,5})\b")
 
 
 # --- what is saved ------------------------------------------------------------
@@ -400,6 +402,7 @@ class _Run:
     values_verified: int = 0
     values_needs_review: int = 0
     embedded: bool = False
+    lowest_ocr_dpi: int | None = None  # when a page was drawn for OCR below OCR_DPI
 
 
 class DocumentProcessor:
@@ -542,6 +545,8 @@ class DocumentProcessor:
         run.values_needs_review = len(values) - run.values_verified
 
         reader, version = self._socket.reader_id(record.detected_type)
+        lowered = _LOWERED_OCR_DPI.search(version)
+        run.lowest_ocr_dpi = None if lowered is None else int(lowered.group(1))
         outputs = [ReaderOutput("first", reader, version, tuple(spans))]
         if second is not None:
             second_reader, second_version = self._socket.reader_id(record.detected_type, second=True)
@@ -699,7 +704,9 @@ class DocumentProcessor:
             seconds_ocr=ocr_seconds if meter is not None else None,
             values_verified=run.values_verified,
             values_needs_review=run.values_needs_review,
-            config=self._run_config,
+            config=self._run_config
+            if run.lowest_ocr_dpi is None
+            else {**self._run_config, "ocr_dpi_lowest": run.lowest_ocr_dpi},
         )
         return FinishedRun(run.run_id, totals, self._clock())
 

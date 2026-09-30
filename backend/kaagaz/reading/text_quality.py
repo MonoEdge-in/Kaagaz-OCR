@@ -157,8 +157,8 @@ def count_malformed_devanagari(text: str) -> int:
     vowel sign or a virama that does not directly follow a consonant or a
     nukta. Two vowel signs in a row count once, on the second.
 
-    Local to PR 3; ML 1(a) needs the same rule for OCR values in PR 5, so
-    dedupe the two there. O(c) time, O(1) space.
+    Local to PR 3. When PR 4 lands ``kaagaz.chunking.script.malformed_devanagari``
+    (the same ML 1(a) rule), this body becomes a call to it. O(c) time, O(1) space.
     """
     count = 0
     previous = ""
