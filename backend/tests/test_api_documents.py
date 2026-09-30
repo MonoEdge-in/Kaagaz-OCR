@@ -16,7 +16,7 @@ from PIL import Image
 from sqlalchemy import Connection, event, text
 
 from kaagaz.api.routers.documents import day_start, display_name, upload_policy
-from kaagaz.api.views import status_message
+from kaagaz.api.views import in_progress, status_message
 from kaagaz.db import folders as folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import FolderRow
@@ -201,6 +201,46 @@ def _upload(client: TestClient, data: bytes, name: str = "bill.pdf") -> httpx.Re
     return reply
 
 
+def test_status_messages_say_how_far_the_worker_has_got() -> None:
+    """PRD 2 X3 (PROVISIONAL wording). ``done`` counts pages finished, so the page
+    named is the one being worked on."""
+
+    def message(status: str, step: str, done: int, total: int, attempts: int = 0) -> str:
+        progress = {"step": step, "done": done, "total": total}
+        return status_message(
+            status,
+            None,
+            detected_type="pdf",
+            max_pages=100,
+            attempts=attempts,
+            max_attempts=5,
+            progress=progress,
+        )
+
+    assert message("received", "scanning", 0, 1) == "Checking for viruses…"
+    assert message("clean", "preparing", 0, 40) == "Preparing page 1 of 40…"
+    assert message("clean", "reading", 2, 40) == "Reading page 3 of 40…"
+    assert message("clean", "reading", 40, 40) == "Reading page 40 of 40…"
+    assert message("clean", "reading", 0, 0) == "Reading the document…"  # a sheet is read as a whole
+    assert message("clean", "understanding", 1, 3) == "Understanding the document…"
+    assert message("clean", "indexing", 0, 1) == "Making it searchable…"
+    assert message("clean", "reading", 2, 40, attempts=2) == "Reading page 3 of 40… Try 2 of 5."
+
+
+def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
+    progress = {"step": "reading", "done": 2, "total": 40}
+
+    def message(status: str, failure_code: str | None = None) -> str:
+        return status_message(status, failure_code, detected_type="pdf", max_pages=100, progress=progress)
+
+    assert message("ready") == "Ready. You can ask about it."
+    assert message("failed", "corrupt_file") == "This file could not be read. (corrupt_file)"
+    assert in_progress("ready", progress) is None
+    assert in_progress("failed", progress) is None
+    assert in_progress("clean", progress) == progress
+    assert in_progress("clean", None) is None
+
+
 @pytest.mark.db
 def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
     api = Api(db)
@@ -232,6 +272,9 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "max_attempts",
         "can_delete",
         "newer_version",
+        "progress",  # PRD 2 X3
+        "doc_type",  # PRD 2 D3 (null until the card, PR 5)
+        "languages",
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
     assert (document["attempts"], document["max_attempts"]) == (0, None)
@@ -683,6 +726,9 @@ def test_detail_has_pages_and_values_in_order(db: Database) -> None:
         "height": 842.0,
         "unit": "pt",
         "has_image": True,
+        "route": None,  # PRD 2 R1: not read by a run
+        "effective_dpi": None,  # R4
+        "low_resolution": False,
     }
     assert [value["id"] for value in body["values"]] == [first, second]
     assert body["values"][0] == {
@@ -699,6 +745,64 @@ def test_detail_has_pages_and_values_in_order(db: Database) -> None:
         "label_reason": "readers_disagree",
         "confidence": None,
     }
+
+
+@pytest.mark.db
+def test_the_list_and_detail_show_progress_only_while_a_document_is_read(db: Database) -> None:
+    """PRD 2 X3: the progress and its words while checked or read; an old one left on
+    a finished document is not shown."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    reading = api.add_document(c, status="clean", attempts=2, max_attempts=5, name="a.pdf")
+    finished = api.add_document(c, status="ready", name="b.pdf")
+    with db.customer(c) as conn:
+        conn.execute(
+            text(
+                "UPDATE documents SET progress = CAST(:p AS jsonb)"
+                " WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+            ),
+            {"c": c, "p": '{"step": "reading", "done": 2, "total": 40}', "ids": [reading, finished]},
+        )
+
+    items = {item["id"]: item for item in signed.client.get("/api/documents").json()["items"]}
+    detail = signed.client.get(f"/api/documents/{reading}").json()
+
+    assert items[reading]["progress"] == {"step": "reading", "done": 2, "total": 40}
+    assert items[reading]["status_message"] == "Reading page 3 of 40… Try 2 of 5."
+    assert (detail["progress"], detail["status_message"]) == (
+        items[reading]["progress"],
+        items[reading]["status_message"],
+    )
+    assert (items[finished]["progress"], items[finished]["status_message"]) == (
+        None,
+        "Ready. You can ask about it.",
+    )
+    assert (items[reading]["doc_type"], items[reading]["languages"]) == (None, [])  # the card is PR 5's
+
+
+@pytest.mark.db
+def test_the_detail_shows_each_pages_route_and_resolution(db: Database) -> None:
+    """PRD 2 R1 and R4, as saved by a run."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    doc = api.add_document(c)
+    for page in (1, 2):
+        api.add_page(c, doc, page)
+    with db.customer(c) as conn:
+        conn.execute(
+            text(
+                "UPDATE pages SET route = 'ocr', effective_dpi = 80, low_resolution = true"
+                " WHERE customer_id = :c AND document_id = :d AND page_no = 2"
+            ),
+            {"c": c, "d": doc},
+        )
+    pages = signed.client.get(f"/api/documents/{doc}").json()["pages"]
+    assert [(p["route"], p["effective_dpi"], p["low_resolution"]) for p in pages] == [
+        (None, None, False),
+        ("ocr", 80, True),
+    ]
 
 
 @pytest.mark.db

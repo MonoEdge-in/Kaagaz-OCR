@@ -166,12 +166,13 @@ class Api:
         *,
         settings: Settings | None = None,
         clock: MovingClock | None = None,
+        queue: ApiFakeQueue | None = None,
     ) -> None:
         self.db = db
         self.settings = settings or make_settings()
         self.clock = clock or MovingClock()
         self.storage = ApiFakeStorage()
-        self.queue = ApiFakeQueue()
+        self.queue = queue or ApiFakeQueue()
         self.answers = FakeAnswers()
         self.app = create_app(
             self.settings,

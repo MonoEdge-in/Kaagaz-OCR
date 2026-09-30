@@ -64,7 +64,16 @@ def test_queue_lists_needs_review_values_oldest_first_with_their_page(db: Databa
     assert item["document_id"] == document_id
     assert item["document_name"] == "bill.pdf"
     assert item["detected_type"] == "pdf"
-    assert item["page"] == {"page_no": 1, "width": 595.0, "height": 842.0, "unit": "pt", "has_image": True}
+    assert item["page"] == {  # a PageSummary, with PRD 2's route fields
+        "page_no": 1,
+        "width": 595.0,
+        "height": 842.0,
+        "unit": "pt",
+        "has_image": True,
+        "route": None,
+        "effective_dpi": None,
+        "low_resolution": False,
+    }
     assert item["value"]["second_reading"] == "1,250"
 
 

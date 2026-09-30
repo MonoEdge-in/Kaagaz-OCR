@@ -5,6 +5,7 @@ and the explicit customer filter both keep A's document as it was.
 """
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -23,7 +24,7 @@ def test_another_customer_cannot_mark_a_document_exhausted(db: Database) -> None
     documents = PgDocuments(db)
     record, _ = documents.add_if_absent(DocumentRecord(a, str(uuid.uuid4()), "b" * 64, 10, "pdf"))
 
-    documents.mark_exhausted(b, record.document_id)
+    documents.mark_exhausted(b, record.document_id, now=datetime(2026, 9, 30, 12, 0, tzinfo=UTC))
 
     assert documents.get_status(a, record.document_id) is None  # still received, not failed
     assert documents.get(b, record.document_id) is None

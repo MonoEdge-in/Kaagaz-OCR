@@ -303,10 +303,11 @@ class NoDirectReaderCallsTest(unittest.TestCase):
     """CLAUDE.md: application code never calls a reader directly."""
 
     # Every module in kaagaz/reading is a reader, except the socket and the
-    # span types, which everyone may use, and the wiring and the OCR engine
-    # interface, which the pipeline uses to build the socket. New readers are
-    # covered automatically.
-    ALLOWED: ClassVar[set[str]] = {"__init__", "socket", "spans", "wiring", "ocr"}
+    # span types, which everyone may use, the wiring and the OCR engine
+    # interface, which the pipeline uses to build the socket, and the page
+    # route, which the pipeline works out from the spans after reading
+    # (PRD 2 R1). New readers are covered automatically.
+    ALLOWED: ClassVar[set[str]] = {"__init__", "socket", "spans", "wiring", "ocr", "route"}
 
     def reader_modules(self) -> set[str]:
         return {

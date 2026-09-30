@@ -57,7 +57,8 @@ def signals_of(data: bytes) -> PageSignals:
 
 
 def reader_text(data: bytes) -> str:
-    spans = PdfReader(None, max_pages=1, dpi=72, max_image_pixels=10_000_000).read(data)
+    reader = PdfReader(None, max_pages=1, dpi=72, max_image_pixels=10_000_000, rules=RULES, blank_stddev=3.0)
+    spans = reader.read(data)
     return " ".join(span.text for span in spans)
 
 

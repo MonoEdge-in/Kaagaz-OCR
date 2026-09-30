@@ -2,14 +2,21 @@
 
 Test-only. They follow the port contracts in kaagaz.ingestion.ports,
 kaagaz.scanning.gate (status store, scanner, quarantine) and kaagaz.pipeline
-(documents, pipeline store, page pictures, preparer, socket, models),
-keyed by customer first, so a cross-customer test can
+(documents, pipeline store, runs, progress, page pictures, preparer, socket,
+models), keyed by customer first, so a cross-customer test can
 actually fail. They are never used by product code.
+
+The run fence (PRD 2, Lead's resolution 2) is mirrored when a store is given
+``runs``: ``MemoryPipelineStore.save``, ``MemoryDocuments.mark_ready`` and
+``MemoryDocuments.set_failed`` raise Superseded for a run that is not open, as
+their PostgreSQL versions do (tests/test_runs_db.py runs one scenario on both).
 """
 
 import threading
+import uuid
 from collections.abc import Callable, Collection
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import IO, Any
 
 from kaagaz.chunking.piece import Piece
@@ -17,7 +24,17 @@ from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job, UnknownFolder
-from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
+from kaagaz.jobs.worker import JobFailed
+from kaagaz.pipeline import (
+    DocumentContent,
+    FinishedRun,
+    PageRecord,
+    Progress,
+    ReaderOutput,
+    RunTotals,
+    Superseded,
+)
+from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import CellLocation, PageInfo, ReadError, Span
 from kaagaz.scanning.gate import DocumentStatus, ScannerError
@@ -209,14 +226,17 @@ class MemoryDocuments(MemoryRepository):
     nothing for a document this customer does not have, like an UPDATE whose
     WHERE matches no row."""
 
-    def __init__(self, statuses: MemoryStatuses) -> None:
+    def __init__(self, statuses: MemoryStatuses, runs: "MemoryRuns | None" = None) -> None:
         super().__init__()
         self._statuses = statuses
+        self.runs = runs  # the run fence, when set (it may be set after the runs are made)
         self.failure_codes: dict[tuple[str, str], str] = {}
         self.attempts: dict[tuple[str, str], tuple[int, int]] = {}
         self.page_counts: dict[tuple[str, str], int] = {}
 
-    def set_failed(self, customer_id: str, document_id: str, code: str) -> None:
+    def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
+        if run_id is not None and not self._open(customer_id, document_id, run_id):
+            raise Superseded(run_id)
         if self.get(customer_id, document_id) is None:
             return
         self._statuses.set_status(customer_id, document_id, DocumentStatus.FAILED)
@@ -226,16 +246,44 @@ class MemoryDocuments(MemoryRepository):
         if self.get(customer_id, document_id) is not None:
             self.page_counts[(customer_id, document_id)] = page_count
 
-    def mark_ready(self, customer_id: str, document_id: str, page_count: int) -> None:
+    def mark_ready(
+        self, customer_id: str, document_id: str, page_count: int, *, run: FinishedRun | None = None
+    ) -> None:
         """Like PgDocuments.mark_ready for a family of one version (records have no
         family here): the page count, then ready. A rejected document keeps both.
-        Families of several versions are tested on PostgreSQL
-        (tests/test_documents_mark_ready_db.py)."""
+        With ``run`` and ``runs``: the fence first, then the run is finished too
+        (failed with document_missing, or rejected, on the early returns). Families
+        of several versions are tested on PostgreSQL (tests/test_documents_mark_ready_db.py)."""
+        if self.get(customer_id, document_id) is None:
+            self._finish(customer_id, run, status="failed", error_code="document_missing")
+            return
+        if run is not None and not self._open(customer_id, document_id, run.run_id):
+            raise Superseded(run.run_id)
         if self._statuses.get_status(customer_id, document_id) is DocumentStatus.REJECTED:
+            self._finish(customer_id, run, status="rejected")
             return
         self.set_page_count(customer_id, document_id, page_count)
-        if self.get(customer_id, document_id) is not None:
-            self._statuses.set_status(customer_id, document_id, DocumentStatus.READY)
+        self._statuses.set_status(customer_id, document_id, DocumentStatus.READY)
+        self._finish(customer_id, run)
+
+    def _open(self, customer_id: str, document_id: str, run_id: str) -> bool:
+        return self.runs is None or self.runs.is_open(customer_id, document_id, run_id)
+
+    def _finish(
+        self,
+        customer_id: str,
+        run: FinishedRun | None,
+        *,
+        status: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        """Finish ``run``, with its status (and code) changed on an early return."""
+        if run is None or self.runs is None:
+            return
+        totals = run.totals if status is None else replace(run.totals, status=status)
+        if error_code is not None:
+            totals = replace(totals, error_code=error_code)
+        self.runs.finish(customer_id, replace(run, totals=totals))
 
     def record_attempt(self, customer_id: str, document_id: str, attempt: int, max_attempts: int) -> None:
         """Like PgDocuments.record_attempt: only a document still in progress keeps
@@ -243,11 +291,107 @@ class MemoryDocuments(MemoryRepository):
         if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
             self.attempts[(customer_id, document_id)] = (attempt, max_attempts)
 
-    def mark_exhausted(self, customer_id: str, document_id: str) -> None:
+    def mark_exhausted(self, customer_id: str, document_id: str, *, now: datetime) -> None:
         """The worker's last delivery, like PgDocuments.mark_exhausted: only a document
-        still in progress (received or clean) becomes failed with retries_exhausted."""
+        still in progress (received or clean) becomes failed with retries_exhausted,
+        and then its runs still running end failed with retries_exhausted at ``now``."""
+        if self.get(customer_id, document_id) is None:
+            return
         if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
             self.set_failed(customer_id, document_id, "retries_exhausted")
+            if self.runs is not None:
+                self.runs.close_running(
+                    customer_id, document_id, status="failed", error_code="retries_exhausted", now=now
+                )
+
+
+@dataclass
+class MemoryRun:
+    """One row of MemoryRuns, as processing_runs holds it."""
+
+    customer_id: str
+    document_id: str
+    started_at: datetime
+    status: str = "running"
+    error_code: str | None = None
+    finished_at: datetime | None = None
+    totals: RunTotals | None = None
+
+
+class MemoryRuns:
+    """Runs keyed by run id and checked by customer (kaagaz.pipeline.RunStore), like
+    kaagaz.db.runs: ``start`` needs this customer's document (else document_missing,
+    AR8), marks its runs still running superseded, and adds a running one; ``finish``
+    changes only this customer's run; a run never ends before it started."""
+
+    def __init__(self, documents: MemoryRepository) -> None:
+        self._documents = documents
+        self.rows: dict[str, MemoryRun] = {}
+        self.down = False  # finish raises BackendUnavailable, as a database that went away
+
+    def start(self, customer_id: str, document_id: str, *, now: datetime) -> str:
+        if self._documents.get(customer_id, document_id) is None:
+            raise JobFailed("document_missing", retryable=False)
+        for row in self._running(customer_id, document_id):
+            row.status, row.finished_at = "superseded", max(now, row.started_at)
+        run_id = str(uuid.uuid4())
+        self.rows[run_id] = MemoryRun(customer_id, document_id, now)
+        return run_id
+
+    def finish(self, customer_id: str, run: FinishedRun) -> None:
+        if self.down:
+            raise BackendUnavailable("database")
+        row = self.rows.get(run.run_id)
+        if row is None or row.customer_id != customer_id:
+            return  # like an UPDATE whose WHERE matches no row
+        row.status, row.error_code = run.totals.status, run.totals.error_code
+        row.finished_at, row.totals = max(run.now, row.started_at), run.totals
+
+    def is_open(self, customer_id: str, document_id: str, run_id: str) -> bool:
+        row = self.rows.get(run_id)
+        return row is not None and (row.customer_id, row.document_id, row.status) == (
+            customer_id,
+            document_id,
+            "running",
+        )
+
+    def close_running(
+        self, customer_id: str, document_id: str, *, status: str, error_code: str, now: datetime
+    ) -> None:
+        for row in self._running(customer_id, document_id):
+            row.status, row.error_code, row.finished_at = status, error_code, max(now, row.started_at)
+
+    def for_document(self, customer_id: str, document_id: str) -> list[MemoryRun]:
+        """This customer's runs of the document, oldest first."""
+        key = (customer_id, document_id)
+        mine = [row for row in self.rows.values() if (row.customer_id, row.document_id) == key]
+        return sorted(mine, key=lambda row: row.started_at)
+
+    def _running(self, customer_id: str, document_id: str) -> list[MemoryRun]:
+        return [row for row in self.for_document(customer_id, document_id) if row.status == "running"]
+
+
+class MemoryProgress:
+    """kaagaz.pipeline.ProgressStore, like PgDocuments.set_progress: written only on
+    this customer's document while it is still in progress (received or clean).
+    ``history`` keeps every write in order, for tests of the order."""
+
+    def __init__(self, documents: MemoryRepository, statuses: MemoryStatuses) -> None:
+        self._documents = documents
+        self._statuses = statuses
+        self.progress: dict[tuple[str, str], Progress] = {}
+        self.history: list[tuple[str, str, Progress]] = []
+        self.down = False
+
+    def set_progress(self, customer_id: str, document_id: str, progress: Progress) -> None:
+        if self.down:
+            raise BackendUnavailable("database")
+        if self._documents.get(customer_id, document_id) is None:
+            return
+        if self._statuses.get_status(customer_id, document_id) not in (None, DocumentStatus.CLEAN):
+            return
+        self.progress[(customer_id, document_id)] = progress
+        self.history.append((customer_id, document_id, progress))
 
 
 class MemoryPipelineStore:
@@ -255,14 +399,18 @@ class MemoryPipelineStore:
     the whole content, so running a job twice never duplicates anything
     (kaagaz.pipeline.PipelineStore)."""
 
-    def __init__(self) -> None:
+    def __init__(self, runs: MemoryRuns | None = None) -> None:
         self._content: dict[tuple[str, str], DocumentContent] = {}
         self.learned: dict[str, list[LearnedCorrection]] = {}  # customer -> corrections
         self.saves = 0
+        self._runs = runs
 
-    def save(self, content: DocumentContent) -> None:
+    def save(self, content: DocumentContent, *, run_id: str | None = None) -> None:
+        key = (content.customer_id, content.document_id)
+        if run_id is not None and self._runs is not None and not self._runs.is_open(*key, run_id):
+            raise Superseded(run_id)
         self.saves += 1
-        self._content[(content.customer_id, content.document_id)] = content
+        self._content[key] = content
 
     def clear(self, customer_id: str, document_id: str) -> None:
         self._content.pop((customer_id, document_id), None)
@@ -304,6 +452,7 @@ class MemoryPageImages:
 class FakePrepared:
     pages: list[PageInfo]
     images: dict[int, bytes]
+    checks: dict[int, PageCheck] = field(default_factory=dict)
 
 
 class FakePreparer:

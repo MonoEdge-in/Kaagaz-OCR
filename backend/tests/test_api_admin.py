@@ -3,13 +3,17 @@
 checks that an app session is refused on every one of them)."""
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
 
+from kaagaz.api.routers.admin import month_window
 from kaagaz.db.engine import Database
-from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, answer_json
+from kaagaz.db.runs import PgRuns
+from kaagaz.pipeline import FinishedRun
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, answer_json
+from tests.test_runs_db import totals
 
 ADMIN_USER_FIELDS = {
     "id",
@@ -251,6 +255,7 @@ def test_stats_count_this_customers_activity(db: Database) -> None:
         "open_review_items": 1,
         "older_versions": 0,
         "in_trash": 0,
+        "pages_this_month": {"cells": 0, "text_layer": 0, "ocr": 0, "blank": 0},  # PRD 2 R6
     }
 
 
@@ -276,6 +281,59 @@ def test_stats_count_each_family_by_its_current_version_and_older_versions_and_t
     assert stats["documents_by_status"] == {"ready": 1, "failed": 1}
     assert stats["open_review_items"] == 1  # the current version's value, as the review queue shows it
     assert (stats["older_versions"], stats["in_trash"]) == (2, 1)
+
+
+# --- pages read this month, by route (PRD 2 R6) ------------------------------------------------
+
+
+def _run(api: Api, customer_id: str, document_id: str, started: datetime, **pages: int) -> None:
+    run = PgRuns(api.db).start(customer_id, document_id, now=started)
+    counts = {"pages_cells": 0, "pages_text_layer": 0, "pages_ocr": 0, "pages_blank": 0, **pages}
+    PgRuns(api.db).finish(customer_id, FinishedRun(run, totals(**counts), started))
+
+
+def test_the_month_is_worked_out_in_the_customers_timezone() -> None:
+    start, end = month_window(datetime(2026, 9, 30, 19, 0, tzinfo=UTC), "Asia/Kolkata")  # 00:30 IST, 1 Oct
+    assert (start.isoformat(), end.isoformat()) == ("2026-10-01T00:00:00+05:30", "2026-11-01T00:00:00+05:30")
+    start, end = month_window(datetime(2026, 12, 15, tzinfo=UTC), "Asia/Kolkata")
+    assert (start.isoformat(), end.isoformat()) == ("2026-12-01T00:00:00+05:30", "2027-01-01T00:00:00+05:30")
+
+
+@pytest.mark.db
+def test_stats_count_the_pages_read_this_month_by_route(db: Database) -> None:
+    api = Api(db, clock=MovingClock(datetime(2026, 10, 20, 6, 0, tzinfo=UTC)))
+    admin = api.new_admin()
+    c = admin.customer_id
+    doc = api.add_document(c)
+    _run(api, c, doc, datetime(2026, 10, 2, tzinfo=UTC), pages_text_layer=3, pages_ocr=2)
+    _run(api, c, doc, datetime(2026, 10, 3, tzinfo=UTC), pages_ocr=1, pages_blank=1)  # a read again
+    _run(api, c, doc, datetime(2026, 9, 29, tzinfo=UTC), pages_cells=9)  # last month
+    other = api.new_admin()
+    _run(
+        api,
+        other.customer_id,
+        api.add_document(other.customer_id),
+        datetime(2026, 10, 2, tzinfo=UTC),
+        pages_ocr=50,
+    )
+
+    stats = admin.client.get("/api/admin/stats").json()
+
+    assert stats["pages_this_month"] == {"cells": 0, "text_layer": 3, "ocr": 3, "blank": 1}
+
+
+@pytest.mark.db
+def test_a_run_at_00_30_ist_on_the_1st_counts_in_the_new_month(db: Database) -> None:
+    api = Api(db, clock=MovingClock(datetime(2026, 10, 1, 1, 0, tzinfo=UTC)))  # 06:30 IST, 1 Oct
+    admin = api.new_admin()
+    c = admin.customer_id
+    doc = api.add_document(c)
+    _run(api, c, doc, datetime(2026, 9, 30, 19, 0, tzinfo=UTC), pages_ocr=4)  # 00:30 IST, 1 Oct
+    _run(api, c, doc, datetime(2026, 9, 30, 18, 0, tzinfo=UTC), pages_ocr=7)  # 23:30 IST, 30 Sep
+
+    assert admin.client.get("/api/admin/stats").json()["pages_this_month"]["ocr"] == 4
+    api.clock.now = datetime(2026, 9, 30, 18, 45, tzinfo=UTC)  # 00:15 IST, 1 Oct
+    assert admin.client.get("/api/admin/stats").json()["pages_this_month"]["ocr"] == 4
 
 
 # --- lockout, temporary passwords and 2FA: the admin's three buttons ----------------------------

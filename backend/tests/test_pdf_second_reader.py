@@ -5,6 +5,7 @@ import pypdfium2 as pdfium
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.pdf_second_reader import PdfiumReader
 from kaagaz.reading.spans import BoxLocation, ReadError, Span
+from kaagaz.reading.text_quality import TextLayerRules
 from tests.pdf_builder import Page, Text, make_pdf
 
 
@@ -13,7 +14,10 @@ def second(data: bytes, max_pages: int = 10) -> list[Span]:
 
 
 def first(data: bytes) -> list[Span]:
-    return PdfReader(None, max_pages=10, dpi=72, max_image_pixels=10_000_000).read(data)
+    rules = TextLayerRules(min_chars=40, min_good_ratio=0.9, scan_image_coverage=0.5)
+    return PdfReader(
+        None, max_pages=10, dpi=72, max_image_pixels=10_000_000, rules=rules, blank_stddev=3.0
+    ).read(data)
 
 
 def box_of(span: Span) -> BoxLocation:

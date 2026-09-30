@@ -6,8 +6,16 @@ from importlib import metadata
 
 from PIL import Image, ImageDraw, ImageFont
 
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading import ocr
-from kaagaz.reading.ocr import OcrLine, OcrTable, RapidOcrEngine, build_ocr_engine, ocr_spans
+from kaagaz.reading.ocr import (
+    MeteredOcrEngine,
+    OcrLine,
+    OcrTable,
+    RapidOcrEngine,
+    build_ocr_engine,
+    ocr_spans,
+)
 from kaagaz.reading.spans import BoxLocation, Span
 from tests.settings_factory import make_settings
 
@@ -166,6 +174,42 @@ class BlockModeTest(unittest.TestCase):
             OcrLine("kept", 10, 60, 50, 70, 0.4, "paragraph"),
         ]
         self.assertEqual([(s.text, s.confidence) for s in ocr_spans(lines, 1, 100, 100)], [("kept", 0.4)])
+
+
+class MeteredOcrEngineTest(unittest.TestCase):
+    """PRD 2 R6: the pages sent to OCR and their seconds, for the run's seconds_ocr."""
+
+    class Engine:
+        name = "fake-ocr"
+
+        def __init__(self, clock: list[float]) -> None:
+            self.version = "1"
+            self.clock = clock
+            self.down = False
+
+        def read(self, image: Image.Image) -> list[OcrLine]:
+            self.clock[0] += 3.0
+            if self.down:
+                raise BackendUnavailable("ocr")
+            return [OcrLine("x", 0, 0, 1, 1, None)]
+
+    def test_it_counts_pages_and_seconds_and_take_starts_again_from_zero(self) -> None:
+        clock = [10.0]
+        engine = self.Engine(clock)
+        meter = MeteredOcrEngine(engine, timer=lambda: clock[0])
+        page = Image.new("RGB", (4, 4))
+        self.assertEqual(meter.read(page), [OcrLine("x", 0, 0, 1, 1, None)])
+        engine.down = True
+        with self.assertRaises(BackendUnavailable):
+            meter.read(page)  # sent, so counted
+        self.assertEqual(meter.take(), (2, 6.0))
+        self.assertEqual(meter.take(), (0, 0.0))
+
+    def test_it_has_the_engines_name_and_its_latest_version(self) -> None:
+        engine = self.Engine([0.0])
+        meter = MeteredOcrEngine(engine, timer=lambda: 0.0)
+        engine.version = "2"  # PaddleOCR-VL's comes from its last reply
+        self.assertEqual((meter.name, meter.version), ("fake-ocr", "2"))
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ state and its code.
 """
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -17,6 +18,8 @@ from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import DocumentRecord
 from kaagaz.scanning.gate import DocumentStatus
 from tests.db_support import new_customer
+
+NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 
 pytestmark = pytest.mark.db
 
@@ -44,7 +47,7 @@ def test_a_document_still_in_progress_is_stored_as_failed_retries_exhausted(db: 
     documents.set_status(customer, clean, DocumentStatus.CLEAN)
 
     for document_id in (received, clean):
-        documents.mark_exhausted(customer, document_id)
+        documents.mark_exhausted(customer, document_id, now=NOW)
         assert stored_state(db, customer, document_id) == ("failed", "retries_exhausted")
 
 
@@ -55,7 +58,7 @@ def test_retries_exhausted_never_overwrites_a_rejection(db: Database) -> None:
     documents.set_status(customer, rejected, DocumentStatus.REJECTED)
     documents.set_failed(customer, rejected, "virus_found")  # as the pipeline records it
 
-    documents.mark_exhausted(customer, rejected)
+    documents.mark_exhausted(customer, rejected, now=NOW)
     assert stored_state(db, customer, rejected) == ("rejected", "virus_found")
 
 
@@ -70,7 +73,7 @@ def test_retries_exhausted_never_fails_a_finished_document(db: Database) -> None
     documents.set_failed(customer, failed, "corrupt_file")  # a failure for good keeps its own code
 
     for document_id in (ready, needs_reader, failed):
-        documents.mark_exhausted(customer, document_id)
+        documents.mark_exhausted(customer, document_id, now=NOW)
     assert stored_state(db, customer, ready) == ("ready", None)
     assert stored_state(db, customer, needs_reader) == ("needs_reader", None)
     assert stored_state(db, customer, failed) == ("failed", "corrupt_file")

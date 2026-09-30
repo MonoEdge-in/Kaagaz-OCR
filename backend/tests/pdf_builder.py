@@ -9,7 +9,8 @@ purpose: a password-protected file and a page with no text layer.
 Coordinates here are PDF-native: points, origin at the bottom left, and a
 text's ``y`` is its baseline. Text uses the standard Helvetica font, or the
 page's ``font_name`` (a font that is named but not embedded, with the same
-WinAnsi codes), so text must be ASCII.
+WinAnsi codes), so text is written in cp1252: ASCII, plus the Latin-1
+symbols a garbled text layer holds (PRD 2 R2).
 """
 
 import re
@@ -121,7 +122,7 @@ def _text_content(texts: list[Text]) -> bytes:
             parts.append(f"q BT /F1 {item.size} Tf 3 Tr {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET Q\n")
         else:
             parts.append(f"BT /F1 {item.size} Tf {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET\n")
-    return "".join(parts).encode("ascii")
+    return "".join(parts).encode("cp1252")
 
 
 def _named_font(objects: list[bytes], name: str) -> int:

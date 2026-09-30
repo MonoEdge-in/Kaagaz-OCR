@@ -8,6 +8,7 @@ import io
 import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.ingestion import sniff
@@ -57,6 +58,7 @@ XLSX_LIMITS = XlsxLimits(
 )
 LEASE_SECONDS = 30
 MAX_ATTEMPTS = 3
+EXHAUSTED_AT = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 
 
 @dataclass
@@ -85,7 +87,7 @@ def make_worker(queue: LeaseQueue, handler: Handler, repo: MemoryDocuments) -> W
         queue,
         handler,
         max_attempts=MAX_ATTEMPTS,
-        on_exhausted=lambda job: repo.mark_exhausted(job.customer_id, job.document_id),
+        on_exhausted=lambda job: repo.mark_exhausted(job.customer_id, job.document_id, now=EXHAUSTED_AT),
     )
 
 
