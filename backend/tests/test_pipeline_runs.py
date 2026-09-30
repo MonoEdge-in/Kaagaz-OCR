@@ -533,8 +533,9 @@ class EveryPathClosesItsRunTest(unittest.TestCase):
         self.assertEqual(failed.exception.code, "malformed_csv")
         self.assertEqual([r.getMessage() for r in logs.records], ["run_not_closed"])
 
-    def test_the_last_delivery_closes_a_run_a_crash_left_open(self) -> None:
-        """AR11: mark_exhausted ends the runs still running, failed with retries_exhausted."""
+    def test_an_unexpected_error_ends_the_run_failed_and_is_raised(self) -> None:
+        """Council PR 3 review, low 9: a bug still propagates (no blanket except), but its
+        run ends failed with internal_error instead of staying open."""
         system = rig()
         job = system.job(CSV)
 
@@ -546,7 +547,14 @@ class EveryPathClosesItsRunTest(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             system.make(CrashingSocket(build_reader_socket(SETTINGS, None), beat))(job, beat)
-        self.assertEqual(statuses_of(system.runs_of(job)), [("running", None)])
+        self.assertEqual(self.closed(system, job), [("failed", "internal_error")])
+
+    def test_the_last_delivery_closes_a_run_a_dead_worker_left_open(self) -> None:
+        """AR11: mark_exhausted ends the runs still running, failed with retries_exhausted."""
+        system = rig()
+        job = system.job(CSV)
+        system.runs.start(CUSTOMER, job.document_id, now=T0)  # the worker was killed mid-run
+        system.statuses.set_status(CUSTOMER, job.document_id, DocumentStatus.CLEAN)
         system.repo.record_attempt(CUSTOMER, job.document_id, 5, 5)
         system.repo.mark_exhausted(CUSTOMER, job.document_id, now=T0, max_attempts=5)
         self.assertEqual(self.closed(system, job), [("failed", "retries_exhausted")])
