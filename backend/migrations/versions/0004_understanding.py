@@ -58,7 +58,8 @@ UPGRADE = [
         ADD COLUMN low_resolution boolean NOT NULL DEFAULT false
     """,
     # --- documents: the card (D3) and progress (X3) --------------------------------
-    # A NULL CHECK passes, so progress names each key it needs with the ? operator.
+    # A NULL CHECK passes, so progress names each key it needs with the ? operator,
+    # and checks each value's JSON type (->> turns a JSON null into NULL).
     """
     ALTER TABLE documents
         ADD COLUMN doc_type text NULL CHECK (doc_type IN (
@@ -74,6 +75,7 @@ UPGRADE = [
         ADD COLUMN progress jsonb NULL CHECK (
             jsonb_typeof(progress) = 'object'
             AND progress ? 'step' AND progress ? 'done' AND progress ? 'total'
+            AND jsonb_typeof(progress -> 'step') = 'string'
             AND progress ->> 'step' IN ('scanning', 'preparing', 'reading', 'understanding', 'indexing')
             AND jsonb_typeof(progress -> 'done') = 'number' AND progress ->> 'done' ~ '^[0-9]{1,9}$'
             AND jsonb_typeof(progress -> 'total') = 'number' AND progress ->> 'total' ~ '^[0-9]{1,9}$'
