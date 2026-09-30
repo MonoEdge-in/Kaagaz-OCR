@@ -21,9 +21,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+COPY pyproject.toml constraints.txt ./
 COPY kaagaz kaagaz
-RUN pip install ".[ocr]"
+# constraints.txt pins what indic-transliteration brings in (PRD 2 L3), so the
+# image gets the versions checked on 30 Sep 2026, not whatever is newest.
+RUN pip install -c constraints.txt ".[ocr]"
 
 # Page pictures are stored as WebP (PRD 1 S1). Pillow's wheel carries libwebp;
 # stop the build here if a future Pillow or base image ever lacks it, rather

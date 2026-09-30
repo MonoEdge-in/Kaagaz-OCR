@@ -364,12 +364,19 @@ def both_ways(first: str, second: str) -> set[tuple[Any, ...]]:
     return {(first, second, "invoice_number", "inv7"), (second, first, "invoice_number", "inv7")}
 
 
+def read(db: Database, content: DocumentContent) -> None:
+    """Save ``content`` and mark its document ready, as a run of the pipeline ends."""
+    PgPipelineStore(db).save(content)
+    PgDocuments(db).mark_ready(content.customer_id, content.document_id, 2)
+
+
 def linked_pair(db: Database) -> tuple[str, str, str]:
-    """A new customer with two documents that share an invoice number, both saved (so linked)."""
+    """A new customer with two documents that share an invoice number, read one after the
+    other (so linked)."""
     customer, _ = new_customer(db)
     first, second = new_document(db, customer), new_document(db, customer)
     for doc in (first, second):
-        PgPipelineStore(db).save(numbered(customer, doc))
+        read(db, numbered(customer, doc))
     return customer, first, second
 
 
@@ -470,21 +477,37 @@ def test_save_writes_the_invoice_and_its_lines_and_replaces_them(db: Database) -
 
 
 @pytest.mark.parametrize("second_first", [False, True])
-def test_links_are_written_both_ways_whichever_is_saved_first_and_stay_when_ready(
-    db: Database, second_first: bool
-) -> None:
-    """AR5 (PROVISIONAL): a document still being read is linked too, so two read at once both link."""
+def test_links_are_written_both_ways_whichever_is_read_first(db: Database, second_first: bool) -> None:
     customer, _ = new_customer(db)
     first, second = new_document(db, customer), new_document(db, customer)
-    store = PgPipelineStore(db)
     for doc in (second, first) if second_first else (first, second):
-        store.save(numbered(customer, doc))
-    for doc in (first, second):
-        PgDocuments(db).mark_ready(customer, doc, 2)
+        read(db, numbered(customer, doc))
 
     assert links(db, customer, first) == both_ways(first, second)
-    store.save(numbered(customer, first))  # replaced, never doubled
+    PgPipelineStore(db).save(numbered(customer, first))  # replaced, never doubled
     assert links(db, customer, first) == both_ways(first, second)
+
+
+def test_links_go_only_to_current_ready_documents(db: Database) -> None:
+    """A link target is current, out of Trash and ready (LIVE_CURRENT): never a document
+    still being read, a failed one, or an older version of its family."""
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        target = insert_document(conn, customer)
+        failed = insert_document(conn, customer, status="failed")
+        older = insert_document(conn, customer, is_current=False)
+        insert_document(conn, customer, family_id=older, version_no=2)  # its family's current version
+    reading = new_document(db, customer)
+    store = PgPipelineStore(db)
+    for doc in (target, failed, older, reading):
+        store.save(numbered(customer, doc))
+    doc = new_document(db, customer)
+    store.save(numbered(customer, doc))
+
+    assert links(db, customer, doc) == {
+        (doc, target, "invoice_number", "inv7"),
+        (target, doc, "invoice_number", "inv7"),
+    }
 
 
 def test_a_save_with_no_links_removes_links_both_ways(db: Database) -> None:
@@ -579,7 +602,7 @@ def test_links_two_saves_complete_without_deadlock(db: Database) -> None:
 def test_save_skips_a_target_deleted_before_its_lock(db: Database) -> None:
     customer, _ = new_customer(db)
     target, doc = new_document(db, customer), new_document(db, customer)
-    PgPipelineStore(db).save(numbered(customer, target))
+    read(db, numbered(customer, target))
     session = new_session()
     named = _named_database(session)
     try:
@@ -786,22 +809,23 @@ def test_links_from_card_identifiers_end_to_end(db: Database) -> None:
     customer, _ = new_customer(db)
     first, second = new_document(db, customer), new_document(db, customer)
     gstin = {"kind": "gstin", "value_quote": "27AAPFU0939F1ZV"}
-    store = PgPipelineStore(db)
-    store.save(
+    read(
+        db,
         card_content(
             customer,
             first,
             [card_line("Challan No: CH 4417 GSTIN 27AAPFU0939F1ZV", y=0.1)],
             card_reply(identifiers=[{"kind": "challan_number", "value_quote": "CH 4417"}, gstin]),
-        )
+        ),
     )
-    store.save(
+    read(
+        db,
         card_content(
             customer,
             second,
             [card_line("Against challan ch4417, GSTIN 27AAPFU0939F1ZV", y=0.1)],
             card_reply(identifiers=[{"kind": "challan_number", "value_quote": "ch4417"}, gstin]),
-        )
+        ),
     )
 
     assert links(db, customer, first) == {
@@ -816,11 +840,10 @@ def test_devanagari_and_ascii_digits_of_one_number_link(db: Database) -> None:
     either order."""
     customer, _ = new_customer(db)
     first, second = new_document(db, customer), new_document(db, customer)
-    store = PgPipelineStore(db)
     for doc, printed in ((first, "गट नं. ४५/२"), (second, "Gat No. 45/2")):
         number = printed.split()[-1]
         answer = card_reply(identifiers=[{"kind": "survey_number", "value_quote": number}])
-        store.save(card_content(customer, doc, [card_line(printed, y=0.1)], answer))
+        read(db, card_content(customer, doc, [card_line(printed, y=0.1)], answer))
 
     assert links(db, customer, first) == {
         (first, second, "survey_number", "45/2"),

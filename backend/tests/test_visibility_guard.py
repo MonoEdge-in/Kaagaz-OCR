@@ -15,12 +15,12 @@ from types import ModuleType
 
 from sqlalchemy import TextClause
 
-from kaagaz.answering import fixed_queries
+from kaagaz.answering import fixed_queries, unchecked
 from kaagaz.db import admin, listing, pipeline_store, review
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid
 
-MODULES: tuple[ModuleType, ...] = (hybrid, fixed_queries, review, admin, listing, pipeline_store)
+MODULES: tuple[ModuleType, ...] = (hybrid, fixed_queries, unchecked, review, admin, listing, pipeline_store)
 
 # (module, constant name) -> the fragment it must carry.
 FILTERED: dict[tuple[ModuleType, str], str] = {
@@ -36,6 +36,8 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (fixed_queries, "_EXTREME_VALUE"): LIVE_CURRENT,
     (fixed_queries, "_COUNT_DOCUMENTS"): LIVE_CURRENT,
     (fixed_queries, "_VALUE_REFS"): LIVE_CURRENT,
+    # The documents an unchecked figure points to (decided 30 Sep 2026): the same.
+    (unchecked, "_CARD_DOCUMENTS"): LIVE_CURRENT,
     # Review: the values of the version answers use, and nothing else.
     (review, "_QUEUE"): LIVE_CURRENT,
     (review, "_COUNT"): LIVE_CURRENT,
@@ -48,11 +50,10 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # or only Trash (trashed=true).
     (listing, "_LIST"): LISTED,
     (listing, "_TRASH_LIST"): TRASHED_LISTED,
-    # Links (PRD 2 D5): any live document of another family, still reading or not, so
-    # two documents read at once still link (AR5, PROVISIONAL). PRD 3's reader of the
-    # links filters both ends with LIVE_CURRENT.
-    (pipeline_store, "_LINK_TARGETS"): LIVE,
-    (pipeline_store, "_LIVE_TARGETS"): LIVE,
+    # Links (PRD 2 D5): only to a current, ready document out of Trash, never an older
+    # version or one still being read (replacing AR5's any state, PROVISIONAL).
+    (pipeline_store, "_LINK_TARGETS"): LIVE_CURRENT,
+    (pipeline_store, "_LIVE_TARGETS"): LIVE_CURRENT,
 }
 
 # Statements that count every version on purpose, and why.

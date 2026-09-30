@@ -15,7 +15,8 @@
   type is ``invoice`` and ``invoice_windows`` is given, ``invoice.read_invoice``
   reads the windows, one call each, with ``beat(2 + i, 2 + n)`` after window i
   of n. Its E4 values replace labelled.py's values of the fields they located,
-  and only those (``invoice.rule_values_left``, ML 6(f)). A window that fails
+  and only those (``invoice.rule_values_left``, ML 6(f)); labelled.py's values of a
+  field that disagree with E4's are kept, under their own lines' keys. A window that fails
   (the model down or its reply unusable) gives no E4 values at all: labelled.py's
   values stay, the card stays, and ``error_code`` is ``"model_"`` plus the code.
 * A card value whose field the rule values or the E4 values already have is
@@ -64,6 +65,7 @@ from kaagaz.extraction.links import link_identifiers
 from kaagaz.extraction.quotes import ReaderText
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.pipeline import DocumentFacts, LinkIdentifier
+from kaagaz.reading.spans import Span
 
 if TYPE_CHECKING:
     from kaagaz.settings import Settings
@@ -145,9 +147,11 @@ def understand(
     num_ctx: int,
     run_id: str | None,
     beat: Callable[[int, int], None],
+    spans: Sequence[Span],
     invoice_windows: WindowSettings | None = None,
 ) -> Understanding:
-    """The card for this document, or none, then its invoice windows (the module docstring)."""
+    """The card for this document, or none, then its invoice windows (the module docstring).
+    ``spans`` are the spans the rule values were read from."""
     rules = list(rule_values)
     if chat is None or not reader.norm:
         return Understanding(DocumentFacts(), rules, [], None, 0, None)
@@ -174,7 +178,7 @@ def understand(
             beat=lambda done, total: beat(2 + done, 2 + total),
         )
     e4 = [] if invoice is None else invoice.values
-    rules = rule_values_left(rules, e4)
+    rules = rule_values_left(rules, e4, spans)
     card = without_fields(card, {value.field for value in rules} | {value.field for value in e4})
     calls = 1 + (0 if invoice is None else invoice.model_calls)
     window_error = None if invoice is None else invoice.error_code

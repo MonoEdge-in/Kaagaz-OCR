@@ -48,10 +48,14 @@ class ContextHeaderTest(unittest.TestCase):
         self.assertTrue(header(piece(4, 4)).endswith(" | Page 4"))
         self.assertTrue(header(piece(4, 6)).endswith(" | Pages 4-6"))
 
-    def test_before_over_120_characters_keeps_its_last_120_after_an_ellipsis(self) -> None:
-        end = "b" * 119 + "."
+    def test_before_over_120_characters_is_an_ellipsis_and_its_last_119(self) -> None:
+        end = "b" * 118 + "."
         self.assertTrue(header(piece(1), before="a" * 5 + end).endswith(" | Before: \u2026" + end))
-        self.assertTrue(header(piece(1), before=end).endswith(" | Before: " + end))  # exactly 120: kept
+        (part,) = [p for p in header(piece(1), before="a" * 500).split(" | ") if p.startswith("Before: ")]
+        self.assertEqual(len(part), len("Before: ") + 120)  # C4: up to 120 characters, the ellipsis included
+        self.assertTrue(
+            header(piece(1), before="c" + end).endswith(" | Before: c" + end)
+        )  # exactly 120: kept
 
     def test_the_section_part_is_at_most_120_characters(self) -> None:
         # Council A7: a heading can be long (a layout reader may call a paragraph a heading).

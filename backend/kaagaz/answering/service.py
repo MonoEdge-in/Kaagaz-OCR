@@ -13,6 +13,9 @@ The steps (docs/architecture.md):
 4. **Fixed route**: run the query; the sentence is a template filled only
    from the query's result (numbers written the Indian way). Citations are
    the values used. No rows: not found.
+   **Unchecked**: no plan because no checked value holds the figure, but an
+   unchecked card value does: no number, a request to confirm it in Review, and
+   the documents where it appears (status ``unchecked``, answering/unchecked.py).
 5. **Search route**: embed the question (skipped without a model), retrieve,
    the evidence gate, then a draft (the model, or quoting without one), then
    ``verify`` drops every sentence its evidence does not back.
@@ -52,14 +55,17 @@ from kaagaz.answering.evidence import (
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
 from kaagaz.answering.format import indian_number
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
-from kaagaz.answering.intent import FixedPlan, plan_fixed
+from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.sanitize import clean_snippet, clean_text
+from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import verify
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.settings import Settings
 
-Status = Literal["answered", "not_found"]
+# "unchecked": the figure asked for exists only as unchecked card values, so no
+# number is given (kaagaz/answering/unchecked.py).
+Status = Literal["answered", "not_found", "unchecked"]
 Route = Literal["fixed_query", "search"]
 _MAX_NAME = 100  # a party name longer than this is cut in the sentence
 
@@ -126,7 +132,8 @@ class Answer:
 
 
 class AnswerService:
-    """``retriever`` and ``fixed_queries`` default to the PostgreSQL ones; tests pass fakes."""
+    """``retriever``, ``fixed_queries`` and ``unchecked`` default to the PostgreSQL ones;
+    tests pass fakes."""
 
     def __init__(
         self,
@@ -137,6 +144,7 @@ class AnswerService:
         clock: Callable[[], datetime],
         retriever: Retriever | None = None,
         fixed_queries: FixedQueries | None = None,
+        unchecked: UncheckedValues | None = None,
     ) -> None:
         self._model = model
         self._settings = settings
@@ -144,6 +152,7 @@ class AnswerService:
         self._zone = ZoneInfo(settings.timezone)
         self._retriever = retriever if retriever is not None else PgRetriever(db)
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
+        self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
 
     def answer(self, customer_id: str, question: str) -> Answer:
         """Answer ``question`` for ``customer_id`` only."""
@@ -156,7 +165,34 @@ class AnswerService:
         )
         if plan is not None:
             return self._fixed_answer(customer_id, plan, shown)
+        unchecked = self._unchecked_answer(customer_id, normalised, shown)
+        if unchecked is not None:
+            return unchecked
         return self._search_answer(customer_id, question, normalised, shown)
+
+    def _unchecked_answer(
+        self, customer_id: str, normalised: NormalisedQuestion, shown: str
+    ) -> Answer | None:
+        """A figure asked for that no checked value holds but a card does: no number,
+        the documents where it appears, and a request to confirm it in Review first
+        (decided 30 Sep 2026). None when no card holds it either."""
+        asked = metric_asked(normalised)
+        if asked is None:
+            return None
+        concept, fields = asked
+        documents = self._unchecked.documents_with(customer_id, fields)
+        if not documents:
+            return None
+        return Answer(
+            status="unchecked",
+            label="needs_review",
+            sentences=[AnswerSentence(text=unchecked_sentence(concept), citations=[])],
+            citations=[],
+            closest_documents=documents,
+            route="fixed_query",
+            normalized_question=shown,
+            model_used=False,
+        )
 
     # --- fixed route --------------------------------------------------------
 

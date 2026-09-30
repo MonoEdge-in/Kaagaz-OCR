@@ -41,6 +41,8 @@ class Text:
     # Devanagari back exactly. It draws almost blank, so never use it where
     # OCR must read the page (council test-engineer 9).
     devanagari: bool = False
+    # Written with the standard Helvetica-Bold font, as a bold heading is.
+    bold: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,11 @@ def make_pdf(pages: list[Page], *, password_protected: bool = False) -> bytes:
         resources = b"/Font << /F1 %d 0 R" % font
         if any(item.devanagari for item in page.texts):
             resources += b" /F2 %d 0 R" % _devanagari_font(objects)
+        if any(item.bold for item in page.texts):
+            objects.append(
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
+            )
+            resources += b" /F3 %d 0 R" % len(objects)
         resources += b" >>"
         content = _text_content(page.texts)
         drawn = ([] if page.picture is None else [page.picture]) + page.pictures
@@ -132,6 +139,7 @@ def _text_content(texts: list[Text]) -> bytes:
     for item in texts:
         escaped = item.text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
         font, shown = ("F2", _hex_code_points(item.text)) if item.devanagari else ("F1", f"({escaped})")
+        font = "F3" if item.bold else font
         matrix = "0 1 -1 0" if item.turned else "1 0 0 1"
         if item.color is not None:
             red, green, blue = item.color

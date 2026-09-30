@@ -144,7 +144,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -e ".[dev,ocr]"
+          # constraints.txt pins what indic-transliteration brings in, as the image does.
+          pip install -c constraints.txt -e ".[dev,ocr]"
 
       - name: Lint
         run: ruff check .

@@ -129,6 +129,25 @@ def plan_fixed(
     return FixedPlan(aggregate, metric, group_fields, date_fields, start, end)
 
 
+def metric_asked(normalised: NormalisedQuestion) -> tuple[str, tuple[str, ...]] | None:
+    """The one metric a highest, lowest or total question asks for, as its concept
+    ("profit") and the field names that hold it, else None. ``plan_fixed``'s own
+    reading, without the fields on hand: when its plan is None because no checked
+    value holds the metric, the service looks for unchecked card values
+    (kaagaz/answering/unchecked.py)."""
+    words = normalised.words
+    aggregate = _aggregate(words)
+    if aggregate is None or aggregate == "count":
+        return None
+    concepts = {_METRIC_WORDS[word] for word in words if word in _METRIC_WORDS}
+    if not concepts and "total" in words:
+        concepts = {"amount"}
+    if len(concepts) != 1:
+        return None
+    concept = concepts.pop()
+    return concept, _METRIC_FIELDS[concept]
+
+
 def _aggregate(words: list[str]) -> Aggregate | None:
     """The one aggregate asked for. "how much" means a total unless highest or lowest is asked."""
     highest = any(word in _HIGHEST for word in words)

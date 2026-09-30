@@ -37,6 +37,8 @@ from kaagaz.extraction.values import ExtractedValue, QuoteMatch
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 from kaagaz.settings import CHAT_OVERHEAD_TOKENS
 from tests.fakes import FakeChat
+from tests.pdf_builder import Page, Text, make_pdf
+from tests.test_cross_page_pieces import read_pdf
 from tests.test_extraction_quotes import checked
 
 RUN = "3f2b6c1e-0000-4000-8000-000000000001"
@@ -113,6 +115,18 @@ class CardInputTest(unittest.TestCase):
             "</document>"
         )
         self.assertEqual(card_input(reader_text(spans), max_chars=12000, max_input_tokens=10_000), expected)
+
+    def test_a_text_layer_pdf_gives_the_card_its_middle_headings(self) -> None:
+        pages = []
+        for n in range(1, 6):
+            texts = [Text(72, 700, f"Body of page {n}."), Text(72, 680, "Counted twice.")]
+            if n == 3:
+                texts.insert(0, Text(72, 740, "Profit", size=16))
+            pages.append(Page(texts=texts))
+        text = card_input(reader_text(read_pdf(make_pdf(pages))), max_chars=12000, max_input_tokens=10_000)
+        self.assertIn('<page n="3">\nProfit\n</page>\n<page n="5">', text)
+        self.assertNotIn("page 3.", text)
+        self.assertNotIn("page 4.", text)
 
     def test_cells_of_one_row_are_joined_with_a_bar(self) -> None:
         cells = [

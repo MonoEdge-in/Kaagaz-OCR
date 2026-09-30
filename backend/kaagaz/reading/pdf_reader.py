@@ -7,6 +7,16 @@ line becomes one span, its box a fraction of the page as the viewer shows it
 (the crop box, with the page's rotation applied). Such spans have no
 confidence: the text is exactly what the file holds.
 
+A text layer has no layout labels, so headings are found from the fonts
+(``_with_kinds``, PROVISIONAL), for pieces (PRD 2 C1, C3) and the card (D1):
+a line is a ``heading`` when its largest character is at least
+``_HEADING_SIZE`` times the page's median line size, or when it is bold, the
+same size as the body or larger, alone on its line and not ending like a
+sentence or a label, on a page where fewer than half the lines are bold. Either
+way it has a letter and at most ``_HEADING_MAX_WORDS`` words. On page 1 the
+first of the largest headings by size is the ``title``. Everything else has no
+kind, as before.
+
 Each page is judged on its own, in one pass (PRD 2 R2, with the council's
 ML 3 and ML 4; ``kaagaz/reading/text_quality.py``): its text-layer spans, joined
 by one space, and the file's own signals for the page
@@ -48,9 +58,11 @@ an OCR'd page's picture after the engine has read it.
 
 import io
 import math
+import statistics
 import struct
 import zlib
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import pdfplumber
@@ -67,7 +79,7 @@ from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
 from kaagaz.reading.pdf_signals import page_signals, words_left_visible
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage
-from kaagaz.reading.spans import ReadError, Span
+from kaagaz.reading.spans import BoxLocation, ReadError, Span
 from kaagaz.reading.text_quality import (
     PageSignals,
     TextLayerRules,
@@ -77,6 +89,12 @@ from kaagaz.reading.text_quality import (
 
 # PROVISIONAL: the lowest DPI a page is drawn at for OCR; a page too big even then is refused.
 _MIN_OCR_DPI = 72
+
+# PROVISIONAL, not measured on real documents yet: a text-layer heading (the module notes).
+_HEADING_SIZE = 1.2  # times the page's median line size
+_HEADING_MAX_WORDS = 10
+# A bold line ending so is a sentence or a label ("Total:"), never a heading.
+_NOT_HEADING_ENDS = tuple(".,:;!?\N{DEVANAGARI DANDA}")
 
 # pdfplumber wraps most pdfminer errors in PdfminerException. pdfminer is
 # lenient and on a damaged file can also fail with plain Python errors from
@@ -285,4 +303,64 @@ def _page_spans(
         for word in page.extract_words()
     ]
     frame = PageFrame(left, top, right - left, bottom - top)
-    return line_spans(words_left_visible(words, frame, hidden), number, frame, origin="text_layer")
+    spans = line_spans(words_left_visible(words, frame, hidden), number, frame, origin="text_layer")
+    return _with_kinds(spans, page.chars, frame)
+
+
+def _with_kinds(spans: list[Span], chars: list[dict[str, Any]], frame: PageFrame) -> list[Span]:
+    """``spans`` with the headings and the title marked, by the rule in the module notes.
+    Each character counts for the span its centre lies in; the spans are put in 100 bands
+    by height, as ``words_left_visible`` does. O(characters x spans per band + S log S)."""
+    boxes = [span.location for span in spans if isinstance(span.location, BoxLocation)]
+    if len(boxes) != len(spans) or frame.width <= 0 or frame.height <= 0:
+        return spans  # line_spans gives only boxes, on a page with a size
+    bands: dict[int, list[int]] = {}
+    for k, box in enumerate(boxes):
+        for band in range(int(box.y0 * 100), min(100, int(box.y1 * 100)) + 1):
+            bands.setdefault(band, []).append(k)
+    sizes: dict[int, float] = {}  # span -> its largest character
+    bold: dict[int, bool] = {}  # span -> every character is bold
+    for char in chars:
+        if not str(char["text"]).strip():
+            continue
+        x = ((float(char["x0"]) + float(char["x1"])) / 2 - frame.left) / frame.width
+        y = ((float(char["top"]) + float(char["bottom"])) / 2 - frame.top) / frame.height
+        for k in bands.get(int(y * 100), ()):
+            box = boxes[k]
+            if box.x0 <= x <= box.x1 and box.y0 <= y <= box.y1:
+                sizes[k] = max(sizes.get(k, 0.0), float(char["size"]))
+                bold[k] = bold.get(k, True) and "bold" in str(char["fontname"]).casefold()
+                break
+    if not sizes:
+        return spans
+    body = statistics.median(sizes.values())
+    bold_page = 2 * sum(bold.values()) >= len(bold)
+    headings = set()
+    for k, size in sizes.items():
+        text = spans[k].text
+        if len(text.split()) > _HEADING_MAX_WORDS or not any(ch.isalpha() for ch in text):
+            continue
+        strong = bold[k] and not bold_page and size >= body and not text.endswith(_NOT_HEADING_ENDS)
+        if size >= _HEADING_SIZE * body or (strong and _alone(boxes, k)):
+            headings.add(k)
+    if not headings:
+        return spans
+    largest = max(sizes[k] for k in headings)
+    title = min(k for k in headings if sizes[k] == largest) if boxes[0].page == 1 else None
+    return [
+        replace(span, kind="title" if k == title else "heading") if k in headings else span
+        for k, span in enumerate(spans)
+    ]
+
+
+def _alone(boxes: list[BoxLocation], k: int) -> bool:
+    """No other span shares span k's line: none overlaps it by half the smaller height, as
+    ``line_spans`` joins a line, and it gives one line's spans one after another."""
+    box = boxes[k]
+    for other in (boxes[k - 1] if k else None, boxes[k + 1] if k + 1 < len(boxes) else None):
+        if other is None:
+            continue
+        smaller = min(box.y1 - box.y0, other.y1 - other.y0)
+        if min(box.y1, other.y1) - max(box.y0, other.y0) >= smaller / 2:
+            return False
+    return True

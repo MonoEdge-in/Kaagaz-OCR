@@ -153,9 +153,11 @@ class RecordingProgress(MemoryProgress):
         super().__init__(documents, statuses)
         self.log = log
 
-    def set_progress(self, customer_id: str, document_id: str, progress: Progress) -> None:
+    def set_progress(
+        self, customer_id: str, document_id: str, progress: Progress, *, run_id: str | None = None
+    ) -> None:
         self.log.append(progress.step)
-        super().set_progress(customer_id, document_id, progress)
+        super().set_progress(customer_id, document_id, progress, run_id=run_id)
 
 
 @dataclass
@@ -298,6 +300,30 @@ class RoutesTest(unittest.TestCase):
         self.assertEqual(
             (totals.ocr_engine, totals.seconds_ocr), ("fake-ocr 7", 2.5)
         )  # page 3 was never sent
+
+    def test_with_no_ocr_engine_a_blank_page_is_blank_and_a_scan_is_not_read(self) -> None:
+        """OCR_ENGINE=none: the reader gives no route for a page with no text layer. A blank
+        picture needs no reader, so that page is blank; the scan stays None (not read, and
+        never ocr: nothing went to OCR). The run counts the pages that have a route."""
+        system = rig()
+        job = system.job(make_pdf([Page(texts=[Text(72, 700, LONG_LINE)]), SCANNED, WHITE]))
+        system.processor(job, beat)
+        pages = system.store.pages_for(CUSTOMER, job.document_id)
+        self.assertEqual([p.route for p in pages], ["text_layer", None, "blank"])
+        totals = system.totals(job)
+        self.assertEqual(
+            (totals.status, totals.pages_text_layer, totals.pages_ocr, totals.pages_blank), ("ready", 1, 0, 1)
+        )
+
+    def test_with_no_ocr_engine_a_pdf_of_scans_needs_a_reader_and_its_blank_page_is_blank(self) -> None:
+        system = rig()
+        job = system.job(make_pdf([SCANNED, WHITE]))
+        system.processor(job, beat)
+        self.assertIs(system.statuses.get_status(CUSTOMER, job.document_id), DocumentStatus.NEEDS_READER)
+        self.assertEqual(
+            [p.route for p in system.store.pages_for(CUSTOMER, job.document_id)], [None, "blank"]
+        )
+        self.assertEqual((system.totals(job).status, system.totals(job).pages_blank), ("needs_reader", 1))
 
     def test_a_spreadsheet_page_is_cells(self) -> None:
         system = rig()
@@ -679,6 +705,31 @@ class RunFenceTest(unittest.TestCase):
         self.assertEqual(
             (first.totals.seconds_ocr, second.totals.seconds_ocr), (5.0, 5.0)
         )  # each its own pages
+        # R6: the failed run counts the page it read before OCR went away.
+        self.assertEqual((first.totals.pages_ocr, second.totals.pages_ocr), (1, 2))
+
+    def test_a_stale_delivery_never_writes_progress_over_the_newer_run(self) -> None:
+        """The progress fence: after the newer run, a "read again" puts the document back in
+        progress (clean, scanned again); the stale delivery's next progress write is fenced, so
+        it ends there, quietly, and its superseded run still records the page it read."""
+        system = rig()
+        job = system.job(make_pdf([Page(texts=[Text(72, 700, LONG_LINE)])]))
+        written: list[int] = []
+
+        def newer_run_then_read_again() -> None:
+            system.processor(job, beat)
+            system.statuses.set_status(CUSTOMER, job.document_id, DocumentStatus.CLEAN)
+            written.append(len(system.progress.history))
+
+        stale = system.make(CallbackSocket(build_reader_socket(SETTINGS, None), newer_run_then_read_again))
+        stale(job, beat)
+
+        self.assertEqual(system.progress.history[written[0] :], [])
+        self.assertEqual(system.store.saves, 1)
+        self.assertEqual(statuses_of(system.runs_of(job)), [("superseded", None), ("ready", None)])
+        old, _ = system.runs_of(job)
+        assert old.totals is not None
+        self.assertEqual(old.totals.pages_text_layer, 1)
 
 
 class LoggingTest(unittest.TestCase):

@@ -301,7 +301,9 @@ export interface AnswerSentence {
 }
 
 export interface Answer {
-  status: "answered" | "not_found";
+  // "unchecked": the figure asked for is only in unchecked card values, so no
+  // number is given; one sentence asks for Review and closest_documents says where.
+  status: "answered" | "not_found" | "unchecked";
   label: Label | null; // null when not found
   sentences: AnswerSentence[];
   citations: Citation[];

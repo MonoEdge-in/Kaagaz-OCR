@@ -28,6 +28,7 @@ from tests.test_pipeline_store_db import (
     links,
     new_document,
     numbered,
+    read,
     rows,
 )
 from tests.test_runs_db import totals
@@ -66,9 +67,8 @@ def world(db: Database) -> dict[str, str]:
     a, _ = new_customer(db)
     b, _ = new_customer(db)
     doc, other, bare = new_document(db, a), new_document(db, a), new_document(db, a)
-    store = PgPipelineStore(db)
-    store.save(numbered(a, other))
-    store.save(replace(numbered(a, doc), facts=FACTS))
+    read(db, numbered(a, other))  # a link target is ready
+    PgPipelineStore(db).save(replace(numbered(a, doc), facts=FACTS))
     ids = {"a": a, "b": b, "doc": doc, "other": other, "bare": bare, "b_doc": new_document(db, b)}
     ids["processing_runs"] = PgRuns(db).start(a, doc, now=T)
     with db.customer(a) as conn:
@@ -165,9 +165,8 @@ def test_same_invoice_number_at_b_never_links_to_a(db: Database) -> None:
     ids = world(db)
     b, b_doc = ids["b"], ids["b_doc"]
     b_other = new_document(db, b)
-    store = PgPipelineStore(db)
-    store.save(numbered(b, b_doc))
-    store.save(numbered(b, b_other))
+    read(db, numbered(b, b_doc))
+    PgPipelineStore(db).save(numbered(b, b_other))
 
     assert links(db, b, b_doc) == {
         (b_doc, b_other, "invoice_number", "inv7"),

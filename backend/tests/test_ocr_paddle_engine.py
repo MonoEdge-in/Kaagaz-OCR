@@ -153,6 +153,7 @@ def test_a_confidence_in_the_reply_is_never_used(fake: FakeOcrServer) -> None:
 @pytest.mark.parametrize(
     ("status", "code"),
     [
+        (500, "ocr_failed"),  # read_failed: the model raised on this page, so asking again fails again
         (422, "corrupt_file"),
         (413, "image_too_large"),
         (400, "invalid_reader_output"),
@@ -160,22 +161,49 @@ def test_a_confidence_in_the_reply_is_never_used(fake: FakeOcrServer) -> None:
     ],
 )
 def test_refusals_fail_the_document_with_a_code(fake: FakeOcrServer, status: int, code: str) -> None:
-    assert read_error(fake, Reply(status, {"error": "any"})) == code
+    error = "read_failed" if status == 500 else "any"
+    assert read_error(fake, Reply(status, {"error": error})) == code
+    assert len(fake.requests) == 1  # never asked again
 
 
 @pytest.mark.parametrize(
     ("status", "error"),
     [
         (503, "not_ready"),
-        (503, "busy"),
         (500, "internal_error"),
+        (500, "not json"),
+        (502, "bad_gateway"),
+        (504, "gateway_timeout"),
         (421, "misdirected"),
     ],  # 421: set-up, not the file
 )
 def test_a_server_that_cannot_read_now_is_unavailable(fake: FakeOcrServer, status: int, error: str) -> None:
-    fake.replies.append(Reply(status, {"error": error}))
+    fake.replies.append(Reply(status, b"not json" if error == "not json" else {"error": error}))
     with pytest.raises(BackendUnavailable):
         engine(fake).read(page())
+    assert len(fake.requests) == 1  # the job's own retry asks again, later
+
+
+def test_a_busy_server_is_asked_again_within_the_deadline(
+    fake: FakeOcrServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Busy: still on a page a worker gave up on. This page is fine, so no attempt is used up."""
+    monkeypatch.setattr(ocr, "_BUSY_WAIT_SECONDS", 0.05)
+    fake.replies += [Reply(503, {"error": "busy"}), Reply(503, {"error": "busy"}), Reply()]
+    assert len(engine(fake).read(page())) == 2
+    assert len(fake.requests) == 3
+
+
+def test_a_server_busy_past_the_deadline_is_unavailable(
+    fake: FakeOcrServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ocr, "_BUSY_WAIT_SECONDS", 0.05)
+    fake.replies += [Reply(503, {"error": "busy"}) for _ in range(20)]
+    started = time.monotonic()
+    with pytest.raises(BackendUnavailable):
+        engine(fake, timeout=0.5).read(page())
+    assert time.monotonic() - started < 0.5 + 1.0  # one deadline for the whole call
+    assert 2 <= len(fake.requests) < 20  # asked again, backing off
 
 
 def test_a_redirect_is_refused_and_not_followed(fake: FakeOcrServer) -> None:

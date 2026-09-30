@@ -11,6 +11,7 @@ import unittest
 
 from PIL import Image
 
+from kaagaz.chunking.context import with_context
 from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.ingestion import sniff
@@ -151,6 +152,57 @@ class MixedPagesTest(unittest.TestCase):
         self.assertEqual(piece.text, "\n".join(["Closing stock of cotton bales was", *scan_lines]))
         self.assertEqual((piece.page_from, piece.page_to), (1, 2))
         self.assertEqual(piece.label, "needs_review")  # part of it was read by OCR
+
+
+class TextLayerHeadingsTest(unittest.TestCase):
+    """C1 and C3 on a PDF's text layer: its headings come from the fonts (pdf_reader)."""
+
+    def test_a_heading_at_the_bottom_of_page_15_leads_one_piece_with_its_paragraph_on_16(self) -> None:
+        pages = [Page(texts=[Text(72, 740, "Annual Report", size=20), Text(72, 700, "For the owners.")])]
+        for n in range(2, 17):
+            texts = [Text(72, 700, f"Branch report for page {n}, all counted.")]
+            texts += [Text(72, 686, "The figures are in rupees and were checked twice.")]
+            if n == 15:
+                texts.append(Text(72, 60, "Profit", size=16))
+            if n == 16:
+                texts = [Text(72, 740, "Profit of the month Sept was $12,000."), *texts]
+            pages.append(Page(texts=texts))
+        pieces = pieces_from_lines("cust-a", "doc-1", read_pdf(make_pdf(pages)))
+
+        (piece,) = holding(pieces, "Profit")
+        self.assertTrue(piece.text.startswith("Profit\nProfit of the month Sept was $12,000."))
+        self.assertEqual((piece.page_from, piece.page_to), (15, 16))
+        self.assertEqual(piece.section, ("Annual Report", "Profit"))
+        (before,) = holding(pieces, "Branch report for page 15")  # the heading starts a new piece
+        self.assertNotIn("Profit", before.text)
+
+    def test_monthly_results_and_profit_split_into_sections_with_a_section_header(self) -> None:
+        page = Page(
+            texts=[
+                Text(72, 740, "MONTHLY RESULTS", size=18),
+                Text(72, 710, "Sales were 40,000 in every branch this month."),
+                Text(72, 696, "Returns were low."),
+                Text(72, 682, "PROFIT", bold=True),  # bold, no gap above it
+                Text(72, 668, "Profit was 12,000 after tax."),
+            ]
+        )
+        pieces = with_context(
+            pieces_from_lines("cust-a", "doc-1", read_pdf(make_pdf([page]))),
+            document_name="Sept report.pdf",
+            doc_type=None,
+            document_date=None,
+        )
+        self.assertEqual(
+            [(p.text, p.section) for p in pieces],
+            [
+                (
+                    "MONTHLY RESULTS\nSales were 40,000 in every branch this month.\nReturns were low.",
+                    ("MONTHLY RESULTS",),
+                ),
+                ("PROFIT\nProfit was 12,000 after tax.", ("MONTHLY RESULTS", "PROFIT")),
+            ],
+        )
+        self.assertIn(" | Section: MONTHLY RESULTS > PROFIT | Page 1 | ", pieces[1].context_header)
 
 
 HINDI = ["पाटील ट्रेडर्स", "बिल संख्या १७ दिनांक १२/०८/२०२६", "ग्राहक का नाम शर्मा", "Total: १,१८०.५०"]

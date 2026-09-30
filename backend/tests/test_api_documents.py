@@ -1417,3 +1417,11 @@ def test_the_detail_shows_the_invoice_row_and_its_lines_in_order(db: Database) -
         ],
     }
     assert signed.client.get(f"/api/documents/{plain}").json()["invoice"] is None
+
+
+def test_a_page_the_scan_reader_failed_on_has_its_own_words() -> None:
+    message = status_message("failed", "ocr_failed", detected_type="pdf", max_pages=100)
+    assert (
+        message
+        == "The scan reader couldn't read a page of this file. Upload a clearer scan, or read it again."
+    )

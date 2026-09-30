@@ -75,6 +75,7 @@ def run(
         num_ctx=8192,
         run_id=RUN,
         beat=beat,
+        spans=spans,
         invoice_windows=windows,
     )
     return understanding, beats
@@ -99,7 +100,7 @@ class InvoiceWindowsTest(unittest.TestCase):
             fields(invoice.values), ["invoice_number", "party_name", "total_amount", "description", "amount"]
         )
         # E4 replaced labelled.py's invoice number and total, and only those (ML 6(f)).
-        self.assertEqual(understanding.rule_values, rule_values_left(RULES, invoice.values))
+        self.assertEqual(understanding.rule_values, rule_values_left(RULES, invoice.values, SPANS))
         self.assertEqual(fields(understanding.rule_values), ["invoice_date", "subtotal"])
 
     def test_card_values_for_fields_the_rules_or_e4_have_are_dropped_and_e4_values_are_quoted(self) -> None:

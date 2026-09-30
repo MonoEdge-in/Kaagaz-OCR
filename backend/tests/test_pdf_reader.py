@@ -141,6 +141,59 @@ class TextLayerTest(unittest.TestCase):
         self.assertEqual([s.text for s in read(data)], ["seen"])
 
 
+class HeadingTest(unittest.TestCase):
+    """A text layer's headings come from its fonts (PROVISIONAL, PRD 2 C1 and C3)."""
+
+    def kinds(self, *pages: list[Text]) -> list[tuple[str, str | None]]:
+        return [(s.text, s.kind) for s in read(make_pdf([Page(texts=list(texts)) for texts in pages]))]
+
+    def test_a_larger_font_is_a_heading_and_the_largest_on_page_1_the_title(self) -> None:
+        page_1 = [
+            Text(72, 740, "Monthly Report", size=20),
+            Text(72, 700, "Sales", size=15),
+            Text(72, 680, "Sales were steady in every branch."),
+            Text(72, 660, "Stock was counted twice."),
+            Text(72, 30, "Page 1 of 2", size=9),  # smaller than the body: never a heading
+        ]
+        page_2 = [Text(72, 740, "Profit", size=20), Text(72, 700, "Profit rose after tax.")]
+        self.assertEqual(
+            self.kinds(page_1, page_2),
+            [
+                ("Monthly Report", "title"),
+                ("Sales", "heading"),
+                ("Sales were steady in every branch.", None),
+                ("Stock was counted twice.", None),
+                ("Page 1 of 2", None),
+                ("Profit", "heading"),  # the title is only ever on page 1
+                ("Profit rose after tax.", None),
+            ],
+        )
+
+    def test_just_under_1_2_times_the_body_is_not_a_heading(self) -> None:
+        body = [Text(72, 700 - 20 * i, f"Body line {i} of the page.") for i in range(3)]
+        self.assertEqual(self.kinds([Text(72, 740, "Almost", size=14.3), *body])[0], ("Almost", None))
+        self.assertEqual(self.kinds([Text(72, 740, "Enough", size=14.4), *body])[0], ("Enough", "title"))
+
+    def test_a_short_bold_line_alone_is_a_heading_but_not_a_label_or_a_sentence(self) -> None:
+        body = [Text(72, 500 - 20 * i, f"Body line {i} of the page.") for i in range(6)]  # 5 bold of 11
+        texts = [
+            Text(72, 740, "Profit and loss", bold=True),
+            Text(72, 700, "Total:", bold=True),  # a label
+            Text(72, 660, "Checked by the owner.", bold=True),  # a sentence
+            Text(72, 620, "Amount", bold=True),
+            Text(400, 620, "Rate"),  # "Amount" shares its line: a table header, not a heading
+            Text(72, 580, " ".join(["word"] * 11), bold=True),  # more than 10 words
+            *body,
+        ]
+        kinds = dict(self.kinds(texts))
+        self.assertEqual(kinds.pop("Profit and loss"), "title")
+        self.assertEqual(set(kinds.values()), {None})
+
+    def test_on_a_page_that_is_mostly_bold_bold_means_nothing(self) -> None:
+        texts = [Text(72, 740 - 20 * i, f"Bold line {i}", bold=True) for i in range(3)]
+        self.assertEqual({kind for _, kind in self.kinds([*texts, Text(72, 600, "Plain line.")])}, {None})
+
+
 class PagesWithoutTextTest(unittest.TestCase):
     def test_no_text_anywhere_and_no_ocr_needs_a_reader(self) -> None:
         with self.assertRaises(NoReader) as ctx:

@@ -17,7 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 import kaagaz
-from kaagaz.db.documents import PgDocuments
+from kaagaz.db.documents import PgDocuments, delete_family_forever
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns, finish_run, is_run_open, pages_by_route, start_run
@@ -27,7 +27,7 @@ from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import FinishedRun, Progress, RunTotals, Superseded
 from kaagaz.scanning.gate import REJECTION_CODES, DocumentStatus
 from tests.db_support import insert_document, new_customer, violation, wait_until_blocked
-from tests.fakes import MemoryDocuments, MemoryProgress, MemoryRuns, MemoryStatuses
+from tests.fakes import MemoryDocuments, MemoryProgress, MemoryRuns, MemoryStatuses, MemoryStorage
 from tests.test_api_review import _named_database
 from tests.test_ocr_server import VERSION as OCR_VERSION
 from tests.test_pipeline_store_db import EMPTY, content, counts, new_document, new_session, rows
@@ -207,17 +207,25 @@ def test_every_error_code_the_pipeline_emits_is_accepted(db: Database) -> None:
     assert violation(refused.value) == ("23514", "processing_runs_error_code_check")
 
 
-def test_a_deleted_document_keeps_its_runs_without_the_document(db: Database) -> None:
-    """AR12 (PROVISIONAL): the page counts per month outlive a purge."""
+def test_deleting_a_document_forever_deletes_its_runs_and_everything_else_of_it(db: Database) -> None:
+    """Vrushit's decision (0005, replacing AR12): if a document is deleted, instantly forget
+    everything about it. Its runs go with its rows, so its pages no longer count either."""
     customer, _ = new_customer(db)
-    doc = new_document(db, customer)
-    run = PgRuns(db).start(customer, doc, now=T0)
     with db.customer(customer) as conn:
-        conn.execute(
-            text("DELETE FROM documents WHERE customer_id = :c AND id = :d"), {"c": customer, "d": doc}
-        )
-        kept = conn.execute(text("SELECT document_id FROM processing_runs WHERE id = :r"), {"r": run}).all()
-    assert [tuple(row) for row in kept] == [(None,)]
+        doc = insert_document(conn, customer, deleted_at=T0)
+        kept = insert_document(conn, customer)
+    PgPipelineStore(db).save(content(customer, doc))
+    for document in (doc, kept):
+        run = PgRuns(db).start(customer, document, now=T0)
+        PgRuns(db).finish(customer, FinishedRun(run, totals(), T1))
+    PgRuns(db).start(customer, doc, now=T1)  # one still running too
+
+    with db.customer(customer) as conn:
+        assert delete_family_forever(conn, MemoryStorage(), customer, doc) == 1
+        counted = pages_by_route(conn, customer, start=T0, end=T2)
+    assert counts(db, customer, doc) == EMPTY
+    assert len(runs(db, customer, kept)) == 1
+    assert counted == {"cells": 1, "text_layer": 2, "ocr": 3, "blank": 4}  # the kept document's run only
 
 
 PROGRESS = "SELECT progress FROM documents WHERE id = :d"
@@ -232,6 +240,22 @@ def test_set_progress_on_a_ready_document_changes_nothing(db: Database) -> None:
 
     assert rows(db, customer, PROGRESS, reading) == [{"progress": {"step": "reading", "done": 2, "total": 5}}]
     assert rows(db, customer, PROGRESS, ready) == [{"progress": None}]
+
+
+def test_progress_from_a_superseded_run_changes_nothing(db: Database) -> None:
+    """The progress fence: a stale delivery never overwrites the newer run's progress."""
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        doc = insert_document(conn, customer, status="clean")
+    old = PgRuns(db).start(customer, doc, now=T0)
+    new = PgRuns(db).start(customer, doc, now=T1)
+    PgDocuments(db).set_progress(customer, doc, Progress("reading", 1, 5), run_id=new)
+
+    with pytest.raises(Superseded):
+        PgDocuments(db).set_progress(customer, doc, Progress("indexing", 0, 1), run_id=old)
+    assert rows(db, customer, PROGRESS, doc) == [{"progress": {"step": "reading", "done": 1, "total": 5}}]
+    PgDocuments(db).set_progress(customer, doc, Progress("reading", 2, 5), run_id=new)
+    assert rows(db, customer, PROGRESS, doc) == [{"progress": {"step": "reading", "done": 2, "total": 5}}]
 
 
 def test_progress_waits_for_the_family_lock_and_is_then_written(db: Database) -> None:
@@ -277,16 +301,27 @@ def test_a_save_or_ready_from_a_superseded_run_changes_nothing(db: Database) -> 
     assert runs(db, customer, doc) == [(old, "superseded", None, T0, T1), (new, "ready", None, T1, T2)]
 
 
-def test_finish_never_overwrites_a_superseded_run(db: Database) -> None:
+def test_a_superseded_run_keeps_its_status_and_gets_its_counts_once(db: Database) -> None:
+    """R6: the stale delivery's pages were read, so its late finish records its counts; its
+    status, code and finish time stay the supersede's, and a finish never overwrites a
+    finished run."""
     customer, _ = new_customer(db)
     doc = new_document(db, customer)
     old = PgRuns(db).start(customer, doc, now=T0)
     new = PgRuns(db).start(customer, doc, now=T1)
-    PgRuns(db).finish(customer, FinishedRun(old, totals(), T2))  # the stale delivery ends late
+    PgRuns(db).finish(customer, FinishedRun(old, totals("failed", error_code="ocr_unavailable"), T2))
+    PgRuns(db).finish(customer, FinishedRun(old, totals(pages_ocr=99), T2))  # counted once only
     PgRuns(db).finish(customer, FinishedRun(new, totals(), T2))
     PgRuns(db).finish(customer, FinishedRun(new, totals("failed", error_code="corrupt_file"), T2))
 
     assert runs(db, customer, doc) == [(old, "superseded", None, T0, T1), (new, "ready", None, T1, T2)]
+    counted = "SELECT pages_ocr, seconds_total, model_calls FROM processing_runs WHERE document_id = :d"
+    assert rows(db, customer, counted + " ORDER BY started_at", doc) == [
+        {"pages_ocr": 3, "seconds_total": 12.5, "model_calls": 6},
+        {"pages_ocr": 3, "seconds_total": 12.5, "model_calls": 6},
+    ]
+    with db.customer(customer) as conn:
+        assert pages_by_route(conn, customer, start=T0, end=T2)["ocr"] == 6
 
 
 def test_set_failed_from_a_superseded_run_changes_nothing(db: Database) -> None:

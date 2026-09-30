@@ -7,9 +7,10 @@ models), keyed by customer first, so a cross-customer test can
 actually fail. They are never used by product code.
 
 The run fence (PRD 2, Lead's resolution 2) is mirrored when a store is given
-``runs``: ``MemoryPipelineStore.save``, ``MemoryDocuments.mark_ready`` and
-``MemoryDocuments.set_failed`` raise Superseded for a run that is not open, as
-their PostgreSQL versions do (tests/test_runs_db.py runs one scenario on both).
+``runs``: ``MemoryPipelineStore.save``, ``MemoryDocuments.mark_ready``,
+``MemoryDocuments.set_failed`` and ``MemoryProgress.set_progress`` raise
+Superseded for a run that is not open, as their PostgreSQL versions do
+(tests/test_runs_db.py runs one scenario on both).
 """
 
 import threading
@@ -331,7 +332,8 @@ class MemoryRuns:
     """Runs keyed by run id and checked by customer (kaagaz.pipeline.RunStore), like
     kaagaz.db.runs: ``start`` needs this customer's document (else document_missing,
     AR8), marks its runs still running superseded, and adds a running one; ``finish``
-    changes only this customer's run; a run never ends before it started."""
+    changes only this customer's run, a running one wholly, a superseded one's totals
+    only and once; a run never ends before it started."""
 
     def __init__(self, documents: MemoryRepository) -> None:
         self._documents = documents
@@ -353,6 +355,11 @@ class MemoryRuns:
         row = self.rows.get(run.run_id)
         if row is None or row.customer_id != customer_id:
             return  # like an UPDATE whose WHERE matches no row
+        if row.status == "superseded" and row.totals is None:
+            row.totals = replace(run.totals, status=row.status, error_code=row.error_code)
+            return  # its status, code and finish time stay
+        if row.status != "running":
+            return
         row.status, row.error_code = run.totals.status, run.totals.error_code
         row.finished_at, row.totals = max(run.now, row.started_at), run.totals
 
@@ -382,7 +389,8 @@ class MemoryRuns:
 
 class MemoryProgress:
     """kaagaz.pipeline.ProgressStore, like PgDocuments.set_progress: written only on
-    this customer's document while it is still in progress (received or clean).
+    this customer's document while it is still in progress (received or clean), and
+    with ``run_id`` only while that run is open (the fence, through ``statuses.runs``).
     ``history`` keeps every write in order, for tests of the order."""
 
     def __init__(self, documents: MemoryRepository, statuses: MemoryStatuses) -> None:
@@ -392,9 +400,14 @@ class MemoryProgress:
         self.history: list[tuple[str, str, Progress]] = []
         self.down = False
 
-    def set_progress(self, customer_id: str, document_id: str, progress: Progress) -> None:
+    def set_progress(
+        self, customer_id: str, document_id: str, progress: Progress, *, run_id: str | None = None
+    ) -> None:
         if self.down:
             raise BackendUnavailable("database")
+        runs = self._statuses.runs
+        if run_id is not None and runs is not None and not runs.is_open(customer_id, document_id, run_id):
+            raise Superseded(run_id)
         if self._documents.get(customer_id, document_id) is None:
             return
         if self._statuses.get_status(customer_id, document_id) not in (None, DocumentStatus.CLEAN):

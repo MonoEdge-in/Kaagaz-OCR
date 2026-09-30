@@ -24,10 +24,14 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # PyPI only, no --extra-index-url: the paddlepaddle 3.3.1 CPU wheel for cp312 is there (FINDINGS).
-COPY constraints-ocr.txt ./
-RUN pip install --constraint constraints-ocr.txt \
-    "paddleocr[doc-parser]==3.7.0" "paddlex==3.7.2" "paddlepaddle==3.3.1" fastapi uvicorn pillow
-COPY pyproject.toml ./
+# The paddle extra's list, read from pyproject.toml so its pins live in one place, and not
+# `pip install .[paddle]`, which would also bring the backend's own dependencies (the database,
+# storage and queue libraries checked for below). fastapi, uvicorn and pillow are the server's.
+# constraints-ocr.txt pins every package that goes in.
+COPY constraints-ocr.txt pyproject.toml ./
+RUN python -c "import tomllib; extras = tomllib.load(open('pyproject.toml', 'rb'))['project']['optional-dependencies']; print(*extras['paddle'], sep='\n')" > /tmp/paddle.txt \
+    && pip install --constraint constraints-ocr.txt --requirement /tmp/paddle.txt fastapi uvicorn pillow \
+    && rm /tmp/paddle.txt
 COPY kaagaz kaagaz
 RUN pip install --no-deps .
 
@@ -36,8 +40,13 @@ RUN pip install --no-deps .
 RUN python -c "import importlib.util as u; bad = [m for m in ('transformers', 'psycopg', 'boto3', 'sqlalchemy') if u.find_spec(m)]; assert not bad, bad"
 
 # The weights at pinned revisions (FINDINGS), then sha256 checked: the sums are VERIFIED
-# against the files the scratch venv downloaded at these revisions on 30 Sep. The models'
-# own Python files are removed, so nothing in /opt/models can run, and it is read-only.
+# against the files the scratch venv downloaded at these revisions on 30 Sep. Licence: both
+# are Apache-2.0 (their Hugging Face cards, read 30 Sep). The models' own Python files are
+# removed, so nothing in /opt/models can run, and it is read-only. PaddleOCR-VL-1.6's four
+# (configuration_, image_processing_, modeling_ and processing_paddleocr_vl.py) are for
+# Hugging Face transformers' remote code; PaddleX builds the model and processor from its own
+# classes and reads the weights, configs, tokenizer and chat template only (INFERRED from
+# PaddleX's develop branch, inference/models/doc_vlm/predictor.py, not from 3.7.2 itself).
 # VERIFY: that `hf` (huggingface-hub 1.33.0) runs here, and that PaddleOCR-VL loads with
 # the .py files gone (the scratch run had them).
 RUN hf download PaddlePaddle/PaddleOCR-VL-1.6 --revision c5630abae1d940eafe0697512a0325494b02ab42 \

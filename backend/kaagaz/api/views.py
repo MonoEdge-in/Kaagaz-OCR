@@ -69,6 +69,9 @@ def status_message(
         return (
             f"We tried {tries} and couldn't read this file. Upload it again, or ask your admin to look at it."
         )
+    if status == "failed" and failure_code == "ocr_failed":
+        # The scan reader failed on a page of this file (kaagaz/reading/ocr.py): not an outage.
+        return "The scan reader couldn't read a page of this file. Upload a clearer scan, or read it again."
     if status == "failed":
         return "This file could not be read." + (f" ({failure_code})" if failure_code else "")
     message = _STATUS_MESSAGES.get(status, "")

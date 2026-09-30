@@ -8,7 +8,12 @@ and counted.
 **The reader text** (``reader_text``). The first reader's spans in reading
 order (a stable sort by page keeps each page's own order), joined by new
 lines. Cells of one table row (a sheet row, or an OCR table row) are joined by
-" | " instead.
+" | " instead. Running headers and footers are left out as pieces leave them
+out (``chunking.lines.running_spans`` with ``keep_first``), so a quote runs
+across a page break past "Page 15 of 20"; the first copy of a repeated
+letterhead and a one-off header block stay, so a value printed only there can
+still be quoted. ``spans`` holds only the spans kept, so every match maps back
+to a real span.
 
 **Normalising, with a map back.** Both sides are normalised the same way, one
 cluster at a time (a character and the combining marks after it):
@@ -67,7 +72,7 @@ is unknown, so the first is not called unique).
 
 Cost. ``reader_text`` is O(n) time and memory for n characters (two 4-byte
 array entries per normalised character), plus the page sort: O(S) for spans
-already in page order, O(S log S) otherwise. One search is O(n + m) in
+already in page order, O(S log S) otherwise, and ``running_spans``: O(S x R). One search is O(n + m) in
 practice (CPython's ``str.find``); a labelled search is O(k * (LABEL_WINDOW + m))
 for k label matches; mapping a match back is O(log S) plus its spans.
 """
@@ -79,6 +84,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from functools import lru_cache
 
+from kaagaz.chunking.lines import running_spans
 from kaagaz.chunking.script import fold_digits, has_devanagari_letters
 from kaagaz.extraction.values import ExtractedValue, QuoteMatch
 from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span
@@ -201,7 +207,9 @@ def located_value(found: Found, *, record_key: str, field: str, label: Found | N
 
 def reader_text(spans: Sequence[Span]) -> ReaderText:
     """The reader text of ``spans``, normalised with its map back. O(n) (module docstring)."""
-    ordered = tuple(sorted(spans, key=lambda span: span.location.page))
+    running = running_spans(spans, keep_first=True)
+    kept = (span for index, span in enumerate(spans) if index not in running)
+    ordered = tuple(sorted(kept, key=lambda span: span.location.page))
     builder = _Normaliser()
     parts: list[str] = []
     span_starts: list[int] = []

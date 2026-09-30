@@ -33,6 +33,19 @@ _WINDOW_LINE_CHARS = 50
 _WINDOW_LINE_TOKENS = 50
 _WINDOW_FIELD_TOKENS = 300
 
+
+def window_for_reply_tokens(max_tokens: int) -> tuple[int, int]:
+    """The invoice window (characters, overlap) that a reply of ``max_tokens``
+    (MODEL_WINDOW_MAX_TOKENS) can answer: as many 50-character line items as fit
+    after the fields, and a quarter of that as overlap, both in whole line items.
+    2048 gives 1700 and 400; a bigger model is one setting (MODEL_WINDOW_MAX_TOKENS,
+    with MODEL_NUM_CTX), and the windows grow with it. (0, 0) if nothing fits."""
+    line_items = max(0, (max_tokens - _WINDOW_FIELD_TOKENS) // _WINDOW_LINE_TOKENS)
+    chars = line_items * _WINDOW_LINE_CHARS
+    overlap = (chars // 4) // _WINDOW_LINE_CHARS * _WINDOW_LINE_CHARS
+    return chars, overlap
+
+
 # The model's context window (ML amendment 5, council fix 7). Every call keeps room
 # for its system prompt (tests keep each prompt under MAX_SYSTEM_PROMPT_TOKENS; the
 # card's is about 700), a reply and its one repair retry, and CHAT_OVERHEAD_TOKENS
@@ -208,8 +221,15 @@ class Settings:
                 raise SettingsError(
                     f"{name} must leave at least {MIN_INPUT_TOKENS} tokens of MODEL_NUM_CTX for the document"
                 )
-        window_chars = env.positive("EXTRACT_WINDOW_CHARS")
-        window_overlap = env.integer("EXTRACT_WINDOW_OVERLAP")
+        # Empty means "what MODEL_WINDOW_MAX_TOKENS can answer" (window_for_reply_tokens);
+        # a value set here overrides it, and is still checked below.
+        auto_chars, auto_overlap = window_for_reply_tokens(window_max_tokens)
+        set_chars = env.optional_integer("EXTRACT_WINDOW_CHARS")
+        set_overlap = env.optional_integer("EXTRACT_WINDOW_OVERLAP")
+        window_chars = auto_chars if set_chars is None else set_chars
+        window_overlap = auto_overlap if set_overlap is None else set_overlap
+        if window_chars < 1:
+            raise SettingsError("EXTRACT_WINDOW_CHARS must be at least 1 (or MODEL_WINDOW_MAX_TOKENS larger)")
         if window_overlap >= window_chars:
             # Without this the windows would never move forward (plan 6).
             raise SettingsError("EXTRACT_WINDOW_OVERLAP must be less than EXTRACT_WINDOW_CHARS")

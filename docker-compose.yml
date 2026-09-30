@@ -210,7 +210,7 @@ services:
   # /read contract (PRD 2 P1; backend/Dockerfile.ocr). Only with --profile
   # paddle. It gets no .env, so no database, storage or queue settings reach
   # it, and it sits on an internal network with no way out and no port on the
-  # laptop (docker-compose.ocr-host.yml adds 127.0.0.1:8080 when wanted).
+  # laptop (docker-compose.ocr-host.yml adds a relay on 127.0.0.1:8080 when wanted).
   ocr:
     image: kaagaz-ocr:local
     build:

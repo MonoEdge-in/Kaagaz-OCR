@@ -380,6 +380,19 @@ class FakeModel:
         raise ModelUnavailable("no_vision")
 
 
+class FakeUnchecked:
+    """unchecked.py's rule over in-memory card documents: {customer: {field: [documents]}}."""
+
+    def __init__(self, cards: dict[str, dict[str, list[dict[str, str]]]] | None = None) -> None:
+        self.cards = cards or {}
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def documents_with(self, customer_id: str, fields: Sequence[str]) -> list[dict[str, str]]:
+        self.calls.append((customer_id, tuple(fields)))
+        found = self.cards.get(customer_id, {})
+        return [doc for field in fields for doc in found.get(field, [])]
+
+
 # --- helpers ------------------------------------------------------------------
 
 
@@ -389,6 +402,7 @@ def service(
     records: list[Record] | None = None,
     model: FakeModel | None = None,
     clock: datetime = NOW,
+    unchecked: FakeUnchecked | None = None,
 ) -> tuple[AnswerService, FakeRetriever, FakeFixedQueries]:
     retriever = FakeRetriever({A: [INVOICE, TERMS] if pieces is None else pieces})
     fixed = FakeFixedQueries({A: [*register(), invoice_record()] if records is None else records})
@@ -399,6 +413,7 @@ def service(
         clock=lambda: clock,
         retriever=retriever,
         fixed_queries=fixed,
+        unchecked=unchecked if unchecked is not None else FakeUnchecked(),
     )
     return answer_service, retriever, fixed
 
@@ -414,6 +429,13 @@ def assert_well_formed(answer: Answer) -> None:
         assert data["label"] is None
         assert data["sentences"] == []
         assert data["citations"] == []
+        return
+    if data["status"] == "unchecked":
+        # No number and no citation: one sentence asking for Review, and the documents.
+        assert data["label"] == "needs_review"
+        assert len(data["sentences"]) == 1 and data["citations"] == []
+        assert not any(ch.isdigit() for ch in data["sentences"][0]["text"])
+        assert data["closest_documents"]
         return
     assert data["status"] == "answered"
     assert data["label"] in {"verified", "needs_review"}
@@ -768,3 +790,35 @@ def test_every_answered_sentence_cites_a_source_with_a_region(model_reply: Reply
         answered += answer.status == "answered"
         assert "99,99,999" not in str(answer.to_json())
     assert answered >= 2  # the property was checked on real answers, not only on not-found
+
+
+# --- figures that only an unchecked card holds (decided 30 Sep 2026) ---------------
+
+SEPT_REPORT = {"id": str(uuid.uuid4()), "display_name": "Sept report.pdf"}
+
+
+def test_a_figure_only_a_card_holds_gives_no_number_and_asks_for_review() -> None:
+    unchecked = FakeUnchecked({A: {"profit": [SEPT_REPORT]}})
+    answer = service(records=[invoice_record()], unchecked=unchecked)[0].answer(
+        A, "What was the total profit?"
+    )
+
+    assert_well_formed(answer)
+    assert answer.status == "unchecked"
+    assert answer.closest_documents == [SEPT_REPORT]  # the whole document, to open and read
+    assert "Review" in answer.sentences[0].text
+    assert unchecked.calls == [(A, ("profit", "net_profit"))]
+
+
+def test_a_checked_figure_is_answered_and_cards_are_never_asked() -> None:
+    unchecked = FakeUnchecked({A: {"profit": [SEPT_REPORT]}})
+    answer = service(unchecked=unchecked)[0].answer(A, "What was the highest profit?")
+
+    assert answer.status == "answered"
+    assert unchecked.calls == []
+
+
+def test_with_no_card_either_the_question_goes_to_search_as_before() -> None:
+    answer = service(records=[invoice_record()])[0].answer(A, "What was the total profit?")
+    assert answer.status in {"answered", "not_found"}
+    assert answer.route == "search"

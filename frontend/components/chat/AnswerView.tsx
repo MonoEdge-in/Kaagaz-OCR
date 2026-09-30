@@ -5,7 +5,8 @@
 // citation chips (each moves to its source card), the source cards, and
 // "Was this helpful?". The card's inline-start edge carries the margin rule:
 // solid for Verified, hatched for Needs review. "Not found" is a real answer:
-// a neutral card that says so and lists the closest documents. All text is
+// a neutral card that says so and lists the closest documents. "Unchecked" says
+// a figure is only in values nobody has checked yet, and where. All text is
 // plain text; answers are built from document text, which is untrusted.
 
 import Link from "next/link";
@@ -55,6 +56,23 @@ export function AnswerView({ message, question }: { message: Message; question: 
     </div>
   );
 
+  const documentChips = (heading: string) =>
+    answer.closest_documents.length > 0 ? (
+      <div>
+        <h3 className={styles.subheading}>{heading}</h3>
+        <ul className={styles.docChips}>
+          {answer.closest_documents.map((doc) => (
+            <li key={doc.id}>
+              <Link className={styles.docChip} href={`/documents/${encodeURIComponent(doc.id)}`}>
+                <Icon name="file" size={16} />
+                <span className={styles.docChipName}>{doc.display_name}</span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
+
   if (answer.status === "not_found") {
     return (
       <div className={styles.answerCard}>
@@ -66,21 +84,30 @@ export function AnswerView({ message, question }: { message: Message; question: 
           <p className={styles.plain}>{NOT_FOUND_TEXT}</p>
         </div>
         {understood}
-        {answer.closest_documents.length > 0 ? (
-          <div>
-            <h3 className={styles.subheading}>Closest documents</h3>
-            <ul className={styles.docChips}>
-              {answer.closest_documents.map((doc) => (
-                <li key={doc.id}>
-                  <Link className={styles.docChip} href={`/documents/${encodeURIComponent(doc.id)}`}>
-                    <Icon name="file" size={16} />
-                    <span className={styles.docChipName}>{doc.display_name}</span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
+        {documentChips("Closest documents")}
+        {feedback}
+      </div>
+    );
+  }
+
+  // The figure is only in unchecked card values: no number, a request to check it
+  // in Review first, and the documents to open and read (decided 30 Sep 2026).
+  if (answer.status === "unchecked") {
+    return (
+      <div className={styles.answerCard} data-label="needs_review">
+        <span className="visually-hidden">Answer: </span>
+        <div className={styles.notFound}>
+          <span className={styles.notFoundIcon}>
+            <Icon name="eye-alert" size={20} />
+          </span>
+          {answer.sentences.map((sentence, index) => (
+            <p key={index} className={styles.plain}>
+              {sentence.text}
+            </p>
+          ))}
+        </div>
+        {understood}
+        {documentChips("Where it appears")}
         {feedback}
       </div>
     );
