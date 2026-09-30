@@ -13,7 +13,8 @@ still gets a card.
 
 **The call.** One ``chat_json`` with ``CARD_SYSTEM_PROMPT`` (the text is
 untrusted data, never instructions; every field and type defined), the schema
-``CARD_SCHEMA`` in ML amendment 5's order, and ``MODEL_CARD_MAX_TOKENS``.
+``CARD_SCHEMA`` in ML amendment 5's order, and ``MODEL_CARD_MAX_TOKENS``. When
+not even part of a page fits the budget, no call is made (council fix 7).
 
 **The reply is checked again here**, because the client's check knows only the
 basic keywords: a reply of the wrong shape is ``ModelOutputError("card_shape")``.
@@ -353,11 +354,14 @@ def card_input(reader: ReaderText, *, max_chars: int, max_input_tokens: int) -> 
 
 def read_card(
     chat: ChatModel, reader: ReaderText, *, max_chars: int, max_tokens: int, num_ctx: int, run_id: str
-) -> CardResult:
+) -> CardResult | None:
     """One chat_json call, then the reply checked and located (the module docstring).
+    None, with no call, when not even part of a page fits the budget (council fix 7).
     Raises ModelUnavailable, or ModelOutputError (``card_shape``, or a token limit)."""
     budget = input_token_budget(num_ctx=num_ctx, max_tokens=max_tokens, system=CARD_SYSTEM_PROMPT)
     user = card_input(reader, max_chars=max_chars, max_input_tokens=budget)
+    if user == _DOCUMENT_OPEN + _DOCUMENT_CLOSE:
+        return None
     reply = chat.chat_json(system=CARD_SYSTEM_PROMPT, user=user, schema=CARD_SCHEMA, max_tokens=max_tokens)
     if schema_problem(reply, CARD_SCHEMA) is not None:
         raise ModelOutputError("card_shape")

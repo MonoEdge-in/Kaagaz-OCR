@@ -65,7 +65,7 @@ from collections.abc import Callable, Mapping
 from http.client import HTTPException
 from typing import Any, Protocol
 
-from kaagaz.settings import Settings
+from kaagaz.settings import CHAT_OVERHEAD_TOKENS, Settings
 
 # Texts per embedding request: one CPU-sized model call, and no round trip per piece.
 EMBED_BATCH_SIZE = 32
@@ -73,9 +73,6 @@ EMBED_BATCH_SIZE = 32
 # A reply larger than this is refused. 32 vectors of 1024 floats as JSON are
 # under 1 MB; a chat reply is a few kilobytes.
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
-
-# PROVISIONAL: tokens kept free for the chat template and the one repair message.
-CHAT_OVERHEAD_TOKENS = 100
 
 _REPAIR = (
     "Your reply was not valid: {problem}. Reply again with only the JSON object that follows the schema."

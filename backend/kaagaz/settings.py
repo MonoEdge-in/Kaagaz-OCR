@@ -26,6 +26,15 @@ OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
 # chat_json: a call and its repair retry) and the job's lease.
 _MODEL_LEASE_MARGIN_SECONDS = 60
 
+# The model's context window (ML amendment 5, council fix 7). Every call keeps room
+# for its system prompt (tests keep each prompt under MAX_SYSTEM_PROMPT_TOKENS; the
+# card's is about 700), a reply and its one repair retry, and CHAT_OVERHEAD_TOKENS
+# for the chat template and the repair message; at least MIN_INPUT_TOKENS must be
+# left for the document. All PROVISIONAL.
+CHAT_OVERHEAD_TOKENS = 100
+MAX_SYSTEM_PROMPT_TOKENS = 1000
+MIN_INPUT_TOKENS = 1024
+
 
 class SettingsError(Exception):
     """A setting is missing or malformed. The message names the variable only."""
@@ -173,9 +182,11 @@ class Settings:
             ("MODEL_CARD_MAX_TOKENS", card_max_tokens),
             ("MODEL_WINDOW_MAX_TOKENS", window_max_tokens),
         ):
-            # A reply and its one repair retry must leave room in the window for the input.
-            if 2 * tokens >= model_num_ctx:
-                raise SettingsError(f"{name} must be less than half of MODEL_NUM_CTX")
+            left = model_num_ctx - 2 * tokens - MAX_SYSTEM_PROMPT_TOKENS - CHAT_OVERHEAD_TOKENS
+            if left < MIN_INPUT_TOKENS:
+                raise SettingsError(
+                    f"{name} must leave at least {MIN_INPUT_TOKENS} tokens of MODEL_NUM_CTX for the document"
+                )
         extract_timeout_seconds = env.number("MODEL_EXTRACT_TIMEOUT_SECONDS")
         if not (math.isfinite(extract_timeout_seconds) and extract_timeout_seconds > 0):
             raise SettingsError("MODEL_EXTRACT_TIMEOUT_SECONDS must be a number above 0")

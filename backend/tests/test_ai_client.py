@@ -15,7 +15,6 @@ from typing import Any
 import pytest
 
 from kaagaz.ai.client import (
-    CHAT_OVERHEAD_TOKENS,
     ModelOutputError,
     ModelUnavailable,
     OllamaClient,
@@ -24,7 +23,7 @@ from kaagaz.ai.client import (
     input_token_budget,
     schema_problem,
 )
-from kaagaz.settings import Settings
+from kaagaz.settings import CHAT_OVERHEAD_TOKENS, Settings
 from tests.settings_factory import make_settings
 
 SCHEMA: dict[str, Any] = {

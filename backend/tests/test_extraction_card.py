@@ -13,7 +13,7 @@ from datetime import date
 from typing import Any
 
 from kaagaz import settings as settings_module
-from kaagaz.ai.client import CHAT_OVERHEAD_TOKENS, ModelOutputError, estimate_tokens, input_token_budget
+from kaagaz.ai.client import ModelOutputError, estimate_tokens, input_token_budget
 from kaagaz.extraction.card import (
     CARD_PROMPT_HASH,
     CARD_SCHEMA,
@@ -32,6 +32,7 @@ from kaagaz.extraction.labels import label_quoted
 from kaagaz.extraction.quotes import reader_text
 from kaagaz.extraction.values import ExtractedValue, QuoteMatch
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
+from kaagaz.settings import CHAT_OVERHEAD_TOKENS
 from tests.fakes import FakeChat
 
 RUN = "3f2b6c1e-0000-4000-8000-000000000001"

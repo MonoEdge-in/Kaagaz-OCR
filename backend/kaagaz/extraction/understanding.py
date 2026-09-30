@@ -5,7 +5,7 @@
   type as "Unknown" (D6): that is the frontend's.
 * A model: one card call (``card.read_card``), then ``beat(1, 1)``, so the
   job's heartbeat and progress move after the call (plan 4.2). A document with
-  no text makes no call.
+  no text, or with no page that fits the budget, makes no call.
 * The model down or its reply unusable (``ModelUnavailable``,
   ``ModelOutputError``): no card, the rule values are kept, and ``error_code``
   is ``"model_"`` plus the error's code, for the run (the PRD edge case "the
@@ -69,6 +69,8 @@ def understand(
     except (ModelUnavailable, ModelOutputError) as error:
         beat(1, 1)
         return Understanding(DocumentFacts(), rules, [], None, 1, "model_" + error.code)
+    if card is None:  # no page fitted the budget, so no call was made
+        return Understanding(DocumentFacts(), rules, [], None, 0, None)
     beat(1, 1)
     known = {value.field for value in rules}
     quoted = [value for value in card.values if value.field not in known]
