@@ -45,11 +45,10 @@ the first pair wins. With no label, the first match in the range wins.
 
 **The loose second pass** (ML amendment 9(c)): only for a quote with a
 Devanagari letter, and only when the exact pass finds nothing. On both sides
-ळ becomes ल, ी becomes ि, ू becomes ु and ऱ becomes र, and the anusvara and
-candrabindu are dropped. The rules above still hold, and the stored text is
-still the reader's. PROVISIONAL: ML 9(c) also drops the nukta, but test-engineer
-amendment 15 wants a quote with a nukta dropped against OCR text without one,
-so the nukta is kept.
+ळ becomes ल, ी becomes ि, ू becomes ु and ऱ becomes र, and the anusvara,
+candrabindu and nukta are dropped. The rules above still hold, and the stored
+text is still the reader's. The nukta follows ML 9(c) (the lead's decision): a
+loose match is OCR Devanagari, which is needs review anyway.
 
 **Counts** (``QuoteCounts``, ML amendment 9(d) and (e)), per item:
 ``returned`` items searched for; ``dropped`` not found (or over a cap);
@@ -94,6 +93,7 @@ _LOOSE = {
     "\N{DEVANAGARI LETTER RRA}": "\N{DEVANAGARI LETTER RA}",
     "\N{DEVANAGARI SIGN ANUSVARA}": "",
     "\N{DEVANAGARI SIGN CANDRABINDU}": "",
+    "\N{DEVANAGARI SIGN NUKTA}": "",
 }
 
 

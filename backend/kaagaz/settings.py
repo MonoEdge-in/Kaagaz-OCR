@@ -22,6 +22,9 @@ _OCR_LEASE_MARGIN_SECONDS = 120
 # The Host values the ocr server accepts (ALLOWED_HOSTS in kaagaz/ocr_server/app.py,
 # which must never import this module; a test keeps the two the same).
 OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
+# AR1: seconds to spare between the longest model step without a heartbeat (one
+# chat_json: a call and its repair retry) and the job's lease.
+_MODEL_LEASE_MARGIN_SECONDS = 60
 
 
 class SettingsError(Exception):
@@ -104,6 +107,15 @@ class Settings:
     model_vision: str | None
     embedding_dim: int
     model_timeout_seconds: float
+    # PRD 2 model budgets (ML amendment 5): the context window sent with every
+    # call, the reply budgets for the document card and for each invoice window,
+    # and the worker's timeout for those calls. The card reads at most
+    # card_max_chars of the document (D1).
+    model_num_ctx: int
+    model_card_max_tokens: int
+    model_window_max_tokens: int
+    model_extract_timeout_seconds: float
+    card_max_chars: int
 
     # Sign-in. The TOTP key encrypts the admins' two-step secrets
     # (kaagaz.api.secret_box); it must differ from the session secret, so one
@@ -154,6 +166,23 @@ class Settings:
             raise SettingsError(
                 "OCR_URL must name ocr:8080, localhost:8080 or 127.0.0.1:8080 (the ocr server's hosts)"
             )
+        model_num_ctx = env.positive("MODEL_NUM_CTX")
+        card_max_tokens = env.positive("MODEL_CARD_MAX_TOKENS")
+        window_max_tokens = env.positive("MODEL_WINDOW_MAX_TOKENS")
+        for name, tokens in (
+            ("MODEL_CARD_MAX_TOKENS", card_max_tokens),
+            ("MODEL_WINDOW_MAX_TOKENS", window_max_tokens),
+        ):
+            # A reply and its one repair retry must leave room in the window for the input.
+            if 2 * tokens >= model_num_ctx:
+                raise SettingsError(f"{name} must be less than half of MODEL_NUM_CTX")
+        extract_timeout_seconds = env.number("MODEL_EXTRACT_TIMEOUT_SECONDS")
+        if not (math.isfinite(extract_timeout_seconds) and extract_timeout_seconds > 0):
+            raise SettingsError("MODEL_EXTRACT_TIMEOUT_SECONDS must be a number above 0")
+        if 2 * extract_timeout_seconds + _MODEL_LEASE_MARGIN_SECONDS > queue_lease_seconds:
+            raise SettingsError(
+                "2 x MODEL_EXTRACT_TIMEOUT_SECONDS + 60 must not be more than QUEUE_LEASE_SECONDS"
+            )
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -201,6 +230,11 @@ class Settings:
             model_vision=env.optional("MODEL_VISION"),
             embedding_dim=env.integer("EMBEDDING_DIM"),
             model_timeout_seconds=env.number("MODEL_TIMEOUT_SECONDS"),
+            model_num_ctx=model_num_ctx,
+            model_card_max_tokens=card_max_tokens,
+            model_window_max_tokens=window_max_tokens,
+            model_extract_timeout_seconds=extract_timeout_seconds,
+            card_max_chars=env.positive("CARD_MAX_CHARS"),
             session_secret=session_secret,
             session_hours=env.integer("SESSION_HOURS"),
             cookie_secure=env.boolean("COOKIE_SECURE"),

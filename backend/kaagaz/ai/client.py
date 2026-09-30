@@ -26,14 +26,33 @@ on the build laptop; tests use a local fake):
 
 * ``POST /api/embed`` ``{"model", "input": [..]}`` replies ``{"embeddings": [[..]]}``.
 * ``POST /api/chat`` ``{"model", "messages", "stream": false, "format": <JSON
-  schema>, "think": false, "options": {"temperature": 0}}`` replies
-  ``{"message": {"role": "assistant", "content": "<text>"}}``.
+  schema>, "think": false, "options": {"temperature": 0, "seed": 0, "num_ctx":
+  n, "num_predict": n}}`` replies ``{"message": {"role": "assistant",
+  "content": "<text>"}, "prompt_eval_count": n, "eval_count": n}``.
 * Images go in a message's ``images`` list as base64 strings (no data: prefix).
 * Sending ``"think": false`` to a model without thinking is accepted.
 
+**Budgets** (PRD 2 ML amendment 5). Every call sends the same fixed options:
+temperature 0, seed 0 and the context window ``MODEL_NUM_CTX``; a caller that
+gives ``max_tokens`` also sends it as ``num_predict``. When the reply carries
+its token counts, two guards run before the reply is read:
+
+* ``context_overflow``: prompt and reply together filled the window, so Ollama
+  cut the prompt or shifted it out (``prompt_eval_count + eval_count >= num_ctx``);
+* ``output_truncated``: the reply stopped at its budget (``eval_count >=
+  max_tokens``).
+
+Either raises ``ModelOutputError`` with no repair retry: a cut reply would be
+cut again. UNVERIFIED: that Ollama 0.34.4 sends both counts on a
+non-streaming chat reply, and whether a cached prompt prefix is left out of
+``prompt_eval_count`` (that would only make the first guard fire later).
+``estimate_tokens`` and ``input_token_budget`` let callers cut their input to
+fit before calling. The worker's chat calls (the card and the invoice windows)
+may use their own timeout, ``MODEL_EXTRACT_TIMEOUT_SECONDS``.
+
 Cost: ``embed`` makes ceil(n / 32) requests for n texts and holds O(n * dim)
 floats. ``chat_json`` makes at most two requests; checking a reply against the
-schema is O(size of the reply).
+schema is O(size of the reply). ``estimate_tokens`` is O(n) in the text.
 """
 
 import base64
@@ -54,6 +73,9 @@ EMBED_BATCH_SIZE = 32
 # A reply larger than this is refused. 32 vectors of 1024 floats as JSON are
 # under 1 MB; a chat reply is a few kilobytes.
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+# PROVISIONAL: tokens kept free for the chat template and the one repair message.
+CHAT_OVERHEAD_TOKENS = 100
 
 _REPAIR = (
     "Your reply was not valid: {problem}. Reply again with only the JSON object that follows the schema."
@@ -84,8 +106,10 @@ class ModelClient(Protocol):
         """One vector per text, in order."""
         ...
 
-    def chat_json(self, *, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
-        """One JSON object that follows ``schema``."""
+    def chat_json(
+        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+    ) -> dict[str, Any]:
+        """One JSON object that follows ``schema``, in at most ``max_tokens`` reply tokens."""
         ...
 
     def read_image(self, *, png: bytes, instruction: str) -> str:
@@ -140,6 +164,26 @@ def schema_problem(value: object, schema: Mapping[str, Any], path: str = "$") ->
     return None
 
 
+def estimate_tokens(text: str) -> int:
+    """About how many tokens ``text`` is (ML amendment 5): an ASCII character is a
+    quarter of a token, any other (Devanagari) two thirds of one. Rounded up. O(n)."""
+    other = sum(1 for ch in text if ch >= "\x80")
+    return -(-(3 * (len(text) - other) + 8 * other) // 12)  # ascii / 4 + other / 1.5, rounded up
+
+
+def input_token_budget(*, num_ctx: int, max_tokens: int, system: str) -> int:
+    """How many tokens the user message may take so the call fits ``num_ctx``: the room
+    left after the system prompt, the reply, and a repair retry (which sends the first
+    reply back and gets a second one), less ``CHAT_OVERHEAD_TOKENS``. Never below 0."""
+    return max(0, num_ctx - 2 * max_tokens - estimate_tokens(system) - CHAT_OVERHEAD_TOKENS)
+
+
+def _count(reply: Mapping[str, Any], key: str) -> int | None:
+    """A token count from the reply, or None when it is missing or not a whole number."""
+    value = reply.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def _parse_reply(content: str, schema: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
     """The reply as an object that follows the schema, else (None, the problem)."""
     try:
@@ -157,12 +201,16 @@ def _parse_reply(content: str, schema: Mapping[str, Any]) -> tuple[dict[str, Any
 class OllamaClient:
     """``ModelClient`` over Ollama's HTTP API, with the standard library only."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, chat_timeout_seconds: float | None = None) -> None:
+        """``chat_timeout_seconds`` is for ``chat_json`` only (the worker passes
+        MODEL_EXTRACT_TIMEOUT_SECONDS); everything else uses MODEL_TIMEOUT_SECONDS."""
         base_url = settings.model_base_url.rstrip("/")
         if urllib.parse.urlsplit(base_url).scheme not in {"http", "https"}:
             raise ValueError("model_base_url must be an http or https URL")
         self._base_url = base_url
         self._timeout = settings.model_timeout_seconds
+        self._chat_timeout = self._timeout if chat_timeout_seconds is None else chat_timeout_seconds
+        self._num_ctx = settings.model_num_ctx
         self._dim = settings.embedding_dim
         self._vision_model = settings.model_vision
         self.chat_model = settings.model_chat
@@ -174,7 +222,7 @@ class OllamaClient:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), EMBED_BATCH_SIZE):
             batch = texts[start : start + EMBED_BATCH_SIZE]
-            reply = self._post("/api/embed", {"model": self.embed_model, "input": batch})
+            reply = self._post("/api/embed", {"model": self.embed_model, "input": batch}, self._timeout)
             embeddings = reply.get("embeddings")
             if not isinstance(embeddings, list):
                 raise ModelUnavailable("bad_response")
@@ -183,21 +231,25 @@ class OllamaClient:
             vectors.extend(self._vector(item) for item in embeddings)
         return vectors
 
-    def chat_json(self, *, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+    def chat_json(
+        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+    ) -> dict[str, Any]:
         """If the first reply does not follow the schema, the problem goes back to
         the model once so it can repair it. A second bad reply raises
-        ``ModelOutputError("invalid_output")``."""
+        ``ModelOutputError("invalid_output")``; a reply that reached a token limit
+        raises at once (the module docstring)."""
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
-        content = self._chat(self.chat_model, messages, schema)
+        content = self._chat(self.chat_model, messages, schema, max_tokens, self._chat_timeout)
         value, problem = _parse_reply(content, schema)
         if value is not None:
             return value
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": _REPAIR.format(problem=problem)})
-        value, _ = _parse_reply(self._chat(self.chat_model, messages, schema), schema)
+        content = self._chat(self.chat_model, messages, schema, max_tokens, self._chat_timeout)
+        value, _ = _parse_reply(content, schema)
         if value is None:
             raise ModelOutputError("invalid_output")
         return value
@@ -207,23 +259,42 @@ class OllamaClient:
             raise ModelUnavailable("no_vision_model")
         image = base64.b64encode(png).decode("ascii")
         messages = [{"role": "user", "content": instruction, "images": [image]}]
-        return self._chat(self._vision_model, messages, None).strip()
+        return self._chat(self._vision_model, messages, None, None, self._timeout).strip()
 
-    def _chat(self, model: str, messages: list[dict[str, Any]], schema: dict[str, Any] | None) -> str:
+    def _chat(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        schema: dict[str, Any] | None,
+        max_tokens: int | None,
+        timeout: float,
+    ) -> str:
+        options: dict[str, Any] = {"temperature": 0, "seed": 0, "num_ctx": self._num_ctx}
+        if max_tokens is not None:
+            options["num_predict"] = max_tokens
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
             "think": False,
-            "options": {"temperature": 0},
+            "options": options,
         }
         if schema is not None:
             body["format"] = schema
-        reply = self._post("/api/chat", body)
+        reply = self._post("/api/chat", body, timeout)
         message = reply.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):
             raise ModelUnavailable("bad_response")
+        prompt_tokens, reply_tokens = _count(reply, "prompt_eval_count"), _count(reply, "eval_count")
+        if (
+            prompt_tokens is not None
+            and reply_tokens is not None
+            and prompt_tokens + reply_tokens >= self._num_ctx
+        ):
+            raise ModelOutputError("context_overflow")
+        if max_tokens is not None and reply_tokens is not None and reply_tokens >= max_tokens:
+            raise ModelOutputError("output_truncated")
         return content
 
     def _vector(self, item: object) -> list[float]:
@@ -238,7 +309,7 @@ class OllamaClient:
             vector.append(float(number))
         return vector
 
-    def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _post(self, path: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
         request = urllib.request.Request(  # noqa: S310 - the scheme is checked to be http(s) in __init__
             self._base_url + path,
             data=json.dumps(body).encode("utf-8"),
@@ -246,7 +317,7 @@ class OllamaClient:
             method="POST",
         )
         try:
-            with self._opener.open(request, timeout=self._timeout) as response:
+            with self._opener.open(request, timeout=timeout) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:
             error.close()
@@ -269,8 +340,11 @@ class OllamaClient:
         return reply
 
 
-def build_model_client(settings: Settings) -> ModelClient | None:
-    """The configured model client, or None when the product runs without AI."""
+def build_model_client(
+    settings: Settings, *, chat_timeout_seconds: float | None = None
+) -> ModelClient | None:
+    """The configured model client, or None when the product runs without AI.
+    ``chat_timeout_seconds``: see ``OllamaClient``."""
     if not settings.model_enabled:
         return None
-    return OllamaClient(settings)
+    return OllamaClient(settings, chat_timeout_seconds=chat_timeout_seconds)
