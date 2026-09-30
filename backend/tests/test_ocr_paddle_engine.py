@@ -212,6 +212,26 @@ def test_a_reply_cut_off_mid_body_is_unavailable(fake: FakeOcrServer) -> None:
         good(blocks=[CELL | {"table": TABLE | {"row": -1}}]),
         good(blocks=[CELL | {"table": TABLE | {"header": "no"}}]),
         good(blocks=[CELL | {"table": [3, 4]}]),
+        # A crafted reply must never crash the worker (council): every field's type is checked.
+        good(engine=7),
+        good(blocks=[HEADING | {"kind": ["heading"]}]),  # unhashable: not even a set lookup
+        good(blocks=[HEADING | {"kind": {"heading": 1}}]),
+        good(blocks=[HEADING | {"kind": 7}]),
+        good(blocks=[HEADING | {"text": "Total \ud800 500"}]),  # a lone surrogate cannot be stored
+        good(blocks=[HEADING | {"text": "\udfff"}]),
+        good(blocks=[HEADING | {"order": 1.5}]),
+        good(blocks=[HEADING | {"order": "0"}]),
+        good(blocks=[HEADING | {"box": {"x0": 0.1}}]),
+        good(blocks=[HEADING | {"box": ["0.1", 0.1, 0.5, 0.2]}]),
+        good(blocks=[HEADING | {"box": [True, 0.1, 0.5, 0.2]}]),
+        good(blocks=[HEADING | {"box": [0.1, 0.1, float("inf"), 0.2]}]),
+        good(blocks=[HEADING | {"box": [0.1, 0.1, 10**400, 0.2]}]),  # too big for a float
+        good(blocks=[CELL | {"table": TABLE | {"id": ["t1"]}}]),
+        good(blocks=[CELL | {"table": TABLE | {"id": ""}}]),
+        good(blocks=[CELL | {"table": TABLE | {"row": 1.0}}]),
+        good(blocks=[CELL | {"table": TABLE | {"col": "2"}}]),
+        good(blocks=[CELL | {"table": TABLE | {"row": True}}]),
+        good(blocks=[CELL | {"table": TABLE | {"header": None}}]),
     ],
 )
 def test_a_malformed_reply_is_invalid_output(fake: FakeOcrServer, body: object) -> None:
