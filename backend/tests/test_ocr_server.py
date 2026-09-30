@@ -12,6 +12,8 @@ import io
 import json
 import logging
 import struct
+import subprocess
+import sys
 import threading
 import zlib
 from collections.abc import Iterator
@@ -284,6 +286,21 @@ def test_unreadable_images_are_422(
     monkeypatch.setattr(server, "MAX_PIXELS", 199 * 100)
     assert client.post("/read", content=png(200, 100), headers=PNG).status_code == 422
     assert model.images == []
+
+
+def test_the_server_needs_no_backend_settings_database_storage_or_paddle() -> None:
+    """The ocr image installs our package with --no-deps (security A4), so importing
+    the app must pull in none of these. A fresh interpreter: this one has them loaded."""
+    code = (
+        "import sys, kaagaz.ocr_server.app; "
+        "names = ('kaagaz.settings', 'kaagaz.db', 'sqlalchemy', 'psycopg', 'boto3', 'paddle'); "
+        "print(sorted(m for m in sys.modules if m.startswith(names)))"
+    )
+    backend = FIXTURES.parent.parent
+    result = subprocess.run(  # noqa: S603 - fixed arguments, this interpreter
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True, timeout=60, cwd=backend
+    )
+    assert result.stdout.strip() == "[]"
 
 
 def test_the_docs_routes_are_off(client: TestClient) -> None:

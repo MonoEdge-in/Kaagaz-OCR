@@ -8,8 +8,9 @@ line becomes one span, its box a fraction of the page as the viewer shows it
 confidence: the text is exactly what the file holds.
 
 A page with no words at all has no text layer: it is a scan inside a PDF.
-With an OCR engine, that page is drawn with pypdfium2 at ``dpi`` and read by
-the engine, whose spans carry its confidence, and ``on_page`` (if given) is
+With an OCR engine, that page is drawn with pypdfium2 at ``dpi`` (the wiring
+gives ``OCR_DPI``, PRD 2 R5; the picture is never stored) and read by the
+engine, whose spans carry its confidence, and ``on_page`` (if given) is
 called after it, so a long scan can renew its lease between pages. Without
 an engine, the page gives nothing. If the whole document gives nothing:
 
@@ -82,8 +83,13 @@ class PdfReader:
         self._max_pages = max_pages
         self._dpi = dpi
         self._max_image_pixels = max_image_pixels
+
+    @property
+    def version(self) -> str:
+        """Asked for after reading, so an engine whose version comes from its reply
+        (PaddleOCR-VL) is named as it was."""
         version = str(pdfplumber.__version__)
-        self.version = version if ocr is None else f"{version}+{ocr.name}-{ocr.version}"
+        return version if self._ocr is None else f"{version}+{self._ocr.name}-{self._ocr.version}"
 
     def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> list[Span]:
         spans, pages_without_text = self._read_text_layer(data)
@@ -156,4 +162,4 @@ def _page_spans(page: pdfplumber.page.Page, number: int) -> list[Span]:
         )
         for word in page.extract_words()
     ]
-    return line_spans(words, number, PageFrame(left, top, right - left, bottom - top))
+    return line_spans(words, number, PageFrame(left, top, right - left, bottom - top), origin="text_layer")

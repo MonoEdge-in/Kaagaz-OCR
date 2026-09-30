@@ -5,7 +5,7 @@ ever talks to the socket, never to a reader (CLAUDE.md "The reader plug
 socket"). Adding a reader means one new module and one entry here.
 
 * text -> CsvReader, zip -> XlsxReader, pdf -> PdfReader (text layer, and OCR
-  for scanned pages when an engine is set up).
+  for scanned pages when an engine is set up, drawn at OCR_DPI).
 * png, jpeg, tiff -> ImageReader, only with an OCR engine. Without one they
   have no reader, so they are stored and marked needs_reader.
 * Second readers: pdf -> PdfiumReader. Nothing else has one yet, so every
@@ -38,12 +38,17 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
         sniff.PDF: PdfReader(
             ocr,
             max_pages=settings.max_pages,
-            dpi=settings.page_image_dpi,
+            dpi=settings.ocr_dpi,
             max_image_pixels=settings.max_image_pixels,
         ),
     }
     if ocr is not None:
-        images = ImageReader(ocr, max_pages=settings.max_pages, max_image_pixels=settings.max_image_pixels)
+        images = ImageReader(
+            ocr,
+            max_pages=settings.max_pages,
+            max_image_pixels=settings.max_image_pixels,
+            ocr_dpi=settings.ocr_dpi,
+        )
         readers.update({sniff.PNG: images, sniff.JPEG: images, sniff.TIFF: images})
     second_readers: dict[str, Reader] = {sniff.PDF: PdfiumReader(max_pages=settings.max_pages)}
     return ReaderSocket(readers, second_readers)

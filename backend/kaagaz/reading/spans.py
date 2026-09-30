@@ -26,6 +26,7 @@ PROVISIONAL: P4 names ``table_id``, ``row`` and ``col``; ``header`` is added
 because the OCR contract (P2) already sends it and table pieces need it.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,6 +47,7 @@ BLOCK_KINDS = frozenset(
     }
 )
 ORIGINS = frozenset({"cell", "text_layer", "ocr"})
+TABLE_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")  # a table's id on its page, such as "t1"
 
 
 @dataclass(frozen=True, slots=True, order=True)

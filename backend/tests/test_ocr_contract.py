@@ -91,7 +91,11 @@ def test_the_request_is_a_png_of_the_page_at_ocr_dpi(bridge: Bridge) -> None:
 
     spans = socket.read(sniff.PDF, make_pdf([Page()]))  # a US letter page, 612 x 792 points, no text layer
 
-    assert bridge.model.images == [((2550, 3300), "RGB")]  # 612 and 792 points x 300 / 72
+    # 612 and 792 points x 300 / 72 = 2550 x 3300 (not PAGE_IMAGE_DPI's 1275 x 1650); pdfium
+    # rounds 792 x (300 / 72) = 3300.0000000000005 up, so one pixel either way is its rounding.
+    ((size, mode),) = bridge.model.images
+    assert mode == "RGB"
+    assert abs(size[0] - 2550) <= 1 and abs(size[1] - 3300) <= 1
     assert [(span.text, span.origin, span.kind) for span in spans] == [("Total 500", "ocr", "paragraph")]
     assert socket.reader_id(sniff.PDF)[1].endswith(f"+paddleocr-vl-{VERSION}")  # named after the reply
 

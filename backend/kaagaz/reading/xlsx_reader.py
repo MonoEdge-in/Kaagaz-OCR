@@ -272,7 +272,8 @@ class _Workbook:
                 if value is None or not value.strip():
                     continue
                 self._count(value)
-                spans.append(Span(value.strip(), value, CellLocation(sheet_number, row_number, column)))
+                location = CellLocation(sheet_number, row_number, column)
+                spans.append(Span(value.strip(), value, location, origin="cell"))
 
     def _check_order(self, sheet: int, row: int, column: int) -> None:
         position = (sheet, row, column)

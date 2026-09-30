@@ -18,8 +18,10 @@ type without one. ``reader_id`` names the reader and its version, stored with
 its output (``reader_outputs``), so a later change of reader can be traced.
 
 Every span from either reader is checked before it leaves the socket: text
-present, a real cell or a box inside the page, and a confidence that is None
-or between 0 and 1.
+present, a real cell or a box inside the page, a confidence that is None or
+between 0 and 1, and its layout fields (PRD 2 P4): a known kind and origin; a
+cell has no kind and no table; a table cell has all its table fields, and
+nothing else has any.
 
 ``read`` takes an optional ``on_page`` callback. A reader that reads page by
 page (OCR of scans and photos) calls it after each page, so a long reading
@@ -35,12 +37,14 @@ import math
 from collections.abc import Callable, Iterable, Mapping
 from typing import Protocol
 
-from kaagaz.reading.spans import BoxLocation, CellLocation, ReadError, Span
+from kaagaz.reading.spans import BLOCK_KINDS, ORIGINS, TABLE_ID, BoxLocation, CellLocation, ReadError, Span
 
 
 class Reader(Protocol):
     name: str
-    version: str
+
+    @property
+    def version(self) -> str: ...  # read-only: asked for after reading
 
     def read(self, data: bytes, *, on_page: Callable[[], None] | None = None) -> Iterable[Span]: ...
 
@@ -108,7 +112,32 @@ def _is_valid(span: Span) -> bool:
         and bool(span.text)
         and isinstance(span.raw, str)
         and _is_valid_confidence(span.confidence)
+        and _is_valid_layout(span)
     )
+
+
+def _is_valid_layout(span: Span) -> bool:
+    if (span.kind is not None and span.kind not in BLOCK_KINDS) or (
+        span.origin is not None and span.origin not in ORIGINS
+    ):
+        return False
+    table = (span.table_id, span.row, span.col, span.header)
+    if isinstance(span.location, CellLocation):
+        return span.origin in {None, "cell"} and span.kind is None and table == (None, None, None, None)
+    if table == (None, None, None, None):
+        return span.kind != "table_cell"
+    return (
+        span.kind == "table_cell"
+        and isinstance(span.table_id, str)
+        and TABLE_ID.fullmatch(span.table_id) is not None
+        and _is_index(span.row)
+        and _is_index(span.col)
+        and isinstance(span.header, bool)
+    )
+
+
+def _is_index(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _is_valid_location(location: object) -> bool:

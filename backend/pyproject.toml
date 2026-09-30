@@ -28,6 +28,13 @@ ocr = [
     "rapidocr>=3.9",           # Apache-2.0
     "onnxruntime>=1.30",       # MIT
 ]
+# The scan reader's own image only (backend/Dockerfile.ocr, from constraints-ocr.txt):
+# never installed in the api or worker image, or in CI. Exact pins (security A6).
+paddle = [
+    "paddleocr[doc-parser]==3.7.0",  # Apache-2.0
+    "paddlex==3.7.2",                # Apache-2.0; floats inside 3.7.x unless pinned
+    "paddlepaddle==3.3.1",           # Apache-2.0, the CPU build
+]
 dev = [
     "pytest>=9.1",             # MIT
     "httpx2>=2.13",            # BSD-3-Clause, FastAPI's TestClient needs it
@@ -78,6 +85,7 @@ module = [
     "boto3", "boto3.*", "botocore", "botocore.*",
     "pdfplumber", "pdfplumber.*", "pypdfium2", "pypdfium2.*",
     "rapidocr", "rapidocr.*",
+    "paddleocr", "paddleocr.*",
 ]
 ignore_missing_imports = true
 

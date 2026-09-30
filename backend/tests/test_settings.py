@@ -18,11 +18,11 @@ def shipped(**changes: str | None) -> dict[str, str]:
         if line.strip() and not line.startswith("#"):
             name, _, value = line.partition("=")
             env.setdefault(name.strip(), value.strip())
-    for name, value in changes.items():
-        if value is None:
-            env.pop(name)
+    for changed, new_value in changes.items():
+        if new_value is None:
+            env.pop(changed)
         else:
-            env[name] = value
+            env[changed] = new_value
     return env
 
 

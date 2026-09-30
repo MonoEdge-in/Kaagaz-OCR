@@ -227,7 +227,7 @@ def test_over_limit_items_are_dropped_and_counted(
     fake: FakeOcrServer, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr(ocr, "MAX_BLOCK_CHARS", 11)
-    monkeypatch.setattr(ocr, "MAX_BLOCKS_PER_PAGE", 3)
+    monkeypatch.setattr(ocr, "MAX_BLOCKS_PER_PAGE", 4)
     blocks = [
         HEADING,
         HEADING | {"text": "Twelve chars"},  # over MAX_BLOCK_CHARS
@@ -238,10 +238,9 @@ def test_over_limit_items_are_dropped_and_counted(
     fake.replies.append(Reply(body=good(blocks=blocks)))
     assert [line.text for line in engine(fake).read(page())] == ["Tax Invoice"]
     (record,) = [r for r in caplog.records if r.name == "kaagaz.reading.ocr"]
-    assert (record.getMessage(), record.__dict__["code"], record.__dict__["dropped"]) == (
-        "ocr reply items dropped",
+    assert (record.getMessage(), record.__dict__["code"]) == (
+        "ocr reply items dropped: 4",
         "ocr_reply_capped",
-        4,
     )
     assert "Twelve" not in caplog.text
 

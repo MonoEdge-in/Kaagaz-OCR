@@ -1,0 +1,11 @@
+# Opt-in: the ocr service on this laptop's 127.0.0.1:8080, for a worker run
+# outside Docker (OCR_URL=http://localhost:8080 in .env):
+#   docker compose -f docker-compose.yml -f docker-compose.ocr-host.yml --profile paddle up ocr
+# An internal network cannot publish a port, so this also puts ocr on the
+# default network, which has a way out: use it only when you need it.
+# VERIFY (no Docker on the build laptop): compose merges the two network lists.
+services:
+  ocr:
+    networks: [default, ocr_net]
+    ports:
+      - "127.0.0.1:8080:8080"
