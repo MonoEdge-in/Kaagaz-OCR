@@ -1,0 +1,126 @@
+"""The optional layout fields on spans and OCR lines (PRD 2 P3, P4), and how a
+span is stored as JSON.
+
+The new JSON keys are written only when set, so a span from a reader that sets
+none of them is stored exactly as before, and every output stored before
+PRD 2 still loads.
+"""
+
+import dataclasses
+import json
+import unittest
+
+from kaagaz.db import pipeline_store
+from kaagaz.db.pipeline_store import span_to_json
+from kaagaz.extraction.values import ExtractedValue
+from kaagaz.reading import ocr, spans
+from kaagaz.reading.ocr import OcrLine
+from kaagaz.reading.spans import BoxLocation, CellLocation, Span
+
+BOX = BoxLocation(2, 0.125, 0.25, 0.5, 0.375)
+NEW_KEYS = ("kind", "origin", "table_id", "row", "col", "header")
+
+
+class SpanFieldsTest(unittest.TestCase):
+    def test_the_block_kinds_and_origins_are_the_prds(self) -> None:
+        self.assertEqual(
+            spans.BLOCK_KINDS,
+            frozenset(
+                {
+                    "title",
+                    "heading",
+                    "paragraph",
+                    "list_item",
+                    "table_cell",
+                    "header",
+                    "footer",
+                    "stamp",
+                    "signature",
+                    "image",
+                    "formula",
+                    "other",
+                }
+            ),
+        )
+        self.assertEqual(spans.ORIGINS, frozenset({"cell", "text_layer", "ocr"}))
+
+    def test_the_new_fields_default_to_none(self) -> None:
+        span = Span("Total 500", "Total 500", BOX)
+        self.assertEqual(
+            (span.kind, span.origin, span.table_id, span.row, span.col, span.header), (None,) * 6
+        )
+
+
+class SpanJsonTest(unittest.TestCase):
+    def test_span_json_writes_kind_origin_table_only_when_set_and_old_outputs_load(self) -> None:
+        plain = Span("Total 500", " Total 500 ", BOX, 0.9)
+        self.assertEqual(
+            span_to_json(plain),
+            {
+                "text": "Total 500",
+                "raw": " Total 500 ",
+                "region": {"kind": "box", "page": 2, "box": [0.125, 0.25, 0.5, 0.375]},
+                "confidence": 0.9,
+            },
+        )
+
+        cell = Span(
+            "7,000.00", "7,000.00", BOX, None, "table_cell", "ocr", table_id="t1", row=3, col=4, header=False
+        )
+        data = span_to_json(cell)
+        self.assertEqual(
+            {key: data[key] for key in NEW_KEYS},
+            {"kind": "table_cell", "origin": "ocr", "table_id": "t1", "row": 3, "col": 4, "header": False},
+        )
+
+        # Only the keys that are set: a direct PDF line has an origin and nothing else.
+        line = span_to_json(Span("typed", "typed", BOX, origin="text_layer"))
+        self.assertEqual([key for key in NEW_KEYS if key in line], ["origin"])
+
+        # An output stored before PRD 2 (PRD 1's shape) loads with every new field None.
+        old = {"text": "500", "raw": "500", "region": {"kind": "cell", "page": 1, "row": 4, "column": 2}}
+        loaded = pipeline_store.span_from_json({**old, "confidence": None})
+        self.assertEqual(loaded, Span("500", "500", CellLocation(1, 4, 2)))
+
+    def test_every_field_survives_a_round_trip_through_json_text(self) -> None:
+        for span in (
+            Span("Tax Invoice", "Tax Invoice", BOX, None, "heading", "ocr"),
+            Span("Qty", "Qty", BOX, None, "table_cell", "ocr", table_id="t2", row=0, col=1, header=True),
+            Span("500", "500", CellLocation(1, 4, 2), origin="cell"),
+            Span("scan", "scan", BOX, 0.75),
+        ):
+            with self.subTest(span=span):
+                stored = json.loads(json.dumps(span_to_json(span)))
+                self.assertEqual(pipeline_store.span_from_json(stored), span)
+
+    def test_a_table_row_never_collides_with_a_cells_row(self) -> None:
+        # ``row`` and ``col`` are top-level keys; a cell's own row stays inside ``region``,
+        # which is all listing.sheet_cells reads.
+        data = span_to_json(Span("500", "500", CellLocation(1, 4, 2), origin="cell"))
+        self.assertEqual(data["region"]["row"], 4)
+        self.assertNotIn("row", data)
+
+
+class ExtractedValueOriginTest(unittest.TestCase):
+    def test_origin_defaults_to_none_and_is_the_last_field(self) -> None:
+        value = ExtractedValue("document", "total_amount", "500", "500", BOX)
+        self.assertIsNone(value.origin)
+        # AR16: ..., value_date, label_location (PR 1), origin (PR 2).
+        names = [field.name for field in dataclasses.fields(ExtractedValue)]
+        self.assertEqual(names[-1], "origin")
+        self.assertLess(names.index("value_date"), names.index("origin"))
+
+
+class OcrLineFieldsTest(unittest.TestCase):
+    def test_kind_and_table_are_optional_and_confidence_may_be_none(self) -> None:
+        line = OcrLine("Sunil Patil", 192, 718, 432, 781, None)
+        self.assertEqual((line.confidence, line.kind, line.table), (None, None, None))
+
+        table = ocr.OcrTable("t1", 3, 4, False)
+        cell = OcrLine("7,000.00", 199, 1000, 2280, 1400, None, kind="table_cell", table=table)
+        self.assertEqual((cell.kind, cell.table), ("table_cell", table))
+        self.assertEqual((table.table_id, table.row, table.col, table.header), ("t1", 3, 4, False))
+
+
+if __name__ == "__main__":
+    unittest.main()
