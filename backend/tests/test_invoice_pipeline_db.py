@@ -72,7 +72,7 @@ def test_the_textile_invoice_row_and_its_lines_are_saved_and_read_back(db: Datab
             ),
             ids,
         ).all()
-        line_values = conn.execute(
+        line_values: int = conn.execute(
             text(
                 "SELECT count(*) FROM extracted_values"
                 " WHERE customer_id = :c AND document_id = :d AND record_key LIKE 'line:%'"

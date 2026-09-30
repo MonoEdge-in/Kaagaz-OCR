@@ -52,6 +52,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from kaagaz.extraction.labelled import DOCUMENT_RECORD
+from kaagaz.extraction.labelled import NOT_AN_ITEM as NOT_AN_ITEM  # K1's rule; it lives with the labels
 from kaagaz.extraction.parsing import parse_amount, parse_date
 from kaagaz.extraction.values import NEEDS_REVIEW, ExtractedValue
 
@@ -68,11 +69,6 @@ REASONS = (
     "conflicting_values",
     "truncated",
 )  # K2 order
-# K1, widened by ML 6(c): the words, or b/f, c/f, b/d, c/d (optionally "wd") standing alone.
-NOT_AN_ITEM = re.compile(
-    r"\b(?:brought|carried)\s+(?:forward|down|over)\b|(?<![a-z0-9])[bc]\s*/\s*[fd](?:wd)?(?![a-z0-9])",
-    re.IGNORECASE,
-)
 GSTIN_FIELDS = frozenset({"gstin", "buyer_gstin"})
 
 PASSED, FAILED, NOT_CHECKED = "passed", "failed", "not_checked"

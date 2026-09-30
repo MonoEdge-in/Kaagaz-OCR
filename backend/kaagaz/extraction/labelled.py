@@ -21,6 +21,16 @@ nothing else is recognised, and no field is ever guessed from layout.
   ``page:{p}:line:{n}`` (n counts lines on that page from 1). Which one is
   right is never guessed.
 
+**Tax components** (``tax_components``, PRD 2 ML amendment 6(a)), for the
+invoice total check only: each CGST, SGST, UTGST, IGST or cess amount on a
+line, with or without its rate ("CGST @ 9%: 900.00", "IGST (18%) 1,800.00").
+A line is split before each component name, so "CGST 900 SGST 900" gives two.
+Each is a ``tax_amount`` value at its line, with the record key that
+``values_from_lines`` gives the same value there (so a failed check can flag
+it), else ``page:{p}:line:{n}``. One per component name per line box (the same
+span read twice counts once), and none from a line that ``NOT_AN_ITEM``
+matches (a brought or carried forward line).
+
 Time O(n * L) for n characters of text and L labels (a fixed list of 26);
 memory O(lines).
 """
@@ -47,6 +57,23 @@ AMOUNT_FIELDS = frozenset({"total_amount", "subtotal", "tax_amount"})
 DATE_FIELDS = frozenset({"invoice_date"})
 
 DOCUMENT_RECORD = "document"
+
+# K1, widened by ML amendment 6(c): the words, or b/f, c/f, b/d, c/d (optionally "wd")
+# standing alone. A line it matches is not an invoice item, and no document field or tax
+# component is taken from it. "Sub/Fabric" is an item. (kaagaz.extraction.checks uses it too.)
+NOT_AN_ITEM = re.compile(
+    r"\b(?:brought|carried)\s+(?:forward|down|over)\b|(?<![a-z0-9])[bc]\s*/\s*[fd](?:wd)?(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+# ML 6(a): the parts of an invoice's GST. The word, an optional rate, a separator, the amount.
+_COMPONENT_WORD = re.compile(r"(?<![a-z0-9])(?:utgst|cgst|sgst|igst|cess)(?![a-z0-9])", re.IGNORECASE)
+_COMPONENT = re.compile(
+    r"(?P<kind>utgst|cgst|sgst|igst|cess)\.?"
+    r"(?:\s*@?\s*\(?\s*[0-9]+(?:\.[0-9]+)?\s*%\s*\)?)?"  # 9%, @ 9%, (18%)
+    r"(?:\s*:\s*|\s*[-\u2013]\s+|\s+)(?P<value>.+)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _words(label: str) -> str:
@@ -94,6 +121,49 @@ def values_from_lines(spans: Iterable[Span]) -> list[ExtractedValue]:
                 )
             )
     return values
+
+
+def tax_components(spans: Iterable[Span]) -> list[ExtractedValue]:
+    """The tax components of the box spans (the module docstring), in reading order.
+    O(n * L) time, like ``values_from_lines``, which it runs once for the record keys."""
+    listed = list(spans)
+    stored: dict[tuple[BoxLocation, str], list[str]] = {}
+    for value in values_from_lines(listed):
+        if value.field == "tax_amount" and isinstance(value.location, BoxLocation):
+            stored.setdefault((value.location, value.value_text), []).append(value.record_key)
+    lines = [(span, span.location) for span in listed if isinstance(span.location, BoxLocation)]
+    lines.sort(key=lambda pair: pair[1].page)  # stable, as in values_from_lines
+    components: list[ExtractedValue] = []
+    seen: set[tuple[BoxLocation, str]] = set()
+    line_no, page = 0, 0
+    for span, box in lines:
+        line_no = line_no + 1 if box.page == page else 1
+        page = box.page
+        if NOT_AN_ITEM.search(span.text):
+            continue
+        for kind, amount in _components(span.text):
+            if (box, kind) in seen:
+                continue
+            seen.add((box, kind))
+            keys = stored.get((box, amount))
+            record_key = keys.pop(0) if keys else f"page:{page}:line:{line_no}"
+            components.append(
+                ExtractedValue(record_key, "tax_amount", amount, amount, box, confidence=span.confidence)
+            )
+    return components
+
+
+def _components(line: str) -> list[tuple[str, str]]:
+    """(component name, amount text) for each segment of the line that starts with a component."""
+    starts = [match.start() for match in _COMPONENT_WORD.finditer(line)]
+    found = []
+    for begin, end in pairwise([*starts, len(line)]):
+        match = _COMPONENT.match(line, begin, end)
+        if match is not None:
+            value = match["value"].strip()
+            if parse_amount(value) is not None:
+                found.append((match["kind"].casefold(), value))
+    return found
 
 
 def value_after_label(field: str, text: str) -> str | None:

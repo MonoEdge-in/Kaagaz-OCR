@@ -11,7 +11,7 @@ import unittest
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypedDict, Unpack
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.extraction.checks import FAILED, NOT_CHECKED, PASSED, CheckResult
@@ -43,9 +43,11 @@ from tests.exit_fixtures import (
     SELLER_GSTIN,
     TEXTILE_FIELDS,
     QuotingChat,
+    holds,
     textile_line,
     textile_lines,
     textile_spans,
+    window_text,
 )
 
 TODAY = date(2026, 9, 30)
@@ -93,25 +95,32 @@ def item(description: str, amount: str, **quotes: str) -> dict[str, Any]:
     return line_quotes
 
 
+class Sizes(TypedDict, total=False):
+    """Window sizes; the settings' starting values (6000, 1000, 10) when left out."""
+
+    chars: int
+    overlap: int
+    max_windows: int
+
+
 def read(
-    spans: list[Span],
-    chat: Any,
-    *,
-    chars: int = 6000,
-    overlap: int = 1000,
-    max_windows: int = 10,
-    beats: list[tuple[int, int]] | None = None,
+    spans: list[Span], chat: Any, *, beats: list[tuple[int, int]] | None = None, **sizes: Unpack[Sizes]
 ) -> InvoiceExtraction:
     def beat(done: int, total: int) -> None:
         if beats is not None:
             beats.append((done, total))
 
     return read_invoice(
-        chat, reader_text(spans), chars=chars, overlap=overlap, max_windows=max_windows, beat=beat
+        chat,
+        reader_text(spans),
+        chars=sizes.get("chars", 6000),
+        overlap=sizes.get("overlap", 1000),
+        max_windows=sizes.get("max_windows", 10),
+        beat=beat,
     )
 
 
-def one_window_each(spans: list[Span]) -> dict[str, int]:
+def one_window_each(spans: list[Span]) -> Sizes:
     """Window sizes that give every span a window of its own."""
     return {"chars": max(len(span.text) for span in spans), "overlap": 0, "max_windows": len(spans)}
 
@@ -128,9 +137,9 @@ def agreed(values: list[ExtractedValue]) -> list[ExtractedValue]:
     ]
 
 
-def with_model(spans: list[Span], chat: Any, *, today: date = TODAY, **window: int) -> InvoiceResult:
+def with_model(spans: list[Span], chat: Any, *, today: date = TODAY, **sizes: Unpack[Sizes]) -> InvoiceResult:
     """The invoice stage with the model on, as the pipeline runs it."""
-    extraction = read(spans, chat, **window)
+    extraction = read(spans, chat, **sizes)
     rule = values_from_lines(spans)
     values = label_values(rule_values_left(rule, extraction.values), spans) + agreed(extraction.values)
     return finish_invoice(
@@ -689,8 +698,15 @@ class TextileInvoiceTest(unittest.TestCase):
 
     def test_small_overlapping_windows_give_the_same_row(self) -> None:
         chat = QuotingChat(TEXTILE_FIELDS, textile_lines())
-        result = with_model(textile_spans(), chat, chars=250, overlap=80, max_windows=10)
-        self.assertGreaterEqual(len(chat.calls), 4)
+        result = with_model(textile_spans(), chat, chars=300, overlap=150, max_windows=10)
+        returned = [
+            line["description_quote"]
+            for _, user, _ in chat.calls
+            for line in textile_lines()
+            if holds(window_text(user), line["description_quote"] or "")
+        ]
+        self.assertEqual(len(chat.calls), 5)
+        self.assertEqual(len(returned), 8)  # each of the 4 items from two overlapping windows
         self.assertEqual(result.invoice, TEXTILE_ROW)
 
     def test_e4_values_replace_the_labelled_ones_field_by_field(self) -> None:
@@ -804,6 +820,25 @@ class WithoutModelTest(unittest.TestCase):
                 check_reasons=(),
             ),
         )
+
+    def test_the_first_total_label_by_page_and_line_is_the_rows_total(self) -> None:
+        # PROVISIONAL (plan 3.8): labelled.py's document record, so a page total printed
+        # before the grand total is the row's total, and the check sends the row to review.
+        spans = [
+            *page_lines("Invoice No: A-1", "Total: 6,000.00", page=1),
+            *page_lines("Sub Total: 10,000.00", "IGST: 1,800.00", "Grand Total: 11,800.00", page=2),
+        ]
+        result = without_model(spans)
+        assert result.invoice is not None
+        self.assertEqual(result.invoice.total, Decimal("6000.00"))
+        self.assertEqual(result.invoice.check_reasons, ("total_mismatch",))
+
+    def test_the_model_down_mid_invoice_leaves_the_row_without_the_model(self) -> None:
+        spans = textile_spans()
+        chat = QuotingChat(TEXTILE_FIELDS, textile_lines(), fail_at=2, error=ModelUnavailable("timeout"))
+        result = with_model(spans, chat, chars=300, overlap=150, max_windows=10)
+        self.assertEqual(len(chat.calls), 2)
+        self.assertEqual(result.invoice, without_model(spans).invoice)
 
     def test_without_an_invoice_number_or_a_total_there_is_no_row(self) -> None:
         spans = page_lines("A letter", "Date: 12/08/2026", "Sub Total: 100.00")
