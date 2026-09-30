@@ -7,7 +7,8 @@
 // lib/regions.ts, so they land on the same spot at any size.
 //
 // The full page fits the width of its container (measured with a
-// ResizeObserver) and zooms from there. A crop preview fills its reserved box
+// ResizeObserver) and zooms from there; beside its number it says how the
+// page was read (PRD 2, R1). A crop preview fills its reserved box
 // without clipping the spot, and is drawn only once it comes near the screen
 // (IntersectionObserver); until then a skeleton holds its space.
 
@@ -22,7 +23,7 @@ import type { BoxRegion, FractionRect } from "@/lib/regions";
 import type { DocumentSummary, PageSummary, Region } from "@/lib/types";
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
-import { ZOOM_STEPS, fitPageSize, pageMode, stepZoom } from "./viewer";
+import { ZOOM_STEPS, fitPageSize, pageMode, routeText, stepZoom } from "./viewer";
 import styles from "./PageViewer.module.css";
 
 // PDF.js needs the browser, so its component never renders on the server.
@@ -238,22 +239,25 @@ export function PageViewer({
       {showPages || canZoom ? (
         <div className={styles.toolbar}>
           {showPages ? (
-            <div className={styles.group} role="group" aria-label="Pages">
-              <IconButton
-                icon="chevron-left"
-                label="Previous page"
-                disabled={previous === undefined}
-                onClick={() => previous !== undefined && onPageChange?.(previous)}
-              />
-              <span className={`tabular ${styles.readout}`} aria-live="polite">
-                Page {page.page_no} of {numbers.length}
-              </span>
-              <IconButton
-                icon="chevron-right"
-                label="Next page"
-                disabled={next === undefined}
-                onClick={() => next !== undefined && onPageChange?.(next)}
-              />
+            <div className={styles.pageInfo}>
+              <div className={styles.group} role="group" aria-label="Pages">
+                <IconButton
+                  icon="chevron-left"
+                  label="Previous page"
+                  disabled={previous === undefined}
+                  onClick={() => previous !== undefined && onPageChange?.(previous)}
+                />
+                <span className={`tabular ${styles.readout}`} aria-live="polite">
+                  Page {page.page_no} of {numbers.length}
+                </span>
+                <IconButton
+                  icon="chevron-right"
+                  label="Next page"
+                  disabled={next === undefined}
+                  onClick={() => next !== undefined && onPageChange?.(next)}
+                />
+              </div>
+              <span className={styles.route}>{routeText(page.route)}</span>
             </div>
           ) : null}
           {canZoom ? (

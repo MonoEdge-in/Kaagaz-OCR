@@ -1,8 +1,8 @@
 // The page viewer's small decisions, kept out of the components so they are
 // unit tested in node (tests/viewer-*.test.ts): zoom steps, which rows and
-// columns of a sheet to fetch and show, and how a page is drawn.
+// columns of a sheet to fetch and show, how a page is drawn, and how it was read.
 
-import type { DocumentSummary, PageSummary, SheetCells } from "@/lib/types";
+import type { DocumentSummary, PageRoute, PageSummary, SheetCells } from "@/lib/types";
 
 export const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
 
@@ -45,6 +45,18 @@ export function pageMode(
   if (document.detected_type === "pdf" && !pdfFailed) return "pdf";
   if (page.has_image) return "image";
   return "none";
+}
+
+const ROUTE_WORDS: Record<PageRoute, string> = {
+  cells: "Read from spreadsheet cells",
+  text_layer: "Read from the PDF text",
+  ocr: "Read by OCR",
+  blank: "Blank page",
+};
+
+/** How a page was read, in words, shown beside its number (PRD 2, R1). null: not read. */
+export function routeText(route: PageRoute | null): string {
+  return route === null ? "Not read" : ROUTE_WORDS[route];
 }
 
 // The backend gives at most 500 rows per call; 200 keeps the table quick.

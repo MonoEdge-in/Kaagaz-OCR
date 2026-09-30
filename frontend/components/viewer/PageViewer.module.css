@@ -30,6 +30,19 @@
   color: var(--fg-muted);
 }
 
+/* The page buttons, and how that page was read beside them (words, not colour). */
+.pageInfo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+
+.route {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
 /* The full page: fits the frame's content width (measured), zooms from there. */
 .frame {
   max-width: 100%;

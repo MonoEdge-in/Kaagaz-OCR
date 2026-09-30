@@ -27,7 +27,16 @@ const item = (id: string, overrides: Partial<ReviewItem["value"]> = {}): ReviewI
   document_id: "d1",
   document_name: "Bill.pdf",
   detected_type: "pdf",
-  page: { page_no: 1, width: 595, height: 842, unit: "pt", has_image: true },
+  page: {
+    page_no: 1,
+    width: 595,
+    height: 842,
+    unit: "pt",
+    has_image: true,
+    route: "ocr",
+    effective_dpi: 300,
+    low_resolution: false,
+  },
 });
 
 describe("checkChoice", () => {

@@ -76,6 +76,14 @@ export interface DocumentSummary {
   attempts: number; // reads tried so far; status_message already says "Try 2 of 5"
   max_attempts: number | null;
   newer_version: NewerVersion | null; // a later version still being read, or one that failed
+  progress: DocumentProgress | null; // null unless it is being checked or read; status_message already says it
+}
+
+/** How far the worker has got (PRD 2, X3), e.g. step "reading", done 3, total 40. */
+export interface DocumentProgress {
+  step: "scanning" | "preparing" | "reading" | "understanding" | "indexing";
+  done: number;
+  total: number; // 0 for a sheet, which is read as a whole
 }
 
 /** A version newer than the one listed (the family's current), not in use yet. */
@@ -118,12 +126,18 @@ export interface DocumentFolder {
   path: { id: string; name: string }[];
 }
 
+/** How a page was read (PRD 2, R1). */
+export type PageRoute = "cells" | "text_layer" | "ocr" | "blank";
+
 export interface PageSummary {
   page_no: number;
   width: number;
   height: number;
   unit: "pt" | "px" | "cells";
   has_image: boolean;
+  route: PageRoute | null; // null: not read (yet)
+  effective_dpi: number | null; // of the largest image on the page; null when it has none
+  low_resolution: boolean; // effective_dpi under LOW_RES_DPI; PRD 3 shows the warning
 }
 
 export interface ExtractedValue {
@@ -294,4 +308,5 @@ export interface Stats {
   open_review_items: number;
   older_versions: number; // versions kept that are not the current one
   in_trash: number;
+  pages_this_month: Record<PageRoute, number>; // pages read this month, by route (PRD 2, R6); 0 when none
 }

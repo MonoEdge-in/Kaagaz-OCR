@@ -1,7 +1,7 @@
 // The decisions behind the documents screen, kept out of the components so
 // they are unit tested in node (tests/shell-documents.test.ts).
 
-import type { DocumentStatus, DocumentSummary, UploadLimits } from "@/lib/types";
+import type { DocumentStatus, UploadLimits } from "@/lib/types";
 
 /** File name endings the backend can take. The server checks the bytes again. */
 export const ACCEPTED_EXTENSIONS = [
@@ -129,9 +129,21 @@ export function validateUpload(
 
 const SETTLING: readonly DocumentStatus[] = ["received", "clean"];
 
-/** Keep asking the server only while something is still being checked or read. */
-export function shouldPoll(items: readonly Pick<DocumentSummary, "status">[]): boolean {
-  return items.some((item) => SETTLING.includes(item.status));
+interface Polled {
+  status: DocumentStatus;
+  newer_version?: { status: DocumentStatus } | null;
+}
+
+/**
+ * Keep asking the server only while something is still being checked or read,
+ * a newer version included, so the status_message the server writes as it
+ * goes ("Reading page 3 of 40…", PRD 2 X3) keeps moving.
+ */
+export function shouldPoll(items: readonly Polled[]): boolean {
+  return items.some((item) => {
+    const newer = item.newer_version?.status;
+    return SETTLING.includes(item.status) || (newer !== undefined && SETTLING.includes(newer));
+  });
 }
 
 export interface PageInfo {
