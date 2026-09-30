@@ -83,7 +83,7 @@ class InvoiceWindowsTest(unittest.TestCase):
         self.assertEqual(len(chat.calls), 2)
         self.assertEqual((chat.calls[0]["max_tokens"], chat.calls[1]["max_tokens"]), (1024, 2048))
         self.assertEqual(chat.calls[1]["system"], INVOICE_SYSTEM_PROMPT)
-        self.assertEqual(beats, [(1, 1), (2, 2)])
+        self.assertEqual(beats, [(1, 2), (2, 2), (3, 3)])  # the card's call and search, then the window
         self.assertEqual((understanding.model_calls, understanding.error_code), (2, None))
         invoice = understanding.invoice
         assert invoice is not None
@@ -119,7 +119,7 @@ class InvoiceWindowsTest(unittest.TestCase):
     def test_a_card_of_another_type_reads_no_windows(self) -> None:
         chat = FakeChat(card_reply(doc_type="receipt"))
         understanding, beats = run(chat)
-        self.assertEqual((len(chat.calls), beats, understanding.model_calls), (1, [(1, 1)], 1))
+        self.assertEqual((len(chat.calls), beats, understanding.model_calls), (1, [(1, 2), (2, 2)], 1))
         self.assertIsNone(understanding.invoice)
         self.assertEqual(understanding.rule_values, RULES)
 
@@ -142,7 +142,7 @@ class InvoiceWindowsTest(unittest.TestCase):
         self.assertEqual(understanding.facts.doc_type, "invoice")
         self.assertEqual(
             (understanding.error_code, understanding.model_calls, beats),
-            ("model_timeout", 2, [(1, 1), (2, 2)]),
+            ("model_timeout", 2, [(1, 2), (2, 2), (3, 3)]),
         )
         self.assertEqual(understanding.rule_values, RULES)
         self.assertEqual(fields(understanding.quoted_values), ["party_name", "grand_total"])

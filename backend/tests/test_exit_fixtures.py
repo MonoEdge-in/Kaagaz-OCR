@@ -28,12 +28,16 @@ from tests.exit_fixtures import (
     ScriptedOcr,
     exit_files,
 )
+from tests.test_pdf_reader import BLANK_PAGE_STDDEV, RULES
 
 FILES = exit_files()
 
 
 def pdf_text(data: bytes, ocr: ScriptedOcr | None = None) -> list[Span]:
-    return PdfReader(ocr, max_pages=30, dpi=100, max_image_pixels=10**8).read(data)
+    reader = PdfReader(
+        ocr, max_pages=30, dpi=100, max_image_pixels=10**8, rules=RULES, blank_stddev=BLANK_PAGE_STDDEV
+    )
+    return reader.read(data)
 
 
 class ExitFilesTest(unittest.TestCase):
@@ -104,7 +108,9 @@ class ScansTest(unittest.TestCase):
             self.assertEqual((photo.format, photo.size), ("JPEG", (620, 877)))
             self.assertGreater(ImageStat.Stat(photo.convert("L")).stddev[0], 3.0)  # not blank
         ocr = ScriptedOcr(file.ocr_pages)
-        spans = ImageReader(ocr, max_pages=5, max_image_pixels=10**8).read(file.data)
+        spans = ImageReader(
+            ocr, max_pages=5, max_image_pixels=10**8, ocr_dpi=300, blank_stddev=BLANK_PAGE_STDDEV
+        ).read(file.data)
         self.assertEqual([span.text for span in spans], list(HINDI_BILL_LINES))
         box = spans[0].location
         assert isinstance(box, BoxLocation)

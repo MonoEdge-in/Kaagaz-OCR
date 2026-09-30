@@ -54,6 +54,7 @@ from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.pdf_second_reader import PdfiumReader
 from kaagaz.reading.spans import Span
 from tests.pdf_builder import Page, Picture, Text, _assemble, _stream, make_pdf
+from tests.test_pdf_reader import BLANK_PAGE_STDDEV, RULES
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
 SELLER_GSTIN = "24ABCDE1234F1Z6"
@@ -112,7 +113,9 @@ def textile_invoice_pdf(*, silk_amount: str = "3,000.00", sgst: bool = True) -> 
 
 def textile_spans(*, silk_amount: str = "3,000.00", sgst: bool = True) -> list[Span]:
     """The first reader's spans of the invoice: its text layer read by the real PdfReader."""
-    reader = PdfReader(None, max_pages=10, dpi=100, max_image_pixels=10**8)
+    reader = PdfReader(
+        None, max_pages=10, dpi=100, max_image_pixels=10**8, rules=RULES, blank_stddev=BLANK_PAGE_STDDEV
+    )
     return reader.read(textile_invoice_pdf(silk_amount=silk_amount, sgst=sgst))
 
 

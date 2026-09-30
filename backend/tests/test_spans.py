@@ -102,12 +102,12 @@ class SpanJsonTest(unittest.TestCase):
 
 
 class ExtractedValueOriginTest(unittest.TestCase):
-    def test_origin_defaults_to_none_and_is_the_last_field(self) -> None:
+    def test_origin_defaults_to_none_and_follows_label_location(self) -> None:
         value = ExtractedValue("document", "total_amount", "500", "500", BOX)
         self.assertIsNone(value.origin)
-        # AR16: ..., value_date, label_location (PR 1), origin (PR 2).
+        # AR16: ..., value_date, label_location (PR 1), origin (PR 2), then quote (PR 5).
         names = [field.name for field in dataclasses.fields(ExtractedValue)]
-        self.assertEqual(names[-1], "origin")
+        self.assertEqual(names[-3:], ["label_location", "origin", "quote"])
         self.assertLess(names.index("value_date"), names.index("origin"))
 
 

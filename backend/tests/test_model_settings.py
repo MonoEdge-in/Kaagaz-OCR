@@ -98,5 +98,9 @@ def test_a_card_call_and_its_repair_must_end_well_inside_the_lease() -> None:
     assert fits.model_extract_timeout_seconds == 570.0
     for timeout, lease in (("571", "1200"), ("300", "600")):
         with pytest.raises(SettingsError, match="MODEL_EXTRACT_TIMEOUT_SECONDS") as caught:
-            Settings.from_env(shipped(MODEL_EXTRACT_TIMEOUT_SECONDS=timeout, QUEUE_LEASE_SECONDS=lease))
+            # OCR_TIMEOUT_SECONDS fits both leases, so only the model check can refuse.
+            shipped_env = shipped(
+                MODEL_EXTRACT_TIMEOUT_SECONDS=timeout, QUEUE_LEASE_SECONDS=lease, OCR_TIMEOUT_SECONDS="300"
+            )
+            Settings.from_env(shipped_env)
         assert "QUEUE_LEASE_SECONDS" in str(caught.value)
