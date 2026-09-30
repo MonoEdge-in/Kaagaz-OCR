@@ -141,12 +141,22 @@ class NotReprocessable(Exception):
 
 
 class ReprocessLimited(Exception):
-    """Too many "read again" requests: the customer's hourly limit, or this
-    document's cooldown."""
+    """Too many "read again" requests. ``reason`` is ``hourly`` (the customer's
+    REPROCESS_PER_HOUR) or ``cooldown`` (this document, within the cooldown)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 _REPROCESS_STATE = (
     "SELECT status, deleted_at IS NOT NULL AS in_trash FROM documents WHERE customer_id = :c AND id = :d"
+)
+
+# One customer's "read again" requests take their counts one after the other
+# (council PR 3 review, medium 4), so two at once can't both pass the hourly limit.
+_REPROCESS_LOCK = (
+    "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.reprocess:' || CAST(:c AS uuid)::text, 0))"
 )
 
 # The audit rows are the record of each "read again", so they are what is counted.
@@ -175,12 +185,13 @@ def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, 
 
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes
     first, and is waited for, never skipped: a family being moved to Trash is
-    waited for, then seen. Raises NotReprocessable unless the status is ready,
+    waited for, then seen. Then the customer's reprocess lock (a transaction
+    advisory lock), so the hourly count is exact. Raises NotReprocessable unless the status is ready,
     failed or needs_reader and it is out of Trash, and ReprocessLimited when the
     customer already started ``per_hour`` in the last hour, or this document one
     in the last REPROCESS_COOLDOWN_MINUTES. Nothing is changed when it raises.
     ``is_current`` is kept, so an older version never takes its place.
-    5 statements; O(v log D) for the family's v versions, plus the audit rows of
+    6 statements; O(v log D) for the family's v versions, plus the audit rows of
     the last hour.
     """
     if lock_family(conn, customer_id, document_id) is None:
@@ -189,11 +200,12 @@ def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, 
     state = conn.execute(text(_REPROCESS_STATE), params).one()
     if state.in_trash or state.status not in REPROCESSABLE:
         raise NotReprocessable(document_id)
+    conn.execute(text(_REPROCESS_LOCK), params)  # held to the end of the transaction
     if int(conn.execute(text(_REPROCESSED_THIS_HOUR), params).scalar_one()) >= per_hour:
-        raise ReprocessLimited(document_id)
+        raise ReprocessLimited("hourly")
     lately = {**params, "target": document_id, "minutes": REPROCESS_COOLDOWN_MINUTES}
     if conn.execute(text(_REPROCESSED_LATELY), lately).scalar_one():
-        raise ReprocessLimited(document_id)
+        raise ReprocessLimited("cooldown")
     conn.execute(text(_REPROCESS), params)
     return str(state.status)
 

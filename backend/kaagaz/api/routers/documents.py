@@ -123,10 +123,12 @@ _CONTENT_TYPES = {
     "ole2": ("application/octet-stream", "bin"),
     "text": ("text/plain; charset=utf-8", "csv"),
 }
-_REPROCESS_LIMITED = (
-    "Too many documents were sent to be read again. A document can be read again once in 10 minutes;"
-    " please wait and try again."
-)
+_REPROCESS_LIMITED = {
+    "hourly": "Too many documents were sent to be read again in the last hour. Please try again later.",
+    "cooldown": (
+        "This document was sent to be read again less than 10 minutes ago. Please wait and try again."
+    ),
+}
 _REJECT_STATUS = {
     RejectCode.EMPTY_FILE: 400,
     RejectCode.UNSUPPORTED_TYPE: 400,
@@ -429,8 +431,8 @@ def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context)
             )
         except NotReprocessable:
             raise ApiError(409, "not_reprocessable") from None
-        except ReprocessLimited:
-            raise ApiError(429, "rate_limited", _REPROCESS_LIMITED) from None
+        except ReprocessLimited as limited:
+            raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
         if previous is None:  # deleted in the moment since
             raise ApiError(404, "not_found")
         audit.record(
@@ -442,11 +444,12 @@ def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context)
             target_id=target,
             details={"status": previous},
         )
-        # Last, inside the transaction: a queue that is down rolls everything back (503).
-        context.queue.enqueue(Job(customer_id, target))
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
-    return document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
+        reply = document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
+        # Last, inside the transaction: a queue that is down rolls everything back (503).
+        context.queue.enqueue(Job(customer_id, target))
+    return reply
 
 
 class DocumentChangesBody(BaseModel):
