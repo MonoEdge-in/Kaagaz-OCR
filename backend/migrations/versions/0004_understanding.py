@@ -12,9 +12,9 @@ them fail fast). Adding columns with constant defaults does not rewrite a table.
 
 PROVISIONAL additions beyond PRD 2 section 7 (for Vrushit to confirm):
 * ``processing_runs.error_code`` (the edge case "the run records the error
-  code"; digits allowed, as the CSV reader's ``not_utf8`` needs), ``config``, ``quotes_returned``, ``values_verified``,
-  ``values_needs_review`` (ML10) and the status ``superseded`` (a delivery a
-  newer run replaced; Lead's resolution 2).
+  code"; digits allowed, as the CSV reader's ``not_utf8`` needs), ``config``,
+  ``quotes_returned``, ``values_verified``, ``values_needs_review`` (ML10) and the
+  status ``superseded`` (a run that a newer run of the document replaced).
 * ``processing_runs.document_id`` may be NULL and is set NULL when its document
   is deleted, so the pages-per-month numbers outlive a purge (AR12).
 * ``created_at`` on runs and lines, ``UNIQUE (customer_id, id)`` on all four new
@@ -26,7 +26,12 @@ PROVISIONAL additions beyond PRD 2 section 7 (for Vrushit to confirm):
 * The label reasons ``check_failed`` (K3), ``model_chosen`` (A1) and ``ocr_script`` (ML1).
 * The grants: runs are never deleted and lines are only inserted by the app (A9).
 * The indexes ``document_links_linked`` and ``processing_runs_document``.
-* The downgrade refuses while values carry a label reason 0003 does not have.
+* The downgrade refuses while values carry a label reason 0003 does not have,
+  or documents a failure code 0003 does not allow.
+
+Fixes a main bug: a non-UTF-8 CSV could not be marked failed. 0001's
+``documents_failure_code_check`` allows no digits, and the CSV reader's code is
+``not_utf8``; it now allows digits, like ``processing_runs.error_code``.
 
 Revision ID: 0004
 Revises: 0003
@@ -73,6 +78,12 @@ UPGRADE = [
             AND jsonb_typeof(progress -> 'done') = 'number' AND progress ->> 'done' ~ '^[0-9]{1,9}$'
             AND jsonb_typeof(progress -> 'total') = 'number' AND progress ->> 'total' ~ '^[0-9]{1,9}$'
         )
+    """,
+    # --- documents: failure codes may hold digits (the main bug above) ---------------
+    "ALTER TABLE documents DROP CONSTRAINT documents_failure_code_check",
+    """
+    ALTER TABLE documents ADD CONSTRAINT documents_failure_code_check
+        CHECK (failure_code ~ '^[a-z0-9_]{1,64}$')
     """,
     # --- pieces: context header (C4) and Latin spelling (L3) -----------------------
     """
@@ -254,6 +265,16 @@ DOWNGRADE = [
     END
     $$
     """,
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM documents WHERE failure_code !~ '^[a-z_]{1,64}$') THEN
+            RAISE EXCEPTION 'documents have failure codes 0003 does not allow (such as not_utf8); change them before downgrading'
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END
+    $$
+    """,
     "ALTER TABLE extracted_values DROP CONSTRAINT extracted_values_label_reason_check",
     """
     ALTER TABLE extracted_values ADD CONSTRAINT extracted_values_label_reason_check
@@ -261,6 +282,11 @@ DOWNGRADE = [
             'direct_cell', 'readers_agree', 'readers_disagree', 'single_reader',
             'low_confidence', 'corrected', 'learned_correction'
         ))
+    """,
+    "ALTER TABLE documents DROP CONSTRAINT documents_failure_code_check",
+    """
+    ALTER TABLE documents ADD CONSTRAINT documents_failure_code_check
+        CHECK (failure_code ~ '^[a-z_]{1,64}$')
     """,
     "DROP TABLE IF EXISTS processing_runs",
     "DROP TABLE IF EXISTS document_links",
