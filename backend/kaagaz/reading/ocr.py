@@ -20,8 +20,8 @@ page ever leaves the machine and nothing is downloaded at run time.
 
   It uses ``http.client``, not urllib's opener: it follows no redirect, reads
   no proxy variable (page images never reach a proxy), and one monotonic
-  deadline covers the whole call, because each socket read gets only the time
-  that is left. Over-limit items in a reply are dropped and counted.
+  deadline covers the whole call (a timer shuts the socket down at it).
+  Over-limit items in a reply are dropped and counted.
 * ``RapidOcrEngine`` imports ``rapidocr`` only on its first page, because it
   is an optional extra (``pip install .[ocr]``): without it, the rest of the
   backend still starts, and ``OCR_ENGINE=none`` marks scans needs_reader.
@@ -36,6 +36,7 @@ An engine never logs what it read: RapidOCR's own logger is set to errors
 only, and its messages hold no page text.
 """
 
+import contextlib
 import dataclasses
 import io
 import json
@@ -148,42 +149,57 @@ class PaddleVlEngine:
         return lines
 
     def _post(self, png: bytes) -> tuple[int, bytes]:
+        """One deadline for the whole call: connecting waits at most the time left, and a
+        timer shuts the socket down at the deadline, so even a server that sends its
+        headers a byte at a time cannot hold the worker past OCR_TIMEOUT_SECONDS."""
         deadline = time.monotonic() + self._timeout
         connection = self._connection(self._host, self._port, timeout=self._timeout)
+        expired = threading.Event()
+        timer: threading.Timer | None = None
         response: HTTPResponse | None = None
         reply: tuple[int, bytes] | None = None
         try:
+            connection.timeout = _time_left(deadline)
+            connection.connect()
+            timer = threading.Timer(_time_left(deadline), _cut, (connection.sock, expired))
+            timer.daemon = True
+            timer.start()
             connection.request("POST", self._path, body=png, headers={"Content-Type": "image/png"})
-            sock = connection.sock  # kept: getresponse drops the connection's own when the reply closes it
-            _time_left(sock, deadline)
             response = connection.getresponse()
-            reply = response.status, _body(sock, response, deadline)
+            reply = response.status, _body(response)
         except (OSError, HTTPException):
             reply = None  # refused, unreachable, cut off or too slow: raised below, nothing chained
         finally:
+            if timer is not None:
+                timer.cancel()
             if response is not None:
                 response.close()
             connection.close()
-        if reply is None:
+        if reply is None or expired.is_set():  # what arrived before the cut is not the reply
             raise BackendUnavailable("ocr")
         return reply
 
 
-def _time_left(sock: socket.socket, deadline: float) -> None:
-    """Give the next socket read only the time left before the deadline."""
+def _time_left(deadline: float) -> float:
     left = deadline - time.monotonic()
     if left <= 0:
         raise TimeoutError("ocr deadline")
-    sock.settimeout(left)
+    return left
 
 
-def _body(sock: socket.socket, response: HTTPResponse, deadline: float) -> bytes:
+def _cut(sock: socket.socket, expired: threading.Event) -> None:
+    """The timer, at the deadline: stop every read and write on the socket."""
+    expired.set()
+    with contextlib.suppress(OSError):  # already closed: the call ended first
+        sock.shutdown(socket.SHUT_RDWR)
+
+
+def _body(response: HTTPResponse) -> bytes:
     """At most MAX_OCR_REPLY_BYTES + 1 bytes; a body cut short of its length raises."""
     expected = response.length
     chunks: list[bytes] = []
     size = 0
     while size <= MAX_OCR_REPLY_BYTES and not response.isclosed():  # closed: all of it was read
-        _time_left(sock, deadline)
         chunk = response.read1(_READ_CHUNK)
         if not chunk:
             break
