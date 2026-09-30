@@ -46,11 +46,17 @@ INSERTS = {
     "processing_runs": "INSERT INTO processing_runs (customer_id, document_id, started_at, status)"
     " VALUES (:who, :doc, :now, 'running')",
 }
+# B's own row pointing at A's rows: (the statement, the foreign key that refuses it).
 FOREIGN_KEYS = {
-    "invoices": "invoices_customer_id_document_id_fkey",
-    "invoice_lines": "invoice_lines_customer_id_document_id_invoice_id_fkey",
-    "document_links": "document_links_customer_id_linked_document_id_fkey",
-    "processing_runs": "processing_runs_customer_id_document_id_fkey",
+    "invoices": (INSERTS["invoices"], "invoices_customer_id_document_id_fkey"),
+    "invoice_lines": (INSERTS["invoice_lines"], "invoice_lines_customer_id_document_id_invoice_id_fkey"),
+    "link_to_a": (INSERTS["document_links"], "document_links_customer_id_linked_document_id_fkey"),
+    "link_from_a": (
+        "INSERT INTO document_links (customer_id, document_id, linked_document_id, identifier_kind,"
+        " identifier_value) VALUES (:who, :doc, :b_doc, 'invoice_number', 'inv7')",
+        "document_links_customer_id_document_id_fkey",
+    ),
+    "processing_runs": (INSERTS["processing_runs"], "processing_runs_customer_id_document_id_fkey"),
 }
 
 
@@ -116,16 +122,26 @@ def test_b_writing_a_row_as_a_is_refused_by_the_policy(db: Database, table: str)
     with pytest.raises(DBAPIError) as refused, db.customer(ids["b"]) as conn:
         conn.execute(text(INSERTS[table]), {**ids, "who": ids["a"], "now": T})
     assert violation(refused.value) == ("42501", None)
+    assert "row-level security" in str(refused.value.orig)
 
 
-@pytest.mark.parametrize("table", TABLES)
-def test_b_pointing_its_own_row_at_a_document_is_refused_by_the_foreign_key(db: Database, table: str) -> None:
+@pytest.mark.parametrize("case", FOREIGN_KEYS)
+def test_b_pointing_its_own_row_at_a_document_is_refused_by_the_foreign_key(db: Database, case: str) -> None:
     ids = world(db)
     before = a_rows(db, ids)
+    statement, constraint = FOREIGN_KEYS[case]
     with pytest.raises(IntegrityError) as refused, db.customer(ids["b"]) as conn:
-        conn.execute(text(INSERTS[table]), {**ids, "who": ids["b"], "now": T})
-    assert violation(refused.value) == ("23503", FOREIGN_KEYS[table])
+        conn.execute(text(statement), {**ids, "who": ids["b"], "now": T})
+    assert violation(refused.value) == ("23503", constraint)
     assert a_rows(db, ids) == before
+
+
+def test_a_line_belongs_to_its_invoices_document(db: Database) -> None:
+    """AR13, inside one customer: a line of one document's invoice can't name another document."""
+    ids = world(db)
+    with pytest.raises(IntegrityError) as refused, db.customer(ids["a"]) as conn:
+        conn.execute(text(INSERTS["invoice_lines"]), {**ids, "who": ids["a"], "doc": ids["other"]})
+    assert violation(refused.value) == ("23503", "invoice_lines_customer_id_document_id_invoice_id_fkey")
 
 
 def test_b_saving_or_clearing_with_a_document_id_leaves_a_card_invoice_and_links(db: Database) -> None:
