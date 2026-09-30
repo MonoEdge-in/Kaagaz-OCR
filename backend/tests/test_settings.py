@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from kaagaz import settings as settings_module
+from kaagaz.ocr_server.app import ALLOWED_HOSTS
 from kaagaz.settings import Settings, SettingsError
 
 ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
@@ -76,3 +78,32 @@ def test_one_ocr_request_must_end_well_inside_the_lease() -> None:
         with pytest.raises(SettingsError, match="OCR_TIMEOUT_SECONDS") as caught:
             Settings.from_env(shipped(OCR_TIMEOUT_SECONDS=timeout, QUEUE_LEASE_SECONDS=lease))
         assert "QUEUE_LEASE_SECONDS" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://ocr:9000",
+        "http://evil.example:8080",
+        "http://ocr",
+        "https://localhost:8443",
+        "http://[::1]:8080",
+    ],
+)
+def test_paddleocr_vl_needs_a_host_the_ocr_server_accepts(url: str) -> None:
+    """The server answers 421 to any other Host, so a wrong URL would fail every scan."""
+    with pytest.raises(SettingsError, match="OCR_URL"):
+        Settings.from_env(shipped(OCR_ENGINE="paddleocr_vl", OCR_URL=url))
+
+
+@pytest.mark.parametrize("url", ["http://ocr:8080", "http://localhost:8080/", "http://127.0.0.1:8080"])
+def test_each_host_the_ocr_server_accepts_is_allowed(url: str) -> None:
+    assert Settings.from_env(shipped(OCR_ENGINE="paddleocr_vl", OCR_URL=url)).ocr_url == url
+
+
+def test_the_host_is_checked_only_for_paddleocr_vl_and_matches_the_server() -> None:
+    assert (
+        Settings.from_env(shipped(OCR_ENGINE="rapidocr", OCR_URL="http://elsewhere:1")).ocr_engine
+        == "rapidocr"
+    )
+    assert settings_module.OCR_SERVER_HOSTS == ALLOWED_HOSTS

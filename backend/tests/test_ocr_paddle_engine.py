@@ -163,7 +163,15 @@ def test_refusals_fail_the_document_with_a_code(fake: FakeOcrServer, status: int
     assert read_error(fake, Reply(status, {"error": "any"})) == code
 
 
-@pytest.mark.parametrize(("status", "error"), [(503, "not_ready"), (503, "busy"), (500, "internal_error")])
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        (503, "not_ready"),
+        (503, "busy"),
+        (500, "internal_error"),
+        (421, "misdirected"),
+    ],  # 421: set-up, not the file
+)
 def test_a_server_that_cannot_read_now_is_unavailable(fake: FakeOcrServer, status: int, error: str) -> None:
     fake.replies.append(Reply(status, {"error": error}))
     with pytest.raises(BackendUnavailable):
