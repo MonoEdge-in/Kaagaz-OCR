@@ -207,6 +207,7 @@ BAD_ROWS = [
         "documents_progress_check",
         _DOCUMENT.format("""progress = '{"step": "napping", "done": 1, "total": 2}'"""),
     ),
+    ("documents_progress_check", _DOCUMENT.format("""progress = '{"step": null, "done": 1, "total": 2}'""")),
     ("documents_progress_check", _DOCUMENT.format("progress = '[1, 2]'")),
     ("extracted_values_label_both", "UPDATE extracted_values SET label_page_no = 1 WHERE id = :v"),
     ("invoices_check", _INVOICE.format("check_status = 'failed'")),
