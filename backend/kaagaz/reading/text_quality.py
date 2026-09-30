@@ -52,6 +52,7 @@ import string
 import unicodedata
 from dataclasses import dataclass
 
+from kaagaz.chunking.script import malformed_devanagari
 from kaagaz.reading.route import RouteDecision
 
 # PRD R2's fixed "fewer than 200 characters"; not a setting (plan §13, 18).
@@ -72,26 +73,6 @@ _GOOD = frozenset(
 )
 _CID = re.compile(r"\(cid:\d+\)")
 _CID_PUNCTUATION = 3  # "(", ":" and ")" in each (cid:N); the rest are letters and digits
-
-# Devanagari, for the malformed rule (ML 1(a)).
-_CONSONANT_RANGES = ((0x0915, 0x0939), (0x0958, 0x095F), (0x0978, 0x097F))
-_DEPENDENT_VOWEL_SIGNS = frozenset(
-    chr(code)
-    for code in (
-        0x093A,
-        0x093B,
-        *range(0x093E, 0x094D),
-        0x094E,
-        0x094F,
-        0x0955,
-        0x0956,
-        0x0957,
-        0x0962,
-        0x0963,
-    )
-)
-_VIRAMA = "\u094d"
-_NUKTA = "\u093c"
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,20 +139,11 @@ def good_ratio(text: str) -> float:
 def count_malformed_devanagari(text: str) -> int:
     """The malformed Devanagari signs in ``text`` (ML 1(a)'s rule): a dependent
     vowel sign or a virama that does not directly follow a consonant or a
-    nukta. Two vowel signs in a row count once, on the second.
-
-    Local to PR 3. When PR 4 lands ``kaagaz.chunking.script.malformed_devanagari``
-    (the same ML 1(a) rule), this body becomes a call to it. O(c) time, O(1) space.
+    nukta. Two vowel signs in a row count once, on the second. The rule lives
+    in ``kaagaz.chunking.script``, shared with the OCR value checks. O(c) time,
+    O(1) space.
     """
-    count = 0
-    previous = ""
-    for char in text:
-        if (char in _DEPENDENT_VOWEL_SIGNS or char == _VIRAMA) and not (
-            previous == _NUKTA or _is_consonant(previous)
-        ):
-            count += 1
-        previous = char
-    return count
+    return malformed_devanagari(text)
 
 
 def malformed_devanagari_share(text: str) -> float:
@@ -215,10 +187,3 @@ def _is_whitespace(char: str) -> bool:
     ``isspace()`` is true for some controls (U+001C to U+001F, U+0085), which
     R2 counts as bad."""
     return char in "\t\n" or (char.isspace() and unicodedata.category(char) != "Cc")
-
-
-def _is_consonant(char: str) -> bool:
-    if len(char) != 1:
-        return False
-    code = ord(char)
-    return any(low <= code <= high for low, high in _CONSONANT_RANGES)
