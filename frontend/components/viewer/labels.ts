@@ -25,6 +25,8 @@ const REASONS: Record<LabelReason, string> = {
   low_confidence: "The reader was not sure of this value.",
   corrected: "Corrected by a reviewer.",
   learned_correction: "Fixed by a correction a reviewer asked to remember.",
+  model_chosen: "Found by the AI model. Check it against the page.",
+  ocr_script: "Read by OCR from Hindi, Marathi or mixed-script text. Check it against the page.",
 };
 
 export function reasonText(reason: LabelReason): string {

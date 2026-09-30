@@ -22,7 +22,9 @@ export type LabelReason =
   | "single_reader"
   | "low_confidence"
   | "corrected"
-  | "learned_correction";
+  | "learned_correction"
+  | "model_chosen" // PRD 2: the AI model chose its field (card and invoice values)
+  | "ocr_script"; // PRD 2: OCR read it from Devanagari or mixed-script text
 
 /** "admin" only for a session started at /admin/login (PRD A1). */
 export type SessionScope = "app" | "admin";
