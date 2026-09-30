@@ -24,8 +24,8 @@ Lock order (plan 4.3), the same in ``save`` and ``clear``:
 4. one DELETE of this document's links both ways (AR6), then the new links, one
    row each way, sorted, ON CONFLICT DO NOTHING.
 
-The run fence: with ``run_id``, a save goes ahead only if that run is the
-document's latest (``runs.is_latest_run``, read under the family lock);
+The run fence: with ``run_id``, a save goes ahead only if that run is still
+open (``runs.is_run_open``, read under the family lock);
 otherwise it raises Superseded and writes nothing. A deadlock that PostgreSQL
 breaks (40P01) runs the whole transaction again (AR7).
 
@@ -54,7 +54,7 @@ from typing import Any
 from sqlalchemy import Connection, text
 
 from kaagaz.db.engine import Database, unavailable
-from kaagaz.db.runs import is_latest_run
+from kaagaz.db.runs import is_run_open
 from kaagaz.db.sqlstate import retry_on_deadlock
 from kaagaz.db.trash import lock_family
 from kaagaz.extraction.learned import LearnedCorrection
@@ -154,8 +154,8 @@ class PgPipelineStore:
 
     def save(self, content: DocumentContent, *, run_id: str | None = None) -> None:
         """Replace everything saved for the document with ``content``, in one transaction.
-        With ``run_id``, raise Superseded and write nothing unless that run is the
-        document's latest run (the run fence)."""
+        With ``run_id``, raise Superseded and write nothing unless that run is still
+        open (the run fence)."""
         customer_id, document_id = content.customer_id, content.document_id
         ids = {"c": customer_id, "d": document_id}
         pages = [
@@ -201,7 +201,7 @@ class PgPipelineStore:
         def transaction() -> None:
             with self._db.customer(customer_id) as conn:
                 family_id = lock_family(conn, customer_id, document_id)
-                if run_id is not None and not is_latest_run(conn, customer_id, document_id, run_id):
+                if run_id is not None and not is_run_open(conn, customer_id, document_id, run_id):
                     raise Superseded(run_id)
                 _replace_facts_and_delete(conn, ids, content.facts)
                 for statement, rows in (

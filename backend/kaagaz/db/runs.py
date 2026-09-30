@@ -1,15 +1,18 @@
 """Processing runs: one row per delivery of a document's job (PRD 2 R6, X2).
 
 A run records what one delivery did: its routes per page, its models, its
-counts and its outcome. ``start_run`` closes the document's earlier runs that
-are still ``running`` (a delivery that died, or one a newer delivery replaced)
-as failed with ``interrupted``. ``finish_run`` writes the outcome; a later
-finish of the same run overwrites an earlier close, so runs stay truthful.
+counts and its outcome. ``start_run`` marks the document's other runs that are
+still ``running`` (a delivery that died, or one still going that this delivery
+replaces) as ``superseded``. ``finish_run`` writes the outcome; a later finish
+of the same run overwrites an earlier close, so runs stay truthful.
 
-The run fence (Lead's resolution 2): only the document's latest run, by
-``started_at`` then ``id``, may save results or mark the document ready.
-``is_latest_run`` is read under the family lock by the save and by
-``mark_ready``, which raise ``kaagaz.pipeline.Superseded`` otherwise.
+The run fence (Lead's resolution 2): only a run that is still ``running`` may
+save results or mark the document ready. ``is_run_open`` is read under the
+family lock by the save and by ``mark_ready``, which raise
+``kaagaz.pipeline.Superseded`` otherwise. It asks which run is open, not which
+started last, so a worker whose clock runs ahead can't win it with a stale run.
+A run superseded just after its save passed the fence still commits that save;
+the newer run replaces it, as every save replaces the one before.
 
 Lock order (AR8): ``start_run`` locks the parent documents row FOR KEY SHARE
 first, which does not wait for the family lock (FOR NO KEY UPDATE), so a new
@@ -39,8 +42,8 @@ if TYPE_CHECKING:
 
 _LOCK_DOCUMENT = "SELECT id FROM documents WHERE customer_id = :c AND id = :d FOR KEY SHARE"
 
-_CLOSE_RUNNING = (
-    "UPDATE processing_runs SET status = 'failed', error_code = 'interrupted',"
+_SUPERSEDE_RUNNING = (
+    "UPDATE processing_runs SET status = 'superseded',"
     " finished_at = GREATEST(CAST(:now AS timestamptz), started_at)"
     " WHERE customer_id = :c AND document_id = :d AND status = 'running'"
 )
@@ -62,21 +65,21 @@ _FINISH = (
     " WHERE customer_id = :c AND id = :id"
 )
 
-_LATEST = (
-    "SELECT id FROM processing_runs WHERE customer_id = :c AND document_id = :d"
-    " ORDER BY started_at DESC, id DESC LIMIT 1"
+_OPEN = (
+    "SELECT EXISTS (SELECT 1 FROM processing_runs WHERE customer_id = :c AND document_id = :d"
+    " AND id = :r AND status = 'running')"
 )
 
 
 def start_run(conn: Connection, customer_id: str, document_id: str, *, now: datetime) -> str:
-    """Close this document's runs still ``running`` as interrupted, then insert a
+    """Mark this document's runs still ``running`` as superseded, then insert a
     ``running`` run started at ``now`` and return its id. Raises
     JobFailed("document_missing") when this customer has no such document.
     3 statements on the index processing_runs_document: O(log R + k) for k open runs."""
     params = {"c": customer_id, "d": document_id, "now": now}
     if conn.execute(text(_LOCK_DOCUMENT), params).first() is None:
         raise JobFailed("document_missing", retryable=False)
-    conn.execute(text(_CLOSE_RUNNING), params)
+    conn.execute(text(_SUPERSEDE_RUNNING), params)
     return str(conn.execute(text(_INSERT), params).scalar_one())
 
 
@@ -88,11 +91,12 @@ def finish_run(conn: Connection, customer_id: str, run: "FinishedRun") -> None:
     conn.execute(text(_FINISH), {**totals, "c": customer_id, "id": run.run_id, "now": run.now})
 
 
-def is_latest_run(conn: Connection, customer_id: str, document_id: str, run_id: str) -> bool:
-    """True when ``run_id`` is the document's latest run (the run fence). The caller
-    holds the family lock (``trash.lock_family``). One indexed query: O(log R)."""
-    latest = conn.execute(text(_LATEST), {"c": customer_id, "d": document_id}).scalar()
-    return latest is not None and str(latest) == run_id
+def is_run_open(conn: Connection, customer_id: str, document_id: str, run_id: str) -> bool:
+    """True while ``run_id`` is this document's run and still ``running`` (the run
+    fence). The caller holds the family lock (``trash.lock_family``). One query by
+    primary key: O(log R)."""
+    params = {"c": customer_id, "d": document_id, "r": run_id}
+    return bool(conn.execute(text(_OPEN), params).scalar())
 
 
 class PgRuns:

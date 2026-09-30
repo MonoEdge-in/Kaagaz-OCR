@@ -31,7 +31,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.db.engine import Database, unavailable
-from kaagaz.db.runs import finish_run, is_latest_run
+from kaagaz.db.runs import finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
 from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, UnknownFolder
@@ -80,8 +80,8 @@ def mark_ready(
     once queue, and trash, restore and the purge never deadlock with it. A
     missing document, or a rejected one (final), is left as it is, and ``run``
     is still finished: failed with ``document_missing``, or rejected (AR11,
-    PROVISIONAL). Raises Superseded, and writes nothing, when ``run`` is not the
-    document's latest run (the run fence, read under the family lock).
+    PROVISIONAL). Raises Superseded, and writes nothing, when ``run`` is no longer
+    open (the run fence, read under the family lock).
     3 to 6 statements; O(v log D) time and O(v) space for the family's v versions.
     """
     family_id = lock_family(conn, customer_id, document_id)
@@ -90,7 +90,7 @@ def mark_ready(
             closed = dataclasses.replace(run.totals, status="failed", error_code="document_missing")
             finish_run(conn, customer_id, dataclasses.replace(run, totals=closed))
         return
-    if run is not None and not is_latest_run(conn, customer_id, document_id, run.run_id):
+    if run is not None and not is_run_open(conn, customer_id, document_id, run.run_id):
         raise Superseded(run.run_id)
     params = {"c": customer_id, "d": document_id, "f": family_id}
     state = conn.execute(text(_READY_STATE), params).one()
