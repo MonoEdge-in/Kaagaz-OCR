@@ -14,32 +14,47 @@ reply (``MODEL_WINDOW_MAX_TOKENS``). The input budget is what
 ``ai.client.input_token_budget`` leaves in ``num_ctx`` for the user message, less
 the message's own words. The window's text goes to the model fenced as untrusted
 data (``window_prompt``), and the reply follows ``INVOICE_SCHEMA``: quotes only,
-never values (the quote rule, D2).
+never values (the quote rule, D2). A reply cut at its budget
+(``output_truncated``) is asked again as two halves of its window, split at a
+row's start near the middle, up to ``2 * max_windows`` calls in all (council 5);
+past that, or for a window of one span, the reading fails. A reply's first
+``MAX_WINDOW_LINES`` lines are read; the rest are counted in ``over_limit``.
 
 **Locating.** Each quote is found in the reader text with ``quotes.find_labelled``
 or ``find_quote``, only inside its window's [start, end) (ML amendment 6(e)).
 The stored text is the reader's text at the match. A quote that is not found,
 or is refused below, is dropped and counted (``QuoteCounts``).
 
-* A document field is refused when the line holding its value or its label
-  matches ``NOT_AN_ITEM`` (ML 6(b)), when an amount or the date does not read as
-  one (as ``labelled.py`` does), or when a text field is longer than its
-  ``invoices`` column (``MAX_TEXT_CHARS``, security A7).
+* A document field is refused when a row holding its value or its label matches
+  ``NOT_AN_ITEM`` (ML 6(b); a row is a text line, or the cells joined by " | ",
+  council 2), when an amount or the date does not read as one (as ``labelled.py``
+  does), when an amount does not fit numeric(14,2) after rounding to 0.01
+  (``checks.fit_amount``, security A7, council 6), or when a text field is longer
+  than its ``invoices`` column (``MAX_TEXT_CHARS``).
 * A window its token budget cut short keeps at most half of itself as overlap
   (PROVISIONAL), so the windows still move on.
 * A line's description is searched from the previous line's description on
-  (from the window's start if the model listed it out of order). Its other
-  quotes follow it in column order, each after the one before, and never past
-  the next description (ML 6(d)). A line is kept only with its description and
-  amount, and never when either sits on a ``NOT_AN_ITEM`` line.
+  (from the window's start if the model listed it out of order). Its amount is
+  found next, after the description and before the next description (ML 6(d)):
+  the last match on the description's own row, else the first one (council 4).
+  Its other quotes are then searched in column order between the description
+  and the amount, each after the one before; one not found there is searched
+  from the description again, never on a spot another field of the line took
+  (PROVISIONAL: "Rate 250.00 per Nos" puts the unit after the rate). A quantity
+  or rate that is negative, or an amount or rate that does not fit numeric(14,2),
+  is dropped and counted (council 6 and 10). A line is kept only with its
+  description and amount, and never when a row either sits on matches
+  ``NOT_AN_ITEM``.
 
 **Merging (E3).** For a field, the first window whose quote is found wins. A
 later window that finds a different value (amounts compared as numbers, so
 "1,800" and "1800.00" agree; dates as dates; GSTINs without spaces; other text
 normalised as quotes are) adds the stored field to ``conflicts``. The same value
 at another spot is not a conflict. A line whose description spot or amount spot
-is already taken repeats one kept before, and is left out. Lines are numbered
-``line:1..n`` in the order of their amounts in the text; at most ``MAX_LINES``.
+is already taken repeats one kept before, and is left out without being counted
+again (council 10); so is a field found again at its first spot. Lines are
+numbered ``line:1..n`` in the order of their amounts in the text; at most
+``MAX_LINES``.
 
 **E4 names.** seller_name is stored as party_name, seller_gstin as gstin,
 tax_total as tax_amount and total as total_amount; record_key ``document``
@@ -56,20 +71,27 @@ twice (bug B2).
   which may be the buyer's GSTIN). With the model off it is built from the
   labelled.py ``document`` values, and a tax value that sits at a tax
   component's spot is a component, not the tax total (conflict 21, PROVISIONAL).
+  labelled.py's one GSTIN field cannot tell the seller's number from the
+  buyer's, so the model-off seller GSTIN is filled only when the document's
+  labelled GSTINs are one number (council 1).
+* ``values`` must hold each E4 field once: the caller removes labelled.py's
+  values of those fields first (``rule_values_left``), else ValueError (bug B2).
 * The checks always run on the row (K1, K2), with the tax components for the
-  total check (ML 6(a)) and every GSTIN value of the document (ML 6(i)).
+  total check (ML 6(a)) and every other GSTIN value of the document (ML 6(i)).
 * The lead's resolution 1: an E4 value is verified only when ``label_quoted``
   verified it (the readers agree under A2's strict rules), the check passed, and,
   for a field labelled.py also finds, labelled.py's value for it sits at the same
   spot with the same text (security A1(c)). Otherwise it is needs review,
-  ``model_chosen``, whatever ``label_quoted`` said (single_reader,
-  readers_disagree...); its second reading is kept. A reviewer's remembered fix
-  keeps its label (PROVISIONAL).
+  ``model_chosen`` (single_reader on a shared line box included), keeping its
+  second reading; but ``ocr_script`` and ``readers_disagree`` stay the reason,
+  being more specific (council 3, PROVISIONAL). A reviewer's remembered fix
+  stays verified only when the check passed (council 7).
 * K3: the values a failed check involves become needs review, ``check_failed``.
 
 **Rows (E5, ``invoice_row``).** Typed through parsing.py. An amount is rounded
 to 0.01 first and then must fit numeric(14,2), else it is NULL (security A7);
-text longer than its column is NULL. A row is verified only when every
+text longer than its column is NULL; the GSTIN columns are stored without
+spaces, in capitals (council 8). A row is verified only when every
 non-null field in it is verified and the check did not fail; a line row, when
 every non-null field in it is verified. A row with nothing in it is needs review.
 
@@ -86,13 +108,22 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable, estimate_tokens, input_token_budget
 from kaagaz.extraction.card import ChatModel
-from kaagaz.extraction.checks import FAILED, GSTIN_FIELDS, PASSED, CheckResult, apply_checks, check_invoice
+from kaagaz.extraction.checks import (
+    AMOUNT_LIMIT,
+    FAILED,
+    GSTIN_FIELDS,
+    PASSED,
+    CheckResult,
+    apply_checks,
+    check_invoice,
+    fit_amount,
+)
 from kaagaz.extraction.labelled import DOCUMENT_RECORD, NOT_AN_ITEM
 from kaagaz.extraction.labels import comparable, overlap
 from kaagaz.extraction.parsing import parse_amount, parse_date
@@ -133,18 +164,19 @@ LINE_FIELDS = ("description", "hsn", "quantity", "unit", "rate", "amount")
 LINE_PREFIX = "line:"
 
 MAX_LINES = 1000  # security A7: lines per invoice; the rest are dropped and counted
-MAX_WINDOW_LINES = 100  # the schema's limit per window (PROVISIONAL; the model's output budget is lower)
+MAX_WINDOW_LINES = 100  # per reply: the schema's limit, and the rest are counted (PROVISIONAL)
 MAX_TEXT_CHARS = 200  # 0004's CHECK on the invoices and invoice_lines text columns
 MAX_DESCRIPTION_CHARS = 1000  # and on invoice_lines.description
 
 _AMOUNT_FIELDS = frozenset({"subtotal", "tax_total", "total"})
 _DATE_FIELDS = frozenset({"invoice_date"})
 _GSTIN_NAMES = frozenset({"seller_gstin", "buyer_gstin"})
-_NUMBER_LINE_FIELDS = frozenset({"quantity", "rate", "amount"})
+_OPTIONAL_LINE_FIELDS = ("hsn", "quantity", "unit", "rate")  # in column order
+_NOT_NEGATIVE = frozenset({"quantity", "rate"})
+_SPECIFIC_REASONS = frozenset({"ocr_script", "readers_disagree"})  # kept over model_chosen (council 3)
+_ROW_JOIN = " | "  # quotes.reader_text joins one row's cells with this
 _REQUIRED_LINE_FIELDS = ("description", "amount")
 _ROW_FIELDS = frozenset(STORED_FIELD.get(name, name) for name in INVOICE_FIELDS)
-_CENT = Decimal("0.01")
-_AMOUNT_LIMIT = Decimal(10) ** 12  # numeric(14,2) holds less than this
 
 _QUOTE = {"type": "string", "maxLength": MAX_QUOTE_CHARS}
 _OPTIONAL_QUOTE = {"type": ["string", "null"], "maxLength": MAX_QUOTE_CHARS}
@@ -200,7 +232,8 @@ value has no label.
 5. Set tax_total only from a line that states the total tax, such as "Total Tax". If the invoice \
 shows only CGST, SGST, UTGST, IGST or cess lines, tax_total is null.
 6. lines are the items sold, in the order they appear. Never return brought-forward, \
-carried-forward, subtotal, tax or total rows as lines.
+carried-forward, subtotal, tax, total or HSN/SAC summary rows as lines, \
+nor round-off, discount or freight rows printed after the subtotal.
 7. For amounts, rates and quantities, quote only the number as it is printed.
 Reply with JSON only, following the schema."""
 
@@ -229,6 +262,8 @@ class Window:
     start: int  # norm offsets into ReaderText.norm: the window is [start, end)
     end: int
     text: str  # the reader text of the window, for the prompt
+    first_span: int = 0  # the spans it holds, in ReaderText.spans
+    last_span: int = -1
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,7 +273,7 @@ class InvoiceExtraction:
     truncated: bool  # text was left after the last window (E2)
     quotes: QuoteCounts  # returned, dropped, loose and ambiguous items (ML 9(d), 9(e))
     model_calls: int
-    over_limit: int = 0  # lines past MAX_LINES, dropped (A7)
+    over_limit: int = 0  # lines past MAX_LINES, or past MAX_WINDOW_LINES in a reply, dropped (A7)
     error_code: str | None = None  # "model_<code>" when a call failed; values is then empty
 
     @property
@@ -279,9 +314,7 @@ def windows(
                 used += more
             last += 1
         end = _span_end(reader, last)
-        parts.append(
-            Window(bisect_left(reader.starts, begin), bisect_left(reader.starts, end), reader.text[begin:end])
-        )
+        parts.append(_window(reader, first, last))
         if last == count - 1:
             return parts, False
         # PROVISIONAL: a window its token budget cut short keeps at most half of itself as
@@ -308,31 +341,41 @@ def read_invoice(
     beat: Callable[[int, int], None],
 ) -> InvoiceExtraction:
     """E2 and E3: one call per window, each reply at most ``max_tokens``, each window cut to
-    fit ``num_ctx``; the quotes located and merged. ``beat(done, total)`` after each call. A
-    model error stops the reading: no values, and ``error_code`` says why (the caller keeps
-    labelled.py's values instead)."""
+    fit ``num_ctx``; a cut reply asked again in halves (the module docstring); the quotes
+    located and merged. ``beat(done, total)`` after each call, ``total`` the calls planned so
+    far. A model error stops the reading: no values, and ``error_code`` says why (the caller
+    keeps labelled.py's values instead)."""
     budget = input_token_budget(num_ctx=num_ctx, max_tokens=max_tokens, system=INVOICE_SYSTEM_PROMPT)
-    wording = estimate_tokens(window_prompt(Window(0, 0, ""), max_windows, max_windows))
+    wording = estimate_tokens(window_prompt(Window(0, 0, ""), 2 * max_windows, 2 * max_windows))
     parts, truncated = windows(
         reader, chars=chars, overlap=overlap, max_windows=max_windows, max_input_tokens=budget - wording
     )
     merge = _Merge(reader)
-    for number, window in enumerate(parts, start=1):
+    waiting, calls, planned = list(parts), 0, len(parts)
+    while waiting:
+        window = waiting.pop(0)
+        calls += 1
         try:
             answer = chat.chat_json(
                 system=INVOICE_SYSTEM_PROMPT,
-                user=window_prompt(window, number, len(parts)),
+                user=window_prompt(window, calls, planned),
                 schema=INVOICE_SCHEMA,
                 max_tokens=max_tokens,
             )
         except (ModelUnavailable, ModelOutputError) as error:
-            beat(number, len(parts))
+            halves = merge.halves(window) if error.code == "output_truncated" else None
+            if halves is not None and calls < 2 * max_windows:
+                waiting[:0] = halves
+                planned += 1
+                beat(calls, planned)
+                continue
+            beat(calls, planned)
             code = f"model_{error.code}"
-            return InvoiceExtraction([], frozenset(), truncated, merge.quotes, number, merge.over_limit, code)
-        beat(number, len(parts))
+            return InvoiceExtraction([], frozenset(), truncated, merge.quotes, calls, merge.over_limit, code)
+        beat(calls, planned)
         merge.add(window, answer)
     return InvoiceExtraction(
-        merge.values(), frozenset(merge.conflicts), truncated, merge.quotes, len(parts), merge.over_limit
+        merge.values(), frozenset(merge.conflicts), truncated, merge.quotes, calls, merge.over_limit
     )
 
 
@@ -363,6 +406,9 @@ def finish_invoice(
     ``fallback`` allows a row from labelled.py's values when there are no E4 values."""
     e4 = [] if extraction is None else extraction.values
     quoted = frozenset((value.record_key, value.field) for value in e4)
+    held = [(value.record_key, value.field) for value in values if (value.record_key, value.field) in quoted]
+    if len(held) != len(set(held)):
+        raise ValueError("an invoice field is stored twice: remove labelled.py's first (rule_values_left)")
     conflicts: frozenset[str] = frozenset()
     truncated = False
     if extraction is not None and quoted:
@@ -370,13 +416,23 @@ def finish_invoice(
         conflicts, truncated = extraction.conflicts, extraction.truncated
     else:
         spots = {(component.location, component.value_raw) for component in components}
-        view = [value for value in values if _labelled_row_value(value, spots)]
+        one_gstin = len({_gstin(value) for value in values if value.field == "gstin"}) == 1
+        view = [
+            value
+            for value in values
+            if _labelled_row_value(value, spots) and (value.field != "gstin" or one_gstin)
+        ]
         if not (fallback and any(_names_the_invoice(value) for value in view)):
             return InvoiceResult(list(values), None, None)
     keys = {(value.record_key, value.field) for value in view}
     gstins = [v for v in values if v.field in GSTIN_FIELDS and (v.record_key, v.field) not in keys]
     check = check_invoice(
-        [*view, *gstins], today=today, conflicts=conflicts, truncated=truncated, tax_components=components
+        view,
+        today=today,
+        conflicts=conflicts,
+        truncated=truncated,
+        tax_components=components,
+        other_gstins=gstins,
     )
     final = apply_checks([_settle(value, quoted, labelled, check) for value in values], check)
     row = invoice_row([value for value in final if (value.record_key, value.field) in keys], check)
@@ -397,8 +453,8 @@ def invoice_row(values: Sequence[ExtractedValue], check: CheckResult) -> "Invoic
             lines.setdefault(number, {}).setdefault(value.field, value)
     typed = _Typed(document)
     invoice_number, invoice_date = typed.text("invoice_number"), typed.day("invoice_date")
-    seller_name, seller_gstin = typed.text("party_name"), typed.text("gstin")
-    buyer_name, buyer_gstin = typed.text("buyer_name"), typed.text("buyer_gstin")
+    seller_name, seller_gstin = typed.text("party_name"), typed.gstin("gstin")
+    buyer_name, buyer_gstin = typed.text("buyer_name"), typed.gstin("buyer_gstin")
     subtotal, tax_total, total = (
         typed.money("subtotal"),
         typed.money("tax_amount"),
@@ -442,6 +498,17 @@ class _Merge:
         self.taken: set[tuple[str, int]] = set()  # ("description" or "amount", norm start)
         self.quotes = QuoteCounts()
         self.over_limit = 0
+        # Council 2: each span's row, the spans joined by " | " around it. O(S).
+        count = len(reader.spans)
+        joined = [k > 0 and _join_before(reader, k) == _ROW_JOIN for k in range(count)]
+        self.row_first = list(range(count))
+        for k in range(1, count):
+            if joined[k]:
+                self.row_first[k] = self.row_first[k - 1]
+        self.row_last = list(range(count))
+        for k in range(count - 2, -1, -1):
+            if joined[k + 1]:
+                self.row_last[k] = self.row_last[k + 1]
 
     def add(self, window: Window, answer: Mapping[str, Any]) -> None:
         fields = answer.get("fields")
@@ -452,7 +519,9 @@ class _Merge:
                     self._field(window, name, *quotes)
         lines = answer.get("lines")
         if isinstance(lines, list):
-            self._lines(window, [item for item in lines if isinstance(item, dict)])
+            items = [item for item in lines if isinstance(item, dict)]
+            self.over_limit += max(0, len(items) - MAX_WINDOW_LINES)
+            self._lines(window, items[:MAX_WINDOW_LINES])
 
     def values(self) -> list[ExtractedValue]:
         found: list[ExtractedValue] = []
@@ -466,31 +535,44 @@ class _Merge:
             ]
         return found
 
+    def halves(self, window: Window) -> list[Window] | None:
+        """The window's spans in two, split at the start of the row nearest the middle (so a
+        row's cells stay together), or None for a window of one span."""
+        first, last = window.first_span, window.last_span
+        if last <= first:
+            return None
+        middle = (first + last + 1) // 2
+        split = self.row_first[middle] if self.row_first[middle] > first else middle
+        return [_window(self.reader, first, split - 1), _window(self.reader, split, last)]
+
     def _field(self, window: Window, name: str, label_quote: str | None, value_quote: str) -> None:
         label, value = find_labelled(
             self.reader, label_quote, value_quote, start=window.start, end=window.end
         )
-        value = self.quotes.add(self._field_kept(name, label, value))
-        if value is None:
-            return
+        kept = self._field_kept(name, label, value)
         first = self.fields.get(name)
+        if kept is not None and first is not None and kept.start == first[0].start:
+            return  # the same field again from an overlapping window: not counted again
+        self.quotes.add(kept)
+        if kept is None:
+            return
         if first is None:
-            self.fields[name] = (value, label)
-        elif not _same_value(name, first[0].text, value.text):
+            self.fields[name] = (kept, label)
+        elif not _same_value(name, first[0].text, kept.text):
             self.conflicts.add(STORED_FIELD.get(name, name))
 
     def _field_kept(self, name: str, label: Found | None, value: Found | None) -> Found | None:
         if value is None or self._not_an_item(value) or (label is not None and self._not_an_item(label)):
             return None
         if name in _AMOUNT_FIELDS:
-            return value if parse_amount(value.text) is not None else None
+            return value if fit_amount(parse_amount(value.text)) is not None else None
         if name in _DATE_FIELDS:
             return value if parse_date(value.text) is not None else None
         return value if len(value.text) <= MAX_TEXT_CHARS else None
 
     def _lines(self, window: Window, items: list[dict[str, Any]]) -> None:
-        """Descriptions first, each from the last one found; then each line's other quotes,
-        bounded by the next description (ML 6(d))."""
+        """Descriptions first, each from the last one found; then each line's amount and other
+        quotes, bounded by the next description (ML 6(d))."""
         located: list[tuple[dict[str, str], Found]] = []
         cursor = window.start
         for item in items:
@@ -514,22 +596,28 @@ class _Merge:
             self._line(quotes, description, starts[nearest] if nearest < len(starts) else window.end)
 
     def _line(self, quotes: dict[str, str], description: Found, bound: int) -> None:
-        found = {"description": description}
-        optional: list[Found | None] = []
-        cursor = description.end
-        for name in LINE_FIELDS[1:]:
-            if name not in quotes:
-                continue
-            hit = self._line_field_kept(name, find_quote(self.reader, quotes[name], start=cursor, end=bound))
-            if name != "amount":
-                optional.append(hit)
-            if hit is not None:
-                found[name] = hit
-                cursor = hit.end
-        amount = found.get("amount")
+        amount = self._amount(quotes["amount"], description, bound)
         if amount is None or self._not_an_item(description) or self._not_an_item(amount):
             self.quotes.add(None)
             return
+        spots = {("description", description.start), ("amount", amount.start)}
+        if spots & self.taken:
+            return  # the same line from an overlapping window: not counted again
+        found = {"description": description, "amount": amount}
+        taken = [(description.start, description.end), (amount.start, amount.end)]
+        optional: list[Found | None] = []
+        cursor = description.end
+        for name in _OPTIONAL_LINE_FIELDS:
+            if name not in quotes:
+                continue
+            hit = self._free(name, quotes[name], cursor, amount.start, taken)
+            if hit is None:  # out of column order: from the description again
+                hit = self._free(name, quotes[name], description.end, amount.start, taken)
+            optional.append(hit)
+            if hit is not None:
+                found[name] = hit
+                taken.append((hit.start, hit.end))
+                cursor = max(cursor, hit.end)
         # One item for the line: loose or ambiguous when its description or its amount is.
         self.quotes.add(
             replace(
@@ -540,28 +628,71 @@ class _Merge:
         )
         for hit in optional:
             self.quotes.add(hit)
-        spots = {("description", description.start), ("amount", amount.start)}
-        if spots & self.taken:
-            return  # the same line from an overlapping window
         if len(self.lines) >= MAX_LINES:
             self.over_limit += 1
             return
         self.taken |= spots
         self.lines.append(found)
 
+    def _amount(self, quote: str, description: Found, bound: int) -> Found | None:
+        """The line's amount in [description.end, bound): the last kept match on the
+        description's own row, else the first kept match (council 4)."""
+        row_end = self._row_end(description)
+        first: Found | None = None
+        on_row: Found | None = None
+        start = description.end
+        while (hit := find_quote(self.reader, quote, start=start, end=bound)) is not None:
+            kept = self._line_field_kept("amount", hit)
+            if kept is not None:
+                first = first or kept
+                if kept.end > row_end:
+                    break
+                on_row = kept
+            start = hit.end
+        return on_row or first
+
+    def _free(
+        self, name: str, quote: str, start: int, end: int, taken: list[tuple[int, int]]
+    ) -> Found | None:
+        """The first kept match of a line field in [start, end) on no spot another field took."""
+        while (hit := find_quote(self.reader, quote, start=start, end=end)) is not None:
+            free = all(hit.end <= a or hit.start >= b for a, b in taken)
+            kept = self._line_field_kept(name, hit)
+            if free and kept is not None:
+                return kept
+            start = hit.end
+        return None
+
     def _line_field_kept(self, name: str, hit: Found | None) -> Found | None:
         if hit is None:
             return None
-        if name in _NUMBER_LINE_FIELDS:
-            return hit if parse_amount(hit.text) is not None else None
+        if name in ("rate", "amount") and fit_amount(parse_amount(hit.text)) is None:
+            return None
+        if name == "quantity":
+            quantity = parse_amount(hit.text)
+            if quantity is None or abs(quantity) >= AMOUNT_LIMIT:
+                return None
+        if name in _NOT_NEGATIVE and (number := parse_amount(hit.text)) is not None and number < 0:
+            return None
         return hit if len(hit.text) <= MAX_TEXT_CHARS else None
 
-    def _not_an_item(self, found: Found) -> bool:
-        """Whether a span the match touches is a brought or carried forward line."""
+    def _spans(self, found: Found) -> tuple[int, int]:
+        """The first and last span a match touches."""
         reader = self.reader
         first = bisect_right(reader.span_starts, reader.starts[found.start]) - 1
         last = bisect_right(reader.span_starts, reader.ends[found.end - 1] - 1) - 1
-        return any(NOT_AN_ITEM.search(span.text) for span in reader.spans[first : last + 1])
+        return first, last
+
+    def _row_end(self, found: Found) -> int:
+        """The norm offset where the row of the match's last span ends."""
+        last = self.row_last[self._spans(found)[1]]
+        return bisect_left(self.reader.starts, _span_end(self.reader, last))
+
+    def _not_an_item(self, found: Found) -> bool:
+        """Whether a row the match touches (every span of it) is a brought or carried forward line."""
+        first, last = self._spans(found)
+        rows = self.reader.spans[self.row_first[first] : self.row_last[last] + 1]
+        return any(NOT_AN_ITEM.search(span.text) for span in rows)
 
 
 def _field_quotes(item: object) -> tuple[str | None, str] | None:
@@ -612,16 +743,34 @@ def _span_end(reader: ReaderText, k: int) -> int:
     return reader.span_starts[k] + len(reader.spans[k].text)
 
 
+def _join_before(reader: ReaderText, k: int) -> str:
+    """The reader text's join between span k - 1 and span k ("\\n", or " | " in a row)."""
+    return reader.text[_span_end(reader, k - 1) : reader.span_starts[k]]
+
+
+def _window(reader: ReaderText, first: int, last: int) -> Window:
+    """The window of spans first..last."""
+    begin, end = reader.span_starts[first], _span_end(reader, last)
+    return Window(
+        bisect_left(reader.starts, begin),
+        bisect_left(reader.starts, end),
+        reader.text[begin:end],
+        first,
+        last,
+    )
+
+
+def _gstin(value: ExtractedValue) -> str:
+    return "".join(value.value_text.split()).upper()
+
+
 class _Costs:
     """Each span's escaped text, and the join before it, in twelfths of a token: an ASCII
     character is 3, any other 8 (``ai.client.estimate_tokens``, kept exact). O(n)."""
 
     def __init__(self, reader: ReaderText) -> None:
         self.span = [_twelfths(_escape(span.text)) for span in reader.spans]
-        self.join = [0] + [
-            _twelfths(_escape(reader.text[_span_end(reader, k - 1) : reader.span_starts[k]]))
-            for k in range(1, len(reader.spans))
-        ]
+        self.join = [0] + [_twelfths(_escape(_join_before(reader, k))) for k in range(1, len(reader.spans))]
 
 
 def _twelfths(text: str) -> int:
@@ -657,10 +806,14 @@ def _settle(
     labelled: Sequence[ExtractedValue],
     check: CheckResult,
 ) -> ExtractedValue:
-    """The lead's resolution 1 for one value (the module docstring)."""
-    if (value.record_key, value.field) not in quoted or value.label_reason == "learned_correction":
+    """The lead's resolution 1 for one value, with council 3 and 7 (the module docstring)."""
+    if (value.record_key, value.field) not in quoted:
+        return value
+    if value.label_reason == "learned_correction" and check.status == PASSED:
         return value
     if value.label == VERIFIED and check.status == PASSED and _labelled_agrees(value, labelled):
+        return value
+    if value.label_reason in _SPECIFIC_REASONS:
         return value
     return replace(value, label=NEEDS_REVIEW, label_reason="model_chosen")
 
@@ -701,6 +854,12 @@ class _Typed:
         self._used.append(value)
         return value.value_text
 
+    def gstin(self, field: str) -> str | None:
+        """Without spaces, in capitals (council 8)."""
+        value = self._fields.get(field)
+        compact = None if value is None else _gstin(value)
+        return self._use(value, compact if compact and len(compact) <= MAX_TEXT_CHARS else None)
+
     def day(self, field: str) -> date | None:
         value = self._fields.get(field)
         day = None if value is None else value.value_date or parse_date(value.value_text)
@@ -709,16 +868,13 @@ class _Typed:
     def money(self, field: str) -> Decimal | None:
         """Rounded to 0.01 first, then inside numeric(14,2) (security A7), else None."""
         value = self._fields.get(field)
-        amount = None if value is None else _amount(value)
-        if amount is not None:
-            amount = amount.quantize(_CENT, rounding=ROUND_HALF_UP)
-        return self._use(value, amount if amount is not None and abs(amount) < _AMOUNT_LIMIT else None)
+        return self._use(value, None if value is None else fit_amount(_amount(value)))
 
     def number(self, field: str) -> Decimal | None:
         """A quantity: not rounded, and inside the same range as the amounts (PROVISIONAL)."""
         value = self._fields.get(field)
         amount = None if value is None else _amount(value)
-        return self._use(value, amount if amount is not None and abs(amount) < _AMOUNT_LIMIT else None)
+        return self._use(value, amount if amount is not None and abs(amount) < AMOUNT_LIMIT else None)
 
     def label(self, check_ok: bool) -> str:
         verified = check_ok and bool(self._used) and all(value.label == VERIFIED for value in self._used)
@@ -731,9 +887,8 @@ class _Typed:
 
 
 def _amount(value: ExtractedValue) -> Decimal | None:
-    """The value's number, when it is small enough to round safely (under 10^13)."""
-    amount = value.value_number if value.value_number is not None else parse_amount(value.value_text)
-    return amount if amount is not None and abs(amount) < _AMOUNT_LIMIT * 10 else None
+    """The value's number: its value_number, else its text read as an amount."""
+    return value.value_number if value.value_number is not None else parse_amount(value.value_text)
 
 
 def _line_row(number: int, fields: Mapping[str, ExtractedValue]) -> "InvoiceLineRow":

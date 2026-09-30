@@ -25,6 +25,12 @@ OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
 # AR1: seconds to spare between the longest model step without a heartbeat (one
 # chat_json: a call and its repair retry) and the job's lease.
 _MODEL_LEASE_MARGIN_SECONDS = 60
+# Council 5 (PROVISIONAL): an invoice window's reply needs about this many tokens for each
+# line item, taking one line item per _WINDOW_LINE_CHARS characters of the window, plus
+# _WINDOW_FIELD_TOKENS for its nine fields. The window must fit MODEL_WINDOW_MAX_TOKENS.
+_WINDOW_LINE_CHARS = 50
+_WINDOW_LINE_TOKENS = 50
+_WINDOW_FIELD_TOKENS = 300
 
 # The model's context window (ML amendment 5, council fix 7). Every call keeps room
 # for its system prompt (tests keep each prompt under MAX_SYSTEM_PROMPT_TOKENS; the
@@ -197,6 +203,12 @@ class Settings:
         if window_overlap >= window_chars:
             # Without this the windows would never move forward (plan 6).
             raise SettingsError("EXTRACT_WINDOW_OVERLAP must be less than EXTRACT_WINDOW_CHARS")
+        line_items = -(-window_chars // _WINDOW_LINE_CHARS)
+        if line_items * _WINDOW_LINE_TOKENS + _WINDOW_FIELD_TOKENS > window_max_tokens:
+            raise SettingsError(
+                "EXTRACT_WINDOW_CHARS is too long for MODEL_WINDOW_MAX_TOKENS: a window needs about"
+                " 50 reply tokens for every 50 characters, plus 300"
+            )
         extract_timeout_seconds = env.number("MODEL_EXTRACT_TIMEOUT_SECONDS")
         if not (math.isfinite(extract_timeout_seconds) and extract_timeout_seconds > 0):
             raise SettingsError("MODEL_EXTRACT_TIMEOUT_SECONDS must be a number above 0")

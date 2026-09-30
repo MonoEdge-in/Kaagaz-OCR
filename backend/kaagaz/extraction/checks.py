@@ -21,12 +21,19 @@ K1, each amount check with an allowance of plus or minus 1.00 (``ALLOWANCE``):
 * invoice_date, when there is one, is a date from 2000-01-01 to tomorrow.
   ``today`` comes from the caller's clock (the worker's, in the configured
   time zone; ML 6(j)).
-* Every GSTIN value (fields gstin and buyer_gstin, in any record) passes
-  ``gstin_valid``: spaces removed and upper-cased (ASCII only), a full match of
-  ``GSTIN``, and the published mod-36 check character.
+* Every GSTIN value (fields gstin and buyer_gstin, in any record, and the
+  ``other_gstins`` the caller passes) passes ``gstin_valid``: spaces removed and
+  upper-cased (ASCII only), a full match of ``GSTIN``, and the published mod-36
+  check character. The document's seller GSTIN and buyer GSTIN must differ once
+  spaces and case are ignored (council 8); if they are the same, both are
+  flagged. PROVISIONAL: the state codes are not compared, because the place of
+  supply can differ from the buyer's state.
 
 An amount is the value's ``value_number`` when set, else ``parse_amount`` of
-its text; a date is its ``value_date``, else ``parse_date`` of its text.
+its text, rounded to 0.01 (half up); one that does not fit numeric(14,2) then,
+|x| >= 10^12, cannot be read (``fit_amount``, security A7), so no check runs on
+it (Decimal's 28 digits would lose the 3 in 10^30 + 3). A date is its
+``value_date``, else ``parse_date`` of its text.
 
 K2, the status (ML 6(g)): ``failed`` when there is any reason; otherwise
 ``passed`` when at least one of the two amount checks ran; otherwise
@@ -49,7 +56,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from kaagaz.extraction.labelled import DOCUMENT_RECORD
 from kaagaz.extraction.labelled import NOT_AN_ITEM as NOT_AN_ITEM  # K1's rule; it lives with the labels
@@ -57,6 +64,8 @@ from kaagaz.extraction.parsing import parse_amount, parse_date
 from kaagaz.extraction.values import NEEDS_REVIEW, ExtractedValue
 
 ALLOWANCE = Decimal("1.00")
+AMOUNT_LIMIT = Decimal(10) ** 12  # numeric(14,2) holds less than this (security A7)
+_CENT = Decimal("0.01")
 EARLIEST = date(2000, 1, 1)
 GSTIN = re.compile(r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]")
 REASONS = (
@@ -106,6 +115,16 @@ def gstin_valid(text: str) -> bool:
     return GSTIN.fullmatch(compact) is not None and gstin_check_char(compact[:14]) == compact[14]
 
 
+def fit_amount(amount: Decimal | None) -> Decimal | None:
+    """``amount`` rounded to 0.01 (half up), or None when it does not fit numeric(14,2)
+    (security A7). The size is checked before rounding too, so a huge number never needs
+    more digits than Decimal keeps."""
+    if amount is None or not amount.is_finite() or abs(amount) >= AMOUNT_LIMIT:
+        return None
+    rounded = amount.quantize(_CENT, rounding=ROUND_HALF_UP)
+    return rounded if abs(rounded) < AMOUNT_LIMIT else None
+
+
 def check_invoice(
     values: Sequence[ExtractedValue],
     *,
@@ -113,9 +132,11 @@ def check_invoice(
     conflicts: frozenset[str],
     truncated: bool,
     tax_components: Sequence[ExtractedValue] = (),
+    other_gstins: Sequence[ExtractedValue] = (),
 ) -> CheckResult:
     """K1 and K2 for one invoice (the module docstring). ``conflicts`` holds the document
-    fields that had conflicting values; ``tax_components`` the invoice's tax lines (ML 6(a))."""
+    fields that had conflicting values; ``tax_components`` the invoice's tax lines (ML 6(a));
+    ``other_gstins`` the document's other GSTIN values, checked but never the invoice's own."""
     document: dict[str, ExtractedValue] = {}
     for value in values:
         if value.record_key == DOCUMENT_RECORD:
@@ -159,10 +180,14 @@ def check_invoice(
     if invoice_date is not None and _present(invoice_date) and not _in_range(invoice_date, today):
         reasons.add("bad_date")
         flagged.add((DOCUMENT_RECORD, "invoice_date"))
-    for value in values:
+    for value in [*values, *other_gstins]:
         if value.field in GSTIN_FIELDS and not gstin_valid(value.value_text):
             reasons.add("bad_gstin")
             flagged.add((value.record_key, value.field))
+    seller, buyer = document.get("gstin"), document.get("buyer_gstin")
+    if seller is not None and buyer is not None and _present(seller) and _compact(seller) == _compact(buyer):
+        reasons.add("bad_gstin")
+        flagged |= {(DOCUMENT_RECORD, "gstin"), (DOCUMENT_RECORD, "buyer_gstin")}
     if conflicts:
         reasons.add("conflicting_values")
         flagged |= {(DOCUMENT_RECORD, field) for field in conflicts}
@@ -206,7 +231,12 @@ def _item_lines(values: Sequence[ExtractedValue]) -> list[tuple[str, Decimal | N
 def _amount(value: ExtractedValue | None) -> Decimal | None:
     if value is None:
         return None
-    return value.value_number if value.value_number is not None else parse_amount(value.value_text)
+    amount = value.value_number if value.value_number is not None else parse_amount(value.value_text)
+    return fit_amount(amount)
+
+
+def _compact(value: ExtractedValue) -> str:
+    return "".join(value.value_text.split()).upper()
 
 
 def _present(value: ExtractedValue | None) -> bool:
