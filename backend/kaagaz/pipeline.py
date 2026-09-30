@@ -46,8 +46,10 @@ import hashlib
 import io
 import logging
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Protocol
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from PIL import Image
 
@@ -98,11 +100,21 @@ _WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
 
 # --- what is saved ------------------------------------------------------------
 
+ROUTES = frozenset({"cells", "text_layer", "ocr", "blank"})
+# The identifiers two documents are linked by (D5).
+LINK_KINDS = frozenset(
+    {"invoice_number", "po_number", "challan_number", "survey_number"}
+    | {"khata_number", "account_number", "reference_number"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PageRecord:
     info: PageInfo
     has_image: bool
+    route: str | None = None  # one of ROUTES; None when the page was not read
+    effective_dpi: int | None = None
+    low_resolution: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +123,54 @@ class ReaderOutput:
     reader: str
     version: str
     spans: tuple[Span, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentFacts:
+    """The documents columns a run writes (D3, L2). Every save replaces all of them,
+    so a run without a model clears an older run's card."""
+
+    doc_type: str | None = None
+    languages: tuple[str, ...] = ()
+    summary: str | None = None
+    document_date: date | None = None
+    card: Mapping[str, Any] | None = None  # plain JSON
+
+
+@dataclass(frozen=True, slots=True)
+class InvoiceLineRow:
+    line_no: int
+    description: str | None
+    hsn: str | None
+    quantity: Decimal | None
+    unit: str | None
+    rate: Decimal | None
+    amount: Decimal | None
+    label: str  # "verified" or "needs_review"
+
+
+@dataclass(frozen=True, slots=True)
+class InvoiceRow:
+    invoice_number: str | None
+    invoice_date: date | None
+    seller_name: str | None
+    seller_gstin: str | None
+    buyer_name: str | None
+    buyer_gstin: str | None
+    subtotal: Decimal | None
+    tax_total: Decimal | None
+    total: Decimal | None
+    label: str
+    check_status: str  # "passed", "failed" or "not_checked"
+    check_reasons: tuple[str, ...]
+    currency: str = "INR"
+    lines: tuple[InvoiceLineRow, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LinkIdentifier:
+    kind: str  # one of LINK_KINDS
+    value: str  # whitespace removed, lower case
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +184,60 @@ class DocumentContent:
     pieces: list[Piece]
     values: list[ExtractedValue]
     reader: str  # the first reader's name, kept with every value
+    facts: DocumentFacts = field(default_factory=DocumentFacts)
+    invoice: InvoiceRow | None = None
+    links: tuple[LinkIdentifier, ...] = ()  # this document's own identifiers
+
+
+# --- runs and progress (R6, X2, X3) -------------------------------------------
+
+Step = Literal["scanning", "preparing", "reading", "understanding", "indexing"]
+
+
+@dataclass(frozen=True, slots=True)
+class Progress:
+    step: Step
+    done: int
+    total: int
+
+    def to_json(self) -> dict[str, object]:
+        return {"step": self.step, "done": self.done, "total": self.total}
+
+
+@dataclass(frozen=True, slots=True)
+class RunTotals:
+    status: str  # "ready", "failed", "needs_reader", "rejected" or "superseded"
+    error_code: str | None
+    ocr_engine: str | None  # "<name> <version>" when any page went to OCR
+    model_chat: str | None  # the model tag, when a chat call was made
+    model_vision: str | None  # when a crop was read
+    model_embed: str | None  # when embedding ran
+    pages_cells: int
+    pages_text_layer: int
+    pages_ocr: int
+    pages_blank: int
+    vision_crops: int
+    model_calls: int
+    dropped_quotes: int
+    seconds_total: float | None
+    seconds_ocr: float | None
+    quotes_returned: int = 0
+    values_verified: int = 0
+    values_needs_review: int = 0
+    config: Mapping[str, Any] = field(default_factory=dict)  # how the run was set up, plain JSON (ML10)
+
+
+@dataclass(frozen=True, slots=True)
+class FinishedRun:
+    run_id: str
+    totals: RunTotals
+    now: datetime
+
+
+class Superseded(Exception):
+    """A newer run of this document has started (the run fence), so this run's results
+    are not saved and it does not mark the document ready. Not a failure: the newer
+    run does the work."""
 
 
 # --- what the processor needs (ports) ------------------------------------------

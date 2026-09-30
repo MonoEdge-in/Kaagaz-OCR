@@ -1,25 +1,46 @@
-"""PgPipelineStore against a real PostgreSQL: replace, never append; one transaction."""
+"""PgPipelineStore against a real PostgreSQL: replace, never append; one transaction.
+
+The concurrency tests force the order with ``wait_until_blocked``, never with sleeps.
+"""
 
 import json
+import re
 import uuid
-from datetime import date
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import ModuleType
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.chunking.piece import Piece
+from kaagaz.db import documents as documents_module
+from kaagaz.db import pipeline_store
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
+from kaagaz.db.trash import lock_family
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import DocumentRecord
-from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
+from kaagaz.pipeline import (
+    DocumentContent,
+    DocumentFacts,
+    InvoiceLineRow,
+    InvoiceRow,
+    LinkIdentifier,
+    PageRecord,
+    ReaderOutput,
+)
 from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, Span
-from tests.db_support import new_customer
+from tests.db_support import insert_document, new_customer, wait_until_blocked
+from tests.test_api_review import _named_database
 
 pytestmark = pytest.mark.db
 
@@ -32,6 +53,18 @@ def new_document(db: Database, customer_id: str) -> str:
         DocumentRecord(customer_id, document_id, uuid.uuid4().hex + uuid.uuid4().hex, 10, "pdf")
     )
     return document_id
+
+
+def invoice(total: str) -> InvoiceRow:
+    """An invoice with two lines; ``total`` as the document shows it ("1,180.00")."""
+    cloth = InvoiceLineRow(
+        1, "Cotton cloth", "5208", Decimal(10), "m", Decimal(100), Decimal(1000), "verified"
+    )
+    freight = InvoiceLineRow(2, None, None, None, None, None, Decimal(180), "needs_review")
+    parties = ("Sharma Traders", "27AAPFU0939F1ZV", "Patil Stores", None)
+    amounts = (Decimal(1000), Decimal(180), Decimal(total.replace(",", "")))
+    checks = ("needs_review", "failed", ("total_mismatch",))
+    return InvoiceRow("INV 7", date(2026, 8, 12), *parties, *amounts, *checks, lines=(cloth, freight))
 
 
 def content(
@@ -82,7 +115,16 @@ def content(
             ),
         ],
         reader="pdfplumber",
+        invoice=invoice(total),
     )
+
+
+def numbered(customer_id: str, document_id: str, number: str = "INV 7") -> DocumentContent:
+    """``content`` plus an invoice number value, with that number as its link identifier."""
+    base = content(customer_id, document_id)
+    value = ExtractedValue("document", "invoice_number", number, number, BOX)
+    link = LinkIdentifier("invoice_number", number.replace(" ", "").lower())
+    return replace(base, values=[*base.values, value], links=(link,))
 
 
 def rows(db: Database, customer_id: str, sql: str, document_id: str) -> list[dict[str, Any]]:
@@ -95,7 +137,16 @@ COUNTS = {
     "reader_outputs": text("SELECT count(*) FROM reader_outputs WHERE document_id = :d"),
     "pieces": text("SELECT count(*) FROM pieces WHERE document_id = :d"),
     "extracted_values": text("SELECT count(*) FROM extracted_values WHERE document_id = :d"),
+    "invoices": text("SELECT count(*) FROM invoices WHERE document_id = :d"),
+    "invoice_lines": text("SELECT count(*) FROM invoice_lines WHERE document_id = :d"),
+    "document_links": text(
+        "SELECT count(*) FROM document_links WHERE document_id = :d OR linked_document_id = :d"
+    ),
+    "processing_runs": text("SELECT count(*) FROM processing_runs WHERE document_id = :d"),
 }
+EMPTY = dict.fromkeys(COUNTS, 0)
+FULL = {**EMPTY, "pages": 2, "reader_outputs": 2, "pieces": 2, "extracted_values": 2, "invoices": 1}
+FULL["invoice_lines"] = 2
 
 
 def counts(db: Database, customer_id: str, document_id: str) -> dict[str, int]:
@@ -109,7 +160,7 @@ def test_save_writes_every_table(db: Database) -> None:
     doc = new_document(db, customer)
     PgPipelineStore(db).save(content(customer, doc))
 
-    assert counts(db, customer, doc) == {"pages": 2, "reader_outputs": 2, "pieces": 2, "extracted_values": 2}
+    assert counts(db, customer, doc) == FULL
     pages = rows(
         db,
         customer,
@@ -201,7 +252,7 @@ def test_saving_again_replaces_and_never_appends(db: Database) -> None:
     store.save(content(customer, doc))
     store.save(content(customer, doc, total="2,000.00"))
 
-    assert counts(db, customer, doc) == {"pages": 2, "reader_outputs": 2, "pieces": 2, "extracted_values": 2}
+    assert counts(db, customer, doc) == FULL
     texts = rows(db, customer, "SELECT text FROM pieces WHERE document_id = :d ORDER BY seq", doc)
     assert [t["text"] for t in texts] == ["Sharma Traders", "Total: 2,000.00"]
 
@@ -212,10 +263,10 @@ def test_a_failing_save_keeps_the_earlier_rows(db: Database) -> None:
     store = PgPipelineStore(db)
     store.save(content(customer, doc))
 
-    with pytest.raises(IntegrityError):  # "Bad Field" breaks the field name check, last insert
+    with pytest.raises(IntegrityError):  # "Bad Field" breaks the field name check, after most inserts
         store.save(content(customer, doc, total="9.00", field="Bad Field"))
 
-    assert counts(db, customer, doc) == {"pages": 2, "reader_outputs": 2, "pieces": 2, "extracted_values": 2}
+    assert counts(db, customer, doc) == FULL
     texts = rows(db, customer, "SELECT text FROM pieces WHERE document_id = :d ORDER BY seq", doc)
     assert texts[1]["text"] == "Total: 1,180.00"
 
@@ -227,7 +278,7 @@ def test_clear_removes_everything_for_the_document_only(db: Database) -> None:
     store.save(content(customer, doc))
     store.save(content(customer, other))
     store.clear(customer, doc)
-    assert counts(db, customer, doc) == {"pages": 0, "reader_outputs": 0, "pieces": 0, "extracted_values": 0}
+    assert counts(db, customer, doc) == EMPTY
     assert counts(db, customer, other)["pieces"] == 2
 
 
@@ -238,7 +289,7 @@ def test_saving_only_pages_is_allowed(db: Database) -> None:
         customer, doc, [PageRecord(PageInfo(1, 800.0, 600.0, "px"), True)], [], [], [], ""
     )
     PgPipelineStore(db).save(empty)
-    assert counts(db, customer, doc) == {"pages": 1, "reader_outputs": 0, "pieces": 0, "extracted_values": 0}
+    assert counts(db, customer, doc) == {**EMPTY, "pages": 1}
 
 
 def test_load_learned_returns_this_customers_corrections_for_the_fields_asked(db: Database) -> None:
@@ -268,3 +319,361 @@ def test_load_learned_returns_this_customers_corrections_for_the_fields_asked(db
         LearnedCorrection("total_amount", "1,13O", "1,130"),
     ]
     assert store.load_learned(customer, set()) == []
+
+
+# --- PRD 2 (WP2.1): routes, the card, invoices and links ----------------------
+
+FACTS = DocumentFacts("invoice", ("en", "hi"), "A bill from Sharma.", date(2026, 8, 12), {"title": "Bill"})
+FACT_COLUMNS = "SELECT doc_type, languages, summary, document_date, card FROM documents WHERE id = :d"
+NO_FACTS: list[dict[str, Any]] = [
+    {"doc_type": None, "languages": [], "summary": None, "document_date": None, "card": None}
+]
+LINKS = (
+    "SELECT document_id::text, linked_document_id::text, identifier_kind, identifier_value"
+    " FROM document_links WHERE document_id = :d OR linked_document_id = :d"
+)
+
+
+def links(db: Database, customer_id: str, document_id: str) -> set[tuple[Any, ...]]:
+    """Every link row with ``document_id`` at either end, as ``customer_id`` sees them."""
+    return {tuple(row.values()) for row in rows(db, customer_id, LINKS, document_id)}
+
+
+def both_ways(first: str, second: str) -> set[tuple[Any, ...]]:
+    return {(first, second, "invoice_number", "inv7"), (second, first, "invoice_number", "inv7")}
+
+
+def linked_pair(db: Database) -> tuple[str, str, str]:
+    """A new customer with two documents that share an invoice number, both saved (so linked)."""
+    customer, _ = new_customer(db)
+    first, second = new_document(db, customer), new_document(db, customer)
+    for doc in (first, second):
+        PgPipelineStore(db).save(numbered(customer, doc))
+    return customer, first, second
+
+
+def test_save_writes_routes_dpi_label_spots_context_and_latin(db: Database) -> None:
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    base = content(customer, doc)
+    page = replace(base.pages[0], route="ocr", effective_dpi=150, low_resolution=True)
+    piece = replace(base.pieces[0], context_header="Invoice | 2026-08-12", text_latin="sharma")
+    value = replace(base.values[0], label_location=BoxLocation(1, 0.1, 0.38, 0.3, 0.4))
+    PgPipelineStore(db).save(
+        replace(
+            base, pages=[page, base.pages[1]], pieces=[piece, base.pieces[1]], values=[value, base.values[1]]
+        )
+    )
+
+    pages = "SELECT route, effective_dpi, low_resolution FROM pages WHERE document_id = :d ORDER BY page_no"
+    assert rows(db, customer, pages, doc) == [
+        {"route": "ocr", "effective_dpi": 150, "low_resolution": True},
+        {"route": None, "effective_dpi": None, "low_resolution": False},
+    ]
+    pieces = "SELECT context_header, text_latin FROM pieces WHERE document_id = :d ORDER BY seq"
+    assert rows(db, customer, pieces, doc) == [
+        {"context_header": "Invoice | 2026-08-12", "text_latin": "sharma"},
+        {"context_header": "", "text_latin": None},
+    ]
+    spots = (
+        "SELECT label_page_no, label_region FROM extracted_values WHERE document_id = :d ORDER BY record_key"
+    )
+    assert rows(db, customer, spots, doc) == [
+        {"label_page_no": 1, "label_region": {"kind": "box", "page": 1, "box": [0.1, 0.38, 0.3, 0.4]}},
+        {"label_page_no": None, "label_region": None},
+    ]
+
+
+def test_save_writes_the_card_columns_and_clears_them_on_the_next_save(db: Database) -> None:
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    store = PgPipelineStore(db)
+    store.save(replace(content(customer, doc), facts=FACTS))
+
+    assert rows(db, customer, FACT_COLUMNS, doc) == [
+        {
+            "doc_type": "invoice",
+            "languages": ["en", "hi"],
+            "summary": "A bill from Sharma.",
+            "document_date": date(2026, 8, 12),
+            "card": {"title": "Bill"},
+        }
+    ]
+    store.save(content(customer, doc))  # a run with the model off has no card
+    assert rows(db, customer, FACT_COLUMNS, doc) == NO_FACTS
+
+
+def test_save_writes_the_invoice_and_its_lines_and_replaces_them(db: Database) -> None:
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    store = PgPipelineStore(db)
+    store.save(content(customer, doc))
+    store.save(content(customer, doc, total="1,190.00"))
+
+    assert counts(db, customer, doc) == FULL
+    [row] = rows(
+        db,
+        customer,
+        "SELECT id, invoice_number, invoice_date, seller_name, seller_gstin, buyer_name, buyer_gstin,"
+        " subtotal, tax_total, total, currency, label, check_status, check_reasons"
+        " FROM invoices WHERE document_id = :d",
+        doc,
+    )
+    invoice_id = row.pop("id")
+    assert row == {
+        "invoice_number": "INV 7",
+        "invoice_date": date(2026, 8, 12),
+        "seller_name": "Sharma Traders",
+        "seller_gstin": "27AAPFU0939F1ZV",
+        "buyer_name": "Patil Stores",
+        "buyer_gstin": None,
+        "subtotal": Decimal("1000.00"),
+        "tax_total": Decimal("180.00"),
+        "total": Decimal("1190.00"),
+        "currency": "INR",
+        "label": "needs_review",
+        "check_status": "failed",
+        "check_reasons": ["total_mismatch"],
+    }
+    lines = rows(
+        db,
+        customer,
+        "SELECT invoice_id, line_no, description, hsn, quantity, unit, rate, amount, label"
+        " FROM invoice_lines WHERE document_id = :d ORDER BY line_no",
+        doc,
+    )
+    assert [tuple(line.values()) for line in lines] == [
+        (invoice_id, 1, "Cotton cloth", "5208", Decimal(10), "m", Decimal(100), Decimal(1000), "verified"),
+        (invoice_id, 2, None, None, None, None, None, Decimal(180), "needs_review"),
+    ]
+
+
+@pytest.mark.parametrize("second_first", [False, True])
+def test_links_are_written_both_ways_whichever_is_saved_first_and_stay_when_ready(
+    db: Database, second_first: bool
+) -> None:
+    """AR5 (PROVISIONAL): a document still being read is linked too, so two read at once both link."""
+    customer, _ = new_customer(db)
+    first, second = new_document(db, customer), new_document(db, customer)
+    store = PgPipelineStore(db)
+    for doc in (second, first) if second_first else (first, second):
+        store.save(numbered(customer, doc))
+    for doc in (first, second):
+        PgDocuments(db).mark_ready(customer, doc, 2)
+
+    assert links(db, customer, first) == both_ways(first, second)
+    store.save(numbered(customer, first))  # replaced, never doubled
+    assert links(db, customer, first) == both_ways(first, second)
+
+
+def test_a_save_with_no_links_removes_links_both_ways(db: Database) -> None:
+    customer, first, second = linked_pair(db)
+    PgPipelineStore(db).save(content(customer, second))
+    assert links(db, customer, first) == set()
+
+
+def test_reverse_link_goes_when_the_target_changes_its_number(db: Database) -> None:
+    customer, first, second = linked_pair(db)
+    PgPipelineStore(db).save(numbered(customer, second, "INV 8"))
+    assert links(db, customer, first) == set()
+    assert links(db, customer, second) == set()
+
+
+def test_no_link_to_a_trashed_or_same_family_document(db: Database) -> None:
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        trashed = insert_document(conn, customer, deleted_at=datetime(2026, 9, 29, tzinfo=UTC))
+        older = insert_document(conn, customer)
+        newer = insert_document(conn, customer, family_id=older, version_no=2, is_current=False)
+    store = PgPipelineStore(db)
+    for doc in (trashed, older, newer):
+        store.save(numbered(customer, doc))
+
+    assert links(db, customer, older) == set()
+    assert links(db, customer, trashed) == set()
+
+
+def test_clear_removes_card_invoice_and_links(db: Database) -> None:
+    customer, first, second = linked_pair(db)
+    store = PgPipelineStore(db)
+    store.save(replace(numbered(customer, first), facts=FACTS))
+    store.clear(customer, first)
+
+    assert counts(db, customer, first) == EMPTY
+    assert rows(db, customer, FACT_COLUMNS, first) == NO_FACTS
+    assert links(db, customer, second) == set()
+
+
+def new_session() -> str:
+    """A session name no other test, and no other database on the server, uses."""
+    return f"kaagaz-{uuid.uuid4().hex[:16]}"
+
+
+def test_save_waits_for_the_family_lock(db: Database) -> None:
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    session = new_session()
+    named = _named_database(session)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with db.customer(customer) as conn:
+                lock_family(conn, customer, doc)
+                saving = pool.submit(PgPipelineStore(named).save, content(customer, doc))
+                wait_until_blocked(db, application_name=session)
+                assert counts(db, customer, doc) == EMPTY
+            saving.result(timeout=10)
+    finally:
+        named.engine.dispose()
+    assert counts(db, customer, doc) == FULL
+
+
+def test_links_two_saves_complete_without_deadlock(db: Database) -> None:
+    """Both saves wait on the customer's link lock, then run one after the other. The
+    key is built from the canonical id, so a customer id in capitals takes the same lock."""
+    customer, first, second = linked_pair(db)
+    sessions = [new_session(), new_session()]
+    named = [_named_database(session) for session in sessions]
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with db.customer(customer) as conn:
+                lock = "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.document_links:'"
+                lock += " || CAST(:c AS uuid)::text, 0))"
+                conn.execute(text(lock), {"c": customer})
+                saving = [
+                    pool.submit(PgPipelineStore(database).save, numbered(who, doc))
+                    for database, who, doc in zip(
+                        named, (customer.upper(), customer), (first, second), strict=True
+                    )
+                ]
+                for session in sessions:
+                    wait_until_blocked(db, application_name=session)
+            for future in saving:
+                future.result(timeout=10)
+    finally:
+        for database in named:
+            database.engine.dispose()
+    assert links(db, customer, first) == both_ways(first, second)
+
+
+def test_save_skips_a_target_deleted_before_its_lock(db: Database) -> None:
+    customer, _ = new_customer(db)
+    target, doc = new_document(db, customer), new_document(db, customer)
+    PgPipelineStore(db).save(numbered(customer, target))
+    session = new_session()
+    named = _named_database(session)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with db.customer(customer) as conn:
+                delete = text("DELETE FROM documents WHERE customer_id = :c AND id = :d")
+                conn.execute(delete, {"c": customer, "d": target})
+                saving = pool.submit(PgPipelineStore(named).save, numbered(customer, doc))
+                wait_until_blocked(db, application_name=session)  # on the target's lock
+            saving.result(timeout=10)
+    finally:
+        named.engine.dispose()
+    assert links(db, customer, doc) == set()
+    assert counts(db, customer, doc)["pieces"] == 2
+
+
+@pytest.mark.parametrize("step", ["save", "clear"])
+def test_links_wait_for_an_old_partner_being_deleted_before_any_link_is_touched(
+    db: Database, step: str
+) -> None:
+    """A delete forever or a purge of B locks B FOR UPDATE, then its cascade deletes
+    B's link rows. A's save or clear locks B FOR KEY SHARE before it touches a link
+    row, so it waits for that delete instead of holding rows the cascade needs."""
+    customer, first, second = linked_pair(db)
+    session = new_session()
+    named = _named_database(session)
+    store = PgPipelineStore(named)
+    steps = {
+        "save": lambda: store.save(content(customer, first)),
+        "clear": lambda: store.clear(customer, first),
+    }
+    ids = {"c": customer, "d": second}
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with db.customer(customer) as conn:
+                conn.execute(
+                    text("SELECT id FROM documents WHERE customer_id = :c AND id = :d FOR UPDATE"), ids
+                )
+                replacing = pool.submit(steps[step])
+                wait_until_blocked(db, application_name=session)
+                conn.execute(text("DELETE FROM documents WHERE customer_id = :c AND id = :d"), ids)
+            replacing.result(timeout=10)
+    finally:
+        named.engine.dispose()
+    assert links(db, customer, first) == set()
+
+
+def fail_first(
+    monkeypatch: pytest.MonkeyPatch, module: ModuleType, times: int, state: str = "40P01"
+) -> list[str]:
+    """Make ``module.lock_family`` fail its first ``times`` calls with a real error from
+    the server with SQLSTATE ``state`` (40P01: PostgreSQL broke a deadlock). Returns the calls."""
+    assert re.fullmatch(r"[0-9A-Z]{5}", state)
+    raising = text(f"DO $$ BEGIN RAISE EXCEPTION 'failing' USING ERRCODE = '{state}'; END $$")
+    calls: list[str] = []
+    real: Callable[[Connection, str, str], str | None] = module.lock_family
+
+    def failing(conn: Connection, customer_id: str, document_id: str) -> str | None:
+        calls.append(document_id)
+        if len(calls) <= times:
+            conn.execute(raising)
+        return real(conn, customer_id, document_id)
+
+    monkeypatch.setattr(module, "lock_family", failing)
+    return calls
+
+
+@pytest.mark.parametrize("step", ["save", "clear", "mark_ready"])
+def test_a_deadlock_is_retried_and_the_step_succeeds(
+    db: Database, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    store = PgPipelineStore(db)
+    store.save(content(customer, doc))
+    calls = fail_first(monkeypatch, documents_module if step == "mark_ready" else pipeline_store, 1)
+    steps = {
+        "save": lambda: store.save(content(customer, doc, total="2,000.00")),
+        "clear": lambda: store.clear(customer, doc),
+        "mark_ready": lambda: PgDocuments(db).mark_ready(customer, doc, 2),
+    }
+    steps[step]()
+
+    assert len(calls) == 2
+    totals = rows(db, customer, "SELECT total FROM invoices WHERE document_id = :d", doc)
+    status = rows(db, customer, "SELECT status FROM documents WHERE id = :d", doc)[0]["status"]
+    assert (totals, status) == {
+        "save": ([{"total": Decimal(2000)}], "received"),
+        "clear": ([], "received"),
+        "mark_ready": ([{"total": Decimal(1180)}], "ready"),
+    }[step]
+
+
+def test_a_deadlock_on_every_try_is_an_outage_after_four_tries(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    calls = fail_first(monkeypatch, pipeline_store, 99)
+
+    with pytest.raises(BackendUnavailable):
+        PgPipelineStore(db).save(content(customer, doc))
+
+    assert len(calls) == 4  # the first try and 3 retries (AR7)
+    assert counts(db, customer, doc) == EMPTY
+
+
+def test_only_a_deadlock_is_retried(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """55P03 (a lock that could not be taken) is an outage at once: one try, no retry."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    calls = fail_first(monkeypatch, pipeline_store, 99, state="55P03")
+
+    with pytest.raises(BackendUnavailable):
+        PgPipelineStore(db).save(content(customer, doc))
+
+    assert len(calls) == 1
+    assert counts(db, customer, doc) == EMPTY

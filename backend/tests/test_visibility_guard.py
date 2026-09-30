@@ -16,11 +16,11 @@ from types import ModuleType
 from sqlalchemy import TextClause
 
 from kaagaz.answering import fixed_queries
-from kaagaz.db import admin, listing, review
+from kaagaz.db import admin, listing, pipeline_store, review
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid
 
-MODULES: tuple[ModuleType, ...] = (hybrid, fixed_queries, review, admin, listing)
+MODULES: tuple[ModuleType, ...] = (hybrid, fixed_queries, review, admin, listing, pipeline_store)
 
 # (module, constant name) -> the fragment it must carry.
 FILTERED: dict[tuple[ModuleType, str], str] = {
@@ -48,6 +48,11 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # or only Trash (trashed=true).
     (listing, "_LIST"): LISTED,
     (listing, "_TRASH_LIST"): TRASHED_LISTED,
+    # Links (PRD 2 D5): any live document of another family, still reading or not, so
+    # two documents read at once still link (AR5, PROVISIONAL). PRD 3's reader of the
+    # links filters both ends with LIVE_CURRENT.
+    (pipeline_store, "_LINK_TARGETS"): LIVE,
+    (pipeline_store, "_LIVE_TARGETS"): LIVE,
 }
 
 # Statements that count every version on purpose, and why.
@@ -63,6 +68,10 @@ BY_ID: dict[tuple[ModuleType, str], str] = {
         "_SELECT",
     ): "get_document: the detail, the file and the pages open any version, in Trash or not",
     (listing, "_VERSIONS"): "family_versions: the detail lists every version of its family, in Trash or not",
+    (
+        pipeline_store,
+        "_LOCK_LINKED",
+    ): "locks the link targets and old partners by id in one order; filters nothing",
 }
 
 _JOINS_DOCUMENTS = re.compile(r"\bdocuments d\b")

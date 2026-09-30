@@ -30,6 +30,24 @@ FROM_0001 = {
     "audit_log",
 }
 FROM_0002 = {"folders", "tags", "document_tags"}
+# (SELECT, INSERT, UPDATE, DELETE) for the app role, the least each needs: a save
+# deletes and inserts invoices and links, never updates them; lines are only
+# inserted (the invoice's delete cascades to them); runs are never deleted, and
+# only their outcome columns may be updated (RUN_OUTCOME below).
+FROM_0004 = {
+    "invoices": (True, True, False, True),
+    "invoice_lines": (True, True, False, False),
+    "document_links": (True, True, False, True),
+    "processing_runs": (True, True, False, False),
+}
+RUN_OUTCOME = {
+    "status", "error_code", "ocr_engine", "model_chat", "model_vision", "model_embed", "config",
+    "pages_cells", "pages_text_layer", "pages_ocr", "pages_blank", "vision_crops", "model_calls",
+    "dropped_quotes", "quotes_returned", "values_verified", "values_needs_review", "seconds_total",
+    "seconds_ocr", "finished_at",
+}  # fmt: skip
+# The only tables without customer_id: the customers themselves, and alembic's own.
+NO_CUSTOMER_ID = {"customers", "alembic_version"}
 
 _CUSTOMER_TABLES = text(
     "SELECT c.relname, c.relrowsecurity, pg_get_userbyid(c.relowner)"
@@ -47,7 +65,7 @@ def _customer_tables(db: Database) -> dict[str, tuple[bool, str]]:
 
 def test_every_customer_table_has_row_level_security_and_the_customer_only_policy(db: Database) -> None:
     tables = _customer_tables(db)
-    assert set(tables) >= FROM_0001 | FROM_0002
+    assert set(tables) >= FROM_0001 | FROM_0002 | set(FROM_0004)
 
     with db.system() as conn:
         policies = {
@@ -93,3 +111,54 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
+    for table, expected in FROM_0004.items():
+        assert granted[table] == expected, table
+
+
+def test_the_app_may_update_only_the_outcome_columns_of_a_run(db: Database) -> None:
+    """Never its customer, document, start time or id."""
+    with db.system() as conn:
+        columns = conn.execute(
+            text(
+                "SELECT attname::text, has_column_privilege(:r, attrelid, attname, 'UPDATE')"
+                " FROM pg_attribute WHERE attrelid = 'processing_runs'::regclass"
+                " AND attnum > 0 AND NOT attisdropped"
+            ),
+            {"r": APP_ROLE},
+        ).all()
+    assert {name for name, may_update in columns if may_update} == RUN_OUTCOME
+
+
+_FOREIGN_KEYS = text(
+    "SELECT con.conname, con.conrelid::regclass::text, con.confrelid::regclass::text,"
+    " ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k (num, pos)"
+    "  JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.num ORDER BY k.pos),"
+    " ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k (num, pos)"
+    "  JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.num ORDER BY k.pos)"
+    " FROM pg_constraint con WHERE con.contype = 'f' AND con.connamespace = 'public'::regnamespace"
+)
+
+
+def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_sides(db: Database) -> None:
+    """A key on the id alone would let a row hang under another customer's parent: the
+    key checks run without row level security."""
+    tables = _customer_tables(db)
+    with db.system() as conn:
+        keys = [tuple(row) for row in conn.execute(_FOREIGN_KEYS)]
+    between = [key for key in keys if key[1] in tables and key[2] in tables]
+
+    assert {key[1] for key in between} >= set(FROM_0004)
+    for name, _table, _parent, columns, parent_columns in between:
+        assert ("customer_id", "customer_id") in zip(columns, parent_columns, strict=True), name
+
+
+def test_only_the_listed_tables_have_no_customer_id(db: Database) -> None:
+    with db.system() as conn:
+        every = conn.execute(
+            text(
+                "SELECT relname FROM pg_class"
+                " WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p')"
+            )
+        )
+        names = {str(row[0]) for row in every}
+    assert names - set(_customer_tables(db)) == NO_CUSTOMER_ID

@@ -10,12 +10,9 @@ from sqlalchemy.exc import IntegrityError
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from tests.db_support import new_customer
-from tests.test_pipeline_store_db import content, counts, new_document
+from tests.test_pipeline_store_db import EMPTY, FULL, content, counts, new_document
 
 pytestmark = pytest.mark.db
-
-FULL = {"pages": 2, "reader_outputs": 2, "pieces": 2, "extracted_values": 2}
-EMPTY = {"pages": 0, "reader_outputs": 0, "pieces": 0, "extracted_values": 0}
 
 
 def test_saving_for_another_customers_document_is_refused_and_changes_nothing(db: Database) -> None:
