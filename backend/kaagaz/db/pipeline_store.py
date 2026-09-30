@@ -19,7 +19,10 @@ Lock order (plan 4.3), the same in ``save`` and ``clear``:
 2. the customer's link lock (a transaction advisory lock), so two saves of one
    customer make their links one after the other, the second seeing the first's
    committed values;
-3. FOR KEY SHARE on the link targets, by id: a target deleted meanwhile is left
+3. FOR KEY SHARE, by id in one sorted order, on the link targets and on the
+   documents already linked to this one, before any link row is touched: a delete
+   forever or purge of an old partner (FOR UPDATE, then a cascade over its link
+   rows) is waited for, never deadlocked with; a target deleted meanwhile is left
    out, and a locked one can't be deleted before this commits;
 4. one DELETE of this document's links both ways (AR6), then the new links, one
    row each way, sorted, ON CONFLICT DO NOTHING.
@@ -125,9 +128,17 @@ _LINK_TARGETS = text(
     r" AND lower(regexp_replace(v.value_text, '\s', '', 'g')) = ANY(CAST(:values AS text[]))"
     " AND d.id <> :d AND d.family_id <> :f AND d.deleted_at IS NULL"
 )
-_LOCK_TARGETS = text(
+_LINK_PARTNERS = text(
+    "SELECT linked_document_id FROM document_links WHERE customer_id = :c AND document_id = :d"
+)
+# Filters nothing on purpose: an old partner in Trash is locked too (see the lock order above).
+_LOCK_LINKED = text(
     "SELECT d.id FROM documents d WHERE d.customer_id = :c AND d.id = ANY(CAST(:ids AS uuid[]))"
-    " AND d.id <> :d AND d.family_id <> :f AND d.deleted_at IS NULL ORDER BY d.id FOR KEY SHARE"
+    " ORDER BY d.id FOR KEY SHARE"
+)
+_LIVE_TARGETS = text(
+    "SELECT d.id FROM documents d WHERE d.customer_id = :c AND d.id = ANY(CAST(:ids AS uuid[]))"
+    " AND d.id <> :d AND d.family_id <> :f AND d.deleted_at IS NULL"
 )
 _DELETE_LINKS = text(
     "DELETE FROM document_links WHERE customer_id = :c AND (document_id = :d OR linked_document_id = :d)"
@@ -273,9 +284,18 @@ def _replace_links(
     conn: Connection, ids: dict[str, str], family_id: str | None, identifiers: Sequence[LinkIdentifier]
 ) -> None:
     """Replace this document's links, both ways, under the customer's link lock.
-    No family (no such document for this customer) finds no targets."""
+    Every document a link goes to, or went to, is locked first (the lock order
+    above). No family (no such document for this customer) finds no targets."""
     conn.execute(_LINK_LOCK, {"key": f"kaagaz.document_links:{ids['c']}"})
     targets = _link_targets(conn, ids, family_id, identifiers) if family_id and identifiers else []
+    partners: Sequence[object] = conn.execute(_LINK_PARTNERS, ids).scalars().all()
+    linked = sorted({target for target, _, _ in targets} | {str(partner) for partner in partners})
+    if linked:
+        conn.execute(_LOCK_LINKED, {**ids, "ids": linked})
+    if targets:  # still live once locked
+        params = {**ids, "f": family_id, "ids": sorted({target for target, _, _ in targets})}
+        live: Sequence[object] = conn.execute(_LIVE_TARGETS, params).scalars().all()
+        targets = [match for match in targets if match[0] in {str(target) for target in live}]
     conn.execute(_DELETE_LINKS, ids)
     document_id = ids["d"]
     rows = sorted(
@@ -296,22 +316,15 @@ def _link_targets(
     conn: Connection, ids: dict[str, str], family_id: str, identifiers: Sequence[LinkIdentifier]
 ) -> list[tuple[str, str, str]]:
     """(target document, kind, value) for each of this customer's live documents of
-    another family with a value equal to one of ``identifiers``, each target locked
-    FOR KEY SHARE. O(V) for the V values of the link fields, plus O(t log t) for t targets."""
+    another family with a value equal to one of ``identifiers``. O(V) for the V
+    values of the link fields."""
     wanted = {(item.kind, item.value) for item in identifiers}
-    params = {**ids, "f": family_id}
     lookup = {"kinds": sorted({kind for kind, _ in wanted}), "values": sorted({value for _, value in wanted})}
-    found = [
+    return [
         (str(target), str(kind), str(value))
-        for target, kind, value in conn.execute(_LINK_TARGETS, {**params, **lookup})
+        for target, kind, value in conn.execute(_LINK_TARGETS, {**ids, "f": family_id, **lookup})
         if (kind, value) in wanted
     ]
-    if not found:
-        return []
-    targets = sorted({target for target, _, _ in found})
-    rows: Sequence[object] = conn.execute(_LOCK_TARGETS, {**params, "ids": targets}).scalars().all()
-    locked = {str(target) for target in rows}
-    return [match for match in found if match[0] in locked]
 
 
 def _value_row(ids: dict[str, str], value: ExtractedValue, reader: str) -> dict[str, Any]:
