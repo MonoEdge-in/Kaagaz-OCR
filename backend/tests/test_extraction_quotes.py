@@ -19,9 +19,11 @@ from kaagaz.extraction.quotes import (
     ReaderText,
     find_labelled,
     find_quote,
+    located_value,
     normalise_quote,
     reader_text,
 )
+from kaagaz.extraction.values import ExtractedValue, QuoteMatch
 from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span
 
 NBSP = "\N{NO-BREAK SPACE}"
@@ -173,6 +175,39 @@ class FindQuoteTest(unittest.TestCase):
         found = find_quote(reader, "1,180.00")
         assert found is not None
         self.assertEqual(found.location, CellLocation(1, 4, 2))
+
+    def test_found_says_how_many_spans_and_pages_it_covers_and_whether_whole(self) -> None:
+        """Council fix 5: the labeller must know when a quote is not one whole span."""
+        reader = reader_text([cell("Patil", 2, 1), cell("500 kg", 2, 2), line("Total", 3), line("1,000", 4)])
+        cases = {
+            "Patil": (1, 1, True),
+            "500": (1, 1, False),
+            "Patil | 500 kg": (2, 1, False),
+            "Total 1,000": (2, 2, False),
+        }
+        for quote, expected in cases.items():
+            with self.subTest(quote=quote):
+                found = find_quote(reader, quote)
+                assert found is not None
+                self.assertEqual((found.spans, found.pages, found.whole), expected)
+
+    def test_a_located_value_carries_the_readers_text_spot_and_match(self) -> None:
+        reader = reader_text([line("Grand Total: 1,180.00"), line("Paid 1,180.00", y=0.2)])
+        label, found = find_labelled(reader, "Grand Total:", "1,180.00")
+        assert label is not None and found is not None
+        value = located_value(found, record_key="document", field="total_amount", label=label)
+        self.assertEqual(
+            value,
+            ExtractedValue(
+                "document",
+                "total_amount",
+                "1,180.00",
+                "1,180.00",
+                found.location,
+                label_location=label.location,
+                quote=QuoteMatch(spans=1, pages=1, whole=False),
+            ),
+        )
 
     def test_the_location_is_the_union_box_on_the_first_matched_page(self) -> None:
         reader = reader_text(

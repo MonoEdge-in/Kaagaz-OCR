@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from kaagaz.extraction.labels import comparable, label_quoted, label_values, overlap
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
+from kaagaz.extraction.quotes import find_quote, located_value, reader_text
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 
@@ -204,6 +205,37 @@ class LabelQuotedTest(unittest.TestCase):
         cell = ExtractedValue("line:1", "amount", "1,000.00", "1,000.00", CellLocation(1, 4, 6))
         (labelled,) = label_quoted([cell], None)
         self.assertEqual(reason(labelled), ("verified", "direct_cell", None))
+
+    def test_a_quote_across_two_cells_is_not_direct_cell(self) -> None:
+        """Council fix 5: only one whole cell is a direct read of the value."""
+        reader = reader_text(
+            [Span("Patil", "Patil", CellLocation(1, 2, 1)), Span("500 kg", "500 kg", CellLocation(1, 2, 2))]
+        )
+        values = []
+        for quote, field in (("Patil | 500 kg", "description"), ("500", "quantity"), ("Patil", "buyer_name")):
+            found = find_quote(reader, quote)
+            assert found is not None
+            values.append(located_value(found, record_key="line:1", field=field))
+        self.assertEqual(
+            [reason(value) for value in label_quoted(values, None)],
+            [
+                ("needs_review", "model_chosen", None),  # across two cells
+                ("needs_review", "model_chosen", None),  # part of a cell
+                ("verified", "direct_cell", None),  # one whole cell
+            ],
+        )
+
+    def test_a_quote_across_two_pages_is_needs_review(self) -> None:
+        """Council fix 5: the spot is only page 1's part, so no reading of it can confirm it."""
+        spans = [
+            Span("Rs.", "Rs.", BoxLocation(1, 0.8, 0.90, 0.9, 0.92)),
+            Span("1,000.00", "1,000.00", BoxLocation(2, 0.1, 0.05, 0.9, 0.07)),
+        ]
+        found = find_quote(reader_text(spans), "Rs. 1,000.00")
+        assert found is not None
+        value = located_value(found, record_key="line:1", field="amount")
+        (labelled,) = label_quoted([value], spans, {found.location: "Rs. 1,000.00"})
+        self.assertEqual(reason(labelled), ("needs_review", "model_chosen", None))
 
     def test_a_whole_token_run_inside_the_second_line_agrees_and_keeps_the_matched_part(self) -> None:
         (labelled,) = label_quoted(

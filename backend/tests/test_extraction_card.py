@@ -8,7 +8,7 @@ reader's text at that spot. Expected values are literals written by hand.
 import hashlib
 import json
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any
 
@@ -29,7 +29,7 @@ from kaagaz.extraction.card import (
 )
 from kaagaz.extraction.labels import label_quoted
 from kaagaz.extraction.quotes import reader_text
-from kaagaz.extraction.values import ExtractedValue
+from kaagaz.extraction.values import ExtractedValue, QuoteMatch
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 from tests.fakes import FakeChat
 
@@ -411,7 +411,7 @@ class ReadCardTest(unittest.TestCase):
         )
         spot = INVOICE[5].location
         self.assertEqual(
-            result.values,
+            [replace(value, quote=None) for value in result.values],
             [
                 ExtractedValue("card", "party_name", "Sharma Traders", "Sharma Traders", INVOICE[0].location),
                 ExtractedValue("card", "buyer_name", "पाटील ट्रेडर्स", "पाटील ट्रेडर्स", INVOICE[4].location),
@@ -423,6 +423,9 @@ class ReadCardTest(unittest.TestCase):
                 ),
             ],
         )
+        # How each quote was found (council fix 5): one span each; only "Sharma Traders" is a whole line.
+        whole, part = QuoteMatch(spans=1, pages=1, whole=True), QuoteMatch(spans=1, pages=1, whole=False)
+        self.assertEqual([value.quote for value in result.values], [whole, part, part, part, part, part])
         self.assertEqual(result.counts, CardCounts(6, 0, 0, 0, 0, 0, 0, 0))
         self.assertEqual(json.loads(json.dumps(result.facts.card)), result.facts.card)  # plain JSON
 
