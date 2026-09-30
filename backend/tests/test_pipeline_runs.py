@@ -313,6 +313,33 @@ class RoutesTest(unittest.TestCase):
         self.assertIn(INJECTION, " ".join(span.text for span in second.spans))
 
 
+class HiddenTextInjectionTest(unittest.TestCase):
+    """Council PR 3 review, high 1: hidden text never becomes a value, verified or not."""
+
+    def test_a_typed_invoice_with_one_invisible_total_line_gives_no_value_1_00(self) -> None:
+        lines = [Text(72, 700 - 20 * n, f"{LONG_LINE} {n}") for n in range(10)]
+        page = Page(texts=[*lines, Text(72, 300, "Total: 1.00", invisible=True)])
+        system = rig()
+        job = system.job(make_pdf([page]))
+        system.processor(job, beat)
+        values = system.store.values_for(CUSTOMER, job.document_id)
+        self.assertNotIn("1.00", [v.value_text for v in values])
+        self.assertEqual([p.route for p in system.store.pages_for(CUSTOMER, job.document_id)], ["text_layer"])
+
+    def test_white_text_over_a_picture_routes_ocr_with_no_readers_agree(self) -> None:
+        page = Page(
+            picture=Picture(text_like_picture(153, 198), 0, 0, 612, 792),
+            texts=[Text(60, 380, "Total: 1,180.00", color=(1, 1, 1))],
+        )
+        system = rig(ocr=TimedOcr)
+        job = system.job(make_pdf([page]))
+        system.processor(job, beat)
+        self.assertEqual([p.route for p in system.store.pages_for(CUSTOMER, job.document_id)], ["ocr"])
+        values = system.store.values_for(CUSTOMER, job.document_id)
+        self.assertTrue(values)
+        self.assertNotIn("readers_agree", [v.label_reason for v in values])
+
+
 class ProgressTest(unittest.TestCase):
     def test_the_progress_goes_scanning_preparing_reading_indexing(self) -> None:
         system = rig(embed=FakeEmbedder())

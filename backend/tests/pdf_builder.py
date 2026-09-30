@@ -33,6 +33,9 @@ class Text:
     # OCR layer of a searchable scan is: nothing shows, but readers still
     # extract it (PRD 2, the council's ML 4).
     invisible: bool = False
+    # The fill colour (r, g, b from 0 to 1), for example white text that shows
+    # nothing on white paper; None is the default black.
+    color: tuple[float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,8 @@ class Page:
     height: float = 792.0
     texts: list[Text] = field(default_factory=list)
     picture: Picture | None = None
+    # More pictures after ``picture``, for example the strips of a tiled scan.
+    pictures: list[Picture] = field(default_factory=list)
     rotate: int = 0
     # The page's font by name instead of Helvetica, for example "KrutiDev010"
     # (an old Hindi font that stores Devanagari on Latin codes): the name goes
@@ -80,14 +85,17 @@ def make_pdf(pages: list[Page], *, password_protected: bool = False) -> bytes:
         font = 3 if page.font_name is None else _named_font(objects, page.font_name)
         resources = b"/Font << /F1 %d 0 R >>" % font
         content = _text_content(page.texts)
-        if page.picture is not None:
-            objects.append(_image_object(page.picture.image))
-            resources += b" /XObject << /Im1 %d 0 R >>" % len(objects)
-            picture = page.picture
-            content = (
-                f"q {picture.width} 0 0 {picture.height} {picture.x} {picture.y} cm /Im1 Do Q\n".encode()
-                + content
-            )
+        drawn = ([] if page.picture is None else [page.picture]) + page.pictures
+        images = b""
+        pictures = b""
+        for number, picture in enumerate(drawn, start=1):
+            objects.append(_image_object(picture.image))
+            images += b" /Im%d %d 0 R" % (number, len(objects))
+            placed = f"{picture.width} 0 0 {picture.height} {picture.x} {picture.y}"
+            pictures += f"q {placed} cm /Im{number} Do Q\n".encode()
+        if drawn:
+            resources += b" /XObject <<" + images + b" >>"
+            content = pictures + content
         objects.append(_stream(b"", content))
         content_number = len(objects)
         objects.append(
@@ -116,7 +124,11 @@ def _text_content(texts: list[Text]) -> bytes:
     for item in texts:
         escaped = item.text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
         matrix = "0 1 -1 0" if item.turned else "1 0 0 1"
-        if item.invisible:
+        if item.color is not None:
+            red, green, blue = item.color
+            shown = f"BT /F1 {item.size} Tf {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET"
+            parts.append(f"q {red} {green} {blue} rg {shown} Q\n")
+        elif item.invisible:
             # The render mode is part of the graphics state and outlives ET,
             # so q ... Q keeps it to this text only.
             parts.append(f"q BT /F1 {item.size} Tf 3 Tr {matrix} {item.x} {item.y} Tm ({escaped}) Tj ET Q\n")

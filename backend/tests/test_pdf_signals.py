@@ -20,6 +20,7 @@ from kaagaz.preparing.pages import open_pdf, render_pdf_page
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.pdf_signals import LEGACY_FONT_PATTERN, image_coverage, is_legacy_font, page_signals
 from kaagaz.reading.route import RouteDecision
+from kaagaz.reading.socket import NoReader
 from kaagaz.reading.text_quality import PageSignals, TextLayerRules, text_layer_ok
 from tests.pdf_builder import Page, Picture, Text, _assemble, _stream, make_pdf
 from tests.picture_support import text_like_picture
@@ -56,10 +57,18 @@ def signals_of(data: bytes) -> PageSignals:
         return page_signals(plumber_page, pdfium_page)
 
 
-def reader_text(data: bytes) -> str:
+def reader_lines(data: bytes) -> list[str]:
+    """The text reader's lines; none for a page whose only text is hidden."""
     reader = PdfReader(None, max_pages=1, dpi=72, max_image_pixels=10_000_000, rules=RULES, blank_stddev=3.0)
-    spans = reader.read(data)
-    return " ".join(span.text for span in spans)
+    try:
+        spans = reader.read(data)
+    except NoReader:
+        return []
+    return [span.text for span in spans]
+
+
+def reader_text(data: bytes) -> str:
+    return " ".join(reader_lines(data))
 
 
 def route_of(data: bytes) -> RouteDecision:
@@ -175,7 +184,7 @@ class HiddenTextTest(unittest.TestCase):
     def test_invisible_text_over_a_picture_goes_to_ocr_as_hidden_text(self) -> None:
         picture = Picture(text_like_picture(612, 792), 0, 0, 612, 792)
         data = make_pdf([Page(picture=picture, texts=[Text(72, 700, INJECTION, invisible=True)])])
-        self.assertEqual(reader_text(data), INJECTION)  # the text reader still reads it
+        self.assertEqual(reader_text(data), "")  # the text reader drops hidden words (council, high 1)
         signals = signals_of(data)
         self.assertEqual(signals.hidden_share, 1.0)
         self.assertEqual(signals.coverage, 1.0)
@@ -210,6 +219,23 @@ class HiddenTextTest(unittest.TestCase):
         self.assertGreater(signals.hidden_share, 0.0)
         self.assertLess(signals.hidden_share, 0.05)
         self.assertEqual(route_of(data), RouteDecision("text_layer", "ok"))
+        # The page stays text_layer, but the hidden word is gone (council, high 1).
+        self.assertNotIn("x", reader_lines(data))
+        self.assertEqual(len(reader_lines(data)), len(INVOICE_LINES) * 4)
+
+    def test_white_text_and_text_under_1pt_count_as_hidden(self) -> None:
+        """Council PR 3 review, high 1: fill colour (white, or no alpha) and a size
+        under 1 pt hide text as surely as render modes 3 and 7."""
+        for hidden in (Text(72, 700, INJECTION, color=(1, 1, 1)), Text(72, 700, INJECTION, size=0.5)):
+            with self.subTest(hidden=hidden):
+                data = make_pdf([Page(texts=[hidden])])
+                self.assertEqual(signals_of(data).hidden_share, 1.0)
+                self.assertEqual(reader_text(data), "")
+
+    def test_white_text_over_a_picture_goes_to_ocr(self) -> None:
+        picture = Picture(text_like_picture(153, 198), 0, 0, 612, 792)
+        data = make_pdf([Page(picture=picture, texts=[Text(72, 700, INJECTION, color=(1, 1, 1))])])
+        self.assertEqual(route_of(data), RouteDecision("ocr", "hidden_text"))
 
 
 class MapErrorTest(unittest.TestCase):
@@ -237,6 +263,18 @@ class CoverageTest(unittest.TestCase):
                 first_page(make_pdf([Page(picture=picture)])) as (plumber_page, _),
             ):
                 self.assertAlmostEqual(image_coverage(plumber_page), share)
+
+    def test_a_scan_in_eight_strips_covers_the_whole_page(self) -> None:
+        """Council PR 3 review, high 1: the union of the images counts, so a tiled scan does."""
+        strips = [Picture(text_like_picture(153, 25), 0, 99 * n, 612, 99) for n in range(8)]
+        with first_page(make_pdf([Page(pictures=strips)])) as (plumber_page, _):
+            self.assertAlmostEqual(image_coverage(plumber_page), 1.0)
+
+    def test_a_scan_in_strips_with_a_small_text_layer_goes_to_ocr(self) -> None:
+        strips = [Picture(text_like_picture(153, 25), 0, 99 * n, 612, 99) for n in range(8)]
+        footer = Text(72, 30, "Scanned by CamScanner, page 1 of 1, 12/08/2026, Pune office copy", size=8)
+        data = make_pdf([Page(pictures=strips, texts=[footer])])
+        self.assertEqual(route_of(data), RouteDecision("ocr", "scan_image"))
 
     def test_a_page_with_no_image_has_no_coverage(self) -> None:
         with first_page(typed(INVOICE_LINES)) as (plumber_page, _):

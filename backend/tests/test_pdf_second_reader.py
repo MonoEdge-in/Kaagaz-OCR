@@ -100,6 +100,18 @@ class SecondReaderTest(unittest.TestCase):
             self.assertEqual(ctx.exception.code, code)
             self.assertIsNone(ctx.exception.__context__)
 
+    def test_hidden_text_is_not_read(self) -> None:
+        """Council PR 3 review, high 1: render mode 3, white fill and a size under 1 pt
+        are all left out, so hidden text never agrees with itself."""
+        texts = [
+            Text(72, 700, "Seen line one"),
+            Text(72, 650, "Total: 1.00", invisible=True),
+            Text(72, 600, "White words", color=(1, 1, 1)),
+            Text(72, 550, "Tiny words", size=0.5),
+        ]
+        spans = PdfiumReader(max_pages=10).read(make_pdf([Page(texts=texts)]))
+        self.assertEqual([span.text for span in spans], ["Seen line one"])
+
     def test_name_and_version(self) -> None:
         reader = PdfiumReader(max_pages=1)
         self.assertEqual(reader.name, "pdfium")
