@@ -135,6 +135,11 @@ class PagesWithoutTextTest(unittest.TestCase):
         spans = read(make_pdf([Page(), Page(texts=[Text(72, 700, "typed")])]), ocr)
         self.assertEqual([(s.text, box_of(s).page) for s in spans], [("scan", 1), ("typed", 2)])
 
+    def test_text_layer_and_scanned_spans_say_how_they_were_read(self) -> None:
+        ocr = FakeOcr([OcrLine("scan", 10, 10, 100, 30, 0.9)])
+        spans = read(make_pdf([Page(texts=[Text(72, 700, "typed")]), Page()]), ocr)
+        self.assertEqual([(s.text, s.origin) for s in spans], [("typed", "text_layer"), ("scan", "ocr")])
+
     def test_with_ocr_and_still_no_text_it_is_unreadable(self) -> None:
         with self.assertRaises(ReadError) as ctx:
             read(make_pdf([Page()]), FakeOcr([]))
@@ -189,6 +194,12 @@ class NameTest(unittest.TestCase):
         self.assertEqual((without.name, with_ocr.name), ("pdfplumber", "pdfplumber"))
         self.assertEqual(without.version, pdfplumber.__version__)
         self.assertEqual(with_ocr.version, f"{pdfplumber.__version__}+fake-ocr-7")
+
+    def test_the_version_names_the_engine_as_it_is_after_reading(self) -> None:
+        ocr = FakeOcr()
+        reader = PdfReader(ocr, max_pages=1, dpi=72, max_image_pixels=1)
+        ocr.version = "8"  # PaddleOCR-VL's version comes from its reply
+        self.assertEqual(reader.version, f"{pdfplumber.__version__}+fake-ocr-8")
 
 
 if __name__ == "__main__":

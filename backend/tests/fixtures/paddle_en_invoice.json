@@ -1,0 +1,16 @@
+{"width": 2480, "height": 3508, "parsing_res_list": [
+  {"block_label": "paragraph_title", "block_content": "TAX INVOICE", "block_bbox": [194, 203, 771, 295], "block_id": 0, "block_order": 1},
+  {"block_label": "text", "block_content": "Sahyadri Traders Pvt. Ltd.", "block_bbox": [190, 356, 784, 422], "block_id": 1, "block_order": 2},
+  {"block_label": "text", "block_content": "Plot 14, MIDC Bhosari, Pune 411026", "block_bbox": [191, 427, 1024, 491], "block_id": 2, "block_order": 3},
+  {"block_label": "text", "block_content": "Invoice No: INV-2026-0457", "block_bbox": [1491, 355, 2105, 422], "block_id": 3, "block_order": 4},
+  {"block_label": "text", "block_content": "GSTIN: 27AABCS1234K1Z5", "block_bbox": [191, 496, 847, 562], "block_id": 4, "block_order": 5},
+  {"block_label": "text", "block_content": "Date: 12/09/2026", "block_bbox": [1493, 428, 1894, 492], "block_id": 5, "block_order": 6},
+  {"block_label": "text", "block_content": "Bill To:", "block_bbox": [191, 646, 376, 709], "block_id": 6, "block_order": 7},
+  {"block_label": "text", "block_content": "Sunil Patil", "block_bbox": [192, 718, 432, 781], "block_id": 7, "block_order": 8},
+  {"block_label": "text", "block_content": "Shirol, Kolhapur 416103", "block_bbox": [191, 787, 746, 852], "block_id": 8, "block_order": 9},
+  {"block_label": "table", "block_content": "<table><tr><td>Item</td><td>Qty</td><td>Rate</td><td>Amount</td></tr><tr><td>Cotton seeds (5 kg bag)</td><td>4</td><td>1,250.00</td><td>5,000.00</td></tr><tr><td>Drip pipe 16 mm (100 m)</td><td>2</td><td>2,300.00</td><td>4,600.00</td></tr><tr><td>Fertiliser NPK 19:19:19</td><td>10</td><td>95.00</td><td>950.00</td></tr></table>", "block_bbox": [199, 1000, 2280, 1400], "block_id": 9, "block_order": null},
+  {"block_label": "text", "block_content": "Subtotal: 10,550.00", "block_bbox": [1393, 1457, 1843, 1520], "block_id": 10, "block_order": 10},
+  {"block_label": "text", "block_content": "GST 18%: 1,899.00", "block_bbox": [1394, 1527, 1847, 1589], "block_id": 11, "block_order": 11},
+  {"block_label": "text", "block_content": "Total: 12,449.00", "block_bbox": [1394, 1597, 1778, 1662], "block_id": 12, "block_order": 12},
+  {"block_label": "text", "block_content": "Amount in words: Twelve thousand four hundred forty-nine rupees only.", "block_bbox": [189, 1739, 1782, 1804], "block_id": 13, "block_order": 13}
+]}

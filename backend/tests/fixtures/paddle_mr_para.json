@@ -1,0 +1,5 @@
+{"width": 2480, "height": 3508, "parsing_res_list": [
+  {"block_label": "paragraph_title", "block_content": "अज़िया तपائिल्", "block_bbox": [190, 214, 693, 325], "block_id": 0, "block_order": 1},
+  {"block_label": "text", "block_content": "श्री. सुनील पाटिल, राहणार शिरोल, तालुका शिरोल, जिल्हा कोल्लापूर, यानी दिनांक १२ सर्टेबर २०२६ रोजी हा अर्ज सादर केला. सांঘ्या शेतजমিनीचे क्षेत्रफक दोन हेक्टर आहे.", "block_bbox": [183, 412, 2284, 599], "block_id": 1, "block_order": 2},
+  {"block_label": "text", "block_content": "सौ. मीना शिंदे यानी साक्षीदार म्हणुन स्वाक्षरी केली आहे. ग्रामपंचायत कार्यालयाने सातबारा उता्याची प्रत जोडली आहे.", "block_bbox": [181, 661, 2076, 846], "block_id": 2, "block_order": 3}
+]}

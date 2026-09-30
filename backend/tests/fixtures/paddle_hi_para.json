@@ -1,0 +1,5 @@
+{"width": 2480, "height": 3508, "parsing_res_list": [
+  {"block_label": "paragraph_title", "block_content": "आवेदन पत्र", "block_bbox": [191, 218, 565, 323], "block_id": 0, "block_order": 1},
+  {"block_label": "text", "block_content": "श्री रमेश कुमार शर्मा, निवासी ग्राम पिपेरिया, जिला सीहोर, मध्य प्रदेश, ने दिनानक 15 अगस्त 2026 को यह आवेदन प्रस्तुत किया। उनकी वार्षिक आय तीन लाख रुपये है।", "block_bbox": [185, 413, 2232, 598], "block_id": 1, "block_order": 2},
+  {"block_label": "text", "block_content": "आवेदक के सभी दस्तावेज़ों की जाँच पूरी हो चुकी है। प्रमाणपत्र की प्रति संलग्र है और पंचायत सचिव ने हस्ताक्षर कर दिए हैं।", "block_bbox": [181, 661, 2288, 847], "block_id": 2, "block_order": 3}
+]}
