@@ -331,6 +331,14 @@ class RefusalsTest(unittest.TestCase):
             with self.subTest(data=data[:20]):
                 refused_with(self, data, "corrupt_file")
 
+    def test_a_file_whose_two_parsers_count_different_pages_is_refused_both_ways(self) -> None:
+        """Council PR 3 review, medium 5: pdfplumber walks the page tree, PDFium trusts
+        /Count, so an edited /Count makes them disagree; every page must be read by both."""
+        two = make_pdf([Page(texts=[Text(72, 700, "one")]), Page(texts=[Text(72, 700, "two")])])
+        for count in (b"/Count 1", b"/Count 3"):
+            with self.subTest(count=count):
+                refused_with(self, two.replace(b"/Count 2", count), "corrupt_file")
+
     def test_too_many_pages(self) -> None:
         refused_with(self, make_pdf([Page(), Page(), Page()]), "too_many_pages", max_pages=2)
 
