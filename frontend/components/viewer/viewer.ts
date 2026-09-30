@@ -54,9 +54,12 @@ const ROUTE_WORDS: Record<PageRoute, string> = {
   blank: "Blank page",
 };
 
-/** How a page was read, in words, shown beside its number (PRD 2, R1). null: not read. */
-export function routeText(route: PageRoute | null): string {
-  return route === null ? "Not read" : ROUTE_WORDS[route];
+/**
+ * How a page was read, in words, shown beside its number (PRD 2, R1). null
+ * when the page has no route, as for a page read before PRD 2: nothing is shown.
+ */
+export function routeText(route: PageRoute | null): string | null {
+  return route === null ? null : ROUTE_WORDS[route];
 }
 
 // The backend gives at most 500 rows per call; 200 keeps the table quick.
