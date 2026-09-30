@@ -31,6 +31,12 @@ Rules shared by every query (never a guess, CLAUDE.md never-do 6):
 * The document card's values (record ``card``, PRD 2 D3) never take part, nor
   count as available fields: the model chose their fields (security amendment
   A1, council fix 9).
+* An invoice's line items (the ``line:{n}`` records, PRD 2 E4) are never used,
+  not even in the list of fields questions can name. A line's ``amount`` field
+  would make "amount" (``total_amount`` or ``amount``, kaagaz/answering/intent.py)
+  ambiguous for every customer with invoices, and "total amount" questions would
+  stop reaching a fixed query (PRD 2 plan conflict 1). The invoice's own total is
+  its ``document`` record's.
 * The date filter is ``[start, end)`` on the record's own date value. No
   date candidates means no date filter.
 * Party names are grouped ignoring case and repeated spaces; the name shown
@@ -124,6 +130,7 @@ _AVAILABLE_FIELDS = text(
     JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND v.record_key <> 'card'
+      AND v.record_key NOT LIKE 'line:%'
     """
 )
 
@@ -137,6 +144,7 @@ _TOP_GROUP = text(
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), grp AS (
@@ -147,6 +155,7 @@ _TOP_GROUP = text(
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:group_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(btrim(v.value_text) <> '')
     ), dated AS (
@@ -157,6 +166,7 @@ _TOP_GROUP = text(
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
@@ -196,6 +206,7 @@ _TOTAL = text(
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), dated AS (
@@ -206,6 +217,7 @@ _TOTAL = text(
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
@@ -237,6 +249,7 @@ _EXTREME_VALUE = text(
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), dated AS (
@@ -247,6 +260,7 @@ _EXTREME_VALUE = text(
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
@@ -275,6 +289,7 @@ _COUNT_DOCUMENTS = text(
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%'
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL

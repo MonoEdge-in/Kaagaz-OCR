@@ -125,6 +125,11 @@ class Settings:
     model_window_max_tokens: int
     model_extract_timeout_seconds: float
     card_max_chars: int
+    # PRD 2 E2: an invoice is read in windows of this many characters, each overlapping
+    # the one before by extract_window_overlap, at most extract_max_windows of them.
+    extract_window_chars: int
+    extract_window_overlap: int
+    extract_max_windows: int
 
     # Sign-in. The TOTP key encrypts the admins' two-step secrets
     # (kaagaz.api.secret_box); it must differ from the session secret, so one
@@ -187,6 +192,11 @@ class Settings:
                 raise SettingsError(
                     f"{name} must leave at least {MIN_INPUT_TOKENS} tokens of MODEL_NUM_CTX for the document"
                 )
+        window_chars = env.positive("EXTRACT_WINDOW_CHARS")
+        window_overlap = env.integer("EXTRACT_WINDOW_OVERLAP")
+        if window_overlap >= window_chars:
+            # Without this the windows would never move forward (plan 6).
+            raise SettingsError("EXTRACT_WINDOW_OVERLAP must be less than EXTRACT_WINDOW_CHARS")
         extract_timeout_seconds = env.number("MODEL_EXTRACT_TIMEOUT_SECONDS")
         if not (math.isfinite(extract_timeout_seconds) and extract_timeout_seconds > 0):
             raise SettingsError("MODEL_EXTRACT_TIMEOUT_SECONDS must be a number above 0")
@@ -246,6 +256,9 @@ class Settings:
             model_window_max_tokens=window_max_tokens,
             model_extract_timeout_seconds=extract_timeout_seconds,
             card_max_chars=env.positive("CARD_MAX_CHARS"),
+            extract_window_chars=window_chars,
+            extract_window_overlap=window_overlap,
+            extract_max_windows=env.positive("EXTRACT_MAX_WINDOWS"),
             session_secret=session_secret,
             session_hours=env.integer("SESSION_HOURS"),
             cookie_secure=env.boolean("COOKIE_SECURE"),

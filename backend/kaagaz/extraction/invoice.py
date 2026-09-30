@@ -2,14 +2,19 @@
 
 **Windows (E2, plan 5.9).** The first reader's text (``quotes.ReaderText``) is cut
 into windows of whole spans: a window takes spans until one more would pass
-``chars`` characters (a span longer than that is a window of its own), and the
-next starts at the first span that begins at or after the window's end minus
+``chars`` characters, or its estimated tokens (``ai.client.estimate_tokens``'s
+rule, on the escaped text the model is sent) would pass the input budget (ML
+amendment 5). A span longer than that is a window of its own. The next window
+starts at the first span that begins at or after the window's end minus
 ``overlap``, and always after the previous start, so the windows move forward.
 At most ``max_windows``; ``truncated`` when spans are left after the last one.
 
-**One model call per window** (``read_invoice``). The window's text goes to the
-model fenced as untrusted data (``window_prompt``), and the reply follows
-``INVOICE_SCHEMA``: quotes only, never values (the quote rule, D2).
+**One model call per window** (``read_invoice``), with ``max_tokens`` for the
+reply (``MODEL_WINDOW_MAX_TOKENS``). The input budget is what
+``ai.client.input_token_budget`` leaves in ``num_ctx`` for the user message, less
+the message's own words. The window's text goes to the model fenced as untrusted
+data (``window_prompt``), and the reply follows ``INVOICE_SCHEMA``: quotes only,
+never values (the quote rule, D2).
 
 **Locating.** Each quote is found in the reader text with ``quotes.find_labelled``
 or ``find_quote``, only inside its window's [start, end) (ML amendment 6(e)).
@@ -20,6 +25,8 @@ or is refused below, is dropped and counted (``QuoteCounts``).
   matches ``NOT_AN_ITEM`` (ML 6(b)), when an amount or the date does not read as
   one (as ``labelled.py`` does), or when a text field is longer than its
   ``invoices`` column (``MAX_TEXT_CHARS``, security A7).
+* A window its token budget cut short keeps at most half of itself as overlap
+  (PROVISIONAL), so the windows still move on.
 * A line's description is searched from the previous line's description on
   (from the window's start if the model listed it out of order). Its other
   quotes follow it in column order, each after the one before, and never past
@@ -51,11 +58,13 @@ twice (bug B2).
   component's spot is a component, not the tax total (conflict 21, PROVISIONAL).
 * The checks always run on the row (K1, K2), with the tax components for the
   total check (ML 6(a)) and every GSTIN value of the document (ML 6(i)).
-* The lead's resolution 1: an E4 value the readers verified stays verified only
-  when the check passed and, for a field labelled.py also finds, labelled.py's
-  value for it sits at the same spot with the same text (security A1(c)); else
-  it is needs review, ``model_chosen``. A reviewer's remembered fix keeps its
-  label (PROVISIONAL), and a value the readers did not verify keeps its reason.
+* The lead's resolution 1: an E4 value is verified only when ``label_quoted``
+  verified it (the readers agree under A2's strict rules), the check passed, and,
+  for a field labelled.py also finds, labelled.py's value for it sits at the same
+  spot with the same text (security A1(c)). Otherwise it is needs review,
+  ``model_chosen``, whatever ``label_quoted`` said (single_reader,
+  readers_disagree...); its second reading is kept. A reviewer's remembered fix
+  keeps its label (PROVISIONAL).
 * K3: the values a failed check involves become needs review, ``check_failed``.
 
 **Rows (E5, ``invoice_row``).** Typed through parsing.py. An amount is rounded
@@ -64,7 +73,8 @@ text longer than its column is NULL. A row is verified only when every
 non-null field in it is verified and the check did not fail; a line row, when
 every non-null field in it is verified. A row with nothing in it is needs review.
 
-Cost. ``windows`` is O(S log n) for S spans over n characters. ``read_invoice``
+Cost. ``windows`` is O(n) for n characters (the token counts), plus O(S log n)
+for S spans. ``read_invoice``
 makes one model call per window; each quote search is O(w) for a window of w
 characters (CPython's ``str.find``), so a window costs O(q * w) for its q quotes,
 and the bound for each line is O(log q). ``finish_invoice`` is O(v * f) for v
@@ -77,10 +87,11 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from kaagaz.ai.client import ModelOutputError, ModelUnavailable
+from kaagaz.ai.client import ModelOutputError, ModelUnavailable, estimate_tokens, input_token_budget
+from kaagaz.extraction.card import ChatModel
 from kaagaz.extraction.checks import FAILED, GSTIN_FIELDS, PASSED, CheckResult, apply_checks, check_invoice
 from kaagaz.extraction.labelled import DOCUMENT_RECORD, NOT_AN_ITEM
 from kaagaz.extraction.labels import comparable, overlap
@@ -99,6 +110,7 @@ from kaagaz.reading.spans import BoxLocation, Location
 
 if TYPE_CHECKING:
     from kaagaz.pipeline import InvoiceLineRow, InvoiceRow
+    from kaagaz.settings import Settings
 
 INVOICE_FIELDS = (
     "invoice_number",
@@ -193,10 +205,23 @@ carried-forward, subtotal, tax or total rows as lines.
 Reply with JSON only, following the schema."""
 
 
-class InvoiceChat(Protocol):
-    """The part of the model client an invoice needs (``ai.client.ModelClient.chat_json``)."""
+@dataclass(frozen=True, slots=True)
+class WindowSettings:
+    """How the invoice windows are cut, and each reply's token budget (PRD 2 §8, ML 5)."""
 
-    def chat_json(self, *, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]: ...
+    chars: int  # EXTRACT_WINDOW_CHARS
+    overlap: int  # EXTRACT_WINDOW_OVERLAP
+    max_windows: int  # EXTRACT_MAX_WINDOWS
+    max_tokens: int  # MODEL_WINDOW_MAX_TOKENS
+
+    @classmethod
+    def from_settings(cls, settings: "Settings") -> "WindowSettings":
+        return cls(
+            settings.extract_window_chars,
+            settings.extract_window_overlap,
+            settings.extract_max_windows,
+            settings.model_window_max_tokens,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,16 +253,30 @@ class InvoiceResult:
     check: CheckResult | None
 
 
-def windows(reader: ReaderText, *, chars: int, overlap: int, max_windows: int) -> tuple[list[Window], bool]:
-    """(windows, truncated) over ``reader``'s spans (the module docstring). O(S log n)."""
+def windows(
+    reader: ReaderText, *, chars: int, overlap: int, max_windows: int, max_input_tokens: int | None = None
+) -> tuple[list[Window], bool]:
+    """(windows, truncated) over ``reader``'s spans (the module docstring). With
+    ``max_input_tokens``, a window's escaped text is also at most that many estimated
+    tokens, unless it is one span. O(n) for the token counts, plus O(S log n)."""
     if chars < 1 or not 0 <= overlap < chars or max_windows < 1:
         raise ValueError("windows need chars >= 1, 0 <= overlap < chars and max_windows >= 1")
     count, starts = len(reader.spans), reader.span_starts
+    costs = None if max_input_tokens is None else _Costs(reader)
+    room = 0 if max_input_tokens is None else 12 * max(0, max_input_tokens)  # in twelfths of a token
     parts: list[Window] = []
     first = 0
     while first < count and len(parts) < max_windows:
         begin, last = starts[first], first
+        used = 0 if costs is None else costs.span[first]
+        cut_by_tokens = False
         while last + 1 < count and _span_end(reader, last + 1) - begin <= chars:
+            if costs is not None:
+                more = costs.join[last + 1] + costs.span[last + 1]
+                if used + more > room:
+                    cut_by_tokens = True
+                    break
+                used += more
             last += 1
         end = _span_end(reader, last)
         parts.append(
@@ -245,7 +284,10 @@ def windows(reader: ReaderText, *, chars: int, overlap: int, max_windows: int) -
         )
         if last == count - 1:
             return parts, False
-        first = max(bisect_left(starts, end - overlap), first + 1)
+        # PROVISIONAL: a window its token budget cut short keeps at most half of itself as
+        # overlap, or the windows would move on by one span at a time.
+        back = min(overlap, (end - begin) // 2) if cut_by_tokens else overlap
+        first = max(bisect_left(starts, end - back), first + 1)
     return parts, first < count
 
 
@@ -255,18 +297,25 @@ def window_prompt(window: Window, part: int, parts: int) -> str:
 
 
 def read_invoice(
-    chat: InvoiceChat,
+    chat: ChatModel,
     reader: ReaderText,
     *,
     chars: int,
     overlap: int,
     max_windows: int,
+    max_tokens: int,
+    num_ctx: int,
     beat: Callable[[int, int], None],
 ) -> InvoiceExtraction:
-    """E2 and E3: one call per window, the quotes located and merged. ``beat(done, total)``
-    after each call. A model error stops the reading: no values, and ``error_code`` says why
-    (the caller keeps labelled.py's values instead)."""
-    parts, truncated = windows(reader, chars=chars, overlap=overlap, max_windows=max_windows)
+    """E2 and E3: one call per window, each reply at most ``max_tokens``, each window cut to
+    fit ``num_ctx``; the quotes located and merged. ``beat(done, total)`` after each call. A
+    model error stops the reading: no values, and ``error_code`` says why (the caller keeps
+    labelled.py's values instead)."""
+    budget = input_token_budget(num_ctx=num_ctx, max_tokens=max_tokens, system=INVOICE_SYSTEM_PROMPT)
+    wording = estimate_tokens(window_prompt(Window(0, 0, ""), max_windows, max_windows))
+    parts, truncated = windows(
+        reader, chars=chars, overlap=overlap, max_windows=max_windows, max_input_tokens=budget - wording
+    )
     merge = _Merge(reader)
     for number, window in enumerate(parts, start=1):
         try:
@@ -274,6 +323,7 @@ def read_invoice(
                 system=INVOICE_SYSTEM_PROMPT,
                 user=window_prompt(window, number, len(parts)),
                 schema=INVOICE_SCHEMA,
+                max_tokens=max_tokens,
             )
         except (ModelUnavailable, ModelOutputError) as error:
             beat(number, len(parts))
@@ -480,7 +530,14 @@ class _Merge:
         if amount is None or self._not_an_item(description) or self._not_an_item(amount):
             self.quotes.add(None)
             return
-        self.quotes.add(description)
+        # One item for the line: loose or ambiguous when its description or its amount is.
+        self.quotes.add(
+            replace(
+                description,
+                loose=description.loose or amount.loose,
+                ambiguous=description.ambiguous or amount.ambiguous,
+            )
+        )
         for hit in optional:
             self.quotes.add(hit)
         spots = {("description", description.start), ("amount", amount.start)}
@@ -555,6 +612,22 @@ def _span_end(reader: ReaderText, k: int) -> int:
     return reader.span_starts[k] + len(reader.spans[k].text)
 
 
+class _Costs:
+    """Each span's escaped text, and the join before it, in twelfths of a token: an ASCII
+    character is 3, any other 8 (``ai.client.estimate_tokens``, kept exact). O(n)."""
+
+    def __init__(self, reader: ReaderText) -> None:
+        self.span = [_twelfths(_escape(span.text)) for span in reader.spans]
+        self.join = [0] + [
+            _twelfths(_escape(reader.text[_span_end(reader, k - 1) : reader.span_starts[k]]))
+            for k in range(1, len(reader.spans))
+        ]
+
+
+def _twelfths(text: str) -> int:
+    return sum(3 if ch < "\x80" else 8 for ch in text)
+
+
 def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -585,11 +658,9 @@ def _settle(
     check: CheckResult,
 ) -> ExtractedValue:
     """The lead's resolution 1 for one value (the module docstring)."""
-    if (value.record_key, value.field) not in quoted or value.label != VERIFIED:
+    if (value.record_key, value.field) not in quoted or value.label_reason == "learned_correction":
         return value
-    if value.label_reason == "learned_correction":
-        return value
-    if check.status == PASSED and _labelled_agrees(value, labelled):
+    if value.label == VERIFIED and check.status == PASSED and _labelled_agrees(value, labelled):
         return value
     return replace(value, label=NEEDS_REVIEW, label_reason="model_chosen")
 

@@ -41,7 +41,7 @@ def test_an_overlap_as_large_as_the_window_is_refused() -> None:
     [
         ("EXTRACT_WINDOW_CHARS", "0", "EXTRACT_WINDOW_CHARS must be at least 1"),
         ("EXTRACT_MAX_WINDOWS", "0", "EXTRACT_MAX_WINDOWS must be at least 1"),
-        ("EXTRACT_WINDOW_OVERLAP", "-1", "EXTRACT_WINDOW_OVERLAP must be"),
+        ("EXTRACT_WINDOW_OVERLAP", "-1", "EXTRACT_WINDOW_OVERLAP must not be negative"),
         ("EXTRACT_WINDOW_CHARS", "6k", "EXTRACT_WINDOW_CHARS must be a whole number"),
     ],
 )

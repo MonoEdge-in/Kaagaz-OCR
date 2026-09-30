@@ -77,7 +77,7 @@ def test_b_can_never_read_a_invoice_its_lines_or_their_values(db: Database) -> N
 
     assert a_sees(db, b, a_doc) == ([], [], [])
     with db.customer(b) as conn:
-        by_id = conn.execute(
+        by_id: int = conn.execute(
             text("SELECT count(*) FROM invoice_lines WHERE invoice_id = :i"), {"i": invoice["id"]}
         ).scalar_one()
         assert by_id == 0

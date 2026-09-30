@@ -673,7 +673,7 @@ class LinesTest(unittest.TestCase):
     def test_at_most_1000_lines_and_the_rest_are_dropped_and_counted(self) -> None:
         spans = page_lines(*[f"Item {k} {k}.00" for k in range(1, MAX_LINES + 2)])
         chat = FakeChat(reply(lines=[item(f"Item {k}", f"{k}.00") for k in range(1, MAX_LINES + 2)]))
-        extraction = read(spans, chat, chars=50000, overlap=0, max_windows=1)
+        extraction = read(spans, chat, chars=50000, overlap=0, max_windows=1, num_ctx=65536)
         self.assertEqual(MAX_LINES, 1000)
         self.assertEqual(len({value.record_key for value in extraction.values}), 1000)
         self.assertEqual(found(extraction.values)[("line:1000", "amount")], "1000.00")
@@ -886,7 +886,11 @@ class QuotedLabelsTest(unittest.TestCase):
         ]
         chat = FakeChat(
             reply(
-                {"invoice_number": ("Invoice No", "A-1"), "subtotal": ("Sub Total", "3,000.00")},
+                {
+                    "invoice_number": ("Invoice No", "A-1"),
+                    "subtotal": ("Sub Total", "3,000.00"),
+                    "total": ("Grand Total", "3,000.00"),
+                },
                 lines=[item("Cotton Poplin", "3,000.00", hsn="5208")],
             )
         )
