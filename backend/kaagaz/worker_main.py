@@ -270,7 +270,9 @@ def _serve(settings: Settings) -> None:
         max_attempts=settings.job_max_attempts,
         # The last delivery also ends the document's runs still running (AR11), on the worker's clock.
         on_exhausted=MarkExhausted(
-            lambda customer, document: documents.mark_exhausted(customer, document, now=_utc_now())
+            lambda customer, document: documents.mark_exhausted(
+                customer, document, now=_utc_now(), max_attempts=settings.job_max_attempts
+            )
         ),
         on_attempt=RecordAttempt(documents.record_attempt, settings.job_max_attempts),
     )

@@ -492,13 +492,15 @@ class PgDocuments:
                 {"a": attempt, "m": max_attempts, "c": customer_id, "d": document_id},
             )
 
-    def mark_exhausted(self, customer_id: str, document_id: str, *, now: datetime) -> None:
+    def mark_exhausted(self, customer_id: str, document_id: str, *, now: datetime, max_attempts: int) -> None:
         """The queue's last delivery of this document's job came: mark it failed
         with ``retries_exhausted``, so it does not show "Reading…" for good.
 
         Only a document still in progress (received or clean) changes, in one
         conditional statement: a rejected one keeps its reason, and a ready,
-        needs_reader or failed one keeps its state and code. When it changes,
+        needs_reader or failed one keeps its state and code, and so does one whose
+        recorded try is under ``max_attempts``: after "read again" the tries start
+        again, so an old job's last delivery must not fail the new one. When it changes,
         its runs still ``running`` end failed with ``retries_exhausted`` at
         ``now`` (AR11), in the same transaction.
         """
@@ -506,9 +508,10 @@ class PgDocuments:
             marked = conn.execute(
                 text(
                     "UPDATE documents SET status = 'failed', failure_code = 'retries_exhausted'"
-                    " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean') RETURNING id"
+                    " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
+                    " AND attempts >= :max RETURNING id"
                 ),
-                {"c": customer_id, "d": document_id},
+                {"c": customer_id, "d": document_id, "max": max_attempts},
             ).first()
             if marked is not None:
                 close_running(
