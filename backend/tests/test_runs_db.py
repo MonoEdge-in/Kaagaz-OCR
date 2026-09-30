@@ -160,14 +160,17 @@ def emitted_codes() -> set[str]:
 def test_every_error_code_the_pipeline_emits_is_accepted(db: Database) -> None:
     customer, _ = new_customer(db)
     doc = new_document(db, customer)
-    run = PgRuns(db).start(customer, doc, now=T0)
     codes = emitted_codes()
-    assert {"corrupt_file", "document_missing", "storage_unavailable", "model_timeout"} <= codes
+    assert {"corrupt_file", "document_missing", "storage_unavailable", "model_timeout", "not_utf8"} <= codes
 
-    with db.customer(customer) as conn:
+    with db.customer(customer) as conn:  # a new run for each code: a run is finished once
         for code in sorted(codes):
+            run = start_run(conn, customer, doc, now=T0)
             finish_run(conn, customer, FinishedRun(run, totals("failed", error_code=code), T1))
+    stored = rows(db, customer, "SELECT error_code FROM processing_runs WHERE document_id = :d", doc)
+    assert sorted(row["error_code"] for row in stored) == sorted(codes)
     with pytest.raises(IntegrityError) as refused, db.customer(customer) as conn:
+        run = start_run(conn, customer, doc, now=T0)
         finish_run(conn, customer, FinishedRun(run, totals("failed", error_code="Bad-Code"), T1))
     assert violation(refused.value) == ("23514", "processing_runs_error_code_check")
 
@@ -240,6 +243,32 @@ def test_a_save_or_ready_from_a_superseded_run_changes_nothing(db: Database) -> 
     documents.mark_ready(customer, doc, 2, run=FinishedRun(new, totals(), T2))
     assert rows(db, customer, "SELECT status FROM documents WHERE id = :d", doc) == [{"status": "ready"}]
     assert runs(db, customer, doc) == [(old, "superseded", None, T0, T1), (new, "ready", None, T1, T2)]
+
+
+def test_finish_never_overwrites_a_superseded_run(db: Database) -> None:
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    old = PgRuns(db).start(customer, doc, now=T0)
+    new = PgRuns(db).start(customer, doc, now=T1)
+    PgRuns(db).finish(customer, FinishedRun(old, totals(), T2))  # the stale delivery ends late
+    PgRuns(db).finish(customer, FinishedRun(new, totals(), T2))
+    PgRuns(db).finish(customer, FinishedRun(new, totals("failed", error_code="corrupt_file"), T2))
+
+    assert runs(db, customer, doc) == [(old, "superseded", None, T0, T1), (new, "ready", None, T1, T2)]
+
+
+def test_set_failed_from_a_superseded_run_changes_nothing(db: Database) -> None:
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    old = PgRuns(db).start(customer, doc, now=T0)
+    new = PgRuns(db).start(customer, doc, now=T1)
+    failed = "SELECT status, failure_code FROM documents WHERE id = :d"
+
+    with pytest.raises(Superseded):
+        PgDocuments(db).set_failed(customer, doc, "corrupt_file", run_id=old)
+    assert rows(db, customer, failed, doc) == [{"status": "received", "failure_code": None}]
+    PgDocuments(db).set_failed(customer, doc, "corrupt_file", run_id=new)
+    assert rows(db, customer, failed, doc) == [{"status": "failed", "failure_code": "corrupt_file"}]
 
 
 def test_the_new_run_wins_the_fence_even_when_the_stale_run_started_later(db: Database) -> None:

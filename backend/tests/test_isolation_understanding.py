@@ -178,6 +178,8 @@ def test_b_cannot_start_finish_fence_or_show_progress_on_a_document(db: Database
         assert not is_run_open(conn, b, doc, run)
     with pytest.raises(Superseded):
         PgPipelineStore(db).save(content(b, doc), run_id=run)
+    with pytest.raises(Superseded):
+        PgDocuments(db).set_failed(b, doc, "corrupt_file", run_id=run)
 
     assert a_rows(db, ids) == before
     assert before[-1] == [{"status": "received", "progress": None}]
