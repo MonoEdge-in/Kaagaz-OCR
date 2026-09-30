@@ -308,9 +308,9 @@ class RoutesTest(unittest.TestCase):
         self.assertEqual(by_page[1].field, "total_amount")
         self.assertNotEqual(by_page[1].label_reason, "readers_agree")
         self.assertEqual((by_page[2].field, by_page[2].label_reason), ("invoice_number", "readers_agree"))
-        # The raw second reading is kept as read (CLAUDE.md), it is only not used for page 1.
+        # Hidden text is not read by the second reader either (council PR 3 review, high 1).
         second = next(o for o in content.outputs if o.role == "second")
-        self.assertIn(INJECTION, " ".join(span.text for span in second.spans))
+        self.assertNotIn(INJECTION, " ".join(span.text for span in second.spans))
 
 
 class HiddenTextInjectionTest(unittest.TestCase):

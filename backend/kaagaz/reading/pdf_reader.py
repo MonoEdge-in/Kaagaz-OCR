@@ -64,7 +64,7 @@ from kaagaz.preparing.page_checks import is_blank
 from kaagaz.preparing.pages import check_page_count, open_pdf, render_pdf_page
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
 from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
-from kaagaz.reading.pdf_signals import page_signals
+from kaagaz.reading.pdf_signals import page_signals, words_left_visible
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError, Span
@@ -221,8 +221,8 @@ def _text_layer(
     """One page's text-layer spans, what R2 says about them, and the signals it saw."""
     page = pdf.pages[number - 1]
     try:
-        spans = _page_spans(page, number)
         signals = page_signals(page, pdfium_page)
+        spans = _page_spans(page, number, signals.hidden_boxes)
     finally:
         page.close()  # release this page's parsed objects
     return spans, text_layer_ok(" ".join(span.text for span in spans), signals, rules), signals
@@ -254,7 +254,11 @@ def _parsed[T](call: Callable[[], T]) -> T:
     raise ReadError(code)
 
 
-def _page_spans(page: pdfplumber.page.Page, number: int) -> list[Span]:
+def _page_spans(
+    page: pdfplumber.page.Page, number: int, hidden: tuple[tuple[float, float, float, float], ...] = ()
+) -> list[Span]:
+    """The page's lines, without the words under ``hidden`` (page fractions): text
+    that can't be seen never becomes a line (the council's PR 3 review, high 1)."""
     # Boxes are fractions of the crop box, the part of the page a viewer shows
     # (and the part pypdfium2 draws). pdfplumber gives both in the same
     # top-left coordinates, with the page's rotation applied.
@@ -269,4 +273,5 @@ def _page_spans(page: pdfplumber.page.Page, number: int) -> list[Span]:
         )
         for word in page.extract_words()
     ]
-    return line_spans(words, number, PageFrame(left, top, right - left, bottom - top), origin="text_layer")
+    frame = PageFrame(left, top, right - left, bottom - top)
+    return line_spans(words_left_visible(words, frame, hidden), number, frame, origin="text_layer")

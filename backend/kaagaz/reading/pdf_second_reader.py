@@ -28,14 +28,14 @@ Time is O(characters). Memory is one page's text page at a time.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 
 from kaagaz.preparing.pages import check_page_count, open_pdf
-from kaagaz.reading.lines import PageFrame, WordBox, line_spans
+from kaagaz.reading.lines import PageFrame, line_spans
+from kaagaz.reading.pdf_signals import ViewerFrame, is_hidden_char
 from kaagaz.reading.spans import ReadError, Span
 
 
@@ -72,8 +72,7 @@ class PdfiumReader:
 
 
 def _page_spans(page: Any, number: int) -> list[Span]:
-    left, bottom, right, top = (float(value) for value in page.get_cropbox())
-    frame = _Frame(left, bottom, right, top, int(page.get_rotation()) % 360)
+    frame = ViewerFrame.of(page)
     textpage = page.get_textpage()
     try:
         words = [frame.word(*run) for run in _runs(textpage)]
@@ -109,9 +108,13 @@ def _runs(textpage: Any) -> list[_Run]:
 
 def _char(textpage: Any, index: int) -> str:
     """The character at ``index``; a space for one PDFium made up (a line break
-    or a space it inferred) or one with no Unicode value, so it ends a run."""
+    or a space it inferred), one with no Unicode value, or one that can't be seen
+    (``pdf_signals.is_hidden_char``: hidden text never agrees with itself), so
+    it ends a run."""
     code = int(pdfium_c.FPDFText_GetUnicode(textpage, index))
     if not 0 < code < 0x110000 or pdfium_c.FPDFText_IsGenerated(textpage, index) == 1:
+        return " "
+    if is_hidden_char(textpage, index):
         return " "
     return chr(code)
 
@@ -120,38 +123,3 @@ def _text(units: list[str]) -> str:
     """PDFium can hand a character outside the basic plane as two UTF-16 halves:
     rejoin them, and turn a lone half into U+FFFD instead of storing it."""
     return "".join(units).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
-
-
-@dataclass(frozen=True, slots=True)
-class _Frame:
-    """The crop box in PDF units and the page's rotation (clockwise, as shown)."""
-
-    left: float
-    bottom: float
-    right: float
-    top: float
-    rotation: int
-
-    @property
-    def width(self) -> float:
-        across = self.right - self.left
-        return self.top - self.bottom if self.rotation in (90, 270) else across
-
-    @property
-    def height(self) -> float:
-        down = self.top - self.bottom
-        return self.right - self.left if self.rotation in (90, 270) else down
-
-    def word(self, text: str, left: float, bottom: float, right: float, top: float) -> WordBox:
-        """A box in PDF units to the viewer's frame: origin top left of the page as shown, y down."""
-        (u_a, v_a), (u_b, v_b) = self._point(left, bottom), self._point(right, top)
-        return WordBox(text, min(u_a, u_b), min(v_a, v_b), max(u_a, u_b), max(v_a, v_b))
-
-    def _point(self, x: float, y: float) -> tuple[float, float]:
-        if self.rotation == 90:
-            return y - self.bottom, x - self.left
-        if self.rotation == 180:
-            return self.right - x, y - self.bottom
-        if self.rotation == 270:
-            return self.top - y, self.right - x
-        return x - self.left, self.top - y

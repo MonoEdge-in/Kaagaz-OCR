@@ -34,9 +34,14 @@ ENGLISH = (
 HINDI = "भारत सरकार कार्यालय, पुणे जिला। दिनांक ७/१२/२०२६ क्षेत्र का विवरण: पाटील ट्रेडर्स, शिंदे मार्ग। कुल राशि ₹ १०,५००"
 
 
-def signals(**shares: float) -> PageSignals:
-    values = {"coverage": 0.0, "hidden_share": 0.0, "legacy_font_share": 0.0, "map_error_share": 0.0}
-    return PageSignals(**(values | shares))
+def signals(
+    *,
+    coverage: float = 0.0,
+    hidden_share: float = 0.0,
+    legacy_font_share: float = 0.0,
+    map_error_share: float = 0.0,
+) -> PageSignals:
+    return PageSignals(coverage, hidden_share, legacy_font_share, map_error_share)
 
 
 def check(text: str, page: PageSignals = PLAIN) -> RouteDecision:

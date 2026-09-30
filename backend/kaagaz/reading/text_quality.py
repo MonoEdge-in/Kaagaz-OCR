@@ -105,10 +105,13 @@ class TextLayerRules:
 class PageSignals:
     """What the file says about a page, beyond its text (ML 3, ML 4). Each is 0 to 1."""
 
-    coverage: float  # the largest image's share of the page
-    hidden_share: float  # characters drawn invisible (render modes 3 and 7)
+    coverage: float  # the share of the page under its images (their union)
+    hidden_share: float  # characters drawn so they can't be seen (pdf_signals.is_hidden_char)
     legacy_font_share: float  # characters in an old Devanagari font
     map_error_share: float  # characters with no Unicode mapping
+    # Where the hidden characters are, as page fractions (x0, y0, x1, y1), top-left
+    # origin: the readers drop the words under them, whatever the share.
+    hidden_boxes: tuple[tuple[float, float, float, float], ...] = ()
 
 
 def text_layer_ok(text: str, signals: PageSignals, rules: TextLayerRules) -> RouteDecision:
