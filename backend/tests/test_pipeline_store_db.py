@@ -4,6 +4,7 @@ The concurrency tests force the order with ``wait_until_blocked``, never with sl
 """
 
 import json
+import re
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -601,16 +602,20 @@ def test_links_wait_for_an_old_partner_being_deleted_before_any_link_is_touched(
     assert links(db, customer, first) == set()
 
 
-def deadlock_first(monkeypatch: pytest.MonkeyPatch, module: ModuleType, times: int) -> list[str]:
-    """Make ``module.lock_family`` fail its first ``times`` calls with a real 40P01 from
-    the server, the error PostgreSQL gives when it breaks a deadlock. Returns the calls."""
+def fail_first(
+    monkeypatch: pytest.MonkeyPatch, module: ModuleType, times: int, state: str = "40P01"
+) -> list[str]:
+    """Make ``module.lock_family`` fail its first ``times`` calls with a real error from
+    the server with SQLSTATE ``state`` (40P01: PostgreSQL broke a deadlock). Returns the calls."""
+    assert re.fullmatch(r"[0-9A-Z]{5}", state)
+    raising = text(f"DO $$ BEGIN RAISE EXCEPTION 'failing' USING ERRCODE = '{state}'; END $$")
     calls: list[str] = []
     real: Callable[[Connection, str, str], str | None] = module.lock_family
 
     def failing(conn: Connection, customer_id: str, document_id: str) -> str | None:
         calls.append(document_id)
         if len(calls) <= times:
-            conn.execute(text("DO $$ BEGIN RAISE EXCEPTION 'deadlock' USING ERRCODE = '40P01'; END $$"))
+            conn.execute(raising)
         return real(conn, customer_id, document_id)
 
     monkeypatch.setattr(module, "lock_family", failing)
@@ -625,7 +630,7 @@ def test_a_deadlock_is_retried_and_the_step_succeeds(
     doc = new_document(db, customer)
     store = PgPipelineStore(db)
     store.save(content(customer, doc))
-    calls = deadlock_first(monkeypatch, documents_module if step == "mark_ready" else pipeline_store, 1)
+    calls = fail_first(monkeypatch, documents_module if step == "mark_ready" else pipeline_store, 1)
     steps = {
         "save": lambda: store.save(content(customer, doc, total="2,000.00")),
         "clear": lambda: store.clear(customer, doc),
@@ -648,10 +653,23 @@ def test_a_deadlock_on_every_try_is_an_outage_after_four_tries(
 ) -> None:
     customer, _ = new_customer(db)
     doc = new_document(db, customer)
-    calls = deadlock_first(monkeypatch, pipeline_store, 99)
+    calls = fail_first(monkeypatch, pipeline_store, 99)
 
     with pytest.raises(BackendUnavailable):
         PgPipelineStore(db).save(content(customer, doc))
 
     assert len(calls) == 4  # the first try and 3 retries (AR7)
+    assert counts(db, customer, doc) == EMPTY
+
+
+def test_only_a_deadlock_is_retried(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """55P03 (a lock that could not be taken) is an outage at once: one try, no retry."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    calls = fail_first(monkeypatch, pipeline_store, 99, state="55P03")
+
+    with pytest.raises(BackendUnavailable):
+        PgPipelineStore(db).save(content(customer, doc))
+
+    assert len(calls) == 1
     assert counts(db, customer, doc) == EMPTY
