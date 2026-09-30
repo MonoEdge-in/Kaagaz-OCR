@@ -57,6 +57,14 @@ a loose match locates is never verified (``labels.label_quoted``, council fix 6)
 fitted too and the first was taken (for a labelled item: a later label match
 with its own value).
 
+**Bounded work** (council fix 8). A document can repeat near-matches (every
+"12,000" inside a "12,000.50"), so each item's search checks at most
+``MAX_CHECKS`` candidate spots over both passes (``Checks``, optionally drawing on
+a wider budget, such as a card's), and a labelled item tries at most
+``MAX_LABEL_MATCHES`` label matches. Past either, the item is not found; a first
+match whose look-ahead for a second spot ran out is ``ambiguous`` (a second spot
+is unknown, so the first is not called unique).
+
 Cost. ``reader_text`` is O(n) time and memory for n characters (two 4-byte
 array entries per normalised character), plus the page sort: O(S) for spans
 already in page order, O(S log S) otherwise. One search is O(n + m) in
@@ -77,6 +85,8 @@ from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span
 
 LABEL_WINDOW = 300  # D2: a value_quote within 300 characters after its label_quote
 MAX_QUOTE_CHARS = 300  # security A7: longer quotes, and longer reader text at a match, are dropped
+MAX_CHECKS = 512  # council fix 8: candidate spots one item's search checks, over both passes
+MAX_LABEL_MATCHES = 64  # council fix 8: label matches one labelled item tries
 
 _DEVANAGARI_FIRST, _DEVANAGARI_LAST = chr(0x0900), chr(0x097F)
 
@@ -126,6 +136,30 @@ class Found:
     spans: int = 1  # the spans the match covers
     pages: int = 1  # the pages those spans are on
     whole: bool = False  # the match is exactly one span's whole text
+
+
+class Checks:
+    """How many more candidate spots (``_kept`` calls) a search may check (council fix
+    8). ``shared`` is an optional wider budget, such as a whole card's, that every check
+    also draws on. ``ran_out`` says a check was refused, so the search stopped early."""
+
+    def __init__(self, limit: int = MAX_CHECKS, shared: "Checks | None" = None) -> None:
+        self.left = limit
+        self.ran_out = False
+        self._shared = shared
+
+    def take(self) -> bool:
+        """Spend one check; False when none is left, here or in the shared budget."""
+        if self.left <= 0 or (self._shared is not None and not self._shared.take()):
+            self.ran_out = True
+            return False
+        self.left -= 1
+        return True
+
+    def stop(self) -> None:
+        """No more checks for this search (a labelled item tried its last label)."""
+        self.left = 0
+        self.ran_out = True
 
 
 @dataclass(slots=True)
@@ -197,43 +231,55 @@ def normalise_quote(quote: str) -> str:
     return "".join(builder.chars)
 
 
-def find_quote(reader: ReaderText, quote: str, *, start: int = 0, end: int | None = None) -> Found | None:
-    """The first kept match of ``quote`` whose normalised text lies in [start, end), or None."""
+def find_quote(
+    reader: ReaderText, quote: str, *, start: int = 0, end: int | None = None, checks: Checks | None = None
+) -> Found | None:
+    """The first kept match of ``quote`` whose normalised text lies in [start, end), or None.
+    ``checks``: this item's budget (a fresh ``Checks()`` when None)."""
     if len(quote) > MAX_QUOTE_CHARS:
         return None
+    budget = Checks() if checks is None else checks
     needle = normalise_quote(quote)
     lo, hi = _bounds(reader, start, end)
     for loose in _passes(reader, needle):
-        matches = _matches(reader, _loosen(needle) if loose else needle, loose, lo, hi)
+        matches = _matches(reader, _loosen(needle) if loose else needle, loose, lo, hi, budget)
         first = next(matches, None)
         if first is not None:
-            return replace(first, ambiguous=next(matches, None) is not None)
+            ambiguous = next(matches, None) is not None or budget.ran_out
+            return replace(first, ambiguous=ambiguous)
     return None
 
 
 def find_labelled(
-    reader: ReaderText, label_quote: str | None, value_quote: str, *, start: int = 0, end: int | None = None
+    reader: ReaderText,
+    label_quote: str | None,
+    value_quote: str,
+    *,
+    start: int = 0,
+    end: int | None = None,
+    checks: Checks | None = None,
 ) -> tuple[Found | None, Found | None]:
     """(label, value). With a label: for each label match in order, the value starting within
     LABEL_WINDOW characters after the label's end; the first pair wins, and no pair gives
     (None, None), so the item is dropped. With no label (None or blank): (None, the first match)."""
     if label_quote is not None and len(label_quote) > MAX_QUOTE_CHARS:
         return None, None
+    budget = Checks() if checks is None else checks
     label_needle = "" if label_quote is None else normalise_quote(label_quote)
     if not label_needle:
-        return None, find_quote(reader, value_quote, start=start, end=end)
+        return None, find_quote(reader, value_quote, start=start, end=end, checks=budget)
     if len(value_quote) > MAX_QUOTE_CHARS:
         return None, None
     value_needle = normalise_quote(value_quote)
     lo, hi = _bounds(reader, start, end)
     for loose in _passes(reader, label_needle + value_needle):
         if loose:
-            pairs = _pairs(reader, _loosen(label_needle), _loosen(value_needle), True, lo, hi)
+            pairs = _pairs(reader, _loosen(label_needle), _loosen(value_needle), True, lo, hi, budget)
         else:
-            pairs = _pairs(reader, label_needle, value_needle, False, lo, hi)
+            pairs = _pairs(reader, label_needle, value_needle, False, lo, hi, budget)
         first = next(pairs, None)
         if first is not None:
-            ambiguous = next(pairs, None) is not None
+            ambiguous = next(pairs, None) is not None or budget.ran_out
             return replace(first[0], ambiguous=ambiguous), replace(first[1], ambiguous=ambiguous)
     return None, None
 
@@ -322,24 +368,34 @@ def _bounds(reader: ReaderText, start: int, end: int | None) -> tuple[int, int]:
 
 
 def _pairs(
-    reader: ReaderText, label: str, value: str, loose: bool, lo: int, hi: int
+    reader: ReaderText, label: str, value: str, loose: bool, lo: int, hi: int, checks: Checks
 ) -> Iterator[tuple[Found, Found]]:
-    """Each label match in order, with the first value that starts within LABEL_WINDOW after it."""
+    """Each label match in order, with the first value that starts within LABEL_WINDOW after
+    it; at most MAX_LABEL_MATCHES label matches."""
     if not label or not value:
         return
-    for found_label in _matches(reader, label, loose, lo, hi):
+    for tried, found_label in enumerate(_matches(reader, label, loose, lo, hi, checks), start=1):
         last_start = found_label.end + LABEL_WINDOW
-        found_value = next(_matches(reader, value, loose, found_label.end, hi, last_start), None)
+        found_value = next(_matches(reader, value, loose, found_label.end, hi, checks, last_start), None)
         if found_value is not None:
             yield found_label, found_value
+        if tried >= MAX_LABEL_MATCHES:
+            checks.stop()
+            return
 
 
 def _matches(
-    reader: ReaderText, needle: str, loose: bool, lo: int, hi: int, last_start: int | None = None
+    reader: ReaderText,
+    needle: str,
+    loose: bool,
+    lo: int,
+    hi: int,
+    checks: Checks,
+    last_start: int | None = None,
 ) -> Iterator[Found]:
-    """Every kept match of ``needle`` inside norm [lo, hi), in order; with ``last_start``, only
-    matches starting at or before that norm offset. ``needle`` is already normalised (and
-    loosened for the loose pass, which searches ``reader.loose``)."""
+    """Every kept match of ``needle`` inside norm [lo, hi), in order, while ``checks`` last;
+    with ``last_start``, only matches starting at or before that norm offset. ``needle`` is
+    already normalised (and loosened for the loose pass, which searches ``reader.loose``)."""
     if not needle:
         return
     view = reader.loose if loose else reader.norm
@@ -349,6 +405,8 @@ def _matches(
         view_hi = min(view_hi, _to_view(at, last_start + 1) - 1 + len(needle))
     i = view.find(needle, view_lo, view_hi)
     while i >= 0:
+        if not checks.take():
+            return
         last = i + len(needle) - 1
         found = _kept(reader, at[i] if at else i, (at[last] if at else last) + 1, loose)
         if found is not None:

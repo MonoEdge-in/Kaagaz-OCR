@@ -57,8 +57,9 @@ They are labelled later, always needs review (``labels.label_quoted``, Lead's
 resolution 1). Nothing here logs.
 
 Cost: ``card_input`` is O(n) for n characters of reader text. ``read_card``
-makes one model call, then at most 71 searches of O(n) each in practice
-(``quotes``), and, only when the card is over ``MAX_CARD_BYTES``, one JSON
+makes one model call (``ask_card``), then at most 71 searches (``locate_card``)
+that check at most ``MAX_CARD_CHECKS`` candidate spots in all (council fix 8), each
+check O(log S) plus the match, and, only when the card is over ``MAX_CARD_BYTES``, one JSON
 encoding per dropped item (at most 70, each under 128 KiB).
 """
 
@@ -78,6 +79,7 @@ from kaagaz.extraction.links import MAX_IDENTIFIER_CHARS, normalise_identifier
 from kaagaz.extraction.parsing import parse_date
 from kaagaz.extraction.quotes import (
     MAX_QUOTE_CHARS,
+    Checks,
     Found,
     QuoteCounts,
     ReaderText,
@@ -128,6 +130,7 @@ MAX_TITLE, MAX_SUMMARY, MAX_KEY_FACTS = 120, 600, 20
 MAX_PARTIES, MAX_IDENTIFIERS = 20, 30  # security amendment A7
 MAX_FIELD_CHARS = 63
 MAX_CARD_BYTES = 60_000  # PROVISIONAL: under the 64 KiB CHECK on documents.card, with room to spare
+MAX_CARD_CHECKS = 8192  # council fix 8, PROVISIONAL: candidate spots all of one card's searches check
 
 # PR 6's E4 names, stored and as the model gives them (plan 3.8), including the line fields.
 _INVOICE_FIELDS = (
@@ -355,8 +358,17 @@ def card_input(reader: ReaderText, *, max_chars: int, max_input_tokens: int) -> 
 def read_card(
     chat: ChatModel, reader: ReaderText, *, max_chars: int, max_tokens: int, num_ctx: int, run_id: str
 ) -> CardResult | None:
-    """One chat_json call, then the reply checked and located (the module docstring).
-    None, with no call, when not even part of a page fits the budget (council fix 7).
+    """``ask_card``, then ``locate_card``: one call, then the reply located. None, with no
+    call, when not even part of a page fits the budget (council fix 7)."""
+    reply = ask_card(chat, reader, max_chars=max_chars, max_tokens=max_tokens, num_ctx=num_ctx)
+    return None if reply is None else locate_card(reply, reader, model=chat.chat_model, run_id=run_id)
+
+
+def ask_card(
+    chat: ChatModel, reader: ReaderText, *, max_chars: int, max_tokens: int, num_ctx: int
+) -> dict[str, Any] | None:
+    """The one chat_json call, its reply checked for shape (the module docstring). None,
+    with no call, when not even part of a page fits the budget (council fix 7).
     Raises ModelUnavailable, or ModelOutputError (``card_shape``, or a token limit)."""
     budget = input_token_budget(num_ctx=num_ctx, max_tokens=max_tokens, system=CARD_SYSTEM_PROMPT)
     user = card_input(reader, max_chars=max_chars, max_input_tokens=budget)
@@ -365,7 +377,12 @@ def read_card(
     reply = chat.chat_json(system=CARD_SYSTEM_PROMPT, user=user, schema=CARD_SCHEMA, max_tokens=max_tokens)
     if schema_problem(reply, CARD_SCHEMA) is not None:
         raise ModelOutputError("card_shape")
-    return _Card(reader).read(reply, model=chat.chat_model, run_id=run_id)
+    return reply
+
+
+def locate_card(reply: Mapping[str, Any], reader: ReaderText, *, model: str, run_id: str) -> CardResult:
+    """The checked reply's items located in the reader text (the module docstring). No call."""
+    return _Card(reader).read(reply, model=model, run_id=run_id)
 
 
 # --- the input ----------------------------------------------------------------
@@ -462,6 +479,7 @@ class _Card:
 
     def __init__(self, reader: ReaderText) -> None:
         self._reader = reader
+        self._checks = Checks(MAX_CARD_CHECKS)  # the whole card's budget (council fix 8)
         self._quotes = QuoteCounts()
         self._used: set[str] = set()
         self._reserved = self._bad = self._over = self._dropped_words = 0
@@ -521,7 +539,7 @@ class _Card:
     def _parties(self, raw: Sequence[Mapping[str, str]]) -> list[_Item]:
         items = []
         for party in self._capped(raw, MAX_PARTIES):
-            found = self._quotes.add(find_quote(self._reader, party["name_quote"]))
+            found = self._quotes.add(find_quote(self._reader, party["name_quote"], checks=self._item()))
             if found is None:
                 continue
             field = self._field(PARTY_FIELDS[party["role"]])
@@ -533,7 +551,7 @@ class _Card:
     def _identifiers(self, raw: Sequence[Mapping[str, str]]) -> list[_Item]:
         items = []
         for identifier in self._capped(raw, MAX_IDENTIFIERS):
-            found = self._quotes.add(find_quote(self._reader, identifier["value_quote"]))
+            found = self._quotes.add(find_quote(self._reader, identifier["value_quote"], checks=self._item()))
             if found is None:
                 continue
             if len(normalise_identifier(found.text)) > MAX_IDENTIFIER_CHARS:
@@ -549,7 +567,7 @@ class _Card:
         """The document date's item and its parsed date (or None), or None when not located."""
         if raw is None:
             return None
-        found = self._quotes.add(find_quote(self._reader, raw["value_quote"]))
+        found = self._quotes.add(find_quote(self._reader, raw["value_quote"], checks=self._item()))
         if found is None:
             return None
         field = self._field("document_date")
@@ -567,7 +585,9 @@ class _Card:
             if name in RESERVED_KEY_FACT_FIELDS:
                 self._reserved += 1
                 continue
-            label, found = find_labelled(self._reader, fact["label_quote"], fact["value_quote"])
+            label, found = find_labelled(
+                self._reader, fact["label_quote"], fact["value_quote"], checks=self._item()
+            )
             self._quotes.add(found)
             if found is None:
                 continue
@@ -582,6 +602,10 @@ class _Card:
             }
             items.append(_Item(card, _value(field, found, label)))
         return items
+
+    def _item(self) -> Checks:
+        """One item's search budget, drawing on the card's."""
+        return Checks(shared=self._checks)
 
     def _capped(self, raw: Sequence[Mapping[str, str]], most: int) -> Sequence[Mapping[str, str]]:
         self._over += max(0, len(raw) - most)

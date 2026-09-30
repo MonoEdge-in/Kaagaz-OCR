@@ -3,13 +3,14 @@
 * No model (``MODEL_ENABLED=false``): no call, and so no card, no type and no
   links; the rule values go on as they are. The list shows a document with no
   type as "Unknown" (D6): that is the frontend's.
-* A model: one card call (``card.read_card``), then ``beat(1, 1)``, so the
-  job's heartbeat and progress move after the call (plan 4.2). A document with
-  no text, or with no page that fits the budget, makes no call.
+* A model: one card call (``card.ask_card``), then ``beat(1, 2)``; the
+  searches for its quotes (``card.locate_card``), then ``beat(2, 2)``. So the
+  job's heartbeat and progress move after each (plan 4.2, council fix 8). A
+  document with no text, or with no page that fits the budget, makes no call.
 * The model down or its reply unusable (``ModelUnavailable``,
   ``ModelOutputError``): no card, the rule values are kept, and ``error_code``
   is ``"model_"`` plus the error's code, for the run (the PRD edge case "the
-  model is down halfway").
+  model is down halfway"), after ``beat(1, 2)``.
 * A card value whose field the rule values already have is dropped
   (PROVISIONAL, plan conflict 15), so nothing is counted twice (bug B2 of
   PRD 1); with the reserved key-fact names (``card.RESERVED_KEY_FACT_FIELDS``) a
@@ -22,15 +23,15 @@ card's, and PR 6's invoice values) to ``labels.label_quoted``.
 ``document_links`` gives the link identifiers (D5) from the document's final
 values, and only when it has a card (D6).
 
-Time: one model call and ``card.read_card``'s cost, plus O(v) for the
-de-duplication.
+Time: one model call and ``card.locate_card``'s bounded searches, plus O(v) for
+the de-duplication.
 """
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
-from kaagaz.extraction.card import CardCounts, ChatModel, read_card
+from kaagaz.extraction.card import CardCounts, ChatModel, ask_card, locate_card
 from kaagaz.extraction.links import link_identifiers
 from kaagaz.extraction.quotes import ReaderText
 from kaagaz.extraction.values import ExtractedValue
@@ -63,15 +64,15 @@ def understand(
     if chat is None or not reader.norm:
         return Understanding(DocumentFacts(), rules, [], None, 0, None)
     try:
-        card = read_card(
-            chat, reader, max_chars=card_max_chars, max_tokens=card_max_tokens, num_ctx=num_ctx, run_id=run_id
-        )
+        reply = ask_card(chat, reader, max_chars=card_max_chars, max_tokens=card_max_tokens, num_ctx=num_ctx)
     except (ModelUnavailable, ModelOutputError) as error:
-        beat(1, 1)
+        beat(1, 2)
         return Understanding(DocumentFacts(), rules, [], None, 1, "model_" + error.code)
-    if card is None:  # no page fitted the budget, so no call was made
+    if reply is None:  # no page fitted the budget, so no call was made
         return Understanding(DocumentFacts(), rules, [], None, 0, None)
-    beat(1, 1)
+    beat(1, 2)
+    card = locate_card(reply, reader, model=chat.chat_model, run_id=run_id)
+    beat(2, 2)
     known = {value.field for value in rules}
     quoted = [value for value in card.values if value.field not in known]
     return Understanding(card.facts, rules, quoted, card.counts, 1, None)
