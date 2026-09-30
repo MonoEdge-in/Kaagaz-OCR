@@ -14,6 +14,7 @@ from typing import Any
 
 from kaagaz import settings as settings_module
 from kaagaz.ai.client import ModelOutputError, estimate_tokens, input_token_budget
+from kaagaz.extraction import card as card_module
 from kaagaz.extraction.card import (
     CARD_PROMPT_HASH,
     CARD_SCHEMA,
@@ -25,7 +26,9 @@ from kaagaz.extraction.card import (
     RESERVED_KEY_FACT_FIELDS,
     CardCounts,
     CardResult,
+    ask_card,
     card_input,
+    locate_card,
     read_card,
 )
 from kaagaz.extraction.labels import label_quoted
@@ -34,6 +37,7 @@ from kaagaz.extraction.values import ExtractedValue, QuoteMatch
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 from kaagaz.settings import CHAT_OVERHEAD_TOKENS
 from tests.fakes import FakeChat
+from tests.test_extraction_quotes import checked
 
 RUN = "3f2b6c1e-0000-4000-8000-000000000001"
 
@@ -714,6 +718,31 @@ class ReadCardTest(unittest.TestCase):
             [item["field"] for item in card["key_facts"]],
             [f"fact_{n:02d}" for n in range(len(card["key_facts"]))],
         )
+
+
+class SearchCostTest(unittest.TestCase):
+    """Council fix 8: the card's searches share one budget of spot checks."""
+
+    def test_a_card_checks_at_most_8192_spots_in_all(self) -> None:
+        spans = [line("Total 12,000.50 " * 1000, y=0.01 * n) for n in range(32)]  # 512,000 characters
+        answer = reply(key_facts=[fact(f"fact_{n:02d}", "12,000") for n in range(20)])  # 20 x 512 > 8192
+        result, calls = checked(lambda: read(spans, answer))
+        self.assertLessEqual(calls, 8192)
+        self.assertEqual(card_module.MAX_CARD_CHECKS, 8192)
+        self.assertEqual(
+            (result.counts.quotes_returned, result.counts.dropped_quotes, result.values), (20, 20, [])
+        )
+
+    def test_asking_and_locating_are_two_steps(self) -> None:
+        """So the pipeline can beat the heartbeat between the call and the searches."""
+        answer = reply(parties=[{"role": "seller", "name_quote": "Sharma Traders"}])
+        chat = FakeChat(answer)
+        reader = reader_text(INVOICE)
+        asked = ask_card(chat, reader, max_chars=12000, max_tokens=1024, num_ctx=8192)
+        self.assertEqual((asked, len(chat.calls)), (answer, 1))
+        located = locate_card(answer, reader, model="qwen3:4b", run_id=RUN)
+        self.assertEqual(located, read(INVOICE, answer))
+        self.assertIsNone(ask_card(FakeChat(answer), reader, max_chars=10, max_tokens=1024, num_ctx=8192))
 
 
 class AdversarialTest(unittest.TestCase):

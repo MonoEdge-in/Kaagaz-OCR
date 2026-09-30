@@ -75,7 +75,10 @@ class ModelOnTest(unittest.TestCase):
         understanding, beats = run(chat)
         assert understanding.facts.card is not None
         self.assertEqual(understanding.facts.doc_type, "invoice")
-        self.assertEqual((understanding.model_calls, understanding.error_code, beats), (1, None, [(1, 1)]))
+        # Council fix 8: one beat after the call, one after the searches.
+        self.assertEqual(
+            (understanding.model_calls, understanding.error_code, beats), (1, None, [(1, 2), (2, 2)])
+        )
         self.assertEqual(understanding.rule_values, RULES)
         # The card's invoice_number is a field the rules already have, so it is not stored
         # twice (conflict 15); the total_amount key fact is reserved (A1(a)).
@@ -137,7 +140,7 @@ class ModelDownTest(unittest.TestCase):
         understanding, beats = run(FakeChat(error))
         self.assertEqual(understanding.facts, DocumentFacts())
         self.assertEqual((understanding.rule_values, understanding.quoted_values), (RULES, []))
-        self.assertEqual((understanding.error_code, understanding.model_calls, beats), (code, 1, [(1, 1)]))
+        self.assertEqual((understanding.error_code, understanding.model_calls, beats), (code, 1, [(1, 2)]))
         self.assertEqual(document_links(understanding.facts, RULES), ())
 
     def test_the_model_timing_out(self) -> None:

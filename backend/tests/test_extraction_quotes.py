@@ -10,8 +10,12 @@ pieces it generated, never by the code under test.
 import random
 import unittest
 from bisect import bisect_left
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
+from unittest import mock
 
+from kaagaz.extraction import quotes
 from kaagaz.extraction.quotes import (
     LABEL_WINDOW,
     MAX_QUOTE_CHARS,
@@ -422,6 +426,53 @@ class LoosePassTest(unittest.TestCase):
         assert found is not None
         self.assertEqual((found.text, found.loose), ("ज" + NUKTA + "िला", True))
         self.assertEqual((counts.returned, counts.dropped, counts.loose), (2, 0, 2))
+
+
+def checked(search: Callable[[], Any]) -> tuple[Any, int]:
+    """What ``search`` returns, and how many candidate spots it checked (``quotes._kept``
+    calls): council fix 8 counts the work, never the wall time."""
+    with mock.patch.object(quotes, "_kept", wraps=quotes._kept) as kept:
+        result = search()
+    return result, kept.call_count
+
+
+class SearchCostTest(unittest.TestCase):
+    """Council fix 8: a document built to repeat near-matches cannot make a search slow."""
+
+    near: ReaderText
+    labels: ReaderText
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # 512,000 characters each: every "12,000" is inside "12,000.50", and every
+        # "Total" is followed by text that never holds the value.
+        cls.near = reader_text([line("Total 12,000.50 " * 1000, y=0.01 * n) for n in range(32)])
+        cls.labels = reader_text([line("Total abcdefghij " * 1000, y=0.01 * n) for n in range(30)])
+
+    def test_one_search_checks_at_most_512_spots(self) -> None:
+        found, calls = checked(lambda: find_quote(self.near, "12,000"))
+        self.assertIsNone(found)
+        self.assertLessEqual(calls, 512)
+        self.assertEqual(quotes.MAX_CHECKS, 512)
+
+    def test_a_labelled_search_tries_at_most_64_label_matches(self) -> None:
+        pair, calls = checked(lambda: find_labelled(self.labels, "Total", "12,000"))
+        self.assertEqual(pair, (None, None))
+        self.assertLessEqual(calls, 64)
+        self.assertEqual(quotes.MAX_LABEL_MATCHES, 64)
+
+    def test_a_labelled_search_near_many_values_still_checks_at_most_512_spots(self) -> None:
+        pair, calls = checked(lambda: find_labelled(self.near, "Total", "12,000"))
+        self.assertEqual(pair, (None, None))
+        self.assertLessEqual(calls, 512)
+
+    def test_a_first_match_whose_look_ahead_ran_out_is_ambiguous(self) -> None:
+        """Past the budget a second spot is unknown, so the first is not called unique."""
+        reader = reader_text([line("Paid 12,000 in cash"), line("Total 12,000.50 " * 1000, y=0.2)])
+        found, calls = checked(lambda: find_quote(reader, "12,000"))
+        assert found is not None
+        self.assertEqual((found.text, found.ambiguous), ("12,000", True))
+        self.assertLessEqual(calls, 512)
 
 
 class QuoteCountsTest(unittest.TestCase):
