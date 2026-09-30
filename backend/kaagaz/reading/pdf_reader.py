@@ -205,7 +205,7 @@ def _for_each_page(data: bytes, max_pages: int, visit: Callable[[Any, Any, int],
         check_page_count(count, max_pages)
         document = open_pdf(data)
         try:
-            if len(document) < count:  # the two parsers disagree on the file's pages
+            if len(document) != count:  # the two parsers disagree on the file's pages: read neither
                 raise ReadError("corrupt_file")
             for number in range(1, count + 1):
                 visit(pdf, document, number)
