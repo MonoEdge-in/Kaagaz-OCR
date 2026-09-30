@@ -20,7 +20,7 @@ import kaagaz
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
-from kaagaz.db.runs import PgRuns, finish_run
+from kaagaz.db.runs import PgRuns, finish_run, start_run
 from kaagaz.db.trash import lock_family
 from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import FinishedRun, Progress, RunTotals, Superseded
@@ -74,6 +74,28 @@ def test_start_run_closes_a_stale_run_that_started_after_now(db: Database) -> No
     assert runs(db, customer, doc) == [
         (now, "running", None, T0, None),
         (ahead, "superseded", None, T1, T1),
+    ]
+
+
+def test_two_starts_at_once_leave_one_open_run(db: Database) -> None:
+    """The second start waits for the first on the document's run lock, then
+    supersedes it, so exactly one run is left open."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    session = new_session()
+    named = _named_database(session)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with db.customer(customer) as conn:
+                first = start_run(conn, customer, doc, now=T0)
+                starting = pool.submit(PgRuns(named).start, customer, doc, now=T1)
+                wait_until_blocked(db, application_name=session)
+            second = starting.result(timeout=10)
+    finally:
+        named.engine.dispose()
+    assert runs(db, customer, doc) == [
+        (first, "superseded", None, T0, T1),
+        (second, "running", None, T1, None),
     ]
 
 

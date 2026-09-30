@@ -277,3 +277,16 @@ def test_a_failure_code_outside_the_pattern_is_refused(db: Database) -> None:
     with pytest.raises(IntegrityError) as refused:
         PgDocuments(db).set_failed(customer, doc, "Bad-Code")
     assert violation(refused.value) == ("23514", "documents_failure_code_check")
+
+
+def test_a_document_has_at_most_one_running_run(db: Database) -> None:
+    """The backstop behind start_run's lock: a second running run is refused."""
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        doc = insert_document(conn, customer)
+    running = text(_RUN.format("", "'running', NULL"))
+    with db.customer(customer) as conn:
+        conn.execute(running, {"c": customer, "d": doc, "t": T0})
+    with pytest.raises(IntegrityError) as refused, db.customer(customer) as conn:
+        conn.execute(running, {"c": customer, "d": doc, "t": T0})
+    assert violation(refused.value) == ("23505", "processing_runs_one_running")
