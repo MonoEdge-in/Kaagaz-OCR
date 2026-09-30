@@ -247,6 +247,16 @@ class RunningLinesTest(unittest.TestCase):
         for text in ("101", "205", "318", "12,000", "24,500", "31,750"):
             self.assertIn(text, kept)
 
+    def test_an_invoice_number_rising_one_a_page_is_kept_but_a_small_page_offset_is_not(self) -> None:
+        # PROVISIONAL (lead): a page counter's offset from the page number is at most 10,
+        # so invoices 101 to 103 on pages 1 to 3 (offset 100) are kept.
+        spans = [line(f"Invoice No: {100 + n}", 0.02, page=n) for n in (1, 2, 3)]
+        spans += [line(f"Page {n + 2}", 0.95, page=n) for n in (1, 2, 3)]  # offset 2: a counter
+        kept = "\n".join(texts(spans))
+        for n in (101, 102, 103):
+            self.assertIn(f"Invoice No: {n}", kept)
+        self.assertNotIn("Page", kept)
+
     def test_a_carried_amount_at_the_top_of_each_page_stays_in_its_sentence(self) -> None:
         spans = [line("Profit of the month Sept is", 0.9, page=15)]
         for page, amount in ((16, "$12,000"), (17, "$48,500"), (18, "$9,250")):
