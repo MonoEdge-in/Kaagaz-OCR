@@ -242,7 +242,9 @@ class LabelQuotedTest(unittest.TestCase):
     def test_the_same_value_located_twice_is_one_value(self) -> None:
         twice = [quoted("1,000.00"), quoted("1,000.00")]
         labelled = label_quoted(twice, [second_line("Cotton 1,000.00", LINE_BOX)])
-        self.assertEqual([reason(value) for value in labelled], [("verified", "readers_agree", "1,000.00")] * 2)
+        self.assertEqual(
+            [reason(value) for value in labelled], [("verified", "readers_agree", "1,000.00")] * 2
+        )
 
     def test_a_value_located_elsewhere_in_the_same_box_counts_too(self) -> None:
         """Council fix 2: rule values and quoted values on one page are counted together."""

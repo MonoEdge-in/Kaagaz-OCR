@@ -49,8 +49,10 @@ Two labellers (ML amendment 2):
      ``second_reading`` is the matched part of that line, or the whole line when
      it is not there.
 
-"More than one value" counts different texts: the same text twice at one box
-is one value located twice.
+"More than one value" counts every located value in the box (council fix 2):
+"Subtotal 500 Total 500" holds two. Only the same (record, field, text) twice
+is one value located twice. ``also_located`` adds the values the other
+labeller gets (the rule values next to the quoted ones), so both are counted.
 
 PROVISIONAL: what "verified" promises is Vrushit's decision (CLAUDE.md, due
 9 Oct). Until then it means exactly the rules above.
@@ -101,13 +103,16 @@ def label_values(
     values: Iterable[ExtractedValue],
     second: Sequence[Span] | None,
     readings: Mapping[Location, str] | None = None,
+    *,
+    also_located: Iterable[ExtractedValue] = (),
 ) -> list[ExtractedValue]:
     """Label each value the rules found. ``second`` is the second reader's spans (None:
     there is no second reader for this type); ``readings`` are extra second readings by
-    box, which win over ``second`` for that box."""
+    box, which win over ``second`` for that box; ``also_located`` are the document's
+    other located values, counted for the shared boxes only."""
     values = list(values)
     lines = _lines_by_page(second)
-    shared = _shared_boxes(values)
+    shared = _shared_boxes([*values, *also_located])
     labelled = []
     for value in values:
         box = value.location
@@ -124,11 +129,14 @@ def label_quoted(
     values: Iterable[ExtractedValue],
     second: Sequence[Span] | None,
     readings: Mapping[Location, str] | None = None,
+    *,
+    also_located: Iterable[ExtractedValue] = (),
 ) -> list[ExtractedValue]:
-    """Label each value the model located by quoting (the module docstring, rules 1 to 6)."""
+    """Label each value the model located by quoting (the module docstring, rules 1 to 6).
+    ``also_located``: as in ``label_values``."""
     values = list(values)
     lines = _lines_by_page(second)
-    shared = _shared_boxes(values)
+    shared = _shared_boxes([*values, *also_located])
     labelled = []
     for value in values:
         box = value.location
@@ -169,12 +177,13 @@ def _lines_by_page(second: Sequence[Span] | None) -> _Lines:
 
 
 def _shared_boxes(values: Sequence[ExtractedValue]) -> set[Location]:
-    """The boxes that hold more than one value (different texts). O(v)."""
-    texts: dict[Location, set[str]] = {}
+    """The boxes that hold more than one located value; the same (record, field, text)
+    twice counts once. O(v)."""
+    located: dict[Location, set[tuple[str, str, str]]] = {}
     for value in values:
         if isinstance(value.location, BoxLocation):
-            texts.setdefault(value.location, set()).add(comparable(value.value_text))
-    return {box for box, seen in texts.items() if len(seen) > 1}
+            located.setdefault(value.location, set()).add((value.record_key, value.field, value.value_text))
+    return {box for box, seen in located.items() if len(seen) > 1}
 
 
 def _reading(box: BoxLocation, lines: _Lines, readings: Mapping[Location, str] | None) -> str | None:
