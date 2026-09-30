@@ -323,6 +323,13 @@ describe("estimateIngestSeconds", () => {
     expect(estimateIngestSeconds("image", 1 * MB)).toBe(onePage("image"));
     expect(estimateIngestSeconds("sheet", 9 * MB)).toBe(onePage("sheet"));
   });
+
+  it("uses a PDF's real page count when it is known, else MB divided by 0.4", () => {
+    const seconds = (pages: number) => Math.max(4, Math.round(pages * SECONDS_PER_PAGE.pdf));
+    expect(estimateIngestSeconds("pdf", 40 * MB, 1, 30)).toBe(seconds(30));
+    expect(estimateIngestSeconds("pdf", 40 * MB, 1, null)).toBe(seconds(100));
+    expect(estimateIngestSeconds("pdf", 40 * MB)).toBe(seconds(100));
+  });
 });
 
 describe("estimatePages (PRD 2, X4)", () => {
@@ -343,6 +350,27 @@ describe("estimatePages (PRD 2, X4)", () => {
   it("counts a photo or a sheet as one page, whatever its size", () => {
     expect(estimatePages("image", 15 * MB)).toBe(1);
     expect(estimatePages("sheet", 9 * MB)).toBe(1);
+  });
+
+  it("uses a PDF's real page count once the upload flow has counted it (PROVISIONAL)", () => {
+    expect(estimatePages("pdf", 40 * MB, 3)).toBe(3);
+    expect(estimatePages("pdf", 0.1 * MB, 250)).toBe(250);
+  });
+
+  it("still rounds the count up, to at least 1", () => {
+    expect(estimatePages("pdf", 40 * MB, 2.5)).toBe(3);
+    expect(estimatePages("pdf", 40 * MB, 0)).toBe(1);
+  });
+
+  it("falls back to MB divided by 0.4 when the count is not known", () => {
+    expect(estimatePages("pdf", 0.41 * MB, null)).toBe(2);
+    expect(estimatePages("pdf", 4 * MB, null)).toBe(10);
+    expect(estimatePages("pdf", 0, null)).toBe(1);
+  });
+
+  it("leaves a photo or a sheet at one page, count or not", () => {
+    expect(estimatePages("image", 15 * MB, 7)).toBe(1);
+    expect(estimatePages("sheet", 9 * MB, 7)).toBe(1);
   });
 });
 
