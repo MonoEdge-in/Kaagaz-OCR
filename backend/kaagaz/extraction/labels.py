@@ -38,13 +38,16 @@ Two labellers (ML amendment 2):
   and PR 6's invoice values), with security amendment A2's stricter rules:
 
   1. a card value is ``model_chosen``;
-  2. a cell is ``direct_cell``;
-  3. an OCR value is labelled as ``label_values`` labels one (``ocr_script``, a
+  2. a value whose quote covers more than one span (two cells, two lines, two
+     pages) or only part of a cell is ``model_chosen``: no one reading of its
+     spot can confirm it (council fix 5, from ``ExtractedValue.quote``);
+  3. a cell is ``direct_cell``;
+  4. an OCR value is labelled as ``label_values`` labels one (``ocr_script``, a
      shared box, then equality with its vision reading only);
-  4. a box that holds more than one located value (the table's box given to
+  5. a box that holds more than one located value (the table's box given to
      each cell, a line or paragraph holding several values) is ``single_reader``;
-  5. a vision reading must equal the value (after its label), never contain it;
-  6. otherwise the value agrees when its comparable text is a whole-token run
+  6. a vision reading must equal the value (after its label), never contain it;
+  7. otherwise the value agrees when its comparable text is a whole-token run
      inside the second reader's line (``quotes.find_quote``), and
      ``second_reading`` is the matched part of that line, or the whole line when
      it is not there.
@@ -70,7 +73,7 @@ from kaagaz.chunking.script import has_devanagari_letters, ocr_script_suspect
 from kaagaz.extraction.labelled import value_after_label
 from kaagaz.extraction.quotes import find_quote, normalise_quote, reader_text
 from kaagaz.extraction.values import CARD_RECORD, NEEDS_REVIEW, VERIFIED, ExtractedValue
-from kaagaz.reading.spans import BoxLocation, Location, Span
+from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span
 
 LOW_CONFIDENCE = 0.90
 MIN_OVERLAP = 0.5
@@ -133,7 +136,7 @@ def label_quoted(
     *,
     also_located: Iterable[ExtractedValue] = (),
 ) -> list[ExtractedValue]:
-    """Label each value the model located by quoting (the module docstring, rules 1 to 6).
+    """Label each value the model located by quoting (the module docstring, rules 1 to 7).
     ``also_located``: as in ``label_values``."""
     values = list(values)
     lines = _lines_by_page(second)
@@ -141,7 +144,7 @@ def label_quoted(
     labelled = []
     for value in values:
         box = value.location
-        if value.record_key == CARD_RECORD:
+        if value.record_key == CARD_RECORD or _spot_unsure(value):
             labelled.append(_needs_review(value, "model_chosen", None))
         elif not isinstance(box, BoxLocation):
             labelled.append(replace(value, label=VERIFIED, label_reason="direct_cell"))
@@ -203,6 +206,16 @@ def _best_line(box: BoxLocation, lines: list[tuple[Span, BoxLocation]]) -> Span 
         if score >= MIN_OVERLAP and score > best_score:
             best, best_score = span, score
     return best
+
+
+def _spot_unsure(value: ExtractedValue) -> bool:
+    """Rule 2 of ``label_quoted``: the quote is not one span, or is only part of a cell."""
+    quote = value.quote
+    if quote is None:
+        return False
+    return (
+        quote.spans > 1 or quote.pages > 1 or (isinstance(value.location, CellLocation) and not quote.whole)
+    )
 
 
 def _is_ocr(value: ExtractedValue) -> bool:

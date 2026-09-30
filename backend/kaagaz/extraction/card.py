@@ -82,6 +82,7 @@ from kaagaz.extraction.quotes import (
     ReaderText,
     find_labelled,
     find_quote,
+    located_value,
     normalise_quote,
 )
 from kaagaz.extraction.values import CARD_RECORD, ExtractedValue
@@ -575,7 +576,7 @@ class _Card:
                 "label_page": None if label is None else label.location.page,
                 "label_region": None if label is None else location_to_json(label.location),
             }
-            items.append(_Item(card, _value(field, found, None if label is None else label.location)))
+            items.append(_Item(card, _value(field, found, label)))
         return items
 
     def _capped(self, raw: Sequence[Mapping[str, str]], most: int) -> Sequence[Mapping[str, str]]:
@@ -620,16 +621,8 @@ def _spot(location: Location) -> dict[str, Any]:
     return {"page": location.page, "region": location_to_json(location)}
 
 
-def _value(field: str, found: Found, label: Location | None = None) -> ExtractedValue:
-    return ExtractedValue(
-        record_key=CARD_RECORD,
-        field=field,
-        value_text=found.text,
-        value_raw=found.text,
-        location=found.location,
-        confidence=found.confidence,
-        label_location=label,
-    )
+def _value(field: str, found: Found, label: Found | None = None) -> ExtractedValue:
+    return located_value(found, record_key=CARD_RECORD, field=field, label=label)
 
 
 def _size(card: Mapping[str, Any]) -> int:

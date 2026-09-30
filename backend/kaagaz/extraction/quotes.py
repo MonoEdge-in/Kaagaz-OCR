@@ -71,6 +71,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 
 from kaagaz.chunking.script import fold_digits, has_devanagari_letters
+from kaagaz.extraction.values import ExtractedValue, QuoteMatch
 from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span
 
 LABEL_WINDOW = 300  # D2: a value_quote within 300 characters after its label_quote
@@ -121,6 +122,9 @@ class Found:
     origin: str | None  # "ocr" when any matched span is OCR, else the first span's
     loose: bool = False  # found only by the loose pass
     ambiguous: bool = False  # a later spot fitted too; this, the first, was taken
+    spans: int = 1  # the spans the match covers
+    pages: int = 1  # the pages those spans are on
+    whole: bool = False  # the match is exactly one span's whole text
 
 
 @dataclass(slots=True)
@@ -141,6 +145,21 @@ class QuoteCounts:
             self.loose += found.loose
             self.ambiguous += found.ambiguous
         return found
+
+
+def located_value(found: Found, *, record_key: str, field: str, label: Found | None = None) -> ExtractedValue:
+    """The value a located quote gives: the reader's text at its spot, with its label's
+    spot and how it was found, not labelled yet (the card, and PR 6's invoice values)."""
+    return ExtractedValue(
+        record_key=record_key,
+        field=field,
+        value_text=found.text,
+        value_raw=found.text,
+        location=found.location,
+        confidence=found.confidence,
+        label_location=None if label is None else label.location,
+        quote=QuoteMatch(spans=found.spans, pages=found.pages, whole=found.whole),
+    )
 
 
 def reader_text(spans: Sequence[Span]) -> ReaderText:
@@ -385,6 +404,9 @@ def _kept(reader: ReaderText, j0: int, j1: int, loose: bool) -> Found | None:
         confidence=min(confidences) if confidences else None,
         origin="ocr" if "ocr" in origins else origins[0],
         loose=loose,
+        spans=len(matched),
+        pages=len({span.location.page for span in matched}),
+        whole=len(matched) == 1 and text == matched[0].text,
     )
 
 
