@@ -1,14 +1,18 @@
 """``embed_pieces`` with a fake model, against a real PostgreSQL."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Connection, text
+from sqlalchemy.exc import OperationalError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.db.engine import Database
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.indexing import embed_pieces
-from tests.db_support import new_customer
+from tests.db_support import APP_ROLE, new_customer
 from tests.test_search_db import add_document, add_pieces, axis, run
 
 pytestmark = pytest.mark.db
@@ -41,6 +45,23 @@ class FakeModel:
 
     def read_image(self, *, png: bytes, instruction: str) -> str:
         raise AssertionError("indexing never reads images")
+
+
+class GoesDown(Database):
+    """The test database, until transaction number ``down_at``: from then on the server
+    cannot be reached (OperationalError), as in an outage."""
+
+    def __init__(self, db: Database, down_at: int) -> None:
+        super().__init__(db.engine, APP_ROLE)
+        self._left = down_at - 1
+
+    @contextmanager
+    def customer(self, customer_id: str) -> Iterator[Connection]:
+        if self._left == 0:
+            raise OperationalError("SELECT 1", {}, ConnectionRefusedError())
+        self._left -= 1
+        with super().customer(customer_id) as conn:
+            yield conn
 
 
 def _embeddings(db: Database, customer_id: str, document_id: str) -> list[tuple[bool, str | None]]:
@@ -161,3 +182,17 @@ def test_batch_size_must_be_positive(db: Database) -> None:
     customer, _ = new_customer(db)
     with pytest.raises(ValueError, match="batch_size"):
         embed_pieces(db, customer, add_document(db, customer), FakeModel(), batch_size=0)
+
+
+@pytest.mark.parametrize("down_at", [1, 2, 3])  # the count, the first fetch, the first write
+def test_a_database_outage_is_backend_unavailable(db: Database, down_at: int) -> None:
+    """So the pipeline ends the run database_unavailable and the job is retried later,
+    rather than an internal error that also stops the worker."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [("one", None), ("two", None)])
+
+    with pytest.raises((BackendUnavailable, OperationalError)) as caught:
+        embed_pieces(GoesDown(db, down_at), customer, document, FakeModel())
+    assert isinstance(caught.value, BackendUnavailable)
+    assert str(caught.value) == "database"
