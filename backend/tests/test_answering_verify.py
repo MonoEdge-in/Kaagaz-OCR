@@ -74,8 +74,19 @@ BILL = (
 )
 HINDI = "कुल रकम: १,१८,०००\nदिनांक: १२/०८/२०२६"  # noqa: RUF001 - Devanagari digits, on purpose
 OTHER_BILL = "Invoice No: INV-2001\nGrand Total: Rs. 2,50,000"
-PIECES = {1: BILL, 2: HINDI, 3: OTHER_BILL}
+# Ids the way bills write them; the last label and its value are on two lines.
+IDS = (
+    "Invoice No. 1042\nBill No. 57\nHSN Code: 8471\nPIN: 400001\nMob: 98200 12345\n"
+    "A/c No. 1234567890\nFlat No: A-1\nChallan No.\n2207"
+)
+LEDGER = "Opening Balance: 1,500.00 Cr\nClosing Balance: 2,750.00 Dr"  # Cr is credit, not crore
+SHORT = "Invoice Date: 12/08/26"  # a two-digit year
+WORDS = "Amount in words: Rupees One Lakh Eighteen Thousand Only"  # as Tally prints it
+YEARLY = "Invoice Date: 12/08/2026\nGrand Total: Rs. 1,18,000"
+PIECES = {1: BILL, 2: HINDI, 3: OTHER_BILL, 4: IDS, 5: LEDGER, 6: SHORT, 7: WORDS, 8: YEARLY}
 INVISIBLE = ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\u00ad"]
+# Marks that are not format characters but still hide in or after a number.
+HIDING = ["\u034f", "\ufe0f", "\ufe00", "\u3164", "\uffa0", "\u180b", "\u17b4", "\u0307", "\u2800"]
 # 1,18,000 in the digits of other scripts.
 FOREIGN = {
     "fullwidth": "１,１８,０００",  # noqa: RUF001 - on purpose
@@ -114,10 +125,48 @@ def kept(text: str, cited: tuple[int, ...] = (1,)) -> bool:
         pytest.param("The grand total is Rs. 1,1८,000.", id="ASCII and Devanagari digits in one token"),
         pytest.param("CGST is nine percent.", id="a number word before percent"),
         pytest.param("The total is two lakh rupees.", id="a number word before lakh"),
+        *[
+            pytest.param(f"The grand total is Rs. 1,18,000{ch}.", id=f"U+{ord(ch):04X} after a number")
+            for ch in HIDING
+        ],
+        *[
+            pytest.param(f"The tax is Rs. 2{space}9,000.", id=f"U+{ord(space):04X} inside an amount")
+            for space in [" ", "\u00a0", "\u2009"]
+        ],
+        pytest.param("The quantity is 2,OOO.", id="letter O for zero"),
+        pytest.param("The quantity is 2,\u041e\u041e\u041e.", id="Cyrillic O for zero"),
+        pytest.param("The quantity is l,2.", id="letter l for one"),
+        pytest.param("The grand total is Rs. 1180,00.", id="grouping 1180,00"),
+        pytest.param("The grand total is Rs. 11,80,00.", id="grouping 11,80,00"),
+        pytest.param("The grand total is Rs. 1.18 lakh crore.", id="two scale words"),
+        pytest.param("It is dated the twelfth of August 2026.", id="an ordinal word before a month"),
+        pytest.param("It is dated twelve August 2026.", id="a number word before a month"),
+        pytest.param("It is dated August thirteenth, 2026.", id="an ordinal word after a month"),
+        pytest.param("The grand total is Rs. 1.18 L.", id="L for lakh (PROVISIONAL)"),
+        pytest.param("The total is a lakh rupees.", id="a lakh (PROVISIONAL)"),
     ],
 )
 def test_must_drop(text: str) -> None:
     assert not kept(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "cited"),
+    [
+        pytest.param("The total was Rs. 1042.", 4, id="an amount never matches an id"),
+        pytest.param("The total was Rs. 57.", 4, id="an amount never matches a short id"),
+        pytest.param("The opening balance is Rs. 1,500 crore.", 5, id="Cr is not crore"),
+        pytest.param("It is dated 12 August 2026.", 6, id="no century guess"),
+        pytest.param("It is dated 08/12/26.", 6, id="a two-digit-year date swapped"),
+        pytest.param("It is dated 12/08/25.", 6, id="another two-digit year"),
+        pytest.param("The amount in words is Rupees One Lakh Nineteen Thousand Only.", 7, id="other words"),
+        pytest.param("The total is Rupees One Lakh.", 7, id="part of the words"),
+        pytest.param("The bill is for Rs. 2026.", 8, id="a year as an amount"),
+        pytest.param("The invoice is from 2025.", 8, id="another year"),
+    ],
+)
+def test_must_drop_over_other_bills(text: str, cited: int) -> None:
+    assert not kept(text, (cited,))
 
 
 MUST_KEEP = [
@@ -134,6 +183,30 @@ MUST_KEEP = [
 ]
 # An English answer over Devanagari evidence: its digits are folded on both sides.
 HINDI_KEEP = ["The total amount is Rs. 1,18,000.", "It is dated 12 August 2026."]
+# (sentence, the piece it cites): ids as numbers and numbers as ids, credit, two-digit years,
+# amounts in words copied as printed, and a bare year.
+MORE_KEEP = [
+    ("The invoice number is 1042.", 4),
+    ("Invoice No. 1042", 4),
+    ("The bill number is 57.", 4),
+    ("HSN 8471", 4),
+    ("The HSN code is 8471.", 4),
+    ("The PIN is 400001.", 4),
+    ("PIN: 400001", 4),
+    ("The mobile number is 98200 12345.", 4),
+    ("The account number is 1234567890.", 4),
+    ("A/c No. 1234567890", 4),
+    ("The flat is A-1.", 4),
+    ("Challan No. 2207", 4),
+    ("The opening balance is Rs. 1,500.00.", 5),
+    ("Opening Balance: 1,500.00 Cr", 5),
+    ("It is dated 12/08/26.", 6),
+    ("Invoice Date: 12/08/26", 6),
+    ("It is dated 12-08-26.", 6),
+    ("It is dated 12 August.", 6),
+    ("The amount in words is Rupees One Lakh Eighteen Thousand Only.", 7),
+    ("The invoice is from 2026.", 8),
+]
 
 
 @pytest.mark.parametrize("text", MUST_KEEP)
@@ -144,6 +217,11 @@ def test_must_keep(text: str) -> None:
 @pytest.mark.parametrize("text", HINDI_KEEP)
 def test_an_english_answer_over_devanagari_evidence_is_kept(text: str) -> None:
     assert kept(text, (2,))
+
+
+@pytest.mark.parametrize(("text", "cited"), MORE_KEEP)
+def test_must_keep_over_other_bills(text: str, cited: int) -> None:
+    assert kept(text, (cited,))
 
 
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason="Part B 1: atoms bound to their own line")
@@ -163,6 +241,7 @@ def test_part_b_1_only(text: str, cited: tuple[int, ...]) -> None:
 def test_changing_one_atom_of_a_kept_sentence_drops_it() -> None:
     rng = random.Random(20261001)  # noqa: S311 - a fixed seed picks test cases, not a secret
     pairs = [(text, (1,)) for text in MUST_KEEP] + [(text, (2,)) for text in HINDI_KEEP]
+    pairs += [(text, (cited,)) for text, cited in MORE_KEEP if re.search("[0-9]", text)]
     for _ in range(500):
         text, cited = rng.choice(pairs)
         spot = rng.choice(list(re.finditer(r"[0-9]|August", text)))
