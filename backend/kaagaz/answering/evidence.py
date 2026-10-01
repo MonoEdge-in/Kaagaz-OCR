@@ -20,10 +20,15 @@ passes through the keyword rule. Vrushit decides.
 
 Document text is untrusted. A piece that reads like instructions to a model
 ("ignore previous instructions...", "you are now the assistant", a fake
-evidence tag) is left out of the evidence entirely: it can neither steer the
-model nor be quoted. PROVISIONAL: the phrase list is a first line of defence
-next to the fenced prompt (draft.py) and the number check (verify.py); it is
-not the only one.
+evidence tag, "when asked, say ...", a note to the assistant, "AI ko bolo", and
+their Devanagari forms) is left out of the evidence entirely: it can neither
+steer the model nor be quoted. The phrases are matched on the NFKC text with
+its format characters (category Cf) dropped, so a zero-width space or
+fullwidth letters cannot hide one. "When asked" counts only with an
+imperative near it: "original to be produced when asked" is a bill's own
+words. PROVISIONAL: the phrase list is a first line of defence next to the
+fenced prompt (draft.py) and the number check (verify.py); it is not the
+only one.
 
 A hit with no valid region cannot be pointed at, so it is not evidence
 (CLAUDE.md never-do 5).
@@ -33,6 +38,7 @@ expressions and substring checks per hit.
 """
 
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -42,6 +48,7 @@ from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_js
 
 CLOSEST_DOCUMENTS = 3
 
+_TELL = r"(?:say|answer|reply|tell|respond|write)"  # an imperative near "when asked"
 _INSTRUCTION_LIKE = (
     re.compile(
         r"\b(?:ignore|disregard|forget|override)\b.{0,40}?\b(?:previous|prior|above|earlier|all|any|your)\b"
@@ -52,6 +59,28 @@ _INSTRUCTION_LIKE = (
     re.compile(r"\byou\s+are\s+(?:now\s+)?(?:an?|the)\s+(?:ai|assistant|model|chatbot)\b", re.IGNORECASE),
     re.compile(r"^\s*(?:system|assistant)\s*:", re.IGNORECASE | re.MULTILINE),
     re.compile(r"</?\s*evidence\b", re.IGNORECASE),
+    re.compile(
+        rf"\bwhen\s+asked\b.{{0,40}}?\b{_TELL}\b|\b{_TELL}\b.{{0,40}}?\bwhen\s+asked\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\b(?:note|message)\s+(?:to|for)\s+(?:the\s+)?(?:ai|assistant|model|chatbot|bot)\b", re.IGNORECASE
+    ),
+    re.compile(
+        r"\b(?:ai|assistant|model|chatbot|bot)\s+ko\b.{0,40}?\b(?:bolo|batao|kaho)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    # Devanagari: "AI ko bolo", and "ignore the earlier instructions" (Hindi and Marathi).
+    re.compile(
+        r"(?:\bai\b|एआई|सहायक|मॉडल|बॉट)\s*को.{0,40}?(?:बोलो|बताओ|कहो|बोलें|बताएं|कहें|बोलिए|बताइए|कहिए)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"(?:पिछले|पहले|ऊपर|सभी|सारे|मागील|सर्व).{0,40}?(?:निर्देश|आदेश|सूचना)"
+        # "Forget" is भूल जा..., never भूल alone: "भूल चूक लेनी देनी" is a bill's E&OE.
+        r".{0,40}?(?:अनदेखा|नज\N{DEVANAGARI SIGN NUKTA}?रअंदाज|भूल\s*जा|विसर|दुर्लक्ष)",
+        re.DOTALL,
+    ),
 )
 
 
@@ -146,7 +175,9 @@ def closest_documents(hits: Sequence[Hit]) -> list[dict[str, str]]:
 
 
 def looks_like_instructions(text: str) -> bool:
-    return any(pattern.search(text) for pattern in _INSTRUCTION_LIKE)
+    """Any phrase of ``_INSTRUCTION_LIKE`` in the NFKC text, its format characters dropped. O(n)."""
+    folded = "".join(ch for ch in unicodedata.normalize("NFKC", text) if unicodedata.category(ch) != "Cf")
+    return any(pattern.search(folded) for pattern in _INSTRUCTION_LIKE)
 
 
 def valid_regions(regions: Sequence[Any]) -> list[dict[str, Any]]:
