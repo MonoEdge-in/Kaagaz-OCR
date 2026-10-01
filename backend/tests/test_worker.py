@@ -318,6 +318,33 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(handed_out, [None] * 12)
         self.assertEqual(queue.pending(), 0)
 
+    def test_a_worker_clock_that_steps_back_still_renews(self) -> None:
+        """The clock should be monotonic. If it steps back anyway (50 s here), the next beat
+        renews at once, rather than waiting for the clock to catch up while the lease runs out."""
+        clock, worker_clock = FakeClock(), FakeClock(100.0)
+        queue = RenewalLog(clock)
+        queue.enqueue(GOOD)
+        handed_out = []
+
+        def beats_after_a_step_back(job: Job, beat: Heartbeat) -> None:
+            clock.advance(20)
+            worker_clock.advance(-50)
+            beat()
+            clock.advance(20)  # 40 s after the receive: past the first lease
+            handed_out.append(queue.receive())  # a second worker asks for work
+
+        worker = Worker(
+            queue,
+            beats_after_a_step_back,
+            max_attempts=MAX_ATTEMPTS,
+            on_exhausted=lambda job: None,
+            clock=worker_clock.now,
+        )
+        self.assertTrue(worker.run_once())
+        self.assertEqual(queue.renewed_at, [20])
+        self.assertEqual(handed_out, [None])
+        self.assertEqual(queue.pending(), 0)
+
     def test_heartbeat_after_the_lease_is_lost_does_not_crash_the_worker(self) -> None:
         clock, queue = make_queue()
         queue.enqueue(GOOD)
