@@ -12,7 +12,9 @@ there, so a long document keeps its lease (a 20k-row sheet is about 626
 batches, longer than one lease).
 
 ``ModelUnavailable`` propagates: the caller decides (the pipeline logs it and
-marks the document ready without vectors; word and typo search still work).
+marks the document ready without vectors; word and typo search still work). A
+database that cannot be reached is ``BackendUnavailable("database")``, so the
+job is retried.
 
 Cost: ceil(n / batch_size) model calls and 2 * ceil(n / batch_size) + 2 short
 transactions for n pieces; O(batch_size * dim) memory.
@@ -23,7 +25,7 @@ from collections.abc import Callable
 from sqlalchemy import text
 
 from kaagaz.ai.client import ModelClient, ModelOutputError
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, unavailable
 from kaagaz.search.hybrid import vector_literal
 
 _TO_EMBED = text(
@@ -55,12 +57,12 @@ def embed_pieces(
     the ``total`` pieces that had no vector at the start."""
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
-    with db.customer(customer_id) as conn:
+    with unavailable(), db.customer(customer_id) as conn:
         total = int(conn.execute(_TO_EMBED, {"c": customer_id, "d": document_id}).scalar_one())
     written = done = 0
     after = -1
     while True:
-        with db.customer(customer_id) as conn:
+        with unavailable(), db.customer(customer_id) as conn:
             rows = conn.execute(
                 _NEXT_BATCH, {"c": customer_id, "d": document_id, "after": after, "n": batch_size}
             ).all()
@@ -70,7 +72,7 @@ def embed_pieces(
         vectors = model.embed([str(row[2]) for row in rows])
         if len(vectors) != len(rows):
             raise ModelOutputError("embedding_count")
-        with db.customer(customer_id) as conn:
+        with unavailable(), db.customer(customer_id) as conn:
             result = conn.execute(
                 _WRITE,
                 [

@@ -774,7 +774,8 @@ class DocumentProcessor:
 
     def _index(self, job: Job, run: _Run, heartbeat: Heartbeat) -> bool:
         """Make the pieces' meaning vectors; True if it ran. After each batch is written,
-        the heartbeat, then "indexing i of n" (fenced: a newer run stops this one there)."""
+        the heartbeat, then "indexing i of n". The progress write runs after every batch
+        on purpose: it is fenced, so it is what stops a superseded run within one batch."""
         if self._embed is None:
             return False
 
