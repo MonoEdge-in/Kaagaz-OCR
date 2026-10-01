@@ -27,7 +27,8 @@ _OCR_LEASE_MARGIN_SECONDS = 120 + LEASE_RENEW_SECONDS
 # which must never import this module; a test keeps the two the same).
 OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
 # AR1: seconds to spare between the longest model step without a heartbeat (one
-# chat_json: a call and its repair retry) and the job's lease.
+# chat_json: a call and its repair retry; or one embedding batch or vision crop, a
+# single call) and the job's lease.
 _MODEL_LEASE_MARGIN_SECONDS = 60 + LEASE_RENEW_SECONDS
 # Council 5 (PROVISIONAL): an invoice window's reply needs about this many tokens for each
 # line item, taking one line item per _WINDOW_LINE_CHARS characters of the window, plus
@@ -252,6 +253,14 @@ class Settings:
                 f"2 x MODEL_EXTRACT_TIMEOUT_SECONDS + {_MODEL_LEASE_MARGIN_SECONDS}"
                 " must not be more than QUEUE_LEASE_SECONDS"
             )
+        model_timeout_seconds = env.number("MODEL_TIMEOUT_SECONDS")
+        if not (math.isfinite(model_timeout_seconds) and model_timeout_seconds > 0):
+            raise SettingsError("MODEL_TIMEOUT_SECONDS must be a number above 0")
+        if model_timeout_seconds + _MODEL_LEASE_MARGIN_SECONDS > queue_lease_seconds:
+            raise SettingsError(
+                f"MODEL_TIMEOUT_SECONDS + {_MODEL_LEASE_MARGIN_SECONDS}"
+                " must not be more than QUEUE_LEASE_SECONDS"
+            )
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -298,7 +307,7 @@ class Settings:
             model_embed=env.text("MODEL_EMBED"),
             model_vision=env.optional("MODEL_VISION"),
             embedding_dim=env.integer("EMBEDDING_DIM"),
-            model_timeout_seconds=env.number("MODEL_TIMEOUT_SECONDS"),
+            model_timeout_seconds=model_timeout_seconds,
             model_num_ctx=model_num_ctx,
             model_card_max_tokens=card_max_tokens,
             model_window_max_tokens=window_max_tokens,
