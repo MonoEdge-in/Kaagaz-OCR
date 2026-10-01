@@ -16,11 +16,20 @@ from types import ModuleType
 from sqlalchemy import TextClause
 
 from kaagaz.answering import fixed_queries, unchecked
-from kaagaz.db import admin, listing, pipeline_store, review
+from kaagaz.db import admin, chat, listing, pipeline_store, review
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid
 
-MODULES: tuple[ModuleType, ...] = (hybrid, fixed_queries, unchecked, review, admin, listing, pipeline_store)
+MODULES: tuple[ModuleType, ...] = (
+    hybrid,
+    fixed_queries,
+    unchecked,
+    review,
+    admin,
+    listing,
+    pipeline_store,
+    chat,
+)
 
 # (module, constant name) -> the fragment it must carry.
 FILTERED: dict[tuple[ModuleType, str], str] = {

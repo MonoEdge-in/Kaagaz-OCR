@@ -14,12 +14,15 @@ builder owns (FULL-BUILD-SPEC section 10); pytest collects it and finds nothing.
   and add document rows directly with SQL (as the pipeline would).
 * ``route_calls``: every API route with its path filled in, for tests that walk
   all routes (the admin-session and the password-change gates).
+* ``statements``: how many SQL statements a request sends, for tests that prove a
+  reply costs the same for 1 row or many (no N+1).
 """
 
 import hashlib
 import io
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -28,7 +31,7 @@ import httpx2 as httpx
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient as TestClient
-from sqlalchemy import RowMapping, text
+from sqlalchemy import RowMapping, event, text
 
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
@@ -454,3 +457,19 @@ def call(client: TestClient, method: str, path: str) -> httpx.Response:
     if method in ("GET", "DELETE"):
         return client.request(method, path, headers=CSRF)
     return client.request(method, path, json={}, headers=CSRF)
+
+
+def statements(db: Database, run: Callable[[], object]) -> int:
+    """How many SQL statements ``run`` sends to the database."""
+    count = 0
+
+    def counted(*_: object) -> None:
+        nonlocal count
+        count += 1
+
+    event.listen(db.engine, "before_cursor_execute", counted)
+    try:
+        run()
+    finally:
+        event.remove(db.engine, "before_cursor_execute", counted)
+    return count

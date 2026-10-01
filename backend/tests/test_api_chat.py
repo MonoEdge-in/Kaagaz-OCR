@@ -12,12 +12,24 @@ from sqlalchemy import text
 from kaagaz.api.app import create_app
 from kaagaz.api.routers.chat import NOT_FOUND_TEXT, answer_text
 from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, cited_document_ids
+from kaagaz.db import chat as chat_sql
 from kaagaz.db.engine import Database
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, NOW, PASSWORD, Api, TestClient, answer_json
+from tests.test_api_support import CSRF, NOW, PASSWORD, Api, TestClient, answer_json, statements
 
 PAN = "ABCDE1234F"  # made up
 REGION = {"kind": "box", "page": 1, "box": [0.1, 0.2, 0.3, 0.25]}
+# The PageSummary of the page Api.add_page adds: what a source preview draws.
+PAGE = {
+    "page_no": 1,
+    "width": 595.0,
+    "height": 842.0,
+    "unit": "pt",
+    "has_image": True,
+    "route": None,
+    "effective_dpi": None,
+    "low_resolution": False,
+}
 
 
 def _citation(n: int, document_id: str) -> dict[str, Any]:
@@ -108,6 +120,14 @@ def test_a_sentence_whose_every_source_is_gone_is_replaced_and_one_without_sourc
     assert {key: shown[key] for key in ("status", "label", "route")} == {
         key: answer[key] for key in ("status", "label", "route")
     }
+
+
+def test_a_source_in_trash_or_deleted_loses_its_page_and_an_older_version_keeps_it() -> None:
+    answer = _cited_answer("live", "older", "binned", "gone")
+    answer["citations"] = [{**each, "page": PAGE} for each in answer["citations"]]
+    states = {"live": "live", "older": "older_version", "binned": "in_trash"}  # "gone": deleted forever
+    shown = answer_with_source_states(answer, states)
+    assert [each["page"] for each in shown["citations"]] == [PAGE, PAGE, None, None]
 
 
 @pytest.mark.db
@@ -310,6 +330,8 @@ def test_a_saved_answer_shows_a_source_moved_to_trash_as_gone(db: Database) -> N
     signed = api.new_signed()
     binned = api.add_document(signed.customer_id, name="bill 1.pdf", uploaded_by=signed.user_id)
     live = api.add_document(signed.customer_id, name="bill 2.pdf", uploaded_by=signed.user_id)
+    for document in (binned, live):
+        api.add_page(signed.customer_id, document)
     api.answers.reply = _cited_answer(binned, live, closest=(binned, live))
     body = signed.client.post("/api/chat", json={"question": "totals?"}, headers=CSRF).json()
     assert signed.client.delete(f"/api/documents/{binned}", headers=CSRF).status_code == 204
@@ -323,6 +345,10 @@ def test_a_saved_answer_shows_a_source_moved_to_trash_as_gone(db: Database) -> N
     ]
     assert (shown["citations"][0]["snippet"], shown["citations"][0]["regions"]) == (None, [])
     assert (shown["citations"][1]["snippet"], shown["citations"][1]["regions"]) == ("Total 200", [REGION])
+    assert [each.get("page") for each in shown["citations"]] == [None, PAGE]
+    with db.customer(signed.customer_id) as conn:  # the page lookup itself leaves Trash out
+        found = chat_sql.cited_pages(conn, signed.customer_id, [(binned, 1), (live, 1)])
+    assert set(found) == {(live, 1)}
     assert [sentence["text"] for sentence in shown["sentences"]] == [
         GONE_SENTENCE,
         "Sentence 2.",
@@ -333,6 +359,65 @@ def test_a_saved_answer_shows_a_source_moved_to_trash_as_gone(db: Database) -> N
     assert signed.client.post(f"/api/documents/{binned}/restore", headers=CSRF).status_code == 200
     again = signed.client.get(f"/api/conversations/{body['conversation_id']}").json()["messages"][1]["answer"]
     assert [c["source_state"] for c in again["citations"]] == ["live", "live"]
+    assert [each.get("page") for each in again["citations"]] == [PAGE, PAGE]
     assert {key: value for key, value in again.items() if key != "citations"} == {
         key: value for key, value in api.answers.reply.items() if key != "citations"
     }
+
+
+@pytest.mark.db
+def test_each_citation_carries_its_page_when_asked_and_reopened_and_it_is_never_stored(
+    db: Database,
+) -> None:
+    """The preview's page (PageSummary) is looked up each time the answer is shown, so the
+    screen never fetches a whole document for it. An older version keeps its page."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    older = api.add_document(c, name="bill 1.pdf", is_current=False)
+    api.add_document(c, family_id=older, version_no=2)
+    live = api.add_document(c, name="bill 2.pdf")
+    for document in (older, live):
+        api.add_page(c, document)
+    api.answers.reply = _cited_answer(older, live)
+
+    body = signed.client.post("/api/chat", json={"question": "totals?"}, headers=CSRF).json()
+    opened = signed.client.get(f"/api/conversations/{body['conversation_id']}").json()["messages"][1]
+
+    assert [each.get("page") for each in body["answer"]["answer"]["citations"]] == [PAGE, PAGE]
+    assert [(each["source_state"], each.get("page")) for each in opened["answer"]["citations"]] == [
+        ("older_version", PAGE),
+        ("live", PAGE),
+    ]
+    with db.customer(c) as conn:
+        stored: dict[str, Any] = conn.execute(
+            text("SELECT answer FROM messages WHERE role = 'assistant'")
+        ).scalar_one()
+    assert stored == api.answers.reply  # no page in the stored answer
+
+
+@pytest.mark.db
+def test_the_pages_cost_the_same_statements_for_1_or_18_citations(db: Database) -> None:
+    """One batched page lookup, on asking and on reopening, however many sources there are."""
+    api = Api(db)
+    signed = api.new_signed()
+    documents = [api.add_document(signed.customer_id, name=f"bill {n}.pdf") for n in range(1, 19)]
+    for document in documents:
+        api.add_page(signed.customer_id, document)
+
+    def counts(cited: list[str]) -> tuple[int, int]:
+        api.answers.reply = _cited_answer(*cited)
+        replies: list[Any] = []
+        asked = statements(
+            db,
+            lambda: replies.append(
+                signed.client.post("/api/chat", json={"question": "totals?"}, headers=CSRF).json()
+            ),
+        )
+        path = f"/api/conversations/{replies[0]['conversation_id']}"
+        opened = statements(db, lambda: replies.append(signed.client.get(path).json()["messages"][1]))
+        for answer in (replies[0]["answer"]["answer"], replies[1]["answer"]):
+            assert [each.get("page") for each in answer["citations"]] == [PAGE] * len(cited)
+        return asked, opened
+
+    assert counts(documents[:1]) == counts(documents)

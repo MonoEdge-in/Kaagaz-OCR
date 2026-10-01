@@ -11,9 +11,11 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.api.auth import SESSION_COOKIE, SessionClaims, sign_session
+from kaagaz.db import chat as chat_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import span_to_json
 from kaagaz.reading.spans import CellLocation, Span
+from tests.test_api_chat import _cited_answer
 from tests.test_api_support import CSRF, NOW, PDF_BYTES, Api, Signed
 
 pytestmark = pytest.mark.db
@@ -83,6 +85,25 @@ def test_b_cannot_open_a_conversation_or_rate_its_answer(world: _World) -> None:
     with world.api.db.customer(world.a.customer_id) as conn:
         assert conn.execute(text("SELECT count(*) FROM feedback")).scalar_one() == 0
         assert conn.execute(text("SELECT count(*) FROM messages")).scalar_one() == 2
+
+
+def test_b_answer_citing_a_document_of_a_gets_no_page_even_on_the_owner_connection(world: _World) -> None:
+    """A citation's page is looked up for the session's customer: B's stored answer naming
+    A's document and page gets none, through the API (row level security) and in the
+    lookup on the owner's connection, which skips the policy, so its own customer_id = :c does it."""
+    api, doc = world.api, world.document
+    api.answers.reply = _cited_answer(doc)
+    mine = world.a.client.post("/api/chat", json={"question": "sharma total"}, headers=CSRF).json()
+    assert mine["answer"]["answer"]["citations"][0].get("page") is not None  # A sees its own page
+
+    theirs = world.b.client.post("/api/chat", json={"question": "sharma total"}, headers=CSRF).json()
+    opened = world.b.client.get(f"/api/conversations/{theirs['conversation_id']}").json()["messages"][1]
+    for answer in (theirs["answer"]["answer"], opened["answer"]):
+        assert [(each["document_id"], each["page"]) for each in answer["citations"]] == [(doc, None)]
+
+    with api.db.engine.begin() as conn:  # no SET ROLE: the tables' owner, which RLS does not stop
+        assert chat_sql.cited_pages(conn, world.b.customer_id, [(doc, 1)]) == {}
+        assert set(chat_sql.cited_pages(conn, world.a.customer_id, [(doc, 1)])) == {(doc, 1)}
 
 
 def test_b_cannot_resolve_a_value_of_a(world: _World) -> None:

@@ -6,7 +6,7 @@ are tested first, without a database.
 
 import io
 import json
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,7 +14,7 @@ from typing import Any
 import httpx2 as httpx
 import pytest
 from PIL import Image
-from sqlalchemy import Connection, event, text
+from sqlalchemy import Connection, text
 
 from kaagaz.api.routers.documents import day_start, display_name, upload_policy
 from kaagaz.api.views import in_progress, status_message
@@ -27,7 +27,7 @@ from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 from kaagaz.settings import Settings, SettingsError
 from tests.db_support import insert_document
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed, TestClient
+from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed, TestClient, statements
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
 MB = 1024 * 1024
@@ -1034,22 +1034,6 @@ def _columns(db: Database, customer_id: str, document_id: str) -> tuple[str | No
     return (None if folder is None else str(folder)), str(name)
 
 
-def _statements(db: Database, run: Callable[[], object]) -> int:
-    """How many SQL statements ``run`` sends to the database."""
-    count = 0
-
-    def counted(*_: object) -> None:
-        nonlocal count
-        count += 1
-
-    event.listen(db.engine, "before_cursor_execute", counted)
-    try:
-        run()
-    finally:
-        event.remove(db.engine, "before_cursor_execute", counted)
-    return count
-
-
 @pytest.mark.db
 def test_upload_into_a_folder_files_it_there_as_the_first_version_of_its_own_family(db: Database) -> None:
     api = Api(db)
@@ -1136,10 +1120,10 @@ def test_the_list_gives_each_document_its_folder_and_tags_with_no_query_per_row(
         [{"id": gst, "name": "GST"}, {"id": paid, "name": "Paid"}],
     )
 
-    one = _statements(db, lambda: signed.client.get("/api/documents"))
+    one = statements(db, lambda: signed.client.get("/api/documents"))
     for _ in range(5):
         api.tag_document(signed.customer_id, _filed(db, signed), paid)
-    assert _statements(db, lambda: signed.client.get("/api/documents")) == one
+    assert statements(db, lambda: signed.client.get("/api/documents")) == one
 
 
 @pytest.mark.db
