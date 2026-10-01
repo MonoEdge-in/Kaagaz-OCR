@@ -63,6 +63,8 @@ def test_a_missing_model_budget_stops_start_up_by_name(name: str) -> None:
         ("MODEL_EXTRACT_TIMEOUT_SECONDS", "nan"),
         ("MODEL_EXTRACT_TIMEOUT_SECONDS", "inf"),
         ("MODEL_EXTRACT_TIMEOUT_SECONDS", "ten"),
+        ("MODEL_TIMEOUT_SECONDS", "-1"),
+        ("MODEL_TIMEOUT_SECONDS", "nan"),
         ("CARD_MAX_CHARS", "0"),
     ],
 )
@@ -104,3 +106,13 @@ def test_a_card_call_and_its_repair_must_end_well_inside_the_lease() -> None:
             )
             Settings.from_env(shipped_env)
         assert "QUEUE_LEASE_SECONDS" in str(caught.value)
+
+
+def test_one_embedding_batch_or_vision_crop_must_end_well_inside_the_lease() -> None:
+    """One embedding batch or one vision crop is a single model call (MODEL_TIMEOUT_SECONDS)
+    between two heartbeats, so it gets the same margin as a card call (AR1)."""
+    fits = Settings.from_env(shipped(MODEL_TIMEOUT_SECONDS="1125", QUEUE_LEASE_SECONDS="1200"))
+    assert fits.model_timeout_seconds == 1125.0
+    with pytest.raises(SettingsError, match="MODEL_TIMEOUT_SECONDS") as caught:
+        Settings.from_env(shipped(MODEL_TIMEOUT_SECONDS="1126", QUEUE_LEASE_SECONDS="1200"))
+    assert "QUEUE_LEASE_SECONDS" in str(caught.value)
