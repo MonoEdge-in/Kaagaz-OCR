@@ -9,6 +9,8 @@
 // A new version of a document ("Upload new version") goes through the same
 // queue. The outcome, including "already uploaded" and any error, stays next
 // to its file; a duplicate whose earlier copy is in Trash offers Restore.
+// Each file is sent with who was signed in when it was added, so the server
+// refuses it if someone else has signed in since (critical #5).
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,6 +24,7 @@ import {
   uploadVersion,
 } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
+import { useSession } from "@/lib/session";
 import type { UploadLimits, UploadResult } from "@/lib/types";
 import {
   FALLBACK_UPLOAD_LIMITS,
@@ -54,6 +57,7 @@ type Start = (onProgress: (fraction: number) => void) => Promise<UploadResult>;
 
 /** The upload queue: add files, watch them go, clear the finished ones. */
 export function useUploads(onUploaded: () => void) {
+  const { me } = useSession();
   const nextKey = useRef(0);
   const [entries, setEntries] = useState<UploadEntry[]>([]);
   const [limits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
@@ -116,6 +120,7 @@ export function useUploads(onUploaded: () => void) {
 
   /** Queue files for upload into folderId (undefined: the top level). */
   async function addFiles(files: File[], folderId?: string) {
+    const userId = me.user.id;
     const added = files.map((file) => {
       nextKey.current += 1;
       const problem = validateUpload(file, limits);
@@ -132,7 +137,7 @@ export function useUploads(onUploaded: () => void) {
     for (const { entry, file } of added) {
       if (entry.state.kind === "waiting") {
         await checkThenSend(entry.key, file, (onProgress) =>
-          uploadDocument(file, onProgress, folderId),
+          uploadDocument(file, userId, onProgress, folderId),
         );
       }
     }
@@ -140,6 +145,7 @@ export function useUploads(onUploaded: () => void) {
 
   /** Queue one file as the next version of a document. */
   async function addVersion(file: File, of: { id: string; display_name: string }) {
+    const userId = me.user.id;
     nextKey.current += 1;
     const key = `upload-${nextKey.current}`;
     const problem = validateUpload(file, limits);
@@ -154,7 +160,7 @@ export function useUploads(onUploaded: () => void) {
       ...current,
     ]);
     if (!problem) {
-      await checkThenSend(key, file, (onProgress) => uploadVersion(of.id, file, onProgress));
+      await checkThenSend(key, file, (onProgress) => uploadVersion(of.id, file, userId, onProgress));
     }
   }
 

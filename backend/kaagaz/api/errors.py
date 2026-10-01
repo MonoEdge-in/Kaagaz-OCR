@@ -40,6 +40,10 @@ MESSAGES = {
         "This document can't be read again right now. Only a ready, failed or unreadable document"
         " that is not in Trash can be."
     ),
+    # Critical #5: the tab chose the file while someone else was signed in.
+    "session_changed": (
+        "Someone else has signed in on this browser since you chose this file. Reload the page and try again."
+    ),
     "too_large": "This file is too large.",
     "empty_file": "This file is empty.",
     "unsupported_type": "This kind of file is not supported.",
