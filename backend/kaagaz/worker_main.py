@@ -58,7 +58,7 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.ports import QueueSetupError
+from kaagaz.jobs.ports import QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import purge_expired
 from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
 from kaagaz.settings import Settings
@@ -161,6 +161,27 @@ class MarkExhausted:
                 "code": RETRIES_EXHAUSTED,
             },
         )
+
+
+def job_worker(
+    queue: WorkQueue,
+    handler: Handler,
+    *,
+    max_attempts: int,
+    mark_exhausted: Callable[[str, str], None],
+    record_attempt: Callable[[str, str, int, int], None],
+) -> Worker:
+    """The Worker _serve runs: each outcome logged, each try recorded, the delivery after
+    the last attempt marked, and a lease renewed at most every LEASE_RENEW_SECONDS on
+    time.monotonic."""
+    return Worker(
+        queue,
+        LoggedHandler(handler),
+        max_attempts=max_attempts,
+        on_exhausted=MarkExhausted(mark_exhausted),
+        on_attempt=RecordAttempt(record_attempt, max_attempts),
+        clock=time.monotonic,
+    )
 
 
 class RunsJobs(Protocol):
@@ -276,18 +297,15 @@ def _serve(settings: Settings) -> None:
     storage.ensure_bucket()  # the laptop's first start; in AWS it only checks
     logger.info("worker started")
     documents = PgDocuments(db)
-    jobs = Worker(
+    jobs = job_worker(
         queue,
-        LoggedHandler(processor),
+        processor,
         max_attempts=settings.job_max_attempts,
         # The last delivery also ends the document's runs still running (AR11), on the worker's clock.
-        on_exhausted=MarkExhausted(
-            lambda customer, document: documents.mark_exhausted(
-                customer, document, now=_utc_now(), max_attempts=settings.job_max_attempts
-            )
+        mark_exhausted=lambda customer, document: documents.mark_exhausted(
+            customer, document, now=_utc_now(), max_attempts=settings.job_max_attempts
         ),
-        on_attempt=RecordAttempt(documents.record_attempt, settings.job_max_attempts),
-        clock=time.monotonic,  # a lease is renewed at most every LEASE_RENEW_SECONDS
+        record_attempt=documents.record_attempt,
     )
     purge = functools.partial(purge_expired, db, storage, _utc_now, settings.trash_days)
     worker = PurgeHourly(jobs, purge, _utc_now)
