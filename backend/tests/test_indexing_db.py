@@ -68,7 +68,7 @@ def test_every_piece_is_embedded_in_batches_in_order(db: Database) -> None:
 
 
 def test_each_batch_is_reported_once_its_write_has_committed(db: Database) -> None:
-    """The pipeline's heartbeat and "indexing i of n" (R2 1). Each report comes after the
+    """The pipeline's heartbeat and "indexing i of n". Each report comes after the
     batch's transaction, never inside one: another transaction already sees the vectors."""
     customer, _ = new_customer(db)
     document = add_document(db, customer)

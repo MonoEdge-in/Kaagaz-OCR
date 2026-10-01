@@ -419,7 +419,7 @@ class LongReadingTest(unittest.TestCase):
         self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
 
     def test_a_long_indexing_keeps_its_lease_between_batches(self) -> None:
-        """R2 1: a 20k-row sheet is about 626 embedding batches, far longer than one lease.
+        """A 20k-row sheet is about 626 embedding batches, far longer than one lease.
         Each batch here takes 0.6 of a lease: the heartbeat after each renews it (on the
         worker's clock, at most every 15 s), so a second worker asking meanwhile gets nothing."""
         handed_out: list[Delivery | None] = []

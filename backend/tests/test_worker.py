@@ -292,7 +292,7 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(queue.pending(), 0)
 
     def test_heartbeats_renew_the_lease_at_most_once_every_15_seconds(self) -> None:
-        """R2 7: a heartbeat after every page or batch is hundreds of queue calls on a long
+        """A heartbeat after every page or batch is hundreds of queue calls on a long
         document. On the worker's clock, a beat less than 15 s after the receive or the last
         renewal does not call the queue, and the job is still never handed out twice."""
         clock = FakeClock()

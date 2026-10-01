@@ -429,6 +429,16 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(log[start - 1], "reading")
         self.assertEqual(log[end + 1 :], ["indexing"])
 
+    def test_each_written_batch_beats_then_shows_indexing_i_of_n(self) -> None:
+        log: list[str] = []
+        system = rig(embed=FakeEmbedder(batches=2), log=log)
+        job = system.job(CSV)
+        system.processor(job, lambda: log.append("beat"))
+        after_save = log[log.index("save ends") + 1 :]
+        self.assertEqual(after_save, ["beat", "indexing", "beat", "indexing", "beat", "indexing"])
+        steps = [progress for _, _, progress in system.progress.history]
+        self.assertEqual(steps[-2:], [Progress("indexing", 1, 2), Progress("indexing", 2, 2)])
+
     def test_progress_that_cannot_be_saved_is_logged_and_the_document_is_still_read(self) -> None:
         system = rig()
         system.progress.down = True
