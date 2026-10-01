@@ -822,3 +822,33 @@ def test_with_no_card_either_the_question_goes_to_search_as_before() -> None:
     answer = service(records=[invoice_record()])[0].answer(A, "What was the total profit?")
     assert answer.status in {"answered", "not_found"}
     assert answer.route == "search"
+
+
+# --- the answer check through the service (critical finding 1) ---------------------
+
+
+def _says(text: str) -> Reply:
+    def reply(system: str, user: str) -> dict[str, Any]:
+        return {"status": "answered", "sentences": [{"text": text, "evidence": [1]}]}
+
+    return reply
+
+
+HINDI_BILL = "Grand Total / कुल रकम: १,१८,०००\nदिनांक: १२/०८/२०२६"  # noqa: RUF001 - Devanagari digits, on purpose
+
+
+def test_an_english_answer_over_devanagari_evidence_is_answered() -> None:
+    hindi = piece("bill-hindi.pdf", HINDI_BILL)
+    model = FakeModel(_says("The grand total is Rs. 1,18,000."))
+    answer = service(pieces=[hindi], records=[], model=model)[0].answer(A, "What is the grand total?")
+    assert_well_formed(answer)
+    assert [s.text for s in answer.sentences] == ["The grand total is Rs. 1,18,000."]
+
+
+def test_evidence_lines_are_checked_one_by_one() -> None:
+    # Joined into one line, "12" and "August 2026" would read as the date 12 August 2026.
+    stock = piece("stock.pdf", "Stock statement quantity: 12\nAugust 2026 closing stock")
+    model = FakeModel(_says("The stock statement quantity is 12."))
+    answer = service(pieces=[stock], records=[], model=model)[0].answer(A, "Stock statement quantity?")
+    assert_well_formed(answer)
+    assert answer.status == "answered"
