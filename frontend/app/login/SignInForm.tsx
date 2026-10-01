@@ -8,13 +8,13 @@
 // - the password is masked again as soon as the form is submitted;
 // - typed values stay after an error, so nothing has to be typed twice.
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { login } from "@/lib/api";
+import { announceSession } from "@/lib/sessionChannel";
 import {
   emailError,
   firstInvalid,
@@ -32,7 +32,6 @@ const FIELD_IDS: Record<SignInField, string> = {
 };
 
 export function SignInForm() {
-  const router = useRouter();
   const hydrated = useHydrated();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -76,8 +75,11 @@ export function SignInForm() {
     setErrors(found);
     setBusy(true);
     try {
-      await login(normalizeEmail(email), password);
-      router.replace("/documents");
+      const signedIn = await login(normalizeEmail(email), password);
+      // A full page load, and the other tabs hear who is signed in now, so
+      // nothing of anyone signed in before stays in memory (critical #5).
+      announceSession(signedIn.user.id);
+      window.location.replace("/documents");
     } catch (caught) {
       setServerError(signInErrorMessage(caught));
       setBusy(false);

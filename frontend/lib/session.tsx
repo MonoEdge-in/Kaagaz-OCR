@@ -14,12 +14,13 @@
 // app opens once the new password is saved.
 
 import { usePathname, useRouter } from "next/navigation";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { appGate, signInPath } from "@/components/shell/gate";
+import { appGate, endedPath, pageAfterSessionChange, signInPath } from "@/components/shell/gate";
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
 import { ApiError, me as fetchMe, onSessionEnded } from "./api";
+import { watchSession } from "./sessionChannel";
 import type { Me } from "./types";
 
 export interface Session {
@@ -67,9 +68,36 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => onSessionEnded(null);
   }, []);
 
+  // Once a session existed, the sign-in page is a full page load, so nothing
+  // of that person (cached PDFs, earlier screens) stays in this tab's memory.
+  // A first visit with no session has nothing to clear: a quick move is fine.
+  const hadSession = useRef(false);
   useEffect(() => {
-    if (state.kind === "signed_out") router.replace(signInPath(pathname));
+    if (state.kind === "signed_in") hadSession.current = true;
+    if (state.kind !== "signed_out") return;
+    if (hadSession.current) window.location.replace(endedPath(pathname));
+    else router.replace(signInPath(pathname));
   }, [state.kind, router, pathname]);
+
+  // Another tab signed out, or someone else signed in (lib/sessionChannel.ts).
+  const userId = state.kind === "signed_in" ? state.me.user.id : null;
+  useEffect(() => {
+    if (userId === null) return;
+    return watchSession((now) => {
+      const to = pageAfterSessionChange(userId, now, window.location);
+      if (to !== null) window.location.replace(to);
+    });
+  }, [userId]);
+
+  // The back button can bring back a page kept whole in memory (the
+  // back-forward cache), even after signing out: load it fresh instead.
+  useEffect(() => {
+    const onShow = (event: PageTransitionEvent) => {
+      if (event.persisted) window.location.reload();
+    };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
 
   const refresh = useCallback(() => setAttempt((n) => n + 1), []);
 

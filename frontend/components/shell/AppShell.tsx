@@ -6,13 +6,14 @@
 // Both get their links from the one navLinks list for the whole shell.
 // <main id="main"> has no padding; screens use .page (the chat fills it).
 
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Drawer } from "@/components/ui/Drawer";
 import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, logout, logoutEverywhere } from "@/lib/api";
 import { useSession } from "@/lib/session";
+import { announceSession } from "@/lib/sessionChannel";
 import { sessionScope } from "./gate";
 import { currentPageName, navLinks } from "./nav";
 import { ShellMenu } from "./ShellMenu";
@@ -25,7 +26,6 @@ const MENU_ID = "app-menu";
 export function AppShell({ children }: { children: ReactNode }) {
   const { me } = useSession();
   const pathname = usePathname();
-  const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [signingOut, setSigningOut] = useState<SignOutKind | null>(null);
   const [signOutError, setSignOutError] = useState<string | null>(null);
@@ -33,26 +33,28 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pageName = currentPageName(links, pathname);
 
   // "everywhere" raises the account's session version on the server, which
-  // ends this browser's session too, so both end on the sign-in page.
+  // ends this browser's session too, so both end on the sign-in page. It is a
+  // full page load, so nothing of this person stays in the tab's memory, and
+  // the other tabs are told (lib/sessionChannel.ts).
   async function endSession(kind: SignOutKind) {
     setSigningOut(kind);
     setSignOutError(null);
     try {
       await (kind === "everywhere" ? logoutEverywhere() : logout());
-      router.replace("/login");
     } catch (caught) {
-      // Already signed out on the server: go to the sign-in page anyway.
-      if (caught instanceof ApiError && caught.status === 401) {
-        router.replace("/login");
+      // Already signed out on the server (401): go to the sign-in page anyway.
+      if (!(caught instanceof ApiError && caught.status === 401)) {
+        setSignOutError(
+          caught instanceof ApiError && caught.status !== 0
+            ? "Could not sign out. Try again in a minute."
+            : "Could not reach Kaagaz to sign out. Check your internet connection and try again.",
+        );
+        setSigningOut(null);
         return;
       }
-      setSignOutError(
-        caught instanceof ApiError && caught.status !== 0
-          ? "Could not sign out. Try again in a minute."
-          : "Could not reach Kaagaz to sign out. Check your internet connection and try again.",
-      );
-      setSigningOut(null);
     }
+    announceSession(null);
+    window.location.replace("/login?signed_out=1");
   }
 
   const signOut = () => endSession("here");

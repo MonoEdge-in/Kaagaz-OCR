@@ -761,6 +761,16 @@
   font-weight: 600;
 }
 
+/* After signing out (SignedOutNotice): calm, not an error. */
+.notice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-inline-start-width: 4px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
 .submit {
   min-height: calc(var(--control-h) + 4px);
   font-size: var(--fs-base);

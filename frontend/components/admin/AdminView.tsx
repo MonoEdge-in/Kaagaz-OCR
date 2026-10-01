@@ -10,7 +10,6 @@
 // who signed in at /login, is sent to /admin/login. The link is shown to admin
 // sessions only, and the server refuses the data to anyone else.
 
-import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { useSession } from "@/lib/session";
@@ -24,14 +23,14 @@ import styles from "./Admin.module.css";
 
 export function AdminView({ twoStep }: { twoStep: ReactNode }) {
   const { me } = useSession();
-  const router = useRouter();
   const gate = adminGate(me);
   const [active, setActive] = useState<TabId>("users");
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
+  // A full page load: someone else may sign in there (critical #5).
   useEffect(() => {
-    if (gate === "admin_sign_in") router.replace("/admin/login");
-  }, [gate, router]);
+    if (gate === "admin_sign_in") window.location.replace("/admin/login");
+  }, [gate]);
 
   if (gate !== "allow") {
     return (

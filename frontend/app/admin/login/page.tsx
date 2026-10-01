@@ -2,15 +2,22 @@
 // outside the (app) group on purpose: nobody is signed in yet, so there is no
 // session to load and no shell. One centred column at every width, with the
 // same frame and theme switch as /login. The form gives an admin session,
-// which alone opens /admin.
+// which alone opens /admin. A note says when a session has just ended.
 
+import { signedOutMessage } from "@/components/shell/gate";
 import { Wordmark } from "@/components/shell/Wordmark";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import login from "../../login/login.module.css";
+import { SignedOutNotice } from "../../login/SignedOutNotice";
 import { AdminSignInForm } from "./AdminSignInForm";
 import styles from "./adminLogin.module.css";
 
-export default function AdminLoginPage() {
+export default async function AdminLoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const note = signedOutMessage(await searchParams);
   return (
     <div className={styles.page}>
       <div className={login.theme}>
@@ -21,6 +28,7 @@ export default function AdminLoginPage() {
           <div className={styles.brand}>
             <Wordmark reader={false} />
           </div>
+          <SignedOutNotice message={note} />
           <AdminSignInForm />
         </div>
       </main>
