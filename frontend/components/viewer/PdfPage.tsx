@@ -7,7 +7,7 @@
 
 import { useEffect, useRef } from "react";
 import type { RenderTask } from "pdfjs-dist";
-import { loadPdf } from "./pdfDocuments";
+import { holdPdf, releasePdf } from "./pdfDocuments";
 
 // Sharp on high-density screens, without huge canvases (browsers cap their size).
 const MAX_PIXEL_RATIO = 2;
@@ -37,8 +37,10 @@ export default function PdfPage({
   useEffect(() => {
     let cancelled = false;
     let task: RenderTask | null = null;
+    // Held while this page is on screen, so the cache never destroys it meanwhile.
+    const held = holdPdf(documentId);
     const draw = async () => {
-      const pdf = await loadPdf(documentId);
+      const pdf = await held;
       if (cancelled) return;
       const page = await pdf.getPage(pageNo);
       const canvas = canvasRef.current;
@@ -59,6 +61,7 @@ export default function PdfPage({
     return () => {
       cancelled = true;
       task?.cancel();
+      releasePdf(documentId, held);
     };
   }, [documentId, pageNo, width, onFailed, onRendered]);
 
