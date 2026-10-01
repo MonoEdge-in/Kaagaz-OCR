@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from kaagaz.api.app import create_app
 from kaagaz.api.routers.chat import NOT_FOUND_TEXT, answer_text
-from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, cited_document_ids
+from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, citation_pages, cited_document_ids
 from kaagaz.db import chat as chat_sql
 from kaagaz.db.engine import Database
 from tests.settings_factory import make_settings
@@ -128,6 +128,18 @@ def test_a_source_in_trash_or_deleted_loses_its_page_and_an_older_version_keeps_
     states = {"live": "live", "older": "older_version", "binned": "in_trash"}  # "gone": deleted forever
     shown = answer_with_source_states(answer, states)
     assert [each["page"] for each in shown["citations"]] == [PAGE, PAGE, None, None]
+
+
+# Stored page numbers the pages table cannot hold: a bool, beyond int4, below 1.
+NOT_PAGE_NUMBERS = (True, 2**31, 0)
+
+
+def test_only_a_page_number_the_pages_table_can_hold_is_looked_up() -> None:
+    """Sending one of NOT_PAGE_NUMBERS would fail the whole query (council review W2)."""
+    answer = _cited_answer(*["d1"] * 4)
+    for each, page_no in zip(answer["citations"], (1, *NOT_PAGE_NUMBERS), strict=True):
+        each["page_no"] = page_no
+    assert citation_pages(answer) == [("d1", 1)]
 
 
 @pytest.mark.db
@@ -394,6 +406,44 @@ def test_each_citation_carries_its_page_when_asked_and_reopened_and_it_is_never_
             text("SELECT answer FROM messages WHERE role = 'assistant'")
         ).scalar_one()
     assert stored == api.answers.reply  # no page in the stored answer
+
+
+@pytest.mark.db
+def test_a_stored_page_number_that_is_not_a_page_gets_no_page_and_the_conversation_still_opens(
+    db: Database,
+) -> None:
+    """True (which Python counts as 1), 2**31 and 0 beside a real page 1 of the same document."""
+    api = Api(db)
+    signed = api.new_signed()
+    document = api.add_document(signed.customer_id)
+    api.add_page(signed.customer_id, document)
+    api.answers.reply = _cited_answer(*[document] * 4)
+    for each, page_no in zip(api.answers.reply["citations"], (1, *NOT_PAGE_NUMBERS), strict=True):
+        each["page_no"] = page_no
+
+    asked = signed.client.post("/api/chat", json={"question": "totals?"}, headers=CSRF)
+    assert asked.status_code == 200
+    opened = signed.client.get(f"/api/conversations/{asked.json()['conversation_id']}")
+    assert opened.status_code == 200
+    for answer in (asked.json()["answer"]["answer"], opened.json()["messages"][1]["answer"]):
+        assert [each["page"] for each in answer["citations"]] == [PAGE, None, None, None]
+
+
+@pytest.mark.db
+def test_a_live_citation_of_a_page_its_document_does_not_have_gets_no_page(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    document = api.add_document(signed.customer_id)
+    api.add_page(signed.customer_id, document)
+    api.answers.reply = _cited_answer(document)
+    api.answers.reply["citations"][0]["page_no"] = 2
+
+    body = signed.client.post("/api/chat", json={"question": "totals?"}, headers=CSRF).json()
+    opened = signed.client.get(f"/api/conversations/{body['conversation_id']}").json()["messages"][1]
+
+    assert body["answer"]["answer"]["citations"][0]["page"] is None
+    (cited,) = opened["answer"]["citations"]
+    assert (cited["source_state"], cited["page"]) == ("live", None)
 
 
 @pytest.mark.db
