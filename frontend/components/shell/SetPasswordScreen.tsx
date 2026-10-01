@@ -10,6 +10,7 @@
 // without an import cycle. Like the sign-in form: method="post", no name
 // attributes, passwords masked again on submit and never trimmed.
 
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
@@ -17,8 +18,9 @@ import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { MIN_PASSWORD_LENGTH } from "@/components/admin/logic";
 import { changePassword, logout } from "@/lib/api";
-import { announceSession } from "@/lib/sessionChannel";
+import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me } from "@/lib/types";
+import { signedOutPath } from "./gate";
 import {
   NEW_PASSWORD_FIELD_IDS,
   firstInvalidNewPassword,
@@ -37,6 +39,7 @@ import styles from "./Shell.module.css";
 const ALL_MASKED: Record<NewPasswordField, boolean> = { current: true, next: true, again: true };
 
 export function SetPasswordScreen({ me, onChanged }: { me: Me; onChanged(): void }) {
+  const pathname = usePathname();
   const hydrated = useHydrated();
   const [input, setInput] = useState<NewPasswordInput>({ current: "", next: "", again: "" });
   const [errors, setErrors] = useState<NewPasswordErrors>({});
@@ -85,7 +88,7 @@ export function SetPasswordScreen({ me, onChanged }: { me: Me; onChanged(): void
     }
     // A full page load, as in AppShell: nothing of this person stays in memory.
     announceSession(null);
-    window.location.replace("/login?signed_out=1");
+    leavePage(signedOutPath(pathname));
   }
 
   const field = (id: NewPasswordField) => ({

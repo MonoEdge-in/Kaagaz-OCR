@@ -13,8 +13,8 @@ import { Drawer } from "@/components/ui/Drawer";
 import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, logout, logoutEverywhere } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { announceSession } from "@/lib/sessionChannel";
-import { sessionScope } from "./gate";
+import { announceSession, leavePage } from "@/lib/sessionChannel";
+import { sessionScope, signedOutPath } from "./gate";
 import { currentPageName, navLinks } from "./nav";
 import { ShellMenu } from "./ShellMenu";
 import type { SignOutKind } from "./ShellMenu";
@@ -54,7 +54,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       }
     }
     announceSession(null);
-    window.location.replace("/login?signed_out=1");
+    leavePage(signedOutPath(pathname));
   }
 
   const signOut = () => endSession("here");

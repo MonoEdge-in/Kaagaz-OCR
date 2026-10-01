@@ -1,6 +1,7 @@
 // The decisions behind the documents screen, kept out of the components so
 // they are unit tested in node (tests/shell-documents.test.ts).
 
+import { ApiError } from "@/lib/api";
 import type { DocumentStatus, UploadLimits } from "@/lib/types";
 
 /** File name endings the backend can take. The server checks the bytes again. */
@@ -272,6 +273,15 @@ export function uploadStateText(state: UploadState): string {
     case "error":
       return "Not uploaded";
   }
+}
+
+/**
+ * The server's words when another account has signed in on this browser
+ * since the file was chosen (409 session_changed, critical #5); null for any
+ * other failure. Once said, no file still waiting in this tab is sent.
+ */
+export function sessionChangedMessage(caught: unknown): string | null {
+  return caught instanceof ApiError && caught.code === "session_changed" ? caught.message : null;
 }
 
 /**

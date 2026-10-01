@@ -8,7 +8,6 @@ import { signedOutMessage } from "@/components/shell/gate";
 import { Wordmark } from "@/components/shell/Wordmark";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import login from "../../login/login.module.css";
-import { SignedOutNotice } from "../../login/SignedOutNotice";
 import { AdminSignInForm } from "./AdminSignInForm";
 import styles from "./adminLogin.module.css";
 
@@ -28,8 +27,7 @@ export default async function AdminLoginPage({
           <div className={styles.brand}>
             <Wordmark reader={false} />
           </div>
-          <SignedOutNotice message={note} />
-          <AdminSignInForm />
+          <AdminSignInForm note={note} />
         </div>
       </main>
     </div>

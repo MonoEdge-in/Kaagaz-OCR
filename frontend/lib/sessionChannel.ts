@@ -6,15 +6,28 @@
 //
 // Each tab uses one channel for both, opened on first use: a channel never
 // gets its own messages, so a tab never hears itself.
+//
+// leavePage is the one way a tab leaves for a fresh page (signing in or
+// out, a session ending, another tab's change). The first page asked for
+// wins, so a late reply saying the session has ended cannot send a tab that
+// is signing out somewhere else.
 
 export const SESSION_CHANNEL = "kaagaz-session";
 
 let channel: BroadcastChannel | null = null;
+let leaving = false;
 
 function tabChannel(): BroadcastChannel | null {
   if (typeof BroadcastChannel === "undefined") return null;
   channel ??= new BroadcastChannel(SESSION_CHANNEL);
   return channel;
+}
+
+/** Load a fresh page, so nothing of whoever was signed in stays in memory. Only once. */
+export function leavePage(to: string): void {
+  if (leaving) return;
+  leaving = true;
+  window.location.replace(to);
 }
 
 /** Tell the other tabs who is signed in now: a user id, or null after signing out. */

@@ -20,7 +20,7 @@ import { appGate, endedPath, pageAfterSessionChange, signInPath } from "@/compon
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
 import { ApiError, me as fetchMe, onSessionEnded } from "./api";
-import { watchSession } from "./sessionChannel";
+import { leavePage, watchSession } from "./sessionChannel";
 import type { Me } from "./types";
 
 export interface Session {
@@ -75,28 +75,43 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (state.kind === "signed_in") hadSession.current = true;
     if (state.kind !== "signed_out") return;
-    if (hadSession.current) window.location.replace(endedPath(pathname));
+    if (hadSession.current) leavePage(endedPath(pathname));
     else router.replace(signInPath(pathname));
   }, [state.kind, router, pathname]);
 
   // Another tab signed out, or someone else signed in (lib/sessionChannel.ts).
-  const userId = state.kind === "signed_in" ? state.me.user.id : null;
-  useEffect(() => {
-    if (userId === null) return;
-    return watchSession((now) => {
-      const to = pageAfterSessionChange(userId, now, window.location);
-      if (to !== null) window.location.replace(to);
-    });
-  }, [userId]);
+  // Heard from the start: a tab that does not know yet who is signed in
+  // (loading, or the last try failed) asks again, as the answer on its way
+  // may be from before the change.
+  useEffect(
+    () =>
+      watchSession((now) => {
+        if (state.kind === "signed_in") {
+          const to = pageAfterSessionChange(state.me.user.id, now, window.location);
+          if (to !== null) leavePage(to);
+        } else if (state.kind !== "signed_out") {
+          setAttempt((n) => n + 1);
+        }
+      }),
+    [state],
+  );
 
   // The back button can bring back a page kept whole in memory (the
-  // back-forward cache), even after signing out: load it fresh instead.
+  // back-forward cache), even after signing out: it is hidden as it is put
+  // away, so it never shows, and loads fresh when it comes back.
   useEffect(() => {
+    const onHide = (event: PageTransitionEvent) => {
+      if (event.persisted) document.documentElement.style.visibility = "hidden";
+    };
     const onShow = (event: PageTransitionEvent) => {
       if (event.persisted) window.location.reload();
     };
+    window.addEventListener("pagehide", onHide);
     window.addEventListener("pageshow", onShow);
-    return () => window.removeEventListener("pageshow", onShow);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("pageshow", onShow);
+    };
   }, []);
 
   const refresh = useCallback(() => setAttempt((n) => n + 1), []);

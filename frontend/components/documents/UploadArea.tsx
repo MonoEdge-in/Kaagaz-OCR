@@ -10,7 +10,8 @@
 // queue. The outcome, including "already uploaded" and any error, stays next
 // to its file; a duplicate whose earlier copy is in Trash offers Restore.
 // Each file is sent with who was signed in when it was added, so the server
-// refuses it if someone else has signed in since (critical #5).
+// refuses it if another account has signed in since (critical #5); then
+// no file still waiting is sent, and each says why.
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -30,6 +31,7 @@ import {
   FALLBACK_UPLOAD_LIMITS,
   estimateIngestSeconds,
   estimateText,
+  sessionChangedMessage,
   uploadKind,
   uploadLimitsHint,
   uploadStateText,
@@ -59,6 +61,8 @@ type Start = (onProgress: (fraction: number) => void) => Promise<UploadResult>;
 export function useUploads(onUploaded: () => void) {
   const { me } = useSession();
   const nextKey = useRef(0);
+  // The server's words once another account has signed in here; then nothing more is sent.
+  const stopped = useRef<string | null>(null);
   const [entries, setEntries] = useState<UploadEntry[]>([]);
   const [limits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
 
@@ -100,6 +104,7 @@ export function useUploads(onUploaded: () => void) {
       );
       onUploaded();
     } catch (caught) {
+      stopped.current ??= sessionChangedMessage(caught);
       const message =
         caught instanceof ApiError
           ? caught.message
@@ -110,12 +115,20 @@ export function useUploads(onUploaded: () => void) {
 
   /** Count a PDF's or TIFF's pages (kept for the time estimate), then send it, unless it has too many. */
   async function checkThenSend(key: string, file: File, start: Start) {
+    if (notSent(key)) return;
     const { pages, problem } = await checkPages(file, limits.max_pages);
     setEntries((current) =>
       current.map((entry) => (entry.key === key ? { ...entry, pages } : entry)),
     );
     if (problem) update(key, { kind: "error", message: problem });
-    else await send(key, start);
+    else if (!notSent(key)) await send(key, start);
+  }
+
+  /** True, and the file says why, once another account has signed in here. */
+  function notSent(key: string): boolean {
+    if (stopped.current === null) return false;
+    update(key, { kind: "error", message: stopped.current });
+    return true;
   }
 
   /** Queue files for upload into folderId (undefined: the top level). */

@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { useSession } from "@/lib/session";
+import { leavePage } from "@/lib/sessionChannel";
 import { ActivityPanel } from "./ActivityPanel";
 import { TABS, adminGate, tabAfterKey } from "./logic";
 import type { TabId } from "./logic";
@@ -29,7 +30,7 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
 
   // A full page load: someone else may sign in there (critical #5).
   useEffect(() => {
-    if (gate === "admin_sign_in") window.location.replace("/admin/login");
+    if (gate === "admin_sign_in") leavePage("/admin/login");
   }, [gate]);
 
   if (gate !== "allow") {

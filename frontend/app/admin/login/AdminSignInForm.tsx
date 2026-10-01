@@ -20,9 +20,10 @@ import { flushSync } from "react-dom";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { adminLogin } from "@/lib/api";
-import { announceSession } from "@/lib/sessionChannel";
+import { announceSession, leavePage } from "@/lib/sessionChannel";
 import { emailError, normalizeEmail, passwordError } from "../../login/signIn";
 import login from "../../login/login.module.css";
+import { SignedOutNotice } from "../../login/SignedOutNotice";
 import {
   adminSignInError,
   firstInvalidAdmin,
@@ -44,7 +45,8 @@ const NO_ERRORS: AdminSignInErrors = { email: null, password: null, code: null }
 
 const CODE_HINT = "From your authenticator app. Leave it empty if two-step sign-in is off.";
 
-export function AdminSignInForm() {
+/** note: what the page says after a session ending (SignedOutNotice). */
+export function AdminSignInForm({ note }: { note: string | null }) {
   const hydrated = useHydrated();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -97,7 +99,7 @@ export function AdminSignInForm() {
       );
       // As the normal sign-in: a full page load, and the other tabs are told.
       announceSession(signedIn.user.id);
-      window.location.replace("/admin");
+      leavePage("/admin");
     } catch (caught) {
       setFailure(adminSignInError(caught));
       setCode("");
@@ -119,6 +121,7 @@ export function AdminSignInForm() {
         </h1>
         <p className={styles.lead}>For account admins: users, settings and activity.</p>
       </div>
+      <SignedOutNotice message={note} />
 
       <div className="field">
         <label htmlFor={FIELD_IDS.email}>E-mail</label>

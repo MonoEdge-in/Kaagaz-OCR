@@ -40,9 +40,11 @@ MESSAGES = {
         "This document can't be read again right now. Only a ready, failed or unreadable document"
         " that is not in Trash can be."
     ),
-    # Critical #5: the tab chose the file while someone else was signed in.
+    # Critical #5: the tab chose the file while another account was signed in. It must
+    # not invite a retry: that would send the file into the account signed in now.
     "session_changed": (
-        "Someone else has signed in on this browser since you chose this file. Reload the page and try again."
+        "Not uploaded. A different account has signed in on this browser since you chose this file."
+        " Reload the page to see who is signed in now."
     ),
     "too_large": "This file is too large.",
     "empty_file": "This file is empty.",

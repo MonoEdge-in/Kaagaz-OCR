@@ -34,6 +34,11 @@ export function endedPath(pathname: string): string {
   return `${signInPath(pathname)}?ended=1`;
 }
 
+/** The sign-in page after signing out (it says so). */
+export function signedOutPath(pathname: string): string {
+  return `${signInPath(pathname)}?signed_out=1`;
+}
+
 /** The note on a sign-in page, from its query: ?signed_out=1 or ?ended=1. */
 export function signedOutMessage(query: Record<string, string | string[] | undefined>): string | null {
   if (query.signed_out === "1") return "You signed out.";
@@ -53,6 +58,6 @@ export function pageAfterSessionChange(
   here: { pathname: string; href: string },
 ): string | null {
   if (now === mine) return null;
-  if (now === null) return `${signInPath(here.pathname)}?signed_out=1`;
+  if (now === null) return signedOutPath(here.pathname);
   return here.href;
 }
