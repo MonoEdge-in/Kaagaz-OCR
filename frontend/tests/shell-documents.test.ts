@@ -470,7 +470,7 @@ describe("uploadDocument into a folder", () => {
   it("sends the folder being viewed as the form field folder_id, with the file", async () => {
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
     const file = new File(["%PDF-1.7"], "bill.pdf", { type: "application/pdf" });
-    const done = uploadDocument(file, () => {}, FOLDER);
+    const done = uploadDocument(file, "u1", () => {}, FOLDER);
     const form = lastForm();
     expect(form.get("folder_id")).toBe(FOLDER);
     expect(form.get("file")).toBeInstanceOf(File);
@@ -481,7 +481,7 @@ describe("uploadDocument into a folder", () => {
 
   it("sends no folder_id when uploading at the top level", async () => {
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
-    const done = uploadDocument(new File(["a,b"], "rates.csv"), () => {});
+    const done = uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {});
     expect(lastForm().has("folder_id")).toBe(false);
     FakeXhr.sent[0]?.reply(201, { document: { id: "d2" }, duplicate: false });
     await done;
@@ -490,7 +490,7 @@ describe("uploadDocument into a folder", () => {
   it("sends a new version to /documents/{id}/versions, with progress, and no folder", async () => {
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
     const fractions: number[] = [];
-    const done = uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), (f) => fractions.push(f));
+    const done = uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", (f) => fractions.push(f));
     const xhr = FakeXhr.sent[0];
     expect(xhr?.method).toBe("POST");
     expect(xhr?.url).toBe("/api/documents/d1/versions");
@@ -501,6 +501,24 @@ describe("uploadDocument into a folder", () => {
     expect(fractions).toEqual([0.25]);
     xhr?.reply(201, { document: { id: "d9", version_no: 2 }, duplicate: false, in_trash: false });
     await expect(done).resolves.toMatchObject({ document: { id: "d9" }, in_trash: false });
+  });
+
+  // Critical #5: the server refuses the file (409 session_changed) when
+  // someone else has signed in on this browser since it was chosen.
+  it("sends who was signed in when the file was chosen, on both routes", () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, FOLDER);
+    expect(lastForm().get("user_id")).toBe("u1");
+    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {});
+    expect(lastForm().get("user_id")).toBe("u1");
+  });
+
+  it("gives the server's words when someone else has signed in since", async () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    const done = uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {});
+    const said = "Someone else has signed in on this browser since you chose this file.";
+    FakeXhr.sent[0]?.reply(409, { error: { code: "session_changed", message: said } });
+    await expect(done).rejects.toMatchObject({ status: 409, code: "session_changed", message: said });
   });
 });
 
