@@ -280,5 +280,17 @@ class UnreachableStorageTest(unittest.TestCase):
                     call()
 
 
+class ClientConfigTest(unittest.TestCase):
+    """Storage that does not answer fails fast, so no caller hangs on it."""
+
+    def test_the_client_has_short_timeouts_and_two_retries(self) -> None:
+        config = S3Storage(make_settings())._client.meta.config  # builds the real client; nothing is sent
+        self.assertEqual((config.connect_timeout, config.read_timeout), (5, 30))
+        # max_attempts 2 is two retries after the first try.
+        self.assertEqual(config.retries["total_max_attempts"], 3)
+        # SeaweedFS still gets signature version 4 and the bucket in the path.
+        self.assertEqual((config.signature_version, config.s3), ("s3v4", {"addressing_style": "path"}))
+
+
 if __name__ == "__main__":
     unittest.main()
