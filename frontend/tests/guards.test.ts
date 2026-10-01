@@ -41,4 +41,21 @@ describe("guards", () => {
     );
     expect(offenders.map((p) => relative(ROOT, p))).toEqual([]);
   });
+
+  // Critical #5: a client-side move keeps the tab's memory (cached PDFs, the
+  // last screens). Signing out, a session ending and signing in are full page
+  // loads instead. The one router.replace to a sign-in page left is the first
+  // visit with no session, which has nothing in memory yet.
+  it("never moves to or from a sign-in page with router.replace once a session existed", () => {
+    const moves = all((p) => /\.(ts|tsx)$/.test(p)).flatMap((p) =>
+      Array.from(readFileSync(p, "utf8").matchAll(/router\.(?:replace|push)\(([^)]*)\)/g), (m) => ({
+        file: relative(ROOT, p).replaceAll("\\", "/"),
+        to: m[1] ?? "",
+      })),
+    );
+    const toSignIn = moves.filter((m) => /login|signInPath/.test(m.to));
+    expect(toSignIn).toEqual([{ file: "lib/session.tsx", to: "signInPath(pathname" }]);
+    const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/") || m.file.startsWith("app/admin/login/"));
+    expect(fromSignIn).toEqual([]);
+  });
 });

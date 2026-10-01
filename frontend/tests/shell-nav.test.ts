@@ -2,7 +2,15 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ICON_NAMES } from "@/components/ui/icons";
-import { appGate, mustChangePassword, sessionScope, signInPath } from "@/components/shell/gate";
+import {
+  appGate,
+  endedPath,
+  mustChangePassword,
+  pageAfterSessionChange,
+  sessionScope,
+  signedOutMessage,
+  signInPath,
+} from "@/components/shell/gate";
 import { currentPageName, isCurrent, navLinks, roleName } from "@/components/shell/nav";
 import type { Me, Role, SessionScope } from "@/lib/types";
 
@@ -113,6 +121,46 @@ describe("where to sign in", () => {
     expect(session).toContain("router.replace(signInPath(pathname))");
     expect(session).toContain("onSessionEnded(");
     expect(session).not.toContain('router.replace("/login")');
+  });
+
+  // Critical #5: once a session existed, the sign-in page is a full page load,
+  // so nothing of that person stays in the tab's memory.
+  it("adds why, for the sign-in page's note", () => {
+    expect(endedPath("/documents/d-1")).toBe("/login?ended=1");
+    expect(endedPath("/admin")).toBe("/admin/login?ended=1");
+    expect(signedOutMessage({ signed_out: "1" })).toBe("You signed out.");
+    expect(signedOutMessage({ ended: "1" })).toBe("Your session ended. Sign in again to continue.");
+    expect(signedOutMessage({})).toBeNull();
+    expect(signedOutMessage({ ended: "yes", other: "1" })).toBeNull();
+  });
+
+  it("loads a fresh page when a session existed, and keeps a quick redirect on a first visit", () => {
+    const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
+    expect(session).toContain("window.location.replace(endedPath(pathname))");
+    expect(session).toMatch(/if \(event\.persisted\) window\.location\.reload\(\)/);
+    expect(session).toContain("watchSession(");
+    const shell = readFileSync(join(__dirname, "..", "components", "shell", "AppShell.tsx"), "utf8");
+    expect(shell).toContain('window.location.replace("/login?signed_out=1")');
+    expect(shell).toContain("announceSession(null)");
+  });
+});
+
+describe("another tab signs out or in", () => {
+  const here = { pathname: "/documents/d-1", href: "http://localhost:3000/documents/d-1" };
+
+  it("stays when the same person is still signed in", () => {
+    expect(pageAfterSessionChange("u1", "u1", here)).toBeNull();
+  });
+
+  it("goes to sign in when nobody is signed in any more", () => {
+    expect(pageAfterSessionChange("u1", null, here)).toBe("/login?signed_out=1");
+    expect(pageAfterSessionChange("u1", null, { pathname: "/admin", href: "/admin" })).toBe(
+      "/admin/login?signed_out=1",
+    );
+  });
+
+  it("loads the page again when someone else signed in", () => {
+    expect(pageAfterSessionChange("u1", "u2", here)).toBe(here.href);
   });
 });
 
