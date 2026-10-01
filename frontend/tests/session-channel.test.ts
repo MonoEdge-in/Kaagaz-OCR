@@ -1,6 +1,7 @@
 // Critical #5: tabs of one browser share one session cookie. A tab that signs
 // out or in says who is signed in now, so the other tabs can leave the
-// screens of whoever was signed in before. Node has BroadcastChannel too.
+// screens of whoever was signed in before. Node has BroadcastChannel too:
+// `other` stands in for another tab.
 
 import { afterEach, describe, expect, it } from "vitest";
 import { SESSION_CHANNEL, announceSession, watchSession } from "@/lib/sessionChannel";
@@ -17,28 +18,41 @@ describe("the session channel between tabs", () => {
     return heard;
   }
 
+  function otherTab(): { channel: BroadcastChannel; heard: unknown[] } {
+    const channel = new BroadcastChannel(SESSION_CHANNEL);
+    const heard: unknown[] = [];
+    channel.onmessage = (event: MessageEvent<unknown>) => heard.push(event.data);
+    stops.push(() => channel.close());
+    return { channel, heard };
+  }
+
   it("is called kaagaz-session", () => {
     expect(SESSION_CHANNEL).toBe("kaagaz-session");
   });
 
   it("tells the other tabs who is signed in now, or nobody", async () => {
-    const heard = listen();
+    const other = otherTab();
     announceSession("u2");
     announceSession(null);
-    await expect.poll(() => heard).toEqual(["u2", null]);
+    await expect.poll(() => other.heard).toEqual([{ userId: "u2" }, { userId: null }]);
   });
 
-  it("ignores anything else on the channel", async () => {
+  it("hears the other tabs, and ignores anything else on the channel", async () => {
     const heard = listen();
-    const other = new BroadcastChannel(SESSION_CHANNEL);
-    other.postMessage("u2");
-    other.postMessage({ userId: 7 });
-    other.postMessage({});
-    other.close();
-    announceSession("u3");
+    const other = otherTab();
+    for (const data of ["u2", { userId: 7 }, {}, { userId: "u3" }]) other.channel.postMessage(data);
     await expect.poll(() => heard).toEqual(["u3"]);
-    announceSession("u4");
-    await expect.poll(() => heard).toEqual(["u3", "u4"]);
+  });
+
+  // The tab that signs out goes to its own sign-in page; hearing itself would
+  // send it somewhere else as well (the admin sign-in, from /admin).
+  it("never hears its own announcement", async () => {
+    const heard = listen();
+    const other = otherTab();
+    announceSession(null);
+    other.channel.postMessage({ userId: "u4" });
+    await expect.poll(() => heard).toEqual(["u4"]);
+    expect(other.heard).toEqual([{ userId: null }]);
   });
 
   it("hears nothing once stopped", async () => {
@@ -46,7 +60,7 @@ describe("the session channel between tabs", () => {
     const stop = watchSession((userId) => heard.push(userId));
     stop();
     const still = listen();
-    announceSession("u5");
+    otherTab().channel.postMessage({ userId: "u5" });
     await expect.poll(() => still).toEqual(["u5"]);
     expect(heard).toEqual([]);
   });
