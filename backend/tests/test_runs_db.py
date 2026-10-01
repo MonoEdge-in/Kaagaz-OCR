@@ -379,7 +379,9 @@ def test_a_save_waiting_on_the_family_lock_is_fenced_by_a_run_started_meanwhile(
 
 
 def test_mark_ready_on_a_rejected_or_deleted_document_still_finishes_its_run(db: Database) -> None:
-    """AR11 (PROVISIONAL statuses): the early returns close the run too."""
+    """AR11 (PROVISIONAL statuses): the early returns close the run too. A deleted
+    document's run went with it (0005, Vrushit: "if a document is deleted, instantly
+    forget everything about it"), so mark_ready finds nothing to close and does not fail."""
     customer, _ = new_customer(db)
     with db.customer(customer) as conn:
         rejected, deleted = (
@@ -396,11 +398,11 @@ def test_mark_ready_on_a_rejected_or_deleted_document_still_finishes_its_run(db:
 
     assert runs(db, customer, rejected) == [(ids[rejected], "rejected", None, T0, T1)]
     with db.customer(customer) as conn:
-        closed = conn.execute(
-            text("SELECT status, error_code, finished_at FROM processing_runs WHERE id = :r"),
-            {"r": ids[deleted]},
-        ).one()
-    assert tuple(closed) == ("failed", "document_missing", T1)
+        left: int = conn.execute(
+            text("SELECT count(*) FROM processing_runs WHERE customer_id = :c AND id = :r"),
+            {"c": customer, "r": ids[deleted]},
+        ).scalar_one()
+    assert left == 0
     assert counts(db, customer, rejected) == {**EMPTY, "processing_runs": 1}
 
 
