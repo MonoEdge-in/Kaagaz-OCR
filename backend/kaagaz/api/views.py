@@ -320,15 +320,24 @@ def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
     return ids
 
 
+_MAX_PAGE_NO = 2_147_483_647  # pages.page_no is an integer (int4), from 1
+
+
+def _page_key(citation: Mapping[str, Any]) -> tuple[str, int] | None:
+    """A citation's (document id, page number), or None when its stored ``page_no``
+    is not one the pages table can hold (a bool, below 1, beyond int4): sent to the
+    database, it would fail the whole query."""
+    document_id, page_no = citation.get("document_id"), citation.get("page_no")
+    if not document_id or type(page_no) is not int or not 1 <= page_no <= _MAX_PAGE_NO:
+        return None
+    return str(document_id), page_no
+
+
 def citation_pages(answer: Mapping[str, Any] | None) -> list[tuple[str, int]]:
     """The (document id, page number) of every citation of a saved answer."""
     if not answer:
         return []
-    return [
-        (str(each["document_id"]), each["page_no"])
-        for each in answer.get("citations", [])
-        if each.get("document_id") and isinstance(each.get("page_no"), int)
-    ]
+    return [key for each in answer.get("citations", []) if (key := _page_key(each)) is not None]
 
 
 def answer_with_pages(
@@ -339,7 +348,8 @@ def answer_with_pages(
     Looked up each time the answer is shown and never stored. O(citations)."""
     citations = []
     for each in answer.get("citations", []):
-        row = pages.get((str(each.get("document_id")), each.get("page_no")))
+        key = _page_key(each)
+        row = None if key is None else pages.get(key)
         citations.append({**each, "page": None if row is None else page_summary(row)})
     return {**answer, "citations": citations}
 
