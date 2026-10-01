@@ -273,7 +273,8 @@ class AnswerService:
             return _not_found("search", shown, closest, model_used=False)
 
         draft, model_used = self._draft(question, normalised, evidence)
-        texts = {item.n: clean_text(item.hit.text) for item in evidence}
+        # Line by line: joined, "12" and a next line's "August 2026" would read as a date.
+        texts = {item.n: "\n".join(map(clean_text, item.hit.text.splitlines())) for item in evidence}
         cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
         kept = verify([s for s in cleaned if s.text], texts) if draft.status == "answered" else []
         if not kept:
