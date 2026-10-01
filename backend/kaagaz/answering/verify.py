@@ -33,7 +33,8 @@ A sentence is kept only if:
      12.08.26 and 12 August, never 12 August 2026.
    * An id in a sentence is backed by the same token in the evidence,
      however that token was read ("HSN 8471" over "HSN Code: 8471"). A token
-     under 4 characters that is an id of the evidence (A-1) is that id.
+     written exactly as an id of the evidence (A-1, the 45/2 of "Gat No.
+     45/2") is that id, however short.
    * A plain digit run (no comma, decimal, currency or scale) is also backed
      by an evidence id written the same ("The invoice number is 1042." over
      "Invoice No. 1042"). A plain year on its own (1900 to 2099) is also
@@ -346,7 +347,7 @@ def _unreadable(token: str) -> bool:
 
 def _atoms(line: str, *, known: Collection[str] = (), tokens: set[str] | None = None) -> list[Atom]:
     """The atoms of one normalised line, in the module docstring's order. ``known``: the
-    evidence's ids, so a short token that is one of them is that id. ``tokens``, for
+    evidence's ids, so a token written as one of them is that id. ``tokens``, for
     evidence: gets every token with a digit that an id in a sentence may name."""
     atoms: list[Atom] = []
     if not _DIGIT.search(line):
@@ -446,9 +447,9 @@ def _generic_id(match: re.Match[str], known: Collection[str]) -> Atom | None:
     token = match[0]
     if not _DIGIT.search(token):
         return None
-    if len(token) < 4:
-        return ("id", token) if token in known else None
-    if _NOT_ID.fullmatch(token) or not _LETTER.search(token):
+    if token in known:
+        return ("id", token)  # written as an id of the evidence (A-1), however short
+    if len(token) < 4 or _NOT_ID.fullmatch(token) or not _LETTER.search(token):
         return None
     return ("id", token)
 
