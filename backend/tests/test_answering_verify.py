@@ -77,7 +77,7 @@ OTHER_BILL = "Invoice No: INV-2001\nGrand Total: Rs. 2,50,000"
 # Ids the way bills write them; the last label and its value are on two lines.
 IDS = (
     "Invoice No. 1042\nBill No. 57\nHSN Code: 8471\nPIN: 400001\nMob: 98200 12345\n"
-    "A/c No. 1234567890\nFlat No: A-1\nChallan No.\n2207"
+    "A/c No. 1234567890\nFlat No: A-1\nGat No. 45/2\nSurvey No: 7/12\nChallan No.\n2207"
 )
 LEDGER = "Opening Balance: 1,500.00 Cr\nClosing Balance: 2,750.00 Dr"  # Cr is credit, not crore
 SHORT = "Invoice Date: 12/08/26"  # a two-digit year
@@ -144,6 +144,7 @@ def kept(text: str, cited: tuple[int, ...] = (1,)) -> bool:
         pytest.param("It is dated August thirteenth, 2026.", id="an ordinal word after a month"),
         pytest.param("The grand total is Rs. 1.18 L.", id="L for lakh (PROVISIONAL)"),
         pytest.param("The total is a lakh rupees.", id="a lakh (PROVISIONAL)"),
+        pytest.param("It is dated August second, 2026.", id="an ordinal word after a month name"),
     ],
 )
 def test_must_drop(text: str) -> None:
@@ -197,6 +198,8 @@ MORE_KEEP = [
     ("The account number is 1234567890.", 4),
     ("A/c No. 1234567890", 4),
     ("The flat is A-1.", 4),
+    ("The gat number is 45/2.", 4),
+    ("The survey number is 7/12.", 4),
     ("Challan No. 2207", 4),
     ("The opening balance is Rs. 1,500.00.", 5),
     ("Opening Balance: 1,500.00 Cr", 5),
@@ -206,6 +209,7 @@ MORE_KEEP = [
     ("It is dated 12 August.", 6),
     ("The amount in words is Rupees One Lakh Eighteen Thousand Only.", 7),
     ("The invoice is from 2026.", 8),
+    ("You may first check the total of Rs. 1,18,000.", 8),  # "may first" is not a date
 ]
 
 
