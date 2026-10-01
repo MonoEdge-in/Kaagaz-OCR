@@ -53,9 +53,27 @@ describe("guards", () => {
         to: m[1] ?? "",
       })),
     );
-    const toSignIn = moves.filter((m) => /login|signInPath/.test(m.to));
+    const toSignIn = moves.filter((m) =>
+      /login|signInPath|endedPath|signedOutPath|pageAfterSessionChange/.test(m.to),
+    );
     expect(toSignIn).toEqual([{ file: "lib/session.tsx", to: "signInPath(pathname" }]);
     const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/") || m.file.startsWith("app/admin/login/"));
     expect(fromSignIn).toEqual([]);
+    const leaving = [
+      "app/login/SignInForm.tsx",
+      "app/admin/login/AdminSignInForm.tsx",
+      "components/shell/AppShell.tsx",
+      "components/shell/SetPasswordScreen.tsx",
+      "components/admin/AdminView.tsx",
+    ];
+    for (const file of leaving) expect(readFileSync(join(ROOT, file), "utf8"), file).not.toContain("useRouter");
+  });
+
+  // One way out (lib/sessionChannel.ts), so the first page asked for wins.
+  it("leaves for a fresh page only through leavePage", () => {
+    const offenders = all((p) => /\.(ts|tsx)$/.test(p))
+      .filter((p) => /location\.replace\(/.test(readFileSync(p, "utf8")))
+      .map((p) => relative(ROOT, p).replaceAll("\\", "/"));
+    expect(offenders).toEqual(["lib/sessionChannel.ts"]);
   });
 });

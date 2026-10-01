@@ -14,6 +14,7 @@ import {
   listView,
   offsetAfterDelete,
   pageInfo,
+  sessionChangedMessage,
   shouldPoll,
   tooLargeMessage,
   uploadKind,
@@ -278,6 +279,18 @@ describe("offsetAfterDelete", () => {
   it("stays when rows are left, or on the first page", () => {
     expect(offsetAfterDelete(25, 3, 25)).toBe(25);
     expect(offsetAfterDelete(0, 1, 25)).toBe(0);
+  });
+});
+
+// Critical #5: once the server says another account has signed in here, the
+// files still waiting are not sent, and say why in the server's words.
+describe("sessionChangedMessage", () => {
+  it("gives the server's words for session_changed only", () => {
+    const said = "Not uploaded. A different account has signed in on this browser since you chose this file.";
+    expect(sessionChangedMessage(new ApiError(409, "session_changed", said))).toBe(said);
+    expect(sessionChangedMessage(new ApiError(409, "conflict", "That already exists."))).toBeNull();
+    expect(sessionChangedMessage(new ApiError(0, "network", "Could not reach the server."))).toBeNull();
+    expect(sessionChangedMessage(new TypeError("Failed to fetch"))).toBeNull();
   });
 });
 

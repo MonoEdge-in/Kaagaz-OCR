@@ -3,8 +3,8 @@
 // screens of whoever was signed in before. Node has BroadcastChannel too:
 // `other` stands in for another tab.
 
-import { afterEach, describe, expect, it } from "vitest";
-import { SESSION_CHANNEL, announceSession, watchSession } from "@/lib/sessionChannel";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SESSION_CHANNEL, announceSession, leavePage, watchSession } from "@/lib/sessionChannel";
 
 describe("the session channel between tabs", () => {
   const stops: (() => void)[] = [];
@@ -63,5 +63,19 @@ describe("the session channel between tabs", () => {
     otherTab().channel.postMessage({ userId: "u5" });
     await expect.poll(() => still).toEqual(["u5"]);
     expect(heard).toEqual([]);
+  });
+});
+
+// A late reply saying the session has ended must not send a tab that is
+// already signing out somewhere else: the first page it leaves for wins.
+describe("leavePage", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("loads the first page asked for, and ignores any later one", () => {
+    const replace = vi.fn();
+    vi.stubGlobal("window", { location: { replace } });
+    leavePage("/login?signed_out=1");
+    leavePage("/login?ended=1");
+    expect(replace.mock.calls).toEqual([["/login?signed_out=1"]]);
   });
 });
