@@ -12,6 +12,7 @@ import json
 from collections.abc import Callable, Mapping
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -561,6 +562,27 @@ def test_two_reads_of_the_exit_files_give_the_same_results(db: Database, cropped
     either read leaves is the same as the other's, apart from ids and times."""
     first, second = (read_files(db, model=True, cropped=cropped) for _ in range(2))
     assert results(db, first) == results(db, second)
+
+
+SNAPSHOT = Path(__file__).parent / "fixtures" / "exit_labels.json"
+
+
+def labels_json(db: Database, files: Read) -> str:
+    """Each value's [file, record_key, field, value_text, label, label_reason], sorted, one
+    per line."""
+    found = sorted(
+        [key, *row] for key, doc in files.ids.items() for row in rows(db, files.customer, LABELS, doc)
+    )
+    return "[\n" + ",\n".join(json.dumps(row, ensure_ascii=False) for row in found) + "\n]\n"
+
+
+def test_the_exit_labels_match_the_committed_snapshot(db: Database, cropped: list[BoxLocation]) -> None:
+    """A characterization snapshot for A9's clean-up, which must keep it byte for byte: each
+    value's label and reason when the exit files are read with the model and the echo vision.
+    It was generated from the code at de36d96 (W6). A change to it changes what is verified,
+    so it needs its own reason and review, never a refactor's."""
+    files = read_files(db, model=True, cropped=cropped)
+    assert labels_json(db, files) == SNAPSHOT.read_text(encoding="utf-8")
 
 
 def test_reprocessing_replaces_the_results_and_keeps_one_set(db: Database) -> None:
