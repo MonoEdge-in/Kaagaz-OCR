@@ -398,7 +398,7 @@ def test_mark_ready_on_a_rejected_or_deleted_document_still_finishes_its_run(db:
 
     assert runs(db, customer, rejected) == [(ids[rejected], "rejected", None, T0, T1)]
     with db.customer(customer) as conn:
-        left = conn.execute(
+        left: int = conn.execute(
             text("SELECT count(*) FROM processing_runs WHERE customer_id = :c AND id = :r"),
             {"c": customer, "r": ids[deleted]},
         ).scalar_one()
