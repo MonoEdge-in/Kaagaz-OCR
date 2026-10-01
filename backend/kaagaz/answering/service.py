@@ -116,7 +116,9 @@ class Answer:
     model_used: bool
 
     def to_json(self) -> dict[str, Any]:
-        """The ``Answer`` of frontend/lib/types.ts, exactly."""
+        """The ``Answer`` of frontend/lib/types.ts, as it is stored: each citation's
+        ``page`` and ``source_state`` are added each time the answer is shown, never
+        stored (kaagaz/api/views.py)."""
         return {
             "status": self.status,
             "label": self.label,

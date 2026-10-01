@@ -293,7 +293,9 @@ export interface Citation {
   snippet: string | null; // plain text, never markup; null once in Trash or deleted
   label: Label;
   source_state?: SourceState;
-  page: PageSummary | null; // the cited page, for the preview; null once in Trash or deleted
+  // The cited page, for the preview: added each time the answer is shown, never
+  // stored; null once in Trash or deleted, or when the page is not there.
+  page: PageSummary | null;
 }
 
 export interface AnswerSentence {
