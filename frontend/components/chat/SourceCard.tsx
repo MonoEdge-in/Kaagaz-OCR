@@ -35,12 +35,12 @@ function SourcePreview({ citation }: { citation: Citation }) {
   if (!citation.page || !region) {
     return <p className={styles.previewNote}>The preview is not available. Open the page to see the spot.</p>;
   }
-  const document = {
+  const cited = {
     id: citation.document_id,
     display_name: citation.document_name,
     detected_type: citation.detected_type,
   };
-  return <PageViewer document={document} page={citation.page} highlights={citation.regions} crop={region} />;
+  return <PageViewer document={cited} page={citation.page} highlights={citation.regions} crop={region} />;
 }
 
 function LazySourcePreview({ citation }: { citation: Citation }) {
