@@ -16,16 +16,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+# AR1: the worker renews a job's lease at most once in this many seconds
+# (kaagaz/jobs/worker.py), so a heartbeat can wait this long; each margin below adds it.
+LEASE_RENEW_SECONDS = 15
 # AR1: seconds to spare between one OCR request (the longest step without a
 # heartbeat) and the job's lease, or a slow page outlives the lease and a second
 # worker starts the same document.
-_OCR_LEASE_MARGIN_SECONDS = 120
+_OCR_LEASE_MARGIN_SECONDS = 120 + LEASE_RENEW_SECONDS
 # The Host values the ocr server accepts (ALLOWED_HOSTS in kaagaz/ocr_server/app.py,
 # which must never import this module; a test keeps the two the same).
 OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
 # AR1: seconds to spare between the longest model step without a heartbeat (one
 # chat_json: a call and its repair retry) and the job's lease.
-_MODEL_LEASE_MARGIN_SECONDS = 60
+_MODEL_LEASE_MARGIN_SECONDS = 60 + LEASE_RENEW_SECONDS
 # Council 5 (PROVISIONAL): an invoice window's reply needs about this many tokens for each
 # line item, taking one line item per _WINDOW_LINE_CHARS characters of the window, plus
 # _WINDOW_FIELD_TOKENS for its nine fields. The window must fit MODEL_WINDOW_MAX_TOKENS.
@@ -199,7 +202,9 @@ class Settings:
         if not (math.isfinite(ocr_timeout_seconds) and ocr_timeout_seconds > 0):
             raise SettingsError("OCR_TIMEOUT_SECONDS must be a number above 0")
         if ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
-            raise SettingsError("OCR_TIMEOUT_SECONDS + 120 must not be more than QUEUE_LEASE_SECONDS")
+            raise SettingsError(
+                f"OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS} must not be more than QUEUE_LEASE_SECONDS"
+            )
         ocr_engine = env.choice("OCR_ENGINE", {"paddleocr_vl", "rapidocr", "none"})
         ocr_url = env.url("OCR_URL")
         if (
@@ -244,7 +249,8 @@ class Settings:
             raise SettingsError("MODEL_EXTRACT_TIMEOUT_SECONDS must be a number above 0")
         if 2 * extract_timeout_seconds + _MODEL_LEASE_MARGIN_SECONDS > queue_lease_seconds:
             raise SettingsError(
-                "2 x MODEL_EXTRACT_TIMEOUT_SECONDS + 60 must not be more than QUEUE_LEASE_SECONDS"
+                f"2 x MODEL_EXTRACT_TIMEOUT_SECONDS + {_MODEL_LEASE_MARGIN_SECONDS}"
+                " must not be more than QUEUE_LEASE_SECONDS"
             )
         return cls(
             database_url=env.text("DATABASE_URL"),

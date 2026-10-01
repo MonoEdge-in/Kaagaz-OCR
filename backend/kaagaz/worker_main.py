@@ -43,6 +43,7 @@ import logging
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from types import FrameType
@@ -286,6 +287,7 @@ def _serve(settings: Settings) -> None:
             )
         ),
         on_attempt=RecordAttempt(documents.record_attempt, settings.job_max_attempts),
+        clock=time.monotonic,  # a lease is renewed at most every LEASE_RENEW_SECONDS
     )
     purge = functools.partial(purge_expired, db, storage, _utc_now, settings.trash_days)
     worker = PurgeHourly(jobs, purge, _utc_now)

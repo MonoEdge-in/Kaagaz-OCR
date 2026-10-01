@@ -41,8 +41,10 @@ The steps, in order, for one (customer, document):
 7. Just before saving, the document must still be clean. Everything is saved
    in one transaction that replaces what an earlier run saved, so running the
    same job twice is safe (queues deliver at least once).
-8. Meaning vectors for the pieces, if a model is set. A model that is down
-   only means no vectors: word and typo search still work.
+8. Meaning vectors for the pieces, if a model is set, with the heartbeat and
+   progress "indexing i of n" after each batch is written (a 20k-row sheet is
+   about 626 batches, longer than one lease). A model that is down only means
+   no vectors: word and typo search still work.
 9. The page count, and the document is ready, in one transaction that also
    makes it its family's current version unless a newer version is ready
    already (PRD 1 F6). A version that fails never gets here, so the one before
@@ -411,6 +413,14 @@ class PipelineStore(Protocol):
     def load_learned(self, customer_id: str, fields: Collection[str]) -> list[LearnedCorrection]: ...
 
 
+class Embedder(Protocol):
+    """kaagaz.search.indexing.embed_pieces in production, with its database and model."""
+
+    def __call__(
+        self, customer_id: str, document_id: str, *, on_batch: Callable[[int, int], None]
+    ) -> object: ...
+
+
 class VisionModel(Protocol):
     def read_image(self, *, png: bytes, instruction: str) -> str: ...
 
@@ -454,7 +464,7 @@ class DocumentProcessor:
         sheet_pages: Callable[[list[Span]], Sequence[PageInfo]],
         page_images: PageImageStore,
         store: PipelineStore,
-        embed: Callable[[str, str], object] | None = None,
+        embed: Embedder | None = None,
         vision: VisionModel | None = None,
         model_errors: tuple[type[Exception], ...] = (),
         runs: RunStore | None = None,
@@ -472,7 +482,7 @@ class DocumentProcessor:
         model_budget: "ModelBudget | None" = None,
         timezone: str = "UTC",
     ) -> None:
-        """``embed(customer_id, document_id)`` gives the saved pieces their vectors;
+        """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         ``vision`` reads scanned boxes again. Either failing with one of
         ``model_errors`` is logged and skipped, never a failed document.
 
@@ -653,7 +663,7 @@ class DocumentProcessor:
         self._store.save(content, run_id=run.run_id)
         heartbeat()
         self._progress(job, run, "indexing", 0, 1)
-        run.embedded = self._index(job)
+        run.embedded = self._index(job, run, heartbeat)
         finished = self._finished(run, "ready", run.model_error)
         self._documents.mark_ready(customer_id, document_id, len(pages), run=finished)
 
@@ -762,12 +772,18 @@ class DocumentProcessor:
             return False
         return True
 
-    def _index(self, job: Job) -> bool:
-        """Make the pieces' meaning vectors; True if it ran."""
+    def _index(self, job: Job, run: _Run, heartbeat: Heartbeat) -> bool:
+        """Make the pieces' meaning vectors; True if it ran. After each batch is written,
+        the heartbeat, then "indexing i of n" (fenced: a newer run stops this one there)."""
         if self._embed is None:
             return False
+
+        def on_batch(done: int, total: int) -> None:
+            heartbeat()
+            self._progress(job, run, "indexing", done, total)
+
         try:
-            self._embed(job.customer_id, job.document_id)
+            self._embed(job.customer_id, job.document_id, on_batch=on_batch)
         except self._model_errors as error:
             _log.warning(
                 "pieces saved without meaning vectors",
@@ -1078,7 +1094,7 @@ def build_processor(
             low_res_dpi=settings.low_res_dpi,
         )
 
-    embed: Callable[[str, str], object] | None = None
+    embed: Embedder | None = None
     if model is not None:
         embed = functools.partial(embed_pieces, db, model=model)
     engine = build_ocr_engine(settings)
