@@ -7,6 +7,7 @@ answer. Connection failures come from a tiny client object that raises them.
 import json
 import unittest
 from typing import Any
+from unittest import mock
 
 import boto3
 from botocore import UNSIGNED
@@ -338,6 +339,43 @@ class ClientConfigTest(unittest.TestCase):
         self.assertEqual(
             config.retries["total_max_attempts"], 3
         )  # max_attempts 2 is two retries after the first try
+
+    def test_sends_use_their_own_client_with_a_short_read_timeout(self) -> None:
+        made: list[_RecordingClient] = []
+
+        def client(service_name: str, **kwargs: Any) -> _RecordingClient:
+            made.append(_RecordingClient(_real_boto3_client(service_name, **kwargs).meta.config))
+            return made[-1]
+
+        with mock.patch.object(boto3, "client", client):
+            queue = SqsQueue(make_settings(queue_url=URL, queue_wait_seconds=20))
+        queue.enqueue(JOB)
+        self.assertIsNone(queue.receive())  # a bad message, buried at once: one more send
+        (sender,) = [made_client for made_client in made if "send_message" in made_client.calls]
+        (receiver,) = [made_client for made_client in made if "receive_message" in made_client.calls]
+        self.assertIsNot(sender, receiver)
+        self.assertEqual(sender.calls, ["send_message", "send_message"])
+        self.assertEqual((sender.config.connect_timeout, sender.config.read_timeout), (5, 5))
+        self.assertEqual(sender.config.retries["total_max_attempts"], 3)
+        self.assertGreater(receiver.config.read_timeout, 20)  # longer than the long poll
+
+
+_real_boto3_client = boto3.client
+
+
+class _RecordingClient:
+    """Stands in for one SQS client: keeps its real config and the calls made on it."""
+
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self.calls: list[str] = []
+
+    def __getattr__(self, name: str) -> Any:
+        def call(**kwargs: Any) -> Any:
+            self.calls.append(name)
+            return {"Messages": [message(body="not a job")]} if name == "receive_message" else {}
+
+        return call
 
 
 if __name__ == "__main__":
