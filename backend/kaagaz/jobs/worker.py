@@ -76,10 +76,11 @@ class Worker:
     ) -> None:
         """``max_attempts`` is how many times the handler may run for one job;
         ``on_exhausted`` marks a job's document when a delivery comes after that;
-        ``on_attempt`` records each try before the handler runs. ``clock`` (seconds,
-        time.monotonic in worker_main) spaces the lease renewals: a heartbeat less than
-        LEASE_RENEW_SECONDS after the receive or the last renewal does not call the
-        queue. With no clock, every heartbeat renews."""
+        ``on_attempt`` records each try before the handler runs. ``clock`` (monotonic
+        seconds, time.monotonic in worker_main) spaces the lease renewals: a heartbeat
+        less than LEASE_RENEW_SECONDS after the receive or the last renewal does not
+        call the queue. A clock that steps back renews at once. With no clock, every
+        heartbeat renews."""
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
         self._queue = queue
@@ -104,7 +105,7 @@ class Worker:
             nonlocal renewed
             if clock is not None:
                 now = clock()
-                if now - renewed < LEASE_RENEW_SECONDS:
+                if 0 <= now - renewed < LEASE_RENEW_SECONDS:
                     return
                 renewed = now
             self._queue.extend(delivery.receipt)
