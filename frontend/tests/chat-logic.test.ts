@@ -113,6 +113,7 @@ describe("source cards", () => {
     regions: [],
     snippet: "Total 1,234",
     label: "verified",
+    page: null,
     ...overrides,
   });
 

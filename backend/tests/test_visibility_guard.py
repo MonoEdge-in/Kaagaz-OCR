@@ -63,6 +63,9 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # version or one still being read (replacing AR5's any state, PROVISIONAL).
     (pipeline_store, "_LINK_TARGETS"): LIVE_CURRENT,
     (pipeline_store, "_LIVE_TARGETS"): LIVE_CURRENT,
+    # A citation's page, for its preview: out of Trash, any version, as an older
+    # version's citation keeps its text and link (views.answer_with_source_states).
+    (chat, "_CITED_PAGES"): LIVE,
 }
 
 # Statements that count every version on purpose, and why.

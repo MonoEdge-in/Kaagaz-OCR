@@ -17,6 +17,17 @@ from sqlalchemy import Connection, RowMapping, text
 
 CONVERSATION_LIST_LIMIT = 50
 
+# The pages saved answers cite, for their previews. Out of Trash only (visibility.LIVE):
+# an older version keeps its page, as its citation was true of that version.
+_CITED_PAGES = (
+    "SELECT p.document_id, p.page_no, p.width, p.height, p.unit, p.has_image, p.route,"
+    " p.effective_dpi, p.low_resolution"
+    " FROM unnest(CAST(:documents AS uuid[]), CAST(:pages AS integer[])) AS cited (document_id, page_no)"
+    " JOIN pages p ON p.document_id = cited.document_id AND p.page_no = cited.page_no"
+    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " WHERE p.customer_id = :c AND d.customer_id = :c AND d.deleted_at IS NULL"
+)
+
 
 def create_conversation(conn: Connection, customer_id: str, user_id: str, title: str) -> str:
     conversation_id: object = conn.execute(
@@ -128,6 +139,26 @@ def document_states(conn: Connection, customer_id: str, document_ids: Sequence[s
         str(row.id): "in_trash" if row.in_trash else "live" if row.is_current else "older_version"
         for row in rows
     }
+
+
+def cited_pages(
+    conn: Connection, customer_id: str, pages: Sequence[tuple[str, int]]
+) -> dict[tuple[str, int], RowMapping]:
+    """The page row for each (document id, page number) an answer cites, keyed by
+    that pair. A page that is not there, or whose document is in Trash or deleted,
+    is missing. One query for any number of pages, by the pages key: O(k log P)."""
+    wanted = sorted(set(pages))
+    if not wanted:
+        return {}
+    rows = (
+        conn.execute(
+            text(_CITED_PAGES),
+            {"c": customer_id, "documents": [doc for doc, _ in wanted], "pages": [n for _, n in wanted]},
+        )
+        .mappings()
+        .all()
+    )
+    return {(str(row["document_id"]), int(row["page_no"])): row for row in rows}
 
 
 def upsert_feedback(

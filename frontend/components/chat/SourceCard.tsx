@@ -10,7 +10,6 @@
 import Link from "next/link";
 import { useRef } from "react";
 import { Icon } from "@/components/ui/Icon";
-import { useDocumentDetail } from "@/components/viewer/documentCache";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import type { Citation } from "@/lib/types";
@@ -30,20 +29,18 @@ function PreviewSkeleton() {
   return <span className={`skeleton ${styles.previewSkeleton}`} aria-hidden="true" />;
 }
 
+// The citation carries its page, so the preview never fetches the whole document.
 function SourcePreview({ citation }: { citation: Citation }) {
-  const state = useDocumentDetail(citation.document_id);
-  if (state.status === "loading") return <PreviewSkeleton />;
-  const page =
-    state.status === "ready"
-      ? state.document.pages.find((p) => p.page_no === citation.page_no)
-      : undefined;
   const region = citationRegion(citation);
-  if (state.status === "error" || !page || !region) {
+  if (!citation.page || !region) {
     return <p className={styles.previewNote}>The preview is not available. Open the page to see the spot.</p>;
   }
-  return (
-    <PageViewer document={state.document} page={page} highlights={citation.regions} crop={region} />
-  );
+  const document = {
+    id: citation.document_id,
+    display_name: citation.document_name,
+    detected_type: citation.detected_type,
+  };
+  return <PageViewer document={document} page={citation.page} highlights={citation.regions} crop={region} />;
 }
 
 function LazySourcePreview({ citation }: { citation: Citation }) {

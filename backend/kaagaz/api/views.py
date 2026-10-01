@@ -320,13 +320,37 @@ def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
     return ids
 
 
+def citation_pages(answer: Mapping[str, Any] | None) -> list[tuple[str, int]]:
+    """The (document id, page number) of every citation of a saved answer."""
+    if not answer:
+        return []
+    return [
+        (str(each["document_id"]), each["page_no"])
+        for each in answer.get("citations", [])
+        if each.get("document_id") and isinstance(each.get("page_no"), int)
+    ]
+
+
+def answer_with_pages(
+    answer: Mapping[str, Any], pages: Mapping[tuple[str, int], RowMapping]
+) -> dict[str, Any]:
+    """An answer whose every citation has ``page``: the ``PageSummary`` its preview
+    draws, or None when ``pages`` (db/chat.py ``cited_pages``) has no such page.
+    Looked up each time the answer is shown and never stored. O(citations)."""
+    citations = []
+    for each in answer.get("citations", []):
+        row = pages.get((str(each.get("document_id")), each.get("page_no")))
+        citations.append({**each, "page": None if row is None else page_summary(row)})
+    return {**answer, "citations": citations}
+
+
 def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, str]) -> dict[str, Any]:
     """A saved answer as it may be shown now (``states`` from db/chat.py
     ``document_states``; a missing id was deleted forever).
 
     * Each citation gets ``source_state``. One from a document in Trash or
-      deleted loses its snippet and its highlight regions: Trash means deleted,
-      so its words and its place on the page must not show any more.
+      deleted loses its snippet, its highlight regions and its page: Trash means
+      deleted, so its words and its place on the page must not show any more.
     * A sentence whose every citation is gone is replaced by ``GONE_SENTENCE``.
     * Closest documents that are gone are left out.
     A citation of an older version keeps its text and link, marked
@@ -341,6 +365,7 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
         if state in _GONE:
             citation["snippet"] = None
             citation["regions"] = []
+            citation["page"] = None
             gone.add(each.get("n"))
         citations.append(citation)
     sentences = []

@@ -293,6 +293,7 @@ export interface Citation {
   snippet: string | null; // plain text, never markup; null once in Trash or deleted
   label: Label;
   source_state?: SourceState;
+  page: PageSummary | null; // the cited page, for the preview; null once in Trash or deleted
 }
 
 export interface AnswerSentence {

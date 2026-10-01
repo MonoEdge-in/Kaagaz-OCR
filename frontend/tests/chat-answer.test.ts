@@ -28,6 +28,7 @@ const citation = (n: number, overrides: Partial<Citation> = {}): Citation => ({
   regions: [{ kind: "box", page: 2, box: [0.1, 0.2, 0.3, 0.4] }],
   snippet: "Total 1,234",
   label: "verified",
+  page: null,
   ...overrides,
 });
 
