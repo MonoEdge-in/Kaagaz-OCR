@@ -4,6 +4,10 @@
 // the least recently used values that nothing holds are dropped (drop()
 // frees them). A held value is never dropped, so while more than `keep` are
 // on screen the cache is over its size until they are released.
+//
+// Room is made once the current work is done (a microtask), not at once: a
+// screen that lets go and holds again in one go (an effect run again on a
+// resize, or by React's StrictMode) keeps what it shows.
 
 export class LruCache<V> {
   // Oldest first: a Map keeps the order its keys were set in.
@@ -20,7 +24,7 @@ export class LruCache<V> {
     entry.holders += 1;
     this.entries.delete(key);
     this.entries.set(key, entry); // now the most recently used
-    this.trim();
+    queueMicrotask(() => this.trim());
     return entry.value;
   }
 
