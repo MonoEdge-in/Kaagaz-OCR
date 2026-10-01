@@ -592,14 +592,28 @@ class FakeChat:
 
 
 class FakeEmbedder:
-    """Records (customer_id, document_id) for each call; raises ModelDown if down."""
+    """Records (customer_id, document_id) for each call; raises ModelDown if down.
+    Then it writes ``batches`` batches, like embed_pieces: ``during_batch(i)`` runs
+    while batch i is embedded (a test moves its clock there), and ``on_batch(i, batches)``
+    once it is written."""
 
-    def __init__(self, *, down: bool = False) -> None:
+    def __init__(
+        self, *, down: bool = False, batches: int = 0, during_batch: Callable[[int], None] | None = None
+    ) -> None:
         self.down = down
         self.calls: list[tuple[str, str]] = []
+        self._batches = batches
+        self._during_batch = during_batch
 
-    def __call__(self, customer_id: str, document_id: str) -> int:
+    def __call__(
+        self, customer_id: str, document_id: str, *, on_batch: Callable[[int, int], None] | None = None
+    ) -> int:
         self.calls.append((customer_id, document_id))
         if self.down:
             raise ModelDown
+        for done in range(1, self._batches + 1):
+            if self._during_batch is not None:
+                self._during_batch(done)
+            if on_batch is not None:
+                on_batch(done, self._batches)
         return 0

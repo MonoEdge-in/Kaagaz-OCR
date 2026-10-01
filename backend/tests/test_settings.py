@@ -71,10 +71,11 @@ def test_each_engine_name_is_accepted(engine: str) -> None:
 
 def test_one_ocr_request_must_end_well_inside_the_lease() -> None:
     """The longest step without a heartbeat is one OCR request: with less than two
-    minutes to spare, a slow page outlives the lease and a second worker starts."""
-    fits = Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="1080", QUEUE_LEASE_SECONDS="1200"))
-    assert fits.ocr_timeout_seconds == 1080.0
-    for timeout, lease in (("1081", "1200"), ("900", "900")):
+    minutes to spare, plus the 15 s the worker may wait to renew a lease, a slow page
+    outlives the lease and a second worker starts."""
+    fits = Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="1065", QUEUE_LEASE_SECONDS="1200"))
+    assert fits.ocr_timeout_seconds == 1065.0
+    for timeout, lease in (("1066", "1200"), ("900", "900")):
         with pytest.raises(SettingsError, match="OCR_TIMEOUT_SECONDS") as caught:
             Settings.from_env(shipped(OCR_TIMEOUT_SECONDS=timeout, QUEUE_LEASE_SECONDS=lease))
         assert "QUEUE_LEASE_SECONDS" in str(caught.value)

@@ -19,6 +19,18 @@ def make_queue(max_attempts: int = QUEUE_MAX_RECEIVES) -> tuple[FakeClock, Lease
     return clock, LeaseQueue(clock, lease_seconds=LEASE, max_attempts=max_attempts)
 
 
+class RenewalLog(LeaseQueue):
+    """A LeaseQueue that notes the time of each lease renewal."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__(clock, lease_seconds=LEASE, max_attempts=QUEUE_MAX_RECEIVES)
+        self.renewed_at: list[float] = []
+
+    def extend(self, receipt: str) -> None:
+        self.renewed_at.append(self._clock.now())
+        super().extend(receipt)
+
+
 def make_worker(queue: LeaseQueue, handler: Handler, marked: list[Job] | None = None) -> Worker:
     """The worker under test, with MAX_ATTEMPTS tries per job. ``marked`` collects
     every job ``on_exhausted`` is called with."""
@@ -277,6 +289,33 @@ class WorkerTest(unittest.TestCase):
 
         make_worker(queue, slow_handler).run_once()
         self.assertEqual(seen_by_other_worker, [])
+        self.assertEqual(queue.pending(), 0)
+
+    def test_heartbeats_renew_the_lease_at_most_once_every_15_seconds(self) -> None:
+        """R2 7: a heartbeat after every page or batch is hundreds of queue calls on a long
+        document. On the worker's clock, a beat less than 15 s after the receive or the last
+        renewal does not call the queue, and the job is still never handed out twice."""
+        clock = FakeClock()
+        queue = RenewalLog(clock)
+        queue.enqueue(GOOD)
+        handed_out = []
+
+        def beats_every_5_seconds(job: Job, beat: Heartbeat) -> None:
+            for _ in range(12):  # 60 s: two leases
+                clock.advance(5)
+                beat()
+                handed_out.append(queue.receive())  # a second worker asks for work
+
+        worker = Worker(
+            queue,
+            beats_every_5_seconds,
+            max_attempts=MAX_ATTEMPTS,
+            on_exhausted=lambda job: None,
+            clock=clock.now,
+        )
+        self.assertTrue(worker.run_once())
+        self.assertEqual(queue.renewed_at, [15, 30, 45, 60])
+        self.assertEqual(handed_out, [None] * 12)
         self.assertEqual(queue.pending(), 0)
 
     def test_heartbeat_after_the_lease_is_lost_does_not_crash_the_worker(self) -> None:

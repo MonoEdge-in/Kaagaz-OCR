@@ -731,6 +731,25 @@ class RunFenceTest(unittest.TestCase):
         assert old.totals is not None
         self.assertEqual(old.totals.pages_text_layer, 1)
 
+    def test_a_newer_run_during_indexing_stops_the_older_one_before_it_is_ready(self) -> None:
+        """A delivery whose lease ran out while embedding overlaps the next one, which starts
+        a new run. The fence refuses the older run's next write (its progress after the
+        batch), so it embeds no more and never marks the document ready."""
+        batches: list[int] = []
+
+        def newer_run_starts(done: int) -> None:
+            batches.append(done)
+            if done == 1:
+                system.runs.start(CUSTOMER, job.document_id, now=T0)
+
+        system = rig(embed=FakeEmbedder(batches=3, during_batch=newer_run_starts))
+        job = system.job(CSV)
+        system.processor(job, beat)  # returns normally: the worker acks it
+
+        self.assertEqual(batches, [1])
+        self.assertIs(system.statuses.get_status(CUSTOMER, job.document_id), DocumentStatus.CLEAN)
+        self.assertEqual(statuses_of(system.runs_of(job)), [("superseded", None), ("running", None)])
+
 
 class LoggingTest(unittest.TestCase):
     def test_run_and_progress_logs_carry_ids_only(self) -> None:

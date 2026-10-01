@@ -82,8 +82,11 @@ def real_socket(max_cells: int = 10_000) -> ReaderSocket:
     return ReaderSocket({sniff.TEXT: CsvReader(max_cells=max_cells), sniff.ZIP: XlsxReader(XLSX_LIMITS)})
 
 
-def make_worker(queue: LeaseQueue, handler: Handler, repo: MemoryDocuments) -> Worker:
-    """The worker as worker_main wires it: the delivery after the last attempt marks the document."""
+def make_worker(
+    queue: LeaseQueue, handler: Handler, repo: MemoryDocuments, clock: FakeClock | None = None
+) -> Worker:
+    """The worker as worker_main wires it: the delivery after the last attempt marks the
+    document. With ``clock``, it renews a lease at most every 15 s on that clock."""
     return Worker(
         queue,
         handler,
@@ -94,6 +97,7 @@ def make_worker(queue: LeaseQueue, handler: Handler, repo: MemoryDocuments) -> W
         on_attempt=lambda job, attempt: repo.record_attempt(
             job.customer_id, job.document_id, attempt, MAX_ATTEMPTS
         ),
+        clock=None if clock is None else clock.now,
     )
 
 

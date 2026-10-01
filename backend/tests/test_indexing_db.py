@@ -67,6 +67,23 @@ def test_every_piece_is_embedded_in_batches_in_order(db: Database) -> None:
     assert _embeddings(db, customer, document) == [(True, "fake-embed")] * 5
 
 
+def test_each_batch_is_reported_once_its_write_has_committed(db: Database) -> None:
+    """The pipeline's heartbeat and "indexing i of n" (R2 1). Each report comes after the
+    batch's transaction, never inside one: another transaction already sees the vectors."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [(f"piece {n}", None) for n in range(5)])
+    reports: list[tuple[int, int, int]] = []
+
+    def on_batch(done: int, total: int) -> None:
+        embedded = sum(has_vector for has_vector, _ in _embeddings(db, customer, document))
+        reports.append((done, total, embedded))
+
+    embed_pieces(db, customer, document, FakeModel(), batch_size=2, on_batch=on_batch)
+
+    assert reports == [(2, 5, 2), (4, 5, 4), (5, 5, 5)]
+
+
 def test_a_second_run_does_nothing(db: Database) -> None:
     customer, _ = new_customer(db)
     document = add_document(db, customer)
