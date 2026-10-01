@@ -84,6 +84,21 @@ def test_each_batch_is_reported_once_its_write_has_committed(db: Database) -> No
     assert reports == [(2, 5, 2), (4, 5, 4), (5, 5, 5)]
 
 
+def test_the_last_fetch_that_finds_nothing_reports_nothing(db: Database) -> None:
+    """4 pieces in batches of 2: the second batch is full, so one more fetch finds nothing,
+    and that fetch is not a batch."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [(f"piece {n}", None) for n in range(4)])
+    reports: list[tuple[int, int]] = []
+
+    embed_pieces(
+        db, customer, document, FakeModel(), batch_size=2, on_batch=lambda *report: reports.append(report)
+    )
+
+    assert reports == [(2, 4), (4, 4)]
+
+
 def test_a_second_run_does_nothing(db: Database) -> None:
     customer, _ = new_customer(db)
     document = add_document(db, customer)
