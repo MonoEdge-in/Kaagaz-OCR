@@ -135,7 +135,8 @@ python -m kaagaz.worker_main          # in a second terminal
 
 The worker makes the storage bucket on its first start if it is missing.
 Ctrl+C stops it after the job in hand. At most once an hour it also deletes
-for good what has been in Trash longer than `TRASH_DAYS` days (30).
+for good what has been in Trash longer than `TRASH_DAYS` days (30). With the
+model on, every 10 minutes it gives up to 64 pieces their missing meaning vectors.
 
 And the web app, from `frontend/`:
 

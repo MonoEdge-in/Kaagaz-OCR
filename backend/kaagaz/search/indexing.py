@@ -24,7 +24,9 @@ the current tag, so a vector from another model or recipe is left out until
 ``python -m kaagaz.cli reembed`` replaces it (PRD 3 V4, edge case 7).
 
 ``ModelUnavailable`` propagates: the caller decides (the pipeline logs it and
-marks the document ready without vectors; word and typo search still work). A
+marks the document ready without vectors; word and typo search still work).
+The worker then fills those pieces in later, a few at a time
+(``embed_missing``, run by kaagaz/worker_main.py's ``EmbedMissing``). A
 database that cannot be reached is ``BackendUnavailable("database")``, so the
 job is retried.
 
@@ -33,6 +35,7 @@ transactions for n pieces; O(batch_size * dim) memory.
 """
 
 from collections.abc import Callable, Sequence
+from typing import NamedTuple
 
 from sqlalchemy import Connection, text
 
@@ -78,6 +81,20 @@ _DOCUMENTS_WITH_PIECES = text(
     "SELECT DISTINCT p.document_id FROM pieces p WHERE p.customer_id = :c ORDER BY p.document_id"
 )
 
+# embed_missing: this customer's ready, current documents out of Trash that still
+# have a piece with no vector, after the cursor, in id order. A document still
+# being read is left to its own run; one in Trash or an older version never is searched.
+_MISSING = text(
+    "SELECT d.id FROM documents d"
+    " WHERE d.customer_id = :c AND d.id > CAST(:after AS uuid)"
+    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND EXISTS (SELECT 1 FROM pieces p WHERE p.customer_id = :c AND p.document_id = d.id"
+    " AND p.embedding IS NULL)"
+    " ORDER BY d.id LIMIT :n"
+)
+# The cursor's start: below every document id.
+_FIRST = "00000000-0000-0000-0000-000000000000"
+
 
 def recipe_tag(model_embed: str) -> str:
     """The ``embedding_model`` value of a vector made by ``model_embed`` today."""
@@ -119,21 +136,26 @@ def embed_pieces(
     model: ModelClient,
     batch_size: int = 32,
     on_batch: Callable[[int, int], None] | None = None,
+    *,
+    limit: int | None = None,
 ) -> int:
     """Embed the document's pieces that have no vector. Returns how many were written.
     ``on_batch(done, total)`` follows each batch, outside any transaction: ``done`` of
-    the ``total`` pieces that had no vector at the start."""
-    if batch_size < 1:
-        raise ValueError("batch_size must be at least 1")
+    the ``total`` pieces that had no vector at the start. ``limit``: read at most that
+    many pieces (the worker's pass), else all of them."""
+    if batch_size < 1 or (limit is not None and limit < 1):
+        raise ValueError("batch_size and limit must be at least 1")
     with unavailable(), db.customer(customer_id) as conn:
         total = int(conn.execute(_TO_EMBED, {"c": customer_id, "d": document_id}).scalar_one())
     written = done = 0
     after = -1
+    left = limit
     tag = recipe_tag(model.embed_model)
     while True:
+        size = batch_size if left is None else min(batch_size, left)
         with unavailable(), db.customer(customer_id) as conn:
             rows = conn.execute(
-                _NEXT_BATCH, {"c": customer_id, "d": document_id, "after": after, "n": batch_size}
+                _NEXT_BATCH, {"c": customer_id, "d": document_id, "after": after, "n": size}
             ).all()
         if not rows:
             return written
@@ -153,7 +175,9 @@ def embed_pieces(
         done += len(rows)
         if on_batch is not None:
             on_batch(done, total)  # committed: the heartbeat never waits inside a transaction
-        if len(rows) < batch_size:
+        if left is not None:
+            left -= len(rows)
+        if len(rows) < size or left == 0:
             return written
 
 
@@ -176,3 +200,68 @@ def clear_stale(
     (``every``: all of them). Returns how many. O(p) for its p pieces."""
     params = {"c": customer_id, "d": document_id, "m": recipe_tag(model_embed), "all": every}
     return conn.execute(_CLEAR_STALE, params).rowcount
+
+
+class MissingPass(NamedTuple):
+    """What one ``embed_missing`` pass did. ``after`` is the cursor the next pass
+    starts after (None: from the first customer). ``skipped`` is (customer,
+    document, code) of a document whose vectors came back unusable, and ``down``
+    the model's code when it stopped answering; either one ends the pass."""
+
+    written: int
+    after: tuple[str, str] | None
+    skipped: tuple[str, str, str] | None = None
+    down: str | None = None
+
+
+def embed_missing(
+    db: Database, model: ModelClient, after: tuple[str, str] | None, *, limit: int = 64
+) -> MissingPass:
+    """Give at most ``limit`` pieces their missing vectors, through ``embed_pieces``,
+    walking (customer, document) in id order from just after the cursor ``after``.
+
+    Only the pieces of ready, current documents out of Trash (``_MISSING``). The
+    customers come from ``kaagaz_customer_ids()`` through ``Database.system()``;
+    everything else runs inside ``Database.customer``, one customer at a time.
+    The cursor moves past a document once it has no piece left without a vector,
+    or once it was skipped, so one bad document never holds up the rest; a pass
+    that reaches the last document starts the next one from the first again.
+
+    * ``ModelUnavailable``: the pass stops; the cursor stays (``down`` is set).
+    * ``ModelOutputError`` or ``ValueError`` (a NaN vector, from
+      ``vector_literal``): that document is skipped, and the pass stops there,
+      since an unknown share of ``limit`` went to it.
+
+    Database errors propagate: the caller logs them. Running it again changes
+    nothing that is done: ``_WRITE`` only fills a NULL vector.
+
+    Cost: one statement for the C customers, one ``_MISSING`` per customer
+    after the cursor (O(D) over its documents, each with an index probe of its
+    pieces), then ``embed_pieces`` per document: at most ``limit`` pieces sent,
+    in batches of 32 within a document (counted by pieces written: a piece
+    another run fills at the same moment is sent but not counted).
+    Memory O(C + limit * dim).
+    """
+    with db.system() as conn:
+        customers = [c for c in customer_ids(conn) if after is None or c >= after[0]]
+    written = 0
+    for customer in customers:
+        start = after[1] if after is not None and after[0] == customer else _FIRST
+        with db.customer(customer) as conn:
+            params = {"c": customer, "after": start, "n": limit - written}
+            documents = [str(row[0]) for row in conn.execute(_MISSING, params)]
+        for document in documents:
+            budget = limit - written
+            try:
+                done = embed_pieces(db, customer, document, model, limit=budget)
+            except ModelUnavailable as error:
+                return MissingPass(written, after, down=error.code)
+            except ModelOutputError as error:
+                return MissingPass(written, (customer, document), (customer, document, error.code))
+            except ValueError:
+                return MissingPass(written, (customer, document), (customer, document, "bad_vector"))
+            written += done
+            if done == budget:  # the budget is spent; this document may have more
+                return MissingPass(written, after)
+            after = (customer, document)
+    return MissingPass(written, None)

@@ -28,6 +28,11 @@ until it is told to stop:
   one of them only. A database error in the purge is logged by its type and
   the jobs go on: the purge can never stop the worker, or crash it again on
   every restart.
+* With the model on, pieces left without a meaning vector (the model was down
+  while their document was read) get one later: at most 64 pieces every 10
+  minutes, between jobs (``EmbedMissing``, kaagaz/search/indexing.py). A model
+  that is down waits 10 minutes, then twice as long each time, up to an hour.
+  Like the purge, it never stops the jobs or crashes the worker.
 
 Logs are JSON lines holding ids, codes and counts only: never file names,
 document text or an exception's message (it could quote a document). An
@@ -61,6 +66,7 @@ from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import purge_expired
 from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
+from kaagaz.search.indexing import MissingPass, embed_missing
 from kaagaz.settings import Settings
 
 if TYPE_CHECKING:
@@ -70,6 +76,11 @@ logger = logging.getLogger("kaagaz.worker")
 
 # How often the trash purge runs, at most (PRD 1 F5).
 PURGE_EVERY = timedelta(hours=1)
+# The missing-vector pass (council 2 Oct 2026, PROVISIONAL): how often, at most;
+# the longest wait while the model is down; how many pieces a pass may embed.
+EMBED_EVERY = timedelta(minutes=10)
+EMBED_BACKOFF_MOST = timedelta(hours=1)
+EMBED_PASS_PIECES = 64
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
@@ -220,6 +231,60 @@ class PurgeHourly:
         return self._worker.run_once()
 
 
+class EmbedMissing:
+    """Wraps the worker: before a turn, runs ``embed`` (``embed_missing`` bound to
+    the database, the model and EMBED_PASS_PIECES) with its cursor, at most every
+    EMBED_EVERY on ``clock``. The first turn runs it. ``embed`` None (the model is
+    off) does nothing.
+
+    The cursor is kept here between passes (a restart starts from the first
+    customer again). A pass the model was down for waits EMBED_EVERY, then twice
+    as long each time it is down again, up to EMBED_BACKOFF_MOST; a pass it
+    answers sets the wait back. A database error (SQLAlchemyError) is logged by
+    its type and swallowed, as in PurgeHourly: the jobs go on, and the next
+    pass is EMBED_EVERY later. Logs hold ids, codes and counts only.
+    O(1) per turn, plus one pass's own cost at most every EMBED_EVERY.
+    """
+
+    def __init__(
+        self,
+        worker: RunsJobs,
+        embed: Callable[[tuple[str, str] | None], MissingPass] | None,
+        clock: Callable[[], datetime],
+    ) -> None:
+        self._worker = worker
+        self._embed = embed
+        self._clock = clock
+        self._next: datetime | None = None
+        self._backoff = EMBED_EVERY
+        self._after: tuple[str, str] | None = None
+
+    def run_once(self) -> bool:
+        now = self._clock()
+        if self._embed is not None and (self._next is None or now >= self._next):
+            self._next = now + EMBED_EVERY  # noted first: a pass that fails waits too
+            try:
+                done = self._embed(self._after)
+            except SQLAlchemyError as error:
+                logger.error("missing vectors failed", extra={"code": type(error).__name__})
+            else:
+                self._after = done.after
+                if done.skipped is not None:
+                    customer, document, code = done.skipped
+                    logger.warning(
+                        "vectors skipped",
+                        extra={"customer_id": customer, "document_id": document, "code": code},
+                    )
+                if done.down is None:
+                    self._backoff = EMBED_EVERY
+                else:
+                    logger.warning("model unavailable, vectors wait", extra={"code": done.down})
+                    self._next = now + self._backoff
+                    self._backoff = min(self._backoff * 2, EMBED_BACKOFF_MOST)
+                logger.info("missing vectors: %d pieces", done.written)
+        return self._worker.run_once()
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -308,7 +373,8 @@ def _serve(settings: Settings) -> None:
         record_attempt=documents.record_attempt,
     )
     purge = functools.partial(purge_expired, db, storage, _utc_now, settings.trash_days)
-    worker = PurgeHourly(jobs, purge, _utc_now)
+    embed = None if model is None else functools.partial(embed_missing, db, model, limit=EMBED_PASS_PIECES)
+    worker = EmbedMissing(PurgeHourly(jobs, purge, _utc_now), embed, _utc_now)
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
     db.engine.dispose()
     logger.info("worker stopped")
