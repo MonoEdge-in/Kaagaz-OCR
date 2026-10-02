@@ -140,9 +140,15 @@ def model_draft(model: ModelClient, question: str, evidence: Sequence[Evidence],
     return _parse(reply)
 
 
-def extractive_draft(keywords: Sequence[str], evidence: Sequence[Evidence]) -> Draft:
-    """Quote the best lines of the top evidence (see the module docstring). O(e * t)."""
+def extractive_draft(
+    keywords: Sequence[str], evidence: Sequence[Evidence], numbers: Sequence[str] | None = None
+) -> Draft:
+    """Quote the best lines of the top evidence (see the module docstring). ``numbers``: the
+    question's own numbers (``evidence.numbers_asked``), which then stand for its keywords
+    with a digit, so "1,20,000" is one number, not 1, 20 and 000. O(e * t)."""
     wanted = list(dict.fromkeys(keyword.casefold() for keyword in keywords))
+    if numbers is not None:
+        wanted = [keyword for keyword in wanted if not any(ch.isdigit() for ch in keyword)] + list(numbers)
     if not wanted:
         return Draft("not_found", [])
     # (keywords in the line, evidence rank, line number, line, evidence id)

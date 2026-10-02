@@ -98,6 +98,13 @@ def present(keyword: str, text: str) -> bool:
     return any(_matches(term, word) for term in terms for word in words)
 
 
+def english_for(text: str) -> set[str]:
+    """The English keys one of whose words is in ``text`` (GENERIC ones too), by the same
+    match as ``present``: the English an answer may use for that text. O(t * g) for g words."""
+    words = _words(unicodedata.normalize("NFC", text))
+    return {key for key, terms in EQUIVALENTS.items() if any(_matches(t, w) for t in terms for w in words)}
+
+
 def word_query(keywords: list[str]) -> str:
     """A ``to_tsquery('simple', ...)`` text ORing every equivalent of ``keywords`` once,
     with ``:*`` on terms of PREFIX_MIN code points or more; "" when none is listed."""

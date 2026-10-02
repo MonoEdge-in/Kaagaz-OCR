@@ -239,7 +239,7 @@ RECEIPT = piece("receipt.pdf", "Paid Rs 48.00 cash")
         ("48", "4.48 R", False),
         ("48", "gat 47/48", False),
         ("48", "gat 48/2", False),
-        ("48", "Paid Rs 48.00", False),
+        ("48", "Paid Rs 48.00", True),  # by value (fix/s2-answer-checks)
         ("48", "A48", False),
         ("45/2", "Gat No. 45/2", True),
         ("inv-1042", "Invoice No: INV-1042.", True),
