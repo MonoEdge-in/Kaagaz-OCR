@@ -1,7 +1,8 @@
 """Ask the golden questions against a live stack and score them (PRD 3 G1).
 
     cd backend
-    python -m scripts.run_golden [--api http://127.0.0.1:8000] [--docs DIR] [--runs 3]
+    python -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" [--api http://127.0.0.1:8000]
+        [--docs DIR] [--runs 3]
 
 Run it with the stack's settings loaded in the shell, as for ``kaagaz.cli``
 (docs/running-locally.md), and the model on for a real baseline. Never in CI.
@@ -14,11 +15,14 @@ with ``kaagaz.cli create-customer``, signs in as its admin (the password from
 printed), uploads the documents and waits until they are ready. It asks every
 question ``--runs`` times through POST /api/chat, a follow-up in its
 question's conversation, and prints a row per question, each run's totals and
-slices, and the worst run with Wilson intervals.
+slices, and the worst run with Wilson intervals. The header shows this shell's
+settings, which may not be the server's, so each run also counts the search
+answers the model wrote, and warns when none were.
 
 recall@5 uses the answer's citations, in order, as the hits, each spanning its
 regions' pages; a not-found answer cites nothing, so it is a miss. Part 3.2
-adds GET /api/search, and recall then comes from its top 5.
+adds GET /api/search, and recall then comes from its top 5: a new baseline,
+not comparable with this one.
 
 A command line report, so it writes to standard output, not to the log.
 """
@@ -32,7 +36,7 @@ import sys
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from http.client import HTTPConnection, HTTPSConnection
+from http.client import HTTPConnection, HTTPException, HTTPSConnection
 from pathlib import Path
 from typing import Any, TextIO
 from urllib.parse import urlsplit
@@ -47,6 +51,7 @@ CUSTOMER = "Golden Test Co"
 LOCAL = {"localhost", "127.0.0.1", "::1"}
 DONE = {"ready", "rejected", "needs_reader", "failed"}  # statuses a document stays in
 CHAT_TIMEOUT = 600.0  # seconds: one answer may wait on the model
+CALL_TIMEOUT = 30.0  # seconds, for every other call; an upload gets 4 times this
 
 Row = tuple[scoring.Question, scoring.Score, bool | None]
 
@@ -58,14 +63,19 @@ class GoldenError(Exception):
 class Http:
     """JSON over one connection per call; it keeps the session cookie it is given."""
 
-    def __init__(self, base: str, timeout: float = CHAT_TIMEOUT) -> None:
+    def __init__(self, base: str) -> None:
         parts = urlsplit(base)
-        self._timeout = timeout
         self._https, self._host, self._port = parts.scheme == "https", parts.hostname or "", parts.port
         self._cookie = ""
 
     def call(
-        self, method: str, path: str, body: Any = None, *, files: tuple[str, bytes] | None = None
+        self,
+        method: str,
+        path: str,
+        body: Any = None,
+        *,
+        files: tuple[str, bytes] | None = None,
+        timeout: float = CALL_TIMEOUT,
     ) -> Any:
         headers = {CSRF_HEADER: CSRF_VALUE, "Cookie": self._cookie}
         data = None if body is None else json.dumps(body).encode()
@@ -83,7 +93,7 @@ class Http:
             )
             headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
         connect = HTTPSConnection if self._https else HTTPConnection
-        connection = connect(self._host, self._port, timeout=self._timeout)
+        connection = connect(self._host, self._port, timeout=timeout)
         try:
             connection.request(method, path, body=data, headers=headers)
             response = connection.getresponse()
@@ -100,6 +110,7 @@ class Http:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m scripts.run_golden", description=__doc__.split("\n")[0])
+    parser.add_argument("--git-sha", required=True, help='the commit under test: "$(git rev-parse HEAD)"')
     parser.add_argument("--api", default="http://127.0.0.1:8000")
     parser.add_argument("--docs", type=Path, default=GOLDEN / "docs")
     parser.add_argument("--runs", type=int, default=3)
@@ -121,6 +132,8 @@ def load_golden(docs: Path) -> tuple[list[scoring.Question], dict[str, bytes]]:
     raw = json.loads((GOLDEN / "questions.json").read_text(encoding="utf-8"))
     manifest = scoring.sha256_manifest((GOLDEN / "documents.sha256").read_text(encoding="utf-8"))
     found = scoring.problems(raw, manifest)
+    if scoring.file_sha256(GOLDEN / "questions.json") != scoring.QUESTIONS_SHA256:
+        found.append("questions.json differs from golden_scoring.QUESTIONS_SHA256")
     for name, digest in manifest.items():
         path = docs / name
         if not path.is_file() or scoring.file_sha256(path) != digest:
@@ -131,32 +144,11 @@ def load_golden(docs: Path) -> tuple[list[scoring.Question], dict[str, bytes]]:
     return [scoring.question_from(item) for item in raw], documents
 
 
-def git_sha(start: Path) -> str:
-    """HEAD's commit, read from .git (no git process); a worktree's .git file names its folder."""
-    folder = next((p for p in (start, *start.parents) if (p / ".git").exists()), None)
-    if folder is None:
-        return "unknown"
-    git = folder / ".git"
-    if git.is_file():
-        git = (folder / git.read_text().split("gitdir:", 1)[1].strip()).resolve()
-    head = (git / "HEAD").read_text().strip()
-    if not head.startswith("ref: "):
-        return head
-    ref = head.removeprefix("ref: ")
-    common = (git / (git / "commondir").read_text().strip()) if (git / "commondir").exists() else git
-    for root in (git, common):
-        if (root / ref).is_file():
-            return (root / ref).read_text().strip()
-    packed = common / "packed-refs"
-    lines = packed.read_text().splitlines() if packed.is_file() else []
-    return next((line.split()[0] for line in lines if line.endswith(f" {ref}")), "unknown")
-
-
 def model_digests(settings: Settings) -> str:
     """The chat and embedding models' digests from Ollama's /api/tags, if it answers."""
     try:
-        models = Http(settings.model_base_url, timeout=5).call("GET", "/api/tags").get("models", [])
-    except (OSError, GoldenError, ValueError):
+        models = Http(settings.model_base_url).call("GET", "/api/tags", timeout=5).get("models", [])
+    except (OSError, GoldenError, HTTPException, ValueError):
         return "digests unknown (Ollama did not answer)"
     digests = {m.get("name"): str(m.get("digest", ""))[:12] for m in models if isinstance(m, dict)}
     return " ".join(
@@ -164,10 +156,8 @@ def model_digests(settings: Settings) -> str:
     )
 
 
-def header(out: TextIO, settings: Settings, api: str) -> None:
-    out.write(
-        f"Golden run {datetime.now(UTC).isoformat(timespec='seconds')}  git {git_sha(GOLDEN)}  api {api}\n"
-    )
+def header(out: TextIO, settings: Settings, api: str, sha: str) -> None:
+    out.write(f"Golden run {datetime.now(UTC).isoformat(timespec='seconds')}  git {sha}  api {api}\n")
     out.write(f"questions.json sha256 {scoring.file_sha256(GOLDEN / 'questions.json')}\n")
     out.write(
         f"MODEL_ENABLED={settings.model_enabled} MODEL_CHAT={settings.model_chat}"
@@ -192,12 +182,12 @@ def upload(api: Http, documents: dict[str, bytes], wait_minutes: float, out: Tex
     """Upload every document and wait until none is still being read. {document id: file name}."""
     names = {}
     for name, data in documents.items():
-        names[api.call("POST", "/api/documents", files=(name, data))["document"]["id"]] = name
+        reply = api.call("POST", "/api/documents", files=(name, data), timeout=4 * CALL_TIMEOUT)
+        names[reply["document"]["id"]] = name
     deadline = time.monotonic() + wait_minutes * 60
-    status: dict[str, str] = {}
-    while time.monotonic() < deadline:
+    while True:  # at least one look, however short the wait
         status = {i: api.call("GET", f"/api/documents/{i}")["status"] for i in names}
-        if set(status.values()) <= DONE:
+        if set(status.values()) <= DONE or time.monotonic() > deadline:
             break
         time.sleep(5)
     not_ready = {names[i]: s for i, s in status.items() if s != "ready"}
@@ -222,14 +212,18 @@ def hits(answer: dict[str, Any], names: dict[str, str]) -> list[scoring.Hit]:
 def ask_all(api: Http, questions: list[scoring.Question], names: dict[str, str], out: TextIO) -> list[Row]:
     conversations: dict[str, str] = {}
     rows: list[Row] = []
+    searched = modelled = 0
     out.write(f"{'id':<5} {'outcome':<21} {'label':<13} {'route':<12} {'recall':<6} answer\n")
     for question in questions:
         body: dict[str, Any] = {"question": question.question}
         if question.follow_up_of is not None:
             body["conversation_id"] = conversations[question.follow_up_of]
-        reply = api.call("POST", "/api/chat", body)
+        reply = api.call("POST", "/api/chat", body, timeout=CHAT_TIMEOUT)
         conversations[question.id] = reply["conversation_id"]
         answer = reply["answer"]["answer"]
+        if answer["route"] == "search":
+            searched += 1
+            modelled += answer.get("model_used") is True
         marked = scoring.score(question, answer)
         counted = scoring.counts_for_recall(question, answer["route"])
         recall = scoring.recall_hit(question, hits(answer, names)) if counted else None
@@ -240,6 +234,9 @@ def ask_all(api: Http, questions: list[scoring.Question], names: dict[str, str],
             f" {answer['route']:<12} {'-' if recall is None else 'hit' if recall else 'miss':<6}"
             f" {scoring.answer_text(answer)[:70]}\n"
         )
+    out.write(f"The model wrote {modelled} of {searched} search-route answers.\n")
+    if searched and not modelled:
+        out.write("WARNING: the model was off or down, so this is not a model-on baseline.\n")
     return rows
 
 
@@ -260,12 +257,12 @@ def write_totals(out: TextIO, label: str, total: scoring.Totals) -> None:
 def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout) -> int:
     args = _parser().parse_args(argv)
     try:
-        if args.runs < 1:
-            raise GoldenError("--runs must be at least 1")
+        if args.runs < 1 or args.wait_minutes <= 0:
+            raise GoldenError("--runs must be at least 1 and --wait-minutes above 0")
         settings = Settings.from_env(os.environ)
         check_local(args.api, settings.database_url, args.allow_remote)
         questions, documents = load_golden(args.docs)
-        header(out, settings, args.api)
+        header(out, settings, args.api, args.git_sha)
         api = Http(args.api)
         sign_in(api, os.environ.get(cli.ADMIN_ENV_VAR) or secrets.token_urlsafe(24), out)
         names = upload(api, documents, args.wait_minutes, out)
@@ -279,8 +276,9 @@ def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout) -> int:
                 write_totals(out, f"  {name}", total)
             out.write("\n")
         write_totals(out, "WORST RUN", scoring.worst(runs))
-    except (GoldenError, SettingsError, OSError) as error:
-        sys.stderr.write(f"error: {error}\n")
+    except (GoldenError, SettingsError, OSError, HTTPException, ValueError, KeyError) as error:
+        # Short codes and names only: no message here carries the password.
+        sys.stderr.write(f"error: {type(error).__name__}: {error}\n")
         return 2
     return 0
 

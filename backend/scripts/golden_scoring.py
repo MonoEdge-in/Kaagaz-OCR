@@ -2,17 +2,21 @@
 
 ``backend/tests/golden/questions.json`` holds the questions, each
 ``{id, question, follow_up_of?, tags, expect: {kind, value?, tolerance?,
-document?, pages}}``. ``tags`` name the slices a question belongs to; its kind
+not?, document?, pages}}``. ``tags`` name the slices a question belongs to; its kind
 ("not_found") and ``follow_up_of`` ("follow_up") add two more. ``problems``
 checks the file against the G2 minimums, and ``score`` marks one answer (the
 ``Answer`` JSON that POST /api/chat returns) as:
 
 * **right**: a number answer holds the expected value within ``tolerance``
   (absolute, in the value's own unit: rupees for money; 0 by default), read
-  with verify's number parser, so "Rs. 11,800.00", "₹11,800" and "1,20,000"
-  all parse; a text answer holds one of the expected texts, any case;
+  with verify's number parser after Devanagari digits are folded, so
+  "Rs. 11,800.00", "₹11,800", "1,20,000" and Devanagari digits all parse; a text
+  answer holds one of the expected texts as a whole word, any case ("8%" is
+  not in "18%"). Either is wrong when it also holds a value of ``not``: the
+  near answers a list of everything would hold;
 * **wrong**: anything else for a question that has an answer;
-* **correct not-found** / **missed not-found** for a question that has none.
+* **correct not-found** when the status is "not_found", else **missed
+  not-found**: "unchecked" says the figure exists, so it is a miss too.
 
 ``wrong_verified`` is set on a wrong or missed answer labelled verified: the
 handover bar wants 0 of them (G3).
@@ -27,6 +31,7 @@ Time is O(q) per file and O(s + h) per answer, in its characters and hits.
 
 import hashlib
 import math
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -35,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from kaagaz.answering.verify import numbers_in
+from kaagaz.chunking.script import fold_digits
 
 QUESTION_COUNT = 30
 # G2's minimum counts per slice, plus the 3.1a plan's near misses and topic change.
@@ -51,6 +57,10 @@ MINIMUMS = {
 TAGS = frozenset(MINIMUMS) - {"follow_up", "not_found"}
 KINDS = ("number", "text", "not_found")
 RECALL_K = 5
+# questions.json is frozen (plan 3.1a): any edit must change this line too, and means a new baseline.
+QUESTIONS_SHA256 = "246d31c813a11279cc006e45ce9cae1048da043e12c7a7132ac224824a92d083"
+# A text matches only as a whole: no letter, digit or "/" (or "." before it) touching it.
+_BEFORE, _AFTER = r"(?<![0-9A-Za-z\u0900-\u097F/.])", r"(?![0-9A-Za-z\u0900-\u097F/])"
 
 
 class Outcome(StrEnum):
@@ -71,6 +81,7 @@ class Question:
     kind: str
     value: Any  # a number, or one text or a list of texts (any of them is right)
     tolerance: Decimal
+    distractors: tuple[Any, ...]  # expect.not: numbers or texts that make the answer wrong
     document: str | None
     pages: tuple[int, ...]
 
@@ -165,6 +176,11 @@ def _question_problems(item: dict[str, Any], seen: set[str], documents: Collecti
         wrong.append("a text answer needs a text value, or a list of them")
     if kind == "not_found" and value is not None:
         wrong.append("a not-found question has no value")
+    distractors = expect.get("not", [])
+    if not isinstance(distractors, list) or not all(_is_value(d) for d in distractors):
+        wrong.append("expect.not must be a list of numbers and texts")
+    elif kind == "not_found" and distractors:
+        wrong.append("a not-found question has no expect.not")
     if "cross_page" in tags and len(set(pages)) < 2:
         wrong.append("a cross-page answer names at least 2 pages")
     if "near_miss" in tags and kind != "not_found":
@@ -188,6 +204,7 @@ def question_from(item: Mapping[str, Any]) -> Question:
         expect["kind"],
         expect.get("value"),
         tolerance,
+        tuple(expect.get("not", [])),
         expect.get("document"),
         tuple(expect["pages"]),
     )
@@ -202,26 +219,39 @@ def answer_text(answer: Mapping[str, Any]) -> str:
 
 def score(question: Question, answer: Mapping[str, Any]) -> Score:
     """Mark the ``Answer`` JSON. Only status "answered" counts as an answer: "unchecked"
-    gives no figure, so it is wrong for an answer and a miss for a not-found question."""
+    gives no figure, so it is wrong for an answer, and claims one exists, so it is a miss
+    for a not-found question."""
     answered = answer.get("status") == "answered"
     if question.kind == "not_found":
-        outcome = Outcome.MISSED_NOT_FOUND if answered else Outcome.CORRECT_NOT_FOUND
+        found = answer.get("status") == "not_found"
+        outcome = Outcome.CORRECT_NOT_FOUND if found else Outcome.MISSED_NOT_FOUND
     else:
-        right = answered and _holds(question, answer_text(answer))
+        text = answer_text(answer)
+        near = any(_holds_value(d, question.tolerance, text) for d in question.distractors)
+        right = answered and not near and _holds(question, text)
         outcome = Outcome.RIGHT if right else Outcome.WRONG
     wrong = outcome in (Outcome.WRONG, Outcome.MISSED_NOT_FOUND)
     return Score(outcome, wrong_verified=wrong and answered and answer.get("label") == "verified")
 
 
+def _is_value(value: Any) -> bool:
+    return isinstance(value, int | float | str) and not isinstance(value, bool) and str(value).strip() != ""
+
+
 def _holds(question: Question, text: str) -> bool:
-    if question.kind == "number":
-        # ponytail: any number in the answer counts, so an answer listing many numbers
-        # can pass; binding the number to its label waits for the atom check (Part B).
-        target = Decimal(str(question.value))
-        return any(abs(found - target) <= question.tolerance for found in numbers_in(text))
-    texts = question.value if isinstance(question.value, list) else [question.value]
-    plain = " ".join(text.casefold().split())
-    return any(" ".join(t.casefold().split()) in plain for t in texts)
+    values = question.value if isinstance(question.value, list) else [question.value]
+    return any(_holds_value(value, question.tolerance, text) for value in values)
+
+
+def _holds_value(value: Any, tolerance: Decimal, text: str) -> bool:
+    """A number anywhere in ``text`` within ``tolerance``, or a text as a whole word.
+    ponytail: the number is not bound to its label, so an answer listing many numbers
+    passes unless ``expect.not`` lists them; binding waits for the atom check (Part B)."""
+    if not isinstance(value, str):
+        target = Decimal(str(value))
+        return any(abs(found - target) <= tolerance for found in numbers_in(fold_digits(text)))
+    plain, wanted = " ".join(text.casefold().split()), " ".join(value.casefold().split())
+    return re.search(_BEFORE + re.escape(wanted) + _AFTER, plain) is not None
 
 
 def counts_for_recall(question: Question, route: str | None) -> bool:

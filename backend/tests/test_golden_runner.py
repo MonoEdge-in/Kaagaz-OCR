@@ -1,13 +1,15 @@
 """The golden runner's own checks (PRD 3 G1). The run itself needs a live stack, so it
 is not run here."""
 
+import contextlib
+import io
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from scripts.golden_scoring import Hit
-from scripts.run_golden import GOLDEN, GoldenError, check_local, git_sha, hits, load_golden
+from scripts.run_golden import GOLDEN, GoldenError, check_local, hits, load_golden, main
 
 LOCAL_DB = "postgresql://kaagaz@127.0.0.1:5432/kaagaz"
 
@@ -45,17 +47,12 @@ class RunnerTest(unittest.TestCase):
             hits(answer, {"d1": "monthly-report.pdf"}), [Hit("monthly-report.pdf", 15, 16), Hit("?", 3, 3)]
         )
 
-    def test_git_sha_follows_a_worktree_to_its_packed_ref(self) -> None:
-        sha = "a" * 40
-        with tempfile.TemporaryDirectory() as folder:
-            root, common = Path(folder) / "wt", Path(folder) / "main.git"
-            (common / "worktrees" / "wt").mkdir(parents=True)
-            root.mkdir()
-            (root / ".git").write_text(f"gitdir: {common / 'worktrees' / 'wt'}\n")
-            (common / "worktrees" / "wt" / "HEAD").write_text("ref: refs/heads/test/s2-golden\n")
-            (common / "worktrees" / "wt" / "commondir").write_text("../..\n")
-            (common / "packed-refs").write_text(f"# pack-refs\n{sha} refs/heads/test/s2-golden\n")
-            self.assertEqual(git_sha(root), sha)
+    def test_no_wait_or_no_run_stops_before_anything_is_made(self) -> None:
+        for argv in (["--wait-minutes", "0"], ["--runs", "0"]):
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                self.assertEqual(main(["--git-sha", "abc", *argv]), 2)
+            self.assertIn("--wait-minutes above 0", errors.getvalue())
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from scripts.golden_scoring import file_sha256, problems, sha256_manifest
+from scripts.golden_scoring import QUESTIONS_SHA256, file_sha256, problems, sha256_manifest
 
 GOLDEN = Path(__file__).parent / "golden"
 
@@ -25,6 +25,10 @@ class GoldenQuestionsTest(unittest.TestCase):
         _, manifest = load()
         on_disk = {path.name: file_sha256(path) for path in (GOLDEN / "docs").iterdir()}
         self.assertEqual(on_disk, manifest)
+
+    def test_the_questions_are_frozen(self) -> None:
+        # An edit means a new baseline: change QUESTIONS_SHA256 with it, on purpose (plan 3.1a).
+        self.assertEqual(file_sha256(GOLDEN / "questions.json"), QUESTIONS_SHA256)
 
     def test_a_follow_up_must_point_to_an_earlier_question(self) -> None:
         raw, manifest = load()
@@ -57,10 +61,14 @@ class GoldenQuestionsTest(unittest.TestCase):
         broken[0]["expect"]["value"] = "12000"  # a number answer given as text
         broken[1]["expect"]["value"] = 1  # a not-found question with a value
         broken[5]["expect"]["value"] = ["Patil", ""]
+        broken[6]["expect"]["not"] = [True]
+        broken[2]["expect"]["not"] = [1]
         found = problems(broken, manifest)
         self.assertIn(f"{raw[0]['id']}: a number answer needs a number value", found)
         self.assertIn(f"{raw[1]['id']}: a not-found question has no value", found)
         self.assertIn(f"{raw[5]['id']}: a text answer needs a text value, or a list of them", found)
+        self.assertIn(f"{raw[6]['id']}: expect.not must be a list of numbers and texts", found)
+        self.assertIn(f"{raw[2]['id']}: a not-found question has no expect.not", found)
 
     def test_a_cross_page_answer_names_two_pages(self) -> None:
         raw, manifest = load()

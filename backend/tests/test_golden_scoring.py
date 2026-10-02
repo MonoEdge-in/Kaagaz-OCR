@@ -18,8 +18,11 @@ from scripts.golden_scoring import (
 )
 
 
-def question(kind: str = "number", value: Any = 11800, tolerance: float = 0, **extra: Any) -> Question:
+def question(
+    kind: str = "number", value: Any = 11800, tolerance: float = 0, distractors: Any = (), **extra: Any
+) -> Question:
     expect = {"kind": kind, "value": value, "tolerance": tolerance, "document": "bill.pdf", "pages": [15, 16]}
+    expect["not"] = list(distractors)
     if kind == "not_found":
         del expect["value"]
     return question_from({"id": "q1", "question": "?", "tags": [], "expect": expect, **extra})
@@ -41,6 +44,20 @@ class NumberTest(unittest.TestCase):
         self.assertEqual(score(question(value=500000), answer("Up to Rs. 5,00,000.")).outcome, Outcome.RIGHT)
         self.assertEqual(score(question(value=50000), answer("Up to Rs. 5,00,000.")).outcome, Outcome.WRONG)
 
+    def test_devanagari_digits_parse(self) -> None:
+        bill = "कुल ₹ ४५\u0966.\u0966\u0966"  # the Hindi bill's total line, 450.00
+        self.assertEqual(score(question(value=450), answer(bill)).outcome, Outcome.RIGHT)
+        self.assertEqual(score(question(value=45), answer(bill)).outcome, Outcome.WRONG)
+
+    def test_a_distractor_in_the_answer_makes_it_wrong(self) -> None:
+        balance = question(value=46800, distractors=[61800, 36800])
+        self.assertEqual(score(balance, answer("The balance was Rs. 46,800.")).outcome, Outcome.RIGHT)
+        listed = score(balance, answer("Balances: 61,800, 46,800 and 36,800.", label="verified"))
+        self.assertEqual((listed.outcome, listed.wrong_verified), (Outcome.WRONG, True))
+        gat = question(value=47, distractors=["45/2", "46/1"])
+        self.assertEqual(score(gat, answer("Gat 47, next to 46/1.")).outcome, Outcome.WRONG)
+        self.assertEqual(score(gat, answer("Gat number 47.")).outcome, Outcome.RIGHT)
+
     def test_the_tolerance_is_absolute_and_zero_by_default(self) -> None:
         self.assertEqual(score(question(), answer("Rs. 11,801")).outcome, Outcome.WRONG)
         self.assertEqual(score(question(tolerance=1), answer("Rs. 11,801")).outcome, Outcome.RIGHT)
@@ -55,6 +72,16 @@ class OutcomeTest(unittest.TestCase):
         self.assertEqual(score(shinde, answer("It was SHINDE.")).outcome, Outcome.RIGHT)
         self.assertEqual(score(shinde, answer("It was Patil.")).outcome, Outcome.WRONG)
 
+    def test_a_text_matches_only_as_a_whole(self) -> None:
+        percent, gat = question("text", "8%"), question("text", "45/2")
+        self.assertEqual(score(percent, answer("It was 18% more.")).outcome, Outcome.WRONG)
+        self.assertEqual(score(percent, answer("It was 8% more.")).outcome, Outcome.RIGHT)
+        self.assertEqual(score(gat, answer("Gat 145/2.")).outcome, Outcome.WRONG)
+        self.assertEqual(score(gat, answer("Gat 45/23.")).outcome, Outcome.WRONG)
+        self.assertEqual(score(gat, answer("It is gat 45/2.")).outcome, Outcome.RIGHT)
+        notice = question("text", ["60 days", "sixty days"])
+        self.assertEqual(score(notice, answer("Sixty days' notice.")).outcome, Outcome.RIGHT)
+
     def test_not_found_questions(self) -> None:
         nothing = question("not_found")
         self.assertEqual(
@@ -63,6 +90,9 @@ class OutcomeTest(unittest.TestCase):
         missed = score(nothing, answer("Rs. 50,000", label="needs_review"))
         self.assertEqual((missed.outcome, missed.wrong_verified), (Outcome.MISSED_NOT_FOUND, False))
         self.assertTrue(score(nothing, answer("Rs. 50,000", label="verified")).wrong_verified)
+        # "unchecked" claims the figure exists in a card, so it is a miss
+        unchecked = score(nothing, answer("Confirm it in Review.", status="unchecked"))
+        self.assertEqual(unchecked.outcome, Outcome.MISSED_NOT_FOUND)
 
     def test_a_wrong_answer_labelled_verified_is_flagged(self) -> None:
         wrong = score(question(), answer("Rs. 10,000", label="verified"))
