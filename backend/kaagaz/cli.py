@@ -48,8 +48,6 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
-from PIL import Image
-
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.db import audit

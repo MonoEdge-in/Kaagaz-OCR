@@ -13,7 +13,8 @@ def test_a_piece_found_two_ways_beats_the_top_of_one_list() -> None:
         fuzzy=[("only-fuzzy", 0.95), ("both", 0.4)],
         meaning=[],
     )
-    assert [hit.piece_id for hit in fused] == ["both", "only-fuzzy", "only-words"]
+    # The two tops tie at 1 / (k + 1): the word list gave its top first (#63).
+    assert [hit.piece_id for hit in fused] == ["both", "only-words", "only-fuzzy"]
     assert fused[0].score == pytest.approx(2 / (RRF_K + 2))
     assert fused[1].score == pytest.approx(1 / (RRF_K + 1))
 
@@ -37,9 +38,20 @@ def test_each_list_keeps_its_raw_score_in_its_own_field() -> None:
     assert (fused["b"].word_score, fused["b"].fuzzy_score, fused["b"].meaning_score) == (None, 0.4, 0.93)
 
 
-def test_ties_break_on_the_piece_id() -> None:
+def test_ties_keep_the_order_the_lists_first_gave() -> None:
+    """#63: word list first, then typo, then meaning; each list has broken its own ties
+    by upload time and position, so a tie never falls back to the piece id."""
     fused = fuse(word=[("z", 1.0)], fuzzy=[("m", 1.0)], meaning=[("a", 1.0)])
-    assert [hit.piece_id for hit in fused] == ["a", "m", "z"]
+    assert [hit.piece_id for hit in fused] == ["z", "m", "a"]
+
+
+def test_the_order_does_not_depend_on_the_random_piece_id() -> None:
+    def order(ids: list[str]) -> list[int]:
+        fused = fuse(word=[(ids[0], 1.0), (ids[1], 0.5)], fuzzy=[(ids[2], 1.0)], meaning=[(ids[3], 0.9)])
+        return [ids.index(hit.piece_id) for hit in fused]
+
+    ids = ["f0c1", "0a2b", "9e3d", "1b4c"]
+    assert order(ids) == order(sorted(ids)) == order(sorted(ids, reverse=True)) == [0, 2, 3, 1]
 
 
 def test_a_repeat_in_one_list_counts_once_at_its_best_rank() -> None:
