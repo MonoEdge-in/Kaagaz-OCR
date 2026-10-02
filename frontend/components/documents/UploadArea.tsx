@@ -9,6 +9,9 @@
 // A new version of a document ("Upload new version") goes through the same
 // queue. The outcome, including "already uploaded" and any error, stays next
 // to its file; a duplicate whose earlier copy is in Trash offers Restore.
+// Each file is sent with who was signed in when it was added, so the server
+// refuses it if another account has signed in since (critical #5); then
+// no file still waiting is sent, and each says why.
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,11 +25,13 @@ import {
   uploadVersion,
 } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
+import { useSession } from "@/lib/session";
 import type { UploadLimits, UploadResult } from "@/lib/types";
 import {
   FALLBACK_UPLOAD_LIMITS,
   estimateIngestSeconds,
   estimateText,
+  sessionChangedMessage,
   uploadKind,
   uploadLimitsHint,
   uploadStateText,
@@ -54,7 +59,10 @@ type Start = (onProgress: (fraction: number) => void) => Promise<UploadResult>;
 
 /** The upload queue: add files, watch them go, clear the finished ones. */
 export function useUploads(onUploaded: () => void) {
+  const { me } = useSession();
   const nextKey = useRef(0);
+  // The server's words once another account has signed in here; then nothing more is sent.
+  const stopped = useRef<string | null>(null);
   const [entries, setEntries] = useState<UploadEntry[]>([]);
   const [limits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
 
@@ -96,6 +104,7 @@ export function useUploads(onUploaded: () => void) {
       );
       onUploaded();
     } catch (caught) {
+      stopped.current ??= sessionChangedMessage(caught);
       const message =
         caught instanceof ApiError
           ? caught.message
@@ -106,16 +115,25 @@ export function useUploads(onUploaded: () => void) {
 
   /** Count a PDF's or TIFF's pages (kept for the time estimate), then send it, unless it has too many. */
   async function checkThenSend(key: string, file: File, start: Start) {
+    if (notSent(key)) return;
     const { pages, problem } = await checkPages(file, limits.max_pages);
     setEntries((current) =>
       current.map((entry) => (entry.key === key ? { ...entry, pages } : entry)),
     );
     if (problem) update(key, { kind: "error", message: problem });
-    else await send(key, start);
+    else if (!notSent(key)) await send(key, start);
+  }
+
+  /** True, and the file says why, once another account has signed in here. */
+  function notSent(key: string): boolean {
+    if (stopped.current === null) return false;
+    update(key, { kind: "error", message: stopped.current });
+    return true;
   }
 
   /** Queue files for upload into folderId (undefined: the top level). */
   async function addFiles(files: File[], folderId?: string) {
+    const userId = me.user.id;
     const added = files.map((file) => {
       nextKey.current += 1;
       const problem = validateUpload(file, limits);
@@ -132,7 +150,7 @@ export function useUploads(onUploaded: () => void) {
     for (const { entry, file } of added) {
       if (entry.state.kind === "waiting") {
         await checkThenSend(entry.key, file, (onProgress) =>
-          uploadDocument(file, onProgress, folderId),
+          uploadDocument(file, userId, onProgress, folderId),
         );
       }
     }
@@ -140,6 +158,7 @@ export function useUploads(onUploaded: () => void) {
 
   /** Queue one file as the next version of a document. */
   async function addVersion(file: File, of: { id: string; display_name: string }) {
+    const userId = me.user.id;
     nextKey.current += 1;
     const key = `upload-${nextKey.current}`;
     const problem = validateUpload(file, limits);
@@ -154,7 +173,7 @@ export function useUploads(onUploaded: () => void) {
       ...current,
     ]);
     if (!problem) {
-      await checkThenSend(key, file, (onProgress) => uploadVersion(of.id, file, onProgress));
+      await checkThenSend(key, file, (onProgress) => uploadVersion(of.id, file, userId, onProgress));
     }
   }
 

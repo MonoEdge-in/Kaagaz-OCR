@@ -42,6 +42,41 @@ describe("guards", () => {
     expect(offenders.map((p) => relative(ROOT, p))).toEqual([]);
   });
 
+  // Critical #5: a client-side move keeps the tab's memory (cached PDFs, the
+  // last screens). Signing out, a session ending and signing in are full page
+  // loads instead. The one router.replace to a sign-in page left is the first
+  // visit with no session, which has nothing in memory yet.
+  it("never moves to or from a sign-in page with router.replace once a session existed", () => {
+    const moves = all((p) => /\.(ts|tsx)$/.test(p)).flatMap((p) =>
+      Array.from(readFileSync(p, "utf8").matchAll(/router\.(?:replace|push)\(([^)]*)\)/g), (m) => ({
+        file: relative(ROOT, p).replaceAll("\\", "/"),
+        to: m[1] ?? "",
+      })),
+    );
+    const toSignIn = moves.filter((m) =>
+      /login|signInPath|endedPath|signedOutPath|pageAfterSessionChange/.test(m.to),
+    );
+    expect(toSignIn).toEqual([{ file: "lib/session.tsx", to: "signInPath(pathname" }]);
+    const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/") || m.file.startsWith("app/admin/login/"));
+    expect(fromSignIn).toEqual([]);
+    const leaving = [
+      "app/login/SignInForm.tsx",
+      "app/admin/login/AdminSignInForm.tsx",
+      "components/shell/AppShell.tsx",
+      "components/shell/SetPasswordScreen.tsx",
+      "components/admin/AdminView.tsx",
+    ];
+    for (const file of leaving) expect(readFileSync(join(ROOT, file), "utf8"), file).not.toContain("useRouter");
+  });
+
+  // One way out (lib/sessionChannel.ts), so the first page asked for wins.
+  it("leaves for a fresh page only through leavePage", () => {
+    const offenders = all((p) => /\.(ts|tsx)$/.test(p))
+      .filter((p) => /location\.replace\(/.test(readFileSync(p, "utf8")))
+      .map((p) => relative(ROOT, p).replaceAll("\\", "/"));
+    expect(offenders).toEqual(["lib/sessionChannel.ts"]);
+  });
+
   // Critical #5: a module-level Map is a cache that outlives the screen, and
   // grows without end. The viewer keeps PDFs in its LruCache instead.
   it("keeps no module-level Map in components", () => {
