@@ -41,18 +41,35 @@ _ITEM = (
     " WHERE v.customer_id = :c"
 )
 
+# Every label_reason the extracted_values CHECK allows (migration 0004): the reasons
+# bound when the queue is not filtered, so the reason filter is never a catch-all.
+EVERY_REASON = (
+    "direct_cell",
+    "readers_agree",
+    "readers_disagree",
+    "single_reader",
+    "low_confidence",
+    "corrected",
+    "learned_correction",
+    "check_failed",
+    "model_chosen",
+    "ocr_script",
+)
+
 # The queue and its total repeat the same filter in full, so each can be checked on its own.
 # Two fixed statements each, for the whole queue and for one document, never one with
 # "(:doc IS NULL OR ...)": a prepared statement's generic plan could not use the
 # document id then. The count keeps the pages join, so it counts what the queue lists.
 _QUEUE = _ITEM + (
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready' AND v.label = 'needs_review'"
+    " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
     " ORDER BY v.created_at, v.id LIMIT :limit OFFSET :offset"
 )
 
 _QUEUE_FOR_DOCUMENT = _ITEM + (
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready' AND v.label = 'needs_review'"
     " AND v.document_id = CAST(:doc AS uuid)"
+    " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
     " ORDER BY v.created_at, v.id LIMIT :limit OFFSET :offset"
 )
 
@@ -63,6 +80,7 @@ _COUNT = (
     " AND p.page_no = v.page_no"
     " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND v.label = 'needs_review'"
+    " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
 )
 
 _COUNT_FOR_DOCUMENT = (
@@ -72,6 +90,7 @@ _COUNT_FOR_DOCUMENT = (
     " AND p.page_no = v.page_no"
     " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND v.label = 'needs_review' AND v.document_id = CAST(:doc AS uuid)"
+    " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
 )
 
 # Only the value's row is locked (OF v), never the document's, so a resolve never
@@ -94,11 +113,20 @@ def list_queue(
     document_id: str | None,
     reasons: Sequence[str] | None = None,
 ) -> tuple[Sequence[RowMapping], int]:
-    """Needs-review values of documents not in Trash, oldest first, and their total.
-    Uses the partial index ``extracted_values_review``, then each value's document
-    by primary key: O(limit + offset) rows read for the page, and O(n) for the
-    total over the customer's n needs-review values."""
-    params = {"c": customer_id, "doc": document_id, "limit": limit, "offset": offset}
+    """Needs-review values of documents not in Trash, oldest first, and their total;
+    with ``reasons``, only values labelled for one of them (PRD 3 Y5), else every
+    reason. Each carries its document's invoice check reasons. Uses the partial index
+    ``extracted_values_review``, then each value's document and invoice by key:
+    O(limit + offset) rows read for the page, and O(n) for the total over the
+    customer's n needs-review values.
+    ponytail: OFFSET paging, as the screen's "Show more" asks; keyset on (created_at, id) if queues grow."""
+    params = {
+        "c": customer_id,
+        "doc": document_id,
+        "reasons": list(EVERY_REASON if reasons is None else reasons),
+        "limit": limit,
+        "offset": offset,
+    }
     queue, count = (_QUEUE, _COUNT) if document_id is None else (_QUEUE_FOR_DOCUMENT, _COUNT_FOR_DOCUMENT)
     rows = conn.execute(text(queue), params).mappings().all()
     total: int = conn.execute(text(count), params).scalar_one()

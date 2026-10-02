@@ -5,11 +5,13 @@
 // that version's own id), the page viewer and the values table (side by side
 // from 1024 px, stacked below). A newer version still being read, or one that
 // failed, gets a line linking to it. A document in Trash says so. A reviewer
-// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1). Clicking a
-// value jumps to its page and highlights its spot. Every value is shown as
-// plain text; it came from the document. Beside the page: the document card,
-// related documents and the invoice (DocumentPanels.tsx, PRD 3 Y1 to Y3); a
-// low-resolution page says so above it (Y4).
+// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1). While it is
+// checked or read, on load too, its summary is asked for again (lib/poll.ts);
+// once it settles, the whole detail is asked for once, and the screen says
+// what was found. Clicking a value jumps to its page and highlights its spot.
+// Every value is shown as plain text; it came from the document. Beside the
+// page: the document card, related documents and the invoice
+// (DocumentPanels.tsx, PRD 3 Y1 to Y3); a low-resolution page says so above it (Y4).
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -30,7 +32,7 @@ import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { fieldText, reasonText } from "@/components/viewer/labels";
 import { lowResolutionText } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
-import { canReprocess } from "@/components/viewer/reprocess";
+import { beingRead, canReprocess, settledText, valuesNote } from "@/components/viewer/reprocess";
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
 import { selectSpot, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
@@ -38,7 +40,8 @@ import { ApiError, getDocument, getDocumentSummary } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { useSession } from "@/lib/session";
-import type { DocumentDetail, ExtractedValue } from "@/lib/types";
+import type { DocumentDetail, DocumentSummary, ExtractedValue } from "@/lib/types";
+import { usePoll } from "@/lib/usePoll";
 import { CardPanel, InvoicePanel, RelatedPanel } from "./DocumentPanels";
 import { ReadAgain } from "./ReadAgain";
 import styles from "./DocumentView.module.css";

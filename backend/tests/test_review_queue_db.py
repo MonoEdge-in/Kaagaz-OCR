@@ -7,6 +7,7 @@ Two fixed statements, one for the whole queue and one for a document, each get
 their own plan. They must list and count exactly what the old one did.
 """
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -100,7 +101,10 @@ def test_the_queue_and_its_total_are_what_the_old_statement_gave(db: Database) -
                 rows, total = review.list_queue(conn, customer, limit=limit, offset=offset, document_id=asked)
                 old_rows = conn.execute(text(_OLD_QUEUE), params).mappings().all()
                 old_total = conn.execute(text(_OLD_COUNT), params).scalar_one()
-            assert [dict(row) for row in rows] == [dict(row) for row in old_rows], (asked, limit, offset)
+            # PRD 3 Y5 adds each value's invoice check reasons (none here: no invoices).
+            assert [row["check_reasons"] for row in rows] == [[] for _ in rows]
+            new_rows = [{k: v for k, v in dict(row).items() if k != "check_reasons"} for row in rows]
+            assert new_rows == [dict(row) for row in old_rows], (asked, limit, offset)
             assert total == old_total
             cases += bool(old_rows)
     assert cases >= 5  # the comparison was made on real rows, not only on empty pages
@@ -108,3 +112,17 @@ def test_the_queue_and_its_total_are_what_the_old_statement_gave(db: Database) -
         _, everything = review.list_queue(conn, customer, limit=50, offset=0, document_id=None)
         _, of_first = review.list_queue(conn, customer, limit=50, offset=0, document_id=first)
     assert (everything, of_first) == (8, 5)  # the value on page 3 has no page, so it is left out
+
+
+@pytest.mark.db
+def test_an_unfiltered_queue_binds_every_reason_the_table_allows(db: Database) -> None:
+    """With no reason asked for, every needs-review value is listed: EVERY_REASON is the
+    extracted_values label_reason CHECK, so a new reason cannot drop out of the queue."""
+    with db.customer(new_customer(db)[0]) as conn:
+        check = conn.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint"
+                " WHERE conname = 'extracted_values_label_reason_check'"
+            )
+        ).scalar_one()
+    assert sorted(re.findall(r"'([a-z_]+)'::text", check)) == sorted(review.EVERY_REASON)

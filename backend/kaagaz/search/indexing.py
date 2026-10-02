@@ -6,6 +6,11 @@ work. Pieces are read in ``seq`` order, ``batch_size`` at a time; each batch is
 one model call and one batched UPDATE. The model call runs outside any
 database transaction, so a slow model never holds a transaction open.
 
+After each batch's write has committed, ``on_batch(done, total)`` is told how far
+it has got: the pipeline beats the heartbeat and shows "indexing done of total"
+there, so a long document keeps its lease (a 20k-row sheet is about 626
+batches, longer than one lease).
+
 What is embedded (PRD 3 V3, the Qwen3-Embedding model card): a piece is its
 reduced header, a blank line, then its text (``piece_input``); a question is
 ``Instruct: {QUERY_TASK}\nQuery:{question}`` (``query_input``), with no space
@@ -27,15 +32,17 @@ Cost: ceil(n / batch_size) model calls and 2 * ceil(n / batch_size) + 2 short
 transactions for n pieces; O(batch_size * dim) memory.
 """
 
-from collections.abc import Sequence
-
-from sqlalchemy import Connection, text
+from collections.abc import Callable, Sequence
 
 from sqlalchemy import Connection, text
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, unavailable
 from kaagaz.search.hybrid import vector_literal
+
+_TO_EMBED = text(
+    "SELECT count(*) FROM pieces WHERE customer_id = :c AND document_id = :d AND embedding IS NULL"
+)
 
 # The query task, in English (the model card: queries carry an instruction).
 QUERY_TASK = "Given a question about business documents, retrieve passages that answer it"
@@ -80,6 +87,19 @@ def recipe_tag(model_embed: str) -> str:
 def query_input(question: str) -> str:
     """What a question is embedded as, in the model card's exact format. O(length)."""
     return f"Instruct: {QUERY_TASK}\nQuery:{question}"
+
+
+def embed_question(model: ModelClient | None, question: str) -> list[float] | None:
+    """The question's vector, or None (no model, model down, or unusable vectors), so
+    search falls back to word and fuzzy matching. One model call, in ``query_input``'s
+    format; chat and GET /api/search both embed this way."""
+    if model is None or not question:
+        return None
+    try:
+        vectors = model.embed([query_input(question)])
+    except (ModelUnavailable, ModelOutputError):
+        return None
+    return vectors[0] if vectors else None
 
 
 def piece_input(context_header: str, piece_text: str) -> str:

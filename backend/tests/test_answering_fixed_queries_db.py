@@ -26,6 +26,7 @@ from kaagaz.extraction.parsing import parse_amount, parse_date
 from kaagaz.extraction.spreadsheet import values_from_cells
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span, location_to_json
+from kaagaz.search.scope import EVERYTHING
 from tests.db_support import insert_document, new_customer
 
 pytestmark = pytest.mark.db
@@ -604,7 +605,7 @@ def test_the_fields_query_finds_what_the_full_list_found_among_the_fields_asked(
     for who in (customer, other):
         with db.customer(who) as conn:
             before = {str(row.field) for row in conn.execute(_ALL_FIELDS_BEFORE, {"customer_id": who})}
-            params = {"customer_id": who, "candidates": _ASKED}
+            params = {"customer_id": who, "candidates": _ASKED, **EVERYTHING.params()}
             found[who] = {str(row.field) for row in conn.execute(fixed_queries._AVAILABLE_FIELDS, params)}
         assert found[who] == before & set(_ASKED)
     # Left out: a card's net_worth, a line's amount, a waiting, a binned and an older document's.

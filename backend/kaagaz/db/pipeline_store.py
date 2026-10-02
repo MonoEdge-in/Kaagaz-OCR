@@ -82,7 +82,11 @@ from kaagaz.jobs.worker import Superseded
 from kaagaz.reading.spans import Span, location_from_json, location_to_json
 
 if TYPE_CHECKING:
-    from kaagaz.pipeline import DocumentContent  # pipeline builds this store
+    from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput  # pipeline builds this store
+
+# Rows per statement (A6b): the save holds one chunk of row data at a time, not every
+# row of a 20k-row workbook at once.
+SAVE_CHUNK = 1000
 
 _UPDATE_FACTS = text(
     "UPDATE documents SET doc_type = :doc_type, languages = CAST(:languages AS text[]),"
@@ -378,7 +382,7 @@ def _link_targets(
     ]
 
 
-def _page_row(ids: dict[str, str], page: PageRecord) -> dict[str, Any]:
+def _page_row(ids: dict[str, str], page: "PageRecord") -> dict[str, Any]:
     info = page.info
     return {
         **ids,
@@ -393,7 +397,7 @@ def _page_row(ids: dict[str, str], page: PageRecord) -> dict[str, Any]:
     }
 
 
-def _output_row(ids: dict[str, str], output: ReaderOutput) -> dict[str, Any]:
+def _output_row(ids: dict[str, str], output: "ReaderOutput") -> dict[str, Any]:
     """The spans joined as JSON one by one, so no dict of every span is held (C-architect 5)."""
     spans = ",".join(json.dumps(span_to_json(span)) for span in output.spans)
     return {

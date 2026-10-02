@@ -1,9 +1,10 @@
 "use client";
 
-// The review queue: every value labelled needs review, oldest first. Each one
-// leaves the list once it is resolved, the page says so politely in one
-// message, and focus moves to the next card so it is never lost. Members see a
-// short note instead; the server refuses them anyway.
+// The review queue: every value labelled needs review, oldest first, or only
+// those of one reason (PRD 3 Y5). Each one leaves the list once it is
+// resolved, the page says so politely in one message, and focus moves to the
+// next card so it is never lost. Members see a short note instead; the server
+// refuses them anyway.
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -12,12 +13,15 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, listReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import type { ReviewItem, ReviewList } from "@/lib/types";
+import type { ReviewItem, ReviewList, ReviewReason } from "@/lib/types";
 import {
+  REASON_FILTERS,
   appendItems,
   canReview,
   focusAfterResolve,
   leftToReview,
+  parseReason,
+  queueParams,
   resolvedMessage,
   withoutItem,
 } from "./review";
@@ -50,6 +54,7 @@ function Queue({ documentId }: { documentId?: string }) {
   const [moreError, setMoreError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [saved, setSaved] = useState("");
+  const [reason, setReason] = useState<ReviewReason | null>(null);
   // The latest list, kept in step with every setList, so a resolve that lands
   // after another one works on the current queue.
   const latest = useRef<ReviewList | null>(null);
@@ -97,11 +102,7 @@ function Queue({ documentId }: { documentId?: string }) {
     setMoreError(null);
     try {
       // Resolved values have left the queue, so the next page starts after what is shown.
-      const more = await listReview({
-        limit: PAGE_SIZE,
-        offset: shown.items.length,
-        document_id: documentId,
-      });
+      const more = await listReview(queueParams(shown.items.length, PAGE_SIZE, documentId, reason));
       const next = latest.current ? appendItems(latest.current, more) : more;
       if (focusFirst) {
         const top = next.items[0];
@@ -188,7 +189,7 @@ function Queue({ documentId }: { documentId?: string }) {
         loaded.total === 0 ? (
           <EmptyState
             icon="check-seal"
-            title="Nothing to review"
+            title={reason ? "Nothing to review for this reason" : "Nothing to review"}
             headingId={EMPTY_HEADING_ID}
             action={
               <Link href="/documents" className="btn">
