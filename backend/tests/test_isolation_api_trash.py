@@ -5,7 +5,8 @@ B signs in on the admin screen, so "delete forever" (an admin session only)
 reaches the lookup instead of stopping at the session check. A has one family
 in Trash and one live document, so each route is tried on the state it would
 act on. This runs through the whole API (session, routes, SQL and row level
-security).
+security). The control: A's own admin then gets through each of the three routes
+with those ids, so B's 404s come from the customer, never from a broken route or id.
 """
 
 from datetime import datetime
@@ -52,3 +53,9 @@ def test_b_gets_404_on_every_trash_route_with_a_s_ids_and_a_is_unchanged(db: Dat
     assert _state(db, a.customer_id) == before
     assert all(api.storage.has(a.customer_id, document) for document in (binned, older, live))
     assert _state(db, b.customer_id) == {}
+
+    assert a.client.post(f"/api/documents/{binned}/restore", headers=CSRF).status_code == 200
+    assert a.client.delete(f"/api/documents/{live}", headers=CSRF).status_code == 204
+    assert a.client.delete(f"/api/documents/{live}/permanent", headers=CSRF).status_code == 204
+    assert _state(db, a.customer_id) == {binned: None, older: None}
+    assert not api.storage.has(a.customer_id, live)

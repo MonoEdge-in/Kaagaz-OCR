@@ -37,6 +37,7 @@ from tests.test_api_support import (
 
 UID = "11111111-1111-4111-8111-111111111111"
 BAD_CREDENTIALS = "Email or password is wrong, or the account is locked. Try again in 15 minutes."
+OTHER_PASSWORD = "another made-up password"
 
 
 def _claims(
@@ -289,6 +290,22 @@ def test_bad_credentials_look_the_same_for_every_reason(db: Database) -> None:
     assert len({reply.text for reply in replies}) == 1
     assert replies[0].json() == {"error": {"code": "bad_credentials", "message": BAD_CREDENTIALS}}
     assert all("set-cookie" not in reply.headers for reply in replies)
+
+
+@pytest.mark.db
+def test_a_password_signs_in_only_its_own_user(db: Database) -> None:
+    """The helpers' users share one cached hash of PASSWORD, so here B has a different
+    password: a login must check the hash of the user it names, never another's."""
+    api = Api(db)
+    _, a_email = api.add_user(api.customer("Sharma Traders")[0], "member")
+    _, b_email = api.add_user(api.customer("Mehta Textiles")[0], "member", password=OTHER_PASSWORD)
+
+    def login(email: str, password: str) -> int:
+        body = {"email": email, "password": password}
+        return api.client().post("/api/auth/login", json=body, headers=CSRF).status_code
+
+    assert [login(a_email, OTHER_PASSWORD), login(b_email, PASSWORD)] == [401, 401]
+    assert [login(a_email, PASSWORD), login(b_email, OTHER_PASSWORD)] == [200, 200]
 
 
 @pytest.mark.db

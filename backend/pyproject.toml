@@ -97,6 +97,7 @@ testpaths = ["tests"]
 addopts = ["--strict-markers", "-ra"]
 markers = [
     "db: needs a real PostgreSQL (DATABASE_URL); CI provides one",
+    "eval: the ML 11 eval gate (tests/test_eval_labels.py); runs in the normal suite",
 ]
 filterwarnings = ["error"]
 xfail_strict = true

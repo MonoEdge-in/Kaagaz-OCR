@@ -20,8 +20,9 @@ The steps, in order, for one (customer, document):
    second reader if the type has one. A type with no reader is marked "needs
    a reader" (its pages are kept) and the job ends normally. A reader that
    reads page by page (PDFs, photos) beats the heartbeat after each page, so a
-   long scan keeps its lease. Each page then gets its route (PRD 2 R1:
-   ``kaagaz.reading.route``), and the second reading of a page read by OCR, or
+   long scan keeps its lease. Each page then gets the route its reader
+   reported through ``on_page`` (PRD 2 R1, ``_with_routes``; a sheet page is
+   ``cells``), and the second reading of a page read by OCR, or
    blank, is left out: a scan's hidden text layer must never agree with itself
    (the council's ML 4).
 6. Pieces for search (kaagaz.chunking) and the rule values for fixed queries
@@ -98,8 +99,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
-from decimal import Decimal
+from datetime import UTC, datetime
 from importlib import metadata
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -110,17 +110,26 @@ from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
+from kaagaz.extraction.card import ChatModel
+from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import label_quoted, label_values, spot_unsure
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
 from kaagaz.extraction.parsing import parse_amount, parse_date
 from kaagaz.extraction.quotes import reader_text
 from kaagaz.extraction.spreadsheet import values_from_cells
-from kaagaz.extraction.values import CARD_RECORD, ExtractedValue
+from kaagaz.extraction.understanding import (
+    ModelBudget,
+    Understanding,
+    document_links,
+    model_config,
+    understand,
+)
+from kaagaz.extraction.values import CARD_RECORD, DocumentFacts, ExtractedValue, InvoiceRow, LinkIdentifier
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.ports import LeaseLost
-from kaagaz.jobs.worker import Heartbeat, JobFailed
+from kaagaz.jobs.worker import Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage
@@ -147,8 +156,6 @@ from kaagaz.scanning.gate import (
 if TYPE_CHECKING:
     from kaagaz.ai.client import ModelClient
     from kaagaz.db.engine import Database
-    from kaagaz.extraction.card import ChatModel
-    from kaagaz.extraction.understanding import ModelBudget, Understanding
     from kaagaz.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -179,19 +186,12 @@ _LOWERED_OCR_DPI = re.compile(r";ocr_dpi=([0-9]{1,5})\b")
 
 # --- what is saved ------------------------------------------------------------
 
-ROUTES = frozenset({"cells", "text_layer", "ocr", "blank"})
-# The identifiers two documents are linked by (D5).
-LINK_KINDS = frozenset(
-    {"invoice_number", "po_number", "challan_number", "survey_number"}
-    | {"khata_number", "account_number", "reference_number"}
-)
-
 
 @dataclass(frozen=True, slots=True)
 class PageRecord:
     info: PageInfo
     has_image: bool
-    route: str | None = None  # one of ROUTES; None when the page was not read
+    route: str | None = None  # a Route (kaagaz.reading.route); None when the page was not read
     effective_dpi: int | None = None
     low_resolution: bool = False
 
@@ -202,54 +202,6 @@ class ReaderOutput:
     reader: str
     version: str
     spans: tuple[Span, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class DocumentFacts:
-    """The documents columns a run writes (D3, L2). Every save replaces all of them,
-    so a run without a model clears an older run's card."""
-
-    doc_type: str | None = None
-    languages: tuple[str, ...] = ()
-    summary: str | None = None
-    document_date: date | None = None
-    card: Mapping[str, Any] | None = None  # plain JSON
-
-
-@dataclass(frozen=True, slots=True)
-class InvoiceLineRow:
-    line_no: int
-    description: str | None
-    hsn: str | None
-    quantity: Decimal | None
-    unit: str | None
-    rate: Decimal | None
-    amount: Decimal | None
-    label: str  # "verified" or "needs_review"
-
-
-@dataclass(frozen=True, slots=True)
-class InvoiceRow:
-    invoice_number: str | None
-    invoice_date: date | None
-    seller_name: str | None
-    seller_gstin: str | None
-    buyer_name: str | None
-    buyer_gstin: str | None
-    subtotal: Decimal | None
-    tax_total: Decimal | None
-    total: Decimal | None
-    label: str
-    check_status: str  # "passed", "failed" or "not_checked"
-    check_reasons: tuple[str, ...]
-    currency: str = "INR"
-    lines: tuple[InvoiceLineRow, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class LinkIdentifier:
-    kind: str  # one of LINK_KINDS
-    value: str  # whitespace removed, lower case
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,12 +263,6 @@ class FinishedRun:
     run_id: str
     totals: RunTotals
     now: datetime
-
-
-class Superseded(Exception):
-    """A newer run of this document has started (the run fence), so this run's results
-    are not saved and it does not mark the document ready. Not a failure: the newer
-    run does the work."""
 
 
 # --- what the processor needs (ports) ------------------------------------------
@@ -485,14 +431,13 @@ class DocumentProcessor:
         ocr_meter: OcrMeter | None = None,
         clock: Callable[[], datetime] | None = None,
         timer: Callable[[], float] | None = None,
-        ocr_on: bool = False,
         max_vision_crops: int = MAX_VISION_CROPS,
         run_config: Mapping[str, Any] | None = None,
         vision_model: str | None = None,
         embed_model: str | None = None,
-        chat: "ChatModel | None" = None,
+        chat: ChatModel | None = None,
         chat_model: str | None = None,
-        model_budget: "ModelBudget | None" = None,
+        model_budget: ModelBudget | None = None,
         timezone: str = "UTC",
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
@@ -502,8 +447,7 @@ class DocumentProcessor:
         The rest are for PRD 2 and all optional: ``runs`` keeps one run per delivery
         (it needs ``clock`` for its times and ``timer`` for its seconds);
         ``progress`` shows how far a document has got; ``ocr_meter`` is the OCR
-        engine the readers use, counted; ``ocr_on`` says an engine is set, so a page
-        with no text went to OCR; ``run_config`` is the run's plain JSON set-up
+        engine the readers use, counted; ``run_config`` is the run's plain JSON set-up
         (ML 10); ``vision_model`` and ``embed_model`` are the tags a run records
         when it used them. ``chat`` is the model stage's chat model (PRD 2 D1, E2),
         with its ``model_budget``; ``chat_model`` is the tag a run records when a
@@ -531,7 +475,6 @@ class DocumentProcessor:
         self._ocr_meter = ocr_meter
         self._clock = clock or _utc_now
         self._timer = timer or time.perf_counter
-        self._ocr_on = ocr_on
         self._max_vision_crops = max_vision_crops
         self._run_config = dict(run_config or {})
         self._vision_model = vision_model
@@ -652,7 +595,7 @@ class DocumentProcessor:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
             values = [_with_parsed(value) for value in apply_learned(values, learned)]
         values, invoice = self._invoice(understanding, facts, usable, values)
-        links = _document_links(facts, values)
+        links = document_links(facts, values)
         run.values_verified = sum(1 for value in values if value.label == "verified")
         run.values_needs_review = len(values) - run.values_verified
 
@@ -686,7 +629,7 @@ class DocumentProcessor:
 
     def _invoice(
         self,
-        understanding: "Understanding",
+        understanding: Understanding,
         facts: DocumentFacts,
         spans: list[Span],
         values: list[ExtractedValue],
@@ -695,8 +638,6 @@ class DocumentProcessor:
         and its checks, on the labelled values. A row comes from the E4 values, or with no
         type or an invoice type (the model off, down or silent) from labelled.py's values
         (PROVISIONAL). O(v) plus labelled.py's pass over the spans."""
-        from kaagaz.extraction.invoice import finish_invoice, local_today  # it imports this module
-
         result = finish_invoice(
             values,
             extraction=understanding.invoice,
@@ -709,10 +650,9 @@ class DocumentProcessor:
 
     def _understand(
         self, job: Job, run: _Run, heartbeat: Heartbeat, spans: list[Span], values: list[ExtractedValue]
-    ) -> "Understanding":
+    ) -> Understanding:
         """The model stage (``extraction.understanding``), and its numbers on the run.
         With no chat model it is today's result: no card, and the rule values as they are."""
-        from kaagaz.extraction.understanding import understand  # it imports this module
 
         def beat(done: int, total: int) -> None:
             heartbeat()
@@ -1009,13 +949,6 @@ def _without_unread_pages(second: list[Span], pages: Sequence[PageRecord]) -> li
     return [span for span in second if span.location.page not in left_out]
 
 
-def _document_links(facts: DocumentFacts, values: list[ExtractedValue]) -> tuple[LinkIdentifier, ...]:
-    """D5: the link identifiers of the final values, only with a card (D6)."""
-    from kaagaz.extraction.understanding import document_links  # it imports this module
-
-    return document_links(facts, values)
-
-
 def _unavailable_code(error: BackendUnavailable) -> str:
     """The run's error code for a backend that is down: ``ocr_unavailable`` and so on."""
     name = str(error)
@@ -1094,7 +1027,6 @@ def build_processor(
     from kaagaz.db.documents import PgDocuments
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
-    from kaagaz.extraction.understanding import ModelBudget, model_config
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
     from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
     from kaagaz.reading.wiring import build_reader_socket, reader_config
@@ -1138,7 +1070,6 @@ def build_processor(
         ocr_meter=meter,
         clock=_utc_now,
         timer=time.perf_counter,
-        ocr_on=meter is not None,
         run_config={
             "build": _build(),
             **reader_config(settings),

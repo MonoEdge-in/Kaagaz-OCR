@@ -11,6 +11,7 @@ from datetime import datetime
 
 from fastapi import Request
 
+from kaagaz.ai.client import ModelClient
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
 from kaagaz.db.engine import Database
 from kaagaz.settings import Settings
@@ -24,6 +25,8 @@ class AppContext:
     queue: ApiQueue
     answers: Answers
     clock: Callable[[], datetime]
+    # The model GET /api/search embeds questions with; None with the model off.
+    model: ModelClient | None = None
 
 
 def get_context(request: Request) -> AppContext:

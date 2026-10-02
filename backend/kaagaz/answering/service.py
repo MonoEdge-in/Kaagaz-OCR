@@ -1,8 +1,14 @@
 """Answer one customer's question, with a source for every sentence.
 
-The API calls ``AnswerService.answer(customer_id, question)`` with the
-question, and stores ``Answer.to_json()`` (the ``Answer`` type
-in frontend/lib/types.ts, field for field).
+The API calls ``AnswerService.answer(customer_id, question, scope=...)`` with the
+chat's resolved scope (PRD 3 H2), and stores ``Answer.to_json()`` (the ``Answer``
+type in frontend/lib/types.ts, field for field). A scope that matches nothing is
+"not found" before any query or model call (edge case 1); otherwise every step
+below (fixed queries, unchecked, search, neighbours) sees only documents in it.
+
+A follow-up (PRD 3 H1) is first rewritten to stand on its own from the
+conversation's last turns (kaagaz/answering/rewrite.py); the steps below then run
+on the rewrite, and the answer carries it as ``rewritten_question``.
 
 The steps (docs/architecture.md):
 
@@ -17,32 +23,47 @@ The steps (docs/architecture.md):
    unchecked card value does: no number, a request to confirm it in Review, and
    the documents where it appears (status ``unchecked``, answering/unchecked.py).
 5. **Search route**: embed the question (skipped without a model), retrieve,
-   the evidence gate, then a draft (the model, or quoting without one), then
-   ``verify`` drops every sentence its evidence does not back.
+   the evidence gate on the hits, then the hits' neighbours (Q4) after them,
+   then a draft (the model, or quoting without one), then ``verify`` drops
+   every sentence its evidence's text does not back.
 6. ``sanitize`` on every sentence and snippet. The label is verified only
-   when every value or piece behind the answer is verified.
+   when every value or piece behind the answer is verified, and no sentence
+   rests on neighbours alone (PROVISIONAL, plan decision 8: the gate never
+   judged them).
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
 
-Nothing here logs the question or any document text.
+Nothing here logs the question or any document text: a model error is logged
+as its code, and each model answer as the model's tag and ANSWER_PROMPT_HASH.
 
-Time: one ``available_fields`` query, then either one fixed query or one
-search plus at most one model call; the rest is O(e * t) over e pieces of
-evidence of t characters.
+Time: one ``available_fields`` query only for a question with an aggregate
+word and no unknown topic word, then either one fixed query or one search plus
+at most one model call; the rest is O(e * t) over e pieces of evidence of t
+characters.
 """
 
+import logging
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
+from functools import partial
 from itertools import zip_longest
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
+from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, input_token_budget
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
-from kaagaz.answering.draft import Draft, DraftSentence, extractive_draft, model_draft
+from kaagaz.answering.draft import (
+    ANSWER_PROMPT_HASH,
+    SYSTEM_PROMPT,
+    Draft,
+    DraftSentence,
+    extractive_draft,
+    fit_evidence,
+    model_draft,
+)
 from kaagaz.answering.evidence import (
     Evidence,
     PgRetriever,
@@ -56,18 +77,25 @@ from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, Fixed
 from kaagaz.answering.format import indian_number
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
+from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import verify
+from kaagaz.chunking.script import has_devanagari_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
+from kaagaz.search.indexing import query_input, recipe_tag
 from kaagaz.settings import Settings
+
+_log = logging.getLogger(__name__)
 
 # "unchecked": the figure asked for exists only as unchecked card values, so no
 # number is given (kaagaz/answering/unchecked.py).
 Status = Literal["answered", "not_found", "unchecked"]
 Route = Literal["fixed_query", "search"]
 _MAX_NAME = 100  # a party name longer than this is cut in the sentence
+_REPLY_TOKENS = 1024  # PROVISIONAL: a draft's reply budget (num_predict), kept free of evidence
+_FENCE_TOKENS = 10  # an evidence tag and its line breaks
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,10 +106,14 @@ class Citation:
     document_id: str
     document_name: str
     detected_type: str
-    page_no: int
-    regions: list[dict[str, Any]]
+    page_no: int  # the page the source card opens: its first region's
+    regions: list[dict[str, Any]]  # grouped by page, in page order (H4)
     snippet: str
     label: str
+    page_from: int  # H4: the pages the source covers ("Pages 15 to 16")
+    page_to: int
+    label_page_no: int | None  # H4: where a value's label is, when it was located
+    label_regions: list[dict[str, Any]]
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -95,6 +127,10 @@ class Citation:
             "regions": [dict(region) for region in self.regions],
             "snippet": self.snippet,
             "label": self.label,
+            "page_from": self.page_from,
+            "page_to": self.page_to,
+            "label_page_no": self.label_page_no,
+            "label_regions": [dict(region) for region in self.label_regions],
         }
 
 
@@ -114,6 +150,7 @@ class Answer:
     route: Route
     normalized_question: str
     model_used: bool
+    rewritten_question: str | None = None  # H1: what was searched for, when a follow-up was rewritten
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly."""
@@ -128,6 +165,7 @@ class Answer:
             "route": self.route,
             "normalized_question": self.normalized_question,
             "model_used": self.model_used,
+            "rewritten_question": self.rewritten_question,
         }
 
 
@@ -150,28 +188,43 @@ class AnswerService:
         self._settings = settings
         self._clock = clock
         self._zone = ZoneInfo(settings.timezone)
+        # What the answer's evidence may take: the window less the reply, its repair and the prompt.
+        self._evidence_budget = input_token_budget(
+            num_ctx=settings.model_num_ctx, max_tokens=settings.model_answer_max_tokens, system=SYSTEM_PROMPT
+        )
         self._retriever = retriever if retriever is not None else PgRetriever(db)
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
 
-    def answer(self, customer_id: str, question: str) -> Answer:
-        """Answer ``question`` for ``customer_id`` only."""
+    def answer(
+        self, customer_id: str, question: str, *, scope: Scope = EVERYTHING, history: Sequence[Turn] = ()
+    ) -> Answer:
+        """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
+        ``history`` is the conversation's earlier turns, oldest first."""
+        if scope.matches_nothing:
+            return _not_found("search", question.strip(), [], model_used=False)
+        turns = self._settings.chat_history_turns
+        rewritten = None
+        if self._model is not None and history and turns:
+            rewritten = rewrite(self._model, question, history[-turns:])
+        return replace(self._answer(customer_id, rewritten or question, scope), rewritten_question=rewritten)
+
+    def _answer(self, customer_id: str, question: str, scope: Scope) -> Answer:
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
         found_range = date_range(normalised, self._today())
-        plan = plan_fixed(
-            normalised, found_range, mentions_date(normalised), self._fixed.available_fields(customer_id)
-        )
+        fields = partial(self._fixed.available_fields, customer_id)  # asked for only if a plan could follow
+        plan = plan_fixed(normalised, found_range, mentions_date(normalised), fields)
         if plan is not None:
-            return self._fixed_answer(customer_id, plan, shown)
-        unchecked = self._unchecked_answer(customer_id, normalised, shown)
+            return self._fixed_answer(customer_id, plan, shown, fixed)
+        unchecked = self._unchecked_answer(customer_id, normalised, shown, scope)
         if unchecked is not None:
             return unchecked
-        return self._search_answer(customer_id, question, normalised, shown)
+        return self._search_answer(customer_id, question, normalised, shown, scope)
 
     def _unchecked_answer(
-        self, customer_id: str, normalised: NormalisedQuestion, shown: str
+        self, customer_id: str, normalised: NormalisedQuestion, shown: str, scope: Scope
     ) -> Answer | None:
         """A figure asked for that no checked value holds but a card does: no number,
         the documents where it appears, and a request to confirm it in Review first
@@ -180,7 +233,7 @@ class AnswerService:
         if asked is None:
             return None
         concept, fields = asked
-        documents = self._unchecked.documents_with(customer_id, fields)
+        documents = self._unchecked.documents_with(customer_id, fields, scope=scope)
         if not documents:
             return None
         return Answer(
@@ -196,8 +249,8 @@ class AnswerService:
 
     # --- fixed route --------------------------------------------------------
 
-    def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str) -> Answer:
-        rows = self._run_plan(customer_id, plan)
+    def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
+        rows = self._run_plan(fixed, customer_id, plan)
         if not rows:
             return _not_found("fixed_query", shown, [], model_used=False)
         top = [row for row in rows if row.number == rows[0].number]  # a tie is shown, never broken
@@ -217,6 +270,10 @@ class AnswerService:
                 regions=regions,
                 snippet=clean_snippet(f"{value.field}: {value.value_text}"),
                 label=value.label,
+                page_from=value.page_no,
+                page_to=value.page_no,
+                label_page_no=value.label_page_no,
+                label_regions=valid_regions([value.label_region] if value.label_region else []),
             )
             for index, (value, regions) in enumerate(cited, start=1)
         ]
@@ -232,18 +289,16 @@ class AnswerService:
             model_used=False,
         )
 
-    def _run_plan(self, customer_id: str, plan: FixedPlan) -> list[FixedRow]:
+    def _run_plan(self, fixed: FixedQueries, customer_id: str, plan: FixedPlan) -> list[FixedRow]:
         if plan.aggregate == "count":
-            return self._fixed.count_documents(
-                customer_id, plan.start, plan.end, date_fields=plan.date_fields
-            )
+            return fixed.count_documents(customer_id, plan.start, plan.end, date_fields=plan.date_fields)
         if plan.metric is None:
             return []
         if plan.aggregate == "total":
-            return self._fixed.total(customer_id, plan.metric, plan.date_fields, plan.start, plan.end)
+            return fixed.total(customer_id, plan.metric, plan.date_fields, plan.start, plan.end)
         descending = plan.aggregate == "highest"
         if plan.group_fields:
-            return self._fixed.top_group(
+            return fixed.top_group(
                 customer_id,
                 plan.metric,
                 plan.group_fields,
@@ -252,28 +307,46 @@ class AnswerService:
                 plan.end,
                 descending,
             )
-        return self._fixed.extreme_value(
+        return fixed.extreme_value(
             customer_id, plan.metric, plan.date_fields, plan.start, plan.end, descending
         )
 
     # --- search route -------------------------------------------------------
 
     def _search_answer(
-        self, customer_id: str, question: str, normalised: NormalisedQuestion, shown: str
+        self, customer_id: str, question: str, normalised: NormalisedQuestion, shown: str, scope: Scope
     ) -> Answer:
         query_text = " ".join(normalised.keywords) or normalised.english
         if not query_text:
             return _not_found("search", shown, [], model_used=False)
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
-        hits = self._retriever.search(customer_id, query_text, self._embed(normalised.english), limit)
+        # A Devanagari question is embedded as asked (W3): its Latin spelling means little to the model.
+        meant = question if has_devanagari_letters(question) else normalised.english
+        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit)
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
         if not enough_evidence(evidence, normalised.keywords, self._settings.answer_min_evidence_score):
             return _not_found("search", shown, closest, model_used=False)
+        # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
+        # while they fit the room the hits and the question leave in MODEL_NUM_CTX: every
+        # hit is kept, the neighbours go first. ponytail: fit_evidence (perf/s2-query-wins)
+        # replaces this cut at the rebase.
+        room = input_token_budget(
+            num_ctx=self._settings.model_num_ctx, max_tokens=_REPLY_TOKENS, system=SYSTEM_PROMPT
+        )
+        room -= estimate_tokens(question) + sum(_tokens(item) for item in evidence)
+        near = self._retriever.neighbours(customer_id, [item.hit for item in evidence], scope)
+        for item in number_evidence(near, start=len(evidence) + 1, neighbour=True):
+            room -= _tokens(item)
+            if room < 0:
+                break
+            evidence.append(item)
 
-        draft, model_used = self._draft(question, normalised, evidence)
-        texts = {item.n: clean_text(item.hit.text) for item in evidence}
+        draft, model_used, seen = self._draft(question, normalised, evidence)
+        # Only the evidence the draft saw. Line by line: joined, "12" and a next
+        # line's "August 2026" would read as a date.
+        texts = {item.n: "\n".join(map(clean_text, item.hit.text.splitlines())) for item in seen}
         cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
         kept = verify([s for s in cleaned if s.text], texts) if draft.status == "answered" else []
         if not kept:
@@ -288,7 +361,10 @@ class AnswerService:
             _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence])
             for old, new in renumber.items()
         ]
-        verified = all(c.label == "verified" for c in citations)
+        # A sentence backed by neighbours only, or with a number only a neighbour holds, is never
+        # verified: the gate never judged them (PROVISIONAL, plan decision 8).
+        on_neighbours = any(_rests_on_neighbours(s, by_n, texts) for s in kept)
+        verified = all(c.label == "verified" for c in citations) and not on_neighbours
         return Answer(
             status="answered",
             label="verified" if verified else "needs_review",
@@ -302,34 +378,58 @@ class AnswerService:
 
     def _embed(self, english: str) -> list[float] | None:
         """The question's vector, or None (no model, model down, or unusable
-        vectors), so search falls back to word and fuzzy matching. One model call."""
+        vectors), so search falls back to word and fuzzy matching. One model call,
+        with the query instruction (kaagaz.search.indexing.query_input, PRD 3 V3)."""
         if self._model is None or not english:
             return None
         try:
             vectors = self._model.embed([english])
-        except (ModelUnavailable, ModelOutputError):
+        except (ModelUnavailable, ModelOutputError) as error:
+            _log.warning("question searched without its meaning vector", extra={"code": error.code})
             return None
         return vectors[0] if vectors else None
 
     def _draft(
         self, question: str, normalised: NormalisedQuestion, evidence: Sequence[Evidence]
-    ) -> tuple[Draft, bool]:
-        """The model's draft (and True), or the extractive one (and False)."""
+    ) -> tuple[Draft, bool, Sequence[Evidence]]:
+        """The model's draft (and True), or the extractive one (and False), with the
+        evidence it was drafted from: for the model, the best pieces that fit its window."""
         if self._model is not None:
             asked = f"{question} (in English: {normalised.english})" if normalised.hinglish else question
-            try:
-                return model_draft(self._model, asked, evidence), True
-            except (ModelUnavailable, ModelOutputError):
-                pass  # quoting the evidence needs no model
+            seen = fit_evidence(asked, evidence, self._evidence_budget)
+            code = "evidence_too_large"  # not even the best piece fits
+            if seen:
+                model, max_tokens = self._model, self._settings.model_answer_max_tokens
+                try:
+                    draft = model_draft(model, asked, seen, max_tokens=max_tokens)
+                except (ModelUnavailable, ModelOutputError) as error:
+                    code = error.code
+                else:
+                    _log.info("answer drafted by %s with prompt %s", model.chat_model, ANSWER_PROMPT_HASH)
+                    return draft, True, seen
+            # Quoting the evidence needs no model.
+            _log.warning("answer drafted without the model", extra={"code": code})
         if mentions_date(normalised):
-            return Draft("not_found", []), False  # a quoted line cannot be checked against a date
-        return extractive_draft(normalised.keywords, evidence), False
+            return Draft("not_found", []), False, evidence  # a quoted line cannot be checked against a date
+        return extractive_draft(normalised.keywords, evidence), False, evidence
 
     def _today(self) -> date:
         now = self._clock()
         if now.tzinfo is None:
             raise ValueError("the clock must give a timezone-aware time")
         return now.astimezone(self._zone).date()
+
+
+def _tokens(item: Evidence) -> int:
+    """About how many prompt tokens a piece takes: its header and text, and its fence."""
+    return estimate_tokens(item.hit.context_header + item.hit.text) + _FENCE_TOKENS
+
+
+def _rests_on_neighbours(sentence: DraftSentence, by_n: dict[int, Evidence], texts: dict[int, str]) -> bool:
+    """True when ``sentence`` cites no hit, or a number in it is in none of the hits it cites."""
+    hits = [n for n in sentence.evidence if not by_n[n].neighbour]
+    allowed: set[Decimal] = set().union(*(numbers_in(texts[n], dates_split=True) for n in hits))
+    return not hits or not numbers_in(sentence.text) <= allowed
 
 
 def _not_found(route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool) -> Answer:
@@ -347,7 +447,7 @@ def _not_found(route: Route, shown: str, closest: list[dict[str, str]], *, model
 
 def _piece_citation(n: int, item: Evidence, sentences: Sequence[str]) -> Citation:
     hit = item.hit
-    regions = _focus(item, sentences)
+    regions = sorted(_focus(item, sentences), key=lambda region: int(region["page"]))  # H4: by page
     return Citation(
         n=n,
         kind="piece",
@@ -359,6 +459,10 @@ def _piece_citation(n: int, item: Evidence, sentences: Sequence[str]) -> Citatio
         regions=regions,
         snippet=clean_snippet(hit.text),
         label=hit.label,
+        page_from=hit.page_from,
+        page_to=hit.page_to,
+        label_page_no=None,
+        label_regions=[],
     )
 
 
@@ -371,7 +475,8 @@ def _focus(item: Evidence, sentences: Sequence[str]) -> list[dict[str, Any]]:
     A text piece keeps one region per line, in order. A line is used when it
     holds a sentence (or a sentence holds it), or shares a number with one.
     Falls back to every region when the lines and regions do not pair up (a
-    spreadsheet row) or no line matches. O(lines * sentences).
+    spreadsheet row), no line matches, or the lines used miss a page of a piece
+    that crosses pages (H4: each of its pages shows its spot). O(lines * sentences).
     """
     lines = item.hit.text.splitlines()
     if len(lines) != len(item.regions) or len(item.regions) != len(item.hit.regions):
@@ -387,7 +492,9 @@ def _focus(item: Evidence, sentences: Sequence[str]) -> list[dict[str, Any]]:
             n.replace(",", "") in numbers for n in _NUMBER.findall(line)
         ):
             used.append(region)
-    return used or item.regions
+    if {region["page"] for region in used} != {region["page"] for region in item.regions}:
+        return item.regions
+    return used
 
 
 def _cited_values(rows: Sequence[FixedRow]) -> list[tuple[ValueRef, list[dict[str, Any]]]]:

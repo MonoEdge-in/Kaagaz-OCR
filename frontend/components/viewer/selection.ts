@@ -9,6 +9,7 @@ export interface Selection {
   pageNo: number;
   region: Region | null;
   valueId: string | null;
+  label?: Region | null; // the item's label spot too (PRD 3 Y1), on this page or another
 }
 
 export function sameRegion(a: Region, b: Region): boolean {
@@ -38,4 +39,21 @@ export function initialSelection(
 
 export function selectValue(value: ExtractedValue): Selection {
   return { pageNo: value.region.page, region: value.region, valueId: value.id };
+}
+
+/** A panel item's spot and its label's (PRD 3 Y1, Y3), opened on the item's page. */
+export function selectSpot(region: Region, label: Region | null): Selection {
+  return { pageNo: region.page, region, valueId: null, label };
+}
+
+/** Another page: the highlights stay while either spot is on it, else they go. */
+export function pageChange(selection: Selection | null, pageNo: number): Selection {
+  const spots = [selection?.region, selection?.label];
+  if (selection && spots.some((spot) => spot?.page === pageNo)) return { ...selection, pageNo };
+  return { pageNo, region: null, valueId: null };
+}
+
+/** What the page highlights: the spot and its label spot (PageViewer keeps those on its page). */
+export function highlightsOf(selection: Selection | null): Region[] {
+  return [selection?.region, selection?.label].filter((spot): spot is Region => !!spot);
 }

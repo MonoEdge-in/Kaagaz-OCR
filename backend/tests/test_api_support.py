@@ -16,10 +16,12 @@ builder owns (FULL-BUILD-SPEC section 10); pytest collects it and finds nothing.
   all routes (the admin-session and the password-change gates).
 """
 
+import functools
 import hashlib
 import io
 import json
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -30,14 +32,17 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
 
+from kaagaz.ai.client import ModelClient
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import hash_password
+from kaagaz.api.ports import Answers
 from kaagaz.api.secret_box import SecretBox
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
+from kaagaz.search.scope import Scope
 from kaagaz.settings import Settings
 from tests.db_support import insert_document, insert_folder, insert_tag, new_customer, tag_document
 from tests.fakes import MemoryQueue, MemoryStorage
@@ -47,6 +52,19 @@ CSRF = {"X-Requested-With": "kaagaz"}
 PASSWORD = "correct horse battery"  # made up, 12+ characters
 PDF_BYTES = b"%PDF-1.7\n" + b"0" * 200
 NOW = datetime(2026, 9, 27, 10, 0, tzinfo=UTC)
+
+
+def password_hash_of(password: str) -> str:
+    """The stored hash for a user a helper adds. PASSWORD's is made once per test session
+    (scrypt takes about a quarter of a second on purpose), so those users share one salt;
+    any other password is hashed fresh. Only the helpers use this: the product's own
+    hashing still makes a new salt every time (test_api_admin.py checks)."""
+    return _password_hash() if password == PASSWORD else hash_password(password)
+
+
+@functools.cache
+def _password_hash() -> str:
+    return hash_password(PASSWORD)
 
 
 class ApiFakeStorage(MemoryStorage):
@@ -115,9 +133,13 @@ class _FixedAnswer:
 class FakeAnswers:
     reply: dict[str, Any] = field(default_factory=answer_json)
     asked: list[tuple[str, str]] = field(default_factory=list)
+    scopes: list[Scope] = field(default_factory=list)
 
-    def answer(self, customer_id: str, question: str) -> _FixedAnswer:
+    def answer(
+        self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn]
+    ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
+        self.scopes.append(scope)
         return _FixedAnswer(self.reply)
 
 
@@ -167,7 +189,9 @@ class Api:
         settings: Settings | None = None,
         clock: MovingClock | None = None,
         queue: ApiFakeQueue | None = None,
+        model: ModelClient | None = None,
     ) -> None:
+        """``answers``: the real AnswerService for a test that needs one; FakeAnswers otherwise."""
         self.db = db
         self.settings = settings or make_settings()
         self.clock = clock or MovingClock()
@@ -179,8 +203,9 @@ class Api:
             db=db,
             storage=self.storage,
             queue=self.queue,
-            answers=self.answers,
+            answers=self.answers if answers is None else answers,
             clock=self.clock,
+            model=model,
         )
 
     def client(self) -> TestClient:
@@ -201,7 +226,7 @@ class Api:
                 email=email,
                 display_name=f"Test {role}",
                 role=role,
-                password_hash=hash_password(password),
+                password_hash=password_hash_of(password),
                 must_change_password=False,
             )
         return str(row["id"]), email

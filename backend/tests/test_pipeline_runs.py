@@ -239,7 +239,6 @@ def rig(
             ocr_meter=meter,
             clock=lambda: T0,
             timer=timer,
-            ocr_on=meter is not None,
             max_vision_crops=max_vision_crops,
             run_config=CONFIG,
             vision_model="qwen-vision" if vision is not None else None,

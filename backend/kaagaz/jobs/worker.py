@@ -63,6 +63,12 @@ class JobFailed(Exception):
         self.retryable = retryable
 
 
+class Superseded(Exception):
+    """A newer run of this document has started (the run fence), so this run's results
+    are not saved and it does not mark the document ready. Not a failure: the newer
+    run does the work."""
+
+
 class Worker:
     def __init__(
         self,
