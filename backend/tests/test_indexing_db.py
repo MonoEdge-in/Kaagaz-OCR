@@ -1,5 +1,7 @@
 """``embed_pieces`` with a fake model, against a real PostgreSQL, and what it embeds (PRD 3 V3)."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from typing import Any
 
@@ -11,9 +13,10 @@ from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.chunking.context import context_header
 from kaagaz.chunking.piece import Piece
 from kaagaz.db.engine import Database
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.spans import BoxLocation
 from kaagaz.search.indexing import embed_pieces, piece_input, query_input, recipe_tag
-from tests.db_support import new_customer
+from tests.db_support import APP_ROLE, new_customer
 from tests.test_search_db import RECIPE, add_document, add_pieces, axis, run
 
 pytestmark = pytest.mark.db
@@ -183,6 +186,20 @@ def test_batch_size_must_be_positive(db: Database) -> None:
     customer, _ = new_customer(db)
     with pytest.raises(ValueError, match="batch_size"):
         embed_pieces(db, customer, add_document(db, customer), FakeModel(), batch_size=0)
+
+
+@pytest.mark.parametrize("down_at", [1, 2, 3])  # the count, the first fetch, the first write
+def test_a_database_outage_is_backend_unavailable(db: Database, down_at: int) -> None:
+    """So the pipeline ends the run database_unavailable and the job is retried later,
+    rather than an internal error that also stops the worker."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [("one", None), ("two", None)])
+
+    with pytest.raises((BackendUnavailable, OperationalError)) as caught:
+        embed_pieces(GoesDown(db, down_at), customer, document, FakeModel())
+    assert isinstance(caught.value, BackendUnavailable)
+    assert str(caught.value) == "database"
 
 
 def test_a_piece_is_embedded_with_its_reduced_header_and_no_instruction(db: Database) -> None:

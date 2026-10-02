@@ -33,6 +33,7 @@ from kaagaz.answering.evidence import number_evidence
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedRow, ValueRef
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.db.engine import Database
+from kaagaz.search.scope import EVERYTHING, Scope
 from kaagaz.settings import CHAT_OVERHEAD_TOKENS, Settings
 from tests.settings_factory import make_settings
 
@@ -209,6 +210,9 @@ class FakeFixedQueries:
         self.records = records
         self.calls: list[str] = []
         self.field_calls: list[str] = []  # the customer of each available_fields call
+
+    def scoped(self, scope: Scope) -> "FakeFixedQueries":
+        return self
 
     def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]:
         self.field_calls.append(customer_id)

@@ -117,3 +117,13 @@ def test_the_answer_reply_budget_is_a_start_up_setting() -> None:
     del env["MODEL_ANSWER_MAX_TOKENS"]
     with pytest.raises(SettingsError, match="MODEL_ANSWER_MAX_TOKENS"):
         Settings.from_env(env)
+
+
+def test_one_embedding_batch_or_vision_crop_must_end_well_inside_the_lease() -> None:
+    """One embedding batch or one vision crop is a single model call (MODEL_TIMEOUT_SECONDS)
+    between two heartbeats, so it gets the same margin as a card call (AR1)."""
+    fits = Settings.from_env(shipped(MODEL_TIMEOUT_SECONDS="1125", QUEUE_LEASE_SECONDS="1200"))
+    assert fits.model_timeout_seconds == 1125.0
+    with pytest.raises(SettingsError, match="MODEL_TIMEOUT_SECONDS") as caught:
+        Settings.from_env(shipped(MODEL_TIMEOUT_SECONDS="1126", QUEUE_LEASE_SECONDS="1200"))
+    assert "QUEUE_LEASE_SECONDS" in str(caught.value)

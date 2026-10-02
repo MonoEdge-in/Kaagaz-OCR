@@ -112,6 +112,13 @@ def user_prompt(question: str, evidence: Sequence[Evidence]) -> str:
     return "Question:\n" + question_block + "\n\nEvidence:\n" + "\n".join(blocks)
 
 
+def _block(item: Evidence) -> str:
+    """One piece, fenced and escaped: a "Context:" line with its header (Q5), then its text."""
+    mark = ' neighbour="yes"' if item.neighbour else ""
+    context = f"Context: {_escape(item.hit.context_header)}\n" if item.hit.context_header else ""
+    return f'<evidence id="{item.n}"{mark}>\n{context}{_escape(item.hit.text)}\n</evidence>'
+
+
 def fit_evidence(question: str, evidence: Sequence[Evidence], budget: int) -> list[Evidence]:
     """The best-ranked evidence whose prompt is at most ``budget`` tokens: lower-ranked
     pieces are left out whole, never cut. Empty when even the best one does not fit.
