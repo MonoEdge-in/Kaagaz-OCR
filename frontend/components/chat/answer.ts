@@ -9,6 +9,11 @@ import type { Answer, AnswerSentence, Citation, Label, Message, Region } from "@
 
 export const NOT_FOUND_TEXT = "I couldn't find this in your documents.";
 export const MAX_QUESTION_LENGTH = 1000;
+
+// The chat's one status line for screen readers; the log itself stays quiet.
+export const ASKING_STATUS = "Looking through your documents…";
+export const LOADED_STATUS = "Conversation loaded.";
+export const NO_ANSWER_STATUS = "No answer found in your documents.";
 export const MAX_REASON_LENGTH = 500;
 
 /** Citation number to its source card. */
@@ -51,6 +56,17 @@ export function answerLabelText(label: Label): AnswerLabelText {
     title: "Needs review",
     explanation: "At least one source was not fully checked. Open the page before you rely on it.",
   };
+}
+
+/**
+ * What the status line says when an answer arrives: its label and first
+ * sentence only. Verified only when the answer itself is verified.
+ */
+export function answerStatusText(answer: Answer | null): string {
+  if (!answer || answer.status === "not_found") return NO_ANSWER_STATUS;
+  const verified = answer.status === "answered" && answer.label === "verified";
+  const first = answer.sentences[0]?.text.trim();
+  return [`Answer ready. ${verified ? "Verified" : "Needs review"}.`, first].filter(Boolean).join(" ");
 }
 
 const loose = (text: string) =>

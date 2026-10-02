@@ -12,16 +12,27 @@ export interface EmptyStateProps {
   children?: ReactNode;
   action?: ReactNode;
   headingLevel?: 1 | 2 | 3;
+  /** Gives the heading an id and makes it focusable from script, so a page can move focus to it. */
+  headingId?: string;
 }
 
-export function EmptyState({ icon, title, children, action, headingLevel = 2 }: EmptyStateProps) {
+export function EmptyState({
+  icon,
+  title,
+  children,
+  action,
+  headingLevel = 2,
+  headingId,
+}: EmptyStateProps) {
   const Heading = headingLevel === 1 ? "h1" : headingLevel === 3 ? "h3" : "h2";
   return (
     <div className={styles.empty}>
       <span className={styles.icon}>
         <Icon name={icon} size={28} />
       </span>
-      <Heading className={styles.title}>{title}</Heading>
+      <Heading id={headingId} tabIndex={headingId ? -1 : undefined} className={styles.title}>
+        {title}
+      </Heading>
       {children && <div className={styles.text}>{children}</div>}
       {action && <div className={styles.action}>{action}</div>}
     </div>
