@@ -15,6 +15,7 @@ import {
   LINE_FIELDS,
   cardSections,
   checkChip,
+  groupLinks,
   invoiceSpot,
   languagesText,
   linkText,
@@ -116,13 +117,16 @@ export function RelatedPanel({ detail }: Pick<PanelProps, "detail">) {
         <p className="muted">No other document shares a number with this one.</p>
       ) : (
         <ul className={styles.panelList}>
-          {detail.links.map((link) => (
-            <li key={`${link.id}:${link.identifier.kind}:${link.identifier.value}`}>
+          {groupLinks(detail.links).map(([link, ...more]) => (
+            <li key={link.id}>
               <Link href={`/documents/${link.id}`} className={styles.fieldCell}>
                 {link.display_name}
               </Link>
               <div className={styles.pageNote}>
-                {docTypeLabel(link.doc_type)} · {linkText(link, detail.values)}
+                {[
+                  docTypeLabel(link.doc_type),
+                  ...[link, ...more].map((shared) => linkText(shared, detail.values)),
+                ].join(" · ")}
               </div>
             </li>
           ))}

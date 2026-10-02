@@ -128,6 +128,17 @@ export function linkText(link: DocumentLink, values: ExtractedValue[]): string {
   return `Same ${words}: ${own?.value ?? value}`;
 }
 
+/** One entry per related document, in the server's order, with every number it shares. */
+export function groupLinks(links: DocumentLink[]): [DocumentLink, ...DocumentLink[]][] {
+  const byDocument = new Map<string, [DocumentLink, ...DocumentLink[]]>();
+  for (const link of links) {
+    const group = byDocument.get(link.id);
+    if (group) group.push(link);
+    else byDocument.set(link.id, [link]);
+  }
+  return [...byDocument.values()];
+}
+
 const CHECK_REASONS: Record<string, string> = {
   lines_sum_mismatch: "line items don't add up to the subtotal",
   total_mismatch: "the subtotal and tax don't add up to the total",

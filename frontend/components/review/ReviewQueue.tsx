@@ -93,7 +93,10 @@ function Queue({ documentId }: { documentId?: string }) {
           id="review-reason"
           className="input"
           value={reason ?? ""}
+          // A "Show more" still loading belongs to the old filter: wait for it.
+          disabled={loadingMore}
           onChange={(event) => {
+            setMoreError(null);
             setReason(parseReason(event.target.value));
             setAttempt((n) => n + 1); // the loading state until the filtered list comes
           }}

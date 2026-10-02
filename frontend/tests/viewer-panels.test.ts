@@ -3,6 +3,7 @@ import {
   cardSections,
   checkChip,
   checkReasonText,
+  groupLinks,
   invoiceSpot,
   languagesText,
   linkText,
@@ -130,6 +131,16 @@ describe("linkText", () => {
     expect(linkText(link, [])).toBe("Same invoice number: inv17");
     const po = { ...link, identifier: { kind: "po_number", value: "po-9" } };
     expect(linkText(po, [])).toBe("Same PO number: po-9");
+  });
+
+  it("lists a document once, with every number it shares, in the server's order", () => {
+    const po = { ...link, identifier: { kind: "po_number", value: "po-9" } };
+    const other = { ...link, id: "d3" };
+    expect(groupLinks([link, other, po]).map((group) => group.map((l) => l.identifier.kind))).toEqual([
+      ["invoice_number", "po_number"],
+      ["invoice_number"],
+    ]);
+    expect(groupLinks([])).toEqual([]);
   });
 
   it("normalises as the server does, Devanagari digits included", () => {

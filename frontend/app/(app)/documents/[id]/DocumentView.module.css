@@ -170,6 +170,7 @@
 @media (min-width: 1024px) {
   .layout {
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    grid-template-rows: auto 1fr;
   }
 
   .viewer {
