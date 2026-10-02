@@ -195,9 +195,12 @@ class FakeFixedQueries:
     def __init__(self, records: dict[str, list[Record]]) -> None:
         self.records = records
         self.calls: list[str] = []
+        self.field_calls: list[str] = []  # the customer of each available_fields call
 
-    def available_fields(self, customer_id: str) -> set[str]:
-        return {s.ref.field for record in self.records.get(customer_id, []) for s in record}
+    def available_fields(self, customer_id: str, fields: Sequence[str] | None = None) -> set[str]:
+        self.field_calls.append(customer_id)
+        found = {s.ref.field for record in self.records.get(customer_id, []) for s in record}
+        return found if fields is None else found & set(fields)
 
     def _matching(
         self,
@@ -566,6 +569,19 @@ def test_values_without_a_region_are_never_an_answer() -> None:
     bad = [dataclasses.replace(s, ref=dataclasses.replace(s.ref, region={})) for s in register()[0]]
     answer = service(records=[bad])[0].answer(A, "Kiska profit sabse jyada tha last month?")
     assert answer.status == "not_found"
+
+
+def test_only_a_question_with_an_aggregate_word_asks_which_fields_there_are() -> None:
+    """A7a: the fields query runs only when a fixed query could follow, and then once."""
+    for question, calls in [
+        ("What are the payment terms?", 0),
+        ("What is the grand total of INV-1042?", 0),  # "grand" and "inv-1042" are not known words
+        ("Kiska profit sabse jyada tha last month?", 1),
+        ("How many invoices in August 2026?", 1),
+    ]:
+        answer_service, _, fixed = service()
+        answer_service.answer(A, question)
+        assert fixed.field_calls == [A] * calls, question
 
 
 # --- the search route ---------------------------------------------------------
