@@ -39,8 +39,6 @@ export function MyWordsScreen() {
   const [asking, setAsking] = useState<(Job & { existing: Existing[] }) | null>(null);
   const [row, setRow] = useState<RowDialog | null>(null);
   const [status, setStatus] = useState("");
-  // GET does not say which words chat already knows; a save does, so they are marked from then on.
-  const [builtIn, setBuiltIn] = useState<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +72,6 @@ export function MyWordsScreen() {
         const { id } = reply.word;
         setItems((now) => [...(now ?? []).filter((it) => it.id !== id && it.id !== job.body.replace_id), reply.word]);
         if (job.body.replace_id) setAttempt((n) => n + 1); // and ask the server which rows a replace left
-        if (reply.warning === "built_in") setBuiltIn((now) => new Set(now).add(id));
         setStatus(savedState(reply).message);
         if (job.wordId === undefined) {
           setDraft(EMPTY);
@@ -184,7 +181,7 @@ export function MyWordsScreen() {
                         <span aria-hidden="true">→ </span><span className="visually-hidden">means </span>{item.meaning}
                       </span>
                       <span className="muted">{SOURCE_TEXT[item.source]}</span>
-                      {builtIn.has(item.id) && <span className="badge badge-review">Chat also knows this word</span>}
+                      {item.built_in && <span className="badge badge-review">Chat also knows this word</span>}
                       {(["Change", "Delete"] as const).map((verb) => (
                         <button key={verb} type="button" className={`btn btn-quiet ${styles.target}`} aria-label={`${verb} '${item.word}' as '${item.meaning}'`}
                           onClick={() => setRow({ mode: verb === "Change" ? "change" : "delete", item, draft: item, error: null })}>{verb}</button>

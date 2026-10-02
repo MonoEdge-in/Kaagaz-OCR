@@ -343,6 +343,7 @@ export interface MyWord {
   word: string;
   meaning: string;
   source: "manual" | "upload" | "viewer";
+  built_in: boolean; // chat's own word list reads it too (the badge)
   created_at: string;
   updated_at: string;
 }

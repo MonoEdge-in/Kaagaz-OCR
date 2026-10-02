@@ -10,7 +10,7 @@ import type { MyWord } from "@/lib/types";
 
 const at = "2026-10-03T10:00:00Z";
 const word = (id: string, text: string, meaning: string): MyWord =>
-  ({ id, word: text, meaning, source: "manual", created_at: at, updated_at: at });
+  ({ id, word: text, meaning, source: "manual", built_in: false, created_at: at, updated_at: at });
 
 describe("the text check, as the server's (it decides)", () => {
   it("passes a Romanised, a Devanagari and a two-part word, a meaning with a comma, and counts characters", () => {
@@ -57,6 +57,7 @@ describe("the requests", () => {
     // A2 review: PATCH asks the same question; the choice is sent the same way.
     const body = changeBody(item, { word: "malak", meaning: "owner" }, "u1") ?? { user_id: "" };
     expect(retryBody(body, { kind: "add_too" })).toEqual({ meaning: "owner", user_id: "u1", confirm_another: true });
+    expect(retryBody(body, { kind: "replace", id: "w2" })).toEqual({ meaning: "owner", user_id: "u1", replace_id: "w2" });
   });
 });
 
