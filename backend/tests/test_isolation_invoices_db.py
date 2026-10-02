@@ -15,7 +15,8 @@ from kaagaz.db import listing
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
-from kaagaz.pipeline import DocumentContent, LinkIdentifier, PageRecord
+from kaagaz.extraction.values import LinkIdentifier
+from kaagaz.pipeline import DocumentContent, PageRecord
 from kaagaz.reading.spans import PageInfo
 from tests.db_support import new_customer
 from tests.exit_fixtures import TEXTILE_FIELDS, QuotingChat, textile_lines

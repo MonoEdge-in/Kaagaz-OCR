@@ -8,14 +8,21 @@ The steps, in order, for one (customer, document):
    bytes used below are exactly the bytes that were scanned.
 3. Check the scanned bytes still match the fingerprint taken at upload.
 4. Prepare the pages: sizes, and a picture of each page (PDFs, photos),
-   stored one by one as WebP. The PNGs kept in memory stay lossless for the
-   vision crops. Spreadsheets get one page per sheet after reading.
+   streamed (council A5b): each page is drawn, made WebP, stored, the
+   heartbeat beats, and its picture is dropped before the next page is drawn,
+   so memory is one page's picture, not one per page. A page that fails to
+   draw after earlier pages were stored leaves those pictures behind with no
+   rows; they are under this customer's document prefix, which delete and
+   purge remove whole, and a later run writes the same keys again. A vision
+   crop draws its page again (``Prepared.picture``), lossless. Spreadsheets
+   get one page per sheet after reading.
 5. Read the bytes through the reader socket, then read them again with the
    second reader if the type has one. A type with no reader is marked "needs
    a reader" (its pages are kept) and the job ends normally. A reader that
    reads page by page (PDFs, photos) beats the heartbeat after each page, so a
-   long scan keeps its lease. Each page then gets its route (PRD 2 R1:
-   ``kaagaz.reading.route``), and the second reading of a page read by OCR, or
+   long scan keeps its lease. Each page then gets the route its reader
+   reported through ``on_page`` (PRD 2 R1, ``_with_routes``; a sheet page is
+   ``cells``), and the second reading of a page read by OCR, or
    blank, is left out: a scan's hidden text layer must never agree with itself
    (the council's ML 4).
 6. Pieces for search (kaagaz.chunking) and the rule values for fixed queries
@@ -41,8 +48,10 @@ The steps, in order, for one (customer, document):
 7. Just before saving, the document must still be clean. Everything is saved
    in one transaction that replaces what an earlier run saved, so running the
    same job twice is safe (queues deliver at least once).
-8. Meaning vectors for the pieces, if a model is set. A model that is down
-   only means no vectors: word and typo search still work.
+8. Meaning vectors for the pieces, if a model is set, with the heartbeat and
+   progress "indexing i of n" after each batch is written (a 20k-row sheet is
+   about 626 batches, longer than one lease). A model that is down only means
+   no vectors: word and typo search still work.
 9. The page count, and the document is ready, in one transaction that also
    makes it its family's current version unless a newer version is ready
    already (PRD 1 F6). A version that fails never gets here, so the one before
@@ -90,8 +99,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
-from decimal import Decimal
+from datetime import UTC, datetime
 from importlib import metadata
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -102,17 +110,26 @@ from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
+from kaagaz.extraction.card import ChatModel
+from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import label_quoted, label_values, spot_unsure
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
 from kaagaz.extraction.parsing import parse_amount, parse_date
 from kaagaz.extraction.quotes import reader_text
 from kaagaz.extraction.spreadsheet import values_from_cells
-from kaagaz.extraction.values import CARD_RECORD, ExtractedValue
+from kaagaz.extraction.understanding import (
+    ModelBudget,
+    Understanding,
+    document_links,
+    model_config,
+    understand,
+)
+from kaagaz.extraction.values import CARD_RECORD, DocumentFacts, ExtractedValue, InvoiceRow, LinkIdentifier
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.ports import LeaseLost
-from kaagaz.jobs.worker import Heartbeat, JobFailed
+from kaagaz.jobs.worker import Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage
@@ -139,8 +156,6 @@ from kaagaz.scanning.gate import (
 if TYPE_CHECKING:
     from kaagaz.ai.client import ModelClient
     from kaagaz.db.engine import Database
-    from kaagaz.extraction.card import ChatModel
-    from kaagaz.extraction.understanding import ModelBudget, Understanding
     from kaagaz.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -155,8 +170,10 @@ VISION_INSTRUCTION = (
 _CROP_PADDING = 0.005  # a little of the page around a box, as a fraction of the page
 
 # Stored page pictures are for people to look at (PRD 1, S1), so they are WebP.
+# Method 2 (R2 finding 2): several times faster to encode than 4, for under 1 dB
+# of PSNR and a few % more bytes. Viewer-only: OCR and vision draw their own.
 _WEBP_QUALITY = 80
-_WEBP_METHOD = 4
+_WEBP_METHOD = 2
 _WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
 
 # Security A8 (PROVISIONAL): at most this many value boxes of one document are
@@ -169,19 +186,12 @@ _LOWERED_OCR_DPI = re.compile(r";ocr_dpi=([0-9]{1,5})\b")
 
 # --- what is saved ------------------------------------------------------------
 
-ROUTES = frozenset({"cells", "text_layer", "ocr", "blank"})
-# The identifiers two documents are linked by (D5).
-LINK_KINDS = frozenset(
-    {"invoice_number", "po_number", "challan_number", "survey_number"}
-    | {"khata_number", "account_number", "reference_number"}
-)
-
 
 @dataclass(frozen=True, slots=True)
 class PageRecord:
     info: PageInfo
     has_image: bool
-    route: str | None = None  # one of ROUTES; None when the page was not read
+    route: str | None = None  # a Route (kaagaz.reading.route); None when the page was not read
     effective_dpi: int | None = None
     low_resolution: bool = False
 
@@ -192,54 +202,6 @@ class ReaderOutput:
     reader: str
     version: str
     spans: tuple[Span, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class DocumentFacts:
-    """The documents columns a run writes (D3, L2). Every save replaces all of them,
-    so a run without a model clears an older run's card."""
-
-    doc_type: str | None = None
-    languages: tuple[str, ...] = ()
-    summary: str | None = None
-    document_date: date | None = None
-    card: Mapping[str, Any] | None = None  # plain JSON
-
-
-@dataclass(frozen=True, slots=True)
-class InvoiceLineRow:
-    line_no: int
-    description: str | None
-    hsn: str | None
-    quantity: Decimal | None
-    unit: str | None
-    rate: Decimal | None
-    amount: Decimal | None
-    label: str  # "verified" or "needs_review"
-
-
-@dataclass(frozen=True, slots=True)
-class InvoiceRow:
-    invoice_number: str | None
-    invoice_date: date | None
-    seller_name: str | None
-    seller_gstin: str | None
-    buyer_name: str | None
-    buyer_gstin: str | None
-    subtotal: Decimal | None
-    tax_total: Decimal | None
-    total: Decimal | None
-    label: str
-    check_status: str  # "passed", "failed" or "not_checked"
-    check_reasons: tuple[str, ...]
-    currency: str = "INR"
-    lines: tuple[InvoiceLineRow, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class LinkIdentifier:
-    kind: str  # one of LINK_KINDS
-    value: str  # whitespace removed, lower case
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,12 +263,6 @@ class FinishedRun:
     run_id: str
     totals: RunTotals
     now: datetime
-
-
-class Superseded(Exception):
-    """A newer run of this document has started (the run fence), so this run's results
-    are not saved and it does not mark the document ready. Not a failure: the newer
-    run does the work."""
 
 
 # --- what the processor needs (ports) ------------------------------------------
@@ -385,10 +341,15 @@ class Prepared(Protocol):
     def pages(self) -> Sequence[PageInfo]: ...
 
     @property
-    def images(self) -> Mapping[int, bytes]: ...  # page number -> PNG
-
-    @property
     def checks(self) -> Mapping[int, PageCheck]: ...  # page number -> blank, effective DPI (R3, R4)
+
+    def picture(self, page_no: int) -> Image.Image:
+        """A page given to ``on_picture``, drawn again exactly as it was then."""
+        ...
+
+
+# What ``prepare`` calls with each page it draws: (page number, page count, picture).
+OnPicture = Callable[[int, int, Image.Image], None]
 
 
 class PageImageStore(Protocol):
@@ -409,6 +370,14 @@ class PipelineStore(Protocol):
         ...
 
     def load_learned(self, customer_id: str, fields: Collection[str]) -> list[LearnedCorrection]: ...
+
+
+class Embedder(Protocol):
+    """kaagaz.search.indexing.embed_pieces in production, with its database and model."""
+
+    def __call__(
+        self, customer_id: str, document_id: str, *, on_batch: Callable[[int, int], None]
+    ) -> object: ...
 
 
 class VisionModel(Protocol):
@@ -450,11 +419,11 @@ class DocumentProcessor:
         statuses: StatusStore,
         documents: DocumentStore,
         socket: ReadingSocket,
-        prepare: Callable[[str, bytes], Prepared],
+        prepare: Callable[[str, bytes, OnPicture], Prepared],
         sheet_pages: Callable[[list[Span]], Sequence[PageInfo]],
         page_images: PageImageStore,
         store: PipelineStore,
-        embed: Callable[[str, str], object] | None = None,
+        embed: Embedder | None = None,
         vision: VisionModel | None = None,
         model_errors: tuple[type[Exception], ...] = (),
         runs: RunStore | None = None,
@@ -462,25 +431,23 @@ class DocumentProcessor:
         ocr_meter: OcrMeter | None = None,
         clock: Callable[[], datetime] | None = None,
         timer: Callable[[], float] | None = None,
-        ocr_on: bool = False,
         max_vision_crops: int = MAX_VISION_CROPS,
         run_config: Mapping[str, Any] | None = None,
         vision_model: str | None = None,
         embed_model: str | None = None,
-        chat: "ChatModel | None" = None,
+        chat: ChatModel | None = None,
         chat_model: str | None = None,
-        model_budget: "ModelBudget | None" = None,
+        model_budget: ModelBudget | None = None,
         timezone: str = "UTC",
     ) -> None:
-        """``embed(customer_id, document_id)`` gives the saved pieces their vectors;
+        """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         ``vision`` reads scanned boxes again. Either failing with one of
         ``model_errors`` is logged and skipped, never a failed document.
 
         The rest are for PRD 2 and all optional: ``runs`` keeps one run per delivery
         (it needs ``clock`` for its times and ``timer`` for its seconds);
         ``progress`` shows how far a document has got; ``ocr_meter`` is the OCR
-        engine the readers use, counted; ``ocr_on`` says an engine is set, so a page
-        with no text went to OCR; ``run_config`` is the run's plain JSON set-up
+        engine the readers use, counted; ``run_config`` is the run's plain JSON set-up
         (ML 10); ``vision_model`` and ``embed_model`` are the tags a run records
         when it used them. ``chat`` is the model stage's chat model (PRD 2 D1, E2),
         with its ``model_budget``; ``chat_model`` is the tag a run records when a
@@ -508,7 +475,6 @@ class DocumentProcessor:
         self._ocr_meter = ocr_meter
         self._clock = clock or _utc_now
         self._timer = timer or time.perf_counter
-        self._ocr_on = ocr_on
         self._max_vision_crops = max_vision_crops
         self._run_config = dict(run_config or {})
         self._vision_model = vision_model
@@ -561,12 +527,16 @@ class DocumentProcessor:
             raise JobFailed("content_changed", retryable=False)
         heartbeat()
 
-        prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data))
-        for done, (page_no, png) in enumerate(prepared.images.items(), start=1):
-            self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(png))
+        pictured: set[int] = set()  # the pages whose picture is stored
+
+        def on_picture(page_no: int, count: int, picture: Image.Image) -> None:
+            self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(picture))
+            pictured.add(page_no)
             heartbeat()
-            self._progress(job, run, "preparing", done, len(prepared.images))
-        pages = [_page_record(info, prepared) for info in prepared.pages]
+            self._progress(job, run, "preparing", len(pictured), count)
+
+        prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data, on_picture))
+        pages = [_page_record(info, prepared, pictured) for info in prepared.pages]
 
         self._progress(job, run, "reading", 0, len(pages))
         reads: list[RouteDecision | None] = []  # how each page was read, as the reader said
@@ -618,14 +588,14 @@ class DocumentProcessor:
         cropped = rule + [
             value for value in quoted if value.record_key != CARD_RECORD and not spot_unsure(value)
         ]
-        readings = self._vision_readings(job, cropped, prepared.images, heartbeat, run)
+        readings = self._vision_readings(job, cropped, prepared, pictured, heartbeat, run)
         values = label_values(rule, compared, readings, also_located=quoted)
         values += label_quoted(quoted, compared, readings, also_located=rule)
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
             values = [_with_parsed(value) for value in apply_learned(values, learned)]
         values, invoice = self._invoice(understanding, facts, usable, values)
-        links = _document_links(facts, values)
+        links = document_links(facts, values)
         run.values_verified = sum(1 for value in values if value.label == "verified")
         run.values_needs_review = len(values) - run.values_verified
 
@@ -653,13 +623,13 @@ class DocumentProcessor:
         self._store.save(content, run_id=run.run_id)
         heartbeat()
         self._progress(job, run, "indexing", 0, 1)
-        run.embedded = self._index(job)
+        run.embedded = self._index(job, run, heartbeat)
         finished = self._finished(run, "ready", run.model_error)
         self._documents.mark_ready(customer_id, document_id, len(pages), run=finished)
 
     def _invoice(
         self,
-        understanding: "Understanding",
+        understanding: Understanding,
         facts: DocumentFacts,
         spans: list[Span],
         values: list[ExtractedValue],
@@ -668,8 +638,6 @@ class DocumentProcessor:
         and its checks, on the labelled values. A row comes from the E4 values, or with no
         type or an invoice type (the model off, down or silent) from labelled.py's values
         (PROVISIONAL). O(v) plus labelled.py's pass over the spans."""
-        from kaagaz.extraction.invoice import finish_invoice, local_today  # it imports this module
-
         result = finish_invoice(
             values,
             extraction=understanding.invoice,
@@ -682,10 +650,9 @@ class DocumentProcessor:
 
     def _understand(
         self, job: Job, run: _Run, heartbeat: Heartbeat, spans: list[Span], values: list[ExtractedValue]
-    ) -> "Understanding":
+    ) -> Understanding:
         """The model stage (``extraction.understanding``), and its numbers on the run.
         With no chat model it is today's result: no card, and the rule values as they are."""
-        from kaagaz.extraction.understanding import understand  # it imports this module
 
         def beat(done: int, total: int) -> None:
             heartbeat()
@@ -717,11 +684,11 @@ class DocumentProcessor:
             }
         return understanding
 
-    def _prepare_or_count(self, job: Job, detected_type: str, data: bytes) -> Prepared:
+    def _prepare_or_count(self, job: Job, detected_type: str, data: bytes, on_picture: OnPicture) -> Prepared:
         """``prepare``; a file with too many pages keeps its real page count before
         it fails, so its message can name it."""
         try:
-            return self._prepare(detected_type, data)
+            return self._prepare(detected_type, data, on_picture)
         except TooManyPages as error:
             self._documents.set_page_count(job.customer_id, job.document_id, error.pages)
             raise
@@ -762,12 +729,19 @@ class DocumentProcessor:
             return False
         return True
 
-    def _index(self, job: Job) -> bool:
-        """Make the pieces' meaning vectors; True if it ran."""
+    def _index(self, job: Job, run: _Run, heartbeat: Heartbeat) -> bool:
+        """Make the pieces' meaning vectors; True if it ran. After each batch is written,
+        the heartbeat, then "indexing i of n". The progress write runs after every batch
+        on purpose: it is fenced, so it is what stops a superseded run within one batch."""
         if self._embed is None:
             return False
+
+        def on_batch(done: int, total: int) -> None:
+            heartbeat()
+            self._progress(job, run, "indexing", done, total)
+
         try:
-            self._embed(job.customer_id, job.document_id)
+            self._embed(job.customer_id, job.document_id, on_batch=on_batch)
         except self._model_errors as error:
             _log.warning(
                 "pieces saved without meaning vectors",
@@ -780,14 +754,16 @@ class DocumentProcessor:
         self,
         job: Job,
         values: list[ExtractedValue],
-        images: Mapping[int, bytes],
+        prepared: Prepared,
+        pictured: Collection[int],
         heartbeat: Heartbeat,
         run: _Run,
     ) -> dict[Location, str]:
         """A vision model's reading of each scanned value's box, by box, with a
         heartbeat after each (security A8). Stops at the first model error, and
         after ``max_vision_crops`` boxes; the values left stay single reader. One
-        page picture decoded at a time."""
+        page picture at a time, drawn again (``Prepared.picture``): the pixels
+        preparing drew, lossless."""
         if self._vision is None:
             return {}
         wanted: dict[int, dict[BoxLocation, None]] = {}  # page -> boxes, in order, once each
@@ -797,11 +773,11 @@ class DocumentProcessor:
                 value.confidence is None and value.origin in DIRECT_ORIGINS
             ):
                 continue  # read directly, not scanned; no origin counts as scanned (fail closed)
-            if box.page in images:
+            if box.page in pictured:
                 wanted.setdefault(box.page, {})[box] = None
         readings: dict[Location, str] = {}
         for page_no, boxes in wanted.items():
-            with Image.open(io.BytesIO(images[page_no])) as page:
+            with _or_fail(functools.partial(prepared.picture, page_no)) as page:
                 for box in boxes:
                     if run.vision_crops >= self._max_vision_crops:
                         return readings
@@ -928,10 +904,10 @@ def _or_fail[T](call: Callable[[], T]) -> T:
     raise JobFailed(code, retryable=False)
 
 
-def _page_record(info: PageInfo, prepared: Prepared) -> PageRecord:
+def _page_record(info: PageInfo, prepared: Prepared, pictured: Collection[int]) -> PageRecord:
     """The page as saved, with its effective DPI and low-resolution flag (R4)."""
     check = prepared.checks.get(info.page)
-    record = PageRecord(info, info.page in prepared.images)
+    record = PageRecord(info, info.page in pictured)
     if check is None:
         return record
     return replace(record, effective_dpi=check.effective_dpi, low_resolution=check.low_resolution)
@@ -973,13 +949,6 @@ def _without_unread_pages(second: list[Span], pages: Sequence[PageRecord]) -> li
     return [span for span in second if span.location.page not in left_out]
 
 
-def _document_links(facts: DocumentFacts, values: list[ExtractedValue]) -> tuple[LinkIdentifier, ...]:
-    """D5: the link identifiers of the final values, only with a card (D6)."""
-    from kaagaz.extraction.understanding import document_links  # it imports this module
-
-    return document_links(facts, values)
-
-
 def _unavailable_code(error: BackendUnavailable) -> str:
     """The run's error code for a backend that is down: ``ocr_unavailable`` and so on."""
     name = str(error)
@@ -1013,23 +982,22 @@ def _crop(page: Image.Image, box: BoxLocation) -> bytes:
     return out.getvalue()
 
 
-def _stored_picture(png: bytes) -> bytes:
-    """The page picture as stored: WebP, made only here, just before storing, so
-    the PNG kept for the vision crops stays lossless. O(pixels), one page in memory.
+def _stored_picture(page: Image.Image) -> bytes:
+    """The page picture as stored: WebP, straight from the drawn picture, with no
+    PNG in between. O(pixels), one page in memory.
 
     PROVISIONAL (plan 7.6): a side longer than WebP allows is shrunk for storage
     only. The page keeps its real size, and boxes are fractions of it, so they
     still fit the smaller picture.
     """
-    with Image.open(io.BytesIO(png)) as page:
-        picture: Image.Image = page
-        longest = max(page.size)
-        if longest > _WEBP_MAX_SIDE:
-            scale = _WEBP_MAX_SIDE / longest
-            size = (_scaled(page.width, scale), _scaled(page.height, scale))
-            picture = page.resize(size, Image.Resampling.LANCZOS)
-        out = io.BytesIO()
-        picture.save(out, format="WEBP", quality=_WEBP_QUALITY, method=_WEBP_METHOD)
+    picture = page
+    longest = max(page.size)
+    if longest > _WEBP_MAX_SIDE:
+        scale = _WEBP_MAX_SIDE / longest
+        size = (_scaled(page.width, scale), _scaled(page.height, scale))
+        picture = page.resize(size, Image.Resampling.LANCZOS)
+    out = io.BytesIO()
+    picture.save(out, format="WEBP", quality=_WEBP_QUALITY, method=_WEBP_METHOD)
     return out.getvalue()
 
 
@@ -1059,7 +1027,6 @@ def build_processor(
     from kaagaz.db.documents import PgDocuments
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
-    from kaagaz.extraction.understanding import ModelBudget, model_config
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
     from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
     from kaagaz.reading.wiring import build_reader_socket, reader_config
@@ -1067,10 +1034,11 @@ def build_processor(
 
     documents = PgDocuments(db)
 
-    def prepare(detected_type: str, data: bytes) -> Prepared:
+    def prepare(detected_type: str, data: bytes, on_picture: OnPicture) -> Prepared:
         return prepare_pages(
             detected_type,
             data,
+            on_picture,
             dpi=settings.page_image_dpi,
             max_pages=settings.max_pages,
             max_image_pixels=settings.max_image_pixels,
@@ -1078,7 +1046,7 @@ def build_processor(
             low_res_dpi=settings.low_res_dpi,
         )
 
-    embed: Callable[[str, str], object] | None = None
+    embed: Embedder | None = None
     if model is not None:
         embed = functools.partial(embed_pieces, db, model=model)
     engine = build_ocr_engine(settings)
@@ -1102,7 +1070,6 @@ def build_processor(
         ocr_meter=meter,
         clock=_utc_now,
         timer=time.perf_counter,
-        ocr_on=meter is not None,
         run_config={
             "build": _build(),
             **reader_config(settings),

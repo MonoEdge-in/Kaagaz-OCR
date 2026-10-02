@@ -18,6 +18,16 @@
   names a folder of the right text for each page (``1.txt``, ``2.txt``, ...,
   UTF-8), and adds each page's character and word error rates (CER, WER). It
   prints no text and no file name: only numbers and short codes.
+* ``reembed [--customer-id ID] [--all]``: give pieces their meaning vectors
+  again after the model or what is embedded changed (PRD 3 V4), for every
+  customer or one. Per document: one short transaction clears the vectors whose
+  tag is not the current one (``--all``: every vector), then the pieces with no
+  vector are embedded, with the model called outside any transaction. If the
+  model fails it stops; running it again (without ``--all``) goes on where it
+  stopped, and a run with nothing left to do makes only its one probe call (a
+  model already down stops it before anything is cleared). Run it
+  once after upgrading to PRD 3 V3: every older vector carries the old tag.
+  Prints ids and counts only.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -29,7 +39,6 @@ terminal instead of logging): ids and e-mails only, never a password.
 
 import argparse
 import getpass
-import io
 import os
 import sys
 import time
@@ -41,19 +50,21 @@ from typing import TextIO
 
 from PIL import Image
 
+from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.db import audit
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.spool import HEAD_SIZE
-from kaagaz.preparing.page_checks import measure_blank
+from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
 from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError, Span
 from kaagaz.reading.wiring import PdfPageCheck, build_reader_socket, pdf_text_layer_checks
+from kaagaz.search import indexing
 from kaagaz.settings import Settings, SettingsError
 
 MIN_PASSWORD = 12
@@ -62,6 +73,8 @@ MAX_TRUTH_CHARS = 5000
 MAX_TRUTH_WORDS = 1000
 ADMIN_ENV_VAR = "KAAGAZ_ADMIN_PASSWORD"
 DEMO_ENV_VAR = "KAAGAZ_DEMO_PASSWORD"
+# reembed embeds this once before it clears anything (a check that the model answers).
+REEMBED_PROBE = "probe"
 
 # Made-up companies on the reserved ".example" domain.
 DEMO_CUSTOMERS = (
@@ -102,6 +115,10 @@ def _parser() -> argparse.ArgumentParser:
     measure.add_argument(
         "--truth", type=Path, help="a folder of 1.txt, 2.txt, ...: the right text of each page"
     )
+
+    reembed = commands.add_parser("reembed", help="embed pieces again after a model or recipe change")
+    reembed.add_argument("--customer-id", help="one customer only (default: every customer)")
+    reembed.add_argument("--all", action="store_true", help="embed every piece again, not only stale ones")
     return parser
 
 
@@ -201,6 +218,39 @@ def _seed_demo(db: Database, password: str, out: TextIO) -> None:
             out.write(f"  {role}: {emails[role]}\n")
 
 
+def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: bool, out: TextIO) -> None:
+    """Re-embed each customer's documents in turn, one line per customer.
+
+    O(P) model inputs in batches of 32 for the P pieces cleared or without a
+    vector, and two short transactions per document plus embed_pieces' own.
+    """
+    if customer_id is None:
+        with db.system() as conn:
+            customers = indexing.customer_ids(conn)
+    else:
+        try:
+            uuid.UUID(customer_id)
+        except ValueError:
+            raise CliError("the customer id is not valid") from None
+        customers = [customer_id]
+    try:  # one tiny call first, so a model that is already down clears nothing
+        model.embed([REEMBED_PROBE])
+    except (ModelUnavailable, ModelOutputError) as error:
+        raise CliError(f"the model is not answering ({error}); nothing was changed") from None
+    for customer in customers:
+        with db.customer(customer) as conn:
+            documents = indexing.document_ids(conn, customer)
+        cleared = written = 0
+        for document in documents:
+            with db.customer(customer) as conn:
+                cleared += indexing.clear_stale(conn, customer, document, model.embed_model, every=every)
+            try:
+                written += indexing.embed_pieces(db, customer, document, model)
+            except (ModelUnavailable, ModelOutputError) as error:
+                raise CliError(f"the model failed ({error}); run reembed again to go on") from None
+        out.write(f"customer {customer}: {len(documents)} documents, {cleared} cleared, {written} embedded\n")
+
+
 # --- measure (PRD 2 X4) -----------------------------------------------------------
 
 
@@ -209,9 +259,9 @@ def _measure(
 ) -> None:
     """Read ``path`` as the worker would, and write one line per page, then the totals.
 
-    The route and its reason are worked out as the pipeline does
-    (``kaagaz.reading.route``); a PDF page's reason and numbers come from the route
-    check itself, through the wiring. Time: the reading's, plus O(p x t) per page
+    Each page's route and reason are the ones its reader reported through
+    ``on_page``, as in the pipeline (a sheet page is ``cells``); a PDF page's
+    numbers come from the route check itself, through the wiring. Time: the reading's, plus O(p x t) per page
     for ``--truth`` (p and t the page's and the truth's characters).
     """
     try:
@@ -224,10 +274,12 @@ def _measure(
     engine = build_ocr_engine(settings)
     meter = None if engine is None else MeteredOcrEngine(engine, timer=timer)
     started = timer()
+    blanks: dict[int, BlankMeasure] = {}  # page number -> what the blank rule saw (ML 12)
     try:
         prepared = prepare_pages(
             detected,
             data,
+            lambda page, count, picture: blanks.__setitem__(page, measure_blank(picture)),
             dpi=settings.page_image_dpi,
             max_pages=settings.max_pages,
             max_image_pixels=settings.max_image_pixels,
@@ -264,7 +316,7 @@ def _measure(
             if unit == "cells"
             else (reads[index] if index < len(reads) else None)
         )
-        line = _page_line(page, read, page_spans, prepared, check)
+        line = _page_line(page, read, page_spans, prepared, blanks.get(page), check)
         if len(stamps) == len(pages) + 1:
             line += f" seconds {stamps[index + 1] - stamps[index]:.2f}"
         if truth is not None:
@@ -283,6 +335,7 @@ def _page_line(
     read: RouteDecision | None,
     spans: list[Span],
     prepared: PreparedPages,
+    blank: BlankMeasure | None,
     check: PdfPageCheck | None,
 ) -> str:
     """One page's route and reason as its reader read it, and the numbers (ML 12),
@@ -301,9 +354,7 @@ def _page_line(
     if found is not None:
         dpi = "none" if found.effective_dpi is None else str(found.effective_dpi)
         line += f" dpi {dpi} low_resolution {'yes' if found.low_resolution else 'no'}"
-    if page in prepared.images:
-        with Image.open(io.BytesIO(prepared.images[page])) as picture:
-            blank = measure_blank(picture)
+    if blank is not None:
         line += f" blank_stddev {blank.stddev:.2f} dark_pixels {blank.dark_pixels}"
     return line
 
@@ -364,8 +415,9 @@ def main(
     out: TextIO | None = None,
     ask: Callable[[str], str] | None = getpass.getpass,
     timer: Callable[[], float] = time.perf_counter,
+    model: ModelClient | None = None,
 ) -> int:
-    """Run one command. Tests pass ``db``, ``environ``, ``out``, ``ask`` and ``timer``."""
+    """Run one command. Tests pass ``db``, ``environ``, ``out``, ``ask``, ``timer`` and ``model``."""
     args = _parser().parse_args(argv)
     env = os.environ if environ is None else environ
     stdout = sys.stdout if out is None else out
@@ -384,6 +436,12 @@ def main(
             password = _password(env, ADMIN_ENV_VAR, ask)
             user_id = _create_user(db, args.customer_id, args.email, args.name, args.role, password)
             stdout.write(f"user {user_id}\n")
+        elif args.command == "reembed":
+            if model is None:
+                model = build_model_client(Settings.from_env(env))
+            if model is None:
+                raise CliError("reembed needs the model: set MODEL_ENABLED=true")
+            _reembed(db, model, args.customer_id, args.all, stdout)
         elif args.command == "reset-admin-2fa":
             user_id = _reset_admin_2fa(db, args.email)
             stdout.write(f"user {user_id}: 2FA is off; they can turn it on again in Admin, Settings\n")

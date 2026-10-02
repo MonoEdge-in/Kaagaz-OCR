@@ -111,3 +111,14 @@ def test_punctuation_and_case_do_not_matter() -> None:
 def test_an_empty_question_is_empty() -> None:
     result = normalise("?!")
     assert (result.english, result.keywords, result.hinglish) == ("", [], False)
+
+
+def test_a_devanagari_question_is_spelled_in_latin_letters_not_dropped() -> None:
+    """PRD 3 W3: before, every Devanagari letter was dropped, so the question had no keywords."""
+    result = normalise("पाटील का बिल कितना है?")
+    assert (result.english, result.keywords, result.hinglish) == (
+        "patil invoice kitana",
+        ["patil", "invoice", "kitana"],
+        True,
+    )
+    assert normalise("INV-१०४२ ka total").keywords == ["inv-1042", "total"]  # Devanagari digits

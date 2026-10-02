@@ -16,10 +16,11 @@ from kaagaz.ai.client import ModelUnavailable
 from kaagaz.extraction.card import CARD_PROMPT_HASH
 from kaagaz.extraction.invoice import WindowSettings
 from kaagaz.extraction.understanding import ModelBudget
+from kaagaz.extraction.values import LinkIdentifier
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
-from kaagaz.pipeline import DocumentContent, DocumentProcessor, LinkIdentifier, Progress, RunTotals
+from kaagaz.pipeline import DocumentContent, DocumentProcessor, Progress, RunTotals
 from kaagaz.reading.spans import BoxLocation, PageInfo, Span
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from tests.fakes import (

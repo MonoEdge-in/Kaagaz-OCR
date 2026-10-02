@@ -301,6 +301,28 @@ def invoice_for(
     return row, lines
 
 
+# PRD 3 Y2: the documents linked to this one, either way round (the pipeline stores
+# both ways, so DISTINCT shows each partner and identifier once), and only a
+# current, ready one out of Trash.
+_LINKS = text(
+    "SELECT DISTINCT d.id, d.display_name, d.doc_type, l.identifier_kind, l.identifier_value"
+    " FROM document_links l JOIN documents d ON d.customer_id = l.customer_id"
+    " AND d.id = CASE WHEN l.document_id = :d THEN l.linked_document_id ELSE l.document_id END"
+    " WHERE l.customer_id = :c AND (l.document_id = :d OR l.linked_document_id = :d)"
+    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " ORDER BY d.display_name, d.id, l.identifier_kind, l.identifier_value LIMIT :limit"
+)
+# ponytail: a cap, not paging; an identifier shared by more documents than this shows the first ones.
+MAX_LINKS = 50
+
+
+def document_links(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:
+    """The detail's related documents (PRD 3 Y2), by name. One query on the unique key's
+    document_id and the index document_links_linked: O(L log L) for the document's L links."""
+    params = {"c": customer_id, "d": document_id, "limit": MAX_LINKS}
+    return conn.execute(_LINKS, params).mappings().all()
+
+
 def list_values(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:
     """Every value of one document, by page, record and field. O(v log v)."""
     return (

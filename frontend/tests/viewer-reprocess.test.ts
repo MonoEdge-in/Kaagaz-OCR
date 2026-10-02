@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  beingRead,
   canReprocess,
   canSend,
   reprocessConfirmText,
   reprocessErrorText,
   reprocessReducer,
+  settledText,
+  valuesNote,
 } from "@/components/viewer/reprocess";
 import type { ReprocessState } from "@/components/viewer/reprocess";
 import { ApiError, reprocessDocument } from "@/lib/api";
-import type { DocumentStatus, Role } from "@/lib/types";
+import type { DocumentStatus, Label, Role } from "@/lib/types";
 
 const TRASHED = "2026-09-20T10:00:00Z";
 const doc = (status: DocumentStatus, deleted_at: string | null = null) => ({ status, deleted_at });
@@ -143,5 +146,40 @@ describe("reprocessDocument", () => {
     });
     await expect(reprocessDocument("d1")).resolves.toMatchObject({ id: "d1", status: "received" });
     expect(calls).toEqual([{ url: "/api/documents/d1/reprocess", method: "POST", csrf: "kaagaz" }]);
+  });
+});
+
+// A8a: the viewer follows a document while it is read, on load too.
+describe("Read again settles", () => {
+  it("goes back to the button once the document is no longer being read", () => {
+    expect(reprocessReducer({ step: "done" }, { type: "settled" })).toEqual({ step: "idle" });
+    const sending: ReprocessState = { step: "sending" };
+    expect(reprocessReducer(sending, { type: "settled" })).toBe(sending);
+  });
+
+  it("says what was found, or why reading failed", () => {
+    const values = (labels: Label[]) => labels.map((label) => ({ label }));
+    const ready = { status: "ready" as const, status_message: "Ready" };
+    const many = values([...Array<Label>(36).fill("verified"), ...Array<Label>(6).fill("needs_review")]);
+    expect(settledText({ ...ready, values: many }, true)).toBe("Read again. 42 values found, 6 need review.");
+    expect(settledText({ ...ready, values: values(["needs_review"]) }, false)).toBe(
+      "Reading finished. 1 value found, 1 needs review.",
+    );
+    const failed = { status: "failed" as const, status_message: "This file could not be read.", values: [] };
+    expect(settledText(failed, true)).toBe("Reading failed. This file could not be read.");
+  });
+});
+
+describe("valuesNote", () => {
+  it("says the values are not final while the document is read", () => {
+    expect(valuesNote("received", 0)).toBe("Values show here once the document has been read.");
+    expect(valuesNote("clean", 0)).toBe("Values show here once the document has been read.");
+    expect(valuesNote("clean", 12)).toBe(
+      "Being read again. These values are from the last reading and may change.",
+    );
+    for (const status of ["ready", "failed", "needs_reader", "rejected"] as DocumentStatus[]) {
+      expect(valuesNote(status, 3)).toBeNull();
+    }
+    expect([beingRead("received"), beingRead("clean"), beingRead("ready")]).toEqual([true, true, false]);
   });
 });

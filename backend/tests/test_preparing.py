@@ -1,6 +1,7 @@
 import io
 import math
 import unittest
+from dataclasses import replace
 
 from PIL import Image
 
@@ -15,29 +16,32 @@ BLANK_PAGE_STDDEV = 3.0  # the PRD's values
 LOW_RES_DPI = 150
 
 
-def prepare(
+def drawn(
     kind: str, data: bytes, *, dpi: int = 72, max_pages: int = 10, max_image_pixels: int = 5_000_000
-) -> PreparedPages:
-    return prepare_pages(
+) -> tuple[PreparedPages, dict[int, Image.Image]]:
+    """The prepared pages, and each picture given to ``on_picture``, by page number."""
+    pictures: dict[int, Image.Image] = {}
+    prepared = prepare_pages(
         kind,
         data,
+        lambda page, count, picture: pictures.__setitem__(page, picture),
         dpi=dpi,
         max_pages=max_pages,
         max_image_pixels=max_image_pixels,
         blank_stddev=BLANK_PAGE_STDDEV,
         low_res_dpi=LOW_RES_DPI,
     )
+    return prepared, pictures
+
+
+def prepare(kind: str, data: bytes, **limits: int) -> PreparedPages:
+    return drawn(kind, data, **limits)[0]
 
 
 def encode(image: Image.Image, fmt: str, **options: object) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format=fmt, **options)
     return buffer.getvalue()
-
-
-def picture(png: bytes) -> Image.Image:
-    assert png.startswith(b"\x89PNG\r\n\x1a\n"), "page pictures are PNG"
-    return Image.open(io.BytesIO(png))
 
 
 def refused_with(test: unittest.TestCase, kind: str, data: bytes, code: str, **kwargs: int) -> None:
@@ -48,25 +52,25 @@ def refused_with(test: unittest.TestCase, kind: str, data: bytes, code: str, **k
 
 
 class PdfPagesTest(unittest.TestCase):
-    def test_sizes_in_points_and_one_png_per_page_at_the_dpi(self) -> None:
+    def test_sizes_in_points_and_one_picture_per_page_at_the_dpi(self) -> None:
         data = make_pdf([Page(texts=[Text(72, 700, "one")]), Page(width=300, height=400)])
-        prepared = prepare(sniff.PDF, data, dpi=144)
+        prepared, pictures = drawn(sniff.PDF, data, dpi=144)
         self.assertEqual(prepared.pages, [PageInfo(1, 612.0, 792.0, "pt"), PageInfo(2, 300.0, 400.0, "pt")])
-        self.assertEqual(sorted(prepared.images), [1, 2])
-        self.assertEqual(picture(prepared.images[1]).size, (1224, 1584))
-        self.assertEqual(picture(prepared.images[2]).size, (600, 800))
+        self.assertEqual(sorted(pictures), [1, 2])
+        self.assertEqual(pictures[1].size, (1224, 1584))
+        self.assertEqual(pictures[2].size, (600, 800))
 
     def test_the_picture_shows_the_page(self) -> None:
         black = Image.new("RGB", (4, 4), "black")
         data = make_pdf([Page(width=100, height=100, picture=Picture(black, 0, 50, 100, 50))])
-        image = picture(prepare(sniff.PDF, data).images[1]).convert("RGB")
+        image = drawn(sniff.PDF, data)[1][1]
         self.assertEqual(image.getpixel((50, 25)), (0, 0, 0))  # top half: the black picture
         self.assertEqual(image.getpixel((50, 75)), (255, 255, 255))  # bottom half: white paper
 
     def test_a_rotated_page_is_shown_turned(self) -> None:
-        prepared = prepare(sniff.PDF, make_pdf([Page(rotate=90)]))
+        prepared, pictures = drawn(sniff.PDF, make_pdf([Page(rotate=90)]))
         self.assertEqual(prepared.pages, [PageInfo(1, 792.0, 612.0, "pt")])
-        self.assertEqual(picture(prepared.images[1]).size, (792, 612))
+        self.assertEqual(pictures[1].size, (792, 612))
 
     def test_refusals(self) -> None:
         refused_with(self, sniff.PDF, make_pdf([Page()], password_protected=True), "encrypted")
@@ -82,23 +86,23 @@ class ImagePagesTest(unittest.TestCase):
     def test_sizes_in_pixels_and_a_normalised_png(self) -> None:
         for fmt, mode in (("PNG", "RGBA"), ("JPEG", "L"), ("TIFF", "RGB")):
             with self.subTest(fmt=fmt):
-                prepared = prepare(fmt.lower(), encode(Image.new(mode, (40, 30)), fmt))
+                prepared, pictures = drawn(fmt.lower(), encode(Image.new(mode, (40, 30)), fmt))
                 self.assertEqual(prepared.pages, [PageInfo(1, 40.0, 30.0, "px")])
-                self.assertEqual(picture(prepared.images[1]).mode, "RGB")
+                self.assertEqual(pictures[1].mode, "RGB")
 
     def test_exif_orientation_is_applied(self) -> None:
         exif = Image.Exif()
         exif[0x0112] = 8  # "rotate 90 degrees anticlockwise to show"
-        prepared = prepare(sniff.JPEG, encode(Image.new("RGB", (60, 20)), "JPEG", exif=exif))
+        prepared, pictures = drawn(sniff.JPEG, encode(Image.new("RGB", (60, 20)), "JPEG", exif=exif))
         self.assertEqual(prepared.pages, [PageInfo(1, 20.0, 60.0, "px")])
-        self.assertEqual(picture(prepared.images[1]).size, (20, 60))
+        self.assertEqual(pictures[1].size, (20, 60))
 
     def test_every_tiff_frame_is_a_page(self) -> None:
         frames = [Image.new("RGB", (10 * (i + 1), 10)) for i in range(3)]
         data = encode(frames[0], "TIFF", save_all=True, append_images=frames[1:])
-        prepared = prepare(sniff.TIFF, data)
+        prepared, pictures = drawn(sniff.TIFF, data)
         self.assertEqual([(p.page, p.width) for p in prepared.pages], [(1, 10.0), (2, 20.0), (3, 30.0)])
-        self.assertEqual(sorted(prepared.images), [1, 2, 3])
+        self.assertEqual(sorted(pictures), [1, 2, 3])
 
     def test_refusals(self) -> None:
         png = encode(Image.new("RGB", (100, 100)), "PNG")
@@ -109,11 +113,46 @@ class ImagePagesTest(unittest.TestCase):
         refused_with(self, sniff.TIFF, tiff, "too_many_pages", max_pages=2)
 
 
+class DrawnAgainTest(unittest.TestCase):
+    def test_a_page_drawn_again_has_the_pixels_preparing_drew(self) -> None:
+        """For the vision crops (council A5b): the same DPI, pixel check and EXIF turn."""
+        exif = Image.Exif()
+        exif[0x0112] = 6  # "rotate 90 degrees clockwise to show"
+        frames = [text_like_picture(40 + 10 * i, 30) for i in range(3)]
+        two_pages = [Page(texts=[Text(72, 700, "one")]), Page(rotate=90, texts=[Text(72, 500, "two")])]
+        files = {
+            sniff.PDF: make_pdf(two_pages),
+            sniff.JPEG: encode(text_like_picture(60, 40), "JPEG", exif=exif),
+            sniff.TIFF: encode(frames[0], "TIFF", save_all=True, append_images=frames[1:]),
+        }
+        for kind, data in files.items():
+            prepared, pictures = drawn(kind, data, dpi=100)
+            for page, picture in pictures.items():
+                with self.subTest(kind=kind, page=page):
+                    again = prepared.picture(page)
+                    self.assertEqual((again.mode, again.size), (picture.mode, picture.size))
+                    self.assertEqual(again.tobytes(), picture.tobytes())
+
+    def test_the_pixel_check_holds_when_drawn_again(self) -> None:
+        for kind, data in (
+            (sniff.PDF, make_pdf([Page()])),
+            (sniff.PNG, encode(Image.new("RGB", (9, 9)), "PNG")),
+        ):
+            with self.subTest(kind=kind):
+                prepared = prepare(kind, data)
+                assert prepared.source is not None
+                kind, data, limits = prepared.source
+                tight = replace(prepared, source=(kind, data, replace(limits, max_image_pixels=80)))
+                with self.assertRaises(ReadError) as ctx:
+                    tight.picture(1)
+                self.assertEqual(ctx.exception.code, "image_too_large")
+
+
 class OtherTypesTest(unittest.TestCase):
     def test_types_without_pages_to_draw_give_nothing(self) -> None:
         for kind in (sniff.TEXT, sniff.ZIP, sniff.OLE2):
             with self.subTest(kind):
-                self.assertEqual(prepare(kind, b"a,b\n"), PreparedPages([], {}))
+                self.assertEqual(drawn(kind, b"a,b\n"), (PreparedPages([], {}), {}))
 
 
 class SheetPagesTest(unittest.TestCase):

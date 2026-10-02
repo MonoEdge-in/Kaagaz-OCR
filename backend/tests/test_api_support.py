@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -31,14 +32,17 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
 
+from kaagaz.ai.client import ModelClient
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import hash_password
+from kaagaz.api.ports import Answers
 from kaagaz.api.secret_box import SecretBox
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
+from kaagaz.search.scope import Scope
 from kaagaz.settings import Settings
 from tests.db_support import insert_document, insert_folder, insert_tag, new_customer, tag_document
 from tests.fakes import MemoryQueue, MemoryStorage
@@ -129,9 +133,13 @@ class _FixedAnswer:
 class FakeAnswers:
     reply: dict[str, Any] = field(default_factory=answer_json)
     asked: list[tuple[str, str]] = field(default_factory=list)
+    scopes: list[Scope] = field(default_factory=list)
 
-    def answer(self, customer_id: str, question: str) -> _FixedAnswer:
+    def answer(
+        self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn]
+    ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
+        self.scopes.append(scope)
         return _FixedAnswer(self.reply)
 
 
@@ -181,7 +189,9 @@ class Api:
         settings: Settings | None = None,
         clock: MovingClock | None = None,
         queue: ApiFakeQueue | None = None,
+        model: ModelClient | None = None,
     ) -> None:
+        """``answers``: the real AnswerService for a test that needs one; FakeAnswers otherwise."""
         self.db = db
         self.settings = settings or make_settings()
         self.clock = clock or MovingClock()
@@ -193,8 +203,9 @@ class Api:
             db=db,
             storage=self.storage,
             queue=self.queue,
-            answers=self.answers,
+            answers=self.answers if answers is None else answers,
             clock=self.clock,
+            model=model,
         )
 
     def client(self) -> TestClient:
