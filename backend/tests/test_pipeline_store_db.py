@@ -30,18 +30,10 @@ from kaagaz.extraction.labels import label_quoted
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.quotes import reader_text
 from kaagaz.extraction.understanding import document_links
-from kaagaz.extraction.values import ExtractedValue
+from kaagaz.extraction.values import DocumentFacts, ExtractedValue, InvoiceLineRow, InvoiceRow, LinkIdentifier
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import DocumentRecord
-from kaagaz.pipeline import (
-    DocumentContent,
-    DocumentFacts,
-    InvoiceLineRow,
-    InvoiceRow,
-    LinkIdentifier,
-    PageRecord,
-    ReaderOutput,
-)
+from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
 from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, Span
 from tests.db_support import insert_document, new_customer, wait_until_blocked
 from tests.fakes import FakeChat
