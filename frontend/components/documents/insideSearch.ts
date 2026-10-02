@@ -15,6 +15,8 @@ import type { LibraryState } from "./libraryQuery";
 export type SearchMode = "inside" | "names";
 
 export const DEFAULT_SEARCH_MODE: SearchMode = "inside";
+/** The longest search both routes take (q, 200 characters). */
+export const MAX_SEARCH_LENGTH = 200;
 
 export const SEARCH_MODES: readonly { mode: SearchMode; label: string }[] = [
   { mode: "inside", label: "Inside documents" },

@@ -25,7 +25,14 @@ import { FolderActions } from "./FolderActions";
 import { FolderNav } from "./FolderNav";
 import { buildTree, folderPath } from "./folderTree";
 import { InsideSearchResults } from "./InsideResults";
-import { DEFAULT_SEARCH_MODE, SEARCH_MODES, noResultsText, searchModeFor, searchParams } from "./insideSearch";
+import {
+  DEFAULT_SEARCH_MODE,
+  MAX_SEARCH_LENGTH,
+  SEARCH_MODES,
+  noResultsText,
+  searchModeFor,
+  searchParams,
+} from "./insideSearch";
 import type { SearchMode } from "./insideSearch";
 import { noMatchTitle } from "./library";
 import { LibraryFilters } from "./LibraryFilters";
@@ -487,6 +494,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                             type="search"
                             enterKeyHint="search"
                             autoComplete="off"
+                            maxLength={MAX_SEARCH_LENGTH}
                             value={draft}
                             onChange={(event) => setDraft(event.target.value)}
                           />
@@ -586,7 +594,10 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                       q={q}
                       noResults={noResultsText(library)}
                       datesIgnored={library.from !== null || library.to !== null}
-                      onRetry={() => setSearchAgain((n) => n + 1)}
+                      onRetry={() => {
+                        setSearchFailure(null); // back to "Searching…" until the new reply
+                        setSearchAgain((n) => n + 1);
+                      }}
                       onClear={clearSearch}
                     />
                   )}
