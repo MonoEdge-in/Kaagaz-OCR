@@ -42,13 +42,20 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from itertools import zip_longest
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
+from kaagaz.ai.client import (
+    ModelClient,
+    ModelOutputError,
+    ModelUnavailable,
+    estimate_tokens,
+    input_token_budget,
+)
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
-from kaagaz.answering.draft import Draft, DraftSentence, extractive_draft, model_draft
+from kaagaz.answering.draft import SYSTEM_PROMPT, Draft, DraftSentence, extractive_draft, model_draft
 from kaagaz.answering.evidence import (
     Evidence,
     PgRetriever,
@@ -64,7 +71,7 @@ from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
-from kaagaz.answering.verify import verify
+from kaagaz.answering.verify import numbers_in, verify
 from kaagaz.chunking.script import has_devanagari_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
@@ -77,6 +84,8 @@ from kaagaz.settings import Settings
 Status = Literal["answered", "not_found", "unchecked"]
 Route = Literal["fixed_query", "search"]
 _MAX_NAME = 100  # a party name longer than this is cut in the sentence
+_REPLY_TOKENS = 1024  # PROVISIONAL: the room a draft's reply (and its repair) is given
+_FENCE_TOKENS = 10  # an evidence tag and its line breaks
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,10 +301,19 @@ class AnswerService:
         closest = closest_documents([item.hit for item in evidence])
         if not enough_evidence(evidence, normalised.keywords, self._settings.answer_min_evidence_score):
             return _not_found("search", shown, closest, model_used=False)
-        # Q4: neighbours only after the gate passed on the hits, numbered after all of them.
-        # ponytail: at most 2 * ANSWER_NEIGHBOURS per hit and no character cap of its own;
-        # the evidence window cap (fit_evidence, perf/s2-query-wins) bounds it once rebased.
-        evidence += number_evidence(found.neighbours, start=len(evidence) + 1, neighbour=True)
+        # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
+        # while they fit the room the hits and the question leave in MODEL_NUM_CTX: every
+        # hit is kept, the neighbours go first. ponytail: fit_evidence (perf/s2-query-wins)
+        # replaces this cut at the rebase.
+        room = input_token_budget(
+            num_ctx=self._settings.model_num_ctx, max_tokens=_REPLY_TOKENS, system=SYSTEM_PROMPT
+        )
+        room -= estimate_tokens(question) + sum(_tokens(item) for item in evidence)
+        for item in number_evidence(found.neighbours, start=len(evidence) + 1, neighbour=True):
+            room -= _tokens(item)
+            if room < 0:
+                break
+            evidence.append(item)
 
         draft, model_used = self._draft(question, normalised, evidence)
         texts = {item.n: clean_text(item.hit.text) for item in evidence}
@@ -313,9 +331,10 @@ class AnswerService:
             _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence])
             for old, new in renumber.items()
         ]
-        # A sentence backed by neighbours only is never verified (PROVISIONAL, plan decision 8).
-        neighbour_only = any(all(by_n[n].neighbour for n in s.evidence) for s in kept)
-        verified = all(c.label == "verified" for c in citations) and not neighbour_only
+        # A sentence backed by neighbours only, or with a number only a neighbour holds, is never
+        # verified: the gate never judged them (PROVISIONAL, plan decision 8).
+        on_neighbours = any(_rests_on_neighbours(s, by_n, texts) for s in kept)
+        verified = all(c.label == "verified" for c in citations) and not on_neighbours
         return Answer(
             status="answered",
             label="verified" if verified else "needs_review",
@@ -350,6 +369,18 @@ class AnswerService:
         if now.tzinfo is None:
             raise ValueError("the clock must give a timezone-aware time")
         return now.astimezone(self._zone).date()
+
+
+def _tokens(item: Evidence) -> int:
+    """About how many prompt tokens a piece takes: its header and text, and its fence."""
+    return estimate_tokens(item.hit.context_header + item.hit.text) + _FENCE_TOKENS
+
+
+def _rests_on_neighbours(sentence: DraftSentence, by_n: dict[int, Evidence], texts: dict[int, str]) -> bool:
+    """True when ``sentence`` cites no hit, or a number in it is in none of the hits it cites."""
+    hits = [n for n in sentence.evidence if not by_n[n].neighbour]
+    allowed: set[Decimal] = set().union(*(numbers_in(texts[n], dates_split=True) for n in hits))
+    return not hits or not numbers_in(sentence.text) <= allowed
 
 
 def _not_found(route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool) -> Answer:

@@ -54,8 +54,8 @@ def blocks(prompt: str) -> dict[int, tuple[bool, str]]:
 
 
 class DraftModel:
-    """Cites the first evidence block holding ``wanted`` with ``sentence`` (not found
-    without one); any call but a draft fails the test. Embedding is down: words only."""
+    """Cites every evidence block holding ``wanted`` with ``sentence`` (not found without
+    one); any call but a draft fails the test. Embedding is down: words only."""
 
     chat_model, embed_model = "fake-chat", "fake-embed"
 
@@ -72,7 +72,7 @@ class DraftModel:
         assert system == SYSTEM_PROMPT
         self.prompts.append(user)
         found = [n for n, (_, body) in blocks(user).items() if self.wanted in body]
-        sentences = [{"text": self.sentence, "evidence": found[:1]}] if found else []
+        sentences = [{"text": self.sentence, "evidence": found}] if found else []
         return {"status": "answered" if found else "not_found", "sentences": sentences}
 
     def read_image(self, *, png: bytes, instruction: str) -> str:
@@ -129,3 +129,24 @@ def test_a_document_named_like_an_instruction_is_left_out(db: Database) -> None:
     model = DraftModel("Grand Total")
 
     assert (ask(db, customer, model)["status"], model.prompts) == ("not_found", [])
+
+
+def test_a_number_only_a_neighbour_holds_is_never_verified_even_beside_a_hit(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add(db, customer, ["Invoice INV-1042 grand total", "Amount payable Rs. 99,000"])
+    model = DraftModel("", "The grand total of INV-1042 is Rs. 99,000.")  # cites the hit and the neighbour
+
+    answer = ask(db, customer, model)
+
+    assert len(answer["citations"]) == 2 and answer["sentences"][0]["citations"] == [1, 2]
+    assert (answer["status"], answer["label"]) == ("answered", "needs_review")
+
+
+def test_neighbours_that_do_not_fit_the_model_window_are_dropped_and_every_hit_kept(db: Database) -> None:
+    customer, _ = new_customer(db)
+    terms = "Payment is due within 30 days."
+    add(db, customer, ["x " * 20000, TOTAL, terms])  # the first neighbour alone overfills MODEL_NUM_CTX
+    model = DraftModel("Grand Total")
+
+    assert ask(db, customer, model)["label"] == "verified"
+    assert blocks(model.prompts[0]) == {1: (False, TOTAL)}
