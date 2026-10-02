@@ -69,6 +69,22 @@ describe("guards", () => {
     for (const file of leaving) expect(readFileSync(join(ROOT, file), "utf8"), file).not.toContain("useRouter");
   });
 
+  // A8a (#35): the documents screen never reloads itself after uploads. A
+  // reload wiped the error and duplicate rows and the search; the list asks
+  // the server again instead (lib/poll.ts).
+  it("never reloads the documents screen", () => {
+    const offenders = files(join(ROOT, "components", "documents"), (p) => /\.(ts|tsx)$/.test(p))
+      .filter((p) => /location\.reload\(/.test(readFileSync(p, "utf8")))
+      .map((p) => relative(ROOT, p));
+    expect(offenders).toEqual([]);
+  });
+
+  // A8a: the uploads list is not a live region; the screen says each batch once, politely.
+  it("keeps the uploads list and its counts out of the live regions", () => {
+    const source = readFileSync(join(ROOT, "components", "documents", "UploadArea.tsx"), "utf8");
+    expect(source).not.toMatch(/aria-live/);
+  });
+
   // One way out (lib/sessionChannel.ts), so the first page asked for wins.
   it("leaves for a fresh page only through leavePage", () => {
     const offenders = all((p) => /\.(ts|tsx)$/.test(p))
