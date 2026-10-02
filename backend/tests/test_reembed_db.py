@@ -2,7 +2,8 @@
 
 It clears the vectors whose tag is not the current recipe, then embeds the
 pieces with no vector, document by document: it can stop when the model goes
-down and go on later, a run with nothing to do calls the model 0 times, and
+down and go on later, a run with nothing to do embeds no piece (only the
+probe that checks the model answers before anything is cleared), and
 one customer's run never touches another customer's rows.
 """
 
@@ -13,11 +14,12 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.ai.client import ModelUnavailable
-from kaagaz.cli import main
+from kaagaz.cli import REEMBED_PROBE, main
 from kaagaz.db import listing
 from kaagaz.db.engine import Database
 from kaagaz.search.indexing import piece_input, recipe_tag
-from tests.db_support import new_customer
+from tests import test_migration_0002_db as m0002
+from tests.db_support import migrate, new_customer
 from tests.test_indexing_db import FakeModel
 from tests.test_search_db import add_document, add_pieces, axis
 
@@ -67,7 +69,7 @@ def test_a_run_stopped_by_the_model_goes_on_and_then_has_nothing_to_do(db: Datab
     customer = _stale_customer(db)
     current_before = [row for row in _pieces(db, customer) if row[2] == CURRENT]
 
-    code, _ = _reembed(db, FailingModel(good=0), "--customer-id", customer)
+    code, _ = _reembed(db, FailingModel(good=1), "--customer-id", customer)  # the probe, then down
     assert code == 2
     assert all((row[1] is None) == (row[2] is None) for row in _pieces(db, customer))  # 0001's CHECK
 
@@ -76,7 +78,7 @@ def test_a_run_stopped_by_the_model_goes_on_and_then_has_nothing_to_do(db: Datab
     # Documents go in id order, so the first run may already have cleared "one".
     assert code == 0
     assert out.startswith(f"customer {customer}: 3 documents, ") and out.endswith(", 2 embedded\n")
-    assert sorted(call for batch in resumed.calls for call in batch) == ["one", "two"]
+    assert sorted(call for batch in resumed.calls[1:] for call in batch) == ["one", "two"]
     assert {row[2] for row in _pieces(db, customer)} == {CURRENT}
     assert [row for row in _pieces(db, customer) if row[0] == current_before[0][0]] == current_before
 
@@ -85,7 +87,7 @@ def test_a_run_stopped_by_the_model_goes_on_and_then_has_nothing_to_do(db: Datab
         0,
         f"customer {customer}: 3 documents, 0 cleared, 0 embedded\n",
     )
-    assert idle.calls == []
+    assert idle.calls == [[REEMBED_PROBE]]
 
 
 def test_all_embeds_every_piece_again(db: Database) -> None:
@@ -95,7 +97,7 @@ def test_all_embeds_every_piece_again(db: Database) -> None:
     code, out = _reembed(db, model, "--customer-id", customer, "--all")
 
     assert (code, out) == (0, f"customer {customer}: 3 documents, 2 cleared, 3 embedded\n")
-    assert sorted(call for batch in model.calls for call in batch) == ["one", "three", "two"]
+    assert sorted(call for batch in model.calls[1:] for call in batch) == ["one", "three", "two"]
 
 
 def test_one_customers_run_leaves_another_byte_identical(db: Database) -> None:
@@ -136,3 +138,33 @@ def test_a_rename_keeps_the_vectors_because_the_name_is_never_embedded(db: Datab
     assert after[0][3] == "Document: Sharma bill.pdf | Type: invoice | Page 1"
     assert after[0][1:3] == before[0][1:3]
     assert piece_input(after[0][3], "Total 5,000") == piece_input(before[0][3], "Total 5,000")
+
+
+def test_a_model_already_down_stops_reembed_before_anything_is_cleared(db: Database) -> None:
+    customer = _stale_customer(db)
+    before = _pieces(db, customer)
+    model = FailingModel(good=0)
+
+    assert _reembed(db, model, "--customer-id", customer, "--all") == (2, "")
+
+    assert model.calls == [[REEMBED_PROBE]]
+    assert _pieces(db, customer) == before
+
+
+fresh = m0002.fresh  # the fixture, by its name
+
+
+def test_with_no_customer_id_every_customer_is_reembedded(fresh: tuple[str, Database]) -> None:
+    """A fresh database, so "every customer" is exactly these two."""
+    url, database = fresh
+    migrate(url, "head")
+    customers = sorted([_stale_customer(database), _stale_customer(database)])
+
+    code, out = _reembed(database, FakeModel())
+
+    assert code == 0
+    lines = out.splitlines()
+    assert [line.split(":")[0] for line in lines] == [f"customer {c}" for c in customers]
+    assert all(line.endswith(", 2 embedded") for line in lines)
+    for customer in customers:
+        assert {row[2] for row in _pieces(database, customer)} == {CURRENT}

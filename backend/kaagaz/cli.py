@@ -24,7 +24,8 @@
   tag is not the current one (``--all``: every vector), then the pieces with no
   vector are embedded, with the model called outside any transaction. If the
   model fails it stops; running it again (without ``--all``) goes on where it
-  stopped, and a run with nothing left to do calls the model 0 times. Run it
+  stopped, and a run with nothing left to do makes only its one probe call (a
+  model already down stops it before anything is cleared). Run it
   once after upgrading to PRD 3 V3: every older vector carries the old tag.
   Prints ids and counts only.
 
@@ -73,6 +74,8 @@ MAX_TRUTH_CHARS = 5000
 MAX_TRUTH_WORDS = 1000
 ADMIN_ENV_VAR = "KAAGAZ_ADMIN_PASSWORD"
 DEMO_ENV_VAR = "KAAGAZ_DEMO_PASSWORD"
+# reembed embeds this once before it clears anything (a check that the model answers).
+REEMBED_PROBE = "probe"
 
 # Made-up companies on the reserved ".example" domain.
 DEMO_CUSTOMERS = (
@@ -231,6 +234,10 @@ def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: b
         except ValueError:
             raise CliError("the customer id is not valid") from None
         customers = [customer_id]
+    try:  # one tiny call first, so a model that is already down clears nothing
+        model.embed([REEMBED_PROBE])
+    except (ModelUnavailable, ModelOutputError) as error:
+        raise CliError(f"the model is not answering ({error}); nothing was changed") from None
     for customer in customers:
         with db.customer(customer) as conn:
             documents = indexing.document_ids(conn, customer)
