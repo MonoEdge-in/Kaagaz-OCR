@@ -41,4 +41,14 @@ describe("guards", () => {
     );
     expect(offenders.map((p) => relative(ROOT, p))).toEqual([]);
   });
+
+  // Critical #5: a module-level Map is a cache that outlives the screen, and
+  // grows without end. The viewer keeps PDFs in its LruCache instead.
+  it("keeps no module-level Map in components", () => {
+    // documentCache.ts is deleted by the citation-page change (critical #5, part 2).
+    const offenders = files(join(ROOT, "components"), (p) => /\.(ts|tsx)$/.test(p))
+      .filter((p) => !p.endsWith("documentCache.ts"))
+      .filter((p) => /^(export )?(const|let|var) \w+(: [^=]+)? = new Map\b/m.test(readFileSync(p, "utf8")));
+    expect(offenders.map((p) => relative(ROOT, p).replaceAll("\\", "/"))).toEqual([]);
+  });
 });
