@@ -15,8 +15,9 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    each piece's. Skipped when there is no embedding (no model, or it is down):
    the other two still answer. This scan is exact on purpose: the HNSW index
    applies the customer and "ready" filters only after taking its first
-   candidates, so a small customer in a big table could get too few rows, and
-   the installed pgvector (0.6) has no iterative index scan to fix that. The
+   candidates, so a small customer in a big table could get too few rows.
+   The pgvector in use (0.8.6) has iterative index scans that could fix that,
+   but they are not turned on here: the HNSW change is PRD 3's. The
    ``MATERIALIZED`` step keeps the planner from choosing the index.
 
 Every query filters on ``p.customer_id = :c`` itself, on top of row level

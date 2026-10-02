@@ -14,8 +14,9 @@ The steps, in order, for one (customer, document):
    second reader if the type has one. A type with no reader is marked "needs
    a reader" (its pages are kept) and the job ends normally. A reader that
    reads page by page (PDFs, photos) beats the heartbeat after each page, so a
-   long scan keeps its lease. Each page then gets its route (PRD 2 R1:
-   ``kaagaz.reading.route``), and the second reading of a page read by OCR, or
+   long scan keeps its lease. Each page then gets the route its reader
+   reported through ``on_page`` (PRD 2 R1, ``_with_routes``; a sheet page is
+   ``cells``), and the second reading of a page read by OCR, or
    blank, is left out: a scan's hidden text layer must never agree with itself
    (the council's ML 4).
 6. Pieces for search (kaagaz.chunking) and the rule values for fixed queries

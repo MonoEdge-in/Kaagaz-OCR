@@ -209,9 +209,9 @@ def _measure(
 ) -> None:
     """Read ``path`` as the worker would, and write one line per page, then the totals.
 
-    The route and its reason are worked out as the pipeline does
-    (``kaagaz.reading.route``); a PDF page's reason and numbers come from the route
-    check itself, through the wiring. Time: the reading's, plus O(p x t) per page
+    Each page's route and reason are the ones its reader reported through
+    ``on_page``, as in the pipeline (a sheet page is ``cells``); a PDF page's
+    numbers come from the route check itself, through the wiring. Time: the reading's, plus O(p x t) per page
     for ``--truth`` (p and t the page's and the truth's characters).
     """
     try:
