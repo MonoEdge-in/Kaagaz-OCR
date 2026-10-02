@@ -26,7 +26,7 @@ _NEXT_BATCH = text(
 )
 
 _WRITE = text(
-    "UPDATE pieces SET embedding = CAST(:v AS vector), embedding_model = :m"
+    "UPDATE pieces SET embedding = CAST(:v AS halfvec(1024)), embedding_model = :m"
     " WHERE customer_id = :c AND id = :id AND embedding IS NULL"
 )
 

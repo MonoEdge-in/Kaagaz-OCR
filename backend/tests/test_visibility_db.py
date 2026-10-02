@@ -23,7 +23,7 @@ from kaagaz.search import hybrid
 from kaagaz.search.hybrid import search
 from tests.db_support import insert_document, new_customer
 from tests.test_answering_fixed_queries_db import add_values, cell
-from tests.test_search_db import add_pieces, axis
+from tests.test_search_db import EF_SEARCH, RECIPE, add_pieces, axis
 
 pytestmark = pytest.mark.db
 
@@ -79,7 +79,15 @@ def _library(db: Database) -> Library:
 
 def _found(db: Database, library: Library, query: str, embedding: list[float] | None) -> set[str]:
     with db.customer(library.customer) as conn:
-        hits = search(conn, customer_id=library.customer, query_text=query, embedding=embedding, limit=10)
+        hits = search(
+            conn,
+            customer_id=library.customer,
+            query_text=query,
+            embedding=embedding,
+            limit=10,
+            recipe=RECIPE,
+            ef_search=EF_SEARCH,
+        )
     return {hit.document_id for hit in hits}
 
 

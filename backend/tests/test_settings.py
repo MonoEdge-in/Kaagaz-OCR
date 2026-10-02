@@ -155,3 +155,12 @@ def test_a_missing_page_route_setting_stops_start_up_by_name(name: str) -> None:
 def test_a_bad_page_route_setting_stops_start_up_by_name(name: str, value: str) -> None:
     with pytest.raises(SettingsError, match=name):
         Settings.from_env(shipped(**{name: value}))
+
+
+def test_search_ef_ships_at_100_and_must_be_1_to_1000() -> None:
+    """PRD 3 V2: hnsw.ef_search takes 1 to 1000; a value outside stops start-up by name."""
+    assert Settings.from_env(shipped()).search_ef == 100
+    assert Settings.from_env(shipped(SEARCH_EF="1000")).search_ef == 1000
+    for bad in ("0", "1001", "-5", "ten", None):
+        with pytest.raises(SettingsError, match="SEARCH_EF"):
+            Settings.from_env(shipped(SEARCH_EF=bad))

@@ -150,7 +150,11 @@ class AnswerService:
         self._settings = settings
         self._clock = clock
         self._zone = ZoneInfo(settings.timezone)
-        self._retriever = retriever if retriever is not None else PgRetriever(db)
+        self._retriever = (
+            retriever
+            if retriever is not None
+            else PgRetriever(db, recipe=settings.model_embed, ef_search=settings.search_ef)
+        )
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
 

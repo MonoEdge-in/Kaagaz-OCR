@@ -99,7 +99,7 @@ def test_embedded_pieces_are_found_by_meaning(db: Database) -> None:
     first, second = add_pieces(db, customer, document, [("alpha", None), ("beta", None)])
     embed_pieces(db, customer, document, FakeModel())
 
-    hits = run(db, customer, "", embedding=axis(1))
+    hits = run(db, customer, "", embedding=axis(1), recipe=FakeModel.embed_model)
 
     assert [hit.piece_id for hit in hits] == [second, first]
     assert hits[0].meaning_score == pytest.approx(1.0)
