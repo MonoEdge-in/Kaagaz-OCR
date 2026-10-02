@@ -106,11 +106,12 @@ class Database:
             yield conn
 
     def ping(self) -> None:
-        """Raise BackendUnavailable unless the database answers."""
+        """Raise BackendUnavailable unless the database answers. No free pooled connection
+        counts as no answer."""
         try:
             with self.system() as conn:
                 conn.execute(text("SELECT 1"))
-        except OperationalError as error:
+        except (OperationalError, PoolTimeout) as error:
             raise BackendUnavailable("database") from error
 
     @contextmanager
