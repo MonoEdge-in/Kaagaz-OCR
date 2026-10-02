@@ -34,6 +34,10 @@ depends_on = None
 
 CUSTOMER = "→ customers.id, the customer the row belongs to (row level security filters on it)."
 CREATED = "When the row was written."
+SPOT = (
+    'JSON {"kind": "box", "page": p, "box": [x0, y0, x1, y1]} in fractions (0 to 1) of the page from the top left,'
+    ' or {"kind": "cell", "page": the sheet, "row": r, "column": c} counted from 1'
+)
 
 # table → (table comment, {column: comment}). Plain constants: no colon followed by
 # a word, which SQLAlchemy would read as a bind parameter.
@@ -80,7 +84,7 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
             "display_name": "File name as uploaded or renamed, 1 to 255 characters.",
             "sha256": "SHA-256 of the uploaded bytes, lower-case hex. Unique per customer, so a duplicate is found.",
             "size_bytes": "File size in bytes.",
-            "detected_type": "Type from the file's first bytes, never its name (pdf, png, jpeg, tiff, zip for xlsx, ole2, text for CSV).",
+            "detected_type": "Type from the file's first bytes, never its name: pdf, png, jpeg, tiff, zip (xlsx, docx and other zip files), ole2 (old xls and doc) or text (CSV and other UTF-8 text).",
             "status": "received, clean (scanned, being read), rejected (failed the scan, final), needs_reader, ready (searchable) or failed.",
             "failure_code": "Why it was rejected or failed, a short code such as corrupt_file. NULL otherwise.",
             "page_count": "Number of pages (PDF pages, image frames, or sheets with cells). NULL until read.",
@@ -127,7 +131,7 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
             "role": "first (the main reader) or second (an independent second reading, PDFs only).",
             "reader": "Reader name, such as pdfplumber, pdfium, xlsx, csv, rapidocr or paddleocr-vl.",
             "reader_version": "The reader's version text.",
-            "output": "JSON array of spans {text, raw, region, confidence}. region is a box in fractions of the page, or a cell.",
+            "output": "JSON array of spans {text, raw, region, confidence}, plus kind, origin, table_id, row, col and header when set. region is a spot as in pieces.regions.",
             "created_at": CREATED,
         },
     ),
@@ -140,14 +144,14 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
             "seq": "Position in the document, from 0.",
             "page_from": "First page of the piece, from 1 (the sheet for a spreadsheet).",
             "page_to": "Last page of the piece, at least page_from.",
-            "text": "The passage as read. Spreadsheet and table rows are written as header and value pairs.",
-            "regions": "JSON array of spots, one per line or cell. A box is [x0, y0, x1, y1] in fractions (0 to 1) of the page.",
+            "text": "The passage as read. A spreadsheet row is written as column letter and value pairs (A: ... | B: ...); a table row read by OCR as header and value pairs, with column letters when the table has no header row.",
+            "regions": "JSON array of spots, one per line or cell, each " + SPOT + ".",
             "label": "verified when every line was read directly (cells or the PDF's text), else needs_review.",
-            "embedding": "Meaning vector of the piece (halfvec, 1024 numbers). NULL until embedded.",
-            "embedding_model": "The MODEL_EMBED model the vector was made with. NULL together with embedding.",
+            "embedding": "Meaning vector (halfvec, 1024 numbers) made from the input recipe named in embedding_model; recipe ctx1 is the type, date and section from context_header, then text. NULL until embedded.",
+            "embedding_model": "What made the vector: the MODEL_EMBED model name, then # and the input recipe (such as ctx1). Meaning search uses only the current tag. processing_runs.model_embed holds the bare name. NULL together with embedding.",
             "tsv": "Generated. English word index of text.",
             "created_at": CREATED,
-            "context_header": "One line saying where the piece sits (document, type, date, section, pages). Never cited.",
+            "context_header": "One line saying where the piece sits (document name, type, date, section or sheet, pages, and the last line of the piece before it). Empty for older pieces. Never cited.",
             "text_latin": "text with its Devanagari spelt in Latin letters, when mostly Devanagari. Else NULL.",
             "tsv_simple": "Generated. Word index of text and text_latin with no stemming, for any script.",
         },
@@ -166,7 +170,7 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
             "value_number": "value_text as a number when it reads as one (currency signs and commas removed, no unit kept).",
             "value_date": "value_text as a date when it reads as one (day first).",
             "page_no": "Page of the value, from 1 (the sheet for a spreadsheet).",
-            "region": "The value's spot on page_no, in fractions of the page or as a cell.",
+            "region": "The value's spot on page_no, " + SPOT + ".",
             "reader": "Name of the document's first reader.",
             "confidence": "The reading engine's confidence, 0 to 1. NULL for direct reads and some OCR engines.",
             "label": "verified or needs_review, shown to the user.",
@@ -174,7 +178,9 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
             "created_at": CREATED,
             "updated_at": "When the row last changed (a trigger sets it).",
             "label_page_no": "Page of the field's printed label when it sits elsewhere. NULL together with label_region.",
-            "label_region": "Spot of the field's printed label on label_page_no. NULL together with label_page_no.",
+            "label_region": "Spot of the field's printed label on label_page_no, "
+            + SPOT
+            + ". NULL together with label_page_no.",
         },
     ),
     "corrections": (
@@ -216,7 +222,7 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
         },
     ),
     "messages": (
-        "Questions and answers in a conversation, in created_at order.",
+        "Questions and answers in a conversation. A question and its answer are written together and share created_at; order by created_at, then role DESC (the question first), then id.",
         {
             "id": "Message id.",
             "customer_id": CUSTOMER,
@@ -226,7 +232,7 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
             "answer": "Answers only. JSON with status, label, sentences and citations (document, page, spots).",
             "created_at": CREATED,
             "rewritten_question": "A follow-up rewritten to stand alone, at most 300 characters. NULL when there is none.",
-            "scope": "JSON object (at most 4 KiB) of the folder or documents the question was limited to. NULL when none.",
+            "scope": "The filter the question was limited to, a JSON object (at most 4 KiB) with any of folder_id, include_subfolders, tag_ids, doc_types, document_ids, date_from, date_to (the search filter shape). NULL = all documents.",
         },
     ),
     "feedback": (
@@ -285,7 +291,7 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
         },
     ),
     "invoices": (
-        "The invoice read from a document, at most one per document. Amounts are as printed, never converted.",
+        "The invoice read from a document, at most one per document. Amounts are the printed figures rounded half up to 2 decimals, never converted.",
         {
             "id": "Invoice id.",
             "customer_id": CUSTOMER,
@@ -296,9 +302,9 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
             "seller_gstin": "Seller's GSTIN, upper case without spaces. NULL if not found.",
             "buyer_name": "Buyer's name as printed. NULL if not found.",
             "buyer_gstin": "Buyer's GSTIN, upper case without spaces. NULL if not found.",
-            "subtotal": "Amount before tax, in rupees (see currency), 2 decimals, as printed. NULL if not found.",
-            "tax_total": "Total tax, in rupees (see currency), 2 decimals, as printed. NULL if not found.",
-            "total": "Invoice total, in rupees (see currency), 2 decimals, as printed. NULL if not found.",
+            "subtotal": "Amount before tax, in rupees (see currency), rounded half up to 2 decimals. NULL if not found.",
+            "tax_total": "Total tax, in rupees (see currency), rounded half up to 2 decimals. NULL if not found.",
+            "total": "Invoice total, in rupees (see currency), rounded half up to 2 decimals. NULL if not found.",
             "currency": "Currency code of the amounts. Always INR (rupees): the app sets nothing else.",
             "label": "verified only when the checks did not fail and every value used is verified.",
             "check_status": "passed, failed (see check_reasons) or not_checked (no check could run).",
@@ -319,8 +325,8 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
             "hsn": "HSN or SAC code as printed.",
             "quantity": "Quantity as printed, in unit.",
             "unit": "Unit of the quantity as printed.",
-            "rate": "Price per unit, in rupees (the invoice's currency), 2 decimals, as printed.",
-            "amount": "Line amount, in rupees (the invoice's currency), 2 decimals, as printed.",
+            "rate": "Price per unit, in rupees (the invoice's currency), rounded half up to 2 decimals.",
+            "amount": "Line amount, in rupees (the invoice's currency), rounded half up to 2 decimals.",
             "label": "verified when every value used is verified, else needs_review.",
             "created_at": CREATED,
         },
@@ -333,7 +339,7 @@ TABLES: dict[str, tuple[str, dict[str, str]]] = {
             "document_id": "→ documents.id (same customer), one of the two documents.",
             "linked_document_id": "→ documents.id (same customer), the other one.",
             "identifier_kind": "invoice_number, po_number, challan_number, survey_number, khata_number, account_number or reference_number.",
-            "identifier_value": "The identifier, lower case with no spaces, so spellings match.",
+            "identifier_value": "The identifier, lower case with no spaces and Devanagari digits as 0 to 9, so spellings match.",
             "created_at": CREATED,
         },
     ),

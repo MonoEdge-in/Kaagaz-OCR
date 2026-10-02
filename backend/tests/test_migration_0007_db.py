@@ -37,9 +37,24 @@ _COMMENTS = text(
     "SELECT d.description FROM pg_description d JOIN pg_class c ON c.oid = d.objoid"
     " WHERE d.classoid = 'pg_class'::regclass AND c.relnamespace = 'public'::regnamespace"
 )
-# What must never be in a comment: identity numbers (an Aadhaar's 12 digits, also
-# written in groups of four, or a PAN), e-mail addresses and links.
-_FORBIDDEN = re.compile(r"[0-9]{12}|[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}|[A-Z]{5}[0-9]{4}[A-Z]|@|://")
+# What must never be in a comment: identity numbers (an Aadhaar's 12 digits, in
+# ASCII or Devanagari digits, run together or in groups of four, or a PAN in either
+# case), e-mail addresses and links.
+_DIGIT = r"[0-9\u0966-\u096f]"
+_FORBIDDEN = re.compile(
+    rf"{_DIGIT}{{4}}[ -]?{_DIGIT}{{4}}[ -]?{_DIGIT}{{4}}|[A-Za-z]{{5}}[0-9]{{4}}[A-Za-z]|@|://"
+)
+# One made-up sample per pattern, so the scan is shown to work. None starts with
+# 2 to 9 or has a PAN's holder letter, so pr.yml's identity warnings stay quiet.
+_CAUGHT = (
+    "123456789012",
+    "1234 5678 9012",
+    "\u0967\u0968\u0969\u096a-\u096b\u096c\u096d\u096e-\u096f\u0966\u0967\u0968",
+    "abcde1234f",
+    "ABCDE1234F",
+    "a@b",
+    "x://y",
+)
 
 
 def _dictionary(database: Database) -> dict[tuple[str, str | None], str | None]:
@@ -64,7 +79,7 @@ def test_no_comment_holds_an_identity_number_an_address_or_a_link(db: Database) 
     comments = _comments(db)
     assert comments
     assert [comment for comment in comments if _FORBIDDEN.search(comment)] == []
-    assert _FORBIDDEN.search("PAN ABCDE1234F") and _FORBIDDEN.search("1234 5678 9012")  # the scan works
+    assert [sample for sample in _CAUGHT if not _FORBIDDEN.search(sample)] == []  # the scan works
 
 
 def test_0007_up_down_up_sets_and_clears_every_comment(fresh: tuple[str, Database]) -> None:

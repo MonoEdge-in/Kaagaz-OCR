@@ -37,7 +37,11 @@ def test_the_doc_copies_the_path_and_names_the_volumes_compose_uses() -> None:
         "postgres-data",
     )
 
+    image = re.search(r"^    image: (chrislusf/seaweedfs:\S+)$", seaweedfs, re.MULTILINE)
+    assert image is not None
+
     section = _backup_section()
+    assert f"`{image.group(1)}`" in section  # the filer index path was read from this image
     assert f"docker compose cp seaweedfs:{data_dir.group(1)} " in section
     assert f"seaweedfs:{data_dir.group(1)}\n" in section  # the restore copies back to the same path
     assert f"`{files_volume.group(1)}`" in section and f"`{database_volume.group(1)}`" in section
