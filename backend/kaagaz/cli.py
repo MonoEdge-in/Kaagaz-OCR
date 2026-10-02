@@ -27,6 +27,9 @@
   stopped, and a run with nothing left to do makes only its one probe call (a
   model already down stops it before anything is cleared). Run it
   once after upgrading to PRD 3 V3: every older vector carries the old tag.
+  Then each customer's stories (Story of this PDF) with no vector, or one
+  with another tag, are embedded, 32 at a time, each as its own user;
+  ``--all`` does not embed a story again whose vector is current.
   Prints ids and counts only.
 
 Why passwords are never flags: a flag lands in the shell history and the
@@ -52,6 +55,7 @@ from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, bu
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.db import audit
 from kaagaz.db import users as users_sql
+from kaagaz.db.document_stories import recipe_tag as story_tag
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.spool import HEAD_SIZE
@@ -62,7 +66,7 @@ from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError, Span
 from kaagaz.reading.wiring import PdfPageCheck, build_reader_socket, pdf_text_layer_checks
-from kaagaz.search import indexing
+from kaagaz.search import indexing, story_vectors
 from kaagaz.settings import Settings, SettingsError
 
 MIN_PASSWORD = 12
@@ -73,6 +77,8 @@ ADMIN_ENV_VAR = "KAAGAZ_ADMIN_PASSWORD"
 DEMO_ENV_VAR = "KAAGAZ_DEMO_PASSWORD"
 # reembed embeds this once before it clears anything (a check that the model answers).
 REEMBED_PROBE = "probe"
+# reembed: the stories one pass embeds (one model call).
+REEMBED_STORIES = 32
 
 # Made-up companies on the reserved ".example" domain.
 DEMO_CUSTOMERS = (
@@ -246,7 +252,28 @@ def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: b
                 written += indexing.embed_pieces(db, customer, document, model)
             except (ModelUnavailable, ModelOutputError) as error:
                 raise CliError(f"the model failed ({error}); run reembed again to go on") from None
-        out.write(f"customer {customer}: {len(documents)} documents, {cleared} cleared, {written} embedded\n")
+        stories = _reembed_stories(db, model, customer)
+        out.write(
+            f"customer {customer}: {len(documents)} documents, {cleared} cleared, {written} embedded,"
+            f" {stories} stories\n"
+        )
+
+
+def _reembed_stories(db: Database, model: ModelClient, customer: str) -> int:
+    """Embed the customer's stories with no current vector, a pass at a time, until a
+    pass finds fewer than a full pass or writes none (a story edited meanwhile is
+    left for the next run). Returns how many vectors were written."""
+    written = 0
+    while True:
+        try:
+            done = story_vectors.embed_missing_stories(
+                db, model, limit=REEMBED_STORIES, tag=story_tag(model.embed_model), customer_id=customer
+            )
+        except (ModelUnavailable, ModelOutputError) as error:
+            raise CliError(f"the model failed ({error}); run reembed again to go on") from None
+        written += done.written
+        if done.found < REEMBED_STORIES or done.written == 0:
+            return written
 
 
 # --- measure (PRD 2 X4) -----------------------------------------------------------

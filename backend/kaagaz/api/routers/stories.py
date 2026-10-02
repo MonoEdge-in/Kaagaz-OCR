@@ -18,7 +18,7 @@ Why some choices:
   already current. The model client's own timeout (MODEL_TIMEOUT_SECONDS)
   bounds the wait. A model that is off, down or slow never fails the save: the
   story is saved without a vector and the error's type is logged; the worker's
-  sweep (S2b) embeds it later.
+  sweep (``StoryVectors``) embeds it later.
 * **The session check.** PUT may send ``user_id`` in the body and DELETE in
   the query: who the tab had signed in. Someone else signed in since gets 409
   ``session_changed``, as for uploads.

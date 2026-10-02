@@ -28,6 +28,10 @@ until it is told to stop:
   one of them only. A database error in the purge is logged by its type and
   the jobs go on: the purge can never stop the worker, or crash it again on
   every restart.
+* With the model on, stories left without a meaning vector (the model was off
+  or down when they were saved) get one later: at most 32 every 10 minutes,
+  between jobs (``StoryVectors``, kaagaz/search/story_vectors.py). Like the
+  purge, it never stops the jobs or crashes the worker.
 
 Logs are JSON lines holding ids, codes and counts only: never file names,
 document text or an exception's message (it could quote a document). An
@@ -54,6 +58,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from kaagaz.adapters.queue import SqsQueue
 from kaagaz.adapters.scanner import build_scanner
 from kaagaz.adapters.storage import S3Storage
+from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -61,6 +66,7 @@ from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import purge_expired
 from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
+from kaagaz.search.story_vectors import StoryPass, embed_missing_stories
 from kaagaz.settings import Settings
 
 if TYPE_CHECKING:
@@ -70,6 +76,10 @@ logger = logging.getLogger("kaagaz.worker")
 
 # How often the trash purge runs, at most (PRD 1 F5).
 PURGE_EVERY = timedelta(hours=1)
+# The story vector sweep (council 3 Oct 2026, PROVISIONAL): how often, at most, and
+# how many stories one pass may embed.
+STORY_EVERY = timedelta(minutes=10)
+STORY_PASS_STORIES = 32
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
@@ -220,6 +230,41 @@ class PurgeHourly:
         return self._worker.run_once()
 
 
+class StoryVectors:
+    """Wraps the worker: before a turn, runs ``embed`` (``embed_missing_stories`` bound
+    to the database, the model and STORY_PASS_STORIES) at most every STORY_EVERY on
+    ``clock``. The first turn runs it. ``embed`` None (the model is off) does nothing.
+
+    The time is noted first, so a pass that fails waits STORY_EVERY too. A database
+    error (SQLAlchemyError, or BackendUnavailable when the database cannot be
+    reached) or a model error (ModelUnavailable, ModelOutputError) is logged by its
+    type or code and swallowed, as in PurgeHourly: the jobs go on. Logs hold codes
+    and counts only, never a story. O(1) per turn, plus one pass at most every STORY_EVERY.
+    """
+
+    def __init__(
+        self, worker: RunsJobs, embed: Callable[[], StoryPass] | None, clock: Callable[[], datetime]
+    ) -> None:
+        self._worker = worker
+        self._embed = embed
+        self._clock = clock
+        self._next: datetime | None = None
+
+    def run_once(self) -> bool:
+        now = self._clock()
+        if self._embed is not None and (self._next is None or now >= self._next):
+            self._next = now + STORY_EVERY
+            try:
+                done = self._embed()
+            except (SQLAlchemyError, BackendUnavailable) as error:
+                logger.error("story vectors failed", extra={"code": type(error).__name__})
+            except (ModelUnavailable, ModelOutputError) as error:
+                logger.warning("model unavailable, story vectors wait", extra={"code": error.code})
+            else:
+                logger.info("story vectors: %d of %d stories", done.written, done.found)
+        return self._worker.run_once()
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -308,7 +353,12 @@ def _serve(settings: Settings) -> None:
         record_attempt=documents.record_attempt,
     )
     purge = functools.partial(purge_expired, db, storage, _utc_now, settings.trash_days)
-    worker = PurgeHourly(jobs, purge, _utc_now)
+    stories = (
+        None
+        if model is None
+        else functools.partial(embed_missing_stories, db, model, limit=STORY_PASS_STORIES)
+    )
+    worker = StoryVectors(PurgeHourly(jobs, purge, _utc_now), stories, _utc_now)
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
     db.engine.dispose()
     logger.info("worker stopped")
