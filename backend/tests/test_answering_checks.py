@@ -154,3 +154,83 @@ def test_a_receipt_for_48_00_next_to_gat_47_is_never_verified() -> None:
 def test_gat_48_is_not_found_in_48_a_or_48_to_49(text: str) -> None:
     hit = dataclasses.replace(piece("satbara.csv", text), meaning_score=SURE)
     assert ask("Who owns gat 48?", [hit], says("The owner is ramchandra patil.")).status == "not_found"
+
+
+# --- the third code review: fail closed ------------------------------------------------------
+
+G47 = dataclasses.replace(GAT_47, meaning_score=SURE)
+
+
+@pytest.mark.parametrize("joined", [f"48{EN_DASH}49", f"48{NB_HYPHEN}A"])
+@pytest.mark.parametrize("with_model", [True, False])
+def test_a_number_joined_by_a_unicode_dash_in_the_question_is_never_lost(
+    joined: str, with_model: bool
+) -> None:
+    question = f"Who owns gat {joined}?"
+    if with_model:
+        answer = ask(question, [G47], says("The owner of gat 47 is ramchandra patil."))
+    else:
+        answer = ask(
+            question,
+            [dataclasses.replace(piece("s.csv", "gat 47 owns ramchandra patil"), meaning_score=SURE)],
+        )
+    assert answer.status == "not_found"
+
+
+def test_numbers_asked_never_drop_a_digit_keyword() -> None:
+    assert numbers_asked(f"Who owns gat 48{EN_DASH}49?", ["owns", "gat", "48", "49"]) == ["48-49"]
+    assert numbers_asked(f"Who owns gat 48{NB_HYPHEN}A?", ["owns", "gat", "48"]) == ["48-a"]
+    assert numbers_asked("Who owns gat 48?", ["owns", "gat", "48", "7"]) == ["48", "7"]  # 7: no token, kept
+
+
+def test_a_joined_number_asked_is_found_as_written() -> None:
+    record = dataclasses.replace(piece("s.csv", "gat 48-A malak ramchandra patil"), meaning_score=SURE)
+    answer = ask("Who owns gat 48-A?", [record], says("The owner of gat 48-A is ramchandra patil."))
+    assert (answer.status, answer.label) == ("answered", "verified")
+    assert ask("gat 48 malak?", [G47], says("The owner of gat 47 is ramchandra patil.")).status == "not_found"
+
+
+@pytest.mark.parametrize(
+    "hits",
+    [
+        [dataclasses.replace(SATBARA, text=f"{SATBARA.text}\nPage 1 of 1")],
+        [dataclasses.replace(SATBARA, text=f"{SATBARA.text} | Rs GSTIN")],
+        [
+            SATBARA,
+            dataclasses.replace(
+                piece("e.pdf", "Land record of the village gat 47 owner"), meaning_score=SURE
+            ),
+        ],
+    ],
+)
+def test_latin_words_in_the_cited_text_never_turn_the_name_check_off(hits: list[FakeHit]) -> None:
+    answer = ask(
+        "Who owns gat 47?", hits, says("The भोगवटादार of gat 47 is Sita Deshmukh.", *range(1, len(hits) + 1))
+    )
+    assert (answer.status, answer.label) == ("answered", "needs_review")
+
+
+@pytest.mark.parametrize(
+    ("question", "reply"),
+    [
+        ("Is Sita Deshmukh the owner of gat 47?", "Sita Deshmukh is the owner of gat 47."),
+        ("Is Sita Deshmukh the owner of gat 47?", "Sita Deshmukh is the भोगवटादार of gat 47."),
+        ("gat 47 ka malak kon hai sita deshmukh?", "Sita Deshmukh is the भोगवटादार of gat 47."),
+    ],
+)
+def test_a_name_the_question_puts_forward_is_never_backed_by_the_question(question: str, reply: str) -> None:
+    answer = ask(question, [SATBARA], says(reply))
+    assert (answer.status, answer.label) == ("answered", "needs_review")
+
+
+def test_the_question_rule_leaves_good_answers_verified() -> None:
+    marathi = ask("Who owns gat 47?", [SATBARA], says("The owner is रामचंद्र गणपत पाटील."))
+    english = ask("Who owns gat 47?", [G47], says("The owner of gat 47 is ramchandra patil."))
+    assert (marathi.label, english.label) == ("verified", "verified")
+
+
+@pytest.mark.parametrize(("keyword", "text"), [("48", "A-48"), ("48", "INV-48"), ("48", "A/48")])
+def test_a_letter_joined_before_a_number_makes_it_an_id(keyword: str, text: str) -> None:
+    folded = text.casefold()
+    assert not has_token(keyword, folded)
+    assert has_token(folded, folded)  # the id itself, asked as an id
