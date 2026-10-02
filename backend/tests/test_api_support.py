@@ -16,6 +16,7 @@ builder owns (FULL-BUILD-SPEC section 10); pytest collects it and finds nothing.
   all routes (the admin-session and the password-change gates).
 """
 
+import functools
 import hashlib
 import io
 import json
@@ -47,6 +48,19 @@ CSRF = {"X-Requested-With": "kaagaz"}
 PASSWORD = "correct horse battery"  # made up, 12+ characters
 PDF_BYTES = b"%PDF-1.7\n" + b"0" * 200
 NOW = datetime(2026, 9, 27, 10, 0, tzinfo=UTC)
+
+
+def password_hash_of(password: str) -> str:
+    """The stored hash for a user a helper adds. PASSWORD's is made once per test session
+    (scrypt takes about a quarter of a second on purpose), so those users share one salt;
+    any other password is hashed fresh. Only the helpers use this: the product's own
+    hashing still makes a new salt every time (test_api_admin.py checks)."""
+    return _password_hash() if password == PASSWORD else hash_password(password)
+
+
+@functools.cache
+def _password_hash() -> str:
+    return hash_password(PASSWORD)
 
 
 class ApiFakeStorage(MemoryStorage):
@@ -201,7 +215,7 @@ class Api:
                 email=email,
                 display_name=f"Test {role}",
                 role=role,
-                password_hash=hash_password(password),
+                password_hash=password_hash_of(password),
                 must_change_password=False,
             )
         return str(row["id"]), email

@@ -2,7 +2,7 @@
 
 import pytest
 
-from kaagaz.answering.sanitize import SNIPPET_MAX, clean_snippet, clean_text
+from kaagaz.answering.sanitize import SNIPPET_MAX, clean_snippet, clean_text, strip_ignorable
 
 
 @pytest.mark.parametrize(
@@ -37,3 +37,14 @@ def test_snippet_is_cut_to_the_limit_with_an_ellipsis() -> None:
 def test_short_snippet_is_kept_whole_and_cleaned() -> None:
     assert clean_snippet("total_amount: <i>1,20,000</i>") == "total_amount: 1,20,000"
     assert SNIPPET_MAX == 300
+
+
+def test_strip_ignorable_drops_every_default_ignorable_code_point() -> None:
+    """Unicode's Default_Ignorable_Code_Point: category Cf, plus the marks listed here."""
+    ignorable = [
+        "\u00ad", "\u200b", "\u200d", "\u2060", "\ufeff", "\u034f", "\u115f", "\u1160", "\u17b4",
+        "\u17b5", "\u180b", "\u180f", "\u3164", "\ufe00", "\ufe0f", "\uffa0", "\U000e0100", "\U000e01ef",
+    ]  # fmt: skip
+    assert strip_ignorable("1" + "".join(ignorable) + "8") == "18"
+    shown = "\u0915\u094d\u0937 \u20b91,18,000 \u2013 \u201cx\u201d a\u0307 \u2800"
+    assert strip_ignorable(shown) == shown  # visible marks and letters stay

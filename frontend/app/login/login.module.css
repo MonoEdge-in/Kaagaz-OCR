@@ -761,6 +761,18 @@
   font-weight: 600;
 }
 
+/* After signing out (SignedOutNotice): calm, not an error. One line high
+   before its words arrive, so the form does not move. */
+.notice {
+  margin: 0;
+  min-height: calc(1lh + 2 * var(--space-3) + 2px);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-inline-start-width: 4px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
 .submit {
   min-height: calc(var(--control-h) + 4px);
   font-size: var(--fs-base);

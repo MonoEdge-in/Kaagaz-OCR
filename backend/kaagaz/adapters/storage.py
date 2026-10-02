@@ -41,7 +41,18 @@ from kaagaz.settings import Settings
 
 # SeaweedFS needs the bucket in the path (host/bucket/key), not in the host
 # name, and signature version 4. Amazon S3 accepts both.
-_CONFIG = Config(signature_version="s3v4", s3={"addressing_style": "path"})
+# Storage that does not answer fails fast: 5 s to connect, 30 s per read, and at
+# most two retries (botocore's max_attempts counts retries: three tries in all),
+# about 105 s per call at worst instead of botocore's default 5 x (60 + 60) s.
+# A delete forever and the purge call storage inside their database
+# transaction, so this also bounds how long they hold its locks.
+_CONFIG = Config(
+    signature_version="s3v4",
+    s3={"addressing_style": "path"},
+    connect_timeout=5,
+    read_timeout=30,
+    retries={"max_attempts": 2},
+)
 
 # Cannot reach storage, or it stopped answering part way.
 _UNREACHABLE = (BotoConnectionError, HTTPClientError)

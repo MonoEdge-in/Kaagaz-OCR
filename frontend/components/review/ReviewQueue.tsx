@@ -1,23 +1,32 @@
 "use client";
 
 // The review queue: every value labelled needs review, oldest first. Each one
-// leaves the list once it is resolved, and the page says so politely. Members
-// see a short note instead; the server refuses them anyway.
+// leaves the list once it is resolved, the page says so politely in one
+// message, and focus moves to the next card so it is never lost. Members see a
+// short note instead; the server refuses them anyway.
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, listReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { ReviewItem, ReviewList } from "@/lib/types";
-import { appendItems, canReview, resolvedMessage, withoutItem } from "./review";
-import { ReviewCard } from "./ReviewCard";
+import {
+  appendItems,
+  canReview,
+  focusAfterResolve,
+  leftToReview,
+  resolvedMessage,
+  withoutItem,
+} from "./review";
+import { ReviewCard, reviewTitleId } from "./ReviewCard";
 import styles from "./Review.module.css";
 
 const PAGE_SIZE = 20;
 const SKELETON_CARDS = [0, 1];
+const EMPTY_HEADING_ID = "review-empty-title";
 
 const messageOf = (error: unknown) =>
   error instanceof ApiError ? error.message : "Check your internet connection, then try again.";
@@ -40,7 +49,17 @@ function Queue({ documentId }: { documentId?: string }) {
   const [list, setList] = useState<ReviewList | null>(null);
   const [moreError, setMoreError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [announcement, setAnnouncement] = useState("");
+  const [saved, setSaved] = useState("");
+  // The latest list, kept in step with every setList, so a resolve that lands
+  // after another one works on the current queue.
+  const latest = useRef<ReviewList | null>(null);
+  // The element id to focus once the list has re-rendered.
+  const focusNext = useRef<string | null>(null);
+
+  const commit = (next: ReviewList) => {
+    latest.current = next;
+    setList(next);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -48,6 +67,7 @@ function Queue({ documentId }: { documentId?: string }) {
       .then((result) => {
         if (cancelled) return;
         setFirst({ attempt, list: result });
+        latest.current = result;
         setList(result);
       })
       .catch((caught: unknown) => {
@@ -58,21 +78,36 @@ function Queue({ documentId }: { documentId?: string }) {
     };
   }, [attempt, documentId]);
 
+  useEffect(() => {
+    const id = focusNext.current;
+    if (id === null) return;
+    focusNext.current = null;
+    document.getElementById(id)?.focus();
+  }, [list]);
+
   const loaded = first !== null && first.attempt === attempt ? list : null;
   const failed = loadError !== null && loadError.attempt === attempt ? loadError.message : null;
+  const announcement = saved && loaded ? `${saved} ${leftToReview(loaded.total)}` : "";
 
-  const loadMore = async () => {
-    if (!loaded) return;
+  /** Loads the next page; with focusFirst, focus then goes to its first card (or the empty heading). */
+  const loadMore = async (focusFirst = false) => {
+    const shown = latest.current;
+    if (!shown) return;
     setLoadingMore(true);
     setMoreError(null);
     try {
       // Resolved values have left the queue, so the next page starts after what is shown.
       const more = await listReview({
         limit: PAGE_SIZE,
-        offset: loaded.items.length,
+        offset: shown.items.length,
         document_id: documentId,
       });
-      setList((current) => (current ? appendItems(current, more) : more));
+      const next = latest.current ? appendItems(latest.current, more) : more;
+      if (focusFirst) {
+        const top = next.items[0];
+        focusNext.current = top ? reviewTitleId(top.value.id) : EMPTY_HEADING_ID;
+      }
+      commit(next);
     } catch (caught) {
       setMoreError(messageOf(caught));
     } finally {
@@ -81,8 +116,15 @@ function Queue({ documentId }: { documentId?: string }) {
   };
 
   const onResolved = (before: ReviewItem, after: ReviewItem) => {
-    setList((current) => (current ? withoutItem(current, before.value.id) : current));
-    setAnnouncement(resolvedMessage(after));
+    const current = latest.current;
+    if (!current) return;
+    // Decide where focus goes before the card leaves.
+    const target = focusAfterResolve(current, before.value.id);
+    commit(withoutItem(current, before.value.id));
+    setSaved(resolvedMessage(after));
+    if (target.kind === "card") focusNext.current = reviewTitleId(target.valueId);
+    else if (target.kind === "empty") focusNext.current = EMPTY_HEADING_ID;
+    else void loadMore(true);
   };
 
   return (
@@ -125,6 +167,7 @@ function Queue({ documentId }: { documentId?: string }) {
           <EmptyState
             icon="check-seal"
             title="Nothing to review"
+            headingId={EMPTY_HEADING_ID}
             action={
               <Link href="/documents" className="btn">
                 Go to Documents
@@ -135,7 +178,7 @@ function Queue({ documentId }: { documentId?: string }) {
           </EmptyState>
         ) : (
           <>
-            <p className={`${styles.count} tabular`} aria-live="polite">
+            <p className={`${styles.count} tabular`}>
               {`${loaded.total} value${loaded.total === 1 ? "" : "s"} to review.`}
             </p>
             <div className={styles.cards}>

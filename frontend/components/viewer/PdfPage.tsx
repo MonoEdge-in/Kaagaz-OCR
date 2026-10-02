@@ -11,9 +11,11 @@
 
 import { useEffect, useRef } from "react";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
-import { canvasPlan } from "./canvasPlan";
-import type { ViewRect } from "./canvasPlan";
 import { holdPdf, releasePdf } from "./pdfDocuments";
+
+// Sharp on high-density screens, without huge canvases (browsers cap their size).
+const MAX_PIXEL_RATIO = 2;
+const MAX_CANVAS_WIDTH = 4096;
 
 export interface PdfPageProps {
   documentId: string;
@@ -39,11 +41,6 @@ export default function PdfPage({
 }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pdfRef = useRef<Promise<PDFDocumentProxy> | null>(null);
-  const isCrop = view !== undefined;
-  const vx = view?.x ?? 0;
-  const vy = view?.y ?? 0;
-  const vw = view?.width ?? width;
-  const vh = view?.height ?? height;
 
   // Runs before the drawing effect below, so it always finds the held PDF.
   useEffect(() => {
