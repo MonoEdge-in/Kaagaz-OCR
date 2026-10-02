@@ -69,7 +69,7 @@ _WORD = text(
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.tsv @@ websearch_to_tsquery('english', :q)"
-    " ORDER BY score DESC, p.id LIMIT :n"
+    " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
 _SET_FUZZY_THRESHOLD = text("SELECT set_config('pg_trgm.word_similarity_threshold', :t, true)")
@@ -80,17 +80,17 @@ _FUZZY = text(
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND :q <% p.text"
-    " ORDER BY score DESC, p.id LIMIT :n"
+    " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
 _MEANING = text(
     "WITH candidates AS MATERIALIZED ("
-    " SELECT p.id, p.embedding <=> CAST(:vec AS vector) AS distance"
+    " SELECT p.id, p.embedding <=> CAST(:vec AS vector) AS distance, d.created_at, p.document_id, p.seq"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.embedding IS NOT NULL"
-    ") SELECT id, distance FROM candidates ORDER BY distance, id LIMIT :n"
+    ") SELECT id, distance FROM candidates ORDER BY distance, created_at, document_id, seq, id LIMIT :n"
 )
 
 _DETAILS = text(
@@ -140,7 +140,9 @@ def fuse(
     """Merge three ranked lists of (piece_id, raw score), each best first.
 
     A piece listed twice in one list counts once, at its best rank. The result
-    is best first, ties broken by piece id. O(n log n) for n listed pieces.
+    is best first; a tie keeps the order the lists first gave the pieces in (each list
+    breaks its own ties by upload time and position, never by the random piece id),
+    so the same documents always rank the same. O(n log n) for n listed pieces.
     """
     if k < 0:
         raise ValueError("k must not be negative")
@@ -155,7 +157,7 @@ def fuse(
             rank += 1
             own[name] = raw_score
             scores[piece_id] = scores.get(piece_id, 0.0) + 1.0 / (k + rank)
-    order = sorted(scores, key=lambda piece_id: (-scores[piece_id], piece_id))
+    order = sorted(scores, key=lambda piece_id: -scores[piece_id])  # stable: ties keep first-seen order
     return [
         FusedPiece(
             piece_id=piece_id,

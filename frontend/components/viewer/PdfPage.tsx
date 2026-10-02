@@ -3,11 +3,13 @@
 // One PDF page drawn by PDF.js on a canvas, at the size the viewer asks for.
 // Any failure (the file, the worker, a broken page) calls onFailed, and the
 // viewer falls back to the stored page image. onRendered says the page is
-// drawn, so the viewer can take its loading skeleton away.
+// drawn, so the viewer can take its loading skeleton away. The document is
+// held while it is on screen (pdfDocuments.ts), in an effect of its own: a
+// new size or page redraws, and only a new document lets go of the old one.
 
 import { useEffect, useRef } from "react";
-import type { RenderTask } from "pdfjs-dist";
-import { loadPdf } from "./pdfDocuments";
+import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
+import { holdPdf, releasePdf } from "./pdfDocuments";
 
 // Sharp on high-density screens, without huge canvases (browsers cap their size).
 const MAX_PIXEL_RATIO = 2;
@@ -33,12 +35,22 @@ export default function PdfPage({
   onRendered,
 }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const pdfRef = useRef<Promise<PDFDocumentProxy> | null>(null);
+
+  // Runs before the drawing effect below, so it always finds the held PDF.
+  useEffect(() => {
+    const held = holdPdf(documentId);
+    pdfRef.current = held;
+    return () => releasePdf(documentId, held);
+  }, [documentId]);
 
   useEffect(() => {
     let cancelled = false;
     let task: RenderTask | null = null;
     const draw = async () => {
-      const pdf = await loadPdf(documentId);
+      const held = pdfRef.current;
+      if (!held) throw new Error("no PDF held");
+      const pdf = await held;
       if (cancelled) return;
       const page = await pdf.getPage(pageNo);
       const canvas = canvasRef.current;
