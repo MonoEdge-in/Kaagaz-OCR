@@ -57,3 +57,64 @@ export function restoredMessage(name: string): string {
 export function deletedForeverMessage(name: string): string {
   return `Deleted ${name} for good.`;
 }
+
+// --- Acting on a selection: Move to Trash in the list, Restore and Delete forever in Trash.
+
+/** What a selection can be asked to do. */
+export type BulkAction = "trash" | "restore" | "forever";
+
+export function bulkForeverQuestion(count: number): string {
+  return count === 1
+    ? "Delete 1 selected document for good, with all its versions? It can't be brought back."
+    : `Delete ${count} selected documents for good, with all their versions? They can't be brought back.`;
+}
+
+/** "Restored 3 documents.": what the selection had done to it. */
+export function bulkDoneMessage(action: BulkAction, count: number): string {
+  const documents = documentsCount(count);
+  if (action === "restore") return `Restored ${documents}.`;
+  if (action === "forever") return `Deleted ${documents} for good.`;
+  return `Moved ${documents} to Trash.`;
+}
+
+const FAILED_TO: Record<BulkAction, string> = {
+  trash: "moved to Trash",
+  restore: "restored",
+  forever: "deleted",
+};
+
+/** "2 documents could not be restored. <why>". */
+export function bulkFailedMessage(action: BulkAction, failed: number, reason: string): string {
+  return `${documentsCount(failed)} could not be ${FAILED_TO[action]}. ${reason}`;
+}
+
+export interface BulkResult {
+  done: string[];
+  failed: string[];
+  /** The first failure, for its message; undefined if none failed. */
+  firstError: unknown;
+}
+
+/**
+ * Run call for each id, one at a time and in order, and keep going past a
+ * failure, so one document the server refuses doesn't hold back the rest.
+ * onProgress gets how many have been handled so far. O(n) calls, one in flight.
+ */
+export async function runEach(
+  ids: readonly string[],
+  call: (id: string) => Promise<unknown>,
+  onProgress?: (handled: number) => void,
+): Promise<BulkResult> {
+  const result: BulkResult = { done: [], failed: [], firstError: undefined };
+  for (const [index, id] of ids.entries()) {
+    try {
+      await call(id);
+      result.done.push(id);
+    } catch (caught) {
+      if (result.failed.length === 0) result.firstError = caught;
+      result.failed.push(id);
+    }
+    onProgress?.(index + 1);
+  }
+  return result;
+}

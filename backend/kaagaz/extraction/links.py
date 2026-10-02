@@ -28,8 +28,7 @@ from collections.abc import Sequence
 
 from kaagaz.chunking.script import fold_digits
 from kaagaz.extraction.labelled import DOCUMENT_RECORD
-from kaagaz.extraction.values import CARD_RECORD, ExtractedValue
-from kaagaz.pipeline import LINK_KINDS, LinkIdentifier
+from kaagaz.extraction.values import CARD_RECORD, LINK_KINDS, ExtractedValue, LinkIdentifier
 
 MAX_IDENTIFIER_CHARS = 64  # A7: a normalised identifier
 MAX_LINK_IDENTIFIERS = 30  # A7: identifiers per document

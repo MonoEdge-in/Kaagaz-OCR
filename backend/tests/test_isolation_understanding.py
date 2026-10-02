@@ -16,8 +16,9 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns, is_run_open
-from kaagaz.jobs.worker import JobFailed
-from kaagaz.pipeline import DocumentContent, DocumentFacts, FinishedRun, LinkIdentifier, Progress, Superseded
+from kaagaz.extraction.values import DocumentFacts, LinkIdentifier
+from kaagaz.jobs.worker import JobFailed, Superseded
+from kaagaz.pipeline import DocumentContent, FinishedRun, Progress
 from tests.db_support import count_rows, new_customer, violation
 from tests.test_isolation_schema import FROM_0004
 from tests.test_pipeline_store_db import (

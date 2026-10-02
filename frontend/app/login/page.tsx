@@ -3,15 +3,22 @@
 // form. Below 900 px it is the wordmark and the form. The backend gives the
 // same short message for an unknown e-mail, a wrong password or a disabled
 // account, and the form shows it as is. A small link under the form goes to
-// the separate admin sign-in (PRD A1).
+// the separate admin sign-in (PRD A1). After signing out, or a session
+// ending, a note under the form's heading says so (SignedOutNotice).
 
 import Link from "next/link";
+import { signedOutMessage } from "@/components/shell/gate";
 import { Wordmark } from "@/components/shell/Wordmark";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { SignInForm } from "./SignInForm";
 import styles from "./login.module.css";
 
-export default function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const note = signedOutMessage(await searchParams);
   return (
     <div className={styles.page}>
       <div className={styles.theme}>
@@ -69,7 +76,7 @@ export default function LoginPage() {
           <div className={styles.smallBrand}>
             <Wordmark reader={false} />
           </div>
-          <SignInForm />
+          <SignInForm note={note} />
           <p className={styles.adminLink}>
             <Link href="/admin/login">Admin sign-in</Link>
           </p>

@@ -191,15 +191,19 @@ export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 2
 
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),
- * into a folder when one is given, else at the top level.
+ * into a folder when one is given, else at the top level. userId is who was
+ * signed in when the file was chosen: the server refuses the file (409
+ * session_changed) if someone else has signed in since, in another tab.
  */
 export function uploadDocument(
   file: File,
+  userId: string,
   onProgress: (fraction: number) => void,
   folderId?: string,
 ): Promise<UploadResult> {
   const form = new FormData();
   if (folderId) form.append("folder_id", folderId);
+  form.append("user_id", userId);
   form.append("file", file);
   return sendForm("/api/documents", form, onProgress);
 }
@@ -212,9 +216,11 @@ export function uploadDocument(
 export function uploadVersion(
   documentId: string,
   file: File,
+  userId: string,
   onProgress: (fraction: number) => void,
 ): Promise<UploadResult> {
   const form = new FormData();
+  form.append("user_id", userId);
   form.append("file", file);
   return sendForm(`/api/documents/${documentId}/versions`, form, onProgress);
 }
