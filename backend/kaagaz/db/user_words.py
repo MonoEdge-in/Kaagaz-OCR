@@ -183,18 +183,29 @@ def update_word(
     word: WordText | None = None,
     meaning: WordText | None = None,
     confirm_another: bool = False,
+    replace_id: str | None = None,
 ) -> WordRow | HasMeaning:
     """Change a word's text, its meaning, or both (None keeps it). Raises WordError:
     not_found; conflict when the result is another row of this user; too_many_meanings
     when it moves to a word that has MAX_MEANINGS already. Moving to a word that has
-    other meanings asks first, as ``add_word`` does (``HasMeaning``, nothing written).
-    Under the user lock, like ``add_word``. O(log W + m) time, O(m) space."""
+    other meanings asks first, as ``add_word`` does (``HasMeaning``, nothing written),
+    unless ``confirm_another``, or ``replace_id`` names the meaning it replaces: that
+    row is deleted and this one keeps its id and spots (not_same_word for another
+    word, conflict for this row itself). Under the user lock, like ``add_word``.
+    O(log W + m) time, O(m) space."""
     me = {"c": customer_id, "me": user_id}
     _lock_user(conn, me)
     current = _get(conn, me, word_id)
     new_word = word or WordText(text=current.word, fold=current.word_fold)
     new_meaning = meaning or WordText(current.meaning, current.meaning_fold)
-    if new_word.fold != current.word_fold and not confirm_another:
+    if replace_id is not None:
+        replaced = _get(conn, me, replace_id)
+        if replaced.id == current.id:
+            raise WordError("conflict")
+        if replaced.word_fold != new_word.fold:
+            raise WordError("not_same_word")
+        conn.execute(text(_DELETE), {**me, "id": replaced.id})
+    elif new_word.fold != current.word_fold and not confirm_another:
         same = list(conn.execute(text(_SAME_WORD), {**me, "wf": new_word.fold}))
         if same and len(same) < MAX_MEANINGS and all(row.meaning_fold != new_meaning.fold for row in same):
             return HasMeaning(existing=[_word(row) for row in same])

@@ -101,10 +101,15 @@ def check_word(value: str) -> CheckedWord:
         raise WordTextError("too_many_parts")
     if all(part in _COMMON for part in parts):
         raise WordTextError("common_word")
-    built_in = tuple(parts) in _HINDI_PHRASES or any(
+    return CheckedWord(word=word, built_in=is_built_in(word.fold))
+
+
+def is_built_in(word_fold: str) -> bool:
+    """Whether the Hinglish map already reads this folded word, or a part of it."""
+    parts = word_fold.split()
+    return tuple(parts) in _HINDI_PHRASES or any(
         part in _HINDI_WORDS or part in _ENGLISH_WORDS for part in parts
     )
-    return CheckedWord(word=word, built_in=built_in)
 
 
 def check_meaning(value: str) -> WordText:

@@ -57,7 +57,16 @@ def test_a_word_is_created_listed_and_audited_with_ids_and_counts_only(db: Datab
     assert reply.status_code == 201
     body = reply.json()
     assert (body["outcome"], body["warning"]) == ("created", None)
-    assert set(body["word"]) == {"id", "word", "meaning", "as_read", "source", "created_at", "updated_at"}
+    assert set(body["word"]) == {
+        "id",
+        "word",
+        "meaning",
+        "as_read",
+        "source",
+        "built_in",
+        "created_at",
+        "updated_at",
+    }
     assert (body["word"]["word"], body["word"]["source"]) == ("Malak", "manual")
     assert listed(signed) == [("Malak", "owner")]
     assert audited(api, signed) == [
@@ -142,6 +151,11 @@ def test_a_word_chat_already_knows_is_kept_with_a_warning(db: Database) -> None:
     signed = Api(db).new_signed()
     assert post(signed, "kam", "work").json()["warning"] == "built_in"
     assert post(signed, "kaam", "work").json()["warning"] is None
+    items = signed.client.get("/api/me/words").json()["items"]
+    assert [(item["word"], item["built_in"]) for item in items] == [
+        ("kaam", False),
+        ("kam", True),
+    ]  # the badge
 
 
 def test_patch_onto_a_word_with_meanings_asks_first_like_post(db: Database) -> None:
@@ -156,6 +170,25 @@ def test_patch_onto_a_word_with_meanings_asks_first_like_post(db: Database) -> N
     assert asked.json()["error"]["details"] == {"existing": [{"id": boss["id"], "meaning": "boss"}]}
     assert confirmed.status_code == 200
     assert listed(signed) == [("malak", "boss"), ("Malak", "charge")]
+
+
+def test_patch_with_replace_id_takes_the_place_of_that_meaning(db: Database) -> None:
+    signed = Api(db).new_signed()
+    boss = post(signed, "malak", "boss").json()["word"]
+    holder = post(signed, "bojha", "holder").json()["word"]
+    charge = post(signed, "bojha", "charge", confirm_another=True).json()["word"]
+
+    def patch(word_id: str, **body: Any) -> httpx.Response:
+        reply: httpx.Response = signed.client.patch(f"/api/me/words/{word_id}", json=body, headers=CSRF)
+        return reply
+
+    assert error(patch(charge["id"], word="malak", replace_id=charge["id"])) == (409, "conflict")  # itself
+    assert error(patch(charge["id"], word="malak", replace_id=holder["id"])) == (400, "not_same_word")
+    assert error(patch(charge["id"], word="malak", replace_id=UNKNOWN)) == (404, "not_found")
+    replaced = patch(charge["id"], word="malak", replace_id=boss["id"])
+
+    assert (replaced.status_code, replaced.json()["word"]["id"]) == (200, charge["id"])  # keeps its id
+    assert listed(signed) == [("bojha", "holder"), ("malak", "charge")]
 
 
 def test_patch_changes_the_word_or_meaning_and_delete_removes_it(db: Database) -> None:

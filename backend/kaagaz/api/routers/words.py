@@ -41,6 +41,8 @@ from kaagaz.answering.words_text import (
     WordTextError,
     check_meaning,
     check_word,
+    fold,
+    is_built_in,
 )
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
@@ -137,6 +139,7 @@ class WordChangeBody(BaseModel):
     word: str | None = Field(default=None, max_length=4 * WORD_MAX)
     meaning: str | None = Field(default=None, max_length=4 * MEANING_MAX)
     confirm_another: bool = False
+    replace_id: uuid.UUID | None = None
     user_id: str | None = None
 
 
@@ -212,6 +215,7 @@ def _view(row: words_sql.WordRow) -> dict[str, Any]:
         "meaning": row.meaning,
         "as_read": row.as_read,
         "source": row.source,
+        "built_in": is_built_in(fold(row.word)),  # the Hinglish map reads it too: the screen's badge
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
@@ -302,6 +306,7 @@ def change_my_word(word_id: uuid.UUID, body: WordChangeBody, user: User, context
             word=word,
             meaning=meaning,
             confirm_another=body.confirm_another,
+            replace_id=None if body.replace_id is None else str(body.replace_id),
         )
         if isinstance(row, words_sql.HasMeaning):  # moved onto a word with meanings: ask first
             _ask(row)
