@@ -133,6 +133,17 @@ uvicorn kaagaz.api.main:app --port 8000
 python -m kaagaz.worker_main          # in a second terminal
 ```
 
+With `OCR_ENGINE=rapidocr`, Marathi and Hindi scans also need RapidOCR's
+Devanagari model (8 MB). The worker never downloads it (the Docker image has
+it), so fetch it once into the package's models folder:
+
+```
+python -c "from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR; RapidOCR(params={'Rec.lang_type': LangRec.DEVANAGARI, 'Rec.ocr_version': OCRVersion.PPOCRV5, 'Rec.model_type': ModelType.MOBILE})"
+```
+
+Without it, those pages stay as the default model read them, and the log says
+`ocr_model_missing`.
+
 The worker makes the storage bucket on its first start if it is missing.
 Ctrl+C stops it after the job in hand. At most once an hour it also deletes
 for good what has been in Trash longer than `TRASH_DAYS` days (30).

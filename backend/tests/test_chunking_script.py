@@ -17,6 +17,7 @@ from kaagaz.chunking.script import (
     latin_spelling,
     malformed_devanagari,
     ocr_script_suspect,
+    ocr_suspect_count,
 )
 from kaagaz.reading.spans import BoxLocation
 
@@ -90,6 +91,12 @@ class OcrScriptTest(unittest.TestCase):
 
     def test_malformed_devanagari_is_suspect(self) -> None:
         self.assertTrue(ocr_script_suspect("उता्याची"))
+
+    def test_suspect_letters_and_malformed_signs_are_counted(self) -> None:
+        cases = {"Gat 克拉马克 48": 4, "उता्याची": 1, "Café ঘম ्": 4, "पाटील ७/१२।": 0, "": 0}
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(ocr_suspect_count(text), expected)
 
     def test_devanagari_letters_are_found_but_digits_and_danda_are_not(self) -> None:
         for text in ("पाटील", "Name: शिंदे", "कि", NUKTA):

@@ -34,8 +34,13 @@ RUN python -c "from PIL import features; assert features.check('webp'), 'Pillow 
 
 # RapidOCR fetches its model files on first use, into its own package folder,
 # which the non-root user below cannot write. Load it once here, as root, so
-# the files are part of the image.
-RUN python -c "from rapidocr import RapidOCR; RapidOCR()"
+# the files are part of the image. Then the same for its Devanagari recogniser,
+# which the worker uses on Marathi and Hindi scans and only ever loads from disk
+# (kaagaz/reading/ocr.py): the build stops unless the file is there with the
+# SHA-256 rapidocr 3.9.2 lists for it.
+RUN python -c "from rapidocr import RapidOCR; RapidOCR()" \
+    && python -c "from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR; RapidOCR(params={'Rec.lang_type': LangRec.DEVANAGARI, 'Rec.ocr_version': OCRVersion.PPOCRV5, 'Rec.model_type': ModelType.MOBILE})" \
+    && python -c "import hashlib; from kaagaz.reading.ocr import devanagari_model_path; assert hashlib.sha256(devanagari_model_path().read_bytes()).hexdigest() == 'd6f0a906580e3fa6b324a318718f1f31f268b6ea8ef985f91c2012a37f52c91e', 'the Devanagari model is not the one expected'"
 
 COPY alembic.ini ./
 COPY migrations migrations
