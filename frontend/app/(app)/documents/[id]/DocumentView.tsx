@@ -34,8 +34,9 @@ import { canReprocess } from "@/components/viewer/reprocess";
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
 import { selectSpot, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
-import { ApiError, getDocument } from "@/lib/api";
+import { ApiError, getDocument, getDocumentSummary } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
+import { progressSignature } from "@/lib/poll";
 import { useSession } from "@/lib/session";
 import type { DocumentDetail, ExtractedValue } from "@/lib/types";
 import { CardPanel, InvoicePanel, RelatedPanel } from "./DocumentPanels";
@@ -62,7 +63,7 @@ function BackLink() {
 export function DocumentView({ documentId, pageParam, regionParam }: DocumentViewProps) {
   const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
-  // Asks again but keeps showing what is loaded until the answer comes (after Read again).
+  // Asks again but keeps showing what is loaded until the answer comes (once reading settles).
   const [reloads, setReloads] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   // A choice made on this screen, remembered with the link it was made under,
@@ -71,12 +72,40 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
   const [chosen, setChosen] = useState<{ linkKey: string; selection: Selection } | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const viewerRef = useRef<HTMLElement>(null);
+  // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
+  const settling = useRef<"read" | "again" | null>(null);
+  const readingAgain = useRef(false);
+
+  // While it is read: merge each summary; once it settles, ask for the detail once.
+  const merge = (summary: DocumentSummary) =>
+    setLoaded((shown) =>
+      shown && "detail" in shown && shown.detail.id === summary.id
+        ? { ...shown, detail: { ...shown.detail, ...summary } }
+        : shown,
+    );
+  const poll = usePoll<DocumentSummary>({
+    load: () => getDocumentSummary(documentId),
+    onResult: (summary) => {
+      merge(summary);
+      if (beingRead(summary.status)) return;
+      settling.current = readingAgain.current ? "again" : "read";
+      readingAgain.current = false;
+      setReloads((n) => n + 1);
+    },
+    onFailure: () => undefined, // it keeps trying; the page shows what it has
+    again: (summary) => beingRead(summary.status),
+    signature: (summary) => progressSignature([summary]),
+  });
 
   useEffect(() => {
     let cancelled = false;
     getDocument(documentId)
       .then((detail) => {
-        if (!cancelled) setLoaded({ attempt, detail });
+        if (cancelled) return;
+        setLoaded({ attempt, detail });
+        if (beingRead(detail.status)) poll.later();
+        else if (settling.current) setAnnouncement(settledText(detail, settling.current === "again"));
+        settling.current = null;
       })
       .catch((error: unknown) => {
         const message =
@@ -87,8 +116,9 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
       });
     return () => {
       cancelled = true;
+      poll.stop();
     };
-  }, [documentId, attempt, reloads]);
+  }, [poll, documentId, attempt, reloads]);
 
   // A retry shows the loading state again until its own answer arrives.
   const current = loaded && loaded.attempt === attempt ? loaded : null;
@@ -163,6 +193,7 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
   const download = detail.deleted_at === null ? downloadHref(detail) : null;
   const position = versionPosition(detail);
   const note = versionNote(detail);
+  const readingNote = valuesNote(detail.status, detail.values.length);
 
   return (
     <div className="page">
@@ -180,7 +211,12 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
             documentId={detail.id}
             fixes={detail.reviewer_fixes}
             offered={canReprocess(me.user.role, detail)}
-            onStarted={() => setReloads((n) => n + 1)}
+            reading={beingRead(detail.status)}
+            onStarted={(reply) => {
+              merge(reply);
+              readingAgain.current = true;
+              poll.later();
+            }}
           />
         </div>
         <div className={styles.place}>
@@ -297,8 +333,9 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
               <span className={`${styles.count} tabular`}>{detail.values.length}</span>
             ) : null}
           </h2>
+          {readingNote && <p className="muted">{readingNote}</p>}
           {detail.values.length === 0 ? (
-            <p className="muted">No values were found in this document.</p>
+            !readingNote && <p className="muted">No values were found in this document.</p>
           ) : (
             <table className={`table ${styles.valuesTable}`} role="table">
               <caption className="visually-hidden">

@@ -1,4 +1,4 @@
-"""The document routes: list, upload, a new version, detail, rename or move,
+"""The document routes: list, upload, a new version, detail and its summary, rename or move,
 the original file, page images, spreadsheet cells, and Trash (move to Trash,
 restore, delete forever).
 
@@ -443,6 +443,17 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         # PRD 3 Y2: the current, ready documents sharing an identifier with this one.
         "links": [document_link(each) for each in links],
     }
+
+
+@router.get("/documents/{document_id}/summary")
+def get_document_summary(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """The detail's own summary, as in the list (two queries): the viewer asks for it
+    while a document is read, then for the whole detail once it settles."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        row = _document_or_404(conn, user, document_id)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+    return document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
 
 
 @router.post("/documents/{document_id}/reprocess")
