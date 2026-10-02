@@ -34,32 +34,36 @@ The steps (docs/architecture.md):
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
 
-Nothing here logs the question or any document text.
+Nothing here logs the question or any document text: a model error is logged
+as its code, and each model answer as the model's tag and ANSWER_PROMPT_HASH.
 
-Time: one ``available_fields`` query, then either one fixed query or one
-search (then one neighbours statement for the usable hits) plus at most one model call; the
-rest is O(e * t) over e pieces of evidence of t characters. e is at most
-ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
+Time: one ``available_fields`` query only for a question with an aggregate
+word and no unknown topic word, then either one fixed query or one search plus
+at most one model call; the rest is O(e * t) over e pieces of evidence of t
+characters.
 """
 
+import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from decimal import Decimal
+from functools import partial
 from itertools import zip_longest
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from kaagaz.ai.client import (
-    ModelClient,
-    ModelOutputError,
-    ModelUnavailable,
-    estimate_tokens,
-    input_token_budget,
-)
+from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, input_token_budget
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
-from kaagaz.answering.draft import SYSTEM_PROMPT, Draft, DraftSentence, extractive_draft, model_draft
+from kaagaz.answering.draft import (
+    ANSWER_PROMPT_HASH,
+    SYSTEM_PROMPT,
+    Draft,
+    DraftSentence,
+    extractive_draft,
+    fit_evidence,
+    model_draft,
+)
 from kaagaz.answering.evidence import (
     Evidence,
     PgRetriever,
@@ -76,13 +80,14 @@ from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
-from kaagaz.answering.verify import numbers_in, verify
+from kaagaz.answering.verify import verify
 from kaagaz.chunking.script import has_devanagari_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
-from kaagaz.search.indexing import embed_question, recipe_tag
-from kaagaz.search.scope import EVERYTHING, Scope
+from kaagaz.search.indexing import query_input, recipe_tag
 from kaagaz.settings import Settings
+
+_log = logging.getLogger(__name__)
 
 # "unchecked": the figure asked for exists only as unchecked card values, so no
 # number is given (kaagaz/answering/unchecked.py).
@@ -183,16 +188,11 @@ class AnswerService:
         self._settings = settings
         self._clock = clock
         self._zone = ZoneInfo(settings.timezone)
-        self._retriever = (
-            retriever
-            if retriever is not None
-            else PgRetriever(
-                db,
-                recipe=recipe_tag(settings.model_embed),
-                ef_search=settings.search_ef,
-                neighbours=settings.answer_neighbours,
-            )
+        # What the answer's evidence may take: the window less the reply, its repair and the prompt.
+        self._evidence_budget = input_token_budget(
+            num_ctx=settings.model_num_ctx, max_tokens=settings.model_answer_max_tokens, system=SYSTEM_PROMPT
         )
+        self._retriever = retriever if retriever is not None else PgRetriever(db)
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
 
@@ -214,10 +214,8 @@ class AnswerService:
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
         found_range = date_range(normalised, self._today())
-        fixed = self._fixed.scoped(scope)
-        plan = plan_fixed(
-            normalised, found_range, mentions_date(normalised), fixed.available_fields(customer_id)
-        )
+        fields = partial(self._fixed.available_fields, customer_id)  # asked for only if a plan could follow
+        plan = plan_fixed(normalised, found_range, mentions_date(normalised), fields)
         if plan is not None:
             return self._fixed_answer(customer_id, plan, shown, fixed)
         unchecked = self._unchecked_answer(customer_id, normalised, shown, scope)
@@ -324,7 +322,7 @@ class AnswerService:
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         # A Devanagari question is embedded as asked (W3): its Latin spelling means little to the model.
         meant = question if has_devanagari_letters(question) else normalised.english
-        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit, scope)
+        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit)
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
@@ -345,8 +343,10 @@ class AnswerService:
                 break
             evidence.append(item)
 
-        draft, model_used = self._draft(question, normalised, evidence)
-        texts = {item.n: clean_text(item.hit.text) for item in evidence}
+        draft, model_used, seen = self._draft(question, normalised, evidence)
+        # Only the evidence the draft saw. Line by line: joined, "12" and a next
+        # line's "August 2026" would read as a date.
+        texts = {item.n: "\n".join(map(clean_text, item.hit.text.splitlines())) for item in seen}
         cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
         kept = verify([s for s in cleaned if s.text], texts) if draft.status == "answered" else []
         if not kept:
@@ -377,22 +377,41 @@ class AnswerService:
         )
 
     def _embed(self, english: str) -> list[float] | None:
-        """The question's vector, or None: kaagaz.search.indexing.embed_question (PRD 3 V3)."""
-        return embed_question(self._model, english)
+        """The question's vector, or None (no model, model down, or unusable
+        vectors), so search falls back to word and fuzzy matching. One model call,
+        with the query instruction (kaagaz.search.indexing.query_input, PRD 3 V3)."""
+        if self._model is None or not english:
+            return None
+        try:
+            vectors = self._model.embed([english])
+        except (ModelUnavailable, ModelOutputError) as error:
+            _log.warning("question searched without its meaning vector", extra={"code": error.code})
+            return None
+        return vectors[0] if vectors else None
 
     def _draft(
         self, question: str, normalised: NormalisedQuestion, evidence: Sequence[Evidence]
-    ) -> tuple[Draft, bool]:
-        """The model's draft (and True), or the extractive one (and False)."""
+    ) -> tuple[Draft, bool, Sequence[Evidence]]:
+        """The model's draft (and True), or the extractive one (and False), with the
+        evidence it was drafted from: for the model, the best pieces that fit its window."""
         if self._model is not None:
             asked = f"{question} (in English: {normalised.english})" if normalised.hinglish else question
-            try:
-                return model_draft(self._model, asked, evidence, max_tokens=_REPLY_TOKENS), True
-            except (ModelUnavailable, ModelOutputError):
-                pass  # quoting the evidence needs no model
+            seen = fit_evidence(asked, evidence, self._evidence_budget)
+            code = "evidence_too_large"  # not even the best piece fits
+            if seen:
+                model, max_tokens = self._model, self._settings.model_answer_max_tokens
+                try:
+                    draft = model_draft(model, asked, seen, max_tokens=max_tokens)
+                except (ModelUnavailable, ModelOutputError) as error:
+                    code = error.code
+                else:
+                    _log.info("answer drafted by %s with prompt %s", model.chat_model, ANSWER_PROMPT_HASH)
+                    return draft, True, seen
+            # Quoting the evidence needs no model.
+            _log.warning("answer drafted without the model", extra={"code": code})
         if mentions_date(normalised):
-            return Draft("not_found", []), False  # a quoted line cannot be checked against a date
-        return extractive_draft(normalised.keywords, evidence), False
+            return Draft("not_found", []), False, evidence  # a quoted line cannot be checked against a date
+        return extractive_draft(normalised.keywords, evidence), False, evidence
 
     def _today(self) -> date:
         now = self._clock()

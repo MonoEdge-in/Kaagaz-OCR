@@ -4,7 +4,8 @@ from datetime import date
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Connection, text
+from sqlalchemy.exc import OperationalError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.chunking.context import context_header
@@ -47,6 +48,23 @@ class FakeModel:
         raise AssertionError("indexing never reads images")
 
 
+class GoesDown(Database):
+    """The test database, until transaction number ``down_at``: from then on the server
+    cannot be reached (OperationalError), as in an outage."""
+
+    def __init__(self, db: Database, down_at: int) -> None:
+        super().__init__(db.engine, APP_ROLE)
+        self._left = down_at - 1
+
+    @contextmanager
+    def customer(self, customer_id: str) -> Iterator[Connection]:
+        if self._left == 0:
+            raise OperationalError("SELECT 1", {}, ConnectionRefusedError())
+        self._left -= 1
+        with super().customer(customer_id) as conn:
+            yield conn
+
+
 def _embeddings(db: Database, customer_id: str, document_id: str) -> list[tuple[bool, str | None]]:
     with db.customer(customer_id) as conn:
         rows = conn.execute(
@@ -69,6 +87,38 @@ def test_every_piece_is_embedded_in_batches_in_order(db: Database) -> None:
 
     assert model.calls == [["piece 0", "piece 1"], ["piece 2", "piece 3"], ["piece 4"]]
     assert _embeddings(db, customer, document) == [(True, "fake-embed#ctx1")] * 5
+
+
+def test_each_batch_is_reported_once_its_write_has_committed(db: Database) -> None:
+    """The pipeline's heartbeat and "indexing i of n". Each report comes after the
+    batch's transaction, never inside one: another transaction already sees the vectors."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [(f"piece {n}", None) for n in range(5)])
+    reports: list[tuple[int, int, int]] = []
+
+    def on_batch(done: int, total: int) -> None:
+        embedded = sum(has_vector for has_vector, _ in _embeddings(db, customer, document))
+        reports.append((done, total, embedded))
+
+    embed_pieces(db, customer, document, FakeModel(), batch_size=2, on_batch=on_batch)
+
+    assert reports == [(2, 5, 2), (4, 5, 4), (5, 5, 5)]
+
+
+def test_the_last_fetch_that_finds_nothing_reports_nothing(db: Database) -> None:
+    """4 pieces in batches of 2: the second batch is full, so one more fetch finds nothing,
+    and that fetch is not a batch."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [(f"piece {n}", None) for n in range(4)])
+    reports: list[tuple[int, int]] = []
+
+    embed_pieces(
+        db, customer, document, FakeModel(), batch_size=2, on_batch=lambda *report: reports.append(report)
+    )
+
+    assert reports == [(2, 4), (4, 4)]
 
 
 def test_a_second_run_does_nothing(db: Database) -> None:

@@ -12,7 +12,7 @@ stays as it is.
 The run fence (Lead's resolution 2): only a run that is still ``running`` may
 save results or mark the document ready. ``is_run_open`` is read under the
 family lock by the save and by ``mark_ready``, which raise
-``kaagaz.pipeline.Superseded`` otherwise. It asks which run is open, not which
+``kaagaz.jobs.worker.Superseded`` otherwise. It asks which run is open, not which
 started last, so a worker whose clock runs ahead can't win it with a stale run.
 A run superseded just after its save passed the fence still commits that save;
 the newer run replaces it, as every save replaces the one before.

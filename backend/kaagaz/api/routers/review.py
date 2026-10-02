@@ -24,6 +24,9 @@ router = APIRouter()
 
 Context = Annotated[AppContext, Depends(get_context)]
 
+# PRD 3 Y5: the reasons the queue can be filtered by; any other is 400 bad_request.
+QueueReason = Literal["check_failed", "readers_disagree", "low_confidence", "single_reader"]
+
 
 class ResolveBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -40,6 +43,7 @@ def list_review(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
     document_id: uuid.UUID | None = None,
+    reason: Annotated[list[QueueReason] | None, Query(max_length=4)] = None,
 ) -> dict[str, Any]:
     with context.db.customer(user.customer_id) as conn:
         rows, total = review_sql.list_queue(
@@ -48,6 +52,7 @@ def list_review(
             limit=limit,
             offset=offset,
             document_id=None if document_id is None else str(document_id),
+            reasons=reason,
         )
     return {"items": [review_item(row) for row in rows], "total": total}
 

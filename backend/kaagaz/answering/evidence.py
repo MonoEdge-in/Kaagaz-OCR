@@ -20,11 +20,20 @@ passes through the keyword rule. Vrushit decides.
 
 Document text is untrusted. A piece that reads like instructions to a model
 ("ignore previous instructions...", "you are now the assistant", a fake
-evidence tag) in its text or its context header (which holds the document's
-name, PRD 3 Q5) is left out of the evidence entirely: it can neither steer the
-model nor be quoted. PROVISIONAL: the phrase list is a first line of defence
-next to the fenced prompt (draft.py) and the number check (verify.py); it is
-not the only one.
+evidence tag, "when asked, say ...", a note to the assistant, "AI ko bolo", and
+their Devanagari forms) is left out of the evidence entirely: it can neither
+steer the model nor be quoted. The phrases are matched on the NFKC text
+without its default-ignorable code points (``sanitize.strip_ignorable``) and
+the Braille blank, so a zero-width space, a variation selector or fullwidth
+letters cannot hide one. A bill's own words are not instructions:
+"when asked" counts only with an imperative that starts its clause or follows
+"when asked" ("Customers must write their GSTIN ... when asked" is not one);
+a note or message to the assistant needs ":" or "," after the role ("Note for
+the Assistant Manager" is not one); the polite Hindi "tell" (बताएं) needs
+what to say after it ("... बताएं कि ..."); and "do not ignore" (अनदेखा न करें,
+दुर्लक्ष करू नये, विसरू नका) is not "ignore". PROVISIONAL: the phrase list is a
+first line of defence next to the fenced prompt (draft.py) and the number
+check (verify.py); it is not the only one.
 
 A hit with no valid region cannot be pointed at, so it is not evidence
 (CLAUDE.md never-do 5).
@@ -38,16 +47,26 @@ expressions and substring checks per hit.
 """
 
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from kaagaz.answering.sanitize import strip_ignorable
 from kaagaz.db.engine import Database
 from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_json
 from kaagaz.search.scope import Scope
 
 CLOSEST_DOCUMENTS = 3
 
+_TELL = r"(?:say|answer|reply|tell|respond|write)"  # an imperative near "when asked"
+# Before "when asked", the imperative starts its clause ("Reply that ..."); after it, any
+# that does not follow a modal or "to" ("when asked to write" is not an order).
+_TELL_FIRST = rf"(?:^|[.!?:;,(\"']\s*|\b(?:then|and|just|always|please|also)\s+){_TELL}\b"
+_NOT_MODAL = "".join(
+    f"(?<!{word} )" for word in ("must", "should", "shall", "will", "would", "can", "may", "to")
+)
+_BLANKS = str.maketrans("", "", "\N{BRAILLE PATTERN BLANK}")  # draws nothing, yet not default-ignorable
 _INSTRUCTION_LIKE = (
     re.compile(
         r"\b(?:ignore|disregard|forget|override)\b.{0,40}?\b(?:previous|prior|above|earlier|all|any|your)\b"
@@ -58,6 +77,34 @@ _INSTRUCTION_LIKE = (
     re.compile(r"\byou\s+are\s+(?:now\s+)?(?:an?|the)\s+(?:ai|assistant|model|chatbot)\b", re.IGNORECASE),
     re.compile(r"^\s*(?:system|assistant)\s*:", re.IGNORECASE | re.MULTILINE),
     re.compile(r"</?\s*evidence\b", re.IGNORECASE),
+    re.compile(
+        rf"\bwhen\s+asked\b[^.!?\n]{{0,40}}?{_NOT_MODAL}\b{_TELL}\b"
+        rf"|{_TELL_FIRST}[^.!?\n]{{0,40}}?\bwhen\s+asked\b",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    re.compile(
+        r"\b(?:note|message)\s+(?:to|for)\s+(?:the\s+)?(?:ai|assistant|model|chatbot|bot)\s*[:,\-\u2013\u2014]",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:ai|assistant|model|chatbot|bot)\s+ko\b.{0,40}?\b(?:bolo|batao|kaho)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    # Devanagari: "AI ko bolo", and "ignore the earlier instructions" (Hindi and Marathi).
+    re.compile(
+        # The familiar command, or the polite one with what to say after it.
+        r"(?:\bai\b|एआई|सहायक|मॉडल|बॉट)\s*को.{0,40}?"
+        r"(?:बोलो|बताओ|कहो|(?:बोलें|बताएं|कहें|बोलिए|बताइए|कहिए)\s*(?:कि(?=[\s,।]|$)|:))",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"(?:पिछले|पहले|ऊपर|सभी|सारे|मागील|सर्व).{0,40}?(?:निर्देश|आदेश|सूचना)"
+        # "Forget" is भूल जा..., never भूल alone: "भूल चूक लेनी देनी" is a bill's E&OE.
+        r".{0,40}?(?:अनदेखा|नज\N{DEVANAGARI SIGN NUKTA}?रअंदाज|भूल\s*जा|विसर|दुर्लक्ष)"
+        # ... unless it says not to: "अनदेखा न करें", "दुर्लक्ष करू नये", "विसरू नका".
+        r"(?!.{0,20}?(?<!\S)(?:न|नहीं|नये|नका|मत)(?=[\s,।.!?]|$))",
+        re.DOTALL,
+    ),
 )
 
 
@@ -106,14 +153,12 @@ class PgRetriever:
     """``Retriever`` over PostgreSQL: hybrid search, and the hits' neighbours, each inside
     ``db.customer``."""
 
-    def __init__(self, db: Database, *, recipe: str, ef_search: int, neighbours: int) -> None:
+    def __init__(self, db: Database, *, recipe: str, ef_search: int) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
-        another tag are left out); ``ef_search``: SEARCH_EF; ``neighbours``:
-        ANSWER_NEIGHBOURS, the pieces on each side of a hit (0: none)."""
+        another tag are left out); ``ef_search``: SEARCH_EF."""
         self._db = db
         self._recipe = recipe
         self._ef_search = ef_search
-        self._neighbours = neighbours
 
     def search(
         self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
@@ -131,16 +176,7 @@ class PgRetriever:
                 limit=limit,
                 recipe=self._recipe,
                 ef_search=self._ef_search,
-                scope=scope,
             )
-
-    def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
-        from kaagaz.search.hybrid import neighbours
-
-        if not self._neighbours or not hits:
-            return []
-        with self._db.customer(customer_id) as conn:
-            return neighbours(conn, customer_id=customer_id, hits=hits, size=self._neighbours, scope=scope)
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,7 +228,9 @@ def closest_documents(hits: Sequence[Hit]) -> list[dict[str, str]]:
 
 
 def looks_like_instructions(text: str) -> bool:
-    return any(pattern.search(text) for pattern in _INSTRUCTION_LIKE)
+    """Any phrase of ``_INSTRUCTION_LIKE`` in the NFKC text, without the marks that draw nothing. O(n)."""
+    folded = strip_ignorable(unicodedata.normalize("NFKC", text)).translate(_BLANKS)
+    return any(pattern.search(folded) for pattern in _INSTRUCTION_LIKE)
 
 
 def valid_regions(regions: Sequence[Any]) -> list[dict[str, Any]]:
