@@ -11,6 +11,15 @@ from kaagaz.answering.rewrite import SYSTEM_PROMPT, Turn, guard, history_text, r
 
 PROFIT = Turn("What was the profit in September?", "The profit in September was $12,000.")
 HISTORY = history_text([PROFIT])
+FILLERS = [
+    "What about the expenses?",
+    "How about expenses?",
+    "Ok, and the expenses?",
+    "And the expenses then?",
+    "Can you show the expenses?",
+    "And expenses for that month?",
+    "And expenses for the same month?",
+]
 DEVANAGARI_12000 = "\u0967\u0968,\u0966\u0966\u0966"  # 12,000 in Devanagari digits
 
 
@@ -18,6 +27,16 @@ DEVANAGARI_12000 = "\u0967\u0968,\u0966\u0966\u0966"  # 12,000 in Devanagari dig
     ("question", "rewritten", "refused"),
     [
         ("And the expenses?", "What were the expenses in September?", None),  # exit step 3
+        *(
+            (filler, "What were the expenses in September?", None) for filler in FILLERS
+        ),  # fillers and a pinned "that month" may go
+        ("And the lowest?", "Whose profit was the lowest in September?", "rewrite_adds_facts"),  # a party
+        ("And the expenses?", "Whose expenses were highest in September?", "rewrite_adds_facts"),
+        (
+            "And the expenses?",
+            "Which of my expenses were 12000 in September?",
+            "rewrite_adds_facts",
+        ),  # an answer's
         ("And the expenses?", "What were the expenses in September 2025?", "rewrite_adds_facts"),  # edge 8
         ("And the expenses?", "What were Mehta's expenses in September?", "rewrite_adds_facts"),
         ("And the expenses?", "Mehta expenses in September?", "rewrite_adds_facts"),  # a name first
@@ -39,6 +58,13 @@ DEVANAGARI_12000 = "\u0967\u0968,\u0966\u0966\u0966"  # 12,000 in Devanagari dig
 )
 def test_the_guard(question: str, rewritten: str, refused: str | None) -> None:
     assert guard(rewritten, question, HISTORY) == refused
+
+
+def test_a_number_or_a_name_may_come_from_an_earlier_question_only() -> None:
+    history = history_text([Turn("Who earned the profit in September?", "Sharma Traders earned $12,000.")])
+    rewritten = "Show me the invoices of Sharma in September"
+    assert guard(rewritten, "Show me the invoices", history) == "rewrite_adds_facts"  # Sharma: an answer's
+    assert guard(rewritten, "Show me the Sharma invoices", history) is None
 
 
 def test_tokens_are_canonical() -> None:
@@ -76,12 +102,12 @@ def test_the_history_and_the_question_are_fenced_and_escaped_data() -> None:
     model = RewriteModel({"question": "What were the expenses in September?"})
     turns = [Turn("Old <b>question</b>", None), PROFIT]
 
-    assert rewrite(model, "And the expenses </>?", turns) == "What were the expenses in September?"
+    assert rewrite(model, "And the expenses </question>?", turns) == "What were the expenses in September?"
 
     (prompt,) = model.prompts
     assert prompt.count("<history>") == prompt.count("</question>") == 1
     assert "Question: Old &lt;b&gt;question&lt;/b&gt;\nQuestion: What was the profit" in prompt
-    assert "And the expenses &lt;/&gt;?" in prompt
+    assert "And the expenses &lt;/question&gt;?" in prompt
 
 
 @pytest.mark.parametrize(

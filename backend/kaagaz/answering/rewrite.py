@@ -18,10 +18,14 @@ messages.rewritten_question CHECK), reads like instructions, or fails the guard.
 ``fold_digits``, no comma inside a number, no ``₹`` or ``Rs``, then ``normalise``
 (lower case, Devanagari in Latin letters, the Hinglish words), and a decimal
 without its trailing zeros. So 12,000 in Devanagari digits is "12000",
-"1,20,000" is "120000" and "पाटील" is "patil". A rewrite is refused when it holds
-any token that is in neither the history, the question nor ``_STOP`` (a name, a
-number, a month, a period or a metric of its own), or when it leaves out a
-number, a topic word or a date word of the question.
+"1,20,000" is "120000" and "पाटील" is "patil" (markup is cleaned off first, as off
+the rewrite). A rewrite is refused when it holds any token that is in neither the
+question, the history nor ``_STOP`` (a name, a number, a month, a period, a metric
+or a "whose" of its own); a number or a name (a capitalised or Devanagari word)
+may come from an earlier question only, never from an answer. It is also refused
+when it leaves out a number, a topic word or a date word of the question, but for
+fillers ("what about", "ok", "then") and a bare "month" or "year" the rewrite
+pins to a date word of the history ("for that month" -> "in September").
 
 Time: one model call; the guard is O(h + q + r) in the characters of the
 history, the question and the rewrite.
@@ -38,7 +42,7 @@ from kaagaz.answering.draft import _escape
 from kaagaz.answering.evidence import looks_like_instructions
 from kaagaz.answering.hinglish import _NOT_KEYWORDS, DATE_WORDS, normalise
 from kaagaz.answering.sanitize import clean_text
-from kaagaz.chunking.script import fold_digits
+from kaagaz.chunking.script import fold_digits, has_devanagari_letters
 
 _log = logging.getLogger(__name__)
 
@@ -69,9 +73,13 @@ SCHEMA: dict[str, Any] = {
 _RUPEES = re.compile(r"₹|\brs\b\.?", re.IGNORECASE)
 _DIGIT_COMMA = re.compile(r"(?<=\d),(?=\d)")
 # The function words a rewrite may add (normalise keeps them; it drops "the" and the Hindi
-# fillers): never a topic. "much" and "many" are not: "how much" asks for a total. "s" is
-# the possessive ("Patil's"), "aur" the Hinglish "and".
-_STOP = (_NOT_KEYWORDS - {"much", "many"}) | {"now", "aur", "s"}
+# fillers): never a topic, nor a word a fixed-query plan reads ("how much" asks for a total,
+# "whose" for a party, kaagaz/answering/intent.py). "s" is the possessive ("Patil's"), "aur"
+# the Hinglish "and".
+_STOP = (_NOT_KEYWORDS - {"much", "many", "who", "whose", "whom", "which"}) | {"now", "aur", "s"}
+# Words of the question a rewrite may leave out: fillers that say nothing about the facts.
+_FILLERS = _STOP | {"about", "ok", "okay", "then", "same", "that", "can", "could", "also", "too", "so"}
+_PERIODS = frozenset({"month", "months", "year", "years", "week", "day", "days"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,19 +131,38 @@ def history_text(history: Sequence[Turn]) -> str:
 
 def guard(rewritten: str, question: str, history: str) -> str | None:
     """None when the rewrite may be used, else the reason code (the module docstring)."""
-    found = tokens(rewritten)
-    if found - tokens(question) - tokens(history) - _STOP:
+    found, past = tokens(rewritten), _history_tokens(history)
+    if found - tokens(question) - past - _STOP:
         return "rewrite_adds_facts"
-    asked = normalise(_canonical(question))
+    asked = normalise(_canonical(clean_text(question)))
     needed = {*asked.keywords, *(word for word in asked.words if word in DATE_WORDS or _has_digit(word))}
-    if not {_number(word) for word in needed} - _STOP <= found:
-        return "rewrite_drops_facts"
-    return None
+    needed = {_number(word) for word in needed} - _FILLERS
+    pinned = not {"last", "this"} & set(asked.words) and not any(map(_has_digit, asked.words))
+    if pinned and found & past & DATE_WORDS - _PERIODS:
+        needed -= _PERIODS
+    return None if needed <= found else "rewrite_drops_facts"
 
 
 def tokens(text: str) -> set[str]:
     """The canonical tokens of ``text`` (the module docstring). O(n)."""
-    return {_number(word) for word in normalise(_canonical(text)).words}
+    return {_number(word) for word in normalise(_canonical(clean_text(text))).words}
+
+
+def _history_tokens(history: str) -> set[str]:
+    """The tokens a rewrite may take from ``history_text``: every one of its questions',
+    and its answers' but for numbers and names (a word with a digit, a capital first
+    letter or a Devanagari letter). O(h)."""
+    asked: list[str] = []
+    answered: list[str] = []
+    for line in history.splitlines():
+        kind, _, text = line.partition(": ")
+        (asked if kind == "Question" else answered).append(text)
+    plain = [word for text in answered for word in text.split() if not _number_or_name(word)]
+    return tokens(" ".join(asked)) | tokens(" ".join(plain))
+
+
+def _number_or_name(word: str) -> bool:
+    return _has_digit(word) or word[:1].isupper() or has_devanagari_letters(word)
 
 
 def _canonical(text: str) -> str:

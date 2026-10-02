@@ -89,7 +89,7 @@ from kaagaz.settings import Settings
 Status = Literal["answered", "not_found", "unchecked"]
 Route = Literal["fixed_query", "search"]
 _MAX_NAME = 100  # a party name longer than this is cut in the sentence
-_REPLY_TOKENS = 1024  # PROVISIONAL: the room a draft's reply (and its repair) is given
+_REPLY_TOKENS = 1024  # PROVISIONAL: a draft's reply budget (num_predict), kept free of evidence
 _FENCE_TOKENS = 10  # an evidence tag and its line breaks
 
 
@@ -387,7 +387,7 @@ class AnswerService:
         if self._model is not None:
             asked = f"{question} (in English: {normalised.english})" if normalised.hinglish else question
             try:
-                return model_draft(self._model, asked, evidence), True
+                return model_draft(self._model, asked, evidence, max_tokens=_REPLY_TOKENS), True
             except (ModelUnavailable, ModelOutputError):
                 pass  # quoting the evidence needs no model
         if mentions_date(normalised):

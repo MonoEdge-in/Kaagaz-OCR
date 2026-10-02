@@ -454,8 +454,8 @@ def neighbours(
     conn: Connection, *, customer_id: str, hits: Sequence[Hit], size: int, scope: Scope = EVERYTHING
 ) -> list[SearchHit]:
     """Q4: the pieces up to ``size`` either side of each hit in its document, in ``scope``,
-    each once, never a hit: the first hit's first, in seq order. ``conn`` is the search's
-    ``Database.customer`` one. One statement, O(h * size * log N) for h hits."""
+    each once, never a hit: the first hit's first, in seq order. ``conn`` comes from
+    ``Database.customer(customer_id)``. One statement, O(h * size * log N) for h hits."""
     if size < 1 or not hits or scope.matches_nothing:
         return []
     params = {

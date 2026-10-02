@@ -215,6 +215,16 @@ def test_an_invoice_whose_check_failed_is_never_a_verified_total(db: Database) -
 
     assert (answer["status"], answer["route"], answer["label"]) == ("answered", "fixed_query", "needs_review")
     assert {c["label"] for c in answer["citations"]} == {"needs_review"}
+    # Not cited (no valid spot), it still makes the total needs review: the aggregate's own label.
+    clean = add_document(db, customer, "clean.pdf")
+    add_values(db, customer, clean, [cell("document", "total_amount", "100", number=100)])
+    with db.customer(customer) as conn:
+        sql = "UPDATE extracted_values SET region = CAST(:r AS jsonb)"
+        sql += " WHERE customer_id = :c AND document_id = :d"
+        conn.execute(text(sql), {"r": '{"kind": "cell"}', "c": customer, "d": document})
+    answer = service.answer(customer, "What is the total amount?").to_json()
+    assert answer["sentences"][0]["text"] == "The total amount was 11,900, from 2 records."
+    assert ([c["label"] for c in answer["citations"]], answer["label"]) == (["verified"], "needs_review")
 
 
 def test_an_instruction_like_hits_neighbours_never_reach_the_draft(db: Database) -> None:

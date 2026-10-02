@@ -100,9 +100,13 @@ def _block(item: Evidence) -> str:
     return f'<evidence id="{item.n}"{mark}>\n{context}{_escape(item.hit.text)}\n</evidence>'
 
 
-def model_draft(model: ModelClient, question: str, evidence: Sequence[Evidence]) -> Draft:
-    """Ask the model. Raises ModelUnavailable, or ModelOutputError for a reply of the wrong shape."""
-    reply = model.chat_json(system=SYSTEM_PROMPT, user=user_prompt(question, evidence), schema=ANSWER_SCHEMA)
+def model_draft(
+    model: ModelClient, question: str, evidence: Sequence[Evidence], *, max_tokens: int | None = None
+) -> Draft:
+    """Ask the model, for at most ``max_tokens`` reply tokens. Raises ModelUnavailable, or
+    ModelOutputError for a reply of the wrong shape or one cut at the budget."""
+    user = user_prompt(question, evidence)
+    reply = model.chat_json(system=SYSTEM_PROMPT, user=user, schema=ANSWER_SCHEMA, max_tokens=max_tokens)
     return _parse(reply)
 
 

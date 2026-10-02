@@ -424,7 +424,9 @@ _COUNT_DOCUMENTS = text(
     """
     WITH dated AS (
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
-               bool_and(v.label = 'verified') AS verified
+               bool_and(v.label = 'verified') AND NOT EXISTS (SELECT 1 FROM invoices i
+                   WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
+                   AND i.check_status = 'failed') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
