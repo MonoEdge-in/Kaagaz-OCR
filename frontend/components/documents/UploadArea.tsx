@@ -8,13 +8,15 @@
 // progress bar, into the folder that was being viewed when they were added.
 // A new version of a document ("Upload new version") goes through the same
 // queue. The outcome, including "already uploaded" and any error, stays next
-// to its file; a duplicate whose earlier copy is in Trash offers Restore.
+// to its file until "Clear finished"; a duplicate whose earlier copy is in
+// Trash offers Restore. Each batch is summed up once when it settles
+// (uploadQueue.ts); the documents screen says it.
 // Each file is sent with who was signed in when it was added, so the server
 // refuses it if another account has signed in since (critical #5); then
 // no file still waiting is sent, and each says why.
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -32,6 +34,7 @@ import {
   estimateIngestSeconds,
   estimateText,
   sessionChangedMessage,
+  uploadErrorText,
   uploadKind,
   uploadLimitsHint,
   uploadStateText,
@@ -39,21 +42,9 @@ import {
 } from "./logic";
 import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
+import { EMPTY_QUEUE, isBusy, queueReducer } from "./uploadQueue";
+import type { UploadEntry } from "./uploadQueue";
 import styles from "./Documents.module.css";
-
-export interface UploadEntry {
-  key: string;
-  name: string;
-  size: number;
-  versionOf?: string; // for a new version: the name of the document it updates
-  pages?: number | null; // a PDF's or TIFF's pages, counted just before sending; null when not known
-  state: UploadState;
-}
-
-const isBusy = (entry: UploadEntry) =>
-  entry.state.kind === "waiting" ||
-  entry.state.kind === "uploading" ||
-  entry.state.kind === "restoring";
 
 type Start = (onProgress: (fraction: number) => void) => Promise<UploadResult>;
 
@@ -63,7 +54,7 @@ export function useUploads(onUploaded: () => void) {
   const nextKey = useRef(0);
   // The server's words once another account has signed in here; then nothing more is sent.
   const stopped = useRef<string | null>(null);
-  const [entries, setEntries] = useState<UploadEntry[]>([]);
+  const [queue, dispatch] = useReducer(queueReducer, EMPTY_QUEUE);
   const [limits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
 
   // Asked once. Until it answers, or if it fails, the platform's limits apply;
@@ -82,9 +73,7 @@ export function useUploads(onUploaded: () => void) {
   }, []);
 
   function update(key: string, state: UploadState) {
-    setEntries((current) =>
-      current.map((entry) => (entry.key === key ? { ...entry, state } : entry)),
-    );
+    dispatch({ type: "change", key, change: { state } });
   }
 
   async function send(key: string, start: Start) {
@@ -105,11 +94,7 @@ export function useUploads(onUploaded: () => void) {
       onUploaded();
     } catch (caught) {
       stopped.current ??= sessionChangedMessage(caught);
-      const message =
-        caught instanceof ApiError
-          ? caught.message
-          : "Upload failed. Check your connection, then try again.";
-      update(key, { kind: "error", message });
+      update(key, { kind: "error", message: uploadErrorText(caught, navigator.onLine) });
     }
   }
 
@@ -117,9 +102,7 @@ export function useUploads(onUploaded: () => void) {
   async function checkThenSend(key: string, file: File, start: Start) {
     if (notSent(key)) return;
     const { pages, problem } = await checkPages(file, limits.max_pages);
-    setEntries((current) =>
-      current.map((entry) => (entry.key === key ? { ...entry, pages } : entry)),
-    );
+    dispatch({ type: "change", key, change: { pages } });
     if (problem) update(key, { kind: "error", message: problem });
     else if (!notSent(key)) await send(key, start);
   }
@@ -145,7 +128,7 @@ export function useUploads(onUploaded: () => void) {
       };
       return { entry, file };
     });
-    setEntries((current) => [...added.map((item) => item.entry), ...current]);
+    dispatch({ type: "add", entries: added.map((item) => item.entry) });
     // One at a time, so a big batch does not trip the rate limit.
     for (const { entry, file } of added) {
       if (entry.state.kind === "waiting") {
@@ -162,16 +145,18 @@ export function useUploads(onUploaded: () => void) {
     nextKey.current += 1;
     const key = `upload-${nextKey.current}`;
     const problem = validateUpload(file, limits);
-    setEntries((current) => [
-      {
-        key,
-        name: file.name,
-        size: file.size,
-        versionOf: of.display_name,
-        state: problem ? { kind: "error", message: problem } : { kind: "waiting" },
-      },
-      ...current,
-    ]);
+    dispatch({
+      type: "add",
+      entries: [
+        {
+          key,
+          name: file.name,
+          size: file.size,
+          versionOf: of.display_name,
+          state: problem ? { kind: "error", message: problem } : { kind: "waiting" },
+        },
+      ],
+    });
     if (!problem) {
       await checkThenSend(key, file, (onProgress) => uploadVersion(of.id, file, userId, onProgress));
     }
@@ -194,10 +179,11 @@ export function useUploads(onUploaded: () => void) {
   }
 
   function clearFinished() {
-    setEntries((current) => current.filter(isBusy));
+    dispatch({ type: "clear" });
   }
 
-  return { entries, limits, addFiles, addVersion, restore, clearFinished };
+  const { entries, finished, settled } = queue;
+  return { entries, finished, settled, limits, addFiles, addVersion, restore, clearFinished };
 }
 
 /**
@@ -292,7 +278,7 @@ export function UploadList({
           <h2 id="uploads-heading" className={styles.smallHeading}>
             Uploads
           </h2>
-          <span className={styles.queueSummary} aria-live="polite">
+          <span className={styles.queueSummary}>
             {active} active · {done} done · {failed} failed
           </span>
         </div>
@@ -302,7 +288,7 @@ export function UploadList({
           </button>
         )}
       </div>
-      <ul className={styles.uploads} aria-live="polite">
+      <ul className={styles.uploads}>
         {entries.map((entry) => (
           <UploadRow key={entry.key} entry={entry} onRestore={onRestore} />
         ))}
