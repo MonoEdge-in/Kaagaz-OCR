@@ -3,14 +3,15 @@
 // The composer, pinned to the foot of the thread. With a mouse or trackpad,
 // Enter sends and Shift+Enter makes a new line; on a touch screen Enter makes a
 // new line and the Send button sends. The box grows with the text up to about
-// six lines. The text stays in the box if sending fails, so nothing typed is
-// lost, and the error offers "Try again".
+// six lines. The box empties as soon as a question is sent, so the next one can
+// be typed while the answer loads. If sending fails, the question comes back
+// (unless something new was typed meanwhile) and the error offers "Try again".
 
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { cleanQuestion, MAX_QUESTION_LENGTH, sendsOnKey } from "./answer";
+import { cleanQuestion, MAX_QUESTION_LENGTH, restoreAfterFailure, sendsOnKey } from "./answer";
 import { useMediaQuery } from "./hooks";
 import styles from "./Chat.module.css";
 
@@ -39,18 +40,40 @@ export function QuestionBox({
   const [text, setText] = useState("");
   const [emptyTried, setEmptyTried] = useState(false);
   const coarse = useMediaQuery("(pointer: coarse)");
+  // Set from the moment a question is accepted, so a quick second Enter or
+  // click cannot send it twice before `pending` arrives.
+  const sending = useRef(false);
+
+  // Fit the box to its text after every change: typing, clearing on send, or
+  // the question coming back after a failure. Empty, it goes back to one line.
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    if (text) fitToText(input);
+    else input.style.height = "";
+  }, [text, inputRef]);
 
   const submit = async () => {
-    if (pending) return;
+    if (pending || sending.current) return;
     const question = cleanQuestion(text);
     if (!question) {
       setEmptyTried(true);
       inputRef.current?.focus();
       return;
     }
-    if (await onAsk(question)) {
-      setText("");
-      if (inputRef.current) inputRef.current.style.height = "";
+    const input = inputRef.current;
+    const focused = document.activeElement;
+    // Keep typing in the box when the send came from this form. On a touch
+    // screen only when the box itself had focus: focusing it opens the keyboard.
+    const keepFocus = coarse ? focused === input : Boolean(input?.form?.contains(focused));
+    const sent = text;
+    sending.current = true;
+    setText("");
+    if (keepFocus) input?.focus({ preventScroll: true });
+    try {
+      if (!(await onAsk(question))) setText((current) => restoreAfterFailure(current, sent));
+    } finally {
+      sending.current = false;
     }
   };
 
@@ -96,7 +119,6 @@ export function QuestionBox({
           onChange={(event) => {
             setText(event.target.value);
             if (emptyTried) setEmptyTried(false);
-            fitToText(event.target);
           }}
           onKeyDown={(event) => {
             const { key, shiftKey } = event;

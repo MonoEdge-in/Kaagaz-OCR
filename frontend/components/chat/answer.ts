@@ -2,7 +2,7 @@
 // unit tested in node (tests/chat-*.test.ts): which source card a citation
 // number points at, the words for an answer's label, when to show how the
 // question was understood, what a source card may still show of its
-// document, and what the question box sends.
+// document, and what the question box sends or gets back.
 
 import { pageLink } from "@/lib/regions";
 import type { Answer, AnswerSentence, Citation, Label, Message, Region } from "@/lib/types";
@@ -172,6 +172,15 @@ export function cleanQuestion(text: string): string | null {
   const question = text.trim();
   if (!question) return null;
   return question.slice(0, MAX_QUESTION_LENGTH);
+}
+
+/**
+ * The box empties as soon as a question is sent. If sending fails, the sent
+ * text comes back, but only into an empty box: anything typed meanwhile is
+ * never overwritten.
+ */
+export function restoreAfterFailure(current: string, sent: string): string {
+  return current === "" ? sent : current;
 }
 
 /** A down vote's reason: optional, trimmed, at most 500 characters. */
