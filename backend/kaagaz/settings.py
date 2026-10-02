@@ -13,7 +13,7 @@ import math
 import os
 import urllib.parse
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # AR1: seconds to spare between one OCR request (the longest step without a
@@ -26,6 +26,8 @@ OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
 # AR1: seconds to spare between the longest model step without a heartbeat (one
 # chat_json: a call and its repair retry) and the job's lease.
 _MODEL_LEASE_MARGIN_SECONDS = 60
+# The size of the pieces' vector(1024) column (migration 0001): EMBEDDING_DIM must match it.
+EMBEDDING_DIM = 1024
 # Council 5 (PROVISIONAL): an invoice window's reply needs about this many tokens for each
 # line item, taking one line item per _WINDOW_LINE_CHARS characters of the window, plus
 # _WINDOW_FIELD_TOKENS for its nine fields. The window must fit MODEL_WINDOW_MAX_TOKENS.
@@ -74,15 +76,15 @@ class Settings:
     # Database. The app switches to ``db_app_role`` in every transaction, a role
     # that is not a superuser, does not own the tables and has no BYPASSRLS, so
     # row level security always applies (docs/architecture.md).
-    database_url: str
+    database_url: str = field(repr=False)  # it can hold a password
     db_app_role: str
 
     # File storage (S3 API: SeaweedFS on the laptop, Amazon S3 in AWS).
     storage_endpoint_url: str | None
     storage_region: str
     storage_bucket: str
-    storage_access_key: str | None
-    storage_secret_key: str | None
+    storage_access_key: str | None = field(repr=False)
+    storage_secret_key: str | None = field(repr=False)
 
     # Queue (SQS API: ElasticMQ on the laptop, Amazon SQS in AWS).
     queue_endpoint_url: str | None
@@ -164,10 +166,10 @@ class Settings:
     # (kaagaz.api.secret_box); it must differ from the session secret, so one
     # leaked value does not give away both. Lockout: after login_max_failures
     # wrong attempts in a row the account is locked for login_lock_minutes.
-    session_secret: str
+    session_secret: str = field(repr=False)
     session_hours: int
     cookie_secure: bool
-    totp_encryption_key: str
+    totp_encryption_key: str = field(repr=False)
     login_max_failures: int
     login_lock_minutes: int
     admin_session_minutes: int
@@ -239,6 +241,9 @@ class Settings:
                 "EXTRACT_WINDOW_CHARS is too long for MODEL_WINDOW_MAX_TOKENS: a window needs about"
                 " 50 reply tokens for every 50 characters, plus 300"
             )
+        embedding_dim = env.integer("EMBEDDING_DIM")
+        if embedding_dim != EMBEDDING_DIM:
+            raise SettingsError(f"EMBEDDING_DIM must be {EMBEDDING_DIM}, the size of the vector column")
         extract_timeout_seconds = env.number("MODEL_EXTRACT_TIMEOUT_SECONDS")
         if not (math.isfinite(extract_timeout_seconds) and extract_timeout_seconds > 0):
             raise SettingsError("MODEL_EXTRACT_TIMEOUT_SECONDS must be a number above 0")
@@ -291,7 +296,7 @@ class Settings:
             model_chat=env.text("MODEL_CHAT"),
             model_embed=env.text("MODEL_EMBED"),
             model_vision=env.optional("MODEL_VISION"),
-            embedding_dim=env.integer("EMBEDDING_DIM"),
+            embedding_dim=embedding_dim,
             model_timeout_seconds=env.number("MODEL_TIMEOUT_SECONDS"),
             model_num_ctx=model_num_ctx,
             model_card_max_tokens=card_max_tokens,
