@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
-from kaagaz.answering.words_text import WordText, check_meaning, check_word
+from kaagaz.answering.words_text import check_meaning, check_word
 from kaagaz.db import user_words
 from kaagaz.db.engine import Database
 from kaagaz.db.user_words import MAX_MEANINGS, MAX_WORDS, Added, HasMeaning, WordError, WordRow
@@ -132,10 +132,12 @@ def test_update_changes_the_word_or_the_meaning_by_the_same_rules(db: Database) 
     with db.user(customer, user) as conn:
         changed = user_words.update_word(conn, customer, user, bojha.id, meaning=check_meaning("charge"))
         renamed = user_words.update_word(conn, customer, user, bojha.id, word=check_word("Bojaa").word)
+    assert isinstance(changed, WordRow)
+    assert isinstance(renamed, WordRow)
     assert (changed.id, changed.word, changed.meaning) == (bojha.id, "bojha", "charge")
     assert (renamed.word, renamed.meaning) == ("Bojaa", "charge")
     malak = check_word("malak").word
-    cases: list[tuple[str, str, dict[str, WordText]]] = [
+    cases: list[tuple[str, str, dict[str, Any]]] = [
         ("conflict", bojha.id, {"word": malak, "meaning": check_meaning("boss")}),
         ("too_many_meanings", bojha.id, {"word": malak}),
         ("not_found", str(uuid.uuid4()), {"meaning": check_meaning("x")}),
@@ -189,9 +191,10 @@ def test_spots_are_kept_once_and_listed_per_page_with_their_word(db: Database) -
         on_page = user_words.spots_on_page(conn, customer, user, document, 2)
         assert count_rows(conn, _SPOTS_OF, {"d": document}) == 3
         assert user_words.spots_on_page(conn, customer, user, document, 1) == []
+    # Written in one transaction, so created_at ties: then by word, never by the random ids.
     assert [(s.word_id, s.word, s.meaning, s.page_no, s.region) for s in on_page] == [
-        (malak.id, "malak", "owner", 2, box),
         (bojha.id, "bojha", "charge", 2, cell),
+        (malak.id, "malak", "owner", 2, box),
     ]
 
 
@@ -213,6 +216,38 @@ def test_two_adds_of_one_user_wait_for_each_other(db: Database) -> None:
             wait(db, application_name=session)
         assert isinstance(first, Added)
         assert later.result(timeout=10) == Added(word=first.word, outcome="already")
+
+
+def test_a_delete_waits_for_an_add_of_the_same_user_so_its_spot_never_fails(db: Database) -> None:
+    """Without the user lock in delete_word, the delete would remove the word between
+    the add's read and its spot, and the spot's key would fail (a 500)."""
+    customer, user = new_customer(db)
+    malak = added(db, customer, user, "malak", "owner")
+    session = f"words-{uuid.uuid4().hex[:16]}"
+    with db.user(customer, user) as conn:
+        document = insert_document(conn, customer)
+
+    def delete_it() -> bool:
+        with db.user(customer, user) as conn:
+            name_session(conn, session)
+            return user_words.delete_word(conn, customer, user, malak.id)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with db.user(customer, user) as conn:
+            again = user_words.add_word(
+                conn,
+                customer,
+                user,
+                word=check_word("malak").word,
+                meaning=check_meaning("owner"),
+                source="upload",
+            )
+            later = pool.submit(delete_it)
+            wait(db, application_name=session)
+            user_words.add_spot(conn, customer, user, word_id=malak.id, document_id=document)
+        assert again == Added(word=malak, outcome="already")
+        assert later.result(timeout=10) is True
+    assert meanings(db, customer, user) == []
 
 
 def test_a_malformed_user_id_fails_before_any_policy(db: Database) -> None:

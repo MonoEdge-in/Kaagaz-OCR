@@ -57,7 +57,16 @@ def test_a_word_is_created_listed_and_audited_with_ids_and_counts_only(db: Datab
     assert reply.status_code == 201
     body = reply.json()
     assert (body["outcome"], body["warning"]) == ("created", None)
-    assert set(body["word"]) == {"id", "word", "meaning", "as_read", "source", "created_at", "updated_at"}
+    assert set(body["word"]) == {
+        "id",
+        "word",
+        "meaning",
+        "as_read",
+        "source",
+        "built_in",
+        "created_at",
+        "updated_at",
+    }
     assert (body["word"]["word"], body["word"]["source"]) == ("Malak", "manual")
     assert listed(signed) == [("Malak", "owner")]
     assert audited(api, signed) == [
@@ -142,6 +151,44 @@ def test_a_word_chat_already_knows_is_kept_with_a_warning(db: Database) -> None:
     signed = Api(db).new_signed()
     assert post(signed, "kam", "work").json()["warning"] == "built_in"
     assert post(signed, "kaam", "work").json()["warning"] is None
+    items = signed.client.get("/api/me/words").json()["items"]
+    assert [(item["word"], item["built_in"]) for item in items] == [
+        ("kaam", False),
+        ("kam", True),
+    ]  # the badge
+
+
+def test_patch_onto_a_word_with_meanings_asks_first_like_post(db: Database) -> None:
+    signed = Api(db).new_signed()
+    boss = post(signed, "malak", "boss").json()["word"]
+    path = f"/api/me/words/{post(signed, 'bojha', 'charge').json()['word']['id']}"
+
+    asked = signed.client.patch(path, json={"word": "Malak"}, headers=CSRF)
+    confirmed = signed.client.patch(path, json={"word": "Malak", "confirm_another": True}, headers=CSRF)
+
+    assert error(asked) == (409, "word_has_meaning")
+    assert asked.json()["error"]["details"] == {"existing": [{"id": boss["id"], "meaning": "boss"}]}
+    assert confirmed.status_code == 200
+    assert listed(signed) == [("malak", "boss"), ("Malak", "charge")]
+
+
+def test_patch_with_replace_id_takes_the_place_of_that_meaning(db: Database) -> None:
+    signed = Api(db).new_signed()
+    boss = post(signed, "malak", "boss").json()["word"]
+    holder = post(signed, "bojha", "holder").json()["word"]
+    charge = post(signed, "bojha", "charge", confirm_another=True).json()["word"]
+
+    def patch(word_id: str, **body: Any) -> httpx.Response:
+        reply: httpx.Response = signed.client.patch(f"/api/me/words/{word_id}", json=body, headers=CSRF)
+        return reply
+
+    assert error(patch(charge["id"], word="malak", replace_id=charge["id"])) == (409, "conflict")  # itself
+    assert error(patch(charge["id"], word="malak", replace_id=holder["id"])) == (400, "not_same_word")
+    assert error(patch(charge["id"], word="malak", replace_id=UNKNOWN)) == (404, "not_found")
+    replaced = patch(charge["id"], word="malak", replace_id=boss["id"])
+
+    assert (replaced.status_code, replaced.json()["word"]["id"]) == (200, charge["id"])  # keeps its id
+    assert listed(signed) == [("bojha", "holder"), ("malak", "charge")]
 
 
 def test_patch_changes_the_word_or_meaning_and_delete_removes_it(db: Database) -> None:
@@ -184,7 +231,8 @@ def test_every_write_from_a_tab_of_another_account_is_session_changed(db: Databa
         assert error(reply) == (409, "session_changed")
         assert reply.json()["error"]["message"].startswith("Not saved.")
     assert post(signed, "bojha", "charge", user_id=signed.user_id).status_code == 201  # the same user
-    assert listed(signed) == [("bojha", "charge"), ("malak", "boss")]
+    assert post(signed, "kaam", "work", user_id=signed.user_id.upper()).status_code == 201  # in capitals too
+    assert listed(signed) == [("bojha", "charge"), ("kaam", "work"), ("malak", "boss")]
 
 
 def test_words_from_an_upload_and_a_viewer_spot_are_linked_to_their_documents(db: Database) -> None:
@@ -226,6 +274,7 @@ def _box(**changes: Any) -> dict[str, Any]:
         ({"region": _box(page="2")}, 400),
         ({"region": _box(note="x")}, 400),  # an unknown key
         ({"region": {"kind": "cell", "page": 2, "row": 0, "column": 1}}, 400),
+        ({"region": {"kind": "cell", "page": 2, "row": 10**30, "column": 1}}, 400),  # never a 500
         ({"region": {"kind": "line", "page": 2}}, 400),
         ({"extra": True}, 400),
         ({"document_id": UNKNOWN}, 404),

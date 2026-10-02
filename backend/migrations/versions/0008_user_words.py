@@ -108,7 +108,7 @@ UPGRADE = [
         region jsonb NULL CHECK (jsonb_typeof(region) = 'object' AND pg_column_size(region) <= 256),
         created_at timestamptz NOT NULL DEFAULT now(),
         CONSTRAINT user_word_spots_page_with_region CHECK ((page_no IS NULL) = (region IS NULL)),
-        CONSTRAINT user_word_spots_region_page CHECK (region -> 'page' = to_jsonb(page_no)),
+        CONSTRAINT user_word_spots_region_page CHECK (region IS NULL OR coalesce(region ->> 'kind' IN ('box', 'cell') AND region -> 'page' = to_jsonb(page_no), false)),
         CONSTRAINT user_word_spots_once UNIQUE NULLS NOT DISTINCT
             (customer_id, user_id, word_id, document_id, page_no, region),
         FOREIGN KEY (customer_id, user_id, word_id)

@@ -124,7 +124,7 @@ _SPOTS = (
     " JOIN user_words w ON w.customer_id = s.customer_id AND w.user_id = s.user_id AND w.id = s.word_id"
     " WHERE s.customer_id = :c AND s.user_id = :me AND w.customer_id = :c AND w.user_id = :me"
     " AND s.document_id = :d AND s.page_no = :p"
-    " ORDER BY s.created_at, s.id"
+    " ORDER BY s.created_at, w.word_fold, w.meaning_fold, s.id"
 )
 
 
@@ -182,22 +182,43 @@ def update_word(
     *,
     word: WordText | None = None,
     meaning: WordText | None = None,
-) -> WordRow:
+    confirm_another: bool = False,
+    replace_id: str | None = None,
+) -> WordRow | HasMeaning:
     """Change a word's text, its meaning, or both (None keeps it). Raises WordError:
     not_found; conflict when the result is another row of this user; too_many_meanings
-    when it moves to a word that has MAX_MEANINGS already. Under the user lock, like
-    ``add_word``. O(log W + m) time, O(m) space."""
+    when it moves to a word that has MAX_MEANINGS already. Moving to a word that has
+    other meanings asks first, as ``add_word`` does (``HasMeaning``, nothing written),
+    unless ``confirm_another``, or ``replace_id`` names the meaning it replaces: that
+    row is deleted and this one keeps its id and spots (not_same_word for another
+    word, conflict for this row itself). Under the user lock, like ``add_word``.
+    O(log W + m) time, O(m) space."""
     me = {"c": customer_id, "me": user_id}
     _lock_user(conn, me)
     current = _get(conn, me, word_id)
     new_word = word or WordText(text=current.word, fold=current.word_fold)
-    return _update(conn, me, current, new_word, meaning or WordText(current.meaning, current.meaning_fold))
+    new_meaning = meaning or WordText(current.meaning, current.meaning_fold)
+    if replace_id is not None:
+        replaced = _get(conn, me, replace_id)
+        if replaced.id == current.id:
+            raise WordError("conflict")
+        if replaced.word_fold != new_word.fold:
+            raise WordError("not_same_word")
+        conn.execute(text(_DELETE), {**me, "id": replaced.id})
+    elif new_word.fold != current.word_fold and not confirm_another:
+        same = list(conn.execute(text(_SAME_WORD), {**me, "wf": new_word.fold}))
+        if same and len(same) < MAX_MEANINGS and all(row.meaning_fold != new_meaning.fold for row in same):
+            return HasMeaning(existing=[_word(row) for row in same])
+    return _update(conn, me, current, new_word, new_meaning)
 
 
 def delete_word(conn: Connection, customer_id: str, user_id: str, word_id: str) -> bool:
     """Delete one word of this user, and its spots with it (ON DELETE CASCADE).
-    False if there is no such word. O(log W + s) for its s spots."""
+    False if there is no such word. Under the user lock, so it waits for an add or a
+    change of the same user to finish. O(log W + s) for its s spots."""
     params = {"c": customer_id, "me": user_id, "id": word_id}
+    if conn.execute(text(_LOCK_USER), params).first() is None:
+        return False  # not a user of this customer, so no word of theirs either
     return conn.execute(text(_DELETE), params).first() is not None
 
 
@@ -249,7 +270,10 @@ def _update(
         raise WordError("conflict")
     if word.fold != current.word_fold and len(same) >= MAX_MEANINGS:
         raise WordError("too_many_meanings")
-    return _word(conn.execute(text(_UPDATE), {**me, **_texts(word, meaning), "id": current.id}).one())
+    updated = conn.execute(text(_UPDATE), {**me, **_texts(word, meaning), "id": current.id}).first()
+    if updated is None:  # gone since it was read: only a writer that skipped the user lock
+        raise WordError("not_found")
+    return _word(updated)
 
 
 def _texts(word: WordText, meaning: WordText) -> dict[str, str]:
