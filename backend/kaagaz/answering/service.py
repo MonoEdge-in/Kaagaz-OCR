@@ -28,9 +28,10 @@ every sentence cites at least one source, and every source has a region.
 Nothing here logs the question or any document text: a model error is logged
 as its code, and each model answer as the model's tag and ANSWER_PROMPT_HASH.
 
-Time: one ``available_fields`` query, then either one fixed query or one
-search plus at most one model call; the rest is O(e * t) over e pieces of
-evidence of t characters.
+Time: one ``available_fields`` query only for a question with an aggregate
+word and no unknown topic word, then either one fixed query or one search plus
+at most one model call; the rest is O(e * t) over e pieces of evidence of t
+characters.
 """
 
 import logging
@@ -38,6 +39,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from functools import partial
 from itertools import zip_longest
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -176,9 +178,8 @@ class AnswerService:
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
         found_range = date_range(normalised, self._today())
-        plan = plan_fixed(
-            normalised, found_range, mentions_date(normalised), self._fixed.available_fields(customer_id)
-        )
+        fields = partial(self._fixed.available_fields, customer_id)  # asked for only if a plan could follow
+        plan = plan_fixed(normalised, found_range, mentions_date(normalised), fields)
         if plan is not None:
             return self._fixed_answer(customer_id, plan, shown)
         unchecked = self._unchecked_answer(customer_id, normalised, shown)

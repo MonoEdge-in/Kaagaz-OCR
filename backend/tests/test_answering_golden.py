@@ -197,10 +197,10 @@ class FakeFixedQueries:
         self.calls: list[str] = []
         self.field_calls: list[str] = []  # the customer of each available_fields call
 
-    def available_fields(self, customer_id: str, fields: Sequence[str] | None = None) -> set[str]:
+    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]:
         self.field_calls.append(customer_id)
         found = {s.ref.field for record in self.records.get(customer_id, []) for s in record}
-        return found if fields is None else found & set(fields)
+        return found & set(fields)
 
     def _matching(
         self,

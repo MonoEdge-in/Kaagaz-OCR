@@ -19,7 +19,7 @@ from kaagaz.answering import fixed_queries
 from kaagaz.answering.dates import date_range, mentions_date
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, PgFixedQueries
 from kaagaz.answering.hinglish import normalise
-from kaagaz.answering.intent import FixedPlan, plan_fixed
+from kaagaz.answering.intent import FIELDS, FixedPlan, plan_fixed
 from kaagaz.db.engine import Database
 from kaagaz.extraction.labelled import values_from_lines
 from kaagaz.extraction.parsing import parse_amount, parse_date
@@ -129,7 +129,7 @@ def test_available_fields_are_those_of_ready_documents(db: Database) -> None:
     waiting = add_document(db, customer, "b.xlsx", status="clean")
     add_values(db, customer, ready, [cell("sheet:1:row:2", "profit", "5", number=5)])
     add_values(db, customer, waiting, [cell("sheet:1:row:2", "expense", "5", number=5)])
-    assert PgFixedQueries(db).available_fields(customer) == {"profit"}
+    assert PgFixedQueries(db).available_fields(customer, FIELDS) == {"profit"}
 
 
 def test_top_group_sums_per_party_inside_the_month(db: Database, register: Any) -> None:
@@ -504,7 +504,7 @@ def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> N
     customer, document, _ = register
     fixed = PgFixedQueries(db)
     before = (
-        fixed.available_fields(customer),
+        fixed.available_fields(customer, (*FIELDS, "net_worth")),
         fixed.total(customer, "profit", (), None, None),
         fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
         fixed.extreme_value(customer, "profit", (), None, None, True),
@@ -523,7 +523,7 @@ def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> N
     add_values(db, customer, card_only, [{**value, "id": str(uuid.uuid4())} for value in card])
 
     after = (
-        fixed.available_fields(customer),
+        fixed.available_fields(customer, (*FIELDS, "net_worth")),
         fixed.total(customer, "profit", (), None, None),
         fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
         fixed.extreme_value(customer, "profit", (), None, None, True),
@@ -554,7 +554,7 @@ def test_invoice_line_amounts_are_never_used_and_total_amount_still_plans(db: Da
     add_values(db, customer, document, as_stored([*values_from_lines(spans), *lines]))
     fixed = PgFixedQueries(db)
 
-    available = fixed.available_fields(customer)
+    available = fixed.available_fields(customer, (*FIELDS, "invoice_number", "description"))
     assert available == {"party_name", "invoice_number", "invoice_date", "total_amount"}
     assert fixed.total(customer, "amount", (), None, None) == []
     assert fixed.extreme_value(customer, "amount", (), None, None, True) == []
@@ -562,7 +562,10 @@ def test_invoice_line_amounts_are_never_used_and_total_amount_still_plans(db: Da
     assert (august.number, august.records) == (Decimal(1180), 1)
     normalised = normalise("Total amount in August 2026?")
     plan = plan_fixed(
-        normalised, date_range(normalised, date(2026, 9, 30)), mentions_date(normalised), available
+        normalised,
+        date_range(normalised, date(2026, 9, 30)),
+        mentions_date(normalised),
+        lambda asked: fixed.available_fields(customer, asked),
     )
     assert plan == FixedPlan("total", "total_amount", (), ("invoice_date",), *AUGUST)
 
