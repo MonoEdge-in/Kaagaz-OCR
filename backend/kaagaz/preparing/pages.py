@@ -124,9 +124,9 @@ def prepare_pages(
         prepared = PreparedPages([], {}, (detected_type, data, limits))
         with _open_image(data) as header:  # the header only, for the page count
             count = _frame_count(header)
-        number = 0
+        # Not enumerate(): its reused tuple would keep the last frame alive into the next decode.
         for image in image_pages(data, max_pages=max_pages, max_image_pixels=max_image_pixels):
-            number += 1  # noqa: SIM113 - enumerate's reused tuple would keep the last frame alive
+            number = len(prepared.pages) + 1
             prepared.pages.append(PageInfo(number, float(image.width), float(image.height), "px"))
             prepared.checks[number] = _check(image, photo_dpi(image.width, image.height), limits)
             on_picture(number, count, image)
