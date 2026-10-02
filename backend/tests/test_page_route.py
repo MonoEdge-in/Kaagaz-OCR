@@ -4,8 +4,9 @@ kaagaz/reading/route.py: every branch of ``route_for_page``.
 """
 
 import unittest
+from typing import get_args
 
-from kaagaz.reading.route import REASONS, ROUTES, RouteDecision, route_for_page
+from kaagaz.reading.route import Reason, Route, RouteDecision, route_for_page
 
 FAILED = RouteDecision("ocr", "scan_image")  # what text_layer_ok said for a page it sent to OCR
 PASSED = RouteDecision("text_layer", "ok")
@@ -13,9 +14,9 @@ PASSED = RouteDecision("text_layer", "ok")
 
 class RouteForPageTest(unittest.TestCase):
     def test_the_routes_and_reasons_are_the_stored_and_printed_ones(self) -> None:
-        self.assertEqual(ROUTES, ("cells", "text_layer", "ocr", "blank"))  # pages.route CHECK (0004)
+        self.assertEqual(get_args(Route), ("cells", "text_layer", "ocr", "blank"))  # pages.route CHECK (0004)
         self.assertEqual(
-            REASONS,
+            get_args(Reason),
             (
                 "few_chars",
                 "bad_chars",
