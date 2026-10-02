@@ -8,7 +8,8 @@
 // (libraryQuery.ts), so a reload keeps them and Back returns to the folder
 // before. While any document is still being checked or read, the list is
 // asked for again (lib/poll.ts: from every 3 s to every 15 s, never while the
-// tab is hidden); once all have settled, it stops.
+// tab is hidden); once all have settled, it stops. Each finished upload asks
+// for it at once; the screen is never reloaded.
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -37,7 +38,7 @@ import {
   offsetAfterDelete,
   pageInfo,
   shouldPoll,
-  shouldReloadAfterUploads,
+  uploadsFinishedText,
 } from "./logic";
 import { foreverNeeds } from "./trash";
 import { Dropzone, UploadList, useUploads } from "./UploadArea";
@@ -81,15 +82,14 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const [tagsVersion, setTagsVersion] = useState(0);
   const [foldersOpen, setFoldersOpen] = useState(false);
   const uploads = useUploads(() => setReload((n) => n + 1));
+  const filtered = isFiltered(library);
 
-  useEffect(() => {
-    if (shouldReloadAfterUploads(uploads.entries.map((entry) => entry.state))) {
-      const timer = window.setTimeout(() => {
-        window.location.reload();
-      }, 250);
-      return () => window.clearTimeout(timer);
-    }
-  }, [uploads.entries]);
+  // Each batch of uploads is said once, when it settles; nothing is cleared.
+  const [heardBatches, setHeardBatches] = useState(0);
+  if (uploads.settled !== heardBatches) {
+    setHeardBatches(uploads.settled);
+    if (uploads.finished) setAnnouncement(uploadsFinishedText(uploads.finished, q !== "" || filtered));
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -146,7 +146,6 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const tree = useMemo(() => buildTree(folders ?? []), [folders]);
   const current = library.folderId === null ? null : (tree.byId.get(library.folderId) ?? null);
   const folderGone = folders !== null && library.folderId !== null && current === null;
-  const filtered = isFiltered(library);
   // The folder in the address, even before the folder list has loaded.
   const uploadInto = library.folderId ?? undefined;
 
