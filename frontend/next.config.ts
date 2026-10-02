@@ -20,6 +20,14 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
         ],
       },
+      {
+        // The browser keeps no copy of an app page, so after signing out the
+        // back button cannot show a signed-in screen from its cache. Not for
+        // /_next/ (Next.js's hashed files, kept for good) or /api (the
+        // backend sets its own).
+        source: "/((?!_next/|api/).*)",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      },
     ];
   },
 };

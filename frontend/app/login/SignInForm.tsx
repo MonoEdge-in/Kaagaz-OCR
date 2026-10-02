@@ -8,13 +8,13 @@
 // - the password is masked again as soon as the form is submitted;
 // - typed values stay after an error, so nothing has to be typed twice.
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { login } from "@/lib/api";
+import { announceSession, leavePage } from "@/lib/sessionChannel";
 import {
   emailError,
   firstInvalid,
@@ -24,6 +24,7 @@ import {
   validateSignIn,
 } from "./signIn";
 import type { SignInErrors, SignInField } from "./signIn";
+import { SignedOutNotice } from "./SignedOutNotice";
 import styles from "./login.module.css";
 
 const FIELD_IDS: Record<SignInField, string> = {
@@ -31,8 +32,8 @@ const FIELD_IDS: Record<SignInField, string> = {
   password: "login-password",
 };
 
-export function SignInForm() {
-  const router = useRouter();
+/** note: what the page says after signing out or a session ending (SignedOutNotice). */
+export function SignInForm({ note }: { note: string | null }) {
   const hydrated = useHydrated();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -76,8 +77,11 @@ export function SignInForm() {
     setErrors(found);
     setBusy(true);
     try {
-      await login(normalizeEmail(email), password);
-      router.replace("/documents");
+      const signedIn = await login(normalizeEmail(email), password);
+      // A full page load, and the other tabs hear who is signed in now, so
+      // nothing of anyone signed in before stays in memory (critical #5).
+      announceSession(signedIn.user.id);
+      leavePage("/documents");
     } catch (caught) {
       setServerError(signInErrorMessage(caught));
       setBusy(false);
@@ -91,6 +95,7 @@ export function SignInForm() {
       <h1 id="login-title" className={styles.title}>
         Sign in to Kaagaz
       </h1>
+      <SignedOutNotice message={note} />
 
       <div className="field">
         <label htmlFor={FIELD_IDS.email}>E-mail</label>

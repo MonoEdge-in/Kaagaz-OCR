@@ -5,7 +5,8 @@
 // dialog: which reviewer fixes come back, and that the document is out of
 // search meanwhile. Focus goes to Cancel, and back to Read again when it is
 // cancelled or fails. Once the server has queued the document, the screen
-// loads it again (onStarted) and a line says so. The steps and the words are
+// takes its reply (onStarted) and follows the reading, and a line says so
+// until it settles; then the button is back. The steps and the words are
 // components/viewer/reprocess.ts; the server checks the role again.
 
 import { useCallback, useReducer, useRef } from "react";
@@ -17,37 +18,48 @@ import {
   reprocessReducer,
 } from "@/components/viewer/reprocess";
 import { reprocessDocument } from "@/lib/api";
+import type { DocumentSummary } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
 export interface ReadAgainProps {
   documentId: string;
   fixes: number; // the detail's reviewer_fixes
   offered: boolean; // canReprocess(role, detail)
-  onStarted(): void;
+  reading: boolean; // beingRead(detail.status)
+  onStarted(reply: DocumentSummary): void;
 }
 
-export function ReadAgain({ documentId, fixes, offered, onStarted }: ReadAgainProps) {
+export function ReadAgain({ documentId, fixes, offered, reading, onStarted }: ReadAgainProps) {
   const [state, dispatch] = useReducer(reprocessReducer, { step: "idle" });
   const refocusButton = useRef(false);
+  const lineShown = useRef(false);
+  if (state.step === "done" && !reading) dispatch({ type: "settled" });
 
   // Stable callback refs, so each runs once when its element appears.
   const focusOnMount = useCallback((element: HTMLElement | null) => {
     element?.focus();
   }, []);
+  const showLine = useCallback((element: HTMLElement | null) => {
+    if (!element) return;
+    lineShown.current = true;
+    element.focus();
+  }, []);
+  // Back from the line once reading settles: focus follows, unless it moved on.
   const holdButton = useCallback((element: HTMLButtonElement | null) => {
-    if (element && refocusButton.current) {
-      refocusButton.current = false;
-      element.focus();
-    }
+    if (!element) return;
+    const settled = lineShown.current && document.activeElement === document.body;
+    if (refocusButton.current || settled) element.focus();
+    refocusButton.current = false;
+    lineShown.current = false;
   }, []);
 
   function send() {
     if (!canSend(state)) return; // already sent once
     dispatch({ type: "send" });
     reprocessDocument(documentId).then(
-      () => {
+      (reply) => {
         dispatch({ type: "sent" });
-        onStarted();
+        onStarted(reply);
       },
       (caught: unknown) => {
         refocusButton.current = true;
@@ -63,8 +75,8 @@ export function ReadAgain({ documentId, fixes, offered, onStarted }: ReadAgainPr
 
   if (state.step === "done") {
     return (
-      <p ref={focusOnMount} tabIndex={-1} role="status" className={styles.readAgainLine}>
-        It will be read again. The Documents list shows how it is going.
+      <p ref={showLine} tabIndex={-1} role="status" className={styles.readAgainLine}>
+        Reading it again. This page updates as it goes.
       </p>
     );
   }

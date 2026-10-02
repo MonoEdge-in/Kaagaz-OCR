@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  bulkDoneMessage,
+  bulkFailedMessage,
+  bulkForeverQuestion,
   bulkTrashQuestion,
   canDeleteForever,
   deletedForeverMessage,
@@ -7,6 +10,7 @@ import {
   foreverNeeds,
   foreverQuestion,
   restoredMessage,
+  runEach,
   trashQuestion,
 } from "@/components/documents/trash";
 import { ApiError, deleteDocumentForever, listDocuments, restoreDocument } from "@/lib/api";
@@ -77,6 +81,73 @@ describe("the words for Trash", () => {
   it("announces a restore and a delete for good, as plain text", () => {
     expect(restoredMessage("Bill <1>.pdf")).toBe("Restored Bill <1>.pdf.");
     expect(deletedForeverMessage("Bill <1>.pdf")).toBe("Deleted Bill <1>.pdf for good.");
+  });
+});
+
+describe("acting on a selection", () => {
+  it("asks before deleting a selection for good, and says every version goes", () => {
+    expect(bulkForeverQuestion(1)).toBe(
+      "Delete 1 selected document for good, with all its versions? It can't be brought back.",
+    );
+    expect(bulkForeverQuestion(3)).toBe(
+      "Delete 3 selected documents for good, with all their versions? They can't be brought back.",
+    );
+  });
+
+  it("announces what was done to the selection", () => {
+    expect(bulkDoneMessage("trash", 1)).toBe("Moved 1 document to Trash.");
+    expect(bulkDoneMessage("restore", 1)).toBe("Restored 1 document.");
+    expect(bulkDoneMessage("restore", 4)).toBe("Restored 4 documents.");
+    expect(bulkDoneMessage("forever", 2)).toBe("Deleted 2 documents for good.");
+  });
+
+  it("says how many failed, and why", () => {
+    expect(bulkFailedMessage("trash", 1, "Check your connection, then try again.")).toBe(
+      "1 document could not be moved to Trash. Check your connection, then try again.",
+    );
+    expect(bulkFailedMessage("restore", 2, "Not allowed.")).toBe(
+      "2 documents could not be restored. Not allowed.",
+    );
+    expect(bulkFailedMessage("forever", 3, "Sign in again.")).toBe(
+      "3 documents could not be deleted. Sign in again.",
+    );
+  });
+
+  it("runs the call for each document, one at a time, in order", async () => {
+    const seen: string[] = [];
+    const progress: number[] = [];
+    const result = await runEach(
+      ["a", "b", "c"],
+      async (id) => {
+        seen.push(id);
+      },
+      (handled) => progress.push(handled),
+    );
+    expect(seen).toEqual(["a", "b", "c"]);
+    expect(progress).toEqual([1, 2, 3]);
+    expect(result).toEqual({ done: ["a", "b", "c"], failed: [], firstError: undefined });
+  });
+
+  it("keeps going when one fails, and keeps the first error", async () => {
+    const first = new Error("first");
+    const progress: number[] = [];
+    const result = await runEach(
+      ["a", "b", "c", "d"],
+      async (id) => {
+        if (id === "b") throw first;
+        if (id === "d") throw new Error("second");
+      },
+      (handled) => progress.push(handled),
+    );
+    expect(result).toEqual({ done: ["a", "c"], failed: ["b", "d"], firstError: first });
+    expect(progress).toEqual([1, 2, 3, 4]);
+  });
+
+  it("does nothing for an empty selection", async () => {
+    const result = await runEach([], async () => {
+      throw new Error("never called");
+    });
+    expect(result).toEqual({ done: [], failed: [], firstError: undefined });
   });
 });
 

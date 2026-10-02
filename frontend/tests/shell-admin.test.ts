@@ -6,15 +6,18 @@ import {
   describeDetails,
   firstInvalidField,
   isLocked,
+  lastRunText,
   lockedUntilText,
   pageRouteTiles,
   parseUploadLimit,
+  retryErrorText,
   statTiles,
   tabAfterKey,
   userActions,
   userStatus,
   validateNewUser,
 } from "@/components/admin/logic";
+import { ApiError } from "@/lib/api";
 import type { AdminUser, Me, Role, SessionScope, Stats } from "@/lib/types";
 
 // 29 Sep 2026, 13:50 in India (08:20 UTC). A lock until 08:35 UTC is 14:05 there.
@@ -313,5 +316,26 @@ describe("describeAction", () => {
       expect(describeAction(action), action).not.toBe(action);
     }
     expect(describeAction("user.reset_totp")).toBe("Reset a user's 2FA");
+  });
+});
+
+describe("the failed jobs tab", () => {
+  it("is the last tab", () => {
+    expect(TABS.at(-1)).toEqual({ id: "failed", label: "Failed jobs" });
+  });
+
+  it("says when a document was last tried, or that it never ran", () => {
+    expect(lastRunText(null)).toBe("Never run");
+    expect(lastRunText("2026-10-01T09:00:00+00:00")).toMatch(/^Last tried .*2026/);
+  });
+
+  it("shows the server's words for a refused Retry, and a hint when it can't be reached", () => {
+    const stale = new ApiError(409, "not_reprocessable", "This document can't be read again now.");
+    const busy = new ApiError(429, "rate_limited", "Please wait and try again.");
+    expect(retryErrorText(stale)).toBe("This document can't be read again now.");
+    expect(retryErrorText(busy)).toBe("Please wait and try again.");
+    expect(retryErrorText(new TypeError("fetch failed"))).toBe(
+      "Could not reach the server. Check your connection, then try again.",
+    );
   });
 });
