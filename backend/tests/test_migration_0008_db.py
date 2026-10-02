@@ -1,10 +1,11 @@
-"""Migration 0008 (council 3 Oct 2026, PR 2b-1): the sound key function and its index.
+"""Migration 0008 (council 3 Oct 2026, PR 2b-1): the sound key function, the stored
+``pieces.tsv_sound`` column and its index.
 
 Up, down and up again on a fresh database (from test_migration_0002_db, a plain
-import): the downgrade gives back 0007's schema exactly. The function is IMMUTABLE,
-STRICT, PARALLEL SAFE, runs with an empty search_path, keeps PUBLIC's EXECUTE (the
-worker's inserts run it) and carries its comment; the index is partial, built on the
-function, and the production word statement uses it.
+import): a piece written before the upgrade gets its keys, and the downgrade gives
+back 0007's schema exactly. The function is IMMUTABLE, STRICT, PARALLEL SAFE, runs
+with an empty search_path, keeps PUBLIC's EXECUTE (the worker's inserts run it) and
+carries its comment; so does the column, and the word statement can use the index.
 """
 
 import pytest
@@ -26,9 +27,11 @@ _FUNCTION = text(
     " obj_description(oid, 'pg_proc') FROM pg_proc"
     " WHERE pronamespace = 'public'::regnamespace AND proname = 'kaagaz_sound_key_v1'"
 )
-_INDEX = (
-    "CREATE INDEX pieces_sound ON public.pieces USING gin (to_tsvector('simple'::regconfig,"
-    " kaagaz_sound_key_v1(COALESCE(text_latin, text)))) WHERE (COALESCE(text_latin, text) ~ '[A-Za-z]'::text)"
+_INDEX = "CREATE INDEX pieces_sound ON public.pieces USING gin (tsv_sound)"
+_COLUMN = text(
+    "SELECT pg_get_expr(d.adbin, d.adrelid), a.attgenerated, col_description(a.attrelid, a.attnum)"
+    " FROM pg_attribute a JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum"
+    " WHERE a.attrelid = 'public.pieces'::regclass AND a.attname = 'tsv_sound'"
 )
 
 
@@ -39,6 +42,8 @@ def _indexes(database: Database) -> dict[str, str]:
 def test_0008_up_down_up(fresh: tuple[str, Database]) -> None:
     url, database = fresh
     migrate(url, "0007")
+    customer, _ = new_customer(database)
+    (piece,) = add_pieces(database, customer, add_document(database, customer), [("भोगवटादार गायकवाड", None)])
     at_0007 = m0002._schema(database)
     assert "pieces_sound" not in _indexes(database)
 
@@ -46,6 +51,15 @@ def test_0008_up_down_up(fresh: tuple[str, Database]) -> None:
     assert _current(url) == _head()
     at_head = m0002._schema(database)
     assert _indexes(database)["pieces_sound"] == _INDEX
+    with database.customer(customer) as conn:
+        keys = conn.execute(
+            text("SELECT tsv_sound::text FROM pieces WHERE id = :p"), {"p": piece}
+        ).scalar_one()
+    assert keys == "'bogvtdr':1 'gikvd':2"  # the rewrite keyed the piece written before it
+    with database.system() as conn:
+        expression, generated, column_comment = conn.execute(_COLUMN).one()
+    assert expression == "to_tsvector('simple'::regconfig, kaagaz_sound_key_v1(COALESCE(text_latin, text)))"
+    assert generated == "s" and "kaagaz_sound_key_v1" in column_comment
     with database.system() as conn:
         (function,) = conn.execute(_FUNCTION).all()
     volatility, strict, parallel, config, public_execute, comment = function
@@ -67,14 +81,15 @@ def test_0008_up_down_up(fresh: tuple[str, Database]) -> None:
     assert m0002._schema(database) == at_head
 
 
-def test_the_word_statement_can_use_the_sound_index(fresh: tuple[str, Database]) -> None:
-    """2,000 pieces of one customer, analysed, so the customer filter alone does not pick
-    the plan: the sound arm's index condition matches pieces_sound, next to the other
-    arms' GIN indexes.
+def test_the_sound_index_serves_the_sound_arm(fresh: tuple[str, Database]) -> None:
+    """2,000 pieces of one customer, analysed: the sound arm's condition on its own reads
+    pieces_sound, and the word statement as the app role finds the piece.
 
-    The plan is the owner's, with the customer set: under row level security PostgreSQL
-    never uses a GIN index for ``@@`` (it is not LEAKPROOF, so it may not run before the
-    policy), the same for pieces_tsv and pieces_tsv_simple. EXPLAIN reads no rows."""
+    At this size the whole word statement reads the customer's pieces by a b-tree and
+    filters them, which is cheap because tsv_sound is stored. The plan is the owner's,
+    with the customer set: under row level security PostgreSQL never uses a GIN index
+    for ``@@`` (it is not LEAKPROOF, so it may not run before the policy), the same for
+    pieces_tsv and pieces_tsv_simple. EXPLAIN reads no rows."""
     url, database = fresh
     migrate(url, "head")
     customer, _ = new_customer(database)
@@ -84,14 +99,16 @@ def test_the_word_statement_can_use_the_sound_index(fresh: tuple[str, Database])
     # Only the table owner may ANALYZE (the app role may not); it reads no rows into the test.
     with database.engine.begin() as conn:
         conn.execute(text("ANALYZE pieces, documents"))
-    words = {"c": customer, "q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query("bhogwatdar"), "n": 50}
+    arm = text(
+        "EXPLAIN SELECT p.id FROM pieces p WHERE p.customer_id = :c"
+        " AND p.tsv_sound @@ to_tsquery('simple', :sk)"
+    )
     with database.engine.begin() as conn:
         conn.execute(text("SELECT set_config('kaagaz.customer_id', :c, true)"), {"c": customer})
-        plan = "\n".join(
-            conn.execute(text("EXPLAIN " + hybrid._WORD.text), words | EVERYTHING.params()).scalars()
-        )
+        plan = "\n".join(conn.execute(arm, {"c": customer, "sk": "bogvtdr"}).scalars())
+    words = {"c": customer, "q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query("bhogwatdar"), "n": 50}
     with database.customer(customer) as conn:
         found = conn.execute(hybrid._WORD, words | EVERYTHING.params()).all()
 
     assert "Bitmap Index Scan on pieces_sound" in plan
-    assert [str(row[0]) for row in found] == [wanted]  # the control: the app role finds the piece
+    assert [str(row[0]) for row in found] == [wanted]

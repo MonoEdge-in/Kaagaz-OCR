@@ -11,24 +11,33 @@
    Non-letters become spaces first, then ``translate`` lower-cases (it ignores
    the collation): ``lower`` would turn the Kelvin sign into k. ``\\m`` and
    ``\\M`` are the start and end of a word (``\\b`` is a backspace there).
-   EXECUTE stays with PUBLIC: the index below runs it on every insert into
+   EXECUTE stays with PUBLIC: the column below runs it on every insert into
    pieces, by the worker's role too.
-2. ``pieces_sound``: a partial GIN expression index on
+2. ``pieces.tsv_sound``: a STORED generated column,
    ``to_tsvector('simple', kaagaz_sound_key_v1(coalesce(text_latin, text)))``
-   for the pieces with an ASCII letter in that text. ``coalesce``: a piece that
-   is mostly English has no ``text_latin``, yet its Marathi names in Latin
-   letters are keyed too. No column, so no rewrite of pieces: building it takes
-   a SHARE lock (writes wait, reads go on) for one pass over the table.
+   (empty for a text with no ASCII letter), and ``pieces_sound``, a GIN index on
+   it. ``coalesce``: a piece that is mostly English has no ``text_latin``, yet
+   its Marathi names in Latin letters are keyed too.
+
+Why a stored column, not an expression index (PROVISIONAL, reverses the
+council's call; Vrushit decides): under row level security PostgreSQL never
+uses a GIN index for ``@@`` (it is not LEAKPROOF, so it may not run before the
+policy), so an expression arm ran the function on every piece of the customer on
+every search: 1,122 ms for 2,001 pieces against 7.8 ms with the stored column.
+The cost is one rewrite of ``pieces`` here, under an ACCESS EXCLUSIVE lock
+(0004's and 0006's pattern; env.py's lock_timeout makes a busy table fail
+fast): 2.1 s for 2,001 pieces on the laptop, and it grows with the table.
+Offline: stop the api and the worker first.
 
 Any change to the rules is a NEW function, ``kaagaz_sound_key_v2``, with a new
-index in a new migration, never ``CREATE OR REPLACE`` of this one: an
-expression index is not rebuilt when its function changes, so its stored keys
-would go stale, and no test could see it.
+column in a new migration, never ``CREATE OR REPLACE`` of this one: a stored
+column is not recomputed when its function changes, so its keys would go stale,
+and no test could see it.
 
-The function is commented (the data dictionary's rule); the index is not, as
-the completeness test of tests/test_migration_0007_db.py counts the comments of
-tables, columns and indexes. The downgrade drops the index, then the function;
-no data is lost.
+The function and the column are commented (the data dictionary's rule); the
+index is not, as the completeness test of tests/test_migration_0007_db.py counts
+the comments of tables, columns and indexes. The downgrade drops the index, the
+column, then the function; no data is lost (the column is computed).
 
 Revision ID: 0008
 Revises: 0007
@@ -80,21 +89,31 @@ SOUND_KEY = f"""
 COMMENT = (
     "The sound key of every run of ASCII letters in a text, joined by spaces, so spellings of one"
     " Marathi or Hindi word typed the way it sounds compare equal (bhogwatdar, bhogavatadar)."
-    " The rules of sound_key in kaagaz/chunking/script.py, version 1. Indexed by pieces_sound."
+    " The rules of sound_key in kaagaz/chunking/script.py, version 1. Stored in pieces.tsv_sound."
 )
 
+COLUMN_COMMENT = (
+    "Generated. Word index of the sound keys of coalesce(text_latin, text) (kaagaz_sound_key_v1),"
+    " so a Marathi or Hindi word typed the way it sounds is found."
+)
+LOCK = "LOCK TABLE pieces IN ACCESS EXCLUSIVE MODE"
+
 UPGRADE = [
+    LOCK,
     SOUND_KEY,
     f"COMMENT ON FUNCTION kaagaz_sound_key_v1(text) IS '{COMMENT}'",
     """
-    CREATE INDEX pieces_sound ON pieces
-        USING gin (to_tsvector('simple', kaagaz_sound_key_v1(coalesce(text_latin, text))))
-        WHERE coalesce(text_latin, text) ~ '[A-Za-z]'
+    ALTER TABLE pieces ADD COLUMN tsv_sound tsvector GENERATED ALWAYS AS
+        (to_tsvector('simple', kaagaz_sound_key_v1(coalesce(text_latin, text)))) STORED
     """,
+    f"COMMENT ON COLUMN pieces.tsv_sound IS '{COLUMN_COMMENT}'",
+    "CREATE INDEX pieces_sound ON pieces USING gin (tsv_sound)",
 ]
 
 DOWNGRADE = [
+    LOCK,
     "DROP INDEX IF EXISTS pieces_sound",
+    "ALTER TABLE pieces DROP COLUMN IF EXISTS tsv_sound",
     "DROP FUNCTION IF EXISTS kaagaz_sound_key_v1(text)",
 ]
 

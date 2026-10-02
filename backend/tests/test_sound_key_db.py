@@ -1,6 +1,6 @@
 """Python and SQL give the same sound keys (council 3 Oct 2026, PR 2b-1).
 
-Migration 0008's ``kaagaz_sound_key_v1`` keys the pieces in the index, and
+Migration 0008's ``kaagaz_sound_key_v1`` keys the pieces (``pieces.tsv_sound``), and
 ``sound_key`` keys the question, so they must agree on every word or a typed word
 silently misses. Both run over the same ~200 texts: names, the glossary's
 Devanagari terms through ``latin_spelling``, the council's spellings, whole lines,

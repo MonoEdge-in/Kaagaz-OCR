@@ -16,8 +16,8 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    cannot fail on it; "" (no keyword listed) is NULL, which matches nothing.
    A fourth query, ``to_tsquery('simple', sk)``, matches the sound keys of
    the question's words (``sound_query``, council 3 Oct 2026, PR 2b) against
-   the sound keys of the piece (migration 0008's ``pieces_sound`` index on
-   ``kaagaz_sound_key_v1(coalesce(text_latin, text))``), so "bhogwatdar"
+   the piece's ``tsv_sound`` (migration 0008: the sound keys of
+   ``coalesce(text_latin, text)``, stored), so "bhogwatdar"
    finds भोगवटादार. ``sk`` is built from ``sound_key`` output only, each term
    checked to be ``[a-z]`` letters, never from the question's text; "" is
    NULL, as for ``g``. A piece scores the highest ``ts_rank_cd`` of the four,
@@ -126,8 +126,7 @@ _DIGIT = re.compile(r"\d")  # any script's digits
 
 _WORD = text(
     "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
-    " ts_rank_cd(p.tsv_simple, g.q), 0.5 * ts_rank_cd(to_tsvector('simple',"
-    " kaagaz_sound_key_v1(coalesce(p.text_latin, p.text))), sk.q)) AS score"
+    " ts_rank_cd(p.tsv_simple, g.q), 0.5 * ts_rank_cd(p.tsv_sound, sk.q)) AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
@@ -147,9 +146,7 @@ _WORD = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
-    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q"
-    " OR (coalesce(p.text_latin, p.text) ~ '[A-Za-z]'"
-    " AND to_tsvector('simple', kaagaz_sound_key_v1(coalesce(p.text_latin, p.text))) @@ sk.q))"
+    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q OR p.tsv_sound @@ sk.q)"
     " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
