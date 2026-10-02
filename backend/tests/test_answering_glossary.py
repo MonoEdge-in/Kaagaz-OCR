@@ -82,7 +82,8 @@ def test_word_query_ors_each_term_once_with_a_prefix_on_long_terms() -> None:
 def _outputs(question: str) -> tuple[object, ...]:
     normalised = normalise(question)
     found = date_range(normalised, date(2026, 9, 27))
-    plan = plan_fixed(normalised, found, mentions_date(normalised), {"amount", "profit", "party", "date"})
+    fields = {"amount", "profit", "party", "date"}
+    plan = plan_fixed(normalised, found, mentions_date(normalised), lambda _: fields)
     return normalised, plan, guard(question, question, ""), guard("the owner of the land", question, "")
 
 
