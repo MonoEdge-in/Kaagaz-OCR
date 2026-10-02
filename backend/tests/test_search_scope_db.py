@@ -1,11 +1,6 @@
-"""The scope of a search (PRD 3 Q1) and search inside documents (Q2, W3), against
-a real PostgreSQL.
-
-Every document holds the same words, so only the scope decides what is found;
-each test also searches with no scope (or a wider one) as its positive control.
-Pieces come from ``test_search_db.add_pieces``, so a Devanagari piece gets
-production's ``latin_spelling``.
-"""
+"""The scope (PRD 3 Q1) and search inside documents (Q2, W3) on PostgreSQL. Every document holds
+the same words, so only the scope decides what is found; each test has a positive control.
+Pieces come from ``test_search_db.add_pieces`` (production's ``latin_spelling``)."""
 
 import uuid
 from datetime import UTC, date, datetime
@@ -286,3 +281,14 @@ def test_the_best_piece_is_the_documents_best_ranked_piece(db: Database) -> None
 
     assert (result.best.document_id, result.best.doc_type, result.more) == (document, "invoice", 0)
     assert result.best.text == "Invoice INV-9001 grand total"
+
+
+def test_with_no_dates_the_date_filter_is_not_in_the_plan(db: Database) -> None:
+    """An always-on date filter shrinks the row estimate and can push meaning search off the index."""
+    customer, _ = new_customer(db)
+    vector = {"c": customer, "vec": hybrid.vector_literal(axis(0)), "recipe": RECIPE, "n": 50}
+    with db.customer(customer) as conn:
+        for dates, filtered in (({}, False), ({"s_from": date(2026, 3, 1)}, True)):
+            bound = vector | EVERYTHING.params() | dates
+            plan = "\n".join(conn.execute(text("EXPLAIN " + hybrid._MEANING.text), bound).scalars())
+            assert ("document_date" in plan) is filtered, dates

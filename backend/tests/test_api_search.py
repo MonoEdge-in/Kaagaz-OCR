@@ -1,10 +1,5 @@
-"""GET /api/search (PRD 3 Q2): search inside documents through the whole API.
-
-Signed in for real against PostgreSQL; pieces from ``test_search_db.add_pieces``
-(each on axis 0, tagged with the settings' recipe so the meaning list can find
-them). The model is ``test_indexing_db.FakeModel``: it embeds the first question
-as axis 0, or fails like a model that is down.
-"""
+"""GET /api/search (PRD 3 Q2) through the whole API, signed in, on PostgreSQL. Pieces lie on
+axis 0 with the settings' recipe; ``FakeModel`` embeds the first question as axis 0, or fails."""
 
 import logging
 import uuid

@@ -111,8 +111,9 @@ _WORD = text(
     " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
     " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
     " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
-    " AND coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
-    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity')"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
     " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q)"
     " ORDER BY score DESC, p.id LIMIT :n"
 )
@@ -146,8 +147,9 @@ _FUZZY = text(
     " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
     " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
     " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
-    " AND coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
-    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity')"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
     " AND (:q <% p.text OR :ql <% p.text_latin)"
     " ORDER BY score DESC, p.id LIMIT :n"
 )
@@ -170,8 +172,9 @@ _MEANING = text(
     " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
     " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
     " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
-    " AND coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
-    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity')"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
     " ORDER BY p.embedding <=> CAST(:vec AS halfvec(1024)) LIMIT :n"
     ") SELECT id, document_id, distance FROM candidates ORDER BY distance + 0, id"
 )
@@ -196,8 +199,9 @@ _MEANING_EXACT = text(
     " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
     " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
     " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
-    " AND coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
-    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity')"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
     ") SELECT id, document_id, distance FROM candidates ORDER BY distance, id LIMIT :n"
 )
 
