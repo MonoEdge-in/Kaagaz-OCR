@@ -3,13 +3,16 @@ own user (``Database.user``): create, replace, read and delete by any version, t
 vector cleared by an edit, the guarded vector write, and the cascades.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 from sqlalchemy import text
 
 from kaagaz.db import document_stories as stories
 from kaagaz.db.document_stories import StoryRow, check_story, story_hash
 from kaagaz.db.engine import Database
-from tests.db_support import count_rows, insert_document, new_customer
+from tests.db_support import count_rows, insert_document, name_session, new_customer
+from tests.db_support import wait_until_blocked as wait
 from tests.test_user_words_db import new_member
 
 pytestmark = pytest.mark.db
@@ -106,6 +109,12 @@ def test_a_vector_of_older_text_is_never_written(db: Database) -> None:
     assert embed(db, customer, user, first, "the land paper dad gave") is False  # gone: nothing written
     with db.user(customer, user) as conn, pytest.raises(ValueError, match="1024"):
         stories.set_embedding(conn, customer, user, first, expected_hash="x", vector=[0.1], model_embed="m")
+    for bad in (float("nan"), float("inf"), -65505.0):  # never reaches SQL, so the transaction lives on
+        with db.user(customer, user) as conn, pytest.raises(ValueError, match="finite"):
+            vector = [*VECTOR[:-1], bad]
+            stories.set_embedding(
+                conn, customer, user, first, expected_hash="x", vector=vector, model_embed="m"
+            )
 
 
 def test_the_story_goes_with_the_family_and_with_the_user(db: Database) -> None:
@@ -130,3 +139,28 @@ def test_the_story_goes_with_the_family_and_with_the_user(db: Database) -> None:
     with db.engine.begin() as conn:
         left = count_rows(conn, _STORIES_OF, {"c": customer})
     assert left == 1  # the admin's story of the other family
+
+
+def test_a_put_racing_the_familys_delete_waits_and_finds_no_document(db: Database) -> None:
+    """T1 deletes the family and holds; the put waits on the document row (FOR KEY
+    SHARE), then finds it gone: None, never a key error."""
+    customer, user = new_customer(db)
+    first, second = _family(db, customer)
+    session = "story-put-" + first
+
+    def put_while_deleting() -> StoryRow | None:
+        with db.user(customer, user) as conn:
+            name_session(conn, session)
+            return stories.put_story(conn, customer, user, second, check_story(STORY))
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with db.customer(customer) as conn:
+            conn.execute(
+                text("DELETE FROM documents WHERE customer_id = :c AND family_id = :f"),
+                {"c": customer, "f": first},
+            )
+            later = pool.submit(put_while_deleting)
+            wait(db, application_name=session)
+        assert later.result(timeout=10) is None
+    with db.engine.begin() as conn:
+        assert count_rows(conn, _STORIES_OF, {"c": customer}) == 0

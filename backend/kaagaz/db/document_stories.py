@@ -3,12 +3,18 @@
 Every function takes a connection from ``Database.user(customer_id, user_id)``
 (the restrictive policy hides every row from any other transaction), and every
 statement also filters on ``customer_id = :c AND user_id = :me``. A story is
-found by any version's document id and stored on its family (the first
-version's id), so every version shares it. The caller checks Trash.
+found by any version's document id and stored on its family, so every
+version shares it. ``family_id`` must be the family's first version: the key
+only says it is a document of this customer, and ``put_story`` is what takes it
+from ``documents.family_id``. Trash is the caller's: S2 locks the live family
+(``trash.lock_live_family``) inside the same ``Database.user`` transaction
+before a change, and S3's matching keeps only ``LIVE_CURRENT`` documents.
 
 * ``put_story`` creates or replaces the story in one statement. An edit clears
   the vector and its tag in that same statement, so a vector never describes
-  older text; saving the same text keeps it.
+  older text; saving the same text keeps it. The document row is read FOR KEY
+  SHARE, so a put racing a delete of the family waits for it and then finds no
+  document (None), never a key error.
 * ``set_embedding`` writes a vector only while the story still has the hash of
   the text that was embedded (``story_hash``), so a slow embed that finishes
   after an edit is dropped, never stored as the new text's vector.
@@ -17,6 +23,7 @@ version's id), so every version shares it. The caller checks Trash.
 """
 
 import hashlib
+import math
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -29,13 +36,26 @@ from kaagaz.chunking.script import latin_spelling
 from kaagaz.search.hybrid import vector_literal
 
 STORY_MAX = 1000
+# story_latin's limit (the table's CHECK): 1,000 Devanagari letters spell at most about 4,000.
+LATIN_MAX = 4000
+# At most this many combining marks after one base character; the rest are dropped.
+MAX_MARKS = 4
 VECTOR_DIM = 1024
+HALF_MAX = 65504.0  # the largest finite number a halfvec holds
 # The input recipe of a story's vector (embedding_model is "{MODEL_EMBED}#story1").
 RECIPE = "story1"
-# The zero-width joiners Devanagari spelling needs; every other format character
-# (Cf, which holds every direction control) is removed.
+# ZWNJ and ZWJ: kept only right after a virama, where they shape Devanagari
+# conjuncts. Every other format character (Cf, which holds every direction
+# control) is removed, as are controls, surrogates, unassigned and private use.
 _JOINERS = frozenset("\u200c\u200d")
-_REMOVED = ("Cc", "Cf", "Cs")
+_VIRAMA = "\u094d"
+_REMOVED = frozenset(("Cc", "Cf", "Cs", "Cn", "Co"))
+# Invisible marks: the combining grapheme joiner and the variation selectors.
+_INVISIBLE = frozenset(
+    chr(code) for code in (0x034F, *range(0x180B, 0x1810), *range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0))
+)
+# Hangul fillers: letters (Lo) that show nothing, so they never count as one.
+_BLANK_LETTERS = frozenset("\u115f\u1160\u3164\uffa0")
 
 
 class StoryTextError(ValueError):
@@ -64,23 +84,44 @@ class StoryRow:
 
 
 def check_story(value: str) -> StoryText:
-    """The story as stored: control (Cc), format (Cf) other than the joiners and
-    surrogate characters removed, Unicode NFC, white space runs made one space,
-    trimmed; 1 to STORY_MAX characters with a letter or digit. Raises
+    """The story as stored: the characters ``_clean`` drops removed, Unicode NFC,
+    white space runs made one space, trimmed; 1 to STORY_MAX characters with a
+    visible letter or a digit, and a Latin spelling of at most LATIN_MAX. Raises
     StoryTextError. O(n) in the length."""
-    kept = "".join(ch for ch in value if _kept(ch))
-    story = " ".join(unicodedata.normalize("NFC", kept).split())
+    story = " ".join(unicodedata.normalize("NFC", _clean(value)).split())
     if not story:
         raise StoryTextError("empty")
     if len(story) > STORY_MAX:
         raise StoryTextError("too_long")
-    if not any(unicodedata.category(ch)[0] in "LN" for ch in story):
+    if not any(unicodedata.category(ch)[0] in "LN" and ch not in _BLANK_LETTERS for ch in story):
         raise StoryTextError("no_letter")
-    return StoryText(text=story, latin=latin_spelling(story))
+    latin = latin_spelling(story)
+    if len(latin) > LATIN_MAX:
+        raise StoryTextError("too_long")
+    return StoryText(text=story, latin=latin)
 
 
-def _kept(ch: str) -> bool:
-    return ch.isspace() or ch in _JOINERS or unicodedata.category(ch) not in _REMOVED
+def _clean(value: str) -> str:
+    """Drop controls, format characters (a joiner stays right after a virama),
+    surrogates, unassigned and private-use characters, invisible marks, and every
+    combining mark past MAX_MARKS on one base. O(n)."""
+    kept: list[str] = []
+    marks = 0
+    for ch in value:
+        if ch in _JOINERS:
+            if kept and kept[-1] == _VIRAMA:
+                kept.append(ch)
+            continue
+        if ch in _INVISIBLE or (not ch.isspace() and unicodedata.category(ch) in _REMOVED):
+            continue
+        if unicodedata.category(ch)[0] == "M":
+            marks += 1
+            if marks > MAX_MARKS:
+                continue
+        else:
+            marks = 0
+        kept.append(ch)
+    return "".join(kept)
 
 
 def story_hash(story: str) -> str:
@@ -105,6 +146,7 @@ _GET = (
 _PUT = (
     "INSERT INTO document_stories AS s (customer_id, user_id, family_id, story, story_latin)"
     " SELECT :c, :me, d.family_id, :story, :latin FROM documents d WHERE d.customer_id = :c AND d.id = :d"
+    " FOR KEY SHARE OF d"
     " ON CONFLICT (customer_id, user_id, family_id) DO UPDATE SET"
     " story = EXCLUDED.story, story_latin = EXCLUDED.story_latin,"
     " embedding = CASE WHEN s.story = EXCLUDED.story THEN s.embedding END,"
@@ -162,10 +204,12 @@ def set_embedding(
 ) -> bool:
     """Store the story's vector, tagged ``recipe_tag(model_embed)``, only if the story
     still hashes to ``expected_hash``. False (nothing written) when it changed or is
-    gone. Raises ValueError for a vector of the wrong size or a non-finite number.
-    O(log S + VECTOR_DIM)."""
+    gone. Raises ValueError, before any SQL, for a vector of the wrong size or with a
+    number that is not finite or is beyond a halfvec's range. O(log S + VECTOR_DIM)."""
     if len(vector) != VECTOR_DIM:
         raise ValueError(f"a story vector holds {VECTOR_DIM} numbers")
+    if not all(math.isfinite(value) and abs(value) <= HALF_MAX for value in vector):
+        raise ValueError(f"a story vector holds finite numbers within +-{HALF_MAX:g}")
     if not model_embed:
         raise ValueError("model_embed is empty")
     params = {
