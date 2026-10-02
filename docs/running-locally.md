@@ -57,16 +57,20 @@ the invoice windows `EXTRACT_WINDOW_CHARS`, `EXTRACT_WINDOW_OVERLAP` and
 plus the new `MAX_PAGES`, `MAX_IMAGE_PIXELS` and `QUEUE_LEASE_SECONDS` values. Recreate the queue too (`docker compose up -d
 --force-recreate elasticmq`): its failure-bin limit is now 10.
 
-PRD 3 adds two required settings, each checked at start-up by name:
+PRD 3 adds four required settings, each checked at start-up by name:
 `SEARCH_EF` (100, 1 to 1000), how many candidates the meaning index walk keeps
-(`hnsw.ef_search`), and `SEARCH_MAX_DOCUMENTS` (20, 1 to 100), the most
-documents one search inside documents returns.
+(`hnsw.ef_search`); `SEARCH_MAX_DOCUMENTS` (20, 1 to 100), the most documents
+one search inside documents returns; `ANSWER_NEIGHBOURS` (1, 0 to 3), the
+pieces on each side of an evidence piece also given to the draft; and
+`CHAT_HISTORY_TURNS` (3, 0 to 10), the question and answer pairs a follow-up
+is rewritten with (0: no rewrite).
 
 **Upgrading an install to PRD 3.** Migration 0006 is offline: it locks
 `pieces` and `messages` while it rewrites the vectors and builds the indexes.
 
 1. `docker compose stop api worker`.
-2. Add `SEARCH_EF=100` and `SEARCH_MAX_DOCUMENTS=20` to `.env`.
+2. Add `SEARCH_EF=100`, `SEARCH_MAX_DOCUMENTS=20`, `ANSWER_NEIGHBOURS=1` and
+   `CHAT_HISTORY_TURNS=3` to `.env`.
 3. `alembic upgrade head` (in Docker, `docker compose up --build migrate`).
 4. Start the api and worker again (`docker compose up -d api worker`).
 5. With the model on, run `python -m kaagaz.cli reembed` once (in Docker,
@@ -456,14 +460,43 @@ The made-up golden documents in `backend/tests/golden/docs/` serve these checks 
 - Expect: `{"items":[{id, display_name, status, failure_code, message, last_run_at, …}], "total": n}`; the app session gets `403 admin_session_required`. Retry says "Sent to be read again."; the second Retry shows the server's own words on that row (409 while it is being read, 429 within 10 minutes).
 - Tests: `test_api_viewer_panels.py`, `test_isolation_viewer_panels.py`; `frontend/tests/shell-admin.test.ts`.
 
+### Chat that keeps context (PRD 3)
+
+Use the golden `monthly-report.pdf` (20 pages, "$12,000" runs from page 15 to page 16), with the model on.
+
+**43. Follow-ups**
+- Check (screen): ask "What was the profit in September?", then "And the expenses?".
+- Expect (exit steps 2 and 3): the first answer cites the report, pages 15 to 16; the second shows "Searching for: …", a question that stands on its own (such as "What were the expenses in September?"). A follow-up the guard refuses shows no "Searching for" and is searched as typed. The rewrite is saved: `SQL "SELECT message_text, rewritten_question FROM messages WHERE rewritten_question IS NOT NULL"`.
+- Tests: `test_answering_rewrite.py`, `test_api_chat.py`; `frontend/tests/chat-answer.test.ts`.
+
+**44. Chat scope**
+- Check (screen): put the report in a folder; in chat, Change, One folder, pick another folder, then ask about the profit; pick the report's folder and ask again; then ask a follow-up.
+- Expect: the chip names the folder ("Folder: …"); with the other folder the answer is not found, with the report's folder it cites only documents in it, and the follow-up keeps the chip. All documents widens again. Another customer's folder id in `scope` gives not found.
+- Tests: `test_answering_scope_db.py`, `test_isolation_chat_scope.py`, `test_scope_guard.py`; `frontend/tests/chat-scope.test.ts`.
+
+**45. Ask about this document**
+- Check (screen): open the report in the viewer and click "Ask about this document" (no reload).
+- Expect: chat opens with the chip "This document: monthly-report.pdf", and the first question uses only it. The button is not offered on an older version, an unready document or one in Trash.
+- Tests: `frontend/tests/chat-scope.test.ts`, `viewer-versions.test.ts`.
+
+**46. Sources over two pages**
+- Check (screen): ask "What was the profit in September?" about the report; then open a value whose label is on another page.
+- Expect: the source says "Pages 15 to 16", opens page 15 with its spot, and has a chip for page 16's spot. A value whose label is elsewhere says "Label on page 15, value on page 16" with a chip for the label. Answers saved before PRD 3 show one page, as before.
+- Tests: `test_answering_neighbours_db.py`, `test_api_chat.py`; `frontend/tests/chat-logic.test.ts`.
+
+**47. The PRD 3 exit test**
+- Check: from `backend/` with `DATABASE_URL` set as in section 4, `.venv/Scripts/python.exe -m pytest -q tests/test_exit_prd3_db.py`.
+- Expect: every test passes: the exit files read by the real pipeline, then exit steps 1 to 5 through the API (a scripted model, no Ollama needed).
+- Tests: `test_exit_prd3_db.py`.
+
 ### Handover (PRD 3)
 
-**43. The data dictionary**
+**48. The data dictionary**
 - Check: `SQL "\d+ pieces"`.
 - Expect: a plain line for every column under Description (`embedding_model`, for example, names the `MODEL_EMBED#ctx1` tag). No comment holds an identity number, an e-mail or a link.
 - Tests: `test_migration_0007_db.py`.
 
-**44. The golden run**
+**49. The golden run**
 - Needs: the whole stack with the model on (both models pulled, `MODEL_ENABLED=true`), the API and database on this machine, and `.env` loaded in a shell in `backend/`. It is never run in CI.
 - Check: `.venv/Scripts/python.exe -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" --runs 3`.
 - Expect: it makes a new "Golden Test Co" customer, uploads the 7 golden documents and asks the 30 questions 3 times. Then a header (git SHA, date, models with their Ollama digests, settings, the questions' sha256), a row per question, each run's totals and slices, "The model wrote N of M search-route answers" (N must be above 0), and the WORST RUN line with Wilson intervals. The password comes from `KAAGAZ_ADMIN_PASSWORD` or is made up, and is never printed. Record the worst run in docs/architecture.md, Decisions.
@@ -481,7 +514,8 @@ The made-up golden documents in `backend/tests/golden/docs/` serve these checks 
 | 23-28 | Admin, customer separation, tools, settings | | |
 | 29-36 | Routes, measure, pieces, Hindi and Marathi, card, invoices, read again, unchecked figures | | |
 | 37-42 | Search inside documents, meaning index, reembed, viewer panels, review by reason, failed jobs | | |
-| 43-44 | Data dictionary, golden run | | |
+| 43-47 | Follow-ups, chat scope, Ask about this document, sources over two pages, exit test | | |
+| 48-49 | Data dictionary, golden run | | |
 
 ## 6. Backup and restore
 
