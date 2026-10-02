@@ -5,7 +5,8 @@
 // and a log (announced politely as answers arrive). While a question is out, it
 // shows as pending and the conversation cannot be switched. Only the latest
 // conversation opened may fill the thread, so a slow reply for an earlier one
-// is dropped.
+// is dropped. Above the composer, the scope chip and picker (ScopePicker.tsx):
+// a reopened conversation shows its last question's scope again.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -26,10 +27,13 @@ import {
   askErrorText,
   chatHref,
   conversationFromSearch,
+  documentFromSearch,
   isNearBottom,
   STILL_LOOKING_AFTER_MS,
 } from "./logic";
 import { QuestionBox } from "./QuestionBox";
+import { answeredScope, chooseScope, restoredScope, sentScope, startScope } from "./scope";
+import { ScopePicker } from "./ScopePicker";
 import styles from "./Chat.module.css";
 
 const DRAWER_ID = "chat-conversations";
@@ -78,6 +82,11 @@ export function ChatScreen() {
     typeof window === "undefined" ? null : conversationFromSearch(window.location.search),
   );
   const [activeId, setActiveId] = useState<string | null>(restoreId);
+  // The documents the next question may use (scope.ts): one document when the
+  // viewer's "Ask about this document" opened chat, else restored from the conversation.
+  const [scope, setScope] = useState(() =>
+    startScope(typeof window === "undefined" ? null : documentFromSearch(window.location.search)),
+  );
   const [messages, setMessages] = useState<Message[]>([]);
   const [threadState, setThreadState] = useState<"idle" | "loading" | "error">(
     restoreId ? "loading" : "idle",
@@ -134,6 +143,7 @@ export function ChatScreen() {
         if (request !== openRequest.current) return;
         jumpToEnd.current = true;
         setMessages(conversation.messages);
+        setScope(restoredScope(conversation.messages));
         setThreadState("idle");
       })
       .catch((error: unknown) => {
@@ -214,6 +224,8 @@ export function ChatScreen() {
     setActiveId(id);
     showInUrl(id);
     setMessages([]);
+    // Until it loads, nothing of the last conversation's scope shows or is sent.
+    setScope(startScope(null));
     setAskError(null);
     setThreadState("loading");
     try {
@@ -221,6 +233,7 @@ export function ChatScreen() {
       if (request !== openRequest.current) return;
       jumpToEnd.current = true;
       setMessages(conversation.messages);
+      setScope(restoredScope(conversation.messages));
       setThreadState("idle");
     } catch {
       if (request === openRequest.current) setThreadState("error");
@@ -233,6 +246,7 @@ export function ChatScreen() {
     setActiveId(null);
     showInUrl(null);
     setMessages([]);
+    setScope(startScope(null));
     setAskError(null);
     setThreadState("idle");
     if (noDocuments !== true) focusComposerOnDesktop(inputRef.current);
@@ -242,8 +256,9 @@ export function ChatScreen() {
     setPending(question);
     setAskError(null);
     try {
-      const reply = await ask(question, activeId ?? undefined);
+      const reply = await ask(question, activeId ?? undefined, sentScope(scope));
       setMessages((current) => [...current, reply.question, reply.answer]);
+      setScope((current) => answeredScope(current, reply.question));
       if (activeId === null) {
         setActiveId(reply.conversation_id);
         showInUrl(reply.conversation_id);
@@ -399,6 +414,11 @@ export function ChatScreen() {
             </div>
           </div>
           <div ref={composerRef} className={styles.composer}>
+            <ScopePicker
+              state={scope}
+              disabled={busy || threadState === "loading"}
+              onChoose={(next) => setScope((current) => chooseScope(current, next))}
+            />
             <QuestionBox pending={busy} error={askError} onAsk={onAsk} inputRef={inputRef} />
           </div>
         </div>

@@ -22,6 +22,7 @@ import type {
   ReviewItem,
   ReviewList,
   Role,
+  ScopeBody,
   SheetCells,
   Stats,
   Tag,
@@ -265,10 +266,12 @@ export const createTag = (name: string) => request<Tag>("POST", "/tags", { name 
 
 // --- chat ----------------------------------------------------------------------
 
-export const ask = (question: string, conversationId?: string) =>
+/** Left out, `scope` stays the conversation's last one (PRD 3 H2); {} is every document. */
+export const ask = (question: string, conversationId?: string, scope?: ScopeBody) =>
   request<ChatResponse>("POST", "/chat", {
     question,
     ...(conversationId ? { conversation_id: conversationId } : {}),
+    ...(scope ? { scope } : {}),
   });
 export const listConversations = () =>
   request<{ items: ConversationSummary[] }>("GET", "/conversations");

@@ -8,14 +8,17 @@ import {
   conversationTime,
   groupConversations,
   isNearBottom,
+  labelPlace,
   NEAR_BOTTOM_PX,
+  pageJumps,
   sourceAction,
   sourceMeta,
   sourcePlace,
   STILL_LOOKING_AFTER_MS,
 } from "@/components/chat/logic";
 import { formatDate } from "@/lib/format";
-import type { Citation, ConversationSummary } from "@/lib/types";
+import { decodeRegion } from "@/lib/regions";
+import type { Citation, ConversationSummary, Region } from "@/lib/types";
 
 const at = (iso: string) => Date.parse(iso);
 
@@ -139,6 +142,50 @@ describe("source cards", () => {
     const sheet = sourceAction(citation({ label: "needs_review", detected_type: "zip" }));
     expect(sheet.text).toBe("Check sheet 3");
     expect(sheet.reason).toMatch(/^This text was not fully checked.*Look at the sheet/);
+  });
+
+  it("names the pages a source covers", () => {
+    expect(sourcePlace(citation({ page_no: 15, page_from: 15, page_to: 16 }))).toBe("Pages 15 to 16");
+    expect(sourcePlace(citation({ page_no: 15, page_from: 15, page_to: 15 }))).toBe("Page 15");
+    expect(sourceMeta(citation({ page_from: 3, page_to: 4 }))).toBe("Pages 3 to 4 · PDF");
+    expect(sourcePlace(citation({ detected_type: "zip", page_from: 1, page_to: 2 }))).toBe(
+      "Sheets 1 to 2",
+    );
+  });
+
+  it("says where a value's label is only when it is on another page", () => {
+    const value = { kind: "value" as const, page_no: 16, page_from: 16, page_to: 16 };
+    expect(labelPlace(citation({ ...value, label_page_no: 15 }))).toBe(
+      "Label on page 15, value on page 16",
+    );
+    expect(labelPlace(citation({ ...value, label_page_no: 16 }))).toBeNull();
+    expect(labelPlace(citation({ ...value, label_page_no: null }))).toBeNull();
+    expect(labelPlace(citation(value))).toBeNull();
+  });
+
+  // Where a chip leads: the page and the highlighted spot, read back from its link.
+  const opens = (href: string) => {
+    const url = new URL(href, "http://x");
+    return [url.pathname, url.searchParams.get("page"), decodeRegion(url.searchParams.get("region"))];
+  };
+
+  it("gives a cross-page source one chip for its later page, at that page's spot", () => {
+    const later: Region = { kind: "box", page: 4, box: [0.1, 0.1, 0.5, 0.2] };
+    const first: Region = { kind: "box", page: 3, box: [0.1, 0.8, 0.5, 0.9] };
+    const jumps = pageJumps(citation({ page_from: 3, page_to: 4, regions: [first, later] }));
+    expect(jumps.map((jump) => jump.text)).toEqual(["Page 4"]);
+    expect(opens(jumps[0]!.href)).toEqual(["/documents/doc-1", "4", later]);
+    expect(pageJumps(citation({ regions: [first] }))).toEqual([]);
+  });
+
+  it("gives a value's label on another page a chip at the label's spot, or the page alone", () => {
+    const label: Region = { kind: "box", page: 2, box: [0.1, 0.9, 0.3, 0.95] };
+    const value = { kind: "value" as const, label_page_no: 2 };
+    const [jump] = pageJumps(citation({ ...value, label_regions: [label] }));
+    expect(jump?.text).toBe("Label, page 2");
+    expect(opens(jump!.href)).toEqual(["/documents/doc-1", "2", label]);
+    // The label's spot can be missing (an invalid region, or the document is in Trash).
+    expect(opens(pageJumps(citation(value))[0]!.href)).toEqual(["/documents/doc-1", "2", null]);
   });
 });
 

@@ -5,12 +5,14 @@
 // that version's own id), the page viewer and the values table (side by side
 // from 1024 px, stacked below). A newer version still being read, or one that
 // failed, gets a line linking to it. A document in Trash says so. A reviewer
-// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1). Clicking a
+// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1), and anyone can
+// "Ask about this document" in chat (PRD 3 H2). Clicking a
 // value jumps to its page and highlights its spot. Every value is shown as
 // plain text; it came from the document.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { askAboutHref } from "@/components/chat/logic";
 import { downloadHref, folderTrail } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
@@ -20,6 +22,7 @@ import { PageViewer } from "@/components/viewer/PageViewer";
 import {
   newerVersionText,
   sortedVersions,
+  usedInChat,
   versionNote,
   versionPosition,
   versionText,
@@ -232,6 +235,12 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
             <a className={`btn ${styles.download}`} href={download} download>
               Download original
             </a>
+          )}
+          {usedInChat(detail) && (
+            <Link className="btn" href={askAboutHref(detail.id)}>
+              <Icon name="chat" />
+              Ask about this document
+            </Link>
           )}
         </div>
         {note && <p className={styles.note}>{note}</p>}
