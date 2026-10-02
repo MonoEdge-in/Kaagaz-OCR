@@ -93,16 +93,14 @@ def test_the_queue_and_its_total_are_what_the_old_statement_gave(db: Database) -
     add_values(db, other, elsewhere, [_needs_review("r1", "f")])
 
     cases = 0
-    for document in (None, first, second, binned, old, waiting, elsewhere):
+    for asked in (None, first, second, binned, old, waiting, elsewhere):
         for limit, offset in ((50, 0), (2, 0), (2, 3), (1, 7)):
-            params = {"c": customer, "doc": document, "limit": limit, "offset": offset}
+            params = {"c": customer, "doc": asked, "limit": limit, "offset": offset}
             with db.customer(customer) as conn:
-                rows, total = review.list_queue(
-                    conn, customer, limit=limit, offset=offset, document_id=document
-                )
+                rows, total = review.list_queue(conn, customer, limit=limit, offset=offset, document_id=asked)
                 old_rows = conn.execute(text(_OLD_QUEUE), params).mappings().all()
                 old_total = conn.execute(text(_OLD_COUNT), params).scalar_one()
-            assert [dict(row) for row in rows] == [dict(row) for row in old_rows], (document, limit, offset)
+            assert [dict(row) for row in rows] == [dict(row) for row in old_rows], (asked, limit, offset)
             assert total == old_total
             cases += bool(old_rows)
     assert cases >= 5  # the comparison was made on real rows, not only on empty pages

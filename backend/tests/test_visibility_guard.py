@@ -41,6 +41,8 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # Review: the values of the version answers use, and nothing else.
     (review, "_QUEUE"): LIVE_CURRENT,
     (review, "_COUNT"): LIVE_CURRENT,
+    (review, "_QUEUE_FOR_DOCUMENT"): LIVE_CURRENT,
+    (review, "_COUNT_FOR_DOCUMENT"): LIVE_CURRENT,
     (review, "_LOCK_VALUE"): LIVE_CURRENT,
     # The admin numbers: each family once, by its current version; open review
     # items as the queue shows them.
