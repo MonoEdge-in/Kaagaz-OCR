@@ -1,6 +1,6 @@
 // The review queue's small decisions, kept out of the components so they are
 // unit tested in node (tests/review-*.test.ts): whether a choice can be sent,
-// how the queue changes after a value is resolved, and where focus goes then.
+// how the queue changes after a value is resolved, where focus goes then, and its reason filter.
 
 import { fieldText } from "@/components/viewer/labels";
 import { checkReasonText } from "@/components/viewer/panels";
