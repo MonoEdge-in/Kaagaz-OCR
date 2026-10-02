@@ -1,9 +1,7 @@
 "use client";
 
-// "What was read" under a value: the reader's text as read, the second
-// reading, the reader's confidence, why it needs review, and a link to its
-// page's Scanned text (not for a sheet, whose grid already is the reading). A
-// native disclosure, closed until asked for; every text is plain React text.
+// "What was read" under a value (a native disclosure, plain React text); the
+// Scanned text link is left out for a sheet, whose grid already is the reading.
 
 import Link from "next/link";
 import { pageLink } from "@/lib/regions";

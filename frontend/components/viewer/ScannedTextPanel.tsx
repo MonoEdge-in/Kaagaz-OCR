@@ -1,11 +1,8 @@
 "use client";
 
-// The viewer's Scanned text panel: every line each reader read on this page,
-// exactly as read (visibleText only marks hidden controls), in the order it was
-// read. It is mounted only while open, so nothing is fetched until it is asked
-// for, and a late reply for another page is never shown (the key and the
-// cancelled flag). Each line is a button that highlights its spot on the page.
-// The text is plain React text; it is never sent to the model.
+// The Scanned text panel: each reader's lines on this page, as read, in order.
+// Mounted only while open (no fetch before); a late reply for another page is
+// dropped (key + cancelled). Plain React text, never sent to the model.
 
 import { useEffect, useState } from "react";
 import { ApiError, getPageReadings } from "@/lib/api";
@@ -17,6 +14,7 @@ import {
   confidenceText,
   emptyState,
   lineMarked,
+  plural,
   readerHeading,
   secondReaderNote,
   truncatedText,
@@ -123,15 +121,13 @@ export function ScannedTextPanel({ documentId, page, active, cited, onShow, onCl
         </div>
       )}
       {note && <p className={styles.note}>{note}</p>}
+      <p className="visually-hidden" role="status">
+        {empty ? empty.text : plural(lines.length, "line")}
+      </p>
       {load.status === "loading" ? (
-        <>
-          <p className="visually-hidden" role="status">
-            {empty?.text}
-          </p>
-          <span className={`skeleton ${styles.skeleton}`} aria-hidden="true" />
-        </>
+        <span className={`skeleton ${styles.skeleton}`} aria-hidden="true" />
       ) : empty ? (
-        <div className={styles.empty} role={load.status === "error" ? "alert" : "status"}>
+        <div className={styles.empty}>
           <p>{empty.text}</p>
           {empty.retry && (
             <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>

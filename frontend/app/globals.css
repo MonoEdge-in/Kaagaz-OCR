@@ -299,9 +299,7 @@ input:-webkit-autofill:focus {
   font-variant-numeric: tabular-nums;
 }
 
-/* Text exactly as a reader read it (Scanned text, What was read): a mono stack
-   with Devanagari before plain monospace, spaces kept, long runs wrapped, and
-   each line isolated so its own direction never reorders what is around it. */
+/* Text as a reader read it: Devanagari-capable mono, spaces kept, direction isolated. */
 .readText {
   font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, "Nirmala UI",
     "Noto Sans Devanagari", monospace;

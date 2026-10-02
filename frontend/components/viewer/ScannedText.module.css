@@ -1,7 +1,4 @@
-/* Scanned text (ScannedTextPanel.tsx) and each value's What was read
-   (WhatWasRead.tsx). Neutral colours only, never the verified or needs review
-   badge colours: confidence is the reader's guess, not a label. A cited line
-   gets a word and a left border, so colour is never the only signal. */
+/* Scanned text and What was read: neutral colours only, never the label badges'. */
 
 .panel {
   display: flex;
@@ -34,20 +31,24 @@
   min-height: 24px;
 }
 
-.title {
+.title,
+.muted,
+.note,
+.empty p {
   margin: 0;
+}
+
+.title {
   font-weight: 600;
 }
 
 .muted {
   display: block;
-  margin: 0;
-  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 
+.muted,
 .note {
-  margin: 0;
   font-size: var(--fs-sm);
 }
 
@@ -61,10 +62,6 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-}
-
-.empty p {
-  margin: 0;
 }
 
 .scroll {

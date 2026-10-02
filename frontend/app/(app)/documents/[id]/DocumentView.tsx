@@ -12,9 +12,8 @@
 // Clicking a value jumps to its page and highlights its spot. Every value is
 // shown as plain text; it came from the document. Beside the page: the
 // document card, related documents and the invoice (DocumentPanels.tsx,
-// PRD 3 Y1 to Y3); a low-resolution page says so above it (Y4). A page that
-// is not a sheet has a "Scanned text" button that opens what was read on it
-// (?scanned=1 too; Esc closes it), and each value has its "What was read".
+// PRD 3 Y1 to Y3); a low-resolution page says so above it (Y4). Scanned text:
+// see ScannedTextPanel.tsx.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -88,9 +87,7 @@ export function DocumentView({
   const linkKey = `${pageParam ?? ""}|${regionParam ?? ""}|${scannedParam ?? ""}`;
   const [chosen, setChosen] = useState<{ linkKey: string; selection: Selection } | null>(null);
   // The Scanned text panel: open as the link says (?scanned=1) until it is toggled.
-  const [scannedChoice, setScannedChoice] = useState<{ linkKey: string; open: boolean } | null>(
-    null,
-  );
+  const [scannedChoice, setScannedChoice] = useState<{ linkKey: string; open: boolean } | null>(null);
   const scannedButton = useRef<HTMLButtonElement>(null);
   const [announcement, setAnnouncement] = useState("");
   const viewerRef = useRef<HTMLElement>(null);

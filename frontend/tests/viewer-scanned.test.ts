@@ -102,9 +102,13 @@ describe("emptyState", () => {
       text: "Too many requests, try again in a minute.",
       retry: true,
     });
-    for (const httpStatus of [500, 404, null]) {
-      expect(emptyState({ status: "error", httpStatus }, "ocr")?.retry).toBe(true);
-    }
+    expect(emptyState({ status: "error", httpStatus: 500 }, "ocr")).toEqual({
+      text: "The scanned text could not be loaded. Try again.",
+      retry: true,
+    });
+    expect(emptyState({ status: "error", httpStatus: null }, "ocr")?.text).toBe(
+      "The scanned text could not be loaded. Check your connection, then try again.",
+    );
   });
 
   it("says not read yet, blank, or no text found; null when there are lines", () => {
@@ -118,6 +122,13 @@ describe("emptyState", () => {
       "No text was found on this page.",
     );
     expect(emptyState({ status: "ready", reader: reader() }, "ocr")).toBeNull();
+  });
+
+  it("never asks for a sharper scan when the second reader found nothing", () => {
+    const second = reader({ role: "second", lines: [] });
+    expect(emptyState({ status: "ready", reader: second }, "ocr")?.text).toBe(
+      "No text was found on this page.",
+    );
   });
 
   it("says when a reader's lines were cut short", () => {
@@ -135,14 +146,21 @@ describe("emptyState", () => {
 describe("visibleText", () => {
   it("keeps markup literal and Devanagari joiners as they are", () => {
     expect(visibleText("<script>alert(1)</script>")).toBe("<script>alert(1)</script>");
-    expect(visibleText("क्‍ष र‌्")).toBe("क्‍ष र‌्");
+    expect(visibleText("क्\u200Dष र\u200C्")).toBe("क्\u200Dष र\u200C्");
     expect(visibleText("कुल ₹ 1,200")).toBe("कुल ₹ 1,200");
   });
 
+  it("keeps line breaks, with CR LF and CR as LF", () => {
+    expect(visibleText("a\nb")).toBe("a\nb");
+    expect(visibleText("a\r\nb")).toBe("a\nb");
+    expect(visibleText("a\rb")).toBe("a\nb");
+    expect(visibleText("a\u000Bb")).toBe("a⟦U+000B⟧b");
+  });
+
   it("marks controls and direction marks, and shows a tab as a space", () => {
-    expect(visibleText("abc‮def")).toBe("abc⟦U+202E⟧def");
+    expect(visibleText("abc\u202Edef")).toBe("abc⟦U+202E⟧def");
     expect(visibleText("a\tb")).toBe("a b");
-    expect(visibleText("\u0000\u0085‎‏؜⁦﻿")).toBe(
+    expect(visibleText("\u0000\u0085\u200E\u200F\u061C\u2066\uFEFF")).toBe(
       "⟦U+0000⟧⟦U+0085⟧⟦U+200E⟧⟦U+200F⟧⟦U+061C⟧⟦U+2066⟧⟦U+FEFF⟧",
     );
   });
