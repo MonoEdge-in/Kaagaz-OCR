@@ -410,3 +410,45 @@ Use made-up files only. With `MODEL_ENABLED=true`, pull `qwen3.5:4b` and `qwen3-
 | 18-22 | Chat, search, labels, conversations, model answers | | |
 | 23-28 | Admin, customer separation, tools, settings | | |
 | 29-36 | Routes, measure, pieces, Hindi and Marathi, card, invoices, read again, unchecked figures | | |
+
+## 6. Backup and restore
+
+One backup is two parts, taken with the api and worker stopped so they match: the database (volume `postgres-data`) and the file store (volume `seaweedfs-data`, mounted at `/data` in `seaweedfs`). `docker-compose.yml` starts SeaweedFS with `server -dir=/data`, and the `chrislusf/seaweedfs:4.47` image keeps its filer index in `/data/filerldb2`, so `/data` holds every file and its name. The job queue is not backed up: wait until no document is still being read. Below, the user and database are `kaagaz`; use `POSTGRES_USER` and `POSTGRES_DB` instead if your `.env` sets them.
+
+The backup holds every customer's documents and text. Keep it outside the repository (here `../kaagaz-backup`, next to it), never commit or share it, and delete it after the drill. Git ignores `*.dump` and `backup-files/` in case one lands in the repository.
+
+**Back up**, from the repository root. The dump is written inside the container and copied out, because PowerShell's `>` would damage a binary file. In Git Bash, run `export MSYS_NO_PATHCONV=1` first, or it turns `/tmp/...` and `/data` into Windows paths:
+
+```
+mkdir ../kaagaz-backup
+docker compose stop api worker
+docker compose exec -T postgres pg_dump -U kaagaz -Fc -f /tmp/kaagaz.dump kaagaz
+docker compose cp postgres:/tmp/kaagaz.dump ../kaagaz-backup/kaagaz.dump
+docker compose exec -T postgres rm /tmp/kaagaz.dump
+docker compose stop seaweedfs
+docker compose cp seaweedfs:/data ../kaagaz-backup/backup-files
+docker compose up -d
+```
+
+**Restore**, the reverse, into a fresh stack: a new laptop with the same `.env`, or this one under another project name, which gets its own empty volumes (`docker compose stop` the main stack first to free its ports). The containers are created but not started, so the files go in before SeaweedFS first runs; the copy is owned by root, so the `chown` hands it back to the image's `seaweed` user. `pg_dump` leaves out roles, so the app role is made first, as migration 0001 makes it:
+
+```
+docker compose -p kaagaz-drill create --build
+docker compose -p kaagaz-drill cp ../kaagaz-backup/backup-files/. seaweedfs:/data
+docker compose -p kaagaz-drill run --rm --no-deps --entrypoint chown seaweedfs -R seaweed:seaweed /data
+docker compose -p kaagaz-drill up -d postgres
+docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_app NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_app TO kaagaz"
+docker compose -p kaagaz-drill cp ../kaagaz-backup/kaagaz.dump postgres:/tmp/kaagaz.dump
+docker compose -p kaagaz-drill exec -T postgres pg_restore -U kaagaz -d kaagaz --exit-on-error /tmp/kaagaz.dump
+docker compose -p kaagaz-drill exec -T postgres rm /tmp/kaagaz.dump
+docker compose -p kaagaz-drill up -d
+```
+
+`pg_restore` goes into the empty database the fresh `postgres` made, as the same user, and keeps the owner and the grants. Never add `--no-owner` or `--no-acl`: the tables must stay owned by the migration user, never by `kaagaz_app` (an owner skips row level security), and without the grants the app can read nothing.
+
+**The drill.** Before the backup, open 3 documents and ask 3 questions, and write down each answer with its source page. After the restore:
+
+1. Open http://localhost:3000, open the same 3 documents (their page pictures come from the restored files) and ask the same 3 questions: the answers and sources match.
+2. Customer separation on the restored database. From `backend/`, with `DATABASE_URL` from `.env` (port 5432 is the drill's database while the main stack is stopped): `.venv/Scripts/python.exe -m pytest -m isolation`. The tests add their own test customers, and some make a `kaagaz_fresh` database next to it, so run them on a drill copy only, never on a database you keep.
+3. Row level security on every customer table: `docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "SELECT relname, relrowsecurity FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' ORDER BY relname"`. Expect `t` on every table except `alembic_version`.
+4. Clean up: `docker compose -p kaagaz-drill down -v`, `rm -r ../kaagaz-backup`, then `docker compose up -d` brings back the main stack.
