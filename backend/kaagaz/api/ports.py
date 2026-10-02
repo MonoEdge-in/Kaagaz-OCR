@@ -9,6 +9,7 @@ API calls, nothing more.
 from typing import Any, Protocol
 
 from kaagaz.ingestion.ports import BlobStorage, JobQueue
+from kaagaz.search.scope import Scope
 
 
 class ApiStorage(BlobStorage, Protocol):
@@ -29,6 +30,6 @@ class AnswerLike(Protocol):
 
 
 class Answers(Protocol):
-    def answer(self, customer_id: str, question: str) -> AnswerLike:
-        """``question`` is the stripped question text."""
+    def answer(self, customer_id: str, question: str, *, scope: Scope) -> AnswerLike:
+        """``question`` is the stripped question text; ``scope`` is resolved for this customer."""
         ...

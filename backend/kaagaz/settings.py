@@ -186,6 +186,8 @@ class Settings:
     # Answers.
     answer_max_evidence: int
     answer_min_evidence_score: float
+    # Q4: the pieces on each side of an evidence piece also given to the draft, 0 to 3.
+    answer_neighbours: int
     timezone: str
 
     # API.
@@ -319,6 +321,7 @@ class Settings:
             search_max_documents=env.between("SEARCH_MAX_DOCUMENTS", 1, 100),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
+            answer_neighbours=env.between("ANSWER_NEIGHBOURS", 0, 3),
             timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             log_level=env.text("LOG_LEVEL"),

@@ -21,6 +21,7 @@ from kaagaz.db import admin, review
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import search
+from kaagaz.search.scope import EVERYTHING
 from tests.db_support import insert_document, new_customer
 from tests.test_answering_fixed_queries_db import add_values, cell
 from tests.test_search_db import EF_SEARCH, RECIPE, add_pieces, axis
@@ -139,7 +140,8 @@ def test_the_cited_values_lookup_leaves_out_trash_and_older_versions(db: Databas
     every_value = [value for ids in library.values.values() for value in ids]
     with db.customer(library.customer) as conn:
         rows = conn.execute(
-            fixed_queries._VALUE_REFS, {"customer_id": library.customer, "ids": every_value}
+            fixed_queries._VALUE_REFS,
+            {"customer_id": library.customer, "ids": every_value, **EVERYTHING.params()},
         ).all()
     assert {str(row.value_id) for row in rows} == set(library.values["current"])
 

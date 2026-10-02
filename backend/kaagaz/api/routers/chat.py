@@ -1,19 +1,26 @@
 """POST /api/chat, GET /api/conversations, GET /api/conversations/{id} and
 POST /api/messages/{id}/feedback.
 
-Why the order in ``ask``: the answer is worked out outside a transaction (it
-may wait on the model), then the conversation, both messages and the audit row are written in
-one transaction. The audit row holds only the ids and ``answer.status``.
+Why the order in ``ask``: one short transaction checks the conversation and
+resolves the scope (PRD 3 H2), the one sent or else the last question's
+(PROVISIONAL, plan decision 9), again for this customer now: a deleted folder or
+another customer's ids match nothing. The answer is worked out outside a
+transaction (it may wait on the model), then the conversation, both messages
+(the question with its scope) and the audit row are written in one transaction.
+The audit row holds only the ids and ``answer.status``.
 
 A conversation belongs to the user who started it; anyone else, in this
 customer or another, gets "not found".
 """
 
+import json
 import uuid
+from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy import RowMapping
 
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
@@ -21,6 +28,7 @@ from kaagaz.api.errors import ApiError
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
 from kaagaz.db import audit
 from kaagaz.db import chat as chat_sql
+from kaagaz.search.scope import EVERYTHING, ScopeBody, resolve
 
 router = APIRouter()
 
@@ -28,6 +36,7 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_TITLE = 200
 NOT_FOUND_TEXT = "I couldn't find this in your documents."
+MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
 
 
 class AskBody(BaseModel):
@@ -35,6 +44,7 @@ class AskBody(BaseModel):
 
     question: str = Field(min_length=1, max_length=1000)
     conversation_id: uuid.UUID | None = None
+    scope: ScopeBody | None = None  # left out: the conversation's last scope, or everything
 
 
 class FeedbackBody(BaseModel):
@@ -59,12 +69,24 @@ def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
     if not question:
         raise ApiError(400, "bad_request", "Type a question first.")
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
-    if conversation_id is not None:
-        with context.db.customer(user.customer_id) as conn:
+    chosen = body.scope
+    with context.db.customer(user.customer_id) as conn:
+        if conversation_id is not None:
             if chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
                 raise ApiError(404, "not_found")
+            if chosen is None:
+                chosen = _saved_scope(chat_sql.recent_messages(conn, user.customer_id, conversation_id, 2))
+        scope = (
+            EVERYTHING
+            if chosen is None
+            else resolve(conn, user.customer_id, chosen, timezone=context.settings.timezone)
+        )
+    saved = None if chosen is None else chosen.model_dump(mode="json")
+    # json.dumps writes ", " and ": " as jsonb's text does, so this is the CHECK's length.
+    if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
+        raise ApiError(400, "bad_request", "Choose fewer documents or tags.")
 
-    answer = context.answers.answer(user.customer_id, question).to_json()
+    answer = context.answers.answer(user.customer_id, question, scope=scope).to_json()
 
     with context.db.customer(user.customer_id) as conn:
         if conversation_id is None:
@@ -74,7 +96,13 @@ def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
         elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
             raise ApiError(404, "not_found")
         asked = chat_sql.add_message(
-            conn, user.customer_id, conversation_id, role="user", message_text=question, answer=None
+            conn,
+            user.customer_id,
+            conversation_id,
+            role="user",
+            message_text=question,
+            answer=None,
+            scope=saved,
         )
         answered = chat_sql.add_message(
             conn,
@@ -99,6 +127,18 @@ def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
             },
         )
     return {"conversation_id": conversation_id, "question": message(asked), "answer": message(answered)}
+
+
+def _saved_scope(recent: Sequence[RowMapping]) -> ScopeBody | None:
+    """The scope the newest question in ``recent`` used, parsed again; None if it had
+    none. One that no longer parses matches nothing: a scope is never widened."""
+    saved = next((row["scope"] for row in recent if row["role"] == "user"), None)
+    if saved is None:
+        return None
+    try:
+        return ScopeBody.model_validate(saved)
+    except ValidationError:
+        return ScopeBody(document_ids=[])
 
 
 @router.get("/conversations")

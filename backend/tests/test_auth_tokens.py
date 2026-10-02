@@ -38,6 +38,7 @@ from kaagaz.api.context import AppContext
 from kaagaz.api.ports import AnswerLike
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.ports import BlobNotFound
+from kaagaz.search.scope import Scope
 from kaagaz.settings import Settings, SettingsError
 from tests.fakes import MemoryQueue, MemoryStorage
 from tests.settings_factory import make_settings
@@ -439,7 +440,7 @@ class _Queue(MemoryQueue):
 
 
 class _NoAnswers:
-    def answer(self, customer_id: str, question: str) -> AnswerLike:
+    def answer(self, customer_id: str, question: str, *, scope: Scope) -> AnswerLike:
         raise AssertionError("not used here")
 
 

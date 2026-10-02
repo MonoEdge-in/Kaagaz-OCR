@@ -4,6 +4,7 @@ Pure helpers (the answer text, and a saved answer's sources as they are now)
 are tested first, without a database.
 """
 
+import uuid
 from typing import Any
 
 import pytest
@@ -13,6 +14,7 @@ from kaagaz.api.app import create_app
 from kaagaz.api.routers.chat import NOT_FOUND_TEXT, answer_text
 from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, cited_document_ids
 from kaagaz.db.engine import Database
+from kaagaz.search.scope import ScopeBody
 from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, NOW, PASSWORD, Api, TestClient, answer_json
 
@@ -336,3 +338,39 @@ def test_a_saved_answer_shows_a_source_moved_to_trash_as_gone(db: Database) -> N
     assert {key: value for key, value in again.items() if key != "citations"} == {
         key: value for key, value in api.answers.reply.items() if key != "citations"
     }
+
+
+@pytest.mark.db
+def test_a_scope_is_resolved_saved_with_the_question_and_inherited_by_a_follow_up(db: Database) -> None:
+    """PRD 3 H2; inheriting is PROVISIONAL (plan decision 9). Sending {} widens it again."""
+    api = Api(db)
+    signed = api.new_signed()
+    folder = api.add_folder(signed.customer_id, signed.user_id, "Suppliers")
+
+    def ask(**body: Any) -> Any:
+        reply = signed.client.post("/api/chat", json={"question": "total?", **body}, headers=CSRF)
+        assert reply.status_code == 200, reply.text
+        return reply.json()
+
+    first = ask(scope={"folder_id": folder})
+    conversation = first["conversation_id"]
+    ask(conversation_id=conversation)
+    ask(conversation_id=conversation, scope={})
+    ask(conversation_id=conversation)
+
+    assert [scope.folder_ids for scope in api.answers.scopes] == [(folder,), (folder,), None, None]
+    messages = signed.client.get(f"/api/conversations/{conversation}").json()["messages"]
+    saved = ScopeBody.model_validate({"folder_id": folder}).model_dump(mode="json")
+    everything = ScopeBody().model_dump()
+    assert [m["scope"] for m in messages if m["role"] == "user"] == [saved, saved, everything, everything]
+    assert first["question"]["scope"] == saved and first["answer"]["scope"] is None
+
+
+@pytest.mark.db
+def test_a_scope_too_big_to_save_is_400_before_asking(db: Database) -> None:
+    api = Api(db)
+    many = [str(uuid.uuid4()) for _ in range(50)]
+    scope = {"tag_ids": many, "document_ids": many, "doc_types": ["invoice", "receipt", "contract"]}
+    reply = api.new_signed().client.post("/api/chat", json={"question": "?", "scope": scope}, headers=CSRF)
+    assert reply.status_code == 400
+    assert api.answers.asked == []

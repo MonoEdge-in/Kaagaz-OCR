@@ -173,3 +173,11 @@ def test_search_max_documents_ships_at_20_and_must_be_1_to_100() -> None:
     for bad in ("0", "101", "twenty", None):
         with pytest.raises(SettingsError, match="SEARCH_MAX_DOCUMENTS"):
             Settings.from_env(shipped(SEARCH_MAX_DOCUMENTS=bad))
+
+
+def test_answer_neighbours_ships_at_1_and_must_be_0_to_3() -> None:
+    """PRD 3 Q4: the pieces on each side of an evidence piece; a value outside stops start-up by name."""
+    assert Settings.from_env(shipped()).answer_neighbours == 1
+    for bad in ("4", "-1", "one", None):
+        with pytest.raises(SettingsError, match="ANSWER_NEIGHBOURS"):
+            Settings.from_env(shipped(ANSWER_NEIGHBOURS=bad))

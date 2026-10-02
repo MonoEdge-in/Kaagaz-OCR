@@ -1,8 +1,10 @@
 """Answer one customer's question, with a source for every sentence.
 
-The API calls ``AnswerService.answer(customer_id, question)`` with the
-question, and stores ``Answer.to_json()`` (the ``Answer`` type
-in frontend/lib/types.ts, field for field).
+The API calls ``AnswerService.answer(customer_id, question, scope=...)`` with the
+chat's resolved scope (PRD 3 H2), and stores ``Answer.to_json()`` (the ``Answer``
+type in frontend/lib/types.ts, field for field). A scope that matches nothing is
+"not found" before any query or model call (edge case 1); otherwise every step
+below (fixed queries, unchecked, search, neighbours) sees only documents in it.
 
 The steps (docs/architecture.md):
 
@@ -17,10 +19,13 @@ The steps (docs/architecture.md):
    unchecked card value does: no number, a request to confirm it in Review, and
    the documents where it appears (status ``unchecked``, answering/unchecked.py).
 5. **Search route**: embed the question (skipped without a model), retrieve,
-   the evidence gate, then a draft (the model, or quoting without one), then
-   ``verify`` drops every sentence its evidence does not back.
+   the evidence gate on the hits, then the hits' neighbours (Q4) after them,
+   then a draft (the model, or quoting without one), then ``verify`` drops
+   every sentence its evidence's text does not back.
 6. ``sanitize`` on every sentence and snippet. The label is verified only
-   when every value or piece behind the answer is verified.
+   when every value or piece behind the answer is verified, and no sentence
+   rests on neighbours alone (PROVISIONAL, plan decision 8: the gate never
+   judged them).
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
@@ -28,8 +33,9 @@ every sentence cites at least one source, and every source has a region.
 Nothing here logs the question or any document text.
 
 Time: one ``available_fields`` query, then either one fixed query or one
-search plus at most one model call; the rest is O(e * t) over e pieces of
-evidence of t characters.
+search (with its one neighbours statement) plus at most one model call; the
+rest is O(e * t) over e pieces of evidence of t characters. e is at most
+ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 """
 
 import re
@@ -63,6 +69,7 @@ from kaagaz.chunking.script import has_devanagari_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.indexing import embed_question, recipe_tag
+from kaagaz.search.scope import EVERYTHING, Scope
 from kaagaz.settings import Settings
 
 # "unchecked": the figure asked for exists only as unchecked card values, so no
@@ -155,29 +162,37 @@ class AnswerService:
         self._retriever = (
             retriever
             if retriever is not None
-            else PgRetriever(db, recipe=recipe_tag(settings.model_embed), ef_search=settings.search_ef)
+            else PgRetriever(
+                db,
+                recipe=recipe_tag(settings.model_embed),
+                ef_search=settings.search_ef,
+                neighbours=settings.answer_neighbours,
+            )
         )
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
 
-    def answer(self, customer_id: str, question: str) -> Answer:
-        """Answer ``question`` for ``customer_id`` only."""
+    def answer(self, customer_id: str, question: str, *, scope: Scope = EVERYTHING) -> Answer:
+        """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``."""
+        if scope.matches_nothing:
+            return _not_found("search", question.strip(), [], model_used=False)
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
         found_range = date_range(normalised, self._today())
+        fixed = self._fixed.scoped(scope)
         plan = plan_fixed(
-            normalised, found_range, mentions_date(normalised), self._fixed.available_fields(customer_id)
+            normalised, found_range, mentions_date(normalised), fixed.available_fields(customer_id)
         )
         if plan is not None:
-            return self._fixed_answer(customer_id, plan, shown)
-        unchecked = self._unchecked_answer(customer_id, normalised, shown)
+            return self._fixed_answer(customer_id, plan, shown, fixed)
+        unchecked = self._unchecked_answer(customer_id, normalised, shown, scope)
         if unchecked is not None:
             return unchecked
-        return self._search_answer(customer_id, question, normalised, shown)
+        return self._search_answer(customer_id, question, normalised, shown, scope)
 
     def _unchecked_answer(
-        self, customer_id: str, normalised: NormalisedQuestion, shown: str
+        self, customer_id: str, normalised: NormalisedQuestion, shown: str, scope: Scope
     ) -> Answer | None:
         """A figure asked for that no checked value holds but a card does: no number,
         the documents where it appears, and a request to confirm it in Review first
@@ -186,7 +201,7 @@ class AnswerService:
         if asked is None:
             return None
         concept, fields = asked
-        documents = self._unchecked.documents_with(customer_id, fields)
+        documents = self._unchecked.documents_with(customer_id, fields, scope=scope)
         if not documents:
             return None
         return Answer(
@@ -202,8 +217,8 @@ class AnswerService:
 
     # --- fixed route --------------------------------------------------------
 
-    def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str) -> Answer:
-        rows = self._run_plan(customer_id, plan)
+    def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
+        rows = self._run_plan(fixed, customer_id, plan)
         if not rows:
             return _not_found("fixed_query", shown, [], model_used=False)
         top = [row for row in rows if row.number == rows[0].number]  # a tie is shown, never broken
@@ -238,18 +253,16 @@ class AnswerService:
             model_used=False,
         )
 
-    def _run_plan(self, customer_id: str, plan: FixedPlan) -> list[FixedRow]:
+    def _run_plan(self, fixed: FixedQueries, customer_id: str, plan: FixedPlan) -> list[FixedRow]:
         if plan.aggregate == "count":
-            return self._fixed.count_documents(
-                customer_id, plan.start, plan.end, date_fields=plan.date_fields
-            )
+            return fixed.count_documents(customer_id, plan.start, plan.end, date_fields=plan.date_fields)
         if plan.metric is None:
             return []
         if plan.aggregate == "total":
-            return self._fixed.total(customer_id, plan.metric, plan.date_fields, plan.start, plan.end)
+            return fixed.total(customer_id, plan.metric, plan.date_fields, plan.start, plan.end)
         descending = plan.aggregate == "highest"
         if plan.group_fields:
-            return self._fixed.top_group(
+            return fixed.top_group(
                 customer_id,
                 plan.metric,
                 plan.group_fields,
@@ -258,14 +271,14 @@ class AnswerService:
                 plan.end,
                 descending,
             )
-        return self._fixed.extreme_value(
+        return fixed.extreme_value(
             customer_id, plan.metric, plan.date_fields, plan.start, plan.end, descending
         )
 
     # --- search route -------------------------------------------------------
 
     def _search_answer(
-        self, customer_id: str, question: str, normalised: NormalisedQuestion, shown: str
+        self, customer_id: str, question: str, normalised: NormalisedQuestion, shown: str, scope: Scope
     ) -> Answer:
         query_text = " ".join(normalised.keywords) or normalised.english
         if not query_text:
@@ -273,12 +286,16 @@ class AnswerService:
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         # A Devanagari question is embedded as asked (W3): its Latin spelling means little to the model.
         meant = question if has_devanagari_letters(question) else normalised.english
-        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit)
-        evidence = number_evidence(hits)
+        found = self._retriever.search(customer_id, query_text, self._embed(meant), limit, scope)
+        evidence = number_evidence(found.hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
         if not enough_evidence(evidence, normalised.keywords, self._settings.answer_min_evidence_score):
             return _not_found("search", shown, closest, model_used=False)
+        # Q4: neighbours only after the gate passed on the hits, numbered after all of them.
+        # ponytail: at most 2 * ANSWER_NEIGHBOURS per hit and no character cap of its own;
+        # the evidence window cap (fit_evidence, perf/s2-query-wins) bounds it once rebased.
+        evidence += number_evidence(found.neighbours, start=len(evidence) + 1, neighbour=True)
 
         draft, model_used = self._draft(question, normalised, evidence)
         texts = {item.n: clean_text(item.hit.text) for item in evidence}
@@ -296,7 +313,9 @@ class AnswerService:
             _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence])
             for old, new in renumber.items()
         ]
-        verified = all(c.label == "verified" for c in citations)
+        # A sentence backed by neighbours only is never verified (PROVISIONAL, plan decision 8).
+        neighbour_only = any(all(by_n[n].neighbour for n in s.evidence) for s in kept)
+        verified = all(c.label == "verified" for c in citations) and not neighbour_only
         return Answer(
             status="answered",
             label="verified" if verified else "needs_review",

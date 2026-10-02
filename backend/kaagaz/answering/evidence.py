@@ -20,13 +20,18 @@ passes through the keyword rule. Vrushit decides.
 
 Document text is untrusted. A piece that reads like instructions to a model
 ("ignore previous instructions...", "you are now the assistant", a fake
-evidence tag) is left out of the evidence entirely: it can neither steer the
+evidence tag) in its text or its context header (which holds the document's
+name, PRD 3 Q5) is left out of the evidence entirely: it can neither steer the
 model nor be quoted. PROVISIONAL: the phrase list is a first line of defence
 next to the fenced prompt (draft.py) and the number check (verify.py); it is
 not the only one.
 
 A hit with no valid region cannot be pointed at, so it is not evidence
 (CLAUDE.md never-do 5).
+
+Neighbours (PRD 3 Q4, fetched in the search's transaction) pass the same two
+checks, are numbered after every hit (a window cut drops them first) and are
+marked; the gate never sees them.
 
 Time is O(h * t) for h hits of t characters: one pass of fixed regular
 expressions and substring checks per hit.
@@ -39,6 +44,7 @@ from typing import Any, Protocol
 
 from kaagaz.db.engine import Database
 from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_json
+from kaagaz.search.scope import Scope
 
 CLOSEST_DOCUMENTS = 3
 
@@ -67,6 +73,10 @@ class Hit(Protocol):
     @property
     def detected_type(self) -> str: ...
     @property
+    def seq(self) -> int: ...
+    @property
+    def context_header(self) -> str: ...
+    @property
     def text(self) -> str: ...
     @property
     def regions(self) -> list[dict[str, Any]]: ...
@@ -78,29 +88,40 @@ class Hit(Protocol):
     def meaning_score(self) -> float | None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class Retrieved:
+    hits: Sequence[Hit]  # best first
+    neighbours: Sequence[Hit] = ()  # Q4: the pieces next to the hits, each once, never a hit
+
+
 class Retriever(Protocol):
     def search(
-        self, customer_id: str, text: str, embedding: list[float] | None, limit: int
-    ) -> Sequence[Hit]: ...
+        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
+    ) -> Retrieved: ...
 
 
 class PgRetriever:
-    """``Retriever`` over PostgreSQL: hybrid search inside ``db.customer``."""
+    """``Retriever`` over PostgreSQL: hybrid search and the hits' neighbours, in one
+    ``db.customer`` transaction."""
 
-    def __init__(self, db: Database, *, recipe: str, ef_search: int) -> None:
+    def __init__(self, db: Database, *, recipe: str, ef_search: int, neighbours: int) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
-        another tag are left out); ``ef_search``: SEARCH_EF."""
+        another tag are left out); ``ef_search``: SEARCH_EF; ``neighbours``:
+        ANSWER_NEIGHBOURS, the pieces on each side of a hit (0: none)."""
         self._db = db
         self._recipe = recipe
         self._ef_search = ef_search
+        self._neighbours = neighbours
 
-    def search(self, customer_id: str, text: str, embedding: list[float] | None, limit: int) -> Sequence[Hit]:
+    def search(
+        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
+    ) -> Retrieved:
         # Imported here so the answering rules (and their tests) do not need the
         # search module; only the real retriever does.
-        from kaagaz.search.hybrid import search
+        from kaagaz.search.hybrid import neighbours, search
 
         with self._db.customer(customer_id) as conn:
-            return search(
+            hits = search(
                 conn,
                 customer_id=customer_id,
                 query_text=text,
@@ -108,7 +129,10 @@ class PgRetriever:
                 limit=limit,
                 recipe=self._recipe,
                 ef_search=self._ef_search,
+                scope=scope,
             )
+            near = neighbours(conn, customer_id=customer_id, hits=hits, size=self._neighbours, scope=scope)
+        return Retrieved(hits, near)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,16 +142,18 @@ class Evidence:
     n: int
     hit: Hit
     regions: list[dict[str, Any]]
+    neighbour: bool = False  # Q4: next to a hit, given as context; the gate never judged it
 
 
-def number_evidence(hits: Sequence[Hit]) -> list[Evidence]:
-    """Usable hits, numbered from 1 in rank order: instruction-like or unlocatable ones left out."""
+def number_evidence(hits: Sequence[Hit], *, start: int = 1, neighbour: bool = False) -> list[Evidence]:
+    """Usable hits, numbered from ``start`` in order: instruction-like (text and header
+    together) or unlocatable ones left out."""
     evidence: list[Evidence] = []
     for hit in hits:
         regions = valid_regions(hit.regions)
-        if not regions or looks_like_instructions(hit.text):
+        if not regions or looks_like_instructions(f"{hit.context_header}\n{hit.text}"):
             continue
-        evidence.append(Evidence(n=len(evidence) + 1, hit=hit, regions=regions))
+        evidence.append(Evidence(n=start + len(evidence), hit=hit, regions=regions, neighbour=neighbour))
     return evidence
 
 

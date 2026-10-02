@@ -19,6 +19,7 @@ from kaagaz.answering.service import AnswerService
 from kaagaz.db.engine import Database
 from tests.db_support import new_customer
 from tests.settings_factory import make_settings
+from tests.test_answering_neighbours_db import add, near
 
 pytestmark = pytest.mark.db
 
@@ -145,3 +146,13 @@ def test_fixed_queries_for_b_find_nothing_even_with_as_field_names(db: Database)
     assert fixed.total(b, "profit", [], None, None) == []
     assert fixed.extreme_value(b, "profit", [], None, None, True) == []
     assert fixed.count_documents(b, None, None, date_fields=["date"]) == []
+
+
+def test_b_never_gets_as_pieces_as_neighbours(db: Database) -> None:
+    """Q4: the neighbour fetch filters on the customer too (with RLS), even given A's ids."""
+    a, _ = new_customer(db)
+    b, _ = new_customer(db)
+    before, the_hit, after = add(db, a, ["before", "the hit", "after"])
+
+    assert near(db, a, [the_hit]) == [before.piece_id, after.piece_id]
+    assert near(db, b, [the_hit]) == []

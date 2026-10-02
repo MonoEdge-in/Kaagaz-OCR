@@ -39,7 +39,8 @@ keeps at most ``CANDIDATES`` pieces.
 The scope (PRD 3 Q1, kaagaz/search/scope.py) is in the WHERE of all three
 lists, before ranking: static predicates, each true for a NULL parameter (the
 custom plans drop them). A scope that matches nothing returns before any SQL.
-``search_documents`` (Q2) groups the candidates by document.
+``search_documents`` (Q2) groups the candidates by document. ``neighbours`` (Q4)
+fetches the pieces next to an answer's hits, with the same filters and scope.
 
 The lists are merged with reciprocal rank fusion (``fuse``): a piece scores the
 sum of 1 / (k + rank) over the lists it is in, so a piece found two ways ranks
@@ -207,11 +208,37 @@ _MEANING_EXACT = text(
 
 _DETAILS = text(
     "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to,"
-    " p.text, p.regions, p.label, d.doc_type"
+    " p.text, p.regions, p.label, d.doc_type, p.seq, p.context_header"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.id = ANY(CAST(:ids AS uuid[]))"
+)
+
+# Q4: the pieces next to each hit (seq - :n to seq + :n of its document) through
+# UNIQUE (document_id, seq), with the same filters and scope as the three lists,
+# so a piece in Trash, an older version or outside the scope is never one (edge
+# case 5). The columns are _DETAILS's; ordered by the hit's rank, then seq.
+_NEIGHBOURS = text(
+    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to,"
+    " p.text, p.regions, p.label, d.doc_type, p.seq, p.context_header"
+    " FROM unnest(CAST(:documents AS uuid[]), CAST(:seqs AS integer[]))"
+    " WITH ORDINALITY AS h (document_id, seq, rank)"
+    " JOIN pieces p ON p.customer_id = :c AND p.document_id = h.document_id"
+    " AND p.seq BETWEEN h.seq - :n AND h.seq + :n"
+    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    " ORDER BY h.rank, p.seq"
 )
 
 
@@ -232,6 +259,8 @@ class SearchHit:
     word_score: float | None
     fuzzy_score: float | None
     meaning_score: float | None
+    seq: int  # the piece's place in its document, from 0
+    context_header: str  # where it sits (kaagaz/chunking/context.py): document text too, untrusted
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,30 +438,53 @@ def _hits(conn: Connection, customer_id: str, fused: Sequence[FusedPiece]) -> li
         str(row[0]): row
         for row in conn.execute(_DETAILS, {"c": customer_id, "ids": [hit.piece_id for hit in fused]})
     }
-    hits: list[SearchHit] = []
-    for hit in fused:
-        row = details.get(hit.piece_id)
-        if row is None:  # removed between the two statements
-            continue
-        hits.append(
-            SearchHit(
-                piece_id=hit.piece_id,
-                document_id=str(row[1]),
-                document_name=str(row[2]),
-                detected_type=str(row[3]),
-                doc_type=None if row[9] is None else str(row[9]),
-                page_from=int(row[4]),
-                page_to=int(row[5]),
-                text=str(row[6]),
-                regions=list(row[7]),
-                label=str(row[8]),
-                score=hit.score,
-                word_score=hit.word_score,
-                fuzzy_score=hit.fuzzy_score,
-                meaning_score=hit.meaning_score,
-            )
-        )
-    return hits
+    # A piece removed between the two statements is left out.
+    return [_hit(details[hit.piece_id], hit) for hit in fused if hit.piece_id in details]
+
+
+def neighbours(
+    conn: Connection, *, customer_id: str, hits: Sequence[SearchHit], size: int, scope: Scope = EVERYTHING
+) -> list[SearchHit]:
+    """Q4: the pieces up to ``size`` either side of each hit in its document, in ``scope``,
+    each once, never a hit: the first hit's first, in seq order. ``conn`` is the search's
+    ``Database.customer`` one. One statement, O(h * size * log N) for h hits."""
+    if size < 1 or not hits or scope.matches_nothing:
+        return []
+    params = {
+        "c": customer_id,
+        "documents": [hit.document_id for hit in hits],
+        "seqs": [hit.seq for hit in hits],
+        "n": size,
+    }
+    seen = {hit.piece_id for hit in hits}
+    found: list[SearchHit] = []
+    for row in conn.execute(_NEIGHBOURS, params | scope.params()):
+        if str(row[0]) not in seen:
+            seen.add(str(row[0]))
+            found.append(_hit(row, FusedPiece(str(row[0]), 0.0, None, None, None)))
+    return found
+
+
+def _hit(row: Sequence[Any], fused: FusedPiece) -> SearchHit:
+    """A _DETAILS or _NEIGHBOURS row as a hit, with ``fused``'s scores."""
+    return SearchHit(
+        piece_id=fused.piece_id,
+        document_id=str(row[1]),
+        document_name=str(row[2]),
+        detected_type=str(row[3]),
+        doc_type=None if row[9] is None else str(row[9]),
+        page_from=int(row[4]),
+        page_to=int(row[5]),
+        text=str(row[6]),
+        regions=list(row[7]),
+        label=str(row[8]),
+        score=fused.score,
+        word_score=fused.word_score,
+        fuzzy_score=fused.fuzzy_score,
+        meaning_score=fused.meaning_score,
+        seq=int(row[10]),
+        context_header=str(row[11]),
+    )
 
 
 def _meaning(

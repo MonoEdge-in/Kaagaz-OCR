@@ -30,6 +30,7 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (hybrid, "_MEANING"): LIVE_CURRENT,
     (hybrid, "_MEANING_EXACT"): LIVE_CURRENT,
     (hybrid, "_DETAILS"): LIVE_CURRENT,
+    (hybrid, "_NEIGHBOURS"): LIVE_CURRENT,  # Q4: the pieces next to an answer's hits
     # The numbers in answers: the same, in every CTE.
     (fixed_queries, "_AVAILABLE_FIELDS"): LIVE_CURRENT,
     (fixed_queries, "_TOP_GROUP"): LIVE_CURRENT,
