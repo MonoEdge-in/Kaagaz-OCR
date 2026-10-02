@@ -4,6 +4,7 @@
 // has ended (401 not_signed_in) is also told to the session provider, which
 // sends the browser to sign in (lib/session.tsx).
 
+import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type {
   AdminUser,
@@ -14,6 +15,7 @@ import type {
   CustomerSettings,
   DocumentDetail,
   DocumentList,
+  DocumentSearch,
   DocumentSummary,
   Folder,
   Me,
@@ -146,6 +148,9 @@ export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everyw
 export const listDocuments = (params: DocumentListParams = {}) =>
   request<DocumentList>("GET", `/documents${query(params)}`);
 export const getDocument = (id: string) => request<DocumentDetail>("GET", `/documents/${id}`);
+/** Search inside documents (PRD 3 Q2), grouped by document. */
+export const searchDocuments = (params: DocumentSearchParams) =>
+  request<DocumentSearch>("GET", `/search${query(params)}`);
 /** Moves the document, with every version of it, to Trash (PRD 1, F5). */
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);
 /** Brings a document in Trash back, with every version of it. */
