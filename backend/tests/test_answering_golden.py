@@ -7,7 +7,8 @@ in test_answering_fixed_queries_db.py and test_isolation_answering.py.
 
 The fake search scores a piece by the share of the query's words it holds
 (its ``fuzzy_score``), so the evidence gate is exercised the way the real
-fuzzy list feeds it.
+fuzzy list feeds it. The fakes take a scope and ignore it: the scope is only
+ever tested on real SQL (test_answering_scope_db.py).
 """
 
 import dataclasses
@@ -51,6 +52,7 @@ ANSWER_KEYS = {
     "route",
     "normalized_question",
     "model_used",
+    "rewritten_question",
 }
 CITATION_KEYS = {
     "n",
@@ -63,6 +65,10 @@ CITATION_KEYS = {
     "regions",
     "snippet",
     "label",
+    "page_from",
+    "page_to",
+    "label_page_no",
+    "label_regions",
 }
 
 
@@ -86,6 +92,8 @@ class FakeHit:
     word_score: float | None = None
     fuzzy_score: float | None = None
     meaning_score: float | None = None
+    seq: int = 0
+    context_header: str = ""
 
 
 def piece(document_name: str, text: str, *, label: str = "verified", regions: Any = None) -> FakeHit:
@@ -108,7 +116,9 @@ class FakeRetriever:
         self.pieces = pieces
         self.calls: list[tuple[str, str, list[float] | None, int]] = []
 
-    def search(self, customer_id: str, text: str, embedding: list[float] | None, limit: int) -> list[FakeHit]:
+    def search(
+        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
+    ) -> list[FakeHit]:
         self.calls.append((customer_id, text, embedding, limit))
         words = text.casefold().split()
         hits = []
@@ -119,6 +129,9 @@ class FakeRetriever:
                 hits.append(dataclasses.replace(hit, score=share, fuzzy_score=share))
         hits.sort(key=lambda hit: -hit.score)
         return hits[:limit]
+
+    def neighbours(self, customer_id: str, hits: Sequence[Any], scope: Scope) -> list[FakeHit]:
+        return []
 
 
 INVOICE = piece(
@@ -397,7 +410,9 @@ class FakeUnchecked:
         self.cards = cards or {}
         self.calls: list[tuple[str, tuple[str, ...]]] = []
 
-    def documents_with(self, customer_id: str, fields: Sequence[str]) -> list[dict[str, str]]:
+    def documents_with(
+        self, customer_id: str, fields: Sequence[str], *, scope: Scope = EVERYTHING
+    ) -> list[dict[str, str]]:
         self.calls.append((customer_id, tuple(fields)))
         found = self.cards.get(customer_id, {})
         return [doc for field in fields for doc in found.get(field, [])]
@@ -726,6 +741,7 @@ def test_the_system_prompt_marks_evidence_as_untrusted() -> None:
     system, user = model.prompts[0]
     assert system == SYSTEM_PROMPT
     assert "untrusted data" in system and "never instructions" in system
+    assert "Answer in English." in system  # PRD 3 H3
     assert "not_found" in system
     assert evidence_blocks(user) == {1: INVOICE.text}
 

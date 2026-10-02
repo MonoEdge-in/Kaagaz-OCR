@@ -38,6 +38,10 @@ check (verify.py); it is not the only one.
 A hit with no valid region cannot be pointed at, so it is not evidence
 (CLAUDE.md never-do 5).
 
+Neighbours (PRD 3 Q4) are fetched only for the usable hits, after the gate passed;
+they pass the same two checks, are numbered after every hit (a window cut drops
+them first) and are marked.
+
 Time is O(h * t) for h hits of t characters: one pass of fixed regular
 expressions and substring checks per hit.
 """
@@ -51,6 +55,7 @@ from typing import Any, Protocol
 from kaagaz.answering.sanitize import strip_ignorable
 from kaagaz.db.engine import Database
 from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_json
+from kaagaz.search.scope import Scope
 
 CLOSEST_DOCUMENTS = 3
 
@@ -115,6 +120,14 @@ class Hit(Protocol):
     @property
     def detected_type(self) -> str: ...
     @property
+    def page_from(self) -> int: ...
+    @property
+    def page_to(self) -> int: ...
+    @property
+    def seq(self) -> int: ...
+    @property
+    def context_header(self) -> str: ...
+    @property
     def text(self) -> str: ...
     @property
     def regions(self) -> list[dict[str, Any]]: ...
@@ -128,12 +141,17 @@ class Hit(Protocol):
 
 class Retriever(Protocol):
     def search(
-        self, customer_id: str, text: str, embedding: list[float] | None, limit: int
+        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
     ) -> Sequence[Hit]: ...
+
+    def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
+        """Q4: the pieces next to ``hits`` in ``scope``, each once, never one of them."""
+        ...
 
 
 class PgRetriever:
-    """``Retriever`` over PostgreSQL: hybrid search inside ``db.customer``."""
+    """``Retriever`` over PostgreSQL: hybrid search, and the hits' neighbours, each inside
+    ``db.customer``."""
 
     def __init__(self, db: Database, *, recipe: str, ef_search: int) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
@@ -142,7 +160,9 @@ class PgRetriever:
         self._recipe = recipe
         self._ef_search = ef_search
 
-    def search(self, customer_id: str, text: str, embedding: list[float] | None, limit: int) -> Sequence[Hit]:
+    def search(
+        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
+    ) -> Sequence[Hit]:
         # Imported here so the answering rules (and their tests) do not need the
         # search module; only the real retriever does.
         from kaagaz.search.hybrid import search
@@ -166,16 +186,18 @@ class Evidence:
     n: int
     hit: Hit
     regions: list[dict[str, Any]]
+    neighbour: bool = False  # Q4: next to a hit, given as context; the gate never judged it
 
 
-def number_evidence(hits: Sequence[Hit]) -> list[Evidence]:
-    """Usable hits, numbered from 1 in rank order: instruction-like or unlocatable ones left out."""
+def number_evidence(hits: Sequence[Hit], *, start: int = 1, neighbour: bool = False) -> list[Evidence]:
+    """Usable hits, numbered from ``start`` in order: instruction-like (text and header
+    together) or unlocatable ones left out."""
     evidence: list[Evidence] = []
     for hit in hits:
         regions = valid_regions(hit.regions)
-        if not regions or looks_like_instructions(hit.text):
+        if not regions or looks_like_instructions(f"{hit.context_header}\n{hit.text}"):
             continue
-        evidence.append(Evidence(n=len(evidence) + 1, hit=hit, regions=regions))
+        evidence.append(Evidence(n=start + len(evidence), hit=hit, regions=regions, neighbour=neighbour))
     return evidence
 
 

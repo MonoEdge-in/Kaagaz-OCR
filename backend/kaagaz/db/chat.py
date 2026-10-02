@@ -5,8 +5,9 @@ from ``Database.customer(customer_id)`` and filters on ``customer_id`` too.
 A conversation belongs to one user: every read and every feedback write also
 checks ``user_id``, so a colleague in the same customer cannot open it either.
 
-Question text is stored as asked, stripped of surrounding spaces. The answer
-is stored as the jsonb ``Answer.to_json()`` gives.
+Question text is stored as asked, stripped of surrounding spaces, with the
+scope it was asked in (``ScopeBody.model_dump``, PRD 3 H2). The answer is stored
+as the jsonb ``Answer.to_json()`` gives.
 """
 
 import json
@@ -67,14 +68,18 @@ def add_message(
     role: str,
     message_text: str,
     answer: Mapping[str, Any] | None,
+    scope: Mapping[str, Any] | None = None,
+    rewritten_question: str | None = None,
 ) -> RowMapping:
-    """Store one message. ``answer`` is set for assistant messages only (a table check)."""
+    """Store one message. ``answer`` is set for assistant messages only (a table check);
+    ``scope`` for a question asked inside one, ``rewritten_question`` for a follow-up (H1)."""
     return (
         conn.execute(
             text(
-                "INSERT INTO messages (customer_id, conversation_id, role, text, answer)"
-                " VALUES (:c, :conv, :role, :text, CAST(:answer AS jsonb))"
-                " RETURNING id, role, text, answer, created_at"
+                "INSERT INTO messages (customer_id, conversation_id, role, text, answer, scope,"
+                " rewritten_question)"
+                " VALUES (:c, :conv, :role, :text, CAST(:answer AS jsonb), CAST(:scope AS jsonb), :rq)"
+                " RETURNING id, role, text, answer, scope, created_at"
             ),
             {
                 "c": customer_id,
@@ -82,6 +87,8 @@ def add_message(
                 "role": role,
                 "text": message_text,
                 "answer": None if answer is None else json.dumps(answer),
+                "scope": None if scope is None else json.dumps(scope),
+                "rq": rewritten_question,
             },
         )
         .mappings()
@@ -96,7 +103,7 @@ def messages_with_feedback(
     return (
         conn.execute(
             text(
-                "SELECT m.id, m.role, m.text, m.answer, m.created_at, f.rating AS feedback"
+                "SELECT m.id, m.role, m.text, m.answer, m.scope, m.created_at, f.rating AS feedback"
                 " FROM messages m"
                 " LEFT JOIN feedback f ON f.customer_id = m.customer_id AND f.message_id = m.id"
                 " AND f.user_id = :u"
@@ -104,6 +111,26 @@ def messages_with_feedback(
                 " ORDER BY m.created_at, m.role DESC, m.id"
             ),
             {"c": customer_id, "conv": conversation_id, "u": user_id},
+        )
+        .mappings()
+        .all()
+    )
+
+
+def recent_messages(
+    conn: Connection, customer_id: str, conversation_id: str, limit: int
+) -> Sequence[RowMapping]:
+    """The conversation's newest ``limit`` messages, newest first (an answer before its
+    question: both are written in one transaction, so they share ``created_at``). One
+    query on (conversation_id, created_at), O(limit log M)."""
+    return (
+        conn.execute(
+            text(
+                "SELECT m.role, m.text, m.answer, m.scope FROM messages m"
+                " WHERE m.customer_id = :c AND m.conversation_id = :conv"
+                " ORDER BY m.created_at DESC, m.role, m.id DESC LIMIT :n"
+            ),
+            {"c": customer_id, "conv": conversation_id, "n": limit},
         )
         .mappings()
         .all()

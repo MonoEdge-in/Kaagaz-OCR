@@ -80,6 +80,8 @@ _BASE: dict[str, Any] = {
     "search_ef": 100,
     "answer_max_evidence": 8,
     "answer_min_evidence_score": 0.2,
+    "answer_neighbours": 1,
+    "chat_history_turns": 3,
     "timezone": "Asia/Kolkata",
     "rate_limit_per_minute": 1000,
     "log_level": "WARNING",

@@ -302,6 +302,7 @@ def message(row: RowMapping, feedback: str | None = None) -> dict[str, Any]:
         "text": row["text"],
         "created_at": iso(row["created_at"]),
         "answer": row["answer"],
+        "scope": row["scope"],  # a question's ScopeBody (PRD 3 H2), None when it had none
         "feedback": feedback,
     }
 
@@ -340,7 +341,7 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
         citation = {**each, "source_state": state}
         if state in _GONE:
             citation["snippet"] = None
-            citation["regions"] = []
+            citation["regions"] = citation["label_regions"] = []
             gone.add(each.get("n"))
         citations.append(citation)
     sentences = []

@@ -139,6 +139,34 @@ _MEANING = text(
     ") SELECT id, distance FROM candidates ORDER BY distance, created_at, document_id, seq, id LIMIT :n"
 )
 
+# ponytail: the exact fallback (PROVISIONAL, plan item 4) for a scope the index
+# walk came back short on, because hnsw.max_scan_tuples (20,000 tuples) ran out
+# first: a small customer or document in a big table. The same filters, with no
+# order inside the MATERIALIZED step, so the index is never used: O(n * dim) for
+# the scope's n vectors. Upgrade path: a per-customer partial or partitioned
+# index, or a higher max_scan_tuples, once a scope is too big to scan exactly.
+_MEANING_EXACT = text(
+    "WITH candidates AS MATERIALIZED ("
+    " SELECT p.id, p.document_id, p.embedding <=> CAST(:vec AS halfvec(1024)) AS distance"
+    " FROM pieces p"
+    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND p.embedding_model = :recipe"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    ") SELECT id, document_id, distance FROM candidates ORDER BY distance, id LIMIT :n"
+)
+
+# A piece of an invoice whose check failed is never verified (edge case 10): its
+# reading may be sure, but the figures do not add up.
 _DETAILS = text(
     "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to,"
     " p.text, p.regions, p.label, d.doc_type"
@@ -146,6 +174,34 @@ _DETAILS = text(
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.id = ANY(CAST(:ids AS uuid[]))"
+)
+
+# Q4: the pieces next to each hit (seq - :n to seq + :n of its document) through
+# UNIQUE (document_id, seq), with the same filters and scope as the three lists,
+# so a piece in Trash, an older version or outside the scope is never one (edge
+# case 5). The columns are _DETAILS's; ordered by the hit's rank, then seq.
+_NEIGHBOURS = text(
+    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to, p.text,"
+    " p.regions, CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :c"
+    " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
+    " d.doc_type, p.seq, p.context_header"
+    " FROM unnest(CAST(:documents AS uuid[]), CAST(:seqs AS integer[]))"
+    " WITH ORDINALITY AS h (document_id, seq, rank)"
+    " JOIN pieces p ON p.customer_id = :c AND p.document_id = h.document_id"
+    " AND p.seq BETWEEN h.seq - :n AND h.seq + :n"
+    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    " ORDER BY h.rank, p.seq"
 )
 
 
@@ -166,6 +222,8 @@ class SearchHit:
     word_score: float | None
     fuzzy_score: float | None
     meaning_score: float | None
+    seq: int  # the piece's place in its document, from 0
+    context_header: str  # where it sits (kaagaz/chunking/context.py): document text too, untrusted
 
 
 @dataclass(frozen=True, slots=True)
