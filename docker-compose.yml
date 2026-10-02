@@ -56,7 +56,7 @@ services:
   # master, volume server, filer and S3 gateway. The access key is in
   # infra/seaweedfs/s3.json and must match STORAGE_ACCESS_KEY in .env.
   seaweedfs:
-    image: chrislusf/seaweedfs:4.47
+    image: chrislusf/seaweedfs:4.48
     command: server -dir=/data -ip.bind=0.0.0.0 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
     ports:
       - "8333:8333"
@@ -199,7 +199,7 @@ services:
   # DOCKER_MODEL_BASE_URL=http://ollama:11434 in .env. Pull the models once:
   #   docker compose exec ollama ollama pull <MODEL_CHAT>   (and MODEL_EMBED)
   ollama:
-    image: ollama/ollama:0.34.4
+    image: ollama/ollama:0.35.0
     profiles: ["ollama"]
     ports:
       - "11434:11434"

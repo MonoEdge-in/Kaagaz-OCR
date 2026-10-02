@@ -1,15 +1,19 @@
-"""``embed_pieces`` with a fake model, against a real PostgreSQL."""
+"""``embed_pieces`` with a fake model, against a real PostgreSQL, and what it embeds (PRD 3 V3)."""
 
+from datetime import date
 from typing import Any
 
 import pytest
 from sqlalchemy import text
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
+from kaagaz.chunking.context import context_header
+from kaagaz.chunking.piece import Piece
 from kaagaz.db.engine import Database
-from kaagaz.search.indexing import embed_pieces
+from kaagaz.reading.spans import BoxLocation
+from kaagaz.search.indexing import embed_pieces, piece_input, query_input, recipe_tag
 from tests.db_support import new_customer
-from tests.test_search_db import add_document, add_pieces, axis, run
+from tests.test_search_db import RECIPE, add_document, add_pieces, axis, run
 
 pytestmark = pytest.mark.db
 
@@ -64,7 +68,7 @@ def test_every_piece_is_embedded_in_batches_in_order(db: Database) -> None:
     assert embed_pieces(db, customer, document, model, batch_size=2) == 5
 
     assert model.calls == [["piece 0", "piece 1"], ["piece 2", "piece 3"], ["piece 4"]]
-    assert _embeddings(db, customer, document) == [(True, "fake-embed")] * 5
+    assert _embeddings(db, customer, document) == [(True, "fake-embed#ctx1")] * 5
 
 
 def test_a_second_run_does_nothing(db: Database) -> None:
@@ -89,7 +93,7 @@ def test_only_pieces_without_a_vector_are_embedded(db: Database) -> None:
     assert embed_pieces(db, customer, document, model) == 1
 
     assert model.calls == [["new"]]
-    assert _embeddings(db, customer, document) == [(True, "test-embed"), (True, "fake-embed")]
+    assert _embeddings(db, customer, document) == [(True, RECIPE), (True, "fake-embed#ctx1")]
     assert _embeddings(db, customer, other) == [(False, None)]
 
 
@@ -99,7 +103,7 @@ def test_embedded_pieces_are_found_by_meaning(db: Database) -> None:
     first, second = add_pieces(db, customer, document, [("alpha", None), ("beta", None)])
     embed_pieces(db, customer, document, FakeModel())
 
-    hits = run(db, customer, "", embedding=axis(1), recipe=FakeModel.embed_model)
+    hits = run(db, customer, "", embedding=axis(1), recipe=recipe_tag(FakeModel.embed_model))
 
     assert [hit.piece_id for hit in hits] == [second, first]
     assert hits[0].meaning_score == pytest.approx(1.0)
@@ -129,3 +133,47 @@ def test_batch_size_must_be_positive(db: Database) -> None:
     customer, _ = new_customer(db)
     with pytest.raises(ValueError, match="batch_size"):
         embed_pieces(db, customer, add_document(db, customer), FakeModel(), batch_size=0)
+
+
+def test_a_piece_is_embedded_with_its_reduced_header_and_no_instruction(db: Database) -> None:
+    """PRD 3 V3: Type, Date and Section only; never "Before:", the name or the pages."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    _, second = add_pieces(db, customer, document, [("Revenue was $60,500.", None), ("$12,000", None)])
+    location = BoxLocation(15, 0.1, 0.1, 0.9, 0.12)
+    header = context_header(
+        Piece(customer, document, "$12,000", (location,), "verified", section=("Monthly results", "Profit")),
+        document_name="Sept report.pdf",
+        doc_type="other",
+        document_date=date(2026, 9, 30),
+        before="Revenue was $60,500.",
+        sheet=None,
+    )
+    with db.customer(customer) as conn:
+        conn.execute(
+            text("UPDATE pieces SET context_header = :h WHERE customer_id = :c AND id = :id"),
+            {"h": header, "c": customer, "id": second},
+        )
+    model = FakeModel()
+
+    embed_pieces(db, customer, document, model)
+
+    assert "Before: " in header and "Document: " in header  # the stored header keeps them
+    assert model.calls == [
+        [
+            "Revenue was $60,500.",
+            "Type: other | Date: 2026-09-30 | Section: Monthly results > Profit\n\n$12,000",
+        ]
+    ]
+    for embedded in model.calls[0]:
+        assert not embedded.startswith("Instruct:")
+        assert "Before:" not in embedded and "Sept report" not in embedded
+
+
+def test_the_query_and_piece_inputs_follow_the_model_card() -> None:
+    assert query_input("total of INV-1042") == (
+        "Instruct: Given a question about business documents, retrieve passages that answer it"
+        "\nQuery:total of INV-1042"
+    )
+    assert piece_input("", "text only") == "text only"
+    assert piece_input("Document: a.pdf | Sheet 2", "cells") == "cells"

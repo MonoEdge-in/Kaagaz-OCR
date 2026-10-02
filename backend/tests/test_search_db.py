@@ -19,13 +19,14 @@ from sqlalchemy import text
 from kaagaz.chunking.script import is_devanagari, latin_spelling
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import SearchHit, search, vector_literal
+from kaagaz.search.indexing import recipe_tag
 from tests.db_support import new_customer
 
 pytestmark = pytest.mark.db
 
 DIM = 1024
 REGION = {"kind": "box", "page": 1, "box": [0.1, 0.2, 0.6, 0.25]}
-RECIPE = "test-embed"  # the embedding_model add_pieces writes and run searches for
+RECIPE = recipe_tag("test-embed")  # the tag add_pieces writes and run searches for
 EF_SEARCH = 100  # SEARCH_EF in .env.example
 
 

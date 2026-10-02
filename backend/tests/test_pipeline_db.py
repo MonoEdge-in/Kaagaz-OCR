@@ -235,7 +235,6 @@ def with_runs(
     storage: MemoryStorage,
     socket: ReadingSocket | None = None,
     *,
-    ocr_on: bool = False,
     scanner: FakeScanner | None = None,
     chat: FakeChat | None = None,
     model_budget: ModelBudget | None = None,
@@ -259,7 +258,6 @@ def with_runs(
         progress=documents,
         clock=moving_clock,
         timer=Timer(),
-        ocr_on=ocr_on,
         chat=chat,
         chat_model=None if chat is None else chat.chat_model,
         model_budget=model_budget,
@@ -359,9 +357,7 @@ def test_ocr_down_on_page_2_then_retry_leaves_one_set_and_two_runs(db: Database)
     upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
     doc = upload.accept(customer, io.BytesIO(make_pdf([SCANNED, SCANNED]))).document_id
     engine = TimedOcr(Timer(), down_on_call=2)
-    processor = with_runs(
-        db, storage, build_reader_socket(SETTINGS, MeteredOcrEngine(engine, timer=Timer())), ocr_on=True
-    )
+    processor = with_runs(db, storage, build_reader_socket(SETTINGS, MeteredOcrEngine(engine, timer=Timer())))
 
     with pytest.raises(BackendUnavailable):
         processor(Job(customer, doc), lambda: None)
