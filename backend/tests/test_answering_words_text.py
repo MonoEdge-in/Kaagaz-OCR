@@ -17,12 +17,12 @@ from kaagaz.answering.words_text import (
 
 # typed -> folded. "Straße": case folding, not lower case; "e" + a combining accent: NFC.
 FOLDS = {"Malak": "malak", "  MALAK  ": "malak", "gat\t\nnumber": "gat number", "Straße": "strasse"}
-FOLDS |= {"बोजा": "बोजा", "é": "é"}
+FOLDS |= {"बोजा": "बोजा", "e\u0301": "é"}
 # reason -> words refused for it.
 REFUSED_WORDS = {
     "empty": ("", "   "),
     "too_long": ("x" * (WORD_MAX + 1),),
-    "characters": ("malak,owner", "<b>malak</b>", "malak's", "mal_ak", "malak‮"),  # last: right-to-left
+    "characters": ("malak,owner", "<b>malak</b>", "malak's", "mal_ak", "malak\u202e"),  # last: right-to-left
     "no_letter": ("33", "- -"),
     "too_many_parts": ("one two three four",),
     "common_word": ("what", "Kya", "last month", "the", "is ka"),
