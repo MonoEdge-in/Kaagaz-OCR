@@ -2,7 +2,16 @@
 
 import pytest
 
-from kaagaz.db.document_stories import STORY_MAX, StoryTextError, check_story, recipe_tag, story_hash
+from kaagaz.db import document_stories
+from kaagaz.db.document_stories import (
+    LATIN_MAX,
+    MAX_MARKS,
+    STORY_MAX,
+    StoryTextError,
+    check_story,
+    recipe_tag,
+    story_hash,
+)
 
 
 def test_a_story_is_tidied_and_spelt_in_latin_letters() -> None:
@@ -30,6 +39,9 @@ def test_the_text_is_nfc() -> None:
         (" \n\t ", "empty"),
         ("\u202e\u200b\x00", "empty"),
         ("!!! ... ???", "no_letter"),
+        ("\u3164", "no_letter"),  # a Hangul filler: a letter that shows nothing
+        ("\u115f\u1160 \uffa0 ...", "no_letter"),
+        ("\u0378\ue000\U000f0000", "empty"),  # unassigned and private use
         ("x" * (STORY_MAX + 1), "too_long"),
     ],
 )
@@ -49,3 +61,25 @@ def test_the_hash_and_the_tag() -> None:
     assert story_hash("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     assert story_hash("जमीन") != story_hash("jamin")
     assert recipe_tag("qwen3-embedding") == "qwen3-embedding#story1"
+
+
+def test_a_joiner_stays_only_right_after_a_virama() -> None:
+    assert check_story("\u200d" * 999 + "a").text == "a"
+    assert check_story("lo\u200can").text == "loan"
+    assert check_story("\u0915\u200d\u094d\u0937").text == "\u0915\u094d\u0937"  # before the virama: dropped
+    assert check_story("\u0915\u094d\u200c\u0937").text == "\u0915\u094d\u200c\u0937"
+
+
+def test_marks_are_capped_per_base_and_invisible_ones_go() -> None:
+    capped = check_story("a" + "\u0301" * 999 + " b" + "\u0302" * 9)
+    assert capped.text == "\u00e1" + "\u0301" * (MAX_MARKS - 1) + " b" + "\u0302" * MAX_MARKS
+    assert check_story("\u0915\u093c\u093f\u0902").text == "\u0915\u093c\u093f\u0902"  # three marks: all kept
+    assert check_story("lo\u034fan\ufe0f \u2764\ufe0f \U000e0100x").text == "loan \u2764 x"
+    assert check_story("ab\u0378c\ue000d").text == "abcd"
+
+
+def test_a_story_whose_latin_spelling_is_too_long_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert len(check_story("\u091b" * STORY_MAX).latin) == LATIN_MAX - 1  # the longest spelling found
+    monkeypatch.setattr(document_stories, "latin_spelling", lambda text: "x" * (LATIN_MAX + 1))
+    with pytest.raises(StoryTextError, match="too_long"):
+        check_story("short")  # the guard before the table's CHECK
