@@ -251,6 +251,15 @@ export interface DocumentDetail extends DocumentSummary {
   document_date: string | null; // YYYY-MM-DD, from the card; null without one
   card: DocumentCard | null; // null without a card (the model off or down)
   invoice: Invoice | null; // null for a document with no invoices row
+  links: DocumentLink[]; // current, ready documents sharing an identifier (PRD 3 Y2); at most 50
+}
+
+/** A related document (PRD 3 Y2). The value is stored normalised: no spaces, lower case. */
+export interface DocumentLink {
+  id: string;
+  display_name: string;
+  doc_type: DocType | null;
+  identifier: { kind: string; value: string };
 }
 
 export interface DocumentList {
@@ -346,7 +355,11 @@ export interface ReviewItem {
   document_name: string;
   detected_type: DetectedType;
   page: PageSummary;
+  check_reasons: string[]; // why its document's invoice check failed (PRD 3 Y5); [] otherwise
 }
+
+/** The review queue's reason filter (PRD 3 Y5). */
+export type ReviewReason = "check_failed" | "readers_disagree" | "low_confidence" | "single_reader";
 
 /** A row of the admin's Failed jobs tab (PRD 3 Z1). */
 export interface FailedDocument {

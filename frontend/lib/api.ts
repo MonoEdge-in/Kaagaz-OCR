@@ -22,6 +22,7 @@ import type {
   ReviewChoice,
   ReviewItem,
   ReviewList,
+  ReviewReason,
   Role,
   SheetCells,
   Stats,
@@ -283,8 +284,9 @@ export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: 
 
 // --- review --------------------------------------------------------------------
 
-export const listReview = (params: { limit?: number; offset?: number; document_id?: string } = {}) =>
-  request<ReviewList>("GET", `/review${query(params)}`);
+export const listReview = (
+  params: { limit?: number; offset?: number; document_id?: string; reason?: ReviewReason[] } = {},
+) => request<ReviewList>("GET", `/review${query(params)}`);
 export const resolveReview = (
   valueId: string,
   choice: ReviewChoice,

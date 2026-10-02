@@ -1,8 +1,9 @@
 "use client";
 
-// The review queue: every value labelled needs review, oldest first. Each one
-// leaves the list once it is resolved, and the page says so politely. Members
-// see a short note instead; the server refuses them anyway.
+// The review queue: every value labelled needs review, oldest first, or only
+// those of one reason (PRD 3 Y5). Each one leaves the list once it is
+// resolved, and the page says so politely. Members see a short note instead;
+// the server refuses them anyway.
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -11,8 +12,9 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, listReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import type { ReviewItem, ReviewList } from "@/lib/types";
-import { appendItems, canReview, resolvedMessage, withoutItem } from "./review";
+import type { ReviewItem, ReviewList, ReviewReason } from "@/lib/types";
+import { REASON_FILTERS, appendItems, canReview, parseReason, queueParams } from "./review";
+import { resolvedMessage, withoutItem } from "./review";
 import { ReviewCard } from "./ReviewCard";
 import styles from "./Review.module.css";
 
@@ -41,10 +43,11 @@ function Queue({ documentId }: { documentId?: string }) {
   const [moreError, setMoreError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [announcement, setAnnouncement] = useState("");
+  const [reason, setReason] = useState<ReviewReason | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    listReview({ limit: PAGE_SIZE, document_id: documentId })
+    listReview(queueParams(0, PAGE_SIZE, documentId, reason))
       .then((result) => {
         if (cancelled) return;
         setFirst({ attempt, list: result });
@@ -56,7 +59,7 @@ function Queue({ documentId }: { documentId?: string }) {
     return () => {
       cancelled = true;
     };
-  }, [attempt, documentId]);
+  }, [attempt, documentId, reason]);
 
   const loaded = first !== null && first.attempt === attempt ? list : null;
   const failed = loadError !== null && loadError.attempt === attempt ? loadError.message : null;
@@ -67,11 +70,7 @@ function Queue({ documentId }: { documentId?: string }) {
     setMoreError(null);
     try {
       // Resolved values have left the queue, so the next page starts after what is shown.
-      const more = await listReview({
-        limit: PAGE_SIZE,
-        offset: loaded.items.length,
-        document_id: documentId,
-      });
+      const more = await listReview(queueParams(loaded.items.length, PAGE_SIZE, documentId, reason));
       setList((current) => (current ? appendItems(current, more) : more));
     } catch (caught) {
       setMoreError(messageOf(caught));
@@ -88,6 +87,25 @@ function Queue({ documentId }: { documentId?: string }) {
   return (
     <div className="page">
       <Header />
+      <div className="field">
+        <label htmlFor="review-reason">Show values where</label>
+        <select
+          id="review-reason"
+          className="input"
+          value={reason ?? ""}
+          onChange={(event) => {
+            setReason(parseReason(event.target.value));
+            setAttempt((n) => n + 1); // the loading state until the filtered list comes
+          }}
+        >
+          <option value="">Any reason</option>
+          {REASON_FILTERS.map((choice) => (
+            <option key={choice.value} value={choice.value}>
+              {choice.text}
+            </option>
+          ))}
+        </select>
+      </div>
       <p className={announcement ? styles.saved : "visually-hidden"} aria-live="polite">
         {announcement ? <Icon name="check-seal" size={16} /> : null}
         {announcement}
@@ -124,14 +142,16 @@ function Queue({ documentId }: { documentId?: string }) {
         loaded.total === 0 ? (
           <EmptyState
             icon="check-seal"
-            title="Nothing to review"
+            title={reason ? "Nothing to review for this reason" : "Nothing to review"}
             action={
               <Link href="/documents" className="btn">
                 Go to Documents
               </Link>
             }
           >
-            Every value read so far is verified or already settled.
+            {reason
+              ? "Choose Any reason to see the rest of the queue."
+              : "Every value read so far is verified or already settled."}
           </EmptyState>
         ) : (
           <>
