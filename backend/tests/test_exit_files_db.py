@@ -237,7 +237,6 @@ def _processor(
         progress=documents,
         clock=moving_clock,
         timer=timer,
-        ocr_on=True,
         vision=vision,
         vision_model=None if vision is None else "echo-vision",
         chat=chat,

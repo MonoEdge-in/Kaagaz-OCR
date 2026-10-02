@@ -16,6 +16,11 @@ import type { ReviewChoice, ReviewItem } from "@/lib/types";
 import { checkChoice, MAX_TYPED_LENGTH } from "./review";
 import styles from "./Review.module.css";
 
+/** The id of a card's heading; the queue moves focus there after a resolve. */
+export function reviewTitleId(valueId: string): string {
+  return `review-${valueId}-title`;
+}
+
 export function ReviewCard({
   item,
   onResolved,
@@ -54,10 +59,10 @@ export function ReviewCard({
   };
 
   return (
-    <article className={`card ${styles.item}`} aria-labelledby={`${idBase}-title`}>
+    <article className={`card ${styles.item}`} aria-labelledby={reviewTitleId(value.id)}>
       <header className={styles.head}>
         <div className={styles.titleRow}>
-          <h2 id={`${idBase}-title`} className={styles.title}>
+          <h2 id={reviewTitleId(value.id)} className={styles.title} tabIndex={-1}>
             {fieldText(value.field)}
           </h2>
           <LabelBadge label="needs_review" />

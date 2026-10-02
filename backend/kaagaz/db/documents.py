@@ -31,7 +31,7 @@ import dataclasses
 import json
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
@@ -41,8 +41,11 @@ from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
 from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, UnknownFolder
-from kaagaz.pipeline import FinishedRun, Progress, Superseded
+from kaagaz.jobs.worker import Superseded
 from kaagaz.scanning.gate import DocumentStatus
+
+if TYPE_CHECKING:
+    from kaagaz.pipeline import FinishedRun, Progress  # the processor's records; pipeline builds this store
 
 _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
@@ -74,7 +77,7 @@ _READY = (
 
 
 def mark_ready(
-    conn: Connection, customer_id: str, document_id: str, page_count: int, *, run: FinishedRun | None = None
+    conn: Connection, customer_id: str, document_id: str, page_count: int, *, run: "FinishedRun | None" = None
 ) -> None:
     """The document is read: set it ready with its page count and, unless a newer
     version of its family is ready already, make it the family's one current version.
@@ -466,7 +469,7 @@ class PgDocuments:
             )
 
     def mark_ready(
-        self, customer_id: str, document_id: str, page_count: int, *, run: FinishedRun | None = None
+        self, customer_id: str, document_id: str, page_count: int, *, run: "FinishedRun | None" = None
     ) -> None:
         """``mark_ready`` in its own transaction: the pipeline's last step."""
 
@@ -478,7 +481,7 @@ class PgDocuments:
             retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
 
     def set_progress(
-        self, customer_id: str, document_id: str, progress: Progress, *, run_id: str | None = None
+        self, customer_id: str, document_id: str, progress: "Progress", *, run_id: str | None = None
     ) -> None:
         """Show how far the reading has got (X3), on a document still in progress
         (received or clean) only. With ``run_id``, the run fence, as ``set_failed``:

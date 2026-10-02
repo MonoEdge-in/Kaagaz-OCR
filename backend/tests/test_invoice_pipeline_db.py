@@ -114,7 +114,6 @@ def processor(
         progress=documents,
         clock=clock,
         timer=Timer(),
-        ocr_on=ocr is not None,
         vision=vision,
         model_errors=(ModelDown,),
         vision_model=None if vision is None else "qwen-vision",

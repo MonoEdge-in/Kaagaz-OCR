@@ -29,6 +29,8 @@ from collections.abc import Sequence
 
 from sqlalchemy import Connection, text
 
+from sqlalchemy import Connection, text
+
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import vector_literal
@@ -76,19 +78,6 @@ def recipe_tag(model_embed: str) -> str:
 def query_input(question: str) -> str:
     """What a question is embedded as, in the model card's exact format. O(length)."""
     return f"Instruct: {QUERY_TASK}\nQuery:{question}"
-
-
-def embed_question(model: ModelClient | None, question: str) -> list[float] | None:
-    """The question's vector, or None (no model, model down, or unusable vectors), so
-    search falls back to word and fuzzy matching. One model call, in ``query_input``'s
-    format; chat and GET /api/search both embed this way."""
-    if model is None or not question:
-        return None
-    try:
-        vectors = model.embed([query_input(question)])
-    except (ModelUnavailable, ModelOutputError):
-        return None
-    return vectors[0] if vectors else None
 
 
 def piece_input(context_header: str, piece_text: str) -> str:

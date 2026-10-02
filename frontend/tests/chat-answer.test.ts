@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   answerLabelText,
+  answerStatusText,
   cardId,
   citationLink,
   citationMap,
@@ -15,7 +16,7 @@ import {
   understoodAs,
 } from "@/components/chat/answer";
 import { decodeRegion } from "@/lib/regions";
-import type { Citation, Message } from "@/lib/types";
+import type { Answer, Citation, Message } from "@/lib/types";
 
 const citation = (n: number, overrides: Partial<Citation> = {}): Citation => ({
   n,
@@ -173,5 +174,42 @@ describe("question box", () => {
     expect(cleanReason("  ")).toBeUndefined();
     expect(cleanReason(" wrong page ")).toBe("wrong page");
     expect(cleanReason("y".repeat(600))?.length).toBe(500);
+  });
+});
+
+describe("what the chat status line says", () => {
+  const answer = (overrides: Partial<Answer> = {}): Answer => ({
+    status: "answered",
+    label: "verified",
+    sentences: [
+      { text: "The total is 1,234.", citations: [1] },
+      { text: "It was paid in March.", citations: [1] },
+    ],
+    citations: [citation(1)],
+    closest_documents: [],
+    route: "fixed_query",
+    normalized_question: "total",
+    model_used: false,
+    ...overrides,
+  });
+
+  it("gives the label and the first sentence only", () => {
+    expect(answerStatusText(answer())).toBe("Answer ready. Verified. The total is 1,234.");
+    expect(answerStatusText(answer({ label: "needs_review" }))).toBe(
+      "Answer ready. Needs review. The total is 1,234.",
+    );
+  });
+
+  it("never says Verified for an unchecked answer or a missing label", () => {
+    expect(answerStatusText(answer({ status: "unchecked" }))).toMatch(
+      /^Answer ready\. Needs review\. /,
+    );
+    expect(answerStatusText(answer({ label: null }))).toMatch(/^Answer ready\. Needs review\. /);
+  });
+
+  it("says plainly when nothing was found", () => {
+    const none = answer({ status: "not_found", label: null, sentences: [], citations: [] });
+    expect(answerStatusText(none)).toBe("No answer found in your documents.");
+    expect(answerStatusText(null)).toBe("No answer found in your documents.");
   });
 });

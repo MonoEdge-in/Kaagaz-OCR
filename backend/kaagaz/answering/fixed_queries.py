@@ -103,11 +103,7 @@ class FixedRow:
 
 
 class FixedQueries(Protocol):
-    def scoped(self, scope: Scope) -> "FixedQueries":
-        """The same queries over the documents inside ``scope`` only (PRD 3 H2)."""
-        ...
-
-    def available_fields(self, customer_id: str) -> set[str]: ...
+    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]: ...
 
     def top_group(
         self,
@@ -139,25 +135,20 @@ class FixedQueries(Protocol):
     ) -> list[FixedRow]: ...
 
 
+# Which of the fields asked the customer has: one EXISTS each, which stops at the
+# first value (the (customer_id, field) index), never a DISTINCT over every value.
 _AVAILABLE_FIELDS = text(
     """
-    SELECT DISTINCT v.field
-    FROM extracted_values v
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-    WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
-      AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
-      AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
-        WHERE dt.customer_id = :customer_id AND dt.tag_id = ANY(CAST(:s_tags AS uuid[]))
-        GROUP BY dt.document_id HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))
-      AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))
-      AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))
-      AND (CAST(:s_documents AS uuid[]) IS NULL OR d.id = ANY(CAST(:s_documents AS uuid[])))
-      AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL
-        OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)
-        BETWEEN coalesce(CAST(:s_from AS date), '-infinity')
-        AND coalesce(CAST(:s_to AS date), 'infinity'))
-      AND v.record_key <> 'card'
-      AND v.record_key NOT LIKE 'line:%'
+    SELECT c.field
+    FROM unnest(CAST(:candidates AS text[])) AS c(field)
+    WHERE EXISTS (
+        SELECT 1
+        FROM extracted_values v
+        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+          AND v.field = c.field
+          AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%')
     """
 )
 
@@ -503,9 +494,10 @@ class PgFixedQueries:
     def scoped(self, scope: Scope) -> "PgFixedQueries":
         return PgFixedQueries(self._db, scope)
 
-    def available_fields(self, customer_id: str) -> set[str]:
+    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]:
+        """Which of ``fields`` the customer has: O(f) index probes for f fields."""
         with self._db.customer(customer_id) as conn:
-            rows = conn.execute(_AVAILABLE_FIELDS, {"customer_id": customer_id, **self._scope.params()})
+            rows = conn.execute(_AVAILABLE_FIELDS, {"customer_id": customer_id, "candidates": list(fields)})
             return {str(row.field) for row in rows}
 
     def top_group(

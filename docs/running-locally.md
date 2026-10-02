@@ -36,7 +36,10 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
 `MODEL_ENABLED=false` (the default) runs everything with no AI. To use
-Ollama, pull `MODEL_CHAT` and `MODEL_EMBED` first, then set it to `true`.
+Ollama, pull the models first, then set it to `true`: `ollama pull qwen3.5:4b`
+(`MODEL_CHAT` and `MODEL_VISION`) and `ollama pull qwen3-embedding:0.6b`
+(`MODEL_EMBED`, whose vectors have `EMBEDDING_DIM` 1024), the models in
+docs/architecture.md, Decisions.
 With the model on, the worker reads each document's card with `MODEL_CHAT`
 (PRD 2): a reply may take up to `MODEL_CARD_MAX_TOKENS` tokens, in a window of
 `MODEL_NUM_CTX`, and one card call times out after
@@ -48,11 +51,34 @@ the start with its name): `TOTP_ENCRYPTION_KEY`, `LOGIN_MAX_FAILURES`,
 `LOGIN_LOCK_MINUTES`, `ADMIN_SESSION_MINUTES`, `MAX_IMAGE_MB`, `MAX_SHEET_MB`,
 `TRASH_DAYS`, `JOB_MAX_ATTEMPTS`, `OCR_URL`, `OCR_TIMEOUT_SECONDS` and
 `OCR_DPI`, the model budgets `MODEL_NUM_CTX`, `MODEL_CARD_MAX_TOKENS`,
-`MODEL_WINDOW_MAX_TOKENS`, `MODEL_EXTRACT_TIMEOUT_SECONDS` and `CARD_MAX_CHARS`,
+`MODEL_WINDOW_MAX_TOKENS`, `MODEL_ANSWER_MAX_TOKENS`, `MODEL_EXTRACT_TIMEOUT_SECONDS` and
+`CARD_MAX_CHARS`,
 the invoice windows `EXTRACT_WINDOW_CHARS`, `EXTRACT_WINDOW_OVERLAP` and
 `EXTRACT_MAX_WINDOWS`,
 plus the new `MAX_PAGES`, `MAX_IMAGE_PIXELS` and `QUEUE_LEASE_SECONDS` values. Recreate the queue too (`docker compose up -d
 --force-recreate elasticmq`): its failure-bin limit is now 10.
+
+PRD 3 adds four required settings, each checked at start-up by name:
+`SEARCH_EF` (100, 1 to 1000), how many candidates the meaning index walk keeps
+(`hnsw.ef_search`); `SEARCH_MAX_DOCUMENTS` (20, 1 to 100), the most documents
+one search inside documents returns; `ANSWER_NEIGHBOURS` (1, 0 to 3), the
+pieces on each side of an evidence piece also given to the draft; and
+`CHAT_HISTORY_TURNS` (3, 0 to 10), the question and answer pairs a follow-up
+is rewritten with (0: no rewrite).
+
+**Upgrading an install to PRD 3.** Migration 0006 is offline: it locks
+`pieces` and `messages` while it rewrites the vectors and builds the indexes.
+
+1. `docker compose stop api worker`.
+2. Add `SEARCH_EF=100`, `SEARCH_MAX_DOCUMENTS=20`, `ANSWER_NEIGHBOURS=1` and
+   `CHAT_HISTORY_TURNS=3` to `.env`.
+3. `alembic upgrade head` (in Docker, `docker compose up --build migrate`).
+4. Start the api and worker again (`docker compose up -d api worker`).
+5. With the model on, run `python -m kaagaz.cli reembed` once (in Docker,
+   `docker compose exec api python -m kaagaz.cli reembed`). Until it ends,
+   meaning search sees only the documents it has done; words and typos find
+   everything. It can be stopped and run again, and it stops before changing
+   anything if the model doesn't answer.
 
 ## 2a. Everything in Docker
 
@@ -399,6 +425,84 @@ Use made-up files only. With `MODEL_ENABLED=true`, pull `qwen3.5:4b` and `qwen3-
 - Expect: no number. The answer says the figure hasn't been checked yet, asks for it to be confirmed in Review, and links the report under "Where it appears".
 - Tests: `test_answering_golden.py`, `test_answering_unchecked_db.py`.
 
+### Search and the viewer (PRD 3)
+
+The made-up golden documents in `backend/tests/golden/docs/` serve these checks too.
+
+**37. Search inside documents**
+- Check (screen): `up backend/tests/golden/docs/land-record.csv` (a Marathi 7/12 register); once it is ready, type `shinde` in the Documents search box (Inside documents is the default), then `शिंदे`, then the typo `shindey`.
+- Expect: each finds the land record, with its passage and page; the result opens the viewer on that spot. Names searches the file names, as before.
+- Check (API): `curl -b admin@sharma-traders.example.jar "$API/search?q=shinde"`; again with `&document_ids=<a Mehta document id>`; then a `q` of 201 characters.
+- Expect: `{"documents":[{id, display_name, doc_type, score, best: {snippet, page_from, page_to, regions}, more}]}`, best first, at most `SEARCH_MAX_DOCUMENTS`; the other customer's id gives `{"documents":[]}`; 201 characters give `400 bad_request`. With the model off, words and typos still answer.
+- Tests: `test_api_search.py`, `test_search_scope_db.py`, `test_search_db.py`, `test_isolation_search.py`, `test_answering_hinglish.py`; `frontend/tests/inside-search.test.ts`.
+
+**38. The meaning index**
+- Check: `SQL "SET enable_seqscan = off; EXPLAIN SELECT id FROM pieces WHERE embedding IS NOT NULL ORDER BY embedding <=> (SELECT embedding FROM pieces WHERE embedding IS NOT NULL LIMIT 1) LIMIT 5"` (a laptop holds too few pieces for the planner to choose the index by itself), then `SQL "SELECT embedding_model, count(*) FROM pieces GROUP BY 1"`.
+- Expect: `Index Scan using pieces_embedding`; with the model on, every vector tagged `qwen3-embedding:0.6b#ctx1`.
+- Tests: `test_search_index_db.py` (`test_explain_of_the_production_statement_uses_pieces_embedding`, `test_a_short_index_walk_falls_back_to_the_exact_scan`), `test_migration_0006_db.py`.
+
+**39. Re-embedding**
+- Check: with the model on, `docker compose exec -T api python -m kaagaz.cli reembed`, twice; then `docker compose exec -T -e MODEL_ENABLED=false api python -m kaagaz.cli reembed`.
+- Expect: one line per customer, `customer <id>: N documents, C cleared, E embedded`; the second run embeds 0. With the model off, `error: reembed needs the model: set MODEL_ENABLED=true` and exit code 2. `--customer-id <id>` does one customer; `--all` makes every vector again.
+- Tests: `test_reembed_db.py`, `test_indexing_db.py`.
+
+**40. Document card, related documents, invoice and low-resolution panels**
+- Check (screen): with the model on, open `textile-invoice.pdf` from the golden documents; click a card item and an invoice cell. Open a document that shares its invoice or PO number with another (feature 33), and a photo scanned under `LOW_RES_DPI`.
+- Expect: the Document card (type, languages, summary, parties, dates, identifiers, key facts), each item highlighting its spot and its label's ("Value on page 2, label on page 1" when apart); the Invoice with its lines and a chip, "Checks passed" or "Needs review: …"; Related documents ("Same invoice number: …"), opening the other document; above a low-resolution page, "This page was scanned at 96 DPI. Small text may be misread. Upload a sharper scan if values look wrong." With the model off: "No document card. The AI model was off or could not be reached when this was read."
+- Tests: `test_api_viewer_panels.py`, `test_isolation_viewer_panels.py`; `frontend/tests/viewer-panels.test.ts`.
+
+**41. Review by reason**
+- Check: `curl -b reviewer@sharma-traders.example.jar "$API/review?reason=check_failed"`, then `?reason=nope`; on screen, Review, "Show values where".
+- Expect: only values with that reason (`check_failed`, `readers_disagree`, `low_confidence` or `single_reader`), each with `check_reasons`; an unknown reason gives `400 bad_request`. A card from a failed invoice says "The invoice checks failed: …"; a reason with no values says "Nothing to review for this reason".
+- Tests: `test_api_review.py`; `frontend/tests/review-queue.test.ts`.
+
+**42. Admin: Failed jobs and Retry**
+- Check: `up bad.csv` (feature 10). Open an admin session, `curl -s -c adm.jar -H "$H" -H "$J" -d '{"email":"admin@sharma-traders.example","password":"demo-pass-2026"}' $API/auth/admin/login`, then `curl -b adm.jar $API/admin/failed`, and the same with `admin@sharma-traders.example.jar`. On screen: Admin, Failed jobs, Retry, then Retry again from the same list.
+- Expect: `{"items":[{id, display_name, status, failure_code, message, last_run_at, …}], "total": n}`; the app session gets `403 admin_session_required`. Retry says "Sent to be read again."; the second Retry shows the server's own words on that row (409 while it is being read, 429 within 10 minutes).
+- Tests: `test_api_viewer_panels.py`, `test_isolation_viewer_panels.py`; `frontend/tests/shell-admin.test.ts`.
+
+### Chat that keeps context (PRD 3)
+
+Use the golden `monthly-report.pdf` (20 pages, "$12,000" runs from page 15 to page 16), with the model on.
+
+**43. Follow-ups**
+- Check (screen): ask "What was the profit in September?", then "And the expenses?".
+- Expect (exit steps 2 and 3): the first answer cites the report, pages 15 to 16; the second shows "Searching for: …", a question that stands on its own (such as "What were the expenses in September?"). A follow-up the guard refuses shows no "Searching for" and is searched as typed. The rewrite is saved: `SQL "SELECT message_text, rewritten_question FROM messages WHERE rewritten_question IS NOT NULL"`.
+- Tests: `test_answering_rewrite.py`, `test_api_chat.py`; `frontend/tests/chat-answer.test.ts`.
+
+**44. Chat scope**
+- Check (screen): put the report in a folder; in chat, Change, One folder, pick another folder, then ask about the profit; pick the report's folder and ask again; then ask a follow-up.
+- Expect: the chip names the folder ("Folder: …"); with the other folder the answer is not found, with the report's folder it cites only documents in it, and the follow-up keeps the chip. All documents widens again. Another customer's folder id in `scope` gives not found.
+- Tests: `test_answering_scope_db.py`, `test_isolation_chat_scope.py`, `test_scope_guard.py`; `frontend/tests/chat-scope.test.ts`.
+
+**45. Ask about this document**
+- Check (screen): open the report in the viewer and click "Ask about this document" (no reload).
+- Expect: chat opens with the chip "This document: monthly-report.pdf", and the first question uses only it. The button is not offered on an older version, an unready document or one in Trash.
+- Tests: `frontend/tests/chat-scope.test.ts`, `viewer-versions.test.ts`.
+
+**46. Sources over two pages**
+- Check (screen): ask "What was the profit in September?" about the report; then open a value whose label is on another page.
+- Expect: the source says "Pages 15 to 16", opens page 15 with its spot, and has a chip for page 16's spot. A value whose label is elsewhere says "Label on page 15, value on page 16" with a chip for the label. Answers saved before PRD 3 show one page, as before.
+- Tests: `test_answering_neighbours_db.py`, `test_api_chat.py`; `frontend/tests/chat-logic.test.ts`.
+
+**47. The PRD 3 exit test**
+- Check: from `backend/` with `DATABASE_URL` set as in section 4, `.venv/Scripts/python.exe -m pytest -q tests/test_exit_prd3_db.py`.
+- Expect: every test passes: the exit files read by the real pipeline, then exit steps 1 to 5 through the API (a scripted model, no Ollama needed).
+- Tests: `test_exit_prd3_db.py`.
+
+### Handover (PRD 3)
+
+**48. The data dictionary**
+- Check: `SQL "\d+ pieces"`.
+- Expect: a plain line for every column under Description (`embedding_model`, for example, names the `MODEL_EMBED#ctx1` tag). No comment holds an identity number, an e-mail or a link.
+- Tests: `test_migration_0007_db.py`.
+
+**49. The golden run**
+- Needs: the whole stack with the model on (both models pulled, `MODEL_ENABLED=true`), the API and database on this machine, and `.env` loaded in a shell in `backend/`. It is never run in CI.
+- Check: `.venv/Scripts/python.exe -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" --runs 3`.
+- Expect: it makes a new "Golden Test Co" customer, uploads the 7 golden documents and asks the 30 questions 3 times. Then a header (git SHA, date, models with their Ollama digests, settings, the questions' sha256), a row per question, each run's totals and slices, "The model wrote N of M search-route answers" (N must be above 0), and the WORST RUN line with Wilson intervals. The password comes from `KAAGAZ_ADMIN_PASSWORD` or is made up, and is never printed. Record the worst run in docs/architecture.md, Decisions.
+- Tests: `test_golden_questions.py`, `test_golden_scoring.py`, `test_golden_runner.py`.
+
 ### Sign-off
 
 | # | Feature | Pass / fail | Notes |
@@ -410,3 +514,50 @@ Use made-up files only. With `MODEL_ENABLED=true`, pull `qwen3.5:4b` and `qwen3-
 | 18-22 | Chat, search, labels, conversations, model answers | | |
 | 23-28 | Admin, customer separation, tools, settings | | |
 | 29-36 | Routes, measure, pieces, Hindi and Marathi, card, invoices, read again, unchecked figures | | |
+| 37-42 | Search inside documents, meaning index, reembed, viewer panels, review by reason, failed jobs | | |
+| 43-47 | Follow-ups, chat scope, Ask about this document, sources over two pages, exit test | | |
+| 48-49 | Data dictionary, golden run | | |
+
+## 6. Backup and restore
+
+One backup is two parts, taken with the api and worker stopped so they match: the database (volume `postgres-data`) and the file store (volume `seaweedfs-data`, mounted at `/data` in `seaweedfs`). `docker-compose.yml` starts SeaweedFS with `server -dir=/data`, and the `chrislusf/seaweedfs:4.47` image keeps its filer index in `/data/filerldb2`, so `/data` holds every file and its name. The job queue is not backed up: wait until no document is still being read. Below, the user and database are `kaagaz`; use `POSTGRES_USER` and `POSTGRES_DB` instead if your `.env` sets them.
+
+The backup holds every customer's documents and text. Keep it outside the repository (here `../kaagaz-backup`, next to it), never commit or share it, and delete it after the drill. Git ignores `*.dump` and `backup-files/` in case one lands in the repository.
+
+**Back up**, from the repository root. The dump is written inside the container and copied out, because PowerShell's `>` would damage a binary file. In Git Bash, run `export MSYS_NO_PATHCONV=1` first, or it turns `/tmp/...` and `/data` into Windows paths:
+
+```
+mkdir ../kaagaz-backup
+docker compose stop api worker
+docker compose exec -T postgres pg_dump -U kaagaz -Fc -f /tmp/kaagaz.dump kaagaz
+docker compose cp postgres:/tmp/kaagaz.dump ../kaagaz-backup/kaagaz.dump
+docker compose exec -T postgres rm /tmp/kaagaz.dump
+docker compose stop seaweedfs
+docker compose cp seaweedfs:/data ../kaagaz-backup/backup-files
+docker compose up -d
+```
+
+**Restore**, the reverse, into a fresh stack: a new laptop with the same `.env`, or this one under another project name, which gets its own empty volumes (`docker compose stop` the main stack first to free its ports). The containers are created but not started, so the files go in before SeaweedFS first runs; the copy is owned by root, so the `chown` hands it back to the image's `seaweed` user. `pg_dump` leaves out roles, so the app role is made first, as migration 0001 makes it:
+
+```
+docker compose -p kaagaz-drill create --build
+docker compose -p kaagaz-drill cp ../kaagaz-backup/backup-files/. seaweedfs:/data
+docker compose -p kaagaz-drill run --rm --no-deps --entrypoint chown seaweedfs -R seaweed:seaweed /data
+docker compose -p kaagaz-drill up -d postgres
+docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_app NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_app TO kaagaz"
+docker compose -p kaagaz-drill cp ../kaagaz-backup/kaagaz.dump postgres:/tmp/kaagaz.dump
+docker compose -p kaagaz-drill exec -T postgres pg_restore -U kaagaz -d kaagaz --exit-on-error /tmp/kaagaz.dump
+docker compose -p kaagaz-drill exec -T postgres rm /tmp/kaagaz.dump
+docker compose -p kaagaz-drill up -d
+```
+
+`pg_restore` goes into the empty database the fresh `postgres` made, as the same user, and keeps the owner and the grants. Never add `--no-owner` or `--no-acl`: the tables must stay owned by the migration user, never by `kaagaz_app` (an owner skips row level security), and without the grants the app can read nothing.
+
+**The drill.** Before the backup, open 3 documents and ask 3 questions, and write down each answer with its source page. After the restore:
+
+1. Open http://localhost:3000, open the same 3 documents (their page pictures come from the restored files) and ask the same 3 questions: the answers and sources match.
+2. Customer separation on the restored database. The tests read `DATABASE_URL` from the shell, not from `.env`, so set it from `backend/` first (port 5432 is the drill's database while the main stack is stopped): `export DATABASE_URL=postgresql://kaagaz:<POSTGRES_PASSWORD>@localhost:5432/kaagaz` in Git Bash, or `$env:DATABASE_URL = "postgresql://kaagaz:<POSTGRES_PASSWORD>@localhost:5432/kaagaz"` in PowerShell. Then `.venv/Scripts/python.exe -m pytest -m isolation`. The tests add their own test customers, and some make a `kaagaz_fresh` database next to it, so run them on a drill copy only, never on a database you keep.
+3. Row level security on every customer table: `docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "SELECT relname, relrowsecurity FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' ORDER BY relname"`. Expect `t` on every table except `alembic_version`.
+4. Clean up: `docker compose -p kaagaz-drill down -v`, `rm -r ../kaagaz-backup`, then `docker compose up -d` brings back the main stack.
+
+For a real restore on a new laptop, run the same commands without `-p kaagaz-drill`, and skip step 4: otherwise a later plain `docker compose up` starts an empty stack, and step 4 deletes the restored data.
