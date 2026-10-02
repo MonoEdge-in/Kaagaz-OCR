@@ -590,7 +590,13 @@ def test_a_model_answer_is_used_and_cited() -> None:
     assert answer.model_used is True
     assert [s.text for s in answer.sentences] == ["The grand total of INV-1042 is Rs. 1,20,000."]
     assert answer.citations[0].ref_id == INVOICE.piece_id
-    assert model.embedded == [["what is grand total of inv-1042"]]
+    # PRD 3 V3: the model card's query format, no space after "Query:".
+    assert model.embedded == [
+        [
+            "Instruct: Given a question about business documents, retrieve passages that answer it"
+            "\nQuery:what is grand total of inv-1042"
+        ]
+    ]
 
 
 def test_a_model_inventing_a_number_loses_that_sentence() -> None:

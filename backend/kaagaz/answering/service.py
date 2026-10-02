@@ -61,6 +61,7 @@ from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unche
 from kaagaz.answering.verify import verify
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
+from kaagaz.search.indexing import query_input, recipe_tag
 from kaagaz.settings import Settings
 
 # "unchecked": the figure asked for exists only as unchecked card values, so no
@@ -153,7 +154,7 @@ class AnswerService:
         self._retriever = (
             retriever
             if retriever is not None
-            else PgRetriever(db, recipe=settings.model_embed, ef_search=settings.search_ef)
+            else PgRetriever(db, recipe=recipe_tag(settings.model_embed), ef_search=settings.search_ef)
         )
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
@@ -306,11 +307,12 @@ class AnswerService:
 
     def _embed(self, english: str) -> list[float] | None:
         """The question's vector, or None (no model, model down, or unusable
-        vectors), so search falls back to word and fuzzy matching. One model call."""
+        vectors), so search falls back to word and fuzzy matching. One model call,
+        with the query instruction (kaagaz.search.indexing.query_input, PRD 3 V3)."""
         if self._model is None or not english:
             return None
         try:
-            vectors = self._model.embed([english])
+            vectors = self._model.embed([query_input(english)])
         except (ModelUnavailable, ModelOutputError):
             return None
         return vectors[0] if vectors else None
