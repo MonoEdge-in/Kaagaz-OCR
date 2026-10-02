@@ -46,12 +46,16 @@ class EditingModel(FakeModel):
         return super().embed(texts)
 
 
-class NanModel(FakeModel):
-    """Replies with a vector halfvec can't hold."""
+class BadVectorModel(FakeModel):
+    """Replies with vectors of ``value``, which halfvec can't hold."""
+
+    def __init__(self, value: float) -> None:
+        super().__init__()
+        self.value = value
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
-        return [[math.nan] * stories.VECTOR_DIM for _ in texts]
+        return [[self.value] * stories.VECTOR_DIM for _ in texts]
 
 
 def path(document: str) -> str:
@@ -190,9 +194,10 @@ def test_the_saved_story_is_embedded_with_the_story_recipe(db: Database) -> None
     [
         (FakeModel(fail=True), "ModelUnavailable"),
         (FakeModel(drop_one=True), "ModelOutputError"),
-        (NanModel(), "embedding_values"),
+        (BadVectorModel(math.nan), "embedding_values"),
+        (BadVectorModel(70000.0), "embedding_values"),
     ],
-    ids=["down", "no_vector", "nan"],
+    ids=["down", "no_vector", "nan", "beyond_halfvec"],
 )
 def test_a_model_that_fails_never_fails_the_save(
     db: Database, caplog: pytest.LogCaptureFixture, model: FakeModel, code: str
