@@ -4,8 +4,7 @@ and embedding, and not even when the code names the wrong customer.
 Both locks are tested: row level security (the transaction's customer) and the
 explicit ``customer_id`` filter in every search query (docs/architecture.md),
 on the meaning index walk and on its exact fallback (PRD 3 V2), each with a
-positive control: A's own search finds A's piece by meaning. A scope naming B's
-folder, tag or documents finds nothing for A (PRD 3 edge case 9).
+positive control: A's own search finds A's piece by meaning.
 """
 
 from typing import Any
@@ -21,7 +20,6 @@ from tests.db_support import insert_document, insert_folder, insert_tag, new_cus
 from tests.test_api_support import Api, Signed
 from tests.test_indexing_db import FakeModel
 from tests.test_search_db import EF_SEARCH, RECIPE, add_document, add_pieces, axis, run
-from tests.test_search_scope_db import found as scoped
 
 pytestmark = pytest.mark.db
 
@@ -84,7 +82,7 @@ def test_neither_meaning_statement_returns_the_other_customers_vectors(db: Datab
     b, _ = new_customer(db)
     (a_piece,) = add_pieces(db, a, add_document(db, a), [(SECRET, axis(0))])
     (b_piece,) = add_pieces(db, b, add_document(db, b), [("Rent paid for August", axis(1))])
-    params = {"vec": hybrid.vector_literal(axis(0)), "recipe": RECIPE, "n": 50, **EVERYTHING.params()}
+    params = {"vec": hybrid.vector_literal(axis(0)), "recipe": RECIPE, "n": 50}
     for statement in (hybrid._MEANING, hybrid._MEANING_EXACT):
         for transaction, named, found in ((a, a, [a_piece]), (b, b, [b_piece]), (b, a, []), (a, b, [])):
             with db.customer(transaction) as conn:

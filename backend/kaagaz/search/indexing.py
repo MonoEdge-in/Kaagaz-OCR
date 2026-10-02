@@ -19,13 +19,17 @@ the current tag, so a vector from another model or recipe is left out until
 ``python -m kaagaz.cli reembed`` replaces it (PRD 3 V4, edge case 7).
 
 ``ModelUnavailable`` propagates: the caller decides (the pipeline logs it and
-marks the document ready without vectors; word and typo search still work).
+marks the document ready without vectors; word and typo search still work). A
+database that cannot be reached is ``BackendUnavailable("database")``, so the
+job is retried.
 
-Cost: ceil(n / batch_size) model calls and 2 * ceil(n / batch_size) + 1 short
+Cost: ceil(n / batch_size) model calls and 2 * ceil(n / batch_size) + 2 short
 transactions for n pieces; O(batch_size * dim) memory.
 """
 
 from collections.abc import Sequence
+
+from sqlalchemy import Connection, text
 
 from sqlalchemy import Connection, text
 
@@ -78,19 +82,6 @@ def query_input(question: str) -> str:
     return f"Instruct: {QUERY_TASK}\nQuery:{question}"
 
 
-def embed_question(model: ModelClient | None, question: str) -> list[float] | None:
-    """The question's vector, or None (no model, model down, or unusable vectors), so
-    search falls back to word and fuzzy matching. One model call, in ``query_input``'s
-    format; chat and GET /api/search both embed this way."""
-    if model is None or not question:
-        return None
-    try:
-        vectors = model.embed([query_input(question)])
-    except (ModelUnavailable, ModelOutputError):
-        return None
-    return vectors[0] if vectors else None
-
-
 def piece_input(context_header: str, piece_text: str) -> str:
     """What a piece is embedded as: its reduced header, a blank line, its text.
 
@@ -102,16 +93,25 @@ def piece_input(context_header: str, piece_text: str) -> str:
 
 
 def embed_pieces(
-    db: Database, customer_id: str, document_id: str, model: ModelClient, batch_size: int = 32
+    db: Database,
+    customer_id: str,
+    document_id: str,
+    model: ModelClient,
+    batch_size: int = 32,
+    on_batch: Callable[[int, int], None] | None = None,
 ) -> int:
-    """Embed the document's pieces that have no vector. Returns how many were written."""
+    """Embed the document's pieces that have no vector. Returns how many were written.
+    ``on_batch(done, total)`` follows each batch, outside any transaction: ``done`` of
+    the ``total`` pieces that had no vector at the start."""
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
-    written = 0
+    with unavailable(), db.customer(customer_id) as conn:
+        total = int(conn.execute(_TO_EMBED, {"c": customer_id, "d": document_id}).scalar_one())
+    written = done = 0
     after = -1
     tag = recipe_tag(model.embed_model)
     while True:
-        with db.customer(customer_id) as conn:
+        with unavailable(), db.customer(customer_id) as conn:
             rows = conn.execute(
                 _NEXT_BATCH, {"c": customer_id, "d": document_id, "after": after, "n": batch_size}
             ).all()
@@ -121,7 +121,7 @@ def embed_pieces(
         vectors = model.embed([piece_input(str(row[3]), str(row[2])) for row in rows])
         if len(vectors) != len(rows):
             raise ModelOutputError("embedding_count")
-        with db.customer(customer_id) as conn:
+        with unavailable(), db.customer(customer_id) as conn:
             result = conn.execute(
                 _WRITE,
                 [
@@ -130,6 +130,9 @@ def embed_pieces(
                 ],
             )
             written += result.rowcount
+        done += len(rows)
+        if on_batch is not None:
+            on_batch(done, total)  # committed: the heartbeat never waits inside a transaction
         if len(rows) < batch_size:
             return written
 

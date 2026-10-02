@@ -136,25 +136,16 @@ def good_ratio(text: str) -> float:
     return _ratio(good, counted)
 
 
-def count_malformed_devanagari(text: str) -> int:
-    """The malformed Devanagari signs in ``text`` (ML 1(a)'s rule): a dependent
-    vowel sign or a virama that does not directly follow a consonant or a
-    nukta. Two vowel signs in a row count once, on the second. The rule lives
-    in ``kaagaz.chunking.script``, shared with the OCR value checks. O(c) time,
-    O(1) space.
-    """
-    return malformed_devanagari(text)
-
-
 def malformed_devanagari_share(text: str) -> float:
-    """``count_malformed_devanagari`` over the Devanagari letters and signs
+    """``malformed_devanagari`` (ML 1(a)'s rule, in ``kaagaz.chunking.script``,
+    shared with the OCR value checks) over the Devanagari letters and signs
     (categories L and M in U+0900 to U+097F; digits and dandas are left out);
     0.0 with none. O(c) time, O(1) space.
     """
     devanagari = sum(
         1 for char in text if "\u0900" <= char <= "\u097f" and unicodedata.category(char)[0] in "LM"
     )
-    return count_malformed_devanagari(text) / devanagari if devanagari else 0.0
+    return malformed_devanagari(text) / devanagari if devanagari else 0.0
 
 
 def _counts(text: str) -> tuple[int, int, int]:

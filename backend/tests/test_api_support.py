@@ -33,7 +33,6 @@ from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
 
 from kaagaz.ai.client import ModelClient
-from kaagaz.answering.rewrite import Turn
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import hash_password
@@ -191,7 +190,6 @@ class Api:
         clock: MovingClock | None = None,
         queue: ApiFakeQueue | None = None,
         model: ModelClient | None = None,
-        answers: Answers | None = None,
     ) -> None:
         """``answers``: the real AnswerService for a test that needs one; FakeAnswers otherwise."""
         self.db = db

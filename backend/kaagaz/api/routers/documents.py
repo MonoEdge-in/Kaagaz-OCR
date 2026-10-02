@@ -1,4 +1,4 @@
-"""The document routes: list, upload, a new version, detail, rename or move,
+"""The document routes: list, upload, a new version, detail and its summary, rename or move,
 the original file, page images, spreadsheet cells, and Trash (move to Trash,
 restore, delete forever).
 
@@ -76,6 +76,7 @@ from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
     can_delete,
     document_folder,
+    document_link,
     document_summary,
     document_version,
     extracted_value,
@@ -276,6 +277,15 @@ def _form_folder_id(value: str | UploadFile | None) -> str | None:
         raise ApiError(400, "bad_request") from None
 
 
+def _same_user(value: str | UploadFile | None, user: CurrentUser) -> None:
+    """The optional ``user_id`` form field: who the browser tab had signed in when
+    the file was chosen. Someone else signed in since (in another tab, critical
+    #5) gets 409 ``session_changed`` before anything is stored, so the file never
+    lands in their account. Not sent: no check (PROVISIONAL)."""
+    if value is not None and value != user.user_id:
+        raise ApiError(409, "session_changed")
+
+
 def _accept(
     context: AppContext, user: CurrentUser, upload: UploadFile, policy: UploadPolicy, folder_id: str | None
 ) -> dict[str, Any]:
@@ -341,6 +351,7 @@ async def upload_document(request: Request, user: User, context: Context) -> JSO
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
+        _same_user(form.get("user_id"), user)
         folder_id = _form_folder_id(form.get("folder_id"))
         body = await run_in_threadpool(_accept, context, user, upload, policy, folder_id)
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
@@ -385,6 +396,7 @@ async def upload_version(
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
+        _same_user(form.get("user_id"), user)
         body = await run_in_threadpool(_accept_version, context, user, upload, policy, str(document_id))
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
@@ -410,6 +422,7 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         fixes = listing.reviewer_fix_count(conn, customer_id, target)
         facts = listing.document_facts(conn, customer_id, target)
         typed = listing.invoice_for(conn, customer_id, target)
+        links = listing.document_links(conn, customer_id, target)
     document_date = None if facts is None else facts["document_date"]
     return {
         **document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user),
@@ -427,7 +440,20 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         # A reviewer's fix to a value does not change it: it is rebuilt when the
         # document is read again (architect AR14).
         "invoice": None if typed is None else invoice(*typed),
+        # PRD 3 Y2: the current, ready documents sharing an identifier with this one.
+        "links": [document_link(each) for each in links],
     }
+
+
+@router.get("/documents/{document_id}/summary")
+def get_document_summary(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """The detail's own summary, as in the list (two queries): the viewer asks for it
+    while a document is read, then for the whole detail once it settles."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        row = _document_or_404(conn, user, document_id)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+    return document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
 
 
 @router.post("/documents/{document_id}/reprocess")

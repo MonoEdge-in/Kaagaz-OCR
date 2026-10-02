@@ -239,7 +239,6 @@ def rig(
             ocr_meter=meter,
             clock=lambda: T0,
             timer=timer,
-            ocr_on=meter is not None,
             max_vision_crops=max_vision_crops,
             run_config=CONFIG,
             vision_model="qwen-vision" if vision is not None else None,
@@ -428,6 +427,16 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(end, start + 1)
         self.assertEqual(log[start - 1], "reading")
         self.assertEqual(log[end + 1 :], ["indexing"])
+
+    def test_each_written_batch_beats_then_shows_indexing_i_of_n(self) -> None:
+        log: list[str] = []
+        system = rig(embed=FakeEmbedder(batches=2), log=log)
+        job = system.job(CSV)
+        system.processor(job, lambda: log.append("beat"))
+        after_save = log[log.index("save ends") + 1 :]
+        self.assertEqual(after_save, ["beat", "indexing", "beat", "indexing", "beat", "indexing"])
+        steps = [progress for _, _, progress in system.progress.history]
+        self.assertEqual(steps[-2:], [Progress("indexing", 1, 2), Progress("indexing", 2, 2)])
 
     def test_progress_that_cannot_be_saved_is_logged_and_the_document_is_still_read(self) -> None:
         system = rig()
@@ -730,6 +739,25 @@ class RunFenceTest(unittest.TestCase):
         old, _ = system.runs_of(job)
         assert old.totals is not None
         self.assertEqual(old.totals.pages_text_layer, 1)
+
+    def test_a_newer_run_during_indexing_stops_the_older_one_before_it_is_ready(self) -> None:
+        """A delivery whose lease ran out while embedding overlaps the next one, which starts
+        a new run. The fence refuses the older run's next write (its progress after the
+        batch), so it embeds no more and never marks the document ready."""
+        batches: list[int] = []
+
+        def newer_run_starts(done: int) -> None:
+            batches.append(done)
+            if done == 1:
+                system.runs.start(CUSTOMER, job.document_id, now=T0)
+
+        system = rig(embed=FakeEmbedder(batches=3, during_batch=newer_run_starts))
+        job = system.job(CSV)
+        system.processor(job, beat)  # returns normally: the worker acks it
+
+        self.assertEqual(batches, [1])
+        self.assertIs(system.statuses.get_status(CUSTOMER, job.document_id), DocumentStatus.CLEAN)
+        self.assertEqual(statuses_of(system.runs_of(job)), [("superseded", None), ("running", None)])
 
 
 class LoggingTest(unittest.TestCase):

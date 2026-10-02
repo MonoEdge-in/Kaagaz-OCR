@@ -3,7 +3,6 @@ import {
   MAX_FOLDER_DEPTH,
   buildTree,
   canAddSubfolder,
-  depthOf,
   folderPath,
   inTreeOrder,
   pathLabel,
@@ -36,8 +35,8 @@ describe("buildTree", () => {
       folder("b", "Bank"),
     ]);
     expect(shape(tree.roots)).toEqual(["Bank", ["Suppliers", [["2026", ["Q1"]]]]]);
-    expect(depthOf(tree, "s")).toBe(1);
-    expect(depthOf(tree, "q")).toBe(3);
+    expect(tree.byId.get("s")?.depth).toBe(1);
+    expect(tree.byId.get("q")?.depth).toBe(3);
     expect(tree.byId.get("q")?.parent?.folder.name).toBe("2026");
   });
 
@@ -54,7 +53,7 @@ describe("buildTree", () => {
   it("puts a folder whose parent is missing (an orphan) at the top level", () => {
     const tree = buildTree([folder("x", "Lost", "gone"), folder("a", "Accounts")]);
     expect(shape(tree.roots)).toEqual(["Accounts", "Lost"]);
-    expect(depthOf(tree, "x")).toBe(1);
+    expect(tree.byId.get("x")?.depth).toBe(1);
   });
 
   it("never loops on bad input: a folder that is its own parent, or two that are each other's", () => {
@@ -67,7 +66,7 @@ describe("buildTree", () => {
     ]);
     const ids = inTreeOrder(tree).map((node) => node.folder.id);
     expect([...ids].sort()).toEqual(["a", "b", "c", "s"]);
-    expect(depthOf(tree, "s")).toBe(1);
+    expect(tree.byId.get("s")?.depth).toBe(1);
     for (const node of inTreeOrder(tree)) expect(node.depth).toBeLessThanOrEqual(3);
   });
 
@@ -90,8 +89,7 @@ describe("folderPath", () => {
   it("is empty for a folder that is not there", () => {
     expect(folderPath(tree, "nope")).toEqual([]);
     expect(pathLabel(tree, "nope")).toBe("");
-    expect(depthOf(tree, "nope")).toBe(0);
-    expect(depthOf(tree, null)).toBe(0);
+    expect(tree.byId.has("nope")).toBe(false);
   });
 });
 

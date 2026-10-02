@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.answering.fixed_queries import PgFixedQueries
+from kaagaz.answering.intent import FIELDS
 from kaagaz.answering.service import AnswerService
 from kaagaz.db.engine import Database
 from tests.db_support import new_customer
@@ -140,8 +141,8 @@ def test_fixed_queries_for_b_find_nothing_even_with_as_field_names(db: Database)
     _seed(db, a)
     fixed = PgFixedQueries(db)
     august = (date(2026, 8, 1), date(2026, 9, 1))
-    assert fixed.available_fields(a) == {"party_name", "profit", "date"}
-    assert fixed.available_fields(b) == set()
+    assert fixed.available_fields(a, FIELDS) == {"party_name", "profit", "date"}
+    assert fixed.available_fields(b, FIELDS) == set()
     assert fixed.top_group(b, "profit", ["party_name"], ["date"], *august, True) == []
     assert fixed.total(b, "profit", [], None, None) == []
     assert fixed.extreme_value(b, "profit", [], None, None, True) == []

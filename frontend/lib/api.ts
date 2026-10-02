@@ -4,6 +4,7 @@
 // has ended (401 not_signed_in) is also told to the session provider, which
 // sends the browser to sign in (lib/session.tsx).
 
+import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type {
   AdminUser,
@@ -14,13 +15,16 @@ import type {
   CustomerSettings,
   DocumentDetail,
   DocumentList,
+  DocumentSearch,
   DocumentSummary,
+  FailedDocument,
   Folder,
   Me,
   PasswordReset,
   ReviewChoice,
   ReviewItem,
   ReviewList,
+  ReviewReason,
   Role,
   ScopeBody,
   SheetCells,
@@ -147,6 +151,9 @@ export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everyw
 export const listDocuments = (params: DocumentListParams = {}) =>
   request<DocumentList>("GET", `/documents${query(params)}`);
 export const getDocument = (id: string) => request<DocumentDetail>("GET", `/documents/${id}`);
+/** Search inside documents (PRD 3 Q2), grouped by document. */
+export const searchDocuments = (params: DocumentSearchParams) =>
+  request<DocumentSearch>("GET", `/search${query(params)}`);
 /** Moves the document, with every version of it, to Trash (PRD 1, F5). */
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);
 /** Brings a document in Trash back, with every version of it. */
@@ -187,15 +194,19 @@ export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 2
 
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),
- * into a folder when one is given, else at the top level.
+ * into a folder when one is given, else at the top level. userId is who was
+ * signed in when the file was chosen: the server refuses the file (409
+ * session_changed) if someone else has signed in since, in another tab.
  */
 export function uploadDocument(
   file: File,
+  userId: string,
   onProgress: (fraction: number) => void,
   folderId?: string,
 ): Promise<UploadResult> {
   const form = new FormData();
   if (folderId) form.append("folder_id", folderId);
+  form.append("user_id", userId);
   form.append("file", file);
   return sendForm("/api/documents", form, onProgress);
 }
@@ -208,9 +219,11 @@ export function uploadDocument(
 export function uploadVersion(
   documentId: string,
   file: File,
+  userId: string,
   onProgress: (fraction: number) => void,
 ): Promise<UploadResult> {
   const form = new FormData();
+  form.append("user_id", userId);
   form.append("file", file);
   return sendForm(`/api/documents/${documentId}/versions`, form, onProgress);
 }
@@ -285,8 +298,9 @@ export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: 
 
 // --- review --------------------------------------------------------------------
 
-export const listReview = (params: { limit?: number; offset?: number; document_id?: string } = {}) =>
-  request<ReviewList>("GET", `/review${query(params)}`);
+export const listReview = (
+  params: { limit?: number; offset?: number; document_id?: string; reason?: ReviewReason[] } = {},
+) => request<ReviewList>("GET", `/review${query(params)}`);
 export const resolveReview = (
   valueId: string,
   choice: ReviewChoice,
@@ -323,3 +337,6 @@ export const updateSettings = (maxUploadMb: number | null) =>
 export const listAudit = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: AuditEntry[]; total: number }>("GET", `/admin/audit${query(params)}`);
 export const getStats = () => request<Stats>("GET", "/admin/stats");
+/** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
+export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
+  request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);

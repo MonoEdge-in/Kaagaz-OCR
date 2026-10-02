@@ -3,7 +3,8 @@
 Readers, page preparation and models are fakes (tests/fakes.py), so these
 tests prove the pipeline's own steps: page pictures, pieces from lines,
 labelled values, second readings, the vision reader and the vectors step.
-The lease test at the end uses the real PDF reader with a slow fake OCR engine.
+The lease tests at the end use the real PDF reader with a slow fake OCR engine,
+and a slow fake embedder.
 """
 
 import io
@@ -12,6 +13,7 @@ import unittest
 from PIL import Image
 
 from kaagaz.ingestion import sniff
+from kaagaz.jobs.ports import Delivery
 from kaagaz.reading.ocr import OcrLine
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.socket import ReaderSocket
@@ -23,7 +25,7 @@ from tests.lease_queue import FakeClock
 from tests.pdf_builder import Page, Picture, make_pdf
 from tests.picture_support import text_like_picture
 from tests.support import PDF_BYTES
-from tests.test_pipeline import CUSTOMER, LEASE_SECONDS, build, make_worker, processor_with
+from tests.test_pipeline import CUSTOMER, LEASE_SECONDS, MAX_ATTEMPTS, build, make_worker, processor_with
 
 
 def png_of(width: int, height: int, color: str = "white") -> bytes:
@@ -414,6 +416,27 @@ class LongReadingTest(unittest.TestCase):
         self.assertEqual(ocr.pages, 3)
         self.assertEqual(system.queue.pending(), 0)  # acked: the lease was renewed after each page
         self.assertEqual(system.queue.failed, {})
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
+
+    def test_a_long_indexing_keeps_its_lease_between_batches(self) -> None:
+        """A 20k-row sheet is about 626 embedding batches, far longer than one lease.
+        Each batch here takes 0.6 of a lease: the heartbeat after each renews it (on the
+        worker's clock, at most every 15 s), so a second worker asking meanwhile gets nothing."""
+        handed_out: list[Delivery | None] = []
+
+        def slow_batch(done: int) -> None:
+            system.clock.advance(0.6 * LEASE_SECONDS)
+            handed_out.append(system.queue.receive())  # a second worker asks for work
+
+        embed = FakeEmbedder(batches=3, during_batch=slow_batch)
+        system = build(socket=PresetSocket({sniff.PDF: INVOICE}), preparer=two_pages(), embed=embed)
+        worker = make_worker(system.queue, system.processor, system.repo, clock=system.clock)
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
+
+        self.assertTrue(worker.run_once())
+        self.assertEqual(handed_out, [None, None, None])
+        self.assertEqual(system.queue.pending(), 0)  # acked, once
+        self.assertEqual(system.repo.attempts[(CUSTOMER, doc)], (1, MAX_ATTEMPTS))  # on attempt 1
         self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
 
 

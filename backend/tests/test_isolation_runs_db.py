@@ -12,8 +12,8 @@ from sqlalchemy import text
 from kaagaz.db.documents import PgDocuments, mark_for_reprocess
 from kaagaz.db.engine import Database
 from kaagaz.db.runs import PgRuns, close_running, pages_by_route
-from kaagaz.jobs.worker import JobFailed
-from kaagaz.pipeline import FinishedRun, Progress, Superseded
+from kaagaz.jobs.worker import JobFailed, Superseded
+from kaagaz.pipeline import FinishedRun, Progress
 from tests.db_support import insert_document, new_customer
 from tests.test_runs_db import totals
 

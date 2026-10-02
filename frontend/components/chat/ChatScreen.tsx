@@ -2,7 +2,8 @@
 
 // The chat screen: the conversation list (a side pane from 1024 px, a drawer
 // below), the open thread and the composer. The thread is the one scroll area
-// and a log (announced politely as answers arrive). While a question is out, it
+// and a log. The log itself is not live (it would read the whole history aloud);
+// one hidden status line says short things instead. While a question is out, it
 // shows as pending and the conversation cannot be switched. Only the latest
 // conversation opened may fill the thread, so a slow reply for an earlier one
 // is dropped. Above the composer, the scope chip and picker (ScopePicker.tsx):
@@ -18,7 +19,7 @@ import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, ask, getConversation, listConversations, listDocuments } from "@/lib/api";
 import type { ConversationSummary, Message } from "@/lib/types";
-import { questionsByAnswer } from "./answer";
+import { answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
 import { AnswerView } from "./AnswerView";
 import { ConversationList } from "./ConversationList";
 import { scrollBehavior } from "./hooks";
@@ -101,6 +102,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [pending, setPending] = useState<string | null>(null);
   const [askError, setAskError] = useState<string | null>(null);
   const [noDocuments, setNoDocuments] = useState<boolean | null>(null);
+  // The one status line for screen readers.
+  const [status, setStatus] = useState("");
   // The drawer is open for the path it was opened on, so any route change closes it.
   const [listOpenOn, setListOpenOn] = useState<string | null>(null);
   const listOpen = listOpenOn !== null && listOpenOn === pathname;
@@ -152,6 +155,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
         setMessages(conversation.messages);
         setScope(restoredScope(conversation.messages));
         setThreadState("idle");
+        setStatus(LOADED_STATUS);
       })
       .catch((error: unknown) => {
         if (request !== openRequest.current) return;
@@ -236,6 +240,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     // scope; nothing of the last conversation's shows or is sent.
     setScope(keptScope());
     setAskError(null);
+    setStatus("");
     setThreadState("loading");
     try {
       const conversation = await getConversation(id);
@@ -244,6 +249,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       setMessages(conversation.messages);
       setScope(restoredScope(conversation.messages));
       setThreadState("idle");
+      setStatus(LOADED_STATUS);
     } catch {
       if (request === openRequest.current) setThreadState("error");
     }
@@ -257,6 +263,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     setMessages([]);
     setScope(startScope(null));
     setAskError(null);
+    setStatus("");
     setThreadState("idle");
     if (noDocuments !== true) focusComposerOnDesktop(inputRef.current);
   };
@@ -264,10 +271,12 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const onAsk = async (question: string): Promise<boolean> => {
     setPending(question);
     setAskError(null);
+    setStatus(ASKING_STATUS);
     try {
       const reply = await ask(question, activeId ?? undefined, sentScope(scope));
       setMessages((current) => [...current, reply.question, reply.answer]);
       setScope((current) => answeredScope(current, reply.question));
+      setStatus(answerStatusText(reply.answer.answer));
       if (activeId === null) {
         setActiveId(reply.conversation_id);
         showInUrl(reply.conversation_id);
@@ -275,6 +284,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       }
       return true;
     } catch (error) {
+      // The error is its own alert.
+      setStatus("");
       setAskError(askErrorText(error instanceof ApiError ? error : null));
       return false;
     } finally {
@@ -367,6 +378,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
         <div className={styles.threadInner}>
           <div className={styles.threadBody}>
             {heading}
+            <p className="visually-hidden" role="status">
+              {status}
+            </p>
             {threadState === "loading" ? (
               <p className={`${styles.threadStatus} delayed`}>
                 <span className="spinner" aria-hidden="true" />
@@ -394,7 +408,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
               ref={logRef}
               className={styles.log}
               role="log"
-              aria-live="polite"
+              aria-live="off"
               aria-label="Conversation"
             >
               {messages.map((message) =>
