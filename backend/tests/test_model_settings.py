@@ -63,6 +63,8 @@ def test_a_missing_model_budget_stops_start_up_by_name(name: str) -> None:
         ("MODEL_EXTRACT_TIMEOUT_SECONDS", "nan"),
         ("MODEL_EXTRACT_TIMEOUT_SECONDS", "inf"),
         ("MODEL_EXTRACT_TIMEOUT_SECONDS", "ten"),
+        ("MODEL_TIMEOUT_SECONDS", "-1"),
+        ("MODEL_TIMEOUT_SECONDS", "nan"),
         ("CARD_MAX_CHARS", "0"),
     ],
 )
@@ -94,11 +96,11 @@ def test_a_4096_window_with_a_2047_token_reply_is_refused() -> None:
 
 def test_a_card_call_and_its_repair_must_end_well_inside_the_lease() -> None:
     """The longest step without a heartbeat after OCR is one chat_json: a call and
-    its repair retry. With less than a minute to spare, a second worker could start
-    the same document (AR1)."""
-    fits = Settings.from_env(shipped(MODEL_EXTRACT_TIMEOUT_SECONDS="570", QUEUE_LEASE_SECONDS="1200"))
-    assert fits.model_extract_timeout_seconds == 570.0
-    for timeout, lease in (("571", "1200"), ("300", "600")):
+    its repair retry. With less than a minute to spare, plus the 15 s the worker may
+    wait to renew a lease, a second worker could start the same document (AR1)."""
+    fits = Settings.from_env(shipped(MODEL_EXTRACT_TIMEOUT_SECONDS="562.5", QUEUE_LEASE_SECONDS="1200"))
+    assert fits.model_extract_timeout_seconds == 562.5
+    for timeout, lease in (("563", "1200"), ("300", "600")):
         with pytest.raises(SettingsError, match="MODEL_EXTRACT_TIMEOUT_SECONDS") as caught:
             # OCR_TIMEOUT_SECONDS fits both leases, so only the model check can refuse.
             shipped_env = shipped(

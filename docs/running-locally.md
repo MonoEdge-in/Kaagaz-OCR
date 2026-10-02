@@ -43,7 +43,7 @@ docs/architecture.md, Decisions.
 With the model on, the worker reads each document's card with `MODEL_CHAT`
 (PRD 2): a reply may take up to `MODEL_CARD_MAX_TOKENS` tokens, in a window of
 `MODEL_NUM_CTX`, and one card call times out after
-`MODEL_EXTRACT_TIMEOUT_SECONDS` (twice that plus 60 must fit
+`MODEL_EXTRACT_TIMEOUT_SECONDS` (twice that plus 75 must fit
 `QUEUE_LEASE_SECONDS`, or nothing starts).
 
 An older `.env` needs these added from `.env.example` (a missing setting stops

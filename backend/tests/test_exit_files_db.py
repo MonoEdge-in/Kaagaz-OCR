@@ -214,7 +214,7 @@ def _processor(
     db: Database,
     storage: MemoryStorage,
     documents: PgDocuments,
-    prepare: Callable[[str, bytes], Any],
+    prepare: Callable[[str, bytes, Any], Any],
     key: str,
     file: ExitFile,
     model: bool,

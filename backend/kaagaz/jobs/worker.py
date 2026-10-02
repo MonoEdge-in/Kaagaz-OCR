@@ -13,6 +13,10 @@
   That is normal, not an error.
 * anything else is a bug and propagates. The job is not acked, so the queue
   hands it out again. There is no blanket ``except Exception`` here on purpose.
+* the heartbeat renews the lease at most once every LEASE_RENEW_SECONDS (15 s)
+  on the worker's clock: a beat after every page or embedding batch
+  would be hundreds of queue calls on a long document. The settings' AR1
+  checks leave room for that wait.
 * each delivery up to ``max_attempts`` (JOB_MAX_ATTEMPTS, 5) runs the handler,
   after ``on_attempt(job, attempt)`` records the try on the document, so the
   file list can say "Try 2 of 5".
@@ -40,6 +44,7 @@ from collections.abc import Callable
 
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import LeaseLost, WorkQueue
+from kaagaz.settings import LEASE_RENEW_SECONDS
 
 # Called by a long-running handler to say "still working", which renews the
 # lease so the job is not handed to another worker.
@@ -73,10 +78,15 @@ class Worker:
         max_attempts: int,
         on_exhausted: Callable[[Job], None],
         on_attempt: Callable[[Job, int], None] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         """``max_attempts`` is how many times the handler may run for one job;
         ``on_exhausted`` marks a job's document when a delivery comes after that;
-        ``on_attempt`` records each try before the handler runs."""
+        ``on_attempt`` records each try before the handler runs. ``clock`` (monotonic
+        seconds, time.monotonic in worker_main) spaces the lease renewals: a heartbeat
+        less than LEASE_RENEW_SECONDS after the receive or the last renewal does not
+        call the queue. A clock that steps back renews at once. With no clock, every
+        heartbeat renews."""
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
         self._queue = queue
@@ -84,6 +94,7 @@ class Worker:
         self._max_attempts = max_attempts
         self._on_exhausted = on_exhausted
         self._on_attempt = on_attempt
+        self._clock = clock
 
     def run_once(self) -> bool:
         """Process one job. Returns False when the queue had nothing ready.
@@ -93,8 +104,16 @@ class Worker:
         delivery = self._queue.receive()
         if delivery is None:
             return False
+        clock = self._clock
+        renewed = 0.0 if clock is None else clock()
 
         def heartbeat() -> None:
+            nonlocal renewed
+            if clock is not None:
+                now = clock()
+                if 0 <= now - renewed < LEASE_RENEW_SECONDS:
+                    return
+                renewed = now
             self._queue.extend(delivery.receipt)
 
         try:

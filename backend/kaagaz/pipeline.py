@@ -8,8 +8,14 @@ The steps, in order, for one (customer, document):
    bytes used below are exactly the bytes that were scanned.
 3. Check the scanned bytes still match the fingerprint taken at upload.
 4. Prepare the pages: sizes, and a picture of each page (PDFs, photos),
-   stored one by one as WebP. The PNGs kept in memory stay lossless for the
-   vision crops. Spreadsheets get one page per sheet after reading.
+   streamed (council A5b): each page is drawn, made WebP, stored, the
+   heartbeat beats, and its picture is dropped before the next page is drawn,
+   so memory is one page's picture, not one per page. A page that fails to
+   draw after earlier pages were stored leaves those pictures behind with no
+   rows; they are under this customer's document prefix, which delete and
+   purge remove whole, and a later run writes the same keys again. A vision
+   crop draws its page again (``Prepared.picture``), lossless. Spreadsheets
+   get one page per sheet after reading.
 5. Read the bytes through the reader socket, then read them again with the
    second reader if the type has one. A type with no reader is marked "needs
    a reader" (its pages are kept) and the job ends normally. A reader that
@@ -42,8 +48,10 @@ The steps, in order, for one (customer, document):
 7. Just before saving, the document must still be clean. Everything is saved
    in one transaction that replaces what an earlier run saved, so running the
    same job twice is safe (queues deliver at least once).
-8. Meaning vectors for the pieces, if a model is set. A model that is down
-   only means no vectors: word and typo search still work.
+8. Meaning vectors for the pieces, if a model is set, with the heartbeat and
+   progress "indexing i of n" after each batch is written (a 20k-row sheet is
+   about 626 batches, longer than one lease). A model that is down only means
+   no vectors: word and typo search still work.
 9. The page count, and the document is ready, in one transaction that also
    makes it its family's current version unless a newer version is ready
    already (PRD 1 F6). A version that fails never gets here, so the one before
@@ -162,8 +170,10 @@ VISION_INSTRUCTION = (
 _CROP_PADDING = 0.005  # a little of the page around a box, as a fraction of the page
 
 # Stored page pictures are for people to look at (PRD 1, S1), so they are WebP.
+# Method 2 (R2 finding 2): several times faster to encode than 4, for under 1 dB
+# of PSNR and a few % more bytes. Viewer-only: OCR and vision draw their own.
 _WEBP_QUALITY = 80
-_WEBP_METHOD = 4
+_WEBP_METHOD = 2
 _WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
 
 # Security A8 (PROVISIONAL): at most this many value boxes of one document are
@@ -331,10 +341,15 @@ class Prepared(Protocol):
     def pages(self) -> Sequence[PageInfo]: ...
 
     @property
-    def images(self) -> Mapping[int, bytes]: ...  # page number -> PNG
-
-    @property
     def checks(self) -> Mapping[int, PageCheck]: ...  # page number -> blank, effective DPI (R3, R4)
+
+    def picture(self, page_no: int) -> Image.Image:
+        """A page given to ``on_picture``, drawn again exactly as it was then."""
+        ...
+
+
+# What ``prepare`` calls with each page it draws: (page number, page count, picture).
+OnPicture = Callable[[int, int, Image.Image], None]
 
 
 class PageImageStore(Protocol):
@@ -355,6 +370,14 @@ class PipelineStore(Protocol):
         ...
 
     def load_learned(self, customer_id: str, fields: Collection[str]) -> list[LearnedCorrection]: ...
+
+
+class Embedder(Protocol):
+    """kaagaz.search.indexing.embed_pieces in production, with its database and model."""
+
+    def __call__(
+        self, customer_id: str, document_id: str, *, on_batch: Callable[[int, int], None]
+    ) -> object: ...
 
 
 class VisionModel(Protocol):
@@ -396,11 +419,11 @@ class DocumentProcessor:
         statuses: StatusStore,
         documents: DocumentStore,
         socket: ReadingSocket,
-        prepare: Callable[[str, bytes], Prepared],
+        prepare: Callable[[str, bytes, OnPicture], Prepared],
         sheet_pages: Callable[[list[Span]], Sequence[PageInfo]],
         page_images: PageImageStore,
         store: PipelineStore,
-        embed: Callable[[str, str], object] | None = None,
+        embed: Embedder | None = None,
         vision: VisionModel | None = None,
         model_errors: tuple[type[Exception], ...] = (),
         runs: RunStore | None = None,
@@ -417,7 +440,7 @@ class DocumentProcessor:
         model_budget: ModelBudget | None = None,
         timezone: str = "UTC",
     ) -> None:
-        """``embed(customer_id, document_id)`` gives the saved pieces their vectors;
+        """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         ``vision`` reads scanned boxes again. Either failing with one of
         ``model_errors`` is logged and skipped, never a failed document.
 
@@ -504,12 +527,16 @@ class DocumentProcessor:
             raise JobFailed("content_changed", retryable=False)
         heartbeat()
 
-        prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data))
-        for done, (page_no, png) in enumerate(prepared.images.items(), start=1):
-            self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(png))
+        pictured: set[int] = set()  # the pages whose picture is stored
+
+        def on_picture(page_no: int, count: int, picture: Image.Image) -> None:
+            self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(picture))
+            pictured.add(page_no)
             heartbeat()
-            self._progress(job, run, "preparing", done, len(prepared.images))
-        pages = [_page_record(info, prepared) for info in prepared.pages]
+            self._progress(job, run, "preparing", len(pictured), count)
+
+        prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data, on_picture))
+        pages = [_page_record(info, prepared, pictured) for info in prepared.pages]
 
         self._progress(job, run, "reading", 0, len(pages))
         reads: list[RouteDecision | None] = []  # how each page was read, as the reader said
@@ -561,7 +588,7 @@ class DocumentProcessor:
         cropped = rule + [
             value for value in quoted if value.record_key != CARD_RECORD and not spot_unsure(value)
         ]
-        readings = self._vision_readings(job, cropped, prepared.images, heartbeat, run)
+        readings = self._vision_readings(job, cropped, prepared, pictured, heartbeat, run)
         values = label_values(rule, compared, readings, also_located=quoted)
         values += label_quoted(quoted, compared, readings, also_located=rule)
         if values:
@@ -596,7 +623,7 @@ class DocumentProcessor:
         self._store.save(content, run_id=run.run_id)
         heartbeat()
         self._progress(job, run, "indexing", 0, 1)
-        run.embedded = self._index(job)
+        run.embedded = self._index(job, run, heartbeat)
         finished = self._finished(run, "ready", run.model_error)
         self._documents.mark_ready(customer_id, document_id, len(pages), run=finished)
 
@@ -657,11 +684,11 @@ class DocumentProcessor:
             }
         return understanding
 
-    def _prepare_or_count(self, job: Job, detected_type: str, data: bytes) -> Prepared:
+    def _prepare_or_count(self, job: Job, detected_type: str, data: bytes, on_picture: OnPicture) -> Prepared:
         """``prepare``; a file with too many pages keeps its real page count before
         it fails, so its message can name it."""
         try:
-            return self._prepare(detected_type, data)
+            return self._prepare(detected_type, data, on_picture)
         except TooManyPages as error:
             self._documents.set_page_count(job.customer_id, job.document_id, error.pages)
             raise
@@ -702,12 +729,19 @@ class DocumentProcessor:
             return False
         return True
 
-    def _index(self, job: Job) -> bool:
-        """Make the pieces' meaning vectors; True if it ran."""
+    def _index(self, job: Job, run: _Run, heartbeat: Heartbeat) -> bool:
+        """Make the pieces' meaning vectors; True if it ran. After each batch is written,
+        the heartbeat, then "indexing i of n". The progress write runs after every batch
+        on purpose: it is fenced, so it is what stops a superseded run within one batch."""
         if self._embed is None:
             return False
+
+        def on_batch(done: int, total: int) -> None:
+            heartbeat()
+            self._progress(job, run, "indexing", done, total)
+
         try:
-            self._embed(job.customer_id, job.document_id)
+            self._embed(job.customer_id, job.document_id, on_batch=on_batch)
         except self._model_errors as error:
             _log.warning(
                 "pieces saved without meaning vectors",
@@ -720,14 +754,16 @@ class DocumentProcessor:
         self,
         job: Job,
         values: list[ExtractedValue],
-        images: Mapping[int, bytes],
+        prepared: Prepared,
+        pictured: Collection[int],
         heartbeat: Heartbeat,
         run: _Run,
     ) -> dict[Location, str]:
         """A vision model's reading of each scanned value's box, by box, with a
         heartbeat after each (security A8). Stops at the first model error, and
         after ``max_vision_crops`` boxes; the values left stay single reader. One
-        page picture decoded at a time."""
+        page picture at a time, drawn again (``Prepared.picture``): the pixels
+        preparing drew, lossless."""
         if self._vision is None:
             return {}
         wanted: dict[int, dict[BoxLocation, None]] = {}  # page -> boxes, in order, once each
@@ -737,11 +773,11 @@ class DocumentProcessor:
                 value.confidence is None and value.origin in DIRECT_ORIGINS
             ):
                 continue  # read directly, not scanned; no origin counts as scanned (fail closed)
-            if box.page in images:
+            if box.page in pictured:
                 wanted.setdefault(box.page, {})[box] = None
         readings: dict[Location, str] = {}
         for page_no, boxes in wanted.items():
-            with Image.open(io.BytesIO(images[page_no])) as page:
+            with _or_fail(functools.partial(prepared.picture, page_no)) as page:
                 for box in boxes:
                     if run.vision_crops >= self._max_vision_crops:
                         return readings
@@ -868,10 +904,10 @@ def _or_fail[T](call: Callable[[], T]) -> T:
     raise JobFailed(code, retryable=False)
 
 
-def _page_record(info: PageInfo, prepared: Prepared) -> PageRecord:
+def _page_record(info: PageInfo, prepared: Prepared, pictured: Collection[int]) -> PageRecord:
     """The page as saved, with its effective DPI and low-resolution flag (R4)."""
     check = prepared.checks.get(info.page)
-    record = PageRecord(info, info.page in prepared.images)
+    record = PageRecord(info, info.page in pictured)
     if check is None:
         return record
     return replace(record, effective_dpi=check.effective_dpi, low_resolution=check.low_resolution)
@@ -946,23 +982,22 @@ def _crop(page: Image.Image, box: BoxLocation) -> bytes:
     return out.getvalue()
 
 
-def _stored_picture(png: bytes) -> bytes:
-    """The page picture as stored: WebP, made only here, just before storing, so
-    the PNG kept for the vision crops stays lossless. O(pixels), one page in memory.
+def _stored_picture(page: Image.Image) -> bytes:
+    """The page picture as stored: WebP, straight from the drawn picture, with no
+    PNG in between. O(pixels), one page in memory.
 
     PROVISIONAL (plan 7.6): a side longer than WebP allows is shrunk for storage
     only. The page keeps its real size, and boxes are fractions of it, so they
     still fit the smaller picture.
     """
-    with Image.open(io.BytesIO(png)) as page:
-        picture: Image.Image = page
-        longest = max(page.size)
-        if longest > _WEBP_MAX_SIDE:
-            scale = _WEBP_MAX_SIDE / longest
-            size = (_scaled(page.width, scale), _scaled(page.height, scale))
-            picture = page.resize(size, Image.Resampling.LANCZOS)
-        out = io.BytesIO()
-        picture.save(out, format="WEBP", quality=_WEBP_QUALITY, method=_WEBP_METHOD)
+    picture = page
+    longest = max(page.size)
+    if longest > _WEBP_MAX_SIDE:
+        scale = _WEBP_MAX_SIDE / longest
+        size = (_scaled(page.width, scale), _scaled(page.height, scale))
+        picture = page.resize(size, Image.Resampling.LANCZOS)
+    out = io.BytesIO()
+    picture.save(out, format="WEBP", quality=_WEBP_QUALITY, method=_WEBP_METHOD)
     return out.getvalue()
 
 
@@ -999,10 +1034,11 @@ def build_processor(
 
     documents = PgDocuments(db)
 
-    def prepare(detected_type: str, data: bytes) -> Prepared:
+    def prepare(detected_type: str, data: bytes, on_picture: OnPicture) -> Prepared:
         return prepare_pages(
             detected_type,
             data,
+            on_picture,
             dpi=settings.page_image_dpi,
             max_pages=settings.max_pages,
             max_image_pixels=settings.max_image_pixels,
@@ -1010,7 +1046,7 @@ def build_processor(
             low_res_dpi=settings.low_res_dpi,
         )
 
-    embed: Callable[[str, str], object] | None = None
+    embed: Embedder | None = None
     if model is not None:
         embed = functools.partial(embed_pieces, db, model=model)
     engine = build_ocr_engine(settings)
