@@ -188,7 +188,7 @@ services:
   #   name: kaagaz-ollama
   #   runtime: image
   #   image:
-  #     url: docker.io/ollama/ollama:0.34.4
+  #     url: docker.io/ollama/ollama:0.35.0
   #   region: singapore
   #   plan: 2c-8g
   #   disk:
@@ -221,7 +221,7 @@ envVarGroups:
   # CARD_MAX_CHARS EXTRACT_WINDOW_CHARS EXTRACT_WINDOW_OVERLAP EXTRACT_MAX_WINDOWS
   # SESSION_HOURS LOGIN_MAX_FAILURES LOGIN_LOCK_MINUTES ADMIN_SESSION_MINUTES
   # TRASH_DAYS REPROCESS_PER_HOUR ANSWER_MAX_EVIDENCE ANSWER_MIN_EVIDENCE_SCORE
-  # TIMEZONE RATE_LIMIT_PER_MINUTE LOG_LEVEL
+  # MODEL_ANSWER_MAX_TOKENS TIMEZONE RATE_LIMIT_PER_MINUTE LOG_LEVEL
   - name: kaagaz-settings
     envVars:
       - key: SEARCH_EF
