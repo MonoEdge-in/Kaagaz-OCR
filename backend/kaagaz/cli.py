@@ -29,7 +29,6 @@ terminal instead of logging): ids and e-mails only, never a password.
 
 import argparse
 import getpass
-import io
 import os
 import sys
 import time
@@ -39,15 +38,13 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
-from PIL import Image
-
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.db import audit
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.spool import HEAD_SIZE
-from kaagaz.preparing.page_checks import measure_blank
+from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
 from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
 from kaagaz.reading.route import RouteDecision
@@ -224,10 +221,12 @@ def _measure(
     engine = build_ocr_engine(settings)
     meter = None if engine is None else MeteredOcrEngine(engine, timer=timer)
     started = timer()
+    blanks: dict[int, BlankMeasure] = {}  # page number -> what the blank rule saw (ML 12)
     try:
         prepared = prepare_pages(
             detected,
             data,
+            lambda page, count, picture: blanks.__setitem__(page, measure_blank(picture)),
             dpi=settings.page_image_dpi,
             max_pages=settings.max_pages,
             max_image_pixels=settings.max_image_pixels,
@@ -264,7 +263,7 @@ def _measure(
             if unit == "cells"
             else (reads[index] if index < len(reads) else None)
         )
-        line = _page_line(page, read, page_spans, prepared, check)
+        line = _page_line(page, read, page_spans, prepared, blanks.get(page), check)
         if len(stamps) == len(pages) + 1:
             line += f" seconds {stamps[index + 1] - stamps[index]:.2f}"
         if truth is not None:
@@ -283,6 +282,7 @@ def _page_line(
     read: RouteDecision | None,
     spans: list[Span],
     prepared: PreparedPages,
+    blank: BlankMeasure | None,
     check: PdfPageCheck | None,
 ) -> str:
     """One page's route and reason as its reader read it, and the numbers (ML 12),
@@ -301,9 +301,7 @@ def _page_line(
     if found is not None:
         dpi = "none" if found.effective_dpi is None else str(found.effective_dpi)
         line += f" dpi {dpi} low_resolution {'yes' if found.low_resolution else 'no'}"
-    if page in prepared.images:
-        with Image.open(io.BytesIO(prepared.images[page])) as picture:
-            blank = measure_blank(picture)
+    if blank is not None:
         line += f" blank_stddev {blank.stddev:.2f} dark_pixels {blank.dark_pixels}"
     return line
 

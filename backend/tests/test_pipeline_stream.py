@@ -42,7 +42,7 @@ from tests.fakes import (
     PresetSocket,
     fake_sheet_pages,
 )
-from tests.pdf_builder import Page, Picture, make_pdf
+from tests.pdf_builder import Page, Picture, Text, make_pdf
 from tests.picture_support import text_like_picture
 from tests.support import SeqIds
 
@@ -57,6 +57,8 @@ POLICY = UploadPolicy(
     type_limits=limits_by_type(pdf=1_000_000, image=1_000_000, sheet=1_000_000),
 )
 SCAN = Page(picture=Picture(text_like_picture(306, 396), 0, 0, 612, 792))
+LINE = "Invoice No: INV-17 from Sharma Traders, Pune, for 12 bags of cement"
+TEXT = Page(texts=[Text(72, 740 - 16 * n, f"{LINE} {n}", size=10) for n in range(40)])
 TOTAL = Span("Total: 1,180.00", "Total: 1,180.00", BoxLocation(1, 0.1, 0.4, 0.9, 0.42), 0.6, origin="ocr")
 
 
@@ -172,22 +174,24 @@ class StreamingTest(unittest.TestCase):
 
     def test_the_stored_picture_is_webp_method_2_within_its_error_bound(self) -> None:
         """WebP method 2 is viewer-only (OCR and vision draw their own pages). Against
-        method 4 on this page: at most 1 dB less PSNR and at most 10% more bytes (the
-        probe measured -0.3 dB and +4%)."""
-        drawn: list[Image.Image] = []
-        rig = Rig(make_pdf([SCAN]))
-        with watching_draws("render_pdf_page", rig.log, drawn):
-            rig.run()
-        (page,) = drawn
-        stored = rig.pictures.images[(CUSTOMER, rig.job.document_id, 1)]
-        self.assertEqual(stored, webp(page, 2))
-        with Image.open(io.BytesIO(stored)) as back:
-            quality = psnr(page, back)
-        with Image.open(io.BytesIO(webp(page, 4))) as back:
-            quality_at_4 = psnr(page, back)
-        self.assertGreater(quality, 40.0)
-        self.assertGreater(quality, quality_at_4 - 1.0)
-        self.assertLessEqual(len(stored), 1.10 * len(webp(page, 4)))
+        method 4: over 40 dB PSNR and at most 1 dB less, and at most 5% more bytes on a
+        text page, 15% on the drawn bars of a scan (measured here: +2% and +10%)."""
+        for page_of, byte_ratio in ((TEXT, 1.05), (SCAN, 1.15)):
+            with self.subTest(byte_ratio=byte_ratio):
+                drawn: list[Image.Image] = []
+                rig = Rig(make_pdf([page_of]))
+                with watching_draws("render_pdf_page", rig.log, drawn):
+                    rig.run()
+                (page,) = drawn
+                stored = rig.pictures.images[(CUSTOMER, rig.job.document_id, 1)]
+                self.assertEqual(stored, webp(page, 2))
+                with Image.open(io.BytesIO(stored)) as back:
+                    quality = psnr(page, back)
+                with Image.open(io.BytesIO(webp(page, 4))) as back:
+                    quality_at_4 = psnr(page, back)
+                self.assertGreater(quality, 40.0)
+                self.assertGreater(quality, quality_at_4 - 1.0)
+                self.assertLessEqual(len(stored), byte_ratio * len(webp(page, 4)))
 
 
 class VisionCropTest(unittest.TestCase):

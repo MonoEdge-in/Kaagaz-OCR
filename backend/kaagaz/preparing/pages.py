@@ -1,10 +1,12 @@
 """Prepare a document's pages: each page's size, and a picture of it.
 
 The page viewer draws every source box over a picture of its page, so each
-PDF page and each image frame gets one PNG here (pdf at ``dpi``; images
+PDF page and each image frame is drawn here (pdf at ``dpi``; images
 normalised to RGB with their EXIF orientation applied, so what the viewer
-shows is what the scan reader read). Sizes are kept in the page's own unit,
-points or pixels; boxes are fractions of them (``kaagaz/reading/spans.py``).
+shows is what the scan reader read) and handed to ``on_picture`` as soon as it
+is drawn. The caller stores it; nothing here keeps it (council A5b). Sizes
+are kept in the page's own unit, points or pixels; boxes are fractions of
+them (``kaagaz/reading/spans.py``).
 Spreadsheets have no picture: ``sheet_pages`` gives one page per sheet.
 
 The file is treated as hostile (it passed the virus scan, but a clean file
@@ -15,7 +17,7 @@ can still be built to exhaust memory):
   before it is drawn or decoded: from the PDF page size and ``dpi``, or from
   the image header. Pillow's own decompression bomb error maps to the same
   code.
-* One page is drawn and decoded at a time; only its PNG is kept.
+* One page is drawn and decoded at a time, and dropped before the next.
 * Errors are short codes (``corrupt_file``, ``too_many_pages``,
   ``image_too_large``, ``encrypted``), raised outside any ``except`` block,
   so no library error (which can quote the file) is chained on.
@@ -29,15 +31,18 @@ its picture is blank (``blank_stddev`` is BLANK_PAGE_STDDEV), and its effective
 DPI, flagged under ``low_res_dpi`` (LOW_RES_DPI): a PDF page's from its largest
 image, a photo's from its short side. The pipeline stores them with the page.
 
-Time is O(total pixels) to draw and encode; memory is one page's picture at
-a time plus the PNGs kept (their total is what the caller stores anyway).
+``PreparedPages.picture`` draws one page again, with the same DPI, pixel
+check and EXIF handling, so a vision crop has the pixels preparing drew.
+
+Time is O(total pixels) to draw; memory is one page's picture at a time, O(1)
+in the page count.
 """
 
 import io
 import math
 import struct
 import zlib
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,12 +64,8 @@ _POINTS_PER_INCH = 72.0
 _IMAGE_DAMAGED = (OSError, ValueError, SyntaxError, EOFError, struct.error, zlib.error)
 _IMAGE_BOMB = (Image.DecompressionBombError, Image.DecompressionBombWarning)
 
-
-@dataclass(frozen=True, slots=True)
-class PreparedPages:
-    pages: list[PageInfo]
-    images: dict[int, bytes]  # page number -> PNG
-    checks: dict[int, PageCheck] = field(default_factory=dict)  # page number -> its checks
+# Called with (page number, page count, picture) for each page drawn, in order.
+OnPicture = Callable[[int, int, Image.Image], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,9 +77,39 @@ class _Limits:
     low_res_dpi: int
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedPages:
+    pages: list[PageInfo]
+    checks: dict[int, PageCheck] = field(default_factory=dict)  # page number -> its checks
+    # What ``picture`` draws from: the file's type, its bytes and the limits.
+    source: tuple[str, bytes, _Limits] | None = field(default=None, repr=False, compare=False)
+
+    def picture(self, page_no: int) -> Image.Image:
+        """Page ``page_no``'s picture, drawn again exactly as preparing drew it. O(pixels)."""
+        if self.source is None:
+            raise ValueError("these pages have no pictures")
+        detected_type, data, limits = self.source
+        if detected_type == sniff.PDF:
+            document = open_pdf(data)
+            try:
+                page = document[page_no - 1]
+                try:
+                    return render_pdf_page(page, dpi=limits.dpi, max_image_pixels=limits.max_image_pixels)
+                finally:
+                    page.close()
+            finally:
+                document.close()
+        image = _open_image(data)
+        try:
+            return _decode_frame(image, page_no - 1, limits.max_image_pixels)  # image_pages' own step
+        finally:
+            image.close()
+
+
 def prepare_pages(
     detected_type: str,
     data: bytes,
+    on_picture: OnPicture,
     *,
     dpi: int,
     max_pages: int,
@@ -88,16 +119,20 @@ def prepare_pages(
 ) -> PreparedPages:
     limits = _Limits(dpi, max_pages, max_image_pixels, blank_stddev, low_res_dpi)
     if detected_type == sniff.PDF:
-        return _prepare_pdf(data, limits)
+        return _prepare_pdf(data, limits, on_picture)
     if detected_type in _IMAGE_TYPES:
-        prepared = PreparedPages([], {})
-        frames = image_pages(data, max_pages=max_pages, max_image_pixels=max_image_pixels)
-        for number, image in enumerate(frames, start=1):
+        prepared = PreparedPages([], {}, (detected_type, data, limits))
+        with _open_image(data) as header:  # the header only, for the page count
+            count = _frame_count(header)
+        number = 0
+        for image in image_pages(data, max_pages=max_pages, max_image_pixels=max_image_pixels):
+            number += 1  # noqa: SIM113 - enumerate's reused tuple would keep the last frame alive
             prepared.pages.append(PageInfo(number, float(image.width), float(image.height), "px"))
-            prepared.images[number] = png_bytes(image)
             prepared.checks[number] = _check(image, photo_dpi(image.width, image.height), limits)
+            on_picture(number, count, image)
+            del image  # dropped before the next frame is decoded
         return prepared
-    return PreparedPages([], {})
+    return PreparedPages([])
 
 
 def sheet_pages(spans: Iterable[Span]) -> list[PageInfo]:
@@ -117,12 +152,13 @@ def sheet_pages(spans: Iterable[Span]) -> list[PageInfo]:
     ]
 
 
-def _prepare_pdf(data: bytes, limits: _Limits) -> PreparedPages:
-    prepared = PreparedPages([], {})
+def _prepare_pdf(data: bytes, limits: _Limits, on_picture: OnPicture) -> PreparedPages:
+    prepared = PreparedPages([], {}, (sniff.PDF, data, limits))
     document = open_pdf(data)
     try:
-        check_page_count(len(document), limits.max_pages)
-        for index in range(len(document)):
+        count = len(document)
+        check_page_count(count, limits.max_pages)
+        for index in range(count):
             page = document[index]
             try:
                 width, height = page.get_size()
@@ -131,8 +167,9 @@ def _prepare_pdf(data: bytes, limits: _Limits) -> PreparedPages:
             finally:
                 page.close()
             prepared.pages.append(PageInfo(index + 1, float(width), float(height), "pt"))
-            prepared.images[index + 1] = png_bytes(image)
             prepared.checks[index + 1] = _check(image, dpi, limits)
+            on_picture(index + 1, count, image)
+            del image  # dropped before the next page is drawn
     finally:
         document.close()
     return prepared
@@ -195,12 +232,6 @@ def image_pages(data: bytes, *, max_pages: int, max_image_pixels: int) -> Iterat
             yield _decode_frame(image, index, max_image_pixels)
     finally:
         image.close()
-
-
-def png_bytes(image: Image.Image) -> bytes:
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 def _open_image(data: bytes) -> Image.Image:

@@ -16,7 +16,7 @@ from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import Handler, JobFailed, Worker
-from kaagaz.pipeline import DocumentProcessor, ReadingSocket
+from kaagaz.pipeline import DocumentProcessor, OnPicture, ReadingSocket
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import ReaderSocket
@@ -361,7 +361,7 @@ class StatusAndFailureTest(unittest.TestCase):
 
     def test_a_crash_on_every_delivery_still_ends_failed_retries_exhausted(self) -> None:
         class CrashingPreparer(FakePreparer):
-            def prepare(self, detected_type: str, data: bytes) -> FakePrepared:
+            def prepare(self, detected_type: str, data: bytes, on_picture: OnPicture) -> FakePrepared:
                 raise RuntimeError("a bug, after the scan passed")
 
         system = build(preparer=CrashingPreparer())

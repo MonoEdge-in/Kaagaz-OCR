@@ -13,12 +13,15 @@ Superseded for a run that is not open, as their PostgreSQL versions do
 (tests/test_runs_db.py runs one scenario on both).
 """
 
+import io
 import threading
 import uuid
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import IO, Any
+
+from PIL import Image
 
 from kaagaz.chunking.piece import Piece
 from kaagaz.extraction.learned import LearnedCorrection
@@ -29,6 +32,7 @@ from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import (
     DocumentContent,
     FinishedRun,
+    OnPicture,
     PageRecord,
     Progress,
     ReaderOutput,
@@ -473,8 +477,12 @@ class MemoryPageImages:
 @dataclass(frozen=True, slots=True)
 class FakePrepared:
     pages: list[PageInfo]
-    images: dict[int, bytes]
+    images: dict[int, bytes]  # page number -> its picture, as PNG
     checks: dict[int, PageCheck] = field(default_factory=dict)
+
+    def picture(self, page_no: int) -> Image.Image:
+        with Image.open(io.BytesIO(self.images[page_no])) as png:
+            return png.convert("RGB")
 
 
 class FakePreparer:
@@ -489,12 +497,16 @@ class FakePreparer:
         self._by_type = dict(by_type or {})
         self._error = error
 
-    def prepare(self, detected_type: str, data: bytes) -> FakePrepared:
+    def prepare(self, detected_type: str, data: bytes, on_picture: OnPicture) -> FakePrepared:
+        """Gives each preset picture to ``on_picture`` in page order, as the real one does."""
         if isinstance(self._error, ReadError):
             raise self._error
         if self._error is not None:
             raise ReadError(self._error)
-        return self._by_type.get(detected_type, FakePrepared([], {}))
+        prepared = self._by_type.get(detected_type, FakePrepared([], {}))
+        for page_no in sorted(prepared.images):
+            on_picture(page_no, len(prepared.images), prepared.picture(page_no))
+        return prepared
 
 
 def fake_sheet_pages(spans: list[Span]) -> list[PageInfo]:
