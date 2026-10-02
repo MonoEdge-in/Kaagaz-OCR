@@ -3,10 +3,8 @@ import {
   appendItems,
   canReview,
   checkChoice,
-  checkReasonsText,
-  parseReason,
-  queueParams,
-  REASON_FILTERS,
+  focusAfterResolve,
+  leftToReview,
   resolvedMessage,
   withoutItem,
 } from "@/components/review/review";
@@ -92,6 +90,32 @@ describe("the queue after a resolve", () => {
     expect(resolvedMessage(item("a", { value: "1,284" }))).toBe(
       'Saved. Total amount in Bill.pdf is now "1,284".',
     );
+  });
+});
+
+describe("focus after a resolve", () => {
+  const list = (ids: string[], total = ids.length) => ({ items: ids.map((id) => item(id)), total });
+
+  it("moves to the next card", () => {
+    expect(focusAfterResolve(list(["a", "b", "c"]), "b")).toEqual({ kind: "card", valueId: "c" });
+  });
+
+  it("moves to the previous card when the last one is resolved", () => {
+    expect(focusAfterResolve(list(["a", "b", "c"]), "c")).toEqual({ kind: "card", valueId: "b" });
+  });
+
+  it("loads the next page when no card is left but the server has more", () => {
+    expect(focusAfterResolve(list(["a"], 21), "a")).toEqual({ kind: "next-page" });
+  });
+
+  it("moves to the empty heading when nothing is left anywhere", () => {
+    expect(focusAfterResolve(list(["a"]), "a")).toEqual({ kind: "empty" });
+  });
+
+  it("says how many values are left, in one message with the save", () => {
+    expect(leftToReview(44)).toBe("44 values left to review.");
+    expect(leftToReview(1)).toBe("1 value left to review.");
+    expect(leftToReview(0)).toBe("Nothing left to review.");
   });
 });
 

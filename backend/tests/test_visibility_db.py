@@ -21,9 +21,10 @@ from kaagaz.db import admin, review
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import search
+from kaagaz.search.scope import EVERYTHING
 from tests.db_support import insert_document, new_customer
 from tests.test_answering_fixed_queries_db import add_values, cell
-from tests.test_search_db import add_pieces, axis
+from tests.test_search_db import EF_SEARCH, RECIPE, add_pieces, axis
 
 pytestmark = pytest.mark.db
 
@@ -79,7 +80,15 @@ def _library(db: Database) -> Library:
 
 def _found(db: Database, library: Library, query: str, embedding: list[float] | None) -> set[str]:
     with db.customer(library.customer) as conn:
-        hits = search(conn, customer_id=library.customer, query_text=query, embedding=embedding, limit=10)
+        hits = search(
+            conn,
+            customer_id=library.customer,
+            query_text=query,
+            embedding=embedding,
+            limit=10,
+            recipe=RECIPE,
+            ef_search=EF_SEARCH,
+        )
     return {hit.document_id for hit in hits}
 
 
@@ -123,7 +132,14 @@ def test_the_fixed_queries_count_only_the_current_version_of_documents_not_in_tr
     assert count.number == Decimal(1)
     cited = {ref.document_id for row in (total, top, count) for ref in row.values}
     assert cited == {library.documents["current"]}
-    assert fixed.available_fields(customer) == {"party_name", "profit", "date", "current_only", "gstin"}
+    asked = ("party_name", "profit", "date", "old_only", "current_only", "binned_only", "gstin")
+    assert fixed.available_fields(customer, asked) == {
+        "party_name",
+        "profit",
+        "date",
+        "current_only",
+        "gstin",
+    }
 
 
 def test_the_cited_values_lookup_leaves_out_trash_and_older_versions(db: Database) -> None:
@@ -131,7 +147,8 @@ def test_the_cited_values_lookup_leaves_out_trash_and_older_versions(db: Databas
     every_value = [value for ids in library.values.values() for value in ids]
     with db.customer(library.customer) as conn:
         rows = conn.execute(
-            fixed_queries._VALUE_REFS, {"customer_id": library.customer, "ids": every_value}
+            fixed_queries._VALUE_REFS,
+            {"customer_id": library.customer, "ids": every_value, **EVERYTHING.params()},
         ).all()
     assert {str(row.value_id) for row in rows} == set(library.values["current"])
 

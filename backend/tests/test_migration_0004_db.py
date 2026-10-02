@@ -122,7 +122,15 @@ def _current(url: str) -> str:
         check=True,
         capture_output=True,
     )
-    return done.stdout.decode()
+    return done.stdout.decode().strip()
+
+
+def _head() -> str:
+    """What ``alembic heads`` prints: the newest revision, read from the scripts."""
+    done = subprocess.run(
+        [sys.executable, "-m", "alembic", "heads"], cwd=BACKEND, check=True, capture_output=True
+    )
+    return done.stdout.decode().strip()
 
 
 _FAILED_WITH = text("UPDATE documents SET status = 'failed', failure_code = :reason WHERE id = :d")
@@ -151,7 +159,7 @@ def test_downgrade_refuses_while_rows_use_what_0003_cannot_hold(
         m0002._downgrade(url, "0003")
 
     assert message in refused.value.stderr
-    assert "0005 (head)" in _current(url)  # the whole downgrade is one transaction
+    assert _current(url) == _head()  # the whole downgrade is one transaction
     assert m0002._schema(database) == at_head
 
 

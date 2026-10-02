@@ -84,6 +84,20 @@ export interface DocumentSummary {
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
 }
 
+/** GET /api/search (PRD 3 Q2): the documents found, best first, at most SEARCH_MAX_DOCUMENTS. */
+export interface DocumentSearch {
+  documents: FoundDocument[];
+}
+
+export interface FoundDocument {
+  id: string;
+  display_name: string;
+  doc_type: DocType | null;
+  score: number;
+  best: { snippet: string; page_from: number; page_to: number; regions: Region[] }; // its best piece
+  more: number; // its other pieces among the candidates
+}
+
 /** What kind of document the AI model's card says it is (PRD 2, D1). */
 export type DocType =
   | "invoice"

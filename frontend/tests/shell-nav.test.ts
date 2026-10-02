@@ -2,7 +2,16 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ICON_NAMES } from "@/components/ui/icons";
-import { appGate, mustChangePassword, sessionScope, signInPath } from "@/components/shell/gate";
+import {
+  appGate,
+  endedPath,
+  mustChangePassword,
+  pageAfterSessionChange,
+  sessionScope,
+  signedOutMessage,
+  signedOutPath,
+  signInPath,
+} from "@/components/shell/gate";
 import { currentPageName, isCurrent, navLinks, roleName } from "@/components/shell/nav";
 import type { Me, Role, SessionScope } from "@/lib/types";
 
@@ -113,6 +122,88 @@ describe("where to sign in", () => {
     expect(session).toContain("router.replace(signInPath(pathname))");
     expect(session).toContain("onSessionEnded(");
     expect(session).not.toContain('router.replace("/login")');
+  });
+
+  // Critical #5: once a session existed, the sign-in page is a full page load,
+  // so nothing of that person stays in the tab's memory.
+  it("adds why, for the sign-in page's note", () => {
+    expect(endedPath("/documents/d-1")).toBe("/login?ended=1");
+    expect(endedPath("/admin")).toBe("/admin/login?ended=1");
+    expect(signedOutPath("/documents")).toBe("/login?signed_out=1");
+    expect(signedOutPath("/admin")).toBe("/admin/login?signed_out=1");
+    expect(signedOutMessage({ signed_out: "1" })).toBe("You signed out.");
+    expect(signedOutMessage({ ended: "1" })).toBe("Your session ended. Sign in again to continue.");
+    expect(signedOutMessage({})).toBeNull();
+    expect(signedOutMessage({ ended: "yes", other: "1" })).toBeNull();
+  });
+
+  it("loads a fresh page when a session existed, and keeps a quick redirect on a first visit", () => {
+    const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
+    expect(session).toContain("leavePage(endedPath(pathname))");
+    expect(session).toMatch(/if \(event\.persisted\) window\.location\.reload\(\)/);
+    // Put away for the back button: blank, so it never shows before the reload.
+    expect(session).toMatch(/if \(event\.persisted\) document\.documentElement\.style\.visibility = "hidden"/);
+    // Admins sign out to the admin sign-in.
+    for (const file of [
+      ["components", "shell", "AppShell.tsx"],
+      ["components", "shell", "SetPasswordScreen.tsx"],
+    ]) {
+      const text = readFileSync(join(__dirname, "..", ...file), "utf8");
+      expect(text, file.join("/")).toContain("announceSession(null);");
+      expect(text, file.join("/")).toContain("leavePage(signedOutPath(pathname))");
+    }
+  });
+
+  // A tab still loading (or showing an error) when another tab signs in or
+  // out asks the server again: the answer on its way may be from before.
+  it("hears the other tabs from the start, and asks again while it does not know yet", () => {
+    const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
+    expect(session).toMatch(/watchSession\(\(now\) => \{[\s\S]*?setAttempt\(\(n\) => n \+ 1\)[\s\S]*?\[state\],/);
+    expect(session).not.toContain("[userId]");
+  });
+
+  // The note sits under the heading. Its box is in the server's HTML, so the
+  // form does not move; the words come once the page runs, so screen readers
+  // announce them.
+  it("puts the sign-in note under the heading, in a box that is there from the start", () => {
+    for (const file of [
+      ["app", "login", "SignInForm.tsx"],
+      ["app", "admin", "login", "AdminSignInForm.tsx"],
+    ]) {
+      const form = readFileSync(join(__dirname, "..", ...file), "utf8");
+      const note = form.indexOf("<SignedOutNotice message={note} />");
+      expect(note, file.join("/")).toBeGreaterThan(form.indexOf("</h1>"));
+      expect(form.indexOf("</h1>"), file.join("/")).toBeGreaterThan(0);
+    }
+    for (const file of [
+      ["app", "login", "page.tsx"],
+      ["app", "admin", "login", "page.tsx"],
+    ]) {
+      expect(readFileSync(join(__dirname, "..", ...file), "utf8"), file.join("/")).not.toContain("<SignedOutNotice");
+    }
+    const notice = readFileSync(join(__dirname, "..", "app", "login", "SignedOutNotice.tsx"), "utf8");
+    expect(notice).toContain('<p role="status" className={styles.notice}>');
+    const css = readFileSync(join(__dirname, "..", "app", "login", "login.module.css"), "utf8");
+    expect(css).toMatch(/\.notice \{[^}]*min-height:/);
+  });
+});
+
+describe("another tab signs out or in", () => {
+  const here = { pathname: "/documents/d-1", href: "http://localhost:3000/documents/d-1" };
+
+  it("stays when the same person is still signed in", () => {
+    expect(pageAfterSessionChange("u1", "u1", here)).toBeNull();
+  });
+
+  it("goes to sign in when nobody is signed in any more", () => {
+    expect(pageAfterSessionChange("u1", null, here)).toBe("/login?signed_out=1");
+    expect(pageAfterSessionChange("u1", null, { pathname: "/admin", href: "/admin" })).toBe(
+      "/admin/login?signed_out=1",
+    );
+  });
+
+  it("loads the page again when someone else signed in", () => {
+    expect(pageAfterSessionChange("u1", "u2", here)).toBe(here.href);
   });
 });
 
