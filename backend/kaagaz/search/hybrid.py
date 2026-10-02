@@ -31,6 +31,11 @@ that are ready, the current version of their family and not in Trash
 (``LIVE_CURRENT`` in kaagaz/db/visibility.py, PRD 1 F5 and F6). Each list
 keeps at most ``CANDIDATES`` pieces.
 
+The scope (PRD 3 Q1, kaagaz/search/scope.py) is in the WHERE of all three
+lists, before ranking: static predicates, each true for a NULL parameter (the
+custom plans drop them). A scope that matches nothing returns before any SQL.
+``search_documents`` (Q2) groups the candidates by document.
+
 The lists are merged with reciprocal rank fusion (``fuse``): a piece scores the
 sum of 1 / (k + rank) over the lists it is in, so a piece found two ways ranks
 above one found one way, with no tuning of scores across the lists. Ties break
@@ -55,7 +60,7 @@ after the index); fine at this size, a per-customer partition is the upgrade.
 """
 
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -81,7 +86,8 @@ _QUERY_CANCELED = "57014"
 # Every statement below repeats the same filter in full, so each one can be read
 # (and checked for the customer filter) on its own: this customer's pieces of
 # ready, current documents that are not in Trash only. The ``LIVE_CURRENT`` text
-# is written out in each one, before any LIMIT (tests/test_visibility_guard.py).
+# is written out in each one, before any LIMIT (tests/test_visibility_guard.py),
+# and so is the scope (the s_* parameters, Scope.params; tests/test_search_scope_db.py).
 
 _WORD = text(
     "SELECT p.id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q)) AS score"
@@ -135,7 +141,7 @@ _MEANING = text(
 
 _DETAILS = text(
     "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to,"
-    " p.text, p.regions, p.label"
+    " p.text, p.regions, p.label, d.doc_type"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -149,6 +155,7 @@ class SearchHit:
     document_id: str
     document_name: str
     detected_type: str
+    doc_type: str | None  # what the document is (PRD 2 D3); None until it is understood
     page_from: int
     page_to: int
     # Document text: untrusted, shown as plain text only.
@@ -230,7 +237,7 @@ def search(
     ef_search: int,
 ) -> list[SearchHit]:
     """The best ``limit`` pieces of this customer's ready, current documents
-    that are not in Trash, best first.
+    that are not in Trash and are inside ``scope``, best first.
 
     ``conn`` must come from ``Database.customer(customer_id)``; its transaction
     gets this search's settings (the timeout, custom plans, the fuzzy threshold,
@@ -244,16 +251,20 @@ def search(
     word: list[tuple[str, float]] = []
     fuzzy: list[tuple[str, float]] = []
     meaning: list[tuple[str, float]] = []
+    owners: dict[str, str] = {}
     if query_text.strip():
         keywords = " ".join(normalise(query_text).keywords)
         params = {"c": customer_id, "q": query_text, "k": keywords, "n": CANDIDATES}
         word = [(str(row[0]), float(row[1])) for row in conn.execute(_WORD, params)]
         conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
-        fuzzy = [(str(row[0]), float(row[1])) for row in conn.execute(_FUZZY, params)]
+        fuzzy = _ranked(conn.execute(_FUZZY, {**params, **scope.params()}), owners)
     if embedding is not None:
         meaning = _meaning(conn, customer_id, vector_literal(embedding), recipe, ef_search)
 
-    fused = fuse(word, fuzzy, meaning)[:limit]
+
+def _hits(conn: Connection, customer_id: str, fused: Sequence[FusedPiece]) -> list[SearchHit]:
+    """The fused pieces with their details, in the same order: one indexed fetch.
+    No scope here: the ids came from the scoped lists of this transaction."""
     if not fused:
         return []
     details = {
@@ -271,6 +282,7 @@ def search(
                 document_id=str(row[1]),
                 document_name=str(row[2]),
                 detected_type=str(row[3]),
+                doc_type=None if row[9] is None else str(row[9]),
                 page_from=int(row[4]),
                 page_to=int(row[5]),
                 text=str(row[6]),

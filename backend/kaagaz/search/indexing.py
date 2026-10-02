@@ -29,7 +29,9 @@ from collections.abc import Sequence
 
 from sqlalchemy import Connection, text
 
-from kaagaz.ai.client import ModelClient, ModelOutputError
+from sqlalchemy import Connection, text
+
+from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import vector_literal
 

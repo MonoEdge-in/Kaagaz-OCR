@@ -71,6 +71,7 @@ from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import verify
+from kaagaz.chunking.script import has_devanagari_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.indexing import query_input, recipe_tag
@@ -283,7 +284,9 @@ class AnswerService:
         if not query_text:
             return _not_found("search", shown, [], model_used=False)
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
-        hits = self._retriever.search(customer_id, query_text, self._embed(normalised.english), limit)
+        # A Devanagari question is embedded as asked (W3): its Latin spelling means little to the model.
+        meant = question if has_devanagari_letters(question) else normalised.english
+        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit)
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])

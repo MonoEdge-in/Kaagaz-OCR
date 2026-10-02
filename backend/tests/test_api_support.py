@@ -31,6 +31,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
 
+from kaagaz.ai.client import ModelClient
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import hash_password
@@ -181,6 +182,7 @@ class Api:
         settings: Settings | None = None,
         clock: MovingClock | None = None,
         queue: ApiFakeQueue | None = None,
+        model: ModelClient | None = None,
     ) -> None:
         self.db = db
         self.settings = settings or make_settings()
@@ -195,6 +197,7 @@ class Api:
             queue=self.queue,
             answers=self.answers,
             clock=self.clock,
+            model=model,
         )
 
     def client(self) -> TestClient:
