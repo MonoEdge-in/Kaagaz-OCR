@@ -10,8 +10,10 @@ The numbers count each family once, by its current version, and leave out
 Trash (``LISTED``, kaagaz/db/visibility.py); values waiting for review are
 counted as the review queue shows them (``LIVE_CURRENT``). Older versions and
 what is in Trash are counted on their own (``_KEPT``), so nothing is hidden.
+The failed jobs list (PRD 3 Z1) shows current versions out of Trash too (``LISTED``).
 """
 
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
@@ -80,3 +82,35 @@ def stats(conn: Connection, customer_id: str) -> dict[str, Any]:
         **{key: int(value) for key, value in counts.items()},
         **{key: int(value) for key, value in kept.items()},
     }
+
+
+# PRD 3 Z1: each family's current version that failed or can't be read, out of Trash,
+# newest first, with the start of its last run (the index processing_runs_document).
+_FAILED = (
+    "SELECT d.id, d.display_name, d.detected_type, d.status, d.failure_code, d.page_count,"
+    " d.attempts, d.max_attempts, r.started_at AS last_run_at"
+    " FROM documents d"
+    " LEFT JOIN LATERAL (SELECT pr.started_at FROM processing_runs pr"
+    " WHERE pr.customer_id = :c AND pr.document_id = d.id ORDER BY pr.started_at DESC LIMIT 1) r ON true"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
+    " AND d.status IN ('failed', 'needs_reader')"
+    " ORDER BY d.created_at DESC, d.id DESC LIMIT :limit OFFSET :offset"
+)
+
+_FAILED_COUNT = (
+    "SELECT count(*) FROM documents d"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
+    " AND d.status IN ('failed', 'needs_reader')"
+)
+
+
+def failed_documents(
+    conn: Connection, customer_id: str, *, limit: int, offset: int
+) -> tuple[Sequence[RowMapping], int]:
+    """The failed jobs page and its total: two queries, plus one index probe per row
+    for its last run. ponytail: O(D) over the customer's D documents, as no index
+    leads on status; a partial index on the failed states if customers grow large."""
+    params = {"c": customer_id, "limit": limit, "offset": offset}
+    rows = conn.execute(text(_FAILED), params).mappings().all()
+    total: int = conn.execute(text(_FAILED_COUNT), params).scalar_one()
+    return rows, int(total)

@@ -46,10 +46,15 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # items as the queue shows them.
     (admin, "_DOCUMENTS_BY_STATUS"): LISTED,
     (admin, "_COUNTS"): LIVE_CURRENT,
+    # The failed jobs list (PRD 3 Z1): each family once, by its current version.
+    (admin, "_FAILED"): LISTED,
+    (admin, "_FAILED_COUNT"): LISTED,
     # The document list: each family's current version, out of Trash by default,
     # or only Trash (trashed=true).
     (listing, "_LIST"): LISTED,
     (listing, "_TRASH_LIST"): TRASHED_LISTED,
+    # The detail's related documents (PRD 3 Y2): only a current, ready one out of Trash.
+    (listing, "_LINKS"): LIVE_CURRENT,
     # Links (PRD 2 D5): only to a current, ready document out of Trash, never an older
     # version or one still being read (replacing AR5's any state, PROVISIONAL).
     (pipeline_store, "_LINK_TARGETS"): LIVE_CURRENT,

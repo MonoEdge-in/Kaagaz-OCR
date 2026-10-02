@@ -348,6 +348,16 @@ export interface ReviewItem {
   page: PageSummary;
 }
 
+/** A row of the admin's Failed jobs tab (PRD 3 Z1). */
+export interface FailedDocument {
+  id: string;
+  display_name: string;
+  status: "failed" | "needs_reader";
+  failure_code: string | null;
+  message: string; // safe to show as is
+  last_run_at: string | null; // null: never run
+}
+
 export interface ReviewList {
   items: ReviewItem[];
   total: number;
