@@ -86,6 +86,8 @@ class ValueRef:
     field: str
     value_text: str
     label: str
+    label_page_no: int | None = None  # where its label is, when located (PRD 2 D3, PRD 3 H4)
+    label_region: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,7 +455,8 @@ _COUNT_DOCUMENTS = text(
 _VALUE_REFS = text(
     """
     SELECT v.id::text AS value_id, v.document_id::text AS document_id, d.display_name,
-           d.detected_type, v.page_no, v.region, v.field, v.value_text, v.label
+           d.detected_type, v.page_no, v.region, v.field, v.value_text, v.label,
+           v.label_page_no, v.label_region
     FROM extracted_values v
     JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
@@ -585,6 +588,8 @@ def _value_refs(conn: Connection, customer_id: str, ids: list[str], scope: Scope
             field=str(row.field),
             value_text=str(row.value_text),
             label=str(row.label),
+            label_page_no=row.label_page_no,
+            label_region=row.label_region,
         )
         for row in rows
     }

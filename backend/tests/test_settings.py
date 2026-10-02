@@ -181,3 +181,11 @@ def test_answer_neighbours_ships_at_1_and_must_be_0_to_3() -> None:
     for bad in ("4", "-1", "one", None):
         with pytest.raises(SettingsError, match="ANSWER_NEIGHBOURS"):
             Settings.from_env(shipped(ANSWER_NEIGHBOURS=bad))
+
+
+def test_chat_history_turns_ships_at_3_and_must_be_0_to_10() -> None:
+    """PRD 3 H1: the pairs a follow-up is rewritten with; a value outside stops start-up by name."""
+    assert Settings.from_env(shipped()).chat_history_turns == 3
+    for bad in ("11", "-1", "three", None):
+        with pytest.raises(SettingsError, match="CHAT_HISTORY_TURNS"):
+            Settings.from_env(shipped(CHAT_HISTORY_TURNS=bad))

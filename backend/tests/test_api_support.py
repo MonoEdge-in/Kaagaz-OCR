@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -32,6 +33,7 @@ from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
 
 from kaagaz.ai.client import ModelClient
+from kaagaz.answering.rewrite import Turn
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import hash_password
@@ -134,7 +136,9 @@ class FakeAnswers:
     asked: list[tuple[str, str]] = field(default_factory=list)
     scopes: list[Scope] = field(default_factory=list)
 
-    def answer(self, customer_id: str, question: str, *, scope: Scope) -> _FixedAnswer:
+    def answer(
+        self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn]
+    ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
         self.scopes.append(scope)
         return _FixedAnswer(self.reply)

@@ -341,7 +341,7 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
         citation = {**each, "source_state": state}
         if state in _GONE:
             citation["snippet"] = None
-            citation["regions"] = []
+            citation["regions"] = citation["label_regions"] = []
             gone.add(each.get("n"))
         citations.append(citation)
     sentences = []

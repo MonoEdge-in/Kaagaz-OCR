@@ -188,6 +188,8 @@ class Settings:
     answer_min_evidence_score: float
     # Q4: the pieces on each side of an evidence piece also given to the draft, 0 to 3.
     answer_neighbours: int
+    # H1: the question and answer pairs a follow-up is rewritten with, 0 (no rewrite) to 10.
+    chat_history_turns: int
     timezone: str
 
     # API.
@@ -322,6 +324,7 @@ class Settings:
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             answer_neighbours=env.between("ANSWER_NEIGHBOURS", 0, 3),
+            chat_history_turns=env.between("CHAT_HISTORY_TURNS", 0, 10),
             timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             log_level=env.text("LOG_LEVEL"),

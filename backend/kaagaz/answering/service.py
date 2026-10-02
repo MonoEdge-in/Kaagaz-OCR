@@ -6,6 +6,10 @@ type in frontend/lib/types.ts, field for field). A scope that matches nothing is
 "not found" before any query or model call (edge case 1); otherwise every step
 below (fixed queries, unchecked, search, neighbours) sees only documents in it.
 
+A follow-up (PRD 3 H1) is first rewritten to stand on its own from the
+conversation's last turns (kaagaz/answering/rewrite.py); the steps below then run
+on the rewrite, and the answer carries it as ``rewritten_question``.
+
 The steps (docs/architecture.md):
 
 1. ``hinglish.normalise``: the question in plain English words and keywords.
@@ -40,7 +44,7 @@ ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
 from itertools import zip_longest
@@ -69,6 +73,7 @@ from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, Fixed
 from kaagaz.answering.format import indian_number
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
+from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import numbers_in, verify
@@ -96,10 +101,14 @@ class Citation:
     document_id: str
     document_name: str
     detected_type: str
-    page_no: int
-    regions: list[dict[str, Any]]
+    page_no: int  # the page the source card opens: its first region's
+    regions: list[dict[str, Any]]  # grouped by page, in page order (H4)
     snippet: str
     label: str
+    page_from: int  # H4: the pages the source covers ("Pages 15 to 16")
+    page_to: int
+    label_page_no: int | None  # H4: where a value's label is, when it was located
+    label_regions: list[dict[str, Any]]
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -113,6 +122,10 @@ class Citation:
             "regions": [dict(region) for region in self.regions],
             "snippet": self.snippet,
             "label": self.label,
+            "page_from": self.page_from,
+            "page_to": self.page_to,
+            "label_page_no": self.label_page_no,
+            "label_regions": [dict(region) for region in self.label_regions],
         }
 
 
@@ -132,6 +145,7 @@ class Answer:
     route: Route
     normalized_question: str
     model_used: bool
+    rewritten_question: str | None = None  # H1: what was searched for, when a follow-up was rewritten
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly."""
@@ -146,6 +160,7 @@ class Answer:
             "route": self.route,
             "normalized_question": self.normalized_question,
             "model_used": self.model_used,
+            "rewritten_question": self.rewritten_question,
         }
 
 
@@ -181,10 +196,20 @@ class AnswerService:
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
 
-    def answer(self, customer_id: str, question: str, *, scope: Scope = EVERYTHING) -> Answer:
-        """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``."""
+    def answer(
+        self, customer_id: str, question: str, *, scope: Scope = EVERYTHING, history: Sequence[Turn] = ()
+    ) -> Answer:
+        """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
+        ``history`` is the conversation's earlier turns, oldest first."""
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False)
+        turns = self._settings.chat_history_turns
+        rewritten = None
+        if self._model is not None and history and turns:
+            rewritten = rewrite(self._model, question, history[-turns:])
+        return replace(self._answer(customer_id, rewritten or question, scope), rewritten_question=rewritten)
+
+    def _answer(self, customer_id: str, question: str, scope: Scope) -> Answer:
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
@@ -247,6 +272,10 @@ class AnswerService:
                 regions=regions,
                 snippet=clean_snippet(f"{value.field}: {value.value_text}"),
                 label=value.label,
+                page_from=value.page_no,
+                page_to=value.page_no,
+                label_page_no=value.label_page_no,
+                label_regions=valid_regions([value.label_region] if value.label_region else []),
             )
             for index, (value, regions) in enumerate(cited, start=1)
         ]
@@ -398,7 +427,7 @@ def _not_found(route: Route, shown: str, closest: list[dict[str, str]], *, model
 
 def _piece_citation(n: int, item: Evidence, sentences: Sequence[str]) -> Citation:
     hit = item.hit
-    regions = _focus(item, sentences)
+    regions = sorted(_focus(item, sentences), key=lambda region: int(region["page"]))  # H4: by page
     return Citation(
         n=n,
         kind="piece",
@@ -410,6 +439,10 @@ def _piece_citation(n: int, item: Evidence, sentences: Sequence[str]) -> Citatio
         regions=regions,
         snippet=clean_snippet(hit.text),
         label=hit.label,
+        page_from=hit.page_from,
+        page_to=hit.page_to,
+        label_page_no=None,
+        label_regions=[],
     )
 
 
@@ -422,7 +455,8 @@ def _focus(item: Evidence, sentences: Sequence[str]) -> list[dict[str, Any]]:
     A text piece keeps one region per line, in order. A line is used when it
     holds a sentence (or a sentence holds it), or shares a number with one.
     Falls back to every region when the lines and regions do not pair up (a
-    spreadsheet row) or no line matches. O(lines * sentences).
+    spreadsheet row), no line matches, or the lines used miss a page of a piece
+    that crosses pages (H4: each of its pages shows its spot). O(lines * sentences).
     """
     lines = item.hit.text.splitlines()
     if len(lines) != len(item.regions) or len(item.regions) != len(item.hit.regions):
@@ -438,7 +472,9 @@ def _focus(item: Evidence, sentences: Sequence[str]) -> list[dict[str, Any]]:
             n.replace(",", "") in numbers for n in _NUMBER.findall(line)
         ):
             used.append(region)
-    return used or item.regions
+    if {region["page"] for region in used} != {region["page"] for region in item.regions}:
+        return item.regions
+    return used
 
 
 def _cited_values(rows: Sequence[FixedRow]) -> list[tuple[ValueRef, list[dict[str, Any]]]]:

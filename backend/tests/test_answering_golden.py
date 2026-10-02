@@ -49,6 +49,7 @@ ANSWER_KEYS = {
     "route",
     "normalized_question",
     "model_used",
+    "rewritten_question",
 }
 CITATION_KEYS = {
     "n",
@@ -61,6 +62,10 @@ CITATION_KEYS = {
     "regions",
     "snippet",
     "label",
+    "page_from",
+    "page_to",
+    "label_page_no",
+    "label_regions",
 }
 
 

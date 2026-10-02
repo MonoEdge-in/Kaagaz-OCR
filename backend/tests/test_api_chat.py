@@ -35,6 +35,7 @@ def _citation(n: int, document_id: str) -> dict[str, Any]:
         "regions": [REGION],
         "snippet": f"Total {n}00",
         "label": "verified",
+        "label_regions": [REGION],  # PRD 3 H4
     }
 
 
@@ -83,7 +84,7 @@ def test_a_saved_answer_shows_each_source_as_it_is_now() -> None:
         assert (kept["snippet"], kept["regions"]) == (f"Total {kept['n']}00", [REGION])
     # Trash means deleted: neither its words nor its place show any more.
     for gone in shown["citations"][2:]:
-        assert (gone["snippet"], gone["regions"]) == (None, [])
+        assert (gone["snippet"], gone["regions"], gone["label_regions"]) == (None, [], [])
         assert gone["document_name"] == f"bill {gone['n']}.pdf"
     assert [sentence["text"] for sentence in shown["sentences"]] == [
         "Sentence 1.",
@@ -299,6 +300,7 @@ def test_default_wiring_uses_the_real_answer_service_without_a_model(db: Databas
         "route",
         "normalized_question",
         "model_used",
+        "rewritten_question",
     }
     assert answer["status"] == "not_found"
     assert answer["label"] is None

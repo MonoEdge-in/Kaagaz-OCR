@@ -40,7 +40,8 @@ The scope (PRD 3 Q1, kaagaz/search/scope.py) is in the WHERE of all three
 lists, before ranking: static predicates, each true for a NULL parameter (the
 custom plans drop them). A scope that matches nothing returns before any SQL.
 ``search_documents`` (Q2) groups the candidates by document. ``neighbours`` (Q4)
-fetches the pieces next to an answer's hits, with the same filters and scope.
+fetches the pieces next to an answer's hits, with the same filters and scope. A
+piece of an invoice whose check failed comes back needs review (edge case 10).
 
 The lists are merged with reciprocal rank fusion (``fuse``): a piece scores the
 sum of 1 / (k + rank) over the lists it is in, so a piece found two ways ranks
@@ -206,9 +207,13 @@ _MEANING_EXACT = text(
     ") SELECT id, document_id, distance FROM candidates ORDER BY distance, id LIMIT :n"
 )
 
+# A piece of an invoice whose check failed is never verified (edge case 10): its
+# reading may be sure, but the figures do not add up.
 _DETAILS = text(
-    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to,"
-    " p.text, p.regions, p.label, d.doc_type, p.seq, p.context_header"
+    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to, p.text,"
+    " p.regions, CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :c"
+    " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
+    " d.doc_type, p.seq, p.context_header"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -220,8 +225,10 @@ _DETAILS = text(
 # so a piece in Trash, an older version or outside the scope is never one (edge
 # case 5). The columns are _DETAILS's; ordered by the hit's rank, then seq.
 _NEIGHBOURS = text(
-    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to,"
-    " p.text, p.regions, p.label, d.doc_type, p.seq, p.context_header"
+    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to, p.text,"
+    " p.regions, CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :c"
+    " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
+    " d.doc_type, p.seq, p.context_header"
     " FROM unnest(CAST(:documents AS uuid[]), CAST(:seqs AS integer[]))"
     " WITH ORDINALITY AS h (document_id, seq, rank)"
     " JOIN pieces p ON p.customer_id = :c AND p.document_id = h.document_id"
