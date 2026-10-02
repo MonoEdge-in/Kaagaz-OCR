@@ -18,14 +18,13 @@ import pytest
 
 from kaagaz.adapters.scanner import EicarDevScanner
 from kaagaz.api.app import create_app
-from kaagaz.api.auth import hash_password
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
 from kaagaz.pipeline import build_processor
 from tests.db_support import new_customer
 from tests.pdf_builder import Page, Text, make_pdf
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, PASSWORD, ApiFakeQueue, ApiFakeStorage, TestClient
+from tests.test_api_support import CSRF, PASSWORD, ApiFakeQueue, ApiFakeStorage, TestClient, password_hash_of
 
 pytestmark = pytest.mark.db
 
@@ -70,7 +69,7 @@ def _sign_in(db: Database, app_client: TestClient, customer_id: str) -> None:
             email=email,
             display_name="Test member",
             role="member",
-            password_hash=hash_password(PASSWORD),
+            password_hash=password_hash_of(PASSWORD),
             must_change_password=False,
         )
     reply = app_client.post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)

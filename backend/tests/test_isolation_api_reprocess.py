@@ -1,7 +1,10 @@
 """Read again across customers (PRD 2 X1): another customer's id is not found.
 
 Customer B's reviewer, using customer A's document id in every state, always gets
-404, never 409 or 429, and nothing is changed, audited, queued or run.
+404, never 409 or 429, and nothing is changed, audited, queued or run. The control:
+A's own admin then gets the route's real answer for that document (read again, or
+409 for a state that can't be), so B's 404 comes from the customer, never from a
+broken route or id.
 """
 
 from typing import Any
@@ -23,6 +26,7 @@ STATES: list[dict[str, Any]] = [
     {"status": "rejected", "failure_code": "virus_found"},
     {"status": "ready", "in_trash": True},
 ]
+READABLE = ("ready", "failed", "needs_reader")  # the states A may read again, out of Trash
 
 
 def snapshot(api: Api, customer_id: str, document_id: str) -> tuple[object, ...]:
@@ -60,3 +64,13 @@ def test_b_reading_a_document_of_a_again_is_404_in_every_state(db: Database, sta
     assert api.queue.jobs == []
     assert "document.reprocess" not in api.audit_actions(b_reviewer.customer_id)
     assert b_reviewer.client.get(f"/api/documents/{doc}").status_code == 404  # reviewer_fixes too
+
+    own = a_admin.client.post(f"/api/documents/{doc}/reprocess", headers=CSRF)
+    if state["status"] in READABLE and not state.get("in_trash"):
+        assert own.status_code == 200, own.text
+        assert own.json()["status"] == "received"
+        assert [(job.customer_id, job.document_id) for job in api.queue.jobs] == [(a_admin.customer_id, doc)]
+        assert api.audit_actions(a_admin.customer_id).count("document.reprocess") == 1
+    else:
+        assert (own.status_code, own.json()["error"]["code"]) == (409, "not_reprocessable")
+        assert api.queue.jobs == []
