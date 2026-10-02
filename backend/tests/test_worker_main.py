@@ -386,6 +386,18 @@ class EmbedMissingTest(unittest.TestCase):
         )
         self.assertNotIn("secret piece text", JsonFormatter().format(record))
 
+    def test_a_database_that_cannot_be_reached_is_logged_and_the_jobs_go_on(self) -> None:
+        clock, jobs = _Clock(), _Jobs()
+        embed = _Embed(clock, error=BackendUnavailable("database"))
+        worker = EmbedMissing(jobs, embed, clock)
+        with self.assertLogs("kaagaz.worker", "ERROR") as logs:
+            self._turns(worker, clock, range(10))
+        self.assertEqual((embed.minutes, jobs.calls), ([0], 10))  # not tried again within 10 minutes
+        (record,) = logs.records
+        self.assertEqual(
+            (record.getMessage(), record.__dict__["code"]), ("missing vectors failed", "BackendUnavailable")
+        )
+
     def test_with_the_model_off_nothing_is_embedded_and_nothing_is_logged(self) -> None:
         clock, jobs = _Clock(), _Jobs()
         worker = EmbedMissing(jobs, None, clock)

@@ -240,9 +240,10 @@ class EmbedMissing:
     The cursor is kept here between passes (a restart starts from the first
     customer again). A pass the model was down for waits EMBED_EVERY, then twice
     as long each time it is down again, up to EMBED_BACKOFF_MOST; a pass it
-    answers sets the wait back. A database error (SQLAlchemyError) is logged by
-    its type and swallowed, as in PurgeHourly: the jobs go on, and the next
-    pass is EMBED_EVERY later. Logs hold ids, codes and counts only.
+    answers sets the wait back. A database error (SQLAlchemyError, or
+    BackendUnavailable when the database cannot be reached) is logged by its
+    type and swallowed, as in PurgeHourly: the jobs go on, and the next pass is
+    EMBED_EVERY later. Logs hold ids, codes and counts only.
     O(1) per turn, plus one pass's own cost at most every EMBED_EVERY.
     """
 
@@ -265,7 +266,7 @@ class EmbedMissing:
             self._next = now + EMBED_EVERY  # noted first: a pass that fails waits too
             try:
                 done = self._embed(self._after)
-            except SQLAlchemyError as error:
+            except (SQLAlchemyError, BackendUnavailable) as error:
                 logger.error("missing vectors failed", extra={"code": type(error).__name__})
             else:
                 self._after = done.after
