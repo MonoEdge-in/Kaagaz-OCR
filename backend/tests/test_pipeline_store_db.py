@@ -799,6 +799,53 @@ def test_the_save_sends_at_most_a_chunk_of_rows_per_statement(
     )
 
 
+def test_values_come_back_as_they_were_sent_whatever_their_characters(db: Database) -> None:
+    """A text that reads NULL, an empty one, braces, quotes, a backslash, a comma and
+    Devanagari keep every character, next to big numbers, dates, confidences and label
+    spots, and the NULLs stay NULL (the values may go as one array per column)."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    texts = ["NULL", "", '{"a", b}', 'say "x" \\ y', "रुपये ४५", "a,b"]
+    values = [
+        ExtractedValue(
+            "document",
+            f"field_{n}",
+            word,
+            f" {word} ",
+            BoxLocation(n + 1, 0.1, 0.2, 0.3, 0.4),
+            confidence=0.5 if n % 2 else None,
+            second_reading=None if n % 3 else word,
+            value_number=Decimal("12345678901234.5678") if n == 0 else None,
+            value_date=date(2026, 8, 12) if n == 1 else None,
+            label_location=CellLocation(1, 2, 3) if n == 2 else None,
+        )
+        for n, word in enumerate(texts)
+    ]
+    PgPipelineStore(db).save(replace(content(customer, doc), values=values))
+
+    saved = rows(
+        db,
+        customer,
+        "SELECT value_text, value_raw, second_reading, value_number, value_date, page_no, confidence,"
+        " label_page_no, label_region FROM extracted_values WHERE document_id = :d ORDER BY field",
+        doc,
+    )
+    assert [
+        (row["value_text"], row["value_raw"], row["second_reading"], row["page_no"]) for row in saved
+    ] == [(word, f" {word} ", None if n % 3 else word, n + 1) for n, word in enumerate(texts)]
+    assert [(row["value_number"], row["value_date"]) for row in saved[:3]] == [
+        (Decimal("12345678901234.5678"), None),
+        (None, date(2026, 8, 12)),
+        (None, None),
+    ]
+    assert [row["confidence"] for row in saved] == [None, pytest.approx(0.5)] * 3
+    assert [(row["label_page_no"], row["label_region"]) for row in saved[1:4]] == [
+        (None, None),
+        (1, {"kind": "cell", "page": 1, "row": 2, "column": 3}),
+        (None, None),
+    ]
+
+
 def test_a_large_save_binds_at_most_65535_parameters_in_one_statement(db: Database) -> None:
     """PostgreSQL refuses a statement with more than 65,535 bound parameters."""
     customer, _ = new_customer(db)
