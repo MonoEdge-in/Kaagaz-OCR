@@ -3,7 +3,8 @@
 // one of these again; these checks only give a quicker, clearer message.
 
 import { sessionScope } from "@/components/shell/gate";
-import { formatNumber } from "@/lib/format";
+import { ApiError } from "@/lib/api";
+import { formatDateTime, formatNumber } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type { AdminUser, DocumentStatus, Me, PageRoute, Role, Stats } from "@/lib/types";
 
@@ -23,6 +24,7 @@ export const TABS = [
   { id: "settings", label: "Settings" },
   { id: "activity", label: "Activity" },
   { id: "numbers", label: "Numbers" },
+  { id: "failed", label: "Failed jobs" },
 ] as const;
 
 export type TabId = (typeof TABS)[number]["id"];
@@ -300,3 +302,20 @@ export function describeAction(action: string): string {
 }
 
 export const AUDIT_PAGE_SIZE = 50;
+
+export const FAILED_PAGE_SIZE = 50;
+
+/** When a failed document was last tried (PRD 3 Z1). */
+export function lastRunText(lastRunAt: string | null): string {
+  return lastRunAt === null ? "Never run" : `Last tried ${formatDateTime(lastRunAt)}`;
+}
+
+/**
+ * What a Retry that did not start says: the server's own words for a refusal
+ * (409, someone already retried it; 429, too many at once), else a network hint.
+ */
+export function retryErrorText(caught: unknown): string {
+  return caught instanceof ApiError
+    ? caught.message
+    : "Could not reach the server. Check your connection, then try again.";
+}

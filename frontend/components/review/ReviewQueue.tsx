@@ -63,7 +63,7 @@ function Queue({ documentId }: { documentId?: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    listReview({ limit: PAGE_SIZE, document_id: documentId })
+    listReview(queueParams(0, PAGE_SIZE, documentId, reason))
       .then((result) => {
         if (cancelled) return;
         setFirst({ attempt, list: result });
@@ -76,7 +76,7 @@ function Queue({ documentId }: { documentId?: string }) {
     return () => {
       cancelled = true;
     };
-  }, [attempt, documentId]);
+  }, [attempt, documentId, reason]);
 
   useEffect(() => {
     const id = focusNext.current;
@@ -130,6 +130,28 @@ function Queue({ documentId }: { documentId?: string }) {
   return (
     <div className="page">
       <Header />
+      <div className="field">
+        <label htmlFor="review-reason">Show values where</label>
+        <select
+          id="review-reason"
+          className="input"
+          value={reason ?? ""}
+          // A "Show more" still loading belongs to the old filter: wait for it.
+          disabled={loadingMore}
+          onChange={(event) => {
+            setMoreError(null);
+            setReason(parseReason(event.target.value));
+            setAttempt((n) => n + 1); // the loading state until the filtered list comes
+          }}
+        >
+          <option value="">Any reason</option>
+          {REASON_FILTERS.map((choice) => (
+            <option key={choice.value} value={choice.value}>
+              {choice.text}
+            </option>
+          ))}
+        </select>
+      </div>
       <p className={announcement ? styles.saved : "visually-hidden"} aria-live="polite">
         {announcement ? <Icon name="check-seal" size={16} /> : null}
         {announcement}
@@ -174,7 +196,9 @@ function Queue({ documentId }: { documentId?: string }) {
               </Link>
             }
           >
-            Every value read so far is verified or already settled.
+            {reason
+              ? "Choose Any reason to see the rest of the queue."
+              : "Every value read so far is verified or already settled."}
           </EmptyState>
         ) : (
           <>

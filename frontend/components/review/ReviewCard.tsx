@@ -13,7 +13,7 @@ import { fieldText, reasonText } from "@/components/viewer/labels";
 import { ApiError, resolveReview } from "@/lib/api";
 import { pageLink } from "@/lib/regions";
 import type { ReviewChoice, ReviewItem } from "@/lib/types";
-import { checkChoice, MAX_TYPED_LENGTH } from "./review";
+import { checkChoice, checkReasonsText, MAX_TYPED_LENGTH } from "./review";
 import styles from "./Review.module.css";
 
 /** The id of a card's heading; the queue moves focus there after a resolve. */
@@ -36,6 +36,7 @@ export function ReviewCard({
   const idBase = `review-${value.id}`;
   const errorId = `${idBase}-error`;
   const link = pageLink(item.document_id, value.region.page, value.region);
+  const checks = checkReasonsText(item);
 
   const resolve = async (choice: ReviewChoice) => {
     const check = checkChoice(choice, typed, value.second_reading);
@@ -76,6 +77,7 @@ export function ReviewCard({
           <span className="tabular">Page {value.region.page}</span>
         </p>
         <p className={styles.reason}>{reasonText(value.label_reason)}</p>
+        {checks && <p className={styles.reason}>{checks}</p>}
       </header>
 
       <PageViewer

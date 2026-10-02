@@ -83,7 +83,7 @@ def test_queue_lists_needs_review_values_oldest_first_with_their_page(db: Databa
     assert body["total"] == 2
     assert [item["value"]["id"] for item in body["items"]] == [first, second]
     item = body["items"][0]
-    assert set(item) == {"value", "document_id", "document_name", "detected_type", "page"}
+    assert set(item) == {"value", "document_id", "document_name", "detected_type", "page", "check_reasons"}
     assert item["document_id"] == document_id
     assert item["document_name"] == "bill.pdf"
     assert item["detected_type"] == "pdf"

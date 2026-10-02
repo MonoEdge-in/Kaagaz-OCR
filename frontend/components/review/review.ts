@@ -3,7 +3,8 @@
 // how the queue changes after a value is resolved, and where focus goes then.
 
 import { fieldText } from "@/components/viewer/labels";
-import type { ReviewChoice, ReviewItem, ReviewList, Role } from "@/lib/types";
+import { checkReasonText } from "@/components/viewer/panels";
+import type { ReviewChoice, ReviewItem, ReviewList, ReviewReason, Role } from "@/lib/types";
 
 export const MAX_TYPED_LENGTH = 500;
 
@@ -82,4 +83,38 @@ export function focusAfterResolve(list: ReviewList, valueId: string): ResolveFoc
 /** Members can't correct values; reviewers and admins can. */
 export function canReview(role: Role): boolean {
   return role === "reviewer" || role === "admin";
+}
+
+/** The reason filter's choices, in the order the screen lists them (PRD 3 Y5). */
+export const REASON_FILTERS: readonly { value: ReviewReason; text: string }[] = [
+  { value: "check_failed", text: "An invoice check failed" },
+  { value: "readers_disagree", text: "The two readers disagree" },
+  { value: "low_confidence", text: "The reader was not sure" },
+  { value: "single_reader", text: "Only one reader read it" },
+];
+
+/** The filter's choice from the select; "" (any reason) or anything else is no filter. */
+export function parseReason(value: string): ReviewReason | null {
+  return REASON_FILTERS.find((choice) => choice.value === value)?.value ?? null;
+}
+
+/** GET /review's parameters for one page of the queue, filtered by `reason` when set. */
+export function queueParams(
+  offset: number,
+  limit: number,
+  documentId: string | undefined,
+  reason: ReviewReason | null,
+) {
+  return {
+    limit,
+    ...(offset > 0 ? { offset } : {}),
+    document_id: documentId,
+    ...(reason ? { reason: [reason] } : {}),
+  };
+}
+
+/** "The invoice checks failed: ..." in plain words; null when its invoice did not fail one. */
+export function checkReasonsText(item: Pick<ReviewItem, "check_reasons">): string | null {
+  if (item.check_reasons.length === 0) return null;
+  return `The invoice checks failed: ${item.check_reasons.map(checkReasonText).join("; ")}.`;
 }

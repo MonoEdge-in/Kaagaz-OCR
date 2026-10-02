@@ -1,4 +1,5 @@
-"""The admin routes: users, the customer's settings, the audit log and the numbers.
+"""The admin routes: users, the customer's settings, the audit log, the numbers and
+the failed jobs (PRD 3 Z1; Retry is the documents router's reprocess route).
 
 Why the admin session: every route here needs a session started on the admin
 screen (/admin/login, with the two-step code when it is on). The check sits on the router
@@ -34,7 +35,7 @@ from sqlalchemy import Connection, RowMapping
 from kaagaz.api.auth import AdminSession, CurrentUser, hash_password, require_admin_session
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.views import admin_user, audit_entry
+from kaagaz.api.views import admin_user, audit_entry, failed_document
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit
 from kaagaz.db import runs as runs_sql
@@ -294,3 +295,17 @@ def get_stats(user: AdminSession, context: Context) -> dict[str, Any]:
         numbers = admin_sql.stats(conn, user.customer_id)
         numbers["pages_this_month"] = runs_sql.pages_by_route(conn, user.customer_id, start=start, end=end)
     return numbers
+
+
+@router.get("/admin/failed")
+def list_failed(
+    user: AdminSession,
+    context: Context,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    """Documents that failed or can't be read, with their message and last run (PRD 3 Z1)."""
+    with context.db.customer(user.customer_id) as conn:
+        rows, total = admin_sql.failed_documents(conn, user.customer_id, limit=limit, offset=offset)
+    max_pages = context.settings.max_pages
+    return {"items": [failed_document(row, max_pages=max_pages) for row in rows], "total": total}

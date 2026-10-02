@@ -17,12 +17,14 @@ import type {
   DocumentList,
   DocumentSearch,
   DocumentSummary,
+  FailedDocument,
   Folder,
   Me,
   PasswordReset,
   ReviewChoice,
   ReviewItem,
   ReviewList,
+  ReviewReason,
   Role,
   SheetCells,
   Stats,
@@ -293,8 +295,9 @@ export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: 
 
 // --- review --------------------------------------------------------------------
 
-export const listReview = (params: { limit?: number; offset?: number; document_id?: string } = {}) =>
-  request<ReviewList>("GET", `/review${query(params)}`);
+export const listReview = (
+  params: { limit?: number; offset?: number; document_id?: string; reason?: ReviewReason[] } = {},
+) => request<ReviewList>("GET", `/review${query(params)}`);
 export const resolveReview = (
   valueId: string,
   choice: ReviewChoice,
@@ -331,3 +334,6 @@ export const updateSettings = (maxUploadMb: number | null) =>
 export const listAudit = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: AuditEntry[]; total: number }>("GET", `/admin/audit${query(params)}`);
 export const getStats = () => request<Stats>("GET", "/admin/stats");
+/** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
+export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
+  request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);

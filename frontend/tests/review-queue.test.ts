@@ -41,6 +41,7 @@ const item = (id: string, overrides: Partial<ReviewItem["value"]> = {}): ReviewI
     effective_dpi: 300,
     low_resolution: false,
   },
+  check_reasons: [],
 });
 
 describe("checkChoice", () => {
@@ -123,5 +124,41 @@ describe("who can review", () => {
     expect(canReview("member")).toBe(false);
     expect(canReview("reviewer")).toBe(true);
     expect(canReview("admin")).toBe(true);
+  });
+});
+
+describe("the reason filter", () => {
+  it("offers the four reasons the server accepts", () => {
+    expect(REASON_FILTERS.map((choice) => choice.value)).toEqual([
+      "check_failed",
+      "readers_disagree",
+      "low_confidence",
+      "single_reader",
+    ]);
+  });
+
+  it("reads the select's value, anything else meaning every reason", () => {
+    expect(parseReason("low_confidence")).toBe("low_confidence");
+    expect(parseReason("")).toBeNull();
+    expect(parseReason("corrected")).toBeNull();
+  });
+
+  it("asks for one page, filtered only when a reason is chosen", () => {
+    expect(queueParams(0, 20, undefined, null)).toEqual({ limit: 20, document_id: undefined });
+    expect(queueParams(20, 20, "d1", "check_failed")).toEqual({
+      limit: 20,
+      offset: 20,
+      document_id: "d1",
+      reason: ["check_failed"],
+    });
+  });
+});
+
+describe("checkReasonsText", () => {
+  it("says why the invoice checks failed, in plain words", () => {
+    expect(checkReasonsText({ check_reasons: ["total_mismatch", "missing_total"] })).toBe(
+      "The invoice checks failed: the subtotal and tax don't add up to the total; no total was found.",
+    );
+    expect(checkReasonsText(item("v1"))).toBeNull();
   });
 });

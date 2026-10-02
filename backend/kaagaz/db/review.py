@@ -31,11 +31,13 @@ _ITEM = (
     " v.second_reading, v.page_no, v.region, v.label, v.label_reason, v.confidence,"
     " v.label_page_no, v.label_region,"
     " d.display_name AS document_name, d.detected_type,"
-    " p.width, p.height, p.unit, p.has_image, p.route, p.effective_dpi, p.low_resolution"
+    " p.width, p.height, p.unit, p.has_image, p.route, p.effective_dpi, p.low_resolution,"
+    " coalesce(i.check_reasons, '{}') AS check_reasons"
     " FROM extracted_values v"
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
+    " LEFT JOIN invoices i ON i.customer_id = v.customer_id AND i.document_id = v.document_id"
     " WHERE v.customer_id = :c"
 )
 
@@ -84,7 +86,13 @@ _LOCK_VALUE = (
 
 
 def list_queue(
-    conn: Connection, customer_id: str, *, limit: int, offset: int, document_id: str | None
+    conn: Connection,
+    customer_id: str,
+    *,
+    limit: int,
+    offset: int,
+    document_id: str | None,
+    reasons: Sequence[str] | None = None,
 ) -> tuple[Sequence[RowMapping], int]:
     """Needs-review values of documents not in Trash, oldest first, and their total.
     Uses the partial index ``extracted_values_review``, then each value's document
