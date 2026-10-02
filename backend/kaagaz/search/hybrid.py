@@ -36,6 +36,11 @@ that are ready, the current version of their family and not in Trash
 (``LIVE_CURRENT`` in kaagaz/db/visibility.py, PRD 1 F5 and F6). Each list
 keeps at most ``CANDIDATES`` pieces.
 
+The scope (PRD 3 Q1, kaagaz/search/scope.py) is in the WHERE of all three
+lists, before ranking: static predicates, each true for a NULL parameter (the
+custom plans drop them). A scope that matches nothing returns before any SQL.
+``search_documents`` (Q2) groups the candidates by document.
+
 The lists are merged with reciprocal rank fusion (``fuse``): a piece scores the
 sum of 1 / (k + rank) over the lists it is in, so a piece found two ways ranks
 above one found one way, with no tuning of scores across the lists. Ties break
@@ -51,16 +56,17 @@ Cost: the word and fuzzy lists are GIN index scans whose posting lists hold
 every customer's pieces, then O(m log m) to rank this customer's m matches.
 The meaning list is about O(ef_search * log N * dim) on the index for N vectors
 when the scope is large, at worst O(min(max_scan_tuples, N) * dim); the exact
-fallback is O(n * dim) over the scope's n vectors. The merge is O(150 log 150);
-then one indexed fetch of at most ``limit`` pieces. At most ten statements in
-the caller's transaction (with the meaning list's savepoint).
+fallback is O(n * dim) over the scope's n vectors. The merge is O(150 log 150)
+and the grouping O(150); then one indexed fetch of at most ``limit`` (or
+``max_documents``) pieces. At most ten statements in the caller's transaction
+(with the meaning list's savepoint).
 
 ponytail: the GIN posting lists span all customers (the customer filter comes
 after the index); fine at this size, a per-customer partition is the upgrade.
 """
 
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,6 +74,8 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.answering.hinglish import normalise
+from kaagaz.chunking.script import has_devanagari_letters, latin_spelling
+from kaagaz.search.scope import EVERYTHING, Scope
 
 # Candidates taken from each of the three lists before merging.
 CANDIDATES = 50
@@ -86,15 +94,25 @@ _QUERY_CANCELED = "57014"
 # Every statement below repeats the same filter in full, so each one can be read
 # (and checked for the customer filter) on its own: this customer's pieces of
 # ready, current documents that are not in Trash only. The ``LIVE_CURRENT`` text
-# is written out in each one, before any LIMIT (tests/test_visibility_guard.py).
+# is written out in each one, before any LIMIT (tests/test_visibility_guard.py),
+# and so is the scope (the s_* parameters, Scope.params; tests/test_search_scope_db.py).
 
 _WORD = text(
-    "SELECT p.id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q)) AS score"
+    "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q)) AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
     " CROSS JOIN websearch_to_tsquery('simple', :k) AS s (q)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity')"
     " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q)"
     " ORDER BY score DESC, p.id LIMIT :n"
 )
@@ -116,11 +134,21 @@ _SET_INDEX_SCAN = text(
 )
 
 _FUZZY = text(
-    "SELECT p.id, GREATEST(word_similarity(:q, p.text), word_similarity(:q, p.text_latin)) AS score"
+    "SELECT p.id, p.document_id, GREATEST(word_similarity(:q, p.text), word_similarity(:ql, p.text_latin))"
+    " AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND (:q <% p.text OR :q <% p.text_latin)"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity')"
+    " AND (:q <% p.text OR :ql <% p.text_latin)"
     " ORDER BY score DESC, p.id LIMIT :n"
 )
 
@@ -130,13 +158,22 @@ _FUZZY = text(
 # the exact distances, never the index, and ties break on the piece id.
 _MEANING = text(
     "WITH candidates AS MATERIALIZED ("
-    " SELECT p.id, p.embedding <=> CAST(:vec AS halfvec(1024)) AS distance"
+    " SELECT p.id, p.document_id, p.embedding <=> CAST(:vec AS halfvec(1024)) AS distance"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.embedding_model = :recipe"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity')"
     " ORDER BY p.embedding <=> CAST(:vec AS halfvec(1024)) LIMIT :n"
-    ") SELECT id, distance FROM candidates ORDER BY distance + 0, id"
+    ") SELECT id, document_id, distance FROM candidates ORDER BY distance + 0, id"
 )
 
 # ponytail: the exact fallback (PROVISIONAL, plan item 4) for a scope the index
@@ -147,17 +184,26 @@ _MEANING = text(
 # index, or a higher max_scan_tuples, once a scope is too big to scan exactly.
 _MEANING_EXACT = text(
     "WITH candidates AS MATERIALIZED ("
-    " SELECT p.id, p.embedding <=> CAST(:vec AS halfvec(1024)) AS distance"
+    " SELECT p.id, p.document_id, p.embedding <=> CAST(:vec AS halfvec(1024)) AS distance"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.embedding_model = :recipe"
-    ") SELECT id, distance FROM candidates ORDER BY distance, id LIMIT :n"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity')"
+    ") SELECT id, document_id, distance FROM candidates ORDER BY distance, id LIMIT :n"
 )
 
 _DETAILS = text(
     "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to,"
-    " p.text, p.regions, p.label"
+    " p.text, p.regions, p.label, d.doc_type"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -171,6 +217,7 @@ class SearchHit:
     document_id: str
     document_name: str
     detected_type: str
+    doc_type: str | None  # what the document is (PRD 2 D3); None until it is understood
     page_from: int
     page_to: int
     # Document text: untrusted, shown as plain text only.
@@ -248,32 +295,110 @@ def search(
     limit: int,
     recipe: str,
     ef_search: int,
+    scope: Scope = EVERYTHING,
 ) -> list[SearchHit]:
     """The best ``limit`` pieces of this customer's ready, current documents
-    that are not in Trash, best first.
+    that are not in Trash and are inside ``scope``, best first.
 
     ``conn`` must come from ``Database.customer(customer_id)``; its transaction
     gets this search's settings (the timeout, custom plans, the fuzzy threshold,
     the index walk), which end with it. ``recipe`` is the ``embedding_model`` of
     vectors made the current way; ``ef_search`` is SEARCH_EF. An empty question
-    with no embedding finds nothing.
+    with no embedding finds nothing, and so does a scope that matches nothing,
+    before any SQL runs (edge case 1).
     """
     if not 1 <= limit <= MAX_LIMIT:
         raise ValueError("limit must be between 1 and 100")
+    if scope.matches_nothing:
+        return []
+    fused, _ = _candidates(conn, customer_id, query_text, embedding, recipe, ef_search, scope)
+    return _hits(conn, customer_id, fused[:limit])
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentResult:
+    """A document found (Q2): its best piece, whose score is the document's, and how many
+    more of its pieces were among the candidates (not every match in the document)."""
+
+    best: SearchHit
+    more: int
+
+
+def search_documents(
+    conn: Connection,
+    *,
+    customer_id: str,
+    query_text: str,
+    embedding: list[float] | None,
+    max_documents: int,
+    recipe: str,
+    ef_search: int,
+    scope: Scope = EVERYTHING,
+) -> list[DocumentResult]:
+    """The best ``max_documents`` documents, best first (Q2). ``fuse`` ranks best first, so
+    one pass groups the c candidates in an insertion-ordered dict, opening no document
+    after ``max_documents``: O(c) time and space. Details are fetched for the best pieces only.
+    """
+    if not 1 <= max_documents <= MAX_LIMIT:
+        raise ValueError("max_documents must be between 1 and 100")
+    if scope.matches_nothing:
+        return []
+    fused, owners = _candidates(conn, customer_id, query_text, embedding, recipe, ef_search, scope)
+    best: dict[str, FusedPiece] = {}
+    more: dict[str, int] = {}
+    for piece in fused:
+        document_id = owners[piece.piece_id]
+        if document_id in best:
+            more[document_id] += 1
+        elif len(best) < max_documents:
+            best[document_id] = piece
+            more[document_id] = 0
+    hits = _hits(conn, customer_id, list(best.values()))
+    return [DocumentResult(hit, more[hit.document_id]) for hit in hits]
+
+
+def _candidates(
+    conn: Connection,
+    customer_id: str,
+    query_text: str,
+    embedding: list[float] | None,
+    recipe: str,
+    ef_search: int,
+    scope: Scope,
+) -> tuple[list[FusedPiece], dict[str, str]]:
+    """The three lists inside ``scope``, merged best first, and each piece's document id.
+    W3: ``text_latin`` is matched with the question's ``latin_spelling``, and the simple
+    word query takes the ``normalise`` keywords, which spell Devanagari in Latin letters."""
     conn.execute(_SET_SEARCH, {"ms": str(STATEMENT_TIMEOUT_MS)})
     word: list[tuple[str, float]] = []
     fuzzy: list[tuple[str, float]] = []
     meaning: list[tuple[str, float]] = []
+    owners: dict[str, str] = {}
     if query_text.strip():
         keywords = " ".join(normalise(query_text).keywords)
-        params = {"c": customer_id, "q": query_text, "k": keywords, "n": CANDIDATES}
-        word = [(str(row[0]), float(row[1])) for row in conn.execute(_WORD, params)]
+        latin = latin_spelling(query_text) if has_devanagari_letters(query_text) else query_text
+        params = {"c": customer_id, "q": query_text, "k": keywords, "ql": latin, "n": CANDIDATES}
+        word = _ranked(conn.execute(_WORD, {**params, **scope.params()}), owners)
         conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
-        fuzzy = [(str(row[0]), float(row[1])) for row in conn.execute(_FUZZY, params)]
+        fuzzy = _ranked(conn.execute(_FUZZY, {**params, **scope.params()}), owners)
     if embedding is not None:
-        meaning = _meaning(conn, customer_id, vector_literal(embedding), recipe, ef_search)
+        vector = {"c": customer_id, "vec": vector_literal(embedding), "recipe": recipe, "n": CANDIDATES}
+        meaning = _meaning(conn, vector | scope.params(), ef_search, owners)
+    return fuse(word, fuzzy, meaning), owners
 
-    fused = fuse(word, fuzzy, meaning)[:limit]
+
+def _ranked(rows: Iterable[Sequence[Any]], owners: dict[str, str]) -> list[tuple[str, float]]:
+    """(piece id, score) of rows (piece id, document id, score), noting each piece's document."""
+    ranked = []
+    for row in rows:
+        owners[str(row[0])] = str(row[1])
+        ranked.append((str(row[0]), float(row[2])))
+    return ranked
+
+
+def _hits(conn: Connection, customer_id: str, fused: Sequence[FusedPiece]) -> list[SearchHit]:
+    """The fused pieces with their details, in the same order: one indexed fetch.
+    No scope here: the ids came from the scoped lists of this transaction."""
     if not fused:
         return []
     details = {
@@ -291,6 +416,7 @@ def search(
                 document_id=str(row[1]),
                 document_name=str(row[2]),
                 detected_type=str(row[3]),
+                doc_type=None if row[9] is None else str(row[9]),
                 page_from=int(row[4]),
                 page_to=int(row[5]),
                 text=str(row[6]),
@@ -306,14 +432,13 @@ def search(
 
 
 def _meaning(
-    conn: Connection, customer_id: str, vec: str, recipe: str, ef_search: int
+    conn: Connection, params: dict[str, Any], ef_search: int, owners: dict[str, str]
 ) -> list[tuple[str, float]]:
     """The meaning list: the index walk, then the exact scan when the walk came
     back with fewer than CANDIDATES rows (a scope with fewer vectors than that
     is scanned exactly too, which is cheap). Empty when the statement timeout
     cancels it: the savepoint keeps the transaction usable for the rest."""
     conn.execute(_SET_INDEX_SCAN, {"ef": str(ef_search)})
-    params = {"c": customer_id, "vec": vec, "recipe": recipe, "n": CANDIDATES}
     try:
         with conn.begin_nested():
             rows = conn.execute(_MEANING, params).all()
@@ -324,4 +449,5 @@ def _meaning(
             raise
         return []
     # A zero vector has no direction: its distance is NaN and says nothing.
-    return [(str(row[0]), 1.0 - float(row[1])) for row in rows if math.isfinite(float(row[1]))]
+    found = [row for row in rows if math.isfinite(float(row[2]))]
+    return _ranked([(row[0], row[1], 1.0 - float(row[2])) for row in found], owners)

@@ -673,6 +673,19 @@ def test_search_still_works_when_embedding_fails(error: Exception) -> None:
     assert retriever.calls[0][2] is None  # word and fuzzy search only
 
 
+def test_a_devanagari_question_reaches_search_and_is_embedded_as_asked() -> None:
+    """PRD 3 W3: the keywords are its Latin spelling, so it is searched, not "not found" unasked."""
+    patil = piece("patil.pdf", "Bill from Patil Traders, total 4,500")
+    model = FakeModel()
+    answer_service, retriever, _ = service(pieces=[patil], model=model)
+
+    answer = answer_service.answer(A, "पाटील का बिल")
+
+    assert [call[1] for call in retriever.calls] == ["patil invoice"]
+    assert model.embedded[0][0].endswith("\nQuery:पाटील का बिल")
+    assert answer.normalized_question == "patil invoice"
+
+
 def test_links_and_markup_from_the_model_never_reach_the_answer() -> None:
     def marked_up(system: str, user: str) -> dict[str, Any]:
         n = next(iter(evidence_blocks(user)))

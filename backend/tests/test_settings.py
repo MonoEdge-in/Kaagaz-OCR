@@ -164,3 +164,12 @@ def test_search_ef_ships_at_100_and_must_be_1_to_1000() -> None:
     for bad in ("0", "1001", "-5", "ten", None):
         with pytest.raises(SettingsError, match="SEARCH_EF"):
             Settings.from_env(shipped(SEARCH_EF=bad))
+
+
+def test_search_max_documents_ships_at_20_and_must_be_1_to_100() -> None:
+    """PRD 3 Q2: at most SEARCH_MAX_DOCUMENTS documents per reply; a value outside stops start-up by name."""
+    assert Settings.from_env(shipped()).search_max_documents == 20
+    assert Settings.from_env(shipped(SEARCH_MAX_DOCUMENTS="100")).search_max_documents == 100
+    for bad in ("0", "101", "twenty", None):
+        with pytest.raises(SettingsError, match="SEARCH_MAX_DOCUMENTS"):
+            Settings.from_env(shipped(SEARCH_MAX_DOCUMENTS=bad))

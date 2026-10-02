@@ -179,7 +179,9 @@ class Settings:
     reprocess_per_hour: int
 
     # Search (PRD 3 V2): hnsw.ef_search, the meaning index's candidate list, 1 to 1000.
+    # Search inside documents (Q2): at most this many documents in a reply, 1 to 100.
     search_ef: int
+    search_max_documents: int
 
     # Answers.
     answer_max_evidence: int
@@ -314,6 +316,7 @@ class Settings:
             trash_days=env.integer("TRASH_DAYS"),
             reprocess_per_hour=env.positive("REPROCESS_PER_HOUR"),
             search_ef=env.between("SEARCH_EF", 1, 1000),
+            search_max_documents=env.between("SEARCH_MAX_DOCUMENTS", 1, 100),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             timezone=_time_zone(env.text("TIMEZONE")),

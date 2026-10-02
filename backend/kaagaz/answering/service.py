@@ -59,9 +59,10 @@ from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import verify
+from kaagaz.chunking.script import has_devanagari_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
-from kaagaz.search.indexing import query_input, recipe_tag
+from kaagaz.search.indexing import embed_question, recipe_tag
 from kaagaz.settings import Settings
 
 # "unchecked": the figure asked for exists only as unchecked card values, so no
@@ -270,7 +271,9 @@ class AnswerService:
         if not query_text:
             return _not_found("search", shown, [], model_used=False)
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
-        hits = self._retriever.search(customer_id, query_text, self._embed(normalised.english), limit)
+        # A Devanagari question is embedded as asked (W3): its Latin spelling means little to the model.
+        meant = question if has_devanagari_letters(question) else normalised.english
+        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit)
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
@@ -306,16 +309,8 @@ class AnswerService:
         )
 
     def _embed(self, english: str) -> list[float] | None:
-        """The question's vector, or None (no model, model down, or unusable
-        vectors), so search falls back to word and fuzzy matching. One model call,
-        with the query instruction (kaagaz.search.indexing.query_input, PRD 3 V3)."""
-        if self._model is None or not english:
-            return None
-        try:
-            vectors = self._model.embed([query_input(english)])
-        except (ModelUnavailable, ModelOutputError):
-            return None
-        return vectors[0] if vectors else None
+        """The question's vector, or None: kaagaz.search.indexing.embed_question (PRD 3 V3)."""
+        return embed_question(self._model, english)
 
     def _draft(
         self, question: str, normalised: NormalisedQuestion, evidence: Sequence[Evidence]
