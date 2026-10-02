@@ -88,8 +88,7 @@ from kaagaz.extraction.quotes import (
     located_value,
     normalise_quote,
 )
-from kaagaz.extraction.values import CARD_RECORD, ExtractedValue
-from kaagaz.pipeline import LINK_KINDS, DocumentFacts
+from kaagaz.extraction.values import CARD_RECORD, LINK_KINDS, DocumentFacts, ExtractedValue
 from kaagaz.reading.spans import Location, location_to_json
 
 DOC_TYPES = (

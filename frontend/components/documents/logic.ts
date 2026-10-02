@@ -1,6 +1,7 @@
 // The decisions behind the documents screen, kept out of the components so
 // they are unit tested in node (tests/shell-documents.test.ts).
 
+import { ApiError } from "@/lib/api";
 import type { DocumentStatus, UploadLimits } from "@/lib/types";
 
 /** File name endings the backend can take. The server checks the bytes again. */
@@ -56,9 +57,6 @@ export function uploadLimitsHint(limits: UploadLimits = FALLBACK_UPLOAD_LIMITS):
     `CSV or XLSX up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
   );
 }
-
-/** How often the list is asked again while a document is still being checked or read. */
-export const POLL_MS = 3000;
 
 export const PAGE_SIZE = 25;
 
@@ -275,22 +273,37 @@ export function uploadStateText(state: UploadState): string {
 }
 
 /**
- * Whether the screen reloads once a batch of uploads settles: nothing is still
- * going, something new came of it, and no duplicate in Trash is waiting for
- * the person to press Restore (a reload would take that choice away).
+ * The server's words when another account has signed in on this browser
+ * since the file was chosen (409 session_changed, critical #5); null for any
+ * other failure. Once said, no file still waiting in this tab is sent.
  */
-export function shouldReloadAfterUploads(states: readonly UploadState[]): boolean {
-  const waiting = states.some(
-    (state) =>
-      state.kind === "waiting" ||
-      state.kind === "uploading" ||
-      state.kind === "restoring" ||
-      (state.kind === "duplicate" && state.inTrash),
-  );
-  const changed = states.some(
-    (state) => state.kind === "done" || state.kind === "duplicate" || state.kind === "restored",
-  );
-  return !waiting && changed;
+export function sessionChangedMessage(caught: unknown): string | null {
+  return caught instanceof ApiError && caught.code === "session_changed" ? caught.message : null;
+}
+
+/** The words for an upload that failed. Offline, the file must be chosen again: nothing keeps it. */
+export function uploadErrorText(caught: unknown, online: boolean): string {
+  if (!online) {
+    return "Not uploaded: no internet connection. Choose the file again when you're back online.";
+  }
+  return caught instanceof ApiError ? caught.message : "Upload failed. Check your connection, then try again.";
+}
+
+/**
+ * Said once, politely, when a batch of uploads settles, in the rows' own
+ * words. A search or filter may hide the new documents (hidden).
+ */
+export function uploadsFinishedText(
+  counts: { uploaded: number; already: number; failed: number },
+  hidden: boolean,
+): string {
+  const parts = [
+    counts.uploaded > 0 ? `${counts.uploaded} uploaded` : "",
+    counts.already > 0 ? `${counts.already} already uploaded` : "",
+    counts.failed > 0 ? `${counts.failed} not uploaded` : "",
+  ].filter(Boolean);
+  const hint = hidden && counts.uploaded + counts.already > 0 ? " Clear search or filters to see them." : "";
+  return `Uploads finished: ${parts.join(", ")}.${hint}`;
 }
 
 /**

@@ -19,7 +19,6 @@ from sqlalchemy.exc import OperationalError
 from kaagaz.db.engine import Database, normalise_url
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import CANDIDATES, search, vector_literal
-from kaagaz.search.scope import EVERYTHING
 from tests import test_migration_0002_db as m0002
 from tests.db_support import APP_ROLE, database_url, make_database, migrate, new_customer
 from tests.test_api_errors import _client_raising
@@ -118,7 +117,6 @@ def _exact(db: Database, customer: str, vector: list[float], limit: int) -> list
 
 def _plan(conn: Connection, statement: str, customer: str, vector: list[float]) -> str:
     params = {"c": customer, "vec": vector_literal(vector), "recipe": RECIPE, "n": CANDIDATES}
-    params |= EVERYTHING.params()
     return "\n".join(conn.execute(text("EXPLAIN " + statement), params).scalars())
 
 
@@ -167,7 +165,7 @@ def test_a_short_index_walk_falls_back_to_the_exact_scan(clusters: Clusters) -> 
         # The index walk alone, with the settings search() just set:
         assert "pieces_embedding" in _plan(conn, hybrid._MEANING.text, customer, vector)
         params = {"c": customer, "vec": vector_literal(vector), "recipe": RECIPE, "n": CANDIDATES}
-        short = conn.execute(hybrid._MEANING, params | EVERYTHING.params()).all()
+        short = conn.execute(hybrid._MEANING, params).all()
 
     assert len(short) < CANDIDATES  # without the fallback: too few rows
     assert len(found) == len(exact) == CANDIDATES
