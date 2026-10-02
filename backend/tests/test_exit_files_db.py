@@ -2,25 +2,31 @@
 tests/exit_fixtures.py, uploaded and read to the end by the real pipeline on a real
 PostgreSQL, each asserting its exit claim. The model is a fake (``QuotingChat``: the
 card, then the invoice windows) and the OCR engine is ``ScriptedOcr``. The model-off
-twin runs the same six with MODEL_ENABLED=false.
+twin runs the same six with MODEL_ENABLED=false. Where a test asks for it, the vision
+model is ``EchoVision``, which reads each cropped box back as the OCR line there.
 """
 
 import functools
 import io
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Mapping
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 from sqlalchemy import text
 
+from kaagaz import pipeline
 from kaagaz.db.documents import PgDocuments, mark_for_reprocess
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.review import list_queue
 from kaagaz.db.runs import PgRuns
 from kaagaz.extraction.invoice import WindowSettings
+from kaagaz.extraction.labels import overlap
 from kaagaz.extraction.understanding import ModelBudget
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
@@ -29,6 +35,7 @@ from kaagaz.ingestion.service import UploadService
 from kaagaz.pipeline import DocumentProcessor
 from kaagaz.preparing.pages import prepare_pages
 from kaagaz.reading.ocr import MeteredOcrEngine
+from kaagaz.reading.spans import BoxLocation
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import ScanGate, Verdict
 from tests.db_support import new_customer
@@ -36,9 +43,11 @@ from tests.exit_fixtures import (
     PROFIT_LABEL,
     PROFIT_VALUE,
     TEXTILE_FIELDS,
+    EchoVision,
     ExitFile,
     QuotingChat,
     ScriptedOcr,
+    english_bill,
     exit_files,
     textile_lines,
 )
@@ -93,6 +102,7 @@ LAND_RECORD_CARD = card_reply(
         {"role": "other", "name_quote": "शिंदे विठ्ठल बाबुराव"},  # the former owner
     ],
     identifiers=[{"kind": "survey_number", "value_quote": "४५/२"}],
+    document_date={"value_quote": "१२/०८/२०२६"},
     title="A land record",
     summary="A village land record of one survey number.",
 )
@@ -112,6 +122,21 @@ CARDS: dict[str, dict[str, Any]] = {
 }
 
 
+@pytest.fixture
+def cropped(monkeypatch: pytest.MonkeyPatch) -> list[BoxLocation]:
+    """Each box the pipeline crops for the vision model, in order, so EchoVision knows
+    where it looks. The pipeline's own crop still runs, and its PNG is what is sent."""
+    boxes: list[BoxLocation] = []
+    crop = pipeline._crop
+
+    def recorded(page: Image.Image, box: BoxLocation) -> bytes:
+        boxes.append(box)
+        return crop(page, box)
+
+    monkeypatch.setattr(pipeline, "_crop", recorded)
+    return boxes
+
+
 def chat_for(key: str) -> QuotingChat:
     if key.startswith("textile_invoice"):
         silk = "3,500.00" if key.endswith("mismatched") else "3,000.00"
@@ -122,12 +147,17 @@ def chat_for(key: str) -> QuotingChat:
 
 
 class Read:
-    """Every exit file uploaded and read to the end, for one new customer."""
+    """Every exit file uploaded and read to the end, for one new customer; ``visions``
+    are the files' echo vision models, when they had one."""
 
     def __init__(
-        self, customer: str, ids: dict[str, str], makers: dict[str, Callable[[], DocumentProcessor]]
+        self,
+        customer: str,
+        ids: dict[str, str],
+        makers: dict[str, Callable[[], DocumentProcessor]],
+        visions: dict[str, EchoVision],
     ) -> None:
-        self.customer, self.ids, self.makers = customer, ids, makers
+        self.customer, self.ids, self.makers, self.visions = customer, ids, makers, visions
 
     def again(self, db: Database, key: str) -> None:
         """PRD 2 X1: read one file again (reprocess), with new readers (the scripted OCR
@@ -137,19 +167,30 @@ class Read:
         self.makers[key]()(Job(self.customer, self.ids[key]), lambda: None)
 
 
-def read_files(db: Database, *, model: bool) -> Read:
-    customer, ids, makers = _read(db, model=model)
-    return Read(customer, ids, makers)
+def read_files(
+    db: Database,
+    *,
+    model: bool,
+    cropped: list[BoxLocation] | None = None,
+    files: Mapping[str, ExitFile] | None = None,
+) -> Read:
+    """``files`` (the exit files by default), each with an EchoVision given ``cropped``."""
+    files = exit_files() if files is None else files
+    visions = (
+        {} if cropped is None else {key: EchoVision(file.ocr_pages, cropped) for key, file in files.items()}
+    )
+    customer, ids, makers = _read(db, model=model, files=files, visions=visions)
+    return Read(customer, ids, makers, visions)
 
 
 def read_all(db: Database, *, model: bool) -> tuple[str, dict[str, str]]:
     """(customer, document id by file key): every exit file uploaded and read to the end."""
-    customer, ids, _ = _read(db, model=model)
+    customer, ids, _ = _read(db, model=model, files=exit_files(), visions={})
     return customer, ids
 
 
 def _read(
-    db: Database, *, model: bool
+    db: Database, *, model: bool, files: Mapping[str, ExitFile], visions: Mapping[str, EchoVision]
 ) -> tuple[str, dict[str, str], dict[str, Callable[[], DocumentProcessor]]]:
     customer, _ = new_customer(db)
     storage = MemoryStorage()
@@ -160,9 +201,10 @@ def _read(
     )
     ids: dict[str, str] = {}
     makers: dict[str, Callable[[], DocumentProcessor]] = {}
-    for key, file in exit_files().items():
+    for key, file in files.items():
         doc = upload.accept(customer, io.BytesIO(file.data)).document_id
-        makers[key] = functools.partial(_processor, db, storage, documents, prepare, key, file, model)
+        vision = visions.get(key)
+        makers[key] = functools.partial(_processor, db, storage, documents, prepare, key, file, model, vision)
         makers[key]()(Job(customer, doc), lambda: None)
         ids[key] = doc
     return customer, ids, makers
@@ -176,8 +218,10 @@ def _processor(
     key: str,
     file: ExitFile,
     model: bool,
+    vision: EchoVision | None,
 ) -> DocumentProcessor:
-    """A processor for one exit file: its scripted OCR, and its fake model when ``model``."""
+    """A processor for one exit file: its scripted OCR, its fake model when ``model``, and
+    its vision model when one is given."""
     chat = chat_for(key) if model else None
     timer = Timer()
     return DocumentProcessor(
@@ -194,6 +238,8 @@ def _processor(
         clock=moving_clock,
         timer=timer,
         ocr_on=True,
+        vision=vision,
+        vision_model=None if vision is None else "echo-vision",
         chat=chat,
         chat_model=None if chat is None else chat.chat_model,
         model_budget=None if chat is None else BUDGET,
@@ -247,6 +293,10 @@ def assert_the_report_joins_pages_15_and_16(db: Database, customer: str, doc: st
     assert all("Page 15 of 20" not in piece[2] for piece in pieces)
     footers = rows(db, customer, "SELECT output::text FROM reader_outputs WHERE document_id = :d", doc)
     assert "Page 15 of 20" in footers[0][0]  # kept in the reader output
+
+
+def without_region(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in item.items() if key != "region"}
 
 
 def test_all_six_files_with_a_fake_model(db: Database) -> None:
@@ -322,6 +372,19 @@ def test_all_six_files_with_a_fake_model(db: Database) -> None:
     assert rows(
         db, customer, "SELECT bool_and(text_latin IS NOT NULL) FROM pieces WHERE document_id = :d", land
     ) == [(True,)]
+    # Its summary, date and identifier, exactly (the Devanagari test below checks their spots).
+    summary = "A village land record of one survey number."
+    facts = rows(db, customer, "SELECT summary, document_date FROM documents WHERE id = :d", land)
+    assert facts == [(summary, date(2026, 8, 12))]
+    assert card[2]["summary"] == summary
+    assert without_region(card[2]["document_date"]) == {
+        "date": "2026-08-12",
+        "page": 1,
+        "value": "१२/०८/२०२६",
+    }
+    assert [without_region(item) for item in card[2]["identifiers"]] == [
+        {"kind": "survey_number", "field": "survey_number", "page": 1, "value": "४५/२"}
+    ]
 
     # The bank statement: its cells, read directly.
     bank = ids["bank_statement"]
@@ -394,14 +457,27 @@ def test_all_six_files_reach_ready_with_the_model_off(db: Database) -> None:
 
 
 VERIFIED = "SELECT count(*) FROM extracted_values WHERE document_id = :d AND label = 'verified'"
+OCR_SCRIPT = "SELECT count(*) FROM extracted_values WHERE document_id = :d AND label_reason = 'ocr_script'"
+LABELS = (
+    "SELECT record_key, field, value_text, label, label_reason FROM extracted_values WHERE document_id = :d"
+)
+# The values with a Devanagari letter, counted by hand: the bill's seller, and its two
+# items' descriptions and units. The land record's values are all the card's (model_chosen
+# first), and no rule or quote takes a value from the broken font's OCR text.
+DEVANAGARI_OCR_SCRIPT = {"hindi_retail_bill": 5, "marathi_land_record": 0, "broken_font_pdf": 0}
 
 
-def test_what_the_model_chose_or_ocr_read_from_devanagari_is_never_verified(db: Database) -> None:
+def test_what_the_model_chose_or_ocr_read_from_devanagari_is_never_verified(
+    db: Database, cropped: list[BoxLocation]
+) -> None:
     """Security A1 and ML 1 across the exit files (final council 2): no card value is
     verified anywhere; nothing read by OCR from Hindi or Marathi, or from the broken font,
-    is verified; and the mismatched copy's document values are all in review."""
-    files = read_files(db, model=True)
+    is verified, though the echo vision reads each box back as OCR read it (the next test
+    is the positive control); and the mismatched copy's document values are all in review.
+    Each of the land record card's spots is its OCR line's box (IoU at least 0.5)."""
+    files = read_files(db, model=True, cropped=cropped)
     customer, ids = files.customer, files.ids
+    assert files.visions["hindi_retail_bill"].calls == 6  # each of its 6 lines holds a value
     with db.customer(customer) as conn:
         cards: int = conn.execute(
             text(
@@ -411,8 +487,9 @@ def test_what_the_model_chose_or_ocr_read_from_devanagari_is_never_verified(db: 
             {"c": customer},
         ).scalar_one()
     assert cards == 0
-    for key in ("hindi_retail_bill", "marathi_land_record", "broken_font_pdf"):
+    for key, expected in DEVANAGARI_OCR_SCRIPT.items():
         assert rows(db, customer, VERIFIED, ids[key]) == [(0,)], key
+        assert rows(db, customer, OCR_SCRIPT, ids[key]) == [(expected,)], key
     copy_verified = (
         "SELECT count(*) FROM extracted_values WHERE document_id = :d AND record_key = 'document'"
         " AND label = 'verified'"
@@ -421,8 +498,91 @@ def test_what_the_model_chose_or_ocr_read_from_devanagari_is_never_verified(db: 
     land_card = rows(db, customer, "SELECT card FROM documents WHERE id = :d", ids["marathi_land_record"])[0][
         0
     ]
-    for party in land_card["parties"]:
-        assert party["page"] == 1 and party["region"]["kind"] == "box", party["name"]
+    spots = [(party["name"], party["region"]) for party in land_card["parties"]]
+    spots += [
+        (item["value"], item["region"]) for item in [*land_card["identifiers"], land_card["document_date"]]
+    ]
+    assert len(spots) == 4
+    ocr_lines = files.visions["marathi_land_record"].pages[0]
+    for value, region in spots:
+        (line,) = [box for line_text, box in ocr_lines if value in line_text]
+        assert region["page"] == 1 and region["kind"] == "box", value
+        assert overlap(BoxLocation(1, *region["box"]), BoxLocation(1, *line)) >= 0.5, value
+
+
+def test_the_echo_vision_verifies_the_same_bill_in_english(db: Database, cropped: list[BoxLocation]) -> None:
+    """The positive control for the test above: the same scripted OCR and echo vision on
+    the bill in English (model off) verify its three labelled values, so the Devanagari
+    scans' 0 verified comes from the rules, not from a vision reading that never agrees."""
+    files = read_files(db, model=False, cropped=cropped, files={"english_bill": english_bill()})
+    assert files.visions["english_bill"].calls == 3
+    assert sorted(rows(db, files.customer, LABELS, files.ids["english_bill"])) == [
+        ("document", "invoice_date", "05/09/2026", "verified", "readers_agree"),
+        ("document", "invoice_number", "245", "verified", "readers_agree"),
+        ("document", "total_amount", "450.00", "verified", "readers_agree"),
+    ]
+
+
+# Everything a read leaves for one document, apart from ids and times.
+RESULTS = (
+    "SELECT status, doc_type, languages, summary, document_date, card - 'run_id', page_count"
+    " FROM documents WHERE id = :d",
+    "SELECT page_no, route, width, height, unit, has_image FROM pages WHERE document_id = :d",
+    "SELECT seq, page_from, page_to, text, regions, label, context_header, text_latin FROM pieces"
+    " WHERE document_id = :d",
+    "SELECT record_key, field, value_text, value_raw, second_reading, value_number, value_date, page_no,"
+    " region, reader, confidence, label, label_reason, label_page_no, label_region FROM extracted_values"
+    " WHERE document_id = :d",
+    "SELECT invoice_number, invoice_date, seller_name, seller_gstin, buyer_name, buyer_gstin, subtotal,"
+    " tax_total, total, currency, label, check_status, check_reasons FROM invoices WHERE document_id = :d",
+    "SELECT line_no, description, hsn, quantity, unit, rate, amount, label FROM invoice_lines"
+    " WHERE document_id = :d",
+    "SELECT identifier_kind, identifier_value FROM document_links WHERE document_id = :d",
+    "SELECT status, error_code, pages_cells, pages_text_layer, pages_ocr, pages_blank, vision_crops,"
+    " model_calls, quotes_returned, dropped_quotes, values_verified, values_needs_review, config"
+    " FROM processing_runs WHERE document_id = :d",
+)
+
+
+def results(db: Database, files: Read) -> dict[str, list[list[str]]]:
+    """For each file, RESULTS' rows as JSON, sorted."""
+    return {
+        key: [
+            sorted(
+                json.dumps(row, default=str, ensure_ascii=False) for row in rows(db, files.customer, sql, doc)
+            )
+            for sql in RESULTS
+        ]
+        for key, doc in files.ids.items()
+    }
+
+
+def test_two_reads_of_the_exit_files_give_the_same_results(db: Database, cropped: list[BoxLocation]) -> None:
+    """Two customers read the exit files with the model and the echo vision: every row
+    either read leaves is the same as the other's, apart from ids and times."""
+    first, second = (read_files(db, model=True, cropped=cropped) for _ in range(2))
+    assert results(db, first) == results(db, second)
+
+
+SNAPSHOT = Path(__file__).parent / "fixtures" / "exit_labels.json"
+
+
+def labels_json(db: Database, files: Read) -> str:
+    """Each value's [file, record_key, field, value_text, label, label_reason], sorted, one
+    per line."""
+    found = sorted(
+        [key, *row] for key, doc in files.ids.items() for row in rows(db, files.customer, LABELS, doc)
+    )
+    return "[\n" + ",\n".join(json.dumps(row, ensure_ascii=False) for row in found) + "\n]\n"
+
+
+def test_the_exit_labels_match_the_committed_snapshot(db: Database, cropped: list[BoxLocation]) -> None:
+    """A characterization snapshot for A9's clean-up, which must keep it byte for byte: each
+    value's label and reason when the exit files are read with the model and the echo vision.
+    It was generated from the code at de36d96 (W6). A change to it changes what is verified,
+    so it needs its own reason and review, never a refactor's."""
+    files = read_files(db, model=True, cropped=cropped)
+    assert labels_json(db, files) == SNAPSHOT.read_text(encoding="utf-8")
 
 
 def test_reprocessing_replaces_the_results_and_keeps_one_set(db: Database) -> None:
