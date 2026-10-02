@@ -94,7 +94,7 @@ class FixedRow:
 
 
 class FixedQueries(Protocol):
-    def available_fields(self, customer_id: str) -> set[str]: ...
+    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]: ...
 
     def top_group(
         self,
@@ -126,14 +126,20 @@ class FixedQueries(Protocol):
     ) -> list[FixedRow]: ...
 
 
+# Which of the fields asked the customer has: one EXISTS each, which stops at the
+# first value (the (customer_id, field) index), never a DISTINCT over every value.
 _AVAILABLE_FIELDS = text(
     """
-    SELECT DISTINCT v.field
-    FROM extracted_values v
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-    WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
-      AND v.record_key <> 'card'
-      AND v.record_key NOT LIKE 'line:%'
+    SELECT c.field
+    FROM unnest(CAST(:candidates AS text[])) AS c(field)
+    WHERE EXISTS (
+        SELECT 1
+        FROM extracted_values v
+        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+          AND v.field = c.field
+          AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%')
     """
 )
 
@@ -361,9 +367,10 @@ class PgFixedQueries:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def available_fields(self, customer_id: str) -> set[str]:
+    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]:
+        """Which of ``fields`` the customer has: O(f) index probes for f fields."""
         with self._db.customer(customer_id) as conn:
-            rows = conn.execute(_AVAILABLE_FIELDS, {"customer_id": customer_id})
+            rows = conn.execute(_AVAILABLE_FIELDS, {"customer_id": customer_id, "candidates": list(fields)})
             return {str(row.field) for row in rows}
 
     def top_group(

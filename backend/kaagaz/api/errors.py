@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -113,3 +114,4 @@ def install(app: FastAPI) -> None:
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(BackendUnavailable, _unavailable)
     app.add_exception_handler(OperationalError, _unavailable)
+    app.add_exception_handler(PoolTimeout, _unavailable)  # no free pooled connection
