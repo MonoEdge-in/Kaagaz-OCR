@@ -2,9 +2,10 @@
 
 // The panels beside the page (PRD 3 Y1 to Y3): the document card, the related
 // documents and the invoice. Each item with a spot is a button that shows it
-// on its page, with its label's spot too. Every text came from the document or
-// the AI model, so it is shown as plain text; the AI's own words sit under a
-// heading that says so.
+// on its page, with its label's spot too, and the card's items and the
+// invoice's fields have their value's "What was read". Every text came from the
+// document or the AI model, so it is shown as plain text; the AI's own words
+// sit under a heading that says so.
 
 import Link from "next/link";
 import { Icon } from "@/components/ui/Icon";
@@ -24,7 +25,9 @@ import {
 } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
 import { fieldText } from "@/components/viewer/labels";
+import { valueAt } from "@/components/viewer/scanned";
 import { sameRegion } from "@/components/viewer/selection";
+import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import { docTypeLabel } from "@/lib/format";
 import type { DocumentDetail, Region } from "@/lib/types";
 import styles from "./DocumentView.module.css";
@@ -54,6 +57,15 @@ function SpotButton({
       {text}
       <span className="visually-hidden">{`, show on page ${spot.region.page}`}</span>
     </button>
+  );
+}
+
+/** The "What was read" of the value at this spot, when the detail has one. */
+function ReadAt({ detail, spot }: { detail: DocumentDetail; spot: Spot | null }) {
+  const value = spot ? valueAt(detail.values, spot.region) : undefined;
+  if (!value) return null;
+  return (
+    <WhatWasRead value={value} page={detail.pages.find((p) => p.page_no === value.region.page)} />
   );
 }
 
@@ -96,6 +108,7 @@ export function CardPanel({ detail, active, onShow }: PanelProps) {
                     <span className={styles.fieldCell}>{item.name}: </span>
                     <SpotButton spot={item} text={item.text} active={active} onShow={onShow} />
                     <div className={styles.pageNote}>{spotNote(item)}</div>
+                    <ReadAt detail={detail} spot={item} />
                   </li>
                 ))}
               </ul>
@@ -166,7 +179,12 @@ export function InvoicePanel({ detail, active, onShow }: PanelProps) {
         {INVOICE_FIELDS.map(([name, stored]) => (
           <div key={name} className={styles.factRow}>
             <dt>{fieldText(name)}</dt>
-            <dd>{cell("document", stored, invoice[name])}</dd>
+            <dd>
+              {cell("document", stored, invoice[name])}
+              {invoice[name] !== null && (
+                <ReadAt detail={detail} spot={invoiceSpot(detail.values, "document", stored)} />
+              )}
+            </dd>
           </div>
         ))}
       </dl>

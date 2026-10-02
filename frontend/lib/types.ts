@@ -301,6 +301,28 @@ export interface SheetCells {
   rows: { row: number; cells: { column: number; text: string }[] }[];
 }
 
+/** GET /documents/{id}/pages/{n}/readings: what each reader read on one page, as read. */
+export interface PageReadings {
+  page_no: number;
+  readers: PageReader[]; // the first reader first; [] when the page was not read yet
+}
+
+export interface PageReader {
+  role: "first" | "second";
+  reader: string;
+  reader_version: string;
+  truncated: boolean; // more lines were read than are sent (2,000 lines or 100,000 characters)
+  lines: ReadLine[]; // in the order they were read
+}
+
+export interface ReadLine {
+  text: string; // exactly as read (the raw): show as plain text only, through visibleText
+  confidence: number | null; // null for a direct read, or a reader that gives none
+  origin: "cell" | "text_layer" | "ocr" | null;
+  kind: string | null; // a layout block kind, when the reader gives one
+  region: Region;
+}
+
 /** What became of a cited document since the answer was given. Missing means "live". */
 export type SourceState = "live" | "older_version" | "in_trash" | "deleted";
 

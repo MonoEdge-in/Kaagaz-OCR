@@ -1,0 +1,185 @@
+"use client";
+
+// The viewer's Scanned text panel: every line each reader read on this page,
+// exactly as read (visibleText only marks hidden controls), in the order it was
+// read. It is mounted only while open, so nothing is fetched until it is asked
+// for, and a late reply for another page is never shown (the key and the
+// cancelled flag). Each line is a button that highlights its spot on the page.
+// The text is plain React text; it is never sent to the model.
+
+import { useEffect, useState } from "react";
+import { ApiError, getPageReadings } from "@/lib/api";
+import type { PageReadings, PageSummary, Region } from "@/lib/types";
+import type { Spot } from "./panels";
+import {
+  CONFIDENCE_NOTE,
+  FIRST_LINES,
+  confidenceText,
+  emptyState,
+  lineMarked,
+  readerHeading,
+  secondReaderNote,
+  truncatedText,
+  visibleText,
+} from "./scanned";
+import type { PanelLoad } from "./scanned";
+import { sameRegion } from "./selection";
+import styles from "./ScannedText.module.css";
+
+export const SCANNED_PANEL_ID = "scanned-text";
+
+export interface ScannedTextPanelProps {
+  documentId: string;
+  page: PageSummary;
+  active: Region | null; // the spot highlighted now
+  cited: Region | null; // the cited spot a "See scanned text" link carried
+  onShow: (spot: Spot) => void;
+  onClose: () => void;
+}
+
+type Loaded = { key: string; readings: PageReadings } | { key: string; httpStatus: number | null };
+
+export function ScannedTextPanel({ documentId, page, active, cited, onShow, onClose }: ScannedTextPanelProps) {
+  const [attempt, setAttempt] = useState(0);
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
+  const [role, setRole] = useState<"first" | "second">("first");
+  const [allFor, setAllFor] = useState<string | null>(null);
+  const key = `${documentId}:${page.page_no}:${attempt}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    getPageReadings(documentId, page.page_no)
+      .then((readings) => {
+        if (!cancelled) setLoaded({ key, readings });
+      })
+      .catch((error: unknown) => {
+        const httpStatus = error instanceof ApiError ? error.status : null;
+        if (!cancelled) setLoaded({ key, httpStatus });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId, page.page_no, key]);
+
+  const current = loaded && loaded.key === key ? loaded : null;
+  const readers = current && "readings" in current ? current.readings.readers : [];
+  const reader = readers.find((r) => r.role === role) ?? readers[0];
+  const hasSecond = readers.some((r) => r.role === "second");
+  let load: PanelLoad = { status: "loading" };
+  if (current) {
+    load = "httpStatus" in current ? { status: "error", httpStatus: current.httpStatus } : { status: "ready", reader };
+  }
+  const empty = emptyState(load, page.route);
+  const heading = reader ? readerHeading(reader, page) : null;
+  const note = reader?.role === "second" ? secondReaderNote(page.route) : null;
+  const truncated = reader ? truncatedText(reader) : null;
+  const lines = reader?.lines ?? [];
+  const listKey = `${key}:${reader?.role ?? ""}`;
+  const shown = allFor === listKey ? lines : lines.slice(0, FIRST_LINES);
+
+  return (
+    <section
+      id={SCANNED_PANEL_ID}
+      className={styles.panel}
+      aria-labelledby="scanned-heading"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.stopPropagation();
+          onClose();
+        }
+      }}
+    >
+      <h2 id="scanned-heading" className={styles.heading}>
+        Scanned text, page {page.page_no}
+      </h2>
+      {hasSecond && (
+        <fieldset className={styles.readers}>
+          <legend className="visually-hidden">Which reader&apos;s text to show</legend>
+          <label>
+            <input
+              type="radio"
+              name="scanned-reader"
+              checked={reader?.role === "first"}
+              onChange={() => setRole("first")}
+            />
+            First reader
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="scanned-reader"
+              checked={reader?.role === "second"}
+              onChange={() => setRole("second")}
+            />
+            Second reader (PDF text layer)
+          </label>
+        </fieldset>
+      )}
+      {heading && (
+        <div>
+          <p className={styles.title}>{heading.title}</p>
+          <p className={styles.muted}>{heading.detail}</p>
+          {heading.notSureCount && <p className={styles.muted}>{heading.notSureCount}</p>}
+        </div>
+      )}
+      {note && <p className={styles.note}>{note}</p>}
+      {load.status === "loading" ? (
+        <>
+          <p className="visually-hidden" role="status">
+            {empty?.text}
+          </p>
+          <span className={`skeleton ${styles.skeleton}`} aria-hidden="true" />
+        </>
+      ) : empty ? (
+        <div className={styles.empty} role={load.status === "error" ? "alert" : "status"}>
+          <p>{empty.text}</p>
+          {empty.retry && (
+            <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
+              Try again
+            </button>
+          )}
+        </div>
+      ) : (
+        <>
+          <p className={styles.muted}>{CONFIDENCE_NOTE}</p>
+          {truncated && <p className={styles.note}>{truncated}</p>}
+          <div
+            className={styles.scroll}
+            tabIndex={0}
+            role="region"
+            aria-label={`Lines read on page ${page.page_no}`}
+          >
+            <ol className={styles.lines}>
+              {shown.map((line, index) => {
+                const marked = lineMarked(line, cited);
+                return (
+                  <li key={index} className={marked ? `${styles.line} ${styles.cited}` : styles.line}>
+                    <button
+                      type="button"
+                      className={styles.lineButton}
+                      aria-pressed={active !== null && sameRegion(active, line.region)}
+                      onClick={() => onShow({ name: `line ${index + 1}`, region: line.region, label: null })}
+                    >
+                      <bdi dir="auto" className="readText">
+                        {visibleText(line.text)}
+                      </bdi>
+                      <span className={styles.lineMeta}>
+                        {marked && <strong>Cited · </strong>}
+                        {confidenceText(line.confidence, line.origin)}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+          {shown.length < lines.length && (
+            <button type="button" className="btn" onClick={() => setAllFor(listKey)}>
+              Show all {lines.length.toLocaleString("en-IN")} lines
+            </button>
+          )}
+        </>
+      )}
+    </section>
+  );
+}

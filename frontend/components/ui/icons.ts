@@ -33,6 +33,7 @@ export const ICON_NAMES = [
   "search-off",
   "refresh",
   "history",
+  "scan-text",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -164,5 +165,15 @@ export const ICONS: Record<IconName, readonly IconShape[]> = {
     path("M4 12a8 8 0 1 0 2.3-5.7L4 8.6"),
     path("M4 4.5v4.1h4.1"),
     path("M12 8v4.5l3 2"),
+  ],
+  // Scanned text: corner brackets (a scan's frame) around lines of text.
+  "scan-text": [
+    path("M4 8V5a1 1 0 0 1 1-1h3"),
+    path("M16 4h3a1 1 0 0 1 1 1v3"),
+    path("M20 16v3a1 1 0 0 1-1 1h-3"),
+    path("M8 20H5a1 1 0 0 1-1-1v-3"),
+    path("M8 9h8"),
+    path("M8 12h8"),
+    path("M8 15h5"),
   ],
 };

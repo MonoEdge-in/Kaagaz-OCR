@@ -299,6 +299,18 @@ input:-webkit-autofill:focus {
   font-variant-numeric: tabular-nums;
 }
 
+/* Text exactly as a reader read it (Scanned text, What was read): a mono stack
+   with Devanagari before plain monospace, spaces kept, long runs wrapped, and
+   each line isolated so its own direction never reorders what is around it. */
+.readText {
+  font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, "Nirmala UI",
+    "Noto Sans Devanagari", monospace;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
+
 /* --- Page layout --------------------------------------------------------------
    AppShell's <main> has no padding. A normal screen wraps its content in .page;
    the chat screen fills the space itself (full height, its own panes). */

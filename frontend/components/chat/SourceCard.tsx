@@ -3,7 +3,8 @@
 // One source behind an answer: its number (matching the chip in the answer),
 // the document and page, its label, a zoomed-in preview of the spot (loaded
 // only when the card comes near view), the cited text (plain text, it came
-// from the document), and a link that opens the page with the spot highlighted.
+// from the document), and a link that opens the page with the spot highlighted,
+// with "See scanned text" beside it (the page's Scanned text open).
 // A source over several pages says "Pages 15 to 16" and gets a chip for each
 // later page's spot; a value whose label is on another page says so and gets
 // a chip for the label (PRD 3 H4).
@@ -25,6 +26,7 @@ import {
   citationLink,
   citationRegion,
   citationSource,
+  scannedLink,
 } from "./answer";
 import { useNearView } from "./hooks";
 import { labelPlace, pageJumps, sourceAction, sourceMeta } from "./logic";
@@ -90,6 +92,7 @@ export function SourceCard({ citation, messageId }: { citation: Citation; messag
   const action = sourceAction(citation);
   const labelText = labelPlace(citation);
   const jumps = pageJumps(citation);
+  const scanned = scannedLink(citation);
   return (
     <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId}>
       <div className={styles.sourceHeader}>
@@ -131,6 +134,13 @@ export function SourceCard({ citation, messageId }: { citation: Citation; messag
           {action.text}
           <span className="visually-hidden">{` of ${citation.document_name}`}</span>
         </Link>
+        {scanned && (
+          <Link href={scanned} className={styles.openLink}>
+            <Icon name="scan-text" size={16} />
+            See scanned text
+            <span className="visually-hidden">{` of ${citation.document_name}`}</span>
+          </Link>
+        )}
         {jumps.length > 0 && (
           <ul className={styles.docChips} aria-label={`More spots in ${citation.document_name}`}>
             {jumps.map((jump) => (

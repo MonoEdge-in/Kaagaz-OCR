@@ -2,7 +2,8 @@
 
 // /documents/[id]: one document, its page viewer and the values read from it.
 // ?page=n&region=<encoded> (from a source card or review item) opens on that
-// spot, highlighted. The URL is read inside Suspense, as Next.js requires.
+// spot, highlighted; &scanned=1 opens that page's Scanned text too. The URL is
+// read inside Suspense, as Next.js requires.
 
 import { useParams, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
@@ -17,6 +18,7 @@ function DocumentRoute() {
       documentId={params.id}
       pageParam={search.get("page")}
       regionParam={search.get("region")}
+      scannedParam={search.get("scanned")}
     />
   );
 }

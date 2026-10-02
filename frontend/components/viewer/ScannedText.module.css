@@ -1,0 +1,152 @@
+/* Scanned text (ScannedTextPanel.tsx) and each value's What was read
+   (WhatWasRead.tsx). Neutral colours only, never the verified or needs review
+   badge colours: confidence is the reader's guess, not a label. A cited line
+   gets a word and a left border, so colour is never the only signal. */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.heading {
+  margin: 0;
+  font-size: var(--fs-base);
+}
+
+.readers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.readers label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 24px;
+}
+
+.title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.muted {
+  display: block;
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.skeleton {
+  display: block;
+  height: 8rem;
+}
+
+.empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.empty p {
+  margin: 0;
+}
+
+.scroll {
+  max-height: min(40vh, 24rem);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  overscroll-behavior: contain;
+}
+
+.lines {
+  margin: 0;
+  padding-inline-start: 3.5em;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.line {
+  border-block-end: 1px solid var(--border);
+  border-inline-start: 3px solid transparent;
+}
+
+.line:last-child {
+  border-block-end: none;
+}
+
+.cited {
+  border-inline-start-color: var(--fg);
+}
+
+.lineButton {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-height: 24px;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  background: none;
+  color: var(--fg);
+  font-size: var(--fs-base);
+  text-align: start;
+  cursor: pointer;
+}
+
+.lineButton:hover {
+  background: var(--surface-2);
+}
+
+.lineButton[aria-pressed="true"] {
+  background: var(--accent-soft);
+}
+
+.lineMeta {
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+/* What was read: a native disclosure under a value. */
+.read {
+  margin-top: var(--space-1);
+  font-size: var(--fs-sm);
+}
+
+.read summary {
+  min-height: 24px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.readList {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-1) 0;
+}
+
+.readList dt {
+  font-weight: 600;
+}
+
+.readList dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
