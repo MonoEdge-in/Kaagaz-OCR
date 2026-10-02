@@ -1425,3 +1425,27 @@ def test_a_page_the_scan_reader_failed_on_has_its_own_words() -> None:
         message
         == "The scan reader couldn't read a page of this file. Upload a clearer scan, or read it again."
     )
+
+
+@pytest.mark.db
+def test_the_summary_is_the_details_own_summary_in_fewer_statements(db: Database) -> None:
+    """A8a: the viewer polls this while a document is read, then asks for the detail once."""
+    api = Api(db)
+    signed = api.new_signed()
+    document_id = api.add_document(signed.customer_id, status="clean")
+    for page_no in (1, 2, 3):
+        api.add_page(signed.customer_id, document_id, page_no)
+        api.add_value(signed.customer_id, document_id, page_no=page_no)
+
+    reply = signed.client.get(f"/api/documents/{document_id}/summary")
+    detail = signed.client.get(f"/api/documents/{document_id}").json()
+    (listed,) = signed.client.get("/api/documents").json()["items"]
+
+    assert reply.status_code == 200
+    summary = reply.json()
+    assert set(summary) == set(listed)  # a DocumentSummary, as in the list
+    assert summary == {key: detail[key] for key in summary}
+    assert (summary["status"], summary["status_message"]) == ("clean", detail["status_message"])
+    asked = _statements(db, lambda: signed.client.get(f"/api/documents/{document_id}/summary"))
+    whole = _statements(db, lambda: signed.client.get(f"/api/documents/{document_id}"))
+    assert asked < whole
