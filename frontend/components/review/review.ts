@@ -1,6 +1,6 @@
 // The review queue's small decisions, kept out of the components so they are
 // unit tested in node (tests/review-*.test.ts): whether a choice can be sent,
-// and how the queue changes after a value is resolved.
+// how the queue changes after a value is resolved, and where focus goes then.
 
 import { fieldText } from "@/components/viewer/labels";
 import type { ReviewChoice, ReviewItem, ReviewList, Role } from "@/lib/types";
@@ -50,6 +50,33 @@ export function appendItems(list: ReviewList, more: ReviewList): ReviewList {
 /** What the page announces after a resolve. */
 export function resolvedMessage(item: ReviewItem): string {
   return `Saved. ${fieldText(item.value.field)} in ${item.document_name} is now "${item.value.value}".`;
+}
+
+/** The remaining count, announced together with the save in one polite message. */
+export function leftToReview(total: number): string {
+  if (total === 0) return "Nothing left to review.";
+  return `${total} value${total === 1 ? "" : "s"} left to review.`;
+}
+
+export type ResolveFocus =
+  | { kind: "card"; valueId: string }
+  | { kind: "next-page" }
+  | { kind: "empty" };
+
+/**
+ * Where focus goes once a resolved card leaves the queue, so a keyboard or
+ * screen reader user is never dropped on the page body: the next card, else
+ * the previous one; with no card left on screen, the next page when the server
+ * has more, else the "Nothing to review" heading.
+ */
+export function focusAfterResolve(list: ReviewList, valueId: string): ResolveFocus {
+  const ids = list.items.map((item) => item.value.id);
+  const at = ids.indexOf(valueId);
+  const left = ids.filter((id) => id !== valueId);
+  // With the resolved card gone, the next one now sits where it was.
+  const target = left[Math.max(at, 0)] ?? left.at(-1);
+  if (target !== undefined) return { kind: "card", valueId: target };
+  return withoutItem(list, valueId).total > 0 ? { kind: "next-page" } : { kind: "empty" };
 }
 
 /** Members can't correct values; reviewers and admins can. */

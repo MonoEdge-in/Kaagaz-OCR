@@ -7,7 +7,9 @@
 // list and its pages. The folder and the filters live in the page address
 // (libraryQuery.ts), so a reload keeps them and Back returns to the folder
 // before. While any document is still being checked or read, the list is
-// asked for again every 3 seconds; once all have settled, it stops.
+// asked for again (lib/poll.ts: from every 3 s to every 15 s, never while the
+// tab is hidden); once all have settled, it stops. Each finished upload asks
+// for it at once; the screen is never reloaded.
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -17,7 +19,9 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, listDocuments, listFolders, listTags } from "@/lib/api";
+import { progressSignature } from "@/lib/poll";
 import { useSession } from "@/lib/session";
+import { usePoll } from "@/lib/usePoll";
 import type { DocumentList, DocumentSummary, Folder, Tag } from "@/lib/types";
 import { DocumentsTable } from "./DocumentsTable";
 import { FolderActions } from "./FolderActions";
@@ -30,12 +34,11 @@ import type { LibraryState } from "./libraryQuery";
 import {
   ACCEPT_ATTRIBUTE,
   PAGE_SIZE,
-  POLL_MS,
   listView,
   offsetAfterDelete,
   pageInfo,
   shouldPoll,
-  shouldReloadAfterUploads,
+  uploadsFinishedText,
 } from "./logic";
 import { foreverNeeds } from "./trash";
 import { Dropzone, UploadList, useUploads } from "./UploadArea";
@@ -79,15 +82,14 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const [tagsVersion, setTagsVersion] = useState(0);
   const [foldersOpen, setFoldersOpen] = useState(false);
   const uploads = useUploads(() => setReload((n) => n + 1));
+  const filtered = isFiltered(library);
 
-  useEffect(() => {
-    if (shouldReloadAfterUploads(uploads.entries.map((entry) => entry.state))) {
-      const timer = window.setTimeout(() => {
-        window.location.reload();
-      }, 250);
-      return () => window.clearTimeout(timer);
-    }
-  }, [uploads.entries]);
+  // Each batch of uploads is said once, when it settles; nothing is cleared.
+  const [heardBatches, setHeardBatches] = useState(0);
+  if (uploads.settled !== heardBatches) {
+    setHeardBatches(uploads.settled);
+    if (uploads.finished) setAnnouncement(uploadsFinishedText(uploads.finished, q !== "" || filtered));
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -123,37 +125,27 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     };
   }, [tagsVersion]);
 
-  useEffect(() => {
-    let cancelled = false;
-    listDocuments(listParams(library, q, offset)).then(
-      (list) => {
-        if (cancelled) return;
-        setLoaded({ view: viewKey, list, now: Date.now() });
-        setFailure(null);
-      },
-      (caught: unknown) => {
-        if (!cancelled) setFailure({ view: viewKey, message: errorText(caught) });
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [library, viewKey, q, offset, reload]);
+  // Each answer is kept with the view it was asked for (one request at a time).
+  const poll = usePoll<Loaded>({
+    load: () =>
+      listDocuments(listParams(library, q, offset)).then((list) => ({ view: viewKey, list, now: Date.now() })),
+    onResult: (result) => {
+      setLoaded(result);
+      setFailure(null);
+    },
+    onFailure: (caught) => setFailure({ view: viewKey, message: errorText(caught) }),
+    again: (result) => shouldPoll(result.list.items),
+    signature: (result) => result.view + progressSignature(result.list.items),
+  });
+  useEffect(() => poll.refresh(), [poll, library, viewKey, q, offset, reload]);
 
   // A new folder or filter shows "loading" until its own list arrives.
   const shown = loaded && loaded.view === viewKey ? loaded : null;
   const error = failure && failure.view === viewKey ? failure.message : null;
-  const items = shown?.list.items;
-  useEffect(() => {
-    if (!items || !shouldPoll(items)) return;
-    const timer = setTimeout(() => setReload((n) => n + 1), POLL_MS);
-    return () => clearTimeout(timer);
-  }, [items]);
 
   const tree = useMemo(() => buildTree(folders ?? []), [folders]);
   const current = library.folderId === null ? null : (tree.byId.get(library.folderId) ?? null);
   const folderGone = folders !== null && library.folderId !== null && current === null;
-  const filtered = isFiltered(library);
   // The folder in the address, even before the folder list has loaded.
   const uploadInto = library.folderId ?? undefined;
 
@@ -482,7 +474,18 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     />
                   )}
 
-                  {error && (
+                  {error && shown && (
+                    <div className={styles.errorBanner} role="status">
+                      <Icon name="alert" className={styles.errorIcon} />
+                      <p className={styles.errorBody}>Couldn&apos;t update the list. It may be out of date.</p>
+                      <button type="button" className="btn" onClick={() => setReload((n) => n + 1)}>
+                        <Icon name="refresh" />
+                        Try again
+                      </button>
+                    </div>
+                  )}
+
+                  {error && !shown && (
                     <div className={styles.errorBanner} role="alert">
                       <Icon name="alert" className={styles.errorIcon} />
                       <div className={styles.errorBody}>

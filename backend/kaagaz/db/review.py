@@ -40,9 +40,17 @@ _ITEM = (
 )
 
 # The queue and its total repeat the same filter in full, so each can be checked on its own.
+# Two fixed statements each, for the whole queue and for one document, never one with
+# "(:doc IS NULL OR ...)": a prepared statement's generic plan could not use the
+# document id then. The count keeps the pages join, so it counts what the queue lists.
 _QUEUE = _ITEM + (
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready' AND v.label = 'needs_review'"
-    " AND (CAST(:doc AS uuid) IS NULL OR v.document_id = CAST(:doc AS uuid))"
+    " ORDER BY v.created_at, v.id LIMIT :limit OFFSET :offset"
+)
+
+_QUEUE_FOR_DOCUMENT = _ITEM + (
+    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready' AND v.label = 'needs_review'"
+    " AND v.document_id = CAST(:doc AS uuid)"
     " ORDER BY v.created_at, v.id LIMIT :limit OFFSET :offset"
 )
 
@@ -53,7 +61,15 @@ _COUNT = (
     " AND p.page_no = v.page_no"
     " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND v.label = 'needs_review'"
-    " AND (CAST(:doc AS uuid) IS NULL OR v.document_id = CAST(:doc AS uuid))"
+)
+
+_COUNT_FOR_DOCUMENT = (
+    "SELECT count(*) FROM extracted_values v"
+    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
+    " AND p.page_no = v.page_no"
+    " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND v.label = 'needs_review' AND v.document_id = CAST(:doc AS uuid)"
 )
 
 # Only the value's row is locked (OF v), never the document's, so a resolve never
@@ -75,8 +91,9 @@ def list_queue(
     by primary key: O(limit + offset) rows read for the page, and O(n) for the
     total over the customer's n needs-review values."""
     params = {"c": customer_id, "doc": document_id, "limit": limit, "offset": offset}
-    rows = conn.execute(text(_QUEUE), params).mappings().all()
-    total: int = conn.execute(text(_COUNT), params).scalar_one()
+    queue, count = (_QUEUE, _COUNT) if document_id is None else (_QUEUE_FOR_DOCUMENT, _COUNT_FOR_DOCUMENT)
+    rows = conn.execute(text(queue), params).mappings().all()
+    total: int = conn.execute(text(count), params).scalar_one()
     return rows, int(total)
 
 

@@ -10,18 +10,40 @@ A new value starts as needs review (``single_reader``) until
 ``kaagaz.extraction.labels`` says otherwise: nothing is verified by default.
 A value of the document card (``CARD_RECORD``, PRD 2 D3) is never verified,
 whatever path it takes (Lead's resolution 1, council fix 4).
+
+The records a run saves with its values live here too (the document's facts,
+its invoice row and its link identifiers), so the extraction modules and
+kaagaz.pipeline share them without importing each other.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from kaagaz.chunking.piece import NEEDS_REVIEW, VERIFIED
 from kaagaz.reading.spans import Location
 
-__all__ = ["CARD_RECORD", "NEEDS_REVIEW", "VERIFIED", "ExtractedValue", "QuoteMatch"]
+__all__ = [
+    "CARD_RECORD",
+    "LINK_KINDS",
+    "NEEDS_REVIEW",
+    "VERIFIED",
+    "DocumentFacts",
+    "ExtractedValue",
+    "InvoiceLineRow",
+    "InvoiceRow",
+    "LinkIdentifier",
+    "QuoteMatch",
+]
 
 CARD_RECORD = "card"  # the record key of the document card's values (PRD 2 D3)
+# The identifiers two documents are linked by (D5).
+LINK_KINDS = frozenset(
+    {"invoice_number", "po_number", "challan_number", "survey_number"}
+    | {"khata_number", "account_number", "reference_number"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,3 +74,51 @@ class ExtractedValue:
     label_location: Location | None = None  # the value's label, when it sits elsewhere (D3)
     origin: str | None = None  # how its span was read: "cell", "text_layer" or "ocr" (spans.ORIGINS)
     quote: QuoteMatch | None = None  # set when a model quote located the value; never stored
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentFacts:
+    """The documents columns a run writes (D3, L2). Every save replaces all of them,
+    so a run without a model clears an older run's card."""
+
+    doc_type: str | None = None
+    languages: tuple[str, ...] = ()
+    summary: str | None = None
+    document_date: date | None = None
+    card: Mapping[str, Any] | None = None  # plain JSON
+
+
+@dataclass(frozen=True, slots=True)
+class InvoiceLineRow:
+    line_no: int
+    description: str | None
+    hsn: str | None
+    quantity: Decimal | None
+    unit: str | None
+    rate: Decimal | None
+    amount: Decimal | None
+    label: str  # "verified" or "needs_review"
+
+
+@dataclass(frozen=True, slots=True)
+class InvoiceRow:
+    invoice_number: str | None
+    invoice_date: date | None
+    seller_name: str | None
+    seller_gstin: str | None
+    buyer_name: str | None
+    buyer_gstin: str | None
+    subtotal: Decimal | None
+    tax_total: Decimal | None
+    total: Decimal | None
+    label: str
+    check_status: str  # "passed", "failed" or "not_checked"
+    check_reasons: tuple[str, ...]
+    currency: str = "INR"
+    lines: tuple[InvoiceLineRow, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LinkIdentifier:
+    kind: str  # one of LINK_KINDS
+    value: str  # whitespace removed, lower case

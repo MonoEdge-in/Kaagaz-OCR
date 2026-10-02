@@ -19,7 +19,7 @@ import type { ReactNode } from "react";
 import { IconButton } from "@/components/ui/IconButton";
 import { pageImageUrl } from "@/lib/api";
 import { boxToPixels, cropRect, fitCropView, pageAspect, regionsOnPage } from "@/lib/regions";
-import type { BoxRegion, FractionRect } from "@/lib/regions";
+import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
 import type { DocumentSummary, PageSummary, Region } from "@/lib/types";
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
@@ -92,14 +92,18 @@ export function PageViewer({
     </div>
   );
 
-  /** The drawn page with its highlight boxes, at width x height pixels. */
-  const stage = (width: number, height: number, offset?: { x: number; y: number }) => (
+  /**
+   * The drawn page with its highlight boxes, at width x height pixels. With a
+   * crop, the page-size stage is shifted into the crop's frame, and a PDF draws
+   * only that frame (a page-size canvas would be some 50 times bigger).
+   */
+  const stage = (width: number, height: number, crop?: CropView) => (
     <div
       className={styles.stage}
       style={{
         width: `${width}px`,
         height: `${height}px`,
-        ...(offset ? { position: "absolute", left: -offset.x, top: -offset.y } : {}),
+        ...(crop ? { position: "absolute", left: -crop.offsetX, top: -crop.offsetY } : {}),
       }}
     >
       {mode === "pdf" ? (
@@ -109,6 +113,11 @@ export function PageViewer({
           pageNo={page.page_no}
           width={width}
           height={height}
+          view={
+            crop
+              ? { x: crop.offsetX, y: crop.offsetY, width: crop.frameWidth, height: crop.frameHeight }
+              : undefined
+          }
           label={label}
           onFailed={onPdfFailed}
           onRendered={onDrawn}
@@ -167,7 +176,7 @@ export function PageViewer({
             className={styles.cropFrame}
             style={{ width: `${view.frameWidth}px`, height: `${view.frameHeight}px` }}
           >
-            {stage(view.pageWidth, view.pageHeight, { x: view.offsetX, y: view.offsetY })}
+            {stage(view.pageWidth, view.pageHeight, view)}
           </div>
           {drawn ? null : <span className={`skeleton ${styles.fill}`} aria-hidden="true" />}
         </>
