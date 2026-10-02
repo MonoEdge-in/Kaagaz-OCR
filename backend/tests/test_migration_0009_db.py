@@ -26,14 +26,14 @@ VECTOR = vector_literal([0.5] * 1024)
 _STORY = text(
     "INSERT INTO document_stories"
     " (customer_id, user_id, family_id, story, story_latin, embedding, embedding_model)"
-    " VALUES (:c, :u, :f, :s, lower(:s), CAST(:v AS halfvec(1024)), :m)"
+    " VALUES (:c, :u, :f, :s, coalesce(:l, lower(:s)), CAST(:v AS halfvec(1024)), :m)"
 )
 _COMMENTS = text(
     "SELECT c.relkind::text FROM pg_description d JOIN pg_class c ON c.oid = d.objoid"
     " WHERE d.classoid = 'pg_class'::regclass AND c.relnamespace = 'public'::regnamespace"
     " AND c.relname LIKE 'document_stor%'"
 )
-GOOD = {"s": "papa ne 2018 me daregaon wali jamin ka 7/12 diya", "v": VECTOR, "m": "embed#story1"}
+GOOD = {"s": "papa ne 2018 me daregaon wali jamin ka 7/12 diya", "l": None, "v": VECTOR, "m": "embed#story1"}
 
 
 def _row(conn: Connection, customer: str, user: str, **changes: Any) -> None:
@@ -71,6 +71,7 @@ def test_upgrade_downgrade_and_upgrade_again(fresh: tuple[str, Database]) -> Non
 BAD_ROWS = {
     "story_empty": ({"s": ""}, "document_stories_story_check"),
     "story_over_1000": ({"s": "x" * 1001}, "document_stories_story_check"),
+    "latin_over_4000": ({"l": "x" * 4001}, "document_stories_story_latin_check"),
     "vector_alone": ({"m": None}, "document_stories_vector_with_model"),
     "model_alone": ({"v": None}, "document_stories_vector_with_model"),
 }
@@ -80,7 +81,7 @@ BAD_ROWS = {
 def test_the_checks_refuse_a_bad_row(db: Database, changes: dict[str, Any], constraint: str) -> None:
     customer, user = new_customer(db)
     with db.user(customer, user) as conn:  # good rows first: 1,000 code points, and no vector yet
-        _row(conn, customer, user, s="ज" * 1000)
+        _row(conn, customer, user, s="ज" * 1000, l="x" * 4000)
         _row(conn, customer, user, v=None, m=None)
     with pytest.raises(IntegrityError) as refused, db.user(customer, user) as conn:
         _row(conn, customer, user, **changes)
