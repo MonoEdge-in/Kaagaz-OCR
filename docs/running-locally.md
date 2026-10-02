@@ -36,7 +36,10 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
 `MODEL_ENABLED=false` (the default) runs everything with no AI. To use
-Ollama, pull `MODEL_CHAT` and `MODEL_EMBED` first, then set it to `true`.
+Ollama, pull the models first, then set it to `true`: `ollama pull qwen3.5:4b`
+(`MODEL_CHAT` and `MODEL_VISION`) and `ollama pull qwen3-embedding:0.6b`
+(`MODEL_EMBED`, whose vectors have `EMBEDDING_DIM` 1024), the models in
+docs/architecture.md, Decisions.
 With the model on, the worker reads each document's card with `MODEL_CHAT`
 (PRD 2): a reply may take up to `MODEL_CARD_MAX_TOKENS` tokens, in a window of
 `MODEL_NUM_CTX`, and one card call times out after
@@ -53,6 +56,24 @@ the invoice windows `EXTRACT_WINDOW_CHARS`, `EXTRACT_WINDOW_OVERLAP` and
 `EXTRACT_MAX_WINDOWS`,
 plus the new `MAX_PAGES`, `MAX_IMAGE_PIXELS` and `QUEUE_LEASE_SECONDS` values. Recreate the queue too (`docker compose up -d
 --force-recreate elasticmq`): its failure-bin limit is now 10.
+
+PRD 3 adds two required settings, each checked at start-up by name:
+`SEARCH_EF` (100, 1 to 1000), how many candidates the meaning index walk keeps
+(`hnsw.ef_search`), and `SEARCH_MAX_DOCUMENTS` (20, 1 to 100), the most
+documents one search inside documents returns.
+
+**Upgrading an install to PRD 3.** Migration 0006 is offline: it locks
+`pieces` and `messages` while it rewrites the vectors and builds the indexes.
+
+1. `docker compose stop api worker`.
+2. Add `SEARCH_EF=100` and `SEARCH_MAX_DOCUMENTS=20` to `.env`.
+3. `alembic upgrade head` (in Docker, `docker compose up --build migrate`).
+4. Start the api and worker again (`docker compose up -d api worker`).
+5. With the model on, run `python -m kaagaz.cli reembed` once (in Docker,
+   `docker compose exec api python -m kaagaz.cli reembed`). Until it ends,
+   meaning search sees only the documents it has done; words and typos find
+   everything. It can be stopped and run again, and it stops before changing
+   anything if the model doesn't answer.
 
 ## 2a. Everything in Docker
 
@@ -399,6 +420,55 @@ Use made-up files only. With `MODEL_ENABLED=true`, pull `qwen3.5:4b` and `qwen3-
 - Expect: no number. The answer says the figure hasn't been checked yet, asks for it to be confirmed in Review, and links the report under "Where it appears".
 - Tests: `test_answering_golden.py`, `test_answering_unchecked_db.py`.
 
+### Search and the viewer (PRD 3)
+
+The made-up golden documents in `backend/tests/golden/docs/` serve these checks too.
+
+**37. Search inside documents**
+- Check (screen): `up backend/tests/golden/docs/land-record.csv` (a Marathi 7/12 register); once it is ready, type `shinde` in the Documents search box (Inside documents is the default), then `शिंदे`, then the typo `shindey`.
+- Expect: each finds the land record, with its passage and page; the result opens the viewer on that spot. Names searches the file names, as before.
+- Check (API): `curl -b admin@sharma-traders.example.jar "$API/search?q=shinde"`; again with `&document_ids=<a Mehta document id>`; then a `q` of 201 characters.
+- Expect: `{"documents":[{id, display_name, doc_type, score, best: {snippet, page_from, page_to, regions}, more}]}`, best first, at most `SEARCH_MAX_DOCUMENTS`; the other customer's id gives `{"documents":[]}`; 201 characters give `400 bad_request`. With the model off, words and typos still answer.
+- Tests: `test_api_search.py`, `test_search_scope_db.py`, `test_search_db.py`, `test_isolation_search.py`, `test_answering_hinglish.py`; `frontend/tests/inside-search.test.ts`.
+
+**38. The meaning index**
+- Check: `SQL "SET enable_seqscan = off; EXPLAIN SELECT id FROM pieces WHERE embedding IS NOT NULL ORDER BY embedding <=> (SELECT embedding FROM pieces WHERE embedding IS NOT NULL LIMIT 1) LIMIT 5"` (a laptop holds too few pieces for the planner to choose the index by itself), then `SQL "SELECT embedding_model, count(*) FROM pieces GROUP BY 1"`.
+- Expect: `Index Scan using pieces_embedding`; with the model on, every vector tagged `qwen3-embedding:0.6b#ctx1`.
+- Tests: `test_search_index_db.py` (`test_explain_of_the_production_statement_uses_pieces_embedding`, `test_a_short_index_walk_falls_back_to_the_exact_scan`), `test_migration_0006_db.py`.
+
+**39. Re-embedding**
+- Check: with the model on, `docker compose exec -T api python -m kaagaz.cli reembed`, twice; then `docker compose exec -T -e MODEL_ENABLED=false api python -m kaagaz.cli reembed`.
+- Expect: one line per customer, `customer <id>: N documents, C cleared, E embedded`; the second run embeds 0. With the model off, `error: reembed needs the model: set MODEL_ENABLED=true` and exit code 2. `--customer-id <id>` does one customer; `--all` makes every vector again.
+- Tests: `test_reembed_db.py`, `test_indexing_db.py`.
+
+**40. Document card, related documents, invoice and low-resolution panels**
+- Check (screen): with the model on, open `textile-invoice.pdf` from the golden documents; click a card item and an invoice cell. Open a document that shares its invoice or PO number with another (feature 33), and a photo scanned under `LOW_RES_DPI`.
+- Expect: the Document card (type, languages, summary, parties, dates, identifiers, key facts), each item highlighting its spot and its label's ("Value on page 2, label on page 1" when apart); the Invoice with its lines and a chip, "Checks passed" or "Needs review: …"; Related documents ("Same invoice number: …"), opening the other document; above a low-resolution page, "This page was scanned at 96 DPI. Small text may be misread. Upload a sharper scan if values look wrong." With the model off: "No document card. The AI model was off or could not be reached when this was read."
+- Tests: `test_api_viewer_panels.py`, `test_isolation_viewer_panels.py`; `frontend/tests/viewer-panels.test.ts`.
+
+**41. Review by reason**
+- Check: `curl -b reviewer@sharma-traders.example.jar "$API/review?reason=check_failed"`, then `?reason=nope`; on screen, Review, "Show values where".
+- Expect: only values with that reason (`check_failed`, `readers_disagree`, `low_confidence` or `single_reader`), each with `check_reasons`; an unknown reason gives `400 bad_request`. A card from a failed invoice says "The invoice checks failed: …"; a reason with no values says "Nothing to review for this reason".
+- Tests: `test_api_review.py`; `frontend/tests/review-queue.test.ts`.
+
+**42. Admin: Failed jobs and Retry**
+- Check: `up bad.csv` (feature 10). Open an admin session, `curl -s -c adm.jar -H "$H" -H "$J" -d '{"email":"admin@sharma-traders.example","password":"demo-pass-2026"}' $API/auth/admin/login`, then `curl -b adm.jar $API/admin/failed`, and the same with `admin@sharma-traders.example.jar`. On screen: Admin, Failed jobs, Retry, then Retry again from the same list.
+- Expect: `{"items":[{id, display_name, status, failure_code, message, last_run_at, …}], "total": n}`; the app session gets `403 admin_session_required`. Retry says "Sent to be read again."; the second Retry shows the server's own words on that row (409 while it is being read, 429 within 10 minutes).
+- Tests: `test_api_viewer_panels.py`, `test_isolation_viewer_panels.py`; `frontend/tests/shell-admin.test.ts`.
+
+### Handover (PRD 3)
+
+**43. The data dictionary**
+- Check: `SQL "\d+ pieces"`.
+- Expect: a plain line for every column under Description (`embedding_model`, for example, names the `MODEL_EMBED#ctx1` tag). No comment holds an identity number, an e-mail or a link.
+- Tests: `test_migration_0007_db.py`.
+
+**44. The golden run**
+- Needs: the whole stack with the model on (both models pulled, `MODEL_ENABLED=true`), the API and database on this machine, and `.env` loaded in a shell in `backend/`. It is never run in CI.
+- Check: `.venv/Scripts/python.exe -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" --runs 3`.
+- Expect: it makes a new "Golden Test Co" customer, uploads the 7 golden documents and asks the 30 questions 3 times. Then a header (git SHA, date, models with their Ollama digests, settings, the questions' sha256), a row per question, each run's totals and slices, "The model wrote N of M search-route answers" (N must be above 0), and the WORST RUN line with Wilson intervals. The password comes from `KAAGAZ_ADMIN_PASSWORD` or is made up, and is never printed. Record the worst run in docs/architecture.md, Decisions.
+- Tests: `test_golden_questions.py`, `test_golden_scoring.py`, `test_golden_runner.py`.
+
 ### Sign-off
 
 | # | Feature | Pass / fail | Notes |
@@ -410,6 +480,8 @@ Use made-up files only. With `MODEL_ENABLED=true`, pull `qwen3.5:4b` and `qwen3-
 | 18-22 | Chat, search, labels, conversations, model answers | | |
 | 23-28 | Admin, customer separation, tools, settings | | |
 | 29-36 | Routes, measure, pieces, Hindi and Marathi, card, invoices, read again, unchecked figures | | |
+| 37-42 | Search inside documents, meaning index, reembed, viewer panels, review by reason, failed jobs | | |
+| 43-44 | Data dictionary, golden run | | |
 
 ## 6. Backup and restore
 

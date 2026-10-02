@@ -20,13 +20,22 @@ Customers upload business documents (invoices, registers, receipts, statements) 
 | Web app: Next.js with PDF.js | `frontend` container, port 3000 | the same image |
 | API: FastAPI, under `/api/*` | `api` container, port 8000 | the same image |
 | Worker: one job at a time | `worker` container | the same image |
-| Database: PostgreSQL 17 with pgvector and pg_trgm | `postgres` | Amazon RDS |
+| Database: PostgreSQL 17 with pgvector 0.8 and pg_trgm | `postgres` | Amazon RDS |
 | File storage, through the S3 API | SeaweedFS | Amazon S3 |
 | Job queue, through the SQS API, with a failure bin | ElasticMQ | Amazon SQS |
 | Virus scanner | ClamAV | ClamAV (provisional) |
 | Local AI: chat, embeddings and an optional vision reader | Ollama; everything works without it | provisional |
 
 The browser talks only to the web app, which forwards `/api/*` to the API, so the session cookie stays first-party.
+
+**Search, in simple terms** (PRD 3, `search/hybrid.py`). Three lists of at most 50 pieces each, merged by reciprocal rank fusion (k = 60), so a piece found two ways ranks above one found one way:
+1. **Words:** full text on `tsv` (english) and `tsv_simple` (the text and its Latin spelling, unstemmed); a piece scores the higher of the two.
+2. **Typos:** trigram `word_similarity` on `text` and on `text_latin`, the higher of the two, so "shindey" finds "शिंदे".
+3. **Meaning:** each piece's vector is a `halfvec(1024)` (half precision, 2 KB) on the HNSW index `pieces_embedding` (m 16, ef_construction 64), walked with pgvector's iterative scan and `SEARCH_EF`. If the walk comes back with fewer than 50 rows, the same filters run as an exact scan.
+
+One `Scope` (`search/scope.py`) narrows all three lists before ranking: a folder (its subfolders only when asked), tags (all of them), document types, up to 50 documents, and dates (the document's date, else its upload day in `TIMEZONE`, both ends included). `GET /api/search` returns the best documents, at most `SEARCH_MAX_DOCUMENTS`: the Documents screen's "Inside documents" mode, beside "Names".
+
+**Also from PRD 3.** The document screen shows the card, related documents (both directions, only to ready, current documents out of Trash, at most 50 links), the invoice with its check chip, and a warning on a page under `LOW_RES_DPI`. The review queue filters by reason (`?reason=`). Admin has a Failed jobs tab (`GET /api/admin/failed`: current versions that are `failed` or `needs_reader`), whose Retry is the Read again route. `python -m kaagaz.cli reembed` makes the vectors again after a model or recipe change. Migration 0007 is the data dictionary: a comment on every table and column, which the NL-to-SQL agent will read from `pg_description`. The golden questions (`backend/tests/golden/`, 30, frozen by sha256) and their live runner `backend/scripts/run_golden.py` measure the answers; CI tests the scorer, never a live run.
 
 ## One upload, step by step
 
@@ -38,17 +47,19 @@ The browser talks only to the web app, which forwards `/api/*` to the API, so th
 5b. **The document card** (model on). One call to `MODEL_CHAT` with the first two pages, every heading and the last page, fenced as untrusted data and cut to `CARD_MAX_CHARS` and the tokens `MODEL_NUM_CTX` leaves. The model only quotes: each party, identifier, date and key fact is found in the reader's text, and the text at that spot is what is stored (`record_key = 'card'`, always needs review, never counted by a fixed query); a quote it can't find is dropped and counted. The card gives the document's type, languages, English summary and date, which also go in each piece's context header, and links it to this customer's other documents that share an invoice, PO, challan, survey, khata, account or reference number (never a GSTIN or PAN). With the model off or down there is no card: the document is saved exactly as without a model, and the run keeps the error code. If the card works but an invoice window then fails, the card is kept and the invoice falls back to its model-off row (step 5c).
 5c. **The invoice as a typed row** (PRD 2 E1 to E5, K1 to K3). When the card says `invoice`, the reader's text is read in windows (`EXTRACT_WINDOW_CHARS` 1700 with `EXTRACT_WINDOW_OVERLAP` 400, at most `EXTRACT_MAX_WINDOWS` 10; PROVISIONAL starting values, each window's reply within `MODEL_WINDOW_MAX_TOKENS`), one call each. The model only quotes the invoice number, date, seller and buyer with their GSTINs, subtotal, tax total and total, and each line item; each quote is found in the reader's text inside its window, and those values replace the labelled fields they cover (never both, so no total counts twice). The row (`invoices`) and its lines (`invoice_lines`) are typed from those values in the same save. With the model off (or no invoice values), the row comes from the labelled fields, with no lines. Every row is checked: the lines add up to the subtotal, subtotal plus tax (the stated tax total, else CGST + SGST + UTGST + IGST + cess) is the total, each within 1.00; the number and total are there; the date is from 2000 to tomorrow in `TIMEZONE`; each GSTIN has the right mod-36 check character. A failed check puts the values involved in review (`check_failed`). A value the model located is verified only when two readers agree, the label rules find the same value at the same spot (when they find that field at all), and the check passed; otherwise it is needs review (`model_chosen`). A reviewer's remembered fix stays verified, but only when the check passed. On an invoice the model read, a failed check leaves none of its header values verified. If an invoice window fails, every window's values are dropped and the row comes from the labelled fields, as with the model off. Line items are never used by the fixed queries. The rows are copies: a reviewer's fix changes the value, and the row follows on the next read.
 6. **Save** in one transaction that replaces any earlier run, so a job delivered twice is safe. The document must still be clean at this point.
-7. **Index.** A meaning vector is made for each piece if a model is on. The document is then `ready`.
+7. **Index.** With a model on, `MODEL_EMBED` makes each piece's meaning vector from its reduced header (only the Type, Date and Section parts of its context header: never "Before:", the name or the pages), a blank line, then its text, with no instruction (`search/indexing.py`). Each vector is tagged `MODEL_EMBED#ctx1` in `embedding_model`, and meaning search uses only the current tag, so after a model or recipe change the old vectors are left out until `reembed` replaces them. A rename keeps the vectors (the name is never embedded). With the model down, the pieces are saved without vectors and words and typos still find them. The document is then `ready`.
 
 Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `needs_reader` and `failed`, each failure with a short code. While a document is read it shows how far it has got ("Reading page 3 of 40…"). Each delivery of a job is one `processing_runs` row with its routes, counts, seconds and set-up; only the open run may save or mark the document ready or failed (the run fence), so a stale delivery ends quietly. A reviewer or admin can "Read again" a ready, failed or unreadable document (20 an hour per customer, once in 10 minutes per document, PROVISIONAL): remembered fixes come back, other fixes are lost. The worker tries a job `JOB_MAX_ATTEMPTS` (5) times and writes each try on the document, so the list says "Try 2 of 5". The delivery after the last try marks the document `failed | retries_exhausted` ("We tried 5 times…") and buries the job; if the database is down just then, a later delivery marks it. So the queue's own `maxReceiveCount` must be above `JOB_MAX_ATTEMPTS + 1` (10 on the laptop), and the worker refuses to start otherwise, logging `queue_redrive_too_low` or `queue_has_no_failure_bin`. The hourly trash purge can't stop or crash the worker: a database error there is logged and the jobs go on. One bad file never blocks the ones behind it.
 
 ## One question, step by step
 
-1. Hinglish words and dates ("last month", in `TIMEZONE`) are understood.
+1. Hinglish words and dates ("last month", in `TIMEZONE`) are understood. A question in Devanagari is first spelt in Latin letters, with its digits folded, so "पाटील का बिल" searches "patil invoice".
 2. A question asking for a number or a list runs a fixed, tested query, never SQL written by an AI.
-3. Anything else searches this customer's pieces three ways: exact words (full-text), typo tolerant (trigram) and meaning (pgvector). The three rankings are merged into one.
+3. Anything else searches this customer's pieces three ways (Search, in simple terms, above). The question is embedded as `Instruct: Given a question about business documents, retrieve passages that answer it\nQuery:{question}` (the Qwen3-Embedding model card's form): the English form of a Hinglish question, a Devanagari question as asked. The search transaction sets a 3 s statement timeout, `hnsw.ef_search` and `plan_cache_mode = force_custom_plan` (a prepared statement's generic plan would skip the index), all ending with the transaction. A meaning list that times out is dropped and words and typos still answer; a word or typo list that times out fails the request with 503 `backend_unavailable`.
 4. If the evidence isn't strong enough, the answer is "I couldn't find this in your documents."
 5. The answer is drafted from the evidence only, with document text treated as data, never as instructions. Any claim without a piece and position is dropped, and each answer is labelled verified or needs review.
+
+**Search inside documents** (`GET /api/search`, PRD 3 Q2). `q` is 1 to 200 characters and never logged; the `Scope` comes from the query string, plus the file type. The scope is resolved in its own short transaction, and one that matches nothing (an empty list, an unknown folder or tag) returns no documents before the model or any search SQL runs. Then the question is embedded (outside any transaction; with the model off or down, words and typos still answer) and the three lists run as above. One pass groups the candidates by document: a document's score is its best piece's, and `more` counts its other pieces among the candidates. Each result has that piece's snippet (`clean_snippet`), pages and regions.
 
 ## Values, review and corrections
 
@@ -68,9 +79,11 @@ Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, 
 Customers are kept apart by two locks:
 
 1. **The database lock.** Row level security is on every customer table. The app connects through `kaagaz_app`, a role that isn't a superuser, doesn't own the tables and can't bypass the rules. Every transaction sets the current customer first.
-2. **The application lock.** Every query also names the customer. One function lists across customers: `kaagaz_customer_ids_with_trash` returns only the ids of customers with trash old enough to purge, for the worker's hourly purge (PROVISIONAL).
+2. **The application lock.** Every query also names the customer. Two functions list across customers, both SECURITY DEFINER with an empty `search_path`, returning ids only: `kaagaz_customer_ids_with_trash`, the customers with trash old enough to purge, for the worker's hourly purge, and `kaagaz_customer_ids()` (0006), every customer, for `reembed` without `--customer-id`, which then works on each customer inside that customer's own transactions (both PROVISIONAL).
 
 The `isolation` tests prove both on every pull request.
+
+**PRD 3** adds no table: 0006 adds columns and indexes to `pieces` and `messages`, and 0007 only comments. Every new statement (the three lists and the exact fallback, `/api/search`, `links`, the review filter, the failed list, `reembed`) names the customer and runs under row level security. A scope's folder and tags are looked up as this customer's, and every list keeps its customer filter, so another customer's folder, tag or document ids match nothing. The failed list needs an admin session: an app session, even an admin's, gets 403.
 
 **Folders, versions and Trash.** Folders and tags belong to a document's whole family of versions. The list, search, chat, review and the admin numbers use each family's current version: the highest version that finished reading. A newer version still reading, or failed, is shown beside it and never hides it. Trash means deleted: a family in Trash can't be renamed, moved, tagged, downloaded or given a new version, only restored or deleted forever. Moving to Trash and restoring act on every version, so only an admin or the user who uploaded every version may do them. Deleting forever, and deleting a tag, need an admin session whose admin has two-step sign-in on. Saved chat answers hide the words and highlights of any source that is now in Trash or deleted, and mark a source that a newer version replaced.
 
@@ -145,6 +158,18 @@ The `isolation` tests prove both on every pull request.
 | Latin spellings use the adjusted rules in `chunking/script.py`, not the PRD's literal recipe (30 Sep 2026) | The literal recipe gives "simde" for शिंदे; search (PRD 3) matches spellings fuzzily |
 | Dependencies approved in the PRDs: `cryptography` (PRD 1); `paddleocr`, `paddlepaddle` and PaddleOCR's own `paddlex` (in the OCR image only, pinned by `constraints-ocr.txt`) and `indic-transliteration` (PRD 2), with what it brings in pinned by `constraints.txt` in the image and CI, and a mypy exception because it ships no types (30 Sep 2026) | Everything else still needs approval. The OCR model files are PaddleOCR-VL-1.6 (Apache-2.0) |
 | Seconds per page, measured with `python -m kaagaz.cli measure` on the build laptop on 30 Sep 2026 (RapidOCR, made-up files, AI off): a scanned page 5.4 to 10.1 (6.9 on average), a photo 6.6, a text-layer PDF page 0.05, a 200-row sheet 0.01. PaddleOCR-VL on the same CPU: 178 to 653 | The upload estimate uses 7 s a page for a PDF or photo (a PDF is estimated as a scan) and 1 for a sheet. The card and invoice calls add time when the AI is on; measure them once Ollama runs |
+| Meaning search: `halfvec(1024)` on HNSW (m 16, ef_construction 64), iterative scan `relaxed_order`, `SEARCH_EF` 100; 50 candidates a list, RRF k 60, a 3 s statement timeout (2 Oct 2026, PROVISIONAL starting values) | The index is used even for a small customer, and vectors take half the space |
+| 0006 casts the old vectors to `halfvec` instead of clearing them (2 Oct 2026, PROVISIONAL) | 3.1b's first PR shipped before `reembed` existed. They keep their old tag, so meaning search leaves them out until `reembed` |
+| The exact scan when the index walk comes back short (2 Oct 2026, PROVISIONAL) | A small scope in a big table still gets its full 50 |
+| A CHECK on `messages.scope` (an object, at most 4096 bytes), not in the PRD; the 0006 downgrade refuses while any message has a rewrite or a scope (2 Oct 2026, PROVISIONAL) | Bounded stored filters; a downgrade never loses saved data (the 0004 pattern) |
+| What is embedded: the reduced header and text for a piece, the model card's instruction for a question, tag `MODEL_EMBED#ctx1`; `reembed` takes `--customer-id` (the PRD wrote `--customer`) (2 Oct 2026) | "Before:" would mix the previous piece into the vector, and the name would make every vector stale on a rename; the flag follows `cli.py` |
+| Scope: a filter that matches nothing finds nothing; both date ends included; `/api/search` also takes the file type; a bad query string is 400, as everywhere in this API; `SEARCH_MAX_DOCUMENTS` 20 (1 to 100); `more` counts within the candidates (2 Oct 2026, PROVISIONAL) | An empty filter must never mean "everything" |
+| Retry in Failed jobs is the existing Read again route, which also takes ready documents; the list shows current versions only (2 Oct 2026, PROVISIONAL) | No second route doing the same job |
+| Review paging stays OFFSET (the plan asked for keyset); `links` is capped at 50 rows; the invoice panel shows for any document with an `invoices` row (2 Oct 2026, PROVISIONAL) | The screen's "Show more" asks by offset; a model-off fallback row is still worth showing |
+| Every table and column carries a comment (0007, `alembic_version` too), and every later migration comments its own new columns (2 Oct 2026) | The NL-to-SQL agent reads `pg_description`; `test_every_table_and_column_has_a_comment` fails otherwise |
+| Golden questions: 30, frozen by `QUESTIONS_SHA256`, never tuned on; each run scores right, wrong, correct and missed not-found, wrong-but-verified and recall@5, and the worst of 3 runs counts (2 Oct 2026, the `tags` and "right or not-found" count PROVISIONAL) | Measured before any search change, so later parts can't drift unseen |
+
+**Golden run (G3): not yet run (needs the model on).** Record the date, the git SHA, the models and the worst run's totals here.
 
 **Open**
 
@@ -153,5 +178,21 @@ The `isolation` tests prove both on every pull request.
 | What "verified" promises, in writing | The labels users see |
 | The virus scanner and upload limits in AWS (values marked PROVISIONAL in `.env.example`) | Hosting |
 | The go or no-go bar for launch, as a number | Launch |
+| PRD 3 sign-off, and each PROVISIONAL row of 2 Oct 2026 above | Merging PRD 3 |
 
-Not built yet, against the Document-to-SQL plan: typed tables beyond invoices (land records, bank statements), and a search tool outside chat. The typed `invoices` and `invoice_lines` tables and their checks came in PRD 2 (step 5c).
+**Known limits**
+
+1. **Word and typo indexes span all customers.** The GIN posting lists of `tsv`, `tsv_simple` and the trigram indexes hold every customer's pieces, and the customer filter comes after the index. Fine at this size; a per-customer partition is the upgrade.
+2. **The index walk stops at `hnsw.max_scan_tuples` (20,000).** A small scope in a big table then runs the exact scan over the scope's pieces, which grows with the scope. Past that, a per-customer index or a higher limit is needed.
+3. **Vectors are half precision (fp16),** so distances are rounded slightly against full precision.
+4. **Migration 0006 is offline.** It holds ACCESS EXCLUSIVE locks on `pieces` and `messages` while it rewrites `pieces` once and builds three indexes, so search, chat and the worker all wait. It is timed only on the tests' 2,000 vectors: time it on a production-sized copy before release. The word and typo plans, and plans with a scope, are not measured at production size either.
+5. **The snippet is the first 300 characters of the best piece,** so the matching words can fall outside it.
+6. **`/api/search` embeds the raw `q`,** while chat embeds the English form of a Hinglish question. A Devanagari question with a typo is matched against `text` and `text_latin`, not against pieces written in Latin letters, and the Hinglish word map doesn't know the Latin spellings of many Devanagari words.
+7. **`more` counts only within the 150 candidates,** not every match in the document.
+8. **The answer check reads ASCII digits only** (`answering/verify.py`). A drafted sentence citing a figure printed in Devanagari digits ("कुल ₹ ४५०.००") is dropped, so the answer becomes not found. The fix (fold the evidence's digits first) belongs in its own PR.
+9. **recall@5 comes from the answer's citations** until `run_golden.py` asks `/api/search`; the two numbers are not comparable.
+10. **A word or typo list past the timeout fails the search** (503); only the meaning list has a fallback.
+11. **The Failed jobs list scans the customer's documents** (no index leads on status); add a partial index on the failed states if customers grow large.
+12. **Not yet checked with the model on:** the model card's example scores for the query instruction in Ollama, and the reduced header's choice against the golden set.
+
+Not built yet, against the Document-to-SQL plan: typed tables beyond invoices (land records, bank statements). The typed `invoices` and `invoice_lines` tables and their checks came in PRD 2 (step 5c), and the search tool outside chat (`GET /api/search`) in PRD 3.
