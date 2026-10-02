@@ -5,8 +5,10 @@
 // status messages are shown as plain text. Each row has an Actions button
 // (DocumentActions.tsx). Move to Trash, and Delete forever in Trash, ask
 // first; focus goes to Cancel, and back to Actions if it is cancelled. Restore
-// needs no question: nothing is lost. In Trash the list shows when each
-// document was trashed, and has no selection bar. Each row is the family's
+// needs no question: nothing is lost. Ticked rows can be moved to Trash
+// together; in Trash they can be restored together, or deleted forever together
+// in an admin session (asked first). In Trash the list shows when each
+// document was trashed. Each row is the family's
 // current version; a newer one still being read, or one that failed, gets a
 // line under the name ("Version 3: ..."), linking to it. The Type column
 // gives the file type, and under it what kind of document it is ("Invoice",
@@ -25,12 +27,16 @@ import type { EditAction, RowAction } from "./library";
 import { deletedMessage, formatProgressPercent } from "./logic";
 import { StatusChip } from "./StatusChip";
 import {
+  type BulkAction,
+  bulkDoneMessage,
+  bulkFailedMessage,
+  bulkForeverQuestion,
   bulkTrashQuestion,
   canDeleteForever,
   deletedForeverMessage,
-  documentsCount,
   foreverQuestion,
   restoredMessage,
+  runEach,
   trashQuestion,
 } from "./trash";
 import styles from "./Documents.module.css";
@@ -63,10 +69,13 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
   const canForever = canDeleteForever(me);
   const deletableItems = useMemo(() => items.filter((item) => item.can_delete), [items]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const [confirming, setConfirming] = useState(false);
+  // The selection's action waiting for its "now" button: Move to Trash or Delete forever.
+  const [confirming, setConfirming] = useState<BulkAction | null>(null);
   const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<BulkAction | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const selectAll = useRef<HTMLInputElement | null>(null);
   const visibleIds = useMemo(() => new Set(items.map((item) => item.id)), [items]);
   const visibleSelectedIds = useMemo(
     () => new Set([...selectedIds].filter((id) => visibleIds.has(id))),
@@ -93,40 +102,42 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
 
   function clearSelection() {
     setSelectedIds(new Set());
-    setConfirming(false);
+    setConfirming(null);
     setError(null);
   }
 
-  async function removeSelected() {
+  // Each selected document in turn. The ones that worked leave the list (it is
+  // asked for again); the ones that failed stay ticked, to try again.
+  async function runSelected(action: BulkAction) {
     const ids = Array.from(visibleSelectedIds);
+    const call = BULK_CALLS[action];
     setBusy(true);
+    setBusyAction(action);
     setDeleteProgress({ done: 0, total: ids.length });
     setError(null);
-    try {
-      for (const [index, id] of ids.entries()) {
-        setDeleteProgress({ done: index, total: ids.length });
-        await deleteDocument(id);
-        setDeleteProgress({ done: index + 1, total: ids.length });
-      }
-      setSelectedIds(new Set());
-      setConfirming(false);
-      onRemoved(deletedMessage(documentsCount(ids.length)));
-    } catch (caught) {
-      setError(
-        caught instanceof ApiError
-          ? caught.message
-          : "Could not move all selected documents to Trash. Check your connection, then try again.",
-      );
-      setConfirming(false);
-    } finally {
-      setBusy(false);
-      setDeleteProgress(null);
+    const result = await runEach(ids, call, (handled) =>
+      setDeleteProgress({ done: handled, total: ids.length }),
+    );
+    setSelectedIds(new Set(result.failed));
+    setConfirming(null);
+    setBusy(false);
+    setBusyAction(null);
+    setDeleteProgress(null);
+    if (result.failed.length > 0) {
+      const reason =
+        result.firstError instanceof ApiError
+          ? result.firstError.message
+          : "Check your connection, then try again.";
+      setError(bulkFailedMessage(action, result.failed.length, reason));
     }
+    if (result.done.length > 0) onRemoved(bulkDoneMessage(action, result.done.length));
+    // The buttons pressed are gone now: keep keyboard focus on the selection bar.
+    selectAll.current?.focus();
   }
 
   return (
     <>
-      {!inTrash && deletableItems.length > 0 && (
+      {deletableItems.length > 0 && (
         <div className={styles.selectionBar} role="toolbar" aria-label="Document selection actions">
           <label className={styles.selectAll}>
             <input
@@ -135,6 +146,7 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
               aria-checked={partiallySelected ? "mixed" : allSelected}
               onChange={toggleAll}
               ref={(input) => {
+                selectAll.current = input;
                 if (input) input.indeterminate = partiallySelected;
               }}
             />
@@ -148,22 +160,66 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
           </label>
           {selectedCount > 0 && !confirming && (
             <>
-              <button type="button" className="btn btn-danger" onClick={() => setConfirming(true)}>
-                <Icon name="trash" />
-                Move to Trash ({selectedCount})
-              </button>
-              <button type="button" className="btn btn-quiet" onClick={clearSelection}>
+              {inTrash ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => void runSelected("restore")}
+                    disabled={busy}
+                  >
+                    <Icon name="history" />
+                    {busy ? "Restoring…" : `Restore (${selectedCount})`}
+                  </button>
+                  {canForever && (
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      onClick={() => setConfirming("forever")}
+                      disabled={busy}
+                    >
+                      <Icon name="trash" />
+                      Delete forever ({selectedCount})
+                    </button>
+                  )}
+                </>
+              ) : (
+                <button type="button" className="btn btn-danger" onClick={() => setConfirming("trash")}>
+                  <Icon name="trash" />
+                  Move to Trash ({selectedCount})
+                </button>
+              )}
+              <button type="button" className="btn btn-quiet" onClick={clearSelection} disabled={busy}>
                 <Icon name="close" />
                 Clear selection
               </button>
             </>
           )}
           {confirming && (
-            <div className={styles.bulkConfirm} role="group" aria-label="Confirm moving to Trash">
-              <span>{bulkTrashQuestion(selectedCount)}</span>
-              <button type="button" className="btn btn-danger" onClick={removeSelected} disabled={busy}>
+            <div
+              className={styles.bulkConfirm}
+              role="group"
+              aria-label={confirming === "forever" ? "Confirm deleting for good" : "Confirm moving to Trash"}
+            >
+              <span>
+                {confirming === "forever"
+                  ? bulkForeverQuestion(selectedCount)
+                  : bulkTrashQuestion(selectedCount)}
+              </span>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => void runSelected(confirming)}
+                disabled={busy}
+              >
                 <Icon name="trash" />
-                {busy ? "Moving…" : "Move now"}
+                {confirming === "forever"
+                  ? busy
+                    ? "Deleting…"
+                    : "Delete now"
+                  : busy
+                    ? "Moving…"
+                    : "Move now"}
               </button>
               <button type="button" className="btn" onClick={clearSelection} disabled={busy}>
                 <Icon name="close" />
@@ -177,7 +233,7 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
                 className={styles.progress}
                 value={deleteProgress.done}
                 max={deleteProgress.total}
-                aria-label="Moving to Trash"
+                aria-label={PROGRESS_LABEL[busyAction ?? "trash"]}
               />
               <span className={`muted tabular ${styles.small}`} aria-hidden="true">
                 {formatProgressPercent(deleteProgress.done, deleteProgress.total)}
@@ -228,6 +284,19 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
     </>
   );
 }
+
+// One call per document for each selection action; the server checks every rule again.
+const BULK_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
+  trash: deleteDocument,
+  restore: restoreDocument,
+  forever: deleteDocumentForever,
+};
+
+const PROGRESS_LABEL: Record<BulkAction, string> = {
+  trash: "Moving to Trash",
+  restore: "Restoring",
+  forever: "Deleting for good",
+};
 
 type Confirming = "trash" | "forever" | null;
 
@@ -351,9 +420,9 @@ function DocumentRow({
       <td
         role="cell"
         className={styles.selectCell}
-        data-empty={deletable && !inTrash ? undefined : "true"}
+        data-empty={deletable ? undefined : "true"}
       >
-        {deletable && !inTrash && (
+        {deletable && (
           <input
             type="checkbox"
             checked={selected}

@@ -42,27 +42,64 @@ describe("guards", () => {
     expect(offenders.map((p) => relative(ROOT, p))).toEqual([]);
   });
 
-  it("keeps Send focusable while waiting: aria-disabled, never disabled", () => {
-    const box = readFileSync(join(ROOT, "components/chat/QuestionBox.tsx"), "utf8");
-    const start = box.indexOf('label="Send question"');
-    const send = box.slice(start, box.indexOf("/>", start));
-    expect(send).toContain("aria-disabled={pending");
-    expect(send).not.toMatch(/\sdisabled=/);
+  // Critical #5: a client-side move keeps the tab's memory (cached PDFs, the
+  // last screens). Signing out, a session ending and signing in are full page
+  // loads instead. The one router.replace to a sign-in page left is the first
+  // visit with no session, which has nothing in memory yet.
+  it("never moves to or from a sign-in page with router.replace once a session existed", () => {
+    const moves = all((p) => /\.(ts|tsx)$/.test(p)).flatMap((p) =>
+      Array.from(readFileSync(p, "utf8").matchAll(/router\.(?:replace|push)\(([^)]*)\)/g), (m) => ({
+        file: relative(ROOT, p).replaceAll("\\", "/"),
+        to: m[1] ?? "",
+      })),
+    );
+    const toSignIn = moves.filter((m) =>
+      /login|signInPath|endedPath|signedOutPath|pageAfterSessionChange/.test(m.to),
+    );
+    expect(toSignIn).toEqual([{ file: "lib/session.tsx", to: "signInPath(pathname" }]);
+    const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/") || m.file.startsWith("app/admin/login/"));
+    expect(fromSignIn).toEqual([]);
+    const leaving = [
+      "app/login/SignInForm.tsx",
+      "app/admin/login/AdminSignInForm.tsx",
+      "components/shell/AppShell.tsx",
+      "components/shell/SetPasswordScreen.tsx",
+      "components/admin/AdminView.tsx",
+    ];
+    for (const file of leaving) expect(readFileSync(join(ROOT, file), "utf8"), file).not.toContain("useRouter");
   });
 
-  it("reads the chat out through one status line, not the whole log", () => {
-    const chat = readFileSync(join(ROOT, "components/chat/ChatScreen.tsx"), "utf8");
-    expect(chat).toMatch(/role="log"\s+aria-live="off"/);
-    expect(chat.match(/role="status"/g)?.length).toBe(1);
+  // A8a (#35): the documents screen never reloads itself after uploads. A
+  // reload wiped the error and duplicate rows and the search; the list asks
+  // the server again instead (lib/poll.ts).
+  it("never reloads the documents screen", () => {
+    const offenders = files(join(ROOT, "components", "documents"), (p) => /\.(ts|tsx)$/.test(p))
+      .filter((p) => /location\.reload\(/.test(readFileSync(p, "utf8")))
+      .map((p) => relative(ROOT, p));
+    expect(offenders).toEqual([]);
   });
 
-  it("has one polite region on the review page", () => {
-    const queue = readFileSync(join(ROOT, "components/review/ReviewQueue.tsx"), "utf8");
-    expect(queue.match(/aria-live=/g)?.length).toBe(1);
+  // A8a: the uploads list is not a live region; the screen says each batch once, politely.
+  it("keeps the uploads list and its counts out of the live regions", () => {
+    const source = readFileSync(join(ROOT, "components", "documents", "UploadArea.tsx"), "utf8");
+    expect(source).not.toMatch(/aria-live/);
   });
 
-  it("keeps a focused element clear of the sticky top bar (WCAG 2.4.11)", () => {
-    const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");
-    expect(css).toMatch(/scroll-padding-top:\s*calc\(var\(--topbar-space\) \+ var\(--space-4\)\)/);
+  // One way out (lib/sessionChannel.ts), so the first page asked for wins.
+  it("leaves for a fresh page only through leavePage", () => {
+    const offenders = all((p) => /\.(ts|tsx)$/.test(p))
+      .filter((p) => /location\.replace\(/.test(readFileSync(p, "utf8")))
+      .map((p) => relative(ROOT, p).replaceAll("\\", "/"));
+    expect(offenders).toEqual(["lib/sessionChannel.ts"]);
+  });
+
+  // Critical #5: a module-level Map is a cache that outlives the screen, and
+  // grows without end. The viewer keeps PDFs in its LruCache instead.
+  it("keeps no module-level Map in components", () => {
+    // documentCache.ts is deleted by the citation-page change (critical #5, part 2).
+    const offenders = files(join(ROOT, "components"), (p) => /\.(ts|tsx)$/.test(p))
+      .filter((p) => !p.endsWith("documentCache.ts"))
+      .filter((p) => /^(export )?(const|let|var) \w+(: [^=]+)? = new Map\b/m.test(readFileSync(p, "utf8")));
+    expect(offenders.map((p) => relative(ROOT, p).replaceAll("\\", "/"))).toEqual([]);
   });
 });

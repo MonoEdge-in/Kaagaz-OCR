@@ -146,12 +146,13 @@ class Settings:
     embedding_dim: int
     model_timeout_seconds: float
     # PRD 2 model budgets (ML amendment 5): the context window sent with every
-    # call, the reply budgets for the document card and for each invoice window,
-    # and the worker's timeout for those calls. The card reads at most
-    # card_max_chars of the document (D1).
+    # call, the reply budgets for the document card, for each invoice window and
+    # for an answer, and the worker's timeout for those calls. The card reads at
+    # most card_max_chars of the document (D1).
     model_num_ctx: int
     model_card_max_tokens: int
     model_window_max_tokens: int
+    model_answer_max_tokens: int
     model_extract_timeout_seconds: float
     card_max_chars: int
     # PRD 2 E2: an invoice is read in windows of this many characters, each overlapping
@@ -212,9 +213,11 @@ class Settings:
         model_num_ctx = env.positive("MODEL_NUM_CTX")
         card_max_tokens = env.positive("MODEL_CARD_MAX_TOKENS")
         window_max_tokens = env.positive("MODEL_WINDOW_MAX_TOKENS")
+        answer_max_tokens = env.positive("MODEL_ANSWER_MAX_TOKENS")
         for name, tokens in (
             ("MODEL_CARD_MAX_TOKENS", card_max_tokens),
             ("MODEL_WINDOW_MAX_TOKENS", window_max_tokens),
+            ("MODEL_ANSWER_MAX_TOKENS", answer_max_tokens),
         ):
             left = model_num_ctx - 2 * tokens - MAX_SYSTEM_PROMPT_TOKENS - CHAT_OVERHEAD_TOKENS
             if left < MIN_INPUT_TOKENS:
@@ -296,6 +299,7 @@ class Settings:
             model_num_ctx=model_num_ctx,
             model_card_max_tokens=card_max_tokens,
             model_window_max_tokens=window_max_tokens,
+            model_answer_max_tokens=answer_max_tokens,
             model_extract_timeout_seconds=extract_timeout_seconds,
             card_max_chars=env.positive("CARD_MAX_CHARS"),
             extract_window_chars=window_chars,
