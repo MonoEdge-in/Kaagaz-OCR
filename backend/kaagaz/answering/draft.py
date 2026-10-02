@@ -61,8 +61,7 @@ SYSTEM_PROMPT = (
     "3. Copy every number exactly as the evidence writes it. Never calculate, round or invent one.\n"
     '4. If the evidence does not answer the question, reply with status "not_found" and no sentences.\n'
     "5. Plain text only: no links, no markdown, no HTML.\n"
-    "6. Write in English. Write Devanagari digits as the same ASCII digits. Copy names, ids and quoted "
-    "words exactly as the evidence writes them.\n"
+    "6. Answer in English. A quote keeps the script it is written in.\n"
     'Reply with JSON only: {"status": "answered" or "not_found", '
     '"sentences": [{"text": "...", "evidence": [ids]}]}.'
 )

@@ -1003,8 +1003,7 @@ def test_each_model_answer_logs_the_model_and_the_prompt_hash(caplog: pytest.Log
 def test_the_answer_prompt_and_schema_are_pinned() -> None:
     pinned = SYSTEM_PROMPT + "\n" + json.dumps(ANSWER_SCHEMA, sort_keys=True)
     assert hashlib.sha256(pinned.encode("utf-8")).hexdigest() == ANSWER_PROMPT_HASH
-    assert ANSWER_PROMPT_HASH == "99f037706379b75f3777b8ce9054e211bb220a7b664a8a22ac6ce797d3120be7"
-    assert "Write in English. Write Devanagari digits as the same ASCII digits." in SYSTEM_PROMPT
-    assert "Copy names, ids and quoted words exactly as the evidence writes them." in SYSTEM_PROMPT
+    assert ANSWER_PROMPT_HASH == "fda1354bb1baa82e6676411177998a5877531bfdb617c054eaee9edf9cb233ba"
+    assert "Answer in English. A quote keeps the script it is written in." in SYSTEM_PROMPT  # PRD 3 H3
     sentences = ANSWER_SCHEMA["properties"]["sentences"]
     assert (sentences.get("maxItems"), sentences["items"]["properties"]["text"].get("maxLength")) == (5, 300)
