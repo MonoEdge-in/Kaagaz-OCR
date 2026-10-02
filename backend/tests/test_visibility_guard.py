@@ -41,6 +41,8 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # Review: the values of the version answers use, and nothing else.
     (review, "_QUEUE"): LIVE_CURRENT,
     (review, "_COUNT"): LIVE_CURRENT,
+    (review, "_QUEUE_FOR_DOCUMENT"): LIVE_CURRENT,
+    (review, "_COUNT_FOR_DOCUMENT"): LIVE_CURRENT,
     (review, "_LOCK_VALUE"): LIVE_CURRENT,
     # The admin numbers: each family once, by its current version; open review
     # items as the queue shows them.
@@ -76,6 +78,18 @@ BY_ID: dict[tuple[ModuleType, str], str] = {
 }
 
 _JOINS_DOCUMENTS = re.compile(r"\bdocuments d\b")
+_EXISTS = re.compile(r"\bEXISTS\s*\(")
+_CUSTOMER_FILTER = "customer_id = :"
+
+
+def _bracketed(sql: str, start: int) -> str:
+    """The text inside the bracket that opens at ``start``, up to the one that closes it."""
+    depth = 0
+    for index in range(start, len(sql)):
+        depth += {"(": 1, ")": -1}.get(sql[index], 0)
+        if depth == 0:
+            return sql[start : index + 1]
+    raise AssertionError("an unclosed bracket")
 
 
 def _sql(module: ModuleType, name: str) -> str:
@@ -101,6 +115,16 @@ class VisibilityGuardTest(unittest.TestCase):
                 sql = _sql(module, name)
                 self.assertTrue(_JOINS_DOCUMENTS.search(sql))
                 self.assertNotIn(LIVE, sql)
+
+    def test_each_statement_and_each_exists_in_it_filters_on_the_customer(self) -> None:
+        """The second lock next to row level security (A7a): ``customer_id = :`` in every
+        listed statement, and again inside each EXISTS, which reads a table of its own."""
+        for module, name in set(FILTERED) | set(BY_ID) | set(ALL_VERSIONS):
+            with self.subTest(statement=f"{module.__name__}.{name}"):
+                sql = _sql(module, name)
+                self.assertIn(_CUSTOMER_FILTER, sql)
+                for found in _EXISTS.finditer(sql):
+                    self.assertIn(_CUSTOMER_FILTER, _bracketed(sql, found.end() - 1))
 
     def test_every_statement_that_joins_documents_is_listed(self) -> None:
         listed = set(FILTERED) | set(BY_ID) | set(ALL_VERSIONS)

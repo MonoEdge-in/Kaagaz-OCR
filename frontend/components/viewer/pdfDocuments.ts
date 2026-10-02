@@ -1,13 +1,21 @@
-// Loads each PDF once per document id and keeps it, so moving between pages,
-// or showing several source cards from one document, fetches the file once.
+// Keeps the PDFs of the last few documents shown (KEPT), so moving between
+// pages, or showing several source cards from one document, fetches the file
+// once. Each PdfPage holds its document while it is on screen and releases it
+// when it goes; beyond KEPT, the least recently used PDF that nothing holds
+// is destroyed, which frees its memory and its PDF.js worker (lruCache.ts).
 // PDF.js is imported here on first use only, in the browser: it needs browser
 // APIs and must never load during server rendering. The upload queue also
 // counts a PDF's pages here before sending it (countPdfPages).
 
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { fileUrl } from "@/lib/api";
+import { LruCache } from "./lruCache";
 
-const cache = new Map<string, Promise<PDFDocumentProxy>>();
+const KEPT = 4; // PROVISIONAL: a document and a few source cards' documents
+
+const pdfs = new LruCache<Promise<PDFDocumentProxy>>(KEPT, (loading) => {
+  loading.then((pdf) => pdf.destroy()).catch(() => undefined);
+});
 
 async function pdfjsLib() {
   const pdfjs = await import("pdfjs-dist");
@@ -36,14 +44,18 @@ export async function countPdfPages(data: ArrayBuffer): Promise<number> {
   }
 }
 
-/** The PDF for one document, loaded at most once. A failed load is forgotten, so it can retry. */
-export function loadPdf(documentId: string): Promise<PDFDocumentProxy> {
-  const known = cache.get(documentId);
-  if (known) return known;
-  const loading = open(documentId);
-  cache.set(documentId, loading);
-  loading.catch(() => {
-    if (cache.get(documentId) === loading) cache.delete(documentId);
+/**
+ * The PDF for one document, loaded once while it is kept, and held until
+ * releasePdf(documentId, it). A failed load is forgotten, so it can retry.
+ */
+export function holdPdf(documentId: string): Promise<PDFDocumentProxy> {
+  return pdfs.hold(documentId, () => {
+    const loading = open(documentId);
+    loading.catch(() => pdfs.forget(documentId, loading));
+    return loading;
   });
-  return loading;
+}
+
+export function releasePdf(documentId: string, pdf: Promise<PDFDocumentProxy>): void {
+  pdfs.release(documentId, pdf);
 }

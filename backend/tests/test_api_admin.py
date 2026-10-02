@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import text
 
+from kaagaz.api.auth import verify_password
 from kaagaz.api.routers.admin import month_window
 from kaagaz.db.engine import Database
 from kaagaz.db.runs import PgRuns
@@ -62,6 +63,27 @@ def test_admin_lists_and_creates_users_and_the_new_user_can_sign_in(db: Database
             text("SELECT details FROM audit_log WHERE action = 'user.create'")
         ).scalar_one()
     assert PASSWORD not in json.dumps(details)
+
+
+@pytest.mark.db
+def test_two_users_made_with_the_same_password_get_different_salts(db: Database) -> None:
+    """The helpers reuse one cached hash of PASSWORD; the product never does. Two users
+    made on the admin screen with PASSWORD each get a new salt (not the helpers' one,
+    which the admin has), and each hash still verifies."""
+    api = Api(db)
+    admin = api.new_admin()
+    made = []
+    for n in (1, 2):
+        body = {"email": f"same-{n}-{admin.user_id[:8]}@example.test", "display_name": f"Same {n}"}
+        reply = admin.client.post(
+            "/api/admin/users", json={**body, "role": "member", "password": PASSWORD}, headers=CSRF
+        )
+        assert reply.status_code == 201, reply.text
+        made.append(str(api.user_state(admin.customer_id, reply.json()["id"])["password_hash"]))
+    helpers = str(api.user_state(admin.customer_id, admin.user_id)["password_hash"])
+
+    assert len({stored.split("$")[4] for stored in [*made, helpers]}) == 3
+    assert all(verify_password(PASSWORD, stored) for stored in made)
 
 
 @pytest.mark.db

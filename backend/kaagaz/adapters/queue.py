@@ -73,24 +73,21 @@ _MAX_LEASE_SECONDS = 12 * 60 * 60
 _REMEMBERED_DELIVERIES = 16
 
 
-# AR15b: a queue that does not answer fails fast. The read timeout leaves room
-# for the long poll (QUEUE_WAIT_SECONDS), and at most two retries (botocore's max_attempts
-# counts retries: three tries in all), so a "read again" or an upload never hangs on the queue.
+# AR15b: a queue that does not answer fails fast: 5 s to connect, and at most two
+# retries (botocore's max_attempts counts retries: three tries in all), so a "read
+# again" or an upload never hangs on the queue. Two clients:
+# * sends (an upload, "read again", the failure bin) are one short request, so
+#   their client reads for 5 s: about 30 s per send at worst, not 105 s
+#   (at QUEUE_WAIT_SECONDS=20);
+# * the other calls share a client whose read timeout leaves room for the long
+#   poll (QUEUE_WAIT_SECONDS plus a margin), or every idle receive would time out.
 _CONNECT_TIMEOUT_SECONDS = 5
 _READ_TIMEOUT_MARGIN_SECONDS = 10
+_SEND_READ_TIMEOUT_SECONDS = 5
 _MAX_ATTEMPTS = 2
 
 
-def client_config(settings: Settings) -> Config:
-    """The SQS client's timeouts and retries (AR15b)."""
-    return Config(
-        connect_timeout=_CONNECT_TIMEOUT_SECONDS,
-        read_timeout=settings.queue_wait_seconds + _READ_TIMEOUT_MARGIN_SECONDS,
-        retries={"max_attempts": _MAX_ATTEMPTS},
-    )
-
-
-def _make_client(settings: Settings) -> Any:
+def _make_client(settings: Settings, read_timeout_seconds: int) -> Any:
     # Credentials come from boto3's usual places: the task role in AWS, and the
     # laptop-only AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for ElasticMQ,
     # which accepts any values (.env.example).
@@ -98,7 +95,11 @@ def _make_client(settings: Settings) -> Any:
         "sqs",
         endpoint_url=settings.queue_endpoint_url,
         region_name=settings.queue_region,
-        config=client_config(settings),
+        config=Config(
+            connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+            read_timeout=read_timeout_seconds,
+            retries={"max_attempts": _MAX_ATTEMPTS},
+        ),
     )
 
 
@@ -141,9 +142,13 @@ class SqsQueue:
             raise ValueError(f"QUEUE_WAIT_SECONDS must be 1 to {_MAX_WAIT_SECONDS}")
         if not 1 <= settings.queue_lease_seconds <= _MAX_LEASE_SECONDS:
             raise ValueError(f"QUEUE_LEASE_SECONDS must be 1 to {_MAX_LEASE_SECONDS}")
-        # boto3 ships no type information, so the client is Any. Tests pass a
-        # client wrapped in botocore.stub.Stubber.
-        self._client = client if client is not None else _make_client(settings)
+        # boto3 ships no type information, so the clients are Any. Tests pass one
+        # client wrapped in botocore.stub.Stubber, which answers every call.
+        if client is None:
+            self._client = _make_client(settings, settings.queue_wait_seconds + _READ_TIMEOUT_MARGIN_SECONDS)
+            self._send_client = _make_client(settings, _SEND_READ_TIMEOUT_SECONDS)
+        else:
+            self._client = self._send_client = client
         self._url = settings.queue_url
         self._failed_url = settings.queue_url + "-failed"
         self._wait = settings.queue_wait_seconds
@@ -155,7 +160,7 @@ class SqsQueue:
     def enqueue(self, job: Job) -> None:
         body = json.dumps({"customer_id": job.customer_id, "document_id": job.document_id})
         try:
-            self._client.send_message(QueueUrl=self._url, MessageBody=body)
+            self._send_client.send_message(QueueUrl=self._url, MessageBody=body)
         except _ANY_ERROR as error:
             raise BackendUnavailable("queue") from error
 
@@ -218,7 +223,7 @@ class SqsQueue:
             raise ValueError("unknown receipt")
         self.extend(receipt)  # LeaseLost here: another delivery owns the job
         try:
-            self._client.send_message(
+            self._send_client.send_message(
                 QueueUrl=self._failed_url,
                 MessageBody=body,
                 MessageAttributes={"failure_code": {"DataType": "String", "StringValue": code}},
