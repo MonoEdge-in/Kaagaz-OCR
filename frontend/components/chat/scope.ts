@@ -1,7 +1,8 @@
 // Which documents the next question may use (PRD 3 H2), kept out of the
 // components so it is unit tested in node (tests/chat-scope.test.ts): the
 // choice as the body POST /api/chat takes, a saved body back into a choice
-// (so a reopened conversation shows its chip again), and the chip's words.
+// (so a reopened conversation shows its chip again), the chip's words, and
+// what the status line says aloud.
 //
 // A follow-up sends no scope and keeps the conversation's last one (plan
 // decision 9, PROVISIONAL): the screen sends one only after the person changes
@@ -17,19 +18,25 @@ export type ChatScope =
   | { kind: "folder"; folderId: string; subfolders: boolean }
   | { kind: "documents"; ids: string[] }
   // Tags, types or dates: not offered here, so a saved one is kept as it was.
-  | { kind: "other"; body: ScopeBody };
+  | { kind: "other"; body: ScopeBody }
+  // A conversation still loading (or that failed to load): the server keeps its saved scope.
+  | { kind: "kept" };
 
-export const EVERY_DOCUMENT: ChatScope = { kind: "all" };
+/** A scope the person can pick, and the server can be sent. */
+export type ChosenScope = Exclude<ChatScope, { kind: "kept" }>;
+
+export const EVERY_DOCUMENT: ChosenScope = { kind: "all" };
 
 /** What the chip and the picker show, and whether the next question sends it. */
 export interface ScopeState {
   scope: ChatScope;
   changed: boolean; // true: send it with the next question; false: the conversation keeps its own
   documents: string[] | null; // the documents the picker offers, once there were some
+  announce: boolean; // true after a pick or a restore: the status line says the scope aloud
 }
 
 /** The choice as POST /api/chat's `scope`; {} is every document. */
-export function scopeBody(scope: ChatScope): ScopeBody {
+export function scopeBody(scope: ChosenScope): ScopeBody {
   switch (scope.kind) {
     case "all":
       return {};
@@ -43,7 +50,7 @@ export function scopeBody(scope: ChatScope): ScopeBody {
 }
 
 /** A saved scope back into a choice. None saved, or nothing set in it, is every document. */
-export function scopeFromBody(body: ScopeBody | null | undefined): ChatScope {
+export function scopeFromBody(body: ScopeBody | null | undefined): ChosenScope {
   if (!body) return EVERY_DOCUMENT;
   const set = Object.entries(body)
     .filter(([key, value]) => key !== "include_subfolders" && value !== null && value !== undefined)
@@ -56,8 +63,13 @@ export function scopeFromBody(body: ScopeBody | null | undefined): ChatScope {
   return { kind: "other", body };
 }
 
-function stateOf(scope: ChatScope, changed: boolean, documents: string[] | null): ScopeState {
-  return { scope, changed, documents: scope.kind === "documents" ? scope.ids : documents };
+function stateOf(
+  scope: ChatScope,
+  changed: boolean,
+  documents: string[] | null,
+  announce = false,
+): ScopeState {
+  return { scope, changed, documents: scope.kind === "documents" ? scope.ids : documents, announce };
 }
 
 /** A new chat: every document, or the one document "Ask about this document" named. */
@@ -67,20 +79,25 @@ export function startScope(documentId: string | null): ScopeState {
     : stateOf(EVERY_DOCUMENT, false, null);
 }
 
+/** A conversation being opened: its scope is not known yet, and nothing is sent. */
+export function keptScope(): ScopeState {
+  return stateOf({ kind: "kept" }, false, null);
+}
+
 /** A reopened conversation: the scope its newest question used. O(messages). */
 export function restoredScope(messages: readonly Message[]): ScopeState {
   const last = messages.findLast((message) => message.role === "user");
-  return stateOf(scopeFromBody(last?.scope), false, null);
+  return stateOf(scopeFromBody(last?.scope), false, null, true);
 }
 
 /** The person picked a scope: it goes with the next question. */
-export function chooseScope(state: ScopeState, scope: ChatScope): ScopeState {
-  return stateOf(scope, true, state.documents);
+export function chooseScope(state: ScopeState, scope: ChosenScope): ScopeState {
+  return stateOf(scope, true, state.documents, true);
 }
 
 /** What the next question sends: the scope when it changed, else nothing (the conversation keeps its own). */
 export function sentScope(state: ScopeState): ScopeBody | undefined {
-  return state.changed ? scopeBody(state.scope) : undefined;
+  return state.changed && state.scope.kind !== "kept" ? scopeBody(state.scope) : undefined;
 }
 
 /** After an answer: the scope the server saved on the question, which a follow-up keeps. */
@@ -112,5 +129,22 @@ export function scopeText(
       return scope.ids.length === 0 ? "No documents" : `${scope.ids.length} documents`;
     case "other":
       return "Filtered documents";
+    case "kept":
+      return "This conversation's documents";
   }
+}
+
+/**
+ * What the status line says aloud: the chip's words once after a pick or a
+ * restore, and only when the names in them are known (`namesLoading` false),
+ * so a name arriving later never says it twice. Otherwise nothing.
+ */
+export function scopeAnnouncement(state: ScopeState, text: string, namesLoading: boolean): string {
+  return state.announce && !namesLoading ? `Asking about: ${text}` : "";
+}
+
+/** Why the choices can't be changed right now, or null when they can. */
+export function scopeLockedText(answerPending: boolean, conversationLoading: boolean): string | null {
+  if (answerPending) return "You can change this once the answer arrives.";
+  return conversationLoading ? "You can change this once the conversation loads." : null;
 }

@@ -176,6 +176,11 @@ describe("source cards", () => {
     expect(jumps.map((jump) => jump.text)).toEqual(["Page 4"]);
     expect(opens(jumps[0]!.href)).toEqual(["/documents/doc-1", "4", later]);
     expect(pageJumps(citation({ regions: [first] }))).toEqual([]);
+    const pages = [5, 4].map((page): Region => ({ kind: "box", page, box: [0, 0, 0.1, 0.1] }));
+    expect(pageJumps(citation({ regions: [first, ...pages] })).map((jump) => jump.text)).toEqual([
+      "Page 4",
+      "Page 5",
+    ]);
   });
 
   it("gives a value's label on another page a chip at the label's spot, or the page alone", () => {

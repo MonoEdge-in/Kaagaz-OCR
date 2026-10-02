@@ -1,7 +1,8 @@
 "use client";
 
 // Which documents the next question may use (PRD 3 H2), above the question
-// box: a chip saying the scope in words (announced politely when it changes),
+// box: a chip saying the scope in words (said aloud once, by a separate status
+// line, after a pick or when a conversation loads),
 // and "Change", which opens one labelled group of choices: all documents, one
 // folder (with or without its subfolders), or the documents chat was opened
 // for. A choice applies to the next question; until then a follow-up keeps
@@ -15,8 +16,8 @@ import libraryStyles from "@/components/documents/Library.module.css";
 import { loadDocument } from "@/components/viewer/documentCache";
 import { listFolders } from "@/lib/api";
 import type { Folder } from "@/lib/types";
-import { EVERY_DOCUMENT, scopeText } from "./scope";
-import type { ChatScope, ScopeState } from "./scope";
+import { EVERY_DOCUMENT, scopeAnnouncement, scopeText } from "./scope";
+import type { ChosenScope, ScopeState } from "./scope";
 import styles from "./Chat.module.css";
 
 interface ChoiceProps {
@@ -40,18 +41,19 @@ function Choice({ type = "radio", children, ...input }: ChoiceProps) {
 
 export function ScopePicker({
   state,
-  disabled,
+  locked,
   onChoose,
 }: {
   state: ScopeState;
-  disabled: boolean;
-  onChoose: (scope: ChatScope) => void;
+  locked: string | null; // why the choices can't be changed right now (scopeLockedText), or null
+  onChoose: (scope: ChosenScope) => void;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [foldersFailed, setFoldersFailed] = useState(false);
-  const [named, setNamed] = useState<{ id: string; name: string } | null>(null);
+  // name null: it could not be loaded (gone, or not this person's).
+  const [named, setNamed] = useState<{ id: string; name: string | null } | null>(null);
   const { scope, documents } = state;
 
   const needFolders = (open || scope.kind === "folder") && folders === null && !foldersFailed;
@@ -80,7 +82,9 @@ export function ScopePicker({
       .then((detail) => {
         if (!cancelled) setNamed({ id: oneDocument, name: detail.display_name });
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setNamed({ id: oneDocument, name: null });
+      });
     return () => {
       cancelled = true;
     };
@@ -91,12 +95,20 @@ export function ScopePicker({
   const ordered = tree ? inTreeOrder(tree) : [];
   const firstFolder = ordered[0]?.folder.id;
   const kind = `${id}-kind`;
+  const text = scopeText(scope, tree, name);
+  const namesLoading =
+    (scope.kind === "folder" && folders === null && !foldersFailed) ||
+    (scope.kind === "documents" && scope.ids.length === 1 && named?.id !== scope.ids[0]);
 
   return (
     <div className={styles.scope}>
+      {/* The visible chip is not a live region; this line speaks once per pick or restore. */}
+      <p className="visually-hidden" role="status" aria-atomic="true">
+        {scopeAnnouncement(state, text, namesLoading)}
+      </p>
       <div className={styles.scopeBar}>
-        <p className={styles.scopeChip} aria-live="polite">
-          <span className="muted">Asking about:</span> <strong>{scopeText(scope, tree, name)}</strong>
+        <p className={styles.scopeChip}>
+          <span className="muted">Asking about:</span> <strong>{text}</strong>
         </p>
         <button
           type="button"
@@ -109,85 +121,83 @@ export function ScopePicker({
           <span className="visually-hidden"> which documents to ask about</span>
         </button>
       </div>
-      {open ? (
-        <div id={`${id}-panel`} className={styles.scopePanel}>
-          <fieldset
-            className={`${libraryStyles.fieldset} ${styles.scopeChoices}`}
-            disabled={disabled}
-            aria-describedby={`${id}-hint`}
+      <div id={`${id}-panel`} className={styles.scopePanel} hidden={!open}>
+        <fieldset
+          className={`${libraryStyles.fieldset} ${styles.scopeChoices}`}
+          disabled={locked !== null}
+          aria-describedby={`${id}-hint`}
+        >
+          <legend>Ask about</legend>
+          <Choice name={kind} checked={scope.kind === "all"} onChange={() => onChoose(EVERY_DOCUMENT)}>
+            All documents
+          </Choice>
+          <Choice
+            name={kind}
+            checked={scope.kind === "folder"}
+            disabled={firstFolder === undefined}
+            onChange={() => {
+              if (firstFolder) onChoose({ kind: "folder", folderId: firstFolder, subfolders: false });
+            }}
           >
-            <legend>Ask about</legend>
-            <Choice name={kind} checked={scope.kind === "all"} onChange={() => onChoose(EVERY_DOCUMENT)}>
-              All documents
-            </Choice>
+            One folder
+          </Choice>
+          {scope.kind === "folder" && tree ? (
+            <div className={styles.scopeFolder}>
+              <div className="field">
+                <label htmlFor={`${id}-folder`}>Folder</label>
+                <select
+                  id={`${id}-folder`}
+                  className="input"
+                  value={tree.byId.has(scope.folderId) ? scope.folderId : ""}
+                  onChange={(event) => onChoose({ ...scope, folderId: event.target.value })}
+                >
+                  <option value="" disabled>
+                    Choose a folder
+                  </option>
+                  {ordered.map((node) => (
+                    <option key={node.folder.id} value={node.folder.id}>
+                      {pathLabel(tree, node.folder.id)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Choice
+                type="checkbox"
+                checked={scope.subfolders}
+                onChange={() => onChoose({ ...scope, subfolders: !scope.subfolders })}
+              >
+                Include subfolders
+              </Choice>
+            </div>
+          ) : null}
+          {foldersFailed ? (
+            <p className="error-text">
+              Could not load the folders.{" "}
+              <button type="button" className="btn btn-quiet" onClick={() => setFoldersFailed(false)}>
+                Try again
+              </button>
+            </p>
+          ) : open && folders === null ? (
+            <p className="muted" role="status">
+              Loading folders…
+            </p>
+          ) : folders?.length === 0 ? (
+            <p className="hint">No folders yet. Make one in Documents.</p>
+          ) : null}
+          {documents ? (
             <Choice
               name={kind}
-              checked={scope.kind === "folder"}
-              disabled={firstFolder === undefined}
-              onChange={() => {
-                if (firstFolder) onChoose({ kind: "folder", folderId: firstFolder, subfolders: false });
-              }}
+              checked={scope.kind === "documents"}
+              onChange={() => onChoose({ kind: "documents", ids: documents })}
             >
-              One folder
+              {scopeText({ kind: "documents", ids: documents }, null, name)}
             </Choice>
-            {scope.kind === "folder" && tree ? (
-              <div className={styles.scopeFolder}>
-                <div className="field">
-                  <label htmlFor={`${id}-folder`}>Folder</label>
-                  <select
-                    id={`${id}-folder`}
-                    className="input"
-                    value={tree.byId.has(scope.folderId) ? scope.folderId : ""}
-                    onChange={(event) => onChoose({ ...scope, folderId: event.target.value })}
-                  >
-                    <option value="" disabled>
-                      Choose a folder
-                    </option>
-                    {ordered.map((node) => (
-                      <option key={node.folder.id} value={node.folder.id}>
-                        {pathLabel(tree, node.folder.id)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <Choice
-                  type="checkbox"
-                  checked={scope.subfolders}
-                  onChange={() => onChoose({ ...scope, subfolders: !scope.subfolders })}
-                >
-                  Include subfolders
-                </Choice>
-              </div>
-            ) : null}
-            {foldersFailed ? (
-              <p className="error-text">
-                Could not load the folders.{" "}
-                <button type="button" className="btn btn-quiet" onClick={() => setFoldersFailed(false)}>
-                  Try again
-                </button>
-              </p>
-            ) : folders === null ? (
-              <p className="muted" role="status">
-                Loading folders…
-              </p>
-            ) : folders.length === 0 ? (
-              <p className="hint">No folders yet. Make one in Documents.</p>
-            ) : null}
-            {documents ? (
-              <Choice
-                name={kind}
-                checked={scope.kind === "documents"}
-                onChange={() => onChoose({ kind: "documents", ids: documents })}
-              >
-                {scopeText({ kind: "documents", ids: documents }, null, name)}
-              </Choice>
-            ) : null}
-            <p id={`${id}-hint`} className="hint">
-              Applies from your next question.
-            </p>
-          </fieldset>
-        </div>
-      ) : null}
+          ) : null}
+          <p id={`${id}-hint`} className="hint">
+            {locked ?? "Applies from your next question."}
+          </p>
+        </fieldset>
+      </div>
     </div>
   );
 }

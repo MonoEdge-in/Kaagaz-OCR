@@ -32,7 +32,15 @@ import {
   STILL_LOOKING_AFTER_MS,
 } from "./logic";
 import { QuestionBox } from "./QuestionBox";
-import { answeredScope, chooseScope, restoredScope, sentScope, startScope } from "./scope";
+import {
+  answeredScope,
+  chooseScope,
+  keptScope,
+  restoredScope,
+  scopeLockedText,
+  sentScope,
+  startScope,
+} from "./scope";
 import { ScopePicker } from "./ScopePicker";
 import styles from "./Chat.module.css";
 
@@ -72,20 +80,19 @@ function showInUrl(conversationId: string | null): void {
   window.history.replaceState(null, "", chatHref(conversationId));
 }
 
-export function ChatScreen() {
+/** `initialSearch`: the address's query string when chat opened (app/(app)/chat/page.tsx), read once. */
+export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const pathname = usePathname();
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [listFailed, setListFailed] = useState(false);
-  // The conversation named in the URL, read once. ChatScreen only renders in
-  // the browser after sign-in (the session gate), so window is always there.
-  const [restoreId] = useState(() =>
-    typeof window === "undefined" ? null : conversationFromSearch(window.location.search),
-  );
+  // The conversation named in the URL, read once at mount: later changes are
+  // this screen's own replaceState.
+  const [restoreId] = useState(() => conversationFromSearch(initialSearch));
   const [activeId, setActiveId] = useState<string | null>(restoreId);
   // The documents the next question may use (scope.ts): one document when the
   // viewer's "Ask about this document" opened chat, else restored from the conversation.
   const [scope, setScope] = useState(() =>
-    startScope(typeof window === "undefined" ? null : documentFromSearch(window.location.search)),
+    restoreId ? keptScope() : startScope(documentFromSearch(initialSearch)),
   );
   const [messages, setMessages] = useState<Message[]>([]);
   const [threadState, setThreadState] = useState<"idle" | "loading" | "error">(
@@ -150,6 +157,7 @@ export function ChatScreen() {
         if (request !== openRequest.current) return;
         if (error instanceof ApiError && error.status === 404) {
           setActiveId(null);
+          setScope(startScope(null));
           setThreadState("idle");
           showInUrl(null);
         } else {
@@ -224,8 +232,9 @@ export function ChatScreen() {
     setActiveId(id);
     showInUrl(id);
     setMessages([]);
-    // Until it loads, nothing of the last conversation's scope shows or is sent.
-    setScope(startScope(null));
+    // Until it loads (or if it fails), the server keeps this conversation's own
+    // scope; nothing of the last conversation's shows or is sent.
+    setScope(keptScope());
     setAskError(null);
     setThreadState("loading");
     try {
@@ -416,7 +425,7 @@ export function ChatScreen() {
           <div ref={composerRef} className={styles.composer}>
             <ScopePicker
               state={scope}
-              disabled={busy || threadState === "loading"}
+              locked={scopeLockedText(busy, threadState === "loading")}
               onChoose={(next) => setScope((current) => chooseScope(current, next))}
             />
             <QuestionBox pending={busy} error={askError} onAsk={onAsk} inputRef={inputRef} />

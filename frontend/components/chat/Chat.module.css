@@ -670,6 +670,9 @@
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface);
+  /* Never taller than a short phone screen above the sticky composer. */
+  max-height: min(40dvh, 20rem);
+  overflow-y: auto;
 }
 
 .scopeFolder {

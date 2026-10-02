@@ -4,9 +4,12 @@ import {
   answeredScope,
   chooseScope,
   EVERY_DOCUMENT,
+  keptScope,
   restoredScope,
+  scopeAnnouncement,
   scopeBody,
   scopeFromBody,
+  scopeLockedText,
   scopeText,
   sentScope,
   startScope,
@@ -16,8 +19,8 @@ import { askAboutHref, documentFromSearch } from "@/components/chat/logic";
 import type { Message, ScopeBody } from "@/lib/types";
 
 const DOC = "0b6f4c2e-8a1d-4d2b-9c3e-1f2a3b4c5d6e";
-const ONE_DOCUMENT: ChatScope = { kind: "documents", ids: [DOC] };
-const FOLDER: ChatScope = { kind: "folder", folderId: "f2", subfolders: false };
+const ONE_DOCUMENT = { kind: "documents", ids: [DOC] } satisfies ChatScope;
+const FOLDER = { kind: "folder", folderId: "f2", subfolders: false } satisfies ChatScope;
 
 const message = (id: string, role: Message["role"], scope: ScopeBody | null = null): Message => ({
   id,
@@ -99,13 +102,49 @@ describe("a reopened conversation", () => {
       message("q2", "user", saved({ folder_id: "f2" })),
       message("a2", "assistant"),
     ]);
-    expect(state).toEqual({ scope: FOLDER, changed: false, documents: null });
+    expect(state).toEqual({ scope: FOLDER, changed: false, documents: null, announce: true });
   });
 
   it("shows every document when nothing was asked or saved, and offers restored documents", () => {
     expect(restoredScope([]).scope).toEqual(EVERY_DOCUMENT);
     expect(restoredScope([message("q1", "user"), message("a1", "assistant")]).scope).toEqual(EVERY_DOCUMENT);
     expect(restoredScope([message("q1", "user", { document_ids: [DOC] })]).documents).toEqual([DOC]);
+  });
+});
+
+describe("a conversation still loading, or that failed to load", () => {
+  it("says the conversation keeps its own documents, and sends nothing", () => {
+    const state = keptScope();
+    expect(scopeText(state.scope, null, null)).toBe("This conversation's documents");
+    expect(sentScope(state)).toBeUndefined();
+  });
+
+  it("counts picking All documents from it as a change, so {} widens it", () => {
+    expect(sentScope(chooseScope(keptScope(), EVERY_DOCUMENT))).toEqual({});
+  });
+
+  it("says why the choices are locked while an answer or the conversation is on its way", () => {
+    expect(scopeLockedText(true, false)).toBe("You can change this once the answer arrives.");
+    expect(scopeLockedText(false, true)).toBe("You can change this once the conversation loads.");
+    expect(scopeLockedText(false, false)).toBeNull();
+  });
+});
+
+describe("what the status line says aloud", () => {
+  it("says the scope after a pick or a restore, once its names are known", () => {
+    const picked = chooseScope(startScope(null), FOLDER);
+    expect(scopeAnnouncement(picked, "Folder: Suppliers / 2026", false)).toBe(
+      "Asking about: Folder: Suppliers / 2026",
+    );
+    expect(scopeAnnouncement(picked, "One folder", true)).toBe("");
+    expect(scopeAnnouncement(restoredScope([]), "All documents", false)).toBe("Asking about: All documents");
+  });
+
+  it("says nothing while a conversation opens, on a new chat, or after an answer", () => {
+    expect(scopeAnnouncement(keptScope(), "This conversation's documents", false)).toBe("");
+    expect(scopeAnnouncement(startScope(DOC), "1 document", false)).toBe("");
+    const answered = answeredScope(chooseScope(startScope(null), FOLDER), message("q1", "user"));
+    expect(scopeAnnouncement(answered, "All documents", false)).toBe("");
   });
 });
 

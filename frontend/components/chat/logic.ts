@@ -170,7 +170,9 @@ export function pageJumps(citation: Citation): PageJump[] {
   });
   const pages = new Set(citation.regions.map((region) => region.page));
   pages.delete(citation.page_no);
-  const jumps = [...pages].map((page) => jump(`${word} ${page}`, page, citation.regions));
+  const jumps = [...pages]
+    .sort((a, b) => a - b)
+    .map((page) => jump(`${word} ${page}`, page, citation.regions));
   const label = citation.label_page_no;
   if (typeof label === "number" && labelPlace(citation) !== null) {
     jumps.push(jump(`Label, ${word.toLowerCase()} ${label}`, label, citation.label_regions ?? []));
