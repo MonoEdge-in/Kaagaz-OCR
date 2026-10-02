@@ -1,4 +1,4 @@
-"""My words (0008): one user's own words and meanings.
+"""My words (0008): one user's own words and meanings, and where they were added.
 
 Every function takes a connection from ``Database.user(customer_id, user_id)``
 (the restrictive policy hides every row from any other transaction), and every
@@ -16,6 +16,7 @@ The text comes checked and folded from ``kaagaz.answering.words_text``. Errors
 carry the API code; nothing is written before one. Words are never logged.
 """
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -54,6 +55,16 @@ class HasMeaning:
     """The word is there with other meanings, oldest first; nothing was written."""
 
     existing: list[WordRow]
+
+
+@dataclass(frozen=True, slots=True)
+class SpotRow:
+    id: str
+    word_id: str
+    word: str
+    meaning: str
+    page_no: int
+    region: dict[str, Any]
 
 
 class WordError(Exception):
@@ -101,6 +112,20 @@ _UPDATE = (
 )
 
 _DELETE = "DELETE FROM user_words WHERE customer_id = :c AND user_id = :me AND id = :id RETURNING id"
+
+_ADD_SPOT = (
+    "INSERT INTO user_word_spots (customer_id, user_id, word_id, document_id, page_no, region)"
+    " VALUES (:c, :me, :w, :d, :p, CAST(:r AS jsonb))"
+    " ON CONFLICT ON CONSTRAINT user_word_spots_once DO NOTHING"
+)
+
+_SPOTS = (
+    "SELECT s.id, s.word_id, w.word, w.meaning, s.page_no, s.region FROM user_word_spots s"
+    " JOIN user_words w ON w.customer_id = s.customer_id AND w.user_id = s.user_id AND w.id = s.word_id"
+    " WHERE s.customer_id = :c AND s.user_id = :me AND w.customer_id = :c AND w.user_id = :me"
+    " AND s.document_id = :d AND s.page_no = :p"
+    " ORDER BY s.created_at, s.id"
+)
 
 
 def list_words(conn: Connection, customer_id: str, user_id: str) -> list[WordRow]:
@@ -174,6 +199,34 @@ def delete_word(conn: Connection, customer_id: str, user_id: str, word_id: str) 
     False if there is no such word. O(log W + s) for its s spots."""
     params = {"c": customer_id, "me": user_id, "id": word_id}
     return conn.execute(text(_DELETE), params).first() is not None
+
+
+def add_spot(
+    conn: Connection,
+    customer_id: str,
+    user_id: str,
+    *,
+    word_id: str,
+    document_id: str,
+    page_no: int | None = None,
+    region: Mapping[str, Any] | None = None,
+) -> None:
+    """Link a word of this user to a document, or to a spot on one of its pages
+    (``page_no`` and ``region`` together). The same link twice is kept once. The
+    caller has checked the document is this customer's and the region's shape;
+    the keys and CHECKs refuse anything else. O(log S)."""
+    region_json = None if region is None else json.dumps(dict(region))
+    params = {"c": customer_id, "me": user_id, "w": word_id, "d": document_id, "p": page_no, "r": region_json}
+    conn.execute(text(_ADD_SPOT), params)
+
+
+def spots_on_page(
+    conn: Connection, customer_id: str, user_id: str, document_id: str, page_no: int
+) -> list[SpotRow]:
+    """This user's spots on one page of a document, with their word and meaning,
+    oldest first. O(log S + k) for the page's k spots, O(k) space."""
+    rows = conn.execute(text(_SPOTS), {"c": customer_id, "me": user_id, "d": document_id, "p": page_no})
+    return [SpotRow(str(row[0]), str(row[1]), row[2], row[3], row[4], dict(row[5])) for row in rows]
 
 
 def _lock_user(conn: Connection, me: Mapping[str, str]) -> None:

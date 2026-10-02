@@ -86,7 +86,7 @@ Customers are kept apart by two locks:
 
 The `isolation` tests prove both on every pull request.
 
-**My words** (0008, PROVISIONAL) belong to one user, not the customer: `user_words` and `user_word_spots` also have a RESTRICTIVE `own_user_only` policy on `kaagaz.user_id`, which only `Database.user` sets, so any other transaction (another user, an admin, `Database.customer`) sees and writes none of them.
+**My words** (0008, PROVISIONAL) belong to one user, not the customer: `user_words` and `user_word_spots` also have a RESTRICTIVE `own_user_only` policy on `kaagaz.user_id`, which only `Database.user` sets, so any other transaction (another user, an admin, `Database.customer`) sees and writes none of them. The routes are `/api/me/words` (list, add, change, delete; the same word with a second meaning is 409 `word_has_meaning` until confirmed) and `GET /api/documents/{id}/my-words?page=` (the caller's own spots on a page).
 
 **PRD 3** adds no table: 0006 adds columns and indexes to `pieces` and `messages`, and 0007 only comments. Every new statement (the three lists and the exact fallback, `/api/search`, `links`, the review filter, the failed list, `reembed`) names the customer and runs under row level security. A scope's folder and tags are looked up as this customer's, and every list keeps its customer filter, so another customer's folder, tag or document ids match nothing. The failed list needs an admin session: an app session, even an admin's, gets 403. In chat the scope is resolved again for the current customer on every turn, saved or sent, so another customer's ids match nothing, and a saved scope that no longer parses matches nothing (it is never widened). Neighbours come from the same customer's live current pieces inside the scope.
 

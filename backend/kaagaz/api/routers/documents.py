@@ -277,13 +277,14 @@ def _form_folder_id(value: str | UploadFile | None) -> str | None:
         raise ApiError(400, "bad_request") from None
 
 
-def _same_user(value: str | UploadFile | None, user: CurrentUser) -> None:
+def _same_user(value: str | UploadFile | None, user: CurrentUser, message: str | None = None) -> None:
     """The optional ``user_id`` form field: who the browser tab had signed in when
     the file was chosen. Someone else signed in since (in another tab, critical
     #5) gets 409 ``session_changed`` before anything is stored, so the file never
-    lands in their account. Not sent: no check (PROVISIONAL)."""
+    lands in their account. Not sent: no check (PROVISIONAL). ``message`` is
+    another route's own words (my words)."""
     if value is not None and value != user.user_id:
-        raise ApiError(409, "session_changed")
+        raise ApiError(409, "session_changed", message)
 
 
 def _accept(

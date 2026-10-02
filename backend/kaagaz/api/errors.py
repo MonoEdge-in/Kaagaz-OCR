@@ -1,4 +1,5 @@
-"""Every error the API sends has one shape: ``{"error": {"code", "message"}}``.
+"""Every error the API sends has one shape: ``{"error": {"code", "message"}}``, plus
+``details`` on the few errors whose screen needs more (my words' 409 ``word_has_meaning``).
 
 Why: the frontend (``frontend/lib/api.ts``) turns any failed reply into an
 ``ApiError`` from these two fields. The code is short and stable; the message
@@ -6,6 +7,9 @@ is plain English for a customer, with no internals: never document text, file
 names, identity numbers, SQL or a stack trace. Validation errors are not
 echoed back either, because they can quote what was typed (a password).
 """
+
+from collections.abc import Mapping
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -71,11 +75,14 @@ _STATUS_CODES = {
 class ApiError(Exception):
     """Raise anywhere in a route or dependency to send an error reply."""
 
-    def __init__(self, status: int, code: str, message: str | None = None) -> None:
+    def __init__(
+        self, status: int, code: str, message: str | None = None, *, details: Mapping[str, Any] | None = None
+    ) -> None:
         super().__init__(code)
         self.status = status
         self.code = code
         self.message = message or MESSAGES.get(code, MESSAGES["bad_request"])
+        self.details = details
 
 
 def bad_credentials(lock_minutes: int) -> ApiError:
@@ -84,16 +91,24 @@ def bad_credentials(lock_minutes: int) -> ApiError:
 
 
 def error_response(
-    status: int, code: str, message: str | None = None, *, headers: dict[str, str] | None = None
+    status: int,
+    code: str,
+    message: str | None = None,
+    *,
+    headers: dict[str, str] | None = None,
+    details: Mapping[str, Any] | None = None,
 ) -> JSONResponse:
     text = message or MESSAGES.get(code, MESSAGES["internal_error"])
-    return JSONResponse({"error": {"code": code, "message": text}}, status_code=status, headers=headers)
+    error: dict[str, Any] = {"code": code, "message": text}
+    if details is not None:
+        error["details"] = dict(details)
+    return JSONResponse({"error": error}, status_code=status, headers=headers)
 
 
 async def _api_error(request: Request, exc: Exception) -> Response:
     if not isinstance(exc, ApiError):
         raise TypeError("registered for ApiError only")
-    return error_response(exc.status, exc.code, exc.message)
+    return error_response(exc.status, exc.code, exc.message, details=exc.details)
 
 
 async def _validation_error(request: Request, exc: Exception) -> Response:

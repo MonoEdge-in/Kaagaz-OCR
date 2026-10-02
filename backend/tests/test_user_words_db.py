@@ -166,6 +166,35 @@ def test_a_word_or_a_document_deleted_takes_its_spots(db: Database) -> None:
     assert meanings(db, customer, user) == [("malak", "owner")]  # the word stays
 
 
+def test_spots_are_kept_once_and_listed_per_page_with_their_word(db: Database) -> None:
+    customer, user = new_customer(db)
+    malak, bojha = added(db, customer, user, "malak", "owner"), added(db, customer, user, "bojha", "charge")
+    box, cell = (
+        {"kind": "box", "page": 2, "box": [0.1, 0.2, 0.3, 0.25]},
+        {"kind": "cell", "page": 2, "row": 4, "column": 3},
+    )
+    with db.user(customer, user) as conn:
+        document, other = insert_document(conn, customer), insert_document(conn, customer)
+        for word_id, document_id, page, region in (
+            (malak.id, document, 2, box),
+            (malak.id, document, 2, box),  # the same spot again
+            (bojha.id, document, 2, cell),
+            (malak.id, document, None, None),  # the whole document, twice
+            (malak.id, document, None, None),
+            (malak.id, other, 2, box),
+        ):
+            user_words.add_spot(
+                conn, customer, user, word_id=word_id, document_id=document_id, page_no=page, region=region
+            )
+        on_page = user_words.spots_on_page(conn, customer, user, document, 2)
+        assert count_rows(conn, _SPOTS_OF, {"d": document}) == 3
+        assert user_words.spots_on_page(conn, customer, user, document, 1) == []
+    assert [(s.word_id, s.word, s.meaning, s.page_no, s.region) for s in on_page] == [
+        (malak.id, "malak", "owner", 2, box),
+        (bojha.id, "bojha", "charge", 2, cell),
+    ]
+
+
 def test_two_adds_of_one_user_wait_for_each_other(db: Database) -> None:
     """The second add waits on the user lock, then finds the first one's row."""
     customer, user = new_customer(db)
