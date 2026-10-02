@@ -169,7 +169,6 @@ _LOWERED_OCR_DPI = re.compile(r";ocr_dpi=([0-9]{1,5})\b")
 
 # --- what is saved ------------------------------------------------------------
 
-ROUTES = frozenset({"cells", "text_layer", "ocr", "blank"})
 # The identifiers two documents are linked by (D5).
 LINK_KINDS = frozenset(
     {"invoice_number", "po_number", "challan_number", "survey_number"}
@@ -181,7 +180,7 @@ LINK_KINDS = frozenset(
 class PageRecord:
     info: PageInfo
     has_image: bool
-    route: str | None = None  # one of ROUTES; None when the page was not read
+    route: str | None = None  # a Route (kaagaz.reading.route); None when the page was not read
     effective_dpi: int | None = None
     low_resolution: bool = False
 
@@ -462,7 +461,6 @@ class DocumentProcessor:
         ocr_meter: OcrMeter | None = None,
         clock: Callable[[], datetime] | None = None,
         timer: Callable[[], float] | None = None,
-        ocr_on: bool = False,
         max_vision_crops: int = MAX_VISION_CROPS,
         run_config: Mapping[str, Any] | None = None,
         vision_model: str | None = None,
@@ -479,8 +477,7 @@ class DocumentProcessor:
         The rest are for PRD 2 and all optional: ``runs`` keeps one run per delivery
         (it needs ``clock`` for its times and ``timer`` for its seconds);
         ``progress`` shows how far a document has got; ``ocr_meter`` is the OCR
-        engine the readers use, counted; ``ocr_on`` says an engine is set, so a page
-        with no text went to OCR; ``run_config`` is the run's plain JSON set-up
+        engine the readers use, counted; ``run_config`` is the run's plain JSON set-up
         (ML 10); ``vision_model`` and ``embed_model`` are the tags a run records
         when it used them. ``chat`` is the model stage's chat model (PRD 2 D1, E2),
         with its ``model_budget``; ``chat_model`` is the tag a run records when a
@@ -508,7 +505,6 @@ class DocumentProcessor:
         self._ocr_meter = ocr_meter
         self._clock = clock or _utc_now
         self._timer = timer or time.perf_counter
-        self._ocr_on = ocr_on
         self._max_vision_crops = max_vision_crops
         self._run_config = dict(run_config or {})
         self._vision_model = vision_model
@@ -1102,7 +1098,6 @@ def build_processor(
         ocr_meter=meter,
         clock=_utc_now,
         timer=time.perf_counter,
-        ocr_on=meter is not None,
         run_config={
             "build": _build(),
             **reader_config(settings),

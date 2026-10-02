@@ -68,7 +68,6 @@ from kaagaz.reading.spans import CellLocation, ReadError, Span
 _MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _DOC_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
-_CONTENT_TYPES_NS = "{http://schemas.openxmlformats.org/package/2006/content-types}"
 
 _WORKBOOK = "xl/workbook.xml"
 _WORKBOOK_RELS = "xl/_rels/workbook.xml.rels"

@@ -303,10 +303,6 @@ class InvoiceExtraction:
     over_limit: int = 0  # lines past MAX_LINES, or past MAX_WINDOW_LINES in a reply, dropped (A7)
     error_code: str | None = None  # "model_<code>" when a call failed; values is then empty
 
-    @property
-    def dropped(self) -> int:
-        return self.quotes.dropped
-
 
 @dataclass(frozen=True, slots=True)
 class InvoiceResult:
