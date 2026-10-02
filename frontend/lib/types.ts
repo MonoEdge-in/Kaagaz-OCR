@@ -334,6 +334,24 @@ export interface Answer {
   route: "fixed_query" | "search";
   normalized_question: string;
   model_used: boolean;
+  understood_words?: { word: string; meaning: string }[]; // my words chat used (A3); missing before it
+}
+
+/** One of my words (GET /me/words). Text from the user: shown as text only. */
+export interface MyWord {
+  id: string;
+  word: string;
+  meaning: string;
+  source: "manual" | "upload" | "viewer";
+  created_at: string;
+  updated_at: string;
+}
+
+/** POST /me/words: 201 created, 200 already there or replaced. */
+export interface WordSaved {
+  word: MyWord;
+  outcome: "created" | "already" | "replaced";
+  warning: "built_in" | null;
 }
 
 export interface Message {

@@ -20,6 +20,7 @@ import type {
   FailedDocument,
   Folder,
   Me,
+  MyWord,
   PasswordReset,
   ReviewChoice,
   ReviewItem,
@@ -32,6 +33,7 @@ import type {
   TwoStepSetup,
   UploadLimits,
   UploadResult,
+  WordSaved,
 } from "./types";
 
 export class ApiError extends Error {
@@ -39,6 +41,7 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly details?: unknown, // the few errors that carry more (409 word_has_meaning)
   ) {
     super(message);
     this.name = "ApiError";
@@ -63,11 +66,12 @@ const CSRF_HEADER = { "X-Requested-With": "kaagaz" };
 
 async function errorFrom(response: Response): Promise<ApiError> {
   try {
-    const body = (await response.json()) as { error?: { code?: string; message?: string } };
+    const body = (await response.json()) as { error?: { code?: string; message?: string; details?: unknown } };
     return new ApiError(
       response.status,
       body.error?.code ?? "error",
       body.error?.message ?? "Something went wrong.",
+      body.error?.details,
     );
   } catch {
     return new ApiError(response.status, "error", "Something went wrong.");
@@ -295,6 +299,17 @@ export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: 
     rating,
     ...(reason ? { reason } : {}),
   });
+
+// --- my words (only the signed-in user's) -------------------------------------
+// Every write sends user_id, who this tab signed in (409 session_changed if someone else has since).
+
+export const listMyWords = () => request<{ items: MyWord[] }>("GET", "/me/words");
+/** The bodies come from components/words/words.ts (addBody, changeBody, retryBody). */
+export const addMyWord = (body: object) => request<WordSaved>("POST", "/me/words", body);
+export const changeMyWord = (id: string, body: object) =>
+  request<Omit<WordSaved, "outcome">>("PATCH", `/me/words/${encodeURIComponent(id)}`, body);
+export const deleteMyWord = (id: string, userId: string) =>
+  request<void>("DELETE", `/me/words/${encodeURIComponent(id)}${query({ user_id: userId })}`);
 
 // --- review --------------------------------------------------------------------
 

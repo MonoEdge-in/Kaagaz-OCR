@@ -13,6 +13,7 @@ import Link from "next/link";
 import { useId } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
+import { understoodNotes } from "@/components/words/words";
 import type { Message } from "@/lib/types";
 import {
   answerLabelText,
@@ -49,7 +50,14 @@ export function AnswerView({ message, question }: { message: Message; question: 
   }
 
   const reading = question !== null ? understoodAs(question, answer.normalized_question) : null;
-  const understood = reading ? <p className={styles.understood}>Understood as: {reading}</p> : null;
+  // My words chat used (A3 sends understood_words; nothing shows before it). Text only.
+  const notes = understoodNotes(answer);
+  const understood = (reading || notes.length > 0) && (
+    <>
+      {reading && <p className={styles.understood}>Understood as: {reading}</p>}
+      {notes.length > 0 && <p className={styles.understood}>{notes.join(". ")}. <Link href="/words">My words</Link></p>}
+    </>
+  );
   const feedback = (
     <div className={styles.answerFooter}>
       <FeedbackControls messageId={message.id} initial={message.feedback} />
