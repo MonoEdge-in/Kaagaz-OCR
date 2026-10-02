@@ -14,12 +14,14 @@ from dataclasses import dataclass
 import pytest
 from sqlalchemy import Connection, create_engine, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError
 
 from kaagaz.db.engine import Database, normalise_url
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import CANDIDATES, search, vector_literal
 from tests import test_migration_0002_db as m0002
 from tests.db_support import APP_ROLE, database_url, make_database, migrate, new_customer
+from tests.test_api_errors import _client_raising
 from tests.test_search_db import EF_SEARCH, RECIPE, add_document, add_pieces, axis, run
 
 pytestmark = pytest.mark.db
@@ -178,7 +180,8 @@ def test_the_search_settings_end_with_their_transaction(db: Database) -> None:
     add_pieces(db, customer, add_document(db, customer), [("Invoice total", axis(0))])
     settings = text(
         "SELECT pg_backend_pid(), current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan'),"
-        " current_setting('statement_timeout'), current_setting('pg_trgm.word_similarity_threshold')"
+        " current_setting('statement_timeout'), current_setting('pg_trgm.word_similarity_threshold'),"
+        " current_setting('plan_cache_mode')"
     )
     try:
         with pooled.customer(customer) as conn:
@@ -190,8 +193,8 @@ def test_the_search_settings_end_with_their_transaction(db: Database) -> None:
         engine.dispose()
 
     assert during[0] == after[0]  # the same connection
-    assert tuple(during[1:]) == ("100", "relaxed_order", "3s", "0.3")
-    assert tuple(after[1:]) == ("40", "off", "0", "0.6")
+    assert tuple(during[1:]) == ("100", "relaxed_order", "3s", "0.3", "force_custom_plan")
+    assert tuple(after[1:]) == ("40", "off", "0", "0.6", "auto")
 
 
 def test_a_meaning_list_past_the_timeout_is_dropped_and_words_still_answer(
@@ -214,3 +217,29 @@ def test_a_meaning_list_past_the_timeout_is_dropped_and_words_still_answer(
 
     assert [hit.piece_id for hit in hits] == [piece]
     assert hits[0].word_score is not None and hits[0].meaning_score is None
+
+
+@pytest.mark.parametrize("statement", ["_WORD", "_FUZZY"])
+def test_a_word_or_typo_list_past_the_timeout_fails_the_search_as_503(
+    db: Database, monkeypatch: pytest.MonkeyPatch, statement: str
+) -> None:
+    """Only the meaning list falls back: a cancelled word or typo list raises, and the
+    API's OperationalError handler answers 503 backend_unavailable."""
+    customer, _ = new_customer(db)
+    add_pieces(db, customer, add_document(db, customer), [("Invoice INV-3003", None)])
+    monkeypatch.setattr(hybrid, "STATEMENT_TIMEOUT_MS", 200)
+    monkeypatch.setattr(
+        hybrid,
+        statement,
+        text(
+            "SELECT p.id, 0.0 FROM pieces p CROSS JOIN pg_sleep(5)"
+            " WHERE p.customer_id = :c AND :q <> '' AND :k <> 'x' AND :n > 0"
+        ),
+    )
+
+    with pytest.raises(OperationalError) as cancelled:
+        run(db, customer, "INV-3003")
+
+    assert getattr(cancelled.value.orig, "sqlstate", None) == "57014"
+    response = _client_raising(cancelled.value).get("/api/boom")
+    assert (response.status_code, response.json()["error"]["code"]) == (503, "backend_unavailable")
