@@ -135,8 +135,12 @@ class Retriever(Protocol):
 class PgRetriever:
     """``Retriever`` over PostgreSQL: hybrid search inside ``db.customer``."""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, *, recipe: str, ef_search: int) -> None:
+        """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
+        another tag are left out); ``ef_search``: SEARCH_EF."""
         self._db = db
+        self._recipe = recipe
+        self._ef_search = ef_search
 
     def search(self, customer_id: str, text: str, embedding: list[float] | None, limit: int) -> Sequence[Hit]:
         # Imported here so the answering rules (and their tests) do not need the
@@ -144,7 +148,15 @@ class PgRetriever:
         from kaagaz.search.hybrid import search
 
         with self._db.customer(customer_id) as conn:
-            return search(conn, customer_id=customer_id, query_text=text, embedding=embedding, limit=limit)
+            return search(
+                conn,
+                customer_id=customer_id,
+                query_text=text,
+                embedding=embedding,
+                limit=limit,
+                recipe=self._recipe,
+                ef_search=self._ef_search,
+            )
 
 
 @dataclass(frozen=True, slots=True)

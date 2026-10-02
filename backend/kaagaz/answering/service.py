@@ -73,6 +73,7 @@ from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unche
 from kaagaz.answering.verify import verify
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
+from kaagaz.search.indexing import query_input, recipe_tag
 from kaagaz.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -321,7 +322,8 @@ class AnswerService:
 
     def _embed(self, english: str) -> list[float] | None:
         """The question's vector, or None (no model, model down, or unusable
-        vectors), so search falls back to word and fuzzy matching. One model call."""
+        vectors), so search falls back to word and fuzzy matching. One model call,
+        with the query instruction (kaagaz.search.indexing.query_input, PRD 3 V3)."""
         if self._model is None or not english:
             return None
         try:

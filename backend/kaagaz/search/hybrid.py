@@ -3,14 +3,19 @@
 The three searches (docs/architecture.md, "Search, in simple terms"):
 
 1. **Exact words:** ``websearch_to_tsquery('english', q)`` against the piece's
-   ``tsv`` column, ranked by ``ts_rank_cd``. This parser never raises a syntax
-   error, so a customer's raw question is safe to pass. A question of stop
-   words only ("the and of") becomes an empty query that matches nothing.
-2. **Typo tolerant:** pg_trgm ``word_similarity(q, text)`` with ``q <% text``,
-   so "invioce" still finds "invoice". The ``<%`` cut-off is pg_trgm's
-   ``word_similarity_threshold``, set for this transaction only to
-   ``FUZZY_THRESHOLD`` (the default 0.6 misses one swapped letter pair in a
-   seven letter word: "invioce" against "invoice" scores 0.375).
+   ``tsv`` column, and ``websearch_to_tsquery('simple', k)`` against
+   ``tsv_simple`` (the text and its Latin spelling, unstemmed: PRD 3 W1), where
+   ``k`` is the question's ``normalise`` keywords, so the simple query does not
+   require stop words ("the", "of"). A piece scores the higher ``ts_rank_cd``
+   of the two. This parser never raises a syntax error, so a customer's raw
+   question is safe to pass. A question of stop words only ("the and of")
+   becomes an empty query that matches nothing.
+2. **Typo tolerant:** pg_trgm ``word_similarity(q, ...)`` with ``q <% ...``
+   against the text and its Latin spelling (W2), the higher of the two, so
+   "invioce" still finds "invoice" and "shindey" finds "शिंदे". The ``<%``
+   cut-off is pg_trgm's ``word_similarity_threshold``, set for this transaction
+   only to ``FUZZY_THRESHOLD`` (the default 0.6 misses one swapped letter pair
+   in a seven letter word: "invioce" against "invoice" scores 0.375).
 3. **Meaning:** cosine distance ``<=>`` between the question's embedding and
    each piece's. Skipped when there is no embedding (no model, or it is down):
    the other two still answer. This scan is exact on purpose: the HNSW index
@@ -37,10 +42,16 @@ cosine similarity, 1 minus the distance (1 is the same direction).
 PROVISIONAL: the search design is Vrushit's (Sprint 2); RRF with k = 60, 50
 candidates per list and the fuzzy threshold are starting values.
 
-Cost: the word and fuzzy lists are GIN index scans, O(m log m) for m matching
-pieces; the meaning list is O(n * dim) for the customer's n embedded pieces;
-the merge is O(150 log 150); then one indexed fetch of at most ``limit``
-pieces. At most five statements in the caller's transaction.
+Cost: the word and fuzzy lists are GIN index scans whose posting lists hold
+every customer's pieces, then O(m log m) to rank this customer's m matches.
+The meaning list is about O(ef_search * log N * dim) on the index for N vectors
+when the scope is large, at worst O(min(max_scan_tuples, N) * dim); the exact
+fallback is O(n * dim) over the scope's n vectors. The merge is O(150 log 150);
+then one indexed fetch of at most ``limit`` pieces. At most ten statements in
+the caller's transaction (with the meaning list's savepoint).
+
+ponytail: the GIN posting lists span all customers (the customer filter comes
+after the index); fine at this size, a per-customer partition is the upgrade.
 """
 
 import math
@@ -49,6 +60,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import Connection, text
+from sqlalchemy.exc import OperationalError
+
+from kaagaz.answering.hinglish import normalise
 
 # Candidates taken from each of the three lists before merging.
 CANDIDATES = 50
@@ -58,6 +72,11 @@ RRF_K = 60
 MAX_LIMIT = 100
 # pg_trgm word similarity cut-off for the typo tolerant list. PROVISIONAL.
 FUZZY_THRESHOLD = 0.3
+# Every search statement is cancelled after this long (PROVISIONAL). A meaning
+# list that runs out of time is dropped; the word and fuzzy lists still answer.
+STATEMENT_TIMEOUT_MS = 3000
+# PostgreSQL's SQLSTATE for a statement cancelled by statement_timeout.
+_QUERY_CANCELED = "57014"
 
 # Every statement below repeats the same filter in full, so each one can be read
 # (and checked for the customer filter) on its own: this customer's pieces of
@@ -65,18 +84,34 @@ FUZZY_THRESHOLD = 0.3
 # is written out in each one, before any LIMIT (tests/test_visibility_guard.py).
 
 _WORD = text(
-    "SELECT p.id, ts_rank_cd(p.tsv, websearch_to_tsquery('english', :q)) AS score"
+    "SELECT p.id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q)) AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
+    " CROSS JOIN websearch_to_tsquery('simple', :k) AS s (q)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.tsv @@ websearch_to_tsquery('english', :q)"
     " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
+# set_config(..., true) is SET LOCAL with a bound value (SET LOCAL takes none):
+# each lasts until this transaction ends, so nothing leaks to the next one on
+# the pooled connection. force_custom_plan: psycopg prepares a statement that has
+# run five times on a connection, and after five custom plans PostgreSQL may keep
+# its generic plan, which for the meaning list (no customer, vector or LIMIT
+# known) is the exact scan, never the index. A custom plan uses this search's own
+# values: the plan EXPLAIN shows.
 _SET_FUZZY_THRESHOLD = text("SELECT set_config('pg_trgm.word_similarity_threshold', :t, true)")
+_SET_SEARCH = text(
+    "SELECT set_config('statement_timeout', :ms, true),"
+    " set_config('plan_cache_mode', 'force_custom_plan', true)"
+)
+_SET_INDEX_SCAN = text(
+    "SELECT set_config('hnsw.ef_search', :ef, true), set_config('hnsw.iterative_scan', 'relaxed_order', true)"
+)
 
 _FUZZY = text(
-    "SELECT p.id, word_similarity(:q, p.text) AS score"
+    "SELECT p.id, GREATEST(word_similarity(:q, p.text), word_similarity(:q, p.text_latin)) AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -84,6 +119,10 @@ _FUZZY = text(
     " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
+# The index query (V2): every filter in WHERE, the index order and LIMIT inside
+# the MATERIALIZED step, so the planner can walk pieces_embedding. relaxed_order
+# may return rows slightly out of order; "distance + 0" makes the outer sort use
+# the exact distances, never the index, and ties break on the piece id.
 _MEANING = text(
     "WITH candidates AS MATERIALIZED ("
     " SELECT p.id, p.embedding <=> CAST(:vec AS vector) AS distance, d.created_at, p.document_id, p.seq"
@@ -172,7 +211,7 @@ def fuse(
 
 
 def vector_literal(values: Sequence[float]) -> str:
-    """pgvector's text form, ``[0.1,0.2]``, for a bound parameter cast to ``vector``."""
+    """pgvector's text form, ``[0.1,0.2]``, for a bound parameter cast to ``halfvec``."""
     if not values:
         raise ValueError("a vector needs at least one value")
     if not all(math.isfinite(value) for value in values):
@@ -187,27 +226,32 @@ def search(
     query_text: str,
     embedding: list[float] | None,
     limit: int,
+    recipe: str,
+    ef_search: int,
 ) -> list[SearchHit]:
     """The best ``limit`` pieces of this customer's ready, current documents
     that are not in Trash, best first.
 
-    ``conn`` must come from ``Database.customer(customer_id)``. An empty question
+    ``conn`` must come from ``Database.customer(customer_id)``; its transaction
+    gets this search's settings (the timeout, custom plans, the fuzzy threshold,
+    the index walk), which end with it. ``recipe`` is the ``embedding_model`` of
+    vectors made the current way; ``ef_search`` is SEARCH_EF. An empty question
     with no embedding finds nothing.
     """
     if not 1 <= limit <= MAX_LIMIT:
         raise ValueError("limit must be between 1 and 100")
+    conn.execute(_SET_SEARCH, {"ms": str(STATEMENT_TIMEOUT_MS)})
     word: list[tuple[str, float]] = []
     fuzzy: list[tuple[str, float]] = []
     meaning: list[tuple[str, float]] = []
     if query_text.strip():
-        params = {"c": customer_id, "q": query_text, "n": CANDIDATES}
+        keywords = " ".join(normalise(query_text).keywords)
+        params = {"c": customer_id, "q": query_text, "k": keywords, "n": CANDIDATES}
         word = [(str(row[0]), float(row[1])) for row in conn.execute(_WORD, params)]
         conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
         fuzzy = [(str(row[0]), float(row[1])) for row in conn.execute(_FUZZY, params)]
     if embedding is not None:
-        rows = conn.execute(_MEANING, {"c": customer_id, "vec": vector_literal(embedding), "n": CANDIDATES})
-        # A zero vector has no direction: its distance is NaN and says nothing.
-        meaning = [(str(row[0]), 1.0 - float(row[1])) for row in rows if math.isfinite(float(row[1]))]
+        meaning = _meaning(conn, customer_id, vector_literal(embedding), recipe, ef_search)
 
     fused = fuse(word, fuzzy, meaning)[:limit]
     if not fused:
@@ -239,3 +283,25 @@ def search(
             )
         )
     return hits
+
+
+def _meaning(
+    conn: Connection, customer_id: str, vec: str, recipe: str, ef_search: int
+) -> list[tuple[str, float]]:
+    """The meaning list: the index walk, then the exact scan when the walk came
+    back with fewer than CANDIDATES rows (a scope with fewer vectors than that
+    is scanned exactly too, which is cheap). Empty when the statement timeout
+    cancels it: the savepoint keeps the transaction usable for the rest."""
+    conn.execute(_SET_INDEX_SCAN, {"ef": str(ef_search)})
+    params = {"c": customer_id, "vec": vec, "recipe": recipe, "n": CANDIDATES}
+    try:
+        with conn.begin_nested():
+            rows = conn.execute(_MEANING, params).all()
+            if len(rows) < CANDIDATES:
+                rows = conn.execute(_MEANING_EXACT, params).all()
+    except OperationalError as error:
+        if getattr(error.orig, "sqlstate", None) != _QUERY_CANCELED:
+            raise
+        return []
+    # A zero vector has no direction: its distance is NaN and says nothing.
+    return [(str(row[0]), 1.0 - float(row[1])) for row in rows if math.isfinite(float(row[1]))]

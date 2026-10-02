@@ -77,6 +77,7 @@ _BASE: dict[str, Any] = {
     "admin_session_minutes": 60,
     "trash_days": 30,
     "reprocess_per_hour": 20,
+    "search_ef": 100,
     "answer_max_evidence": 8,
     "answer_min_evidence_score": 0.2,
     "timezone": "Asia/Kolkata",

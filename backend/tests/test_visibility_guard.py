@@ -28,6 +28,7 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (hybrid, "_WORD"): LIVE_CURRENT,
     (hybrid, "_FUZZY"): LIVE_CURRENT,
     (hybrid, "_MEANING"): LIVE_CURRENT,
+    (hybrid, "_MEANING_EXACT"): LIVE_CURRENT,
     (hybrid, "_DETAILS"): LIVE_CURRENT,
     # The numbers in answers: the same, in every CTE.
     (fixed_queries, "_AVAILABLE_FIELDS"): LIVE_CURRENT,

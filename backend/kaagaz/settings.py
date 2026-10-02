@@ -181,6 +181,9 @@ class Settings:
     # Read again (PRD 2 X1, security A8): how many a customer may start in one hour.
     reprocess_per_hour: int
 
+    # Search (PRD 3 V2): hnsw.ef_search, the meaning index's candidate list, 1 to 1000.
+    search_ef: int
+
     # Answers.
     answer_max_evidence: int
     answer_min_evidence_score: float
@@ -319,6 +322,7 @@ class Settings:
             admin_session_minutes=env.positive("ADMIN_SESSION_MINUTES"),
             trash_days=env.integer("TRASH_DAYS"),
             reprocess_per_hour=env.positive("REPROCESS_PER_HOUR"),
+            search_ef=env.between("SEARCH_EF", 1, 1000),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             timezone=_time_zone(env.text("TIMEZONE")),
@@ -367,6 +371,12 @@ class _Env:
         number = self.integer(name)
         if number < 1:
             raise SettingsError(f"{name} must be at least 1")
+        return number
+
+    def between(self, name: str, low: int, high: int) -> int:
+        number = self.integer(name)
+        if not low <= number <= high:
+            raise SettingsError(f"{name} must be between {low} and {high}")
         return number
 
     def optional_integer(self, name: str) -> int | None:
