@@ -49,7 +49,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
     spans = [
         _box(1, 0.8, " कुल ₹ 1,200 ", confidence=0.62, origin="ocr", kind="paragraph"),
         _box(2, 0.5, "other page", confidence=0.99, origin="ocr"),
-        _box(1, 0.4, "Sharma‍Traders <b>", confidence=0.97, origin="ocr"),
+        _box(1, 0.4, "Sharma\u200dTraders <b>", confidence=0.97, origin="ocr"),
         _box(1, 0.1, "Invoice", origin="ocr"),
     ]
     api.add_reader_output(signed.customer_id, document_id, spans, reader="paddleocr-vl", reader_version="1.5")
@@ -73,7 +73,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
                         "region": {"kind": "box", "page": 1, "box": [0.1, 0.8, 0.9, 0.84]},
                     },
                     {
-                        "text": "Sharma‍Traders <b>",
+                        "text": "Sharma\u200dTraders <b>",
                         "confidence": 0.97,
                         "origin": "ocr",
                         "kind": None,
