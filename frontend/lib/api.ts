@@ -146,6 +146,9 @@ export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everyw
 export const listDocuments = (params: DocumentListParams = {}) =>
   request<DocumentList>("GET", `/documents${query(params)}`);
 export const getDocument = (id: string) => request<DocumentDetail>("GET", `/documents/${id}`);
+/** The detail's own summary only, for asking again while it is read. */
+export const getDocumentSummary = (id: string) =>
+  request<DocumentSummary>("GET", `/documents/${id}/summary`);
 /** Moves the document, with every version of it, to Trash (PRD 1, F5). */
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);
 /** Brings a document in Trash back, with every version of it. */
