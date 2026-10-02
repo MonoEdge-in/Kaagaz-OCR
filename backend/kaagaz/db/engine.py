@@ -25,6 +25,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from kaagaz.ingestion.errors import BackendUnavailable
 
@@ -37,20 +38,36 @@ def normalise_url(url: str) -> str:
     return url
 
 
+# The pool, per process (PROVISIONAL numbers): 10 connections kept, 5 more when busy
+# (15 at most, SQLAlchemy's default total), and a wait of at most 10 seconds for a
+# free one. A wait that runs out is a pool TimeoutError: 503 busy, like a lost database.
+POOL_SIZE = 10
+MAX_OVERFLOW = 5
+POOL_TIMEOUT_SECONDS = 10
+
+
 def make_engine(database_url: str) -> Engine:
     """``hide_parameters``: a failing statement's error and the engine's log lines
     never show the bound values, which can be row values or document text."""
-    return create_engine(normalise_url(database_url), pool_pre_ping=True, future=True, hide_parameters=True)
+    return create_engine(
+        normalise_url(database_url),
+        pool_pre_ping=True,
+        pool_size=POOL_SIZE,
+        max_overflow=MAX_OVERFLOW,
+        pool_timeout=POOL_TIMEOUT_SECONDS,
+        future=True,
+        hide_parameters=True,
+    )
 
 
 @contextmanager
 def unavailable() -> Iterator[None]:
-    """Turn "cannot reach the database" (OperationalError) into BackendUnavailable,
-    the error the upload service undoes and retries on and the worker retries the
-    job on. Constraint errors stay what they are: they are bugs, not outages."""
+    """Turn "cannot reach the database" (OperationalError, or no free pooled connection)
+    into BackendUnavailable, the error the upload service undoes and retries on and the
+    worker retries the job on. Constraint errors stay what they are: they are bugs, not outages."""
     try:
         yield
-    except OperationalError:
+    except (OperationalError, PoolTimeout):
         raise BackendUnavailable("database") from None
 
 
