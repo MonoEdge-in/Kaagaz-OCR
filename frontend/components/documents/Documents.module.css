@@ -737,3 +737,45 @@ table.docs th {
     margin-top: var(--space-3);
   }
 }
+
+/* Search inside documents (PRD 3 Q3): the mode choice and the results. */
+.searchMode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.result {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.resultName {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.resultMeta {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.resultSnippet {
+  margin: var(--space-2) 0 0;
+  overflow-wrap: anywhere;
+}
