@@ -38,8 +38,7 @@ from kaagaz.extraction.invoice import (
 from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import label_quoted, label_values
 from kaagaz.extraction.quotes import MAX_QUOTE_CHARS, QuoteCounts, find_quote, reader_text
-from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue
-from kaagaz.pipeline import InvoiceLineRow, InvoiceRow
+from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue, InvoiceLineRow, InvoiceRow
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 from tests.exit_fixtures import (
     BUYER_GSTIN,

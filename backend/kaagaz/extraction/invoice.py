@@ -154,11 +154,10 @@ from kaagaz.extraction.quotes import (
     located_value,
     normalise_quote,
 )
-from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue
+from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue, InvoiceLineRow, InvoiceRow
 from kaagaz.reading.spans import BoxLocation, Location, Span
 
 if TYPE_CHECKING:
-    from kaagaz.pipeline import InvoiceLineRow, InvoiceRow
     from kaagaz.settings import Settings
 
 INVOICE_FIELDS = (
@@ -307,7 +306,7 @@ class InvoiceExtraction:
 @dataclass(frozen=True, slots=True)
 class InvoiceResult:
     values: list[ExtractedValue]  # every value of the document, with the invoice's labels settled
-    invoice: "InvoiceRow | None"
+    invoice: InvoiceRow | None
     check: CheckResult | None
 
 
@@ -483,10 +482,9 @@ def finish_invoice(
     return InvoiceResult(final, row, check)
 
 
-def invoice_row(values: Sequence[ExtractedValue], check: CheckResult) -> "InvoiceRow":
+def invoice_row(values: Sequence[ExtractedValue], check: CheckResult) -> InvoiceRow:
     """E5: the typed row from the ``document`` values and its lines from the ``line:{n}``
     values (the first value of each field), with the check's status and reasons. O(v)."""
-    from kaagaz.pipeline import InvoiceRow  # pipeline.py runs the invoice stage, so imported here
 
     document: dict[str, ExtractedValue] = {}
     lines: dict[int, dict[str, ExtractedValue]] = {}
@@ -974,9 +972,7 @@ def _amount(value: ExtractedValue) -> Decimal | None:
     return value.value_number if value.value_number is not None else parse_amount(value.value_text)
 
 
-def _line_row(number: int, fields: Mapping[str, ExtractedValue]) -> "InvoiceLineRow":
-    from kaagaz.pipeline import InvoiceLineRow  # see invoice_row
-
+def _line_row(number: int, fields: Mapping[str, ExtractedValue]) -> InvoiceLineRow:
     typed = _Typed(fields)
     description = typed.text("description", MAX_DESCRIPTION_CHARS)
     hsn, quantity, unit = typed.text("hsn"), typed.number("quantity"), typed.text("unit")

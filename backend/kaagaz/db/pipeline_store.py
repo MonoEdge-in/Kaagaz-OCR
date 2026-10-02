@@ -57,7 +57,7 @@ One indexed query for ``load_learned``.
 import json
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Connection, text
 
@@ -66,9 +66,19 @@ from kaagaz.db.runs import is_run_open
 from kaagaz.db.sqlstate import retry_on_deadlock
 from kaagaz.db.trash import lock_family
 from kaagaz.extraction.learned import LearnedCorrection
-from kaagaz.extraction.values import CARD_RECORD, NEEDS_REVIEW, ExtractedValue
-from kaagaz.pipeline import DocumentContent, DocumentFacts, InvoiceRow, LinkIdentifier, Superseded
+from kaagaz.extraction.values import (
+    CARD_RECORD,
+    NEEDS_REVIEW,
+    DocumentFacts,
+    ExtractedValue,
+    InvoiceRow,
+    LinkIdentifier,
+)
+from kaagaz.jobs.worker import Superseded
 from kaagaz.reading.spans import Span, location_from_json, location_to_json
+
+if TYPE_CHECKING:
+    from kaagaz.pipeline import DocumentContent  # pipeline builds this store
 
 _UPDATE_FACTS = text(
     "UPDATE documents SET doc_type = :doc_type, languages = CAST(:languages AS text[]),"
@@ -203,7 +213,7 @@ class PgPipelineStore:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def save(self, content: DocumentContent, *, run_id: str | None = None) -> None:
+    def save(self, content: "DocumentContent", *, run_id: str | None = None) -> None:
         """Replace everything saved for the document with ``content``, in one transaction.
         With ``run_id``, raise Superseded and write nothing unless that run is still
         open (the run fence)."""
