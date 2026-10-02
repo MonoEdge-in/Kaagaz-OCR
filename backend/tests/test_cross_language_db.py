@@ -1,12 +1,7 @@
-"""An English question about a Marathi land record, end to end, against a real
-PostgreSQL (council 2 Oct 2026, PR2).
-
-A 7/12 extract is uploaded as CSV cells (so no OCR is needed), with Devanagari
-digits, and processed by the production processor with no AI model, as in
-test_end_to_end_db.py. "Who is the owner of the land?" shares no word with it:
-only the glossary's word list finds it, and the answer quotes the owner's name
-from its cell, needs review (the gate passed through the glossary alone).
-"""
+"""An English question about a Marathi 7/12, end to end on PostgreSQL (council 2 Oct
+2026, PR2): CSV cells with Devanagari digits, processed with no AI model, as in
+test_end_to_end_db.py. Only the glossary's word list finds the owner's row; the answer
+quotes the name from its cell, needs review (the gate passed through the glossary)."""
 
 from typing import Any
 

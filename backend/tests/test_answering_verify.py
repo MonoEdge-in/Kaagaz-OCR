@@ -3,12 +3,13 @@
 import logging
 import random
 import re
+import unicodedata
 from decimal import Decimal
 
 import pytest
 
 from kaagaz.answering.draft import DraftSentence
-from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
+from kaagaz.answering.verify import FUNCTION_WORDS, numbers_in, unchecked_cross_script, verify
 
 EVIDENCE = {
     1: "Invoice No: INV-1042\nInvoice Date: 12/08/2026\nGrand Total: Rs. 1,20,000",
@@ -331,10 +332,33 @@ def test_every_devanagari_word_must_be_a_word_of_the_evidence(sentence: str, kep
 
 
 def test_a_sentence_checked_against_nothing_over_devanagari_evidence_is_unchecked() -> None:
-    texts = {1: OWNER, 2: "Owner: Ram Patil"}
+    texts = {1: OWNER, 2: "Owner: Ram Patil", 3: "गट क्रमांक ४७ | भोगवटादार रामचंद्र गणपत पाटील"}
     assert unchecked_cross_script(DraftSentence("The owner is Ramchandra Patil.", [1]), texts)
     assert not unchecked_cross_script(DraftSentence("The owner is रामचंद्र गणपत पाटील.", [1]), texts)
-    assert not unchecked_cross_script(DraftSentence("Gat ४७.", [1]), {1: "गट क्रमांक ४७"})  # a checked number
-    assert not unchecked_cross_script(DraftSentence("A: जमीन मालकाचे नाव", [1]), texts)  # a copy
+    assert not unchecked_cross_script(DraftSentence("A: जमीन मालकाचे नाव", [1]), texts)  # a quote
+    # A number is no quote: the 47 is checked, the name never is.
+    assert unchecked_cross_script(DraftSentence("Gat ४७.", [3]), texts)
+    invented = DraftSentence("The owner of gat 47 is Sita Deshmukh.", [3])
+    assert verify([invented], texts) == [invented] and unchecked_cross_script(invented, texts)
+    assert unchecked_cross_script(DraftSentence("It है.", [1]), texts)  # a function word is no quote
     english = DraftSentence("The owner is Ram Patil.", [2])
     assert not unchecked_cross_script(english, texts)  # English evidence
+
+
+@pytest.mark.parametrize(
+    ("sentence", "kept"),
+    [
+        ("कुल ₹ ४५० है।", True),  # है is a function word
+        ("कुल ₹ ४५० आणि रक्कम.", False),  # आणि may be added, रक्कम not
+        ("कुल ₹ ४५० नहीं है।", False),  # a negation is never a function word
+        ("एकूण ४५० नाही.", False),
+        ("कुल ₹ ४५० या ५००.", False),
+    ],
+)
+def test_only_closed_function_words_may_be_added(sentence: str, kept: bool) -> None:
+    assert _kept(sentence, "कुल ₹ ४५०\nएकूण ४५०") is kept
+
+
+def test_function_words_are_whole_nfc_words_and_no_negation() -> None:
+    assert all(unicodedata.is_normalized("NFC", word) for word in FUNCTION_WORDS)
+    assert not {"नहीं", "नाही", "न", "नका", "नये", "नव्हे", "या", "किंवा"} & FUNCTION_WORDS

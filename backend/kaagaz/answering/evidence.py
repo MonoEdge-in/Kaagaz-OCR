@@ -11,16 +11,15 @@ reaches ``answer_min_evidence_score``, or at least half of the question's
 keywords appear in the evidence text (ignoring case). Otherwise the answer is
 "not found" plus the closest documents.
 
-The keyword rule, for English questions on Marathi and Hindi documents too
-(council 2 Oct 2026, PR2 D). Every digit in the evidence reads as ASCII
-(``ascii_digits``). Each keyword counts once, out of the question's keyword
-count. A keyword with a digit (an id, "48", "inv-1042") must be in the
-evidence as written, with no letter, mark or digit next to it, or the gate
-fails on every path, the score path too (this is checked first): "Who owns
-gat number 48?" is never answered from gat 47, however close its scores. A keyword
-also counts when a glossary equivalent is there (``glossary.present``: whole
-words for short terms, never a GENERIC word). A pass that needed the glossary
-is ``"glossary"``, and the service caps that answer at needs review.
+The keyword rule (council 2 Oct 2026, PR2 D): digits of any script read as
+ASCII; each keyword counts once, out of the keyword count; a keyword with a
+digit ("48", "inv-1042") must be in the evidence as a whole token
+(``has_token``: not in 148, 1,48,000, 4.48, 47/48, 48/2 or 48.00), checked
+first on every path, and the score path needs the best piece, whose score it
+is, to hold it too; a keyword also counts through a glossary equivalent
+(``glossary.present``), and such a pass is ``"glossary"``, capped at needs
+review by the service, which also checks each kept sentence's own cited hits
+(``service._judged``).
 
 PROVISIONAL, a change from the spec's "word score or meaning score": the word
 score is PostgreSQL's raw ``ts_rank_cd``, which is small and unbounded (about
@@ -76,6 +75,10 @@ CLOSEST_DOCUMENTS = 3
 # How the gate passed: a score, the English keywords, or only with the glossary's help.
 Gate = Literal["score", "keywords", "glossary"]
 _DIGIT = re.compile("[0-9]")
+_LETTER = re.compile("[a-z]")
+# Whole tokens (has_token): no letter, mark or digit (\w) right before or after.
+_NUMBER_TOKEN = re.compile(r"(?<!\w)[0-9]+(?:[.,/-][0-9]+)*(?!\w)")
+_ID_TOKEN = re.compile(r"(?<!\w)[a-z0-9]+(?:[-/.][a-z0-9]+)*(?!\w)")  # as normalise splits words
 
 _TELL = r"(?:say|answer|reply|tell|respond|write)"  # an imperative near "when asked"
 # Before "when asked", the imperative starts its clause ("Reply that ..."); after it, any
@@ -236,14 +239,18 @@ def enough_evidence(evidence: Sequence[Evidence], keywords: Sequence[str], min_s
     if not evidence:
         return None
     wanted = list(dict.fromkeys(ascii_digits(keyword).casefold() for keyword in keywords))
+    numbered = [keyword for keyword in wanted if _DIGIT.search(keyword)]
     haystack = ascii_digits("\n".join(item.hit.text for item in evidence)).casefold()
     # First, on every path: a close score for "gat 48" over a gat 47 piece is no answer.
-    if any(_DIGIT.search(keyword) and not _verbatim(keyword, haystack) for keyword in wanted):
+    if not all(has_token(keyword, haystack) for keyword in numbered):
         return None
     best = evidence[0].hit
-    for score in (best.meaning_score, best.fuzzy_score):
-        if score is not None and score >= min_score:
-            return "score"
+    # The score belongs to the best piece, so that piece itself must hold every number asked.
+    own = ascii_digits(best.text).casefold()
+    if all(has_token(keyword, own) for keyword in numbered):
+        for score in (best.meaning_score, best.fuzzy_score):
+            if score is not None and score >= min_score:
+                return "score"
     if not wanted:
         return None
     english = sum(1 for keyword in wanted if keyword in haystack)
@@ -253,19 +260,16 @@ def enough_evidence(evidence: Sequence[Evidence], keywords: Sequence[str], min_s
     return "glossary" if either * 2 >= len(wanted) else None
 
 
-def _verbatim(keyword: str, haystack: str) -> bool:
-    """``keyword`` in ``haystack`` with no letter, mark or digit right before or after it. O(t)."""
-    start = haystack.find(keyword)
-    while start >= 0:
-        end = start + len(keyword)
-        if not (_word_char(haystack[start - 1 : start]) or _word_char(haystack[end : end + 1])):
-            return True
-        start = haystack.find(keyword, start + 1)
-    return False
-
-
-def _word_char(ch: str) -> bool:
-    return bool(ch) and unicodedata.category(ch)[0] in "LMN"
+def has_token(keyword: str, folded: str) -> bool:
+    """A keyword with a digit is in ``folded`` (``ascii_digits`` and casefolded text) only as
+    a whole token, compared by equality: a number as one of the text's numbers
+    (``_NUMBER_TOKEN``), so "48" is not in 148, 1,48,000, 4.48, 47/48, 48/2 or 48.00; an id
+    with a letter as one of its ids (``_ID_TOKEN``), so "inv-1042" is not in INV-10421. A
+    keyword with no digit is a plain substring, as before. O(t)."""
+    if not _DIGIT.search(keyword):
+        return keyword in folded
+    pattern = _ID_TOKEN if _LETTER.search(keyword) else _NUMBER_TOKEN
+    return any(token == keyword for token in pattern.findall(folded))
 
 
 def closest_documents(hits: Sequence[Hit]) -> list[dict[str, str]]:

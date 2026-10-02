@@ -44,7 +44,7 @@ from typing import Any, Literal
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, estimate_tokens
 from kaagaz.answering import glossary
-from kaagaz.answering.evidence import Evidence
+from kaagaz.answering.evidence import Evidence, has_token
 from kaagaz.chunking.script import ascii_digits
 
 MAX_EXTRACTIVE_SENTENCES = 3
@@ -166,8 +166,9 @@ def extractive_draft(keywords: Sequence[str], evidence: Sequence[Evidence]) -> D
 
 
 def _holds(folded: str, keyword: str) -> bool:
-    """The keyword, or a glossary equivalent of it (never a GENERIC word's), is in the text."""
-    return keyword in folded or glossary.present(keyword, folded)
+    """The keyword (one with a digit as a whole token, ``has_token``), or a glossary
+    equivalent of it (never a GENERIC word's), is in the text."""
+    return has_token(keyword, folded) or glossary.present(keyword, folded)
 
 
 def _parse(reply: dict[str, Any]) -> Draft:

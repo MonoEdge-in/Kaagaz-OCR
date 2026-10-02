@@ -1,37 +1,23 @@
 """English document words and their Marathi and Hindi equivalents, for English
 questions about Devanagari documents (council 2 Oct 2026, PR2 C and D).
 
-``EQUIVALENTS`` maps an English keyword, written as ``hinglish.normalise``
-gives it (lower case; "bill" is already "invoice"), to at most three NFC
-Devanagari words. They are code constants, never user text: each one is
-Devanagari letters and marks only (no digit, danda, space, quote or tsquery
-operator; tests/test_answering_glossary.py checks this), so ``word_query`` can
-hand them to ``to_tsquery`` safely.
+``EQUIVALENTS`` maps an English keyword, as ``hinglish.normalise`` gives it,
+to at most three NFC Devanagari words: code constants of Devanagari letters
+and marks only (tests/test_answering_glossary.py checks it), so ``word_query``
+can hand them to ``to_tsquery`` safely. A term of ``PREFIX_MIN`` code points
+or more matches a word that starts with it (भोगवटादार finds भोगवटादाराचे,
+``:*`` in SQL); a shorter one a whole word only (कुल is not in कुलकर्णी, कर
+not in करार). Words are runs of letters and marks (L and M), not regex word
+characters, which split a Devanagari word at its vowel sign. ``GENERIC`` words are on
+nearly every form, so ``present`` is False for them; they are still searched.
 
-How a term matches (``present`` and ``word_query`` agree):
+Only hybrid.py's word list, the evidence gate and the extractive draft use
+this module; ``normalise``, ``plan_fixed`` and the rewrite guard never do.
+ponytail: a model translating the question is the upgrade, behind a flag,
+once the cross-language eval exists. PROVISIONAL: Tushar's first list.
 
-* a term of ``PREFIX_MIN`` code points or more matches a word that starts
-  with it, so भोगवटादार finds भोगवटादाराचे (``:*`` in the word list);
-* a shorter term matches a whole word only, so कुल is not found in कुलकर्णी
-  and कर not in करार.
-
-Words are runs of letters and marks (categories L and M), not ``\\w``: a
-Devanagari vowel sign is a mark, and ``\\w`` would split a word at it.
-
-``GENERIC`` words are on nearly every form (name, number, date, total,
-village...), so finding their equivalent says nothing about the question:
-``present`` is False for them. They are still searched for.
-
-Only the search word list (kaagaz/search/hybrid.py), the evidence gate and the
-extractive draft use this module. ``normalise``, ``plan_fixed`` and the
-rewrite guard never do, so their output does not change.
-
-ponytail: a curated list; a model translating the question is the upgrade,
-behind a flag, once the cross-language eval exists. PROVISIONAL: the words are
-Tushar's first list, for Vrushit to review.
-
-Time: ``equivalents`` is O(1); ``present`` is O(t) for t characters of text;
-``word_query`` is O(k) for k keywords.
+Time: ``equivalents`` O(1); ``present`` O(t) for t characters; ``word_query``
+O(k) for k keywords.
 """
 
 import unicodedata

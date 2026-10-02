@@ -387,10 +387,12 @@ class AnswerService:
         # A sentence backed by neighbours only, or with a number only a neighbour holds, is never
         # verified: the gate never judged them (PROVISIONAL, plan decision 8).
         on_neighbours = any(_rests_on_neighbours(s, by_n, texts) for s in kept)
-        # Nor is one the glossary alone let through or chose the quote of, or one checked
-        # against nothing (council, PR2).
+        # Nor is one the glossary alone let through or chose the quote of, one checked against
+        # nothing, or one no hit it cites passes the gate on its own (council, PR2).
+        min_score = self._settings.answer_min_evidence_score
         unchecked = (
             gate == "glossary"
+            or any(not _judged(s, by_n, normalised.keywords, min_score) for s in kept)
             or any(unchecked_cross_script(s, texts) for s in kept)
             or (not model_used and any(_quoted_through_glossary(s, by_n, normalised.keywords) for s in kept))
         )
@@ -460,6 +462,16 @@ def _rests_on_neighbours(sentence: DraftSentence, by_n: dict[int, Evidence], tex
     hits = [n for n in sentence.evidence if not by_n[n].neighbour]
     allowed: set[Decimal] = set().union(*(numbers_in(texts[n]) for n in hits))
     return not hits or not numbers_in(sentence.text) <= allowed
+
+
+def _judged(
+    sentence: DraftSentence, by_n: dict[int, Evidence], keywords: Sequence[str], min_score: float
+) -> bool:
+    """True when one hit the sentence cites passes the gate by itself, on its score or its
+    English keywords, so it holds every number asked as a whole token: a sentence citing a
+    gat 47 piece and a receipt for Rs 48 is never verified for "gat 48". O(c * k * t)."""
+    hits = [by_n[n] for n in sentence.evidence if not by_n[n].neighbour]
+    return any(enough_evidence([item], keywords, min_score) in ("score", "keywords") for item in hits)
 
 
 def _quoted_through_glossary(

@@ -61,16 +61,16 @@ dropped outright when it holds what cannot be checked:
 
 In the evidence, such tokens are simply not atoms.
 
-3. Every Devanagari word in it (a run of two or more Devanagari letters and
-   marks, NFC, ignorable code points removed) is a word of the evidence it
-   cites, exactly: an English answer may quote a Marathi or Hindi name, never
-   respell or invent one (council 2 Oct 2026, PR2; drop code
-   ``missing_word``).
+3. Every Devanagari word in it (two or more letters and marks, NFC, ignorable
+   code points removed) is a word of its cited evidence: a name may be quoted,
+   never respelled or invented (council 2 Oct 2026, PR2; ``missing_word``).
+   Only the closed ``FUNCTION_WORDS`` (है, आहे, आणि, और, का, चा...) may be
+   added; no negation (नहीं, नाही, न, नका, नये, नव्हे), या or किंवा is one.
 
-``unchecked_cross_script``: a kept sentence that cites Devanagari evidence
-but holds no Devanagari word, no digit and is no copy of its evidence was
-checked against nothing (an English "The owner is Ram Patil" over
-"रामचंद्र पाटील"), so the service labels its answer needs review.
+``unchecked_cross_script``: a kept sentence citing Devanagari evidence that
+quotes none of its words ("The owner is Ram Patil", or "The owner of gat 47
+is Sita Deshmukh" over "गट क्रमांक ४७": a number is no quote) was checked
+against nothing for its words; the service labels its answer needs review.
 
 Nothing left means the answer is "not found". The drops are logged by reason, codes only. This runs
 on the search route whether the sentences came from the model or were quoted;
@@ -149,6 +149,8 @@ _LETTER = re.compile("[a-z]")
 _DIGIT = re.compile("[0-9]")
 # Devanagari letters and marks: the block less the danda, the digits and the abbreviation sign.
 _DEVANAGARI_WORD = re.compile(r"[ऀ-ॣॱ-ॿ]+")
+# Whole NFC words a sentence may add (the module docstring): never a negation, या or किंवा.
+FUNCTION_WORDS = frozenset({"है", "हैं", "आहे", "आहेत", "आणि", "और", "का", "की", "के", "चा", "ची", "चे"})
 
 # What a sentence cannot hold (the module docstring).
 _SPLIT_AMOUNT = re.compile(_CURRENCY + r"\s*-?\s*\d[\d,]*(?:\.\d+)?\s+\d")
@@ -250,23 +252,23 @@ def _drop_reason(
         missing = next((kind for kind, value in atoms if not _is_backed(kind, value, backing)), None)
         if missing is not None:
             return f"missing_{_KIND_CODES.get(missing, missing)}"
-    if not {word for word in devanagari_words(text) if len(word) >= 2} <= backing.devanagari:
+    if not _quoted(text) <= backing.devanagari:
         return "missing_word"
     return None
 
 
 def unchecked_cross_script(sentence: DraftSentence, evidence_text: Mapping[int, str]) -> bool:
-    """True when a kept sentence cites Devanagari evidence but holds no Devanagari word,
-    no digit and no copy of its evidence (the module docstring). O(s + e)."""
+    """True when a kept sentence cites Devanagari evidence but quotes no Devanagari word of
+    it (the module docstring). A number does not count: "The owner of gat 47 is Sita
+    Deshmukh" over गट क्रमांक ४७ checks the 47, never the name. O(s + e)."""
     cited = [evidence_text[n] for n in sentence.evidence if n in evidence_text]
-    if not any(has_devanagari_letters(text) for text in cited):
-        return False
-    if any(len(word) >= 2 for word in devanagari_words(sentence.text)) or _DIGIT.search(
-        _normalised(sentence.text)
-    ):
-        return False  # every digit of a kept sentence was checked
-    copied = sentence.text.casefold().strip()
-    return not (copied and any(copied in text.casefold() for text in cited))
+    return any(has_devanagari_letters(text) for text in cited) and not _quoted(sentence.text)
+
+
+def _quoted(text: str) -> set[str]:
+    """The Devanagari words of a sentence that must be in its evidence: two or more letters
+    and marks, and not one of the FUNCTION_WORDS. O(n)."""
+    return {word for word in devanagari_words(text) if len(word) >= 2 and word not in FUNCTION_WORDS}
 
 
 def devanagari_words(text: str) -> set[str]:

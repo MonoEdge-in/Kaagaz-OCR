@@ -10,8 +10,9 @@ from typing import Any
 import pytest
 
 from kaagaz.answering.draft import DraftSentence, extractive_draft
-from kaagaz.answering.evidence import enough_evidence, looks_like_instructions, number_evidence
+from kaagaz.answering.evidence import enough_evidence, has_token, looks_like_instructions, number_evidence
 from kaagaz.answering.service import Answer, AnswerService
+from kaagaz.chunking.script import ascii_digits
 from kaagaz.search.scope import Scope
 from tests.test_answering_golden import (
     NOW,
@@ -120,11 +121,10 @@ def ask(question: str, hits: list[FakeHit], model: FakeModel | None = None) -> A
     return answer
 
 
-def says(text: str) -> FakeModel:
-    """A model that answers ``text``, citing the first evidence block."""
-    return FakeModel(
-        lambda system, user: {"status": "answered", "sentences": [{"text": text, "evidence": [1]}]}
-    )
+def says(text: str, *cited: int) -> FakeModel:
+    """A model that answers ``text``, citing ``cited`` (the first evidence block by default)."""
+    reply = {"status": "answered", "sentences": [{"text": text, "evidence": list(cited or [1])}]}
+    return FakeModel(lambda system, user: reply)
 
 
 def test_a_glossary_only_answer_quotes_the_marathi_name_and_is_needs_review() -> None:
@@ -197,6 +197,8 @@ def test_a_close_score_never_passes_without_the_number_asked() -> None:
     assert gate(["owns", "gat", "48"], close) is None
     assert gate(["total", "inv-1042"], dataclasses.replace(INV_1043, fuzzy_score=0.9)) is None
     assert gate(["owns", "gat", "47"], close) == "score"  # the control: the number is there
+    # The score is the best piece's: a 48 elsewhere passes only on the keyword rule.
+    assert gate(["owns", "gat", "48"], close, piece("receipt.pdf", "Paid Rs 48 cash")) == "keywords"
 
 
 @pytest.mark.parametrize(
@@ -220,3 +222,70 @@ def test_the_number_asked_and_found_is_still_answered_on_its_score() -> None:
         "What is the grand total of INV-1043?", [bill], says("The grand total of INV-1043 is Rs. 12,500.")
     )
     assert (answer.status, answer.label) == ("answered", "verified")
+
+
+# --- whole tokens and the cited pieces (code review of PR 2) -----------------------------
+
+RECEIPT = piece("receipt.pdf", "Paid Rs 48.00 cash")
+
+
+@pytest.mark.parametrize(
+    ("keyword", "text", "found"),
+    [
+        ("48", "gat 48", True),
+        ("48", "गट क्रमांक ४८", True),
+        ("48", "gat 148", False),
+        ("48", "Rs 1,48,000", False),
+        ("48", "4.48 R", False),
+        ("48", "gat 47/48", False),
+        ("48", "gat 48/2", False),
+        ("48", "Paid Rs 48.00", False),
+        ("48", "A48", False),
+        ("45/2", "Gat No. 45/2", True),
+        ("inv-1042", "Invoice No: INV-1042.", True),
+        ("inv-1042", "INV-10421", False),
+        ("inv-1042", "INV-1042/2026", False),
+        ("owner", "landowner", True),  # a keyword with no digit is a plain substring, as before
+    ],
+)
+def test_a_keyword_with_a_digit_is_found_only_as_a_whole_token(keyword: str, text: str, found: bool) -> None:
+    assert has_token(keyword, ascii_digits(text).casefold()) is found
+
+
+@pytest.mark.parametrize(
+    "reply", ["The owner is ramchandra patil.", "The owner of gat 47 is ramchandra patil."]
+)
+def test_a_close_score_with_the_number_only_in_another_piece_is_never_verified(reply: str) -> None:
+    close = dataclasses.replace(GAT_47, meaning_score=0.9, fuzzy_score=0.733)
+    for other in (RECEIPT, piece("receipt.pdf", "Paid Rs 48 cash")):
+        answer = ask("Who owns gat 48?", [close, other], says(reply))
+        assert answer.label != "verified", (other.text, answer.status)
+
+
+def test_a_model_citing_the_gat_47_piece_and_a_receipt_for_48_is_needs_review() -> None:
+    close = dataclasses.replace(GAT_47, meaning_score=0.9, fuzzy_score=0.733)
+    receipt = piece("receipt.pdf", "Paid Rs 48 cash")
+    answer = ask("Who owns gat 48?", [close, receipt], says("The owner is ramchandra patil.", 1, 2))
+    assert (answer.status, answer.label) == ("answered", "needs_review")
+
+
+@pytest.mark.parametrize(
+    ("question", "hits"),
+    [
+        ("Who is the gat 48 owner?", [piece("satbara.csv", "Gat 148 owner Ram Patil"), RECEIPT]),
+        (
+            "What is the grand total of INV-1042?",
+            [piece("bill.pdf", "INV-10421 Grand Total: Rs. 900"), piece("note.pdf", "Ref INV-1042 pending")],
+        ),
+    ],
+)
+def test_the_quote_draft_finds_a_number_only_as_a_whole_token(question: str, hits: list[FakeHit]) -> None:
+    answer = ask(question, hits)  # no model: quoted
+    assert answer.label != "verified" and answer.status == "not_found"
+
+
+def test_a_sentence_whose_cited_piece_passes_only_through_the_glossary_is_needs_review() -> None:
+    english = piece("deed.pdf", "Land record of the village")  # the gate passes on "land"
+    sure = dataclasses.replace(english, fuzzy_score=0.2)
+    answer = ask(OWNER_QUESTION, [sure, OWNER], says("The owner is रामचंद्र गणपत पाटील.", 2))
+    assert (answer.status, answer.label) == ("answered", "needs_review")
