@@ -6,8 +6,9 @@ The concurrency tests force the order with ``wait_until_blocked``, never with sl
 import json
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -15,7 +16,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, event, text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.chunking.piece import Piece
@@ -279,8 +280,9 @@ def test_a_verified_card_value_is_refused_before_anything_is_written(db: Databas
     card = ExtractedValue(
         "card", "profit", "12,000", "12,000", BOX, label="verified", label_reason="readers_agree"
     )
-    with pytest.raises(ValueError, match="card"):
+    with sent(db) as seen, pytest.raises(ValueError, match="card"):
         PgPipelineStore(db).save(replace(base, values=[*base.values, card]))
+    assert seen.statements == 0  # a check before the transaction: not one statement is sent
     assert counts(db, customer, doc) == EMPTY
 
 
@@ -713,6 +715,184 @@ def test_only_a_deadlock_is_retried(db: Database, monkeypatch: pytest.MonkeyPatc
 
     assert len(calls) == 1
     assert counts(db, customer, doc) == EMPTY
+
+
+# --- A6b: the save in chunks ------------------------------------------------------
+
+
+class Sent:
+    """What a save sends: the rows of each INSERT call by table (an executemany's row
+    count, or the length of a statement's array parameters), every statement, and the
+    most parameters bound in one statement (an executemany is one statement per row)."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, list[int]] = {}
+        self.statements = 0
+        self.max_params = 0
+
+    def __call__(self, *event_args: Any) -> None:
+        statement, parameters, many = event_args[2], event_args[3], event_args[5]
+        sets: list[dict[str, Any]] = list(parameters) if many else [parameters]
+        self.statements += len(sets)
+        self.max_params = max(self.max_params, *(len(params) for params in sets))
+        table = re.match(r"INSERT INTO (\w+)", statement)
+        if table:
+            arrays = [len(value) for value in sets[0].values() if isinstance(value, list)]
+            self.rows.setdefault(table[1], []).append(len(sets) if many else max(arrays, default=1))
+
+
+@contextmanager
+def sent(db: Database) -> Iterator[Sent]:
+    seen = Sent()
+    event.listen(db.engine, "before_cursor_execute", seen)
+    try:
+        yield seen
+    finally:
+        event.remove(db.engine, "before_cursor_execute", seen)
+
+
+def sized(customer_id: str, document_id: str, n: int) -> DocumentContent:
+    """``content`` with ``n`` pages, pieces and values, its two reader outputs, no invoice."""
+    return replace(
+        content(customer_id, document_id),
+        pages=[PageRecord(PageInfo(page, 612.0, 792.0, "pt"), False) for page in range(1, n + 1)],
+        pieces=[Piece(customer_id, document_id, f"piece {seq}", (BOX,), "verified") for seq in range(n)],
+        values=[ExtractedValue("document", f"field_{seq}", str(seq), str(seq), BOX) for seq in range(n)],
+        invoice=None,
+    )
+
+
+def sized_counts(n: int) -> dict[str, int]:
+    return {**EMPTY, "pages": n, "reader_outputs": 2, "pieces": n, "extracted_values": n}
+
+
+@pytest.mark.parametrize(("n", "chunks"), [(0, []), (3, [3]), (4, [3, 1])])
+def test_the_save_sends_at_most_a_chunk_of_rows_per_statement(
+    db: Database, monkeypatch: pytest.MonkeyPatch, n: int, chunks: list[int]
+) -> None:
+    """A6b: rows go in chunks of SAVE_CHUNK (3 here), at the boundaries 0, n and n+1, so
+    the save holds one chunk of row data at a time. Each reader output goes alone: one
+    output's JSON at a time. The pieces keep one seq order across the chunks."""
+    monkeypatch.setattr(pipeline_store, "SAVE_CHUNK", 3, raising=False)
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    with sent(db) as seen:
+        PgPipelineStore(db).save(sized(customer, doc, n))
+
+    tables = ("pages", "pieces", "extracted_values")
+    assert {table: seen.rows.get(table, []) for table in tables} == dict.fromkeys(tables, chunks)
+    assert seen.rows["reader_outputs"] == [1, 1]
+    assert counts(db, customer, doc) == sized_counts(n)
+    pieces = rows(db, customer, "SELECT seq, text FROM pieces WHERE document_id = :d ORDER BY seq", doc)
+    assert [(piece["seq"], piece["text"]) for piece in pieces] == [(seq, f"piece {seq}") for seq in range(n)]
+    values = rows(db, customer, "SELECT field, value_text FROM extracted_values WHERE document_id = :d", doc)
+    assert sorted((value["field"], value["value_text"]) for value in values) == sorted(
+        (f"field_{seq}", str(seq)) for seq in range(n)
+    )
+
+
+def test_values_come_back_as_they_were_sent_whatever_their_characters(db: Database) -> None:
+    """A text that reads NULL, an empty one, braces, quotes, a backslash, a comma and
+    Devanagari keep every character, next to big numbers, dates, confidences and label
+    spots, and the NULLs stay NULL (the values may go as one array per column)."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    texts = ["NULL", "", '{"a", b}', 'say "x" \\ y', "रुपये ४५", "a,b"]
+    values = [
+        ExtractedValue(
+            "document",
+            f"field_{n}",
+            word,
+            f" {word} ",
+            BoxLocation(n + 1, 0.1, 0.2, 0.3, 0.4),
+            confidence=0.5 if n % 2 else None,
+            second_reading=None if n % 3 else word,
+            value_number=Decimal("12345678901234.5678") if n == 0 else None,
+            value_date=date(2026, 8, 12) if n == 1 else None,
+            label_location=CellLocation(1, 2, 3) if n == 2 else None,
+        )
+        for n, word in enumerate(texts)
+    ]
+    PgPipelineStore(db).save(replace(content(customer, doc), values=values))
+
+    saved = rows(
+        db,
+        customer,
+        "SELECT value_text, value_raw, second_reading, value_number, value_date, page_no, confidence,"
+        " label_page_no, label_region FROM extracted_values WHERE document_id = :d ORDER BY field",
+        doc,
+    )
+    assert [
+        (row["value_text"], row["value_raw"], row["second_reading"], row["page_no"]) for row in saved
+    ] == [(word, f" {word} ", None if n % 3 else word, n + 1) for n, word in enumerate(texts)]
+    assert [(row["value_number"], row["value_date"]) for row in saved[:3]] == [
+        (Decimal("12345678901234.5678"), None),
+        (None, date(2026, 8, 12)),
+        (None, None),
+    ]
+    assert [row["confidence"] for row in saved] == [None, pytest.approx(0.5)] * 3
+    assert [(row["label_page_no"], row["label_region"]) for row in saved[1:4]] == [
+        (None, None),
+        (1, {"kind": "cell", "page": 1, "row": 2, "column": 3}),
+        (None, None),
+    ]
+
+
+def test_a_large_save_binds_at_most_65535_parameters_in_one_statement(db: Database) -> None:
+    """PostgreSQL refuses a statement with more than 65,535 bound parameters."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    with sent(db) as seen:
+        PgPipelineStore(db).save(sized(customer, doc, 2001))
+
+    assert 0 < seen.max_params <= 65_535
+    assert counts(db, customer, doc) == sized_counts(2001)
+
+
+def test_a_deadlock_after_every_chunk_is_retried_and_saves_every_row(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C-architect 5: a 40P01 runs the whole transaction again, so the chunks are built
+    inside it, from index ranges over the content. Here the first try fails after every
+    chunk was sent; the second try still saves every row (one-shot generators would
+    save none)."""
+    monkeypatch.setattr(pipeline_store, "SAVE_CHUNK", 3, raising=False)
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    real: Callable[..., None] = pipeline_store._replace_links
+    tries: list[str] = []
+
+    def failing_once(conn: Connection, *args: Any) -> None:
+        tries.append(doc)
+        if len(tries) == 1:
+            conn.execute(text("DO $$ BEGIN RAISE EXCEPTION 'failing' USING ERRCODE = '40P01'; END $$"))
+        real(conn, *args)
+
+    monkeypatch.setattr(pipeline_store, "_replace_links", failing_once)
+    PgPipelineStore(db).save(sized(customer, doc, 4))
+
+    assert len(tries) == 2
+    assert counts(db, customer, doc) == sized_counts(4)
+
+
+def test_a_failure_in_the_last_chunk_leaves_no_row_of_that_save(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bad value is the only row of the last chunk: the whole save is undone, so a
+    saved document keeps its earlier rows and a new one has none."""
+    monkeypatch.setattr(pipeline_store, "SAVE_CHUNK", 3, raising=False)
+    customer, _ = new_customer(db)
+    saved, new = new_document(db, customer), new_document(db, customer)
+    store = PgPipelineStore(db)
+    store.save(content(customer, saved))
+    for doc in (saved, new):
+        good = sized(customer, doc, 4)
+        bad = replace(good, values=[*good.values[:3], replace(good.values[3], field="Bad Field")])
+        with pytest.raises(IntegrityError):
+            store.save(bad)
+
+    assert counts(db, customer, saved) == FULL
+    assert counts(db, customer, new) == EMPTY
 
 
 # --- PRD 2 (WP2.5): the card through the store ----------------------------------
