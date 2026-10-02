@@ -39,9 +39,25 @@ of it looks sound, and a Latin spelling of it for search.
 * ``languages_without_model`` (L2). With no model, a Devanagari piece means
   "other" (Hindi and Marathi cannot be told apart), a piece whose letters are
   mostly ASCII means "en", and any other script means "other".
+* ``sound_key`` and ``sound_keys`` (council 3 Oct 2026, PR 2b, the ML
+  reviewer's rules, PROVISIONAL). People type a Marathi or Hindi word the way
+  it sounds: bhogwatdar, bhogvatdar, and ``latin_spelling`` gives bhogavatadar.
+  The sound key gives all three one form, ``bogvtdr``. In this order: keep the
+  ASCII letters only, then lower-case them; a starting dny or gny is jn; ph is
+  f, x is ks, ck is k; a c not before h is k (``latin_spelling``'s c is only
+  ever ch); w, z, q are v, j, k; ay is ai; a consonant's h (one or more) goes
+  (bh, sh, chh); a consonant, r and u is the consonant, r and i (krushna is
+  krishna); ee is i, oo is u, au is o; a doubled letter is one; a final aon,
+  ao or anv is av (gaon and ganv are gav); a final ey is e (shindey); and
+  every a but a first letter goes. Known merges of different words, all with
+  keys of 4 letters or fewer: bati/batti, hati/hatti, sathi/sati, boar/bor,
+  varas/varsha, rasid/rashid. A key under ``SOUND_KEY_MIN`` letters (kar and
+  khar are both kr) is never matched. ``sound_keys`` keys each run of ASCII
+  letters of a text; migration 0008's SQL function ``kaagaz_sound_key_v1``
+  gives the same keys joined by spaces (tests/test_sound_key_db.py).
 
 Every function is O(n) time in the characters of the text; ``latin_spelling``
-takes O(n) memory, the others O(1).
+and ``sound_keys`` take O(n) memory, the others O(1).
 """
 
 import re
@@ -90,6 +106,18 @@ _FINAL_A = re.compile(r"a([\u093c\u200c\u200d]*)(?=\u1e25?\Z)")
 _ANUSVARA_BEFORE_LIP = re.compile("\N{LATIN SMALL LETTER M WITH DOT BELOW}(?=[pbm])")
 _PLACEHOLDER = "\x00"  # never in the IAST spelling of a Devanagari run
 _NON_ASCII_DIGIT = re.compile(r"(?![0-9])\d")  # in a str pattern, \d is every decimal digit (Nd)
+
+SOUND_KEY_MIN = 3  # letters: a shorter sound key is never matched (kar and khar are both kr)
+_ASCII_LETTERS = re.compile("[A-Za-z]+")  # ranges are code points: the Kelvin sign is not a K
+_NOT_ASCII_LETTER = re.compile("[^A-Za-z]")
+_SOUND_FOLD = str.maketrans("wzq", "vjk")
+_SOUND_START = re.compile(r"\A(?:dny|gny)")  # dnyaneshwar is jnaneshvar
+_SOUND_C = re.compile(r"c(?!h)")
+_SOUND_ASPIRATE = re.compile(r"([bcdfgjklmnpqrstv])h+")
+_SOUND_RI = re.compile(r"([bcdfgjklmnpqrstv]r)u")
+_SOUND_DOUBLE = re.compile(r"(.)\1+")
+_SOUND_AV = re.compile(r"a(?:on|o|nv)\Z")
+_SOUND_EY = re.compile(r"ey\Z")
 
 
 def devanagari_share(text: str) -> float:
@@ -159,6 +187,30 @@ def latin_spelling(text: str) -> str:
         )
 
     return _RUN.sub(spell, text).lower()
+
+
+def sound_key(word: str) -> str:
+    """The sound key of one word (the module docstring's rules, in order); "" with no
+    ASCII letter. O(n) in the word's characters."""
+    w = _NOT_ASCII_LETTER.sub("", word).lower()
+    if not w:
+        return ""
+    w = _SOUND_START.sub("jn", w)
+    w = w.replace("ph", "f").replace("x", "ks").replace("ck", "k")
+    w = _SOUND_C.sub("k", w)
+    w = w.translate(_SOUND_FOLD).replace("ay", "ai")
+    w = _SOUND_ASPIRATE.sub(r"\1", w)
+    w = _SOUND_RI.sub(r"\1i", w)
+    w = w.replace("ee", "i").replace("oo", "u").replace("au", "o")
+    w = _SOUND_DOUBLE.sub(r"\1", w)
+    w = _SOUND_AV.sub("av", w)
+    w = _SOUND_EY.sub("e", w)
+    return w[0] + w[1:].replace("a", "")
+
+
+def sound_keys(text: str) -> list[tuple[str, str]]:
+    """(word, sound key) for each run of ASCII letters in ``text``, in order. O(n)."""
+    return [(word, sound_key(word)) for word in _ASCII_LETTERS.findall(text)]
 
 
 def languages_without_model(pieces: Sequence[Piece]) -> tuple[str, ...]:

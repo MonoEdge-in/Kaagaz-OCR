@@ -11,6 +11,7 @@ indexing tests.
 
 import json
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -21,8 +22,8 @@ from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import SearchHit, search, vector_literal
 from kaagaz.search.indexing import recipe_tag
-from kaagaz.search.scope import EVERYTHING
-from tests.db_support import new_customer
+from kaagaz.search.scope import EVERYTHING, Scope
+from tests.db_support import insert_document, new_customer
 
 pytestmark = pytest.mark.db
 
@@ -308,7 +309,7 @@ def test_a_latin_typo_finds_devanagari_through_its_latin_spelling(db: Database) 
     document = add_document(db, customer)
     wanted, _ = add_pieces(db, customer, document, [("पाटील शिंदे", None), ("Rent paid for August", None)])
 
-    hits = run(db, customer, "shindey")  # one letter too many: no word matches (W2)
+    hits = run(db, customer, "shindye")  # a typo no word matches, by sound either (W2)
 
     assert [hit.piece_id for hit in hits] == [wanted]
     assert hits[0].word_score is None
@@ -354,9 +355,100 @@ def test_a_short_glossary_term_matches_a_whole_word_only(db: Database) -> None:
 def test_an_empty_glossary_query_matches_nothing(db: Database) -> None:
     customer, _ = new_customer(db)
     add_pieces(db, customer, add_document(db, customer), [("कर भरला", None)])
-    words = {"c": customer, "q": "zzz", "k": "zzz", "n": 50} | EVERYTHING.params()
+    words = {"c": customer, "q": "zzz", "k": "zzz", "sk": "", "n": 50} | EVERYTHING.params()
     with db.customer(customer) as conn:
         assert conn.execute(hybrid._WORD, words | {"g": ""}).all() == []
         assert len(conn.execute(hybrid._WORD, words | {"g": "कर"}).all()) == 1  # the control
 
     assert run(db, customer, "zzz") == []  # no keyword listed: :g is "", and nothing else matches
+
+
+# --- the sound key list (council 3 Oct 2026, PR 2b-1) ----------------------------------
+
+
+def by_sound(db: Database, customer_id: str, question: str, scope: Scope = EVERYTHING) -> list[str]:
+    """The word statement with only its sound query able to match: the pieces it finds."""
+    words = {"c": customer_id, "q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query(question), "n": 50}
+    with db.customer(customer_id) as conn:
+        return [str(row[0]) for row in conn.execute(hybrid._WORD, words | scope.params())]
+
+
+@pytest.mark.parametrize(
+    ("question", "piece_text"),
+    [
+        ("bhogwatdar", "भोगवटादार रामचंद्र पाटील"),
+        ("Gaikwad", "गायकवाड सुरेश"),
+        ("jaminicha", "जमीन वडगाव"),  # the piece's key is the start of the word's
+        ("jamin", "जमिनीचा उतारा"),  # the word's key is the start of the piece's
+        ("shindey", "पाटील शिंदे"),
+        ("bhogwatdar", "Owner (bhogavatadar): Ramchandra"),  # a mostly English piece, no text_latin
+    ],
+)
+def test_a_word_typed_the_way_it_sounds_finds_the_piece(db: Database, question: str, piece_text: str) -> None:
+    customer, _ = new_customer(db)
+    wanted, _ = add_pieces(
+        db, customer, add_document(db, customer), [(piece_text, None), ("करार झाला", None)]
+    )
+
+    assert by_sound(db, customer, question) == [wanted]
+    hits = run(db, customer, question)
+    assert hits[0].piece_id == wanted
+    assert hits[0].word_score is not None and hits[0].word_score > 0
+
+
+def test_without_the_sound_query_the_word_list_misses_it(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    customer, _ = new_customer(db)
+    add_pieces(db, customer, add_document(db, customer), [("भोगवटादार रामचंद्र पाटील", None)])
+    monkeypatch.setattr(hybrid, "sound_query", lambda _: "")
+
+    assert all(hit.word_score is None for hit in run(db, customer, "bhogwatdar"))
+
+
+def test_an_empty_sound_query_matches_nothing(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_pieces(db, customer, add_document(db, customer), [("गायकवाड सुरेश", None)])
+    words = {"c": customer, "q": "zzz", "k": "zzz", "g": "", "n": 50} | EVERYTHING.params()
+    with db.customer(customer) as conn:
+        assert conn.execute(hybrid._WORD, words | {"sk": ""}).all() == []
+        assert len(conn.execute(hybrid._WORD, words | {"sk": "gikvd"}).all()) == 1  # the control
+
+
+def test_a_match_by_sound_weighs_half_an_exact_one(db: Database) -> None:
+    customer, _ = new_customer(db)
+    exact, by_key = add_pieces(
+        db, customer, add_document(db, customer), [("Gaikwad", None), ("गायकवाड", None)]
+    )
+    words = {
+        "c": customer,
+        "q": "gaikwad",
+        "k": "gaikwad",
+        "g": "",
+        "sk": hybrid.sound_query("gaikwad"),
+        "n": 50,
+    }
+    with db.customer(customer) as conn:
+        scores = {
+            str(row[0]): float(row[2]) for row in conn.execute(hybrid._WORD, words | EVERYTHING.params())
+        }
+
+    assert scores[by_key] == pytest.approx(scores[exact] / 2)
+
+
+def test_the_sound_list_sees_only_the_current_version_out_of_trash_and_in_scope(db: Database) -> None:
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        old = insert_document(conn, customer, is_current=False)
+        current = insert_document(conn, customer, family_id=old, version_no=2)
+        binned = insert_document(
+            conn, customer, deleted_at=datetime(2026, 10, 1, tzinfo=UTC), deleted_by=user
+        )
+        other = insert_document(conn, customer)
+    pieces = {
+        document: add_pieces(db, customer, document, [("भोगवटादार", None)])[0]
+        for document in (old, current, binned, other)
+    }
+
+    assert set(by_sound(db, customer, "bhogwatdar")) == {pieces[current], pieces[other]}
+    assert by_sound(db, customer, "bhogwatdar", Scope(document_ids=(current,))) == [pieces[current]]

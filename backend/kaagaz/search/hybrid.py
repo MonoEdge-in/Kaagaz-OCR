@@ -14,8 +14,16 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    2026), so "owner" finds भोगवटादाराचे. ``g`` is built from the glossary's
    code constants only, never from the question's text, so ``to_tsquery``
    cannot fail on it; "" (no keyword listed) is NULL, which matches nothing.
-   A piece scores the highest ``ts_rank_cd`` of the three. ``search_documents``
-   shares this list, so library search finds these pieces too.
+   A fourth query, ``to_tsquery('simple', sk)``, matches the sound keys of
+   the question's words (``sound_query``, council 3 Oct 2026, PR 2b) against
+   the sound keys of the piece (migration 0008's ``pieces_sound`` index on
+   ``kaagaz_sound_key_v1(coalesce(text_latin, text))``), so "bhogwatdar"
+   finds भोगवटादार. ``sk`` is built from ``sound_key`` output only, each term
+   checked to be ``[a-z]`` letters, never from the question's text; "" is
+   NULL, as for ``g``. A piece scores the highest ``ts_rank_cd`` of the four,
+   the sound one halved, so a match by sound weighs less than an exact one.
+   ``search_documents`` shares this list, so library search finds these
+   pieces too.
 2. **Typo tolerant:** pg_trgm ``word_similarity(q, ...)`` with ``q <% ...``
    against the text and its Latin spelling (W2), the higher of the two, so
    "invioce" still finds "invoice" and "shindey" finds "शिंदे". The ``<%``
@@ -74,6 +82,7 @@ after the index); fine at this size, a per-customer partition is the upgrade.
 """
 
 import math
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -83,7 +92,7 @@ from sqlalchemy.exc import OperationalError
 
 from kaagaz.answering import glossary
 from kaagaz.answering.hinglish import normalise
-from kaagaz.chunking.script import has_devanagari_letters, latin_spelling
+from kaagaz.chunking.script import SOUND_KEY_MIN, has_devanagari_letters, latin_spelling, sound_keys
 from kaagaz.search.scope import EVERYTHING, Scope
 
 if TYPE_CHECKING:
@@ -102,6 +111,12 @@ FUZZY_THRESHOLD = 0.3
 STATEMENT_TIMEOUT_MS = 3000
 # PostgreSQL's SQLSTATE for a statement cancelled by statement_timeout.
 _QUERY_CANCELED = "57014"
+# The sound query (sound_query): at most this many terms, and prefix matching only for
+# words typed with at least this many letters (council 3 Oct 2026, PR 2b).
+SOUND_TERMS_MAX = 12
+SOUND_PREFIX_WORD_MIN = 4
+_SOUND_TERM = re.compile(f"[a-z]{{{SOUND_KEY_MIN},}}")
+_DIGIT = re.compile(r"\d")  # any script's digits
 
 # Every statement below repeats the same filter in full, so each one can be read
 # (and checked for the customer filter) on its own: this customer's pieces of
@@ -111,13 +126,16 @@ _QUERY_CANCELED = "57014"
 
 _WORD = text(
     "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
-    " ts_rank_cd(p.tsv_simple, g.q)) AS score"
+    " ts_rank_cd(p.tsv_simple, g.q), 0.5 * ts_rank_cd(to_tsvector('simple',"
+    " kaagaz_sound_key_v1(coalesce(p.text_latin, p.text))), sk.q)) AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
     " CROSS JOIN websearch_to_tsquery('simple', :k) AS s (q)"
     " CROSS JOIN (SELECT CASE WHEN CAST(:g AS text) = '' THEN NULL"
     " ELSE to_tsquery('simple', CAST(:g AS text)) END) AS g (q)"
+    " CROSS JOIN (SELECT CASE WHEN CAST(:sk AS text) = '' THEN NULL"
+    " ELSE to_tsquery('simple', CAST(:sk AS text)) END) AS sk (q)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
@@ -129,7 +147,9 @@ _WORD = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
-    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q)"
+    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q"
+    " OR (coalesce(p.text_latin, p.text) ~ '[A-Za-z]'"
+    " AND to_tsvector('simple', kaagaz_sound_key_v1(coalesce(p.text_latin, p.text))) @@ sk.q))"
     " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
@@ -332,6 +352,41 @@ def fuse(
     ]
 
 
+def sound_query(question: str) -> str:
+    """A ``to_tsquery('simple', ...)`` text ORing the sound keys of the question's words;
+    "" when none has a key of ``SOUND_KEY_MIN`` letters or more (shorter keys are never
+    matched: kar, khar and khara are all kr). A part of the question with a digit in it
+    ("INV-1042", "gat48") is an identifier, which the other queries match as written: it
+    gives no key.
+
+    A word typed with ``SOUND_PREFIX_WORD_MIN`` letters or more matches by prefix both
+    ways (council 3 Oct 2026): ``key:*`` finds a longer key ("jamin" finds jaminicha's
+    jminic), and each shorter start of its key, down to ``SOUND_KEY_MIN`` letters, is a
+    whole term ("jaminicha" finds jamin's jmin). A shorter word matches its whole key
+    only. Every word's own key comes first, then each word's shorter starts, longest
+    first, at most ``SOUND_TERMS_MAX`` terms in all. Each term is checked to be ``[a-z]``
+    letters, so no character of the question reaches ``to_tsquery``.
+    O(n * w) for n characters and words of at most w letters.
+    """
+    whole: dict[str, None] = {}
+    starts: dict[str, None] = {}
+    words = [pair for part in question.split() if not _DIGIT.search(part) for pair in sound_keys(part)]
+    for word, key in words:
+        if len(key) < SOUND_KEY_MIN:
+            continue
+        if len(word) < SOUND_PREFIX_WORD_MIN:
+            whole.setdefault(key)
+            continue
+        whole.setdefault(f"{key}:*")
+        for end in range(len(key) - 1, SOUND_KEY_MIN - 1, -1):
+            starts.setdefault(key[:end])
+    terms = list(dict.fromkeys([*whole, *starts]))[:SOUND_TERMS_MAX]
+    for term in terms:
+        if not _SOUND_TERM.fullmatch(term.removesuffix(":*")):
+            raise ValueError("a sound term is ASCII letters only")
+    return " | ".join(terms)
+
+
 def vector_literal(values: Sequence[float]) -> str:
     """pgvector's text form, ``[0.1,0.2]``, for a bound parameter cast to ``halfvec``."""
     if not values:
@@ -438,6 +493,7 @@ def _candidates(
             "q": query_text,
             "k": " ".join(asked),
             "g": glossary.word_query(asked),
+            "sk": sound_query(latin),
             "ql": latin,
             "n": CANDIDATES,
         }
