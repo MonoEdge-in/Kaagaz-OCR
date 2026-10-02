@@ -4,8 +4,9 @@ Pure functions. The fold finds duplicates, so "Malak", "MALAK" and " malak " are
 one word: Unicode NFC, case folded (then NFC again), white space runs made one
 space, trimmed.
 
-* A word: 1 to 40 characters of letters, marks (Devanagari vowel signs),
-  digits, spaces and hyphens, with a letter, in at most 3 parts. Refused when
+* A word: 1 to 40 characters of letters, marks (Devanagari vowel signs; at most
+  4 on one letter), digits, spaces and hyphens, and a zero-width (non-)joiner only
+  right after a virama, with a letter, in at most 3 parts. Refused when
   every part is a question, filler or date word ("what", "kya", "last month"),
   which chat reads its own way. One the Hinglish map knows ("kam" is lowest)
   is ``built_in``, so the screen can warn.
@@ -32,6 +33,9 @@ WORD_MAX = 40
 MEANING_MAX = 80
 WORD_MAX_PARTS = 3
 
+MAX_MARKS = 4  # combining marks on one letter: Devanagari needs few, a stack of 40 is noise
+_VIRAMA = "\u094d"
+_JOINERS = frozenset("\u200c\u200d")  # ZWNJ and ZWJ: only right after a virama (ra + virama + ZWJ)
 _COMMON = _NOT_KEYWORDS | DATE_WORDS | _HINDI_STOP | _SHARED_STOP
 
 
@@ -74,10 +78,16 @@ def _checked(value: str, limit: int, extra: str) -> WordText:
         raise WordTextError("empty")
     if len(text) > limit:
         raise WordTextError("too_long")
+    marks, previous = 0, ""
     for character in text:
         category = unicodedata.category(character)
-        if not (category[0] in "LM" or category == "Nd" or character in extra):
+        joiner = character in _JOINERS and previous == _VIRAMA
+        if not (category[0] in "LM" or category == "Nd" or character in extra or joiner):
             raise WordTextError("characters")
+        marks = marks + 1 if category[0] == "M" else 0
+        if marks > MAX_MARKS:
+            raise WordTextError("characters")
+        previous = character
     if not any(unicodedata.category(character)[0] == "L" for character in text):
         raise WordTextError("no_letter")
     return WordText(text=text, fold=fold(text))

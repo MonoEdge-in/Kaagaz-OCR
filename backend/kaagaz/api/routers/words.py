@@ -4,7 +4,8 @@ Why some choices:
 
 * **Only mine.** Every route works as the signed-in user (``Database.user``):
   another user's word, the same customer's included, is 404, never 403.
-* **The second meaning.** The same word with another meaning, without
+* **The second meaning.** The same word with another meaning (POST, or a PATCH
+  that renames onto a word with meanings), without
   ``confirm_another``, is 409 ``word_has_meaning`` with
   ``details.existing: [{id, meaning}]``, so the screen can ask (add both, replace
   one, cancel) and send again with ``confirm_another`` or ``replace_id``. The
@@ -27,7 +28,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -77,6 +78,7 @@ _TEXT = {
 # A fraction of the page: a finite number from 0 to 1, never a string. A count from 1.
 Fraction = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False, strict=True)]
 Count = Annotated[int, Field(ge=1, strict=True)]
+Cell = Annotated[int, Field(ge=1, le=10_000, strict=True)]  # a row or column; keeps the region small
 
 
 class BoxRegion(BaseModel):
@@ -99,8 +101,8 @@ class CellRegion(BaseModel):
 
     kind: Literal["cell"]
     page: Count
-    row: Count
-    column: Count
+    row: Cell
+    column: Cell
 
 
 class SpotBody(BaseModel):
@@ -134,6 +136,7 @@ class WordChangeBody(BaseModel):
 
     word: str | None = Field(default=None, max_length=4 * WORD_MAX)
     meaning: str | None = Field(default=None, max_length=4 * MEANING_MAX)
+    confirm_another: bool = False
     user_id: str | None = None
 
 
@@ -197,6 +200,11 @@ def _audit(
     )
 
 
+def _ask(has: words_sql.HasMeaning) -> NoReturn:
+    existing = [{"id": row.id, "meaning": row.meaning} for row in has.existing]
+    raise ApiError(409, "word_has_meaning", HAS_MEANING, details={"existing": existing})
+
+
 def _view(row: words_sql.WordRow) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -242,8 +250,7 @@ def add_my_word(body: NewWordBody, user: User, context: Context, response: Respo
             replace_id=None if body.replace_id is None else str(body.replace_id),
         )
         if isinstance(result, words_sql.HasMeaning):  # nothing was written
-            existing = [{"id": row.id, "meaning": row.meaning} for row in result.existing]
-            raise ApiError(409, "word_has_meaning", HAS_MEANING, details={"existing": existing})
+            _ask(result)
         word_id = result.word.id
         for document_id in documents:
             words_sql.add_spot(conn, customer_id, me, word_id=word_id, document_id=document_id)
@@ -288,8 +295,16 @@ def change_my_word(word_id: uuid.UUID, body: WordChangeBody, user: User, context
     meaning = None if body.meaning is None else _meaning_text(body.meaning)
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
         row = words_sql.update_word(
-            conn, user.customer_id, user.user_id, str(word_id), word=word, meaning=meaning
+            conn,
+            user.customer_id,
+            user.user_id,
+            str(word_id),
+            word=word,
+            meaning=meaning,
+            confirm_another=body.confirm_another,
         )
+        if isinstance(row, words_sql.HasMeaning):  # moved onto a word with meanings: ask first
+            _ask(row)
         _audit(conn, user, "user_word.changed", row.id, word=word is not None, meaning=meaning is not None)
     return {"word": _view(row), "warning": "built_in" if built_in else None}
 

@@ -22,7 +22,18 @@ FOLDS |= {"बोजा": "बोजा", "e\u0301": "é"}
 REFUSED_WORDS = {
     "empty": ("", "   "),
     "too_long": ("x" * (WORD_MAX + 1),),
-    "characters": ("malak,owner", "<b>malak</b>", "malak's", "mal_ak", "malak\u202e"),  # last: right-to-left
+    # The last five: a right-to-left override, 5 and 38 accents on one letter, joiners not after a virama.
+    "characters": (
+        "malak,owner",
+        "<b>malak</b>",
+        "malak's",
+        "mal_ak",
+        "malak\u202e",
+        "x" + "\u0301" * 5,
+        "a" + "\u0301" * 39,
+        "a\u200db",
+        "\u200d\u0915",
+    ),
     "no_letter": ("33", "- -"),
     "too_many_parts": ("one two three four",),
     "common_word": ("what", "Kya", "last month", "the", "is ka"),
@@ -43,7 +54,17 @@ def test_a_word_and_a_meaning_keep_their_text_as_typed_with_their_fold() -> None
     assert check_word("  Malak   Saheb ") == CheckedWord(
         WordText("Malak Saheb", "malak saheb"), built_in=False
     )
-    for word in ("बोजा", "सात-बारा", "gat 33", "7-12 utara", "kya malak", "x" * WORD_MAX):
+    joined = ("\u0930\u094d\u200d", "\u0915\u094d\u200d\u0937", "\u0915\u094d\u200c\u0937")  # after a virama
+    for word in (
+        "बोजा",
+        "सात-बारा",
+        "gat 33",
+        "7-12 utara",
+        "kya malak",
+        "x" * WORD_MAX,
+        "x\u0301" * 4,
+        *joined,
+    ):
         assert check_word(word).word.text == word
     for meaning in ("land owner, holder", "भोगवटादार", "x" * MEANING_MAX):
         assert check_meaning(meaning).text == meaning
