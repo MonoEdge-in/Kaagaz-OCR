@@ -58,9 +58,6 @@ export function uploadLimitsHint(limits: UploadLimits = FALLBACK_UPLOAD_LIMITS):
   );
 }
 
-/** How often the list is asked again while a document is still being checked or read. */
-export const POLL_MS = 3000;
-
 export const PAGE_SIZE = 25;
 
 function extension(name: string): string {
