@@ -17,18 +17,13 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    only to ``FUZZY_THRESHOLD`` (the default 0.6 misses one swapped letter pair
    in a seven letter word: "invioce" against "invoice" scores 0.375).
 3. **Meaning:** cosine distance ``<=>`` between the question's embedding and
-   each piece's (V2). Skipped when there is no embedding (no model, or it is
-   down): the other two still answer. Only vectors whose ``embedding_model``
-   is the caller's ``recipe`` count, so vectors from another model are left
-   out until they are embedded again (edge case 7). The HNSW index
-   ``pieces_embedding`` is used with every filter in WHERE: pgvector 0.8's
-   iterative scan (``hnsw.iterative_scan = relaxed_order``) keeps walking the
-   graph until LIMIT rows pass the filters, and the outer query sorts them
-   again by exact distance. The walk stops after ``hnsw.max_scan_tuples``
-   (20,000) tuples, so a small scope in a big table can come back short: then
-   the same filters run as an exact scan. A search statement past
-   ``STATEMENT_TIMEOUT_MS`` is cancelled; a meaning list that times out is
-   dropped and the words and typos still answer.
+   each piece's. Skipped when there is no embedding (no model, or it is down):
+   the other two still answer. This scan is exact on purpose: the HNSW index
+   applies the customer and "ready" filters only after taking its first
+   candidates, so a small customer in a big table could get too few rows.
+   The pgvector in use (0.8.6) has iterative index scans that could fix that,
+   but they are not turned on here: the HNSW change is PRD 3's. The
+   ``MATERIALIZED`` step keeps the planner from choosing the index.
 
 Every query filters on ``p.customer_id = :c`` itself, on top of row level
 security (two locks, docs/architecture.md), and sees only pieces of documents
@@ -95,8 +90,8 @@ _WORD = text(
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
     " CROSS JOIN websearch_to_tsquery('simple', :k) AS s (q)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q)"
-    " ORDER BY score DESC, p.id LIMIT :n"
+    " AND p.tsv @@ websearch_to_tsquery('english', :q)"
+    " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
 # set_config(..., true) is SET LOCAL with a bound value (SET LOCAL takes none):
@@ -120,8 +115,8 @@ _FUZZY = text(
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND (:q <% p.text OR :q <% p.text_latin)"
-    " ORDER BY score DESC, p.id LIMIT :n"
+    " AND :q <% p.text"
+    " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
 # The index query (V2): every filter in WHERE, the index order and LIMIT inside
@@ -130,29 +125,12 @@ _FUZZY = text(
 # the exact distances, never the index, and ties break on the piece id.
 _MEANING = text(
     "WITH candidates AS MATERIALIZED ("
-    " SELECT p.id, p.embedding <=> CAST(:vec AS halfvec(1024)) AS distance"
+    " SELECT p.id, p.embedding <=> CAST(:vec AS vector) AS distance, d.created_at, p.document_id, p.seq"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND p.embedding_model = :recipe"
-    " ORDER BY p.embedding <=> CAST(:vec AS halfvec(1024)) LIMIT :n"
-    ") SELECT id, distance FROM candidates ORDER BY distance + 0, id"
-)
-
-# ponytail: the exact fallback (PROVISIONAL, plan item 4) for a scope the index
-# walk came back short on, because hnsw.max_scan_tuples (20,000 tuples) ran out
-# first: a small customer or document in a big table. The same filters, with no
-# order inside the MATERIALIZED step, so the index is never used: O(n * dim) for
-# the scope's n vectors. Upgrade path: a per-customer partial or partitioned
-# index, or a higher max_scan_tuples, once a scope is too big to scan exactly.
-_MEANING_EXACT = text(
-    "WITH candidates AS MATERIALIZED ("
-    " SELECT p.id, p.embedding <=> CAST(:vec AS halfvec(1024)) AS distance"
-    " FROM pieces p"
-    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
-    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND p.embedding_model = :recipe"
-    ") SELECT id, distance FROM candidates ORDER BY distance, id LIMIT :n"
+    " AND p.embedding IS NOT NULL"
+    ") SELECT id, distance FROM candidates ORDER BY distance, created_at, document_id, seq, id LIMIT :n"
 )
 
 _DETAILS = text(
@@ -202,7 +180,9 @@ def fuse(
     """Merge three ranked lists of (piece_id, raw score), each best first.
 
     A piece listed twice in one list counts once, at its best rank. The result
-    is best first, ties broken by piece id. O(n log n) for n listed pieces.
+    is best first; a tie keeps the order the lists first gave the pieces in (each list
+    breaks its own ties by upload time and position, never by the random piece id),
+    so the same documents always rank the same. O(n log n) for n listed pieces.
     """
     if k < 0:
         raise ValueError("k must not be negative")
@@ -217,7 +197,7 @@ def fuse(
             rank += 1
             own[name] = raw_score
             scores[piece_id] = scores.get(piece_id, 0.0) + 1.0 / (k + rank)
-    order = sorted(scores, key=lambda piece_id: (-scores[piece_id], piece_id))
+    order = sorted(scores, key=lambda piece_id: -scores[piece_id])  # stable: ties keep first-seen order
     return [
         FusedPiece(
             piece_id=piece_id,

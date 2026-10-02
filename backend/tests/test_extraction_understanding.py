@@ -10,8 +10,7 @@ from typing import Any
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.extraction.quotes import reader_text
 from kaagaz.extraction.understanding import Understanding, document_links, understand
-from kaagaz.extraction.values import ExtractedValue
-from kaagaz.pipeline import DocumentFacts, LinkIdentifier
+from kaagaz.extraction.values import DocumentFacts, ExtractedValue, LinkIdentifier
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 from tests.fakes import FakeChat
 from tests.test_extraction_card import INVOICE, RUN, fact, reply

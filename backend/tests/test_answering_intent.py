@@ -13,7 +13,7 @@ REGISTER = {"party_name", "profit", "date"}
 
 def _plan(question: str, fields: set[str]) -> FixedPlan | None:
     normalised = normalise(question)
-    return plan_fixed(normalised, date_range(normalised, TODAY), mentions_date(normalised), fields)
+    return plan_fixed(normalised, date_range(normalised, TODAY), mentions_date(normalised), lambda _: fields)
 
 
 def test_the_hinglish_example_is_a_top_group_query() -> None:

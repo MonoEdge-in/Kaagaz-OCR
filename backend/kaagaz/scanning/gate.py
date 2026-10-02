@@ -75,7 +75,7 @@ class StatusStore(Protocol):
     def set_status(
         self, customer_id: str, document_id: str, status: DocumentStatus, *, run_id: str | None = None
     ) -> None:
-        """With ``run_id`` (PRD 2's run fence), raise kaagaz.pipeline.Superseded and
+        """With ``run_id`` (PRD 2's run fence), raise kaagaz.jobs.worker.Superseded and
         change nothing unless that run is still open."""
         ...
 
