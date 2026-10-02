@@ -29,6 +29,9 @@ from sqlalchemy.exc import IntegrityError
 from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
 from kaagaz.db.trash import lock_live_family
 
+# The most tags one filter may name: the document list, search and chat (pydantic checks it).
+MAX_TAG_FILTERS = 50
+
 
 @dataclass(frozen=True, slots=True)
 class TagRow:

@@ -23,8 +23,8 @@ from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns, finish_run, is_run_open, pages_by_route, start_run
 from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.ports import DocumentRecord
-from kaagaz.jobs.worker import JobFailed
-from kaagaz.pipeline import FinishedRun, Progress, RunTotals, Superseded
+from kaagaz.jobs.worker import JobFailed, Superseded
+from kaagaz.pipeline import FinishedRun, Progress, RunTotals
 from kaagaz.scanning.gate import REJECTION_CODES, DocumentStatus
 from tests.db_support import insert_document, new_customer, violation, wait_until_blocked
 from tests.fakes import MemoryDocuments, MemoryProgress, MemoryRuns, MemoryStatuses, MemoryStorage

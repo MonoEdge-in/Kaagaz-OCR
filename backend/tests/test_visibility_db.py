@@ -131,7 +131,14 @@ def test_the_fixed_queries_count_only_the_current_version_of_documents_not_in_tr
     assert count.number == Decimal(1)
     cited = {ref.document_id for row in (total, top, count) for ref in row.values}
     assert cited == {library.documents["current"]}
-    assert fixed.available_fields(customer) == {"party_name", "profit", "date", "current_only", "gstin"}
+    asked = ("party_name", "profit", "date", "old_only", "current_only", "binned_only", "gstin")
+    assert fixed.available_fields(customer, asked) == {
+        "party_name",
+        "profit",
+        "date",
+        "current_only",
+        "gstin",
+    }
 
 
 def test_the_cited_values_lookup_leaves_out_trash_and_older_versions(db: Database) -> None:

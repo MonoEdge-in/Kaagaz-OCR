@@ -14,15 +14,16 @@
 // browser goes to /admin.
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { adminLogin } from "@/lib/api";
+import { announceSession, leavePage } from "@/lib/sessionChannel";
 import { emailError, normalizeEmail, passwordError } from "../../login/signIn";
 import login from "../../login/login.module.css";
+import { SignedOutNotice } from "../../login/SignedOutNotice";
 import {
   adminSignInError,
   firstInvalidAdmin,
@@ -44,8 +45,8 @@ const NO_ERRORS: AdminSignInErrors = { email: null, password: null, code: null }
 
 const CODE_HINT = "From your authenticator app. Leave it empty if two-step sign-in is off.";
 
-export function AdminSignInForm() {
-  const router = useRouter();
+/** note: what the page says after a session ending (SignedOutNotice). */
+export function AdminSignInForm({ note }: { note: string | null }) {
   const hydrated = useHydrated();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -91,8 +92,14 @@ export function AdminSignInForm() {
     setBusy(true);
     const typedCode = normalizeCode(code);
     try {
-      await adminLogin(normalizeEmail(email), password, typedCode === "" ? undefined : typedCode);
-      router.replace("/admin");
+      const signedIn = await adminLogin(
+        normalizeEmail(email),
+        password,
+        typedCode === "" ? undefined : typedCode,
+      );
+      // As the normal sign-in: a full page load, and the other tabs are told.
+      announceSession(signedIn.user.id);
+      leavePage("/admin");
     } catch (caught) {
       setFailure(adminSignInError(caught));
       setCode("");
@@ -114,6 +121,7 @@ export function AdminSignInForm() {
         </h1>
         <p className={styles.lead}>For account admins: users, settings and activity.</p>
       </div>
+      <SignedOutNotice message={note} />
 
       <div className="field">
         <label htmlFor={FIELD_IDS.email}>E-mail</label>

@@ -8,8 +8,7 @@ from kaagaz.extraction.links import (
     link_identifiers,
     normalise_identifier,
 )
-from kaagaz.extraction.values import ExtractedValue
-from kaagaz.pipeline import LinkIdentifier
+from kaagaz.extraction.values import ExtractedValue, LinkIdentifier
 from kaagaz.reading.spans import BoxLocation
 
 BOX = BoxLocation(1, 0.1, 0.1, 0.9, 0.12)

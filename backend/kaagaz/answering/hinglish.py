@@ -6,6 +6,9 @@ the same thing and Tushar can read every rule here.
 
 Steps, in order:
 
+0. Devanagari digits become ASCII digits (``fold_digits``), and a question with
+   Devanagari letters is spelled in Latin letters first (``latin_spelling``,
+   PRD 3 W3), so "पाटील का बिल" reads as "patil ka bil" and is not dropped.
 1. Lower case, then split into words (letters and digits; a hyphen, slash or
    dot inside a word keeps it whole, so "INV-1042" stays one word).
 2. Replace the longest known phrase first (three words, then two, then one),
@@ -25,6 +28,8 @@ Time is O(n) in the number of words: at most three dictionary lookups each.
 
 import re
 from dataclasses import dataclass
+
+from kaagaz.chunking.script import fold_digits, has_devanagari_letters, latin_spelling
 
 # Hindi phrase -> English. Longest phrases are tried first.
 _HINDI_PHRASES: dict[tuple[str, ...], str] = {
@@ -140,6 +145,9 @@ class NormalisedQuestion:
 
 def normalise(question: str) -> NormalisedQuestion:
     """The question in plain English words, its topic words, and whether it was Hinglish."""
+    question = fold_digits(question)
+    if has_devanagari_letters(question):
+        question = latin_spelling(question)
     words = _WORD.findall(question.casefold())
     out: list[str] = []
     hinglish = False

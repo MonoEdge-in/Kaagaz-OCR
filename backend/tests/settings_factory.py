@@ -62,6 +62,7 @@ _BASE: dict[str, Any] = {
     "model_num_ctx": 8192,
     "model_card_max_tokens": 1024,
     "model_window_max_tokens": 2048,
+    "model_answer_max_tokens": 512,
     "model_extract_timeout_seconds": 5.0,
     "card_max_chars": 12000,
     "extract_window_chars": 1700,

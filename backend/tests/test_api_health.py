@@ -1,10 +1,12 @@
 """GET /api/health with a real database and fake storage and queue."""
 
 import pytest
+from sqlalchemy import create_engine
 
 from kaagaz.api.app import create_app
-from kaagaz.db.engine import Database, make_engine
+from kaagaz.db.engine import Database, make_engine, normalise_url
 from kaagaz.ingestion.errors import BackendUnavailable
+from tests.db_support import APP_ROLE, database_url
 from tests.settings_factory import make_settings
 from tests.test_api_support import Api, ApiFakeQueue, ApiFakeStorage, FakeAnswers, TestClient
 
@@ -45,5 +47,22 @@ def test_database_unreachable_is_503() -> None:
         make_settings(), db=unreachable, storage=ApiFakeStorage(), queue=ApiFakeQueue(), answers=FakeAnswers()
     )
     reply = TestClient(app).get("/api/health")
+    assert reply.status_code == 503
+    assert reply.json() == {"status": "degraded", "database": "error", "storage": "ok", "queue": "ok"}
+
+
+@pytest.mark.db
+def test_a_database_with_no_free_connection_shows_as_an_error(db: Database) -> None:
+    """A7a: a pool wait that runs out is the database "error", as when it is down."""
+    engine = create_engine(normalise_url(database_url()), pool_size=1, max_overflow=0, pool_timeout=0.1)
+    busy = Database(engine, APP_ROLE)
+    app = create_app(
+        make_settings(), db=busy, storage=ApiFakeStorage(), queue=ApiFakeQueue(), answers=FakeAnswers()
+    )
+    try:
+        with engine.connect():  # the only connection is in use
+            reply = TestClient(app).get("/api/health")
+    finally:
+        engine.dispose()
     assert reply.status_code == 503
     assert reply.json() == {"status": "degraded", "database": "error", "storage": "ok", "queue": "ok"}

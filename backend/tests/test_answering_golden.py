@@ -11,6 +11,9 @@ fuzzy list feeds it.
 """
 
 import dataclasses
+import hashlib
+import json
+import logging
 import random
 import re
 import uuid
@@ -23,11 +26,13 @@ from typing import Any
 import pytest
 from sqlalchemy import create_engine
 
-from kaagaz.ai.client import ModelOutputError, ModelUnavailable
-from kaagaz.answering.draft import SYSTEM_PROMPT
+from kaagaz.ai.client import ModelOutputError, ModelUnavailable, estimate_tokens
+from kaagaz.answering.draft import ANSWER_PROMPT_HASH, ANSWER_SCHEMA, SYSTEM_PROMPT, user_prompt
+from kaagaz.answering.evidence import number_evidence
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedRow, ValueRef
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.db.engine import Database
+from kaagaz.settings import CHAT_OVERHEAD_TOKENS, Settings
 from tests.settings_factory import make_settings
 
 A = str(uuid.uuid4())
@@ -190,9 +195,12 @@ class FakeFixedQueries:
     def __init__(self, records: dict[str, list[Record]]) -> None:
         self.records = records
         self.calls: list[str] = []
+        self.field_calls: list[str] = []  # the customer of each available_fields call
 
-    def available_fields(self, customer_id: str) -> set[str]:
-        return {s.ref.field for record in self.records.get(customer_id, []) for s in record}
+    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]:
+        self.field_calls.append(customer_id)
+        found = {s.ref.field for record in self.records.get(customer_id, []) for s in record}
+        return found & set(fields)
 
     def _matching(
         self,
@@ -361,6 +369,7 @@ class FakeModel:
         self.embed_error = embed_error
         self.prompts: list[tuple[str, str]] = []
         self.embedded: list[list[str]] = []
+        self.max_tokens: list[int | None] = []
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.embedded.append(texts)
@@ -372,6 +381,7 @@ class FakeModel:
         self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
     ) -> dict[str, Any]:
         self.prompts.append((system, user))
+        self.max_tokens.append(max_tokens)
         if self.chat_error is not None:
             raise self.chat_error
         return self.reply(system, user)
@@ -402,6 +412,7 @@ def service(
     records: list[Record] | None = None,
     model: FakeModel | None = None,
     clock: datetime = NOW,
+    settings: Settings = SETTINGS,
     unchecked: FakeUnchecked | None = None,
 ) -> tuple[AnswerService, FakeRetriever, FakeFixedQueries]:
     retriever = FakeRetriever({A: [INVOICE, TERMS] if pieces is None else pieces})
@@ -409,7 +420,7 @@ def service(
     answer_service = AnswerService(
         db=UNUSED_DB,
         model=model,
-        settings=SETTINGS,
+        settings=settings,
         clock=lambda: clock,
         retriever=retriever,
         fixed_queries=fixed,
@@ -560,6 +571,19 @@ def test_values_without_a_region_are_never_an_answer() -> None:
     assert answer.status == "not_found"
 
 
+def test_only_a_question_with_an_aggregate_word_asks_which_fields_there_are() -> None:
+    """A7a: the fields query runs only when a fixed query could follow, and then once."""
+    for question, calls in [
+        ("What are the payment terms?", 0),
+        ("What is the grand total of INV-1042?", 0),  # "grand" and "inv-1042" are not known words
+        ("Kiska profit sabse jyada tha last month?", 1),
+        ("How many invoices in August 2026?", 1),
+    ]:
+        answer_service, _, fixed = service()
+        answer_service.answer(A, question)
+        assert fixed.field_calls == [A] * calls, question
+
+
 # --- the search route ---------------------------------------------------------
 
 
@@ -590,7 +614,13 @@ def test_a_model_answer_is_used_and_cited() -> None:
     assert answer.model_used is True
     assert [s.text for s in answer.sentences] == ["The grand total of INV-1042 is Rs. 1,20,000."]
     assert answer.citations[0].ref_id == INVOICE.piece_id
-    assert model.embedded == [["what is grand total of inv-1042"]]
+    # PRD 3 V3: the model card's query format, no space after "Query:".
+    assert model.embedded == [
+        [
+            "Instruct: Given a question about business documents, retrieve passages that answer it"
+            "\nQuery:what is grand total of inv-1042"
+        ]
+    ]
 
 
 def test_a_model_inventing_a_number_loses_that_sentence() -> None:
@@ -665,6 +695,19 @@ def test_search_still_works_when_embedding_fails(error: Exception) -> None:
     assert answer.status == "answered"
     assert [c.ref_id for c in answer.citations] == [INVOICE.piece_id]
     assert retriever.calls[0][2] is None  # word and fuzzy search only
+
+
+def test_a_devanagari_question_reaches_search_and_is_embedded_as_asked() -> None:
+    """PRD 3 W3: the keywords are its Latin spelling, so it is searched, not "not found" unasked."""
+    patil = piece("patil.pdf", "Bill from Patil Traders, total 4,500")
+    model = FakeModel()
+    answer_service, retriever, _ = service(pieces=[patil], model=model)
+
+    answer = answer_service.answer(A, "पाटील का बिल")
+
+    assert [call[1] for call in retriever.calls] == ["patil invoice"]
+    assert model.embedded[0][0].endswith("\nQuery:पाटील का बिल")
+    assert answer.normalized_question == "patil invoice"
 
 
 def test_links_and_markup_from_the_model_never_reach_the_answer() -> None:
@@ -822,3 +865,126 @@ def test_with_no_card_either_the_question_goes_to_search_as_before() -> None:
     answer = service(records=[invoice_record()])[0].answer(A, "What was the total profit?")
     assert answer.status in {"answered", "not_found"}
     assert answer.route == "search"
+
+
+# --- the answer check through the service (critical finding 1) ---------------------
+
+
+def _says(text: str) -> Reply:
+    def reply(system: str, user: str) -> dict[str, Any]:
+        return {"status": "answered", "sentences": [{"text": text, "evidence": [1]}]}
+
+    return reply
+
+
+HINDI_BILL = "Grand Total / कुल रकम: १,१८,०००\nदिनांक: १२/०८/२०२६"  # noqa: RUF001 - Devanagari digits, on purpose
+
+
+def test_an_english_answer_over_devanagari_evidence_is_answered() -> None:
+    hindi = piece("bill-hindi.pdf", HINDI_BILL)
+    model = FakeModel(_says("The grand total is Rs. 1,18,000."))
+    answer = service(pieces=[hindi], records=[], model=model)[0].answer(A, "What is the grand total?")
+    assert_well_formed(answer)
+    assert [s.text for s in answer.sentences] == ["The grand total is Rs. 1,18,000."]
+
+
+def test_evidence_lines_are_checked_one_by_one() -> None:
+    # Joined into one line, "12" and "August 2026" would read as the date 12 August 2026.
+    stock = piece("stock.pdf", "Stock statement quantity: 12\nAugust 2026 closing stock")
+    model = FakeModel(_says("The stock statement quantity is 12."))
+    answer = service(pieces=[stock], records=[], model=model)[0].answer(A, "Stock statement quantity?")
+    assert_well_formed(answer)
+    assert answer.status == "answered"
+
+
+# --- the model call: its budget, the evidence it sees, and its logs (W3b) ------------
+
+QUESTION = "What is the grand total of INV-1042?"
+COPY = piece("bill-1042-copy.pdf", INVOICE.text.replace("Tax Invoice", "Duplicate copy"))
+
+
+def window_for(pieces: list[FakeHit]) -> int:
+    """A MODEL_NUM_CTX that leaves the evidence exactly the room ``pieces`` take
+    (with the factory's MODEL_ANSWER_MAX_TOKENS, 512)."""
+    evidence = estimate_tokens(user_prompt(QUESTION, number_evidence(pieces)))
+    return evidence + 2 * 512 + estimate_tokens(SYSTEM_PROMPT) + CHAT_OVERHEAD_TOKENS
+
+
+def windowed(num_ctx: int) -> Settings:
+    return make_settings(answer_min_evidence_score=0.6, answer_max_evidence=5, model_num_ctx=num_ctx)
+
+
+def test_the_answer_call_has_a_reply_budget() -> None:
+    model = FakeModel()
+    service(model=model)[0].answer(A, QUESTION)
+    assert model.max_tokens == [512]  # MODEL_ANSWER_MAX_TOKENS (tests/settings_factory.py)
+
+
+def test_low_ranked_pieces_are_left_out_whole_and_never_checked() -> None:
+    def cites_both(system: str, user: str) -> dict[str, Any]:
+        return {
+            "status": "answered",
+            "sentences": [
+                {"text": "The grand total of INV-1042 is Rs. 1,20,000.", "evidence": [1]},
+                {"text": "The copy says Rs. 1,20,000 too.", "evidence": [2]},
+            ],
+        }
+
+    model = FakeModel(cites_both)
+    settings = windowed(window_for([INVOICE]))
+    answer = service(pieces=[INVOICE, COPY], model=model, settings=settings)[0].answer(A, QUESTION)
+    assert evidence_blocks(model.prompts[0][1]) == {1: INVOICE.text}  # the best piece, whole
+    assert [s.text for s in answer.sentences] == ["The grand total of INV-1042 is Rs. 1,20,000."]
+    assert [c.ref_id for c in answer.citations] == [INVOICE.piece_id]
+
+
+def test_evidence_too_large_for_the_window_is_quoted_without_the_model(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="kaagaz.answering.service")
+    model = FakeModel()
+    answer = service(model=model, settings=windowed(window_for([INVOICE]) - 1))[0].answer(A, QUESTION)
+    assert model.prompts == []
+    assert answer.model_used is False
+    assert "Grand Total: Rs. 1,20,000" in [s.text for s in answer.sentences]
+    logged = [(r.getMessage(), r.__dict__.get("code")) for r in caplog.records]
+    assert logged == [("answer drafted without the model", "evidence_too_large")]
+
+
+def test_a_model_error_is_logged_as_its_code_only(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG)
+    canary = "Zx7Canary"
+    secret = piece("canary.pdf", f"{canary} bill\nGrand Total: Rs. 1,20,000 for INV-1042")
+    model = FakeModel(chat_error=ModelUnavailable("timeout"), embed_error=ModelOutputError("embedding_dim"))
+    answer = service(pieces=[secret], model=model)[0].answer(
+        A, f"What is the grand total of INV-1042 {canary}?"
+    )
+    assert answer.status == "answered"
+    assert answer.model_used is False
+    warnings = [
+        (r.name, r.getMessage(), r.__dict__.get("code"))
+        for r in caplog.records
+        if r.levelno >= logging.WARNING
+    ]
+    assert warnings == [
+        ("kaagaz.answering.service", "question searched without its meaning vector", "embedding_dim"),
+        ("kaagaz.answering.service", "answer drafted without the model", "timeout"),
+    ]
+    assert canary.casefold() not in caplog.text.casefold()
+
+
+def test_each_model_answer_logs_the_model_and_the_prompt_hash(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="kaagaz.answering.service")
+    service(model=FakeModel())[0].answer(A, QUESTION)
+    logged = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.service"]
+    assert logged == [f"answer drafted by fake-chat with prompt {ANSWER_PROMPT_HASH}"]
+
+
+def test_the_answer_prompt_and_schema_are_pinned() -> None:
+    pinned = SYSTEM_PROMPT + "\n" + json.dumps(ANSWER_SCHEMA, sort_keys=True)
+    assert hashlib.sha256(pinned.encode("utf-8")).hexdigest() == ANSWER_PROMPT_HASH
+    assert ANSWER_PROMPT_HASH == "99f037706379b75f3777b8ce9054e211bb220a7b664a8a22ac6ce797d3120be7"
+    assert "Write in English. Write Devanagari digits as the same ASCII digits." in SYSTEM_PROMPT
+    assert "Copy names, ids and quoted words exactly as the evidence writes them." in SYSTEM_PROMPT
+    sentences = ANSWER_SCHEMA["properties"]["sentences"]
+    assert (sentences.get("maxItems"), sentences["items"]["properties"]["text"].get("maxLength")) == (5, 300)
