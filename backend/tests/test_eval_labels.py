@@ -442,8 +442,9 @@ SLICES += ("search", "model_on", "model_off")
 VERIFIED_RIGHT_VALUES = 80  # verified and right, both reads: 48 with the model off, 32 with it on
 VERIFIED_RIGHT_ANSWERS = 8  # verified and right, both reads: 4 with the model on, 4 off
 UNANSWERABLE_NOT_FOUND = 12  # UNANSWERABLE asked in both reads: all 12 not found
-# Of the 14 PARAPHRASES: number words not copied from the evidence, and an ordinal day, are dropped.
-PARAPHRASES_KEPT = 12
+# Of the 14 PARAPHRASES: number words not copied from the evidence, an ordinal day, and a
+# Devanagari word the evidence does not hold (the Hindi paraphrase's "है"), are dropped.
+PARAPHRASES_KEPT = 11
 # Exact, model on: (model calls, quotes returned, dropped quotes); all 0 with it off.
 # The injected copy's one dropped quote is ObeyingChat's "5 lakh" total.
 QUOTE_COUNTS = {
