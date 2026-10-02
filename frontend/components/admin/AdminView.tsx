@@ -1,6 +1,6 @@
 "use client";
 
-// The admin screen: four tabs (Users, Settings, Activity, Numbers) as a
+// The admin screen: five tabs (Users, Settings, Activity, Numbers, Failed jobs) as a
 // segmented control that scrolls sideways on its own at small widths. Only the
 // open tab is mounted, so each one loads its data when it is opened. Settings
 // also shows `twoStep`, the signed-in admin's own Two-step sign-in, which the
@@ -15,6 +15,7 @@ import type { KeyboardEvent, ReactNode } from "react";
 import { useSession } from "@/lib/session";
 import { leavePage } from "@/lib/sessionChannel";
 import { ActivityPanel } from "./ActivityPanel";
+import { FailedPanel } from "./FailedPanel";
 import { TABS, adminGate, tabAfterKey } from "./logic";
 import type { TabId } from "./logic";
 import { NumbersPanel } from "./NumbersPanel";
@@ -99,6 +100,7 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
           )}
           {tab.id === active && tab.id === "activity" && <ActivityPanel />}
           {tab.id === active && tab.id === "numbers" && <NumbersPanel />}
+          {tab.id === active && tab.id === "failed" && <FailedPanel />}
         </div>
       ))}
     </div>

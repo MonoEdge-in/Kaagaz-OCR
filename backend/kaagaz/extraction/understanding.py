@@ -63,8 +63,7 @@ from kaagaz.extraction.invoice import (
 )
 from kaagaz.extraction.links import link_identifiers
 from kaagaz.extraction.quotes import ReaderText
-from kaagaz.extraction.values import ExtractedValue
-from kaagaz.pipeline import DocumentFacts, LinkIdentifier
+from kaagaz.extraction.values import DocumentFacts, ExtractedValue, LinkIdentifier
 from kaagaz.reading.spans import Span
 
 if TYPE_CHECKING:

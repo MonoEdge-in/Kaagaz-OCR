@@ -33,9 +33,11 @@ from kaagaz.worker_main import (
     RecordAttempt,
     check_queue_redrive,
     install_stop_handlers,
+    job_worker,
     run_until_stopped,
 )
 from tests.lease_queue import FakeClock, LeaseQueue
+from tests.test_worker import RenewalLog
 
 FIRST = Job("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 SECOND = Job("11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333")
@@ -294,6 +296,30 @@ class PurgeHourlyTest(unittest.TestCase):
 
 
 class AttemptsTest(unittest.TestCase):
+    def test_the_served_worker_records_each_try_and_renews_on_the_monotonic_clock(self) -> None:
+        """job_worker, as _serve runs it: two beats just after the receive renew nothing, as
+        time.monotonic has not moved 15 s; with no clock, each would be a queue call."""
+        queue = RenewalLog(FakeClock())
+        queue.enqueue(FIRST)
+        recorded: list[tuple[str, str, int, int]] = []
+
+        def beats_twice(job: Job, beat: Heartbeat) -> None:
+            beat()
+            beat()
+
+        worker = job_worker(
+            queue,
+            beats_twice,
+            max_attempts=MAX_ATTEMPTS,
+            mark_exhausted=lambda customer_id, document_id: None,
+            record_attempt=lambda c, d, attempt, most: recorded.append((c, d, attempt, most)),
+        )
+        with self.assertLogs("kaagaz.worker", "INFO"):
+            self.assertTrue(worker.run_once())
+        self.assertEqual(queue.renewed_at, [])
+        self.assertEqual(recorded, [(FIRST.customer_id, FIRST.document_id, 1, MAX_ATTEMPTS)])
+        self.assertEqual(queue.pending(), 0)
+
     def test_each_try_is_recorded_with_the_worker_maximum(self) -> None:
         recorded: list[tuple[str, str, int, int]] = []
         record = RecordAttempt(lambda c, d, attempt, most: recorded.append((c, d, attempt, most)), 5)

@@ -4,8 +4,9 @@
 // (beside the list from 1024 px, in a drawer below that); where you are, with
 // New folder, Rename, Move and Delete; the dropzone, which uploads into the
 // folder being viewed; uploads in progress; search and the filter chips; the
-// list and its pages. The folder and the filters live in the page address
-// (libraryQuery.ts), so a reload keeps them and Back returns to the folder
+// list and its pages. Search looks inside the documents (the default) or at
+// their names (PRD 3 Q3, insideSearch.ts). The folder and the filters live in
+// the page address (libraryQuery.ts), so a reload keeps them and Back returns to the folder
 // before. While any document is still being checked or read, the list is
 // asked for again (lib/poll.ts: from every 3 s to every 15 s, never while the
 // tab is hidden); once all have settled, it stops. Each finished upload asks
@@ -27,6 +28,16 @@ import { DocumentsTable } from "./DocumentsTable";
 import { FolderActions } from "./FolderActions";
 import { FolderNav } from "./FolderNav";
 import { buildTree, folderPath } from "./folderTree";
+import { InsideSearchResults } from "./InsideResults";
+import {
+  DEFAULT_SEARCH_MODE,
+  MAX_SEARCH_LENGTH,
+  SEARCH_MODES,
+  noResultsText,
+  searchModeFor,
+  searchParams,
+} from "./insideSearch";
+import type { SearchMode } from "./insideSearch";
 import { noMatchTitle } from "./library";
 import { LibraryFilters } from "./LibraryFilters";
 import { isFiltered, libraryHref, listParams } from "./libraryQuery";
@@ -70,6 +81,14 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const [search, setSearch] = useState({ view: viewKey, q: "", offset: 0 });
   const q = search.q;
   const offset = search.view === viewKey ? search.offset : 0;
+  const [modeChoice, setModeChoice] = useState<SearchMode>(DEFAULT_SEARCH_MODE);
+  const mode = searchModeFor(modeChoice, library);
+  // Inside documents, the question goes to the search; the list below it is not narrowed by name.
+  const listQ = mode === "inside" ? "" : q;
+  const searchKey = mode === "inside" && q !== "" ? `${viewKey}|${q}` : null;
+  const [found, setFound] = useState<{ key: string; result: DocumentSearch } | null>(null);
+  const [searchFailure, setSearchFailure] = useState<{ key: string; message: string } | null>(null);
+  const [searchAgain, setSearchAgain] = useState(0); // Try again; never the list's polling
   const [reload, setReload] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [failure, setFailure] = useState<{ view: string; message: string } | null>(null);
@@ -225,7 +244,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   }
 
   const list = shown?.list;
-  const view = listView(list ? list.total : null, error !== null, q, filtered);
+  const view = listView(list ? list.total : null, error !== null, listQ, filtered);
   const pages = list ? pageInfo(offset, list.items.length, list.total) : null;
   // Search and filters stay while the next list loads, so an open filter panel stays open.
   const showControls = view === "list" || view === "no-match" || (loaded !== null && !shown);
@@ -437,7 +456,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     <div className={styles.listHead}>
                       <form className={styles.search} role="search" onSubmit={submitSearch}>
                         <label htmlFor="documents-q" className="visually-hidden">
-                          Search documents by name
+                          {mode === "inside" ? "Search inside documents" : "Search documents by name"}
                         </label>
                         <div className={styles.searchField}>
                           <Icon name="search" className={styles.searchIcon} />
@@ -447,6 +466,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                             type="search"
                             enterKeyHint="search"
                             autoComplete="off"
+                            maxLength={MAX_SEARCH_LENGTH}
                             value={draft}
                             onChange={(event) => setDraft(event.target.value)}
                           />
@@ -458,6 +478,22 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                           <button type="button" className="btn btn-quiet" onClick={clearSearch}>
                             Clear search
                           </button>
+                        )}
+                        {!library.trash && (
+                          <fieldset className={styles.searchMode}>
+                            <legend className="visually-hidden">Search in</legend>
+                            {SEARCH_MODES.map((choice) => (
+                              <label key={choice.mode} className={libraryStyles.check}>
+                                <input
+                                  type="radio"
+                                  name="documents-search-mode"
+                                  checked={mode === choice.mode}
+                                  onChange={() => setModeChoice(choice.mode)}
+                                />
+                                {choice.label}
+                              </label>
+                            ))}
+                          </fieldset>
                         )}
                       </form>
                     </div>
@@ -512,7 +548,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     </>
                   )}
 
-                  {view === "no-match" && (
+                  {searchKey === null && view === "no-match" && (
                     <EmptyState
                       icon="search-off"
                       title={noMatchTitle(q, filtered)}
@@ -534,7 +570,22 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     />
                   )}
 
-                  {shown && view === "list" && shown.list.items.length > 0 && (
+                  {searchKey !== null && (
+                    <InsideSearchResults
+                      found={foundNow}
+                      error={searchError}
+                      q={q}
+                      noResults={noResultsText(library)}
+                      datesIgnored={library.from !== null || library.to !== null}
+                      onRetry={() => {
+                        setSearchFailure(null); // back to "Searching…" until the new reply
+                        setSearchAgain((n) => n + 1);
+                      }}
+                      onClear={clearSearch}
+                    />
+                  )}
+
+                  {searchKey === null && shown && view === "list" && shown.list.items.length > 0 && (
                     <DocumentsTable
                       items={shown.list.items}
                       me={me}
@@ -550,7 +601,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     />
                   )}
 
-                  {pages && list && view === "list" && (
+                  {searchKey === null && pages && list && view === "list" && (
                     <nav className={styles.pager} aria-label="Document pages">
                       <span className="muted tabular" aria-live="polite">
                         {pages.from}–{pages.to} of {list.total}

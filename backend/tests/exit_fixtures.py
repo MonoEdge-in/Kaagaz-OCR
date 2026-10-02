@@ -38,6 +38,8 @@ separate implementation.
 ``QuotingChat`` stands in for the model on invoice windows: it answers each
 window with the canned quotes that the window's text holds, the way a model
 copies what it sees. So windows that overlap return the same line twice.
+``EchoVision`` stands in for the vision model on scans: it reads each cropped box
+back as the OCR line there, as a vision model that reads it correctly would.
 """
 
 import io
@@ -48,11 +50,12 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from kaagaz.extraction.invoice import INVOICE_SYSTEM_PROMPT
+from kaagaz.extraction.labels import MIN_OVERLAP, overlap
 from kaagaz.ingestion import sniff
 from kaagaz.reading.ocr import OcrLine
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.pdf_second_reader import PdfiumReader
-from kaagaz.reading.spans import Span
+from kaagaz.reading.spans import BoxLocation, Span
 from tests.pdf_builder import Page, Picture, Text, _assemble, _stream, make_pdf
 from tests.test_cross_page_pieces import AMOUNT, PROFIT
 from tests.test_cross_page_pieces import report_pdf as c7_report_pdf
@@ -176,9 +179,7 @@ HINDI_BILL_LINES = (
 
 def hindi_bill_jpg() -> bytes:
     """A phone photo of the bill: a white page with a dark bar where each line is."""
-    out = io.BytesIO()
-    _scan_picture(_lines_on_page(HINDI_BILL_LINES), 620, 877).save(out, format="JPEG", quality=85)
-    return out.getvalue()
+    return _scan_jpg(_lines_on_page(HINDI_BILL_LINES))
 
 
 # --- 3. the scanned Marathi land record -----------------------------------------------------
@@ -311,6 +312,23 @@ def exit_files() -> dict[str, ExitFile]:
     }
 
 
+# Not an exit file: the positive control for the Devanagari scans, the bill in English.
+ENGLISH_BILL_LINES = (
+    "Sharma Kirana Store",
+    "Bill No: 245",
+    "Date: 05/09/2026",
+    "Rice 5 kg 300.00",
+    "Dal 2 kg 150.00",
+    "Total: 450.00",
+)
+
+
+def english_bill() -> ExitFile:
+    """The Hindi bill's twin in English, photographed the same way, with what OCR reads."""
+    lines = _lines_on_page(ENGLISH_BILL_LINES)
+    return ExitFile("retail-bill-en.jpg", sniff.JPEG, _scan_jpg(lines), (lines,))
+
+
 class ScriptedOcr:
     """An OCR engine (kaagaz.reading.ocr.OcrEngine) that answers the k-th page it is given
     with ``pages[k]``, each box scaled to that picture, at confidence 0.95. Past the script,
@@ -332,6 +350,28 @@ class ScriptedOcr:
             OcrLine(text, x0 * width, y0 * height, x1 * width, y1 * height, 0.95)
             for text, (x0, y0, x1, y1) in self.pages[len(self.seen) - 1]
         ]
+
+
+class EchoVision:
+    """A vision model (``pipeline.VisionModel``) that reads back what the scripted OCR
+    read where it looks: the text of the OCR line (of ``pages``, by page number) whose
+    box overlaps the cropped box most, if their intersection over union is at least
+    0.5, else "". A vision model is sent only the crop's PNG, so the box is the last one
+    in ``cropped``, which the test fills with each box the pipeline crops (its own crop
+    is still made and sent). ``calls`` counts the crops it was sent."""
+
+    def __init__(self, pages: Sequence[Sequence[tuple[str, Box]]], cropped: Sequence[BoxLocation]) -> None:
+        self.pages = pages
+        self.cropped = cropped
+        self.calls = 0
+
+    def read_image(self, *, png: bytes, instruction: str) -> str:
+        self.calls += 1
+        box = self.cropped[-1]
+        lines = self.pages[box.page - 1] if box.page <= len(self.pages) else ()
+        scored = [(overlap(box, BoxLocation(box.page, *line_box)), text) for text, line_box in lines]
+        score, text = max(scored, default=(0.0, ""))
+        return text if score >= MIN_OVERLAP else ""
 
 
 # --- the model ----------------------------------------------------------------------------------
@@ -411,6 +451,12 @@ def _lines_on_page(lines: Sequence[str]) -> tuple[tuple[str, Box], ...]:
         (text, (0.08, 0.08 + 0.08 * i, min(0.92, 0.08 + 0.02 * len(text)), 0.12 + 0.08 * i))
         for i, text in enumerate(lines)
     )
+
+
+def _scan_jpg(lines: Sequence[tuple[str, Box]]) -> bytes:
+    out = io.BytesIO()
+    _scan_picture(lines, 620, 877).save(out, format="JPEG", quality=85)
+    return out.getvalue()
 
 
 def _scan_picture(lines: Sequence[tuple[str, Box]], width: int, height: int) -> Image.Image:

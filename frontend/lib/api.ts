@@ -4,6 +4,7 @@
 // has ended (401 not_signed_in) is also told to the session provider, which
 // sends the browser to sign in (lib/session.tsx).
 
+import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type {
   AdminUser,
@@ -14,13 +15,16 @@ import type {
   CustomerSettings,
   DocumentDetail,
   DocumentList,
+  DocumentSearch,
   DocumentSummary,
+  FailedDocument,
   Folder,
   Me,
   PasswordReset,
   ReviewChoice,
   ReviewItem,
   ReviewList,
+  ReviewReason,
   Role,
   SheetCells,
   Stats,
@@ -146,9 +150,9 @@ export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everyw
 export const listDocuments = (params: DocumentListParams = {}) =>
   request<DocumentList>("GET", `/documents${query(params)}`);
 export const getDocument = (id: string) => request<DocumentDetail>("GET", `/documents/${id}`);
-/** The detail's own summary only, for asking again while it is read. */
-export const getDocumentSummary = (id: string) =>
-  request<DocumentSummary>("GET", `/documents/${id}/summary`);
+/** Search inside documents (PRD 3 Q2), grouped by document. */
+export const searchDocuments = (params: DocumentSearchParams) =>
+  request<DocumentSearch>("GET", `/search${query(params)}`);
 /** Moves the document, with every version of it, to Trash (PRD 1, F5). */
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);
 /** Brings a document in Trash back, with every version of it. */
@@ -291,8 +295,9 @@ export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: 
 
 // --- review --------------------------------------------------------------------
 
-export const listReview = (params: { limit?: number; offset?: number; document_id?: string } = {}) =>
-  request<ReviewList>("GET", `/review${query(params)}`);
+export const listReview = (
+  params: { limit?: number; offset?: number; document_id?: string; reason?: ReviewReason[] } = {},
+) => request<ReviewList>("GET", `/review${query(params)}`);
 export const resolveReview = (
   valueId: string,
   choice: ReviewChoice,
@@ -329,3 +334,6 @@ export const updateSettings = (maxUploadMb: number | null) =>
 export const listAudit = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: AuditEntry[]; total: number }>("GET", `/admin/audit${query(params)}`);
 export const getStats = () => request<Stats>("GET", "/admin/stats");
+/** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
+export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
+  request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);

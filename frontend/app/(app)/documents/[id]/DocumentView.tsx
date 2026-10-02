@@ -5,11 +5,11 @@
 // that version's own id), the page viewer and the values table (side by side
 // from 1024 px, stacked below). A newer version still being read, or one that
 // failed, gets a line linking to it. A document in Trash says so. A reviewer
-// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1). While it is
-// checked or read, on load too, its summary is asked for again (lib/poll.ts);
-// once it settles, the whole detail is asked for once, and the screen says
-// what was found. Clicking a value jumps to its page and highlights its spot.
-// Every value is shown as plain text; it came from the document.
+// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1). Clicking a
+// value jumps to its page and highlights its spot. Every value is shown as
+// plain text; it came from the document. Beside the page: the document card,
+// related documents and the invoice (DocumentPanels.tsx, PRD 3 Y1 to Y3); a
+// low-resolution page says so above it (Y4).
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -28,15 +28,18 @@ import {
 } from "@/components/viewer/versions";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { fieldText, reasonText } from "@/components/viewer/labels";
-import { beingRead, canReprocess, settledText, valuesNote } from "@/components/viewer/reprocess";
-import { initialSelection, selectValue } from "@/components/viewer/selection";
+import { lowResolutionText } from "@/components/viewer/panels";
+import type { Spot } from "@/components/viewer/panels";
+import { canReprocess } from "@/components/viewer/reprocess";
+import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
+import { selectSpot, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { ApiError, getDocument, getDocumentSummary } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { useSession } from "@/lib/session";
-import type { DocumentDetail, DocumentSummary, ExtractedValue } from "@/lib/types";
-import { usePoll } from "@/lib/usePoll";
+import type { DocumentDetail, ExtractedValue } from "@/lib/types";
+import { CardPanel, InvoicePanel, RelatedPanel } from "./DocumentPanels";
 import { ReadAgain } from "./ReadAgain";
 import styles from "./DocumentView.module.css";
 
@@ -172,10 +175,14 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
     // Stacked on a phone, the page is above the list: bring it into view.
     viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
-  const changePage = (pageNo: number) => {
-    const region = selection && selection.region?.page === pageNo ? selection.region : null;
-    choose({ pageNo, region, valueId: region ? (selection?.valueId ?? null) : null });
+  const showSpot = (spot: Spot) => {
+    choose(selectSpot(spot.region, spot.label));
+    setAnnouncement(`Showing ${spot.name} on page ${spot.region.page}.`);
+    viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
+  const changePage = (pageNo: number) => choose(pageChange(selection, pageNo));
+  const lowResolution = page ? lowResolutionText(page) : null;
+  const panel = { detail, active: selection?.region ?? null, onShow: showSpot };
 
   const pagesText =
     detail.page_count !== null
@@ -296,11 +303,17 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
       </p>
       <div className={styles.layout}>
         <section ref={viewerRef} className={styles.viewer} aria-label="Page">
+          {lowResolution && (
+            <p className={styles.trashNotice} role="note">
+              <Icon name="alert" />
+              <span>{lowResolution}</span>
+            </p>
+          )}
           {page ? (
             <PageViewer
               document={detail}
               page={page}
-              highlights={selection?.region ? [selection.region] : []}
+              highlights={highlightsOf(selection)}
               pageNumbers={pageNumbers}
               onPageChange={changePage}
             />
@@ -308,6 +321,11 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
             <p className={styles.noPages}>No pages to show yet.</p>
           )}
         </section>
+        <div className={styles.panels}>
+          <CardPanel {...panel} />
+          <RelatedPanel detail={detail} />
+          <InvoicePanel {...panel} />
+        </div>
         <section className={styles.values} aria-labelledby="values-heading">
           <h2 id="values-heading" className={styles.valuesHeading}>
             Values found

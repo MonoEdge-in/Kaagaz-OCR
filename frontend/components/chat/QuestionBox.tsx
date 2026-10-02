@@ -110,7 +110,9 @@ export function QuestionBox({
           icon="send"
           label="Send question"
           className={`btn-primary ${styles.send}`}
-          disabled={pending}
+          // aria-disabled, not disabled: the button keeps focus while the answer
+          // is out, and submit() ignores a press then.
+          aria-disabled={pending || undefined}
           aria-busy={pending || undefined}
           onClick={() => void submit()}
         />

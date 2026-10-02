@@ -76,6 +76,7 @@ from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
     can_delete,
     document_folder,
+    document_link,
     document_summary,
     document_version,
     extracted_value,
@@ -108,7 +109,7 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MIB = 1024 * 1024
 MAX_SHEET_ROWS = 500
-MAX_TAG_FILTERS = 50
+MAX_TAG_FILTERS = tags_sql.MAX_TAG_FILTERS
 
 DocumentStatusParam = Literal["received", "clean", "rejected", "needs_reader", "ready", "failed"]
 DetectedTypeParam = Literal["pdf", "png", "jpeg", "tiff", "zip", "ole2", "text"]
@@ -421,6 +422,7 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         fixes = listing.reviewer_fix_count(conn, customer_id, target)
         facts = listing.document_facts(conn, customer_id, target)
         typed = listing.invoice_for(conn, customer_id, target)
+        links = listing.document_links(conn, customer_id, target)
     document_date = None if facts is None else facts["document_date"]
     return {
         **document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user),
@@ -438,6 +440,8 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         # A reviewer's fix to a value does not change it: it is rebuilt when the
         # document is read again (architect AR14).
         "invoice": None if typed is None else invoice(*typed),
+        # PRD 3 Y2: the current, ready documents sharing an identifier with this one.
+        "links": [document_link(each) for each in links],
     }
 
 

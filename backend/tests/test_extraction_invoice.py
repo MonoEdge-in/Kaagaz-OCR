@@ -38,8 +38,7 @@ from kaagaz.extraction.invoice import (
 from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import label_quoted, label_values
 from kaagaz.extraction.quotes import MAX_QUOTE_CHARS, QuoteCounts, find_quote, reader_text
-from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue
-from kaagaz.pipeline import InvoiceLineRow, InvoiceRow
+from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue, InvoiceLineRow, InvoiceRow
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 from tests.exit_fixtures import (
     BUYER_GSTIN,
@@ -433,7 +432,7 @@ class FieldsTest(unittest.TestCase):
         self.assertEqual(
             (extraction.conflicts, extraction.truncated, extraction.model_calls), (frozenset(), False, 1)
         )
-        self.assertEqual((extraction.quotes.returned, extraction.dropped), (3, 0))
+        self.assertEqual((extraction.quotes.returned, extraction.quotes.dropped), (3, 0))
 
     def test_a_label_on_its_own_span_is_kept_as_the_label_spot(self) -> None:
         spans = page_lines("Grand Total", "11,800.00")
@@ -446,7 +445,7 @@ class FieldsTest(unittest.TestCase):
         chat = FakeChat(reply({"invoice_number": ("Invoice No", "INV-2")}), reply())
         extraction = read(spans, chat, **one_window_each(spans))
         self.assertEqual(extraction.values, [])
-        self.assertEqual((extraction.quotes.returned, extraction.dropped), (1, 1))
+        self.assertEqual((extraction.quotes.returned, extraction.quotes.dropped), (1, 1))
 
     def test_the_first_window_wins_and_a_later_different_value_is_a_conflict(self) -> None:
         spans = page_lines("Grand Total: 1,800.00", "Grand Total: 1,900.00")
@@ -494,7 +493,7 @@ class FieldsTest(unittest.TestCase):
         )
         extraction = read(spans, chat)
         self.assertEqual(found(extraction.values), {("document", "invoice_number"): "INV-17"})
-        self.assertEqual((extraction.quotes.returned, extraction.dropped), (2, 1))
+        self.assertEqual((extraction.quotes.returned, extraction.quotes.dropped), (2, 1))
 
     def test_a_field_on_a_brought_or_carried_forward_line_is_rejected(self) -> None:
         spans = page_lines("Grand Total c/f: 6,000.00", "Total carried forward 7,000.00")
@@ -504,7 +503,7 @@ class FieldsTest(unittest.TestCase):
         )
         extraction = read(spans, chat, **one_window_each(spans))
         self.assertEqual(extraction.values, [])
-        self.assertEqual(extraction.dropped, 2)
+        self.assertEqual(extraction.quotes.dropped, 2)
 
     def test_an_amount_or_date_that_does_not_read_as_one_is_dropped(self) -> None:
         spans = page_lines("Grand Total: Eleven thousand", "Invoice Date: soon")
@@ -512,7 +511,7 @@ class FieldsTest(unittest.TestCase):
             reply({"total": ("Grand Total", "Eleven thousand"), "invoice_date": ("Invoice Date", "soon")})
         )
         extraction = read(spans, chat)
-        self.assertEqual((extraction.values, extraction.dropped), ([], 2))
+        self.assertEqual((extraction.values, extraction.quotes.dropped), ([], 2))
 
     def test_a_text_field_longer_than_its_column_is_dropped(self) -> None:
         name = " ".join(["Sharma"] * 30)  # 209 characters: over the 200 of invoices.seller_name
@@ -520,7 +519,7 @@ class FieldsTest(unittest.TestCase):
         chat = FakeChat(reply({"seller_name": ("Seller", name), "buyer_name": ("Bill To", "Patil Garments")}))
         extraction = read(spans, chat)
         self.assertEqual(found(extraction.values), {("document", "buyer_name"): "Patil Garments"})
-        self.assertEqual(extraction.dropped, 1)
+        self.assertEqual(extraction.quotes.dropped, 1)
 
     def test_a_reply_part_of_the_wrong_shape_is_skipped(self) -> None:
         spans = page_lines("Invoice No: INV-17", "1 Cotton 3,000.00")
@@ -534,7 +533,7 @@ class FieldsTest(unittest.TestCase):
         self.assertEqual(
             found(extraction.values), {("line:1", "description"): "Cotton", ("line:1", "amount"): "3,000.00"}
         )
-        self.assertEqual((extraction.quotes.returned, extraction.dropped), (2, 1))
+        self.assertEqual((extraction.quotes.returned, extraction.quotes.dropped), (2, 1))
 
 
 class LinesTest(unittest.TestCase):
@@ -594,7 +593,7 @@ class LinesTest(unittest.TestCase):
         extraction = read(spans, chat)
         hsn = {value.record_key: value.location for value in extraction.values if value.field == "hsn"}
         self.assertEqual(hsn, {"line:1": spans[0].location, "line:3": spans[2].location})
-        self.assertEqual((extraction.quotes.returned, extraction.dropped), (6, 1))
+        self.assertEqual((extraction.quotes.returned, extraction.quotes.dropped), (6, 1))
 
     def test_a_line_repeated_by_overlapping_windows_is_kept_once(self) -> None:
         # Window 1 holds spans 0 and 1, window 2 spans 1 and 2 (plan 5.9).
@@ -614,7 +613,7 @@ class LinesTest(unittest.TestCase):
             },
         )
         # Council 10: the repeat is not counted again (the line and its quantity, once).
-        self.assertEqual((extraction.quotes.returned, extraction.dropped), (2, 0))
+        self.assertEqual((extraction.quotes.returned, extraction.quotes.dropped), (2, 0))
 
     def test_a_line_whose_description_or_amount_spot_is_taken_is_a_repeat(self) -> None:
         spans = page_lines("Header row", "1 Cotton Poplin 120 3,000.00", "Footer row")
@@ -670,12 +669,12 @@ class LinesTest(unittest.TestCase):
             found(extraction.values),
             {("line:1", "description"): "Sub/Fabric Lining", ("line:1", "amount"): "1,000.00"},
         )
-        self.assertEqual(extraction.dropped, 2)
+        self.assertEqual(extraction.quotes.dropped, 2)
 
     def test_a_line_without_its_amount_is_dropped(self) -> None:
         spans = page_lines("1 Cotton 3,000.00")
         extraction = read(spans, FakeChat(reply(lines=[item("Cotton", "9,999.00", hsn="5208")])))
-        self.assertEqual((extraction.values, extraction.dropped), ([], 1))
+        self.assertEqual((extraction.values, extraction.quotes.dropped), ([], 1))
 
     def test_at_most_1000_lines_and_the_rest_are_dropped_and_counted(self) -> None:
         # 1,001 lines of 17 characters, 91 to a window (91 * 18 - 1 = 1,637 characters), so
@@ -732,7 +731,7 @@ class ModelCallsTest(unittest.TestCase):
                 self.assertEqual((extraction.values, extraction.error_code), ([], code))
                 self.assertEqual((extraction.model_calls, len(chat.calls)), (2, 2))
                 # Window 1's quotes were thrown away with its values: none are counted.
-                self.assertEqual((extraction.quotes.returned, extraction.dropped), (0, 0))
+                self.assertEqual((extraction.quotes.returned, extraction.quotes.dropped), (0, 0))
                 self.assertEqual(beats, [(1, 3), (2, 3)])
 
     def test_no_text_means_no_call(self) -> None:
@@ -1270,12 +1269,14 @@ class ReviewFixesTest(unittest.TestCase):
                 ("line:1", "amount"): "500.00",
             },
         )
-        self.assertEqual(extraction.dropped, 2)  # the carried forward subtotal; "Opening" is not in the text
+        self.assertEqual(
+            extraction.quotes.dropped, 2
+        )  # the carried forward subtotal; "Opening" is not in the text
 
     def test_a_line_whose_amount_sits_in_a_carried_forward_row_is_rejected(self) -> None:
         spans = [*cells(1, "Silk"), *cells(2, "Carried forward", "7,000.00")]
         extraction = read(spans, FakeChat(reply(lines=[item("Silk", "7,000.00")])))
-        self.assertEqual((extraction.values, extraction.dropped), ([], 1))
+        self.assertEqual((extraction.values, extraction.quotes.dropped), ([], 1))
 
     def test_a_rate_equal_to_the_amount_is_kept_and_the_amount_is_the_last_on_its_row(self) -> None:
         # Council 4: the amount first, preferring the last match on the description's row; the
@@ -1343,7 +1344,7 @@ class ReviewFixesTest(unittest.TestCase):
         )
         extraction = read(spans, chat)
         self.assertEqual(found(extraction.values), {("document", "subtotal"): "999999999999.99"})
-        self.assertEqual(extraction.dropped, 2)
+        self.assertEqual(extraction.quotes.dropped, 2)
 
     def test_a_rate_over_numeric_14_2_is_dropped(self) -> None:
         spans = page_lines("1 Cotton 1000000000000.00 5.00")
@@ -1351,7 +1352,7 @@ class ReviewFixesTest(unittest.TestCase):
         self.assertEqual(
             found(extraction.values), {("line:1", "description"): "Cotton", ("line:1", "amount"): "5.00"}
         )
-        self.assertEqual(extraction.dropped, 1)
+        self.assertEqual(extraction.quotes.dropped, 1)
 
     def test_negative_quantities_and_rates_are_dropped_and_counted(self) -> None:
         # Council 10. PROVISIONAL: a line's amount may be negative (a discount line); its
@@ -1368,7 +1369,7 @@ class ReviewFixesTest(unittest.TestCase):
                 ("line:1", "amount"): "50.00",
             },
         )
-        self.assertEqual(extraction.dropped, 2)
+        self.assertEqual(extraction.quotes.dropped, 2)
 
     def test_a_remembered_fix_on_an_invoice_that_fails_its_check_is_needs_review(self) -> None:
         # Council 7: a learned E4 value stays verified only when the check passed.

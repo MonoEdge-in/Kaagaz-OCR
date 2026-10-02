@@ -16,7 +16,7 @@ from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import Handler, JobFailed, Worker
-from kaagaz.pipeline import DocumentProcessor, ReadingSocket
+from kaagaz.pipeline import DocumentProcessor, OnPicture, ReadingSocket
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import ReaderSocket
@@ -82,8 +82,11 @@ def real_socket(max_cells: int = 10_000) -> ReaderSocket:
     return ReaderSocket({sniff.TEXT: CsvReader(max_cells=max_cells), sniff.ZIP: XlsxReader(XLSX_LIMITS)})
 
 
-def make_worker(queue: LeaseQueue, handler: Handler, repo: MemoryDocuments) -> Worker:
-    """The worker as worker_main wires it: the delivery after the last attempt marks the document."""
+def make_worker(
+    queue: LeaseQueue, handler: Handler, repo: MemoryDocuments, clock: FakeClock | None = None
+) -> Worker:
+    """The worker as worker_main wires it: the delivery after the last attempt marks the
+    document. With ``clock``, it renews a lease at most every 15 s on that clock."""
     return Worker(
         queue,
         handler,
@@ -94,6 +97,7 @@ def make_worker(queue: LeaseQueue, handler: Handler, repo: MemoryDocuments) -> W
         on_attempt=lambda job, attempt: repo.record_attempt(
             job.customer_id, job.document_id, attempt, MAX_ATTEMPTS
         ),
+        clock=None if clock is None else clock.now,
     )
 
 
@@ -357,7 +361,7 @@ class StatusAndFailureTest(unittest.TestCase):
 
     def test_a_crash_on_every_delivery_still_ends_failed_retries_exhausted(self) -> None:
         class CrashingPreparer(FakePreparer):
-            def prepare(self, detected_type: str, data: bytes) -> FakePrepared:
+            def prepare(self, detected_type: str, data: bytes, on_picture: OnPicture) -> FakePrepared:
                 raise RuntimeError("a bug, after the scan passed")
 
         system = build(preparer=CrashingPreparer())
