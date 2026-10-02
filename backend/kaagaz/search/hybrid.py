@@ -6,10 +6,16 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    ``tsv`` column, and ``websearch_to_tsquery('simple', k)`` against
    ``tsv_simple`` (the text and its Latin spelling, unstemmed: PRD 3 W1), where
    ``k`` is the question's ``normalise`` keywords, so the simple query does not
-   require stop words ("the", "of"). A piece scores the higher ``ts_rank_cd``
-   of the two. This parser never raises a syntax error, so a customer's raw
-   question is safe to pass. A question of stop words only ("the and of")
-   becomes an empty query that matches nothing.
+   require stop words ("the", "of"). This parser never raises a syntax error,
+   so a customer's raw question is safe to pass. A question of stop words only
+   ("the and of") becomes an empty query that matches nothing. A third query,
+   ``to_tsquery('simple', g)`` against ``tsv_simple``, ORs the Marathi and
+   Hindi equivalents of the keywords (``glossary.word_query``, council 2 Oct
+   2026), so "owner" finds भोगवटादाराचे. ``g`` is built from the glossary's
+   code constants only, never from the question's text, so ``to_tsquery``
+   cannot fail on it; "" (no keyword listed) is NULL, which matches nothing.
+   A piece scores the highest ``ts_rank_cd`` of the three. ``search_documents``
+   shares this list, so library search finds these pieces too.
 2. **Typo tolerant:** pg_trgm ``word_similarity(q, ...)`` with ``q <% ...``
    against the text and its Latin spelling (W2), the higher of the two, so
    "invioce" still finds "invoice" and "shindey" finds "शिंदे". The ``<%``
@@ -75,6 +81,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import OperationalError
 
+from kaagaz.answering import glossary
 from kaagaz.answering.hinglish import normalise
 from kaagaz.chunking.script import has_devanagari_letters, latin_spelling
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -103,11 +110,14 @@ _QUERY_CANCELED = "57014"
 # and so is the scope (the s_* parameters, Scope.params; tests/test_search_scope_db.py).
 
 _WORD = text(
-    "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q)) AS score"
+    "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
+    " ts_rank_cd(p.tsv_simple, g.q)) AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
     " CROSS JOIN websearch_to_tsquery('simple', :k) AS s (q)"
+    " CROSS JOIN (SELECT CASE WHEN CAST(:g AS text) = '' THEN NULL"
+    " ELSE to_tsquery('simple', CAST(:g AS text)) END) AS g (q)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
@@ -119,7 +129,7 @@ _WORD = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
-    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q)"
+    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q)"
     " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
@@ -413,16 +423,24 @@ def _candidates(
 ) -> tuple[list[FusedPiece], dict[str, str]]:
     """The three lists inside ``scope``, merged best first, and each piece's document id.
     W3: ``text_latin`` is matched with the question's ``latin_spelling``, and the simple
-    word query takes the ``normalise`` keywords, which spell Devanagari in Latin letters."""
+    word query takes the ``normalise`` keywords, which spell Devanagari in Latin letters;
+    the glossary query takes their Marathi and Hindi equivalents (the module docstring)."""
     conn.execute(_SET_SEARCH, {"ms": str(STATEMENT_TIMEOUT_MS)})
     word: list[tuple[str, float]] = []
     fuzzy: list[tuple[str, float]] = []
     meaning: list[tuple[str, float]] = []
     owners: dict[str, str] = {}
     if query_text.strip():
-        keywords = " ".join(normalise(query_text).keywords)
+        asked = normalise(query_text).keywords
         latin = latin_spelling(query_text) if has_devanagari_letters(query_text) else query_text
-        params = {"c": customer_id, "q": query_text, "k": keywords, "ql": latin, "n": CANDIDATES}
+        params = {
+            "c": customer_id,
+            "q": query_text,
+            "k": " ".join(asked),
+            "g": glossary.word_query(asked),
+            "ql": latin,
+            "n": CANDIDATES,
+        }
         word = _ranked(conn.execute(_WORD, {**params, **scope.params()}), owners)
         conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
         fuzzy = _ranked(conn.execute(_FUZZY, {**params, **scope.params()}), owners)

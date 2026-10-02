@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from kaagaz.answering.draft import DraftSentence
-from kaagaz.answering.verify import numbers_in, verify
+from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
 
 EVIDENCE = {
     1: "Invoice No: INV-1042\nInvoice Date: 12/08/2026\nGrand Total: Rs. 1,20,000",
@@ -278,3 +278,63 @@ def test_drops_are_logged_by_reason_with_codes_only(caplog: pytest.LogCaptureFix
     assert [record.getMessage() for record in caplog.records] == [
         "answer sentences dropped: missing_number=2 no_source=1 number_word=1"
     ]
+
+
+# --- any script's digits, and Devanagari words (council 2 Oct 2026, PR2) ---------
+
+DEVANAGARI = str.maketrans("0123456789", "०१२३४५६७८९")
+
+
+def _kept(sentence: str, evidence: str) -> bool:
+    return verify([DraftSentence(sentence, [1])], {1: evidence}) != []
+
+
+@pytest.mark.parametrize(
+    ("sentence", "evidence", "kept"),
+    [
+        ("The area is ४५१ R.", "क्षेत्र ४५०", False),
+        ("The area is ४५० R.", "Area 450", True),
+        ("The area is 450 R.", "क्षेत्र ४५०", True),
+        ("The area is ૪૫૧ R.", "क्षेत्र ४५०", False),  # Gujarati digits cannot be checked: dropped
+        ("The total is " + "1,20,000.00.".translate(DEVANAGARI), "Total: 1,20,000", True),
+        ("Gat ४५/२.", "Gat No. 45/2", True),
+        ("Gat ४५/३.", "Gat No. 45/2", False),
+        ("It is dated 12 August 2026.", "दिनांक १२/०८/२०२६", True),
+        ("It is dated 13 August 2026.", "दिनांक १२/०८/२०२६", False),
+        ("The total is 1.2 lakh.", "Total: " + "1,20,000".translate(DEVANAGARI), True),  # lakh is read
+        ("The total is Rs. 1.2 L.", "Total: " + "1,20,000".translate(DEVANAGARI), False),  # L is not
+    ],
+)
+def test_numbers_of_any_script_compare_by_value(sentence: str, evidence: str, kept: bool) -> None:
+    assert _kept(sentence, evidence) is kept
+
+
+def test_numbers_in_reads_devanagari_digits() -> None:
+    assert numbers_in("एकूण ₹ " + "1,20,000".translate(DEVANAGARI)) == {Decimal(120000)}
+
+
+OWNER = "A: जमीन मालकाचे नाव | B: रामचंद्र गणपत पाटील"
+
+
+@pytest.mark.parametrize(
+    ("sentence", "kept"),
+    [
+        ("The owner is रामचंद्र गणपत पाटील.", True),
+        ("The owner is रामचंद्र पाटील.", True),  # each word is checked on its own
+        ("The owner is रामचंद्र पाटिल.", False),  # respelled
+        ("The owner is सीता पाटील.", False),  # invented
+        ("The owner is पाट.", False),  # a part of a word is not that word
+    ],
+)
+def test_every_devanagari_word_must_be_a_word_of_the_evidence(sentence: str, kept: bool) -> None:
+    assert _kept(sentence, OWNER) is kept
+
+
+def test_a_sentence_checked_against_nothing_over_devanagari_evidence_is_unchecked() -> None:
+    texts = {1: OWNER, 2: "Owner: Ram Patil"}
+    assert unchecked_cross_script(DraftSentence("The owner is Ramchandra Patil.", [1]), texts)
+    assert not unchecked_cross_script(DraftSentence("The owner is रामचंद्र गणपत पाटील.", [1]), texts)
+    assert not unchecked_cross_script(DraftSentence("Gat ४७.", [1]), {1: "गट क्रमांक ४७"})  # a checked number
+    assert not unchecked_cross_script(DraftSentence("A: जमीन मालकाचे नाव", [1]), texts)  # a copy
+    english = DraftSentence("The owner is Ram Patil.", [2])
+    assert not unchecked_cross_script(english, texts)  # English evidence

@@ -11,6 +11,17 @@ reaches ``answer_min_evidence_score``, or at least half of the question's
 keywords appear in the evidence text (ignoring case). Otherwise the answer is
 "not found" plus the closest documents.
 
+The keyword rule, for English questions on Marathi and Hindi documents too
+(council 2 Oct 2026, PR2 D). Every digit in the evidence reads as ASCII
+(``ascii_digits``). Each keyword counts once, out of the question's keyword
+count. A keyword with a digit (an id, "48", "inv-1042") must be in the
+evidence as written, with no letter, mark or digit next to it, or the gate
+fails on every path, the score path too (this is checked first): "Who owns
+gat number 48?" is never answered from gat 47, however close its scores. A keyword
+also counts when a glossary equivalent is there (``glossary.present``: whole
+words for short terms, never a GENERIC word). A pass that needed the glossary
+is ``"glossary"``, and the service caps that answer at needs review.
+
 PROVISIONAL, a change from the spec's "word score or meaning score": the word
 score is PostgreSQL's raw ``ts_rank_cd``, which is small and unbounded (about
 0.1 for an exact "INV-1042", 0.033 for "invoice grand total"), so it cannot
@@ -51,14 +62,20 @@ import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
+from kaagaz.answering import glossary
 from kaagaz.answering.sanitize import strip_ignorable
+from kaagaz.chunking.script import ascii_digits
 from kaagaz.db.engine import Database
 from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_json
 from kaagaz.search.scope import Scope
 
 CLOSEST_DOCUMENTS = 3
+
+# How the gate passed: a score, the English keywords, or only with the glossary's help.
+Gate = Literal["score", "keywords", "glossary"]
+_DIGIT = re.compile("[0-9]")
 
 _TELL = r"(?:say|answer|reply|tell|respond|write)"  # an imperative near "when asked"
 # Before "when asked", the imperative starts its clause ("Reply that ..."); after it, any
@@ -99,7 +116,7 @@ _INSTRUCTION_LIKE = (
         re.IGNORECASE | re.DOTALL,
     ),
     re.compile(
-        r"(?:पिछले|पहले|ऊपर|सभी|सारे|मागील|सर्व).{0,40}?(?:निर्देश|आदेश|सूचना)"
+        r"(?:पिछले|पहले|ऊपर|सभी|सारे|मागील|आधीच्या|पूर्वीच्या|सर्व).{0,40}?(?:निर्देश|आदेश|सूचना)"
         # "Forget" is भूल जा..., never भूल alone: "भूल चूक लेनी देनी" is a bill's E&OE.
         r".{0,40}?(?:अनदेखा|नज\N{DEVANAGARI SIGN NUKTA}?रअंदाज|भूल\s*जा|विसर|दुर्लक्ष)"
         # ... unless it says not to: "अनदेखा न करें", "दुर्लक्ष करू नये", "विसरू नका".
@@ -213,19 +230,42 @@ def number_evidence(hits: Sequence[Hit], *, start: int = 1, neighbour: bool = Fa
     return evidence
 
 
-def enough_evidence(evidence: Sequence[Evidence], keywords: Sequence[str], min_score: float) -> bool:
-    """The evidence gate (see the module docstring)."""
+def enough_evidence(evidence: Sequence[Evidence], keywords: Sequence[str], min_score: float) -> Gate | None:
+    """The evidence gate (see the module docstring): how it passed, or None.
+    O(k * t) for k keywords over t characters of evidence."""
     if not evidence:
-        return False
+        return None
+    wanted = list(dict.fromkeys(ascii_digits(keyword).casefold() for keyword in keywords))
+    haystack = ascii_digits("\n".join(item.hit.text for item in evidence)).casefold()
+    # First, on every path: a close score for "gat 48" over a gat 47 piece is no answer.
+    if any(_DIGIT.search(keyword) and not _verbatim(keyword, haystack) for keyword in wanted):
+        return None
     best = evidence[0].hit
     for score in (best.meaning_score, best.fuzzy_score):
         if score is not None and score >= min_score:
+            return "score"
+    if not wanted:
+        return None
+    english = sum(1 for keyword in wanted if keyword in haystack)
+    if english * 2 >= len(wanted):
+        return "keywords"
+    either = sum(1 for keyword in wanted if keyword in haystack or glossary.present(keyword, haystack))
+    return "glossary" if either * 2 >= len(wanted) else None
+
+
+def _verbatim(keyword: str, haystack: str) -> bool:
+    """``keyword`` in ``haystack`` with no letter, mark or digit right before or after it. O(t)."""
+    start = haystack.find(keyword)
+    while start >= 0:
+        end = start + len(keyword)
+        if not (_word_char(haystack[start - 1 : start]) or _word_char(haystack[end : end + 1])):
             return True
-    if not keywords:
-        return False
-    haystack = "\n".join(item.hit.text for item in evidence).casefold()
-    present = sum(1 for keyword in keywords if keyword.casefold() in haystack)
-    return present * 2 >= len(keywords)
+        start = haystack.find(keyword, start + 1)
+    return False
+
+
+def _word_char(ch: str) -> bool:
+    return bool(ch) and unicodedata.category(ch)[0] in "LMN"
 
 
 def closest_documents(hits: Sequence[Hit]) -> list[dict[str, str]]:

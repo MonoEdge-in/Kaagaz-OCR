@@ -29,7 +29,10 @@ The steps (docs/architecture.md):
 6. ``sanitize`` on every sentence and snippet. The label is verified only
    when every value or piece behind the answer is verified, and no sentence
    rests on neighbours alone (PROVISIONAL, plan decision 8: the gate never
-   judged them).
+   judged them). Nor is it verified when the gate passed only through the
+   glossary's Marathi and Hindi words, or a sentence citing Devanagari
+   evidence was checked against nothing (``verify.unchecked_cross_script``;
+   council 2 Oct 2026, PR2).
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
@@ -88,8 +91,8 @@ from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
-from kaagaz.answering.verify import numbers_in, verify
-from kaagaz.chunking.script import has_devanagari_letters
+from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
+from kaagaz.chunking.script import ascii_digits, has_devanagari_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.indexing import query_input, recipe_tag
@@ -345,7 +348,8 @@ class AnswerService:
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
-        if not enough_evidence(evidence, normalised.keywords, self._settings.answer_min_evidence_score):
+        gate = enough_evidence(evidence, normalised.keywords, self._settings.answer_min_evidence_score)
+        if gate is None:
             return _not_found("search", shown, closest, model_used=False)
         # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
         # while they fit the room the hits and the question leave in MODEL_NUM_CTX: every
@@ -383,7 +387,14 @@ class AnswerService:
         # A sentence backed by neighbours only, or with a number only a neighbour holds, is never
         # verified: the gate never judged them (PROVISIONAL, plan decision 8).
         on_neighbours = any(_rests_on_neighbours(s, by_n, texts) for s in kept)
-        verified = all(c.label == "verified" for c in citations) and not on_neighbours
+        # Nor is one the glossary alone let through or chose the quote of, or one checked
+        # against nothing (council, PR2).
+        unchecked = (
+            gate == "glossary"
+            or any(unchecked_cross_script(s, texts) for s in kept)
+            or (not model_used and any(_quoted_through_glossary(s, by_n, normalised.keywords) for s in kept))
+        )
+        verified = all(c.label == "verified" for c in citations) and not (on_neighbours or unchecked)
         return Answer(
             status="answered",
             label="verified" if verified else "needs_review",
@@ -451,6 +462,15 @@ def _rests_on_neighbours(sentence: DraftSentence, by_n: dict[int, Evidence], tex
     return not hits or not numbers_in(sentence.text) <= allowed
 
 
+def _quoted_through_glossary(
+    sentence: DraftSentence, by_n: dict[int, Evidence], keywords: Sequence[str]
+) -> bool:
+    """True when a quoted line's piece holds a keyword only through a glossary equivalent:
+    the glossary chose the quote, so it is never verified. O(k * t)."""
+    pieces = [ascii_digits(by_n[n].hit.text).casefold() for n in sentence.evidence]
+    return any(keyword.casefold() not in text for keyword in keywords for text in pieces)
+
+
 def _not_found(route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool) -> Answer:
     return Answer(
         status="not_found",
@@ -495,20 +515,22 @@ def _focus(item: Evidence, sentences: Sequence[str]) -> list[dict[str, Any]]:
     holds a sentence (or a sentence holds it), or shares a number with one.
     Falls back to every region when the lines and regions do not pair up (a
     spreadsheet row), no line matches, or the lines used miss a page of a piece
-    that crosses pages (H4: each of its pages shows its spot). O(lines * sentences).
+    that crosses pages (H4: each of its pages shows its spot). Digits of any
+    script read as ASCII on both sides, so "450" finds the line "४५०".
+    O(lines * sentences).
     """
-    lines = item.hit.text.splitlines()
+    lines = ascii_digits(item.hit.text).splitlines()
     if len(lines) != len(item.regions) or len(item.regions) != len(item.hit.regions):
         return item.regions
-    folded = [sentence.casefold().strip() for sentence in sentences]
-    numbers = {n.replace(",", "") for sentence in sentences for n in _NUMBER.findall(sentence)}
+    folded = [ascii_digits(sentence).casefold().strip() for sentence in sentences]
+    numbers = {n.replace(",", "") for sentence in folded for n in _NUMBER.findall(sentence)}
     used = []
     for line, region in zip(lines, item.regions, strict=True):
         text = line.casefold().strip()
         if not text:
             continue
         if any(text in sentence or sentence in text for sentence in folded if sentence) or any(
-            n.replace(",", "") in numbers for n in _NUMBER.findall(line)
+            n.replace(",", "") in numbers for n in _NUMBER.findall(text)
         ):
             used.append(region)
     if {region["page"] for region in used} != {region["page"] for region in item.regions}:

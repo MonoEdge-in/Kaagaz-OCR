@@ -192,7 +192,7 @@ def test_an_empty_array_in_the_sql_matches_nothing_too(db: Database) -> None:
     """Defence in depth: the statements never read an empty list as "no filter"."""
     customer, _ = new_customer(db)
     add(db, customer)
-    words = {"c": customer, "q": "INV-9001", "k": "inv-9001", "ql": "INV-9001", "n": 50}
+    words = {"c": customer, "q": "INV-9001", "k": "inv-9001", "g": "", "ql": "INV-9001", "n": 50}
     vector = {"c": customer, "vec": hybrid.vector_literal(axis(0)), "recipe": RECIPE, "n": 50}
     statements = [
         (hybrid._WORD, words),
