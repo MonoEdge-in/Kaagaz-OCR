@@ -27,8 +27,9 @@ _OCR_LEASE_MARGIN_SECONDS = 120 + LEASE_RENEW_SECONDS
 # which must never import this module; a test keeps the two the same).
 OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
 # AR1: seconds to spare between the longest model step without a heartbeat (one
-# chat_json: a call and its repair retry) and the job's lease.
-_MODEL_LEASE_MARGIN_SECONDS = 60
+# chat_json: a call and its repair retry; or one embedding batch or vision crop, a
+# single call) and the job's lease.
+_MODEL_LEASE_MARGIN_SECONDS = 60 + LEASE_RENEW_SECONDS
 # The size of the pieces' vector(1024) column (migration 0001): EMBEDDING_DIM must match it.
 EMBEDDING_DIM = 1024
 # Council 5 (PROVISIONAL): an invoice window's reply needs about this many tokens for each
@@ -185,7 +186,9 @@ class Settings:
     reprocess_per_hour: int
 
     # Search (PRD 3 V2): hnsw.ef_search, the meaning index's candidate list, 1 to 1000.
+    # Search inside documents (Q2): at most this many documents in a reply, 1 to 100.
     search_ef: int
+    search_max_documents: int
 
     # Answers.
     answer_max_evidence: int
@@ -321,7 +324,7 @@ class Settings:
             model_embed=env.text("MODEL_EMBED"),
             model_vision=env.optional("MODEL_VISION"),
             embedding_dim=embedding_dim,
-            model_timeout_seconds=env.number("MODEL_TIMEOUT_SECONDS"),
+            model_timeout_seconds=model_timeout_seconds,
             model_num_ctx=model_num_ctx,
             model_card_max_tokens=card_max_tokens,
             model_window_max_tokens=window_max_tokens,
@@ -341,6 +344,7 @@ class Settings:
             trash_days=env.integer("TRASH_DAYS"),
             reprocess_per_hour=env.positive("REPROCESS_PER_HOUR"),
             search_ef=env.between("SEARCH_EF", 1, 1000),
+            search_max_documents=env.between("SEARCH_MAX_DOCUMENTS", 1, 100),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             answer_neighbours=env.between("ANSWER_NEIGHBOURS", 0, 3),

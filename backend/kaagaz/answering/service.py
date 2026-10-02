@@ -38,9 +38,10 @@ Nothing here logs the question or any document text: a model error is logged
 as its code, and each model answer as the model's tag and ANSWER_PROMPT_HASH.
 
 Time: one ``available_fields`` query only for a question with an aggregate
-word and no unknown topic word, then either one fixed query or one search plus
-at most one model call; the rest is O(e * t) over e pieces of evidence of t
-characters.
+word and no unknown topic word, then either one fixed query or one search
+(then one neighbours statement for the usable hits) plus at most one model
+call; the rest is O(e * t) over e pieces of evidence of t characters. e is at
+most ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 """
 
 import logging
@@ -48,12 +49,19 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from decimal import Decimal
 from functools import partial
 from itertools import zip_longest
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, input_token_budget
+from kaagaz.ai.client import (
+    ModelClient,
+    ModelOutputError,
+    ModelUnavailable,
+    estimate_tokens,
+    input_token_budget,
+)
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
 from kaagaz.answering.draft import (
     ANSWER_PROMPT_HASH,
@@ -80,11 +88,12 @@ from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
-from kaagaz.answering.verify import verify
+from kaagaz.answering.verify import numbers_in, verify
 from kaagaz.chunking.script import has_devanagari_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.indexing import query_input, recipe_tag
+from kaagaz.search.scope import EVERYTHING, Scope
 from kaagaz.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -192,7 +201,16 @@ class AnswerService:
         self._evidence_budget = input_token_budget(
             num_ctx=settings.model_num_ctx, max_tokens=settings.model_answer_max_tokens, system=SYSTEM_PROMPT
         )
-        self._retriever = retriever if retriever is not None else PgRetriever(db)
+        self._retriever = (
+            retriever
+            if retriever is not None
+            else PgRetriever(
+                db,
+                recipe=recipe_tag(settings.model_embed),
+                ef_search=settings.search_ef,
+                neighbours=settings.answer_neighbours,
+            )
+        )
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
 
@@ -214,7 +232,8 @@ class AnswerService:
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
         found_range = date_range(normalised, self._today())
-        fields = partial(self._fixed.available_fields, customer_id)  # asked for only if a plan could follow
+        fixed = self._fixed.scoped(scope)
+        fields = partial(fixed.available_fields, customer_id)  # asked for only if a plan could follow
         plan = plan_fixed(normalised, found_range, mentions_date(normalised), fields)
         if plan is not None:
             return self._fixed_answer(customer_id, plan, shown, fixed)
@@ -322,7 +341,7 @@ class AnswerService:
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         # A Devanagari question is embedded as asked (W3): its Latin spelling means little to the model.
         meant = question if has_devanagari_letters(question) else normalised.english
-        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit)
+        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit, scope)
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
@@ -383,7 +402,7 @@ class AnswerService:
         if self._model is None or not english:
             return None
         try:
-            vectors = self._model.embed([english])
+            vectors = self._model.embed([query_input(english)])
         except (ModelUnavailable, ModelOutputError) as error:
             _log.warning("question searched without its meaning vector", extra={"code": error.code})
             return None
@@ -428,7 +447,7 @@ def _tokens(item: Evidence) -> int:
 def _rests_on_neighbours(sentence: DraftSentence, by_n: dict[int, Evidence], texts: dict[int, str]) -> bool:
     """True when ``sentence`` cites no hit, or a number in it is in none of the hits it cites."""
     hits = [n for n in sentence.evidence if not by_n[n].neighbour]
-    allowed: set[Decimal] = set().union(*(numbers_in(texts[n], dates_split=True) for n in hits))
+    allowed: set[Decimal] = set().union(*(numbers_in(texts[n]) for n in hits))
     return not hits or not numbers_in(sentence.text) <= allowed
 
 

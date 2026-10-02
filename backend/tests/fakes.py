@@ -29,7 +29,15 @@ from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job, UnknownFolder
 from kaagaz.jobs.worker import JobFailed, Superseded
-from kaagaz.pipeline import DocumentContent, FinishedRun, PageRecord, Progress, ReaderOutput, RunTotals
+from kaagaz.pipeline import (
+    DocumentContent,
+    FinishedRun,
+    OnPicture,
+    PageRecord,
+    Progress,
+    ReaderOutput,
+    RunTotals,
+)
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader

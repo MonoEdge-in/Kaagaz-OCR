@@ -185,3 +185,37 @@ def test_an_embedding_dim_other_than_1024_stops_start_up(value: str) -> None:
     """The pieces' vector(1024) column (migration 0001) holds no other size."""
     with pytest.raises(SettingsError, match="EMBEDDING_DIM must be 1024"):
         Settings.from_env(shipped(EMBEDDING_DIM=value))
+
+
+def test_search_ef_ships_at_100_and_must_be_1_to_1000() -> None:
+    """PRD 3 V2: hnsw.ef_search takes 1 to 1000; a value outside stops start-up by name."""
+    assert Settings.from_env(shipped()).search_ef == 100
+    assert Settings.from_env(shipped(SEARCH_EF="1000")).search_ef == 1000
+    for bad in ("0", "1001", "-5", "ten", None):
+        with pytest.raises(SettingsError, match="SEARCH_EF"):
+            Settings.from_env(shipped(SEARCH_EF=bad))
+
+
+def test_search_max_documents_ships_at_20_and_must_be_1_to_100() -> None:
+    """PRD 3 Q2: at most SEARCH_MAX_DOCUMENTS documents per reply; a value outside stops start-up by name."""
+    assert Settings.from_env(shipped()).search_max_documents == 20
+    assert Settings.from_env(shipped(SEARCH_MAX_DOCUMENTS="100")).search_max_documents == 100
+    for bad in ("0", "101", "twenty", None):
+        with pytest.raises(SettingsError, match="SEARCH_MAX_DOCUMENTS"):
+            Settings.from_env(shipped(SEARCH_MAX_DOCUMENTS=bad))
+
+
+def test_answer_neighbours_ships_at_1_and_must_be_0_to_3() -> None:
+    """PRD 3 Q4: the pieces on each side of an evidence piece; a value outside stops start-up by name."""
+    assert Settings.from_env(shipped()).answer_neighbours == 1
+    for bad in ("4", "-1", "one", None):
+        with pytest.raises(SettingsError, match="ANSWER_NEIGHBOURS"):
+            Settings.from_env(shipped(ANSWER_NEIGHBOURS=bad))
+
+
+def test_chat_history_turns_ships_at_3_and_must_be_0_to_10() -> None:
+    """PRD 3 H1: the pairs a follow-up is rewritten with; a value outside stops start-up by name."""
+    assert Settings.from_env(shipped()).chat_history_turns == 3
+    for bad in ("11", "-1", "three", None):
+        with pytest.raises(SettingsError, match="CHAT_HISTORY_TURNS"):
+            Settings.from_env(shipped(CHAT_HISTORY_TURNS=bad))
