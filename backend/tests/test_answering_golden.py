@@ -26,7 +26,6 @@ from sqlalchemy import create_engine
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.answering.draft import SYSTEM_PROMPT
-from kaagaz.answering.evidence import Retrieved
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedRow, ValueRef
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.db.engine import Database
@@ -115,7 +114,7 @@ class FakeRetriever:
 
     def search(
         self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
-    ) -> Retrieved:
+    ) -> list[FakeHit]:
         self.calls.append((customer_id, text, embedding, limit))
         words = text.casefold().split()
         hits = []
@@ -125,7 +124,10 @@ class FakeRetriever:
                 share = present / len(words)
                 hits.append(dataclasses.replace(hit, score=share, fuzzy_score=share))
         hits.sort(key=lambda hit: -hit.score)
-        return Retrieved(hits[:limit])
+        return hits[:limit]
+
+    def neighbours(self, customer_id: str, hits: Sequence[Any], scope: Scope) -> list[FakeHit]:
+        return []
 
 
 INVOICE = piece(

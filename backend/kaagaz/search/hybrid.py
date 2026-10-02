@@ -75,6 +75,7 @@ from typing import Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import OperationalError
 
+from kaagaz.answering.evidence import Hit
 from kaagaz.answering.hinglish import normalise
 from kaagaz.chunking.script import has_devanagari_letters, latin_spelling
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -450,7 +451,7 @@ def _hits(conn: Connection, customer_id: str, fused: Sequence[FusedPiece]) -> li
 
 
 def neighbours(
-    conn: Connection, *, customer_id: str, hits: Sequence[SearchHit], size: int, scope: Scope = EVERYTHING
+    conn: Connection, *, customer_id: str, hits: Sequence[Hit], size: int, scope: Scope = EVERYTHING
 ) -> list[SearchHit]:
     """Q4: the pieces up to ``size`` either side of each hit in its document, in ``scope``,
     each once, never a hit: the first hit's first, in seq order. ``conn`` is the search's

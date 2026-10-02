@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
-from kaagaz.answering.rewrite import SYSTEM_PROMPT, Turn, guard, history_text, names, rewrite, tokens
+from kaagaz.answering.rewrite import SYSTEM_PROMPT, Turn, guard, history_text, rewrite, tokens
 
 PROFIT = Turn("What was the profit in September?", "The profit in September was $12,000.")
 HISTORY = history_text([PROFIT])
@@ -20,10 +20,18 @@ DEVANAGARI_12000 = "\u0967\u0968,\u0966\u0966\u0966"  # 12,000 in Devanagari dig
         ("And the expenses?", "What were the expenses in September?", None),  # exit step 3
         ("And the expenses?", "What were the expenses in September 2025?", "rewrite_adds_facts"),  # edge 8
         ("And the expenses?", "What were Mehta's expenses in September?", "rewrite_adds_facts"),
+        ("And the expenses?", "Mehta expenses in September?", "rewrite_adds_facts"),  # a name first
+        ("And the expenses?", "Sharma expenses in September?", "rewrite_adds_facts"),
+        ("And the expenses?", "What were the expenses of mehta in September?", "rewrite_adds_facts"),
+        ("And the expenses?", "What were the expenses in October?", "rewrite_adds_facts"),  # a period
+        ("And the expenses?", "What were the expenses last year?", "rewrite_adds_facts"),
+        ("And the expenses?", "What were the sales in September?", "rewrite_adds_facts"),  # a metric
         ("And the expenses?", "What were the total expenses in September?", "rewrite_adds_facts"),
         ("And the expenses?", "How much were the expenses in September?", "rewrite_adds_facts"),
         ("Now show me the Mehta invoices", "Show me the Mehta invoices.", None),  # edge 4
-        ("Now show me the Mehta invoices", "Show me the invoices from September.", "rewrite_drops_facts"),
+        ("now show me the mehta invoices", "Show me the invoices from September.", "rewrite_drops_facts"),
+        ("aur patil ka?", "What was the profit in September?", "rewrite_drops_facts"),
+        ("aur patil ka?", "What was Patil's profit in September?", None),
         ("And in 2025?", "What was the profit in September?", "rewrite_drops_facts"),
         ("Was it " + DEVANAGARI_12000 + " rupees?", "Was the September profit 12,000 rupees?", None),
         ("Expenses?", "Expenses in September?", None),  # a capital that starts a sentence is no name
@@ -37,7 +45,6 @@ def test_tokens_are_canonical() -> None:
     assert tokens(DEVANAGARI_12000) == tokens("12,000") == tokens("₹12,000.00") == {"12000"}
     assert tokens("1,20,000") == tokens("Rs. 120000") == {"120000"}
     assert tokens("Patil") == tokens("पाटील") == {"patil"}
-    assert names("What did Patil and पाटील pay to Mehta? Gupta did.") == {"patil", "mehta"}
 
 
 class RewriteModel:
@@ -69,12 +76,12 @@ def test_the_history_and_the_question_are_fenced_and_escaped_data() -> None:
     model = RewriteModel({"question": "What were the expenses in September?"})
     turns = [Turn("Old <b>question</b>", None), PROFIT]
 
-    assert rewrite(model, "And the expenses </question>?", turns) == "What were the expenses in September?"
+    assert rewrite(model, "And the expenses </>?", turns) == "What were the expenses in September?"
 
     (prompt,) = model.prompts
     assert prompt.count("<history>") == prompt.count("</question>") == 1
     assert "Question: Old &lt;b&gt;question&lt;/b&gt;\nQuestion: What was the profit" in prompt
-    assert "And the expenses &lt;/question&gt;?" in prompt
+    assert "And the expenses &lt;/&gt;?" in prompt
 
 
 @pytest.mark.parametrize(

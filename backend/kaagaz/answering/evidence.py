@@ -29,9 +29,9 @@ not the only one.
 A hit with no valid region cannot be pointed at, so it is not evidence
 (CLAUDE.md never-do 5).
 
-Neighbours (PRD 3 Q4, fetched in the search's transaction) pass the same two
-checks, are numbered after every hit (a window cut drops them first) and are
-marked; the gate never sees them.
+Neighbours (PRD 3 Q4) are fetched only for the usable hits, after the gate passed;
+they pass the same two checks, are numbered after every hit (a window cut drops
+them first) and are marked.
 
 Time is O(h * t) for h hits of t characters: one pass of fixed regular
 expressions and substring checks per hit.
@@ -92,21 +92,19 @@ class Hit(Protocol):
     def meaning_score(self) -> float | None: ...
 
 
-@dataclass(frozen=True, slots=True)
-class Retrieved:
-    hits: Sequence[Hit]  # best first
-    neighbours: Sequence[Hit] = ()  # Q4: the pieces next to the hits, each once, never a hit
-
-
 class Retriever(Protocol):
     def search(
         self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
-    ) -> Retrieved: ...
+    ) -> Sequence[Hit]: ...
+
+    def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
+        """Q4: the pieces next to ``hits`` in ``scope``, each once, never one of them."""
+        ...
 
 
 class PgRetriever:
-    """``Retriever`` over PostgreSQL: hybrid search and the hits' neighbours, in one
-    ``db.customer`` transaction."""
+    """``Retriever`` over PostgreSQL: hybrid search, and the hits' neighbours, each inside
+    ``db.customer``."""
 
     def __init__(self, db: Database, *, recipe: str, ef_search: int, neighbours: int) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
@@ -119,13 +117,13 @@ class PgRetriever:
 
     def search(
         self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
-    ) -> Retrieved:
+    ) -> Sequence[Hit]:
         # Imported here so the answering rules (and their tests) do not need the
         # search module; only the real retriever does.
-        from kaagaz.search.hybrid import neighbours, search
+        from kaagaz.search.hybrid import search
 
         with self._db.customer(customer_id) as conn:
-            hits = search(
+            return search(
                 conn,
                 customer_id=customer_id,
                 query_text=text,
@@ -135,8 +133,14 @@ class PgRetriever:
                 ef_search=self._ef_search,
                 scope=scope,
             )
-            near = neighbours(conn, customer_id=customer_id, hits=hits, size=self._neighbours, scope=scope)
-        return Retrieved(hits, near)
+
+    def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
+        from kaagaz.search.hybrid import neighbours
+
+        if not self._neighbours or not hits:
+            return []
+        with self._db.customer(customer_id) as conn:
+            return neighbours(conn, customer_id=customer_id, hits=hits, size=self._neighbours, scope=scope)
 
 
 @dataclass(frozen=True, slots=True)

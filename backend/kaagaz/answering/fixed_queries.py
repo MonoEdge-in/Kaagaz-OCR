@@ -48,6 +48,9 @@ Rules shared by every query (never a guess, CLAUDE.md never-do 6):
 * Party names are grouped ignoring case and repeated spaces; the name shown
   is the one written in the group's largest record.
 
+A metric value of an invoice whose check failed is never verified, nor is its
+cited value (PRD 3 edge case 10), whatever its own reading label says.
+
 Every row carries the values it used (``values``, at most
 ``MAX_CITED_VALUES``, each with its page and region) for the citations, and
 ``verified`` over *every* value used, cited or not.
@@ -162,7 +165,10 @@ _TOP_GROUP = text(
     """
     WITH metric AS (
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
-               (array_agg(v.value_number))[1] AS amount, bool_and(v.label = 'verified') AS verified
+               (array_agg(v.value_number))[1] AS amount,
+               bool_and(v.label = 'verified') AND NOT EXISTS (SELECT 1 FROM invoices i
+                   WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
+                   AND i.check_status = 'failed') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
@@ -269,7 +275,10 @@ _TOTAL = text(
     """
     WITH metric AS (
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
-               (array_agg(v.value_number))[1] AS amount, bool_and(v.label = 'verified') AS verified
+               (array_agg(v.value_number))[1] AS amount,
+               bool_and(v.label = 'verified') AND NOT EXISTS (SELECT 1 FROM invoices i
+                   WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
+                   AND i.check_status = 'failed') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
@@ -342,7 +351,10 @@ _EXTREME_VALUE = text(
     """
     WITH metric AS (
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
-               (array_agg(v.value_number))[1] AS amount, bool_and(v.label = 'verified') AS verified
+               (array_agg(v.value_number))[1] AS amount,
+               bool_and(v.label = 'verified') AND NOT EXISTS (SELECT 1 FROM invoices i
+                   WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
+                   AND i.check_status = 'failed') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
@@ -455,7 +467,10 @@ _COUNT_DOCUMENTS = text(
 _VALUE_REFS = text(
     """
     SELECT v.id::text AS value_id, v.document_id::text AS document_id, d.display_name,
-           d.detected_type, v.page_no, v.region, v.field, v.value_text, v.label,
+           d.detected_type, v.page_no, v.region, v.field, v.value_text,
+           CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :customer_id
+               AND i.document_id = v.document_id AND i.check_status = 'failed')
+               THEN 'needs_review' ELSE v.label END AS label,
            v.label_page_no, v.label_region
     FROM extracted_values v
     JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id

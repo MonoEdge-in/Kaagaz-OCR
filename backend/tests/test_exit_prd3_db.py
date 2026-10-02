@@ -124,7 +124,12 @@ def test_steps_2_and_3_profit_cites_pages_15_to_16_and_the_follow_up_is_rewritte
 
     second = world.ask("And the expenses?", conversation_id=first["conversation_id"])
 
-    assert second["answer"]["answer"]["rewritten_question"] == FOLLOW_UP
+    follow = second["answer"]["answer"]
+    assert (follow["rewritten_question"], follow["normalized_question"]) == (FOLLOW_UP, FOLLOW_UP)
+    assert (follow["status"], [s["text"] for s in follow["sentences"]]) == (
+        "answered",
+        [DRAFTS["expenses"][1]],
+    )
     assert f"Answer: The profit in September was {PROFIT_VALUE}." in world.model.rewrites[-1]
     with world.api.db.customer(world.signed.customer_id) as conn:
         saved = conn.execute(

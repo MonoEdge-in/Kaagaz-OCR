@@ -37,7 +37,7 @@ every sentence cites at least one source, and every source has a region.
 Nothing here logs the question or any document text.
 
 Time: one ``available_fields`` query, then either one fixed query or one
-search (with its one neighbours statement) plus at most one model call; the
+search (then one neighbours statement for the usable hits) plus at most one model call; the
 rest is O(e * t) over e pieces of evidence of t characters. e is at most
 ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 """
@@ -324,8 +324,8 @@ class AnswerService:
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         # A Devanagari question is embedded as asked (W3): its Latin spelling means little to the model.
         meant = question if has_devanagari_letters(question) else normalised.english
-        found = self._retriever.search(customer_id, query_text, self._embed(meant), limit, scope)
-        evidence = number_evidence(found.hits)
+        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit, scope)
+        evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
         if not enough_evidence(evidence, normalised.keywords, self._settings.answer_min_evidence_score):
@@ -338,7 +338,8 @@ class AnswerService:
             num_ctx=self._settings.model_num_ctx, max_tokens=_REPLY_TOKENS, system=SYSTEM_PROMPT
         )
         room -= estimate_tokens(question) + sum(_tokens(item) for item in evidence)
-        for item in number_evidence(found.neighbours, start=len(evidence) + 1, neighbour=True):
+        near = self._retriever.neighbours(customer_id, [item.hit for item in evidence], scope)
+        for item in number_evidence(near, start=len(evidence) + 1, neighbour=True):
             room -= _tokens(item)
             if room < 0:
                 break
