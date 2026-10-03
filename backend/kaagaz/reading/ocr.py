@@ -29,7 +29,13 @@ page ever leaves the machine and nothing is downloaded at run time.
 * ``RapidOcrEngine`` imports ``rapidocr`` only on its first page, because it
   is an optional extra (``pip install .[ocr]``): without it, the rest of the
   backend still starts, and ``OCR_ENGINE=none`` marks scans needs_reader.
-  The model is loaded once, under a lock, and reused for every page.
+  The model is loaded once, under a lock, and reused for every page. Its
+  default recogniser has no Devanagari, so a page whose reading is suspect
+  (``ocr_script_suspect``: letters from other scripts, such as Chinese) is
+  read again with the Devanagari one, and the better reading is kept
+  (``_better``); the version then names that model. Its file is fetched when
+  the image is built (``backend/Dockerfile``) and only ever loaded from disk:
+  when it is missing (``ocr_model_missing``), the page stays as first read.
 * ``MeteredOcrEngine`` wraps any engine and counts the pages sent to it and
   the seconds they took (PRD 2 R6: the run's ``seconds_ocr``; ``cli measure``).
 * ``ocr_spans`` turns an engine's pixel boxes into spans with page fractions
@@ -50,6 +56,7 @@ import logging
 import math
 import re
 import socket
+import statistics
 import threading
 import time
 import urllib.parse
@@ -57,10 +64,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from http.client import HTTPConnection, HTTPException, HTTPResponse, HTTPSConnection, IncompleteRead
 from importlib import metadata
+from pathlib import Path
 from typing import Any, NoReturn, Protocol, TypeGuard
 
 from PIL import Image
 
+from kaagaz.chunking.script import ocr_script_suspect, ocr_suspect_count
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
 from kaagaz.reading.spans import BLOCK_KINDS, TABLE_ID, BoxLocation, ReadError, Span
@@ -88,6 +97,9 @@ _VERSION = re.compile(r"[A-Za-z0-9._+;=@ -]{1,200}")
 _CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 # Lone surrogates: JSON can carry them, but no database or UTF-8 file can hold them.
 _SURROGATE = re.compile("[\ud800-\udfff]")
+# RapidOCR's Devanagari recogniser (PP-OCRv5 mobile, 7,940,361 bytes, Apache-2.0),
+# for pages its default one (PP-OCRv6 small, no Devanagari) reads as other scripts.
+DEVANAGARI_REC_MODEL = "devanagari_PP-OCRv5_rec_mobile"
 
 _log = logging.getLogger(__name__)
 
@@ -338,6 +350,13 @@ def _invalid() -> NoReturn:
     raise ReadError("invalid_reader_output")
 
 
+class OcrModelMissing(Exception):
+    """A model file the engine loads from disk is not there. ``code`` is short and
+    safe to log; the file is never downloaded at run time."""
+
+    code = "ocr_model_missing"
+
+
 class RapidOcrEngine:
     name = "rapidocr"
 
@@ -345,34 +364,124 @@ class RapidOcrEngine:
         version = _installed_version("rapidocr")
         if version is None:
             raise SettingsError("OCR_ENGINE=rapidocr needs the ocr extra installed")
-        self.version = version
+        self._installed = version
         self._engine: Any = None
+        self._devanagari: Any = None
         self._lock = threading.Lock()
+        self._kept_devanagari = False  # on a page read since the version was last asked for
+        self._version_asked = False
+
+    @property
+    def version(self) -> str:
+        """The installed version, plus ``;rec=`` and the Devanagari model when its reading
+        was kept on a page read since this was last asked for. The readers ask after each
+        document, so it says how that document was read."""
+        self._version_asked = True
+        return f"{self._installed};rec={DEVANAGARI_REC_MODEL}" if self._kept_devanagari else self._installed
 
     def read(self, image: Image.Image) -> list[OcrLine]:
-        """Time is dominated by the model, roughly linear in the image's pixels."""
-        result = self._model()(image.convert("RGB"))
-        # A result with boxes but no text comes back as a detection-only
-        # object without ``txts``, hence getattr.
-        boxes = getattr(result, "boxes", None)
-        texts = getattr(result, "txts", None)
-        scores = getattr(result, "scores", None)
-        if boxes is None or texts is None or scores is None:
-            return []  # nothing found on the page
-        lines = []
-        for box, text, score in zip(boxes, texts, scores, strict=True):
-            xs = [float(point[0]) for point in box]
-            ys = [float(point[1]) for point in box]
-            lines.append(OcrLine(str(text), min(xs), min(ys), max(xs), max(ys), float(score)))
-        return lines
+        """Time is dominated by the model, roughly linear in the image's pixels.
+
+        ponytail: a suspect page is read twice, so it takes about twice as long, and
+        the second engine stays in memory once built (its own detector and the
+        Devanagari recogniser, about 18 MB of model files). A clean page is read once.
+        """
+        if self._version_asked:  # the first page of the next document
+            self._version_asked = self._kept_devanagari = False
+        picture = image.convert("RGB")
+        lines = _rapid_lines(self._model()(picture))
+        if not ocr_script_suspect(_text(lines)):
+            return lines
+        try:
+            devanagari = self._devanagari_model()
+        except OcrModelMissing as error:
+            _log.warning("ocr model missing, page kept as first read", extra={"code": error.code})
+            return lines
+        again = _rapid_lines(devanagari(picture))
+        if not _better(again, lines):
+            return lines
+        self._kept_devanagari = True
+        return again
 
     def _model(self) -> Any:
         with self._lock:
             if self._engine is None:
-                from rapidocr import RapidOCR  # lazy: an optional extra
-
-                self._engine = RapidOCR(params={"Global.log_level": "error"})
+                self._engine = _rapidocr({"Global.log_level": "error"})
             return self._engine
+
+    def _devanagari_model(self) -> Any:
+        """Built on the first suspect page, from the file on disk; ``OcrModelMissing`` without it."""
+        with self._lock:
+            if self._devanagari is None:
+                path = devanagari_model_path()
+                if not path.is_file():
+                    raise OcrModelMissing(DEVANAGARI_REC_MODEL)
+                self._devanagari = _rapidocr(_devanagari_params(path))
+            return self._devanagari
+
+
+def _rapidocr(params: dict[str, Any]) -> Any:
+    from rapidocr import RapidOCR  # lazy: an optional extra
+
+    return RapidOCR(params=params)
+
+
+def _devanagari_params(path: Path) -> dict[str, Any]:
+    """The second engine's settings. With ``Rec.model_path`` set, RapidOCR loads that
+    file and never reaches its download step; the file holds its own letters. The
+    other ``Rec`` values name the same model, as Enum values (RapidOCR refuses plain
+    strings for them)."""
+    from rapidocr import LangRec, ModelType, OCRVersion
+
+    return {
+        "Global.log_level": "error",
+        "Rec.lang_type": LangRec.DEVANAGARI,
+        "Rec.ocr_version": OCRVersion.PPOCRV5,
+        "Rec.model_type": ModelType.MOBILE,
+        "Rec.model_path": str(path),
+    }
+
+
+def devanagari_model_path() -> Path:
+    """Where the image's build puts the Devanagari model: RapidOCR's own models folder,
+    in its package (backend/Dockerfile checks the file's SHA-256 there)."""
+    import rapidocr  # lazy: an optional extra
+
+    return Path(str(rapidocr.__file__)).parent / "models" / f"{DEVANAGARI_REC_MODEL}.onnx"
+
+
+def _rapid_lines(result: Any) -> list[OcrLine]:
+    # A result with boxes but no text comes back as a detection-only
+    # object without ``txts``, hence getattr.
+    boxes = getattr(result, "boxes", None)
+    texts = getattr(result, "txts", None)
+    scores = getattr(result, "scores", None)
+    if boxes is None or texts is None or scores is None:
+        return []  # nothing found on the page
+    lines = []
+    for box, text, score in zip(boxes, texts, scores, strict=True):
+        xs = [float(point[0]) for point in box]
+        ys = [float(point[1]) for point in box]
+        lines.append(OcrLine(str(text), min(xs), min(ys), max(xs), max(ys), float(score)))
+    return lines
+
+
+def _better(again: list[OcrLine], first: list[OcrLine]) -> bool:
+    """Whether a page's second reading beats its first: it found text, it has fewer
+    suspect letters (``ocr_suspect_count``), and its mean confidence is no lower. O(n)."""
+    if not again:
+        return False
+    fewer = ocr_suspect_count(_text(again)) < ocr_suspect_count(_text(first))
+    return fewer and _mean_confidence(again) >= _mean_confidence(first)
+
+
+def _text(lines: list[OcrLine]) -> str:
+    return " ".join(line.text for line in lines)
+
+
+def _mean_confidence(lines: list[OcrLine]) -> float:
+    scores = [line.confidence for line in lines if line.confidence is not None]
+    return statistics.fmean(scores) if scores else 0.0
 
 
 def _installed_version(package: str) -> str | None:

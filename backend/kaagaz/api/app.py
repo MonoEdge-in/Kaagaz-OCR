@@ -27,7 +27,19 @@ from kaagaz.api.auth import csrf_guard
 from kaagaz.api.context import AppContext
 from kaagaz.api.middleware import ErrorMiddleware, RateLimiter, RequestMiddleware
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
-from kaagaz.api.routers import admin, auth, chat, documents, folders, health, review, search, tags, words
+from kaagaz.api.routers import (
+    admin,
+    auth,
+    chat,
+    documents,
+    folders,
+    health,
+    review,
+    search,
+    stories,
+    tags,
+    words,
+)
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.settings import Settings
 
@@ -88,6 +100,7 @@ def create_app(
         review.router,
         admin.router,
         words.router,
+        stories.router,
     ):
         app.include_router(router, prefix="/api")
     return app

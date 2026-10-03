@@ -1,6 +1,6 @@
 """The document routes: list, upload, a new version, detail and its summary, rename or move,
-the original file, page images, spreadsheet cells, and Trash (move to Trash,
-restore, delete forever).
+the original file, page images, each page's scanned text, spreadsheet cells, and
+Trash (move to Trash, restore, delete forever).
 
 Why some choices:
 
@@ -81,6 +81,7 @@ from kaagaz.api.views import (
     document_version,
     extracted_value,
     invoice,
+    page_readings,
     page_summary,
 )
 from kaagaz.db import admin as admin_sql
@@ -594,6 +595,22 @@ def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Co
         media_type="image/webp",
         headers={"Content-Security-Policy": "sandbox", "Cache-Control": "private, no-store"},
     )
+
+
+@router.get("/documents/{document_id}/pages/{page_no}/readings")
+def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context: Context) -> dict[str, Any]:
+    """Scanned text: every line each reader read on this page, as read. Who may see it
+    is exactly who may see the page image (above): any version, in Trash or not
+    (PROVISIONAL), never a rejected one; and the page must exist. Never logged."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        row = _document_or_404(conn, user, document_id)
+        if row["status"] == "rejected" or page_no < 1:
+            raise ApiError(404, "not_found")
+        if listing.get_page(conn, customer_id, target, page_no) is None:
+            raise ApiError(404, "not_found")
+        rows = listing.page_readings(conn, customer_id, target, page_no)
+    return page_readings(page_no, rows)
 
 
 @router.get("/documents/{document_id}/pages/{page_no}/cells")

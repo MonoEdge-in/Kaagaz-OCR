@@ -1,99 +1,98 @@
-"""Migration 0009 (council 3 Oct 2026, PR 2b-1): the sound key function and the stored
-``pieces.tsv_sound`` column.
+"""Migration 0009 (story of this PDF): the table, its policies, CHECKs, index and comments.
 
-Up, down and up again on a fresh database (from test_migration_0002_db, a plain
-import): a piece written before the upgrade gets its keys, and the downgrade gives
-back 0008's schema exactly. The function is IMMUTABLE, STRICT, PARALLEL SAFE, runs
-with an empty search_path and standard_conforming_strings on, keeps PUBLIC's EXECUTE (the
-worker's inserts run it) and carries its comment; so does the column, and the word
-statement reads the stored keys, never the function.
+The upgrade comments the new table and each column and no index, and adds one
+index besides the key (no vector or word index yet); the downgrade gives back
+0008's schema exactly, and upgrading again the same schema. The CHECKs refuse
+every bad row. The fresh database and the schema snapshot come from
+test_migration_0002_db (a plain import).
 """
 
+from typing import Any
+
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Connection, text
+from sqlalchemy.exc import IntegrityError
 
 from kaagaz.db.engine import Database
-from kaagaz.search import hybrid
-from kaagaz.search.scope import EVERYTHING
+from kaagaz.search.hybrid import vector_literal
 from tests import test_migration_0002_db as m0002
-from tests.db_support import migrate, new_customer
-from tests.test_migration_0004_db import _current, _head
-from tests.test_search_db import add_document, add_pieces
+from tests.db_support import insert_document, migrate, new_customer, violation
 
 pytestmark = pytest.mark.db
 
 fresh = m0002.fresh  # the fixture, by its name
-_FUNCTION = text(
-    "SELECT provolatile, proisstrict, proparallel, proconfig::text, proacl IS NULL,"
-    " obj_description(oid, 'pg_proc') FROM pg_proc"
-    " WHERE pronamespace = 'public'::regnamespace AND proname = 'kaagaz_sound_key_v1'"
+TABLE = "document_stories"
+VECTOR = vector_literal([0.5] * 1024)
+_STORY = text(
+    "INSERT INTO document_stories"
+    " (customer_id, user_id, family_id, story, story_latin, embedding, embedding_model)"
+    " VALUES (:c, :u, :f, :s, coalesce(:l, lower(:s)), CAST(:v AS halfvec(1024)), :m)"
 )
-_COLUMN = text(
-    "SELECT pg_get_expr(d.adbin, d.adrelid), a.attgenerated, col_description(a.attrelid, a.attnum)"
-    " FROM pg_attribute a JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum"
-    " WHERE a.attrelid = 'public.pieces'::regclass AND a.attname = 'tsv_sound'"
+_COMMENTS = text(
+    "SELECT c.relkind::text FROM pg_description d JOIN pg_class c ON c.oid = d.objoid"
+    " WHERE d.classoid = 'pg_class'::regclass AND c.relnamespace = 'public'::regnamespace"
+    " AND c.relname LIKE 'document_stor%'"
 )
+GOOD = {"s": "papa ne 2018 me daregaon wali jamin ka 7/12 diya", "l": None, "v": VECTOR, "m": "embed#story1"}
 
 
-def _indexes(database: Database) -> dict[str, str]:
-    return {str(row[1]): str(row[2]) for row in m0002._schema(database)["indexes"]}
+def _row(conn: Connection, customer: str, user: str, **changes: Any) -> None:
+    """A story on a new document, with ``changes``."""
+    conn.execute(_STORY, {"c": customer, "u": user, "f": insert_document(conn, customer), **GOOD, **changes})
 
 
-def test_0009_up_down_up(fresh: tuple[str, Database]) -> None:
+def test_upgrade_downgrade_and_upgrade_again(fresh: tuple[str, Database]) -> None:
     url, database = fresh
     migrate(url, "0008")
-    customer, _ = new_customer(database)
-    (piece,) = add_pieces(database, customer, add_document(database, customer), [("भोगवटादार गायकवाड", None)])
     at_0008 = m0002._schema(database)
 
     migrate(url, "head")
-    assert _current(url) == _head()
     at_head = m0002._schema(database)
-    assert "pieces_sound" not in _indexes(database)  # no index: row level security never uses it
-    with database.customer(customer) as conn:
-        keys = conn.execute(
-            text("SELECT tsv_sound::text FROM pieces WHERE id = :p"), {"p": piece}
-        ).scalar_one()
-    assert keys == "'bogvtdr':1 'gikvd':2"  # the rewrite keyed the piece written before it
+    policies = {(str(row[0]), str(row[1])) for row in at_head["policies"]}
+    assert {(TABLE, "customer_only"), (TABLE, "own_user_only")} <= policies
+    assert (TABLE, "document_stories_touch") in {(str(row[0]), str(row[1])) for row in at_head["triggers"]}
+    indexes = {str(row[1]) for row in at_head["indexes"] if row[0] == TABLE}
+    assert indexes == {"document_stories_pkey", "document_stories_family"}  # no HNSW or GIN in v1
     with database.system() as conn:
-        expression, generated, column_comment = conn.execute(_COLUMN).one()
-    assert expression == "to_tsvector('simple'::regconfig, kaagaz_sound_key_v1(COALESCE(text_latin, text)))"
-    assert generated == "s" and "kaagaz_sound_key_v1" in column_comment
-    with database.system() as conn:
-        (function,) = conn.execute(_FUNCTION).all()
-    volatility, strict, parallel, config, public_execute, comment = function
-    assert (volatility, strict, parallel, config, public_execute) == (
-        "i",
-        True,
-        "s",
-        '{"search_path=\\"\\"",standard_conforming_strings=on}',
-        True,
-    )
-    assert "kaagaz/chunking/script.py" in comment
+        kinds = [str(row[0]) for row in conn.execute(_COMMENTS)]
+    columns = [row for row in at_head["columns"] if row[0] == TABLE]
+    assert set(kinds) == {"r"}  # the table and its columns only, never an index
+    assert len(kinds) == len(columns) + 1 == 11
 
+    customer, user = new_customer(database)
+    with database.user(customer, user) as conn:  # a row, so the downgrade has something to drop
+        _row(conn, customer, user)
     m0002._downgrade(url, "0008")
     assert m0002._schema(database) == at_0008
-    with database.system() as conn:
-        assert conn.execute(_FUNCTION).all() == []
-
     migrate(url, "head")
     assert m0002._schema(database) == at_head
 
 
-def test_the_word_statement_reads_the_stored_keys(db: Database) -> None:
-    """As the app role, the word statement tests ``tsv_sound`` and never runs the
-    function: the keys were stored when the piece was written."""
-    customer, _ = new_customer(db)
-    (wanted, _) = add_pieces(
-        db, customer, add_document(db, customer), [("भोगवटादार रामचंद्र", None), ("Rent", None)]
-    )
-    words = {"c": customer, "q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query("bhogwatdar"), "n": 50}
-    with db.customer(customer) as conn:
-        plan = "\n".join(
-            conn.execute(text("EXPLAIN VERBOSE " + hybrid._WORD.text), words | EVERYTHING.params()).scalars()
-        )
-        found = conn.execute(hybrid._WORD, words | EVERYTHING.params()).all()
+BAD_ROWS = {
+    "story_empty": ({"s": ""}, "document_stories_story_check"),
+    "story_over_1000": ({"s": "x" * 1001}, "document_stories_story_check"),
+    "latin_over_4000": ({"l": "x" * 4001}, "document_stories_story_latin_check"),
+    "vector_alone": ({"m": None}, "document_stories_vector_with_model"),
+    "model_alone": ({"v": None}, "document_stories_vector_with_model"),
+}
 
-    assert "tsv_sound @@" in plan
-    assert "kaagaz_sound_key_v1" not in plan
-    assert [str(row[0]) for row in found] == [wanted]
+
+@pytest.mark.parametrize(("changes", "constraint"), list(BAD_ROWS.values()), ids=list(BAD_ROWS))
+def test_the_checks_refuse_a_bad_row(db: Database, changes: dict[str, Any], constraint: str) -> None:
+    customer, user = new_customer(db)
+    with db.user(customer, user) as conn:  # good rows first: 1,000 code points, and no vector yet
+        _row(conn, customer, user, s="ज" * 1000, l="x" * 4000)
+        _row(conn, customer, user, v=None, m=None)
+    with pytest.raises(IntegrityError) as refused, db.user(customer, user) as conn:
+        _row(conn, customer, user, **changes)
+    assert violation(refused.value) == ("23514", constraint)
+
+
+def test_the_word_index_is_generated_from_both_spellings(db: Database) -> None:
+    customer, user = new_customer(db)
+    with db.user(customer, user) as conn:
+        family = insert_document(conn, customer)
+        conn.execute(_STORY, {"c": customer, "u": user, "f": family, **GOOD, "s": "जमीन Loan"})
+        conn.execute(text("UPDATE document_stories SET story_latin = 'jamin loan'"))
+        tsv = conn.execute(text("SELECT tsv_simple::text FROM document_stories")).scalar_one()
+    assert tsv == "'jamin':3 'loan':2,4 'जमीन':1"

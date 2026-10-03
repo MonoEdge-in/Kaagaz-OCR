@@ -43,14 +43,14 @@ The function and the column are commented (the data dictionary's rule). The
 downgrade drops the column, then the function; no data is lost (the column is
 computed).
 
-Revision ID: 0009
-Revises: 0008 (my words)
+Revision ID: 0011
+Revises: 0010 (story vector sweep)
 """
 
 from alembic import op
 
-revision = "0009"
-down_revision = "0008"
+revision = "0011"
+down_revision = "0010"
 branch_labels = None
 depends_on = None
 

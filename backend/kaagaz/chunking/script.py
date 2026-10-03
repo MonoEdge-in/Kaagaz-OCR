@@ -10,7 +10,9 @@ of it looks sound, and a Latin spelling of it for search.
   (Arabic, Bengali) into Devanagari words, and it gives no confidence. So a
   reading is suspect when a letter or mark is neither ASCII nor in U+0900 to
   U+097F, or when its Devanagari is malformed (``malformed_devanagari``). The
-  danda and the digits are not letters, so they are fine.
+  danda and the digits are not letters, so they are fine. ``ocr_suspect_count``
+  counts those letters and malformed signs, so two readings of a page can be
+  compared (``kaagaz/reading/ocr.py``).
 * ``has_devanagari_letters`` (ML amendment 1(b)). PROVISIONAL for PRD 2: an
   OCR value with any Devanagari letter is needs review. Digits and the danda
   do not count.
@@ -57,7 +59,7 @@ of it looks sound, and a Latin spelling of it for search.
   word is. ``sound_keys`` keys each run of ASCII letters of a text, except in
   a part (between ASCII spaces, tabs or line breaks) with a digit: "INV-1042"
   is an identifier, matched as written elsewhere, never as "inv". Migration
-  0009's SQL function ``kaagaz_sound_key_v1`` gives the same keys joined by
+  0011's SQL function ``kaagaz_sound_key_v1`` gives the same keys joined by
   spaces (tests/test_sound_key_db.py).
 
 Every function is O(n) time in the characters of the text; ``latin_spelling``
@@ -159,12 +161,19 @@ def malformed_devanagari(text: str) -> int:
     return count
 
 
+def ocr_suspect_count(text: str) -> int:
+    """How many letters and marks are neither ASCII nor Devanagari, plus ``malformed_devanagari``."""
+    foreign = sum(
+        1
+        for ch in text
+        if ch >= "\x80" and not "\u0900" <= ch <= "\u097f" and unicodedata.category(ch)[0] in "LM"
+    )
+    return foreign + malformed_devanagari(text)
+
+
 def ocr_script_suspect(text: str) -> bool:
     """True when a letter or mark is neither ASCII nor Devanagari, or the Devanagari is malformed."""
-    for ch in text:
-        if ch >= "\x80" and not "\u0900" <= ch <= "\u097f" and unicodedata.category(ch)[0] in "LM":
-            return True
-    return malformed_devanagari(text) > 0
+    return ocr_suspect_count(text) > 0
 
 
 def fold_digits(text: str) -> str:

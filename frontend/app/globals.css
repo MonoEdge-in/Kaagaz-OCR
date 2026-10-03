@@ -43,6 +43,7 @@
   --hl-fill: rgba(255, 176, 0, 0.3);
   --hl-border: #b86e00;
   --hl-halo: transparent;
+  --mine-on-paper: #233f8c; /* my words markers: pages are paper white in both themes */
 
   /* Type: rem plus vw, so text still grows at 200% zoom */
   --font-sans: system-ui, "Segoe UI Variable Text", "Segoe UI", -apple-system, Roboto, "Noto Sans",
@@ -297,6 +298,16 @@ input:-webkit-autofill:focus {
 
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/* Text as a reader read it: Devanagari-capable mono, spaces kept, direction isolated. */
+.readText {
+  font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, "Nirmala UI",
+    "Noto Sans Devanagari", monospace;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
 }
 
 /* --- Page layout --------------------------------------------------------------
