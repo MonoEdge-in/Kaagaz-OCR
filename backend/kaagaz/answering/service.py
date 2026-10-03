@@ -76,14 +76,17 @@ from kaagaz.answering.draft import (
     model_draft,
 )
 from kaagaz.answering.evidence import (
+    CAPPED,
     Evidence,
     PgRetriever,
     Retriever,
     closest_documents,
     enough_evidence,
+    has_word,
     number_evidence,
     numbers_asked,
     valid_regions,
+    word_text,
 )
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
 from kaagaz.answering.format import indian_number
@@ -339,6 +342,9 @@ class AnswerService:
     def _search_answer(
         self, customer_id: str, question: str, normalised: NormalisedQuestion, shown: str, scope: Scope
     ) -> Answer:
+        # Romanised question words and fillers (ahe, kiti) say nothing about the topic: they
+        # are left out of every step below, never out of normalise (PR 2b-2).
+        normalised = replace(normalised, keywords=glossary.content_words(normalised.keywords))
         query_text = " ".join(normalised.keywords) or normalised.english
         if not query_text:
             return _not_found("search", shown, [], model_used=False)
