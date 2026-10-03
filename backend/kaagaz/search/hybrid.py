@@ -21,7 +21,8 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    finds भोगवटादार. ``sk`` is built from ``sound_key`` output only, each term
    checked to be ``[a-z]`` letters, never from the question's text; "" is
    NULL, as for ``g``. A piece scores the highest ``ts_rank_cd`` of the four,
-   the sound one halved, so a match by sound weighs less than an exact one.
+   and every piece one of the three exact queries matched comes first, so a
+   piece found only by sound fills the slots the exact matches leave.
    ``search_documents`` shares this list, so library search finds these
    pieces too.
 2. **Typo tolerant:** pg_trgm ``word_similarity(q, ...)`` with ``q <% ...``
@@ -91,7 +92,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.answering import glossary
-from kaagaz.answering.hinglish import normalise
+from kaagaz.answering.hinglish import _HINDI_STOP, _NOT_KEYWORDS, _SHARED_STOP, normalise
 from kaagaz.chunking.script import SOUND_KEY_MIN, has_devanagari_letters, latin_spelling, sound_keys
 from kaagaz.search.scope import EVERYTHING, Scope
 
@@ -114,9 +115,11 @@ _QUERY_CANCELED = "57014"
 # The sound query (sound_query): at most this many terms, and prefix matching only for
 # words typed with at least this many letters (council 3 Oct 2026, PR 2b).
 SOUND_TERMS_MAX = 12
-SOUND_PREFIX_WORD_MIN = 4
+SOUND_PREFIX_WORD_MIN = 5
+SOUND_START_MIN = 4  # letters: the shortest start of a key that is a term of its own
+# Words that are never a sound term: English, Hindi and Romanised question words and fillers.
+_NO_SOUND = _NOT_KEYWORDS | _SHARED_STOP | _HINDI_STOP | glossary.ROMANISED_STOP
 _SOUND_TERM = re.compile(f"[a-z]{{{SOUND_KEY_MIN},}}")
-_DIGIT = re.compile(r"\d")  # any script's digits
 
 # Every statement below repeats the same filter in full, so each one can be read
 # (and checked for the customer filter) on its own: this customer's pieces of
@@ -126,7 +129,8 @@ _DIGIT = re.compile(r"\d")  # any script's digits
 
 _WORD = text(
     "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
-    " ts_rank_cd(p.tsv_simple, g.q), 0.5 * ts_rank_cd(p.tsv_sound, sk.q)) AS score"
+    " ts_rank_cd(p.tsv_simple, g.q), ts_rank_cd(p.tsv_sound, sk.q)) AS score,"
+    " coalesce(p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q, false) AS exact"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
@@ -147,7 +151,7 @@ _WORD = text(
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
     " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q OR p.tsv_sound @@ sk.q)"
-    " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
+    " ORDER BY exact DESC, score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
 # set_config(..., true) is SET LOCAL with a bound value (SET LOCAL takes none):
@@ -354,28 +358,28 @@ def sound_query(question: str) -> str:
     "" when none has a key of ``SOUND_KEY_MIN`` letters or more (shorter keys are never
     matched: kar, khar and khara are all kr). A part of the question with a digit in it
     ("INV-1042", "gat48") is an identifier, which the other queries match as written: it
-    gives no key.
+    gives no key (``sound_keys``, as on the pieces' side). A question word or filler
+    (``_NO_SOUND``: "and", "of", "kiti", "ahe") gives none either.
 
     A word typed with ``SOUND_PREFIX_WORD_MIN`` letters or more matches by prefix both
-    ways (council 3 Oct 2026): ``key:*`` finds a longer key ("jamin" finds jaminicha's
-    jminic), and each shorter start of its key, down to ``SOUND_KEY_MIN`` letters, is a
-    whole term ("jaminicha" finds jamin's jmin). A shorter word matches its whole key
-    only. Every word's own key comes first, then each word's shorter starts, longest
-    first, at most ``SOUND_TERMS_MAX`` terms in all. Each term is checked to be ``[a-z]``
-    letters, so no character of the question reaches ``to_tsquery``.
-    O(n * w) for n characters and words of at most w letters.
+    ways (council 3 Oct 2026, narrowed by its code review): ``key:*`` finds a longer key
+    ("jamin" finds jaminicha's jminic), and each shorter start of its key, down to
+    ``SOUND_START_MIN`` letters, is a whole term ("jaminicha" finds jamin's jmin). A
+    shorter word matches its whole key only. Every word's own key comes first, then
+    each word's shorter starts, longest first, at most ``SOUND_TERMS_MAX`` terms in all.
+    Each term is checked to be ``[a-z]`` letters, so no character of the question reaches
+    ``to_tsquery``. O(n) for n characters: a key has at most 40 letters.
     """
     whole: dict[str, None] = {}
     starts: dict[str, None] = {}
-    words = [pair for part in question.split() if not _DIGIT.search(part) for pair in sound_keys(part)]
-    for word, key in words:
-        if len(key) < SOUND_KEY_MIN:
+    for word, key in sound_keys(question):
+        if len(key) < SOUND_KEY_MIN or word.casefold() in _NO_SOUND:
             continue
         if len(word) < SOUND_PREFIX_WORD_MIN:
             whole.setdefault(key)
             continue
         whole.setdefault(f"{key}:*")
-        for end in range(len(key) - 1, SOUND_KEY_MIN - 1, -1):
+        for end in range(len(key) - 1, SOUND_START_MIN - 1, -1):
             starts.setdefault(key[:end])
     terms = list(dict.fromkeys([*whole, *starts]))[:SOUND_TERMS_MAX]
     for term in terms:

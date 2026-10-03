@@ -8,6 +8,8 @@ and characters that lower-case differently (the Kelvin sign, a dotted capital I)
 The query runs inside the customer's transaction, like every other.
 """
 
+import time
+
 import pytest
 from sqlalchemy import text
 
@@ -50,6 +52,13 @@ LINES = [
     "  leading and   trailing  ",
     "aa aaa aon ao anv ey eey dny gny ck cch x ph",
     "पाटील शिंदे",
+    # Parts with a digit give no key; tabs, line breaks and other spaces split parts.
+    "INV-0 gat48 (Rs.450) Patil\tShinde\r\nkhata\x0bno\x0cmore 12abc abc12 a1b",
+    "Patil\N{NO-BREAK SPACE}7 Shinde\N{EM SPACE}Gaikwad",
+    # Runs longer than 40 letters, and doubled letters across the cut.
+    "b" * 5000,
+    "ka" * 20 + "patil " + "x" * 39 + "xx" + " bhogwatdar" * 3,
+    "aaaaabbbbbcccccdddddeeeeefffffggggghhhhhiiiiijjjjjkkkkklllllmmmmm" * 3,
 ]
 
 
@@ -88,4 +97,24 @@ def test_the_sql_keys_are_the_hand_written_ones(db: Database) -> None:
             text("SELECT kaagaz_sound_key_v1(:t)"),
             {"t": "Bhogwatdar, gaikwad\nzameen INV-1042 \N{KELVIN SIGN}ar"},
         ).scalar_one()
-    assert key == "bogvtdr gikvd jmin inv ar"
+    assert key == "bogvtdr gikvd jmin ar"  # INV-1042 has a digit: no key
+
+
+def test_the_function_gives_the_same_keys_whatever_the_session_says_about_backslashes(db: Database) -> None:
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        conn.execute(text("SELECT set_config('standard_conforming_strings', 'off', true)"))
+        key = conn.execute(text("SELECT kaagaz_sound_key_v1('Dnyaneshwar gaon rakkam')")).scalar_one()
+    assert key == "jnnesvr gv rkm"  # a starting dny and a final aon still match
+
+
+def test_keying_long_words_and_long_texts_takes_linear_time(db: Database) -> None:
+    """A back reference made a 2,000-letter word take over 20 s; every step is linear now,
+    and only 40 letters of a word are keyed."""
+    customer, _ = new_customer(db)
+    texts = {"word": "ab" * 2500, "text": ("bhogwatdar gaikwad INV-1042, jaminicha " * 600)[:20000]}
+    with db.customer(customer) as conn:
+        for name, value in texts.items():
+            started = time.perf_counter()
+            conn.execute(text("SELECT kaagaz_sound_key_v1(:t)"), {"t": value}).scalar_one()
+            assert time.perf_counter() - started < 0.5, name
