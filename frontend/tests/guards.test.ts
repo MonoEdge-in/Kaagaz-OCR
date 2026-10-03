@@ -93,6 +93,30 @@ describe("guards", () => {
     expect(offenders).toEqual(["lib/sessionChannel.ts"]);
   });
 
+  it("keeps Send focusable while waiting: aria-disabled, never disabled", () => {
+    const box = readFileSync(join(ROOT, "components/chat/QuestionBox.tsx"), "utf8");
+    const start = box.indexOf('label="Send question"');
+    const send = box.slice(start, box.indexOf("/>", start));
+    expect(send).toContain("aria-disabled={pending");
+    expect(send).not.toMatch(/\sdisabled=/);
+  });
+
+  it("reads the chat out through one status line, not the whole log", () => {
+    const chat = readFileSync(join(ROOT, "components/chat/ChatScreen.tsx"), "utf8");
+    expect(chat).toMatch(/role="log"\s+aria-live="off"/);
+    expect(chat.match(/role="status"/g)?.length).toBe(1);
+  });
+
+  it("has one polite region on the review page", () => {
+    const queue = readFileSync(join(ROOT, "components/review/ReviewQueue.tsx"), "utf8");
+    expect(queue.match(/aria-live=/g)?.length).toBe(1);
+  });
+
+  it("keeps a focused element clear of the sticky top bar (WCAG 2.4.11)", () => {
+    const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");
+    expect(css).toMatch(/scroll-padding-top:\s*calc\(var\(--topbar-space\) \+ var\(--space-4\)\)/);
+  });
+
   // Critical #5: a module-level Map is a cache that outlives the screen, and
   // grows without end. The viewer keeps PDFs in its LruCache instead.
   it("keeps no module-level Map in components", () => {

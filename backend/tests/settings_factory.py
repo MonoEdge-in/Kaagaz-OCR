@@ -78,6 +78,7 @@ _BASE: dict[str, Any] = {
     "trash_days": 30,
     "reprocess_per_hour": 20,
     "search_ef": 100,
+    "search_max_documents": 20,
     "answer_max_evidence": 8,
     "answer_min_evidence_score": 0.2,
     "answer_neighbours": 1,

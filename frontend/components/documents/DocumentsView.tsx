@@ -19,11 +19,11 @@ import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { ApiError, listDocuments, listFolders, listTags } from "@/lib/api";
+import { ApiError, listDocuments, listFolders, listTags, searchDocuments } from "@/lib/api";
 import { progressSignature } from "@/lib/poll";
 import { useSession } from "@/lib/session";
 import { usePoll } from "@/lib/usePoll";
-import type { DocumentList, DocumentSummary, Folder, Tag } from "@/lib/types";
+import type { DocumentList, DocumentSearch, DocumentSummary, Folder, Tag } from "@/lib/types";
 import { DocumentsTable } from "./DocumentsTable";
 import { FolderActions } from "./FolderActions";
 import { FolderNav } from "./FolderNav";
@@ -147,7 +147,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   // Each answer is kept with the view it was asked for (one request at a time).
   const poll = usePoll<Loaded>({
     load: () =>
-      listDocuments(listParams(library, q, offset)).then((list) => ({ view: viewKey, list, now: Date.now() })),
+      listDocuments(listParams(library, listQ, offset)).then((list) => ({ view: viewKey, list, now: Date.now() })),
     onResult: (result) => {
       setLoaded(result);
       setFailure(null);
@@ -156,7 +156,27 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     again: (result) => shouldPoll(result.list.items),
     signature: (result) => result.view + progressSignature(result.list.items),
   });
-  useEffect(() => poll.refresh(), [poll, library, viewKey, q, offset, reload]);
+  useEffect(() => poll.refresh(), [poll, library, viewKey, listQ, offset, reload]);
+
+  useEffect(() => {
+    if (searchKey === null) return;
+    let cancelled = false;
+    searchDocuments(searchParams(library, q)).then(
+      (result) => {
+        if (cancelled) return;
+        setFound({ key: searchKey, result });
+        setSearchFailure(null);
+      },
+      (caught: unknown) => {
+        if (!cancelled) setSearchFailure({ key: searchKey, message: errorText(caught) });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [library, q, searchKey, searchAgain]);
+  const foundNow = found && found.key === searchKey ? found.result : null;
+  const searchError = searchFailure && searchFailure.key === searchKey ? searchFailure.message : null;
 
   // A new folder or filter shows "loading" until its own list arrives.
   const shown = loaded && loaded.view === viewKey ? loaded : null;

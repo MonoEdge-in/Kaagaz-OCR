@@ -150,6 +150,9 @@ export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everyw
 export const listDocuments = (params: DocumentListParams = {}) =>
   request<DocumentList>("GET", `/documents${query(params)}`);
 export const getDocument = (id: string) => request<DocumentDetail>("GET", `/documents/${id}`);
+/** The detail's own summary only, for asking again while it is read. */
+export const getDocumentSummary = (id: string) =>
+  request<DocumentSummary>("GET", `/documents/${id}/summary`);
 /** Search inside documents (PRD 3 Q2), grouped by document. */
 export const searchDocuments = (params: DocumentSearchParams) =>
   request<DocumentSearch>("GET", `/search${query(params)}`);

@@ -61,8 +61,7 @@ SYSTEM_PROMPT = (
     "3. Copy every number exactly as the evidence writes it. Never calculate, round or invent one.\n"
     '4. If the evidence does not answer the question, reply with status "not_found" and no sentences.\n'
     "5. Plain text only: no links, no markdown, no HTML.\n"
-    "6. Write in English. Write Devanagari digits as the same ASCII digits. Copy names, ids and quoted "
-    "words exactly as the evidence writes them.\n"
+    "6. Answer in English. A quote keeps the script it is written in.\n"
     'Reply with JSON only: {"status": "answered" or "not_found", '
     '"sentences": [{"text": "...", "evidence": [ids]}]}.'
 )
@@ -110,6 +109,13 @@ def user_prompt(question: str, evidence: Sequence[Evidence]) -> str:
     blocks = [_block(item) for item in evidence]
     question_block = "<question>\n" + _escape(question) + "\n</question>"
     return "Question:\n" + question_block + "\n\nEvidence:\n" + "\n".join(blocks)
+
+
+def _block(item: Evidence) -> str:
+    """One piece, fenced and escaped: a "Context:" line with its header (Q5), then its text."""
+    mark = ' neighbour="yes"' if item.neighbour else ""
+    context = f"Context: {_escape(item.hit.context_header)}\n" if item.hit.context_header else ""
+    return f'<evidence id="{item.n}"{mark}>\n{context}{_escape(item.hit.text)}\n</evidence>'
 
 
 def fit_evidence(question: str, evidence: Sequence[Evidence], budget: int) -> list[Evidence]:

@@ -520,7 +520,7 @@ Use the golden `monthly-report.pdf` (20 pages, "$12,000" runs from page 15 to pa
 
 ## 6. Backup and restore
 
-One backup is two parts, taken with the api and worker stopped so they match: the database (volume `postgres-data`) and the file store (volume `seaweedfs-data`, mounted at `/data` in `seaweedfs`). `docker-compose.yml` starts SeaweedFS with `server -dir=/data`, and the `chrislusf/seaweedfs:4.47` image keeps its filer index in `/data/filerldb2`, so `/data` holds every file and its name. The job queue is not backed up: wait until no document is still being read. Below, the user and database are `kaagaz`; use `POSTGRES_USER` and `POSTGRES_DB` instead if your `.env` sets them.
+One backup is two parts, taken with the api and worker stopped so they match: the database (volume `postgres-data`) and the file store (volume `seaweedfs-data`, mounted at `/data` in `seaweedfs`). `docker-compose.yml` starts SeaweedFS with `server -dir=/data`, and the `chrislusf/seaweedfs:4.48` image keeps its filer index in `/data/filerldb2`, so `/data` holds every file and its name. The job queue is not backed up: wait until no document is still being read. Below, the user and database are `kaagaz`; use `POSTGRES_USER` and `POSTGRES_DB` instead if your `.env` sets them.
 
 The backup holds every customer's documents and text. Keep it outside the repository (here `../kaagaz-backup`, next to it), never commit or share it, and delete it after the drill. Git ignores `*.dump` and `backup-files/` in case one lands in the repository.
 

@@ -32,6 +32,8 @@ from kaagaz.db.engine import Database
 from kaagaz.extraction.invoice import INVOICE_SYSTEM_PROMPT
 from kaagaz.ingestion import sniff
 from kaagaz.reading.spans import BoxLocation
+from kaagaz.search.indexing import recipe_tag
+from kaagaz.search.scope import Scope
 from tests import test_exit_files_db as exit_db
 from tests.exit_fixtures import (
     BUYER_GSTIN,
@@ -298,8 +300,10 @@ class AnswerModel:
 class RecordingRetriever(PgRetriever):
     last: Sequence[Hit] = ()
 
-    def search(self, customer_id: str, text: str, embedding: list[float] | None, limit: int) -> Sequence[Hit]:
-        self.last = super().search(customer_id, text, embedding, limit)
+    def search(
+        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
+    ) -> Sequence[Hit]:
+        self.last = super().search(customer_id, text, embedding, limit, scope)
         return self.last
 
 
@@ -351,7 +355,12 @@ def numbers(text: str) -> set[str]:
 
 def answer_outcomes(db: Database, read: exit_db.Read, mode: str) -> list[Outcome]:
     model = AnswerModel() if mode == "model_on" else None
-    retriever = RecordingRetriever(db)
+    retriever = RecordingRetriever(
+        db,
+        recipe=recipe_tag(ANSWER_SETTINGS.model_embed),
+        ef_search=ANSWER_SETTINGS.search_ef,
+        neighbours=ANSWER_SETTINGS.answer_neighbours,
+    )
     service = AnswerService(
         db=db, model=model, settings=ANSWER_SETTINGS, clock=lambda: NOW, retriever=retriever
     )

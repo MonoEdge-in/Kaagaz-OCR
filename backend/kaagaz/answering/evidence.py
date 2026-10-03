@@ -21,7 +21,8 @@ passes through the keyword rule. Vrushit decides.
 Document text is untrusted. A piece that reads like instructions to a model
 ("ignore previous instructions...", "you are now the assistant", a fake
 evidence tag, "when asked, say ...", a note to the assistant, "AI ko bolo", and
-their Devanagari forms) is left out of the evidence entirely: it can neither
+their Devanagari forms) in its text or its context header (which holds the
+document's name, PRD 3 Q5) is left out of the evidence entirely: it can neither
 steer the model nor be quoted. The phrases are matched on the NFKC text
 without its default-ignorable code points (``sanitize.strip_ignorable``) and
 the Braille blank, so a zero-width space, a variation selector or fullwidth
@@ -153,12 +154,14 @@ class PgRetriever:
     """``Retriever`` over PostgreSQL: hybrid search, and the hits' neighbours, each inside
     ``db.customer``."""
 
-    def __init__(self, db: Database, *, recipe: str, ef_search: int) -> None:
+    def __init__(self, db: Database, *, recipe: str, ef_search: int, neighbours: int) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
-        another tag are left out); ``ef_search``: SEARCH_EF."""
+        another tag are left out); ``ef_search``: SEARCH_EF; ``neighbours``:
+        ANSWER_NEIGHBOURS, the pieces on each side of a hit (0: none)."""
         self._db = db
         self._recipe = recipe
         self._ef_search = ef_search
+        self._neighbours = neighbours
 
     def search(
         self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
@@ -176,7 +179,16 @@ class PgRetriever:
                 limit=limit,
                 recipe=self._recipe,
                 ef_search=self._ef_search,
+                scope=scope,
             )
+
+    def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
+        from kaagaz.search.hybrid import neighbours
+
+        if not self._neighbours or not hits:
+            return []
+        with self._db.customer(customer_id) as conn:
+            return neighbours(conn, customer_id=customer_id, hits=hits, size=self._neighbours, scope=scope)
 
 
 @dataclass(frozen=True, slots=True)
