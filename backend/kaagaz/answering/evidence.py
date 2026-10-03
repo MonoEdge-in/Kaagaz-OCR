@@ -21,6 +21,16 @@ is, to hold it too; a keyword also counts through a glossary equivalent
 review by the service, which also checks each kept sentence's own cited hits
 (``service._judged``).
 
+Marathi and Hindi typed in English letters (council 3 Oct 2026, PR 2b-2,
+PROVISIONAL): the service leaves the Romanised stop words out of the keywords
+first (``glossary.content_words``), and a Romanised word counts through the
+glossary like an English one ("malak" is owner). Last, a keyword also counts when
+it sounds like a word of the evidence's Latin spelling (``glossary.sounds_like``),
+and such a pass is ``"sound"``. Every gate value in ``CAPPED`` is capped at needs
+review. The typo score of a mostly Devanagari best piece is no shortcut: it is
+the score of its Latin spelling, which a Romanised question nears by filler
+alone ("malak ahe" against a bank letter ending "... ahe" is 0.40).
+
 PROVISIONAL, a change from the spec's "word score or meaning score": the word
 score is PostgreSQL's raw ``ts_rank_cd``, which is small and unbounded (about
 0.1 for an exact "INV-1042", 0.033 for "invoice grand total"), so it cannot
@@ -66,7 +76,7 @@ from typing import Any, Literal, Protocol
 
 from kaagaz.answering import glossary
 from kaagaz.answering.sanitize import strip_ignorable
-from kaagaz.chunking.script import ascii_digits
+from kaagaz.chunking.script import ascii_digits, is_devanagari
 from kaagaz.db.engine import Database
 from kaagaz.extraction.parsing import _INDIAN, _WESTERN
 from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_json
@@ -75,7 +85,9 @@ from kaagaz.search.scope import Scope
 CLOSEST_DOCUMENTS = 3
 
 # How the gate passed: a score, the English keywords, or only with the glossary's help.
-Gate = Literal["score", "keywords", "glossary"]
+Gate = Literal["score", "keywords", "glossary", "sound"]
+# The passes the service caps at needs review: only an equivalent or a sound let them through.
+CAPPED: frozenset[Gate] = frozenset({"glossary", "sound"})
 _DIGIT = re.compile("[0-9]")
 _LETTER = re.compile("[a-z]")
 # Whole tokens (has_token), on text folded by _fold: NFKC, and the hyphens (U+2010, U+2011),
@@ -85,6 +97,8 @@ _LETTER = re.compile("[a-z]")
 _DASHES = str.maketrans(dict.fromkeys("\u2010\u2011\u2013\u2014", "-"))
 _NUMBER_TOKEN = re.compile(r"(?<!\w)(?<![0-9a-z][-/.])[0-9]+(?:[.,/-][0-9]+)*(?!\w)(?![-/.][0-9a-z])")
 _ID_TOKEN = re.compile(r"(?<!\w)[a-z0-9]+(?:[-/.][a-z0-9]+)*(?!\w)")  # as normalise splits words
+# Where camelCase or letters and digits meet: a word boundary for has_word (word_text).
+_WORD_JOINS = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[^\W\d_])(?=\d)|(?<=\d)(?=[^\W\d_])")
 _WORD = re.compile(r"[a-z0-9]+(?:[-/.][a-z0-9]+)*")  # hinglish.normalise's words
 _ALNUM = re.compile("[a-z0-9]+")
 
@@ -261,17 +275,39 @@ def enough_evidence(
     best = evidence[0].hit
     # The score belongs to the best piece, so that piece itself must hold every number asked.
     own = ascii_digits(best.text).casefold()
+    # A mostly Devanagari piece's typo score is its Latin spelling's (the module docstring).
+    scores = (best.meaning_score,) if is_devanagari(best.text) else (best.meaning_score, best.fuzzy_score)
     if all(has_token(keyword, own) for keyword in numbered):
-        for score in (best.meaning_score, best.fuzzy_score):
+        for score in scores:
             if score is not None and score >= min_score:
                 return "score"
     if not wanted:
         return None
-    english = sum(1 for keyword in wanted if keyword in haystack)
+    # As written: a whole word (a number, a whole token). A Romanised word found as written
+    # ("malak" in a Latin text) is still a guess about meaning: it counts from the glossary on.
+    worded = word_text("\n".join(item.hit.text for item in evidence))
+    written = [
+        keyword in haystack if _DIGIT.search(keyword) else has_word(keyword, worded) for keyword in wanted
+    ]
+    english = sum(
+        1
+        for keyword, found in zip(wanted, written, strict=True)
+        if found and not glossary.is_romanised(keyword)
+    )
     if english * 2 >= len(wanted):
         return "keywords"
-    either = sum(1 for keyword in wanted if keyword in haystack or glossary.present(keyword, haystack))
-    return "glossary" if either * 2 >= len(wanted) else None
+    glossed = [
+        found or glossary.present(keyword, haystack) for keyword, found in zip(wanted, written, strict=True)
+    ]
+    if sum(glossed) * 2 >= len(wanted):
+        return "glossary"
+    words = glossary.sound_words(haystack)
+    heard = sum(
+        1
+        for keyword, found in zip(wanted, glossed, strict=True)
+        if found or glossary.sounds_like(keyword, words)
+    )
+    return "sound" if heard * 2 >= len(wanted) else None
 
 
 def numbers_asked(question: str, keywords: Sequence[str]) -> list[str]:
@@ -307,6 +343,36 @@ def has_token(keyword: str, folded: str) -> bool:
         token == keyword or (value is not None and _value(token) == value)
         for token in _NUMBER_TOKEN.findall(folded)
     )
+
+
+def word_text(text: str) -> str:
+    """``text`` for ``has_word``: digits as ASCII, a space where a lower-case letter meets a
+    capital or a letter meets a digit ("GrandTotal" is grand total, "GSTIN27X" is gstin 27 x),
+    NFC, casefolded. Never for numbers: "INV1042" holds no 1042 (``has_token``). O(n)."""
+    return unicodedata.normalize("NFC", _WORD_JOINS.sub(" ", ascii_digits(text))).casefold()
+
+
+def has_word(keyword: str, text: str) -> bool:
+    """``keyword`` (casefolded) in ``text`` (``word_text``) as a whole word, maybe with an
+    English plural "s" or "es" after it: no letter, mark or digit right before or after (PR
+    2b-2's code review: "rin" is not in "printing", "ekar" not in "ekart"; "invoice" is in
+    "invoices"). A keyword with a digit is never a word here: numbers are ``has_token``'s.
+    O(t)."""
+    keyword = unicodedata.normalize("NFC", keyword)
+    start = text.find(keyword)
+    while start >= 0:
+        end = start + len(keyword)
+        if not _word_char(text[start - 1 : start]):
+            for suffix in ("", "s", "es"):
+                after = end + len(suffix)
+                if text[end:after] == suffix and not _word_char(text[after : after + 1]):
+                    return True
+        start = text.find(keyword, start + 1)
+    return False
+
+
+def _word_char(ch: str) -> bool:
+    return bool(ch) and unicodedata.category(ch)[0] in "LMN"
 
 
 def _fold(text: str) -> str:

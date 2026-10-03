@@ -77,14 +77,17 @@ from kaagaz.answering.draft import (
     model_draft,
 )
 from kaagaz.answering.evidence import (
+    CAPPED,
     Evidence,
     PgRetriever,
     Retriever,
     closest_documents,
     enough_evidence,
+    has_word,
     number_evidence,
     numbers_asked,
     valid_regions,
+    word_text,
 )
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
 from kaagaz.answering.format import indian_number
@@ -340,6 +343,9 @@ class AnswerService:
     def _search_answer(
         self, customer_id: str, question: str, normalised: NormalisedQuestion, shown: str, scope: Scope
     ) -> Answer:
+        # Romanised question words and fillers (ahe, kiti) say nothing about the topic: they
+        # are left out of every step below, never out of normalise (PR 2b-2).
+        normalised = replace(normalised, keywords=glossary.content_words(normalised.keywords))
         query_text = " ".join(normalised.keywords) or normalised.english
         if not query_text:
             return _not_found("search", shown, [], model_used=False)
@@ -391,14 +397,15 @@ class AnswerService:
         # A sentence backed by neighbours only, or with a number only a neighbour holds, is never
         # verified: the gate never judged them (PROVISIONAL, plan decision 8).
         on_neighbours = any(_rests_on_neighbours(s, by_n, texts) for s in kept)
-        # Nor is one the glossary alone let through or chose the quote of, one checked against
-        # nothing, one a cited hit does not pass the gate on its own, or one with an English
-        # word that Devanagari evidence cannot back (council, PR2, and its code reviews).
-        # Only the question's dropped words (who, is, ka...): a content word of it, a name the
-        # question puts forward, must be in the cited text itself (or the glossary's English).
+        # Nor is one the glossary or a sound alone let through or chose the quote of, one
+        # checked against nothing, one a cited hit does not pass the gate on its own, or one
+        # with an English word that Devanagari evidence cannot back (council, PR2 and PR 2b,
+        # and their code reviews). Only the question's dropped words (who, is, ka...): a
+        # content word of it, a name the question puts forward, must be in the cited text
+        # itself, by sound, or through the glossary's English.
         asked = _latin_words(f"{question} {normalised.english}") - set(normalised.keywords)
         unchecked = (
-            gate == "glossary"
+            gate in CAPPED
             or any(not _judged(s, by_n, normalised.keywords, min_score, numbers) for s in kept)
             or any(unchecked_cross_script(s, texts) for s in kept)
             or any(_unbacked_latin(s, texts, asked) for s in kept)
@@ -533,23 +540,36 @@ def _unbacked_latin(sentence: DraftSentence, texts: dict[int, str], asked: set[s
     the English side of a glossary word in the cited text, nor the cited texts themselves
     have: "The owner (भोगवटादार) is Sita Deshmukh" names nobody the evidence names. Fail
     closed: Latin words in the cited text ("Page 1 of 1", "GSTIN") only add to what is
-    allowed; they never turn the check off. O(s + e * g) for g glossary words."""
+    allowed; they never turn the check off. A word written the Romanised way (PR 2b) is
+    backed only when its sound key equals that of a word of the cited text's Latin spelling
+    ("Ramchandra" for रामचंद्र; never "Ramchandran", ``glossary.sounds_like`` strict); never by
+    its glossary meaning (Malik, Kisan and Bhumika are names), nor because the question has it
+    ("... is malak patil" for "malak kon ahe?"). O(s * w + e * g) for w words and g glossary
+    words."""
     cited = [texts[n] for n in sentence.evidence if n in texts]
     if not any(has_devanagari_letters(text) for text in cited):
         return False
     found: set[str] = set().union(*(_latin_words(text) for text in cited))
-    allowed = asked | _FUNCTION_WORDS | found | glossary.english_for("\n".join(cited))
-    return bool(_latin_words(sentence.text) - allowed)
+    english = glossary.english_for("\n".join(cited))
+    unbacked = _latin_words(sentence.text) - (asked | _FUNCTION_WORDS | found | english)
+    if not unbacked:
+        return False
+    words = glossary.sound_words("\n".join(cited))
+    return any(not glossary.sounds_like(word, words, strict=True) for word in unbacked)
 
 
 def _quoted_through_glossary(
     sentence: DraftSentence, by_n: dict[int, Evidence], keywords: Sequence[str]
 ) -> bool:
-    """True when a quoted line's piece holds a keyword only through a glossary equivalent:
-    the glossary chose the quote, so it is never verified. O(k * t)."""
-    pieces = [ascii_digits(by_n[n].hit.text).casefold() for n in sentence.evidence]
+    """True when a quoted line's piece holds a keyword only through a glossary equivalent or
+    a word that sounds like it (not as written): they chose the quote, so it is never
+    verified. O(k * t)."""
+    pieces = [word_text(by_n[n].hit.text) for n in sentence.evidence]
     words = [keyword.casefold() for keyword in keywords if not any(ch.isdigit() for ch in keyword)]
-    return any(word not in text for word in words for text in pieces)  # numbers: numbers_asked
+    # A whole word, as the gate counts it; a Romanised word as written is a guess too.
+    return any(
+        glossary.is_romanised(word) or not has_word(word, text) for word in words for text in pieces
+    )  # numbers: numbers_asked
 
 
 def _not_found(route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool) -> Answer:

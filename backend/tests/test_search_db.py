@@ -400,10 +400,11 @@ def test_without_the_sound_query_the_word_list_misses_it(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     customer, _ = new_customer(db)
-    add_pieces(db, customer, add_document(db, customer), [("भोगवटादार रामचंद्र पाटील", None)])
+    add_pieces(db, customer, add_document(db, customer), [("गायकवाड सुरेश", None)])
     monkeypatch.setattr(hybrid, "sound_query", lambda _: "")
 
-    assert all(hit.word_score is None for hit in run(db, customer, "bhogwatdar"))
+    # A name, so no glossary word stands in (bhogwatdar is the glossary's owner since PR 2b-2).
+    assert all(hit.word_score is None for hit in run(db, customer, "gaikwad"))
 
 
 def test_an_empty_sound_query_matches_nothing(db: Database) -> None:
