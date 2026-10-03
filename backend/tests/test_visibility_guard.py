@@ -19,10 +19,11 @@ from sqlalchemy import TextClause
 from kaagaz.answering import fixed_queries, unchecked
 from kaagaz.db import admin, listing, pipeline_store, review
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
-from kaagaz.search import hybrid, indexing
+from kaagaz.search import hybrid, indexing, story_search
 
 MODULES: tuple[ModuleType, ...] = (
     hybrid,
+    story_search,
     fixed_queries,
     unchecked,
     review,
@@ -41,6 +42,8 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (hybrid, "_MEANING_EXACT"): LIVE_CURRENT,
     (hybrid, "_DETAILS"): LIVE_CURRENT,
     (hybrid, "_NEIGHBOURS"): LIVE_CURRENT,  # Q4: the pieces next to an answer's hits
+    # Story matches (S3): the family's current version of a story, read and out of Trash.
+    (story_search, "_STORIES"): LIVE_CURRENT,
     # The numbers in answers: the same, in every CTE.
     (fixed_queries, "_AVAILABLE_FIELDS"): LIVE_CURRENT,
     (fixed_queries, "_TOP_GROUP"): LIVE_CURRENT,

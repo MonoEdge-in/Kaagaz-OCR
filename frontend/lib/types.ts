@@ -87,6 +87,18 @@ export interface DocumentSummary {
 /** GET /api/search (PRD 3 Q2): the documents found, best first, at most SEARCH_MAX_DOCUMENTS. */
 export interface DocumentSearch {
   documents: FoundDocument[];
+  story_matches?: unknown; // checked by lib/storyMatches.ts before use
+}
+
+/** How well a question tells a story the user wrote again (S3): never a score. */
+export type StoryBand = "match" | "maybe";
+
+/** One of the user's own documents whose story the question tells again; never the story. */
+export interface StoryMatch {
+  document_id: string;
+  display_name: string;
+  doc_type: DocType | null;
+  band: StoryBand;
 }
 
 export interface FoundDocument {
@@ -395,6 +407,34 @@ export interface ScopeBody {
   document_ids?: string[] | null;
   date_from?: string | null; // YYYY-MM-DD
   date_to?: string | null;
+}
+
+/** One of my words (GET /me/words). Text from the user: shown as text only. */
+export interface MyWord {
+  id: string;
+  word: string;
+  meaning: string;
+  source: "manual" | "upload" | "viewer";
+  built_in: boolean; // chat's own word list reads it too (the badge)
+  created_at: string;
+  updated_at: string;
+}
+
+/** One of my words on a spot of a page (GET /documents/{id}/my-words?page=): only mine. */
+export interface MySpot {
+  id: string;
+  word_id: string;
+  word: string;
+  meaning: string;
+  page_no: number;
+  region: Region;
+}
+
+/** POST /me/words: 201 created, 200 already there or replaced. */
+export interface WordSaved {
+  word: MyWord;
+  outcome: "created" | "already" | "replaced";
+  warning: "built_in" | null;
 }
 
 export interface Message {

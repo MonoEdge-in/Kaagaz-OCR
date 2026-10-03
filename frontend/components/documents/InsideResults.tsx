@@ -3,11 +3,15 @@
 // The documents a search inside documents found (PRD 3 Q3), best first: each
 // one's name, type, best passage and its pages, opening the viewer on that
 // spot. Every text is React text, so markup in a document or a name shows as
-// plain characters. The logic is in insideSearch.ts.
+// plain characters. The logic is in insideSearch.ts. Above them, "From your
+// stories" shows the reply's story_matches (lib/storyMatches.ts), never mixed
+// into the results.
 
 import Link from "next/link";
+import { StoryMatches } from "@/components/stories/StoryMatches";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
+import { STORY_NOTE_SEARCH, storyMatchesFrom, storyStatusText } from "@/lib/storyMatches";
 import type { DocumentSearch } from "@/lib/types";
 import { resultView } from "./insideSearch";
 import styles from "./Documents.module.css";
@@ -57,10 +61,18 @@ export function InsideSearchResults({
       </p>
     );
   }
+  const stories = storyMatchesFrom(found.story_matches);
+  const storyBox = <StoryMatches matches={stories} note={STORY_NOTE_SEARCH} headingLevel={3} />;
   if (found.documents.length === 0) {
     return (
       <>
         {note}
+        {stories.length > 0 && (
+          <p className="visually-hidden" role="status">
+            {storyStatusText(stories.length)}
+          </p>
+        )}
+        {storyBox}
         <EmptyState
           icon="search-off"
           title={noResults}
@@ -79,7 +91,9 @@ export function InsideSearchResults({
       {note}
       <p className="visually-hidden" role="status">
         {found.documents.length === 1 ? "1 document found." : `${found.documents.length} documents found.`}
+        {stories.length > 0 ? ` ${storyStatusText(stories.length)}` : null}
       </p>
+      {storyBox}
       <ol className={styles.results} aria-label={`Documents with “${q}”`}>
         {found.documents.map((document) => {
           const view = resultView(document);

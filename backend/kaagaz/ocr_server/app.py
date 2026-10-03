@@ -4,6 +4,11 @@ It runs only in the ``ocr`` container (``backend/Dockerfile.ocr``), started as
 ``uvicorn kaagaz.ocr_server.app:app``, and never imports ``kaagaz.settings``:
 it needs no database, storage or queue settings, and has none.
 
+It reads on the CPU, or on a GPU on a GPU server (``docker-compose.gpu.yml``).
+``OCR_DEVICE`` names the device: ``cpu`` (the default, when unset) or
+``gpu:N``. Any other value stops the server while this module is imported, so
+uvicorn never starts with a device it would only fail on later.
+
 * ``GET /health``: 200 ``{"ready": true}`` once the model is loaded, 503
   ``{"ready": false}`` while it loads (minutes), so compose's check waits.
 * ``POST /read``, the body one page as PNG: 200 ``{"engine": "paddleocr-vl",
@@ -27,7 +32,10 @@ taken without waiting before the body is read, so a second caller hears
 (AR2). One ``ocr`` container serves one worker.
 
 Failures: the model raising on a page is a 500 ``read_failed`` (that page's
-own failure, so the worker does not retry it). Any other error nothing else
+own failure, so the worker does not retry it), except running out of memory
+(``MemoryError``, which Paddle raises when the GPU's memory runs out): that is
+a 503 ``out_of_memory``, which the worker retries later, because the page is
+fine and the memory is shared (Ollama on the same GPU). Any other error nothing else
 handled is a 500 ``internal_error``. Each is one log line with the error's
 type name only. A model that fails to load ends the process (exit code 1), so
 compose's ``restart: unless-stopped`` starts it again rather than leaving it
@@ -45,6 +53,7 @@ import html.parser
 import io
 import logging
 import os
+import re
 import struct
 import tempfile
 import threading
@@ -82,6 +91,13 @@ PADDLE_FLAGS = {
     "use_chart_recognition": False,
     "use_seal_recognition": False,
 }
+# Paddle's device names: the CPU, or one GPU by its number (docker-compose.gpu.yml).
+DEVICE = re.compile(r"cpu|gpu:[0-9]{1,2}")
+# Errors that mean the memory ran out, not that the page is bad. Paddle raises
+# MemoryError for its ResourceExhausted errors, GPU memory included (INFERRED from
+# Paddle's C++ to Python error mapping; VERIFY on g4dn). The names cover a library
+# that raises its own type instead.
+_OUT_OF_MEMORY_NAMES = frozenset({"ResourceExhaustedError", "OutOfMemoryError"})
 
 # The 25 layout labels of PaddleOCR-VL-1.6 (PP-DocLayoutV3's inference.yml,
 # VERIFIED in FINDINGS), as our block kinds. An unknown label becomes "other".
@@ -153,12 +169,28 @@ class PageModel(Protocol):
     def version(self) -> str: ...
 
 
-class PaddleModel:
-    """PaddleOCR-VL on the CPU. ``paddleocr`` is imported inside ``load`` only, so this
-    module and its tests never need it. VERIFIED in a scratch venv (paddleocr 3.7.0):
-    the class, the model folders, ``predict`` on a PNG path, and ``json["res"]``."""
+def ocr_device(env: Mapping[str, str]) -> str:
+    """``OCR_DEVICE`` from ``env``, ``cpu`` when unset: exactly ``cpu`` or ``gpu:N``, N one
+    or two ASCII digits. Anything else (spaces and capitals included) is a ValueError
+    that names the variable, the value and the forms allowed."""
+    value = env.get("OCR_DEVICE", "cpu")
+    if not DEVICE.fullmatch(value):
+        raise ValueError(f"OCR_DEVICE={value!r} is not allowed: use cpu or gpu:N, such as gpu:0")
+    return value
 
-    def __init__(self) -> None:
+
+def _out_of_memory(error: Exception) -> bool:
+    return isinstance(error, MemoryError) or type(error).__name__ in _OUT_OF_MEMORY_NAMES
+
+
+class PaddleModel:
+    """PaddleOCR-VL on the CPU or a GPU. ``paddleocr`` is imported inside ``load`` only,
+    so this module and its tests never need it. VERIFIED in a scratch venv (paddleocr
+    3.7.0, on the CPU): the class, the model folders, ``predict`` on a PNG path, and
+    ``json["res"]``. ``device`` is checked here; None reads ``OCR_DEVICE``."""
+
+    def __init__(self, device: str | None = None) -> None:
+        self.device = ocr_device(os.environ if device is None else {"OCR_DEVICE": device})
         self._pipeline: Any = None
         self._loaded = threading.Event()
 
@@ -168,7 +200,7 @@ class PaddleModel:
         for name in ("paddle", "paddlex", "paddleocr"):
             logging.getLogger(name).setLevel(logging.ERROR)
         self._pipeline = PaddleOCRVL(
-            device="cpu",
+            device=self.device,
             vl_rec_model_dir=str(MODELS / "PaddleOCR-VL-1.6"),
             layout_detection_model_dir=str(MODELS / "PP-DocLayoutV3"),
             **PADDLE_FLAGS,
@@ -186,9 +218,21 @@ class PaddleModel:
         return paddle_page(result.json["res"])
 
     def version(self) -> str:
-        packages = (("paddleocr", "paddleocr"), ("paddlex", "paddlex"), ("paddle", "paddlepaddle"))
+        """The packages, the model revisions and the device, so each run records how it was
+        read. The GPU image has ``paddlepaddle-gpu`` and no ``paddlepaddle``, so that one is
+        asked for first, and the short name says which build it was."""
+        packages = (("paddleocr", "paddleocr"), ("paddlex", "paddlex"), _paddle_package())
         installed = ";".join(f"{short}={metadata.version(name)}" for short, name in packages)
-        return f"{installed};vl={VL_MODEL};layout={LAYOUT_MODEL}"
+        return f"{installed};vl={VL_MODEL};layout={LAYOUT_MODEL};device={self.device}"
+
+
+def _paddle_package() -> tuple[str, str]:
+    """(short name, package) of the Paddle build installed: the GPU one, else the CPU one."""
+    try:
+        metadata.version("paddlepaddle-gpu")
+    except metadata.PackageNotFoundError:
+        return "paddle", "paddlepaddle"
+    return "paddle-gpu", "paddlepaddle-gpu"
 
 
 def paddle_page(page: Mapping[str, Any]) -> PageResult:
@@ -374,6 +418,9 @@ def _answer(model: PageModel, body: bytes) -> JSONResponse:
         try:
             blocks = blocks_json(model.predict(image))
         except Exception as error:  # noqa: BLE001 - this page's own failure, see the module notes
+            if _out_of_memory(error):  # not this page's fault: the worker asks again later
+                _log.error("read out of memory: %s", type(error).__name__)
+                return _error(503, "out_of_memory")
             _log.error("read failed: %s", type(error).__name__)
             return _error(500, "read_failed")
         reply = {"engine": "paddleocr-vl", "version": model.version(), "width": image.width}
@@ -453,4 +500,6 @@ def create_app(model: PageModel, *, exit_process: Callable[[int], None] = os._ex
     return app
 
 
-app = create_app(PaddleModel())  # the uvicorn target; the model loads in the lifespan, on a thread
+# The uvicorn target; the model loads in the lifespan, on a thread. PaddleModel() checks
+# OCR_DEVICE here, at import, so a bad value stops uvicorn before it serves anything.
+app = create_app(PaddleModel())

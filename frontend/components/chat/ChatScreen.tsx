@@ -8,17 +8,23 @@
 // conversation opened may fill the thread, so a slow reply for an earlier one
 // is dropped. Above the composer, the scope chip and picker (ScopePicker.tsx):
 // a reopened conversation shows its last question's scope again.
+// Beside each question, the user's own story matches are asked in
+// parallel (lib/storyMatches.ts) and shown below the newest answer, never in
+// it; only the latest question's reply shows, and a failure just shows none.
+// The same status line says how many, once: with the answer, or after it.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { StoryMatches } from "@/components/stories/StoryMatches";
 import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, ask, getConversation, listConversations, listDocuments } from "@/lib/api";
-import type { ConversationSummary, Message } from "@/lib/types";
+import { findStoryMatches, latestOnly, STORY_NOTE_CHAT, storyStatusText } from "@/lib/storyMatches";
+import type { ConversationSummary, Message, StoryMatch } from "@/lib/types";
 import { answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
 import { AnswerView } from "./AnswerView";
 import { ConversationList } from "./ConversationList";
@@ -104,6 +110,10 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [noDocuments, setNoDocuments] = useState<boolean | null>(null);
   // The one status line for screen readers.
   const [status, setStatus] = useState("");
+  // The newest answer's story matches.
+  const [stories, setStories] = useState<{ answerId: string; matches: StoryMatch[] } | null>(null);
+  const [storyRequests] = useState(latestOnly);
+  const storyAbort = useRef<AbortController | null>(null);
   // The drawer is open for the path it was opened on, so any route change closes it.
   const [listOpenOn, setListOpenOn] = useState<string | null>(null);
   const listOpen = listOpenOn !== null && listOpenOn === pathname;
@@ -118,6 +128,14 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const nearBottom = useRef(true);
   // After a conversation loads, show its end once.
   const jumpToEnd = useRef(false);
+
+  /** Retire the story request in flight and hide the box; returns a new request's token. */
+  const forgetStories = (): number => {
+    storyAbort.current?.abort();
+    storyAbort.current = null;
+    setStories(null);
+    return storyRequests.next();
+  };
 
   const refreshList = async () => {
     try {
@@ -215,7 +233,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       nearBottom.current = true;
       return;
     }
-    const last = log.lastElementChild;
+    // The newest answer, not the story box that may follow it.
+    let last = log.lastElementChild;
+    if (last?.hasAttribute("data-stories")) last = last.previousElementSibling;
     if (!nearBottom.current || !(last instanceof HTMLElement)) return;
     const top =
       thread.scrollTop + last.getBoundingClientRect().top - thread.getBoundingClientRect().top;
@@ -232,6 +252,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   const open = async (id: string) => {
     const request = ++openRequest.current;
+    forgetStories();
     setListOpenOn(null);
     setActiveId(id);
     showInUrl(id);
@@ -257,6 +278,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   const startNew = () => {
     openRequest.current += 1;
+    forgetStories();
     setListOpenOn(null);
     setActiveId(null);
     showInUrl(null);
@@ -272,11 +294,35 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     setPending(question);
     setAskError(null);
     setStatus(ASKING_STATUS);
+    // In parallel with the answer, with the same scope (the chat sends none).
+    const token = forgetStories();
+    const controller = new AbortController();
+    storyAbort.current = controller;
+    const early: { matches: StoryMatch[] | null } = { matches: null };
+    const storyCall = findStoryMatches(question, {}, controller.signal).then((matches) => {
+      early.matches = matches;
+      return matches;
+    });
     try {
       const reply = await ask(question, activeId ?? undefined, sentScope(scope));
       setMessages((current) => [...current, reply.question, reply.answer]);
       setScope((current) => answeredScope(current, reply.question));
-      setStatus(answerStatusText(reply.answer.answer));
+      const answerStatus = answerStatusText(reply.answer.answer);
+      const show = (matches: StoryMatch[]) => {
+        if (!storyRequests.isLatest(token) || matches.length === 0) return false;
+        setStories({ answerId: reply.answer.id, matches });
+        return true;
+      };
+      if (early.matches !== null && show(early.matches)) {
+        setStatus(`${answerStatus} ${storyStatusText(early.matches.length)}`);
+      } else {
+        setStatus(answerStatus);
+        if (early.matches === null) {
+          void storyCall.then((matches) => {
+            if (show(matches)) setStatus(storyStatusText(matches.length));
+          });
+        }
+      }
       if (activeId === null) {
         setActiveId(reply.conversation_id);
         showInUrl(reply.conversation_id);
@@ -284,7 +330,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       }
       return true;
     } catch (error) {
-      // The error is its own alert.
+      // The error is its own alert; no answer, so no story box either.
+      forgetStories();
       setStatus("");
       setAskError(askErrorText(error instanceof ApiError ? error : null));
       return false;
@@ -418,11 +465,12 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                     <p className={styles.plain}>{message.text}</p>
                   </div>
                 ) : (
-                  <AnswerView
-                    key={message.id}
-                    message={message}
-                    question={questions.get(message.id) ?? null}
-                  />
+                  <Fragment key={message.id}>
+                    <AnswerView message={message} question={questions.get(message.id) ?? null} />
+                    {stories?.answerId === message.id ? (
+                      <StoryMatches matches={stories.matches} note={STORY_NOTE_CHAT} headingLevel={2} />
+                    ) : null}
+                  </Fragment>
                 ),
               )}
               {pending !== null ? (

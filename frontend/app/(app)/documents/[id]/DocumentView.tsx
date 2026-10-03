@@ -5,13 +5,17 @@
 // that version's own id), the page viewer and the values table (side by side
 // from 1024 px, stacked below). A newer version still being read, or one that
 // failed, gets a line linking to it. A document in Trash says so. A reviewer
-// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1). While it is
-// checked or read, on load too, its summary is asked for again (lib/poll.ts);
-// once it settles, the whole detail is asked for once, and the screen says
-// what was found. Clicking a value jumps to its page and highlights its spot.
-// Every value is shown as plain text; it came from the document. Beside the
-// page: the document card, related documents and the invoice
-// (DocumentPanels.tsx, PRD 3 Y1 to Y3); a low-resolution page says so above it (Y4).
+// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1), and anyone can
+// "Ask about this document" in chat (PRD 3 H2). While it is checked or read,
+// on load too, its summary is asked for again (lib/poll.ts); once it settles,
+// the whole detail is asked for once, and the screen says what was found.
+// Clicking a value jumps to its page and highlights its spot. Every value is
+// shown as plain text; it came from the document. Beside the page: the
+// document card, related documents and the invoice (DocumentPanels.tsx,
+// PRD 3 Y1 to Y3); a low-resolution page says so above it (Y4). Scanned text:
+// see ScannedTextPanel.tsx. My words: "Add meaning" by a value or a scanned
+// line, and the user's own words on the page (components/words/ViewerWords.tsx).
+// Last beside it: the user's own story about the document (StoryPanel.tsx).
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -24,6 +28,8 @@ import { Icon } from "@/components/ui/Icon";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import { SCANNED_PANEL_ID, ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
+import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
+import wordStyles from "@/components/words/Words.module.css";
 import {
   newerVersionText,
   sortedVersions,
@@ -45,7 +51,7 @@ import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { decodeRegion } from "@/lib/regions";
 import { useSession } from "@/lib/session";
-import type { DocumentDetail, DocumentSummary, ExtractedValue } from "@/lib/types";
+import type { DocumentDetail, DocumentSummary, ExtractedValue, Region } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import { CardPanel, InvoicePanel, RelatedPanel } from "./DocumentPanels";
 import { ReadAgain } from "./ReadAgain";
@@ -205,6 +211,10 @@ export function DocumentView({
     viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
   const changePage = (pageNo: number) => choose(pageChange(selection, pageNo));
+  const addMeaning = (text: string, region: Region, from: HTMLElement) => {
+    opener.current = from;
+    setAdding({ text, region });
+  };
   const scannedOpen =
     scannedChoice && scannedChoice.linkKey === linkKey ? scannedChoice.open : scannedParam === "1";
   const setScanned = (open: boolean) => setScannedChoice({ linkKey, open });
@@ -354,6 +364,8 @@ export function DocumentView({
               highlights={highlightsOf(selection)}
               pageNumbers={pageNumbers}
               onPageChange={changePage}
+              marks={words.markers}
+              activeMark={words.activeId}
               tools={
                 hasScannedText && (
                   <button
@@ -379,6 +391,7 @@ export function DocumentView({
                     cited={scannedParam === "1" ? decodeRegion(regionParam) : null}
                     onShow={showSpot}
                     onClose={closeScanned}
+                    onAddMeaning={addMeaning}
                   />
                 )
               }

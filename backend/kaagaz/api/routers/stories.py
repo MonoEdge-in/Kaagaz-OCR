@@ -29,6 +29,11 @@ Why some choices:
   ``session_changed``, as for uploads.
 * Audit rows (``document_story.saved``, ``document_story.deleted``) hold ids
   only; the story is never logged, audited or put in an error.
+* **Story matches** (S3): ``GET /api/me/story-matches?q=`` with the chat's
+  scope, which the chat screen calls beside ``POST /api/chat``, never through
+  it: a story never reaches an answer, a message or a prompt. The question is
+  embedded only while the meaning threshold is calibrated (OFF today), so it
+  makes no model call. The reply holds ids, names and bands only.
 """
 
 import logging
@@ -51,6 +56,9 @@ from kaagaz.api.routers.documents import _same_user
 from kaagaz.db import audit, listing, trash
 from kaagaz.db import document_stories as stories_sql
 from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.search.indexing import embed_question
+from kaagaz.search.scope import ScopeBody, resolve
+from kaagaz.search.story_search import find_story_matches, meaning_threshold, story_matches_json
 from kaagaz.search.story_vectors import embed_story
 
 router = APIRouter()
@@ -80,6 +88,10 @@ class StoryBody(BaseModel):
 
     story: str = Field(max_length=4 * stories_sql.STORY_MAX)  # before tidying; check_story checks the limit
     user_id: str | None = None
+
+
+class StoryMatchParams(ScopeBody):
+    q: str = Field(min_length=1, max_length=1000)  # a chat question's limit
 
 
 def _same_tab(user_id: str | None, user: CurrentUser) -> None:
@@ -215,3 +227,31 @@ def delete_my_story(
             raise ApiError(404, "not_found")
         _audit(conn, user, "document_story.deleted", family_id, target)
     return Response(status_code=204)
+
+
+@router.get("/me/story-matches")
+def my_story_matches(
+    params: Annotated[StoryMatchParams, Query()], user: User, context: Context
+) -> dict[str, Any]:
+    """``{story_matches: [{document_id, display_name, doc_type, band}]}`` for ``q`` in the
+    scope. Two short transactions: the scope as the customer, the stories as the user."""
+    question = params.q.strip()
+    if not question:
+        return {"story_matches": []}
+    settings = context.settings
+    with context.db.customer(user.customer_id) as conn:
+        scope = resolve(conn, user.customer_id, params, timezone=settings.timezone)
+    if scope.matches_nothing:
+        return {"story_matches": []}
+    on = meaning_threshold(settings.model_embed) is not None
+    embedding = embed_question(context.model, question) if on else None
+    found = find_story_matches(
+        context.db,
+        customer_id=user.customer_id,
+        user_id=user.user_id,
+        question=question,
+        embedding=embedding,
+        model_embed=settings.model_embed,
+        scope=scope,
+    )
+    return {"story_matches": story_matches_json(found)}

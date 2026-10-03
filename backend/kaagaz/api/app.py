@@ -101,6 +101,7 @@ def create_app(
         admin.router,
         words.router,
         stories.router,
+        words.router,
     ):
         app.include_router(router, prefix="/api")
     return app

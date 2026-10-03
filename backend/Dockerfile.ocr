@@ -3,8 +3,14 @@
 # libraries, pinned by constraints-ocr.txt, and our own package goes in with --no-deps,
 # so no database, storage or queue library is in it (security A4, A6).
 #
+# PADDLE_EXTRA picks the Paddle build: `paddle` (the default, the CPU) or `paddle-gpu`
+# (CUDA 12.6, for docker-compose.gpu.yml, which sets it). The GPU wheel bundles nothing
+# of CUDA itself: its nvidia-*-cu12 wheels come from PyPI and the driver from the host
+# (NVIDIA Container Toolkit), so the base image is the same for both.
+#
 # NOT BUILT on the build laptop (no Docker): every line marked VERIFY is unchecked.
 #   docker compose --profile paddle build ocr      (downloads about 2 GB of weights)
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile paddle build ocr
 
 # VERIFY: the digest is the tag's index digest from Docker Hub's API on 30 Sep 2026, not
 # pulled here. Check it with: docker buildx imagetools inspect python:3.12.14-slim-trixie
@@ -23,21 +29,47 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# PyPI only, no --extra-index-url: the paddlepaddle 3.3.1 CPU wheel for cp312 is there (FINDINGS).
+ARG PADDLE_EXTRA=paddle
+
+# Never --extra-index-url: a second index can serve any package name (security A6).
+# paddle (CPU): PyPI only, the paddlepaddle 3.3.1 CPU wheel for cp312 is there (FINDINGS).
 # The paddle extra's list, read from pyproject.toml so its pins live in one place, and not
 # `pip install .[paddle]`, which would also bring the backend's own dependencies (the database,
 # storage and queue libraries checked for below). fastapi, uvicorn and pillow are the server's.
 # constraints-ocr.txt pins every package that goes in.
-COPY constraints-ocr.txt pyproject.toml ./
-RUN python -c "import tomllib; extras = tomllib.load(open('pyproject.toml', 'rb'))['project']['optional-dependencies']; print(*extras['paddle'], sep='\n')" > /tmp/paddle.txt \
-    && pip install --constraint constraints-ocr.txt --requirement /tmp/paddle.txt fastapi uvicorn pillow \
-    && rm /tmp/paddle.txt
+# paddle-gpu: paddlepaddle-gpu 3.3.1 is not on PyPI. Step 1 installs that one wheel alone,
+# by its direct URL on Paddle's cu126 index, sha256-checked, nothing else from there
+# (paddle-gpu-wheel.txt). Step 2 installs everything else from PyPI, each file
+# sha256-checked, exactly the list in constraints-ocr-gpu.txt (--no-deps: nothing more).
+# Then pip check, and the paddle-gpu extra's pins are what went in.
+# Anything else stops the build.
+COPY constraints-ocr.txt constraints-ocr-gpu.txt paddle-gpu-wheel.txt pyproject.toml ./
+RUN case "$PADDLE_EXTRA" in \
+      paddle) \
+        python -c "import tomllib; extras = tomllib.load(open('pyproject.toml', 'rb'))['project']['optional-dependencies']; print(*extras['paddle'], sep='\n')" > /tmp/paddle.txt \
+        && pip install --constraint constraints-ocr.txt --requirement /tmp/paddle.txt fastapi uvicorn pillow \
+        && rm /tmp/paddle.txt ;; \
+      paddle-gpu) \
+        pip install --no-index --no-deps --require-hashes --requirement paddle-gpu-wheel.txt \
+        && pip install --no-deps --require-hashes --index-url https://pypi.org/simple \
+            --requirement constraints-ocr-gpu.txt \
+        && pip check \
+        && python -c "import tomllib, importlib.metadata as m; pins = [p.split('==') for p in tomllib.load(open('pyproject.toml', 'rb'))['project']['optional-dependencies']['paddle-gpu']]; bad = [n for n, v in pins if m.version(n.split('[')[0]) != v]; assert not bad, bad" ;; \
+      *) \
+        echo "PADDLE_EXTRA must be paddle or paddle-gpu, not: $PADDLE_EXTRA" >&2; exit 1 ;; \
+    esac
 COPY kaagaz kaagaz
 RUN pip install --no-deps .
 
 # Security A4, A6: Hugging Face transformers would run the Python files that model folders
 # carry, and the database, storage and queue libraries have no business here.
 RUN python -c "import importlib.util as u; bad = [m for m in ('transformers', 'psycopg', 'boto3', 'sqlalchemy') if u.find_spec(m)]; assert not bad, bad"
+
+# One Paddle build only, the one PADDLE_EXTRA asked for: the CPU paddlepaddle is never in
+# the GPU image (both install the same `paddle` module, so one would overwrite the other),
+# and the module is built for CUDA exactly when it is the GPU image. Both checks need no
+# GPU (VERIFY on the first GPU build: importing paddle without a driver only warns).
+RUN python -c "import importlib.metadata as m, os, paddle; gpu = os.environ['PADDLE_EXTRA'] == 'paddle-gpu'; names = {d.metadata['Name'].lower().replace('_', '-') for d in m.distributions()}; assert ('paddlepaddle' in names, 'paddlepaddle-gpu' in names) == (not gpu, gpu), sorted(names); assert paddle.is_compiled_with_cuda() == gpu"
 
 # The weights at pinned revisions (FINDINGS), then sha256 checked: the sums are VERIFIED
 # against the files the scratch venv downloaded at these revisions on 30 Sep. Licence: both

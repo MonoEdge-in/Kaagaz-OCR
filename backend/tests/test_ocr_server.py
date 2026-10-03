@@ -11,12 +11,15 @@ layout scores.
 import io
 import json
 import logging
+import os
 import struct
 import subprocess
 import sys
 import threading
+import types
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +28,16 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from kaagaz.ocr_server import app as server
-from kaagaz.ocr_server.app import PADDLE_LABELS, PageResult, RawBlock, blocks_json, create_app, paddle_page
+from kaagaz.ocr_server.app import (
+    PADDLE_LABELS,
+    PaddleModel,
+    PageResult,
+    RawBlock,
+    blocks_json,
+    create_app,
+    ocr_device,
+    paddle_page,
+)
 from kaagaz.ocr_server.app import table_cells as cells
 from kaagaz.reading import ocr
 
@@ -301,8 +313,15 @@ def test_the_server_needs_no_backend_settings_database_storage_or_paddle() -> No
         "print(sorted(m for m in sys.modules if m.startswith(names)))"
     )
     backend = FIXTURES.parent.parent
+    environ = {name: value for name, value in os.environ.items() if name != "OCR_DEVICE"}
     result = subprocess.run(  # noqa: S603 - fixed arguments, this interpreter
-        [sys.executable, "-c", code], capture_output=True, text=True, check=True, timeout=60, cwd=backend
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+        cwd=backend,
+        env=environ,
     )
     assert result.stdout.strip() == "[]"
 
@@ -414,3 +433,125 @@ def test_a_table_over_1_mib_is_dropped_before_parsing(caplog: pytest.LogCaptureF
     assert [block["text"] for block in blocks_json(PageResult(100, 100, raw))] == ["kept"]
     assert "table dropped" in caplog.text
     assert "999" not in caplog.text
+
+
+def test_the_device_is_the_cpu_unless_ocr_device_says_otherwise() -> None:
+    assert ocr_device({}) == "cpu"
+    assert ocr_device({"OTHER": "gpu:0"}) == "cpu"
+    for value in ("cpu", "gpu:0", "gpu:1", "gpu:7", "gpu:15", "gpu:99"):
+        assert ocr_device({"OCR_DEVICE": value}) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["cuda", "", " cpu", "cpu ", "cpu\n", "CPU", "GPU:0", "gpu", "gpu:", "gpu:\u0967", "gpu:999", "gpu:0,1"],
+)
+def test_any_other_device_is_refused_by_name(value: str) -> None:
+    """Exactly cpu or gpu:N, N one or two ASCII digits: no spaces, no capitals, and no
+    Devanagari digit one (U+0967), which a \\d pattern would let through."""
+    with pytest.raises(ValueError, match="OCR_DEVICE") as refused:
+        ocr_device({"OCR_DEVICE": value})
+    assert repr(value) in str(refused.value)
+    assert "cpu or gpu:N" in str(refused.value)
+    with pytest.raises(ValueError, match="OCR_DEVICE"):
+        PaddleModel(value)
+
+
+def test_paddle_model_reads_ocr_device_when_none_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OCR_DEVICE", raising=False)
+    assert PaddleModel().device == "cpu"
+    monkeypatch.setenv("OCR_DEVICE", "gpu:0")
+    assert PaddleModel().device == "gpu:0"
+    assert PaddleModel("cpu").device == "cpu"  # a device given wins
+    monkeypatch.setenv("OCR_DEVICE", "cuda")
+    with pytest.raises(ValueError, match="OCR_DEVICE"):
+        PaddleModel()
+
+
+def test_a_bad_ocr_device_stops_the_server_at_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """uvicorn imports the module first, and the module builds its model at import
+    (``app = create_app(PaddleModel())``), so a bad OCR_DEVICE fails that import."""
+    source = Path(server.__file__).read_text(encoding="utf-8")
+    assert "app = create_app(PaddleModel())" in source.splitlines()
+    monkeypatch.setenv("OCR_DEVICE", "cuda")
+    with pytest.raises(ValueError, match="OCR_DEVICE='cuda'"):
+        PaddleModel()
+    monkeypatch.setenv("OCR_DEVICE", "gpu:0")
+    assert PaddleModel().device == "gpu:0"
+
+
+def test_the_device_reaches_paddleocr_vl(monkeypatch: pytest.MonkeyPatch) -> None:
+    built: list[dict[str, Any]] = []
+
+    class FakePaddleOCRVL:
+        def __init__(self, **options: Any) -> None:
+            built.append(options)
+
+    monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PaddleOCRVL=FakePaddleOCRVL))
+    model = PaddleModel("gpu:0")
+    model.load()
+    assert model.ready()
+    (options,) = built
+    assert options["device"] == "gpu:0"
+    assert options["use_doc_unwarping"] is False  # the other settings are as before
+
+
+def installed(packages: dict[str, str]) -> Callable[[str], str]:
+    """A stand-in for ``importlib.metadata.version`` that knows only ``packages``."""
+
+    def version(name: str) -> str:
+        if name not in packages:
+            raise metadata.PackageNotFoundError(name)
+        return packages[name]
+
+    return version
+
+
+GPU_PACKAGES = {"paddleocr": "3.7.0", "paddlex": "3.7.2", "paddlepaddle-gpu": "3.3.1"}
+MODELS = "vl=PaddleOCR-VL-1.6@c5630ab;layout=PP-DocLayoutV3@241f8bd"
+
+
+def test_version_names_the_gpu_build_and_the_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The GPU image has paddlepaddle-gpu and no paddlepaddle: asking for paddlepaddle
+    only would fail every GPU page (council, 3 Oct)."""
+    monkeypatch.setattr(metadata, "version", installed(GPU_PACKAGES))
+    gpu = PaddleModel("gpu:0").version()
+    assert gpu == f"paddleocr=3.7.0;paddlex=3.7.2;paddle-gpu=3.3.1;{MODELS};device=gpu:0"
+    cpu_packages = {"paddleocr": "3.7.0", "paddlex": "3.7.2", "paddlepaddle": "3.3.1"}
+    monkeypatch.setattr(metadata, "version", installed(cpu_packages))
+    assert PaddleModel("cpu").version() == f"{VERSION};device=cpu"
+
+
+def test_the_worker_takes_the_gpu_servers_version(
+    client: TestClient, model: FakePageModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Server to worker: a GPU server's real version passes the worker's check. Its ":"
+    was refused there, which would fail every GPU page (council, 3 Oct)."""
+    monkeypatch.setattr(metadata, "version", installed(GPU_PACKAGES))
+    gpu_version = PaddleModel("gpu:0").version()
+    monkeypatch.setattr(model, "version", lambda: gpu_version)
+    reply = client.post("/read", content=png(200, 100), headers=PNG)
+    assert reply.status_code == 200
+    version, lines = ocr._reply_lines(reply.content, 200, 100)
+    assert version == gpu_version
+    assert [line.text for line in lines] == ["Total 500"]
+
+
+class ResourceExhaustedError(Exception):
+    """Named as Paddle's own out-of-memory error, for when it comes through as is."""
+
+
+@pytest.mark.parametrize("failure", [MemoryError("Sunil Patil"), ResourceExhaustedError("Sunil Patil")])
+def test_out_of_memory_is_a_503_the_worker_retries(
+    client: TestClient, model: FakePageModel, caplog: pytest.LogCaptureFixture, failure: Exception
+) -> None:
+    """Not this page's fault (the GPU is shared with Ollama): a 503 the worker asks again
+    later, never read_failed, which would fail the document."""
+    caplog.set_level(logging.DEBUG)
+    model.failure = failure
+    reply = client.post("/read", content=png(), headers=PNG)
+    assert (reply.status_code, reply.json()) == (503, {"error": "out_of_memory"})
+    assert type(failure).__name__ in caplog.text
+    assert "Sunil" not in caplog.text
+    model.failure = None
+    assert client.post("/read", content=png(), headers=PNG).status_code == 200  # the lock was let go

@@ -227,6 +227,11 @@ services:
     user: "10001:10001"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # No core dumps: a crash must never write a page it was reading to a file.
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
     # PROVISIONAL (AR3): loading peaked at 8.9 GB on the build laptop, then 4.6 GB.
     mem_limit: 12g
     pids_limit: 256

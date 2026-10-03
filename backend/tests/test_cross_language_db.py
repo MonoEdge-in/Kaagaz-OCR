@@ -73,13 +73,36 @@ def test_an_english_question_is_answered_from_a_marathi_land_record(db: Database
     assert _ask(a, "Who owns gat number 48?")["status"] == "not_found"
 
 
+@pytest.mark.parametrize(
+    ("question", "cell"),
+    [
+        ("malak kon ahe?", "A: जमीन मालकाचे नाव | B: रामचंद्र गणपत पाटील"),
+        ("jaminicha malak kon?", "A: जमीन मालकाचे नाव | B: रामचंद्र गणपत पाटील"),
+        ("kshetra kiti?", "A: एकूण क्षेत्र (हे.आर) | B: १.२०"),
+    ],
+)
+def test_marathi_typed_in_english_letters_is_answered_and_needs_review(
+    db: Database, question: str, cell: str
+) -> None:
+    """PR 2b-2: the Romanised glossary and stop words, through search, the gate and the quote."""
+    a, _ = _two_customers(db)
+
+    answer = _ask(a, question)
+
+    assert (answer["status"], answer["route"], answer["label"]) == ("answered", "search", "needs_review")
+    assert [s["text"] for s in answer["sentences"]] == [cell]
+    assert all(region["kind"] == "cell" for region in answer["citations"][0]["regions"])
+    assert _ask(a, "malak kon ahe gat 48")["status"] == "not_found"  # only gat ४७ is there
+
+
 @pytest.mark.isolation
 def test_another_customer_asking_gets_nothing_of_it(db: Database) -> None:
     a, b = _two_customers(db)
 
-    assert _ask(a, QUESTION)["status"] == "answered"  # the positive control
-    answer = _ask(b, QUESTION)
-    assert (answer["status"], answer["citations"], answer["closest_documents"]) == ("not_found", [], [])
+    for question in (QUESTION, "malak kon ahe?"):
+        assert _ask(a, question)["status"] == "answered", question  # the positive control
+        answer = _ask(b, question)
+        assert (answer["status"], answer["citations"], answer["closest_documents"]) == ("not_found", [], [])
 
 
 def test_without_the_glossary_the_question_is_not_found(
