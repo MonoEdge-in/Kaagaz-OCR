@@ -11,6 +11,7 @@ indexing tests.
 
 import json
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -308,7 +309,7 @@ def test_a_latin_typo_finds_devanagari_through_its_latin_spelling(db: Database) 
     document = add_document(db, customer)
     wanted, _ = add_pieces(db, customer, document, [("पाटील शिंदे", None), ("Rent paid for August", None)])
 
-    hits = run(db, customer, "shindey")  # one letter too many: no word matches (W2)
+    hits = run(db, customer, "shindye")  # a typo no word matches, by sound either (W2)
 
     assert [hit.piece_id for hit in hits] == [wanted]
     assert hits[0].word_score is None
