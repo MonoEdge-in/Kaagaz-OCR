@@ -33,6 +33,12 @@ The steps (docs/architecture.md):
    glossary's Marathi and Hindi words, or a sentence citing Devanagari
    evidence was checked against nothing (``verify.unchecked_cross_script``;
    council 2 Oct 2026, PR2).
+7. My words (council 3 Oct 2026, A3, PROVISIONAL): on the search route only, the
+   asking user's own words the question uses (``expansion.expand``, read once inside
+   ``Database.user``) are searched as OR alternatives and may count at the gate
+   (``"personal"``). An answer that used one carries them as ``understood_words``
+   and is never verified. They never reach ``normalise``, the fixed queries, the
+   model's prompt or the sentences.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
@@ -89,6 +95,7 @@ from kaagaz.answering.evidence import (
     valid_regions,
     word_text,
 )
+from kaagaz.answering.expansion import NO_EXPANSION, Expansion, PgWords, WordSource, expand
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
 from kaagaz.answering.format import indian_number
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
@@ -168,6 +175,7 @@ class Answer:
     normalized_question: str
     model_used: bool
     rewritten_question: str | None = None  # H1: what was searched for, when a follow-up was rewritten
+    understood_words: tuple[tuple[str, str], ...] = ()  # My words used: (word, meaning)
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly."""
@@ -183,12 +191,13 @@ class Answer:
             "normalized_question": self.normalized_question,
             "model_used": self.model_used,
             "rewritten_question": self.rewritten_question,
+            "understood_words": [{"word": w, "meaning": m} for w, m in self.understood_words],
         }
 
 
 class AnswerService:
-    """``retriever``, ``fixed_queries`` and ``unchecked`` default to the PostgreSQL ones;
-    tests pass fakes."""
+    """``retriever``, ``fixed_queries``, ``unchecked`` and ``words`` default to the
+    PostgreSQL ones; tests pass fakes."""
 
     def __init__(
         self,
@@ -200,6 +209,7 @@ class AnswerService:
         retriever: Retriever | None = None,
         fixed_queries: FixedQueries | None = None,
         unchecked: UncheckedValues | None = None,
+        words: WordSource | None = None,
     ) -> None:
         self._model = model
         self._settings = settings
@@ -221,21 +231,30 @@ class AnswerService:
         )
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
+        self._words = words if words is not None else PgWords(db)
 
     def answer(
-        self, customer_id: str, question: str, *, scope: Scope = EVERYTHING, history: Sequence[Turn] = ()
+        self,
+        customer_id: str,
+        question: str,
+        *,
+        scope: Scope = EVERYTHING,
+        history: Sequence[Turn] = (),
+        user_id: str | None = None,
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
-        ``history`` is the conversation's earlier turns, oldest first."""
+        ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
+        asker, whose own words (only) may help the search (None: nobody's)."""
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False)
         turns = self._settings.chat_history_turns
         rewritten = None
         if self._model is not None and history and turns:
             rewritten = rewrite(self._model, question, history[-turns:])
-        return replace(self._answer(customer_id, rewritten or question, scope), rewritten_question=rewritten)
+        answer = self._answer(customer_id, rewritten or question, scope, user_id)
+        return replace(answer, rewritten_question=rewritten)
 
-    def _answer(self, customer_id: str, question: str, scope: Scope) -> Answer:
+    def _answer(self, customer_id: str, question: str, scope: Scope, user_id: str | None) -> Answer:
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
@@ -248,7 +267,15 @@ class AnswerService:
         unchecked = self._unchecked_answer(customer_id, normalised, shown, scope)
         if unchecked is not None:
             return unchecked
-        return self._search_answer(customer_id, question, normalised, shown, scope)
+        # My words: read once, for this question and this user only, never cached.
+        words = () if user_id is None else self._words.words(customer_id, user_id)
+        expansion = expand(question, words) if words else NO_EXPANSION
+        answer = self._search_answer(customer_id, question, normalised, shown, scope, expansion)
+        if not expansion.used:
+            return answer
+        # The note, and never verified whatever passed (council 3 Oct 2026, A3).
+        label = None if answer.label is None else "needs_review"
+        return replace(answer, label=label, understood_words=expansion.understood())
 
     def _unchecked_answer(
         self, customer_id: str, normalised: NormalisedQuestion, shown: str, scope: Scope
@@ -341,7 +368,13 @@ class AnswerService:
     # --- search route -------------------------------------------------------
 
     def _search_answer(
-        self, customer_id: str, question: str, normalised: NormalisedQuestion, shown: str, scope: Scope
+        self,
+        customer_id: str,
+        question: str,
+        normalised: NormalisedQuestion,
+        shown: str,
+        scope: Scope,
+        expansion: Expansion,
     ) -> Answer:
         # Romanised question words and fillers (ahe, kiti) say nothing about the topic: they
         # are left out of every step below, never out of normalise (PR 2b-2).
@@ -352,13 +385,13 @@ class AnswerService:
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         # A Devanagari question is embedded as asked (W3): its Latin spelling means little to the model.
         meant = question if has_devanagari_letters(question) else normalised.english
-        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit, scope)
+        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit, scope, expansion)
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
-        numbers = numbers_asked(question, normalised.keywords)
+        numbers = _numbers(question, normalised.keywords, expansion)
         min_score = self._settings.answer_min_evidence_score
-        gate = enough_evidence(evidence, normalised.keywords, min_score, numbers)
+        gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
         if gate is None:
             return _not_found("search", shown, closest, model_used=False)
         # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
@@ -376,7 +409,7 @@ class AnswerService:
                 break
             evidence.append(item)
 
-        draft, model_used, seen = self._draft(question, normalised, evidence)
+        draft, model_used, seen = self._draft(question, normalised, evidence, expansion)
         # Only the evidence the draft saw. Line by line: joined, "12" and a next
         # line's "August 2026" would read as a date.
         texts = {item.n: "\n".join(map(clean_text, item.hit.text.splitlines())) for item in seen}
@@ -437,10 +470,16 @@ class AnswerService:
         return vectors[0] if vectors else None
 
     def _draft(
-        self, question: str, normalised: NormalisedQuestion, evidence: Sequence[Evidence]
+        self,
+        question: str,
+        normalised: NormalisedQuestion,
+        evidence: Sequence[Evidence],
+        expansion: Expansion = NO_EXPANSION,
     ) -> tuple[Draft, bool, Sequence[Evidence]]:
         """The model's draft (and True), or the extractive one (and False), with the
-        evidence it was drafted from: for the model, the best pieces that fit its window."""
+        evidence it was drafted from: for the model, the best pieces that fit its window.
+        The model sees the question and the evidence only, never a user's word or meaning;
+        ``expansion`` helps the extractive draft choose its lines."""
         if self._model is not None:
             asked = f"{question} (in English: {normalised.english})" if normalised.hinglish else question
             seen = fit_evidence(asked, evidence, self._evidence_budget)
@@ -459,7 +498,9 @@ class AnswerService:
         if mentions_date(normalised):
             return Draft("not_found", []), False, evidence  # a quoted line cannot be checked against a date
         return (
-            extractive_draft(normalised.keywords, evidence, numbers_asked(question, normalised.keywords)),
+            extractive_draft(
+                normalised.keywords, evidence, _numbers(question, normalised.keywords, expansion), expansion
+            ),
             False,
             evidence,
         )
@@ -469,6 +510,12 @@ class AnswerService:
         if now.tzinfo is None:
             raise ValueError("the clock must give a timezone-aware time")
         return now.astimezone(self._zone).date()
+
+
+def _numbers(question: str, keywords: Sequence[str], expansion: Expansion) -> list[str]:
+    """The numbers asked: the question's own (``numbers_asked``), then those of what the
+    user's words were searched as ("my plot" meaning "gat 47" asks 47). O(q)."""
+    return list(dict.fromkeys([*numbers_asked(question, keywords), *expansion.numbers()]))
 
 
 def _tokens(item: Evidence) -> int:

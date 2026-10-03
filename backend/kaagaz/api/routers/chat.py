@@ -11,6 +11,9 @@ messages (the question with its scope and rewrite) and the audit row are written
 in one transaction.
 The audit row holds only the ids and ``answer.status``.
 
+The asker's own words (My words, A3) may help the answer, which then lists them in
+``understood_words``; they are never in a message's text, so never in the history.
+
 A conversation belongs to the user who started it; anyone else, in this
 customer or another, gets "not found".
 """
@@ -93,7 +96,9 @@ def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
         raise ApiError(400, "bad_request", "Choose fewer documents or tags.")
 
     history = _history(recent)
-    answer = context.answers.answer(user.customer_id, question, scope=scope, history=history).to_json()
+    answer = context.answers.answer(
+        user.customer_id, question, scope=scope, history=history, user_id=user.user_id
+    ).to_json()
 
     with context.db.customer(user.customer_id) as conn:
         if conversation_id is None:

@@ -301,6 +301,7 @@ def test_default_wiring_uses_the_real_answer_service_without_a_model(db: Databas
         "normalized_question",
         "model_used",
         "rewritten_question",
+        "understood_words",
     }
     assert answer["status"] == "not_found"
     assert answer["label"] is None

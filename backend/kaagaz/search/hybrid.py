@@ -14,6 +14,10 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    2026), so "owner" finds भोगवटादाराचे. ``g`` is built from the glossary's
    code constants only, never from the question's text, so ``to_tsquery``
    cannot fail on it; "" (no keyword listed) is NULL, which matches nothing.
+   The asking user's own words (My words, council 3 Oct 2026, A3) join this OR
+   arm only through ``expansion.word_query``'s safe builder: letter and mark
+   runs of their text, never the text itself; another user's words are never
+   loaded (kaagaz/answering/expansion.py).
    A fourth query, ``to_tsquery('simple', sk)``, matches the sound keys of
    the question's words (``sound_query``, council 3 Oct 2026, PR 2b) against
    the piece's ``tsv_sound`` (migration 0011: the sound keys of
@@ -98,6 +102,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.answering import glossary
+from kaagaz.answering.expansion import NO_EXPANSION, Expansion, word_query
 from kaagaz.answering.hinglish import DATE_WORDS, STOP_WORDS, normalise
 from kaagaz.chunking.script import SOUND_KEY_MIN, has_devanagari_letters, latin_spelling, sound_keys
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -428,6 +433,7 @@ def search(
     recipe: str,
     ef_search: int,
     scope: Scope = EVERYTHING,
+    expansion: Expansion = NO_EXPANSION,
 ) -> list[SearchHit]:
     """The best ``limit`` pieces of this customer's ready, current documents
     that are not in Trash and are inside ``scope``, best first.
@@ -437,13 +443,14 @@ def search(
     the index walk), which end with it. ``recipe`` is the ``embedding_model`` of
     vectors made the current way; ``ef_search`` is SEARCH_EF. An empty question
     with no embedding finds nothing, and so does a scope that matches nothing,
-    before any SQL runs (edge case 1).
+    before any SQL runs (edge case 1). ``expansion``: the asking user's words the
+    question used, searched as OR alternatives only (kaagaz/answering/expansion.py).
     """
     if not 1 <= limit <= MAX_LIMIT:
         raise ValueError("limit must be between 1 and 100")
     if scope.matches_nothing:
         return []
-    fused, _ = _candidates(conn, customer_id, query_text, embedding, recipe, ef_search, scope)
+    fused, _ = _candidates(conn, customer_id, query_text, embedding, recipe, ef_search, scope, expansion)
     return _hits(conn, customer_id, fused[:limit])
 
 
@@ -497,6 +504,7 @@ def _candidates(
     recipe: str,
     ef_search: int,
     scope: Scope,
+    expansion: Expansion = NO_EXPANSION,
 ) -> tuple[list[FusedPiece], dict[str, str]]:
     """The three lists inside ``scope``, merged best first, and each piece's document id.
     W3: ``text_latin`` is matched with the question's ``latin_spelling``, and the simple
@@ -514,7 +522,7 @@ def _candidates(
             "c": customer_id,
             "q": query_text,
             "k": " ".join(asked),
-            "g": glossary.word_query(asked),
+            "g": word_query(asked, expansion),
             "sk": sound_query(latin),
             "ql": latin,
             "n": CANDIDATES,

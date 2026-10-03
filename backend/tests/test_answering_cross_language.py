@@ -11,6 +11,7 @@ import pytest
 
 from kaagaz.answering.draft import DraftSentence, extractive_draft
 from kaagaz.answering.evidence import enough_evidence, has_token, looks_like_instructions, number_evidence
+from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.chunking.script import ascii_digits
 from kaagaz.search.scope import Scope
@@ -98,7 +99,13 @@ class Hits:
         self.hits = hits
 
     def search(
-        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
+        self,
+        customer_id: str,
+        text: str,
+        embedding: list[float] | None,
+        limit: int,
+        scope: Scope,
+        expansion: Expansion = NO_EXPANSION,
     ) -> list[FakeHit]:
         return self.hits[:limit]
 

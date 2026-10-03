@@ -16,7 +16,8 @@ each citing evidence ids):
   question count (with no model to read it, a piece that shares one word of
   three is taken to be about something else; a keyword also counts through a
   glossary equivalent, kaagaz/answering/glossary.py, or a word that sounds
-  like it, and digits of any script read as ASCII). From those, the lines holding
+  like it, or what the asking user's own word was searched as (My words,
+  kaagaz/answering/expansion.py), and digits of any script read as ASCII). From those, the lines holding
   the most keywords are quoted as they are, at most
   ``MAX_EXTRACTIVE_SENTENCES``, in document order, each citing its piece.
   Nothing to quote means "not found". The service does not quote at all
@@ -45,6 +46,7 @@ from typing import Any, Literal
 from kaagaz.ai.client import ModelClient, ModelOutputError, estimate_tokens
 from kaagaz.answering import glossary
 from kaagaz.answering.evidence import Evidence, has_token
+from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.chunking.script import ascii_digits
 
 MAX_EXTRACTIVE_SENTENCES = 3
@@ -141,11 +143,15 @@ def model_draft(model: ModelClient, question: str, evidence: Sequence[Evidence],
 
 
 def extractive_draft(
-    keywords: Sequence[str], evidence: Sequence[Evidence], numbers: Sequence[str] | None = None
+    keywords: Sequence[str],
+    evidence: Sequence[Evidence],
+    numbers: Sequence[str] | None = None,
+    expansion: Expansion = NO_EXPANSION,
 ) -> Draft:
     """Quote the best lines of the top evidence (see the module docstring). ``numbers``: the
     question's own numbers (``evidence.numbers_asked``), which then stand for its keywords
-    with a digit, so "1,20,000" is one number, not 1, 20 and 000. O(e * t)."""
+    with a digit, so "1,20,000" is one number, not 1, 20 and 000. ``expansion``: the asking
+    user's words the question used. O(e * t)."""
     wanted = list(dict.fromkeys(keyword.casefold() for keyword in keywords))
     if numbers is not None:
         wanted = [keyword for keyword in wanted if not any(ch.isdigit() for ch in keyword)] + list(numbers)
@@ -155,11 +161,11 @@ def extractive_draft(
     candidates: list[tuple[int, int, int, str, int]] = []
     for rank, item in enumerate(evidence):
         folded_piece = ascii_digits(item.hit.text).casefold()
-        if not all(_holds(folded_piece, keyword) for keyword in wanted):
+        if not all(_holds(folded_piece, keyword, expansion) for keyword in wanted):
             continue
         for line_no, line in enumerate(item.hit.text.splitlines()):
             folded_line = ascii_digits(line).casefold()
-            hits = sum(1 for keyword in wanted if _holds(folded_line, keyword))
+            hits = sum(1 for keyword in wanted if _holds(folded_line, keyword, expansion))
             if hits and line.strip():
                 candidates.append((hits, rank, line_no, line.strip(), item.n))
     # Only the lines that match the most keywords: a line matching fewer is
@@ -171,13 +177,14 @@ def extractive_draft(
     return Draft("answered" if sentences else "not_found", sentences)
 
 
-def _holds(folded: str, keyword: str) -> bool:
+def _holds(folded: str, keyword: str, expansion: Expansion) -> bool:
     """The keyword (one with a digit as a whole token, ``has_token``), a glossary
-    equivalent of it (never a GENERIC word's), or a word that sounds like it
-    (``glossary.sounds_like``, PR 2b-2) is in the text."""
+    equivalent of it (never a GENERIC word's), a word that sounds like it
+    (``glossary.sounds_like``, PR 2b-2), or what the user's own word was searched as
+    (``Expansion.found``) is in the text."""
     if has_token(keyword, folded) or glossary.present(keyword, folded):
         return True
-    return glossary.sounds_like(keyword, glossary.sound_words(folded))
+    return glossary.sounds_like(keyword, glossary.sound_words(folded)) or expansion.found(keyword, folded)
 
 
 def _parse(reply: dict[str, Any]) -> Draft:
