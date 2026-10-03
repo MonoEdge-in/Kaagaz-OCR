@@ -6,10 +6,16 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    ``tsv`` column, and ``websearch_to_tsquery('simple', k)`` against
    ``tsv_simple`` (the text and its Latin spelling, unstemmed: PRD 3 W1), where
    ``k`` is the question's ``normalise`` keywords, so the simple query does not
-   require stop words ("the", "of"). A piece scores the higher ``ts_rank_cd``
-   of the two. This parser never raises a syntax error, so a customer's raw
-   question is safe to pass. A question of stop words only ("the and of")
-   becomes an empty query that matches nothing.
+   require stop words ("the", "of"). This parser never raises a syntax error,
+   so a customer's raw question is safe to pass. A question of stop words only
+   ("the and of") becomes an empty query that matches nothing. A third query,
+   ``to_tsquery('simple', g)`` against ``tsv_simple``, ORs the Marathi and
+   Hindi equivalents of the keywords (``glossary.word_query``, council 2 Oct
+   2026), so "owner" finds भोगवटादाराचे. ``g`` is built from the glossary's
+   code constants only, never from the question's text, so ``to_tsquery``
+   cannot fail on it; "" (no keyword listed) is NULL, which matches nothing.
+   A piece scores the highest ``ts_rank_cd`` of the three. ``search_documents``
+   shares this list, so library search finds these pieces too.
 2. **Typo tolerant:** pg_trgm ``word_similarity(q, ...)`` with ``q <% ...``
    against the text and its Latin spelling (W2), the higher of the two, so
    "invioce" still finds "invoice" and "shindey" finds "शिंदे". The ``<%``
@@ -75,6 +81,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import OperationalError
 
+from kaagaz.answering import glossary
 from kaagaz.answering.hinglish import normalise
 from kaagaz.chunking.script import has_devanagari_letters, latin_spelling
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -108,6 +115,8 @@ _WORD = text(
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
     " CROSS JOIN websearch_to_tsquery('simple', :k) AS s (q)"
+    " CROSS JOIN (SELECT CASE WHEN CAST(:g AS text) = '' THEN NULL"
+    " ELSE to_tsquery('simple', CAST(:g AS text)) END) AS g (q)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"

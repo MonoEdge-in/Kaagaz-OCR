@@ -29,7 +29,7 @@ Customers upload business documents (invoices, registers, receipts, statements) 
 The browser talks only to the web app, which forwards `/api/*` to the API, so the session cookie stays first-party.
 
 **Search, in simple terms** (PRD 3, `search/hybrid.py`). Three lists of at most 50 pieces each, merged by reciprocal rank fusion (k = 60), so a piece found two ways ranks above one found one way:
-1. **Words:** full text on `tsv` (english) and `tsv_simple` (the text and its Latin spelling, unstemmed); a piece scores the higher of the two.
+1. **Words:** full text on `tsv` (english) and `tsv_simple` (the text and its Latin spelling, unstemmed), plus the Marathi and Hindi equivalents of an English question's words from a fixed glossary (`answering/glossary.py`) on `tsv_simple`; a piece scores the highest. An answer only the glossary let through is needs review (PROVISIONAL, 2 Oct 2026).
 2. **Typos:** trigram `word_similarity` on `text` and on `text_latin`, the higher of the two, so "shindey" finds "शिंदे".
 3. **Meaning:** each piece's vector is a `halfvec(1024)` (half precision, 2 KB) on the HNSW index `pieces_embedding` (m 16, ef_construction 64), walked with pgvector's iterative scan and `SEARCH_EF`. If the walk comes back with fewer than 50 rows, the same filters run as an exact scan.
 
