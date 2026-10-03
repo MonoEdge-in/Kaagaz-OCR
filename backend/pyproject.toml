@@ -36,6 +36,15 @@ paddle = [
     "paddlex==3.7.2",                # Apache-2.0; floats inside 3.7.x unless pinned
     "paddlepaddle==3.3.1",           # Apache-2.0, the CPU build
 ]
+# The same, with Paddle's GPU build (CUDA 12.6) in place of the CPU one: the GPU server's
+# OCR image only (docker-compose.gpu.yml). PROVISIONAL: Vrushit approves it. It is not on
+# PyPI: Dockerfile.ocr installs it alone, by direct URL from Paddle's cu126 index and
+# sha256-checked (paddle-gpu-wheel.txt), and the rest from constraints-ocr-gpu.txt.
+paddle-gpu = [
+    "paddleocr[doc-parser]==3.7.0",  # Apache-2.0
+    "paddlex==3.7.2",                # Apache-2.0
+    "paddlepaddle-gpu==3.3.1",       # Apache-2.0; its nvidia-*-cu12 wheels: docs/architecture.md
+]
 dev = [
     "pytest>=9.1",             # MIT
     "httpx2>=2.13",            # BSD-3-Clause, FastAPI's TestClient needs it
