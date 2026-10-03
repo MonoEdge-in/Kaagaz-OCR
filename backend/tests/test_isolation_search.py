@@ -20,7 +20,7 @@ from kaagaz.search.scope import EVERYTHING
 from tests.db_support import insert_document, insert_folder, insert_tag, new_customer, tag_document
 from tests.test_api_support import Api, Signed
 from tests.test_indexing_db import FakeModel
-from tests.test_search_db import EF_SEARCH, RECIPE, add_document, add_pieces, axis, run
+from tests.test_search_db import EF_SEARCH, RECIPE, add_document, add_pieces, axis, by_sound, run
 from tests.test_search_scope_db import found as scoped
 
 pytestmark = pytest.mark.db

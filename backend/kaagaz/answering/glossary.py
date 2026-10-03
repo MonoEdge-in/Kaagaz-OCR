@@ -82,6 +82,15 @@ EQUIVALENTS: dict[str, tuple[str, ...]] = {
 # On nearly every form: finding an equivalent of one says nothing (the module docstring).
 GENERIC = frozenset({"name", "number", "date", "total", "village", "taluka", "district", "amount"})
 
+# Marathi and Hindi question words and fillers typed in English letters (council 3 Oct 2026,
+# PR 2b, PROVISIONAL): never a sound term in search. "pan" ("but") is not one, as a PAN is
+# asked for in English; "kar" is, as in a question it is mostly Hindi "do" ("check kar").
+ROMANISED_STOP = frozenset(
+    {"ahe", "aahe", "ahet", "kay", "kiti", "kon", "kuthe", "kevha", "kasa", "cha", "chi", "che", "chya"}
+    | {"la", "na", "ne", "var", "madhe", "madhye", "ani", "hota", "hoti", "hote", "sanga", "dakhva"}
+    | {"kaha", "kab", "kaise", "wala", "wali", "kar", "karo"}
+)
+
 
 def equivalents(keyword: str) -> tuple[str, ...]:
     """The Devanagari equivalents of one ``normalise`` keyword; () for a word not listed."""

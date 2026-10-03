@@ -113,6 +113,21 @@ _ANUSVARA_BEFORE_LIP = re.compile("\N{LATIN SMALL LETTER M WITH DOT BELOW}(?=[pb
 _PLACEHOLDER = "\x00"  # never in the IAST spelling of a Devanagari run
 _NON_ASCII_DIGIT = re.compile(r"(?![0-9])\d")  # in a str pattern, \d is every decimal digit (Nd)
 
+SOUND_KEY_MIN = 3  # letters: a shorter sound key is never matched (kar and khar are both kr)
+SOUND_WORD_MAX = 40  # letters of a word that are keyed; the rest is left out
+_SPACES = re.compile("[ \t\n\r\f\v]+")  # ASCII only, as migration 0008 splits a text
+_ASCII_DIGIT = re.compile("[0-9]")
+_ASCII_LETTERS = re.compile("[A-Za-z]+")  # ranges are code points: the Kelvin sign is not a K
+_NOT_ASCII_LETTER = re.compile("[^A-Za-z]")
+_SOUND_FOLD = str.maketrans("wzq", "vjk")
+_SOUND_START = re.compile(r"\A(?:dny|gny)")  # dnyaneshwar is jnaneshvar
+_SOUND_C = re.compile(r"c(?!h)")
+_SOUND_ASPIRATE = re.compile(r"([bcdfgjklmnpqrstv])h+")
+_SOUND_RI = re.compile(r"([bcdfgjklmnpqrstv]r)u")
+_SOUND_DOUBLE = re.compile(r"(.)\1+")
+_SOUND_AV = re.compile(r"a(?:on|o|nv)\Z")
+_SOUND_EY = re.compile(r"ey\Z")
+
 
 def devanagari_share(text: str) -> float:
     """Devanagari letters divided by all letters (categories L and M); 0.0 with no letters."""
