@@ -12,6 +12,7 @@
 // Every value is shown as plain text; it came from the document. Beside the
 // page: the document card, related documents and the invoice
 // (DocumentPanels.tsx, PRD 3 Y1 to Y3); a low-resolution page says so above it (Y4).
+// Last beside it: the user's own story about the document (StoryPanel.tsx).
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -44,6 +45,7 @@ import type { DocumentDetail, DocumentSummary, ExtractedValue } from "@/lib/type
 import { usePoll } from "@/lib/usePoll";
 import { CardPanel, InvoicePanel, RelatedPanel } from "./DocumentPanels";
 import { ReadAgain } from "./ReadAgain";
+import { StoryPanel } from "./StoryPanel";
 import styles from "./DocumentView.module.css";
 
 export interface DocumentViewProps {
@@ -328,6 +330,7 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
           <CardPanel {...panel} />
           <RelatedPanel detail={detail} />
           <InvoicePanel {...panel} />
+          <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
         </div>
         <section className={styles.values} aria-labelledby="values-heading">
           <h2 id="values-heading" className={styles.valuesHeading}>
