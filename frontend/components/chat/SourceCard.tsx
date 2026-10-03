@@ -4,6 +4,9 @@
 // the document and page, its label, a zoomed-in preview of the spot (loaded
 // only when the card comes near view), the cited text (plain text, it came
 // from the document), and a link that opens the page with the spot highlighted.
+// A source over several pages says "Pages 15 to 16" and gets a chip for each
+// later page's spot; a value whose label is on another page says so and gets
+// a chip for the label (PRD 3 H4).
 // A source from an older version says so; one whose document is in Trash or
 // deleted shows only "From a deleted document" and its label (citationSource).
 
@@ -18,12 +21,13 @@ import {
   DELETED_SOURCE_TEXT,
   OLDER_VERSION_TEXT,
   cardId,
+  citationHighlights,
   citationLink,
   citationRegion,
   citationSource,
 } from "./answer";
 import { useNearView } from "./hooks";
-import { sourceAction, sourceMeta } from "./logic";
+import { labelPlace, pageJumps, sourceAction, sourceMeta } from "./logic";
 import styles from "./Chat.module.css";
 
 function PreviewSkeleton() {
@@ -42,7 +46,12 @@ function SourcePreview({ citation }: { citation: Citation }) {
     return <p className={styles.previewNote}>The preview is not available. Open the page to see the spot.</p>;
   }
   return (
-    <PageViewer document={state.document} page={page} highlights={citation.regions} crop={region} />
+    <PageViewer
+      document={state.document}
+      page={page}
+      highlights={citationHighlights(citation)}
+      crop={region}
+    />
   );
 }
 
@@ -79,6 +88,8 @@ export function SourceCard({ citation, messageId }: { citation: Citation; messag
     );
   }
   const action = sourceAction(citation);
+  const labelText = labelPlace(citation);
+  const jumps = pageJumps(citation);
   return (
     <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId}>
       <div className={styles.sourceHeader}>
@@ -91,6 +102,7 @@ export function SourceCard({ citation, messageId }: { citation: Citation; messag
             {citation.document_name}
           </h4>
           <p className={styles.sourceMeta}>{sourceMeta(citation)}</p>
+          {labelText && <p className={styles.sourceMeta}>{labelText}</p>}
           {source === "older" && <p className={styles.sourceMeta}>{OLDER_VERSION_TEXT}</p>}
           {citation.label === "needs_review" ? (
             <Link
@@ -119,6 +131,18 @@ export function SourceCard({ citation, messageId }: { citation: Citation; messag
           {action.text}
           <span className="visually-hidden">{` of ${citation.document_name}`}</span>
         </Link>
+        {jumps.length > 0 && (
+          <ul className={styles.docChips} aria-label={`More spots in ${citation.document_name}`}>
+            {jumps.map((jump) => (
+              <li key={jump.text}>
+                <Link className={styles.docChip} href={jump.href}>
+                  <Icon name="open" size={16} />
+                  {jump.text}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </article>
   );

@@ -3,6 +3,7 @@ import {
   answerLabelText,
   answerStatusText,
   cardId,
+  citationHighlights,
   citationLink,
   citationMap,
   citationRegion,
@@ -10,13 +11,15 @@ import {
   cleanQuestion,
   cleanReason,
   NOT_FOUND_TEXT,
+  questionReading,
   questionsByAnswer,
+  restoreAfterFailure,
   sendsOnKey,
   sentenceCitations,
   understoodAs,
 } from "@/components/chat/answer";
 import { decodeRegion } from "@/lib/regions";
-import type { Answer, Citation, Message } from "@/lib/types";
+import type { Answer, Citation, Message, Region } from "@/lib/types";
 
 const citation = (n: number, overrides: Partial<Citation> = {}): Citation => ({
   n,
@@ -128,6 +131,41 @@ describe("understood as", () => {
   });
 });
 
+describe("Searching for, under a follow-up's answer", () => {
+  const rewrite = "What were the expenses in September?";
+
+  it("shows the rewrite, and no Understood as when normalizing kept it", () => {
+    const reading = questionReading("And the expenses?", {
+      normalized_question: "what were the expenses in september",
+      rewritten_question: rewrite,
+    });
+    expect(reading).toEqual({ searchingFor: rewrite, understoodAs: null });
+  });
+
+  it("shows nothing new for a question that was not rewritten", () => {
+    for (const rewritten_question of [null, undefined, "  "]) {
+      const reading = questionReading("Total?", { normalized_question: "total", rewritten_question });
+      expect(reading).toEqual({ searchingFor: null, understoodAs: null });
+    }
+  });
+
+  it("still shows Understood as for a question normalized but not rewritten", () => {
+    expect(
+      questionReading("Kiska profit?", { normalized_question: "whose profit" }).understoodAs,
+    ).toBe("whose profit");
+    expect(questionReading(null, { normalized_question: "whose profit" }).understoodAs).toBeNull();
+  });
+});
+
+describe("what a source card's preview highlights", () => {
+  it("adds a value's label to its spots", () => {
+    const label: Region = { kind: "box", page: 2, box: [0.1, 0.1, 0.2, 0.15] };
+    const c = citation(1, { kind: "value", label_regions: [label] });
+    expect(citationHighlights(c)).toEqual([...c.regions, label]);
+    expect(citationHighlights(citation(1))).toEqual(citation(1).regions);
+  });
+});
+
 describe("questions for answers", () => {
   const message = (id: string, role: Message["role"], text: string): Message => ({
     id,
@@ -174,6 +212,25 @@ describe("question box", () => {
     expect(cleanReason("  ")).toBeUndefined();
     expect(cleanReason(" wrong page ")).toBe("wrong page");
     expect(cleanReason("y".repeat(600))?.length).toBe(500);
+  });
+});
+
+describe("question box while a question is sent", () => {
+  const typed = "  Total of invoice 12?\n";
+
+  it("clears on send, and gets the question back, as typed, if sending fails", () => {
+    expect(cleanQuestion(typed)).toBe("Total of invoice 12?");
+    expect(restoreAfterFailure("", typed)).toBe(typed);
+  });
+
+  it("never overwrites what was typed while the answer loaded", () => {
+    expect(restoreAfterFailure("And invoice 13?", typed)).toBe("And invoice 13?");
+    expect(restoreAfterFailure(" ", typed)).toBe(" ");
+  });
+
+  it("refuses a whitespace-only question, so the box is not cleared", () => {
+    expect(cleanQuestion("  \n\t ")).toBeNull();
+    expect(cleanQuestion("")).toBeNull();
   });
 });
 

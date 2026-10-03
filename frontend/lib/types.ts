@@ -316,6 +316,11 @@ export interface Citation {
   snippet: string | null; // plain text, never markup; null once in Trash or deleted
   label: Label;
   source_state?: SourceState;
+  // PRD 3 H4. Missing on answers saved before PRD 3, so they are read with a fallback.
+  page_from?: number; // the pages the source covers ("Pages 15 to 16")
+  page_to?: number;
+  label_page_no?: number | null; // where a value's label is, when it was found
+  label_regions?: Region[]; // [] for a piece, and once the document is in Trash or deleted
 }
 
 export interface AnswerSentence {
@@ -334,6 +339,21 @@ export interface Answer {
   route: "fixed_query" | "search";
   normalized_question: string;
   model_used: boolean;
+  rewritten_question?: string | null; // PRD 3 H1: what a follow-up was searched as; missing before PRD 3
+}
+
+/**
+ * Which documents a question may use (PRD 3 Q1, H2). A field left out filters
+ * nothing, so {} is every document. The server checks every id again.
+ */
+export interface ScopeBody {
+  folder_id?: string | null;
+  include_subfolders?: boolean;
+  tag_ids?: string[] | null;
+  doc_types?: DocType[] | null;
+  document_ids?: string[] | null;
+  date_from?: string | null; // YYYY-MM-DD
+  date_to?: string | null;
 }
 
 export interface Message {
@@ -342,6 +362,7 @@ export interface Message {
   text: string;
   created_at: string;
   answer: Answer | null; // set for assistant messages only
+  scope?: ScopeBody | null; // the scope a question used (PRD 3 H2); null when it had none
   feedback: "up" | "down" | null;
 }
 
@@ -374,6 +395,16 @@ export interface ReviewItem {
 
 /** The review queue's reason filter (PRD 3 Y5). */
 export type ReviewReason = "check_failed" | "readers_disagree" | "low_confidence" | "single_reader";
+
+/** A row of the admin's Failed jobs tab (PRD 3 Z1). */
+export interface FailedDocument {
+  id: string;
+  display_name: string;
+  status: "failed" | "needs_reader";
+  failure_code: string | null;
+  message: string; // safe to show as is
+  last_run_at: string | null; // null: never run
+}
 
 /** A row of the admin's Failed jobs tab (PRD 3 Z1). */
 export interface FailedDocument {

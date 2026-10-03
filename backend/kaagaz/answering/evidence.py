@@ -140,6 +140,12 @@ class Hit(Protocol):
     def meaning_score(self) -> float | None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class Retrieved:
+    hits: Sequence[Hit]  # best first
+    neighbours: Sequence[Hit] = ()  # Q4: the pieces next to the hits, each once, never a hit
+
+
 class Retriever(Protocol):
     def search(
         self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
@@ -168,7 +174,7 @@ class PgRetriever:
     ) -> Sequence[Hit]:
         # Imported here so the answering rules (and their tests) do not need the
         # search module; only the real retriever does.
-        from kaagaz.search.hybrid import search
+        from kaagaz.search.hybrid import neighbours, search
 
         with self._db.customer(customer_id) as conn:
             return search(

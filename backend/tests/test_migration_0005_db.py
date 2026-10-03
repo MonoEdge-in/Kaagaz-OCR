@@ -24,7 +24,7 @@ fresh = m0002.fresh  # the fixture, by its name
 T0 = datetime(2026, 9, 30, 10, 0, tzinfo=UTC)
 RUNS = "SELECT id::text, document_id::text FROM processing_runs ORDER BY started_at"
 DELETE = text("DELETE FROM documents WHERE customer_id = :c AND id = :d")
-# Every table with a key to documents (0001 to 0009); invoice_lines points at invoices.
+# Every table with a key to documents (0001 to 0008); invoice_lines points at invoices.
 TO_DOCUMENTS = {
     "pages",
     "reader_outputs",
@@ -36,7 +36,6 @@ TO_DOCUMENTS = {
     "document_links",
     "processing_runs",
     "user_word_spots",
-    "document_stories",
 }
 
 
