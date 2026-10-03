@@ -97,6 +97,8 @@ _LETTER = re.compile("[a-z]")
 _DASHES = str.maketrans(dict.fromkeys("\u2010\u2011\u2013\u2014", "-"))
 _NUMBER_TOKEN = re.compile(r"(?<!\w)(?<![0-9a-z][-/.])[0-9]+(?:[.,/-][0-9]+)*(?!\w)(?![-/.][0-9a-z])")
 _ID_TOKEN = re.compile(r"(?<!\w)[a-z0-9]+(?:[-/.][a-z0-9]+)*(?!\w)")  # as normalise splits words
+# Where camelCase or letters and digits meet: a word boundary for has_word (word_text).
+_WORD_JOINS = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[^\W\d_])(?=\d)|(?<=\d)(?=[^\W\d_])")
 _WORD = re.compile(r"[a-z0-9]+(?:[-/.][a-z0-9]+)*")  # hinglish.normalise's words
 _ALNUM = re.compile("[a-z0-9]+")
 
@@ -283,7 +285,10 @@ def enough_evidence(
         return None
     # As written: a whole word (a number, a whole token). A Romanised word found as written
     # ("malak" in a Latin text) is still a guess about meaning: it counts from the glossary on.
-    written = [_written(keyword, haystack) for keyword in wanted]
+    worded = word_text("\n".join(item.hit.text for item in evidence))
+    written = [
+        keyword in haystack if _DIGIT.search(keyword) else has_word(keyword, worded) for keyword in wanted
+    ]
     english = sum(
         1
         for keyword, found in zip(wanted, written, strict=True)
@@ -340,25 +345,30 @@ def has_token(keyword: str, folded: str) -> bool:
     )
 
 
-def has_word(keyword: str, folded: str) -> bool:
-    """``keyword`` in ``folded`` (both casefolded) as a whole word: no letter, mark or digit
-    right before or after it, after NFC (PR 2b-2's code review: "rin" is not in "printing",
-    "ekar" not in "Ekart"). O(t)."""
-    keyword, folded = unicodedata.normalize("NFC", keyword), unicodedata.normalize("NFC", folded)
-    start = folded.find(keyword)
+def word_text(text: str) -> str:
+    """``text`` for ``has_word``: digits as ASCII, a space where a lower-case letter meets a
+    capital or a letter meets a digit ("GrandTotal" is grand total, "GSTIN27X" is gstin 27 x),
+    NFC, casefolded. Never for numbers: "INV1042" holds no 1042 (``has_token``). O(n)."""
+    return unicodedata.normalize("NFC", _WORD_JOINS.sub(" ", ascii_digits(text))).casefold()
+
+
+def has_word(keyword: str, text: str) -> bool:
+    """``keyword`` (casefolded) in ``text`` (``word_text``) as a whole word, maybe with an
+    English plural "s" or "es" after it: no letter, mark or digit right before or after (PR
+    2b-2's code review: "rin" is not in "printing", "ekar" not in "ekart"; "invoice" is in
+    "invoices"). A keyword with a digit is never a word here: numbers are ``has_token``'s.
+    O(t)."""
+    keyword = unicodedata.normalize("NFC", keyword)
+    start = text.find(keyword)
     while start >= 0:
         end = start + len(keyword)
-        if not (_word_char(folded[start - 1 : start]) or _word_char(folded[end : end + 1])):
-            return True
-        start = folded.find(keyword, start + 1)
+        if not _word_char(text[start - 1 : start]):
+            for suffix in ("", "s", "es"):
+                after = end + len(suffix)
+                if text[end:after] == suffix and not _word_char(text[after : after + 1]):
+                    return True
+        start = text.find(keyword, start + 1)
     return False
-
-
-def _written(keyword: str, folded: str) -> bool:
-    """A keyword as written: a word as a whole word (``has_word``); one with a digit as before,
-    a substring, since the numbers asked are checked whole first (``numbers_asked``), and
-    normalise splits "1,20,000" into 1, 20 and 000. O(t)."""
-    return keyword in folded if _DIGIT.search(keyword) else has_word(keyword, folded)
 
 
 def _word_char(ch: str) -> bool:
