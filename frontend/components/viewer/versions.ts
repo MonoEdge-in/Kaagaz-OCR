@@ -41,6 +41,17 @@ export function versionNote(detail: WithVersions): string | null {
 }
 
 /**
+ * Whether chat can use the viewed version, so the viewer offers "Ask about
+ * this document" (PRD 3 H2): it is ready, the version in use, and not in Trash.
+ */
+export function usedInChat(
+  detail: WithVersions & Pick<DocumentDetail, "status" | "deleted_at">,
+): boolean {
+  const viewed = detail.versions.find((version) => version.id === detail.id);
+  return detail.status === "ready" && detail.deleted_at === null && viewed?.is_current === true;
+}
+
+/**
  * The line for a newer version that is still being read, or failed, shown
  * under the current one in the list and the viewer: "Version 3: Reading the
  * document… Try 2 of 5." The server's status message is shown as is.

@@ -120,6 +120,29 @@ export function citationRegion(citation: Pick<Citation, "regions" | "page_no">):
   return onPage[0] ?? citation.regions[0];
 }
 
+/** What a source card's preview highlights: the cited spots, and a value's label (PRD 3 H4). */
+export function citationHighlights(citation: Pick<Citation, "regions" | "label_regions">): Region[] {
+  return [...citation.regions, ...(citation.label_regions ?? [])];
+}
+
+/**
+ * The lines saying how the question was read. A follow-up rewritten as a
+ * standalone question shows "Searching for: …" (PRD 3 H1); "Understood as"
+ * then compares against the rewrite, so it shows only when normalizing changed
+ * it again. Both are plain text.
+ */
+export function questionReading(
+  question: string | null,
+  answer: Pick<Answer, "normalized_question" | "rewritten_question">,
+): { searchingFor: string | null; understoodAs: string | null } {
+  const searchingFor = answer.rewritten_question?.trim() || null;
+  const asked = searchingFor ?? question;
+  return {
+    searchingFor,
+    understoodAs: asked !== null ? understoodAs(asked, answer.normalized_question) : null,
+  };
+}
+
 export const DELETED_SOURCE_TEXT = "From a deleted document";
 export const OLDER_VERSION_TEXT = "From an older version";
 

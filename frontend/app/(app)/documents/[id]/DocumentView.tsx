@@ -15,6 +15,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { askAboutHref } from "@/components/chat/logic";
 import { downloadHref, folderTrail } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
@@ -24,6 +25,7 @@ import { PageViewer } from "@/components/viewer/PageViewer";
 import {
   newerVersionText,
   sortedVersions,
+  usedInChat,
   versionNote,
   versionPosition,
   versionText,
@@ -281,6 +283,12 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
             <a className={`btn ${styles.download}`} href={download} download>
               Download original
             </a>
+          )}
+          {usedInChat(detail) && (
+            <Link className="btn" href={askAboutHref(detail.id)}>
+              <Icon name="chat" />
+              Ask about this document
+            </Link>
           )}
         </div>
         {note && <p className={styles.note}>{note}</p>}
