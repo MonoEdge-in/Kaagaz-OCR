@@ -20,9 +20,7 @@ import type {
   FailedDocument,
   Folder,
   Me,
-  MySpot,
   MyWord,
-  PageReadings,
   PasswordReset,
   ReviewChoice,
   ReviewItem,
@@ -204,6 +202,16 @@ export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 2
 export const getPageReadings = (id: string, pageNo: number) =>
   request<PageReadings>("GET", `/documents/${id}/pages/${pageNo}/readings`);
 
+/** This user's story of the document (any version: it belongs to the family); story is null when there is none. */
+export const getMyStory = (id: string) =>
+  request<{ story: MyStory | null }>("GET", `/documents/${encodeURIComponent(id)}/my-story`);
+/** Create (201) or replace (200). The body comes from components/viewer/story.ts (storyBody). */
+export const saveMyStory = (id: string, body: { story: string; user_id: string }) =>
+  request<{ story: MyStory }>("PUT", `/documents/${encodeURIComponent(id)}/my-story`, body);
+/** 204; 404 when there is none. userId: who this tab signed in (409 session_changed otherwise). */
+export const deleteMyStory = (id: string, userId: string) =>
+  request<void>("DELETE", `/documents/${encodeURIComponent(id)}/my-story${query({ user_id: userId })}`);
+
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),
  * into a folder when one is given, else at the top level. userId is who was
@@ -316,9 +324,6 @@ export const listMyWords = () => request<{ items: MyWord[] }>("GET", "/me/words"
 export const addMyWord = (body: object) => request<WordSaved>("POST", "/me/words", body);
 export const changeMyWord = (id: string, body: object) =>
   request<Omit<WordSaved, "outcome">>("PATCH", `/me/words/${encodeURIComponent(id)}`, body);
-/** My words on one page of a document, oldest first (the viewer's markers). */
-export const getMyWordsOnPage = (documentId: string, page: number) =>
-  request<{ items: MySpot[] }>("GET", `/documents/${encodeURIComponent(documentId)}/my-words${query({ page })}`);
 export const deleteMyWord = (id: string, userId: string) =>
   request<void>("DELETE", `/me/words/${encodeURIComponent(id)}${query({ user_id: userId })}`);
 

@@ -29,7 +29,10 @@ The steps (docs/architecture.md):
 6. ``sanitize`` on every sentence and snippet. The label is verified only
    when every value or piece behind the answer is verified, and no sentence
    rests on neighbours alone (PROVISIONAL, plan decision 8: the gate never
-   judged them).
+   judged them). Nor is it verified when the gate passed only through the
+   glossary's Marathi and Hindi words, or a sentence citing Devanagari
+   evidence was checked against nothing (``verify.unchecked_cross_script``;
+   council 2 Oct 2026, PR2).
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
@@ -79,6 +82,7 @@ from kaagaz.answering.evidence import (
     closest_documents,
     enough_evidence,
     number_evidence,
+    numbers_asked,
     valid_regions,
 )
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
@@ -345,7 +349,10 @@ class AnswerService:
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
-        if not enough_evidence(evidence, normalised.keywords, self._settings.answer_min_evidence_score):
+        numbers = numbers_asked(question, normalised.keywords)
+        min_score = self._settings.answer_min_evidence_score
+        gate = enough_evidence(evidence, normalised.keywords, min_score, numbers)
+        if gate is None:
             return _not_found("search", shown, closest, model_used=False)
         # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
         # while they fit the room the hits and the question leave in MODEL_NUM_CTX: every
@@ -383,7 +390,20 @@ class AnswerService:
         # A sentence backed by neighbours only, or with a number only a neighbour holds, is never
         # verified: the gate never judged them (PROVISIONAL, plan decision 8).
         on_neighbours = any(_rests_on_neighbours(s, by_n, texts) for s in kept)
-        verified = all(c.label == "verified" for c in citations) and not on_neighbours
+        # Nor is one the glossary alone let through or chose the quote of, one checked against
+        # nothing, one a cited hit does not pass the gate on its own, or one with an English
+        # word that Devanagari evidence cannot back (council, PR2, and its code reviews).
+        # Only the question's dropped words (who, is, ka...): a content word of it, a name the
+        # question puts forward, must be in the cited text itself (or the glossary's English).
+        asked = _latin_words(f"{question} {normalised.english}") - set(normalised.keywords)
+        unchecked = (
+            gate == "glossary"
+            or any(not _judged(s, by_n, normalised.keywords, min_score, numbers) for s in kept)
+            or any(unchecked_cross_script(s, texts) for s in kept)
+            or any(_unbacked_latin(s, texts, asked) for s in kept)
+            or (not model_used and any(_quoted_through_glossary(s, by_n, normalised.keywords) for s in kept))
+        )
+        verified = all(c.label == "verified" for c in citations) and not (on_neighbours or unchecked)
         return Answer(
             status="answered",
             label="verified" if verified else "needs_review",
@@ -430,7 +450,11 @@ class AnswerService:
             _log.warning("answer drafted without the model", extra={"code": code})
         if mentions_date(normalised):
             return Draft("not_found", []), False, evidence  # a quoted line cannot be checked against a date
-        return extractive_draft(normalised.keywords, evidence), False, evidence
+        return (
+            extractive_draft(normalised.keywords, evidence, numbers_asked(question, normalised.keywords)),
+            False,
+            evidence,
+        )
 
     def _today(self) -> date:
         now = self._clock()
@@ -449,6 +473,82 @@ def _rests_on_neighbours(sentence: DraftSentence, by_n: dict[int, Evidence], tex
     hits = [n for n in sentence.evidence if not by_n[n].neighbour]
     allowed: set[Decimal] = set().union(*(numbers_in(texts[n]) for n in hits))
     return not hits or not numbers_in(sentence.text) <= allowed
+
+
+def _judged(
+    sentence: DraftSentence,
+    by_n: dict[int, Evidence],
+    keywords: Sequence[str],
+    min_score: float,
+    numbers: Sequence[str],
+) -> bool:
+    """True when every hit the sentence cites passes the gate by itself, on its score or its
+    English keywords, so each holds every number asked as a whole token: a sentence citing a
+    gat 47 piece and a gat 48 page is never verified for "gat 48". O(c * k * t)."""
+    hits = [by_n[n] for n in sentence.evidence if not by_n[n].neighbour]
+    passes = ("score", "keywords")
+    return all(enough_evidence([item], keywords, min_score, numbers) in passes for item in hits)
+
+
+# English words any answer may use, whatever its evidence.
+_FUNCTION_WORDS = frozenset(
+    [
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "of",
+        "for",
+        "in",
+        "on",
+        "to",
+        "and",
+        "by",
+        "this",
+        "that",
+        "it",
+        "its",
+        "has",
+        "have",
+        "as",
+        "at",
+        "from",
+        "with",
+    ]
+)
+_LATIN_TOKEN = re.compile(r"[a-z0-9]+")
+
+
+def _latin_words(text: str) -> set[str]:
+    """The Latin-letter words of ``text``, casefolded; a token with a digit is an id, not a word. O(n)."""
+    return {token for token in _LATIN_TOKEN.findall(text.casefold()) if not any(ch.isdigit() for ch in token)}
+
+
+def _unbacked_latin(sentence: DraftSentence, texts: dict[int, str], asked: set[str]) -> bool:
+    """True when a text the sentence cites has Devanagari letters and the sentence holds an
+    English word that neither the question's dropped words (``asked``), ``_FUNCTION_WORDS``,
+    the English side of a glossary word in the cited text, nor the cited texts themselves
+    have: "The owner (भोगवटादार) is Sita Deshmukh" names nobody the evidence names. Fail
+    closed: Latin words in the cited text ("Page 1 of 1", "GSTIN") only add to what is
+    allowed; they never turn the check off. O(s + e * g) for g glossary words."""
+    cited = [texts[n] for n in sentence.evidence if n in texts]
+    if not any(has_devanagari_letters(text) for text in cited):
+        return False
+    found: set[str] = set().union(*(_latin_words(text) for text in cited))
+    allowed = asked | _FUNCTION_WORDS | found | glossary.english_for("\n".join(cited))
+    return bool(_latin_words(sentence.text) - allowed)
+
+
+def _quoted_through_glossary(
+    sentence: DraftSentence, by_n: dict[int, Evidence], keywords: Sequence[str]
+) -> bool:
+    """True when a quoted line's piece holds a keyword only through a glossary equivalent:
+    the glossary chose the quote, so it is never verified. O(k * t)."""
+    pieces = [ascii_digits(by_n[n].hit.text).casefold() for n in sentence.evidence]
+    words = [keyword.casefold() for keyword in keywords if not any(ch.isdigit() for ch in keyword)]
+    return any(word not in text for word in words for text in pieces)  # numbers: numbers_asked
 
 
 def _not_found(route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool) -> Answer:
@@ -495,20 +595,22 @@ def _focus(item: Evidence, sentences: Sequence[str]) -> list[dict[str, Any]]:
     holds a sentence (or a sentence holds it), or shares a number with one.
     Falls back to every region when the lines and regions do not pair up (a
     spreadsheet row), no line matches, or the lines used miss a page of a piece
-    that crosses pages (H4: each of its pages shows its spot). O(lines * sentences).
+    that crosses pages (H4: each of its pages shows its spot). Digits of any
+    script read as ASCII on both sides, so "450" finds the line "४५०".
+    O(lines * sentences).
     """
-    lines = item.hit.text.splitlines()
+    lines = ascii_digits(item.hit.text).splitlines()
     if len(lines) != len(item.regions) or len(item.regions) != len(item.hit.regions):
         return item.regions
-    folded = [sentence.casefold().strip() for sentence in sentences]
-    numbers = {n.replace(",", "") for sentence in sentences for n in _NUMBER.findall(sentence)}
+    folded = [ascii_digits(sentence).casefold().strip() for sentence in sentences]
+    numbers = {n.replace(",", "") for sentence in folded for n in _NUMBER.findall(sentence)}
     used = []
     for line, region in zip(lines, item.regions, strict=True):
         text = line.casefold().strip()
         if not text:
             continue
         if any(text in sentence or sentence in text for sentence in folded if sentence) or any(
-            n.replace(",", "") in numbers for n in _NUMBER.findall(line)
+            n.replace(",", "") in numbers for n in _NUMBER.findall(text)
         ):
             used.append(region)
     if {region["page"] for region in used} != {region["page"] for region in item.regions}:

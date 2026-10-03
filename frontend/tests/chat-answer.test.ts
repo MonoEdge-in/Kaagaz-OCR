@@ -13,6 +13,7 @@ import {
   NOT_FOUND_TEXT,
   questionReading,
   questionsByAnswer,
+  restoreAfterFailure,
   sendsOnKey,
   sentenceCitations,
   understoodAs,
@@ -211,6 +212,25 @@ describe("question box", () => {
     expect(cleanReason("  ")).toBeUndefined();
     expect(cleanReason(" wrong page ")).toBe("wrong page");
     expect(cleanReason("y".repeat(600))?.length).toBe(500);
+  });
+});
+
+describe("question box while a question is sent", () => {
+  const typed = "  Total of invoice 12?\n";
+
+  it("clears on send, and gets the question back, as typed, if sending fails", () => {
+    expect(cleanQuestion(typed)).toBe("Total of invoice 12?");
+    expect(restoreAfterFailure("", typed)).toBe(typed);
+  });
+
+  it("never overwrites what was typed while the answer loaded", () => {
+    expect(restoreAfterFailure("And invoice 13?", typed)).toBe("And invoice 13?");
+    expect(restoreAfterFailure(" ", typed)).toBe(" ");
+  });
+
+  it("refuses a whitespace-only question, so the box is not cleared", () => {
+    expect(cleanQuestion("  \n\t ")).toBeNull();
+    expect(cleanQuestion("")).toBeNull();
   });
 });
 

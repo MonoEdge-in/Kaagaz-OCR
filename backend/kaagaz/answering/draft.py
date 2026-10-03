@@ -14,7 +14,9 @@ each citing evidence ids):
 * **Without a model** (``MODEL_ENABLED=false``, or the model is down or
   replied badly): extractive. Only pieces holding every keyword of the
   question count (with no model to read it, a piece that shares one word of
-  three is taken to be about something else). From those, the lines holding
+  three is taken to be about something else; a keyword also counts through a
+  glossary equivalent, kaagaz/answering/glossary.py, and digits of any script
+  read as ASCII). From those, the lines holding
   the most keywords are quoted as they are, at most
   ``MAX_EXTRACTIVE_SENTENCES``, in document order, each citing its piece.
   Nothing to quote means "not found". The service does not quote at all
@@ -41,7 +43,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, estimate_tokens
-from kaagaz.answering.evidence import Evidence
+from kaagaz.answering import glossary
+from kaagaz.answering.evidence import Evidence, has_token
+from kaagaz.chunking.script import ascii_digits
 
 MAX_EXTRACTIVE_SENTENCES = 3
 MAX_SENTENCES = 5  # in a model answer (the schema)
@@ -136,19 +140,26 @@ def model_draft(model: ModelClient, question: str, evidence: Sequence[Evidence],
     return _parse(reply)
 
 
-def extractive_draft(keywords: Sequence[str], evidence: Sequence[Evidence]) -> Draft:
-    """Quote the best lines of the top evidence (see the module docstring). O(e * t)."""
+def extractive_draft(
+    keywords: Sequence[str], evidence: Sequence[Evidence], numbers: Sequence[str] | None = None
+) -> Draft:
+    """Quote the best lines of the top evidence (see the module docstring). ``numbers``: the
+    question's own numbers (``evidence.numbers_asked``), which then stand for its keywords
+    with a digit, so "1,20,000" is one number, not 1, 20 and 000. O(e * t)."""
     wanted = list(dict.fromkeys(keyword.casefold() for keyword in keywords))
+    if numbers is not None:
+        wanted = [keyword for keyword in wanted if not any(ch.isdigit() for ch in keyword)] + list(numbers)
     if not wanted:
         return Draft("not_found", [])
     # (keywords in the line, evidence rank, line number, line, evidence id)
     candidates: list[tuple[int, int, int, str, int]] = []
     for rank, item in enumerate(evidence):
-        folded_piece = item.hit.text.casefold()
-        if not all(keyword in folded_piece for keyword in wanted):
+        folded_piece = ascii_digits(item.hit.text).casefold()
+        if not all(_holds(folded_piece, keyword) for keyword in wanted):
             continue
         for line_no, line in enumerate(item.hit.text.splitlines()):
-            hits = sum(1 for keyword in wanted if keyword in line.casefold())
+            folded_line = ascii_digits(line).casefold()
+            hits = sum(1 for keyword in wanted if _holds(folded_line, keyword))
             if hits and line.strip():
                 candidates.append((hits, rank, line_no, line.strip(), item.n))
     # Only the lines that match the most keywords: a line matching fewer is
@@ -158,6 +169,12 @@ def extractive_draft(keywords: Sequence[str], evidence: Sequence[Evidence]) -> D
     best = best[:MAX_EXTRACTIVE_SENTENCES]
     sentences = [DraftSentence(text=line, evidence=[n]) for _, _, _, line, n in best]
     return Draft("answered" if sentences else "not_found", sentences)
+
+
+def _holds(folded: str, keyword: str) -> bool:
+    """The keyword (one with a digit as a whole token, ``has_token``), or a glossary
+    equivalent of it (never a GENERIC word's), is in the text."""
+    return has_token(keyword, folded) or glossary.present(keyword, folded)
 
 
 def _parse(reply: dict[str, Any]) -> Draft:

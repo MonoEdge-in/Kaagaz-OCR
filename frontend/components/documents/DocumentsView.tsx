@@ -19,7 +19,6 @@ import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { UploadWords } from "@/components/words/UploadWords";
 import { ApiError, listDocuments, listFolders, listTags, searchDocuments } from "@/lib/api";
 import { progressSignature } from "@/lib/poll";
 import { useSession } from "@/lib/session";

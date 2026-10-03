@@ -362,7 +362,6 @@ export interface Answer {
   normalized_question: string;
   model_used: boolean;
   rewritten_question?: string | null; // PRD 3 H1: what a follow-up was searched as; missing before PRD 3
-  understood_words?: { word: string; meaning: string }[]; // my words chat used (A3); missing before it
 }
 
 /**
@@ -377,34 +376,6 @@ export interface ScopeBody {
   document_ids?: string[] | null;
   date_from?: string | null; // YYYY-MM-DD
   date_to?: string | null;
-}
-
-/** One of my words (GET /me/words). Text from the user: shown as text only. */
-export interface MyWord {
-  id: string;
-  word: string;
-  meaning: string;
-  source: "manual" | "upload" | "viewer";
-  built_in: boolean; // chat's own word list reads it too (the badge)
-  created_at: string;
-  updated_at: string;
-}
-
-/** One of my words on a spot of a page (GET /documents/{id}/my-words?page=): only mine. */
-export interface MySpot {
-  id: string;
-  word_id: string;
-  word: string;
-  meaning: string;
-  page_no: number;
-  region: Region;
-}
-
-/** POST /me/words: 201 created, 200 already there or replaced. */
-export interface WordSaved {
-  word: MyWord;
-  outcome: "created" | "already" | "replaced";
-  warning: "built_in" | null;
 }
 
 export interface Message {
@@ -446,6 +417,16 @@ export interface ReviewItem {
 
 /** The review queue's reason filter (PRD 3 Y5). */
 export type ReviewReason = "check_failed" | "readers_disagree" | "low_confidence" | "single_reader";
+
+/** A row of the admin's Failed jobs tab (PRD 3 Z1). */
+export interface FailedDocument {
+  id: string;
+  display_name: string;
+  status: "failed" | "needs_reader";
+  failure_code: string | null;
+  message: string; // safe to show as is
+  last_run_at: string | null; // null: never run
+}
 
 /** A row of the admin's Failed jobs tab (PRD 3 Z1). */
 export interface FailedDocument {
@@ -511,4 +492,14 @@ export interface Stats {
   older_versions: number; // versions kept that are not the current one
   in_trash: number;
   pages_this_month: Record<PageRoute, number>; // pages read this month, by route (PRD 2, R6); 0 when none
+}
+
+/** The signed-in user's own story about a document's family (GET / PUT /documents/{id}/my-story).
+ * Only its author ever gets it. The user's text: shown as text only, never logged. */
+export interface MyStory {
+  family_id: string;
+  story: string;
+  embedded: boolean; // it has a vector of today's model (search can use it)
+  created_at: string;
+  updated_at: string;
 }
