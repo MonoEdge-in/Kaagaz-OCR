@@ -388,7 +388,7 @@ class AnswerService:
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
-        numbers = numbers_asked(question, normalised.keywords)
+        numbers = _numbers(question, normalised.keywords, expansion)
         min_score = self._settings.answer_min_evidence_score
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
         if gate is None:
@@ -498,7 +498,7 @@ class AnswerService:
             return Draft("not_found", []), False, evidence  # a quoted line cannot be checked against a date
         return (
             extractive_draft(
-                normalised.keywords, evidence, numbers_asked(question, normalised.keywords), expansion
+                normalised.keywords, evidence, _numbers(question, normalised.keywords, expansion), expansion
             ),
             False,
             evidence,
@@ -509,6 +509,12 @@ class AnswerService:
         if now.tzinfo is None:
             raise ValueError("the clock must give a timezone-aware time")
         return now.astimezone(self._zone).date()
+
+
+def _numbers(question: str, keywords: Sequence[str], expansion: Expansion) -> list[str]:
+    """The numbers asked: the question's own (``numbers_asked``), then those of what the
+    user's words were searched as ("my plot" meaning "gat 47" asks 47). O(q)."""
+    return list(dict.fromkeys([*numbers_asked(question, keywords), *expansion.numbers()]))
 
 
 def _tokens(item: Evidence) -> int:
