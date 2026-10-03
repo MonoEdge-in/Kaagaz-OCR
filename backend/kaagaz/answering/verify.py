@@ -59,15 +59,28 @@ dropped outright when it holds what cannot be checked:
   run of number words is copied from a cited line as printed ("Rupees One
   Lakh Eighteen Thousand" from a Tally bill's amount in words).
 
-In the evidence, such tokens are simply not atoms. Nothing left means the
-answer is "not found". The drops are logged by reason, codes only. This runs
+In the evidence, such tokens are simply not atoms.
+
+3. Every Devanagari word in it (letters and marks, NFC, ignorable code points
+   removed), however short, is a word of its cited evidence: a name may be
+   quoted, never respelled or invented, and न ("not") never added (council
+   2 Oct 2026, PR2; ``missing_word``). Only the closed ``FUNCTION_WORDS`` (है,
+   आहे, आणि, और, का, चा, व...) may be added; no negation (नहीं, नाही, न, नका,
+   नये, नव्हे), या, किंवा or की ("or" in Marathi; PROVISIONAL) is one.
+
+``unchecked_cross_script``: a kept sentence citing Devanagari evidence that
+quotes none of its words ("The owner is Ram Patil", or "The owner of gat 47
+is Sita Deshmukh" over "गट क्रमांक ४७": a number is no quote) was checked
+against nothing for its words; the service labels its answer needs review.
+
+Nothing left means the answer is "not found". The drops are logged by reason, codes only. This runs
 on the search route whether the sentences came from the model or were quoted;
 fixed-route sentences come from templates filled only from query results.
 
 Known gaps, PROVISIONAL (Part B 1, Vrushit decides): an atom may come from any
 line of the evidence a sentence cites, so the sub total given as the grand
-total, or the buyer's GSTIN given as the seller's, still passes; names and
-other words are not checked. "1.18 L" and "a lakh" are dropped, not read. The
+total, or the buyer's GSTIN given as the seller's, still passes; names in
+Latin letters and other words are not checked. "1.18 L" and "a lakh" are dropped, not read. The
 answer rules are Vrushit's (docs/architecture.md).
 
 Time is O(s + e) in the characters of the sentences and their evidence; each
@@ -85,6 +98,7 @@ from decimal import Decimal
 
 from kaagaz.answering.draft import DraftSentence
 from kaagaz.answering.sanitize import strip_ignorable
+from kaagaz.chunking.script import has_devanagari_letters
 from kaagaz.extraction.parsing import _INDIAN, _WESTERN, parse_date
 from kaagaz.extraction.quotes import normalise_quote
 
@@ -134,6 +148,11 @@ _NOT_ID = re.compile(r"\d[\d.]*(?:st|nd|rd|th|pcs?|nos|kgs?|k)")  # a number wit
 _TOKEN = re.compile(r"[a-z0-9]+(?:[-/.,][a-z0-9]+)*")  # a token as an id in a sentence may name it
 _LETTER = re.compile("[a-z]")
 _DIGIT = re.compile("[0-9]")
+# Devanagari letters and marks: the block less the danda, the digits and the abbreviation sign.
+_DEVANAGARI_WORD = re.compile(r"[ऀ-ॣॱ-ॿ]+")
+# Whole NFC words a sentence may add (the module docstring): never a negation, या or किंवा.
+# PROVISIONAL (Vrushit decides): की is left out, because in Marathi it means "or".
+FUNCTION_WORDS = frozenset({"है", "हैं", "आहे", "आहेत", "आणि", "और", "का", "के", "चा", "ची", "चे", "व"})
 
 # What a sentence cannot hold (the module docstring).
 _SPLIT_AMOUNT = re.compile(_CURRENCY + r"\s*-?\s*\d[\d,]*(?:\.\d+)?\s+\d")
@@ -174,6 +193,7 @@ class _Backing:
     tokens: set[str] = field(default_factory=set)  # every token with a digit, however read
     years: set[int] = field(default_factory=set)  # the years of its dates
     words: set[str] = field(default_factory=set)  # its runs of number words
+    devanagari: set[str] = field(default_factory=set)  # its Devanagari words (check 3)
 
     def add(self, other: "_Backing") -> None:
         self.atoms |= other.atoms
@@ -181,10 +201,11 @@ class _Backing:
         self.tokens |= other.tokens
         self.years |= other.years
         self.words |= other.words
+        self.devanagari |= other.devanagari
 
 
 def verify(sentences: Sequence[DraftSentence], evidence_text: Mapping[int, str]) -> list[DraftSentence]:
-    """The sentences that pass both checks, in order. ``evidence_text`` maps each id to its text."""
+    """The sentences that pass all three checks, in order. ``evidence_text`` maps each id to its text."""
     kept: list[DraftSentence] = []
     dropped: Counter[str] = Counter()
     read: dict[int, _Backing] = {}
@@ -233,7 +254,30 @@ def _drop_reason(
         missing = next((kind for kind, value in atoms if not _is_backed(kind, value, backing)), None)
         if missing is not None:
             return f"missing_{_KIND_CODES.get(missing, missing)}"
+    if not _quoted(text) <= backing.devanagari:
+        return "missing_word"
     return None
+
+
+def unchecked_cross_script(sentence: DraftSentence, evidence_text: Mapping[int, str]) -> bool:
+    """True when a kept sentence cites Devanagari evidence but quotes no Devanagari word of
+    it (the module docstring). A number does not count: "The owner of gat 47 is Sita
+    Deshmukh" over गट क्रमांक ४७ checks the 47, never the name. O(s + e)."""
+    cited = [evidence_text[n] for n in sentence.evidence if n in evidence_text]
+    quoted = any(len(word) >= 2 for word in _quoted(sentence.text))  # one letter is no quote
+    return any(has_devanagari_letters(text) for text in cited) and not quoted
+
+
+def _quoted(text: str) -> set[str]:
+    """The Devanagari words of a sentence that must be in its evidence: every one, however
+    short (न is "not"), but the FUNCTION_WORDS. O(n)."""
+    return devanagari_words(text) - FUNCTION_WORDS
+
+
+def devanagari_words(text: str) -> set[str]:
+    """The runs of Devanagari letters and marks in ``text``, NFC, ignorable code points
+    removed. O(n)."""
+    return set(_DEVANAGARI_WORD.findall(unicodedata.normalize("NFC", strip_ignorable(text))))
 
 
 # The drop code of a missing atom, by kind.
@@ -258,7 +302,7 @@ def _is_backed(kind: str, value: object, backing: _Backing) -> bool:
 
 def _backed(text: str) -> _Backing:
     """What one piece of evidence backs: its atoms, ids, tokens, years and number words."""
-    backing = _Backing()
+    backing = _Backing(devanagari=devanagari_words(text))
     for raw in text.splitlines():
         tokens = [token for token in strip_ignorable(raw).split() if not _unreadable(token)]
         line = _normalised(" ".join(tokens))

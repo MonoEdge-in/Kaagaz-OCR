@@ -13,6 +13,7 @@ from sqlalchemy import RowMapping
 
 from kaagaz.api.auth import CurrentUser
 from kaagaz.db.folders import FolderRow
+from kaagaz.db.listing import MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
@@ -292,6 +293,46 @@ def document_link(row: RowMapping) -> dict[str, Any]:
         "doc_type": row["doc_type"],
         "identifier": {"kind": row["identifier_kind"], "value": row["identifier_value"]},
     }
+
+
+def page_readings(page_no: int, rows: Sequence[RowMapping]) -> dict[str, Any]:
+    """``PageReadings``: each reader's lines on one page, the first reader first.
+    ``text`` is the stored ``raw``, exactly as read. A reader keeps its lines while
+    they fit MAX_READING_LINES and MAX_READING_TEXT; past either, or after a line cut
+    in SQL, it stops and says ``truncated``. Never logged: it is document content."""
+    readers: list[dict[str, Any]] = []
+    used = 0
+    for row in rows:
+        if not readers or readers[-1]["role"] != row["role"]:
+            readers.append(
+                {
+                    "role": row["role"],
+                    "reader": row["reader"],
+                    "reader_version": row["reader_version"],
+                    "truncated": False,
+                    "lines": [],
+                }
+            )
+            used = 0
+        reader = readers[-1]
+        if row["ord"] is None or reader["truncated"]:
+            continue
+        line = row["text"]
+        if len(reader["lines"]) == MAX_READING_LINES or used + len(line) > MAX_READING_TEXT:
+            reader["truncated"] = True
+            continue
+        used += len(line)
+        reader["lines"].append(
+            {
+                "text": line,
+                "confidence": row["confidence"],
+                "origin": row["origin"],
+                "kind": row["kind"],
+                "region": row["region"],
+            }
+        )
+        reader["truncated"] = bool(row["cut"])
+    return {"page_no": page_no, "readers": readers}
 
 
 def review_item(row: RowMapping) -> dict[str, Any]:
