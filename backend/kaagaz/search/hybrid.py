@@ -74,6 +74,7 @@ after the index); fine at this size, a per-customer partition is the upgrade.
 """
 
 import math
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -102,6 +103,15 @@ FUZZY_THRESHOLD = 0.3
 STATEMENT_TIMEOUT_MS = 3000
 # PostgreSQL's SQLSTATE for a statement cancelled by statement_timeout.
 _QUERY_CANCELED = "57014"
+# The sound query (sound_query): at most this many terms, and prefix matching only for
+# words typed with at least this many letters (council 3 Oct 2026, PR 2b).
+SOUND_TERMS_MAX = 12
+SOUND_PREFIX_WORD_MIN = 5
+SOUND_START_MIN = 4  # letters: the shortest start of a key that is a term of its own
+# Words that are never a sound term: English, Hindi and Romanised question words and fillers,
+# and date words ("this", "last", "month").
+_NO_SOUND = STOP_WORDS | DATE_WORDS | glossary.ROMANISED_STOP
+_SOUND_TERM = re.compile(f"[a-z]{{{SOUND_KEY_MIN},}}")
 
 # Every statement below repeats the same filter in full, so each one can be read
 # (and checked for the customer filter) on its own: this customer's pieces of
@@ -109,6 +119,9 @@ _QUERY_CANCELED = "57014"
 # is written out in each one, before any LIMIT (tests/test_visibility_guard.py),
 # and so is the scope (the s_* parameters, Scope.params; tests/test_search_scope_db.py).
 
+# The sound query's words are separated by ";" (sound_query): sw holds one tsquery per word,
+# heard the words a piece matches, and rare each word's weight, ln(candidates / candidates
+# matching it): a word on every candidate weighs 0.
 _WORD = text(
     "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q)) AS score"
     " FROM pieces p"
@@ -329,6 +342,42 @@ def fuse(
         )
         for piece_id in order
     ]
+
+
+def sound_query(question: str) -> str:
+    """The sound keys of the question's words as ``to_tsquery('simple', ...)`` texts, one
+    per word, joined by " ; " (``_WORD`` ORs them all, and counts the words a piece
+    matches); "" when none has a key of ``SOUND_KEY_MIN`` letters or more (shorter keys are never
+    matched: kar, khar and khara are all kr). A part of the question with a digit in it
+    ("INV-1042", "gat48") is an identifier, which the other queries match as written: it
+    gives no key (``sound_keys``, as on the pieces' side). A question word or filler
+    (``_NO_SOUND``: "and", "of", "kiti", "ahe") gives none either.
+
+    A word typed with ``SOUND_PREFIX_WORD_MIN`` letters or more matches by prefix both
+    ways (council 3 Oct 2026, narrowed by its code review): ``key:*`` finds a longer key
+    ("jamin" finds jaminicha's jminic), and each shorter start of its key, down to
+    ``SOUND_START_MIN`` letters, is a whole term ("jaminicha" finds jamin's jmin). A
+    shorter word matches its whole key only. Every word's own key comes first, then
+    each word's shorter starts, longest first, at most ``SOUND_TERMS_MAX`` terms in all.
+    Each term is checked to be ``[a-z]`` letters, so no character of the question reaches
+    ``to_tsquery``. O(n) for n characters: a key has at most 40 letters.
+    """
+    words: dict[str, list[str]] = {}  # each word's key -> its terms, its own key first
+    for word, key in sound_keys(question):
+        if len(key) < SOUND_KEY_MIN or word.casefold() in _NO_SOUND or key in words:
+            continue
+        if len(word) < SOUND_PREFIX_WORD_MIN:
+            words[key] = [key]
+            continue
+        words[key] = [f"{key}:*", *(key[:end] for end in range(len(key) - 1, SOUND_START_MIN - 1, -1))]
+    # Every word's own key first, then the shorter starts, at most SOUND_TERMS_MAX in all.
+    ranked = [terms[0] for terms in words.values()] + [term for terms in words.values() for term in terms[1:]]
+    kept = set(list(dict.fromkeys(ranked))[:SOUND_TERMS_MAX])
+    for term in kept:
+        if not _SOUND_TERM.fullmatch(term.removesuffix(":*")):
+            raise ValueError("a sound term is ASCII letters only")
+    groups = [" | ".join(term for term in terms if term in kept) for terms in words.values()]
+    return " ; ".join(group for group in groups if group)
 
 
 def vector_literal(values: Sequence[float]) -> str:

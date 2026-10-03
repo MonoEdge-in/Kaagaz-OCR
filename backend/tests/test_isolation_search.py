@@ -92,6 +92,24 @@ def test_neither_meaning_statement_returns_the_other_customers_vectors(db: Datab
             assert [str(row[0]) for row in rows] == found, (transaction == a, named == a)
 
 
+def test_b_never_gets_the_pieces_of_a_by_sound(db: Database) -> None:
+    """The sound key list (PR 2b-1): A's spelling finds A's Marathi piece (the control),
+    B with the same question finds nothing, and naming the other customer finds nothing."""
+    a, _ = new_customer(db)
+    b, _ = new_customer(db)
+    (a_piece,) = add_pieces(db, a, add_document(db, a), [("भोगवटादार रामचंद्र गायकवाड", None)])
+
+    for question in ("bhogwatdar", "gaikwad"):
+        assert by_sound(db, a, question) == [a_piece], question
+        assert a_piece in {hit.piece_id for hit in run(db, a, question)}, question
+        assert by_sound(db, b, question) == [], question
+        assert run(db, b, question) == [], question
+    words = {"q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query("bhogwatdar"), "n": 50}
+    for transaction, named in ((b, a), (a, b)):
+        with db.customer(transaction) as conn:
+            assert conn.execute(hybrid._WORD, words | {"c": named} | EVERYTHING.params()).all() == []
+
+
 def test_b_cannot_embed_a_document_of_a(db: Database) -> None:
     a, _ = new_customer(db)
     b, _ = new_customer(db)

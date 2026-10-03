@@ -39,9 +39,29 @@ of it looks sound, and a Latin spelling of it for search.
 * ``languages_without_model`` (L2). With no model, a Devanagari piece means
   "other" (Hindi and Marathi cannot be told apart), a piece whose letters are
   mostly ASCII means "en", and any other script means "other".
+* ``sound_key`` and ``sound_keys`` (council 3 Oct 2026, PR 2b, the ML
+  reviewer's rules, PROVISIONAL). People type a Marathi or Hindi word the way
+  it sounds: bhogwatdar, bhogvatdar, and ``latin_spelling`` gives bhogavatadar.
+  The sound key gives all three one form, ``bogvtdr``. In this order: keep the
+  ASCII letters only, then lower-case them; a starting dny or gny is jn; ph is
+  f, x is ks, ck is k; a c not before h is k (``latin_spelling``'s c is only
+  ever ch); w, z, q are v, j, k; ay is ai; a consonant's h (one or more) goes
+  (bh, sh, chh); a consonant, r and u is the consonant, r and i (krushna is
+  krishna); ee is i, oo is u, au is o; a doubled letter is one; a final aon,
+  ao or anv is av (gaon and ganv are gav); a final ey is e (shindey); and
+  every a but a first letter goes. Known merges of different words, all with
+  keys of 4 letters or fewer: bati/batti, hati/hatti, sathi/sati, boar/bor,
+  varas/varsha, rasid/rashid. A key under ``SOUND_KEY_MIN`` letters (kar and
+  khar are both kr) is never matched. Only the first ``SOUND_WORD_MAX``
+  letters of a word are keyed, so a key costs O(1) per word however long the
+  word is. ``sound_keys`` keys each run of ASCII letters of a text, except in
+  a part (between ASCII spaces, tabs or line breaks) with a digit: "INV-1042"
+  is an identifier, matched as written elsewhere, never as "inv". Migration
+  0008's SQL function ``kaagaz_sound_key_v1`` gives the same keys joined by
+  spaces (tests/test_sound_key_db.py).
 
 Every function is O(n) time in the characters of the text; ``latin_spelling``
-takes O(n) memory, the others O(1).
+and ``sound_keys`` take O(n) memory, the others O(1).
 """
 
 import re
@@ -159,6 +179,32 @@ def latin_spelling(text: str) -> str:
         )
 
     return _RUN.sub(spell, text).lower()
+
+
+def sound_key(word: str) -> str:
+    """The sound key of one word (the module docstring's rules, in order); "" with no
+    ASCII letter. O(n) to strip the word, then O(1): at most ``SOUND_WORD_MAX`` letters."""
+    w = _NOT_ASCII_LETTER.sub("", word).lower()[:SOUND_WORD_MAX]
+    if not w:
+        return ""
+    w = _SOUND_START.sub("jn", w)
+    w = w.replace("ph", "f").replace("x", "ks").replace("ck", "k")
+    w = _SOUND_C.sub("k", w)
+    w = w.translate(_SOUND_FOLD).replace("ay", "ai")
+    w = _SOUND_ASPIRATE.sub(r"\1", w)
+    w = _SOUND_RI.sub(r"\1i", w)
+    w = w.replace("ee", "i").replace("oo", "u").replace("au", "o")
+    w = _SOUND_DOUBLE.sub(r"\1", w)
+    w = _SOUND_AV.sub("av", w)
+    w = _SOUND_EY.sub("e", w)
+    return w[0] + w[1:].replace("a", "")
+
+
+def sound_keys(text: str) -> list[tuple[str, str]]:
+    """(word, sound key) for each run of ASCII letters in ``text``, in order, but those of a
+    part with a digit (the module docstring). O(n)."""
+    parts = [part for part in _SPACES.split(text) if not _ASCII_DIGIT.search(part)]
+    return [(word, sound_key(word)) for part in parts for word in _ASCII_LETTERS.findall(part)]
 
 
 def languages_without_model(pieces: Sequence[Piece]) -> tuple[str, ...]:
