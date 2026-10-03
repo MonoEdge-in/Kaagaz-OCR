@@ -4,7 +4,7 @@ import { ICON_NAMES, ICONS, sealPath } from "@/components/ui/icons";
 describe("icons", () => {
   it("draws every name in the contract, and nothing else", () => {
     expect(Object.keys(ICONS).sort()).toEqual([...ICON_NAMES].sort());
-    expect(ICON_NAMES).toHaveLength(29);
+    expect(ICON_NAMES).toHaveLength(30);
   });
 
   it("gives every icon at least one shape, inside the 24 x 24 grid", () => {

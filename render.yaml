@@ -1,0 +1,234 @@
+# Kaagaz on Render, as a Blueprint: STAGING AND DEMO ONLY. Render has no India
+# region, so real customer documents wait for Vrushit's decision.
+# docs/running-locally.md, section 7, has the steps and the "check before use" list.
+#
+# The same images and commands as docker-compose.yml (backend/tests/test_render_blueprint.py
+# keeps them the same). Every service is in singapore, the region nearest India,
+# because the private network works only inside one region. Every service is on a
+# paid plan: free instances have no disk, no pre-deploy command and cannot receive
+# private network traffic. The plans are starting points, never measured.
+#
+# Render has no ${VAR} in a Blueprint, and private hostnames carry a random
+# suffix, so the backend commands build the queue and storage URLs from the
+# hostnames Render gives them (SEAWEEDFS_HOST, ELASTICMQ_HOST).
+
+services:
+  - type: web
+    name: kaagaz-api
+    runtime: docker
+    region: singapore
+    plan: 1c-2g
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/health
+    # compose's migrate service, before every deploy.
+    preDeployCommand: >-
+      /bin/sh -c 'if [ -n "$SEAWEEDFS_HOST" ]; then export STORAGE_ENDPOINT_URL=http://$SEAWEEDFS_HOST:8333; fi;
+      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs;
+      alembic upgrade head && python -c "from kaagaz.adapters.storage import S3Storage; from kaagaz.settings import Settings; S3Storage(Settings.from_env()).ensure_bucket()"'
+    dockerCommand: >-
+      /bin/sh -c 'if [ -n "$SEAWEEDFS_HOST" ]; then export STORAGE_ENDPOINT_URL=http://$SEAWEEDFS_HOST:8333; fi;
+      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs;
+      exec uvicorn kaagaz.api.main:app --host 0.0.0.0 --port 8000'
+    envVars:
+      - key: PORT # Render sends the web traffic here
+        value: "8000"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kaagaz-db
+          property: connectionString
+      # Random 256-bit values made once by Render; the worker and SeaweedFS copy them.
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: TOTP_ENCRYPTION_KEY
+        generateValue: true
+      - key: STORAGE_ACCESS_KEY
+        generateValue: true
+      - key: STORAGE_SECRET_KEY
+        generateValue: true
+      - key: SEAWEEDFS_HOST # delete this one for Amazon S3 or Cloudflare R2
+        fromService: { type: pserv, name: kaagaz-seaweedfs, property: host }
+      - key: ELASTICMQ_HOST
+        fromService: { type: pserv, name: kaagaz-elasticmq, property: host }
+      - key: CLAMAV_HOST
+        fromService: { type: pserv, name: kaagaz-clamav, property: host }
+      - key: CLAMAV_PORT
+        value: "3310"
+      - key: SCANNER
+        value: clamav
+      - key: OCR_ENGINE # PaddleOCR-VL needs OCR_URL to be ocr:8080, which Render cannot give
+        value: rapidocr
+      - key: MODEL_ENABLED # the AI model is off; section 7 turns it on
+        value: "false"
+      - key: COOKIE_SECURE # Render serves https
+        value: "true"
+      - fromGroup: kaagaz-settings
+
+  - type: worker
+    name: kaagaz-worker
+    runtime: docker
+    region: singapore
+    plan: 2c-4g
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: >-
+      /bin/sh -c 'if [ -n "$SEAWEEDFS_HOST" ]; then export STORAGE_ENDPOINT_URL=http://$SEAWEEDFS_HOST:8333; fi;
+      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs;
+      exec python -m kaagaz.worker_main'
+    # compose's stop_grace_period: the job in hand finishes first.
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kaagaz-db
+          property: connectionString
+      - key: SESSION_SECRET
+        fromService: { type: web, name: kaagaz-api, envVarKey: SESSION_SECRET }
+      - key: TOTP_ENCRYPTION_KEY
+        fromService: { type: web, name: kaagaz-api, envVarKey: TOTP_ENCRYPTION_KEY }
+      - key: STORAGE_ACCESS_KEY
+        fromService: { type: web, name: kaagaz-api, envVarKey: STORAGE_ACCESS_KEY }
+      - key: STORAGE_SECRET_KEY
+        fromService: { type: web, name: kaagaz-api, envVarKey: STORAGE_SECRET_KEY }
+      - key: SEAWEEDFS_HOST
+        fromService: { type: pserv, name: kaagaz-seaweedfs, property: host }
+      - key: ELASTICMQ_HOST
+        fromService: { type: pserv, name: kaagaz-elasticmq, property: host }
+      - key: CLAMAV_HOST
+        fromService: { type: pserv, name: kaagaz-clamav, property: host }
+      - key: CLAMAV_PORT
+        value: "3310"
+      - key: SCANNER
+        value: clamav
+      - key: OCR_ENGINE
+        value: rapidocr
+      - key: MODEL_ENABLED
+        value: "false"
+      - key: COOKIE_SECURE
+        value: "true"
+      - fromGroup: kaagaz-settings
+
+  - type: web
+    name: kaagaz-frontend
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    envVars:
+      - key: PORT # next start listens on 3000 (frontend/Dockerfile)
+        value: "3000"
+      # A build argument too: Next.js writes the /api rewrite into the build. The
+      # api's public https address, because a private one would need http:// added
+      # to a hostname, and a Blueprint cannot join values.
+      - key: BACKEND_URL
+        fromService: { type: web, name: kaagaz-api, envVarKey: RENDER_EXTERNAL_URL }
+
+  # The stand-ins, reachable only on the private network.
+  - type: pserv
+    name: kaagaz-clamav
+    runtime: image
+    image:
+      url: docker.io/clamav/clamav:1.5.4
+    region: singapore
+    plan: 2c-4g # clamd needs about 2 GB, and more while it reloads its signatures
+    disk:
+      name: clamav-data
+      mountPath: /var/lib/clamav
+      sizeGB: 2
+    envVars: # the same strict scanning as docker-compose.yml (PROVISIONAL)
+      - { key: CLAMD_CONF_StreamMaxLength, value: "60M" }
+      - { key: CLAMD_CONF_MaxFileSize, value: "100M" }
+      - { key: CLAMD_CONF_MaxScanSize, value: "400M" }
+      - { key: CLAMD_CONF_MaxRecursion, value: "10" }
+      - { key: CLAMD_CONF_MaxFiles, value: "10000" }
+      - { key: CLAMD_CONF_AlertExceedsMax, value: "yes" }
+      - { key: CLAMD_CONF_AlertEncrypted, value: "yes" }
+      - { key: CLAMD_CONF_AlertEncryptedArchive, value: "yes" }
+      - { key: CLAMD_CONF_AlertEncryptedDoc, value: "yes" }
+      - { key: CLAMD_CONF_AlertOLE2Macros, value: "yes" }
+      - { key: CLAMD_CONF_AlertBrokenExecutables, value: "yes" }
+      - { key: CLAMD_CONF_AlertBrokenMedia, value: "yes" }
+      - { key: CLAMD_CONF_AlertPhishingCloak, value: "yes" }
+      - { key: CLAMD_CONF_AlertPartitionIntersection, value: "yes" }
+      - { key: CLAMD_CONF_HeuristicAlerts, value: "yes" }
+      - { key: CLAMD_CONF_HeuristicScanPrecedence, value: "yes" }
+      - { key: CLAMD_CONF_DetectPUA, value: "yes" }
+
+  # The queues live in memory, as on the laptop, so a disk would keep nothing: a
+  # restart or deploy of this service loses the jobs waiting in it (section 7).
+  - type: pserv
+    name: kaagaz-elasticmq
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    dockerfilePath: ./infra/render/elasticmq.Dockerfile
+    dockerContext: ./infra
+
+  # File storage. For Amazon S3 or Cloudflare R2 instead, see section 7.
+  - type: pserv
+    name: kaagaz-seaweedfs
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    dockerfilePath: ./infra/render/seaweedfs.Dockerfile
+    dockerContext: ./infra
+    disk:
+      name: seaweedfs-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: STORAGE_ACCESS_KEY
+        fromService: { type: web, name: kaagaz-api, envVarKey: STORAGE_ACCESS_KEY }
+      - key: STORAGE_SECRET_KEY
+        fromService: { type: web, name: kaagaz-api, envVarKey: STORAGE_SECRET_KEY }
+
+  # Optional, off: the AI model through Ollama (section 7). 8 GB of memory or more.
+  # - type: pserv
+  #   name: kaagaz-ollama
+  #   runtime: image
+  #   image:
+  #     url: docker.io/ollama/ollama:0.35.0
+  #   region: singapore
+  #   plan: 2c-8g
+  #   disk:
+  #     name: ollama-data
+  #     mountPath: /root/.ollama
+  #     sizeGB: 20
+
+databases:
+  - name: kaagaz-db
+    region: singapore
+    plan: 1c-2g
+    postgresMajorVersion: "17" # as docker-compose.yml's pgvector/pgvector:0.8.6-pg17
+    databaseName: kaagaz
+    user: kaagaz
+    ipAllowList: [] # the private network only
+
+envVarGroups:
+  # Shared by the api and the worker. Their own values above always win over it.
+  # The four PRD 3 settings, with their defaults (docs/running-locally.md, section 1).
+  # The rest come from .env.example, added once in the dashboard (section 7):
+  # DB_APP_ROLE STORAGE_REGION STORAGE_BUCKET QUEUE_REGION QUEUE_LEASE_SECONDS
+  # QUEUE_WAIT_SECONDS JOB_MAX_ATTEMPTS SCANNER_TIMEOUT_SECONDS MAX_UPLOAD_MB
+  # MAX_IMAGE_MB MAX_SHEET_MB ALLOWED_TYPES CSV_MAX_CELLS XLSX_MAX_ENTRIES
+  # XLSX_MAX_MEMBER_BYTES XLSX_MAX_TOTAL_BYTES XLSX_MAX_CELLS XLSX_MAX_TEXT_CHARS
+  # MAX_PAGES PAGE_IMAGE_DPI MAX_IMAGE_PIXELS OCR_URL OCR_TIMEOUT_SECONDS OCR_DPI
+  # TEXT_LAYER_MIN_CHARS TEXT_LAYER_MIN_GOOD_RATIO SCAN_IMAGE_COVERAGE
+  # BLANK_PAGE_STDDEV LOW_RES_DPI MODEL_BASE_URL MODEL_CHAT MODEL_EMBED
+  # MODEL_VISION EMBEDDING_DIM MODEL_TIMEOUT_SECONDS MODEL_NUM_CTX
+  # MODEL_CARD_MAX_TOKENS MODEL_WINDOW_MAX_TOKENS MODEL_EXTRACT_TIMEOUT_SECONDS
+  # CARD_MAX_CHARS EXTRACT_WINDOW_CHARS EXTRACT_WINDOW_OVERLAP EXTRACT_MAX_WINDOWS
+  # SESSION_HOURS LOGIN_MAX_FAILURES LOGIN_LOCK_MINUTES ADMIN_SESSION_MINUTES
+  # TRASH_DAYS REPROCESS_PER_HOUR ANSWER_MAX_EVIDENCE ANSWER_MIN_EVIDENCE_SCORE
+  # MODEL_ANSWER_MAX_TOKENS TIMEZONE RATE_LIMIT_PER_MINUTE LOG_LEVEL
+  - name: kaagaz-settings
+    envVars:
+      - key: SEARCH_EF
+        value: "100"
+      - key: SEARCH_MAX_DOCUMENTS
+        value: "20"
+      - key: ANSWER_NEIGHBOURS
+        value: "1"
+      - key: CHAT_HISTORY_TURNS
+        value: "3"

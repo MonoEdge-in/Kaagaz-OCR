@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   newerVersionText,
   sortedVersions,
+  usedInChat,
   versionNote,
   versionPosition,
   versionText,
@@ -63,6 +64,23 @@ describe("the note under the picker", () => {
 
   it("says nothing when no version is in use yet", () => {
     expect(versionNote({ id: "a", versions: [version("a", 1, false, "received")] })).toBeNull();
+  });
+});
+
+describe("Ask about this document", () => {
+  const viewing = (id: string, status: DocumentStatus = "ready", deleted_at: string | null = null) => ({
+    id,
+    status,
+    deleted_at,
+    versions: [v1, v2],
+  });
+
+  it("is offered only on the ready version chat uses, outside Trash", () => {
+    expect(usedInChat(viewing("b"))).toBe(true);
+    expect(usedInChat(viewing("a"))).toBe(false);
+    expect(usedInChat(viewing("b", "failed"))).toBe(false);
+    expect(usedInChat(viewing("b", "ready", "2026-10-01T10:00:00+05:30"))).toBe(false);
+    expect(usedInChat(viewing("x"))).toBe(false);
   });
 });
 
