@@ -87,6 +87,18 @@ export interface DocumentSummary {
 /** GET /api/search (PRD 3 Q2): the documents found, best first, at most SEARCH_MAX_DOCUMENTS. */
 export interface DocumentSearch {
   documents: FoundDocument[];
+  story_matches?: unknown; // checked by lib/storyMatches.ts before use
+}
+
+/** How well a question tells a story the user wrote again (S3): never a score. */
+export type StoryBand = "match" | "maybe";
+
+/** One of the user's own documents whose story the question tells again; never the story. */
+export interface StoryMatch {
+  document_id: string;
+  display_name: string;
+  doc_type: DocType | null;
+  band: StoryBand;
 }
 
 export interface FoundDocument {

@@ -6,6 +6,7 @@
 
 import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
+import type { StoryMatchParams } from "./storyMatches";
 import type {
   AdminUser,
   AuditEntry,
@@ -82,7 +83,12 @@ async function errorFrom(response: Response): Promise<ApiError> {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
   const headers: Record<string, string> = method === "GET" ? {} : { ...CSRF_HEADER };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const response = await fetch(`/api${path}`, {
@@ -90,6 +96,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     headers,
     credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   if (!response.ok) throw noticeSessionEnd(await errorFrom(response));
   if (response.status === 204) return undefined as T;
@@ -309,6 +316,12 @@ export const ask = (question: string, conversationId?: string, scope?: ScopeBody
     ...(conversationId ? { conversation_id: conversationId } : {}),
     ...(scope ? { scope } : {}),
   });
+/**
+ * The user's own documents whose story the question tells again (S3), asked
+ * beside ask(), never through it. The reply is checked by lib/storyMatches.ts.
+ */
+export const getStoryMatches = (params: StoryMatchParams, signal?: AbortSignal) =>
+  request<unknown>("GET", `/me/story-matches${query(params)}`, undefined, signal);
 export const listConversations = () =>
   request<{ items: ConversationSummary[] }>("GET", "/conversations");
 export const getConversation = (id: string) =>

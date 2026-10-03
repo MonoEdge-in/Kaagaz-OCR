@@ -107,6 +107,11 @@ const DOC_TYPE_LABELS: Record<DocType, string> = {
   other: "Other",
 };
 
+/** A doc_type the screens know; anything else from the server is shown as "Unknown". */
+export function isDocType(value: unknown): value is DocType {
+  return typeof value === "string" && Object.hasOwn(DOC_TYPE_LABELS, value);
+}
+
 /** What kind of document it is, in words; "Unknown" without a type, as with the model off (PRD 2, D6). */
 export function docTypeLabel(type: DocType | null): string {
   return type === null ? "Unknown" : DOC_TYPE_LABELS[type];
