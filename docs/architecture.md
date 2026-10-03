@@ -77,7 +77,7 @@ The review queue shows only values of each family's current, ready version, out 
 
 ## Data and customer separation
 
-Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`, `folders`, `tags`, `document_tags`, `invoices`, `invoice_lines`, `document_links`, `processing_runs`. Every one of them except `customers` carries the customer. A document's invoice, lines and links are rebuilt by each run of the pipeline; `processing_runs` keeps one row per run, and outlives its document (PROVISIONAL).
+Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`, `folders`, `tags`, `document_tags`, `invoices`, `invoice_lines`, `document_links`, `processing_runs`, `user_words`, `user_word_spots`. Every one of them except `customers` carries the customer. A document's invoice, lines and links are rebuilt by each run of the pipeline; `processing_runs` keeps one row per run, and outlives its document (PROVISIONAL).
 
 Customers are kept apart by two locks:
 
@@ -85,6 +85,8 @@ Customers are kept apart by two locks:
 2. **The application lock.** Every query also names the customer. Two functions list across customers, both SECURITY DEFINER with an empty `search_path`, returning ids only: `kaagaz_customer_ids_with_trash`, the customers with trash old enough to purge, for the worker's hourly purge, and `kaagaz_customer_ids()` (0006), every customer, for `reembed` without `--customer-id`, which then works on each customer inside that customer's own transactions (both PROVISIONAL).
 
 The `isolation` tests prove both on every pull request.
+
+**My words** (0008, PROVISIONAL) belong to one user, not the customer: `user_words` and `user_word_spots` also have a RESTRICTIVE `own_user_only` policy on `kaagaz.user_id`, which only `Database.user` sets, so any other transaction (another user, an admin, `Database.customer`) sees and writes none of them. The routes are `/api/me/words` (list, add, change, delete; the same word with a second meaning is 409 `word_has_meaning` until confirmed) and `GET /api/documents/{id}/my-words?page=` (the caller's own spots on a page).
 
 **PRD 3** adds no table: 0006 adds columns and indexes to `pieces` and `messages`, and 0007 only comments. Every new statement (the three lists and the exact fallback, `/api/search`, `links`, the review filter, the failed list, `reembed`) names the customer and runs under row level security. A scope's folder and tags are looked up as this customer's, and every list keeps its customer filter, so another customer's folder, tag or document ids match nothing. The failed list needs an admin session: an app session, even an admin's, gets 403. In chat the scope is resolved again for the current customer on every turn, saved or sent, so another customer's ids match nothing, and a saved scope that no longer parses matches nothing (it is never widened). Neighbours come from the same customer's live current pieces inside the scope.
 
