@@ -394,7 +394,9 @@ class AnswerService:
         # Nor is one the glossary alone let through or chose the quote of, one checked against
         # nothing, one a cited hit does not pass the gate on its own, or one with an English
         # word that Devanagari evidence cannot back (council, PR2, and its code reviews).
-        asked = _latin_words(f"{question} {normalised.english}")
+        # Only the question's dropped words (who, is, ka...): a content word of it, a name the
+        # question puts forward, must be in the cited text itself (or the glossary's English).
+        asked = _latin_words(f"{question} {normalised.english}") - set(normalised.keywords)
         unchecked = (
             gate == "glossary"
             or any(not _judged(s, by_n, normalised.keywords, min_score, numbers) for s in kept)
@@ -526,17 +528,16 @@ def _latin_words(text: str) -> set[str]:
 
 
 def _unbacked_latin(sentence: DraftSentence, texts: dict[int, str], asked: set[str]) -> bool:
-    """True when every text the sentence cites is Devanagari only (no Latin word of two or more
-    letters) and the sentence holds an English word that neither the question (``asked``),
-    ``_FUNCTION_WORDS``, the English side of a glossary word in the cited text, nor the cited
-    text itself has: "The owner (भोगवटादार) is Sita Deshmukh" names nobody the evidence names.
-    O(s + e * g) for g glossary words."""
+    """True when a text the sentence cites has Devanagari letters and the sentence holds an
+    English word that neither the question's dropped words (``asked``), ``_FUNCTION_WORDS``,
+    the English side of a glossary word in the cited text, nor the cited texts themselves
+    have: "The owner (भोगवटादार) is Sita Deshmukh" names nobody the evidence names. Fail
+    closed: Latin words in the cited text ("Page 1 of 1", "GSTIN") only add to what is
+    allowed; they never turn the check off. O(s + e * g) for g glossary words."""
     cited = [texts[n] for n in sentence.evidence if n in texts]
-    if not cited or not any(has_devanagari_letters(text) for text in cited):
+    if not any(has_devanagari_letters(text) for text in cited):
         return False
     found: set[str] = set().union(*(_latin_words(text) for text in cited))
-    if any(len(word) >= 2 for word in found):
-        return False
     allowed = asked | _FUNCTION_WORDS | found | glossary.english_for("\n".join(cited))
     return bool(_latin_words(sentence.text) - allowed)
 

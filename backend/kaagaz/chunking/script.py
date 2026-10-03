@@ -52,9 +52,13 @@ of it looks sound, and a Latin spelling of it for search.
   every a but a first letter goes. Known merges of different words, all with
   keys of 4 letters or fewer: bati/batti, hati/hatti, sathi/sati, boar/bor,
   varas/varsha, rasid/rashid. A key under ``SOUND_KEY_MIN`` letters (kar and
-  khar are both kr) is never matched. ``sound_keys`` keys each run of ASCII
-  letters of a text; migration 0008's SQL function ``kaagaz_sound_key_v1``
-  gives the same keys joined by spaces (tests/test_sound_key_db.py).
+  khar are both kr) is never matched. Only the first ``SOUND_WORD_MAX``
+  letters of a word are keyed, so a key costs O(1) per word however long the
+  word is. ``sound_keys`` keys each run of ASCII letters of a text, except in
+  a part (between ASCII spaces, tabs or line breaks) with a digit: "INV-1042"
+  is an identifier, matched as written elsewhere, never as "inv". Migration
+  0008's SQL function ``kaagaz_sound_key_v1`` gives the same keys joined by
+  spaces (tests/test_sound_key_db.py).
 
 Every function is O(n) time in the characters of the text; ``latin_spelling``
 and ``sound_keys`` take O(n) memory, the others O(1).
@@ -108,6 +112,9 @@ _PLACEHOLDER = "\x00"  # never in the IAST spelling of a Devanagari run
 _NON_ASCII_DIGIT = re.compile(r"(?![0-9])\d")  # in a str pattern, \d is every decimal digit (Nd)
 
 SOUND_KEY_MIN = 3  # letters: a shorter sound key is never matched (kar and khar are both kr)
+SOUND_WORD_MAX = 40  # letters of a word that are keyed; the rest is left out
+_SPACES = re.compile("[ \t\n\r\f\v]+")  # ASCII only, as migration 0008 splits a text
+_ASCII_DIGIT = re.compile("[0-9]")
 _ASCII_LETTERS = re.compile("[A-Za-z]+")  # ranges are code points: the Kelvin sign is not a K
 _NOT_ASCII_LETTER = re.compile("[^A-Za-z]")
 _SOUND_FOLD = str.maketrans("wzq", "vjk")
@@ -191,8 +198,8 @@ def latin_spelling(text: str) -> str:
 
 def sound_key(word: str) -> str:
     """The sound key of one word (the module docstring's rules, in order); "" with no
-    ASCII letter. O(n) in the word's characters."""
-    w = _NOT_ASCII_LETTER.sub("", word).lower()
+    ASCII letter. O(n) to strip the word, then O(1): at most ``SOUND_WORD_MAX`` letters."""
+    w = _NOT_ASCII_LETTER.sub("", word).lower()[:SOUND_WORD_MAX]
     if not w:
         return ""
     w = _SOUND_START.sub("jn", w)
@@ -209,8 +216,10 @@ def sound_key(word: str) -> str:
 
 
 def sound_keys(text: str) -> list[tuple[str, str]]:
-    """(word, sound key) for each run of ASCII letters in ``text``, in order. O(n)."""
-    return [(word, sound_key(word)) for word in _ASCII_LETTERS.findall(text)]
+    """(word, sound key) for each run of ASCII letters in ``text``, in order, but those of a
+    part with a digit (the module docstring). O(n)."""
+    parts = [part for part in _SPACES.split(text) if not _ASCII_DIGIT.search(part)]
+    return [(word, sound_key(word)) for part in parts for word in _ASCII_LETTERS.findall(part)]
 
 
 def languages_without_model(pieces: Sequence[Piece]) -> tuple[str, ...]:

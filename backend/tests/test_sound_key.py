@@ -8,7 +8,7 @@ spellings (ENGINEERING_STANDARDS 3.7, leakage).
 
 import pytest
 
-from kaagaz.chunking.script import SOUND_KEY_MIN, latin_spelling, sound_key, sound_keys
+from kaagaz.chunking.script import SOUND_KEY_MIN, SOUND_WORD_MAX, latin_spelling, sound_key, sound_keys
 from kaagaz.search.hybrid import SOUND_TERMS_MAX, sound_query
 
 # Each group is one word: every spelling, and latin_spelling's of the Devanagari, has the key.
@@ -100,13 +100,27 @@ def test_short_keys_merge_different_words_so_they_are_never_matched() -> None:
     assert sound_query("kar khar khara gav mal") == ""
 
 
-def test_sound_keys_keys_each_run_of_ascii_letters() -> None:
+def test_sound_keys_keys_each_run_of_ascii_letters_but_not_in_a_part_with_a_digit() -> None:
     assert sound_keys("Gaikwad,\ngayakavad. 47 पाटील") == [("Gaikwad", "gikvd"), ("gayakavad", "gikvd")]
+    assert sound_keys("INV-0 gat48 (Rs.450) Patil\tShinde") == [("Patil", "ptil"), ("Shinde", "sinde")]
 
 
-def test_the_sound_query_matches_by_prefix_both_ways_for_words_of_four_letters() -> None:
-    assert sound_query("jaminicha malak kon?") == "jminic:* | mlk:* | kon | jmini | jmin | jmi"
-    assert sound_query("Bhogwatdar") == "bogvtdr:* | bogvtd | bogvt | bogv | bog"
+def test_only_the_first_forty_letters_of_a_word_are_keyed() -> None:
+    assert SOUND_WORD_MAX == 40
+    assert sound_key("b" * 5000) == "b"
+    assert sound_key("ka" * 20 + "patil") == sound_key("ka" * 20) == "k" * 20  # patil is past 40
+    assert sound_key("bhogwatdar" * 4 + "x") == sound_key("bhogwatdar" * 4)
+
+
+def test_the_sound_query_matches_by_prefix_both_ways_for_words_of_five_letters() -> None:
+    assert sound_query("jaminicha malak kon?") == "jminic:* | mlk:* | jmini | jmin"  # kon: a stop word
+    assert sound_query("Bhogwatdar") == "bogvtdr:* | bogvtd | bogvt | bogv"  # starts of 4+ letters
+    assert sound_query("ekun ekar") == "ekun | ekr"  # 4 letters: the whole key only
+
+
+def test_question_words_and_fillers_give_no_sound_term() -> None:
+    assert sound_query("what is the total of my bills kiti ahe kay kar") == "totl:* | bils:*"
+    assert sound_query("kon kiti kuthe the and of") == ""
 
 
 def test_the_sound_query_leaves_out_identifiers_and_anything_but_letters() -> None:

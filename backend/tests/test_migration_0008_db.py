@@ -1,11 +1,12 @@
-"""Migration 0008 (council 3 Oct 2026, PR 2b-1): the sound key function, the stored
-``pieces.tsv_sound`` column and its index.
+"""Migration 0008 (council 3 Oct 2026, PR 2b-1): the sound key function and the stored
+``pieces.tsv_sound`` column.
 
 Up, down and up again on a fresh database (from test_migration_0002_db, a plain
 import): a piece written before the upgrade gets its keys, and the downgrade gives
 back 0007's schema exactly. The function is IMMUTABLE, STRICT, PARALLEL SAFE, runs
-with an empty search_path, keeps PUBLIC's EXECUTE (the worker's inserts run it) and
-carries its comment; so does the column, and the word statement can use the index.
+with an empty search_path and standard_conforming_strings on, keeps PUBLIC's EXECUTE (the
+worker's inserts run it) and carries its comment; so does the column, and the word
+statement reads the stored keys, never the function.
 """
 
 import pytest
@@ -27,7 +28,6 @@ _FUNCTION = text(
     " obj_description(oid, 'pg_proc') FROM pg_proc"
     " WHERE pronamespace = 'public'::regnamespace AND proname = 'kaagaz_sound_key_v1'"
 )
-_INDEX = "CREATE INDEX pieces_sound ON public.pieces USING gin (tsv_sound)"
 _COLUMN = text(
     "SELECT pg_get_expr(d.adbin, d.adrelid), a.attgenerated, col_description(a.attrelid, a.attnum)"
     " FROM pg_attribute a JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum"
@@ -45,12 +45,11 @@ def test_0008_up_down_up(fresh: tuple[str, Database]) -> None:
     customer, _ = new_customer(database)
     (piece,) = add_pieces(database, customer, add_document(database, customer), [("भोगवटादार गायकवाड", None)])
     at_0007 = m0002._schema(database)
-    assert "pieces_sound" not in _indexes(database)
 
     migrate(url, "head")
     assert _current(url) == _head()
     at_head = m0002._schema(database)
-    assert _indexes(database)["pieces_sound"] == _INDEX
+    assert "pieces_sound" not in _indexes(database)  # no index: row level security never uses it
     with database.customer(customer) as conn:
         keys = conn.execute(
             text("SELECT tsv_sound::text FROM pieces WHERE id = :p"), {"p": piece}
@@ -67,7 +66,7 @@ def test_0008_up_down_up(fresh: tuple[str, Database]) -> None:
         "i",
         True,
         "s",
-        '{"search_path=\\"\\""}',
+        '{"search_path=\\"\\"",standard_conforming_strings=on}',
         True,
     )
     assert "kaagaz/chunking/script.py" in comment
@@ -81,34 +80,20 @@ def test_0008_up_down_up(fresh: tuple[str, Database]) -> None:
     assert m0002._schema(database) == at_head
 
 
-def test_the_sound_index_serves_the_sound_arm(fresh: tuple[str, Database]) -> None:
-    """2,000 pieces of one customer, analysed: the sound arm's condition on its own reads
-    pieces_sound, and the word statement as the app role finds the piece.
-
-    At this size the whole word statement reads the customer's pieces by a b-tree and
-    filters them, which is cheap because tsv_sound is stored. The plan is the owner's,
-    with the customer set: under row level security PostgreSQL never uses a GIN index
-    for ``@@`` (it is not LEAKPROOF, so it may not run before the policy), the same for
-    pieces_tsv and pieces_tsv_simple. EXPLAIN reads no rows."""
-    url, database = fresh
-    migrate(url, "head")
-    customer, _ = new_customer(database)
-    document = add_document(database, customer)
-    pieces = [(f"Rent paid for August, receipt {n}", None) for n in range(2000)]
-    (wanted, *_) = add_pieces(database, customer, document, [("भोगवटादार रामचंद्र", None), *pieces])
-    # Only the table owner may ANALYZE (the app role may not); it reads no rows into the test.
-    with database.engine.begin() as conn:
-        conn.execute(text("ANALYZE pieces, documents"))
-    arm = text(
-        "EXPLAIN SELECT p.id FROM pieces p WHERE p.customer_id = :c"
-        " AND p.tsv_sound @@ to_tsquery('simple', :sk)"
+def test_the_word_statement_reads_the_stored_keys(db: Database) -> None:
+    """As the app role, the word statement tests ``tsv_sound`` and never runs the
+    function: the keys were stored when the piece was written."""
+    customer, _ = new_customer(db)
+    (wanted, _) = add_pieces(
+        db, customer, add_document(db, customer), [("भोगवटादार रामचंद्र", None), ("Rent", None)]
     )
-    with database.engine.begin() as conn:
-        conn.execute(text("SELECT set_config('kaagaz.customer_id', :c, true)"), {"c": customer})
-        plan = "\n".join(conn.execute(arm, {"c": customer, "sk": "bogvtdr"}).scalars())
     words = {"c": customer, "q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query("bhogwatdar"), "n": 50}
-    with database.customer(customer) as conn:
+    with db.customer(customer) as conn:
+        plan = "\n".join(
+            conn.execute(text("EXPLAIN VERBOSE " + hybrid._WORD.text), words | EVERYTHING.params()).scalars()
+        )
         found = conn.execute(hybrid._WORD, words | EVERYTHING.params()).all()
 
-    assert "Bitmap Index Scan on pieces_sound" in plan
+    assert "tsv_sound @@" in plan
+    assert "kaagaz_sound_key_v1" not in plan
     assert [str(row[0]) for row in found] == [wanted]
