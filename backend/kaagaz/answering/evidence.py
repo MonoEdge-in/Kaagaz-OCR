@@ -31,6 +31,12 @@ review. The typo score of a mostly Devanagari best piece is no shortcut: it is
 the score of its Latin spelling, which a Romanised question nears by filler
 alone ("malak ahe" against a bank letter ending "... ahe" is 0.40).
 
+My words (council 3 Oct 2026, A3, PROVISIONAL): last, a keyword that stands for one of
+the asking user's own words counts when what it was searched as is in the evidence
+(``Expansion.found``), but only when another keyword is there as written, a whole word
+(``as_written``): a user's word alone never passes. Such a pass is ``"personal"``,
+capped like the others.
+
 PROVISIONAL, a change from the spec's "word score or meaning score": the word
 score is PostgreSQL's raw ``ts_rank_cd``, which is small and unbounded (about
 0.1 for an exact "INV-1042", 0.033 for "invoice grand total"), so it cannot
@@ -75,6 +81,7 @@ from decimal import Decimal
 from typing import Any, Literal, Protocol
 
 from kaagaz.answering import glossary
+from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.sanitize import strip_ignorable
 from kaagaz.chunking.script import ascii_digits, is_devanagari
 from kaagaz.db.engine import Database
@@ -84,10 +91,12 @@ from kaagaz.search.scope import Scope
 
 CLOSEST_DOCUMENTS = 3
 
-# How the gate passed: a score, the English keywords, or only with the glossary's help.
-Gate = Literal["score", "keywords", "glossary", "sound"]
-# The passes the service caps at needs review: only an equivalent or a sound let them through.
-CAPPED: frozenset[Gate] = frozenset({"glossary", "sound"})
+# How the gate passed: a score, the English keywords, or only with the glossary's, a
+# sound's or the user's own words' help.
+Gate = Literal["score", "keywords", "glossary", "sound", "personal"]
+# The passes the service caps at needs review: only an equivalent, a sound or a user's word
+# let them through.
+CAPPED: frozenset[Gate] = frozenset({"glossary", "sound", "personal"})
 _DIGIT = re.compile("[0-9]")
 _LETTER = re.compile("[a-z]")
 # Whole tokens (has_token), on text folded by _fold: NFKC, and the hyphens (U+2010, U+2011),
@@ -182,8 +191,16 @@ class Hit(Protocol):
 
 class Retriever(Protocol):
     def search(
-        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
-    ) -> Sequence[Hit]: ...
+        self,
+        customer_id: str,
+        text: str,
+        embedding: list[float] | None,
+        limit: int,
+        scope: Scope,
+        expansion: Expansion = NO_EXPANSION,
+    ) -> Sequence[Hit]:
+        """``expansion``: the asking user's words the question used (OR alternatives only)."""
+        ...
 
     def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
         """Q4: the pieces next to ``hits`` in ``scope``, each once, never one of them."""
@@ -204,7 +221,13 @@ class PgRetriever:
         self._neighbours = neighbours
 
     def search(
-        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
+        self,
+        customer_id: str,
+        text: str,
+        embedding: list[float] | None,
+        limit: int,
+        scope: Scope,
+        expansion: Expansion = NO_EXPANSION,
     ) -> Sequence[Hit]:
         # Imported here so the answering rules (and their tests) do not need the
         # search module; only the real retriever does.
@@ -220,6 +243,7 @@ class PgRetriever:
                 recipe=self._recipe,
                 ef_search=self._ef_search,
                 scope=scope,
+                expansion=expansion,
             )
 
     def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
@@ -258,10 +282,12 @@ def enough_evidence(
     keywords: Sequence[str],
     min_score: float,
     numbers: Sequence[str] | None = None,
+    expansion: Expansion = NO_EXPANSION,
 ) -> Gate | None:
     """The evidence gate (see the module docstring): how it passed, or None. ``numbers``: the
     question's own numbers and ids (``numbers_asked``); None takes the keywords with a digit.
-    O(k * t) for k keywords over t characters of evidence."""
+    ``expansion``: the asking user's words the question used. O(k * t) for k keywords over
+    t characters of evidence."""
     if not evidence:
         return None
     wanted = list(dict.fromkeys(ascii_digits(keyword).casefold() for keyword in keywords))
@@ -288,12 +314,17 @@ def enough_evidence(
     if sum(glossed) * 2 >= len(wanted):
         return "glossary"
     words = glossary.sound_words(haystack)
-    heard = sum(
-        1
-        for keyword, found in zip(wanted, glossed, strict=True)
-        if found or glossary.sounds_like(keyword, words)
-    )
-    return "sound" if heard * 2 >= len(wanted) else None
+    heard = [
+        found or glossary.sounds_like(keyword, words) for keyword, found in zip(wanted, glossed, strict=True)
+    ]
+    if sum(heard) * 2 >= len(wanted):
+        return "sound"
+    if not expansion.used or not any(
+        as_written(keyword, haystack) for keyword in wanted if not expansion.asks(keyword)
+    ):
+        return None
+    mine = [found or expansion.found(keyword, haystack) for keyword, found in zip(wanted, heard, strict=True)]
+    return "personal" if sum(mine) * 2 >= len(wanted) else None
 
 
 def numbers_asked(question: str, keywords: Sequence[str]) -> list[str]:
@@ -329,6 +360,24 @@ def has_token(keyword: str, folded: str) -> bool:
         token == keyword or (value is not None and _value(token) == value)
         for token in _NUMBER_TOKEN.findall(folded)
     )
+
+
+def as_written(keyword: str, folded: str) -> bool:
+    """``keyword`` is in ``folded`` as written and whole: one with a digit by ``has_token``,
+    any other with no letter, mark or digit right before or after it. O(t)."""
+    if _DIGIT.search(keyword):
+        return has_token(keyword, folded)
+    start = folded.find(keyword)
+    while keyword and start >= 0:
+        end = start + len(keyword)
+        if not (_wordish(folded, start - 1) or _wordish(folded, end)):
+            return True
+        start = folded.find(keyword, start + 1)
+    return False
+
+
+def _wordish(text: str, index: int) -> bool:
+    return 0 <= index < len(text) and unicodedata.category(text[index])[0] in "LMN"
 
 
 def _fold(text: str) -> str:

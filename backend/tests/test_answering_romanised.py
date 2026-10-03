@@ -158,7 +158,7 @@ def test_near_spellings_of_other_words_are_not_found(question: str, text: str) -
 
 def test_every_gate_value_is_capped_or_a_check_of_its_own() -> None:
     assert frozenset(typing.get_args(Gate)) == CAPPED | {"score", "keywords"}
-    assert {"glossary", "sound"} == CAPPED
+    assert {"glossary", "sound", "personal"} == CAPPED
 
 
 @pytest.mark.parametrize("passed", typing.get_args(Gate))

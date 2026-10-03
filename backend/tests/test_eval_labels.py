@@ -26,6 +26,7 @@ from kaagaz import pipeline
 from kaagaz.ai.client import ModelUnavailable
 from kaagaz.answering.draft import DraftSentence
 from kaagaz.answering.evidence import Hit, PgRetriever
+from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.service import AnswerService
 from kaagaz.answering.verify import verify
 from kaagaz.db.engine import Database
@@ -301,9 +302,15 @@ class RecordingRetriever(PgRetriever):
     last: Sequence[Hit] = ()
 
     def search(
-        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
+        self,
+        customer_id: str,
+        text: str,
+        embedding: list[float] | None,
+        limit: int,
+        scope: Scope,
+        expansion: Expansion = NO_EXPANSION,
     ) -> Sequence[Hit]:
-        self.last = super().search(customer_id, text, embedding, limit, scope)
+        self.last = super().search(customer_id, text, embedding, limit, scope, expansion)
         return self.last
 
 

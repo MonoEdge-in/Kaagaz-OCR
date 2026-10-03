@@ -137,7 +137,7 @@ class FakeAnswers:
     scopes: list[Scope] = field(default_factory=list)
 
     def answer(
-        self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn]
+        self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn], user_id: str
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
         self.scopes.append(scope)
