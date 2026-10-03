@@ -5,15 +5,13 @@
 // that version's own id), the page viewer and the values table (side by side
 // from 1024 px, stacked below). A newer version still being read, or one that
 // failed, gets a line linking to it. A document in Trash says so. A reviewer
-// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1), and anyone can
-// "Ask about this document" in chat (PRD 3 H2). While it is checked or read,
-// on load too, its summary is asked for again (lib/poll.ts); once it settles,
-// the whole detail is asked for once, and the screen says what was found.
-// Clicking a value jumps to its page and highlights its spot. Every value is
-// shown as plain text; it came from the document. Beside the page: the
-// document card, related documents and the invoice (DocumentPanels.tsx,
-// PRD 3 Y1 to Y3); a low-resolution page says so above it (Y4). Scanned text:
-// see ScannedTextPanel.tsx.
+// or an admin can have it read again (ReadAgain.tsx, PRD 2 X1). While it is
+// checked or read, on load too, its summary is asked for again (lib/poll.ts);
+// once it settles, the whole detail is asked for once, and the screen says
+// what was found. Clicking a value jumps to its page and highlights its spot.
+// Every value is shown as plain text; it came from the document. Beside the
+// page: the document card, related documents and the invoice
+// (DocumentPanels.tsx, PRD 3 Y1 to Y3); a low-resolution page says so above it (Y4).
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";

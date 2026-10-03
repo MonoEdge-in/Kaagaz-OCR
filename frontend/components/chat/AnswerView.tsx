@@ -51,8 +51,6 @@ export function AnswerView({ message, question }: { message: Message; question: 
   }
 
   const reading = questionReading(question, answer);
-  // My words chat used (A3 sends understood_words; nothing shows before it). Text only.
-  const notes = understoodNotes(answer);
   const understood = (
     <>
       {reading.searchingFor ? (
@@ -60,11 +58,6 @@ export function AnswerView({ message, question }: { message: Message; question: 
       ) : null}
       {reading.understoodAs ? (
         <p className={styles.understood}>Understood as: {reading.understoodAs}</p>
-      ) : null}
-      {notes.length > 0 ? (
-        <p className={styles.understood}>
-          {notes.join(". ")}. <Link href="/words">My words</Link>
-        </p>
       ) : null}
     </>
   );

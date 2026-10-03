@@ -21,7 +21,6 @@ import type {
   Folder,
   Me,
   MyWord,
-  PageReadings,
   PasswordReset,
   ReviewChoice,
   ReviewItem,
