@@ -14,6 +14,8 @@ from kaagaz.answering.rewrite import guard
 QUESTIONS = (
     "Who is the owner of the land?",
     "Who owns gat number 48?",
+    "What is the total tax on invoice INV-1042?",
+    "What is the bank account balance?",
     "Kiska profit sabse jyada tha last month?",
     "भोगवटादार कोण आहे?",
 )
@@ -100,6 +102,20 @@ EXPECTED = [
     (NormalisedQuestion("who is owner of land", ["owner", "land"], False), None, None, None),
     (
         NormalisedQuestion("who owns gat number 48", ["owns", "gat", "number", "48"], False),
+        None,
+        None,
+        "rewrite_adds_facts",
+    ),
+    (
+        NormalisedQuestion(
+            "what is total tax on invoice inv-1042", ["total", "tax", "invoice", "inv-1042"], False
+        ),
+        None,
+        None,
+        "rewrite_adds_facts",
+    ),
+    (
+        NormalisedQuestion("what is bank account balance", ["bank", "account", "balance"], False),
         None,
         None,
         "rewrite_adds_facts",

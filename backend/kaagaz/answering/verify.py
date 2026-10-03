@@ -61,11 +61,12 @@ dropped outright when it holds what cannot be checked:
 
 In the evidence, such tokens are simply not atoms.
 
-3. Every Devanagari word in it (two or more letters and marks, NFC, ignorable
-   code points removed) is a word of its cited evidence: a name may be quoted,
-   never respelled or invented (council 2 Oct 2026, PR2; ``missing_word``).
-   Only the closed ``FUNCTION_WORDS`` (है, आहे, आणि, और, का, चा...) may be
-   added; no negation (नहीं, नाही, न, नका, नये, नव्हे), या or किंवा is one.
+3. Every Devanagari word in it (letters and marks, NFC, ignorable code points
+   removed), however short, is a word of its cited evidence: a name may be
+   quoted, never respelled or invented, and न ("not") never added (council
+   2 Oct 2026, PR2; ``missing_word``). Only the closed ``FUNCTION_WORDS`` (है,
+   आहे, आणि, और, का, चा, व...) may be added; no negation (नहीं, नाही, न, नका,
+   नये, नव्हे), या, किंवा or की ("or" in Marathi; PROVISIONAL) is one.
 
 ``unchecked_cross_script``: a kept sentence citing Devanagari evidence that
 quotes none of its words ("The owner is Ram Patil", or "The owner of gat 47
@@ -150,7 +151,8 @@ _DIGIT = re.compile("[0-9]")
 # Devanagari letters and marks: the block less the danda, the digits and the abbreviation sign.
 _DEVANAGARI_WORD = re.compile(r"[ऀ-ॣॱ-ॿ]+")
 # Whole NFC words a sentence may add (the module docstring): never a negation, या or किंवा.
-FUNCTION_WORDS = frozenset({"है", "हैं", "आहे", "आहेत", "आणि", "और", "का", "की", "के", "चा", "ची", "चे"})
+# PROVISIONAL (Vrushit decides): की is left out, because in Marathi it means "or".
+FUNCTION_WORDS = frozenset({"है", "हैं", "आहे", "आहेत", "आणि", "और", "का", "के", "चा", "ची", "चे", "व"})
 
 # What a sentence cannot hold (the module docstring).
 _SPLIT_AMOUNT = re.compile(_CURRENCY + r"\s*-?\s*\d[\d,]*(?:\.\d+)?\s+\d")
@@ -262,13 +264,14 @@ def unchecked_cross_script(sentence: DraftSentence, evidence_text: Mapping[int, 
     it (the module docstring). A number does not count: "The owner of gat 47 is Sita
     Deshmukh" over गट क्रमांक ४७ checks the 47, never the name. O(s + e)."""
     cited = [evidence_text[n] for n in sentence.evidence if n in evidence_text]
-    return any(has_devanagari_letters(text) for text in cited) and not _quoted(sentence.text)
+    quoted = any(len(word) >= 2 for word in _quoted(sentence.text))  # one letter is no quote
+    return any(has_devanagari_letters(text) for text in cited) and not quoted
 
 
 def _quoted(text: str) -> set[str]:
-    """The Devanagari words of a sentence that must be in its evidence: two or more letters
-    and marks, and not one of the FUNCTION_WORDS. O(n)."""
-    return {word for word in devanagari_words(text) if len(word) >= 2 and word not in FUNCTION_WORDS}
+    """The Devanagari words of a sentence that must be in its evidence: every one, however
+    short (न is "not"), but the FUNCTION_WORDS. O(n)."""
+    return devanagari_words(text) - FUNCTION_WORDS
 
 
 def devanagari_words(text: str) -> set[str]:
