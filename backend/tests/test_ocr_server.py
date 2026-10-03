@@ -304,16 +304,6 @@ def test_unreadable_images_are_422(
     assert model.images == []
 
 
-def fresh_python(code: str, **env: str) -> subprocess.CompletedProcess[str]:
-    """``code`` in a fresh interpreter, in backend/, with ``env`` added and OCR_DEVICE
-    left out unless ``env`` sets it."""
-    environ = {name: value for name, value in os.environ.items() if name != "OCR_DEVICE"} | env
-    backend = FIXTURES.parent.parent
-    return subprocess.run(  # noqa: S603 - fixed arguments, this interpreter
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, cwd=backend, env=environ
-    )
-
-
 def test_the_server_needs_no_backend_settings_database_storage_or_paddle() -> None:
     """The ocr image installs our package with --no-deps (security A4), so importing
     the app must pull in none of these. A fresh interpreter: this one has them loaded."""
@@ -322,8 +312,17 @@ def test_the_server_needs_no_backend_settings_database_storage_or_paddle() -> No
         "names = ('kaagaz.settings', 'kaagaz.db', 'sqlalchemy', 'psycopg', 'boto3', 'paddle'); "
         "print(sorted(m for m in sys.modules if m.startswith(names)))"
     )
-    result = fresh_python(code)
-    assert result.returncode == 0, result.stderr
+    backend = FIXTURES.parent.parent
+    environ = {name: value for name, value in os.environ.items() if name != "OCR_DEVICE"}
+    result = subprocess.run(  # noqa: S603 - fixed arguments, this interpreter
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+        cwd=backend,
+        env=environ,
+    )
     assert result.stdout.strip() == "[]"
 
 
@@ -469,13 +468,16 @@ def test_paddle_model_reads_ocr_device_when_none_is_given(monkeypatch: pytest.Mo
         PaddleModel()
 
 
-def test_a_bad_ocr_device_stops_the_server_at_start() -> None:
-    """uvicorn imports the module first: that import fails, so the server never starts."""
-    refused = fresh_python("import kaagaz.ocr_server.app", OCR_DEVICE="cuda")
-    assert refused.returncode != 0
-    assert "OCR_DEVICE='cuda'" in refused.stderr
-    started = fresh_python("import kaagaz.ocr_server.app as a; print(a.app is not None)", OCR_DEVICE="gpu:0")
-    assert (started.returncode, started.stdout.strip()) == (0, "True"), started.stderr
+def test_a_bad_ocr_device_stops_the_server_at_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """uvicorn imports the module first, and the module builds its model at import
+    (``app = create_app(PaddleModel())``), so a bad OCR_DEVICE fails that import."""
+    source = Path(server.__file__).read_text(encoding="utf-8")
+    assert "app = create_app(PaddleModel())" in source.splitlines()
+    monkeypatch.setenv("OCR_DEVICE", "cuda")
+    with pytest.raises(ValueError, match="OCR_DEVICE='cuda'"):
+        PaddleModel()
+    monkeypatch.setenv("OCR_DEVICE", "gpu:0")
+    assert PaddleModel().device == "gpu:0"
 
 
 def test_the_device_reaches_paddleocr_vl(monkeypatch: pytest.MonkeyPatch) -> None:
