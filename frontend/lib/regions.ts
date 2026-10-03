@@ -227,10 +227,19 @@ export function decodeRegion(text: string | null | undefined): Region | null {
   return null;
 }
 
-/** The document page link that source cards and review items open. */
-export function pageLink(documentId: string, pageNo: number, region?: Region): string {
+/**
+ * The document page link that source cards and review items open. `scanned`
+ * opens the page's Scanned text panel too (?scanned=1).
+ */
+export function pageLink(
+  documentId: string,
+  pageNo: number,
+  region?: Region,
+  options: { scanned?: boolean } = {},
+): string {
   const params = new URLSearchParams({ page: String(pageNo) });
   if (region) params.set("region", encodeRegion(region));
+  if (options.scanned) params.set("scanned", "1");
   return `/documents/${encodeURIComponent(documentId)}?${params.toString()}`;
 }
 

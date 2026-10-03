@@ -42,6 +42,7 @@ export function ActionDialog({ title, onClose, onClosed, children }: ActionDialo
     <dialog
       ref={dialogRef}
       className={styles.dialog}
+      aria-modal="true"
       aria-labelledby={titleId}
       onCancel={(event) => {
         // Esc: let the caller's state close it, so the two never disagree.
