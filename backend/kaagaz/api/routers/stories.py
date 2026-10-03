@@ -29,11 +29,22 @@ Why some choices:
   ``session_changed``, as for uploads.
 * Audit rows (``document_story.saved``, ``document_story.deleted``) hold ids
   only; the story is never logged, audited or put in an error.
-* **Story matches** (S3): ``GET /api/me/story-matches?q=`` with the chat's
-  scope, which the chat screen calls beside ``POST /api/chat``, never through
-  it: a story never reaches an answer, a message or a prompt. The question is
-  embedded only while the meaning threshold is calibrated (OFF today), so it
-  makes no model call. The reply holds ids, names and bands only.
+* **Story matches** (S3): ``POST /api/me/story-matches`` with a JSON body (the
+  question, the chat's scope, ``limit`` 1 to 10 and ``mode``: "cards" beside a
+  chat answer, "stories" for "Search my stories"), which the chat screen calls
+  beside ``POST /api/chat`` or instead of it, never through it: a story never
+  reaches an answer, a message or a prompt, and the call saves nothing. POST,
+  not GET, so what a user remembers of a story never sits in a URL that edge or
+  proxy logs keep (council 3 Oct 2026, "story search mode"); the old ``GET
+  ?q=`` still answers the same way, with 3 side cards. The question is embedded
+  only while the meaning threshold is calibrated (OFF today), so it makes no
+  model call. The reply holds ids, names and bands, how many stories were read
+  (``searched``) and whether that was all (``all``); a question with no content
+  word is ``[]`` with ``reason: "no_content_words"`` before any SQL.
+* **Load** (PROVISIONAL): ranking is CPU work on the API process, so story
+  matches have their own limit, STORY_MATCHES_PER_MINUTE a user (429 with
+  Retry-After, beside the site-wide one), and at most RANKING_AT_ONCE run at a
+  time in the process: one more is 503 at once, never a queue.
 """
 
 import logging
@@ -52,13 +63,15 @@ from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers.documents import _same_user
 from kaagaz.db import audit, listing, trash
 from kaagaz.db import document_stories as stories_sql
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.indexing import embed_question
 from kaagaz.search.scope import ScopeBody, resolve
-from kaagaz.search.story_search import find_story_matches, meaning_threshold, story_matches_json
+from kaagaz.search.story_match import MATCHES_MAX, MOST_MAX, Mode, question_words
+from kaagaz.search.story_search import meaning_threshold, search_stories, story_matches_json
 from kaagaz.search.story_vectors import embed_story
 
 router = APIRouter()
@@ -76,6 +89,12 @@ EMBED_WAIT_SECONDS = 5.0
 EMBEDS_AT_ONCE = 4
 _embeds = ThreadPoolExecutor(max_workers=EMBEDS_AT_ONCE, thread_name_prefix="story-embed")
 _embed_slots = threading.BoundedSemaphore(EMBEDS_AT_ONCE)
+# PROVISIONAL (council 3 Oct 2026): story matches a user may ask a minute, and
+# rankings at once in this process.
+STORY_MATCHES_PER_MINUTE = 20
+RANKING_AT_ONCE = 2
+story_limits = RateLimiter(STORY_MATCHES_PER_MINUTE)
+ranking_slots = threading.BoundedSemaphore(RANKING_AT_ONCE)
 _TEXT = {
     "empty": "Write the story first.",
     "too_long": f"A story can be at most {stories_sql.STORY_MAX} characters.",
@@ -92,6 +111,11 @@ class StoryBody(BaseModel):
 
 class StoryMatchParams(ScopeBody):
     q: str = Field(min_length=1, max_length=1000)  # a chat question's limit
+
+
+class StoryMatchBody(StoryMatchParams):
+    limit: int = Field(default=MATCHES_MAX, ge=1, le=MOST_MAX, strict=True)
+    mode: Mode = "cards"
 
 
 def _same_tab(user_id: str | None, user: CurrentUser) -> None:
@@ -230,28 +254,44 @@ def delete_my_story(
 
 
 @router.get("/me/story-matches")
-def my_story_matches(
+def get_my_story_matches(
     params: Annotated[StoryMatchParams, Query()], user: User, context: Context
 ) -> dict[str, Any]:
-    """``{story_matches: [{document_id, display_name, doc_type, band}]}`` for ``q`` in the
-    scope. Two short transactions: the scope as the customer, the stories as the user."""
-    question = params.q.strip()
-    if not question:
-        return {"story_matches": []}
+    """The first form, kept: 3 side cards for ``q`` (``my_story_matches``)."""
+    return my_story_matches(StoryMatchBody.model_validate(params.model_dump()), user, context)
+
+
+@router.post("/me/story-matches")
+def my_story_matches(body: StoryMatchBody, user: User, context: Context) -> dict[str, Any]:
+    """``{story_matches: [{document_id, display_name, doc_type, band}], searched, all}``
+    for ``q`` in the scope. Two short transactions: the scope as the customer, the
+    stories as the user. Writes nothing."""
+    if not story_limits.allow(user.user_id):
+        raise ApiError(429, "rate_limited", headers={"Retry-After": "60"})
+    question = body.q.strip()
+    if not question_words(question):
+        return {"story_matches": [], "searched": 0, "all": True, "reason": "no_content_words"}
     settings = context.settings
     with context.db.customer(user.customer_id) as conn:
-        scope = resolve(conn, user.customer_id, params, timezone=settings.timezone)
+        scope = resolve(conn, user.customer_id, body, timezone=settings.timezone)
     if scope.matches_nothing:
-        return {"story_matches": []}
+        return {"story_matches": [], "searched": 0, "all": True}
     on = meaning_threshold(settings.model_embed) is not None
     embedding = embed_question(context.model, question) if on else None
-    found = find_story_matches(
-        context.db,
-        customer_id=user.customer_id,
-        user_id=user.user_id,
-        question=question,
-        embedding=embedding,
-        model_embed=settings.model_embed,
-        scope=scope,
-    )
-    return {"story_matches": story_matches_json(found)}
+    if not ranking_slots.acquire(blocking=False):
+        raise ApiError(503, "backend_unavailable")
+    try:
+        found = search_stories(
+            context.db,
+            customer_id=user.customer_id,
+            user_id=user.user_id,
+            question=question,
+            embedding=embedding,
+            model_embed=settings.model_embed,
+            scope=scope,
+            mode=body.mode,
+            most=body.limit,
+        )
+    finally:
+        ranking_slots.release()
+    return {"story_matches": story_matches_json(found.matches), "searched": found.searched, "all": found.all}

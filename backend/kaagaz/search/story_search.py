@@ -1,7 +1,9 @@
 """Story matches over the signed-in user's own stories (Story of this PDF, S3, PROVISIONAL).
 
-``find_story_matches`` reads them in one statement (``read_stories``) in a short
-``Database.user`` transaction, then ranks them after it (``story_match``). The
+``search_stories`` reads them in one statement (``read_stories``) in a short
+``Database.user`` transaction, then ranks them after it (``story_match``), and
+says how many it read (``searched``) and whether that was every story (``all``:
+false past ``SCAN_MOST``); ``find_story_matches`` is its side-card form. The
 RESTRICTIVE ``own_user_only`` policy hides every other user's story, and the
 statement names the customer and user too (two locks). Only a family whose current
 version is ready, out of Trash (``LIVE_CURRENT``) and in the scope counts; the match
@@ -13,7 +15,8 @@ The question and the stories are never logged; a match holds ids, a name and a b
 
 ponytail: an exact scan of the user's ``SCAN_MOST`` most recently changed stories
 (written by hand; no index, council). Upgrade: a word or trigram prefilter in SQL.
-Time: O(S log S) for S stories in SQL, then ``rank``'s O(T + V * W).
+Time: O(S log S) for S stories in SQL, then ``rank``'s O(T + V * W + S log S).
+Space: the S <= SCAN_MOST + 1 rows read, O(T).
 """
 
 import dataclasses
@@ -27,7 +30,7 @@ from kaagaz.db.engine import Database
 from kaagaz.search import story_match
 from kaagaz.search.hybrid import vector_literal
 from kaagaz.search.scope import EVERYTHING, Scope
-from kaagaz.search.story_match import Candidate, StoryMatch
+from kaagaz.search.story_match import Candidate, Mode, StoryMatch
 
 SCAN_MOST = 500  # stories read per request, most recently changed first (PROVISIONAL)
 
@@ -69,8 +72,9 @@ def read_stories(
     recipe: str | None,
     embedding: list[float] | None,
     scope: Scope = EVERYTHING,
+    most: int = SCAN_MOST,
 ) -> list[Candidate]:
-    """The user's stories that count, newest change first, at most ``SCAN_MOST``, with
+    """The user's stories that count, newest change first, at most ``most``, with
     their cosine when ``recipe`` and ``embedding`` are given. ``conn`` comes from
     ``Database.user(customer_id, user_id)``. One statement."""
     params = {
@@ -78,12 +82,60 @@ def read_stories(
         "me": user_id,
         "recipe": None if embedding is None else recipe,
         "vec": None if recipe is None or embedding is None else vector_literal(embedding),
-        "n": SCAN_MOST,
+        "n": most,
     }
     rows = conn.execute(_STORIES, params | scope.params()).all()
     # A zero vector has no direction: its NaN cosine says nothing.
     cosines = [None if row[4] is None or not math.isfinite(row[4]) else float(row[4]) for row in rows]
     return [Candidate(str(r[0]), str(r[1]), r[2], str(r[3]), m) for r, m in zip(rows, cosines, strict=True)]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class StorySearch:
+    """The matches, how many stories were read, and whether that was all of them."""
+
+    matches: list[StoryMatch]
+    searched: int
+    all: bool
+
+
+def search_stories(
+    db: Database,
+    *,
+    customer_id: str,
+    user_id: str,
+    question: str,
+    embedding: list[float] | None,
+    model_embed: str,
+    scope: Scope = EVERYTHING,
+    mode: Mode = "cards",
+    most: int = story_match.MATCHES_MAX,
+) -> StorySearch:
+    """At most ``most`` of this user's documents whose story the question tells again,
+    best first (story_match's rules). The rows are read in one short
+    ``Database.user`` transaction and ranked after it has ended, so the matching's CPU
+    never holds a connection. Nothing before any SQL for a scope that matches nothing,
+    or a question with no content word while meaning is off."""
+    if scope.matches_nothing:
+        return StorySearch([], 0, True)
+    words = story_match.question_words(question)
+    threshold = meaning_threshold(model_embed) if embedding is not None else None
+    if not words and threshold is None:
+        return StorySearch([], 0, True)
+    recipe = None if threshold is None else recipe_tag(model_embed)
+    with db.user(customer_id, user_id) as conn:
+        stories = read_stories(
+            conn,
+            customer_id=customer_id,
+            user_id=user_id,
+            recipe=recipe,
+            embedding=embedding,
+            scope=scope,
+            most=SCAN_MOST + 1,  # one more says whether there were more
+        )
+    read = stories[:SCAN_MOST]
+    found = story_match.rank(words, read, threshold=threshold, mode=mode, most=most)
+    return StorySearch(found, len(read), len(stories) <= SCAN_MOST)
 
 
 def find_story_matches(
@@ -96,23 +148,16 @@ def find_story_matches(
     model_embed: str,
     scope: Scope = EVERYTHING,
 ) -> list[StoryMatch]:
-    """At most ``MATCHES_MAX`` of this user's documents whose story the question tells
-    again, best first (story_match's rules). The rows are read in one short
-    ``Database.user`` transaction and ranked after it has ended, so the matching's CPU
-    never holds a connection. Nothing before any SQL for a scope that matches nothing,
-    or a question with no content word while meaning is off."""
-    if scope.matches_nothing:
-        return []
-    words = story_match.question_words(question)
-    threshold = meaning_threshold(model_embed) if embedding is not None else None
-    if not words and threshold is None:
-        return []
-    recipe = None if threshold is None else recipe_tag(model_embed)
-    with db.user(customer_id, user_id) as conn:
-        stories = read_stories(
-            conn, customer_id=customer_id, user_id=user_id, recipe=recipe, embedding=embedding, scope=scope
-        )
-    return story_match.rank(words, stories, threshold=threshold)
+    """The side cards: at most ``MATCHES_MAX`` matches (``search_stories``)."""
+    return search_stories(
+        db,
+        customer_id=customer_id,
+        user_id=user_id,
+        question=question,
+        embedding=embedding,
+        model_embed=model_embed,
+        scope=scope,
+    ).matches
 
 
 def story_matches_json(found: list[StoryMatch]) -> list[dict[str, Any]]:

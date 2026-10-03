@@ -76,13 +76,20 @@ class ApiError(Exception):
     """Raise anywhere in a route or dependency to send an error reply."""
 
     def __init__(
-        self, status: int, code: str, message: str | None = None, *, details: Mapping[str, Any] | None = None
+        self,
+        status: int,
+        code: str,
+        message: str | None = None,
+        *,
+        details: Mapping[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(code)
         self.status = status
         self.code = code
         self.message = message or MESSAGES.get(code, MESSAGES["bad_request"])
         self.details = details
+        self.headers = headers  # e.g. a 429's Retry-After
 
 
 def bad_credentials(lock_minutes: int) -> ApiError:
@@ -108,7 +115,7 @@ def error_response(
 async def _api_error(request: Request, exc: Exception) -> Response:
     if not isinstance(exc, ApiError):
         raise TypeError("registered for ApiError only")
-    return error_response(exc.status, exc.code, exc.message, details=exc.details)
+    return error_response(exc.status, exc.code, exc.message, headers=exc.headers, details=exc.details)
 
 
 async def _validation_error(request: Request, exc: Exception) -> Response:
