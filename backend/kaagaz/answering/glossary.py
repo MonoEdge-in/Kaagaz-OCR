@@ -24,9 +24,11 @@ to an ``EQUIVALENTS`` key, so a typed word reuses that key's Devanagari words.
 key, then the longest Romanised key of ``PREFIX_MIN`` letters or more that the
 word's key starts with ("jaminicha" is jamin, land). Every Romanised key has 3
 letters or more; kar ("do" in Hindi, "tax" in Marathi) and kul ("total" in
-hinglish.py, "tenant" in Marathi) are never keys, nor the six keys two different
-words share (``MERGED_KEYS``: varas and varsha are both vrs). Invariants in
-tests/test_answering_romanised.py.
+hinglish.py, "tenant" in Marathi) are never keys, nor the six known merges of
+different words (varas and varsha are both vrs). A key another common word shares
+(bki: bakaya and baki; bde: bhade and bade; brn: bharna and baran) is in
+``MERGED_KEYS`` too, so only the listed spelling stands for its concept. Invariants
+in tests/test_answering_romanised.py.
 
 ``ROMANISED_STOP`` (question words and fillers: ahe, kiti, madhe...) are left out
 of the keywords by ``content_words`` too, never by ``normalise``.
@@ -35,6 +37,7 @@ of the keywords by ``content_words`` too, never by ``normalise``.
 Latin spelling) when their sound keys are equal, or, for a word typed with 4
 letters or more, one key starts with the other; a key under 3 letters, or one
 of ``MERGED_KEYS``, needs the Latin spelling exactly. Never for a GENERIC word.
+``strict`` (the answer check) allows equal keys only.
 
 Time: ``equivalents`` and ``concept`` O(r) for r Romanised keys; ``present`` O(t)
 for t characters; ``word_query`` O(k) for k keywords; ``sound_words`` O(t);
@@ -173,8 +176,10 @@ _ROMANISED_SPELLINGS: dict[str, str] = {
 }
 ROMANISED: dict[str, str] = {sound_key(spelling): key for spelling, key in _ROMANISED_SPELLINGS.items()}
 _BY_LENGTH = sorted((key for key in ROMANISED if len(key) >= PREFIX_MIN), key=len, reverse=True)
-# The keys of the six known merges of different words (kaagaz/chunking/script.py).
-MERGED_KEYS = frozenset({"bti", "hti", "sti", "bor", "vrs", "rsid"})
+# Keys of different words: the six known merges (kaagaz/chunking/script.py), and three a
+# Romanised key shares with another word (baki and bakaya, bade and bhade, baran and bharna).
+# Each needs its exact spelling, in concept and in sounds_like.
+MERGED_KEYS = frozenset({"bti", "hti", "sti", "bor", "vrs", "rsid", "bki", "bde", "brn"})
 
 
 def content_words(keywords: Sequence[str]) -> list[str]:
@@ -187,9 +192,14 @@ def concept(keyword: str) -> str | None:
     if keyword in EQUIVALENTS:
         return keyword
     key = sound_key(keyword)
-    if key in ROMANISED:
+    if key in ROMANISED and (key not in MERGED_KEYS or keyword in _ROMANISED_SPELLINGS):
         return ROMANISED[key]
     return next((ROMANISED[start] for start in _BY_LENGTH if key.startswith(start)), None)
+
+
+def is_romanised(keyword: str) -> bool:
+    """True for a keyword that stands for an English key without being one (malak). O(r)."""
+    return keyword not in EQUIVALENTS and concept(keyword) is not None
 
 
 def equivalents(keyword: str) -> tuple[str, ...]:
@@ -220,9 +230,10 @@ def sound_words(text: str) -> list[tuple[str, str]]:
     return sound_keys(latin_spelling(text))
 
 
-def sounds_like(keyword: str, words: Sequence[tuple[str, str]]) -> bool:
+def sounds_like(keyword: str, words: Sequence[tuple[str, str]], *, strict: bool = False) -> bool:
     """True when ``keyword`` sounds like one of ``words`` (``sound_words``; the module
-    docstring's rule). Never for a word with a digit or a GENERIC word. O(w)."""
+    docstring's rule). ``strict``: equal keys only, no prefix (the answer check: Ramchandran
+    is not रामचंद्र). Never for a word with a digit or a GENERIC word. O(w)."""
     if any(ch.isdigit() for ch in keyword) or concept(keyword) in GENERIC:
         return False
     key, typed = sound_key(keyword), keyword.casefold()
@@ -230,8 +241,12 @@ def sounds_like(keyword: str, words: Sequence[tuple[str, str]]) -> bool:
         if min(len(key), len(other)) < SOUND_KEY_MIN or {key, other} & MERGED_KEYS:
             if typed == word.casefold():
                 return True
-        elif key == other or (len(typed) >= PREFIX_MIN and (other.startswith(key) or key.startswith(other))):
-            return True
+        else:
+            prefix = (
+                not strict and len(typed) >= PREFIX_MIN and (other.startswith(key) or key.startswith(other))
+            )
+            if key == other or prefix:
+                return True
     return False
 
 

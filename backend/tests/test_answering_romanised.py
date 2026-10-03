@@ -44,7 +44,10 @@ def test_no_sound_key_stands_for_two_concepts() -> None:
 
 def test_every_romanised_key_is_long_enough_and_never_a_known_merge() -> None:
     assert all(len(key) >= SOUND_KEY_MIN for key in glossary.ROMANISED)
-    assert not set(glossary.ROMANISED) & glossary.MERGED_KEYS
+    # Only the three keys another common word shares are exact-only Romanised keys.
+    assert set(glossary.ROMANISED) & glossary.MERGED_KEYS == {"bki", "bde", "brn"}
+    assert [glossary.concept(word) for word in ("bakaya", "bhade", "bharna")] == ["due", "rent", "payment"]
+    assert [glossary.concept(word) for word in ("baki", "bade", "baran", "barna")] == [None] * 4
     assert not {"kar", "kul", "varas", "rasid"} & set(glossary._ROMANISED_SPELLINGS)
 
 
@@ -216,3 +219,60 @@ def test_a_latin_word_is_backed_by_sound_or_glossary_english_never_by_the_questi
     assert not unbacked("The jamin owner is रामचंद्र गणपत पाटील.")  # jamin: land, and जमीन is cited
     assert unbacked("The malak is Sita Deshmukh.")  # nobody the evidence names
     assert unbacked("The kshetra is 1.20.")  # area: क्षेत्र is not in this cited text
+
+
+# --- the code review's probes (PR 2b-2) -------------------------------------------------------
+
+ROW = dataclasses.replace(
+    piece("satbara.csv", "गट क्रमांक ४७ | भोगवटादार रामचंद्र गणपत पाटील"), meaning_score=0.9
+)
+FARM = dataclasses.replace(
+    piece("satbara.csv", "गट क्रमांक ४७ | जमीन | शेतकरी | भोगवटादार रामचंद्र गणपत पाटील"), meaning_score=0.9
+)
+
+
+@pytest.mark.parametrize(
+    ("question", "row", "reply", "label"),
+    [
+        ("Who owns gat 47?", ROW, "The भोगवटादार of gat 47 is Ramchandra Patil.", "verified"),  # the control
+        ("Who owns gat 47?", ROW, "The भोगवटादार of gat 47 is Malik Patil.", "needs_review"),
+        ("Who owns gat 47?", ROW, "The भोगवटादार of gat 47 is Malik.", "needs_review"),
+        ("Who owns gat 47?", FARM, "The भोगवटादार of gat 47 is Kisan Patil.", "needs_review"),
+        ("Who owns gat 47?", FARM, "The भोगवटादार of gat 47 is Bhumika Patil.", "needs_review"),
+        ("Who owns gat 47?", FARM, "The भोगवटादार of gat 47 is Kishan Malik.", "needs_review"),
+        ("gat 47 cha malak kon ahe?", ROW, "The भोगवटादार of gat 47 is Malik Patil.", "needs_review"),
+        ("Who owns gat 47?", ROW, "The भोगवटादार of gat 47 is Ramchandran Patil.", "needs_review"),
+    ],
+)
+def test_a_name_is_backed_by_an_equal_sound_never_by_a_glossary_meaning(
+    question: str, row: FakeHit, reply: str, label: str
+) -> None:
+    answer = ask(question, [row], says(reply))
+    assert (answer.status, answer.label) == ("answered", label)
+
+
+def test_a_lower_case_romanised_word_of_the_question_may_be_echoed() -> None:
+    texts = {1: OWNER.text}
+    sentence = DraftSentence("The malak is रामचंद्र गणपत पाटील.", [1])
+    assert not service._unbacked_latin(sentence, texts, set(), ["malak"])
+    assert service._unbacked_latin(DraftSentence("Malak is रामचंद्र.", [1]), texts, set(), ["malak"])
+
+
+@pytest.mark.parametrize(
+    ("question", "text", "passed"),
+    [
+        ("rin kiti ahe?", "Printing charges: Rs 5,000", None),  # rin is not in printing
+        ("ekar kiti ahe?", "Ekart courier charges Rs 120", "sound"),  # ekr starts ekrt: capped
+    ],
+)
+def test_a_romanised_keyword_counts_as_a_whole_word_only(
+    question: str, text: str, passed: str | None
+) -> None:
+    hit = piece("bill.pdf", text)
+    assert gate(question, hit) == passed
+    for answer in (ask(question, [hit]), ask(question, [hit], says(text))):
+        assert answer.label != "verified"
+
+
+def test_a_romanised_keyword_found_as_written_is_still_capped() -> None:
+    assert gate("malak kon ahe?", piece("deed.pdf", "Malak: Ram Patil")) == "glossary"
