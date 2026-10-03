@@ -127,6 +127,10 @@ DATE_WORDS = frozenset(
     | {"sep", "sept", "oct", "nov", "dec"}
 )
 
+# Words that are never a topic, for other modules: Hindi filler, the shared stop words and
+# the question and English filler words (kaagaz/search/hybrid.py keys none of them by sound).
+STOP_WORDS = _HINDI_STOP | _SHARED_STOP | _NOT_KEYWORDS
+
 _WORD = re.compile(r"[a-z0-9]+(?:[-/.][a-z0-9]+)*")
 _YEAR = re.compile(r"(?:19|20)[0-9]{2}")
 _LONGEST_PHRASE = max(len(phrase) for phrase in _HINDI_PHRASES)

@@ -450,6 +450,27 @@ def test_a_hundred_sound_matches_never_push_an_exact_one_out_of_the_list(db: Dat
     assert [matched for _, _, matched in rows[1:]] == [False] * (hybrid.CANDIDATES - 1)
 
 
+@pytest.mark.parametrize("question", ["salary of Shinde", "Shinde salary slip", "rent receipt of Gaikwad"])
+def test_a_rare_name_is_not_crowded_out_by_common_words(db: Database, question: str) -> None:
+    """No exact match, so the sound tier is "any word": 120 salary slips and rent receipts
+    match the common words, and the one piece with the name, uploaded last, still comes
+    first, as its word is the rarest."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    pieces: list[tuple[str, list[float] | None]] = [
+        (f"Salary slip for September, staff {n}", None) for n in range(60)
+    ]
+    pieces += [(f"Rent receipt for godown {n}", None) for n in range(60)]
+    pieces += [("शिंदे यांचे पत्र", None), ("गायकवाड यांचे पत्र", None)]
+    ids = add_pieces(db, customer, document, pieces)
+    name = ids[-2] if "Shinde" in question else ids[-1]
+
+    rows = _word_rows(db, customer, question)
+
+    assert not any(matched for _, _, matched in rows)
+    assert rows[0][0] == name
+
+
 # Business lines like the golden documents', for the reviewer's false-positive questions.
 CORPUS = [
     "Shree Ganesh Textiles, 12 Cloth Market, Ring Road, Surat",

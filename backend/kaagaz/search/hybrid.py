@@ -22,7 +22,13 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    checked to be ``[a-z]`` letters, never from the question's text; "" is
    NULL, as for ``g``. A piece scores the highest ``ts_rank_cd`` of the four,
    and every piece one of the three exact queries matched comes first, so a
-   piece found only by sound fills the slots the exact matches leave.
+   piece found only by sound fills the slots the exact matches leave. The exact
+   queries need every word, the sound one any word: when no exact query
+   matches, the list is "any word", not "every word". So in the sound tier a
+   piece ranks by the words it matches, each weighed by how rare it is among
+   the candidates (the sum of ln(candidates / candidates with the word)), then
+   by its score: for "salary of Shinde" the one Shinde piece comes before sixty
+   salary slips.
    ``search_documents`` shares this list, so library search finds these
    pieces too.
 2. **Typo tolerant:** pg_trgm ``word_similarity(q, ...)`` with ``q <% ...``
@@ -92,7 +98,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.answering import glossary
-from kaagaz.answering.hinglish import _HINDI_STOP, _NOT_KEYWORDS, _SHARED_STOP, normalise
+from kaagaz.answering.hinglish import DATE_WORDS, STOP_WORDS, normalise
 from kaagaz.chunking.script import SOUND_KEY_MIN, has_devanagari_letters, latin_spelling, sound_keys
 from kaagaz.search.scope import EVERYTHING, Scope
 
@@ -117,8 +123,9 @@ _QUERY_CANCELED = "57014"
 SOUND_TERMS_MAX = 12
 SOUND_PREFIX_WORD_MIN = 5
 SOUND_START_MIN = 4  # letters: the shortest start of a key that is a term of its own
-# Words that are never a sound term: English, Hindi and Romanised question words and fillers.
-_NO_SOUND = _NOT_KEYWORDS | _SHARED_STOP | _HINDI_STOP | glossary.ROMANISED_STOP
+# Words that are never a sound term: English, Hindi and Romanised question words and fillers,
+# and date words ("this", "last", "month").
+_NO_SOUND = STOP_WORDS | DATE_WORDS | glossary.ROMANISED_STOP
 _SOUND_TERM = re.compile(f"[a-z]{{{SOUND_KEY_MIN},}}")
 
 # Every statement below repeats the same filter in full, so each one can be read
@@ -127,10 +134,16 @@ _SOUND_TERM = re.compile(f"[a-z]{{{SOUND_KEY_MIN},}}")
 # is written out in each one, before any LIMIT (tests/test_visibility_guard.py),
 # and so is the scope (the s_* parameters, Scope.params; tests/test_search_scope_db.py).
 
+# The sound query's words are separated by ";" (sound_query): sw holds one tsquery per word,
+# heard the words a piece matches, and rare each word's weight, ln(candidates / candidates
+# matching it): a word on every candidate weighs 0.
 _WORD = text(
-    "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
+    "WITH c AS MATERIALIZED ("
+    "SELECT p.id, p.document_id, p.seq, d.created_at,"
+    " GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
     " ts_rank_cd(p.tsv_simple, g.q), ts_rank_cd(p.tsv_sound, sk.q)) AS score,"
-    " coalesce(p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q, false) AS exact"
+    " coalesce(p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q, false) AS exact,"
+    " ARRAY(SELECT u.i FROM unnest(sw.qs) WITH ORDINALITY AS u (q, i) WHERE p.tsv_sound @@ u.q) AS heard"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
@@ -138,7 +151,9 @@ _WORD = text(
     " CROSS JOIN (SELECT CASE WHEN CAST(:g AS text) = '' THEN NULL"
     " ELSE to_tsquery('simple', CAST(:g AS text)) END) AS g (q)"
     " CROSS JOIN (SELECT CASE WHEN CAST(:sk AS text) = '' THEN NULL"
-    " ELSE to_tsquery('simple', CAST(:sk AS text)) END) AS sk (q)"
+    " ELSE to_tsquery('simple', replace(CAST(:sk AS text), ';', '|')) END) AS sk (q)"
+    " CROSS JOIN (SELECT ARRAY(SELECT to_tsquery('simple', w)"
+    " FROM unnest(string_to_array(CAST(:sk AS text), ';')) AS w WHERE w <> '')) AS sw (qs)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
@@ -150,8 +165,13 @@ _WORD = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
-    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q OR p.tsv_sound @@ sk.q)"
-    " ORDER BY exact DESC, score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
+    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q OR p.tsv_sound @@ sk.q)),"
+    " rare AS MATERIALIZED (SELECT h.i, ln((SELECT count(*) FROM c) / CAST(count(*) AS float8)) AS w"
+    " FROM c CROSS JOIN unnest(c.heard) AS h (i) GROUP BY h.i)"
+    " SELECT c.id, c.document_id, c.score, c.exact FROM c"
+    " ORDER BY c.exact DESC,"
+    " CASE WHEN c.exact THEN 0 ELSE (SELECT sum(r.w) FROM rare r WHERE r.i = ANY(c.heard)) END DESC,"
+    " c.score DESC, c.created_at, c.document_id, c.seq, c.id LIMIT :n"
 )
 
 # set_config(..., true) is SET LOCAL with a bound value (SET LOCAL takes none):
@@ -354,8 +374,9 @@ def fuse(
 
 
 def sound_query(question: str) -> str:
-    """A ``to_tsquery('simple', ...)`` text ORing the sound keys of the question's words;
-    "" when none has a key of ``SOUND_KEY_MIN`` letters or more (shorter keys are never
+    """The sound keys of the question's words as ``to_tsquery('simple', ...)`` texts, one
+    per word, joined by " ; " (``_WORD`` ORs them all, and counts the words a piece
+    matches); "" when none has a key of ``SOUND_KEY_MIN`` letters or more (shorter keys are never
     matched: kar, khar and khara are all kr). A part of the question with a digit in it
     ("INV-1042", "gat48") is an identifier, which the other queries match as written: it
     gives no key (``sound_keys``, as on the pieces' side). A question word or filler
@@ -370,22 +391,22 @@ def sound_query(question: str) -> str:
     Each term is checked to be ``[a-z]`` letters, so no character of the question reaches
     ``to_tsquery``. O(n) for n characters: a key has at most 40 letters.
     """
-    whole: dict[str, None] = {}
-    starts: dict[str, None] = {}
+    words: dict[str, list[str]] = {}  # each word's key -> its terms, its own key first
     for word, key in sound_keys(question):
-        if len(key) < SOUND_KEY_MIN or word.casefold() in _NO_SOUND:
+        if len(key) < SOUND_KEY_MIN or word.casefold() in _NO_SOUND or key in words:
             continue
         if len(word) < SOUND_PREFIX_WORD_MIN:
-            whole.setdefault(key)
+            words[key] = [key]
             continue
-        whole.setdefault(f"{key}:*")
-        for end in range(len(key) - 1, SOUND_START_MIN - 1, -1):
-            starts.setdefault(key[:end])
-    terms = list(dict.fromkeys([*whole, *starts]))[:SOUND_TERMS_MAX]
-    for term in terms:
+        words[key] = [f"{key}:*", *(key[:end] for end in range(len(key) - 1, SOUND_START_MIN - 1, -1))]
+    # Every word's own key first, then the shorter starts, at most SOUND_TERMS_MAX in all.
+    ranked = [terms[0] for terms in words.values()] + [term for terms in words.values() for term in terms[1:]]
+    kept = set(list(dict.fromkeys(ranked))[:SOUND_TERMS_MAX])
+    for term in kept:
         if not _SOUND_TERM.fullmatch(term.removesuffix(":*")):
             raise ValueError("a sound term is ASCII letters only")
-    return " | ".join(terms)
+    groups = [" | ".join(term for term in terms if term in kept) for terms in words.values()]
+    return " ; ".join(group for group in groups if group)
 
 
 def vector_literal(values: Sequence[float]) -> str:
