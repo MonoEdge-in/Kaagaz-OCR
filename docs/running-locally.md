@@ -158,6 +158,88 @@ npm run dev                            # http://localhost:3000
 
 It forwards `/api/*` to `BACKEND_URL` (default `http://localhost:8000`).
 
+## 2c. On a GPU server (EC2 g4dn)
+
+PaddleOCR-VL and Ollama on one NVIDIA GPU (a g4dn's T4, 16 GB), with
+`docker-compose.gpu.yml` laid over `docker-compose.yml`. Laptops never use it.
+**NOT RUN yet:** nothing here has run on a GPU (PROVISIONAL, and
+`paddlepaddle-gpu` and the NVIDIA wheels wait for Vrushit's approval).
+
+**The host, once.**
+
+* The NVIDIA driver 570 or newer (Ollama 0.35.0 bundles CUDA 12.8), the NVIDIA
+  Container Toolkit 1.17.8 or newer (older ones have container escapes), and
+  Docker Compose 2.24.4 or newer (`docker compose version`; the override uses
+  `!reset`). Check: `nvidia-smi` shows the T4 on the host.
+* A 100 GB disk: the GPU OCR image (Paddle, the NVIDIA libraries and the
+  weights) and the Ollama models are tens of GB.
+* A 4 to 8 GB swapfile: a g4dn.xlarge has 16 GB of memory for everything.
+  `sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`,
+  and a `/swapfile none swap sw 0 0` line in `/etc/fstab`.
+* The security group lets in 22 (your own address only) and 443, nothing else.
+  `docker-compose.yml` still publishes 3000, 8000, 5432, 8333, 9324 and 3310 on
+  the host, and Docker's ports go around the host's own firewall, so the
+  security group is what keeps them closed; it must stay that way. (TLS on 443
+  and closing those ports in compose are follow-ups.) The override already
+  removes Ollama's 11434, and `ocr` never had a port.
+
+**Start.** From the repository root, with `.env` made as in section 1:
+
+```
+alias dc='docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile paddle --profile ollama'
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile paddle --profile ollama up -d --build
+```
+
+The `ocr` image builds with `PADDLE_EXTRA=paddle-gpu`: `paddlepaddle-gpu` by
+its direct URL with its sha256, then everything else from PyPI, hashed
+(`backend/constraints-ocr-gpu.txt`). It is tagged `kaagaz-ocr-gpu:local`, so it
+never replaces the CPU image. The worker reads scans with PaddleOCR-VL
+(`OCR_ENGINE=paddleocr_vl`), and the api and worker reach Ollama at
+`http://ollama:11434`; the override sets both, whatever `.env` says.
+
+Then the models, once, and the AI on:
+
+```
+dc exec ollama ollama pull qwen3.5:4b              # MODEL_CHAT (and MODEL_VISION)
+dc exec ollama ollama pull qwen3-embedding:0.6b    # MODEL_EMBED
+```
+
+Set `MODEL_ENABLED=true` in `.env` (use the model names `.env` has, if you
+changed them), then `dc up -d --force-recreate api worker`.
+
+**Check** (the done-when list; each is NOT RUN until done on g4dn):
+
+1. `dc exec ocr nvidia-smi` shows the T4 inside the `ocr` container.
+2. `dc ps ocr` says healthy: `/health` is ready (loading can take minutes).
+3. Ask one chat question, then `dc exec ollama ollama ps`: the model shows
+   `100% GPU`.
+4. In a second terminal on the host, `nvidia-smi --query-gpu=memory.used,memory.total --format=csv -l 1`,
+   then upload a dense made-up scan (a full page of small text and a table) and
+   watch the peak while it is read: it must stay under 16 GB with both Qwen
+   models and PaddleOCR-VL loaded. If the page fails with `out_of_memory` in the
+   ocr log, the job is retried later, not failed.
+5. Seconds per page, inside the worker container (it has the settings; the
+   file must be in the container):
+
+   ```
+   docker compose cp ./made-up-marathi-scan.png worker:/tmp/scan.png
+   docker compose exec worker python -m kaagaz.cli measure --file /tmp/scan.png
+   ```
+
+   Write the numbers into docs/architecture.md, Decisions ("to be measured on
+   g4dn" there now).
+
+**RapidOCR, the fallback.** If PaddleOCR-VL misbehaves on the GPU, change the
+worker's `OCR_ENGINE: paddleocr_vl` in `docker-compose.gpu.yml` to `rapidocr`
+(the override wins over `.env`, so `.env` alone cannot do it) and restart the
+worker: `dc up -d worker`. `dc stop ocr` then frees its GPU memory for Ollama.
+Change it back the same way.
+
+**Known limits.** `OLLAMA_NUM_PARALLEL=1`: one model request at a time, so a
+chat question can wait while a document's facts are being read. The T4 has no
+bfloat16, so Paddle runs in fp32. The GPU is shared by `ocr` and `ollama`
+(an accepted risk, docs/architecture.md, Decisions).
+
 ## 3. Demo customers
 
 With the database migrated, in Docker:
