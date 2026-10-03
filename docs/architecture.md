@@ -64,6 +64,8 @@ Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `need
 
 **Search inside documents** (`GET /api/search`, PRD 3 Q2). `q` is 1 to 200 characters and never logged; the `Scope` comes from the query string, plus the file type. The scope is resolved in its own short transaction, and one that matches nothing (an empty list, an unknown folder or tag) returns no documents before the model or any search SQL runs. Then the question is embedded (outside any transaction; with the model off or down, words and typos still answer) and the three lists run as above. One pass groups the candidates by document: a document's score is its best piece's, and `more` counts its other pieces among the candidates. Each result has that piece's snippet (`clean_snippet`), pages and regions.
 
+**Story of this PDF through the API** (`GET`, `PUT`, `DELETE /api/documents/{id}/my-story`, PROVISIONAL). The signed-in user's own story, under `Database.user`: a document of another customer, or a family in Trash, is 404, and PUT and DELETE lock the live family in the same transaction. After the save commits, with the model on, `MODEL_EMBED` embeds the story's text as it is, tagged `MODEL_EMBED#story1` (`search/story_vectors.py`). A model that is off, down or slow (`MODEL_TIMEOUT_SECONDS`) never fails the save: the story then has no vector yet. The story is never logged; audit rows hold ids only.
+
 ## Values, review and corrections
 
 Every value keeps its raw reading, the second reading if there is one, its page, its region, the reader and a confidence score. Labels and their reasons:
@@ -77,7 +79,7 @@ The review queue shows only values of each family's current, ready version, out 
 
 ## Data and customer separation
 
-Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`, `folders`, `tags`, `document_tags`, `invoices`, `invoice_lines`, `document_links`, `processing_runs`. Every one of them except `customers` carries the customer. A document's invoice, lines and links are rebuilt by each run of the pipeline; `processing_runs` keeps one row per run, and outlives its document (PROVISIONAL).
+Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`, `folders`, `tags`, `document_tags`, `invoices`, `invoice_lines`, `document_links`, `processing_runs`, `user_words`, `user_word_spots`. Every one of them except `customers` carries the customer. A document's invoice, lines and links are rebuilt by each run of the pipeline; `processing_runs` keeps one row per run, and outlives its document (PROVISIONAL).
 
 Customers are kept apart by two locks:
 
@@ -85,6 +87,8 @@ Customers are kept apart by two locks:
 2. **The application lock.** Every query also names the customer. Two functions list across customers, both SECURITY DEFINER with an empty `search_path`, returning ids only: `kaagaz_customer_ids_with_trash`, the customers with trash old enough to purge, for the worker's hourly purge, and `kaagaz_customer_ids()` (0006), every customer, for `reembed` without `--customer-id`, which then works on each customer inside that customer's own transactions (both PROVISIONAL).
 
 The `isolation` tests prove both on every pull request.
+
+**Story of this PDF** (0009, PROVISIONAL) is one user's own note about a document, not the customer's: besides `customer_only`, `document_stories` has a RESTRICTIVE `own_user_only` policy on `kaagaz.user_id`, which only `Database.user` sets, so only its author's transactions see or write it. It is keyed on the family (the first version's id), so every version shares it and a "Read again" never touches it, and it goes with the family and the user (CASCADE). An edit clears its vector in the same statement, and a vector is written only while the story still has the hash of the text that was embedded, so a late embed never stores a vector of older text. A story is what the user said, never evidence: it feeds no answer, gate, label or prompt. It has no vector or word index yet: a user's own stories are few.
 
 **PRD 3** adds no table: 0006 adds columns and indexes to `pieces` and `messages`, and 0007 only comments. Every new statement (the three lists and the exact fallback, `/api/search`, `links`, the review filter, the failed list, `reembed`) names the customer and runs under row level security. A scope's folder and tags are looked up as this customer's, and every list keeps its customer filter, so another customer's folder, tag or document ids match nothing. The failed list needs an admin session: an app session, even an admin's, gets 403. In chat the scope is resolved again for the current customer on every turn, saved or sent, so another customer's ids match nothing, and a saved scope that no longer parses matches nothing (it is never widened). Neighbours come from the same customer's live current pieces inside the scope.
 
