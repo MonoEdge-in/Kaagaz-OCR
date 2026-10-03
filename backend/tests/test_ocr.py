@@ -1,10 +1,16 @@
 import pathlib
+import socket
 import subprocess
 import sys
+import tempfile
 import unittest
 from importlib import metadata
+from types import SimpleNamespace
+from typing import Any
+from unittest import mock
 
 from PIL import Image, ImageDraw, ImageFont
+from rapidocr import LangRec, ModelType, OCRVersion
 
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading import ocr
@@ -86,6 +92,115 @@ class LazyImportTest(unittest.TestCase):
             cwd=pathlib.Path(__file__).resolve().parent.parent,
         )
         self.assertEqual(result.stdout, "False")
+
+
+class FakeRapidOcr:
+    """Stands in for one ``rapidocr.RapidOCR``: the same reading of every picture."""
+
+    def __init__(self, texts: list[str], scores: list[float]) -> None:
+        self.texts = texts
+        self.scores = scores
+        self.pages = 0
+
+    def __call__(self, picture: Image.Image) -> SimpleNamespace:
+        self.pages += 1
+        boxes = [
+            [[0, 10 * i], [90, 10 * i], [90, 10 * i + 8], [0, 10 * i + 8]] for i in range(len(self.texts))
+        ]
+        return SimpleNamespace(boxes=boxes, txts=self.texts, scores=self.scores)
+
+
+# A 7/12 land record as the default recogniser reads it (Latin and Chinese letters),
+# and as the Devanagari one reads it.
+GARBLED = (["Gat 克拉马克 48", "Mauje 莫杰"], [0.62, 0.58])
+DEVANAGARI = (["गट क्रमांक ४८", "मौजे शिरूर"], [0.91, 0.88])
+CLEAN = (["INVOICE 1042"], [0.97])
+DEVANAGARI_VERSION = metadata.version("rapidocr") + ";rec=devanagari_PP-OCRv5_rec_mobile"
+
+
+class DevanagariReadAgainTest(unittest.TestCase):
+    """A suspect page is read again with the Devanagari recogniser, from a file on disk,
+    with fake engines: no real model and no network."""
+
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.model = pathlib.Path(folder.name) / "devanagari_PP-OCRv5_rec_mobile.onnx"
+        self.model.write_bytes(b"model")
+        self.built: list[dict[str, Any]] = []
+        self.first = FakeRapidOcr(*GARBLED)
+        self.second = FakeRapidOcr(*DEVANAGARI)
+        for patch in (
+            mock.patch.object(ocr, "_rapidocr", self.build),
+            mock.patch.object(ocr, "devanagari_model_path", lambda: self.model),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.engine = RapidOcrEngine()
+        self.page = Image.new("RGB", (100, 40), "white")
+
+    def build(self, params: dict[str, Any]) -> FakeRapidOcr:
+        self.built.append(params)
+        return self.second if "Rec.model_path" in params else self.first
+
+    def texts(self, lines: list[OcrLine]) -> list[str]:
+        return [line.text for line in lines]
+
+    def test_a_suspect_page_is_read_again_and_the_devanagari_reading_is_kept(self) -> None:
+        self.assertEqual(self.texts(self.engine.read(self.page)), ["गट क्रमांक ४८", "मौजे शिरूर"])
+        self.assertEqual((self.first.pages, self.second.pages), (1, 1))
+        params = self.built[1]
+        self.assertEqual(params["Rec.model_path"], str(self.model))
+        self.assertIs(params["Rec.lang_type"], LangRec.DEVANAGARI)
+        self.assertIs(params["Rec.ocr_version"], OCRVersion.PPOCRV5)
+        self.assertIs(params["Rec.model_type"], ModelType.MOBILE)
+        self.assertEqual(self.engine.version, DEVANAGARI_VERSION)
+
+    def test_a_clean_page_never_builds_the_second_engine(self) -> None:
+        self.first = FakeRapidOcr(*CLEAN)
+        self.assertEqual(self.texts(self.engine.read(self.page)), ["INVOICE 1042"])
+        self.assertEqual(self.built, [{"Global.log_level": "error"}])
+        self.assertEqual(self.second.pages, 0)
+        self.assertEqual(self.engine.version, metadata.version("rapidocr"))
+
+    def test_a_second_reading_that_is_not_better_is_dropped(self) -> None:
+        cases = {
+            "it found nothing": ([], []),
+            "it is less sure": (["गट क्रमांक ४८", "मौजे शिरूर"], [0.55, 0.5]),
+            "it has as many suspect letters": (["Gat 克拉马克 48", "Mauje 莫杰"], [0.9, 0.9]),
+        }
+        for why, (texts, scores) in cases.items():
+            with self.subTest(why):
+                self.second = FakeRapidOcr(texts, scores)
+                engine = RapidOcrEngine()
+                self.assertEqual(self.texts(engine.read(self.page)), ["Gat 克拉马克 48", "Mauje 莫杰"])
+                self.assertEqual(self.second.pages, 1)
+                self.assertEqual(engine.version, metadata.version("rapidocr"))
+
+    def test_a_missing_model_keeps_the_first_reading_and_downloads_nothing(self) -> None:
+        self.model.unlink()
+        with (
+            mock.patch.object(socket, "create_connection", side_effect=AssertionError("network")) as connect,
+            mock.patch.object(socket.socket, "connect", side_effect=AssertionError("network")) as raw,
+            self.assertLogs("kaagaz.reading.ocr", "WARNING") as logs,
+        ):
+            lines = self.engine.read(self.page)
+        self.assertEqual(self.texts(lines), ["Gat 克拉马克 48", "Mauje 莫杰"])
+        self.assertEqual([record.__dict__.get("code") for record in logs.records], ["ocr_model_missing"])
+        self.assertNotIn("Mauje", logs.output[0])  # never the page's text
+        self.assertEqual(len(self.built), 1)  # the second engine was never built, so nothing fetched
+        self.assertFalse(connect.called or raw.called)
+        self.assertEqual(self.engine.version, metadata.version("rapidocr"))
+
+    def test_the_second_engine_is_built_once_and_the_version_is_per_document(self) -> None:
+        self.engine.read(self.page)
+        self.engine.read(self.page)
+        self.assertEqual((len(self.built), self.second.pages), (2, 2))
+        self.assertEqual(self.engine.version, DEVANAGARI_VERSION)
+        self.assertEqual(self.engine.version, DEVANAGARI_VERSION)  # asked again: the same document
+        self.first.texts, self.first.scores = CLEAN  # the next document is in English
+        self.engine.read(self.page)
+        self.assertEqual(self.engine.version, metadata.version("rapidocr"))
 
 
 class BuildOcrEngineTest(unittest.TestCase):
