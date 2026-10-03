@@ -3,6 +3,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
+import nextConfig from "../next.config";
 
 const ROOT = join(__dirname, "..");
 const SOURCE_DIRS = ["app", "components", "lib"];
@@ -105,6 +106,14 @@ describe("guards", () => {
     const chat = readFileSync(join(ROOT, "components/chat/ChatScreen.tsx"), "utf8");
     expect(chat).toMatch(/role="log"\s+aria-live="off"/);
     expect(chat.match(/role="status"/g)?.length).toBe(1);
+  });
+
+  // The /api rewrite's wait (council 3 Oct 2026): Next's default 30 s cut slow
+  // chat answers, and 0 means that default, not "never".
+  it("lets the /api proxy wait longer than a slow chat answer", () => {
+    const timeout = nextConfig.experimental?.proxyTimeout;
+    expect(typeof timeout).toBe("number");
+    expect(timeout).toBeGreaterThanOrEqual(150_000);
   });
 
   it("has one polite region on the review page", () => {

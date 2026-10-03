@@ -7,6 +7,14 @@ const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  experimental: {
+    // How long the /api rewrite waits for the backend. Next's default is 30 s,
+    // and 0 does not switch it off (it means the default): a chat answer on a
+    // CPU makes up to 5 model calls of MODEL_TIMEOUT_SECONDS (60 s) each, so it
+    // was cut at 30 s and looked failed while the server went on to save it.
+    // 5 x 60 s plus 30 s of margin (council 3 Oct 2026, "story search mode").
+    proxyTimeout: 330_000,
+  },
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${backend}/api/:path*` }];
   },
