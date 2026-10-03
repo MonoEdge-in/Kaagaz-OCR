@@ -60,13 +60,13 @@ def test_the_words() -> None:
     assert words("Papa ne jo Daregaon wali jamin ka 7/12 di thi, kiti?") == [
         ("papa", ()),
         ("daregaon", ()),
-        ("jamin", ()),
+        ("jamin", ("bhumi",)),  # the Romanised glossary's exact alternative
         ("7/12", ()),
     ]
     # Generic words and one-digit words never count; alternatives are 4+ letters only.
     assert words("the land papers of 7 kagaz file") == [("land", ("jamin", "bhumi"))]
     assert words("loan tax name") == [("loan", ("karja",)), ("tax", ("jiesati",)), ("name", ())]
-    assert words("दरेगाव जमीन ७/१२ जमीन") == [("daregav", ()), ("jamin", ()), ("7/12", ())]
+    assert words("दरेगाव जमीन ७/१२ जमीन") == [("daregav", ()), ("jamin", ("bhumi",)), ("7/12", ())]
     assert words("INV-1042 inv-1042 2 11") == [("inv-1042", ()), ("11", ())]
     assert len(m.question_words(" ".join(f"word{chr(97 + i)}x" for i in range(20)))) == m.WORDS_MAX == 12
     assert m.question_words("the of and ka ne wali ahe papers documents agreement") == []

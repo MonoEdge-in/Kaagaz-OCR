@@ -95,7 +95,8 @@ def test_a_scope_that_matches_nothing_never_calls_the_model(db: Database) -> Non
     api, signed = _signed(db, model)
     _document(api, signed, [PIECE])
 
-    assert _search(signed, q="INV-7001", tag_ids=[str(uuid.uuid4())]) == {"documents": []}
+    found = _search(signed, q="INV-7001", tag_ids=[str(uuid.uuid4())])
+    assert found == {"documents": [], "story_matches": []}
     assert model.calls == []
 
 

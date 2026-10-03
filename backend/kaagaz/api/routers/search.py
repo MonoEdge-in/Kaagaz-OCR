@@ -11,23 +11,34 @@ their key) and the list's ``detected_type`` (Q3 applies the Type filter to
 both modes). Anything else is 400 ``bad_request``, as every invalid request.
 ``q`` is never logged (the access line has no query string). Snippets go
 through ``clean_snippet``; only well-formed regions are sent.
+
+``story_matches`` (S3, PROVISIONAL): at most three of the user's own documents
+whose story the question tells again (``find_story_matches``, as the user), with
+a band, never a score or the story; suggestions only, the documents never change.
+A story failure (the database, or a story statement past its time) never fails the
+search: ``story_matches`` is then [] and only the error's type is logged.
 """
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import Field
+from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.answering.evidence import valid_regions
 from kaagaz.answering.sanitize import clean_snippet
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.routers.documents import DetectedTypeParam
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.hybrid import DocumentResult, search_documents
 from kaagaz.search.indexing import embed_question, recipe_tag
 from kaagaz.search.scope import ScopeBody, resolve
+from kaagaz.search.story_search import find_story_matches, story_matches_json
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 Context = Annotated[AppContext, Depends(get_context)]
 
@@ -44,10 +55,11 @@ def search_inside_documents(
     params: Annotated[SearchParams, Query()], user: User, context: Context
 ) -> dict[str, Any]:
     """``{documents: [{id, display_name, doc_type, score, best: {snippet, page_from,
-    page_to, regions}, more}]}``, best first, at most SEARCH_MAX_DOCUMENTS."""
+    page_to, regions}, more}], story_matches: [{document_id, display_name, doc_type,
+    band}]}``, best first, at most SEARCH_MAX_DOCUMENTS and three."""
     question = params.q.strip()
     if not question:
-        return {"documents": []}
+        return {"documents": [], "story_matches": []}
     settings = context.settings
     customer_id = user.customer_id
     with context.db.customer(customer_id) as conn:
@@ -55,7 +67,7 @@ def search_inside_documents(
             conn, customer_id, params, timezone=settings.timezone, detected_type=params.detected_type
         )
     if scope.matches_nothing:
-        return {"documents": []}
+        return {"documents": [], "story_matches": []}
     embedding = embed_question(context.model, question)
     with context.db.customer(customer_id) as conn:
         found = search_documents(
@@ -68,7 +80,23 @@ def search_inside_documents(
             ef_search=settings.search_ef,
             scope=scope,
         )
-    return {"documents": [_document(result) for result in found]}
+    try:
+        stories = find_story_matches(
+            context.db,
+            customer_id=customer_id,
+            user_id=user.user_id,
+            question=question,
+            embedding=embedding,
+            model_embed=settings.model_embed,
+            scope=scope,
+        )
+    except (SQLAlchemyError, BackendUnavailable) as error:
+        logger.warning("story matches left out", extra={"code": type(error).__name__})
+        stories = []
+    return {
+        "documents": [_document(result) for result in found],
+        "story_matches": story_matches_json(stories),
+    }
 
 
 def _document(result: DocumentResult) -> dict[str, Any]:
