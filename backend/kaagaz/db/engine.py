@@ -9,7 +9,9 @@ Every transaction starts the same way (CLAUDE.md never-do 1):
    for this transaction only. Every table's policy compares its ``customer_id``
    with it, so a forgotten ``WHERE`` still returns nothing from another customer.
 
-``Database.customer`` is for everything a customer does. ``Database.system`` has
+``Database.customer`` is for everything a customer does; ``Database.user`` also sets
+``kaagaz.user_id``, without which the one-user tables (my words, 0008) show nothing.
+``Database.system`` has
 no current customer, so every customer table looks empty inside it; it exists
 only to call the few SECURITY DEFINER functions the schema provides (signing
 in by e-mail, creating a customer, listing the customers with old trash for
@@ -97,6 +99,17 @@ class Database:
                 text("SELECT set_config('kaagaz.customer_id', :customer_id, true)"),
                 {"customer_id": customer_id},
             )
+            yield conn
+
+    @contextmanager
+    def user(self, customer_id: str, user_id: str) -> Iterator[Connection]:
+        """One transaction as ``user_id`` of ``customer_id``: the customer, and the one
+        user whose own rows (my words) it may see and write. O(1) setup."""
+        uuid.UUID(customer_id)
+        uuid.UUID(user_id)  # malformed ids fail here, never inside a policy
+        with self._begin() as conn:
+            both = "SELECT set_config('kaagaz.customer_id', :c, true), set_config('kaagaz.user_id', :u, true)"
+            conn.execute(text(both), {"c": customer_id, "u": user_id})
             yield conn
 
     @contextmanager

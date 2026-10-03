@@ -14,6 +14,7 @@ import Link from "next/link";
 import { useId } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
+import { understoodNotes } from "@/components/words/words";
 import type { Message } from "@/lib/types";
 import {
   answerLabelText,
