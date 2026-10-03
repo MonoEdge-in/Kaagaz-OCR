@@ -281,10 +281,19 @@ def enough_evidence(
                 return "score"
     if not wanted:
         return None
-    english = sum(1 for keyword in wanted if keyword in haystack)
+    # As written: a whole word (a number, a whole token). A Romanised word found as written
+    # ("malak" in a Latin text) is still a guess about meaning: it counts from the glossary on.
+    written = [_written(keyword, haystack) for keyword in wanted]
+    english = sum(
+        1
+        for keyword, found in zip(wanted, written, strict=True)
+        if found and not glossary.is_romanised(keyword)
+    )
     if english * 2 >= len(wanted):
         return "keywords"
-    glossed = [keyword in haystack or glossary.present(keyword, haystack) for keyword in wanted]
+    glossed = [
+        found or glossary.present(keyword, haystack) for keyword, found in zip(wanted, written, strict=True)
+    ]
     if sum(glossed) * 2 >= len(wanted):
         return "glossary"
     words = glossary.sound_words(haystack)
@@ -329,6 +338,31 @@ def has_token(keyword: str, folded: str) -> bool:
         token == keyword or (value is not None and _value(token) == value)
         for token in _NUMBER_TOKEN.findall(folded)
     )
+
+
+def has_word(keyword: str, folded: str) -> bool:
+    """``keyword`` in ``folded`` (both casefolded) as a whole word: no letter, mark or digit
+    right before or after it, after NFC (PR 2b-2's code review: "rin" is not in "printing",
+    "ekar" not in "Ekart"). O(t)."""
+    keyword, folded = unicodedata.normalize("NFC", keyword), unicodedata.normalize("NFC", folded)
+    start = folded.find(keyword)
+    while start >= 0:
+        end = start + len(keyword)
+        if not (_word_char(folded[start - 1 : start]) or _word_char(folded[end : end + 1])):
+            return True
+        start = folded.find(keyword, start + 1)
+    return False
+
+
+def _written(keyword: str, folded: str) -> bool:
+    """A keyword as written: a word as a whole word (``has_word``); one with a digit as before,
+    a substring, since the numbers asked are checked whole first (``numbers_asked``), and
+    normalise splits "1,20,000" into 1, 20 and 000. O(t)."""
+    return keyword in folded if _DIGIT.search(keyword) else has_word(keyword, folded)
+
+
+def _word_char(ch: str) -> bool:
+    return bool(ch) and unicodedata.category(ch)[0] in "LMN"
 
 
 def _fold(text: str) -> str:
