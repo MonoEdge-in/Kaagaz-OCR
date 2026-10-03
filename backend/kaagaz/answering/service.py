@@ -87,6 +87,7 @@ from kaagaz.answering.evidence import (
     number_evidence,
     numbers_asked,
     valid_regions,
+    word_text,
 )
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
 from kaagaz.answering.format import indian_number
@@ -407,7 +408,7 @@ class AnswerService:
             gate in CAPPED
             or any(not _judged(s, by_n, normalised.keywords, min_score, numbers) for s in kept)
             or any(unchecked_cross_script(s, texts) for s in kept)
-            or any(_unbacked_latin(s, texts, asked, normalised.keywords) for s in kept)
+            or any(_unbacked_latin(s, texts, asked) for s in kept)
             or (not model_used and any(_quoted_through_glossary(s, by_n, normalised.keywords) for s in kept))
         )
         verified = all(c.label == "verified" for c in citations) and not (on_neighbours or unchecked)
@@ -526,7 +527,6 @@ _FUNCTION_WORDS = frozenset(
     ]
 )
 _LATIN_TOKEN = re.compile(r"[a-z0-9]+")
-_CASED_TOKEN = re.compile(r"[A-Za-z0-9]+")
 
 
 def _latin_words(text: str) -> set[str]:
@@ -534,9 +534,7 @@ def _latin_words(text: str) -> set[str]:
     return {token for token in _LATIN_TOKEN.findall(text.casefold()) if not any(ch.isdigit() for ch in token)}
 
 
-def _unbacked_latin(
-    sentence: DraftSentence, texts: dict[int, str], asked: set[str], keywords: Sequence[str] = ()
-) -> bool:
+def _unbacked_latin(sentence: DraftSentence, texts: dict[int, str], asked: set[str]) -> bool:
     """True when a text the sentence cites has Devanagari letters and the sentence holds an
     English word that neither the question's dropped words (``asked``), ``_FUNCTION_WORDS``,
     the English side of a glossary word in the cited text, nor the cited texts themselves
@@ -544,10 +542,10 @@ def _unbacked_latin(
     closed: Latin words in the cited text ("Page 1 of 1", "GSTIN") only add to what is
     allowed; they never turn the check off. A word written the Romanised way (PR 2b) is
     backed only when its sound key equals that of a word of the cited text's Latin spelling
-    ("Ramchandra" for रामचंद्र; never "Ramchandran", ``glossary.sounds_like`` strict), or it
-    is a Romanised glossary word of the question's own keywords, written in lower case
-    ("malak"): a capitalised Malik, Kisan or Bhumika is a name, and backs nothing.
-    O(s * w + e * g) for w words and g glossary words."""
+    ("Ramchandra" for रामचंद्र; never "Ramchandran", ``glossary.sounds_like`` strict); never by
+    its glossary meaning (Malik, Kisan and Bhumika are names), nor because the question has it
+    ("... is malak patil" for "malak kon ahe?"). O(s * w + e * g) for w words and g glossary
+    words."""
     cited = [texts[n] for n in sentence.evidence if n in texts]
     if not any(has_devanagari_letters(text) for text in cited):
         return False
@@ -557,12 +555,7 @@ def _unbacked_latin(
     if not unbacked:
         return False
     words = glossary.sound_words("\n".join(cited))
-    echoed = {
-        token
-        for token in _CASED_TOKEN.findall(sentence.text)
-        if token.islower() and token in keywords and glossary.is_romanised(token)
-    }
-    return any(not (word in echoed or glossary.sounds_like(word, words, strict=True)) for word in unbacked)
+    return any(not glossary.sounds_like(word, words, strict=True) for word in unbacked)
 
 
 def _quoted_through_glossary(
@@ -571,7 +564,7 @@ def _quoted_through_glossary(
     """True when a quoted line's piece holds a keyword only through a glossary equivalent or
     a word that sounds like it (not as written): they chose the quote, so it is never
     verified. O(k * t)."""
-    pieces = [ascii_digits(by_n[n].hit.text).casefold() for n in sentence.evidence]
+    pieces = [word_text(by_n[n].hit.text) for n in sentence.evidence]
     words = [keyword.casefold() for keyword in keywords if not any(ch.isdigit() for ch in keyword)]
     # A whole word, as the gate counts it; a Romanised word as written is a guess too.
     return any(
