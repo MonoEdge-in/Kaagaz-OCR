@@ -1,5 +1,6 @@
 """Every statement that joins ``documents d`` for search, chat, review, the admin
-numbers or the document list carries its visibility fragment (PRD 1 F5 and F6, plan 9.7).
+numbers, the document list or the missing-vector pass carries its visibility
+fragment (PRD 1 F5 and F6, plan 9.7).
 
 The lists are explicit on purpose. A new statement that joins ``documents d`` in
 one of these modules fails the last test until it is added here: to FILTERED
@@ -18,9 +19,18 @@ from sqlalchemy import TextClause
 from kaagaz.answering import fixed_queries, unchecked
 from kaagaz.db import admin, listing, pipeline_store, review
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
-from kaagaz.search import hybrid
+from kaagaz.search import hybrid, indexing
 
-MODULES: tuple[ModuleType, ...] = (hybrid, fixed_queries, unchecked, review, admin, listing, pipeline_store)
+MODULES: tuple[ModuleType, ...] = (
+    hybrid,
+    fixed_queries,
+    unchecked,
+    review,
+    admin,
+    listing,
+    pipeline_store,
+    indexing,
+)
 
 # (module, constant name) -> the fragment it must carry.
 FILTERED: dict[tuple[ModuleType, str], str] = {
@@ -63,6 +73,8 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # version or one still being read (replacing AR5's any state, PROVISIONAL).
     (pipeline_store, "_LINK_TARGETS"): LIVE_CURRENT,
     (pipeline_store, "_LIVE_TARGETS"): LIVE_CURRENT,
+    # The worker's missing vectors: only pieces search can find, never Trash or an older version.
+    (indexing, "_MISSING"): LIVE_CURRENT,
 }
 
 # Statements that count every version on purpose, and why.
