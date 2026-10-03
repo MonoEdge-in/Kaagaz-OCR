@@ -40,12 +40,32 @@ FROM_0004 = {
     "document_links": (True, True, False, True),
     "processing_runs": (True, True, False, False),
 }
+# My words (0008): a word's text and meaning may change; a spot is only added or deleted.
+FROM_0008 = {"user_words": (True, True, True, True), "user_word_spots": (True, True, False, True)}
+# Story of this PDF (0009): a story is created, replaced (its vector too) and deleted.
+FROM_0009 = {"document_stories": (True, True, True, True)}
+# The second policy of the tables that belong to one user (0008, 0009): it must pass too.
+OWN_USER = "(user_id = (NULLIF(current_setting('kaagaz.user_id'::text, true), ''::text))::uuid)"
 RUN_OUTCOME = {
     "status", "error_code", "ocr_engine", "model_chat", "model_vision", "model_embed", "config",
     "pages_cells", "pages_text_layer", "pages_ocr", "pages_blank", "vision_crops", "model_calls",
     "dropped_quotes", "quotes_returned", "values_verified", "values_needs_review", "seconds_total",
     "seconds_ocr", "finished_at",
 }  # fmt: skip
+# The owner-rights (SECURITY DEFINER) functions, the only ways past the policies,
+# each narrow: {name: (what it returns, its search path)}. Those that list across
+# customers or users give ids only.
+EMPTY_PATH = ['search_path=""']
+OWNER_RIGHTS = {
+    "kaagaz_login_lookup": (
+        "TABLE(user_id uuid, customer_id uuid, password_hash text, role text, disabled boolean)",
+        ["search_path=public, pg_temp"],
+    ),  # 0001, sign-in
+    "kaagaz_create_customer": ("uuid", ["search_path=public, pg_temp"]),  # 0001
+    "kaagaz_customer_ids_with_trash": ("SETOF uuid", EMPTY_PATH),  # 0002, the purge
+    "kaagaz_customer_ids": ("SETOF uuid", EMPTY_PATH),  # 0006, reembed
+    "kaagaz_stories_to_embed": ("TABLE(customer_id uuid, user_id uuid, family_id uuid)", EMPTY_PATH),  # 0010
+}
 # The only tables without customer_id: the customers themselves, and alembic's own.
 NO_CUSTOMER_ID = {"customers", "alembic_version"}
 
@@ -65,7 +85,7 @@ def _customer_tables(db: Database) -> dict[str, tuple[bool, str]]:
 
 def test_every_customer_table_has_row_level_security_and_the_customer_only_policy(db: Database) -> None:
     tables = _customer_tables(db)
-    assert set(tables) >= FROM_0001 | FROM_0002 | set(FROM_0004)
+    assert set(tables) >= FROM_0001 | FROM_0002 | set(FROM_0004) | set(FROM_0008) | set(FROM_0009)
 
     with db.system() as conn:
         policies = {
@@ -111,8 +131,24 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
-    for table, expected in FROM_0004.items():
+    for table, expected in (FROM_0004 | FROM_0008 | FROM_0009).items():
         assert granted[table] == expected, table
+
+
+def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(db: Database) -> None:
+    """It must pass as well as customer_only: with no user set, no row is seen or written."""
+    with db.system() as conn:
+        policies = {
+            table: (command, permissive, roles, using, check)
+            for table, command, permissive, roles, using, check in conn.execute(
+                text(
+                    "SELECT tablename, cmd, permissive, roles, qual, with_check FROM pg_policies"
+                    " WHERE schemaname = 'public' AND policyname <> 'customer_only'"
+                )
+            )
+        }
+    own = FROM_0008 | FROM_0009
+    assert policies == {table: ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER) for table in own}
 
 
 def test_the_app_may_update_only_the_outcome_columns_of_a_run(db: Database) -> None:
@@ -162,3 +198,21 @@ def test_only_the_listed_tables_have_no_customer_id(db: Database) -> None:
         )
         names = {str(row[0]) for row in every}
     assert names - set(_customer_tables(db)) == NO_CUSTOMER_ID
+
+
+def test_only_the_listed_owner_rights_functions_exist_and_only_the_app_may_run_them(db: Database) -> None:
+    """Found from the catalog, so a new one can't be left out: what it returns, its
+    fixed search path, and never runnable by PUBLIC."""
+    with db.system() as conn:
+        functions = conn.execute(
+            text(
+                "SELECT p.proname, pg_get_function_result(p.oid), p.proconfig,"
+                " has_function_privilege('public', p.oid, 'EXECUTE'),"
+                " has_function_privilege(:r, p.oid, 'EXECUTE')"
+                " FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.prosecdef"
+            ),
+            {"r": APP_ROLE},
+        ).all()
+    assert {name: (result, config) for name, result, config, *_ in functions} == OWNER_RIGHTS
+    for name, *_, public_may_run, app_may_run in functions:
+        assert (public_may_run, app_may_run) == (False, True), name

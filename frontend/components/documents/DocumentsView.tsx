@@ -469,6 +469,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 onClearFinished={uploads.clearFinished}
                 onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
               />
+              {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
 
               {view !== "empty" && (
                 <div className={styles.list}>

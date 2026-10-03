@@ -1,6 +1,6 @@
 """The document routes: list, upload, a new version, detail and its summary, rename or move,
-the original file, page images, spreadsheet cells, and Trash (move to Trash,
-restore, delete forever).
+the original file, page images, each page's scanned text, spreadsheet cells, and
+Trash (move to Trash, restore, delete forever).
 
 Why some choices:
 
@@ -81,6 +81,7 @@ from kaagaz.api.views import (
     document_version,
     extracted_value,
     invoice,
+    page_readings,
     page_summary,
 )
 from kaagaz.db import admin as admin_sql
@@ -277,13 +278,23 @@ def _form_folder_id(value: str | UploadFile | None) -> str | None:
         raise ApiError(400, "bad_request") from None
 
 
-def _same_user(value: str | UploadFile | None, user: CurrentUser) -> None:
+def _same_user(value: str | UploadFile | None, user: CurrentUser, message: str | None = None) -> None:
     """The optional ``user_id`` form field: who the browser tab had signed in when
-    the file was chosen. Someone else signed in since (in another tab, critical
-    #5) gets 409 ``session_changed`` before anything is stored, so the file never
-    lands in their account. Not sent: no check (PROVISIONAL)."""
-    if value is not None and value != user.user_id:
-        raise ApiError(409, "session_changed")
+        the file was chosen. Someone else signed in since (in another tab, critical
+        #5) gets 409 ``session_changed`` before anything is stored, so the file never
+        lands in their account. Not sent: no check (PROVISIONAL). ``message`` is
+        another route's own words (my words). Compared as UUIDs, so an upper-case id
+    of the same user passes."""
+    if value is not None and _uuid_or_none(value) != uuid.UUID(user.user_id):
+        raise ApiError(409, "session_changed", message)
+
+
+def _uuid_or_none(value: str | UploadFile) -> uuid.UUID | None:
+    """The id as a UUID, so letter case and hyphens don't matter; None for anything else."""
+    try:
+        return uuid.UUID(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
 
 
 def _accept(
@@ -584,6 +595,22 @@ def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Co
         media_type="image/webp",
         headers={"Content-Security-Policy": "sandbox", "Cache-Control": "private, no-store"},
     )
+
+
+@router.get("/documents/{document_id}/pages/{page_no}/readings")
+def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context: Context) -> dict[str, Any]:
+    """Scanned text: every line each reader read on this page, as read. Who may see it
+    is exactly who may see the page image (above): any version, in Trash or not
+    (PROVISIONAL), never a rejected one; and the page must exist. Never logged."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        row = _document_or_404(conn, user, document_id)
+        if row["status"] == "rejected" or page_no < 1:
+            raise ApiError(404, "not_found")
+        if listing.get_page(conn, customer_id, target, page_no) is None:
+            raise ApiError(404, "not_found")
+        rows = listing.page_readings(conn, customer_id, target, page_no)
+    return page_readings(page_no, rows)
 
 
 @router.get("/documents/{document_id}/pages/{page_no}/cells")
