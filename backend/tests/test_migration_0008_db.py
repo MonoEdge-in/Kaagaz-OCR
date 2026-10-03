@@ -81,6 +81,8 @@ BAD_ROWS = {
     "page_alone": ({"r": None}, "user_word_spots_page_with_region"),
     "region_alone": ({"p": None}, "user_word_spots_page_with_region"),
     "another_page": ({"p": 3}, "user_word_spots_region_page"),
+    "no_page_key": ({"r": '{"kind": "box", "box": [0.1, 0.2, 0.3, 0.25]}'}, "user_word_spots_region_page"),
+    "another_kind": ({"r": BOX.replace('"box",', '"evil",', 1)}, "user_word_spots_region_page"),
     "page_0": ({"p": 0, "r": BOX.replace('"page": 2', '"page": 0')}, "user_word_spots_page_no_check"),
     "not_an_object": ({"r": f"[{BOX}]"}, "user_word_spots_region_check"),
     "over_256_bytes": (
