@@ -2,13 +2,17 @@
 
 // A spreadsheet page (one sheet) as a grid of cells from getSheetCells, with the
 // highlighted cells marked in colour and in words, and the first one scrolled
-// into view inside the grid (the page itself does not jump).
+// into view inside the grid (the page itself does not jump). My words in a cell
+// get a dashed outline and their number (ViewerWords.tsx).
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, getSheetCells } from "@/lib/api";
 import { cellKey, cellName, columnName, highlightedCells } from "@/lib/regions";
 import type { CellRegion } from "@/lib/regions";
 import type { PageSummary, Region, SheetCells } from "@/lib/types";
+import { markerId } from "@/components/words/ViewerWords";
+import { markedCells } from "@/components/words/spots";
+import type { Marker } from "@/components/words/spots";
 import { buildGrid, cropRowWindow, sheetRowWindow, SHEET_ROWS_PER_VIEW } from "./viewer";
 import styles from "./PageViewer.module.css";
 
@@ -17,6 +21,8 @@ export interface SheetGridProps {
   page: PageSummary;
   highlights: Region[];
   crop?: CellRegion;
+  marks?: Marker[];
+  activeMark?: string | null;
 }
 
 interface Loaded {
@@ -25,8 +31,9 @@ interface Loaded {
   error: string | null;
 }
 
-export function SheetGrid({ documentId, page, highlights, crop }: SheetGridProps) {
+export function SheetGrid({ documentId, page, highlights, crop, marks = [], activeMark = null }: SheetGridProps) {
   const marked = highlightedCells(highlights, page.page_no);
+  const mine = markedCells(marks);
   const focus = crop ?? highlights.find(
     (r): r is CellRegion => r.kind === "cell" && r.page === page.page_no,
   );
@@ -126,10 +133,22 @@ export function SheetGrid({ documentId, page, highlights, crop }: SheetGridProps
                   {row.cells.map((cell) => {
                     const k = cellKey(row.row, cell.column);
                     const hit = marked.has(k);
+                    const here = mine.get(k);
+                    const numbers = here?.map((mark) => mark.n);
+                    const active = here?.some((mark) => mark.id === activeMark);
+                    const classes = [hit && styles.cellHit, here && styles.cellMine, active && styles.cellMineActive];
                     return (
-                      <td key={k} data-cell={k} className={hit ? styles.cellHit : undefined}>
+                      <td key={k} data-cell={k} id={here ? markerId(here[0]?.id ?? "") : undefined}
+                        className={classes.filter(Boolean).join(" ") || undefined}>
                         {cell.text}
                         {hit ? <span className="visually-hidden"> (highlighted)</span> : null}
+                        {numbers ? (
+                          <span className={styles.cellMineNumber}>
+                            <span className="visually-hidden"> (my word </span>
+                            {numbers.join(", ")}
+                            <span className="visually-hidden">)</span>
+                          </span>
+                        ) : null}
                       </td>
                     );
                   })}

@@ -137,7 +137,7 @@ class FakeAnswers:
     scopes: list[Scope] = field(default_factory=list)
 
     def answer(
-        self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn]
+        self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn], user_id: str
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
         self.scopes.append(scope)
@@ -402,15 +402,31 @@ class Api:
             ).scalar_one()
         return str(value_id)
 
-    def add_reader_output(self, customer_id: str, document_id: str, spans: list[dict[str, Any]]) -> None:
+    def add_reader_output(
+        self,
+        customer_id: str,
+        document_id: str,
+        spans: list[dict[str, Any]],
+        *,
+        role: str = "first",
+        reader: str = "csv",
+        reader_version: str = "1",
+    ) -> None:
         with self.db.customer(customer_id) as conn:
             conn.execute(
                 text(
                     "INSERT INTO reader_outputs"
                     " (customer_id, document_id, role, reader, reader_version, output)"
-                    " VALUES (:c, :d, 'first', 'csv', '1', CAST(:o AS jsonb))"
+                    " VALUES (:c, :d, :role, :reader, :version, CAST(:o AS jsonb))"
                 ),
-                {"c": customer_id, "d": document_id, "o": json.dumps(spans)},
+                {
+                    "c": customer_id,
+                    "d": document_id,
+                    "role": role,
+                    "reader": reader,
+                    "version": reader_version,
+                    "o": json.dumps(spans),
+                },
             )
 
     def audit_actions(self, customer_id: str) -> list[str]:

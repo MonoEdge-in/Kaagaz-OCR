@@ -32,7 +32,10 @@ class AnswerLike(Protocol):
 
 
 class Answers(Protocol):
-    def answer(self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn]) -> AnswerLike:
+    def answer(
+        self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn], user_id: str
+    ) -> AnswerLike:
         """``question`` is the stripped question text; ``scope`` is resolved for this customer;
-        ``history`` is the conversation's earlier turns, oldest first."""
+        ``history`` is the conversation's earlier turns, oldest first; ``user_id`` is the
+        asker, whose own words (My words) only may help."""
         ...

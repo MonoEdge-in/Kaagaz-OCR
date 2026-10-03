@@ -1,7 +1,8 @@
 "use client";
 
-// One answer card. In order: the label with a line saying what it means, how
-// the question was understood (only when that differs), the sentences with
+// One answer card. In order: the label with a line saying what it means, what
+// a follow-up was searched for ("Searching for: …", PRD 3 H1) and how the
+// question was understood (only when that differs), the sentences with
 // citation chips (each moves to its source card), the source cards, and
 // "Was this helpful?". The card's inline-start edge carries the margin rule:
 // solid for Verified, hatched for Needs review. "Not found" is a real answer:
@@ -20,8 +21,8 @@ import {
   cardId,
   citationMap,
   NOT_FOUND_TEXT,
+  questionReading,
   sentenceCitations,
-  understoodAs,
 } from "./answer";
 import { FeedbackControls } from "./FeedbackControls";
 import { scrollBehavior } from "./hooks";
@@ -49,13 +50,22 @@ export function AnswerView({ message, question }: { message: Message; question: 
     );
   }
 
-  const reading = question !== null ? understoodAs(question, answer.normalized_question) : null;
+  const reading = questionReading(question, answer);
   // My words chat used (A3 sends understood_words; nothing shows before it). Text only.
   const notes = understoodNotes(answer);
-  const understood = (reading || notes.length > 0) && (
+  const understood = (
     <>
-      {reading && <p className={styles.understood}>Understood as: {reading}</p>}
-      {notes.length > 0 && <p className={styles.understood}>{notes.join(". ")}. <Link href="/words">My words</Link></p>}
+      {reading.searchingFor ? (
+        <p className={styles.understood}>Searching for: {reading.searchingFor}</p>
+      ) : null}
+      {reading.understoodAs ? (
+        <p className={styles.understood}>Understood as: {reading.understoodAs}</p>
+      ) : null}
+      {notes.length > 0 ? (
+        <p className={styles.understood}>
+          {notes.join(". ")}. <Link href="/words">My words</Link>
+        </p>
+      ) : null}
     </>
   );
   const feedback = (
