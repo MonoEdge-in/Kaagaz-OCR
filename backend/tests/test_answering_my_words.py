@@ -79,7 +79,7 @@ ODD = {
     "brackets": ("(rent", ("rent",)),
     "quoted": ("'shop':*", ("shop",)),
     "unicode punctuation": ("«दुकान»—भाडे…", ("दुकान", "भाडे")),
-    "zero width space": ("rent​paid", ("rent", "paid")),
+    "zero width space": ("rent\u200bpaid", ("rent", "paid")),
     "digits": ("8A 7/12 utara", ("utara",)),
     "stop words only": ("the of and", ()),
     "a lone mark": ("́ा", ()),
