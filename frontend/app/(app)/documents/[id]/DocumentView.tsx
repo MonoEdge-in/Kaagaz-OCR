@@ -49,6 +49,7 @@ import type { DocumentDetail, DocumentSummary, ExtractedValue } from "@/lib/type
 import { usePoll } from "@/lib/usePoll";
 import { CardPanel, InvoicePanel, RelatedPanel } from "./DocumentPanels";
 import { ReadAgain } from "./ReadAgain";
+import { StoryPanel } from "./StoryPanel";
 import styles from "./DocumentView.module.css";
 
 export interface DocumentViewProps {
@@ -384,6 +385,7 @@ export function DocumentView({
           <CardPanel {...panel} />
           <RelatedPanel detail={detail} />
           <InvoicePanel {...panel} />
+          <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
         </div>
         <section className={styles.values} aria-labelledby="values-heading">
           <h2 id="values-heading" className={styles.valuesHeading}>

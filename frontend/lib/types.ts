@@ -493,3 +493,13 @@ export interface Stats {
   in_trash: number;
   pages_this_month: Record<PageRoute, number>; // pages read this month, by route (PRD 2, R6); 0 when none
 }
+
+/** The signed-in user's own story about a document's family (GET / PUT /documents/{id}/my-story).
+ * Only its author ever gets it. The user's text: shown as text only, never logged. */
+export interface MyStory {
+  family_id: string;
+  story: string;
+  embedded: boolean; // it has a vector of today's model (search can use it)
+  created_at: string;
+  updated_at: string;
+}
