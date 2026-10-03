@@ -30,6 +30,7 @@ from sqlalchemy import create_engine
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable, estimate_tokens
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH, ANSWER_SCHEMA, SYSTEM_PROMPT, user_prompt
 from kaagaz.answering.evidence import number_evidence
+from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedRow, ValueRef
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.db.engine import Database
@@ -54,6 +55,7 @@ ANSWER_KEYS = {
     "normalized_question",
     "model_used",
     "rewritten_question",
+    "understood_words",
 }
 CITATION_KEYS = {
     "n",
@@ -118,7 +120,13 @@ class FakeRetriever:
         self.calls: list[tuple[str, str, list[float] | None, int]] = []
 
     def search(
-        self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
+        self,
+        customer_id: str,
+        text: str,
+        embedding: list[float] | None,
+        limit: int,
+        scope: Scope,
+        expansion: Expansion = NO_EXPANSION,
     ) -> list[FakeHit]:
         self.calls.append((customer_id, text, embedding, limit))
         words = text.casefold().split()
@@ -129,7 +137,7 @@ class FakeRetriever:
                 share = present / len(words)
                 hits.append(dataclasses.replace(hit, score=share, fuzzy_score=share))
         hits.sort(key=lambda hit: -hit.score)
-        return Retrieved(hits[:limit])
+        return hits[:limit]
 
     def neighbours(self, customer_id: str, hits: Sequence[Any], scope: Scope) -> list[FakeHit]:
         return []

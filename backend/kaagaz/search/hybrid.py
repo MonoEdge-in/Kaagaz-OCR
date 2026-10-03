@@ -14,8 +14,27 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    2026), so "owner" finds भोगवटादाराचे. ``g`` is built from the glossary's
    code constants only, never from the question's text, so ``to_tsquery``
    cannot fail on it; "" (no keyword listed) is NULL, which matches nothing.
-   A piece scores the highest ``ts_rank_cd`` of the three. ``search_documents``
-   shares this list, so library search finds these pieces too.
+   The asking user's own words (My words, council 3 Oct 2026, A3) join this OR
+   arm only through ``expansion.word_query``'s safe builder: letter and mark
+   runs of their text, never the text itself; another user's words are never
+   loaded (kaagaz/answering/expansion.py).
+   A fourth query, ``to_tsquery('simple', sk)``, matches the sound keys of
+   the question's words (``sound_query``, council 3 Oct 2026, PR 2b) against
+   the piece's ``tsv_sound`` (migration 0011: the sound keys of
+   ``coalesce(text_latin, text)``, stored), so "bhogwatdar"
+   finds भोगवटादार. ``sk`` is built from ``sound_key`` output only, each term
+   checked to be ``[a-z]`` letters, never from the question's text; "" is
+   NULL, as for ``g``. A piece scores the highest ``ts_rank_cd`` of the four,
+   and every piece one of the three exact queries matched comes first, so a
+   piece found only by sound fills the slots the exact matches leave. The exact
+   queries need every word, the sound one any word: when no exact query
+   matches, the list is "any word", not "every word". So in the sound tier a
+   piece ranks by the words it matches, each weighed by how rare it is among
+   the candidates (the sum of ln(candidates / candidates with the word)), then
+   by its score: for "salary of Shinde" the one Shinde piece comes before sixty
+   salary slips.
+   ``search_documents`` shares this list, so library search finds these
+   pieces too.
 2. **Typo tolerant:** pg_trgm ``word_similarity(q, ...)`` with ``q <% ...``
    against the text and its Latin spelling (W2), the higher of the two, so
    "invioce" still finds "invoice" and "shindey" finds "शिंदे". The ``<%``
@@ -83,8 +102,9 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.answering import glossary
-from kaagaz.answering.hinglish import normalise
-from kaagaz.chunking.script import has_devanagari_letters, latin_spelling
+from kaagaz.answering.expansion import NO_EXPANSION, Expansion, word_query
+from kaagaz.answering.hinglish import DATE_WORDS, STOP_WORDS, normalise
+from kaagaz.chunking.script import SOUND_KEY_MIN, has_devanagari_letters, latin_spelling, sound_keys
 from kaagaz.search.scope import EVERYTHING, Scope
 
 if TYPE_CHECKING:
@@ -123,13 +143,22 @@ _SOUND_TERM = re.compile(f"[a-z]{{{SOUND_KEY_MIN},}}")
 # heard the words a piece matches, and rare each word's weight, ln(candidates / candidates
 # matching it): a word on every candidate weighs 0.
 _WORD = text(
-    "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q)) AS score"
+    "WITH c AS MATERIALIZED ("
+    "SELECT p.id, p.document_id, p.seq, d.created_at,"
+    " GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
+    " ts_rank_cd(p.tsv_simple, g.q), ts_rank_cd(p.tsv_sound, sk.q)) AS score,"
+    " coalesce(p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q, false) AS exact,"
+    " ARRAY(SELECT u.i FROM unnest(sw.qs) WITH ORDINALITY AS u (q, i) WHERE p.tsv_sound @@ u.q) AS heard"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
     " CROSS JOIN websearch_to_tsquery('simple', :k) AS s (q)"
     " CROSS JOIN (SELECT CASE WHEN CAST(:g AS text) = '' THEN NULL"
     " ELSE to_tsquery('simple', CAST(:g AS text)) END) AS g (q)"
+    " CROSS JOIN (SELECT CASE WHEN CAST(:sk AS text) = '' THEN NULL"
+    " ELSE to_tsquery('simple', replace(CAST(:sk AS text), ';', '|')) END) AS sk (q)"
+    " CROSS JOIN (SELECT ARRAY(SELECT to_tsquery('simple', w)"
+    " FROM unnest(string_to_array(CAST(:sk AS text), ';')) AS w WHERE w <> '')) AS sw (qs)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
@@ -141,8 +170,13 @@ _WORD = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
-    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q)"
-    " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
+    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q OR p.tsv_sound @@ sk.q)),"
+    " rare AS MATERIALIZED (SELECT h.i, ln((SELECT count(*) FROM c) / CAST(count(*) AS float8)) AS w"
+    " FROM c CROSS JOIN unnest(c.heard) AS h (i) GROUP BY h.i)"
+    " SELECT c.id, c.document_id, c.score, c.exact FROM c"
+    " ORDER BY c.exact DESC,"
+    " CASE WHEN c.exact THEN 0 ELSE (SELECT sum(r.w) FROM rare r WHERE r.i = ANY(c.heard)) END DESC,"
+    " c.score DESC, c.created_at, c.document_id, c.seq, c.id LIMIT :n"
 )
 
 # set_config(..., true) is SET LOCAL with a bound value (SET LOCAL takes none):
@@ -399,6 +433,7 @@ def search(
     recipe: str,
     ef_search: int,
     scope: Scope = EVERYTHING,
+    expansion: Expansion = NO_EXPANSION,
 ) -> list[SearchHit]:
     """The best ``limit`` pieces of this customer's ready, current documents
     that are not in Trash and are inside ``scope``, best first.
@@ -408,13 +443,14 @@ def search(
     the index walk), which end with it. ``recipe`` is the ``embedding_model`` of
     vectors made the current way; ``ef_search`` is SEARCH_EF. An empty question
     with no embedding finds nothing, and so does a scope that matches nothing,
-    before any SQL runs (edge case 1).
+    before any SQL runs (edge case 1). ``expansion``: the asking user's words the
+    question used, searched as OR alternatives only (kaagaz/answering/expansion.py).
     """
     if not 1 <= limit <= MAX_LIMIT:
         raise ValueError("limit must be between 1 and 100")
     if scope.matches_nothing:
         return []
-    fused, _ = _candidates(conn, customer_id, query_text, embedding, recipe, ef_search, scope)
+    fused, _ = _candidates(conn, customer_id, query_text, embedding, recipe, ef_search, scope, expansion)
     return _hits(conn, customer_id, fused[:limit])
 
 
@@ -468,19 +504,29 @@ def _candidates(
     recipe: str,
     ef_search: int,
     scope: Scope,
+    expansion: Expansion = NO_EXPANSION,
 ) -> tuple[list[FusedPiece], dict[str, str]]:
     """The three lists inside ``scope``, merged best first, and each piece's document id.
     W3: ``text_latin`` is matched with the question's ``latin_spelling``, and the simple
-    word query takes the ``normalise`` keywords, which spell Devanagari in Latin letters."""
+    word query takes the ``normalise`` keywords, which spell Devanagari in Latin letters;
+    the glossary query takes their Marathi and Hindi equivalents (the module docstring)."""
     conn.execute(_SET_SEARCH, {"ms": str(STATEMENT_TIMEOUT_MS)})
     word: list[tuple[str, float]] = []
     fuzzy: list[tuple[str, float]] = []
     meaning: list[tuple[str, float]] = []
     owners: dict[str, str] = {}
     if query_text.strip():
-        keywords = " ".join(normalise(query_text).keywords)
+        asked = normalise(query_text).keywords
         latin = latin_spelling(query_text) if has_devanagari_letters(query_text) else query_text
-        params = {"c": customer_id, "q": query_text, "k": keywords, "ql": latin, "n": CANDIDATES}
+        params = {
+            "c": customer_id,
+            "q": query_text,
+            "k": " ".join(asked),
+            "g": word_query(asked, expansion),
+            "sk": sound_query(latin),
+            "ql": latin,
+            "n": CANDIDATES,
+        }
         word = _ranked(conn.execute(_WORD, {**params, **scope.params()}), owners)
         conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
         fuzzy = _ranked(conn.execute(_FUZZY, {**params, **scope.params()}), owners)

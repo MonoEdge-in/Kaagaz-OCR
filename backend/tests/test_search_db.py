@@ -22,8 +22,8 @@ from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import SearchHit, search, vector_literal
 from kaagaz.search.indexing import recipe_tag
-from kaagaz.search.scope import EVERYTHING
-from tests.db_support import new_customer
+from kaagaz.search.scope import EVERYTHING, Scope
+from tests.db_support import insert_document, new_customer
 
 pytestmark = pytest.mark.db
 
@@ -355,9 +355,173 @@ def test_a_short_glossary_term_matches_a_whole_word_only(db: Database) -> None:
 def test_an_empty_glossary_query_matches_nothing(db: Database) -> None:
     customer, _ = new_customer(db)
     add_pieces(db, customer, add_document(db, customer), [("कर भरला", None)])
-    words = {"c": customer, "q": "zzz", "k": "zzz", "n": 50} | EVERYTHING.params()
+    words = {"c": customer, "q": "zzz", "k": "zzz", "sk": "", "n": 50} | EVERYTHING.params()
     with db.customer(customer) as conn:
         assert conn.execute(hybrid._WORD, words | {"g": ""}).all() == []
         assert len(conn.execute(hybrid._WORD, words | {"g": "कर"}).all()) == 1  # the control
 
     assert run(db, customer, "zzz") == []  # no keyword listed: :g is "", and nothing else matches
+
+
+# --- the sound key list (council 3 Oct 2026, PR 2b-1) ----------------------------------
+
+
+def by_sound(db: Database, customer_id: str, question: str, scope: Scope = EVERYTHING) -> list[str]:
+    """The word statement with only its sound query able to match: the pieces it finds."""
+    words = {"c": customer_id, "q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query(question), "n": 50}
+    with db.customer(customer_id) as conn:
+        return [str(row[0]) for row in conn.execute(hybrid._WORD, words | scope.params())]
+
+
+@pytest.mark.parametrize(
+    ("question", "piece_text"),
+    [
+        ("bhogwatdar", "भोगवटादार रामचंद्र पाटील"),
+        ("Gaikwad", "गायकवाड सुरेश"),
+        ("jaminicha", "जमीन वडगाव"),  # the piece's key is the start of the word's
+        ("jamin", "जमिनीचा उतारा"),  # the word's key is the start of the piece's
+        ("shindey", "पाटील शिंदे"),
+        ("bhogwatdar", "Owner (bhogavatadar): Ramchandra"),  # a mostly English piece, no text_latin
+    ],
+)
+def test_a_word_typed_the_way_it_sounds_finds_the_piece(db: Database, question: str, piece_text: str) -> None:
+    customer, _ = new_customer(db)
+    wanted, _ = add_pieces(
+        db, customer, add_document(db, customer), [(piece_text, None), ("करार झाला", None)]
+    )
+
+    assert by_sound(db, customer, question) == [wanted]
+    hits = run(db, customer, question)
+    assert hits[0].piece_id == wanted
+    assert hits[0].word_score is not None and hits[0].word_score > 0
+
+
+def test_without_the_sound_query_the_word_list_misses_it(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    customer, _ = new_customer(db)
+    add_pieces(db, customer, add_document(db, customer), [("गायकवाड सुरेश", None)])
+    monkeypatch.setattr(hybrid, "sound_query", lambda _: "")
+
+    # A name, so no glossary word stands in (bhogwatdar is the glossary's owner since PR 2b-2).
+    assert all(hit.word_score is None for hit in run(db, customer, "gaikwad"))
+
+
+def test_an_empty_sound_query_matches_nothing(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_pieces(db, customer, add_document(db, customer), [("गायकवाड सुरेश", None)])
+    words = {"c": customer, "q": "zzz", "k": "zzz", "g": "", "n": 50} | EVERYTHING.params()
+    with db.customer(customer) as conn:
+        assert conn.execute(hybrid._WORD, words | {"sk": ""}).all() == []
+        assert len(conn.execute(hybrid._WORD, words | {"sk": "gikvd"}).all()) == 1  # the control
+
+
+def _word_rows(db: Database, customer_id: str, question: str) -> list[tuple[str, float, bool]]:
+    """(piece id, score, matched exactly) of the word statement for ``question``, in order."""
+    words = {"c": customer_id, "q": question, "k": question, "g": "", "sk": hybrid.sound_query(question)}
+    with db.customer(customer_id) as conn:
+        rows = conn.execute(hybrid._WORD, words | {"n": hybrid.CANDIDATES} | EVERYTHING.params())
+        return [(str(row[0]), float(row[2]), bool(row[3])) for row in rows]
+
+
+def test_an_exact_match_comes_before_a_sound_match_that_ranks_higher(db: Database) -> None:
+    customer, _ = new_customer(db)
+    exact, by_key = add_pieces(
+        db, customer, add_document(db, customer), [("Shetkari list", None), ("शेतकरी " * 6, None)]
+    )
+
+    rows = _word_rows(db, customer, "shetkari")
+
+    assert [(piece, matched) for piece, _, matched in rows] == [(exact, True), (by_key, False)]
+    assert rows[1][1] > rows[0][1]  # the repeated sound key ranks higher, yet comes second
+
+
+def test_a_hundred_sound_matches_never_push_an_exact_one_out_of_the_list(db: Database) -> None:
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    pieces: list[tuple[str, list[float] | None]] = [("Shetkari list", None)]
+    pieces += [("शेतकरी शेतकरी", None)] * 100
+    (exact, *_) = add_pieces(db, customer, document, pieces)
+
+    rows = _word_rows(db, customer, "shetkari")
+
+    assert len(rows) == hybrid.CANDIDATES
+    assert rows[0][0] == exact
+    assert [matched for _, _, matched in rows[1:]] == [False] * (hybrid.CANDIDATES - 1)
+
+
+@pytest.mark.parametrize("question", ["salary of Shinde", "Shinde salary slip", "rent receipt of Gaikwad"])
+def test_a_rare_name_is_not_crowded_out_by_common_words(db: Database, question: str) -> None:
+    """No exact match, so the sound tier is "any word": 120 salary slips and rent receipts
+    match the common words, and the one piece with the name, uploaded last, still comes
+    first, as its word is the rarest."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    pieces: list[tuple[str, list[float] | None]] = [
+        (f"Salary slip for September, staff {n}", None) for n in range(60)
+    ]
+    pieces += [(f"Rent receipt for godown {n}", None) for n in range(60)]
+    pieces += [("शिंदे यांचे पत्र", None), ("गायकवाड यांचे पत्र", None)]
+    ids = add_pieces(db, customer, document, pieces)
+    name = ids[-2] if "Shinde" in question else ids[-1]
+
+    rows = _word_rows(db, customer, question)
+
+    assert not any(matched for _, _, matched in rows)
+    assert rows[0][0] == name
+
+
+# Business lines like the golden documents', for the reviewer's false-positive questions.
+CORPUS = [
+    "Shree Ganesh Textiles, 12 Cloth Market, Ring Road, Surat",
+    "TAX INVOICE Invoice No: TX-2026-118 Invoice Date: 12/08/2026 Bill To: Patil Garments",
+    "Cotton Poplin 120 m 25.00 3,000.00 Rayon Print 80 m 37.50 3,000.00",
+    "Sub Total: 10,000.00 CGST: 900.00 SGST: 900.00 Grand Total: 11,800.00",
+    "Amount in words: Rupees Eleven Thousand Eight Hundred Only",
+    "Transport Services Agreement between Shree Ganesh Textiles and Rapid Roadways",
+    "Fees: the monthly fee payable to the Carrier is Rs. 45,000, paid by the 10th",
+    "Late payment: interest of 1.5% a month is charged on any unpaid fee",
+    "Insurance: the Carrier insures every load up to Rs. 5,00,000",
+    "Notice: either party may end this agreement by giving 60 days notice in writing",
+    "Signed for the Client: Ramesh Shah. Signed for the Carrier: Imran Qureshi",
+    "Opening balance 50000. NEFT from Patil Garments 11800. Rent for August 15000",
+    "UPI to Shree Ganesh Textiles 10000. Closing balance 36800",
+    "Mehta General Stores, Station Road, Nashik. Bill No: R-3071 Total: 675.00",
+    "Toor Dal 1 kg 160.00 Sugar 5 kg 225.00 Sunflower Oil 1 L 290.00",
+    "Paid by UPI. Thank you, visit again. Receipt of payment acknowledged",
+    "Salary for September paid to staff: Shinde 18,000, Pawar 16,500",
+    "Rental agreement for the godown at Bhiwandi, rent payable monthly",
+    "गट क्रमांक 45/2 भोगवटादाराचे नाव पाटील रामचंद्र गणपत क्षेत्र 1.20",
+    "शर्मा किराना स्टोर बिल नं. 245 चावल 5 किलो 300.00 दाल 2 किलो 150.00",
+]
+
+
+@pytest.mark.parametrize("question", ["invoices and receipts", "rent agreement", "salary of Shinde"])
+def test_english_questions_bring_few_pieces_by_sound_alone(db: Database, question: str) -> None:
+    """Measured on this corpus: 2, 3 and 0 pieces found by sound alone, each holding a word
+    of the question in another form (Invoice, Receipt, Agreement)."""
+    customer, _ = new_customer(db)
+    ids = add_pieces(db, customer, add_document(db, customer), [(line, None) for line in CORPUS])
+
+    rows = _word_rows(db, customer, question)
+
+    assert sum(1 for _, _, matched in rows if not matched) <= 3
+    assert by_sound(db, customer, "bhogwatdar") == [ids[-2]]  # the control
+
+
+def test_the_sound_list_sees_only_the_current_version_out_of_trash_and_in_scope(db: Database) -> None:
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        old = insert_document(conn, customer, is_current=False)
+        current = insert_document(conn, customer, family_id=old, version_no=2)
+        binned = insert_document(
+            conn, customer, deleted_at=datetime(2026, 10, 1, tzinfo=UTC), deleted_by=user
+        )
+        other = insert_document(conn, customer)
+    pieces = {
+        document: add_pieces(db, customer, document, [("भोगवटादार", None)])[0]
+        for document in (old, current, binned, other)
+    }
+
+    assert set(by_sound(db, customer, "bhogwatdar")) == {pieces[current], pieces[other]}
+    assert by_sound(db, customer, "bhogwatdar", Scope(document_ids=(current,))) == [pieces[current]]
