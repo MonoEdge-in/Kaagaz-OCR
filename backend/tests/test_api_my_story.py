@@ -10,12 +10,15 @@ edit while the model works), and that the story never reaches a log line.
 import json
 import logging
 import math
+import threading
+import time
 from typing import Any
 
 import httpx2 as httpx
 import pytest
 from sqlalchemy import text
 
+from kaagaz.api.routers import stories as story_routes
 from kaagaz.db import document_stories as stories
 from kaagaz.db.engine import Database
 from tests.test_api_support import CSRF, Api, Signed
@@ -43,6 +46,20 @@ class EditingModel(FakeModel):
         with self.db.user(signed.customer_id, signed.user_id) as conn:
             checked = stories.check_story(self.edit)
             stories.put_story(conn, signed.customer_id, signed.user_id, document, checked)
+        return super().embed(texts)
+
+
+class SlowModel(FakeModel):
+    """Embeds only once ``go`` is set, or after ``most`` seconds: a model that is
+    loading, or busy with another request."""
+
+    def __init__(self, most: float) -> None:
+        super().__init__()
+        self.go = threading.Event()
+        self.most = most
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.go.wait(self.most)
         return super().embed(texts)
 
 
@@ -213,6 +230,31 @@ def test_a_model_that_fails_never_fails_the_save(
     assert tag_of(db, signed, document) is None
     assert get(signed, document) == {**reply.json()["story"], "embedded": False}
     assert code in [record.__dict__.get("code") for record in caplog.records]
+
+
+def test_a_slow_model_never_holds_the_save(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """3 Oct 2026: the PUT waited for the model client's own timeout (60 s), the
+    site's proxy gave up after 30 s, and a saved story showed "Not saved". The
+    reply now waits EMBED_WAIT_SECONDS at most; the vector lands later."""
+    monkeypatch.setattr(story_routes, "EMBED_WAIT_SECONDS", 0.2)
+    model = SlowModel(most=8.0)
+    api = Api(db, model=model)
+    signed = api.new_signed()
+    document = api.add_document(signed.customer_id)
+
+    started = time.monotonic()
+    reply = put(signed, document)
+    waited = time.monotonic() - started
+    model.go.set()
+
+    assert waited < 4.0
+    assert (reply.status_code, reply.json()["story"]["embedded"]) == (201, False)
+    assert get(signed, document)["story"] == STORY  # saved, whatever the model does
+    deadline = time.monotonic() + 10.0
+    while tag_of(db, signed, document) is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert tag_of(db, signed, document) == TAG  # the embed went on and wrote it
+    assert get(signed, document)["embedded"] is True
 
 
 def test_an_edit_while_the_model_works_leaves_no_stale_vector(db: Database) -> None:
