@@ -15,10 +15,15 @@ Why some choices:
   it created the story and 200 when it replaced it.
 * **The vector.** After the save has committed, with the model on, the story is
   embedded with the pieces' model (``embed_story``) unless its vector is
-  already current. The model client's own timeout (MODEL_TIMEOUT_SECONDS)
-  bounds the wait. A model that is off, down or slow never fails the save: the
-  story is saved without a vector and the error's type is logged; the worker's
-  sweep (S2b) embeds it later.
+  already current. The reply waits for it at most EMBED_WAIT_SECONDS, never for
+  the model client's own timeout (MODEL_TIMEOUT_SECONDS, 60 s and more): the
+  site's /api proxy (Next.js rewrites) answers 500 after 30 s, so a slow model
+  made a saved story look failed (3 Oct 2026). A slower embed goes on in the
+  background (at most EMBEDS_AT_ONCE at a time; beyond that it is left to the
+  sweep) and the reply says ``embedded: false``; its write is dropped if the
+  story changed meanwhile. A model that is off, down or slow never fails the
+  save: the story is saved without a vector and the error's type is logged; the
+  worker's sweep (S2b) embeds it later.
 * **The session check.** PUT may send ``user_id`` in the body and DELETE in
   the query: who the tab had signed in. Someone else signed in since gets 409
   ``session_changed``, as for uploads.
@@ -27,7 +32,10 @@ Why some choices:
 """
 
 import logging
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as WaitedTooLong
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Response
@@ -54,6 +62,12 @@ SESSION_CHANGED = (
     "Not saved. A different account has signed in on this browser since this page opened."
     " Reload the page to see who is signed in now."
 )
+# PROVISIONAL (3 Oct 2026): how long a PUT waits for the inline embed (well under
+# the site proxy's 30 s), and how many embeds may run in the background at once.
+EMBED_WAIT_SECONDS = 5.0
+EMBEDS_AT_ONCE = 4
+_embeds = ThreadPoolExecutor(max_workers=EMBEDS_AT_ONCE, thread_name_prefix="story-embed")
+_embed_slots = threading.BoundedSemaphore(EMBEDS_AT_ONCE)
 _TEXT = {
     "empty": "Write the story first.",
     "too_long": f"A story can be at most {stories_sql.STORY_MAX} characters.",
@@ -115,16 +129,39 @@ def _view(row: stories_sql.StoryRow, *, embedded: bool) -> dict[str, Any]:
     }
 
 
-def _embed(context: AppContext, user: CurrentUser, row: stories_sql.StoryRow) -> bool:
-    """Embed the saved story unless the model is off or its vector is current. True
-    when it has a current vector afterwards. Never raises for the model or the database."""
-    model = context.model
-    if model is None or _current(model, row):
-        return model is not None
+def _embed_now(context: AppContext, model: ModelClient, user: CurrentUser, row: stories_sql.StoryRow) -> bool:
+    """One embed of the saved story, then frees its slot. Never raises for the model
+    or the database."""
     try:
         return embed_story(context.db, model, user.customer_id, user.user_id, row.family_id, row.story)
     except (ModelUnavailable, ModelOutputError, BackendUnavailable, SQLAlchemyError) as error:
         logger.warning("story saved without a vector", extra={"code": type(error).__name__})
+        return False
+    finally:
+        _embed_slots.release()
+
+
+def _embed(context: AppContext, user: CurrentUser, row: stories_sql.StoryRow) -> bool:
+    """Embed the saved story unless the model is off or its vector is current. True
+    when it has a current vector afterwards. Waits at most EMBED_WAIT_SECONDS: a
+    slower embed goes on in the background and this says False. With every slot
+    taken it does not embed (the sweep will). Never raises for the model or the
+    database."""
+    model = context.model
+    if model is None or _current(model, row):
+        return model is not None
+    if not _embed_slots.acquire(blocking=False):
+        logger.warning("story saved without a vector", extra={"code": "embeds_busy"})
+        return False
+    try:
+        pending = _embeds.submit(_embed_now, context, model, user, row)
+    except RuntimeError:  # the pool was shut down: the app is stopping
+        _embed_slots.release()
+        return False
+    try:
+        return pending.result(timeout=EMBED_WAIT_SECONDS)
+    except WaitedTooLong:
+        logger.warning("story saved, its vector is still on its way", extra={"code": "embed_slow"})
         return False
 
 
