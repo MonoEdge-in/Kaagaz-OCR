@@ -15,7 +15,7 @@ page ever leaves the machine and nothing is downloaded at run time.
   * 503 ``busy``: the server is still on another page (one it cannot stop
     after a worker gave up on it), so the call waits and asks again, backing
     off, until its deadline; only then is it ``BackendUnavailable``;
-  * down, refused, another 5xx (``not_ready``, ``internal_error``), a 421, cut
+  * down, refused, another 5xx (``not_ready``, ``out_of_memory``, ``internal_error``), a 421, cut
     off, or past ``OCR_TIMEOUT_SECONDS``: ``BackendUnavailable("ocr")``, retried later;
   * 500 ``read_failed`` (the model raised on this page): ``ocr_failed``; 422:
     ``corrupt_file``; 413: ``image_too_large``; a 3xx (never followed),
@@ -91,7 +91,8 @@ _REFUSALS = {422: "corrupt_file", 413: "image_too_large"}
 # The first wait after a busy reply, doubled after each one up to the most.
 _BUSY_WAIT_SECONDS = 1.0
 _BUSY_WAIT_MAX_SECONDS = 15.0
-_VERSION = re.compile(r"[A-Za-z0-9._+;=@ -]{1,200}")
+# ":" is in the device the ocr server names (";device=gpu:0").
+_VERSION = re.compile(r"[A-Za-z0-9._+;=@: -]{1,200}")
 # C0 and C1 controls and the bidirectional overrides and isolates, as
 # kaagaz/answering/sanitize.py strips them.
 _CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")

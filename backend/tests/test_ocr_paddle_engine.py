@@ -170,6 +170,7 @@ def test_refusals_fail_the_document_with_a_code(fake: FakeOcrServer, status: int
     ("status", "error"),
     [
         (503, "not_ready"),
+        (503, "out_of_memory"),  # the GPU ran out: this page is fine, asked again later
         (500, "internal_error"),
         (500, "not json"),
         (502, "bad_gateway"),
