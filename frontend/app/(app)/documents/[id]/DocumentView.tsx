@@ -13,7 +13,8 @@
 // shown as plain text; it came from the document. Beside the page: the
 // document card, related documents and the invoice (DocumentPanels.tsx,
 // PRD 3 Y1 to Y3); a low-resolution page says so above it (Y4). Scanned text:
-// see ScannedTextPanel.tsx.
+// see ScannedTextPanel.tsx. My words: "Add meaning" by a value or a scanned
+// line, and the user's own words on the page (components/words/ViewerWords.tsx).
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -26,6 +27,8 @@ import { Icon } from "@/components/ui/Icon";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import { SCANNED_PANEL_ID, ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
+import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
+import wordStyles from "@/components/words/Words.module.css";
 import {
   newerVersionText,
   sortedVersions,
@@ -47,7 +50,7 @@ import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { decodeRegion } from "@/lib/regions";
 import { useSession } from "@/lib/session";
-import type { DocumentDetail, DocumentSummary, ExtractedValue } from "@/lib/types";
+import type { DocumentDetail, DocumentSummary, ExtractedValue, Region } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import { CardPanel, InvoicePanel, RelatedPanel } from "./DocumentPanels";
 import { ReadAgain } from "./ReadAgain";
@@ -94,6 +97,9 @@ export function DocumentView({
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
   const settling = useRef<"read" | "again" | null>(null);
   const readingAgain = useRef(false);
+  // "Add meaning": what it is for, and the button that opened it (focus goes back there).
+  const [adding, setAdding] = useState<{ text: string; region: Region } | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
 
   // While it is read: merge each summary; once it settles, ask for the detail once.
   const merge = (summary: DocumentSummary) =>
@@ -141,6 +147,13 @@ export function DocumentView({
 
   // A retry shows the loading state again until its own answer arrives.
   const current = loaded && loaded.attempt === attempt ? loaded : null;
+  const shown = current && "detail" in current ? current.detail : null;
+  const selection = !shown
+    ? null
+    : chosen && chosen.linkKey === linkKey
+      ? chosen.selection
+      : initialSelection(shown, pageParam, regionParam);
+  const words = useViewerWords(documentId, selection ? selection.pageNo : null);
 
   if (!current) {
     return (
@@ -180,10 +193,6 @@ export function DocumentView({
   }
 
   const detail = current.detail;
-  const selection =
-    chosen && chosen.linkKey === linkKey
-      ? chosen.selection
-      : initialSelection(detail, pageParam, regionParam);
   const page = selection ? detail.pages.find((p) => p.page_no === selection.pageNo) : undefined;
   const pageNumbers = detail.pages.map((p) => p.page_no);
 
@@ -200,6 +209,10 @@ export function DocumentView({
     viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
   const changePage = (pageNo: number) => choose(pageChange(selection, pageNo));
+  const addMeaning = (text: string, region: Region, from: HTMLElement) => {
+    opener.current = from;
+    setAdding({ text, region });
+  };
   const scannedOpen =
     scannedChoice && scannedChoice.linkKey === linkKey ? scannedChoice.open : scannedParam === "1";
   const setScanned = (open: boolean) => setScannedChoice({ linkKey, open });
@@ -349,6 +362,8 @@ export function DocumentView({
               highlights={highlightsOf(selection)}
               pageNumbers={pageNumbers}
               onPageChange={changePage}
+              marks={words.markers}
+              activeMark={words.activeId}
               tools={
                 hasScannedText && (
                   <button
@@ -374,6 +389,7 @@ export function DocumentView({
                     cited={scannedParam === "1" ? decodeRegion(regionParam) : null}
                     onShow={showSpot}
                     onClose={closeScanned}
+                    onAddMeaning={addMeaning}
                   />
                 )
               }
@@ -381,6 +397,7 @@ export function DocumentView({
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
           )}
+          {page && <PageWordsList words={words} />}
         </section>
         <div className={styles.panels}>
           <CardPanel {...panel} />
@@ -442,6 +459,14 @@ export function DocumentView({
                             {`, show on page ${value.region.page}`}
                           </span>
                         </button>
+                        <button
+                          type="button"
+                          className={`btn btn-quiet ${wordStyles.target}`}
+                          onClick={(event) => addMeaning(value.value, value.region, event.currentTarget)}
+                        >
+                          Add meaning
+                          <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
+                        </button>
                         <div className={styles.pageNote}>
                           Page {value.region.page}
                           {active ? ", highlighted on the page" : ""}
@@ -465,6 +490,21 @@ export function DocumentView({
           )}
         </section>
       </div>
+      {adding && (
+        <AddMeaningDialog
+          documentId={detail.id}
+          userId={me.user.id}
+          text={adding.text}
+          region={adding.region}
+          onClose={() => setAdding(null)}
+          onClosed={() => opener.current?.focus()}
+          onSaved={(message) => {
+            setAdding(null);
+            setAnnouncement(message);
+            words.reload();
+          }}
+        />
+      )}
     </div>
   );
 }

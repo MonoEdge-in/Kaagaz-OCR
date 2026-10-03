@@ -8,7 +8,8 @@
 //
 // The full page fits the width of its container (measured with a
 // ResizeObserver) and zooms from there; beside its number it says how the
-// page was read (PRD 2, R1). A crop preview fills its reserved box
+// page was read (PRD 2, R1). The user's own words (marks) are dashed, numbered
+// outlines, drawn on the full page only. A crop preview fills its reserved box
 // without clipping the spot, and is drawn only once it comes near the screen
 // (IntersectionObserver); until then a skeleton holds its space.
 
@@ -17,6 +18,9 @@ import Image from "next/image";
 import { useCallback, useState } from "react";
 import type { ReactNode } from "react";
 import { IconButton } from "@/components/ui/IconButton";
+import { markerId } from "@/components/words/ViewerWords";
+import { markerRect } from "@/components/words/spots";
+import type { Marker } from "@/components/words/spots";
 import { pageImageUrl } from "@/lib/api";
 import { boxToPixels, cropRect, fitCropView, pageAspect, regionsOnPage } from "@/lib/regions";
 import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
@@ -50,6 +54,9 @@ export interface PageViewerProps {
   /** More buttons at the end of the toolbar, and what they open, right below it. */
   tools?: ReactNode;
   belowToolbar?: ReactNode;
+  /** My words on this page (ViewerWords.tsx) and the one its list marked. */
+  marks?: Marker[];
+  activeMark?: string | null;
 }
 
 export function PageViewer({
@@ -61,6 +68,8 @@ export function PageViewer({
   onPageChange,
   tools,
   belowToolbar,
+  marks = [],
+  activeMark = null,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -150,6 +159,23 @@ export function PageViewer({
           />
         );
       })}
+      {crop
+        ? null
+        : marks.map((mark) => {
+            if (mark.region.kind !== "box") return null;
+            const px = markerRect(mark.region.box, width, height);
+            return (
+              <div
+                key={mark.id}
+                id={markerId(mark.id)}
+                className={mark.id === activeMark ? `${styles.mine} ${styles.mineActive}` : styles.mine}
+                aria-hidden="true"
+                style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
+              >
+                <span className={styles.mineNumber}>{mark.n}</span>
+              </div>
+            );
+          })}
     </div>
   );
 
@@ -203,7 +229,7 @@ export function PageViewer({
 
   let body: ReactNode;
   if (mode === "sheet") {
-    body = <SheetGrid documentId={document.id} page={page} highlights={onThisPage} />;
+    body = <SheetGrid documentId={document.id} page={page} highlights={onThisPage} marks={marks} activeMark={activeMark} />;
   } else if (mode === "none") {
     body = <div className={styles.frame}>{failed}</div>;
   } else {

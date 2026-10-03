@@ -390,6 +390,16 @@ export interface MyWord {
   updated_at: string;
 }
 
+/** One of my words on a spot of a page (GET /documents/{id}/my-words?page=): only mine. */
+export interface MySpot {
+  id: string;
+  word_id: string;
+  word: string;
+  meaning: string;
+  page_no: number;
+  region: Region;
+}
+
 /** POST /me/words: 201 created, 200 already there or replaced. */
 export interface WordSaved {
   word: MyWord;

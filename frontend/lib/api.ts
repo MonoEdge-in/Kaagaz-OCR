@@ -20,6 +20,7 @@ import type {
   FailedDocument,
   Folder,
   Me,
+  MySpot,
   MyWord,
   PageReadings,
   PasswordReset,
@@ -315,6 +316,9 @@ export const listMyWords = () => request<{ items: MyWord[] }>("GET", "/me/words"
 export const addMyWord = (body: object) => request<WordSaved>("POST", "/me/words", body);
 export const changeMyWord = (id: string, body: object) =>
   request<Omit<WordSaved, "outcome">>("PATCH", `/me/words/${encodeURIComponent(id)}`, body);
+/** My words on one page of a document, oldest first (the viewer's markers). */
+export const getMyWordsOnPage = (documentId: string, page: number) =>
+  request<{ items: MySpot[] }>("GET", `/documents/${encodeURIComponent(documentId)}/my-words${query({ page })}`);
 export const deleteMyWord = (id: string, userId: string) =>
   request<void>("DELETE", `/me/words/${encodeURIComponent(id)}${query({ user_id: userId })}`);
 
