@@ -170,6 +170,17 @@ export function citationLink(citation: Citation): string {
 }
 
 /**
+ * "See scanned text": the cited page with its Scanned text panel open and the
+ * cited lines marked. null for a gone source (its text is not shown any more)
+ * and for a sheet's cell, whose grid already is the reading.
+ */
+export function scannedLink(citation: Citation): string | null {
+  const region = citationRegion(citation);
+  if (citationSource(citation) === "gone" || !region || region.kind === "cell") return null;
+  return pageLink(citation.document_id, citation.page_no, region, { scanned: true });
+}
+
+/**
  * With a mouse or trackpad (a fine pointer), Enter sends and Shift+Enter makes
  * a new line. On a touch screen (`coarse`), Enter always makes a new line and
  * the Send button sends, as phone keyboards expect. Typing with an input

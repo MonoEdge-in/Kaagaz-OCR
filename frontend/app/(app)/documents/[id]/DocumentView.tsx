@@ -22,6 +22,8 @@ import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery"
 import { StatusChip } from "@/components/documents/StatusChip";
 import { Icon } from "@/components/ui/Icon";
 import { PageViewer } from "@/components/viewer/PageViewer";
+import { SCANNED_PANEL_ID, ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
+import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import {
   newerVersionText,
   sortedVersions,
@@ -41,6 +43,7 @@ import type { Selection } from "@/components/viewer/selection";
 import { ApiError, getDocument, getDocumentSummary } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
+import { decodeRegion } from "@/lib/regions";
 import { useSession } from "@/lib/session";
 import type { DocumentDetail, DocumentSummary, ExtractedValue } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
@@ -52,6 +55,7 @@ export interface DocumentViewProps {
   documentId: string;
   pageParam: string | null;
   regionParam: string | null;
+  scannedParam: string | null;
 }
 
 type Loaded = { attempt: number; detail: DocumentDetail } | { attempt: number; error: string };
@@ -65,7 +69,12 @@ function BackLink() {
   );
 }
 
-export function DocumentView({ documentId, pageParam, regionParam }: DocumentViewProps) {
+export function DocumentView({
+  documentId,
+  pageParam,
+  regionParam,
+  scannedParam,
+}: DocumentViewProps) {
   const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
   // Asks again but keeps showing what is loaded until the answer comes (once reading settles).
@@ -73,8 +82,11 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   // A choice made on this screen, remembered with the link it was made under,
   // so following a new link (new ?page / ?region) shows that link's spot.
-  const linkKey = `${pageParam ?? ""}|${regionParam ?? ""}`;
+  const linkKey = `${pageParam ?? ""}|${regionParam ?? ""}|${scannedParam ?? ""}`;
   const [chosen, setChosen] = useState<{ linkKey: string; selection: Selection } | null>(null);
+  // The Scanned text panel: open as the link says (?scanned=1) until it is toggled.
+  const [scannedChoice, setScannedChoice] = useState<{ linkKey: string; open: boolean } | null>(null);
+  const scannedButton = useRef<HTMLButtonElement>(null);
   const [announcement, setAnnouncement] = useState("");
   const viewerRef = useRef<HTMLElement>(null);
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
@@ -186,6 +198,14 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
     viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
   const changePage = (pageNo: number) => choose(pageChange(selection, pageNo));
+  const scannedOpen =
+    scannedChoice && scannedChoice.linkKey === linkKey ? scannedChoice.open : scannedParam === "1";
+  const setScanned = (open: boolean) => setScannedChoice({ linkKey, open });
+  const closeScanned = () => {
+    setScanned(false);
+    scannedButton.current?.focus();
+  };
+  const hasScannedText = page !== undefined && page.unit !== "cells";
   const lowResolution = page ? lowResolutionText(page) : null;
   const panel = { detail, active: selection?.region ?? null, onShow: showSpot };
 
@@ -327,6 +347,34 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
               highlights={highlightsOf(selection)}
               pageNumbers={pageNumbers}
               onPageChange={changePage}
+              tools={
+                hasScannedText && (
+                  <button
+                    ref={scannedButton}
+                    type="button"
+                    className="btn"
+                    aria-expanded={scannedOpen}
+                    aria-controls={scannedOpen ? SCANNED_PANEL_ID : undefined}
+                    onClick={() => setScanned(!scannedOpen)}
+                  >
+                    <Icon name="scan-text" />
+                    Scanned text
+                  </button>
+                )
+              }
+              belowToolbar={
+                hasScannedText &&
+                scannedOpen && (
+                  <ScannedTextPanel
+                    documentId={detail.id}
+                    page={page}
+                    active={selection?.region ?? null}
+                    cited={scannedParam === "1" ? decodeRegion(regionParam) : null}
+                    onShow={showSpot}
+                    onClose={closeScanned}
+                  />
+                )
+              }
             />
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
@@ -396,6 +444,10 @@ export function DocumentView({ documentId, pageParam, regionParam }: DocumentVie
                           Page {value.region.page}
                           {active ? ", highlighted on the page" : ""}
                         </div>
+                        <WhatWasRead
+                          value={value}
+                          page={detail.pages.find((p) => p.page_no === value.region.page)}
+                        />
                       </td>
                       <td role="cell" className={styles.labelCell}>
                         <LabelBadge label={value.label} />

@@ -198,6 +198,9 @@ export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 2
     "GET",
     `/documents/${id}/pages/${pageNo}/cells${query({ row_from: rowFrom, row_to: rowTo })}`,
   );
+/** What each reader read on one page, as read (the viewer's Scanned text panel only). */
+export const getPageReadings = (id: string, pageNo: number) =>
+  request<PageReadings>("GET", `/documents/${id}/pages/${pageNo}/readings`);
 
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),

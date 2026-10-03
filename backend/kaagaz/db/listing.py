@@ -371,6 +371,57 @@ def sheet_cells(
     )
 
 
+# Scanned text (2 Oct 2026): every line each reader read on one page, for the viewer
+# only. This text goes to the screen and never to the model, so nothing under
+# answering/ or search/ may import page_readings (tests/test_api_readings.py checks).
+MAX_READING_LINES = 2000  # per reader and page
+MAX_READING_TEXT = 100_000  # characters per reader and page
+MAX_READING_CHARS = MAX_READING_TEXT  # one line, cut in SQL: never more than the whole page
+READINGS_TIMEOUT_MS = 3000
+_SET_READINGS_TIMEOUT = text("SELECT set_config('statement_timeout', :ms, true)")
+# One row for a reader with no line on the page (the LEFT JOIN), else one per line in
+# stored order (ORDINALITY). A reader's lines stop once the characters before a line
+# pass the budget, so at most one line over it leaves the database; Python drops that
+# one and says ``truncated`` (views.page_readings).
+_PAGE_READINGS = text(
+    "SELECT ro.role, ro.reader, ro.reader_version, l.ord, l.text, l.cut, l.confidence, l.origin,"
+    " l.kind, l.region"
+    " FROM reader_outputs ro"
+    " LEFT JOIN LATERAL (SELECT * FROM (SELECT e.ord, left(e.span ->> 'raw', :max_chars) AS text,"
+    " length(e.span ->> 'raw') > :max_chars AS cut,"
+    " CAST(e.span ->> 'confidence' AS double precision) AS confidence,"
+    " e.span ->> 'origin' AS origin, e.span ->> 'kind' AS kind, e.span -> 'region' AS region,"
+    " sum(length(left(e.span ->> 'raw', :max_chars))) OVER (ORDER BY e.ord) AS upto"
+    " FROM jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
+    " WHERE (e.span -> 'region' ->> 'page')::int = :page_no"
+    " ORDER BY e.ord LIMIT :max_lines + 1) AS s"
+    " WHERE s.upto - length(s.text) <= :max_text) AS l ON true"
+    " WHERE ro.customer_id = :c AND ro.document_id = :d"
+    " ORDER BY ro.role, l.ord"
+)
+
+
+def page_readings(conn: Connection, customer_id: str, document_id: str, page_no: int) -> Sequence[RowMapping]:
+    """Every line the first and second reader read on one page, as read (``raw``),
+    the first reader first, each in stored order; capped in SQL, under a local timeout
+    (set_config(..., true) lasts until this transaction ends, as in search/hybrid.py).
+
+    O(spans of the document), as ``sheet_cells``: the output is one jsonb array,
+    unpacked in the database, and only this page's lines leave it.
+    ponytail: a per-page index of the spans is the upgrade if big documents get slow.
+    """
+    conn.execute(_SET_READINGS_TIMEOUT, {"ms": str(READINGS_TIMEOUT_MS)})
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "page_no": page_no,
+        "max_lines": MAX_READING_LINES,
+        "max_chars": MAX_READING_CHARS,
+        "max_text": MAX_READING_TEXT,
+    }
+    return conn.execute(_PAGE_READINGS, params).mappings().all()
+
+
 def rename_document(conn: Connection, customer_id: str, document_id: str, *, name: str) -> None:
     """Give this one version a new display name, already cleaned by the caller, and
     put it in its pieces' context headers too, so search never shows the old name.

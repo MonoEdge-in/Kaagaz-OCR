@@ -25,6 +25,7 @@ import {
   citationLink,
   citationRegion,
   citationSource,
+  scannedLink,
 } from "./answer";
 import { useNearView } from "./hooks";
 import { labelPlace, pageJumps, sourceAction, sourceMeta } from "./logic";
