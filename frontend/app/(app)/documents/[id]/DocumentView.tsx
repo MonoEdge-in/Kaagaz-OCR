@@ -93,6 +93,9 @@ export function DocumentView({
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
   const settling = useRef<"read" | "again" | null>(null);
   const readingAgain = useRef(false);
+  // "Add meaning": what it is for, and the button that opened it (focus goes back there).
+  const [adding, setAdding] = useState<{ text: string; region: Region } | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
 
   // While it is read: merge each summary; once it settles, ask for the detail once.
   const merge = (summary: DocumentSummary) =>
@@ -140,6 +143,13 @@ export function DocumentView({
 
   // A retry shows the loading state again until its own answer arrives.
   const current = loaded && loaded.attempt === attempt ? loaded : null;
+  const shown = current && "detail" in current ? current.detail : null;
+  const selection = !shown
+    ? null
+    : chosen && chosen.linkKey === linkKey
+      ? chosen.selection
+      : initialSelection(shown, pageParam, regionParam);
+  const words = useViewerWords(documentId, selection ? selection.pageNo : null);
 
   if (!current) {
     return (
@@ -179,10 +189,6 @@ export function DocumentView({
   }
 
   const detail = current.detail;
-  const selection =
-    chosen && chosen.linkKey === linkKey
-      ? chosen.selection
-      : initialSelection(detail, pageParam, regionParam);
   const page = selection ? detail.pages.find((p) => p.page_no === selection.pageNo) : undefined;
   const pageNumbers = detail.pages.map((p) => p.page_no);
 
@@ -380,6 +386,7 @@ export function DocumentView({
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
           )}
+          {page && <PageWordsList words={words} />}
         </section>
         <div className={styles.panels}>
           <CardPanel {...panel} />
@@ -442,6 +449,14 @@ export function DocumentView({
                             {`, show on page ${value.region.page}`}
                           </span>
                         </button>
+                        <button
+                          type="button"
+                          className={`btn btn-quiet ${wordStyles.target}`}
+                          onClick={(event) => addMeaning(value.value, value.region, event.currentTarget)}
+                        >
+                          Add meaning
+                          <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
+                        </button>
                         <div className={styles.pageNote}>
                           Page {value.region.page}
                           {active ? ", highlighted on the page" : ""}
@@ -465,6 +480,21 @@ export function DocumentView({
           )}
         </section>
       </div>
+      {adding && (
+        <AddMeaningDialog
+          documentId={detail.id}
+          userId={me.user.id}
+          text={adding.text}
+          region={adding.region}
+          onClose={() => setAdding(null)}
+          onClosed={() => opener.current?.focus()}
+          onSaved={(message) => {
+            setAdding(null);
+            setAnnouncement(message);
+            words.reload();
+          }}
+        />
+      )}
     </div>
   );
 }
