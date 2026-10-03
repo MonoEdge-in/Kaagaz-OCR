@@ -24,9 +24,11 @@ import {
 } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
 import { fieldText } from "@/components/viewer/labels";
+import { valueAt } from "@/components/viewer/scanned";
 import { sameRegion } from "@/components/viewer/selection";
+import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import { docTypeLabel } from "@/lib/format";
-import type { DocumentDetail, Region } from "@/lib/types";
+import type { DocumentDetail, ExtractedValue, Region } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
 interface PanelProps {
@@ -54,6 +56,14 @@ function SpotButton({
       {text}
       <span className="visually-hidden">{`, show on page ${spot.region.page}`}</span>
     </button>
+  );
+}
+
+/** The value's "What was read", when there is a value. */
+function ReadAt({ detail, value }: { detail: DocumentDetail; value: ExtractedValue | undefined }) {
+  if (!value) return null;
+  return (
+    <WhatWasRead value={value} page={detail.pages.find((p) => p.page_no === value.region.page)} />
   );
 }
 
@@ -96,6 +106,7 @@ export function CardPanel({ detail, active, onShow }: PanelProps) {
                     <span className={styles.fieldCell}>{item.name}: </span>
                     <SpotButton spot={item} text={item.text} active={active} onShow={onShow} />
                     <div className={styles.pageNote}>{spotNote(item)}</div>
+                    <ReadAt detail={detail} value={valueAt(detail.values, item.region)} />
                   </li>
                 ))}
               </ul>
@@ -166,7 +177,15 @@ export function InvoicePanel({ detail, active, onShow }: PanelProps) {
         {INVOICE_FIELDS.map(([name, stored]) => (
           <div key={name} className={styles.factRow}>
             <dt>{fieldText(name)}</dt>
-            <dd>{cell("document", stored, invoice[name])}</dd>
+            <dd>
+              {cell("document", stored, invoice[name])}
+              {invoice[name] !== null && (
+                <ReadAt
+                  detail={detail}
+                  value={detail.values.find((v) => v.record_key === "document" && v.field === stored)}
+                />
+              )}
+            </dd>
           </div>
         ))}
       </dl>

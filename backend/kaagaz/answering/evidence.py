@@ -11,6 +11,16 @@ reaches ``answer_min_evidence_score``, or at least half of the question's
 keywords appear in the evidence text (ignoring case). Otherwise the answer is
 "not found" plus the closest documents.
 
+The keyword rule (council 2 Oct 2026, PR2 D): digits of any script read as
+ASCII; each keyword counts once, out of the keyword count; a keyword with a
+digit ("48", "inv-1042") must be in the evidence as a whole token
+(``has_token``: not in 148, 1,48,000, 4.48, 47/48, 48/2 or 48.00), checked
+first on every path, and the score path needs the best piece, whose score it
+is, to hold it too; a keyword also counts through a glossary equivalent
+(``glossary.present``), and such a pass is ``"glossary"``, capped at needs
+review by the service, which also checks each kept sentence's own cited hits
+(``service._judged``).
+
 PROVISIONAL, a change from the spec's "word score or meaning score": the word
 score is PostgreSQL's raw ``ts_rank_cd``, which is small and unbounded (about
 0.1 for an exact "INV-1042", 0.033 for "invoice grand total"), so it cannot
@@ -51,14 +61,32 @@ import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from decimal import Decimal
+from typing import Any, Literal, Protocol
 
+from kaagaz.answering import glossary
 from kaagaz.answering.sanitize import strip_ignorable
+from kaagaz.chunking.script import ascii_digits
 from kaagaz.db.engine import Database
+from kaagaz.extraction.parsing import _INDIAN, _WESTERN
 from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_json
 from kaagaz.search.scope import Scope
 
 CLOSEST_DOCUMENTS = 3
+
+# How the gate passed: a score, the English keywords, or only with the glossary's help.
+Gate = Literal["score", "keywords", "glossary"]
+_DIGIT = re.compile("[0-9]")
+_LETTER = re.compile("[a-z]")
+# Whole tokens (has_token), on text folded by _fold: NFKC, and the hyphens (U+2010, U+2011),
+# the en dash (U+2013) and the em dash (U+2014) as "-". No letter, mark or digit (\w) right
+# before or after, and no dash, slash or dot joining a letter or digit on either side: the
+# number 48 is not in "48-A", "A-48", "INV-48" or "A/48" ("48-49" is one token, as written).
+_DASHES = str.maketrans(dict.fromkeys("\u2010\u2011\u2013\u2014", "-"))
+_NUMBER_TOKEN = re.compile(r"(?<!\w)(?<![0-9a-z][-/.])[0-9]+(?:[.,/-][0-9]+)*(?!\w)(?![-/.][0-9a-z])")
+_ID_TOKEN = re.compile(r"(?<!\w)[a-z0-9]+(?:[-/.][a-z0-9]+)*(?!\w)")  # as normalise splits words
+_WORD = re.compile(r"[a-z0-9]+(?:[-/.][a-z0-9]+)*")  # hinglish.normalise's words
+_ALNUM = re.compile("[a-z0-9]+")
 
 _TELL = r"(?:say|answer|reply|tell|respond|write)"  # an imperative near "when asked"
 # Before "when asked", the imperative starts its clause ("Reply that ..."); after it, any
@@ -99,7 +127,7 @@ _INSTRUCTION_LIKE = (
         re.IGNORECASE | re.DOTALL,
     ),
     re.compile(
-        r"(?:पिछले|पहले|ऊपर|सभी|सारे|मागील|सर्व).{0,40}?(?:निर्देश|आदेश|सूचना)"
+        r"(?:पिछले|पहले|ऊपर|सभी|सारे|मागील|आधीच्या|पूर्वीच्या|सर्व).{0,40}?(?:निर्देश|आदेश|सूचना)"
         # "Forget" is भूल जा..., never भूल alone: "भूल चूक लेनी देनी" is a bill's E&OE.
         r".{0,40}?(?:अनदेखा|नज\N{DEVANAGARI SIGN NUKTA}?रअंदाज|भूल\s*जा|विसर|दुर्लक्ष)"
         # ... unless it says not to: "अनदेखा न करें", "दुर्लक्ष करू नये", "विसरू नका".
@@ -140,6 +168,12 @@ class Hit(Protocol):
     def meaning_score(self) -> float | None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class Retrieved:
+    hits: Sequence[Hit]  # best first
+    neighbours: Sequence[Hit] = ()  # Q4: the pieces next to the hits, each once, never a hit
+
+
 class Retriever(Protocol):
     def search(
         self, customer_id: str, text: str, embedding: list[float] | None, limit: int, scope: Scope
@@ -168,7 +202,7 @@ class PgRetriever:
     ) -> Sequence[Hit]:
         # Imported here so the answering rules (and their tests) do not need the
         # search module; only the real retriever does.
-        from kaagaz.search.hybrid import search
+        from kaagaz.search.hybrid import neighbours, search
 
         with self._db.customer(customer_id) as conn:
             return search(
@@ -213,19 +247,89 @@ def number_evidence(hits: Sequence[Hit], *, start: int = 1, neighbour: bool = Fa
     return evidence
 
 
-def enough_evidence(evidence: Sequence[Evidence], keywords: Sequence[str], min_score: float) -> bool:
-    """The evidence gate (see the module docstring)."""
+def enough_evidence(
+    evidence: Sequence[Evidence],
+    keywords: Sequence[str],
+    min_score: float,
+    numbers: Sequence[str] | None = None,
+) -> Gate | None:
+    """The evidence gate (see the module docstring): how it passed, or None. ``numbers``: the
+    question's own numbers and ids (``numbers_asked``); None takes the keywords with a digit.
+    O(k * t) for k keywords over t characters of evidence."""
     if not evidence:
-        return False
+        return None
+    wanted = list(dict.fromkeys(ascii_digits(keyword).casefold() for keyword in keywords))
+    numbered = [word for word in wanted if _DIGIT.search(word)] if numbers is None else list(numbers)
+    haystack = ascii_digits("\n".join(item.hit.text for item in evidence)).casefold()
+    # First, on every path: a close score for "gat 48" over a gat 47 piece is no answer.
+    if not all(has_token(keyword, haystack) for keyword in numbered):
+        return None
     best = evidence[0].hit
-    for score in (best.meaning_score, best.fuzzy_score):
-        if score is not None and score >= min_score:
-            return True
-    if not keywords:
-        return False
-    haystack = "\n".join(item.hit.text for item in evidence).casefold()
-    present = sum(1 for keyword in keywords if keyword.casefold() in haystack)
-    return present * 2 >= len(keywords)
+    # The score belongs to the best piece, so that piece itself must hold every number asked.
+    own = ascii_digits(best.text).casefold()
+    if all(has_token(keyword, own) for keyword in numbered):
+        for score in (best.meaning_score, best.fuzzy_score):
+            if score is not None and score >= min_score:
+                return "score"
+    if not wanted:
+        return None
+    english = sum(1 for keyword in wanted if keyword in haystack)
+    if english * 2 >= len(wanted):
+        return "keywords"
+    either = sum(1 for keyword in wanted if keyword in haystack or glossary.present(keyword, haystack))
+    return "glossary" if either * 2 >= len(wanted) else None
+
+
+def numbers_asked(question: str, keywords: Sequence[str]) -> list[str]:
+    """The numbers and ids the question asks about, whole, from its own text (``_fold``ed):
+    "1,20,000" is one number, never 1, 20 and 000; "48-49" and "48-A" are kept as written. A
+    token none of whose parts ``normalise`` kept as a keyword is left out, so a date's year or
+    the 30 of "last 30 days" is not asked. Fail closed: a keyword with a digit that no token
+    covers is asked as it is, so a number is never lost. O(q)."""
+    folded = _fold(ascii_digits(question).casefold())
+    kept = set(keywords)
+    ids = [t for t in _ID_TOKEN.findall(folded) if _LETTER.search(t) and _DIGIT.search(t)]
+    tokens = _NUMBER_TOKEN.findall(folded) + ids
+    asked = [t for t in tokens if kept & {*_WORD.findall(t), *_ALNUM.findall(t)}]
+    covered = {part for t in asked for part in (t, *_WORD.findall(t), *_ALNUM.findall(t))}
+    asked += [word for word in keywords if _DIGIT.search(word) and word not in covered]
+    return list(dict.fromkeys(asked))
+
+
+def has_token(keyword: str, folded: str) -> bool:
+    """A keyword with a digit is in ``folded`` (``ascii_digits`` and casefolded text, then
+    ``_fold``ed here, like the keyword) only as a whole token: a number as one of the text's
+    numbers (``_NUMBER_TOKEN``), equal by value (450 is 450.00, 1,20,000 is 120000) or, with
+    a slash or dash, as written, so "48" is not in 148, 1,48,000, 4.48, 47/48, 48/2, 48-A or
+    A-48; one with a letter as one of its ids (``_ID_TOKEN``), as written, so "inv-1042" is
+    not in INV-10421. A keyword with no digit is a plain substring, as before. O(t)."""
+    if not _DIGIT.search(keyword):
+        return keyword in folded
+    keyword, folded = _fold(keyword), _fold(folded)
+    if _LETTER.search(keyword):
+        return keyword in _ID_TOKEN.findall(folded)
+    value = _value(keyword)
+    return any(
+        token == keyword or (value is not None and _value(token) == value)
+        for token in _NUMBER_TOKEN.findall(folded)
+    )
+
+
+def _fold(text: str) -> str:
+    """NFKC, and every hyphen and dash as "-", so the question and the evidence write a
+    joined number the same way. O(n)."""
+    return unicodedata.normalize("NFKC", text).translate(_DASHES)
+
+
+def _value(token: str) -> Decimal | None:
+    """A plain number's value, its commas only as Indian or Western grouping; None for a
+    token with a slash or dash, or other commas. O(n)."""
+    whole, _, fraction = token.partition(".")
+    if any(ch in token for ch in "/-") or (fraction and not fraction.isdigit()):
+        return None
+    if "," in whole and not (_INDIAN.fullmatch(whole) or _WESTERN.fullmatch(whole)):
+        return None
+    return Decimal(token.replace(",", ""))
 
 
 def closest_documents(hits: Sequence[Hit]) -> list[dict[str, str]]:

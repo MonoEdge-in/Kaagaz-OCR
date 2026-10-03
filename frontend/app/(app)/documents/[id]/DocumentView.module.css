@@ -502,3 +502,21 @@
 .errorTitle {
   font-weight: 600;
 }
+
+/* Your story about this document (StoryPanel.tsx): every button is at least
+   44 px (the touch size); the story is the user's text, wrapped anywhere. */
+.storyTarget {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.storyBox {
+  min-height: 7rem;
+  resize: vertical;
+}
+
+.storyText {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

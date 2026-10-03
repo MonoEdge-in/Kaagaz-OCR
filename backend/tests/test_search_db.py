@@ -18,8 +18,10 @@ from sqlalchemy import text
 
 from kaagaz.chunking.script import is_devanagari, latin_spelling
 from kaagaz.db.engine import Database
+from kaagaz.search import hybrid
 from kaagaz.search.hybrid import SearchHit, search, vector_literal
 from kaagaz.search.indexing import recipe_tag
+from kaagaz.search.scope import EVERYTHING
 from tests.db_support import new_customer
 
 pytestmark = pytest.mark.db
@@ -325,3 +327,36 @@ def test_vectors_with_an_old_tag_are_left_out_of_meaning_but_words_find_them(db:
     assert {hit.piece_id for hit in hits} == {old, current}
     by_id = {hit.piece_id: hit for hit in hits}
     assert by_id[old].meaning_score is None and by_id[old].word_score is not None
+
+
+# --- the glossary word list (council 2 Oct 2026, PR2 C) ------------------------------
+
+
+def test_an_english_word_finds_a_marathi_piece_through_the_glossary(db: Database) -> None:
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    owner, _ = add_pieces(db, customer, document, [("भोगवटादाराचे नाव रामचंद्र", None), ("करार झाला", None)])
+
+    hits = run(db, customer, "owner")  # भोगवटादार:* takes the inflected भोगवटादाराचे
+
+    assert [hit.piece_id for hit in hits] == [owner]
+    assert hits[0].word_score is not None and hits[0].word_score > 0
+
+
+def test_a_short_glossary_term_matches_a_whole_word_only(db: Database) -> None:
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    tax, _ = add_pieces(db, customer, document, [("कर भरला", None), ("करार झाला", None)])
+
+    assert [hit.piece_id for hit in run(db, customer, "tax")] == [tax]  # कर, never करार
+
+
+def test_an_empty_glossary_query_matches_nothing(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_pieces(db, customer, add_document(db, customer), [("कर भरला", None)])
+    words = {"c": customer, "q": "zzz", "k": "zzz", "n": 50} | EVERYTHING.params()
+    with db.customer(customer) as conn:
+        assert conn.execute(hybrid._WORD, words | {"g": ""}).all() == []
+        assert len(conn.execute(hybrid._WORD, words | {"g": "कर"}).all()) == 1  # the control
+
+    assert run(db, customer, "zzz") == []  # no keyword listed: :g is "", and nothing else matches

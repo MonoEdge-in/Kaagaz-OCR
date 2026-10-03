@@ -33,6 +33,7 @@ export const ICON_NAMES = [
   "search-off",
   "refresh",
   "history",
+  "words",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -164,5 +165,12 @@ export const ICONS: Record<IconName, readonly IconShape[]> = {
     path("M4 12a8 8 0 1 0 2.3-5.7L4 8.6"),
     path("M4 4.5v4.1h4.1"),
     path("M12 8v4.5l3 2"),
+  ],
+  // An open book with a line of text on each page: my words.
+  words: [
+    path("M12 6.5C10 5 7 4.5 3.5 5v13c3.5-0.5 6.5 0 8.5 1.5 2-1.5 5-2 8.5-1.5V5C17 4.5 14 5 12 6.5Z"),
+    path("M12 6.5v13"),
+    path("M6 9h3.5"),
+    path("M14.5 9H18"),
   ],
 };

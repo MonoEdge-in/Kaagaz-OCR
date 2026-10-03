@@ -40,6 +40,12 @@ FROM_0004 = {
     "document_links": (True, True, False, True),
     "processing_runs": (True, True, False, False),
 }
+# My words (0008): a word's text and meaning may change; a spot is only added or deleted.
+FROM_0008 = {"user_words": (True, True, True, True), "user_word_spots": (True, True, False, True)}
+# Story of this PDF (0009): a story is created, replaced (its vector too) and deleted.
+FROM_0009 = {"document_stories": (True, True, True, True)}
+# The second policy of the tables that belong to one user (0008, 0009): it must pass too.
+OWN_USER = "(user_id = (NULLIF(current_setting('kaagaz.user_id'::text, true), ''::text))::uuid)"
 RUN_OUTCOME = {
     "status", "error_code", "ocr_engine", "model_chat", "model_vision", "model_embed", "config",
     "pages_cells", "pages_text_layer", "pages_ocr", "pages_blank", "vision_crops", "model_calls",
@@ -65,7 +71,7 @@ def _customer_tables(db: Database) -> dict[str, tuple[bool, str]]:
 
 def test_every_customer_table_has_row_level_security_and_the_customer_only_policy(db: Database) -> None:
     tables = _customer_tables(db)
-    assert set(tables) >= FROM_0001 | FROM_0002 | set(FROM_0004)
+    assert set(tables) >= FROM_0001 | FROM_0002 | set(FROM_0004) | set(FROM_0008) | set(FROM_0009)
 
     with db.system() as conn:
         policies = {
@@ -111,8 +117,24 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
-    for table, expected in FROM_0004.items():
+    for table, expected in (FROM_0004 | FROM_0008 | FROM_0009).items():
         assert granted[table] == expected, table
+
+
+def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(db: Database) -> None:
+    """It must pass as well as customer_only: with no user set, no row is seen or written."""
+    with db.system() as conn:
+        policies = {
+            table: (command, permissive, roles, using, check)
+            for table, command, permissive, roles, using, check in conn.execute(
+                text(
+                    "SELECT tablename, cmd, permissive, roles, qual, with_check FROM pg_policies"
+                    " WHERE schemaname = 'public' AND policyname <> 'customer_only'"
+                )
+            )
+        }
+    own = FROM_0008 | FROM_0009
+    assert policies == {table: ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER) for table in own}
 
 
 def test_the_app_may_update_only_the_outcome_columns_of_a_run(db: Database) -> None:

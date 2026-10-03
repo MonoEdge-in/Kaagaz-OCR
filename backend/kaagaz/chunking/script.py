@@ -19,6 +19,10 @@ of it looks sound, and a Latin spelling of it for search.
 * ``fold_digits`` (L4). Devanagari digits become ASCII digits for parsing and
   for quote matching. It is one character for one, so offsets still hold. The
   printed text (``value_text``) is never changed.
+* ``ascii_digits`` (council 2 Oct 2026, PR2 E). Every Unicode decimal digit
+  (Devanagari, Gujarati, any category Nd) as its ASCII digit, for checking
+  numbers; one character for one. ``fold_digits`` stays Devanagari only:
+  ``hinglish.normalise`` uses it, and its output must not change.
 * ``latin_spelling`` (L3, ML amendment 8's recipe, PROVISIONAL). For each run
   of Devanagari letters: NFC, then IAST with indic-transliteration. The final
   "a" is dropped only when the run ends in a bare consonant (a nukta is
@@ -87,6 +91,7 @@ _RUN = re.compile(r"(?P<letters>[\u0900-\u0963\u0971-\u097f\u200c\u200d]+)|[\u09
 _FINAL_A = re.compile(r"a([\u093c\u200c\u200d]*)(?=\u1e25?\Z)")
 _ANUSVARA_BEFORE_LIP = re.compile("\N{LATIN SMALL LETTER M WITH DOT BELOW}(?=[pbm])")
 _PLACEHOLDER = "\x00"  # never in the IAST spelling of a Devanagari run
+_NON_ASCII_DIGIT = re.compile(r"(?![0-9])\d")  # in a str pattern, \d is every decimal digit (Nd)
 
 
 def devanagari_share(text: str) -> float:
@@ -139,6 +144,13 @@ def ocr_script_suspect(text: str) -> bool:
 def fold_digits(text: str) -> str:
     """Devanagari digits as ASCII digits; every other character unchanged, so the length is the same."""
     return text.translate(_DIGITS)
+
+
+def ascii_digits(text: str) -> str:
+    """Every decimal digit (category Nd) as its ASCII digit; every other character unchanged."""
+    if text.isascii():
+        return text
+    return _NON_ASCII_DIGIT.sub(lambda match: str(unicodedata.decimal(match[0])), text)
 
 
 def latin_spelling(text: str) -> str:
