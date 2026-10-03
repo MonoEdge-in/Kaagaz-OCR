@@ -251,11 +251,19 @@ def test_a_name_is_backed_by_an_equal_sound_never_by_a_glossary_meaning(
     assert (answer.status, answer.label) == ("answered", label)
 
 
-def test_a_lower_case_romanised_word_of_the_question_may_be_echoed() -> None:
-    texts = {1: OWNER.text}
-    sentence = DraftSentence("The malak is रामचंद्र गणपत पाटील.", [1])
-    assert not service._unbacked_latin(sentence, texts, set(), ["malak"])
-    assert service._unbacked_latin(DraftSentence("Malak is रामचंद्र.", [1]), texts, set(), ["malak"])
+@pytest.mark.parametrize(
+    ("question", "reply"),
+    [
+        ("gat 47 cha bhogvatdar kisan patil ahe ka?", "The भोगवटादार of gat 47 is kisan patil."),
+        ("gat 47 cha bhogvatdar malik patil ahe ka?", "The भोगवटादार of gat 47 is malik patil."),
+        ("gat 47 cha malak kon ahe?", "The भोगवटादार of gat 47 is malak patil."),
+    ],
+)
+def test_a_romanised_word_of_the_question_echoed_in_lower_case_backs_nothing(
+    question: str, reply: str
+) -> None:
+    answer = ask(question, [ROW], says(reply))
+    assert (answer.status, answer.label) == ("answered", "needs_review")
 
 
 @pytest.mark.parametrize(
@@ -276,3 +284,22 @@ def test_a_romanised_keyword_counts_as_a_whole_word_only(
 
 def test_a_romanised_keyword_found_as_written_is_still_capped() -> None:
     assert gate("malak kon ahe?", piece("deed.pdf", "Malak: Ram Patil")) == "glossary"
+
+
+@pytest.mark.parametrize(
+    ("question", "text", "reply"),
+    [
+        (
+            "Show the invoice for September",
+            "Invoices for September: 3",
+            "There are 3 invoices for September.",
+        ),
+        ("What is the total?", "GrandTotal 500", "The total is 500."),
+        ("What is the GSTIN?", "GSTIN27XYZ", "The GSTIN is GSTIN27XYZ."),
+    ],
+)
+def test_a_plural_camel_case_or_a_word_joined_to_digits_still_counts_as_written(
+    question: str, text: str, reply: str
+) -> None:
+    hit = piece("bill.pdf", text)
+    assert ask(question, [hit], says(reply)).label == "verified"
