@@ -277,13 +277,23 @@ def _form_folder_id(value: str | UploadFile | None) -> str | None:
         raise ApiError(400, "bad_request") from None
 
 
-def _same_user(value: str | UploadFile | None, user: CurrentUser) -> None:
+def _same_user(value: str | UploadFile | None, user: CurrentUser, message: str | None = None) -> None:
     """The optional ``user_id`` form field: who the browser tab had signed in when
-    the file was chosen. Someone else signed in since (in another tab, critical
-    #5) gets 409 ``session_changed`` before anything is stored, so the file never
-    lands in their account. Not sent: no check (PROVISIONAL)."""
-    if value is not None and value != user.user_id:
-        raise ApiError(409, "session_changed")
+        the file was chosen. Someone else signed in since (in another tab, critical
+        #5) gets 409 ``session_changed`` before anything is stored, so the file never
+        lands in their account. Not sent: no check (PROVISIONAL). ``message`` is
+        another route's own words (my words). Compared as UUIDs, so an upper-case id
+    of the same user passes."""
+    if value is not None and _uuid_or_none(value) != uuid.UUID(user.user_id):
+        raise ApiError(409, "session_changed", message)
+
+
+def _uuid_or_none(value: str | UploadFile) -> uuid.UUID | None:
+    """The id as a UUID, so letter case and hyphens don't matter; None for anything else."""
+    try:
+        return uuid.UUID(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
 
 
 def _accept(

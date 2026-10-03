@@ -1,0 +1,69 @@
+/* My words and "Words in these files". Tokens only (app/globals.css); the
+   global .stack and .row do the rest. Every button, field and summary here is
+   at least 44 px tall (the touch size). */
+
+.target,
+.field :global(.input),
+.uploadWords > summary {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.subheading {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.block {
+  margin-bottom: var(--space-5);
+}
+
+.fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-3);
+}
+
+.field {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.list {
+  flex: 1 1 20rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.word {
+  flex: 0 1 12rem;
+  font-weight: 600;
+}
+
+.word,
+.text {
+  overflow-wrap: anywhere;
+}
+
+.uploadWords > summary {
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pairState {
+  flex-basis: 100%;
+  margin: 0;
+}
