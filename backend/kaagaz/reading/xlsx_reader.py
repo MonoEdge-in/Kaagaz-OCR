@@ -14,10 +14,11 @@ Guards, all limits passed in (no defaults):
 * Parts must be stored or deflated, and not encrypted or "patched". Sizes are
   counted from the bytes actually read, never trusted from the zip header.
 * Each part at most ``max_member_bytes``; all parts together at most
-  ``max_total_bytes``. Parsing one part needs about 25 times its size in
-  memory, so ``max_member_bytes`` sets the peak memory of a read.
+  ``max_total_bytes``.
 * XML must be UTF-8 and must not contain a DOCTYPE, so entity tricks
-  ("billion laughs", external entities) cannot start.
+  ("billion laughs", external entities) cannot start. Both are checked on the
+  part's whole bytes before parsing starts, and the parser reads UTF-8
+  whatever encoding the part declares.
 * External relationships in the workbook are refused (nothing is ever
   fetched). Macros are refused, found by name, relationship type and content
   type, ignoring case.
@@ -48,10 +49,14 @@ checks for those files belong to their own reader.
 Errors are raised as short codes outside any ``except`` block, so no parser
 error (which can quote content) is chained on.
 
-Time is O(n) in the size of the parts read. Memory: see ``max_member_bytes``
-above, plus the spans (bounded by ``max_cells`` and ``max_text_chars``).
+Time is O(n) in the size of the parts read. Memory: the bytes of the part being
+read (at most ``max_member_bytes``), plus the spans (bounded by ``max_cells``
+and ``max_text_chars``). Sheets and shared strings are parsed as a stream of
+events and dropped as they are read, so no whole parse tree is built; only
+the small workbook, relationships and content-types parts become trees.
 """
 
+import codecs
 import io
 import posixpath
 import re
@@ -60,6 +65,7 @@ import zipfile
 import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import cast
 
 from kaagaz.ingestion import sniff
 from kaagaz.reading.socket import NoReader, OnPage
@@ -68,22 +74,27 @@ from kaagaz.reading.spans import CellLocation, ReadError, Span
 _MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _DOC_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
-_CONTENT_TYPES_NS = "{http://schemas.openxmlformats.org/package/2006/content-types}"
 
 _WORKBOOK = "xl/workbook.xml"
 _WORKBOOK_RELS = "xl/_rels/workbook.xml.rels"
 _SHARED_STRINGS = "xl/sharedStrings.xml"
 _CONTENT_TYPES = "[Content_Types].xml"
+_SHEET_DATA = f"{_MAIN}sheetData"
+_ROW = f"{_MAIN}row"
 
 # Excel's own grid limits.
 _MAX_ROW = 1_048_576
 _MAX_COLUMN = 16_384
 _CELL_REF = re.compile(r"([A-Z]{1,3})([1-9][0-9]{0,6})")
-_DOCTYPE = re.compile(r"<!DOCTYPE", re.IGNORECASE)
+_DOCTYPE = re.compile(rb"<!DOCTYPE", re.IGNORECASE)
 _ALLOWED_COMPRESSION = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
 # Zip flag bits: 0x01 encrypted, 0x20 "compressed patched data", 0x40 strong
 # encryption. None of them appear in a normal spreadsheet.
 _REFUSED_FLAGS = 0x01 | 0x20 | 0x40
+# Bytes handed to the UTF-8 check and to the parser at a time.
+_CHUNK = 16 * 1024
+# A part's parser events: only "start" and "end" are asked for, so each is (event, element).
+_Events = Iterator[tuple[str, ET.Element]]
 
 # Signs of macros, compared in lower case.
 _MACRO_NAMES = ("vbaproject.bin",)
@@ -181,7 +192,7 @@ class _Workbook:
             part = targets.get(sheet.get(f"{_DOC_REL}id", ""))  # no id: no part, so corrupt
             if part is None:
                 raise ReadError("corrupt_file")
-            self._read_sheet(sheet_number, self._xml(part), shared, spans)
+            self._read_sheet(sheet_number, part, shared, spans)
         return spans
 
     # -- parts ------------------------------------------------------------
@@ -197,7 +208,7 @@ class _Workbook:
                 if any(word in content_type for word in _MACRO_CONTENT_WORDS):
                     raise ReadError("macros_not_allowed")
 
-    def _member(self, name: str) -> bytes:
+    def _member(self, name: str) -> bytearray:
         info = self._parts.get(name)
         if info is None or info.header_offset < 0:
             raise ReadError("corrupt_file")
@@ -208,24 +219,50 @@ class _Workbook:
         limit = self._limits.max_member_bytes
         if info.file_size > limit:
             raise ReadError("too_large_inside")
-        content = bytearray()
+        # Room for the header's size (within the limit), so growing never over-allocates.
+        # Only the bytes actually read are kept and counted.
+        content = bytearray(info.file_size)
+        size = 0
         with self._zip.open(info) as part:
             while chunk := part.read(64 * 1024):
-                content += chunk
                 # Backstop: zipfile stops at the declared size and fails the
                 # CRC check, but the limit must hold whatever zipfile does.
-                if len(content) > limit:
+                if size + len(chunk) > limit:
                     raise ReadError("too_large_inside")
+                content[size : size + len(chunk)] = chunk
+                size += len(chunk)
+        del content[size:]
         self._bytes_read += len(content)
         if self._bytes_read > self._limits.max_total_bytes:
             raise ReadError("too_large_inside")
-        return bytes(content)
+        return content  # not copied to bytes: one copy of the part at a time
+
+    def _events(self, name: str) -> _Events:
+        """The part's "start" and "end" events, in order. The whole part is checked
+        first: strict UTF-8 (else UnicodeDecodeError, so corrupt) and no DOCTYPE."""
+        content = self._member(name)
+        view = memoryview(content)
+        utf8 = codecs.getincrementaldecoder("utf-8")()  # strict; the text is thrown away
+        for start in range(0, len(view), _CHUNK):
+            utf8.decode(view[start : start + _CHUNK])
+        utf8.decode(b"", final=True)
+        if _DOCTYPE.search(content):
+            raise ReadError("doctype_not_allowed")
+        # encoding="utf-8" overrides whatever the part declares (checked above as UTF-8).
+        parser = ET.XMLPullParser(("start", "end"), _parser=ET.XMLParser(encoding="utf-8"))
+        for start in range(0, len(view), _CHUNK):
+            parser.feed(view[start : start + _CHUNK])
+            yield from cast(_Events, parser.read_events())
+        parser.close()
+        yield from cast(_Events, parser.read_events())
 
     def _xml(self, name: str) -> ET.Element:
-        text = self._member(name).decode("utf-8")
-        if _DOCTYPE.search(text):
-            raise ReadError("doctype_not_allowed")
-        return ET.fromstring(text)
+        """A small part (workbook, relationships, content types) as a whole tree."""
+        events = self._events(name)
+        _, root = next(events)  # the root's start; an empty part fails in close()
+        for _ in events:
+            pass
+        return root
 
     def _relationship_targets(self) -> dict[str, str]:
         """Relationship id -> part name inside this zip."""
@@ -245,35 +282,68 @@ class _Workbook:
         return targets
 
     def _shared_strings(self) -> list[str]:
+        """The root's <si> children, each dropped once read."""
         if _SHARED_STRINGS not in self._parts:
             return []
-        return [_rich_text(item) for item in self._xml(_SHARED_STRINGS).findall(f"{_MAIN}si")]
+        strings = []
+        path: list[ET.Element] = []  # the open elements, root first
+        for event, element in self._events(_SHARED_STRINGS):
+            if event == "start":
+                path.append(element)
+                continue
+            path.pop()
+            if len(path) == 1:  # a child of the root
+                if element.tag == f"{_MAIN}si":
+                    strings.append(_rich_text(element))
+                path[0].clear()
+        return strings
 
     # -- cells ------------------------------------------------------------
 
-    def _read_sheet(self, sheet_number: int, root: ET.Element, shared: list[str], spans: list[Span]) -> None:
-        data = root.find(f"{_MAIN}sheetData")
-        if data is None:
-            return
+    def _read_sheet(self, sheet_number: int, part: str, shared: list[str], spans: list[Span]) -> None:
+        """The <row> children of the root's first <sheetData>, each read when it ends.
+        Each finished element is then dropped, with its parent's other children, so
+        only the open path and the current row are held."""
+        data = None
         row_number = 0
-        for row in data.findall(f"{_MAIN}row"):
-            row_number = _row_number(row.get("r"), default=row_number + 1)
-            column = 0
-            for cell in row.findall(f"{_MAIN}c"):
-                ref = cell.get("r")
-                if ref is None:
-                    column += 1  # no reference: the next column
-                else:
-                    column, ref_row = _parse_ref(ref)
-                    if ref_row != row_number:
-                        raise ReadError("corrupt_file")  # a cell outside its row
-                self._check_order(sheet_number, row_number, column)
-                value = _cell_value(cell, shared)
-                if value is None or not value.strip():
-                    continue
-                self._count(value)
-                location = CellLocation(sheet_number, row_number, column)
-                spans.append(Span(value.strip(), value, location, origin="cell"))
+        path: list[ET.Element] = []  # the open elements, root first
+        for event, element in self._events(part):
+            if event == "start":
+                if data is None and len(path) == 1 and element.tag == _SHEET_DATA:
+                    data = element
+                path.append(element)
+                continue
+            path.pop()
+            in_data = len(path) >= 2 and path[1] is data
+            if in_data and len(path) == 2 and element.tag == _ROW:
+                row_number = self._read_row(sheet_number, element, row_number, shared, spans)
+            elif in_data and len(path) > 2 and path[2].tag == _ROW:
+                continue  # inside a row: kept until the row ends
+            if path:
+                path[-1].clear()
+
+    def _read_row(
+        self, sheet_number: int, row: ET.Element, previous: int, shared: list[str], spans: list[Span]
+    ) -> int:
+        """One row's cells; gives the row's number."""
+        row_number = _row_number(row.get("r"), default=previous + 1)
+        column = 0
+        for cell in row.findall(f"{_MAIN}c"):
+            ref = cell.get("r")
+            if ref is None:
+                column += 1  # no reference: the next column
+            else:
+                column, ref_row = _parse_ref(ref)
+                if ref_row != row_number:
+                    raise ReadError("corrupt_file")  # a cell outside its row
+            self._check_order(sheet_number, row_number, column)
+            value = _cell_value(cell, shared)
+            if value is None or not value.strip():
+                continue
+            self._count(value)
+            location = CellLocation(sheet_number, row_number, column)
+            spans.append(Span(value.strip(), value, location, origin="cell"))
+        return row_number
 
     def _check_order(self, sheet: int, row: int, column: int) -> None:
         position = (sheet, row, column)

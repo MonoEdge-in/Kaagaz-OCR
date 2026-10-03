@@ -185,3 +185,7 @@ Thumbs.db
 # Local sample documents. Never commit customer files.
 samples/
 scratch/
+
+# Backups hold every customer's data (docs/running-locally.md, Backup and restore).
+*.dump
+backup-files/

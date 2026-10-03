@@ -21,12 +21,13 @@ from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI
 
+from kaagaz.ai.client import ModelClient
 from kaagaz.api import errors
 from kaagaz.api.auth import csrf_guard
 from kaagaz.api.context import AppContext
 from kaagaz.api.middleware import ErrorMiddleware, RateLimiter, RequestMiddleware
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
-from kaagaz.api.routers import admin, auth, chat, documents, folders, health, review, tags
+from kaagaz.api.routers import admin, auth, chat, documents, folders, health, review, search, tags
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.settings import Settings
 
@@ -43,6 +44,7 @@ def create_app(
     queue: ApiQueue | None = None,
     answers: Answers | None = None,
     clock: Callable[[], datetime] | None = None,
+    model: ModelClient | None = None,
 ) -> FastAPI:
     owns_db = db is None
     database = db if db is not None else Database(make_engine(settings.database_url), settings.db_app_role)
@@ -54,6 +56,7 @@ def create_app(
         queue=queue if queue is not None else _default_queue(settings),
         answers=answers if answers is not None else _default_answers(settings, database, now),
         clock=now,
+        model=model if model is not None else _default_model(settings),
     )
 
     @asynccontextmanager
@@ -81,6 +84,7 @@ def create_app(
         folders.router,
         tags.router,
         chat.router,
+        search.router,
         review.router,
         admin.router,
     ):
@@ -118,6 +122,12 @@ def _default_queue(settings: Settings) -> ApiQueue:
     from kaagaz.adapters.queue import SqsQueue
 
     return SqsQueue(settings)
+
+
+def _default_model(settings: Settings) -> ModelClient | None:
+    from kaagaz.ai.client import build_model_client
+
+    return build_model_client(settings)
 
 
 def _default_answers(settings: Settings, db: Database, clock: Callable[[], datetime]) -> Answers:

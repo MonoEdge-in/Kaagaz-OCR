@@ -13,19 +13,24 @@ import math
 import os
 import urllib.parse
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+# AR1: the worker renews a job's lease at most once in this many seconds
+# (kaagaz/jobs/worker.py), so a heartbeat can wait this long; each margin below adds it.
+LEASE_RENEW_SECONDS = 15
 # AR1: seconds to spare between one OCR request (the longest step without a
 # heartbeat) and the job's lease, or a slow page outlives the lease and a second
 # worker starts the same document.
-_OCR_LEASE_MARGIN_SECONDS = 120
+_OCR_LEASE_MARGIN_SECONDS = 120 + LEASE_RENEW_SECONDS
 # The Host values the ocr server accepts (ALLOWED_HOSTS in kaagaz/ocr_server/app.py,
 # which must never import this module; a test keeps the two the same).
 OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
 # AR1: seconds to spare between the longest model step without a heartbeat (one
 # chat_json: a call and its repair retry) and the job's lease.
 _MODEL_LEASE_MARGIN_SECONDS = 60
+# The size of the pieces' vector(1024) column (migration 0001): EMBEDDING_DIM must match it.
+EMBEDDING_DIM = 1024
 # Council 5 (PROVISIONAL): an invoice window's reply needs about this many tokens for each
 # line item, taking one line item per _WINDOW_LINE_CHARS characters of the window, plus
 # _WINDOW_FIELD_TOKENS for its nine fields. The window must fit MODEL_WINDOW_MAX_TOKENS.
@@ -74,15 +79,15 @@ class Settings:
     # Database. The app switches to ``db_app_role`` in every transaction, a role
     # that is not a superuser, does not own the tables and has no BYPASSRLS, so
     # row level security always applies (docs/architecture.md).
-    database_url: str
+    database_url: str = field(repr=False)  # it can hold a password
     db_app_role: str
 
     # File storage (S3 API: SeaweedFS on the laptop, Amazon S3 in AWS).
     storage_endpoint_url: str | None
     storage_region: str
     storage_bucket: str
-    storage_access_key: str | None
-    storage_secret_key: str | None
+    storage_access_key: str | None = field(repr=False)
+    storage_secret_key: str | None = field(repr=False)
 
     # Queue (SQS API: ElasticMQ on the laptop, Amazon SQS in AWS).
     queue_endpoint_url: str | None
@@ -146,12 +151,13 @@ class Settings:
     embedding_dim: int
     model_timeout_seconds: float
     # PRD 2 model budgets (ML amendment 5): the context window sent with every
-    # call, the reply budgets for the document card and for each invoice window,
-    # and the worker's timeout for those calls. The card reads at most
-    # card_max_chars of the document (D1).
+    # call, the reply budgets for the document card, for each invoice window and
+    # for an answer, and the worker's timeout for those calls. The card reads at
+    # most card_max_chars of the document (D1).
     model_num_ctx: int
     model_card_max_tokens: int
     model_window_max_tokens: int
+    model_answer_max_tokens: int
     model_extract_timeout_seconds: float
     card_max_chars: int
     # PRD 2 E2: an invoice is read in windows of this many characters, each overlapping
@@ -164,10 +170,10 @@ class Settings:
     # (kaagaz.api.secret_box); it must differ from the session secret, so one
     # leaked value does not give away both. Lockout: after login_max_failures
     # wrong attempts in a row the account is locked for login_lock_minutes.
-    session_secret: str
+    session_secret: str = field(repr=False)
     session_hours: int
     cookie_secure: bool
-    totp_encryption_key: str
+    totp_encryption_key: str = field(repr=False)
     login_max_failures: int
     login_lock_minutes: int
     admin_session_minutes: int
@@ -178,9 +184,16 @@ class Settings:
     # Read again (PRD 2 X1, security A8): how many a customer may start in one hour.
     reprocess_per_hour: int
 
+    # Search (PRD 3 V2): hnsw.ef_search, the meaning index's candidate list, 1 to 1000.
+    search_ef: int
+
     # Answers.
     answer_max_evidence: int
     answer_min_evidence_score: float
+    # Q4: the pieces on each side of an evidence piece also given to the draft, 0 to 3.
+    answer_neighbours: int
+    # H1: the question and answer pairs a follow-up is rewritten with, 0 (no rewrite) to 10.
+    chat_history_turns: int
     timezone: str
 
     # API.
@@ -199,7 +212,9 @@ class Settings:
         if not (math.isfinite(ocr_timeout_seconds) and ocr_timeout_seconds > 0):
             raise SettingsError("OCR_TIMEOUT_SECONDS must be a number above 0")
         if ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
-            raise SettingsError("OCR_TIMEOUT_SECONDS + 120 must not be more than QUEUE_LEASE_SECONDS")
+            raise SettingsError(
+                f"OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS} must not be more than QUEUE_LEASE_SECONDS"
+            )
         ocr_engine = env.choice("OCR_ENGINE", {"paddleocr_vl", "rapidocr", "none"})
         ocr_url = env.url("OCR_URL")
         if (
@@ -212,9 +227,11 @@ class Settings:
         model_num_ctx = env.positive("MODEL_NUM_CTX")
         card_max_tokens = env.positive("MODEL_CARD_MAX_TOKENS")
         window_max_tokens = env.positive("MODEL_WINDOW_MAX_TOKENS")
+        answer_max_tokens = env.positive("MODEL_ANSWER_MAX_TOKENS")
         for name, tokens in (
             ("MODEL_CARD_MAX_TOKENS", card_max_tokens),
             ("MODEL_WINDOW_MAX_TOKENS", window_max_tokens),
+            ("MODEL_ANSWER_MAX_TOKENS", answer_max_tokens),
         ):
             left = model_num_ctx - 2 * tokens - MAX_SYSTEM_PROMPT_TOKENS - CHAT_OVERHEAD_TOKENS
             if left < MIN_INPUT_TOKENS:
@@ -239,12 +256,24 @@ class Settings:
                 "EXTRACT_WINDOW_CHARS is too long for MODEL_WINDOW_MAX_TOKENS: a window needs about"
                 " 50 reply tokens for every 50 characters, plus 300"
             )
+        embedding_dim = env.integer("EMBEDDING_DIM")
+        if embedding_dim != EMBEDDING_DIM:
+            raise SettingsError(f"EMBEDDING_DIM must be {EMBEDDING_DIM}, the size of the vector column")
         extract_timeout_seconds = env.number("MODEL_EXTRACT_TIMEOUT_SECONDS")
         if not (math.isfinite(extract_timeout_seconds) and extract_timeout_seconds > 0):
             raise SettingsError("MODEL_EXTRACT_TIMEOUT_SECONDS must be a number above 0")
         if 2 * extract_timeout_seconds + _MODEL_LEASE_MARGIN_SECONDS > queue_lease_seconds:
             raise SettingsError(
-                "2 x MODEL_EXTRACT_TIMEOUT_SECONDS + 60 must not be more than QUEUE_LEASE_SECONDS"
+                f"2 x MODEL_EXTRACT_TIMEOUT_SECONDS + {_MODEL_LEASE_MARGIN_SECONDS}"
+                " must not be more than QUEUE_LEASE_SECONDS"
+            )
+        model_timeout_seconds = env.number("MODEL_TIMEOUT_SECONDS")
+        if not (math.isfinite(model_timeout_seconds) and model_timeout_seconds > 0):
+            raise SettingsError("MODEL_TIMEOUT_SECONDS must be a number above 0")
+        if model_timeout_seconds + _MODEL_LEASE_MARGIN_SECONDS > queue_lease_seconds:
+            raise SettingsError(
+                f"MODEL_TIMEOUT_SECONDS + {_MODEL_LEASE_MARGIN_SECONDS}"
+                " must not be more than QUEUE_LEASE_SECONDS"
             )
         return cls(
             database_url=env.text("DATABASE_URL"),
@@ -291,11 +320,12 @@ class Settings:
             model_chat=env.text("MODEL_CHAT"),
             model_embed=env.text("MODEL_EMBED"),
             model_vision=env.optional("MODEL_VISION"),
-            embedding_dim=env.integer("EMBEDDING_DIM"),
+            embedding_dim=embedding_dim,
             model_timeout_seconds=env.number("MODEL_TIMEOUT_SECONDS"),
             model_num_ctx=model_num_ctx,
             model_card_max_tokens=card_max_tokens,
             model_window_max_tokens=window_max_tokens,
+            model_answer_max_tokens=answer_max_tokens,
             model_extract_timeout_seconds=extract_timeout_seconds,
             card_max_chars=env.positive("CARD_MAX_CHARS"),
             extract_window_chars=window_chars,
@@ -310,8 +340,11 @@ class Settings:
             admin_session_minutes=env.positive("ADMIN_SESSION_MINUTES"),
             trash_days=env.integer("TRASH_DAYS"),
             reprocess_per_hour=env.positive("REPROCESS_PER_HOUR"),
+            search_ef=env.between("SEARCH_EF", 1, 1000),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
+            answer_neighbours=env.between("ANSWER_NEIGHBOURS", 0, 3),
+            chat_history_turns=env.between("CHAT_HISTORY_TURNS", 0, 10),
             timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             log_level=env.text("LOG_LEVEL"),
@@ -358,6 +391,12 @@ class _Env:
         number = self.integer(name)
         if number < 1:
             raise SettingsError(f"{name} must be at least 1")
+        return number
+
+    def between(self, name: str, low: int, high: int) -> int:
+        number = self.integer(name)
+        if not low <= number <= high:
+            raise SettingsError(f"{name} must be between {low} and {high}")
         return number
 
     def optional_integer(self, name: str) -> int | None:

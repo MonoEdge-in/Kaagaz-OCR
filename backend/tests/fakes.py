@@ -13,6 +13,7 @@ Superseded for a run that is not open, as their PostgreSQL versions do
 (tests/test_runs_db.py runs one scenario on both).
 """
 
+import io
 import threading
 import uuid
 from collections.abc import Callable, Collection
@@ -20,21 +21,15 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import IO, Any
 
+from PIL import Image
+
 from kaagaz.chunking.piece import Piece
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job, UnknownFolder
-from kaagaz.jobs.worker import JobFailed
-from kaagaz.pipeline import (
-    DocumentContent,
-    FinishedRun,
-    PageRecord,
-    Progress,
-    ReaderOutput,
-    RunTotals,
-    Superseded,
-)
+from kaagaz.jobs.worker import JobFailed, Superseded
+from kaagaz.pipeline import DocumentContent, FinishedRun, PageRecord, Progress, ReaderOutput, RunTotals
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
@@ -473,8 +468,12 @@ class MemoryPageImages:
 @dataclass(frozen=True, slots=True)
 class FakePrepared:
     pages: list[PageInfo]
-    images: dict[int, bytes]
+    images: dict[int, bytes]  # page number -> its picture, as PNG
     checks: dict[int, PageCheck] = field(default_factory=dict)
+
+    def picture(self, page_no: int) -> Image.Image:
+        with Image.open(io.BytesIO(self.images[page_no])) as png:
+            return png.convert("RGB")
 
 
 class FakePreparer:
@@ -489,12 +488,16 @@ class FakePreparer:
         self._by_type = dict(by_type or {})
         self._error = error
 
-    def prepare(self, detected_type: str, data: bytes) -> FakePrepared:
+    def prepare(self, detected_type: str, data: bytes, on_picture: OnPicture) -> FakePrepared:
+        """Gives each preset picture to ``on_picture`` in page order, as the real one does."""
         if isinstance(self._error, ReadError):
             raise self._error
         if self._error is not None:
             raise ReadError(self._error)
-        return self._by_type.get(detected_type, FakePrepared([], {}))
+        prepared = self._by_type.get(detected_type, FakePrepared([], {}))
+        for page_no in sorted(prepared.images):
+            on_picture(page_no, len(prepared.images), prepared.picture(page_no))
+        return prepared
 
 
 def fake_sheet_pages(spans: list[Span]) -> list[PageInfo]:
@@ -592,14 +595,28 @@ class FakeChat:
 
 
 class FakeEmbedder:
-    """Records (customer_id, document_id) for each call; raises ModelDown if down."""
+    """Records (customer_id, document_id) for each call; raises ModelDown if down.
+    Then it writes ``batches`` batches, like embed_pieces: ``during_batch(i)`` runs
+    while batch i is embedded (a test moves its clock there), and ``on_batch(i, batches)``
+    once it is written."""
 
-    def __init__(self, *, down: bool = False) -> None:
+    def __init__(
+        self, *, down: bool = False, batches: int = 0, during_batch: Callable[[int], None] | None = None
+    ) -> None:
         self.down = down
         self.calls: list[tuple[str, str]] = []
+        self._batches = batches
+        self._during_batch = during_batch
 
-    def __call__(self, customer_id: str, document_id: str) -> int:
+    def __call__(
+        self, customer_id: str, document_id: str, *, on_batch: Callable[[int, int], None] | None = None
+    ) -> int:
         self.calls.append((customer_id, document_id))
         if self.down:
             raise ModelDown
+        for done in range(1, self._batches + 1):
+            if self._during_batch is not None:
+                self._during_batch(done)
+            if on_batch is not None:
+                on_batch(done, self._batches)
         return 0

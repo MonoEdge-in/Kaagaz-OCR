@@ -10,6 +10,7 @@ import sys
 
 import pytest
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from kaagaz.api.app import create_app
 from kaagaz.db.engine import Database, make_engine
@@ -82,6 +83,15 @@ def test_an_integrity_error_carrying_row_values_is_logged_by_type_only(
     assert line["error"] == "IntegrityError"
     assert email not in caplog.text
     assert "Traceback" not in caplog.text
+
+
+def test_no_free_database_connection_is_a_503_busy() -> None:
+    """A7a: when every pooled connection is in use for pool_timeout seconds, the
+    request is told the service is busy (503), never a 500."""
+    reply = _client_raising(PoolTimeout("QueuePool limit of size 10 overflow 5 reached")).get("/api/boom")
+
+    assert reply.status_code == 503
+    assert reply.json()["error"]["code"] == "backend_unavailable"
 
 
 # A real uvicorn server on a free local port: uvicorn.Config sets up uvicorn's own

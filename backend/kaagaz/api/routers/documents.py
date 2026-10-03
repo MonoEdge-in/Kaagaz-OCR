@@ -1,4 +1,4 @@
-"""The document routes: list, upload, a new version, detail, rename or move,
+"""The document routes: list, upload, a new version, detail and its summary, rename or move,
 the original file, page images, spreadsheet cells, and Trash (move to Trash,
 restore, delete forever).
 
@@ -109,7 +109,7 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MIB = 1024 * 1024
 MAX_SHEET_ROWS = 500
-MAX_TAG_FILTERS = 50
+MAX_TAG_FILTERS = tags_sql.MAX_TAG_FILTERS
 
 DocumentStatusParam = Literal["received", "clean", "rejected", "needs_reader", "ready", "failed"]
 DetectedTypeParam = Literal["pdf", "png", "jpeg", "tiff", "zip", "ole2", "text"]
@@ -277,6 +277,15 @@ def _form_folder_id(value: str | UploadFile | None) -> str | None:
         raise ApiError(400, "bad_request") from None
 
 
+def _same_user(value: str | UploadFile | None, user: CurrentUser) -> None:
+    """The optional ``user_id`` form field: who the browser tab had signed in when
+    the file was chosen. Someone else signed in since (in another tab, critical
+    #5) gets 409 ``session_changed`` before anything is stored, so the file never
+    lands in their account. Not sent: no check (PROVISIONAL)."""
+    if value is not None and value != user.user_id:
+        raise ApiError(409, "session_changed")
+
+
 def _accept(
     context: AppContext, user: CurrentUser, upload: UploadFile, policy: UploadPolicy, folder_id: str | None
 ) -> dict[str, Any]:
@@ -342,6 +351,7 @@ async def upload_document(request: Request, user: User, context: Context) -> JSO
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
+        _same_user(form.get("user_id"), user)
         folder_id = _form_folder_id(form.get("folder_id"))
         body = await run_in_threadpool(_accept, context, user, upload, policy, folder_id)
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
@@ -386,6 +396,7 @@ async def upload_version(
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
+        _same_user(form.get("user_id"), user)
         body = await run_in_threadpool(_accept_version, context, user, upload, policy, str(document_id))
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
@@ -432,6 +443,17 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         # PRD 3 Y2: the current, ready documents sharing an identifier with this one.
         "links": [document_link(each) for each in links],
     }
+
+
+@router.get("/documents/{document_id}/summary")
+def get_document_summary(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """The detail's own summary, as in the list (two queries): the viewer asks for it
+    while a document is read, then for the whole detail once it settles."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        row = _document_or_404(conn, user, document_id)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+    return document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
 
 
 @router.post("/documents/{document_id}/reprocess")

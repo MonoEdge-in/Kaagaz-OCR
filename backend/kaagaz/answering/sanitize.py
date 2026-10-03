@@ -10,10 +10,17 @@ target goes), HTML tags, URLs (http, https, ftp, www., javascript:, data:,
 vbscript:), control characters and the invisible direction marks that can
 reorder text on screen. Runs of spaces become one space.
 
+``strip_ignorable`` drops every Default_Ignorable_Code_Point (Unicode's list:
+the format characters, category Cf, plus the combining grapheme joiner, the
+Hangul and Mongolian fillers and variation selectors, and the variation
+selectors U+FE00 to U+FE0F and U+E0100 to U+E01EF). They draw nothing, so a
+check that reads text (verify.py, evidence.py) reads it without them.
+
 Time is O(n) in the text length: a fixed number of regular expression passes.
 """
 
 import re
+import unicodedata
 
 SNIPPET_MAX = 300
 
@@ -26,6 +33,10 @@ _SCHEME = re.compile(r"\b(?:javascript|data|vbscript):\S*", re.IGNORECASE)
 # bidirectional overrides and isolates (U+202A to U+202E, U+2066 to U+2069).
 _CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f‪-‮⁦-⁩]")
 _SPACES = re.compile(r"\s+")
+# The Default_Ignorable_Code_Points that are not category Cf.
+_IGNORABLE = re.compile(
+    "[\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u3164\ufe00-\ufe0f\uffa0\U000e0100-\U000e01ef]"
+)
 
 
 def clean_text(text: str) -> str:
@@ -45,3 +56,11 @@ def clean_snippet(text: str) -> str:
     if len(text) <= SNIPPET_MAX:
         return text
     return text[: SNIPPET_MAX - 1].rstrip() + "…"
+
+
+def strip_ignorable(text: str) -> str:
+    """``text`` without its default-ignorable code points (the module docstring). O(n)."""
+    if text.isascii():
+        return text  # none of them is ASCII
+    text = _IGNORABLE.sub("", text)
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
