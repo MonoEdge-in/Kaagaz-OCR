@@ -11,10 +11,10 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.db.engine import Database
-from kaagaz.search import story_match, story_search
+from kaagaz.search import story_match
 from kaagaz.search.scope import Scope
 from kaagaz.search.story_match import StoryMatch
-from kaagaz.search.story_search import find_story_matches, search_stories
+from kaagaz.search.story_search import find_story_matches
 from tests.db_support import insert_document, insert_folder, new_customer
 from tests.test_document_stories_db import STORY, VECTOR, embed, put
 
@@ -99,8 +99,7 @@ def test_meaning_counts_only_with_a_calibrated_threshold(
 
     assert find(db, customer, user, **HOUSE) == []  # OFF
     monkeypatch.setitem(story_match.MEANING_THRESHOLDS, "m#story1", 0.8)
-    # Meaning gives "maybe" at most (council 3 Oct 2026, "story search mode").
-    assert find(db, customer, user, **HOUSE) == [StoryMatch(second, "7-12 extract.pdf", None, "maybe")]
+    assert find(db, customer, user, **HOUSE) == [StoryMatch(second, "7-12 extract.pdf", None, "match")]
     assert find(db, customer, user, **(HOUSE | {"embedding": [-x for x in VECTOR]})) == []  # cosine -1
     assert find(db, customer, user, **(HOUSE | {"model_embed": "other"})) == []  # another recipe: OFF
 
@@ -111,31 +110,6 @@ def test_at_most_three_of_many(db: Database) -> None:
         put(db, customer, user, _family(db, customer)[0])
     found = find(db, customer, user)
     assert len(found) == 3 and {m.band for m in found} == {"maybe"}  # five equal stories: a tie
-
-
-def test_searched_and_all_say_how_many_stories_were_read(
-    db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    customer, user = new_customer(db)
-    for _ in range(3):
-        put(db, customer, user, _family(db, customer)[0])
-
-    def search() -> tuple[int, int, bool]:
-        found = search_stories(
-            db,
-            customer_id=customer,
-            user_id=user,
-            question="daregaon jamin papa loan",
-            embedding=None,
-            model_embed="m",
-            mode="stories",
-            most=10,
-        )
-        return len(found.matches), found.searched, found.all
-
-    assert search() == (3, 3, True)
-    monkeypatch.setattr(story_search, "SCAN_MOST", 2)  # the cap: the 2 most recently changed
-    assert search() == (2, 2, False)
 
 
 def test_the_trigrams_are_pg_trgms(db: Database) -> None:

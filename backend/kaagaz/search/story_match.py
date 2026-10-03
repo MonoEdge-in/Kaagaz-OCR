@@ -22,35 +22,24 @@ Pure: no SQL, no model (the API branch reads the stories). Never evidence.
 3. **Bands** (``word_band``): coverage is the share of the words that match.
    "match": ``WORDS_MIN`` words or more, ``MATCH_COVERAGE``, and at least one
    matched word of letters (numbers alone are "maybe" at most); "maybe": as many
-   words and ``MAYBE_COVERAGE``. A one-word question is "maybe" at most. Side
-   cards (mode "cards"): only when the word itself, of ``SINGLE_WORD_LETTERS``
-   letters or more, is in the story exactly (not an alternative, not a near
-   spelling). "Search my stories" (mode "stories", council 3 Oct 2026, "story
-   search mode"): also a letter word of ``SINGLE_EXACT_LETTERS`` letters in the
-   story exactly, or one of ``SINGLE_NEAR_LETTERS`` letters by trigram or sound;
-   never by a glossary alternative.
+   words and ``MAYBE_COVERAGE``. A one-word question is "maybe" at most, only
+   when the word itself, of ``SINGLE_WORD_LETTERS`` letters or more, is in the
+   story exactly (not an alternative, not a near spelling).
 4. **Meaning** (``meaning_band``) only with a threshold calibrated for the
    recipe in ``MEANING_THRESHOLDS``; none is, so it is OFF. With one: a cosine
-   at the threshold or above is "maybe", never "match".
-5. **Order** (``rank``): a story takes the better of the two bands. At most one
-   "match": a story keeps it only when it matched strictly more question words
-   than every other story read (so a fee receipt never "matches" next year's
-   twin); every other "match" is "maybe". Reciprocal rank fusion of the word and
-   meaning lists orders the stories that pass, every "match" first. Mode
-   "stories" orders each band by IDF over the stories read (the rarer the
-   matched words, the higher; IDF only orders, it never lets a story in). At most
-   ``most``: ``MATCHES_MAX`` for the side cards, up to ``MOST_MAX``. No score and
-   no story text leaves this module.
+   at the threshold or above is "maybe", "match" when it also leads the second
+   best story by ``MEANING_MARGIN``.
+5. **Order** (``rank``): a story takes the better of the two bands. When two or
+   more word matches tie at the top (as many words, as many exact), the words
+   can't tell them apart: every word match is "maybe". Reciprocal rank fusion of
+   the word and meaning lists orders the stories that pass, every "match" first;
+   at most ``MATCHES_MAX``. No score and no story text leaves this module.
 
-Time: ``rank`` O(T + V * W + S log S): T story characters, V different story
-words (the first ``STORY_WORDS_MAX`` of each story), W <= WORDS_MAX words, S
-stories. Each question word's trigrams and key are made once, and each story
-word's once a request. Space: O(V) for the story words seen, O(S) for the bands
-and bit masks (one W-bit int a story), O(W) for the question's tables. Measured
-on a laptop, 500 stories of 1,000 characters and 12 words: about 0.2 s.
+Time: ``rank`` O(T + V * W): T story characters, V different story words (the
+first ``STORY_WORDS_MAX`` of each story), W <= WORDS_MAX words. Each question
+word's trigrams and key are made once, and each story word's once a request.
 """
 
-import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -73,13 +62,11 @@ ALTERNATIVE_LETTERS = 4
 MATCH_COVERAGE = 0.75
 MAYBE_COVERAGE = 0.5
 SINGLE_WORD_LETTERS = 4
-SINGLE_EXACT_LETTERS = 3  # mode "stories": one word, in the story exactly...
-SINGLE_NEAR_LETTERS = 5  # ...or this long, by trigram or sound
+MEANING_MARGIN = 0.03
 # The story recipe tag ("{MODEL_EMBED}#story1") -> its calibrated cosine threshold.
 # Empty: meaning is OFF (uncalibrated, fails closed).
 MEANING_THRESHOLDS: dict[str, float] = {}
-MATCHES_MAX = 3  # the side cards
-MOST_MAX = 10  # "Search my stories"
+MATCHES_MAX = 3
 # Words that fit nearly any story about a document: never a content word.
 GENERIC = frozenset(
     {"paper", "papers", "document", "documents", "doc", "docs", "agreement", "agreements", "file", "files"}
@@ -87,7 +74,6 @@ GENERIC = frozenset(
 )
 
 Band = Literal["match", "maybe"]
-Mode = Literal["cards", "stories"]
 
 _STOP = STOP_WORDS | glossary.ROMANISED_STOP | GENERIC
 _WORD = re.compile(r"[a-z0-9]+(?:[-/.][a-z0-9]+)*")
@@ -208,15 +194,13 @@ class _Matcher:
         self.shortest = min(map(len, self.keys), default=0)
         self._first: dict[str, str] = {}  # three letters -> the first letter of their key
 
-    def masks(self, story_word: str) -> tuple[int, int, int]:
-        """(the question words this story word matches, those it is exactly, those it
-        matches by trigram or sound) as bits."""
-        exact, alternative = self.same.get(story_word, 0), self.exact.get(story_word, 0)
+    def masks(self, story_word: str) -> tuple[int, int]:
+        """(the question words this story word matches, those it is exactly) as bits."""
+        exact, matched = self.same.get(story_word, 0), self.exact.get(story_word, 0)
         if _DIGIT.search(story_word):
-            return alternative | self.digits.get(story_word.translate(_SEPARATORS), 0), exact, 0
+            return matched | self.digits.get(story_word.translate(_SEPARATORS), 0), exact
         if not _LETTERS.fullmatch(story_word):
-            return alternative, exact, 0
-        matched = 0
+            return matched, exact
         if self.sizes and len(story_word) >= TRIGRAM_LETTERS:
             grams = trigrams(story_word)
             shared: dict[int, int] = {}
@@ -235,7 +219,7 @@ class _Matcher:
                 matched |= self.keys.get(key, 0)
                 for size in range(max(SOUND_PREFIX_MIN, len(key) - SOUND_PREFIX_EXTRA), len(key)):
                     matched |= self.starts.get(key[:size], 0)
-        return matched | alternative, exact, matched
+        return matched, exact
 
 
 def form_matches(form: str, story_word: str) -> bool:
@@ -243,23 +227,11 @@ def form_matches(form: str, story_word: str) -> bool:
     return _Matcher([QueryWord(form, _alternatives(form))]).masks(story_word)[0] == 1
 
 
-def word_band(
-    words: Sequence[QueryWord],
-    matched: Sequence[bool],
-    exact: Sequence[bool],
-    near: Sequence[bool] = (),
-    *,
-    mode: Mode = "cards",
-) -> Band | None:
-    """A story's band from which words match it, which are in it exactly, as
-    themselves, and which match it by trigram or sound (step 3)."""
+def word_band(words: Sequence[QueryWord], matched: Sequence[bool], exact: Sequence[bool]) -> Band | None:
+    """A story's band from which words match it and which are in it exactly, as
+    themselves (step 3)."""
     if len(words) == 1:
-        size = len(words[0].word) if words[0].letters else 0
-        if mode == "stories":
-            close = bool(near) and near[0] and size >= SINGLE_NEAR_LETTERS
-            alone = (exact[0] and size >= SINGLE_EXACT_LETTERS) or close
-        else:
-            alone = exact[0] and size >= SINGLE_WORD_LETTERS
+        alone = exact[0] and words[0].letters and len(words[0].word) >= SINGLE_WORD_LETTERS
         return "maybe" if alone else None
     coverage = sum(matched) / len(words) if len(words) >= WORDS_MIN else 0.0
     letter = any(m and w.letters for m, w in zip(matched, words, strict=True))
@@ -268,85 +240,53 @@ def word_band(
     return "maybe" if coverage >= MAYBE_COVERAGE else None
 
 
-def meaning_band(cosine: float | None, threshold: float | None) -> Band | None:
-    """The band by meaning (step 4): "maybe" at most; None when it is off or under
-    the threshold."""
+def meaning_band(cosine: float | None, second: float | None, threshold: float | None) -> Band | None:
+    """The band by meaning (step 4): None when it is off or under the threshold."""
     if threshold is None or cosine is None or cosine < threshold:
         return None
-    return "maybe"
-
-
-def idf(stories: int, holding: int) -> float:
-    """BM25's IDF of a word that ``holding`` of ``stories`` stories match, always above 0."""
-    return math.log((stories - holding + 0.5) / (holding + 0.5) + 1)
+    return "match" if second is None or cosine - second >= MEANING_MARGIN else "maybe"
 
 
 def rank(
-    words: Sequence[QueryWord],
-    candidates: Sequence[Candidate],
-    *,
-    threshold: float | None,
-    mode: Mode = "cards",
-    most: int = MATCHES_MAX,
+    words: Sequence[QueryWord], candidates: Sequence[Candidate], *, threshold: float | None
 ) -> list[StoryMatch]:
-    """The stories that pass, best first, at most ``most`` (1 to MOST_MAX; step 5).
-    ``candidates`` come in the API branch's fixed order, which breaks every tie."""
+    """The stories that pass, best first, at most MATCHES_MAX (step 5). ``candidates``
+    come in the API branch's fixed order, which breaks every tie."""
     matcher = _Matcher(words)
-    seen: dict[str, tuple[int, int, int]] = {}  # story word -> its bit masks (_Matcher.masks)
+    seen: dict[str, tuple[int, int]] = {}  # story word -> bit masks: the words it matches, and is
     word_bands: dict[int, Band] = {}
     hits: dict[int, tuple[int, int]] = {}
-    found: list[int] = []  # each story's matched words, as bits
     places = range(len(words))
     for index, candidate in enumerate(candidates):
-        matched = exact = near = 0
+        matched = exact = 0
         for story_word in list(dict.fromkeys(words_of(candidate.story_latin)))[:STORY_WORDS_MAX]:
             if story_word not in seen:
                 seen[story_word] = matcher.masks(story_word)
-            masks = seen[story_word]
-            matched, exact, near = matched | masks[0], exact | masks[1], near | masks[2]
-        found.append(matched)
+            matched, exact = matched | seen[story_word][0], exact | seen[story_word][1]
         hits[index] = (matched.bit_count(), exact.bit_count())
         band = word_band(
-            words,
-            [matched >> p & 1 == 1 for p in places],
-            [exact >> p & 1 == 1 for p in places],
-            [near >> p & 1 == 1 for p in places],
-            mode=mode,
+            words, [matched >> p & 1 == 1 for p in places], [exact >> p & 1 == 1 for p in places]
         )
         if words and band is not None:
             word_bands[index] = band
+    top = [i for i, band in word_bands.items() if band == "match"]
+    best = max((hits[i] for i in top), default=None)
+    if sum(hits[i] == best for i in top) > 1:  # a tie at the top
+        word_bands.update(dict.fromkeys(top, "maybe"))
     cosines = sorted(
         ((c.meaning, i) for i, c in enumerate(candidates) if c.meaning is not None), key=lambda p: -p[0]
     )
     bands = dict(word_bands)
-    for cosine, index in cosines:
-        if index not in bands and meaning_band(cosine, threshold) is not None:
-            bands[index] = "maybe"
-    _one_match(bands, hits)
+    for place, (cosine, index) in enumerate(cosines):
+        second = cosines[1 if place == 0 else 0][0] if len(cosines) > 1 else None
+        band = meaning_band(cosine, second, threshold)
+        if band is not None and bands.get(index) != "match":
+            bands[index] = band
     by_words = sorted(bands, key=lambda i: (-hits[i][0], -hits[i][1], i))
     by_meaning = [i for _, i in cosines if threshold is not None and i in bands]
     fused = fuse([(str(i), 0.0) for i in by_words], [], [(str(i), 0.0) for i in by_meaning])
-    place = {int(piece.piece_id): n for n, piece in enumerate(fused)}
-    weight = _weights(len(words), found) if mode == "stories" else {}
-    order = sorted(place, key=lambda i: (bands[i] != "match", -weight.get(i, 0.0), place[i]))
+    order = sorted((int(piece.piece_id) for piece in fused), key=lambda i: bands[i] != "match")
+    shown = [candidates[i] for i in order[:MATCHES_MAX]]
     return [
-        StoryMatch(candidates[i].document_id, candidates[i].display_name, candidates[i].doc_type, bands[i])
-        for i in order[: max(1, min(most, MOST_MAX))]
+        StoryMatch(c.document_id, c.display_name, c.doc_type, bands[order[n]]) for n, c in enumerate(shown)
     ]
-
-
-def _one_match(bands: dict[int, Band], hits: dict[int, tuple[int, int]]) -> None:
-    """At most one "match": only a story that matched strictly more question words
-    than every other story read keeps it; every other "match" becomes "maybe". O(S)."""
-    counts = sorted((matched for matched, _ in hits.values()), reverse=True)
-    for index, band in bands.items():
-        ahead = hits[index][0] == counts[0] and (len(counts) == 1 or counts[1] < counts[0])
-        if band == "match" and not ahead:
-            bands[index] = "maybe"
-
-
-def _weights(size: int, found: Sequence[int]) -> dict[int, float]:
-    """Each story's sum of the IDF, over the stories read, of the ``size`` question
-    words it matched (mode "stories"). O(S * W)."""
-    weights = [idf(len(found), sum(bits >> p & 1 for bits in found)) for p in range(size)]
-    return {i: sum(w for p, w in enumerate(weights) if bits >> p & 1) for i, bits in enumerate(found)}

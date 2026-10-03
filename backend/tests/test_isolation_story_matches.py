@@ -1,10 +1,8 @@
 """Story matches reach only the story's author (S3).
 
 A1 tells a story about a document. A2 (a member of the same customer, who may open
-the document) and B1 (customer B) ask with A1's own words through every route (the
-search, the GET form, and the POST of "Search my stories" with mode "stories" and
-limit 10, its widest) and get no match and none of the story; A1, the control,
-gets a "match" from each. Below the
+the document) and B1 (customer B) ask with A1's own words through both routes and
+get no match and none of the story; A1, the control, gets a "match". Below the
 API, both locks hold on their own: the statement run in A2's, B1's or a
 customer-only transaction with A1's ids finds nothing.
 """
@@ -19,18 +17,14 @@ from kaagaz.db.engine import Database
 from kaagaz.search.story_search import read_stories
 from tests.test_api_my_story import put
 from tests.test_api_story_matches import MARK, QUESTION, STORY, matches
-from tests.test_api_support import CSRF, Api, Signed
+from tests.test_api_support import Api, Signed
 
 pytestmark = pytest.mark.db
 
 
-def _every_route(signed: Signed) -> tuple[list[dict[str, Any]], str]:
+def _both_routes(signed: Signed) -> tuple[list[dict[str, Any]], str]:
     search = signed.client.get("/api/search", params={"q": QUESTION})
-    body = {"q": QUESTION, "mode": "stories", "limit": 10}
-    stories = signed.client.post("/api/me/story-matches", json=body, headers=CSRF)
-    assert stories.status_code == 200, stories.text
-    found = [*search.json()["story_matches"], *matches(signed, QUESTION), *stories.json()["story_matches"]]
-    return found, search.text + stories.text
+    return [*search.json()["story_matches"], *matches(signed, QUESTION)], search.text
 
 
 def test_only_the_author_gets_a_match_from_their_story(db: Database) -> None:
@@ -43,11 +37,11 @@ def test_only_the_author_gets_a_match_from_their_story(db: Database) -> None:
     put(a2, document, "my own note about the shop bill")
 
     for other in (a2, b1):
-        found, reply = _every_route(other)
+        found, reply = _both_routes(other)
         assert found == []
         assert MARK not in reply
-    found, _ = _every_route(a1)  # the control
-    assert [(m["document_id"], m["band"]) for m in found] == [(document, "match")] * 3
+    found, _ = _both_routes(a1)  # the control
+    assert [(m["document_id"], m["band"]) for m in found] == [(document, "match")] * 2
 
 
 def test_each_lock_holds_without_the_other(db: Database) -> None:
