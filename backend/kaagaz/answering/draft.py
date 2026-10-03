@@ -15,8 +15,8 @@ each citing evidence ids):
   replied badly): extractive. Only pieces holding every keyword of the
   question count (with no model to read it, a piece that shares one word of
   three is taken to be about something else; a keyword also counts through a
-  glossary equivalent, kaagaz/answering/glossary.py, or a word that sounds
-  like it, and digits of any script read as ASCII). From those, the lines holding
+  glossary equivalent, kaagaz/answering/glossary.py, and digits of any script
+  read as ASCII). From those, the lines holding
   the most keywords are quoted as they are, at most
   ``MAX_EXTRACTIVE_SENTENCES``, in document order, each citing its piece.
   Nothing to quote means "not found". The service does not quote at all
@@ -172,12 +172,9 @@ def extractive_draft(
 
 
 def _holds(folded: str, keyword: str) -> bool:
-    """The keyword (one with a digit as a whole token, ``has_token``), a glossary
-    equivalent of it (never a GENERIC word's), or a word that sounds like it
-    (``glossary.sounds_like``, PR 2b-2) is in the text."""
-    if has_token(keyword, folded) or glossary.present(keyword, folded):
-        return True
-    return glossary.sounds_like(keyword, glossary.sound_words(folded))
+    """The keyword (one with a digit as a whole token, ``has_token``), or a glossary
+    equivalent of it (never a GENERIC word's), is in the text."""
+    return has_token(keyword, folded) or glossary.present(keyword, folded)
 
 
 def _parse(reply: dict[str, Any]) -> Draft:

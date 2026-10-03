@@ -10,7 +10,9 @@ of it looks sound, and a Latin spelling of it for search.
   (Arabic, Bengali) into Devanagari words, and it gives no confidence. So a
   reading is suspect when a letter or mark is neither ASCII nor in U+0900 to
   U+097F, or when its Devanagari is malformed (``malformed_devanagari``). The
-  danda and the digits are not letters, so they are fine.
+  danda and the digits are not letters, so they are fine. ``ocr_suspect_count``
+  counts those letters and malformed signs, so two readings of a page can be
+  compared (``kaagaz/reading/ocr.py``).
 * ``has_devanagari_letters`` (ML amendment 1(b)). PROVISIONAL for PRD 2: an
   OCR value with any Devanagari letter is needs review. Digits and the danda
   do not count.
@@ -111,21 +113,6 @@ _ANUSVARA_BEFORE_LIP = re.compile("\N{LATIN SMALL LETTER M WITH DOT BELOW}(?=[pb
 _PLACEHOLDER = "\x00"  # never in the IAST spelling of a Devanagari run
 _NON_ASCII_DIGIT = re.compile(r"(?![0-9])\d")  # in a str pattern, \d is every decimal digit (Nd)
 
-SOUND_KEY_MIN = 3  # letters: a shorter sound key is never matched (kar and khar are both kr)
-SOUND_WORD_MAX = 40  # letters of a word that are keyed; the rest is left out
-_SPACES = re.compile("[ \t\n\r\f\v]+")  # ASCII only, as migration 0008 splits a text
-_ASCII_DIGIT = re.compile("[0-9]")
-_ASCII_LETTERS = re.compile("[A-Za-z]+")  # ranges are code points: the Kelvin sign is not a K
-_NOT_ASCII_LETTER = re.compile("[^A-Za-z]")
-_SOUND_FOLD = str.maketrans("wzq", "vjk")
-_SOUND_START = re.compile(r"\A(?:dny|gny)")  # dnyaneshwar is jnaneshvar
-_SOUND_C = re.compile(r"c(?!h)")
-_SOUND_ASPIRATE = re.compile(r"([bcdfgjklmnpqrstv])h+")
-_SOUND_RI = re.compile(r"([bcdfgjklmnpqrstv]r)u")
-_SOUND_DOUBLE = re.compile(r"(.)\1+")
-_SOUND_AV = re.compile(r"a(?:on|o|nv)\Z")
-_SOUND_EY = re.compile(r"ey\Z")
-
 
 def devanagari_share(text: str) -> float:
     """Devanagari letters divided by all letters (categories L and M); 0.0 with no letters."""
@@ -159,12 +146,19 @@ def malformed_devanagari(text: str) -> int:
     return count
 
 
+def ocr_suspect_count(text: str) -> int:
+    """How many letters and marks are neither ASCII nor Devanagari, plus ``malformed_devanagari``."""
+    foreign = sum(
+        1
+        for ch in text
+        if ch >= "\x80" and not "\u0900" <= ch <= "\u097f" and unicodedata.category(ch)[0] in "LM"
+    )
+    return foreign + malformed_devanagari(text)
+
+
 def ocr_script_suspect(text: str) -> bool:
     """True when a letter or mark is neither ASCII nor Devanagari, or the Devanagari is malformed."""
-    for ch in text:
-        if ch >= "\x80" and not "\u0900" <= ch <= "\u097f" and unicodedata.category(ch)[0] in "LM":
-            return True
-    return malformed_devanagari(text) > 0
+    return ocr_suspect_count(text) > 0
 
 
 def fold_digits(text: str) -> str:

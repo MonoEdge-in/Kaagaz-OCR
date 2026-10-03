@@ -20,18 +20,21 @@ import type {
   FailedDocument,
   Folder,
   Me,
+  MyWord,
   PasswordReset,
   ReviewChoice,
   ReviewItem,
   ReviewList,
   ReviewReason,
   Role,
+  ScopeBody,
   SheetCells,
   Stats,
   Tag,
   TwoStepSetup,
   UploadLimits,
   UploadResult,
+  WordSaved,
 } from "./types";
 
 export class ApiError extends Error {
@@ -39,6 +42,7 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly details?: unknown, // the few errors that carry more (409 word_has_meaning)
   ) {
     super(message);
     this.name = "ApiError";
@@ -63,11 +67,12 @@ const CSRF_HEADER = { "X-Requested-With": "kaagaz" };
 
 async function errorFrom(response: Response): Promise<ApiError> {
   try {
-    const body = (await response.json()) as { error?: { code?: string; message?: string } };
+    const body = (await response.json()) as { error?: { code?: string; message?: string; details?: unknown } };
     return new ApiError(
       response.status,
       body.error?.code ?? "error",
       body.error?.message ?? "Something went wrong.",
+      body.error?.details,
     );
   } catch {
     return new ApiError(response.status, "error", "Something went wrong.");
@@ -193,6 +198,19 @@ export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 2
     "GET",
     `/documents/${id}/pages/${pageNo}/cells${query({ row_from: rowFrom, row_to: rowTo })}`,
   );
+/** What each reader read on one page, as read (the viewer's Scanned text panel only). */
+export const getPageReadings = (id: string, pageNo: number) =>
+  request<PageReadings>("GET", `/documents/${id}/pages/${pageNo}/readings`);
+
+/** This user's story of the document (any version: it belongs to the family); story is null when there is none. */
+export const getMyStory = (id: string) =>
+  request<{ story: MyStory | null }>("GET", `/documents/${encodeURIComponent(id)}/my-story`);
+/** Create (201) or replace (200). The body comes from components/viewer/story.ts (storyBody). */
+export const saveMyStory = (id: string, body: { story: string; user_id: string }) =>
+  request<{ story: MyStory }>("PUT", `/documents/${encodeURIComponent(id)}/my-story`, body);
+/** 204; 404 when there is none. userId: who this tab signed in (409 session_changed otherwise). */
+export const deleteMyStory = (id: string, userId: string) =>
+  request<void>("DELETE", `/documents/${encodeURIComponent(id)}/my-story${query({ user_id: userId })}`);
 
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),
@@ -281,10 +299,12 @@ export const createTag = (name: string) => request<Tag>("POST", "/tags", { name 
 
 // --- chat ----------------------------------------------------------------------
 
-export const ask = (question: string, conversationId?: string) =>
+/** Left out, `scope` stays the conversation's last one (PRD 3 H2); {} is every document. */
+export const ask = (question: string, conversationId?: string, scope?: ScopeBody) =>
   request<ChatResponse>("POST", "/chat", {
     question,
     ...(conversationId ? { conversation_id: conversationId } : {}),
+    ...(scope ? { scope } : {}),
   });
 export const listConversations = () =>
   request<{ items: ConversationSummary[] }>("GET", "/conversations");
@@ -295,6 +315,17 @@ export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: 
     rating,
     ...(reason ? { reason } : {}),
   });
+
+// --- my words (only the signed-in user's) -------------------------------------
+// Every write sends user_id, who this tab signed in (409 session_changed if someone else has since).
+
+export const listMyWords = () => request<{ items: MyWord[] }>("GET", "/me/words");
+/** The bodies come from components/words/words.ts (addBody, changeBody, retryBody). */
+export const addMyWord = (body: object) => request<WordSaved>("POST", "/me/words", body);
+export const changeMyWord = (id: string, body: object) =>
+  request<Omit<WordSaved, "outcome">>("PATCH", `/me/words/${encodeURIComponent(id)}`, body);
+export const deleteMyWord = (id: string, userId: string) =>
+  request<void>("DELETE", `/me/words/${encodeURIComponent(id)}${query({ user_id: userId })}`);
 
 // --- review --------------------------------------------------------------------
 

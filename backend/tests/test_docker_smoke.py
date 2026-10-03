@@ -1,4 +1,5 @@
-"""Docker-only checks of the ocr service's network (security A4).
+"""Docker-only checks of the ocr service's network (security A4), and of the
+model files baked into the backend image.
 
 NOT RUN on the build laptop, which has no Docker: every test here is skipped
 unless ``docker`` is on PATH and ``KAAGAZ_DOCKER_TESTS=1`` is set. They need the
@@ -27,14 +28,19 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def connects(service: str, host: str, port: int) -> bool:
-    """Whether a TCP connect from inside the running ``service`` to host:port succeeds."""
+def runs(service: str, code: str, *args: str) -> bool:
+    """Whether ``python -c code args`` exits 0 inside the running ``service``."""
     assert DOCKER is not None
-    command = [DOCKER, "compose", "--profile", "paddle", "exec", "-T", service, "python", "-c", CONNECT]
+    command = [DOCKER, "compose", "--profile", "paddle", "exec", "-T", service, "python", "-c", code]
     result = subprocess.run(  # noqa: S603 - fixed arguments; the docker binary found on PATH
-        [*command, host, str(port)], cwd=ROOT, capture_output=True, timeout=120, check=False
+        [*command, *args], cwd=ROOT, capture_output=True, timeout=120, check=False
     )
     return result.returncode == 0
+
+
+def connects(service: str, host: str, port: int) -> bool:
+    """Whether a TCP connect from inside the running ``service`` to host:port succeeds."""
+    return runs(service, CONNECT, host, str(port))
 
 
 def test_the_ocr_container_cannot_reach_the_database() -> None:
@@ -44,3 +50,11 @@ def test_the_ocr_container_cannot_reach_the_database() -> None:
 
 def test_the_worker_reaches_the_ocr_service() -> None:
     assert connects("worker", "ocr", 8080)
+
+
+def test_the_worker_image_holds_the_devanagari_model() -> None:
+    # Fetched at build time (backend/Dockerfile): the worker never downloads it.
+    assert runs(
+        "worker",
+        "from kaagaz.reading.ocr import devanagari_model_path; assert devanagari_model_path().is_file()",
+    )

@@ -4,7 +4,8 @@ It clears the vectors whose tag is not the current recipe, then embeds the
 pieces with no vector, document by document: it can stop when the model goes
 down and go on later, a run with nothing to do embeds no piece (only the
 probe that checks the model answers before anything is cleared), and
-one customer's run never touches another customer's rows.
+one customer's run never touches another customer's rows. Then the
+customer's stories with no vector or another tag are embedded, each as its user.
 """
 
 import io
@@ -15,11 +16,12 @@ from sqlalchemy import text
 
 from kaagaz.ai.client import ModelUnavailable
 from kaagaz.cli import REEMBED_PROBE, main
-from kaagaz.db import listing
+from kaagaz.db import document_stories, listing
 from kaagaz.db.engine import Database
 from kaagaz.search.indexing import piece_input, recipe_tag
 from tests import test_migration_0002_db as m0002
-from tests.db_support import migrate, new_customer
+from tests.db_support import insert_document, migrate, new_customer
+from tests.test_document_stories_db import embed, put
 from tests.test_indexing_db import FakeModel
 from tests.test_search_db import add_document, add_pieces, axis
 
@@ -77,7 +79,7 @@ def test_a_run_stopped_by_the_model_goes_on_and_then_has_nothing_to_do(db: Datab
     code, out = _reembed(db, resumed, "--customer-id", customer)
     # Documents go in id order, so the first run may already have cleared "one".
     assert code == 0
-    assert out.startswith(f"customer {customer}: 3 documents, ") and out.endswith(", 2 embedded\n")
+    assert out.startswith(f"customer {customer}: 3 documents, ") and out.endswith(", 2 embedded, 0 stories\n")
     assert sorted(call for batch in resumed.calls[1:] for call in batch) == ["one", "two"]
     assert {row[2] for row in _pieces(db, customer)} == {CURRENT}
     assert [row for row in _pieces(db, customer) if row[0] == current_before[0][0]] == current_before
@@ -85,7 +87,7 @@ def test_a_run_stopped_by_the_model_goes_on_and_then_has_nothing_to_do(db: Datab
     idle = FakeModel()
     assert _reembed(db, idle, "--customer-id", customer) == (
         0,
-        f"customer {customer}: 3 documents, 0 cleared, 0 embedded\n",
+        f"customer {customer}: 3 documents, 0 cleared, 0 embedded, 0 stories\n",
     )
     assert idle.calls == [[REEMBED_PROBE]]
 
@@ -96,7 +98,7 @@ def test_all_embeds_every_piece_again(db: Database) -> None:
 
     code, out = _reembed(db, model, "--customer-id", customer, "--all")
 
-    assert (code, out) == (0, f"customer {customer}: 3 documents, 2 cleared, 3 embedded\n")
+    assert (code, out) == (0, f"customer {customer}: 3 documents, 2 cleared, 3 embedded, 0 stories\n")
     assert sorted(call for batch in model.calls[1:] for call in batch) == ["one", "three", "two"]
 
 
@@ -109,6 +111,32 @@ def test_one_customers_run_leaves_another_byte_identical(db: Database) -> None:
 
     assert _pieces(db, b) == b_before
     assert {row[2] for row in _pieces(db, a)} == {CURRENT}
+
+
+def test_stories_without_a_current_vector_are_embedded_and_others_left(db: Database) -> None:
+    customer, user = new_customer(db)
+    other, other_user = new_customer(db)
+    documents = []
+    for owner, me, story in (
+        (customer, user, "no vector"),
+        (customer, user, "old tag"),
+        (other, other_user, "b"),
+    ):
+        with db.customer(owner) as conn:
+            documents.append(insert_document(conn, owner))
+        put(db, owner, me, documents[-1], story)
+    assert embed(db, customer, user, documents[1], "old tag")  # tagged "m#story1"
+    model = FakeModel()
+
+    code, out = _reembed(db, model, "--customer-id", customer)
+
+    assert (code, out) == (0, f"customer {customer}: 0 documents, 0 cleared, 0 embedded, 2 stories\n")
+    assert sorted(model.calls[1]) == ["no vector", "old tag"]  # one pass, after the probe
+    tags = text("SELECT embedding_model FROM document_stories")
+    with db.user(customer, user) as conn:
+        assert {row[0] for row in conn.execute(tags)} == {document_stories.recipe_tag(model.embed_model)}
+    with db.user(other, other_user) as conn:
+        assert [row[0] for row in conn.execute(tags)] == [None]  # another customer: untouched
 
 
 def test_a_malformed_customer_id_stops_with_code_2(db: Database) -> None:
@@ -165,6 +193,6 @@ def test_with_no_customer_id_every_customer_is_reembedded(fresh: tuple[str, Data
     assert code == 0
     lines = out.splitlines()
     assert [line.split(":")[0] for line in lines] == [f"customer {c}" for c in customers]
-    assert all(line.endswith(", 2 embedded") for line in lines)
+    assert all(line.endswith(", 2 embedded, 0 stories") for line in lines)
     for customer in customers:
         assert {row[2] for row in _pieces(database, customer)} == {CURRENT}

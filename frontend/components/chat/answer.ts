@@ -2,7 +2,7 @@
 // unit tested in node (tests/chat-*.test.ts): which source card a citation
 // number points at, the words for an answer's label, when to show how the
 // question was understood, what a source card may still show of its
-// document, and what the question box sends.
+// document, and what the question box sends or gets back.
 
 import { pageLink } from "@/lib/regions";
 import type { Answer, AnswerSentence, Citation, Label, Message, Region } from "@/lib/types";
@@ -120,6 +120,29 @@ export function citationRegion(citation: Pick<Citation, "regions" | "page_no">):
   return onPage[0] ?? citation.regions[0];
 }
 
+/** What a source card's preview highlights: the cited spots, and a value's label (PRD 3 H4). */
+export function citationHighlights(citation: Pick<Citation, "regions" | "label_regions">): Region[] {
+  return [...citation.regions, ...(citation.label_regions ?? [])];
+}
+
+/**
+ * The lines saying how the question was read. A follow-up rewritten as a
+ * standalone question shows "Searching for: …" (PRD 3 H1); "Understood as"
+ * then compares against the rewrite, so it shows only when normalizing changed
+ * it again. Both are plain text.
+ */
+export function questionReading(
+  question: string | null,
+  answer: Pick<Answer, "normalized_question" | "rewritten_question">,
+): { searchingFor: string | null; understoodAs: string | null } {
+  const searchingFor = answer.rewritten_question?.trim() || null;
+  const asked = searchingFor ?? question;
+  return {
+    searchingFor,
+    understoodAs: asked !== null ? understoodAs(asked, answer.normalized_question) : null,
+  };
+}
+
 export const DELETED_SOURCE_TEXT = "From a deleted document";
 export const OLDER_VERSION_TEXT = "From an older version";
 
@@ -147,6 +170,17 @@ export function citationLink(citation: Citation): string {
 }
 
 /**
+ * "See scanned text": the cited page with its Scanned text panel open and the
+ * cited lines marked. null for a gone source (its text is not shown any more)
+ * and for a sheet's cell, whose grid already is the reading.
+ */
+export function scannedLink(citation: Citation): string | null {
+  const region = citationRegion(citation);
+  if (citationSource(citation) === "gone" || !region || region.kind === "cell") return null;
+  return pageLink(citation.document_id, citation.page_no, region, { scanned: true });
+}
+
+/**
  * With a mouse or trackpad (a fine pointer), Enter sends and Shift+Enter makes
  * a new line. On a touch screen (`coarse`), Enter always makes a new line and
  * the Send button sends, as phone keyboards expect. Typing with an input
@@ -165,6 +199,15 @@ export function cleanQuestion(text: string): string | null {
   const question = text.trim();
   if (!question) return null;
   return question.slice(0, MAX_QUESTION_LENGTH);
+}
+
+/**
+ * The box empties as soon as a question is sent. If sending fails, the sent
+ * text comes back, but only into an empty box: anything typed meanwhile is
+ * never overwritten.
+ */
+export function restoreAfterFailure(current: string, sent: string): string {
+  return current === "" ? sent : current;
 }
 
 /** A down vote's reason: optional, trimmed, at most 500 characters. */
