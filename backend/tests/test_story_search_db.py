@@ -99,7 +99,8 @@ def test_meaning_counts_only_with_a_calibrated_threshold(
 
     assert find(db, customer, user, **HOUSE) == []  # OFF
     monkeypatch.setitem(story_match.MEANING_THRESHOLDS, "m#story1", 0.8)
-    assert find(db, customer, user, **HOUSE) == [StoryMatch(second, "7-12 extract.pdf", None, "match")]
+    # Meaning gives "maybe" at most (council 3 Oct 2026, "story search mode").
+    assert find(db, customer, user, **HOUSE) == [StoryMatch(second, "7-12 extract.pdf", None, "maybe")]
     assert find(db, customer, user, **(HOUSE | {"embedding": [-x for x in VECTOR]})) == []  # cosine -1
     assert find(db, customer, user, **(HOUSE | {"model_embed": "other"})) == []  # another recipe: OFF
 
