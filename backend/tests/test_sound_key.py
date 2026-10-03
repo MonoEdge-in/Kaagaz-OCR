@@ -113,14 +113,14 @@ def test_only_the_first_forty_letters_of_a_word_are_keyed() -> None:
 
 
 def test_the_sound_query_matches_by_prefix_both_ways_for_words_of_five_letters() -> None:
-    assert sound_query("jaminicha malak kon?") == "jminic:* | mlk:* | jmini | jmin"  # kon: a stop word
+    assert sound_query("jaminicha malak kon?") == "jminic:* | jmini | jmin ; mlk:*"  # kon: a stop word
     assert sound_query("Bhogwatdar") == "bogvtdr:* | bogvtd | bogvt | bogv"  # starts of 4+ letters
-    assert sound_query("ekun ekar") == "ekun | ekr"  # 4 letters: the whole key only
+    assert sound_query("ekun ekar") == "ekun ; ekr"  # 4 letters: the whole key only
 
 
 def test_question_words_and_fillers_give_no_sound_term() -> None:
-    assert sound_query("what is the total of my bills kiti ahe kay kar") == "totl:* | bils:*"
-    assert sound_query("kon kiti kuthe the and of") == ""
+    assert sound_query("what is the total of my bills kiti ahe kay kar") == "totl:* ; bils:*"
+    assert sound_query("kon kiti kuthe the and of this month") == ""  # date words too
 
 
 def test_the_sound_query_leaves_out_identifiers_and_anything_but_letters() -> None:
@@ -130,6 +130,16 @@ def test_the_sound_query_leaves_out_identifiers_and_anything_but_letters() -> No
 
 def test_the_sound_query_keeps_every_word_before_any_shorter_start_and_at_most_twelve_terms() -> None:
     words = "bhogwatdar gaikwad kshetra satbara jaminicha rakkam karja shinde"
-    terms = sound_query(words).split(" | ")
-    assert terms[:8] == ["bogvtdr:*", "gikvd:*", "ksetr:*", "stbr:*", "jminic:*", "rkm:*", "krj:*", "sinde:*"]
-    assert len(terms) == SOUND_TERMS_MAX == 12
+    groups = sound_query(words).split(" ; ")  # one query per word
+    assert [group.split(" | ")[0] for group in groups] == [
+        "bogvtdr:*",
+        "gikvd:*",
+        "ksetr:*",
+        "stbr:*",
+        "jminic:*",
+        "rkm:*",
+        "krj:*",
+        "sinde:*",
+    ]
+    assert groups[:2] == ["bogvtdr:* | bogvtd | bogvt | bogv", "gikvd:* | gikv"]  # the starts that fit
+    assert sum(len(group.split(" | ")) for group in groups) == SOUND_TERMS_MAX == 12

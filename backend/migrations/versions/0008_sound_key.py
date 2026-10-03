@@ -30,8 +30,9 @@ no-rewrite call; Vrushit decides): the search would run the function on every
 piece of the customer on every search (1,122 ms for 2,001 pieces, against
 7.8 ms with the stored column). The cost is one rewrite of ``pieces`` here,
 under an ACCESS EXCLUSIVE lock (0004's and 0006's pattern; env.py's
-lock_timeout makes a busy table fail fast), linear in the table: 2.1 s for
-2,001 pieces on the laptop. Offline: stop the api and the worker first.
+lock_timeout makes a busy table fail fast), linear in the table: it rebuilds
+every index of pieces, the HNSW one too, in one process (see UPGRADE). About
+1.6 s for 2,001 pieces on the laptop. Offline: stop the api and the worker first.
 
 Any change to the rules is a NEW function, ``kaagaz_sound_key_v2``, with a new
 column in a new migration, never ``CREATE OR REPLACE`` of this one: a stored
@@ -113,6 +114,10 @@ UPGRADE = [
     LOCK,
     SOUND_KEY,
     f"COMMENT ON FUNCTION kaagaz_sound_key_v1(text) IS '{COMMENT}'",
+    # The rewrite rebuilds every index of pieces, the HNSW one too. Built in parallel, that
+    # asks for maintenance_work_mem of shared memory, more than Docker's default /dev/shm
+    # (64 MB): it failed at 20,000 pieces. One process needs none. SET LOCAL ends with it.
+    "SET LOCAL max_parallel_maintenance_workers = 0",
     """
     ALTER TABLE pieces ADD COLUMN tsv_sound tsvector GENERATED ALWAYS AS
         (to_tsvector('simple', kaagaz_sound_key_v1(coalesce(text_latin, text)))) STORED
