@@ -52,6 +52,20 @@ RUN_OUTCOME = {
     "dropped_quotes", "quotes_returned", "values_verified", "values_needs_review", "seconds_total",
     "seconds_ocr", "finished_at",
 }  # fmt: skip
+# The owner-rights (SECURITY DEFINER) functions, the only ways past the policies,
+# each narrow: {name: (what it returns, its search path)}. Those that list across
+# customers or users give ids only.
+EMPTY_PATH = ['search_path=""']
+OWNER_RIGHTS = {
+    "kaagaz_login_lookup": (
+        "TABLE(user_id uuid, customer_id uuid, password_hash text, role text, disabled boolean)",
+        ["search_path=public, pg_temp"],
+    ),  # 0001, sign-in
+    "kaagaz_create_customer": ("uuid", ["search_path=public, pg_temp"]),  # 0001
+    "kaagaz_customer_ids_with_trash": ("SETOF uuid", EMPTY_PATH),  # 0002, the purge
+    "kaagaz_customer_ids": ("SETOF uuid", EMPTY_PATH),  # 0006, reembed
+    "kaagaz_stories_to_embed": ("TABLE(customer_id uuid, user_id uuid, family_id uuid)", EMPTY_PATH),  # 0010
+}
 # The only tables without customer_id: the customers themselves, and alembic's own.
 NO_CUSTOMER_ID = {"customers", "alembic_version"}
 
@@ -184,3 +198,21 @@ def test_only_the_listed_tables_have_no_customer_id(db: Database) -> None:
         )
         names = {str(row[0]) for row in every}
     assert names - set(_customer_tables(db)) == NO_CUSTOMER_ID
+
+
+def test_only_the_listed_owner_rights_functions_exist_and_only_the_app_may_run_them(db: Database) -> None:
+    """Found from the catalog, so a new one can't be left out: what it returns, its
+    fixed search path, and never runnable by PUBLIC."""
+    with db.system() as conn:
+        functions = conn.execute(
+            text(
+                "SELECT p.proname, pg_get_function_result(p.oid), p.proconfig,"
+                " has_function_privilege('public', p.oid, 'EXECUTE'),"
+                " has_function_privilege(:r, p.oid, 'EXECUTE')"
+                " FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.prosecdef"
+            ),
+            {"r": APP_ROLE},
+        ).all()
+    assert {name: (result, config) for name, result, config, *_ in functions} == OWNER_RIGHTS
+    for name, *_, public_may_run, app_may_run in functions:
+        assert (public_may_run, app_may_run) == (False, True), name

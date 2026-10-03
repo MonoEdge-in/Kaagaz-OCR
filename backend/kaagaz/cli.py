@@ -28,8 +28,9 @@
   model already down stops it before anything is cleared). Run it
   once after upgrading to PRD 3 V3: every older vector carries the old tag.
   Then each customer's stories (Story of this PDF) with no vector, or one
-  with another tag, are embedded, 32 at a time, each as its own user;
-  ``--all`` does not embed a story again whose vector is current.
+  with another tag, are embedded, 32 at a time, each as its own user, each
+  story tried once a run; ``--all`` does not embed a story again whose vector
+  is current.
   Prints ids and counts only.
 
 Why passwords are never flags: a flag lands in the shell history and the
@@ -260,20 +261,28 @@ def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: b
 
 
 def _reembed_stories(db: Database, model: ModelClient, customer: str) -> int:
-    """Embed the customer's stories with no current vector, a pass at a time, until a
-    pass finds fewer than a full pass or writes none (a story edited meanwhile is
-    left for the next run). Returns how many vectors were written."""
+    """Embed the customer's stories with no current vector, a pass at a time, each
+    pass after the last one's cursor, so each story is tried once a run (one edited
+    meanwhile or refused is left for the next run). Returns how many vectors were
+    written. O(S / 32) model calls for the customer's S stories."""
     written = 0
+    after: story_vectors.StoryKey | None = None
     while True:
         try:
             done = story_vectors.embed_missing_stories(
-                db, model, limit=REEMBED_STORIES, tag=story_tag(model.embed_model), customer_id=customer
+                db,
+                model,
+                limit=REEMBED_STORIES,
+                tag=story_tag(model.embed_model),
+                customer_id=customer,
+                after=after,
             )
         except (ModelUnavailable, ModelOutputError) as error:
             raise CliError(f"the model failed ({error}); run reembed again to go on") from None
         written += done.written
-        if done.found < REEMBED_STORIES or done.written == 0:
+        if done.after is None:
             return written
+        after = done.after
 
 
 # --- measure (PRD 2 X4) -----------------------------------------------------------
