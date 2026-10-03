@@ -4,32 +4,45 @@
 // source card (dashed edge, its own note). The band is always in words. Every
 // text is React text, so a name with markup shows as plain characters. The
 // screen announces the cards itself (storyStatusText); this box adds nothing
-// to a live region. The logic is in lib/storyMatches.ts.
+// to a live region. The logic is in lib/storyMatches.ts. "Search my stories"
+// gives its own heading and band words; cards left behind by a failed answer
+// say which question they belong to.
 
 import Link from "next/link";
 import { useId } from "react";
 import { STORY_HEADING, storyCards } from "@/lib/storyMatches";
-import type { StoryMatch } from "@/lib/types";
+import type { StoryBand, StoryMatch } from "@/lib/types";
 import styles from "./StoryMatches.module.css";
 
 export interface StoryMatchesProps {
   matches: readonly StoryMatch[];
-  note: string;
+  note?: string;
   headingLevel: 2 | 3;
+  heading?: string;
+  bands?: Record<StoryBand, string>;
+  question?: string; // shown as "For your question: ..." when no answer follows it
 }
 
-export function StoryMatches({ matches, note, headingLevel }: StoryMatchesProps) {
+export function StoryMatches({
+  matches,
+  note,
+  headingLevel,
+  heading = STORY_HEADING,
+  bands,
+  question,
+}: StoryMatchesProps) {
   const headingId = useId();
   if (matches.length === 0) return null;
   const Heading = headingLevel === 2 ? "h2" : "h3";
   return (
     <section className={styles.box} aria-labelledby={headingId} data-stories="">
       <Heading id={headingId} className={styles.heading}>
-        {STORY_HEADING}
+        {heading}
       </Heading>
-      <p className={styles.note}>{note}</p>
+      {question !== undefined ? <p className={styles.note}>For your question: {question}</p> : null}
+      {note ? <p className={styles.note}>{note}</p> : null}
       <ul className={styles.cards}>
-        {storyCards(matches).map((card) => (
+        {storyCards(matches, bands).map((card) => (
           <li key={card.id} className={styles.card} data-lead={card.lead ? "" : undefined}>
             <div className={styles.text}>
               <p className={styles.name}>{card.name}</p>

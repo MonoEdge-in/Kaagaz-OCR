@@ -8,10 +8,18 @@
 // conversation opened may fill the thread, so a slow reply for an earlier one
 // is dropped. Above the composer, the scope chip and picker (ScopePicker.tsx):
 // a reopened conversation shows its last question's scope again.
-// Beside each question, the user's own story matches are asked in
-// parallel (lib/storyMatches.ts) and shown below the newest answer, never in
-// it; only the latest question's reply shows, and a failure just shows none.
-// The same status line says how many, once: with the answer, or after it.
+// Beside each question, the user's own story matches are asked in parallel,
+// in the chip's scope (lib/storyMatches.ts), and shown apart from the answer,
+// never in it. They belong to the question, not to the answer succeeding
+// (storySlot.ts): below the pending card as soon as they arrive, then below the
+// answer, or at the end of the log when the answer failed. Only a newer
+// question, opening a conversation or starting a new one clears them. The same
+// status line says how many, once: with the answer, or after it.
+// "Search my stories" (ModeSwitch.tsx, lib/chatMode.ts; council 3 Oct 2026):
+// a question then only searches the user's stories, with no answer and nothing
+// saved, and its results show in their own section (StorySearchView.tsx)
+// instead of the conversation. The mode is kept for the tab; a conversation or
+// "Ask about this document" always asks the documents.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -22,9 +30,20 @@ import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { useHydrated } from "@/components/ui/useHydrated";
 import { ApiError, ask, getConversation, listConversations, listDocuments } from "@/lib/api";
-import { findStoryMatches, latestOnly, STORY_NOTE_CHAT, storyStatusText } from "@/lib/storyMatches";
-import type { ConversationSummary, Message, StoryMatch } from "@/lib/types";
+import { MODE_TEXTS, modeLockedText, readMode, saveMode, sendPlan, startMode, STORY_SEARCH_LIMIT } from "@/lib/chatMode";
+import type { ChatMode } from "@/lib/chatMode";
+import {
+  findStoryMatches,
+  latestOnly,
+  SEARCH_PENDING,
+  searchStatusText,
+  searchStoryMatches,
+  STORY_NOTE_CHAT,
+  storyStatusText,
+} from "@/lib/storyMatches";
+import type { ConversationSummary, Message } from "@/lib/types";
 import { answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
 import { AnswerView } from "./AnswerView";
 import { ConversationList } from "./ConversationList";
@@ -38,9 +57,11 @@ import {
   isNearBottom,
   STILL_LOOKING_AFTER_MS,
 } from "./logic";
+import { ModeSwitch } from "./ModeSwitch";
 import { QuestionBox } from "./QuestionBox";
 import {
   answeredScope,
+  chipScope,
   chooseScope,
   keptScope,
   restoredScope,
@@ -49,6 +70,10 @@ import {
   startScope,
 } from "./scope";
 import { ScopePicker } from "./ScopePicker";
+import { storyPlace, storySlot } from "./storySlot";
+import type { StorySlot, StorySlotEvent } from "./storySlot";
+import { StorySearchView } from "./StorySearchView";
+import type { StorySearchState } from "./StorySearchView";
 import styles from "./Chat.module.css";
 
 const DRAWER_ID = "chat-conversations";
@@ -82,6 +107,15 @@ function PendingAnswer() {
   );
 }
 
+/** The tab's own storage, or null where the browser refuses it. */
+function tabStorage(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 /** Keep the address bar on the open conversation, without a navigation. */
 function showInUrl(conversationId: string | null): void {
   window.history.replaceState(null, "", chatHref(conversationId));
@@ -110,10 +144,22 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [noDocuments, setNoDocuments] = useState<boolean | null>(null);
   // The one status line for screen readers.
   const [status, setStatus] = useState("");
-  // The newest answer's story matches.
-  const [stories, setStories] = useState<{ answerId: string; matches: StoryMatch[] } | null>(null);
+  // The newest question's story matches (storySlot.ts), mirrored in a ref so a
+  // reply can read the slot it just changed.
+  const [slot, setSlot] = useState<StorySlot | null>(null);
+  const slotRef = useRef<StorySlot | null>(null);
   const [storyRequests] = useState(latestOnly);
   const storyAbort = useRef<AbortController | null>(null);
+  // Ask documents or search my stories: the tab's kept mode, read once React runs
+  // in the browser (the server has no sessionStorage), until one is chosen here.
+  const hydrated = useHydrated();
+  const [chosenMode, setChosenMode] = useState<ChatMode | null>(null);
+  const mode: ChatMode =
+    chosenMode ??
+    (hydrated ? startMode(readMode(tabStorage()), documentFromSearch(initialSearch), restoreId) : "documents");
+  const [search, setSearch] = useState<StorySearchState>({ kind: "idle" });
+  const [searchRequests] = useState(latestOnly);
+  const searchAbort = useRef<AbortController | null>(null);
   // The drawer is open for the path it was opened on, so any route change closes it.
   const [listOpenOn, setListOpenOn] = useState<string | null>(null);
   const listOpen = listOpenOn !== null && listOpenOn === pathname;
@@ -129,12 +175,28 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   // After a conversation loads, show its end once.
   const jumpToEnd = useRef(false);
 
-  /** Retire the story request in flight and hide the box; returns a new request's token. */
-  const forgetStories = (): number => {
+  const updateSlot = (event: StorySlotEvent): StorySlot | null => {
+    slotRef.current = storySlot(slotRef.current, event);
+    setSlot(slotRef.current);
+    return slotRef.current;
+  };
+
+  /** Retire the story request in flight and hide the cards. */
+  const forgetStories = () => {
     storyAbort.current?.abort();
     storyAbort.current = null;
-    setStories(null);
-    return storyRequests.next();
+    storyRequests.next();
+    updateSlot({ type: "clear" });
+  };
+
+  /** Switch the mode and keep it for the tab; leaving story mode stops its search. */
+  const chooseMode = (next: ChatMode) => {
+    setChosenMode(next);
+    saveMode(tabStorage(), next);
+    if (next === "stories") return;
+    searchAbort.current?.abort();
+    searchRequests.next();
+    setSearch((current) => (current.kind === "loading" ? { kind: "idle" } : current));
   };
 
   const refreshList = async () => {
@@ -253,6 +315,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const open = async (id: string) => {
     const request = ++openRequest.current;
     forgetStories();
+    chooseMode("documents");
     setListOpenOn(null);
     setActiveId(id);
     showInUrl(id);
@@ -290,39 +353,63 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     if (noDocuments !== true) focusComposerOnDesktop(inputRef.current);
   };
 
+  /** "Search my stories": no answer, nothing saved. False when it failed, so the box gets the question back. */
+  const searchStories = async (question: string): Promise<boolean> => {
+    searchAbort.current?.abort();
+    const controller = new AbortController();
+    searchAbort.current = controller;
+    const token = searchRequests.next();
+    setSearch({ kind: "loading", question });
+    setStatus(SEARCH_PENDING);
+    try {
+      const found = await searchStoryMatches(
+        question,
+        chipScope(scope),
+        STORY_SEARCH_LIMIT,
+        "stories",
+        controller.signal,
+      );
+      if (searchRequests.isLatest(token)) {
+        setSearch({ kind: "done", question, found });
+        setStatus(searchStatusText(found));
+      }
+      return true;
+    } catch {
+      if (!searchRequests.isLatest(token)) return true;
+      setSearch({ kind: "error", question });
+      setStatus("");
+      return false;
+    }
+  };
+
   const onAsk = async (question: string): Promise<boolean> => {
+    const plan = sendPlan(mode);
+    if (!plan.chat) return searchStories(question);
     setPending(question);
     setAskError(null);
     setStatus(ASKING_STATUS);
-    // In parallel with the answer, with the same scope (the chat sends none).
-    const token = forgetStories();
+    // In parallel with the answer, in the chip's scope; kept by this question's token.
+    storyAbort.current?.abort();
+    const token = storyRequests.next();
     const controller = new AbortController();
     storyAbort.current = controller;
-    const early: { matches: StoryMatch[] | null } = { matches: null };
-    const storyCall = findStoryMatches(question, {}, controller.signal).then((matches) => {
-      early.matches = matches;
-      return matches;
-    });
+    updateSlot({ type: "ask", token, question });
+    if (plan.sideCards) {
+      void findStoryMatches(question, chipScope(scope), controller.signal).then((matches) => {
+        const now = updateSlot({ type: "matches", token, matches });
+        if (now?.token === token && now.answer !== "pending" && matches.length > 0) {
+          setStatus(storyStatusText(matches.length));
+        }
+      });
+    }
     try {
       const reply = await ask(question, activeId ?? undefined, sentScope(scope));
       setMessages((current) => [...current, reply.question, reply.answer]);
       setScope((current) => answeredScope(current, reply.question));
       const answerStatus = answerStatusText(reply.answer.answer);
-      const show = (matches: StoryMatch[]) => {
-        if (!storyRequests.isLatest(token) || matches.length === 0) return false;
-        setStories({ answerId: reply.answer.id, matches });
-        return true;
-      };
-      if (early.matches !== null && show(early.matches)) {
-        setStatus(`${answerStatus} ${storyStatusText(early.matches.length)}`);
-      } else {
-        setStatus(answerStatus);
-        if (early.matches === null) {
-          void storyCall.then((matches) => {
-            if (show(matches)) setStatus(storyStatusText(matches.length));
-          });
-        }
-      }
+      const now = updateSlot({ type: "answered", token, answerId: reply.answer.id });
+      const count = now?.token === token ? (now.matches?.length ?? 0) : 0;
+      setStatus(count > 0 ? `${answerStatus} ${storyStatusText(count)}` : answerStatus);
       if (activeId === null) {
         setActiveId(reply.conversation_id);
         showInUrl(reply.conversation_id);
@@ -330,8 +417,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       }
       return true;
     } catch (error) {
-      // The error is its own alert; no answer, so no story box either.
-      forgetStories();
+      // The error is its own alert; the story cards stay, at the end of the log.
+      updateSlot({ type: "failed", token });
       setStatus("");
       setAskError(askErrorText(error instanceof ApiError ? error : null));
       return false;
@@ -342,6 +429,11 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   const questions = questionsByAnswer(messages);
   const busy = pending !== null;
+  const place = storyPlace(slot);
+  const storyCards = (question?: string) =>
+    slot?.matches ? (
+      <StoryMatches matches={slot.matches} note={STORY_NOTE_CHAT} headingLevel={2} question={question} />
+    ) : null;
   const empty = messages.length === 0 && threadState === "idle" && !busy;
   const activeTitle = conversations?.find((item) => item.id === activeId)?.title ?? null;
 
@@ -424,17 +516,25 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       >
         <div className={styles.threadInner}>
           <div className={styles.threadBody}>
-            {heading}
+            {mode === "documents" ? heading : null}
             <p className="visually-hidden" role="status">
               {status}
             </p>
-            {threadState === "loading" ? (
+            {mode === "stories" ? (
+              <StorySearchView
+                state={search}
+                onRetry={() => {
+                  if (search.kind === "error") void searchStories(search.question);
+                }}
+              />
+            ) : null}
+            {mode === "documents" && threadState === "loading" ? (
               <p className={`${styles.threadStatus} delayed`}>
                 <span className="spinner" aria-hidden="true" />
                 Loading the conversation…
               </p>
             ) : null}
-            {threadState === "error" ? (
+            {mode === "documents" && threadState === "error" ? (
               <div className={styles.threadError}>
                 <p className="error-text" role="alert">
                   Could not load this conversation.
@@ -457,6 +557,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
               role="log"
               aria-live="off"
               aria-label="Conversation"
+              hidden={mode === "stories"}
             >
               {messages.map((message) =>
                 message.role === "user" ? (
@@ -467,9 +568,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                 ) : (
                   <Fragment key={message.id}>
                     <AnswerView message={message} question={questions.get(message.id) ?? null} />
-                    {stories?.answerId === message.id ? (
-                      <StoryMatches matches={stories.matches} note={STORY_NOTE_CHAT} headingLevel={2} />
-                    ) : null}
+                    {place.at === "answer" && place.answerId === message.id ? storyCards() : null}
                   </Fragment>
                 ),
               )}
@@ -480,17 +579,28 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                     <p className={styles.plain}>{pending}</p>
                   </div>
                   <PendingAnswer />
+                  {place.at === "pending" ? storyCards() : null}
                 </>
               ) : null}
+              {place.at === "end" ? storyCards(place.question) : null}
             </div>
           </div>
           <div ref={composerRef} className={styles.composer}>
-            <ScopePicker
-              state={scope}
-              locked={scopeLockedText(busy, threadState === "loading")}
-              onChoose={(next) => setScope((current) => chooseScope(current, next))}
+            <div className={styles.composerTools}>
+              <ModeSwitch mode={mode} locked={modeLockedText(busy)} onChange={chooseMode} />
+              <ScopePicker
+                state={scope}
+                locked={scopeLockedText(busy, threadState === "loading")}
+                onChoose={(next) => setScope((current) => chooseScope(current, next))}
+              />
+            </div>
+            <QuestionBox
+              pending={busy || search.kind === "loading"}
+              error={mode === "documents" ? askError : null}
+              onAsk={onAsk}
+              inputRef={inputRef}
+              texts={MODE_TEXTS[mode]}
             />
-            <QuestionBox pending={busy} error={askError} onAsk={onAsk} inputRef={inputRef} />
           </div>
         </div>
       </section>

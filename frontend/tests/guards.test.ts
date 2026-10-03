@@ -96,7 +96,8 @@ describe("guards", () => {
 
   it("keeps Send focusable while waiting: aria-disabled, never disabled", () => {
     const box = readFileSync(join(ROOT, "components/chat/QuestionBox.tsx"), "utf8");
-    const start = box.indexOf('label="Send question"');
+    const start = box.indexOf('icon="send"');
+    expect(start).toBeGreaterThan(-1);
     const send = box.slice(start, box.indexOf("/>", start));
     expect(send).toContain("aria-disabled={pending");
     expect(send).not.toMatch(/\sdisabled=/);
