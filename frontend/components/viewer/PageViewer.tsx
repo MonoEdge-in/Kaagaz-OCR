@@ -54,6 +54,9 @@ export interface PageViewerProps {
   /** More buttons at the end of the toolbar, and what they open, right below it. */
   tools?: ReactNode;
   belowToolbar?: ReactNode;
+  /** My words on this page (ViewerWords.tsx) and the one its list marked. */
+  marks?: Marker[];
+  activeMark?: string | null;
 }
 
 export function PageViewer({
@@ -65,6 +68,8 @@ export function PageViewer({
   onPageChange,
   tools,
   belowToolbar,
+  marks = [],
+  activeMark = null,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);

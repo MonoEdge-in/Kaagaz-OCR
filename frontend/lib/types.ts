@@ -362,6 +362,7 @@ export interface Answer {
   normalized_question: string;
   model_used: boolean;
   rewritten_question?: string | null; // PRD 3 H1: what a follow-up was searched as; missing before PRD 3
+  understood_words?: { word: string; meaning: string }[]; // my words chat used (A3); missing before it
 }
 
 /**
@@ -376,6 +377,34 @@ export interface ScopeBody {
   document_ids?: string[] | null;
   date_from?: string | null; // YYYY-MM-DD
   date_to?: string | null;
+}
+
+/** One of my words (GET /me/words). Text from the user: shown as text only. */
+export interface MyWord {
+  id: string;
+  word: string;
+  meaning: string;
+  source: "manual" | "upload" | "viewer";
+  built_in: boolean; // chat's own word list reads it too (the badge)
+  created_at: string;
+  updated_at: string;
+}
+
+/** One of my words on a spot of a page (GET /documents/{id}/my-words?page=): only mine. */
+export interface MySpot {
+  id: string;
+  word_id: string;
+  word: string;
+  meaning: string;
+  page_no: number;
+  region: Region;
+}
+
+/** POST /me/words: 201 created, 200 already there or replaced. */
+export interface WordSaved {
+  word: MyWord;
+  outcome: "created" | "already" | "replaced";
+  warning: "built_in" | null;
 }
 
 export interface Message {

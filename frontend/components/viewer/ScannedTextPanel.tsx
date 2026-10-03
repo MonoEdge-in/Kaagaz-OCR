@@ -2,7 +2,8 @@
 
 // The Scanned text panel: each reader's lines on this page, as read, in order.
 // Mounted only while open (no fetch before); a late reply for another page is
-// dropped (key + cancelled). Plain React text, never sent to the model.
+// dropped (key + cancelled). Plain React text, never sent to the model. Each
+// line can also get a meaning in My words ("Add meaning", ViewerWords.tsx).
 
 import { useEffect, useState } from "react";
 import { ApiError, getPageReadings } from "@/lib/api";
@@ -33,11 +34,13 @@ export interface ScannedTextPanelProps {
   cited: Region | null; // the cited spot a "See scanned text" link carried
   onShow: (spot: Spot) => void;
   onClose: () => void;
+  onAddMeaning?: (text: string, region: Region, opener: HTMLElement) => void;
 }
 
 type Loaded = { key: string; readings: PageReadings } | { key: string; httpStatus: number | null };
 
-export function ScannedTextPanel({ documentId, page, active, cited, onShow, onClose }: ScannedTextPanelProps) {
+export function ScannedTextPanel(props: ScannedTextPanelProps) {
+  const { documentId, page, active, cited, onShow, onClose, onAddMeaning } = props;
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [role, setRole] = useState<"first" | "second">("first");
@@ -150,20 +153,31 @@ export function ScannedTextPanel({ documentId, page, active, cited, onShow, onCl
                 const marked = lineMarked(line, cited);
                 return (
                   <li key={index} className={marked ? `${styles.line} ${styles.cited}` : styles.line}>
-                    <button
-                      type="button"
-                      className={styles.lineButton}
-                      aria-pressed={active !== null && sameRegion(active, line.region)}
-                      onClick={() => onShow({ name: `line ${index + 1}`, region: line.region, label: null })}
-                    >
-                      <bdi dir="auto" className="readText">
-                        {visibleText(line.text)}
-                      </bdi>
-                      <span className={styles.lineMeta}>
-                        {marked && <strong>Cited · </strong>}
-                        {confidenceText(line.confidence, line.origin)}
-                      </span>
-                    </button>
+                    <div className={styles.lineRow}>
+                      <button
+                        type="button"
+                        className={styles.lineButton}
+                        aria-pressed={active !== null && sameRegion(active, line.region)}
+                        onClick={() => onShow({ name: `line ${index + 1}`, region: line.region, label: null })}
+                      >
+                        <bdi dir="auto" className="readText">
+                          {visibleText(line.text)}
+                        </bdi>
+                        <span className={styles.lineMeta}>
+                          {marked && <strong>Cited · </strong>}
+                          {confidenceText(line.confidence, line.origin)}
+                        </span>
+                      </button>
+                      {onAddMeaning && (
+                        <button
+                          type="button"
+                          className={`btn btn-quiet ${styles.addMeaning}`}
+                          onClick={(event) => onAddMeaning(visibleText(line.text), line.region, event.currentTarget)}
+                        >
+                          Add meaning<span className="visually-hidden">{` for line ${index + 1}`}</span>
+                        </button>
+                      )}
+                    </div>
                   </li>
                 );
               })}
