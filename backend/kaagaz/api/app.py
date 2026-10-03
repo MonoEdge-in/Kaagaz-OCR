@@ -99,6 +99,7 @@ def create_app(
         search.router,
         review.router,
         admin.router,
+        words.router,
         stories.router,
         words.router,
     ):

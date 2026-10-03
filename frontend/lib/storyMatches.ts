@@ -1,13 +1,11 @@
 // "From your stories" (S3b): the user's own documents whose story the question
 // tells again, shown beside a chat answer and above search results, never in
-// them; and "Search my stories" in chat, which shows only them (council 3 Oct
-// 2026, "story search mode"). The server sends ids, names, a type and a band;
-// never the story and never a score. Pure functions, unit tested in node
-// (tests/story-matches.test.ts).
+// them. The server sends ids, names, a type and a band; never the story and
+// never a score. Pure functions, unit tested in node (tests/story-matches.test.ts).
 
-import { postStoryMatches } from "./api";
+import { getStoryMatches } from "./api";
 import { docTypeLabel, isDocType } from "./format";
-import type { ScopeBody, StoryBand, StoryMatch } from "./types";
+import type { StoryBand, StoryMatch } from "./types";
 
 export const MAX_STORY_CARDS = 3;
 const MAX_STORY_QUESTION = 1000; // the route's q limit, a chat question's
@@ -21,42 +19,35 @@ const BAND_TEXT: Record<StoryBand, string> = {
   maybe: "Might match your story",
 };
 
-// "Search my stories": its own words, so it never reads like an answer.
-export const SEARCH_HEADING = "Search my stories";
-export const SEARCH_CARDS_HEADING = "Documents your stories match";
-export const SEARCH_NOTE = "Searched only stories you wrote, not the documents. This is not an answer.";
-export const SEARCH_EMPTY =
-  "No document matches your stories. Try other words, or write a story on the document first.";
-export const SEARCH_NO_WORDS = "Add a name, place or year from your story";
-export const SEARCH_ERROR = "Could not search your stories. Try again.";
-export const SEARCH_PENDING = "Searching your stories\u2026"; // an ellipsis
-export const SEARCH_BANDS: Record<StoryBand, string> = {
-  match: "Your story matches",
-  maybe: "Might be this one",
-};
-
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** The scope fields POST /api/me/story-matches takes: the chat's ScopeBody. */
-export type StoryScope = ScopeBody;
-export type StoryMode = "cards" | "stories";
+/** The scope fields GET /api/me/story-matches takes, as the chat's ScopeBody. */
+export type StoryScope = {
+  folder_id?: string;
+  include_subfolders?: boolean;
+  tag_ids?: readonly string[];
+  doc_types?: readonly string[];
+  document_ids?: readonly string[];
+  date_from?: string; // YYYY-MM-DD
+  date_to?: string;
+};
 
-export type StoryMatchBody = StoryScope & { q: string; limit?: number; mode?: StoryMode };
+export type StoryMatchParams = StoryScope & { q: string };
 
 /**
  * The request for a question and the chat's scope, or null when there is
  * nothing to ask. A field left out filters nothing; include_subfolders goes
  * only with a folder. An empty list would match nothing, so no call is made.
  */
-export function storyMatchParams(question: string, scope: StoryScope = {}): StoryMatchBody | null {
+export function storyMatchParams(question: string, scope: StoryScope = {}): StoryMatchParams | null {
   const q = question.trim().slice(0, MAX_STORY_QUESTION);
   if (!q) return null;
   const lists = [scope.tag_ids, scope.doc_types, scope.document_ids];
-  if (lists.some((list) => list != null && list.length === 0)) return null;
+  if (lists.some((list) => list !== undefined && list.length === 0)) return null;
   return {
     q,
     folder_id: scope.folder_id,
-    include_subfolders: scope.folder_id == null ? undefined : scope.include_subfolders,
+    include_subfolders: scope.folder_id === undefined ? undefined : scope.include_subfolders,
     tag_ids: scope.tag_ids,
     doc_types: scope.doc_types,
     document_ids: scope.document_ids,
@@ -82,9 +73,9 @@ function storyMatch(item: unknown): StoryMatch | null {
 /**
  * The matches to show from a reply's `story_matches`: malformed items, unknown
  * bands and repeats dropped; every "match" before every "maybe", the server's
- * order kept otherwise; at most `most` (three side cards).
+ * order kept otherwise; at most three.
  */
-export function storyMatchesFrom(raw: unknown, most = MAX_STORY_CARDS): StoryMatch[] {
+export function storyMatchesFrom(raw: unknown): StoryMatch[] {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
   const kept: StoryMatch[] = [];
@@ -98,7 +89,7 @@ export function storyMatchesFrom(raw: unknown, most = MAX_STORY_CARDS): StoryMat
     ...kept.filter((match) => match.band === "match"),
     ...kept.filter((match) => match.band === "maybe"),
   ];
-  return ordered.slice(0, most);
+  return ordered.slice(0, MAX_STORY_CARDS);
 }
 
 /** One card as the screen shows it. Every text is plain text, never markup. */
@@ -116,7 +107,7 @@ export interface StoryCard {
  * The cards, in order. When exactly one is a "match", it leads: first, larger,
  * with an "Open document" button. Nothing ever opens by itself.
  */
-export function storyCards(matches: readonly StoryMatch[], bands = BAND_TEXT): StoryCard[] {
+export function storyCards(matches: readonly StoryMatch[]): StoryCard[] {
   const strong = matches.filter((match) => match.band === "match").length === 1;
   const ordered = strong
     ? [...matches.filter((match) => match.band === "match"), ...matches.filter((match) => match.band !== "match")]
@@ -127,7 +118,7 @@ export function storyCards(matches: readonly StoryMatch[], bands = BAND_TEXT): S
       id: match.document_id,
       name: match.display_name,
       type: docTypeLabel(match.doc_type),
-      band: bands[match.band],
+      band: BAND_TEXT[match.band],
       href: `/documents/${encodeURIComponent(match.document_id)}`,
       lead,
       openText: lead ? "Open document" : "Open",
@@ -154,66 +145,22 @@ export function latestOnly(): { next(): number; isLatest(token: number): boolean
 }
 
 /**
- * The side cards' checked matches for a question in the chip's scope, or [] on
- * any failure: this call never affects the answer, so it never throws and shows
- * no error.
+ * The checked matches for a question, or [] on any failure: this call never
+ * affects the answer, so it never throws and shows no error.
  */
 export async function findStoryMatches(
   question: string,
   scope: StoryScope = {},
   signal?: AbortSignal,
-  post: typeof postStoryMatches = postStoryMatches,
+  get: typeof getStoryMatches = getStoryMatches,
 ): Promise<StoryMatch[]> {
   const params = storyMatchParams(question, scope);
   if (params === null) return [];
   try {
-    const reply = await post(params, signal);
+    const reply = await get(params, signal);
     const raw = typeof reply === "object" && reply !== null ? (reply as Record<string, unknown>).story_matches : null;
     return storyMatchesFrom(raw);
   } catch {
     return [];
   }
-}
-
-/** "Search my stories": the matches, how many stories were read, and whether that was all. */
-export interface StorySearch {
-  matches: StoryMatch[];
-  searched: number;
-  all: boolean;
-  noContentWords: boolean; // the question had no name, place or year to look for
-}
-
-/**
- * "Search my stories" for a question in the chip's scope. Unlike the side cards
- * it throws on any failure (an abort too, and a reply of the wrong shape), so an
- * error never looks like "no match".
- */
-export async function searchStoryMatches(
-  question: string,
-  scope: StoryScope,
-  limit: number,
-  mode: StoryMode,
-  signal?: AbortSignal,
-  post: typeof postStoryMatches = postStoryMatches,
-): Promise<StorySearch> {
-  const params = storyMatchParams(question, scope);
-  if (params === null) return { matches: [], searched: 0, all: true, noContentWords: false };
-  const reply = await post({ ...params, limit, mode }, signal);
-  const body = typeof reply === "object" && reply !== null ? (reply as Record<string, unknown>) : {};
-  const { story_matches: raw, searched, all, reason } = body;
-  if (!Array.isArray(raw) || typeof searched !== "number" || typeof all !== "boolean") {
-    throw new Error("story_matches_shape");
-  }
-  return { matches: storyMatchesFrom(raw, limit), searched, all, noContentWords: reason === "no_content_words" };
-}
-
-/** The line under the results when only the newest stories were read; null when all were. */
-export function scanNote(found: StorySearch): string | null {
-  return found.all ? null : `Searched your ${found.searched} most recently changed stories`;
-}
-
-/** What the status line says once a story search is done. */
-export function searchStatusText(found: StorySearch): string {
-  if (found.noContentWords) return SEARCH_NO_WORDS;
-  return found.matches.length === 0 ? "No document matches your stories." : storyStatusText(found.matches.length);
 }

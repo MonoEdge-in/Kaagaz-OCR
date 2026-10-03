@@ -1,15 +1,10 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, postStoryMatches } from "@/lib/api";
+import { getStoryMatches, query } from "@/lib/api";
 import {
   findStoryMatches,
   latestOnly,
   MAX_STORY_CARDS,
-  scanNote,
-  SEARCH_BANDS,
-  SEARCH_NO_WORDS,
-  searchStatusText,
-  searchStoryMatches,
   storyCards,
   storyMatchesFrom,
   storyMatchParams,
@@ -34,7 +29,7 @@ afterEach(() => {
 
 describe("storyMatchParams", () => {
   it("sends the trimmed question, cut at 1,000 characters, and nothing else without a scope", () => {
-    expect(JSON.stringify(storyMatchParams("  Daregaon jamin 7/12  "))).toBe('{"q":"Daregaon jamin 7/12"}');
+    expect(query(storyMatchParams("  Daregaon jamin 7/12  ")!)).toBe("?q=Daregaon+jamin+7%2F12");
     expect(storyMatchParams("x".repeat(1200))?.q).toHaveLength(1000);
   });
 
@@ -53,32 +48,26 @@ describe("storyMatchParams", () => {
       date_from: "2018-01-01",
       date_to: "2018-12-31",
     });
-    expect(JSON.parse(JSON.stringify(params))).toEqual({
-      q: "loan",
-      folder_id: FOLDER,
-      include_subfolders: true,
-      tag_ids: [A, B],
-      doc_types: ["land_record"],
-      date_from: "2018-01-01",
-      date_to: "2018-12-31",
-    });
+    expect(query(params!)).toBe(
+      `?q=loan&folder_id=${FOLDER}&include_subfolders=true&tag_ids=${A}&tag_ids=${B}` +
+        "&doc_types=land_record&date_from=2018-01-01&date_to=2018-12-31",
+    );
     expect(storyMatchParams("loan", { include_subfolders: true })?.include_subfolders).toBeUndefined();
   });
 
-  it("is a POST with a JSON body, so the question is never in a URL, with the CSRF header", async () => {
+  it("is a plain GET of /api/me/story-matches with the session cookie and no CSRF header", async () => {
     const calls: { url: string; init: RequestInit }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       calls.push({ url, init });
       return new Response(JSON.stringify({ story_matches: [] }), { status: 200 });
     });
     const controller = new AbortController();
-    await postStoryMatches({ ...storyMatchParams("papa loan")!, limit: 10, mode: "stories" }, controller.signal);
+    await getStoryMatches(storyMatchParams("papa loan")!, controller.signal);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe("/api/me/story-matches");
-    expect(calls[0]!.init.method).toBe("POST");
-    expect(calls[0]!.init.body).toBe('{"q":"papa loan","limit":10,"mode":"stories"}');
+    expect(calls[0]!.url).toBe("/api/me/story-matches?q=papa+loan");
+    expect(calls[0]!.init.method).toBe("GET");
     expect(calls[0]!.init.credentials).toBe("same-origin");
-    expect(calls[0]!.init.headers).toEqual({ "X-Requested-With": "kaagaz", "Content-Type": "application/json" });
+    expect(calls[0]!.init.headers).toEqual({});
     expect(calls[0]!.init.signal).toBe(controller.signal);
   });
 });
@@ -110,7 +99,6 @@ describe("storyMatchesFrom", () => {
     const raw = [match(A, "maybe"), match(B, "match"), match(C, "maybe"), match(D, "match")];
     expect(storyMatchesFrom(raw).map((m) => m.document_id)).toEqual([B, D, A]);
     expect(storyMatchesFrom(raw)).toHaveLength(MAX_STORY_CARDS);
-    expect(storyMatchesFrom(raw, 10)).toHaveLength(4); // "Search my stories" asks for up to 10
   });
 });
 
@@ -135,11 +123,6 @@ describe("storyCards", () => {
       [A, false, "Open", "Might match your story"],
       [C, false, "Open", "Might match your story"],
     ]);
-  });
-
-  it("says the band in story search's own words when asked to", () => {
-    const cards = storyCards([match(A, "match"), match(B, "maybe")], SEARCH_BANDS);
-    expect(cards.map((card) => card.band)).toEqual(["Your story matches", "Might be this one"]);
   });
 
   it("leads with nothing when two cards match, or none does", () => {
@@ -199,58 +182,6 @@ describe("findStoryMatches", () => {
     const get = vi.fn(async () => ({ story_matches: [] }));
     expect(await findStoryMatches("  ", {}, undefined, get)).toEqual([]);
     expect(get).not.toHaveBeenCalled();
-  });
-
-  it("sends the chip's scope", async () => {
-    const post = vi.fn(async () => ({ story_matches: [] }));
-    await findStoryMatches("loan", { folder_id: FOLDER, include_subfolders: false }, undefined, post);
-    expect(post).toHaveBeenCalledWith({ q: "loan", folder_id: FOLDER, include_subfolders: false }, undefined);
-  });
-});
-
-describe("searchStoryMatches", () => {
-  const reply = (body: object) => vi.fn(async () => body);
-
-  it("asks in story mode with a limit and the scope, and reads searched, all and the reason", async () => {
-    const post = reply({ story_matches: [match(A, "maybe"), match(B, "match")], searched: 2, all: true });
-    const found = await searchStoryMatches("kangan", { document_ids: [C] }, 10, "stories", undefined, post);
-    expect(post).toHaveBeenCalledWith({ q: "kangan", document_ids: [C], limit: 10, mode: "stories" }, undefined);
-    expect(found).toEqual({ matches: [match(B, "match"), match(A, "maybe")], searched: 2, all: true, noContentWords: false });
-    const none = reply({ story_matches: [], searched: 0, all: true, reason: "no_content_words" });
-    expect((await searchStoryMatches("the of", {}, 10, "stories", undefined, none)).noContentWords).toBe(true);
-  });
-
-  it("throws on a failure, an abort or a strange reply, so an error never looks like no match", async () => {
-    const failing = vi.fn(async () => {
-      throw new ApiError(429, "rate_limited", "Too many requests.");
-    });
-    await expect(searchStoryMatches("loan", {}, 10, "stories", undefined, failing)).rejects.toThrow();
-    for (const body of [null, "match", { story_matches: [] }, { story_matches: [], searched: "2", all: true }]) {
-      await expect(searchStoryMatches("loan", {}, 10, "stories", undefined, vi.fn(async () => body))).rejects.toThrow();
-    }
-    const controller = new AbortController();
-    controller.abort();
-    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
-      init.signal?.throwIfAborted();
-      return new Response("{}", { status: 200 });
-    });
-    await expect(searchStoryMatches("loan", {}, 10, "stories", controller.signal)).rejects.toThrow();
-  });
-
-  it("asks nothing for a scope that matches nothing", async () => {
-    const post = reply({});
-    const found = await searchStoryMatches("loan", { tag_ids: [] }, 10, "stories", undefined, post);
-    expect(found.matches).toEqual([]);
-    expect(post).not.toHaveBeenCalled();
-  });
-
-  it("says when only the newest stories were read, and what the status line says", () => {
-    const found = { matches: [match(A, "maybe")], searched: 500, all: false, noContentWords: false };
-    expect(scanNote(found)).toBe("Searched your 500 most recently changed stories");
-    expect(scanNote({ ...found, all: true })).toBeNull();
-    expect(searchStatusText(found)).toBe("1 document matches your stories.");
-    expect(searchStatusText({ ...found, matches: [] })).toBe("No document matches your stories.");
-    expect(searchStatusText({ ...found, matches: [], noContentWords: true })).toBe(SEARCH_NO_WORDS);
   });
 });
 

@@ -6,7 +6,7 @@
 
 import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
-import type { StoryMatchBody } from "./storyMatches";
+import type { StoryMatchParams } from "./storyMatches";
 import type {
   AdminUser,
   AuditEntry,
@@ -317,13 +317,11 @@ export const ask = (question: string, conversationId?: string, scope?: ScopeBody
     ...(scope ? { scope } : {}),
   });
 /**
- * The user's own documents whose story the question tells again (S3): beside
- * ask() for the side cards, or instead of it for "Search my stories", never
- * through it. POST, so what someone remembers never sits in a URL. The reply is
- * checked by lib/storyMatches.ts.
+ * The user's own documents whose story the question tells again (S3), asked
+ * beside ask(), never through it. The reply is checked by lib/storyMatches.ts.
  */
-export const postStoryMatches = (body: StoryMatchBody, signal?: AbortSignal) =>
-  request<unknown>("POST", "/me/story-matches", body, signal);
+export const getStoryMatches = (params: StoryMatchParams, signal?: AbortSignal) =>
+  request<unknown>("GET", `/me/story-matches${query(params)}`, undefined, signal);
 export const listConversations = () =>
   request<{ items: ConversationSummary[] }>("GET", "/conversations");
 export const getConversation = (id: string) =>
