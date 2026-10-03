@@ -69,14 +69,16 @@ def add_message(
     message_text: str,
     answer: Mapping[str, Any] | None,
     scope: Mapping[str, Any] | None = None,
+    rewritten_question: str | None = None,
 ) -> RowMapping:
     """Store one message. ``answer`` is set for assistant messages only (a table check);
-    ``scope`` for a question asked inside one."""
+    ``scope`` for a question asked inside one, ``rewritten_question`` for a follow-up (H1)."""
     return (
         conn.execute(
             text(
-                "INSERT INTO messages (customer_id, conversation_id, role, text, answer, scope)"
-                " VALUES (:c, :conv, :role, :text, CAST(:answer AS jsonb), CAST(:scope AS jsonb))"
+                "INSERT INTO messages (customer_id, conversation_id, role, text, answer, scope,"
+                " rewritten_question)"
+                " VALUES (:c, :conv, :role, :text, CAST(:answer AS jsonb), CAST(:scope AS jsonb), :rq)"
                 " RETURNING id, role, text, answer, scope, created_at"
             ),
             {
@@ -86,6 +88,7 @@ def add_message(
                 "text": message_text,
                 "answer": None if answer is None else json.dumps(answer),
                 "scope": None if scope is None else json.dumps(scope),
+                "rq": rewritten_question,
             },
         )
         .mappings()

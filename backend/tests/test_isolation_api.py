@@ -54,6 +54,7 @@ def test_b_gets_404_on_every_document_route_of_a(world: _World) -> None:
     b, doc, sheet = world.b.client, world.document, world.sheet
     for path in (
         f"/api/documents/{doc}",
+        f"/api/documents/{doc}/summary",
         f"/api/documents/{doc}/file",
         f"/api/documents/{doc}/pages/1/image",
         f"/api/documents/{sheet}/pages/1/cells",
@@ -66,6 +67,7 @@ def test_b_gets_404_on_every_document_route_of_a(world: _World) -> None:
     _assert_not_found(deleted.status_code, deleted.json())
     # A's document, file and page image are all still there.
     assert world.a.client.get(f"/api/documents/{doc}").status_code == 200
+    assert world.a.client.get(f"/api/documents/{doc}/summary").status_code == 200
     assert world.api.storage.has(world.a.customer_id, doc)
     assert (world.a.customer_id, doc, 1) in world.api.storage.page_images
 

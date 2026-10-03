@@ -6,7 +6,7 @@
 
 import { canReview } from "@/components/review/review";
 import { ApiError } from "@/lib/api";
-import type { DocumentStatus, DocumentSummary, Role } from "@/lib/types";
+import type { DocumentStatus, DocumentSummary, Label, Role } from "@/lib/types";
 
 const REPROCESSABLE: readonly DocumentStatus[] = ["ready", "failed", "needs_reader"];
 
@@ -44,7 +44,8 @@ export type ReprocessEvent =
   | { type: "cancel" }
   | { type: "send" } // confirmed
   | { type: "sent" }
-  | { type: "failed"; message: string };
+  | { type: "failed"; message: string }
+  | { type: "settled" }; // the document is no longer being read
 
 /** Whether confirming now would send the request: only from the question. */
 export function canSend(state: ReprocessState): boolean {
@@ -64,6 +65,8 @@ export function reprocessReducer(state: ReprocessState, event: ReprocessEvent): 
       return state.step === "sending" ? { step: "done" } : state;
     case "failed":
       return state.step === "sending" ? { step: "error", message: event.message } : state;
+    case "settled":
+      return state.step === "done" ? { step: "idle" } : state;
   }
 }
 
@@ -79,4 +82,31 @@ export function reprocessErrorText(error: unknown): string {
     return error.message;
   }
   return "Check your internet connection, then try again.";
+}
+
+/** Still being checked or read: the viewer asks again until it is not. */
+export function beingRead(status: DocumentStatus): boolean {
+  return status === "received" || status === "clean";
+}
+
+/** Over the values while the document is read: they are not final. */
+export function valuesNote(status: DocumentStatus, count: number): string | null {
+  if (!beingRead(status)) return null;
+  return count === 0
+    ? "Values show here once the document has been read."
+    : "Being read again. These values are from the last reading and may change.";
+}
+
+/** Said once when reading ends while the viewer is open; again: after Read again. */
+export function settledText(
+  document: { status: DocumentStatus; status_message: string; values: readonly { label: Label }[] },
+  again: boolean,
+): string {
+  if (document.status !== "ready") return `Reading failed. ${document.status_message}`;
+  const found = document.values.length;
+  const review = document.values.filter((value) => value.label === "needs_review").length;
+  return (
+    `${again ? "Read again" : "Reading finished"}. ` +
+    `${found} ${found === 1 ? "value" : "values"} found, ${review} ${review === 1 ? "needs" : "need"} review.`
+  );
 }

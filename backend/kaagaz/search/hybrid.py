@@ -40,7 +40,8 @@ The scope (PRD 3 Q1, kaagaz/search/scope.py) is in the WHERE of all three
 lists, before ranking: static predicates, each true for a NULL parameter (the
 custom plans drop them). A scope that matches nothing returns before any SQL.
 ``search_documents`` (Q2) groups the candidates by document. ``neighbours`` (Q4)
-fetches the pieces next to an answer's hits, with the same filters and scope.
+fetches the pieces next to an answer's hits, with the same filters and scope. A
+piece of an invoice whose check failed comes back needs review (edge case 10).
 
 The lists are merged with reciprocal rank fusion (``fuse``): a piece scores the
 sum of 1 / (k + rank) over the lists it is in, so a piece found two ways ranks
@@ -69,7 +70,7 @@ after the index); fine at this size, a per-customer partition is the upgrade.
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import OperationalError
@@ -77,6 +78,9 @@ from sqlalchemy.exc import OperationalError
 from kaagaz.answering.hinglish import normalise
 from kaagaz.chunking.script import has_devanagari_letters, latin_spelling
 from kaagaz.search.scope import EVERYTHING, Scope
+
+if TYPE_CHECKING:
+    from kaagaz.answering.evidence import Hit  # evidence imports this module
 
 # Candidates taken from each of the three lists before merging.
 CANDIDATES = 50
@@ -116,7 +120,7 @@ _WORD = text(
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
     " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q)"
-    " ORDER BY score DESC, p.id LIMIT :n"
+    " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
 # set_config(..., true) is SET LOCAL with a bound value (SET LOCAL takes none):
@@ -152,7 +156,7 @@ _FUZZY = text(
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
     " AND (:q <% p.text OR :ql <% p.text_latin)"
-    " ORDER BY score DESC, p.id LIMIT :n"
+    " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
 # The index query (V2): every filter in WHERE, the index order and LIMIT inside
@@ -206,9 +210,13 @@ _MEANING_EXACT = text(
     ") SELECT id, document_id, distance FROM candidates ORDER BY distance, id LIMIT :n"
 )
 
+# A piece of an invoice whose check failed is never verified (edge case 10): its
+# reading may be sure, but the figures do not add up.
 _DETAILS = text(
-    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to,"
-    " p.text, p.regions, p.label, d.doc_type, p.seq, p.context_header"
+    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to, p.text,"
+    " p.regions, CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :c"
+    " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
+    " d.doc_type, p.seq, p.context_header"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -220,8 +228,10 @@ _DETAILS = text(
 # so a piece in Trash, an older version or outside the scope is never one (edge
 # case 5). The columns are _DETAILS's; ordered by the hit's rank, then seq.
 _NEIGHBOURS = text(
-    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to,"
-    " p.text, p.regions, p.label, d.doc_type, p.seq, p.context_header"
+    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to, p.text,"
+    " p.regions, CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :c"
+    " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
+    " d.doc_type, p.seq, p.context_header"
     " FROM unnest(CAST(:documents AS uuid[]), CAST(:seqs AS integer[]))"
     " WITH ORDINALITY AS h (document_id, seq, rank)"
     " JOIN pieces p ON p.customer_id = :c AND p.document_id = h.document_id"
@@ -282,7 +292,9 @@ def fuse(
     """Merge three ranked lists of (piece_id, raw score), each best first.
 
     A piece listed twice in one list counts once, at its best rank. The result
-    is best first, ties broken by piece id. O(n log n) for n listed pieces.
+    is best first; a tie keeps the order the lists first gave the pieces in (each list
+    breaks its own ties by upload time and position, never by the random piece id),
+    so the same documents always rank the same. O(n log n) for n listed pieces.
     """
     if k < 0:
         raise ValueError("k must not be negative")
@@ -297,7 +309,7 @@ def fuse(
             rank += 1
             own[name] = raw_score
             scores[piece_id] = scores.get(piece_id, 0.0) + 1.0 / (k + rank)
-    order = sorted(scores, key=lambda piece_id: (-scores[piece_id], piece_id))
+    order = sorted(scores, key=lambda piece_id: -scores[piece_id])  # stable: ties keep first-seen order
     return [
         FusedPiece(
             piece_id=piece_id,
@@ -443,11 +455,11 @@ def _hits(conn: Connection, customer_id: str, fused: Sequence[FusedPiece]) -> li
 
 
 def neighbours(
-    conn: Connection, *, customer_id: str, hits: Sequence[SearchHit], size: int, scope: Scope = EVERYTHING
+    conn: Connection, *, customer_id: str, hits: "Sequence[Hit]", size: int, scope: Scope = EVERYTHING
 ) -> list[SearchHit]:
     """Q4: the pieces up to ``size`` either side of each hit in its document, in ``scope``,
-    each once, never a hit: the first hit's first, in seq order. ``conn`` is the search's
-    ``Database.customer`` one. One statement, O(h * size * log N) for h hits."""
+    each once, never a hit: the first hit's first, in seq order. ``conn`` comes from
+    ``Database.customer(customer_id)``. One statement, O(h * size * log N) for h hits."""
     if size < 1 or not hits or scope.matches_nothing:
         return []
     params = {

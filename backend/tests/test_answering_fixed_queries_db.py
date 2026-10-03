@@ -8,28 +8,31 @@ pipeline store leaves them: one row per value, records keyed by
 import hashlib
 import json
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
 import pytest
 from sqlalchemy import text
 
+from kaagaz.answering import fixed_queries
 from kaagaz.answering.dates import date_range, mentions_date
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, PgFixedQueries
 from kaagaz.answering.hinglish import normalise
-from kaagaz.answering.intent import FixedPlan, plan_fixed
+from kaagaz.answering.intent import FIELDS, FixedPlan, plan_fixed
 from kaagaz.db.engine import Database
 from kaagaz.extraction.labelled import values_from_lines
 from kaagaz.extraction.parsing import parse_amount, parse_date
 from kaagaz.extraction.spreadsheet import values_from_cells
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span, location_to_json
-from tests.db_support import new_customer
+from kaagaz.search.scope import EVERYTHING
+from tests.db_support import insert_document, new_customer
 
 pytestmark = pytest.mark.db
 
 AUGUST = (date(2026, 8, 1), date(2026, 9, 1))
+NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 DATES = ("date", "invoice_date")
 PARTIES = ("party_name", "name")
 
@@ -127,7 +130,7 @@ def test_available_fields_are_those_of_ready_documents(db: Database) -> None:
     waiting = add_document(db, customer, "b.xlsx", status="clean")
     add_values(db, customer, ready, [cell("sheet:1:row:2", "profit", "5", number=5)])
     add_values(db, customer, waiting, [cell("sheet:1:row:2", "expense", "5", number=5)])
-    assert PgFixedQueries(db).available_fields(customer) == {"profit"}
+    assert PgFixedQueries(db).available_fields(customer, FIELDS) == {"profit"}
 
 
 def test_top_group_sums_per_party_inside_the_month(db: Database, register: Any) -> None:
@@ -502,7 +505,7 @@ def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> N
     customer, document, _ = register
     fixed = PgFixedQueries(db)
     before = (
-        fixed.available_fields(customer),
+        fixed.available_fields(customer, (*FIELDS, "net_worth")),
         fixed.total(customer, "profit", (), None, None),
         fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
         fixed.extreme_value(customer, "profit", (), None, None, True),
@@ -521,7 +524,7 @@ def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> N
     add_values(db, customer, card_only, [{**value, "id": str(uuid.uuid4())} for value in card])
 
     after = (
-        fixed.available_fields(customer),
+        fixed.available_fields(customer, (*FIELDS, "net_worth")),
         fixed.total(customer, "profit", (), None, None),
         fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
         fixed.extreme_value(customer, "profit", (), None, None, True),
@@ -552,7 +555,7 @@ def test_invoice_line_amounts_are_never_used_and_total_amount_still_plans(db: Da
     add_values(db, customer, document, as_stored([*values_from_lines(spans), *lines]))
     fixed = PgFixedQueries(db)
 
-    available = fixed.available_fields(customer)
+    available = fixed.available_fields(customer, (*FIELDS, "invoice_number", "description"))
     assert available == {"party_name", "invoice_number", "invoice_date", "total_amount"}
     assert fixed.total(customer, "amount", (), None, None) == []
     assert fixed.extreme_value(customer, "amount", (), None, None, True) == []
@@ -560,6 +563,51 @@ def test_invoice_line_amounts_are_never_used_and_total_amount_still_plans(db: Da
     assert (august.number, august.records) == (Decimal(1180), 1)
     normalised = normalise("Total amount in August 2026?")
     plan = plan_fixed(
-        normalised, date_range(normalised, date(2026, 9, 30)), mentions_date(normalised), available
+        normalised,
+        date_range(normalised, date(2026, 9, 30)),
+        mentions_date(normalised),
+        lambda asked: fixed.available_fields(customer, asked),
     )
     assert plan == FixedPlan("total", "total_amount", (), ("invoice_date",), *AUGUST)
+
+
+# --- the list of fields a question can name (A7a) ------------------------------------------------
+
+# The fields query as it was before A7a: every field the customer has, read in full each time.
+_ALL_FIELDS_BEFORE = text(
+    "SELECT DISTINCT v.field FROM extracted_values v"
+    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND v.record_key <> 'card' AND v.record_key NOT LIKE 'line:%'"
+)
+_ASKED = ["profit", "net_profit", "party_name", "date", "invoice_date", "total_amount", "amount", "net_worth"]
+
+
+def test_the_fields_query_finds_what_the_full_list_found_among_the_fields_asked(db: Database) -> None:
+    """A7a: only the fields asked are looked for, one EXISTS each, and the answer is the
+    old full list cut to them: the same card, line, trash, version and status rules."""
+    customer, admin_user = new_customer(db)
+    other, _ = new_customer(db)
+    add_register(db, customer)
+    add_invoice(db, customer)
+    with_cards = add_document(db, customer, "card.pdf", detected_type="pdf")
+    add_values(db, customer, with_cards, [cell("card", "net_worth", "5", number=5)])
+    add_values(db, customer, with_cards, [cell("line:1", "amount", "5", number=5)])
+    add_values(db, customer, add_document(db, customer, "w.xlsx", status="clean"), [cell("r", "profit", "1")])
+    with db.customer(customer) as conn:
+        binned = insert_document(conn, customer, detected_type="zip", deleted_at=NOW, deleted_by=admin_user)
+        old = insert_document(conn, customer, detected_type="zip", is_current=False)
+    add_values(db, customer, binned, [cell("r", "net_profit", "1")])
+    add_values(db, customer, old, [cell("r", "net_worth", "1")])
+    add_values(db, other, add_document(db, other, "o.xlsx"), [cell("r", "amount", "1")])
+
+    found = {}
+    for who in (customer, other):
+        with db.customer(who) as conn:
+            before = {str(row.field) for row in conn.execute(_ALL_FIELDS_BEFORE, {"customer_id": who})}
+            params = {"customer_id": who, "candidates": _ASKED, **EVERYTHING.params()}
+            found[who] = {str(row.field) for row in conn.execute(fixed_queries._AVAILABLE_FIELDS, params)}
+        assert found[who] == before & set(_ASKED)
+    # Left out: a card's net_worth, a line's amount, a waiting, a binned and an older document's.
+    assert found[customer] == {"party_name", "date", "invoice_date", "total_amount"}
+    assert found[other] == {"amount"}

@@ -28,8 +28,12 @@ PROVISIONAL: the synonym table and the router rules are Vrushit's
 spec's table; say so in the pull request.
 
 Time is O(w + f): one pass over the w words, set lookups against f fields.
+The customer's fields are asked for (one query, only for ``FIELDS``) only once
+the question has one aggregate word and every topic word is known, so a
+search question never runs it.
 """
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from itertools import pairwise
@@ -68,6 +72,8 @@ _DATE_FIELDS = ("invoice_date", "date", "bill_date", "month")
 _THINGS = frozenset({"invoice", "invoices", "document", "documents", "files", "file"})
 # Topic words that add nothing to a fixed query.
 _FILLER = frozenset({"value", "overall", "all", "made", "earned", "got", "number"})
+# Every field a plan can use: the only ones the fields query looks for.
+FIELDS = (*(f for fields in _METRIC_FIELDS.values() for f in fields), *_GROUP_FIELDS, *_DATE_FIELDS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,9 +90,10 @@ def plan_fixed(
     normalised: NormalisedQuestion,
     date_range: tuple[date, date] | None,
     mentions_date: bool,
-    available_fields: set[str],
+    available_fields: Callable[[Sequence[str]], set[str]],
 ) -> FixedPlan | None:
-    """A fixed-query plan, or None to take the search route."""
+    """A fixed-query plan, or None to take the search route. ``available_fields(FIELDS)``
+    gives which of them the customer has; it is called at most once."""
     words = normalised.words
     aggregate = _aggregate(words)
     if aggregate is None or (mentions_date and date_range is None):
@@ -98,11 +105,12 @@ def plan_fixed(
     known = _HIGHEST | _LOWEST | _TOTAL | _COUNT | set(_METRIC_WORDS) | _GROUP_WORDS | _THINGS | _FILLER
     if any(word not in known for word in normalised.keywords):
         return None
+    available = available_fields(FIELDS)
 
     start, end = date_range if date_range is not None else (None, None)
     date_fields: tuple[str, ...] = ()
     if date_range is not None or aggregate == "count":
-        date_fields = _present(_DATE_FIELDS, available_fields)
+        date_fields = _present(_DATE_FIELDS, available)
         if not date_fields:
             return None
 
@@ -115,7 +123,7 @@ def plan_fixed(
         metric_concepts = {"amount"}  # "kul kitna": the total amount
     if len(metric_concepts) != 1:
         return None
-    metric = _one_field(_METRIC_FIELDS[metric_concepts.pop()], available_fields)
+    metric = _one_field(_METRIC_FIELDS[metric_concepts.pop()], available)
     if metric is None:
         return None
 
@@ -123,7 +131,7 @@ def plan_fixed(
     if group_asked:
         if aggregate == "total":
             return None  # "whose total" is a ranking, not one total: not a question we can pin down
-        group_fields = _present(_GROUP_FIELDS, available_fields)
+        group_fields = _present(_GROUP_FIELDS, available)
         if not group_fields:
             return None
     return FixedPlan(aggregate, metric, group_fields, date_fields, start, end)

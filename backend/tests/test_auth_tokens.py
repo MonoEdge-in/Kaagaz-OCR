@@ -440,7 +440,7 @@ class _Queue(MemoryQueue):
 
 
 class _NoAnswers:
-    def answer(self, customer_id: str, question: str, *, scope: Scope) -> AnswerLike:
+    def answer(self, customer_id: str, question: str, *, scope: Scope, history: Any) -> AnswerLike:
         raise AssertionError("not used here")
 
 

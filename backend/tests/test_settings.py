@@ -7,6 +7,7 @@ import pytest
 from kaagaz import settings as settings_module
 from kaagaz.ocr_server.app import ALLOWED_HOSTS
 from kaagaz.settings import Settings, SettingsError
+from tests.settings_factory import make_settings
 
 ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
 OCR_SETTINGS = ["OCR_ENGINE", "OCR_URL", "OCR_TIMEOUT_SECONDS", "OCR_DPI"]
@@ -71,10 +72,11 @@ def test_each_engine_name_is_accepted(engine: str) -> None:
 
 def test_one_ocr_request_must_end_well_inside_the_lease() -> None:
     """The longest step without a heartbeat is one OCR request: with less than two
-    minutes to spare, a slow page outlives the lease and a second worker starts."""
-    fits = Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="1080", QUEUE_LEASE_SECONDS="1200"))
-    assert fits.ocr_timeout_seconds == 1080.0
-    for timeout, lease in (("1081", "1200"), ("900", "900")):
+    minutes to spare, plus the 15 s the worker may wait to renew a lease, a slow page
+    outlives the lease and a second worker starts."""
+    fits = Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="1065", QUEUE_LEASE_SECONDS="1200"))
+    assert fits.ocr_timeout_seconds == 1065.0
+    for timeout, lease in (("1066", "1200"), ("900", "900")):
         with pytest.raises(SettingsError, match="OCR_TIMEOUT_SECONDS") as caught:
             Settings.from_env(shipped(OCR_TIMEOUT_SECONDS=timeout, QUEUE_LEASE_SECONDS=lease))
         assert "QUEUE_LEASE_SECONDS" in str(caught.value)
@@ -157,6 +159,34 @@ def test_a_bad_page_route_setting_stops_start_up_by_name(name: str, value: str) 
         Settings.from_env(shipped(**{name: value}))
 
 
+# The settings that are secrets (council security note 7): repr never shows them.
+SECRET_FIELDS = [
+    "database_url",
+    "storage_access_key",
+    "storage_secret_key",
+    "session_secret",
+    "totp_encryption_key",
+]
+
+
+def test_repr_shows_none_of_the_five_secrets() -> None:
+    canaries = {name: f"canary-{name}-{'z' * 32}" for name in SECRET_FIELDS}
+    text = repr(make_settings(**canaries))
+    assert [name for name, value in canaries.items() if value in text] == []
+    assert "db_app_role='kaagaz_app'" in text  # the other settings still show
+
+
+def test_the_shipped_embedding_dim_is_the_vector_column_size() -> None:
+    assert Settings.from_env(shipped()).embedding_dim == 1024
+
+
+@pytest.mark.parametrize("value", ["0", "768", "1023", "1536"])
+def test_an_embedding_dim_other_than_1024_stops_start_up(value: str) -> None:
+    """The pieces' vector(1024) column (migration 0001) holds no other size."""
+    with pytest.raises(SettingsError, match="EMBEDDING_DIM must be 1024"):
+        Settings.from_env(shipped(EMBEDDING_DIM=value))
+
+
 def test_search_ef_ships_at_100_and_must_be_1_to_1000() -> None:
     """PRD 3 V2: hnsw.ef_search takes 1 to 1000; a value outside stops start-up by name."""
     assert Settings.from_env(shipped()).search_ef == 100
@@ -181,3 +211,11 @@ def test_answer_neighbours_ships_at_1_and_must_be_0_to_3() -> None:
     for bad in ("4", "-1", "one", None):
         with pytest.raises(SettingsError, match="ANSWER_NEIGHBOURS"):
             Settings.from_env(shipped(ANSWER_NEIGHBOURS=bad))
+
+
+def test_chat_history_turns_ships_at_3_and_must_be_0_to_10() -> None:
+    """PRD 3 H1: the pairs a follow-up is rewritten with; a value outside stops start-up by name."""
+    assert Settings.from_env(shipped()).chat_history_turns == 3
+    for bad in ("11", "-1", "three", None):
+        with pytest.raises(SettingsError, match="CHAT_HISTORY_TURNS"):
+            Settings.from_env(shipped(CHAT_HISTORY_TURNS=bad))

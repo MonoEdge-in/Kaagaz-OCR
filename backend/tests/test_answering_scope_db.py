@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, text
 from kaagaz.answering.service import AnswerService
 from kaagaz.db.engine import Database
 from kaagaz.search.scope import EVERYTHING, Scope, ScopeBody, resolve
-from tests.db_support import insert_folder, new_customer
+from tests.db_support import insert_folder, insert_tag, new_customer, tag_document
 from tests.settings_factory import make_settings
 from tests.test_answering_fixed_queries_db import add_document, add_values, row
 from tests.test_answering_unchecked_db import _value as card_value
@@ -22,9 +22,9 @@ NOW = datetime(2026, 9, 27, 6, 30, tzinfo=UTC)  # last month is August 2026
 SETTINGS = make_settings()
 
 
-def _world(db: Database) -> tuple[str, Scope]:
+def _world(db: Database) -> tuple[str, Scope, str, str]:
     """A register in the folder "Suppliers" and one outside it (with an unchecked sales
-    card). Returns the customer and the folder's resolved scope."""
+    card). Returns the customer, the folder's resolved scope, the register inside, its user."""
     customer, user = new_customer(db)
     inside = add_document(db, customer, "suppliers.xlsx")
     outside = add_document(db, customer, "others.xlsx")
@@ -39,7 +39,7 @@ def _world(db: Database) -> tuple[str, Scope]:
             {"f": folder, "c": customer, "d": inside},
         )
         scope = resolve(conn, customer, ScopeBody.model_validate({"folder_id": folder}), timezone="UTC")
-    return customer, scope
+    return customer, scope, inside, user
 
 
 def _ask(db: Database, customer: str, question: str, scope: Scope) -> dict[str, Any]:
@@ -75,7 +75,7 @@ def _ask(db: Database, customer: str, question: str, scope: Scope) -> dict[str, 
 def test_a_fixed_query_counts_only_the_documents_in_scope(
     db: Database, question: str, scoped: str, everything: str
 ) -> None:
-    customer, scope = _world(db)
+    customer, scope, _, _ = _world(db)
 
     inside = _ask(db, customer, question, scope)
     unscoped = _ask(db, customer, question, EVERYTHING)
@@ -86,7 +86,7 @@ def test_a_fixed_query_counts_only_the_documents_in_scope(
 
 
 def test_an_unchecked_figure_outside_the_scope_is_not_pointed_to(db: Database) -> None:
-    customer, scope = _world(db)
+    customer, scope, _, _ = _world(db)
     question = "What were the total sales last month?"
 
     unscoped = _ask(db, customer, question, EVERYTHING)
@@ -99,10 +99,23 @@ def test_an_unchecked_figure_outside_the_scope_is_not_pointed_to(db: Database) -
 
 def test_a_scope_that_matches_nothing_is_not_found_before_any_query(db: Database) -> None:
     """Edge case 1: never the whole customer's answer, and no SQL (the second database is unreachable)."""
-    customer, _ = _world(db)
+    customer, *_ = _world(db)
     unreachable = Database(create_engine("postgresql+psycopg://unused@localhost/unused"), "kaagaz_app")
     for database in (db, unreachable):
         service = AnswerService(db=database, model=None, settings=SETTINGS, clock=lambda: NOW)
         answer = service.answer(customer, "What was the total profit last month?", scope=Scope(folder_ids=()))
         assert answer.status == "not_found" and answer.closest_documents == []
     assert _ask(db, customer, "What was the total profit last month?", EVERYTHING)["status"] == "answered"
+
+
+def test_a_tag_or_document_id_scope_reaches_a_fixed_total(db: Database) -> None:
+    customer, _, inside, user = _world(db)
+    with db.customer(customer) as conn:
+        tag = insert_tag(conn, customer, user, "gst")
+        tag_document(conn, customer, inside, tag)
+    for body in ({"tag_ids": [tag]}, {"document_ids": [inside]}):
+        with db.customer(customer) as conn:
+            scope = resolve(conn, customer, ScopeBody.model_validate(body), timezone="UTC")
+        answer = _ask(db, customer, "What was the total profit last month?", scope)
+        said = "The total profit in August 2026 was 1,50,000, from 2 records."
+        assert (answer["route"], answer["sentences"][0]["text"]) == ("fixed_query", said), body

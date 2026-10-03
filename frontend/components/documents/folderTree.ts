@@ -112,11 +112,6 @@ export function pathLabel(tree: FolderTree, folderId: string): string {
     .join(" / ");
 }
 
-/** 1 for a top-level folder; 0 for the top level itself (null) or a folder not in the tree. O(1). */
-export function depthOf(tree: FolderTree, folderId: string | null): number {
-  return folderId === null ? 0 : (tree.byId.get(folderId)?.depth ?? 0);
-}
-
 /** Whether a new folder may go inside this one (null: at the top level). O(1). */
 export function canAddSubfolder(tree: FolderTree, folderId: string | null): boolean {
   if (folderId === null) return true;

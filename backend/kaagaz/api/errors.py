@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -39,6 +40,12 @@ MESSAGES = {
     "not_reprocessable": (
         "This document can't be read again right now. Only a ready, failed or unreadable document"
         " that is not in Trash can be."
+    ),
+    # Critical #5: the tab chose the file while another account was signed in. It must
+    # not invite a retry: that would send the file into the account signed in now.
+    "session_changed": (
+        "Not uploaded. A different account has signed in on this browser since you chose this file."
+        " Reload the page to see who is signed in now."
     ),
     "too_large": "This file is too large.",
     "empty_file": "This file is empty.",
@@ -113,3 +120,4 @@ def install(app: FastAPI) -> None:
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(BackendUnavailable, _unavailable)
     app.add_exception_handler(OperationalError, _unavailable)
+    app.add_exception_handler(PoolTimeout, _unavailable)  # no free pooled connection

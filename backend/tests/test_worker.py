@@ -19,6 +19,37 @@ def make_queue(max_attempts: int = QUEUE_MAX_RECEIVES) -> tuple[FakeClock, Lease
     return clock, LeaseQueue(clock, lease_seconds=LEASE, max_attempts=max_attempts)
 
 
+class RenewalLog(LeaseQueue):
+    """A LeaseQueue that notes the time of each lease renewal."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__(clock, lease_seconds=LEASE, max_attempts=QUEUE_MAX_RECEIVES)
+        self.renewed_at: list[float] = []
+
+    def extend(self, receipt: str) -> None:
+        self.renewed_at.append(self._clock.now())
+        super().extend(receipt)
+
+
+def pending_after_two_beats(second_beat_after: float) -> int:
+    """A 1200 s lease, a beat at 14.99 s (too soon to renew), then one ``second_beat_after``
+    later, on the worker's clock. Returns the jobs left in the queue (0 once acked)."""
+    clock = FakeClock()
+    queue = LeaseQueue(clock, lease_seconds=1200.0, max_attempts=QUEUE_MAX_RECEIVES)
+    queue.enqueue(GOOD)
+
+    def two_beats(job: Job, beat: Heartbeat) -> None:
+        clock.advance(14.99)
+        beat()
+        clock.advance(second_beat_after)
+        beat()
+
+    Worker(
+        queue, two_beats, max_attempts=MAX_ATTEMPTS, on_exhausted=lambda job: None, clock=clock.now
+    ).run_once()
+    return queue.pending()
+
+
 def make_worker(queue: LeaseQueue, handler: Handler, marked: list[Job] | None = None) -> Worker:
     """The worker under test, with MAX_ATTEMPTS tries per job. ``marked`` collects
     every job ``on_exhausted`` is called with."""
@@ -278,6 +309,66 @@ class WorkerTest(unittest.TestCase):
         make_worker(queue, slow_handler).run_once()
         self.assertEqual(seen_by_other_worker, [])
         self.assertEqual(queue.pending(), 0)
+
+    def test_heartbeats_renew_the_lease_at_most_once_every_15_seconds(self) -> None:
+        """A heartbeat after every page or batch is hundreds of queue calls on a long
+        document. On the worker's clock, a beat less than 15 s after the receive or the last
+        renewal does not call the queue, and the job is still never handed out twice."""
+        clock = FakeClock()
+        queue = RenewalLog(clock)
+        queue.enqueue(GOOD)
+        handed_out = []
+
+        def beats_every_5_seconds(job: Job, beat: Heartbeat) -> None:
+            for _ in range(12):  # 60 s: two leases
+                clock.advance(5)
+                beat()
+                handed_out.append(queue.receive())  # a second worker asks for work
+
+        worker = Worker(
+            queue,
+            beats_every_5_seconds,
+            max_attempts=MAX_ATTEMPTS,
+            on_exhausted=lambda job: None,
+            clock=clock.now,
+        )
+        self.assertTrue(worker.run_once())
+        self.assertEqual(queue.renewed_at, [15, 30, 45, 60])
+        self.assertEqual(handed_out, [None] * 12)
+        self.assertEqual(queue.pending(), 0)
+
+    def test_a_worker_clock_that_steps_back_still_renews(self) -> None:
+        """The clock should be monotonic. If it steps back anyway (50 s here), the next beat
+        renews at once, rather than waiting for the clock to catch up while the lease runs out."""
+        clock, worker_clock = FakeClock(), FakeClock(100.0)
+        queue = RenewalLog(clock)
+        queue.enqueue(GOOD)
+        handed_out = []
+
+        def beats_after_a_step_back(job: Job, beat: Heartbeat) -> None:
+            clock.advance(20)
+            worker_clock.advance(-50)
+            beat()
+            clock.advance(20)  # 40 s after the receive: past the first lease
+            handed_out.append(queue.receive())  # a second worker asks for work
+
+        worker = Worker(
+            queue,
+            beats_after_a_step_back,
+            max_attempts=MAX_ATTEMPTS,
+            on_exhausted=lambda job: None,
+            clock=worker_clock.now,
+        )
+        self.assertTrue(worker.run_once())
+        self.assertEqual(queue.renewed_at, [20])
+        self.assertEqual(handed_out, [None])
+        self.assertEqual(queue.pending(), 0)
+
+    def test_a_beat_the_throttle_skips_does_not_move_the_lease(self) -> None:
+        """The longest wait the throttle adds: a beat 14.99 s after the receive does not
+        renew, so the next beat must still come inside the first lease (1200 s here)."""
+        self.assertEqual(pending_after_two_beats(1185.0), 0)  # 1199.99 s renews: acked
+        self.assertEqual(pending_after_two_beats(1185.02), 1)  # 1200.01 s: lease gone, left for later
 
     def test_heartbeat_after_the_lease_is_lost_does_not_crash_the_worker(self) -> None:
         clock, queue = make_queue()

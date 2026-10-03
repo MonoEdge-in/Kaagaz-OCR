@@ -1,18 +1,22 @@
 """``embed_pieces`` with a fake model, against a real PostgreSQL, and what it embeds (PRD 3 V3)."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Connection, text
+from sqlalchemy.exc import OperationalError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.chunking.context import context_header
 from kaagaz.chunking.piece import Piece
 from kaagaz.db.engine import Database
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.spans import BoxLocation
 from kaagaz.search.indexing import embed_pieces, piece_input, query_input, recipe_tag
-from tests.db_support import new_customer
+from tests.db_support import APP_ROLE, new_customer
 from tests.test_search_db import RECIPE, add_document, add_pieces, axis, run
 
 pytestmark = pytest.mark.db
@@ -47,6 +51,23 @@ class FakeModel:
         raise AssertionError("indexing never reads images")
 
 
+class GoesDown(Database):
+    """The test database, until transaction number ``down_at``: from then on the server
+    cannot be reached (OperationalError), as in an outage."""
+
+    def __init__(self, db: Database, down_at: int) -> None:
+        super().__init__(db.engine, APP_ROLE)
+        self._left = down_at - 1
+
+    @contextmanager
+    def customer(self, customer_id: str) -> Iterator[Connection]:
+        if self._left == 0:
+            raise OperationalError("SELECT 1", {}, ConnectionRefusedError())
+        self._left -= 1
+        with super().customer(customer_id) as conn:
+            yield conn
+
+
 def _embeddings(db: Database, customer_id: str, document_id: str) -> list[tuple[bool, str | None]]:
     with db.customer(customer_id) as conn:
         rows = conn.execute(
@@ -69,6 +90,38 @@ def test_every_piece_is_embedded_in_batches_in_order(db: Database) -> None:
 
     assert model.calls == [["piece 0", "piece 1"], ["piece 2", "piece 3"], ["piece 4"]]
     assert _embeddings(db, customer, document) == [(True, "fake-embed#ctx1")] * 5
+
+
+def test_each_batch_is_reported_once_its_write_has_committed(db: Database) -> None:
+    """The pipeline's heartbeat and "indexing i of n". Each report comes after the
+    batch's transaction, never inside one: another transaction already sees the vectors."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [(f"piece {n}", None) for n in range(5)])
+    reports: list[tuple[int, int, int]] = []
+
+    def on_batch(done: int, total: int) -> None:
+        embedded = sum(has_vector for has_vector, _ in _embeddings(db, customer, document))
+        reports.append((done, total, embedded))
+
+    embed_pieces(db, customer, document, FakeModel(), batch_size=2, on_batch=on_batch)
+
+    assert reports == [(2, 5, 2), (4, 5, 4), (5, 5, 5)]
+
+
+def test_the_last_fetch_that_finds_nothing_reports_nothing(db: Database) -> None:
+    """4 pieces in batches of 2: the second batch is full, so one more fetch finds nothing,
+    and that fetch is not a batch."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [(f"piece {n}", None) for n in range(4)])
+    reports: list[tuple[int, int]] = []
+
+    embed_pieces(
+        db, customer, document, FakeModel(), batch_size=2, on_batch=lambda *report: reports.append(report)
+    )
+
+    assert reports == [(2, 4), (4, 4)]
 
 
 def test_a_second_run_does_nothing(db: Database) -> None:
@@ -133,6 +186,20 @@ def test_batch_size_must_be_positive(db: Database) -> None:
     customer, _ = new_customer(db)
     with pytest.raises(ValueError, match="batch_size"):
         embed_pieces(db, customer, add_document(db, customer), FakeModel(), batch_size=0)
+
+
+@pytest.mark.parametrize("down_at", [1, 2, 3])  # the count, the first fetch, the first write
+def test_a_database_outage_is_backend_unavailable(db: Database, down_at: int) -> None:
+    """So the pipeline ends the run database_unavailable and the job is retried later,
+    rather than an internal error that also stops the worker."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [("one", None), ("two", None)])
+
+    with pytest.raises((BackendUnavailable, OperationalError)) as caught:
+        embed_pieces(GoesDown(db, down_at), customer, document, FakeModel())
+    assert isinstance(caught.value, BackendUnavailable)
+    assert str(caught.value) == "database"
 
 
 def test_a_piece_is_embedded_with_its_reduced_header_and_no_instruction(db: Database) -> None:

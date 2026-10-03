@@ -283,14 +283,49 @@ def invoice(row: RowMapping, lines: Sequence[RowMapping]) -> dict[str, Any]:
     }
 
 
+def document_link(row: RowMapping) -> dict[str, Any]:
+    """``DocumentLink``: a related document and the identifier both share (PRD 3 Y2),
+    as links.normalise_identifier stored it."""
+    return {
+        "id": str(row["id"]),
+        "display_name": row["display_name"],
+        "doc_type": row["doc_type"],
+        "identifier": {"kind": row["identifier_kind"], "value": row["identifier_value"]},
+    }
+
+
 def review_item(row: RowMapping) -> dict[str, Any]:
-    """``ReviewItem``: the value, its document and its page."""
+    """``ReviewItem``: the value, its document and its page, and the reasons its
+    document's invoice check failed (PRD 3 Y5; [] when it passed or has no invoice)."""
     return {
         "value": extracted_value(row),
         "document_id": str(row["document_id"]),
         "document_name": row["document_name"],
         "detected_type": row["detected_type"],
         "page": page_summary(row),
+        "check_reasons": list(row["check_reasons"]),
+    }
+
+
+def failed_document(row: RowMapping, *, max_pages: int) -> dict[str, Any]:
+    """``FailedDocument`` (PRD 3 Z1): a document that failed or can't be read, with the
+    message the document screen shows for it and when it was last tried."""
+    run = row["last_run_at"]
+    return {
+        "id": str(row["id"]),
+        "display_name": row["display_name"],
+        "status": row["status"],
+        "failure_code": row["failure_code"],
+        "message": status_message(
+            row["status"],
+            row["failure_code"],
+            detected_type=row["detected_type"],
+            max_pages=max_pages,
+            page_count=row["page_count"],
+            attempts=int(row["attempts"]),
+            max_attempts=row["max_attempts"],
+        ),
+        "last_run_at": None if run is None else iso(run),
     }
 
 
@@ -341,7 +376,7 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
         citation = {**each, "source_state": state}
         if state in _GONE:
             citation["snippet"] = None
-            citation["regions"] = []
+            citation["regions"] = citation["label_regions"] = []
             gone.add(each.get("n"))
         citations.append(citation)
     sentences = []

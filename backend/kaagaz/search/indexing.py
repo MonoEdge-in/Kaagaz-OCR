@@ -6,6 +6,11 @@ work. Pieces are read in ``seq`` order, ``batch_size`` at a time; each batch is
 one model call and one batched UPDATE. The model call runs outside any
 database transaction, so a slow model never holds a transaction open.
 
+After each batch's write has committed, ``on_batch(done, total)`` is told how far
+it has got: the pipeline beats the heartbeat and shows "indexing done of total"
+there, so a long document keeps its lease (a 20k-row sheet is about 626
+batches, longer than one lease).
+
 What is embedded (PRD 3 V3, the Qwen3-Embedding model card): a piece is its
 reduced header, a blank line, then its text (``piece_input``); a question is
 ``Instruct: {QUERY_TASK}\nQuery:{question}`` (``query_input``), with no space
@@ -19,19 +24,25 @@ the current tag, so a vector from another model or recipe is left out until
 ``python -m kaagaz.cli reembed`` replaces it (PRD 3 V4, edge case 7).
 
 ``ModelUnavailable`` propagates: the caller decides (the pipeline logs it and
-marks the document ready without vectors; word and typo search still work).
+marks the document ready without vectors; word and typo search still work). A
+database that cannot be reached is ``BackendUnavailable("database")``, so the
+job is retried.
 
-Cost: ceil(n / batch_size) model calls and 2 * ceil(n / batch_size) + 1 short
+Cost: ceil(n / batch_size) model calls and 2 * ceil(n / batch_size) + 2 short
 transactions for n pieces; O(batch_size * dim) memory.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from sqlalchemy import Connection, text
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, unavailable
 from kaagaz.search.hybrid import vector_literal
+
+_TO_EMBED = text(
+    "SELECT count(*) FROM pieces WHERE customer_id = :c AND document_id = :d AND embedding IS NULL"
+)
 
 # The query task, in English (the model card: queries carry an instruction).
 QUERY_TASK = "Given a question about business documents, retrieve passages that answer it"
@@ -102,16 +113,25 @@ def piece_input(context_header: str, piece_text: str) -> str:
 
 
 def embed_pieces(
-    db: Database, customer_id: str, document_id: str, model: ModelClient, batch_size: int = 32
+    db: Database,
+    customer_id: str,
+    document_id: str,
+    model: ModelClient,
+    batch_size: int = 32,
+    on_batch: Callable[[int, int], None] | None = None,
 ) -> int:
-    """Embed the document's pieces that have no vector. Returns how many were written."""
+    """Embed the document's pieces that have no vector. Returns how many were written.
+    ``on_batch(done, total)`` follows each batch, outside any transaction: ``done`` of
+    the ``total`` pieces that had no vector at the start."""
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
-    written = 0
+    with unavailable(), db.customer(customer_id) as conn:
+        total = int(conn.execute(_TO_EMBED, {"c": customer_id, "d": document_id}).scalar_one())
+    written = done = 0
     after = -1
     tag = recipe_tag(model.embed_model)
     while True:
-        with db.customer(customer_id) as conn:
+        with unavailable(), db.customer(customer_id) as conn:
             rows = conn.execute(
                 _NEXT_BATCH, {"c": customer_id, "d": document_id, "after": after, "n": batch_size}
             ).all()
@@ -121,7 +141,7 @@ def embed_pieces(
         vectors = model.embed([piece_input(str(row[3]), str(row[2])) for row in rows])
         if len(vectors) != len(rows):
             raise ModelOutputError("embedding_count")
-        with db.customer(customer_id) as conn:
+        with unavailable(), db.customer(customer_id) as conn:
             result = conn.execute(
                 _WRITE,
                 [
@@ -130,6 +150,9 @@ def embed_pieces(
                 ],
             )
             written += result.rowcount
+        done += len(rows)
+        if on_batch is not None:
+            on_batch(done, total)  # committed: the heartbeat never waits inside a transaction
         if len(rows) < batch_size:
             return written
 

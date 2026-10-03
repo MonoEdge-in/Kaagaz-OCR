@@ -4,9 +4,11 @@ POST /api/messages/{id}/feedback.
 Why the order in ``ask``: one short transaction checks the conversation and
 resolves the scope (PRD 3 H2), the one sent or else the last question's
 (PROVISIONAL, plan decision 9), again for this customer now: a deleted folder or
-another customer's ids match nothing. The answer is worked out outside a
-transaction (it may wait on the model), then the conversation, both messages
-(the question with its scope) and the audit row are written in one transaction.
+another customer's ids match nothing. It also reads the last CHAT_HISTORY_TURNS
+question and answer pairs for a follow-up's rewrite (H1). The answer is worked
+out outside a transaction (it may wait on the model), then the conversation, both
+messages (the question with its scope and rewrite) and the audit row are written
+in one transaction.
 The audit row holds only the ids and ``answer.status``.
 
 A conversation belongs to the user who started it; anyone else, in this
@@ -22,6 +24,7 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import RowMapping
 
+from kaagaz.answering.rewrite import Turn
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
@@ -70,12 +73,15 @@ def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
         raise ApiError(400, "bad_request", "Type a question first.")
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
     chosen = body.scope
+    recent: Sequence[RowMapping] = []
     with context.db.customer(user.customer_id) as conn:
         if conversation_id is not None:
             if chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
                 raise ApiError(404, "not_found")
+            pairs = max(context.settings.chat_history_turns, 1)
+            recent = chat_sql.recent_messages(conn, user.customer_id, conversation_id, 2 * pairs)
             if chosen is None:
-                chosen = _saved_scope(chat_sql.recent_messages(conn, user.customer_id, conversation_id, 2))
+                chosen = _saved_scope(recent)
         scope = (
             EVERYTHING
             if chosen is None
@@ -86,7 +92,8 @@ def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
     if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
         raise ApiError(400, "bad_request", "Choose fewer documents or tags.")
 
-    answer = context.answers.answer(user.customer_id, question, scope=scope).to_json()
+    history = _history(recent)
+    answer = context.answers.answer(user.customer_id, question, scope=scope, history=history).to_json()
 
     with context.db.customer(user.customer_id) as conn:
         if conversation_id is None:
@@ -103,6 +110,7 @@ def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
             message_text=question,
             answer=None,
             scope=saved,
+            rewritten_question=answer.get("rewritten_question"),
         )
         answered = chat_sql.add_message(
             conn,
@@ -127,6 +135,22 @@ def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
             },
         )
     return {"conversation_id": conversation_id, "question": message(asked), "answer": message(answered)}
+
+
+def _history(recent: Sequence[RowMapping]) -> list[Turn]:
+    """The question and answer pairs of ``recent`` (newest first), oldest first. Only an
+    answered answer gives its sentences: after "not found" the turn is its question only
+    (edge case 3). O(m) for m messages."""
+    turns: list[Turn] = []
+    answer: str | None = None
+    for row in recent:  # an answer comes just before its question
+        if row["role"] == "assistant":
+            saved = row["answer"] or {}
+            answer = answer_text(saved) if saved.get("status") == "answered" else None
+        else:
+            turns.append(Turn(str(row["text"]), answer))
+            answer = None
+    return turns[::-1]
 
 
 def _saved_scope(recent: Sequence[RowMapping]) -> ScopeBody | None:

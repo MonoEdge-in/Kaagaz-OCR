@@ -179,6 +179,9 @@ body {
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* A focused element scrolled into view stays clear of the sticky top bar
+     (WCAG 2.4.11). The token is 0 once the sidebar shows. */
+  scroll-padding-top: calc(var(--topbar-space) + var(--space-4));
 }
 
 body {

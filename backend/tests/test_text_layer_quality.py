@@ -6,6 +6,7 @@ on real PDFs built in code are in tests/test_pdf_signals.py.
 
 import unittest
 
+from kaagaz.chunking.script import malformed_devanagari
 from kaagaz.reading.route import Reason, RouteDecision
 from kaagaz.reading.text_quality import (
     HIDDEN_TEXT_MAX_SHARE,
@@ -15,7 +16,6 @@ from kaagaz.reading.text_quality import (
     SCAN_FOOTER_MAX_CHARS,
     PageSignals,
     TextLayerRules,
-    count_malformed_devanagari,
     good_ratio,
     malformed_devanagari_share,
     text_layer_fallback_allowed,
@@ -202,7 +202,7 @@ class MalformedDevanagariTest(unittest.TestCase):
     def test_well_formed_words_have_no_malformed_signs(self) -> None:
         for word in ("पाटील ट्रेडर्स", "शिंदे", "क्षेत्र ७/१२ दिनांक", "ज़िला", "कार्यालय", "हँस", "दुःख", HINDI):
             with self.subTest(word=word):
-                self.assertEqual(count_malformed_devanagari(word), 0)
+                self.assertEqual(malformed_devanagari(word), 0)
 
     def test_a_sign_that_follows_no_consonant_or_nukta_is_malformed(self) -> None:
         for text, count in {
@@ -215,10 +215,10 @@ class MalformedDevanagariTest(unittest.TestCase):
             "अॅडव्होकेट": 1,  # Marathi "ॲ" typed as अ + ॅ counts too
         }.items():
             with self.subTest(text=text):
-                self.assertEqual(count_malformed_devanagari(text), count)
+                self.assertEqual(malformed_devanagari(text), count)
 
     def test_other_scripts_are_not_devanagari(self) -> None:
-        self.assertEqual(count_malformed_devanagari("\u0626 Invoice"), 0)  # Arabic yeh with hamza
+        self.assertEqual(malformed_devanagari("\u0626 Invoice"), 0)  # Arabic yeh with hamza
         self.assertEqual(malformed_devanagari_share("Invoice total"), 0.0)
 
     def test_the_share_is_over_devanagari_letters_and_signs(self) -> None:

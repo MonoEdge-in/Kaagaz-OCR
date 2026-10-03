@@ -3,7 +3,7 @@ document's card columns, its invoice with its lines, and its links.
 
 ``save`` keeps everything one run made for a document in one transaction as
 that customer: it deletes what an earlier run saved for the document, then
-inserts the new rows, one batched statement per table. So a redelivered job
+inserts the new rows in chunks of SAVE_CHUNK rows. So a redelivered job
 replaces rather than appends, and a crash half way leaves the earlier run's
 rows as they were. ``clear`` deletes them (a file rejected on a later scan).
 ``load_learned`` reads this customer's remembered corrections for some fields.
@@ -48,27 +48,45 @@ kaagaz.reading.spans.location_to_json, plus ``"kind"``, ``"origin"``,
 (``span_from_json``). A table ``row`` is a top-level key, so it never mixes
 with a cell's ``region.row``, which is all ``listing.sheet_cells`` reads.
 
-Cost per save: one family lock, 1 update, 5 deletes, at most 6 batched inserts
-and 3 to 7 small link statements; O(rows) data sent. The link lookup reads this
-customer's values of the link fields, O(V) for V of them (plan 12, risk 12).
-One indexed query for ``load_learned``.
+Cost per save: one family lock, 1 update, 5 deletes; per SAVE_CHUNK rows, one
+batched insert of pages and one of pieces (pipelined, a row each) and one insert
+of values (an array per column); one insert per reader output, 2 for an invoice,
+and 3 to 7 small link statements; O(rows) data sent, O(SAVE_CHUNK) rows built at
+a time. The card-label check runs before the transaction opens. The link lookup
+reads this customer's values of the link fields, O(V) for V of them (plan 12,
+risk 12). One indexed query for ``load_learned``.
 """
 
 import json
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Connection, text
 
+from kaagaz.chunking.piece import Piece
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import is_run_open
 from kaagaz.db.sqlstate import retry_on_deadlock
 from kaagaz.db.trash import lock_family
 from kaagaz.extraction.learned import LearnedCorrection
-from kaagaz.extraction.values import CARD_RECORD, NEEDS_REVIEW, ExtractedValue
-from kaagaz.pipeline import DocumentContent, DocumentFacts, InvoiceRow, LinkIdentifier, Superseded
+from kaagaz.extraction.values import (
+    CARD_RECORD,
+    NEEDS_REVIEW,
+    DocumentFacts,
+    ExtractedValue,
+    InvoiceRow,
+    LinkIdentifier,
+)
+from kaagaz.jobs.worker import Superseded
 from kaagaz.reading.spans import Span, location_from_json, location_to_json
+
+if TYPE_CHECKING:
+    from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput  # pipeline builds this store
+
+# Rows per statement (A6b): the save holds one chunk of row data at a time, not every
+# row of a 20k-row workbook at once.
+SAVE_CHUNK = 1000
 
 _UPDATE_FACTS = text(
     "UPDATE documents SET doc_type = :doc_type, languages = CAST(:languages AS text[]),"
@@ -97,13 +115,40 @@ _INSERT_PIECE = text(
     " context_header, text_latin) VALUES (:c, :d, :seq, :page_from, :page_to, :text,"
     " CAST(:regions AS jsonb), :label, :context_header, :text_latin)"
 )
-_INSERT_VALUE = text(
+# A chunk of values in one statement: one array parameter per column, in _VALUE_COLUMNS
+# order (measured 2.5 times faster than one pipelined INSERT per row, A6b). The jsonb
+# columns go as text and are cast per row.
+_VALUE_COLUMNS = (
+    "record_key",
+    "field",
+    "value_text",
+    "value_raw",
+    "second_reading",
+    "value_number",
+    "value_date",
+    "page_no",
+    "region",
+    "reader",
+    "confidence",
+    "label",
+    "label_reason",
+    "label_page_no",
+    "label_region",
+)
+_INSERT_VALUES = text(
     "INSERT INTO extracted_values (customer_id, document_id, record_key, field, value_text, value_raw,"
     " second_reading, value_number, value_date, page_no, region, reader, confidence, label, label_reason,"
     " label_page_no, label_region)"
-    " VALUES (:c, :d, :record_key, :field, :value_text, :value_raw, :second_reading, :value_number,"
-    " :value_date, :page_no, CAST(:region AS jsonb), :reader, :confidence, :label, :label_reason,"
-    " :label_page_no, CAST(:label_region AS jsonb))"
+    " SELECT :c, :d, record_key, field, value_text, value_raw, second_reading, value_number, value_date,"
+    " page_no, CAST(region AS jsonb), reader, confidence, label, label_reason, label_page_no,"
+    " CAST(label_region AS jsonb)"
+    " FROM unnest(CAST(:record_key AS text[]), CAST(:field AS text[]), CAST(:value_text AS text[]),"
+    " CAST(:value_raw AS text[]), CAST(:second_reading AS text[]), CAST(:value_number AS numeric[]),"
+    " CAST(:value_date AS date[]), CAST(:page_no AS integer[]), CAST(:region AS text[]),"
+    " CAST(:reader AS text[]), CAST(:confidence AS double precision[]), CAST(:label AS text[]),"
+    " CAST(:label_reason AS text[]), CAST(:label_page_no AS integer[]), CAST(:label_region AS text[]))"
+    " AS v(record_key, field, value_text, value_raw, second_reading, value_number, value_date, page_no,"
+    " region, reader, confidence, label, label_reason, label_page_no, label_region)"
 )
 _INSERT_INVOICE = text(
     "INSERT INTO invoices (customer_id, document_id, invoice_number, invoice_date, seller_name,"
@@ -203,66 +248,36 @@ class PgPipelineStore:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def save(self, content: DocumentContent, *, run_id: str | None = None) -> None:
+    def save(self, content: "DocumentContent", *, run_id: str | None = None) -> None:
         """Replace everything saved for the document with ``content``, in one transaction.
         With ``run_id``, raise Superseded and write nothing unless that run is still
         open (the run fence)."""
+        for value in content.values:
+            if value.record_key == CARD_RECORD and value.label != NEEDS_REVIEW:
+                # The last check (council fix 4): the model chose a card value's field, so it
+                # is never verified. A bug upstream stops the save before any statement.
+                raise ValueError("a card value must be needs_review")
         customer_id, document_id = content.customer_id, content.document_id
         ids = {"c": customer_id, "d": document_id}
-        pages = [
-            {
-                **ids,
-                "page_no": page.info.page,
-                "width": page.info.width,
-                "height": page.info.height,
-                "unit": page.info.unit,
-                "has_image": page.has_image,
-                "route": page.route,
-                "effective_dpi": page.effective_dpi,
-                "low_resolution": page.low_resolution,
-            }
-            for page in content.pages
-        ]
-        outputs = [
-            {
-                **ids,
-                "role": output.role,
-                "reader": output.reader,
-                "version": output.version,
-                "output": json.dumps([span_to_json(span) for span in output.spans]),
-            }
-            for output in content.outputs
-        ]
-        pieces = [
-            {
-                **ids,
-                "seq": seq,
-                "page_from": piece.page_from,
-                "page_to": piece.page_to,
-                "text": piece.text,
-                "regions": json.dumps(piece.regions()),
-                "label": piece.label,
-                "context_header": piece.context_header,
-                "text_latin": piece.text_latin,
-            }
-            for seq, piece in enumerate(content.pieces)
-        ]
-        values = [_value_row(ids, value, content.reader) for value in content.values]
+        pages, outputs, pieces = content.pages, content.outputs, content.pieces
 
         def transaction() -> None:
+            # The rows are built here, chunk by chunk, from index ranges over ``content``:
+            # a deadlock retry runs this again and builds them again (C-architect 5).
             with self._db.customer(customer_id) as conn:
                 family_id = lock_family(conn, customer_id, document_id)
                 if run_id is not None and not is_run_open(conn, customer_id, document_id, run_id):
                     raise Superseded(run_id)
                 _replace_facts_and_delete(conn, ids, content.facts)
-                for statement, rows in (
-                    (_INSERT_PAGE, pages),
-                    (_INSERT_OUTPUT, outputs),
-                    (_INSERT_PIECE, pieces),
-                    (_INSERT_VALUE, values),
-                ):
-                    if rows:
-                        conn.execute(statement, rows)  # one batched statement per table
+                for start in range(0, len(pages), SAVE_CHUNK):
+                    chunk = pages[start : start + SAVE_CHUNK]
+                    conn.execute(_INSERT_PAGE, [_page_row(ids, page) for page in chunk])
+                for output in outputs:  # one at a time: one output's JSON is held at once
+                    conn.execute(_INSERT_OUTPUT, _output_row(ids, output))
+                for start in range(0, len(pieces), SAVE_CHUNK):
+                    seqs = range(start, min(start + SAVE_CHUNK, len(pieces)))
+                    conn.execute(_INSERT_PIECE, [_piece_row(ids, seq, pieces[seq]) for seq in seqs])
+                _insert_values(conn, ids, content.values, content.reader)
                 if content.invoice is not None:
                     _insert_invoice(conn, ids, content.invoice)
                 _replace_links(conn, ids, family_id, content.links)
@@ -367,27 +382,75 @@ def _link_targets(
     ]
 
 
-def _value_row(ids: dict[str, str], value: ExtractedValue, reader: str) -> dict[str, Any]:
-    if value.record_key == CARD_RECORD and value.label != NEEDS_REVIEW:
-        # The last check (council fix 4): the model chose a card value's field, so it is
-        # never verified. A bug upstream stops the save before anything is written.
-        raise ValueError("a card value must be needs_review")
-    label = value.label_location
+def _page_row(ids: dict[str, str], page: "PageRecord") -> dict[str, Any]:
+    info = page.info
     return {
         **ids,
-        "record_key": value.record_key,
-        "field": value.field,
-        "value_text": value.value_text,
-        "value_raw": value.value_raw,
-        "second_reading": value.second_reading,
-        "value_number": value.value_number,
-        "value_date": value.value_date,
-        "page_no": value.location.page,
-        "region": json.dumps(location_to_json(value.location)),
-        "reader": reader,
-        "confidence": value.confidence,
-        "label": value.label,
-        "label_reason": value.label_reason,
-        "label_page_no": None if label is None else label.page,
-        "label_region": None if label is None else json.dumps(location_to_json(label)),
+        "page_no": info.page,
+        "width": info.width,
+        "height": info.height,
+        "unit": info.unit,
+        "has_image": page.has_image,
+        "route": page.route,
+        "effective_dpi": page.effective_dpi,
+        "low_resolution": page.low_resolution,
     }
+
+
+def _output_row(ids: dict[str, str], output: "ReaderOutput") -> dict[str, Any]:
+    """The spans joined as JSON one by one, so no dict of every span is held (C-architect 5)."""
+    spans = ",".join(json.dumps(span_to_json(span)) for span in output.spans)
+    return {
+        **ids,
+        "role": output.role,
+        "reader": output.reader,
+        "version": output.version,
+        "output": f"[{spans}]",
+    }
+
+
+def _piece_row(ids: dict[str, str], seq: int, piece: Piece) -> dict[str, Any]:
+    return {
+        **ids,
+        "seq": seq,
+        "page_from": piece.page_from,
+        "page_to": piece.page_to,
+        "text": piece.text,
+        "regions": json.dumps(piece.regions()),
+        "label": piece.label,
+        "context_header": piece.context_header,
+        "text_latin": piece.text_latin,
+    }
+
+
+def _insert_values(
+    conn: Connection, ids: dict[str, str], values: Sequence[ExtractedValue], reader: str
+) -> None:
+    """The values in chunks of SAVE_CHUNK, one statement each: a list per column, so a
+    chunk binds len(_VALUE_COLUMNS) + 2 parameters however many rows it has."""
+    for start in range(0, len(values), SAVE_CHUNK):
+        rows = [_value_row(value, reader) for value in values[start : start + SAVE_CHUNK]]
+        columns = zip(*rows, strict=True)
+        conn.execute(_INSERT_VALUES, {**ids, **dict(zip(_VALUE_COLUMNS, map(list, columns), strict=True))})
+
+
+def _value_row(value: ExtractedValue, reader: str) -> tuple[object, ...]:
+    """One value's columns, in _VALUE_COLUMNS order."""
+    label = value.label_location
+    return (
+        value.record_key,
+        value.field,
+        value.value_text,
+        value.value_raw,
+        value.second_reading,
+        value.value_number,
+        value.value_date,
+        value.location.page,
+        json.dumps(location_to_json(value.location)),
+        reader,
+        None if value.confidence is None else float(value.confidence),  # one array type
+        value.label,
+        value.label_reason,
+        None if label is None else label.page,
+        None if label is None else json.dumps(location_to_json(label)),
+    )

@@ -3,6 +3,12 @@ import {
   appendItems,
   canReview,
   checkChoice,
+  checkReasonsText,
+  focusAfterResolve,
+  leftToReview,
+  parseReason,
+  queueParams,
+  REASON_FILTERS,
   resolvedMessage,
   withoutItem,
 } from "@/components/review/review";
@@ -39,6 +45,7 @@ const item = (id: string, overrides: Partial<ReviewItem["value"]> = {}): ReviewI
     effective_dpi: 300,
     low_resolution: false,
   },
+  check_reasons: [],
 });
 
 describe("checkChoice", () => {
@@ -90,10 +97,72 @@ describe("the queue after a resolve", () => {
   });
 });
 
+describe("focus after a resolve", () => {
+  const list = (ids: string[], total = ids.length) => ({ items: ids.map((id) => item(id)), total });
+
+  it("moves to the next card", () => {
+    expect(focusAfterResolve(list(["a", "b", "c"]), "b")).toEqual({ kind: "card", valueId: "c" });
+  });
+
+  it("moves to the previous card when the last one is resolved", () => {
+    expect(focusAfterResolve(list(["a", "b", "c"]), "c")).toEqual({ kind: "card", valueId: "b" });
+  });
+
+  it("loads the next page when no card is left but the server has more", () => {
+    expect(focusAfterResolve(list(["a"], 21), "a")).toEqual({ kind: "next-page" });
+  });
+
+  it("moves to the empty heading when nothing is left anywhere", () => {
+    expect(focusAfterResolve(list(["a"]), "a")).toEqual({ kind: "empty" });
+  });
+
+  it("says how many values are left, in one message with the save", () => {
+    expect(leftToReview(44)).toBe("44 values left to review.");
+    expect(leftToReview(1)).toBe("1 value left to review.");
+    expect(leftToReview(0)).toBe("Nothing left to review.");
+  });
+});
+
 describe("who can review", () => {
   it("is reviewers and admins", () => {
     expect(canReview("member")).toBe(false);
     expect(canReview("reviewer")).toBe(true);
     expect(canReview("admin")).toBe(true);
+  });
+});
+
+describe("the reason filter", () => {
+  it("offers the four reasons the server accepts", () => {
+    expect(REASON_FILTERS.map((choice) => choice.value)).toEqual([
+      "check_failed",
+      "readers_disagree",
+      "low_confidence",
+      "single_reader",
+    ]);
+  });
+
+  it("reads the select's value, anything else meaning every reason", () => {
+    expect(parseReason("low_confidence")).toBe("low_confidence");
+    expect(parseReason("")).toBeNull();
+    expect(parseReason("corrected")).toBeNull();
+  });
+
+  it("asks for one page, filtered only when a reason is chosen", () => {
+    expect(queueParams(0, 20, undefined, null)).toEqual({ limit: 20, document_id: undefined });
+    expect(queueParams(20, 20, "d1", "check_failed")).toEqual({
+      limit: 20,
+      offset: 20,
+      document_id: "d1",
+      reason: ["check_failed"],
+    });
+  });
+});
+
+describe("checkReasonsText", () => {
+  it("says why the invoice checks failed, in plain words", () => {
+    expect(checkReasonsText({ check_reasons: ["total_mismatch", "missing_total"] })).toBe(
+      "The invoice checks failed: the subtotal and tax don't add up to the total; no total was found.",
+    );
+    expect(checkReasonsText(item("v1"))).toBeNull();
   });
 });

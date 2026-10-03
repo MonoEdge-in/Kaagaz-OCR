@@ -48,6 +48,9 @@ Rules shared by every query (never a guess, CLAUDE.md never-do 6):
 * Party names are grouped ignoring case and repeated spaces; the name shown
   is the one written in the group's largest record.
 
+A metric value of an invoice whose check failed is never verified, nor is its
+cited value (PRD 3 edge case 10), whatever its own reading label says.
+
 Every row carries the values it used (``values``, at most
 ``MAX_CITED_VALUES``, each with its page and region) for the citations, and
 ``verified`` over *every* value used, cited or not.
@@ -86,6 +89,8 @@ class ValueRef:
     field: str
     value_text: str
     label: str
+    label_page_no: int | None = None  # where its label is, when located (PRD 2 D3, PRD 3 H4)
+    label_region: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +107,7 @@ class FixedQueries(Protocol):
         """The same queries over the documents inside ``scope`` only (PRD 3 H2)."""
         ...
 
-    def available_fields(self, customer_id: str) -> set[str]: ...
+    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]: ...
 
     def top_group(
         self,
@@ -134,25 +139,31 @@ class FixedQueries(Protocol):
     ) -> list[FixedRow]: ...
 
 
+# Which of the fields asked the customer has: one EXISTS each, which stops at the
+# first value (the (customer_id, field) index), never a DISTINCT over every value.
 _AVAILABLE_FIELDS = text(
     """
-    SELECT DISTINCT v.field
-    FROM extracted_values v
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-    WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
-      AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
-      AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
-        WHERE dt.customer_id = :customer_id AND dt.tag_id = ANY(CAST(:s_tags AS uuid[]))
-        GROUP BY dt.document_id HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))
-      AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))
-      AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))
-      AND (CAST(:s_documents AS uuid[]) IS NULL OR d.id = ANY(CAST(:s_documents AS uuid[])))
-      AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL
-        OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)
-        BETWEEN coalesce(CAST(:s_from AS date), '-infinity')
-        AND coalesce(CAST(:s_to AS date), 'infinity'))
-      AND v.record_key <> 'card'
-      AND v.record_key NOT LIKE 'line:%'
+    SELECT c.field
+    FROM unnest(CAST(:candidates AS text[])) AS c(field)
+    WHERE EXISTS (
+        SELECT 1
+        FROM extracted_values v
+        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+          AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
+          AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
+            WHERE dt.customer_id = :customer_id AND dt.tag_id = ANY(CAST(:s_tags AS uuid[]))
+            GROUP BY dt.document_id HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))
+          AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))
+          AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))
+          AND (CAST(:s_documents AS uuid[]) IS NULL OR d.id = ANY(CAST(:s_documents AS uuid[])))
+          AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL
+            OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)
+            BETWEEN coalesce(CAST(:s_from AS date), '-infinity')
+            AND coalesce(CAST(:s_to AS date), 'infinity'))
+          AND v.field = c.field
+          AND v.record_key <> 'card'
+          AND v.record_key NOT LIKE 'line:%')
     """
 )
 
@@ -160,7 +171,10 @@ _TOP_GROUP = text(
     """
     WITH metric AS (
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
-               (array_agg(v.value_number))[1] AS amount, bool_and(v.label = 'verified') AS verified
+               (array_agg(v.value_number))[1] AS amount,
+               bool_and(v.label = 'verified') AND NOT EXISTS (SELECT 1 FROM invoices i
+                   WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
+                   AND i.check_status = 'failed') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
@@ -267,7 +281,10 @@ _TOTAL = text(
     """
     WITH metric AS (
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
-               (array_agg(v.value_number))[1] AS amount, bool_and(v.label = 'verified') AS verified
+               (array_agg(v.value_number))[1] AS amount,
+               bool_and(v.label = 'verified') AND NOT EXISTS (SELECT 1 FROM invoices i
+                   WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
+                   AND i.check_status = 'failed') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
@@ -340,7 +357,10 @@ _EXTREME_VALUE = text(
     """
     WITH metric AS (
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
-               (array_agg(v.value_number))[1] AS amount, bool_and(v.label = 'verified') AS verified
+               (array_agg(v.value_number))[1] AS amount,
+               bool_and(v.label = 'verified') AND NOT EXISTS (SELECT 1 FROM invoices i
+                   WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
+                   AND i.check_status = 'failed') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
@@ -410,7 +430,9 @@ _COUNT_DOCUMENTS = text(
     """
     WITH dated AS (
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
-               bool_and(v.label = 'verified') AS verified
+               bool_and(v.label = 'verified') AND NOT EXISTS (SELECT 1 FROM invoices i
+                   WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
+                   AND i.check_status = 'failed') AS verified
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
@@ -453,7 +475,11 @@ _COUNT_DOCUMENTS = text(
 _VALUE_REFS = text(
     """
     SELECT v.id::text AS value_id, v.document_id::text AS document_id, d.display_name,
-           d.detected_type, v.page_no, v.region, v.field, v.value_text, v.label
+           d.detected_type, v.page_no, v.region, v.field, v.value_text,
+           CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :customer_id
+               AND i.document_id = v.document_id AND i.check_status = 'failed')
+               THEN 'needs_review' ELSE v.label END AS label,
+           v.label_page_no, v.label_region
     FROM extracted_values v
     JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
@@ -483,9 +509,11 @@ class PgFixedQueries:
     def scoped(self, scope: Scope) -> "PgFixedQueries":
         return PgFixedQueries(self._db, scope)
 
-    def available_fields(self, customer_id: str) -> set[str]:
+    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]:
+        """Which of ``fields`` the customer has: O(f) index probes for f fields."""
         with self._db.customer(customer_id) as conn:
-            rows = conn.execute(_AVAILABLE_FIELDS, {"customer_id": customer_id, **self._scope.params()})
+            params = {"customer_id": customer_id, "candidates": list(fields), **self._scope.params()}
+            rows = conn.execute(_AVAILABLE_FIELDS, params)
             return {str(row.field) for row in rows}
 
     def top_group(
@@ -585,6 +613,8 @@ def _value_refs(conn: Connection, customer_id: str, ids: list[str], scope: Scope
             field=str(row.field),
             value_text=str(row.value_text),
             label=str(row.label),
+            label_page_no=row.label_page_no,
+            label_region=row.label_region,
         )
         for row in rows
     }
