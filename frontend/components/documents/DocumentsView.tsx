@@ -19,6 +19,7 @@ import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { UploadWords } from "@/components/words/UploadWords";
 import { ApiError, listDocuments, listFolders, listTags, searchDocuments } from "@/lib/api";
 import { progressSignature } from "@/lib/poll";
 import { useSession } from "@/lib/session";
@@ -469,6 +470,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 onClearFinished={uploads.clearFinished}
                 onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
               />
+              {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
 
               {view !== "empty" && (
                 <div className={styles.list}>
