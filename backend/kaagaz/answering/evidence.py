@@ -78,16 +78,15 @@ CLOSEST_DOCUMENTS = 3
 Gate = Literal["score", "keywords", "glossary"]
 _DIGIT = re.compile("[0-9]")
 _LETTER = re.compile("[a-z]")
-# Whole tokens (has_token): no letter, mark or digit (\w) right before or after.
-# A number is not a token of "48-A" or "48" then an en dash and "49" (or "47" then one and
-# "48"): a dash, slash or dot joins it to a letter or digit. The hyphens (U+2010, U+2011)
-# and the en dash (U+2013) count; an ASCII hyphen between digits already makes one token.
-_JOINERS = "\u2010\u2011\u2013"
-_NUMBER_TOKEN = re.compile(
-    rf"(?<!\w)(?<![0-9][{_JOINERS}])[0-9]+(?:[.,/-][0-9]+)*(?!\w)(?![-/.{_JOINERS}][0-9a-z])"
-)
+# Whole tokens (has_token), on text folded by _fold: NFKC, and the hyphens (U+2010, U+2011),
+# the en dash (U+2013) and the em dash (U+2014) as "-". No letter, mark or digit (\w) right
+# before or after, and no dash, slash or dot joining a letter or digit on either side: the
+# number 48 is not in "48-A", "A-48", "INV-48" or "A/48" ("48-49" is one token, as written).
+_DASHES = str.maketrans(dict.fromkeys("\u2010\u2011\u2013\u2014", "-"))
+_NUMBER_TOKEN = re.compile(r"(?<!\w)(?<![0-9a-z][-/.])[0-9]+(?:[.,/-][0-9]+)*(?!\w)(?![-/.][0-9a-z])")
 _ID_TOKEN = re.compile(r"(?<!\w)[a-z0-9]+(?:[-/.][a-z0-9]+)*(?!\w)")  # as normalise splits words
 _WORD = re.compile(r"[a-z0-9]+(?:[-/.][a-z0-9]+)*")  # hinglish.normalise's words
+_ALNUM = re.compile("[a-z0-9]+")
 
 _TELL = r"(?:say|answer|reply|tell|respond|write)"  # an imperative near "when asked"
 # Before "when asked", the imperative starts its clause ("Reply that ..."); after it, any
@@ -276,25 +275,31 @@ def enough_evidence(
 
 
 def numbers_asked(question: str, keywords: Sequence[str]) -> list[str]:
-    """The numbers and ids the question asks about, whole, from its own text: "1,20,000" is
-    one number, never 1, 20 and 000. Only those ``normalise`` kept as keywords count, so a
-    date's year or the 30 of "last 30 days" does not. O(q)."""
-    folded = ascii_digits(question).casefold()
+    """The numbers and ids the question asks about, whole, from its own text (``_fold``ed):
+    "1,20,000" is one number, never 1, 20 and 000; "48-49" and "48-A" are kept as written. A
+    token none of whose parts ``normalise`` kept as a keyword is left out, so a date's year or
+    the 30 of "last 30 days" is not asked. Fail closed: a keyword with a digit that no token
+    covers is asked as it is, so a number is never lost. O(q)."""
+    folded = _fold(ascii_digits(question).casefold())
     kept = set(keywords)
-    ids = [token for token in _ID_TOKEN.findall(folded) if _LETTER.search(token) and _DIGIT.search(token)]
-    found = _NUMBER_TOKEN.findall(folded) + ids
-    return list(dict.fromkeys(token for token in found if all(w in kept for w in _WORD.findall(token))))
+    ids = [t for t in _ID_TOKEN.findall(folded) if _LETTER.search(t) and _DIGIT.search(t)]
+    tokens = _NUMBER_TOKEN.findall(folded) + ids
+    asked = [t for t in tokens if kept & {*_WORD.findall(t), *_ALNUM.findall(t)}]
+    covered = {part for t in asked for part in (t, *_WORD.findall(t), *_ALNUM.findall(t))}
+    asked += [word for word in keywords if _DIGIT.search(word) and word not in covered]
+    return list(dict.fromkeys(asked))
 
 
 def has_token(keyword: str, folded: str) -> bool:
-    """A keyword with a digit is in ``folded`` (``ascii_digits`` and casefolded text) only as
-    a whole token: a number as one of the text's numbers (``_NUMBER_TOKEN``), equal by value
-    (450 is 450.00, 1,20,000 is 120000) or, with a slash or dash, as written, so "48" is not in
-    148, 1,48,000, 4.48, 47/48, 48/2 or 48-A; an id with a letter as one of its ids
-    (``_ID_TOKEN``), as written, so "inv-1042" is not in INV-10421. A keyword with no digit
-    is a plain substring, as before. O(t)."""
+    """A keyword with a digit is in ``folded`` (``ascii_digits`` and casefolded text, then
+    ``_fold``ed here, like the keyword) only as a whole token: a number as one of the text's
+    numbers (``_NUMBER_TOKEN``), equal by value (450 is 450.00, 1,20,000 is 120000) or, with
+    a slash or dash, as written, so "48" is not in 148, 1,48,000, 4.48, 47/48, 48/2, 48-A or
+    A-48; one with a letter as one of its ids (``_ID_TOKEN``), as written, so "inv-1042" is
+    not in INV-10421. A keyword with no digit is a plain substring, as before. O(t)."""
     if not _DIGIT.search(keyword):
         return keyword in folded
+    keyword, folded = _fold(keyword), _fold(folded)
     if _LETTER.search(keyword):
         return keyword in _ID_TOKEN.findall(folded)
     value = _value(keyword)
@@ -302,6 +307,12 @@ def has_token(keyword: str, folded: str) -> bool:
         token == keyword or (value is not None and _value(token) == value)
         for token in _NUMBER_TOKEN.findall(folded)
     )
+
+
+def _fold(text: str) -> str:
+    """NFKC, and every hyphen and dash as "-", so the question and the evidence write a
+    joined number the same way. O(n)."""
+    return unicodedata.normalize("NFKC", text).translate(_DASHES)
 
 
 def _value(token: str) -> Decimal | None:
