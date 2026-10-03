@@ -1,9 +1,9 @@
-"""Migration 0008 (council 3 Oct 2026, PR 2b-1): the sound key function and the stored
+"""Migration 0009 (council 3 Oct 2026, PR 2b-1): the sound key function and the stored
 ``pieces.tsv_sound`` column.
 
 Up, down and up again on a fresh database (from test_migration_0002_db, a plain
 import): a piece written before the upgrade gets its keys, and the downgrade gives
-back 0007's schema exactly. The function is IMMUTABLE, STRICT, PARALLEL SAFE, runs
+back 0008's schema exactly. The function is IMMUTABLE, STRICT, PARALLEL SAFE, runs
 with an empty search_path and standard_conforming_strings on, keeps PUBLIC's EXECUTE (the
 worker's inserts run it) and carries its comment; so does the column, and the word
 statement reads the stored keys, never the function.
@@ -39,12 +39,12 @@ def _indexes(database: Database) -> dict[str, str]:
     return {str(row[1]): str(row[2]) for row in m0002._schema(database)["indexes"]}
 
 
-def test_0008_up_down_up(fresh: tuple[str, Database]) -> None:
+def test_0009_up_down_up(fresh: tuple[str, Database]) -> None:
     url, database = fresh
-    migrate(url, "0007")
+    migrate(url, "0008")
     customer, _ = new_customer(database)
     (piece,) = add_pieces(database, customer, add_document(database, customer), [("भोगवटादार गायकवाड", None)])
-    at_0007 = m0002._schema(database)
+    at_0008 = m0002._schema(database)
 
     migrate(url, "head")
     assert _current(url) == _head()
@@ -71,8 +71,8 @@ def test_0008_up_down_up(fresh: tuple[str, Database]) -> None:
     )
     assert "kaagaz/chunking/script.py" in comment
 
-    m0002._downgrade(url, "0007")
-    assert m0002._schema(database) == at_0007
+    m0002._downgrade(url, "0008")
+    assert m0002._schema(database) == at_0008
     with database.system() as conn:
         assert conn.execute(_FUNCTION).all() == []
 

@@ -16,7 +16,7 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    cannot fail on it; "" (no keyword listed) is NULL, which matches nothing.
    A fourth query, ``to_tsquery('simple', sk)``, matches the sound keys of
    the question's words (``sound_query``, council 3 Oct 2026, PR 2b) against
-   the piece's ``tsv_sound`` (migration 0008: the sound keys of
+   the piece's ``tsv_sound`` (migration 0009: the sound keys of
    ``coalesce(text_latin, text)``, stored), so "bhogwatdar"
    finds भोगवटादार. ``sk`` is built from ``sound_key`` output only, each term
    checked to be ``[a-z]`` letters, never from the question's text; "" is
