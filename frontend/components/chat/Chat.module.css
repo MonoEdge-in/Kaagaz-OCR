@@ -634,6 +634,51 @@
   background: var(--bg);
 }
 
+/* The scope chip and its choices, above the question box (PRD 3 H2). */
+.scope,
+.scopeChoices,
+.scopeFolder {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.scope {
+  margin-bottom: var(--space-2);
+}
+
+.scopeBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.scopeChip {
+  margin: 0;
+  min-width: 0;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.scopePanel {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  /* Never taller than a short phone screen above the sticky composer. */
+  max-height: min(40dvh, 20rem);
+  overflow-y: auto;
+}
+
+.scopeFolder {
+  padding-inline-start: var(--space-5);
+}
+
 .composerForm {
   display: flex;
   flex-direction: column;

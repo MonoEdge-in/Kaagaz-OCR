@@ -47,6 +47,9 @@ export interface PageViewerProps {
   /** With both of these, the viewer shows previous and next page buttons. */
   pageNumbers?: number[];
   onPageChange?: (pageNo: number) => void;
+  /** More buttons at the end of the toolbar, and what they open, right below it. */
+  tools?: ReactNode;
+  belowToolbar?: ReactNode;
 }
 
 export function PageViewer({
@@ -56,6 +59,8 @@ export function PageViewer({
   crop,
   pageNumbers,
   onPageChange,
+  tools,
+  belowToolbar,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -246,7 +251,7 @@ export function PageViewer({
 
   return (
     <div className={styles.viewer}>
-      {showPages || canZoom ? (
+      {showPages || canZoom || tools ? (
         <div className={styles.toolbar}>
           {showPages ? (
             <div className={styles.pageInfo}>
@@ -294,8 +299,10 @@ export function PageViewer({
               ) : null}
             </div>
           ) : null}
+          {tools}
         </div>
       ) : null}
+      {belowToolbar}
       {body}
     </div>
   );

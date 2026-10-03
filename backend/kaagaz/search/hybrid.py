@@ -110,8 +110,7 @@ _QUERY_CANCELED = "57014"
 # and so is the scope (the s_* parameters, Scope.params; tests/test_search_scope_db.py).
 
 _WORD = text(
-    "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
-    " ts_rank_cd(p.tsv_simple, g.q)) AS score"
+    "SELECT p.id, p.document_id, GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q)) AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
@@ -129,7 +128,7 @@ _WORD = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
-    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q)"
+    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q)"
     " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
@@ -423,24 +422,16 @@ def _candidates(
 ) -> tuple[list[FusedPiece], dict[str, str]]:
     """The three lists inside ``scope``, merged best first, and each piece's document id.
     W3: ``text_latin`` is matched with the question's ``latin_spelling``, and the simple
-    word query takes the ``normalise`` keywords, which spell Devanagari in Latin letters;
-    the glossary query takes their Marathi and Hindi equivalents (the module docstring)."""
+    word query takes the ``normalise`` keywords, which spell Devanagari in Latin letters."""
     conn.execute(_SET_SEARCH, {"ms": str(STATEMENT_TIMEOUT_MS)})
     word: list[tuple[str, float]] = []
     fuzzy: list[tuple[str, float]] = []
     meaning: list[tuple[str, float]] = []
     owners: dict[str, str] = {}
     if query_text.strip():
-        asked = normalise(query_text).keywords
+        keywords = " ".join(normalise(query_text).keywords)
         latin = latin_spelling(query_text) if has_devanagari_letters(query_text) else query_text
-        params = {
-            "c": customer_id,
-            "q": query_text,
-            "k": " ".join(asked),
-            "g": glossary.word_query(asked),
-            "ql": latin,
-            "n": CANDIDATES,
-        }
+        params = {"c": customer_id, "q": query_text, "k": keywords, "ql": latin, "n": CANDIDATES}
         word = _ranked(conn.execute(_WORD, {**params, **scope.params()}), owners)
         conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
         fuzzy = _ranked(conn.execute(_FUZZY, {**params, **scope.params()}), owners)

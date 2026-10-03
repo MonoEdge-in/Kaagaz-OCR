@@ -9,8 +9,9 @@
 // A new version of a document ("Upload new version") goes through the same
 // queue. The outcome, including "already uploaded" and any error, stays next
 // to its file until "Clear finished"; a duplicate whose earlier copy is in
-// Trash offers Restore. Each batch is summed up once when it settles
-// (uploadQueue.ts); the documents screen says it.
+// Trash offers Restore. A finished file also links to its story section in
+// the viewer (a link, never a dialog: nothing waits on it). Each batch is
+// summed up once when it settles (uploadQueue.ts); the documents screen says it.
 // Each file is sent with who was signed in when it was added, so the server
 // refuses it if another account has signed in since (critical #5); then
 // no file still waiting is sent, and each says why.
@@ -19,6 +20,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { storyHref, storyTarget } from "@/components/viewer/story";
 import {
   ApiError,
   getUploadLimits,
@@ -310,6 +312,7 @@ function UploadRow({
     element?.focus();
   }, []);
   const failed = state.kind === "error";
+  const story = storyTarget(state); // a finished file offers its story section, never a dialog
   // Only a file of an accepted type is ever sent, so its type is known while it
   // uploads; a PDF's pages were counted just before (null when they could not be).
   const kind = uploadKind(entry.name);
@@ -398,6 +401,12 @@ function UploadRow({
           </p>
         )}
         {failed && <p className={`error-text ${styles.small}`}>{state.message}</p>}
+        {story !== null && (
+          <Link href={storyHref(story)} className={`${styles.inlineAction} ${styles.storyLink}`}>
+            Add a story so you can find this later
+            <span className="visually-hidden">{`: ${entry.name}`}</span>
+          </Link>
+        )}
       </div>
     </li>
   );

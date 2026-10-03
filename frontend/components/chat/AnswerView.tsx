@@ -1,7 +1,8 @@
 "use client";
 
-// One answer card. In order: the label with a line saying what it means, how
-// the question was understood (only when that differs), the sentences with
+// One answer card. In order: the label with a line saying what it means, what
+// a follow-up was searched for ("Searching for: …", PRD 3 H1) and how the
+// question was understood (only when that differs), the sentences with
 // citation chips (each moves to its source card), the source cards, and
 // "Was this helpful?". The card's inline-start edge carries the margin rule:
 // solid for Verified, hatched for Needs review. "Not found" is a real answer:
@@ -13,14 +14,15 @@ import Link from "next/link";
 import { useId } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
+import { understoodNotes } from "@/components/words/words";
 import type { Message } from "@/lib/types";
 import {
   answerLabelText,
   cardId,
   citationMap,
   NOT_FOUND_TEXT,
+  questionReading,
   sentenceCitations,
-  understoodAs,
 } from "./answer";
 import { FeedbackControls } from "./FeedbackControls";
 import { scrollBehavior } from "./hooks";
@@ -48,8 +50,17 @@ export function AnswerView({ message, question }: { message: Message; question: 
     );
   }
 
-  const reading = question !== null ? understoodAs(question, answer.normalized_question) : null;
-  const understood = reading ? <p className={styles.understood}>Understood as: {reading}</p> : null;
+  const reading = questionReading(question, answer);
+  const understood = (
+    <>
+      {reading.searchingFor ? (
+        <p className={styles.understood}>Searching for: {reading.searchingFor}</p>
+      ) : null}
+      {reading.understoodAs ? (
+        <p className={styles.understood}>Understood as: {reading.understoodAs}</p>
+      ) : null}
+    </>
+  );
   const feedback = (
     <div className={styles.answerFooter}>
       <FeedbackControls messageId={message.id} initial={message.feedback} />
