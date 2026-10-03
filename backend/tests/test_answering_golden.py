@@ -129,7 +129,7 @@ class FakeRetriever:
                 share = present / len(words)
                 hits.append(dataclasses.replace(hit, score=share, fuzzy_score=share))
         hits.sort(key=lambda hit: -hit.score)
-        return hits[:limit]
+        return Retrieved(hits[:limit])
 
     def neighbours(self, customer_id: str, hits: Sequence[Any], scope: Scope) -> list[FakeHit]:
         return []
