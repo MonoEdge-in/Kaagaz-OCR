@@ -43,12 +43,8 @@ The function and the column are commented (the data dictionary's rule). The
 downgrade drops the column, then the function; no data is lost (the column is
 computed).
 
-PROVISIONAL (Vrushit): the number. Built as 0008 on its own branch; My words
-(0008), the stories (0009) and their sweep (0010) merged first, so it comes
-after them as 0011.
-
 Revision ID: 0011
-Revises: 0010
+Revises: 0010 (story vector sweep)
 """
 
 from alembic import op

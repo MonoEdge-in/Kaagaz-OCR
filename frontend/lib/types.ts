@@ -377,6 +377,24 @@ export interface Answer {
   understood_words?: { word: string; meaning: string }[]; // my words chat used (A3); missing before it
 }
 
+/** One of my words (GET /me/words). Text from the user: shown as text only. */
+export interface MyWord {
+  id: string;
+  word: string;
+  meaning: string;
+  source: "manual" | "upload" | "viewer";
+  built_in: boolean; // chat's own word list reads it too (the badge)
+  created_at: string;
+  updated_at: string;
+}
+
+/** POST /me/words: 201 created, 200 already there or replaced. */
+export interface WordSaved {
+  word: MyWord;
+  outcome: "created" | "already" | "replaced";
+  warning: "built_in" | null;
+}
+
 /**
  * Which documents a question may use (PRD 3 Q1, H2). A field left out filters
  * nothing, so {} is every document. The server checks every id again.

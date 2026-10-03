@@ -115,7 +115,7 @@ _NON_ASCII_DIGIT = re.compile(r"(?![0-9])\d")  # in a str pattern, \d is every d
 
 SOUND_KEY_MIN = 3  # letters: a shorter sound key is never matched (kar and khar are both kr)
 SOUND_WORD_MAX = 40  # letters of a word that are keyed; the rest is left out
-_SPACES = re.compile("[ \t\n\r\f\v]+")  # ASCII only, as migration 0011 splits a text
+_SPACES = re.compile("[ \t\n\r\f\v]+")  # ASCII only, as migration 0009 splits a text
 _ASCII_DIGIT = re.compile("[0-9]")
 _ASCII_LETTERS = re.compile("[A-Za-z]+")  # ranges are code points: the Kelvin sign is not a K
 _NOT_ASCII_LETTER = re.compile("[^A-Za-z]")
