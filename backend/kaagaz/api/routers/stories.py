@@ -52,6 +52,7 @@ from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers.documents import _same_user
 from kaagaz.db import audit, listing, trash
 from kaagaz.db import document_stories as stories_sql
@@ -76,6 +77,12 @@ EMBED_WAIT_SECONDS = 5.0
 EMBEDS_AT_ONCE = 4
 _embeds = ThreadPoolExecutor(max_workers=EMBEDS_AT_ONCE, thread_name_prefix="story-embed")
 _embed_slots = threading.BoundedSemaphore(EMBEDS_AT_ONCE)
+# PROVISIONAL (council 3 Oct 2026): story matches a user may ask a minute, and
+# rankings at once in this process.
+STORY_MATCHES_PER_MINUTE = 20
+RANKING_AT_ONCE = 2
+story_limits = RateLimiter(STORY_MATCHES_PER_MINUTE)
+ranking_slots = threading.BoundedSemaphore(RANKING_AT_ONCE)
 _TEXT = {
     "empty": "Write the story first.",
     "too_long": f"A story can be at most {stories_sql.STORY_MAX} characters.",

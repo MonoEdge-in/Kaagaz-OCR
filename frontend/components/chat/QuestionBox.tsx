@@ -6,11 +6,13 @@
 // six lines. The box empties as soon as a question is sent, so the next one can
 // be typed while the answer loads. If sending fails, the question comes back
 // (unless something new was typed meanwhile) and the error offers "Try again".
+// Its label, placeholder, button and help line follow the chat mode (lib/chatMode.ts).
 
 import { useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import type { ModeTexts } from "@/lib/chatMode";
 import { cleanQuestion, MAX_QUESTION_LENGTH, restoreAfterFailure, sendsOnKey } from "./answer";
 import { useMediaQuery } from "./hooks";
 import styles from "./Chat.module.css";
@@ -18,6 +20,7 @@ import styles from "./Chat.module.css";
 const INPUT_ID = "question";
 const HINT_ID = "question-hint";
 const EMPTY_ID = "question-empty";
+const HELP_ID = "question-help";
 
 /** Grow (or shrink) the box to its text; CSS caps it at about six lines. */
 function fitToText(input: HTMLTextAreaElement) {
@@ -30,8 +33,10 @@ export function QuestionBox({
   error,
   onAsk,
   inputRef,
+  texts,
 }: {
   pending: boolean;
+  texts: ModeTexts;
   /** Why the last question could not be sent, or null. */
   error: string | null;
   onAsk: (question: string) => Promise<boolean>;
@@ -77,7 +82,7 @@ export function QuestionBox({
     }
   };
 
-  const describedBy = [emptyTried ? EMPTY_ID : null, coarse ? null : HINT_ID]
+  const describedBy = [emptyTried ? EMPTY_ID : null, texts.help ? HELP_ID : null, coarse ? null : HINT_ID]
     .filter(Boolean)
     .join(" ");
 
@@ -103,7 +108,7 @@ export function QuestionBox({
         </div>
       ) : null}
       <label htmlFor={INPUT_ID} className="visually-hidden">
-        Ask about your documents
+        {texts.label}
       </label>
       <div className={styles.composerBox}>
         <textarea
@@ -111,6 +116,7 @@ export function QuestionBox({
           ref={inputRef}
           className={`input ${styles.composerInput}`}
           rows={1}
+          placeholder={texts.label}
           maxLength={MAX_QUESTION_LENGTH}
           enterKeyHint={coarse ? "enter" : "send"}
           aria-invalid={emptyTried ? true : undefined}
@@ -130,7 +136,7 @@ export function QuestionBox({
         />
         <IconButton
           icon="send"
-          label="Send question"
+          label={texts.button}
           className={`btn-primary ${styles.send}`}
           // aria-disabled, not disabled: the button keeps focus while the answer
           // is out, and submit() ignores a press then.
@@ -142,6 +148,11 @@ export function QuestionBox({
       {emptyTried ? (
         <p id={EMPTY_ID} className="error-text">
           Type a question first.
+        </p>
+      ) : null}
+      {texts.help ? (
+        <p id={HELP_ID} className={styles.composerNote}>
+          {texts.help}
         </p>
       ) : null}
       {coarse ? null : (
