@@ -215,8 +215,11 @@ def list_documents(
             trashed=trashed,
         )
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
-    max_pages = context.settings.max_pages
-    items = [document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user) for row in rows]
+    max_pages, now = context.settings.max_pages, context.clock()
+    items = [
+        document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user, now=now)
+        for row in rows
+    ]
     return {"items": items, "total": total}
 
 
@@ -348,7 +351,11 @@ def _upload_reply(
     if row is None:  # deleted in the moment since; nothing to show
         raise ApiError(404, "not_found")
     summary = document_summary(
-        row, max_pages=context.settings.max_pages, tags=tags[result.document_id], user=user
+        row,
+        max_pages=context.settings.max_pages,
+        tags=tags[result.document_id],
+        user=user,
+        now=context.clock(),
     )
     in_trash = result.duplicate and row["deleted_at"] is not None
     return {"document": summary, "duplicate": result.duplicate, "in_trash": in_trash}
@@ -436,7 +443,9 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         links = listing.document_links(conn, customer_id, target)
     document_date = None if facts is None else facts["document_date"]
     return {
-        **document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user),
+        **document_summary(
+            row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+        ),
         "pages": [page_summary(page) for page in pages],
         "values": [extracted_value(value) for value in values],
         "folder": document_folder(path),
@@ -464,7 +473,9 @@ def get_document_summary(document_id: uuid.UUID, user: User, context: Context) -
     with context.db.customer(customer_id) as conn:
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
-    return document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
+    return document_summary(
+        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+    )
 
 
 @router.post("/documents/{document_id}/reprocess")
@@ -495,7 +506,9 @@ def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context)
         )
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
-        reply = document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
+        reply = document_summary(
+            row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+        )
         # Last, inside the transaction: a queue that is down rolls everything back (503).
         context.queue.enqueue(Job(customer_id, target))
     return reply
@@ -554,7 +567,9 @@ def update_document(
         raise ApiError(404, "not_found") from None
     except trash.InTrash:  # Trash means deleted: nothing was changed
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None
-    return document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
+    return document_summary(
+        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+    )
 
 
 @router.get("/documents/{document_id}/file")
@@ -688,7 +703,9 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
         )
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
-    return document_summary(row, max_pages=context.settings.max_pages, tags=tags, user=user)
+    return document_summary(
+        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+    )
 
 
 @router.delete("/documents/{document_id}/permanent", status_code=204)

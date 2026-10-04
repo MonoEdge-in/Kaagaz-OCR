@@ -37,6 +37,8 @@ ahead, so the finish time is the later of ``now`` and the start (AR11).
 own: the worker's last delivery marks them failed with ``retries_exhausted``
 (AR11). ``pages_by_route`` counts the pages of the runs started in a window, for
 the admin numbers: the runs of documents still kept, never a deleted one's.
+``recent_timings`` gives the time-left estimate (kaagaz.eta) this customer's own
+last ready runs, and never another customer's.
 
 Module functions take a connection from ``Database.customer(customer_id)``, in
 the ``db/trash.py`` style; ``PgRuns`` opens its own transactions.
@@ -50,6 +52,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 
 from kaagaz.db.engine import Database, unavailable
+from kaagaz.eta import HISTORY_RUNS, RunTiming, as_seconds
 from kaagaz.jobs.worker import JobFailed
 
 if TYPE_CHECKING:
@@ -115,6 +118,14 @@ _OPEN = (
     " AND id = :r AND status = 'running')"
 )
 
+# The time left's history (kaagaz.eta): the newest ready runs, on processing_runs_started.
+_RECENT = (
+    "SELECT ocr_engine, pages_ocr, pages_text_layer + pages_blank AS pages_fast, pages_cells, seconds_ocr,"
+    " config -> 'seconds_reading' AS seconds_reading, config -> 'seconds_after_reading' AS seconds_after"
+    " FROM processing_runs WHERE customer_id = :c AND status = 'ready'"
+    " ORDER BY started_at DESC LIMIT :k"
+)
+
 
 def start_run(conn: Connection, customer_id: str, document_id: str, *, now: datetime) -> str:
     """Mark this document's runs still ``running`` as superseded, then insert a
@@ -170,6 +181,16 @@ def pages_by_route(conn: Connection, customer_id: str, *, start: datetime, end: 
     return {route: int(row[route]) for route in ("cells", "text_layer", "ocr", "blank")}
 
 
+def recent_timings(conn: Connection, customer_id: str) -> list[RunTiming]:
+    """This customer's last HISTORY_RUNS ready runs, newest first; a config time that is
+    missing or not a number is None. On processing_runs_started: O(log R + runs passed)."""
+    rows = conn.execute(text(_RECENT), {"c": customer_id, "k": HISTORY_RUNS}).all()
+    return [
+        RunTiming(engine, ocr, fast, cells, seconds_ocr, as_seconds(reading), as_seconds(after))
+        for engine, ocr, fast, cells, seconds_ocr, reading, after in rows
+    ]
+
+
 class PgRuns:
     """The runs, each call in its own short transaction as the customer."""
 
@@ -183,3 +204,7 @@ class PgRuns:
     def finish(self, customer_id: str, run: "FinishedRun") -> None:
         with unavailable(), self._db.customer(customer_id) as conn:
             finish_run(conn, customer_id, run)
+
+    def recent_timings(self, customer_id: str) -> list[RunTiming]:
+        with unavailable(), self._db.customer(customer_id) as conn:
+            return recent_timings(conn, customer_id)

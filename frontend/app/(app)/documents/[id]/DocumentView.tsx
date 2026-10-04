@@ -24,6 +24,7 @@ import { downloadHref, folderTrail } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
 import { StatusChip } from "@/components/documents/StatusChip";
+import { TimeLeft } from "@/components/documents/TimeLeft";
 import { Icon } from "@/components/ui/Icon";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import { SCANNED_PANEL_ID, ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
@@ -49,6 +50,7 @@ import type { Selection } from "@/components/viewer/selection";
 import { ApiError, getDocument, getDocumentSummary } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
+import { markReceived } from "@/lib/timeLeft";
 import { decodeRegion } from "@/lib/regions";
 import { useSession } from "@/lib/session";
 import type { DocumentDetail, DocumentSummary, ExtractedValue, Region } from "@/lib/types";
@@ -111,7 +113,11 @@ export function DocumentView({
         : shown,
     );
   const poll = usePoll<DocumentSummary>({
-    load: () => getDocumentSummary(documentId),
+    load: () =>
+      getDocumentSummary(documentId).then((summary) => {
+        markReceived([summary], performance.now());
+        return summary;
+      }),
     onResult: (summary) => {
       merge(summary);
       if (beingRead(summary.status)) return;
@@ -245,6 +251,7 @@ export function DocumentView({
         <div className={styles.status}>
           <StatusChip status={detail.status} />
           <span>{detail.status_message}</span>
+          <TimeLeft document={detail} />
           <span className={styles.meta}>
             {typeLabel(detail.detected_type)}
             {pagesText}
