@@ -62,4 +62,5 @@ services:
   worker:
     environment:
       OCR_ENGINE: paddleocr_vl # scans go to the ocr service; RapidOCR stays the fallback
+      OCR_DPI: "400" # scans drawn at 400 DPI for the GPU reader (small Devanagari, handwriting); laptops keep .env's value
       MODEL_BASE_URL: http://ollama:11434
