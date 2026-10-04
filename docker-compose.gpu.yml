@@ -24,6 +24,10 @@ services:
       # Paddle takes GPU memory as it needs it, not most of the card at start, so
       # Ollama's two models fit beside it in the 16 GB.
       FLAGS_allocator_strategy: auto_growth
+      # T4 (no bf16, no fast attention): a smaller image per text block so one big handwritten
+      # or book block fits beside Ollama. 501760 = 28*28*640, a quarter of the attention memory
+      # of the model's 1003520. PROVISIONAL: measure on g4dn.
+      OCR_VL_MAX_PIXELS: "501760"
     # The weights sit on the GPU, so the container needs less host memory than on a
     # CPU (12g there). PROVISIONAL: measure on g4dn.
     mem_limit: 8g

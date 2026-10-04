@@ -33,8 +33,9 @@ Why some choices:
   delete only moves it to Trash; nothing is removed and storage is not touched,
   so a restore brings everything back. Because both act on every version, only
   an admin or a user who uploaded every version may do them (``can_delete`` in
-  the summary, kaagaz/api/views.py). Only an admin session (the admin sign-in
-  screen) can delete forever, and only a family in Trash (409 ``not_in_trash``
+  the summary, kaagaz/api/views.py). Only an admin session with two-step sign-in,
+  or a member or reviewer an admin allowed who typed their password in the last
+  5 minutes (``CanDeleteForever``), can delete forever, and only a family in Trash (409 ``not_in_trash``
   otherwise); its files go inside the same transaction, so if storage cannot be
   reached every row stays and the admin can try again.
 * **Trash means deleted.** A family in Trash can't be renamed, moved, tagged
@@ -68,7 +69,7 @@ from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
-from kaagaz.api.auth import AdminWithTwoStep, CurrentUser, Reviewer, User
+from kaagaz.api.auth import CanDeleteForever, CurrentUser, Reviewer, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name
@@ -709,10 +710,11 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
 
 
 @router.delete("/documents/{document_id}/permanent", status_code=204)
-def delete_document_forever(document_id: uuid.UUID, user: AdminWithTwoStep, context: Context) -> Response:
+def delete_document_forever(document_id: uuid.UUID, user: CanDeleteForever, context: Context) -> Response:
     """Delete every version of a family in Trash for good, rows and files (today's
     full delete). It can't be undone, so it needs an admin session whose admin has
-    two-step sign-in on (``require_admin_with_two_step``)."""
+    two-step sign-in on, or an admin's grant and a typed password (``require_delete_forever``).
+    The audit row says ``by_grant`` when a grant was used."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
         try:
@@ -721,6 +723,9 @@ def delete_document_forever(document_id: uuid.UUID, user: AdminWithTwoStep, cont
             raise ApiError(409, "not_in_trash") from None
         if versions is None:
             raise ApiError(404, "not_found")
+        details: dict[str, audit.DetailValue] = {"versions": versions}
+        if user.role != "admin":
+            details["by_grant"] = True
         audit.record(
             conn,
             customer_id,
@@ -728,6 +733,6 @@ def delete_document_forever(document_id: uuid.UUID, user: AdminWithTwoStep, cont
             action="document.delete",
             target_type="document",
             target_id=target,
-            details={"versions": versions},
+            details=details,
         )
     return Response(status_code=204)

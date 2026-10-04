@@ -460,6 +460,7 @@ def me_json(user: CurrentUser) -> dict[str, Any]:
             "role": user.role,
             "must_change_password": user.must_change_password,
             "totp_enabled": user.totp_enabled,
+            "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},
@@ -480,6 +481,7 @@ def admin_user(row: RowMapping, *, now: datetime) -> dict[str, Any]:
         "locked_until": iso(locked_until) if locked_until is not None and locked_until > now else None,
         "totp_enabled": row["totp_enabled_at"] is not None,
         "must_change_password": bool(row["must_change_password"]),
+        "can_delete_forever": row["delete_forever_allowed_at"] is not None and row["role"] != "admin",
     }
 
 

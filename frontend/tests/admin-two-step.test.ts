@@ -21,6 +21,7 @@ const me = (totpEnabled: boolean): Me => ({
     role: "admin",
     must_change_password: false,
     totp_enabled: totpEnabled,
+    can_delete_forever: false,
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope: "admin" },
