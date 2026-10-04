@@ -212,7 +212,7 @@ class BuildOcrEngineTest(unittest.TestCase):
 
     def test_paddleocr_vl_setting_builds_the_paddle_engine_without_calling_it(self) -> None:
         engine = build_ocr_engine(make_settings(ocr_engine="paddleocr_vl", ocr_url="http://ocr:8080"))
-        self.assertIsInstance(engine, ocr.PaddleVlEngine)
+        self.assertIsInstance(engine, ocr.FallbackOcrEngine)  # RapidOCR behind it (test_ocr_fallback.py)
         assert engine is not None
         self.assertEqual((engine.name, engine.version), ("paddleocr-vl", "unknown"))
 

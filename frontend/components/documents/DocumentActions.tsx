@@ -31,7 +31,7 @@ import styles from "./Library.module.css";
 
 export interface RowMenuProps {
   item: DocumentSummary;
-  canForever: boolean; // an admin session: Delete forever
+  canForever: boolean; // Delete forever (canDeleteForever, trash.ts)
   onPick(action: RowAction): void;
   /** The row keeps hold of the Actions button, to hand focus back to it. */
   toggleRef: RefCallback<HTMLButtonElement>;

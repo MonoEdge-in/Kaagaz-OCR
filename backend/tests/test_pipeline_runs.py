@@ -25,9 +25,9 @@ from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import DocumentContent, DocumentProcessor, Progress, ReadingSocket, RunTotals
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.preparing.pages import prepare_pages
-from kaagaz.reading.ocr import MeteredOcrEngine, OcrLine
+from kaagaz.reading.ocr import FallbackOcrEngine, MeteredOcrEngine, OcrEngine, OcrLine
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.spans import PageInfo, Span
+from kaagaz.reading.spans import PageInfo, ReadError, Span
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from kaagaz.settings import Settings
@@ -192,7 +192,7 @@ class Rig:
 
 def rig(
     *,
-    ocr: TimedOcr | Callable[[Timer], TimedOcr] | None = None,
+    ocr: OcrEngine | Callable[[Timer], OcrEngine] | None = None,
     socket: ReadingSocket | None = None,
     preparer: FakePreparer | None = None,
     scanner: FakeScanner | None = None,
@@ -540,6 +540,30 @@ class RunTotalsTest(unittest.TestCase):
         letter_only = system.job(make_pdf([SCANNED, SCANNED]))
         system.processor(letter_only, beat)
         self.assertEqual(system.totals(letter_only).config, {**CONFIG, **timings})  # nothing was drawn lower
+
+    def test_a_run_records_the_pages_the_fallback_ocr_read(self) -> None:
+        """Pages PaddleOCR-VL failed on are read by RapidOCR: the run's set-up counts them,
+        per run, and its engine is still named after the primary (the ETA keys on it)."""
+
+        class FailingOcr:
+            name, version = "paddleocr-vl", "9"
+
+            def read(self, image: Image.Image) -> list[OcrLine]:
+                raise ReadError("ocr_failed")
+
+        def engine(timer: Timer) -> OcrEngine:
+            return FallbackOcrEngine(FailingOcr(), lambda: TimedOcr(timer), timer=timer)
+
+        system = rig(ocr=engine)
+        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0}
+        job = system.job(make_pdf([SCANNED, SCANNED]))
+        system.processor(job, beat)
+        totals = system.totals(job)
+        self.assertEqual(totals.config, {**CONFIG, "pages_ocr_fallback": 2, **timings})
+        self.assertEqual((totals.ocr_engine, totals.pages_ocr), ("paddleocr-vl 9", 2))
+        one = system.job(make_pdf([SCANNED, WHITE]))
+        system.processor(one, beat)
+        self.assertEqual(system.totals(one).config["pages_ocr_fallback"], 1)  # this run's only
 
     def test_the_ocr_meter_starts_each_run_from_zero(self) -> None:
         """AR11: a page counted before the run (or by an earlier one) is not this run's."""

@@ -93,7 +93,11 @@ def test_the_gpu_file_changes_only_what_the_gpu_needs_on_ocr() -> None:
     assert re.search(r"^    image: kaagaz-ocr-gpu:local", ocr, re.MULTILINE)
     assert re.search(r"^      args:\n        PADDLE_EXTRA: paddle-gpu", ocr, re.MULTILINE)
     assert re.search(r"^    mem_limit: 8g$", ocr, re.MULTILINE)
-    assert environment(ocr) == {"OCR_DEVICE": "gpu:0", "FLAGS_allocator_strategy": "auto_growth"}
+    assert environment(ocr) == {
+        "OCR_DEVICE": "gpu:0",
+        "FLAGS_allocator_strategy": "auto_growth",
+        "OCR_VL_MAX_PIXELS": "501760",
+    }
 
 
 def test_the_gpu_file_closes_ollamas_port_and_keeps_its_models_loaded() -> None:

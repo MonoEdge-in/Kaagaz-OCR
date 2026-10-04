@@ -92,6 +92,7 @@ class FakePageModel:
         self.images: list[tuple[tuple[int, int], str]] = []
         self.failure: Exception | None = None
         self.load_failure: Exception | None = None
+        self.released = 0
 
     def load(self) -> None:
         self.may_load.wait(10)
@@ -112,6 +113,9 @@ class FakePageModel:
 
     def version(self) -> str:
         return VERSION
+
+    def release_memory(self) -> None:
+        self.released += 1
 
 
 def png(width: int = 200, height: int = 100, **options: Any) -> bytes:
@@ -562,7 +566,16 @@ class ResourceExhaustedError(Exception):
     """Named as Paddle's own out-of-memory error, for when it comes through as is."""
 
 
-@pytest.mark.parametrize("failure", [MemoryError("Sunil Patil"), ResourceExhaustedError("Sunil Patil")])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        MemoryError("Sunil Patil"),
+        ResourceExhaustedError("Sunil Patil"),
+        RuntimeError("(ResourceExhausted) Out of memory error on GPU 0, Sunil Patil"),
+        OSError("CUDA error(2), out of memory. Sunil Patil"),
+        RuntimeError("ALLOC_FAILED Sunil Patil"),
+    ],
+)
 def test_out_of_memory_is_a_503_the_worker_retries(
     client: TestClient, model: FakePageModel, caplog: pytest.LogCaptureFixture, failure: Exception
 ) -> None:
@@ -574,5 +587,140 @@ def test_out_of_memory_is_a_503_the_worker_retries(
     assert (reply.status_code, reply.json()) == (503, {"error": "out_of_memory"})
     assert type(failure).__name__ in caplog.text
     assert "Sunil" not in caplog.text
+    assert model.released == 1  # Paddle's cached GPU memory is handed back
     model.failure = None
     assert client.post("/read", content=png(), headers=PNG).status_code == 200  # the lock was let go
+
+
+def _deep_failure() -> PageResult:
+    """A model error with a cause, as Paddle's own errors come, both quoting the page."""
+    try:
+        raise ValueError("SENTINEL-4417 Sunil Patil")
+    except ValueError as error:
+        raise RuntimeError("SENTINEL-4417 Exception from the 'vlm' worker") from error
+
+
+def test_a_read_failure_logs_its_frames_never_its_message(
+    client: TestClient,
+    model: FakePageModel,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A RuntimeError that is not out of memory is this page's own failure; the log says
+    where it was raised (file, line, function) and the types along its cause chain."""
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr(model, "predict", lambda image: _deep_failure())
+    reply = client.post("/read", content=png(), headers=PNG)
+    assert (reply.status_code, reply.json()) == (500, {"error": "read_failed"})
+    (line,) = [record.getMessage() for record in caplog.records if "read failed" in record.getMessage()]
+    assert line.startswith("read failed: RuntimeError < ValueError at app.py:")
+    assert line.endswith(":_deep_failure")
+    assert "test_ocr_server.py:" in line
+    assert "SENTINEL" not in caplog.text  # never the message
+    assert "raise RuntimeError" not in caplog.text  # never a source line
+    assert model.released == 1
+
+
+def test_paddles_gpu_memory_is_handed_back_after_every_page(client: TestClient, model: FakePageModel) -> None:
+    assert client.post("/read", content=png(), headers=PNG).status_code == 200
+    model.failure = ValueError("Sunil Patil")
+    assert client.post("/read", content=png(), headers=PNG).status_code == 500
+    assert model.released == 2
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (MemoryError(), True),
+        (RuntimeError("Out of memory error on GPU 0"), True),
+        (OSError("RESOURCEEXHAUSTED"), True),
+        (RuntimeError("Exception from the 'vlm' worker: shape mismatch"), False),
+        (ValueError("out of memory"), False),  # only a RuntimeError's or OSError's text counts
+    ],
+)
+def test_out_of_memory_is_known_by_its_type_or_its_text(failure: Exception, expected: bool) -> None:
+    assert server._out_of_memory(failure) is expected
+
+
+def test_the_vl_limits_are_read_strictly(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert server.vl_limits({}) == {}
+    assert server.vl_limits({"OCR_VL_MAX_PIXELS": "", "OCR_VL_MAX_NEW_TOKENS": ""}) == {}
+    both = {"OCR_VL_MAX_PIXELS": "112896", "OCR_VL_MAX_NEW_TOKENS": "8192"}
+    assert server.vl_limits(both) == {"max_pixels": 112_896, "max_new_tokens": 8192}
+    for name, value in [
+        ("OCR_VL_MAX_PIXELS", "112895"),
+        ("OCR_VL_MAX_PIXELS", "1003521"),
+        ("OCR_VL_MAX_PIXELS", " 501760"),
+        ("OCR_VL_MAX_PIXELS", "5e5"),
+        ("OCR_VL_MAX_PIXELS", "\u0665\u0660\u0661\u0667\u0666\u0660"),  # Arabic-Indic digits
+        ("OCR_VL_MAX_NEW_TOKENS", "255"),
+        ("OCR_VL_MAX_NEW_TOKENS", "8193"),
+    ]:
+        with pytest.raises(ValueError, match=name):
+            server.vl_limits({name: value})
+    monkeypatch.setenv("OCR_VL_MAX_PIXELS", "big")  # read at import, so a bad value stops uvicorn
+    with pytest.raises(ValueError, match="OCR_VL_MAX_PIXELS='big'"):
+        PaddleModel()
+
+
+def test_predict_turns_queues_off_and_passes_the_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakePaddleOCRVL:
+        def __init__(self, **options: Any) -> None:
+            calls.append(("built", options))
+
+        def predict(self, path: str, **options: Any) -> list[Any]:
+            calls.append(("predict", options))
+            page = {"width": 200, "height": 100, "parsing_res_list": []}
+            return [types.SimpleNamespace(json={"res": page})]
+
+    monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PaddleOCRVL=FakePaddleOCRVL))
+    model = PaddleModel("cpu", {"OCR_VL_MAX_PIXELS": "501760", "OCR_VL_MAX_NEW_TOKENS": "2048"})
+    model.load()
+    assert model.predict(Image.new("RGB", (200, 100), "white")) == PageResult(200, 100, [])
+    (_, built), (_, asked) = calls
+    assert built["use_queues"] is False and asked["use_queues"] is False
+    assert (asked["max_pixels"], asked["max_new_tokens"]) == (501_760, 2048)
+    assert "repetition_penalty" not in asked  # the local VL model ignores it
+    unset = PaddleModel("cpu", {})
+    unset.load()
+    unset.predict(Image.new("RGB", (200, 100), "white"))
+    assert not {"max_pixels", "max_new_tokens"} & calls[-1][1].keys()  # the model's own values
+
+
+def test_the_version_names_the_limits_and_the_worker_takes_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metadata, "version", installed(GPU_PACKAGES))
+    limits = {"OCR_VL_MAX_PIXELS": "1003520", "OCR_VL_MAX_NEW_TOKENS": "8192"}
+    version = PaddleModel("gpu:0", limits).version()
+    assert version.endswith(";device=gpu:0;max_pixels=1003520;max_new_tokens=8192")
+    assert ocr._VERSION.fullmatch(version)  # the worker's check of a reply's version
+    assert PaddleModel("gpu:0", {}).version().endswith(";device=gpu:0")
+
+
+def test_release_memory_empties_the_gpu_cache_and_never_raises(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    emptied: list[int] = []
+    cuda = types.SimpleNamespace(empty_cache=lambda: emptied.append(1))
+    paddle = types.SimpleNamespace(
+        is_compiled_with_cuda=lambda: True, device=types.SimpleNamespace(cuda=cuda)
+    )
+    monkeypatch.setitem(sys.modules, "paddle", paddle)
+    monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PaddleOCRVL=lambda **options: None))
+    gpu = PaddleModel("gpu:0", {})
+    gpu.release_memory()  # not loaded: nothing to hand back
+    gpu.load()
+    gpu.release_memory()
+    cpu = PaddleModel("cpu", {})
+    cpu.load()
+    cpu.release_memory()  # the CPU has no GPU cache
+    assert emptied == [1]
+
+    def broken() -> None:
+        raise RuntimeError("Sunil Patil")
+
+    cuda.empty_cache = broken
+    gpu.release_memory()
+    assert "release memory failed: RuntimeError" in caplog.text
+    assert "Sunil" not in caplog.text

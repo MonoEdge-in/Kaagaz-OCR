@@ -8,9 +8,13 @@ import {
   deletedForeverMessage,
   documentsCount,
   foreverNeeds,
+  foreverNeedsPassword,
   foreverQuestion,
+  lostTheRight,
   restoredMessage,
   runEach,
+  runForever,
+  selectable,
   trashQuestion,
 } from "@/components/documents/trash";
 import { ApiError, deleteDocumentForever, listDocuments, restoreDocument } from "@/lib/api";
@@ -24,10 +28,15 @@ const me = (role: Role, scope: SessionScope = "app", totp_enabled = true): Me =>
     role,
     must_change_password: false,
     totp_enabled,
+    can_delete_forever: false,
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope },
 });
+const granted = (role: Role, scope: SessionScope = "app"): Me => {
+  const base = me(role, scope, false);
+  return { ...base, user: { ...base.user, can_delete_forever: true } };
+};
 
 describe("who may delete for good", () => {
   it("is an admin session with two-step sign-in on only (PRD 1, F5); the server checks it again", () => {
@@ -42,8 +51,29 @@ describe("who may delete for good", () => {
     expect(foreverNeeds(me("admin", "app"))).toBe("admin_sign_in");
     expect(foreverNeeds(me("admin", "admin", false))).toBe("two_step");
     expect(foreverNeeds(me("admin", "admin"))).toBeNull();
-    expect(foreverNeeds(me("member"))).toBeNull();
-    expect(foreverNeeds(me("reviewer"))).toBeNull();
+    expect(foreverNeeds(me("member"))).toBe("not_allowed");
+    expect(foreverNeeds(me("reviewer"))).toBe("not_allowed");
+    expect(foreverNeeds(granted("member"))).toBeNull();
+  });
+
+  it("lets a member or reviewer an admin allowed, with a password; a grant never counts for an admin", () => {
+    expect([canDeleteForever(granted("member")), foreverNeedsPassword(granted("reviewer"))]).toEqual([true, true]);
+    expect([canDeleteForever(granted("admin")), foreverNeedsPassword(me("admin", "admin"))]).toEqual([false, false]);
+    expect(selectable({ can_delete: false }, true, true)).toBe(true); // ticked in Trash to delete for good
+    expect(selectable({ can_delete: false }, false, true)).toBe(false);
+  });
+
+  it("checks the password once, then deletes each; a refused password deletes nothing", async () => {
+    const confirm = vi.fn(async () => undefined);
+    const remove = vi.fn(async () => undefined);
+    expect((await runForever(["a", "b"], "secret", { confirm, remove })).kind).toBe("ran");
+    expect([confirm.mock.calls, remove.mock.calls]).toEqual([[["secret"]], [["a"], ["b"]]]);
+    const wrong = new ApiError(400, "bad_request", "Your current password is not right.");
+    confirm.mockRejectedValueOnce(wrong);
+    expect(await runForever(["c"], "nope", { confirm, remove })).toEqual({ kind: "password", error: wrong });
+    await runForever(["d"], null, { confirm, remove }); // an admin types none
+    expect([confirm.mock.calls.length, remove.mock.calls]).toEqual([2, [["a"], ["b"], ["d"]]]);
+    expect([lostTheRight(new ApiError(403, "forbidden", "No.")), lostTheRight(wrong)]).toEqual([true, false]);
   });
 });
 

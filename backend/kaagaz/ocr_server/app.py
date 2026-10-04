@@ -7,7 +7,14 @@ it needs no database, storage or queue settings, and has none.
 It reads on the CPU, or on a GPU on a GPU server (``docker-compose.gpu.yml``).
 ``OCR_DEVICE`` names the device: ``cpu`` (the default, when unset) or
 ``gpu:N``. Any other value stops the server while this module is imported, so
-uvicorn never starts with a device it would only fail on later.
+uvicorn never starts with a device it would only fail on later. Two more, unset
+by default (the model's own values), stop it the same way when out of range:
+``OCR_VL_MAX_PIXELS`` (112896 to 1003520), the most pixels the VL model sees of
+one block, and ``OCR_VL_MAX_NEW_TOKENS`` (256 to 8192), the most tokens it
+writes for one block. Lower values fit a smaller GPU (a T4 runs the vision
+attention in fp32, eager, so its memory grows with the square of the pixels),
+for a little less detail on very large blocks. When set, each is passed to
+``predict`` and named in the version.
 
 * ``GET /health``: 200 ``{"ready": true}`` once the model is loaded, 503
   ``{"ready": false}`` while it loads (minutes), so compose's check waits.
@@ -32,14 +39,23 @@ taken without waiting before the body is read, so a second caller hears
 (AR2). One ``ocr`` container serves one worker.
 
 Failures: the model raising on a page is a 500 ``read_failed`` (that page's
-own failure, so the worker does not retry it), except running out of memory
-(``MemoryError``, which Paddle raises when the GPU's memory runs out): that is
-a 503 ``out_of_memory``, which the worker retries later, because the page is
-fine and the memory is shared (Ollama on the same GPU). Any other error nothing else
-handled is a 500 ``internal_error``. Each is one log line with the error's
-type name only. A model that fails to load ends the process (exit code 1), so
-compose's ``restart: unless-stopped`` starts it again rather than leaving it
-up and never ready.
+own failure, so the worker reads it with RapidOCR instead), except running out
+of memory: that is a 503 ``out_of_memory`` (the worker reads that page with
+RapidOCR too, and asks again later), because the page is fine and the memory is
+shared (Ollama on the same GPU). Out of memory is a ``MemoryError`` (Paddle's
+for its ResourceExhausted), or a ``RuntimeError`` or ``OSError`` whose text
+says so (Paddle writes "Out of memory error on GPU 0"; the text is only tested,
+never logged or returned). Any other error nothing else handled is a 500
+``internal_error``. Each failure is one log line with the type names along its
+cause chain and the frames it was raised through (file name, line, function;
+never its message, source lines or locals, which can quote the page), so
+``docker compose logs ocr`` shows where it failed. After every page on a GPU,
+Paddle's cached GPU memory is handed back (``release_memory``), so it does not
+hold GBs between pages beside Ollama. ``use_queues`` is off, so a model error
+keeps its own type and frames (with it on, paddlex re-raises any error of its
+worker threads as a ``RuntimeError``). A model that fails to load ends the
+process (exit code 1), so compose's ``restart: unless-stopped`` starts it again
+rather than leaving it up and never ready.
 
 Nothing read is ever logged, and ``res.save_to_*`` is never called.
 Inference cannot be cut off inside the server; a reply the worker gave up on
@@ -58,6 +74,7 @@ import re
 import struct
 import tempfile
 import threading
+import traceback
 import warnings
 import zlib
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -85,20 +102,33 @@ MODELS = Path("/opt/models")
 VL_MODEL = "PaddleOCR-VL-1.6@c5630ab"
 LAYOUT_MODEL = "PP-DocLayoutV3@241f8bd"
 # All off (security A6, ML 7). VERIFIED names in paddleocr 3.7.0 (the constructor
-# and predict). Unwarping would move the boxes off the page as it was sent.
+# and predict). Unwarping would move the boxes off the page as it was sent. Without
+# use_queues (on in paddlex 3.7.2's PaddleOCR-VL-1.6.yaml), the layout and VL steps
+# run on this thread, so an error keeps its own type (VERIFIED in the wheels).
 PADDLE_FLAGS = {
     "use_doc_orientation_classify": False,
     "use_doc_unwarping": False,
     "use_chart_recognition": False,
     "use_seal_recognition": False,
+    "use_queues": False,
 }
 # Paddle's device names: the CPU, or one GPU by its number (docker-compose.gpu.yml).
 DEVICE = re.compile(r"cpu|gpu:[0-9]{1,2}")
+# Optional limits passed to predict: variable -> (predict's keyword, lowest, highest).
+# The pixels run from paddlex 3.7.2's min_pixels to its max_pixels default; the most
+# tokens is its VL predictor's own (PADDLEOCR_VL_MAX_NEW_TOKENS).
+VL_LIMITS = {
+    "OCR_VL_MAX_PIXELS": ("max_pixels", 112_896, 1_003_520),
+    "OCR_VL_MAX_NEW_TOKENS": ("max_new_tokens", 256, 8192),
+}
 # Errors that mean the memory ran out, not that the page is bad. Paddle raises
-# MemoryError for its ResourceExhausted errors, GPU memory included (INFERRED from
-# Paddle's C++ to Python error mapping; VERIFY on g4dn). The names cover a library
-# that raises its own type instead.
+# MemoryError for its ResourceExhausted errors, and a RuntimeError or OSError
+# (CUDA's own errors) whose text says it ran out (INFERRED from Paddle's C++ to
+# Python error mapping; VERIFY on g4dn). The names cover a library that raises
+# its own type instead.
 _OUT_OF_MEMORY_NAMES = frozenset({"ResourceExhaustedError", "OutOfMemoryError"})
+_OUT_OF_MEMORY_WORDS = ("out of memory", "resourceexhausted", "alloc_failed")
+_LOGGED_FRAMES = 20  # the innermost frames of a failure, logged as file:line:function
 
 # The 25 layout labels of PaddleOCR-VL-1.6 (PP-DocLayoutV3's inference.yml,
 # VERIFIED in FINDINGS), as our block kinds. An unknown label becomes "other".
@@ -168,6 +198,7 @@ class PageModel(Protocol):
     def ready(self) -> bool: ...
     def predict(self, image: Image.Image) -> PageResult: ...
     def version(self) -> str: ...
+    def release_memory(self) -> None: ...
 
 
 def ocr_device(env: Mapping[str, str]) -> str:
@@ -180,8 +211,47 @@ def ocr_device(env: Mapping[str, str]) -> str:
     return value
 
 
+def vl_limits(env: Mapping[str, str]) -> dict[str, int]:
+    """predict's keyword -> value for each ``VL_LIMITS`` variable set in ``env`` (an empty
+    one is unset): ASCII digits within its range, or a ValueError that names the
+    variable, the value and the range."""
+    limits = {}
+    for name, (keyword, lowest, highest) in VL_LIMITS.items():
+        value = env.get(name, "")
+        if not value:
+            continue
+        if not (re.fullmatch(r"[0-9]{1,7}", value) and lowest <= int(value) <= highest):
+            raise ValueError(f"{name}={value!r} is not allowed: use a whole number, {lowest} to {highest}")
+        limits[keyword] = int(value)
+    return limits
+
+
 def _out_of_memory(error: Exception) -> bool:
-    return isinstance(error, MemoryError) or type(error).__name__ in _OUT_OF_MEMORY_NAMES
+    """Whether ``error`` says the memory ran out. Its text is tested here, never kept."""
+    if isinstance(error, MemoryError) or type(error).__name__ in _OUT_OF_MEMORY_NAMES:
+        return True
+    if not isinstance(error, RuntimeError | OSError):
+        return False
+    text = str(error).lower()
+    return any(words in text for words in _OUT_OF_MEMORY_WORDS)
+
+
+def _where(error: BaseException) -> str:
+    """The type names along the error's cause chain, and the innermost frames it was
+    raised through as ``file:line:function``: never a message, a source line or a local,
+    which can quote the page. O(frames + chain)."""
+    names: list[str] = []
+    seen: set[int] = set()
+    link: BaseException | None = error
+    while link is not None and id(link) not in seen and len(names) < 10:
+        seen.add(id(link))
+        names.append(type(link).__name__)
+        link = link.__cause__ or (None if link.__suppress_context__ else link.__context__)
+    frames = [
+        f"{Path(frame.f_code.co_filename).name}:{line}:{frame.f_code.co_name}"
+        for frame, line in traceback.walk_tb(error.__traceback__)
+    ]
+    return f"{' < '.join(names)} at {' > '.join(frames[-_LOGGED_FRAMES:])}"
 
 
 class PaddleModel:
@@ -190,8 +260,10 @@ class PaddleModel:
     3.7.0, on the CPU): the class, the model folders, ``predict`` on a PNG path, and
     ``json["res"]``. ``device`` is checked here; None reads ``OCR_DEVICE``."""
 
-    def __init__(self, device: str | None = None) -> None:
+    def __init__(self, device: str | None = None, limits: Mapping[str, str] | None = None) -> None:
+        """``limits`` holds the ``VL_LIMITS`` variables; None reads them from the environment."""
         self.device = ocr_device(os.environ if device is None else {"OCR_DEVICE": device})
+        self.limits = vl_limits(os.environ if limits is None else limits)
         self._pipeline: Any = None
         self._loaded = threading.Event()
 
@@ -218,8 +290,18 @@ class PaddleModel:
         with tempfile.TemporaryDirectory() as folder:  # /tmp is a tmpfs in the container
             path = Path(folder) / "page.png"
             image.save(path, format="PNG")
-            (result,) = self._pipeline.predict(str(path), **PADDLE_FLAGS)
+            (result,) = self._pipeline.predict(str(path), **PADDLE_FLAGS, **self.limits)
         return paddle_page(result.json["res"])
+
+    def release_memory(self) -> None:
+        """Hand Paddle's cached GPU memory back to the GPU, which Ollama shares; nothing on
+        the CPU. Its own failure is logged by type name and kept from the page's reply."""
+        if self.device == "cpu" or not self.ready():
+            return
+        try:
+            importlib.import_module("paddle").device.cuda.empty_cache()
+        except (ImportError, AttributeError, RuntimeError, OSError, MemoryError) as error:
+            _log.warning("release memory failed: %s", type(error).__name__)
 
     def version(self) -> str:
         """The packages, the model revisions and the device, so each run records how it was
@@ -227,7 +309,8 @@ class PaddleModel:
         asked for first, and the short name says which build it was."""
         packages = (("paddleocr", "paddleocr"), ("paddlex", "paddlex"), _paddle_package())
         installed = ";".join(f"{short}={metadata.version(name)}" for short, name in packages)
-        return f"{installed};vl={VL_MODEL};layout={LAYOUT_MODEL};device={self.device}"
+        limits = "".join(f";{keyword}={value}" for keyword, value in self.limits.items())
+        return f"{installed};vl={VL_MODEL};layout={LAYOUT_MODEL};device={self.device}{limits}"
 
 
 def _paddle_package() -> tuple[str, str]:
@@ -423,10 +506,12 @@ def _answer(model: PageModel, body: bytes) -> JSONResponse:
             blocks = blocks_json(model.predict(image))
         except Exception as error:  # noqa: BLE001 - this page's own failure, see the module notes
             if _out_of_memory(error):  # not this page's fault: the worker asks again later
-                _log.error("read out of memory: %s", type(error).__name__)
+                _log.error("read out of memory: %s", _where(error))
                 return _error(503, "out_of_memory")
-            _log.error("read failed: %s", type(error).__name__)
+            _log.error("read failed: %s", _where(error))
             return _error(500, "read_failed")
+        finally:
+            model.release_memory()  # after every page, read or not
         reply = {"engine": "paddleocr-vl", "version": model.version(), "width": image.width}
         reply |= {"height": image.height, "blocks": blocks}
     return JSONResponse(reply)

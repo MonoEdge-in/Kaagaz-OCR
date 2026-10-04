@@ -3,12 +3,14 @@ import {
   adminEnrol,
   adminLogin,
   changePassword,
+  confirmPassword,
   getUploadLimits,
   logoutEverywhere,
   onSessionEnded,
   query,
   resetUser2fa,
   resetUserPassword,
+  setDeleteForever,
   startTwoStep,
   turnOffTwoStep,
   unlockUser,
@@ -65,6 +67,7 @@ describe("sign-in and admin calls", () => {
       role: "admin",
       must_change_password: false,
       totp_enabled: false,
+      can_delete_forever: false,
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope: "admin" },
@@ -78,6 +81,7 @@ describe("sign-in and admin calls", () => {
     created_at: "2026-09-01T10:00:00+00:00",
     locked_until: null,
     totp_enabled: false,
+    can_delete_forever: false,
     must_change_password: false,
   };
 
@@ -133,6 +137,18 @@ describe("sign-in and admin calls", () => {
       headers: { "X-Requested-With": "kaagaz" },
       body: { password: "a long password" },
     });
+  });
+
+  it("allows or stops Delete forever, and confirms a granted user's password", async () => {
+    reply(200, USER);
+    await setDeleteForever("u2", true);
+    const url = "/api/admin/users/u2/delete-forever";
+    expect(sent(0)).toMatchObject({ url, method: "PUT", body: { allowed: true } });
+    vi.unstubAllGlobals();
+    reply(204);
+    await expect(confirmPassword("a long password")).resolves.toBeUndefined();
+    const body = { password: "a long password" };
+    expect(sent(1)).toMatchObject({ url: "/api/auth/confirm-password", method: "POST", body });
   });
 
   it("turns 2FA off with the current password", async () => {
