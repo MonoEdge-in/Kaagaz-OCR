@@ -13,7 +13,9 @@
 // current version; a newer one still being read, or one that failed, gets a
 // line under the name ("Version 3: ..."), linking to it. The Type column
 // gives the file type, and under it what kind of document it is ("Invoice",
-// or "Unknown" without the AI model's card: PRD 2, D6).
+// or "Unknown" without the AI model's card: PRD 2, D6). Names wrap in full at
+// their _ . - and @ marks (WrapName.tsx). The By cell says "Uploaded by" in
+// words; the full table hides those words under its By header.
 
 import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -36,6 +38,7 @@ import type { EditAction, RowAction } from "./library";
 import { deletedMessage, formatProgressPercent } from "./logic";
 import { StatusChip } from "./StatusChip";
 import { TimeLeft } from "./TimeLeft";
+import { WrapName } from "./WrapName";
 import {
   type BulkAction,
   bulkDoneMessage,
@@ -481,13 +484,15 @@ function DocumentRow({
         data-empty={deletable ? undefined : "true"}
       >
         {deletable && (
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={onToggle}
-            aria-label={`Select ${document.display_name}`}
-            title={`Select ${document.display_name}`}
-          />
+          <label className={styles.selectHit}>
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={onToggle}
+              aria-label={`Select ${document.display_name}`}
+              title={`Select ${document.display_name}`}
+            />
+          </label>
         )}
       </td>
       <td role="cell" className={styles.nameCell}>
@@ -496,7 +501,7 @@ function DocumentRow({
           className={styles.name}
           title={document.display_name}
         >
-          {document.display_name}
+          <WrapName name={document.display_name} />
         </Link>
         {document.tags.length > 0 && (
           <ul className={`${library.tags} ${library.rowTags}`} aria-label="Tags">
@@ -523,18 +528,29 @@ function DocumentRow({
       <td role="cell" className={styles.meta}>
         {typeLabel(document.detected_type)}
         <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>
+        <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>
       </td>
-      <td role="cell" className={`${styles.meta} ${styles.nowrap} tabular`}>
+      <td role="cell" className={`${styles.meta} ${styles.sizeCell} tabular`}>
         {formatBytes(document.size_bytes)}
       </td>
-      <td role="cell" className={`${styles.meta} ${styles.nowrap}`}>
+      <td role="cell" className={styles.meta}>
         {inTrash && <span className="visually-hidden">Trashed </span>}
         <time dateTime={when} title={formatDateTime(when)}>
           {formatRelative(when, now)}
         </time>
+        {by && (
+          <span className={styles.bandBy}>
+            Uploaded by <WrapName name={by} />
+          </span>
+        )}
       </td>
       <td role="cell" className={`${styles.meta} ${styles.byCell}`} data-empty={by ? undefined : "true"}>
-        {by ?? (
+        {by ? (
+          <>
+            <span className={styles.byLabel}>Uploaded by </span>
+            <WrapName name={by} />
+          </>
+        ) : (
           <>
             <span aria-hidden="true">—</span>
             <span className="visually-hidden">Not known</span>

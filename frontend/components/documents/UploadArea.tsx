@@ -46,6 +46,7 @@ import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
 import { EMPTY_QUEUE, isBusy, queueReducer } from "./uploadQueue";
 import type { UploadEntry } from "./uploadQueue";
+import { WrapName } from "./WrapName";
 import styles from "./Documents.module.css";
 
 type Start = (onProgress: (fraction: number) => void) => Promise<UploadResult>;
@@ -331,7 +332,9 @@ function UploadRow({
       </div>
       <div className={styles.uploadBody}>
         <div className={styles.uploadHead}>
-          <span className={styles.fileName}>{entry.name}</span>
+          <span className={styles.fileName}>
+            <WrapName name={entry.name} />
+          </span>
           <span className={`muted tabular ${styles.small}`}>{formatBytes(entry.size)}</span>
           <span className={failed ? `error-text ${styles.small} ${styles.badge}` : `muted ${styles.small} ${styles.badge}`}>
             {uploadStateText(state)}

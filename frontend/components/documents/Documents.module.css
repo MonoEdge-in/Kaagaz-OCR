@@ -11,10 +11,6 @@
   font-weight: 600;
 }
 
-.nowrap {
-  white-space: nowrap;
-}
-
 /* --- Dropzone ---------------------------------------------------------------- */
 
 .drop {
@@ -106,12 +102,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  flex: 0 1 auto;
-  max-height: min(26rem, 42vh);
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  padding-right: var(--space-1);
 }
 
 .upload {
@@ -174,7 +164,7 @@
 
 .fileName {
   font-weight: 600;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   min-width: 0;
 }
 
@@ -221,8 +211,16 @@
   display: inline-flex;
   align-items: center;
   width: fit-content;
+  min-height: 24px;
   margin-top: var(--space-1);
   font-weight: 600;
+}
+
+@media (pointer: coarse) {
+  .inlineAction {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 @keyframes uploadPulse {
@@ -292,10 +290,14 @@
   background: var(--surface-2);
 }
 
+/* The select cell stays a table cell (no display rule); the label inside is
+   the tick box's 24 px target (44 px for touch). */
 .selectAll,
-.selectCell {
+.selectHit {
   display: inline-flex;
   align-items: center;
+  min-height: 24px;
+  cursor: pointer;
 }
 
 .selectAll {
@@ -305,18 +307,30 @@
   font-weight: 600;
 }
 
+.selectHit {
+  justify-content: center;
+  min-width: 24px;
+}
+
+@media (pointer: coarse) {
+  .selectAll,
+  .selectHit {
+    min-height: 44px;
+  }
+
+  .selectHit {
+    min-width: 44px;
+  }
+}
+
 .selectColumn,
 .selectCell {
   width: 3rem;
   text-align: center;
 }
 
-.selectCell {
-  justify-content: center;
-}
-
 .selectAll input,
-.selectCell input {
+.selectHit input {
   flex: none;
   cursor: pointer;
 }
@@ -325,7 +339,7 @@ table.docs tbody tr[data-selected="true"] {
   background: var(--accent-soft);
 }
 
-table.docs tbody tr[data-selected="true"] .selectCell input {
+table.docs tbody tr[data-selected="true"] .selectHit input {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -421,13 +435,19 @@ table.docs tbody tr[data-selected="true"] .selectCell input {
   justify-content: flex-end;
 }
 
-/* --- Rows: a table when the list is 48rem wide or more, cards below -------------
+/* --- Rows: cards, a narrow table, or the full table -----------------------------
 
-   Below 48rem the eight columns crowd (the Uploaded time runs into By), so
-   the list shows cards: with the tree beside it that is up to about a 1300 px
-   screen. These rules follow Table.module.css (the admin tables), but ask the
-   list's width instead of the window's. The markup carries role="table|
-   rowgroup|row|columnheader|cell", so the cards keep the table's meaning. */
+   The list's own width decides (a container query), since the folder tree
+   beside it takes room the window still has:
+   - below 48rem: cards;
+   - 48 to 64rem: a table without the Size and By columns; the size shows under
+     the type and "Uploaded by" under the time;
+   - 64rem and up: all eight columns.
+   The short columns have rem widths and Name and Status share the rest, so the
+   columns never need more room than the table has (tests/layout-guards.test.ts
+   checks the sums). Every cell may wrap: nothing runs into the next column.
+   The markup carries role="table|rowgroup|row|columnheader|cell", so the cards
+   keep the table's meaning. */
 
 table.docs {
   width: 100%;
@@ -438,21 +458,37 @@ table.docs {
   border-radius: var(--r-md);
 }
 
+/* Long words break only when they cannot fit; names wrap at <wbr> (names.ts). */
 table.docs td,
 table.docs th {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 
 .name {
   font-weight: 600;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 /* A newer version still being read, or one that failed, under the name. */
 .newerVersion {
-  display: block;
+  display: flex;
+  align-items: center;
+  min-height: 24px;
   margin-top: var(--space-1);
   font-size: var(--fs-sm);
+}
+
+@media (pointer: coarse) {
+  .newerVersion {
+    min-height: 44px;
+  }
+}
+
+/* The size and "Uploaded by" lines are shown only in the narrow table. */
+.bandSize,
+.bandBy {
+  display: none;
 }
 
 /* What kind of document it is (PRD 2, D6), under its file type. */
@@ -535,58 +571,29 @@ table.docs th {
     box-shadow: none;
   }
 
+  /* Name and Status have no width: they share what is left. */
   .selectColumn {
     width: 3rem;
   }
 
-  .nameColumn,
-  .nameCell {
-    width: 24%;
-  }
-
-  .statusColumn,
-  .statusCell {
-    width: 21%;
-  }
-
   .typeColumn {
-    width: 10%;
-  }
-
-  .sizeColumn {
-    width: 8%;
+    width: 7.5rem;
   }
 
   .uploadedColumn {
-    width: 11%;
+    width: 8.5rem;
   }
 
-  .byColumn,
-  .byCell {
-    width: 15%;
-  }
-
-  .byCell {
-    overflow-wrap: normal;
-  }
-
-  .nameCell {
-    min-width: 12rem;
+  .actionsColumn {
+    width: 7rem;
   }
 
   .meta {
     font-size: var(--fs-sm);
   }
 
-  .statusMessage {
-    white-space: nowrap;
-  }
-
-  .actionsColumn,
   .actionsCell {
     text-align: end;
-    width: 7rem;
-    white-space: nowrap;
   }
 
   /* The Actions menu opens towards the row, from the end of the table. */
@@ -612,13 +619,48 @@ table.docs th {
     border-radius: var(--r-md);
     background: var(--surface);
     box-shadow: var(--e-2);
-    white-space: normal;
     text-align: start;
   }
 
   .rowError {
-    white-space: normal;
     text-align: start;
+  }
+}
+
+/* The narrow table: Size and By leave their columns for lines in the row. */
+@container docs-list (min-width: 48rem) and (max-width: 63.98rem) {
+  .sizeColumn,
+  .sizeCell,
+  .byColumn,
+  .byCell {
+    display: none;
+  }
+
+  .bandSize,
+  .bandBy {
+    display: block;
+    color: var(--fg-muted);
+  }
+}
+
+/* The full table: "By" heads its column, so the cell's own words are hidden. */
+@container docs-list (min-width: 64rem) {
+  .sizeColumn {
+    width: 6.5rem;
+  }
+
+  .byColumn {
+    width: 9rem;
+  }
+
+  .byLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
   }
 }
 
@@ -689,14 +731,6 @@ table.docs th {
     flex: 1 1 calc(100% - 3rem);
   }
 
-  .name {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    overflow: hidden;
-  }
-
   .statusCell {
     flex: 1 1 100%;
   }
@@ -710,7 +744,8 @@ table.docs th {
   }
 
   .meta {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
     margin-top: var(--space-2);
     font-size: var(--fs-sm);
     color: var(--fg-muted);
@@ -730,6 +765,15 @@ table.docs th {
 
   .meta[data-empty] {
     display: none;
+  }
+
+  /* "Uploaded by ..." starts its own line on a card. */
+  .byCell {
+    flex-basis: 100%;
+  }
+
+  .meta.byCell::before {
+    content: none;
   }
 
   .actionsCell {
@@ -787,7 +831,7 @@ table.docs th {
 
 .timeLeft {
   display: inline-block;
-  min-width: 18ch; /* room for "Ready in about 55 s", so the row does not jump as it counts */
+  min-width: min(18ch, 100%); /* room for "Ready in about 55 s", so the row does not jump as it counts */
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
