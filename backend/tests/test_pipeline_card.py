@@ -48,6 +48,7 @@ from tests.test_pipeline import PIPELINE_POLICY
 CUSTOMER = "cust-a"
 T0 = datetime(2026, 9, 30, 10, 0, tzinfo=UTC)
 CONFIG = {"build": "test"}
+NO_TIME = {"seconds_reading": 0.0, "seconds_after_reading": 0.0}  # the timer stands at 0
 BUDGET = ModelBudget(card_max_chars=12000, card_max_tokens=1024, num_ctx=8192, invoice_windows=None)
 
 
@@ -190,7 +191,8 @@ class ModelOnTest(unittest.TestCase):
         )
         self.assertEqual((totals.quotes_returned, totals.dropped_quotes), (5, 1))  # "10" is made up
         self.assertEqual(
-            totals.config, {**CONFIG, "loose_quotes": 0, "ambiguous_quotes": 0, "summary_dropped": 0}
+            totals.config,
+            {**CONFIG, "loose_quotes": 0, "ambiguous_quotes": 0, "summary_dropped": 0, **NO_TIME},
         )
         self.assertEqual((totals.values_verified, totals.values_needs_review), (3, 3))
 
@@ -200,7 +202,7 @@ class ModelOnTest(unittest.TestCase):
         on, off = rig(FakeChat(CARD)), rig()
         on_job, _ = on.read(), off.read()
         steps = [p for _, _, p in on.progress.history if p.step == "understanding"]
-        self.assertEqual(steps, [Progress("understanding", 1, 2), Progress("understanding", 2, 2)])
+        self.assertEqual(steps, [Progress("understanding", done, 2) for done in (0, 1, 2)])
         self.assertEqual(len(on.beats) - len(off.beats), 2)
         self.assertEqual(on.statuses.get_status(CUSTOMER, on_job.document_id), DocumentStatus.READY)
 
@@ -226,7 +228,7 @@ class ModelOffOrDownTest(unittest.TestCase):
         self.assertNotIn("Type:", content.pieces[0].context_header)
         totals = system.totals(job)
         self.assertEqual((totals.model_chat, totals.model_calls, totals.quotes_returned), (None, 0, 0))
-        self.assertEqual(totals.config, CONFIG)
+        self.assertEqual(totals.config, {**CONFIG, **NO_TIME})
 
     def test_the_model_down_gives_the_model_off_result_and_the_run_keeps_the_code(self) -> None:
         down = rig(FakeChat(ModelUnavailable("timeout")))

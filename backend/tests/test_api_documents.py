@@ -7,7 +7,7 @@ are tested first, without a database.
 import io
 import json
 from collections.abc import Callable, Iterator, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +17,7 @@ from PIL import Image
 from sqlalchemy import Connection, event, text
 
 from kaagaz.api.routers.documents import day_start, display_name, upload_policy
-from kaagaz.api.views import in_progress, status_message
+from kaagaz.api.views import document_time_left, in_progress, status_message
 from kaagaz.db import folders as folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import FolderRow
@@ -27,7 +27,7 @@ from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 from kaagaz.settings import Settings, SettingsError
 from tests.db_support import insert_document
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed, TestClient
+from tests.test_api_support import CSRF, NOW, PDF_BYTES, Api, Signed, TestClient
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
 MB = 1024 * 1024
@@ -242,6 +242,25 @@ def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
     assert in_progress("clean", None) is None
 
 
+# A progress as the worker writes it while reading (kaagaz.eta), 10 s ago, 50 s before ready.
+MOVED, FINISH = (NOW - timedelta(seconds=10)).isoformat(), (NOW + timedelta(seconds=50)).isoformat()
+TIMED: dict[str, object] = {"step": "reading", "done": 2, "total": 40, "confidence": "high"}
+TIMED |= {"moved_at": MOVED, "finish_at": FINISH, "item_s": 1.25, "after_s": 10.0, "slow_after_s": 20.0}
+TIME_LEFT: dict[str, object] = {"seconds": 50.0, "since_move_seconds": 10.0, "items_left": 38}
+TIME_LEFT |= {"slow_after_seconds": 20.0, "item_seconds": 1.25, "after_seconds": 10.0, "confidence": "high"}
+
+
+def test_time_left_only_while_read_and_out_of_trash() -> None:
+    def left(status: str, deleted_at: datetime | None = None, **progress: object) -> object:
+        row = {"status": status, "progress": {**TIMED, **progress}, "deleted_at": deleted_at}
+        return document_time_left(row, now=NOW)
+
+    assert left("clean") == left("received") == TIME_LEFT
+    gone = [left("ready"), left("failed"), left("clean", deleted_at=NOW), left("clean", step="indexing")]
+    assert gone == [None, None, None, None]
+    assert document_time_left({"status": "clean", "progress": None, "deleted_at": None}, now=NOW) is None
+
+
 @pytest.mark.db
 def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
     api = Api(db)
@@ -274,6 +293,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "can_delete",
         "newer_version",
         "progress",  # PRD 2 X3
+        "time_left",  # PRD 4 #13: null until it is being read
         "doc_type",  # PRD 2 D3 (null until the card, PR 5)
         "languages",
     }
@@ -840,6 +860,39 @@ def test_the_list_and_detail_show_progress_only_while_a_document_is_read(db: Dat
         "Ready. You can ask about it.",
     )
     assert (items[reading]["doc_type"], items[reading]["languages"]) == (None, [])  # the card is PR 5's
+
+
+@pytest.mark.db
+def test_the_list_and_detail_show_the_same_time_left_while_a_document_is_read(db: Database) -> None:
+    """PRD 4 #13: one ``now`` per request, the same in the list and the detail; null once
+    ready, in Trash, and never on a newer version; ``progress`` keeps its three keys."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    reading = api.add_document(c, status="clean", name="a.pdf")
+    finished = api.add_document(c, status="ready", name="b.pdf")
+    trashed = api.add_document(c, status="clean", name="c.pdf", deleted_at=NOW)
+    newer = api.add_document(c, status="clean", family_id=finished, version_no=2, is_current=False)
+    with db.customer(c) as conn:
+        conn.execute(
+            text(
+                "UPDATE documents SET progress = CAST(:p AS jsonb)"
+                " WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+            ),
+            {"c": c, "p": json.dumps(TIMED), "ids": [reading, finished, trashed, newer]},
+        )
+
+    items = {item["id"]: item for item in signed.client.get("/api/documents").json()["items"]}
+    detail = signed.client.get(f"/api/documents/{reading}").json()
+    summary = signed.client.get(f"/api/documents/{reading}/summary").json()
+
+    assert items[reading]["time_left"] == detail["time_left"] == summary["time_left"] == TIME_LEFT
+    assert items[reading]["progress"] == {"step": "reading", "done": 2, "total": 40}
+    assert items[reading]["status_message"] == "Reading page 3 of 40\u2026"
+    assert items[finished]["time_left"] is None
+    assert "time_left" not in items[finished]["newer_version"]
+    assert signed.client.get(f"/api/documents/{trashed}").json()["time_left"] is None
+    assert signed.client.get(f"/api/documents/{newer}").json()["time_left"] == TIME_LEFT  # opened as itself
 
 
 @pytest.mark.db

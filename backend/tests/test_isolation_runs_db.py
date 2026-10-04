@@ -83,3 +83,16 @@ def test_b_never_counts_the_pages_of_a(db: Database) -> None:
         assert pages_by_route(conn, b, **window) == {"cells": 0, "text_layer": 0, "ocr": 0, "blank": 0}
     with db.customer(a) as conn:
         assert pages_by_route(conn, a, **window)["ocr"] == 3
+
+
+def test_b_never_reads_the_run_timings_of_a(db: Database) -> None:
+    """PRD 4 #13: the time left learns from this customer's own runs only."""
+    a, _ = new_customer(db)
+    b, _ = new_customer(db)
+    with db.customer(a) as conn:
+        doc = insert_document(conn, a)
+    run = PgRuns(db).start(a, doc, now=T0)
+    timed = {"seconds_reading": 1.0, "seconds_after_reading": 2.0}
+    PgRuns(db).finish(a, FinishedRun(run, totals(config=timed), T0))
+    assert PgRuns(db).recent_timings(b) == []
+    assert [timing.seconds_after for timing in PgRuns(db).recent_timings(a)] == [2.0]

@@ -12,7 +12,8 @@ import logging
 import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from unittest import mock
 
 from PIL import Image
 
@@ -404,6 +405,7 @@ class ProgressTest(unittest.TestCase):
                 Progress("reading", 0, 2),
                 Progress("reading", 1, 2),
                 Progress("reading", 2, 2),
+                Progress("understanding", 0, 2),  # right after reading, before the second reader
                 Progress("indexing", 0, 1),
             ],
         )
@@ -413,9 +415,8 @@ class ProgressTest(unittest.TestCase):
         job = system.job(CSV)
         system.processor(job, beat)
         steps = [progress for _, _, progress in system.progress.history]
-        self.assertEqual(
-            steps, [Progress("scanning", 0, 1), Progress("reading", 0, 0), Progress("indexing", 0, 1)]
-        )
+        read = [Progress("scanning", 0, 1), Progress("reading", 0, 0), Progress("understanding", 0, 2)]
+        self.assertEqual(steps, [*read, Progress("indexing", 0, 1)])
 
     def test_no_progress_is_written_during_save(self) -> None:
         """Plan 4.5, risk 6: progress is its own transaction, never inside T_save."""
@@ -425,7 +426,7 @@ class ProgressTest(unittest.TestCase):
         system.processor(job, beat)
         start, end = log.index("save starts"), log.index("save ends")
         self.assertEqual(end, start + 1)
-        self.assertEqual(log[start - 1], "reading")
+        self.assertEqual(log[start - 1], "understanding")
         self.assertEqual(log[end + 1 :], ["indexing"])
 
     def test_each_written_batch_beats_then_shows_indexing_i_of_n(self) -> None:
@@ -437,6 +438,45 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(after_save, ["beat", "indexing", "beat", "indexing", "beat", "indexing"])
         steps = [progress for _, _, progress in system.progress.history]
         self.assertEqual(steps[-2:], [Progress("indexing", 1, 2), Progress("indexing", 2, 2)])
+
+    def test_reading_and_understanding_carry_the_time_left(self) -> None:
+        """PRD 4 #13, cold: the constants (an unknown engine: 7 s a page), then this run's
+        own pages (2.5 s each); from the end of reading, the time after it. Low confidence."""
+        system = rig(ocr=TimedOcr)
+        system.processor(system.job(make_pdf([SCANNED, SCANNED])), beat)
+        by = {(p.step, p.done): p.estimate for _, _, p in system.progress.history}
+        first, last, after = by[("reading", 0)], by[("reading", 2)], by[("understanding", 0)]
+        assert first is not None and last is not None and after is not None
+        self.assertAlmostEqual(first.item_s, 0.5 * 7.0 + 0.5 * 0.15)
+        self.assertEqual(first.finish_at, T0 + timedelta(seconds=2 * first.item_s + 45.0))
+        self.assertAlmostEqual(last.item_s, 0.75 * (14.0 + 5.0) / 4 + 0.25 * 0.15)
+        self.assertEqual(
+            (after.finish_at - T0, after.slow_after_s, after.confidence), (timedelta(seconds=45), 65.0, "low")
+        )
+        self.assertEqual((by[("scanning", 0)], by[("indexing", 0)]), (None, None))
+
+    def test_three_ready_runs_teach_the_time_after_reading(self) -> None:
+        moves: list[Callable[[float], None]] = []
+        system = rig(embed=FakeEmbedder(batches=1, during_batch=lambda _: moves[0](30.0)))
+        moves.append(system.timer.advance)
+        for n in range(4):
+            job = system.job(make_pdf([Page(texts=[Text(72, 700, f"{LONG_LINE} {n}")])]))
+            system.processor(job, beat)
+        timings = {"seconds_reading": 0.0, "seconds_after_reading": 30.0}
+        self.assertEqual(system.totals(job).config, {**CONFIG, **timings})
+        after = [p for _, _, p in system.progress.history if p.step == "understanding"][-1].estimate
+        assert after is not None
+        self.assertEqual((after.after_s, after.slow_after_s, after.confidence), (30.0, 50.0, "high"))
+
+    def test_history_that_cannot_be_read_leaves_the_constants(self) -> None:
+        system = rig()
+        down = mock.patch.object(system.runs, "recent_timings", side_effect=BackendUnavailable("database"))
+        with down, self.assertLogs("kaagaz.pipeline", level="WARNING") as logs:
+            system.processor(system.job(CSV), beat)
+        self.assertEqual({r.getMessage() for r in logs.records}, {"run_history_not_read"})
+        (after,) = [p.estimate for _, _, p in system.progress.history if p.step == "understanding"]
+        assert after is not None
+        self.assertEqual((after.after_s, after.confidence), (45.0, "low"))
 
     def test_progress_that_cannot_be_saved_is_logged_and_the_document_is_still_read(self) -> None:
         system = rig()
@@ -473,7 +513,7 @@ class RunTotalsTest(unittest.TestCase):
         self.assertEqual(
             (totals.ocr_engine, totals.model_vision, totals.model_embed), (None, None, "embed-tag")
         )
-        self.assertEqual(totals.config, CONFIG)
+        self.assertEqual(totals.config, {**CONFIG, "seconds_reading": 4.0, "seconds_after_reading": 0.0})
         (run,) = system.runs_of(job)
         self.assertEqual((run.started_at, run.finished_at), (T0, T0))
 
@@ -494,11 +534,12 @@ class RunTotalsTest(unittest.TestCase):
         system = rig(ocr=TimedOcr, settings=make_settings(page_image_dpi=72, ocr_dpi=300))
         job = system.job(make_pdf([SCANNED, a1]))
         system.processor(job, beat)
-        self.assertEqual(system.totals(job).config, {**CONFIG, "ocr_dpi_lowest": 164})
+        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0}
+        self.assertEqual(system.totals(job).config, {**CONFIG, "ocr_dpi_lowest": 164, **timings})
 
         letter_only = system.job(make_pdf([SCANNED, SCANNED]))
         system.processor(letter_only, beat)
-        self.assertEqual(system.totals(letter_only).config, CONFIG)  # nothing was drawn lower
+        self.assertEqual(system.totals(letter_only).config, {**CONFIG, **timings})  # nothing was drawn lower
 
     def test_the_ocr_meter_starts_each_run_from_zero(self) -> None:
         """AR11: a page counted before the run (or by an earlier one) is not this run's."""

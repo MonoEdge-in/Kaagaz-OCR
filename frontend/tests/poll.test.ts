@@ -10,6 +10,7 @@ interface Doc {
   status: "received" | "clean" | "ready";
   status_message: string;
   progress: { step: "reading"; done: number; total: number } | null;
+  time_left?: { seconds: number } | null;
 }
 
 function harness() {
@@ -195,5 +196,18 @@ describe("progressSignature", () => {
     expect(progressSignature([{ ...doc, progress: { step: "reading", done: 1, total: 2 } }])).not.toBe(same);
     const newer = { id: "d2", version_no: 2, status: "clean", failure_code: null, status_message: "Reading" };
     expect(progressSignature([{ ...doc, newer_version: newer }])).not.toBe(same);
+    expect(progressSignature([{ ...doc, time_left: { seconds: 40 } }])).toBe(same);
+  });
+
+  // PRD 4 #13: a time left that moves on every answer must not keep the poll at 3 s.
+  it("keeps backing off while only the time left changes", async () => {
+    const { poller, world, gaps } = harness();
+    let seconds = 100;
+    Object.defineProperty(world.doc, "time_left", { enumerable: true, get: () => ({ seconds: (seconds -= 5) }) });
+    poller.refresh();
+    await vi.advanceTimersByTimeAsync(3000 + 6000 + 12000 + 15000);
+    expect(gaps()).toEqual([3000, 6000, 12000, 15000]);
+    expect(seconds).toBe(75); // five answers, each with a new time left
+    poller.stop();
   });
 });

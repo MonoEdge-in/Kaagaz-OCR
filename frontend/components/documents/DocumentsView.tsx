@@ -22,6 +22,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { UploadWords } from "@/components/words/UploadWords";
 import { ApiError, listDocuments, listFolders, listTags, searchDocuments } from "@/lib/api";
 import { progressSignature } from "@/lib/poll";
+import { markReceived } from "@/lib/timeLeft";
 import { useSession } from "@/lib/session";
 import { usePoll } from "@/lib/usePoll";
 import type { DocumentList, DocumentSearch, DocumentSummary, Folder, Tag } from "@/lib/types";
@@ -148,7 +149,10 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   // Each answer is kept with the view it was asked for (one request at a time).
   const poll = usePoll<Loaded>({
     load: () =>
-      listDocuments(listParams(library, listQ, offset)).then((list) => ({ view: viewKey, list, now: Date.now() })),
+      listDocuments(listParams(library, listQ, offset)).then((list) => {
+        markReceived(list.items, performance.now());
+        return { view: viewKey, list, now: Date.now() };
+      }),
     onResult: (result) => {
       setLoaded(result);
       setFailure(null);

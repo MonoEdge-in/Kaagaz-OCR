@@ -26,6 +26,7 @@ import type { FolderTree } from "./folderTree";
 import type { EditAction, RowAction } from "./library";
 import { deletedMessage, formatProgressPercent } from "./logic";
 import { StatusChip } from "./StatusChip";
+import { TimeLeft } from "./TimeLeft";
 import {
   type BulkAction,
   bulkDoneMessage,
@@ -459,6 +460,7 @@ function DocumentRow({
         <span className={styles.statusContent}>
           <StatusChip status={document.status} />
           <span className={styles.statusMessage}>{document.status_message}</span>
+          <TimeLeft document={document} />
         </span>
       </td>
       <td role="cell" className={styles.meta}>

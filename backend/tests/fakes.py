@@ -24,6 +24,7 @@ from typing import IO, Any
 from PIL import Image
 
 from kaagaz.chunking.piece import Piece
+from kaagaz.eta import HISTORY_RUNS, RunTiming
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -365,6 +366,24 @@ class MemoryRuns:
             return
         row.status, row.error_code = run.totals.status, run.totals.error_code
         row.finished_at, row.totals = max(run.now, row.started_at), run.totals
+
+    def recent_timings(self, customer_id: str) -> list[RunTiming]:
+        """Like db/runs.py: this customer's ready runs only, newest first, the config's times."""
+        mine = [row for row in self.rows.values() if (row.customer_id, row.status) == (customer_id, "ready")]
+        mine.sort(key=lambda row: row.started_at, reverse=True)
+        totals = [row.totals for row in mine[:HISTORY_RUNS] if row.totals is not None]
+        config = [(t.config.get("seconds_reading"), t.config.get("seconds_after_reading")) for t in totals]
+        return [
+            RunTiming(
+                t.ocr_engine,
+                t.pages_ocr,
+                t.pages_text_layer + t.pages_blank,
+                t.pages_cells,
+                t.seconds_ocr,
+                *c,
+            )
+            for t, c in zip(totals, config, strict=True)
+        ]
 
     def is_open(self, customer_id: str, document_id: str, run_id: str) -> bool:
         row = self.rows.get(run_id)

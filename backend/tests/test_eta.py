@@ -1,0 +1,102 @@
+"""The time-left estimate (kaagaz.eta), with fixed numbers (PRD 4 #13)."""
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from kaagaz.eta import RunTiming, after_reading, mean, rates, reading, time_left
+
+T0 = datetime(2026, 10, 4, 10, 0, tzinfo=UTC)
+NONE = (0.0, 0.0)
+
+
+def scan_run(seconds_per_page: float = 3.0, after: float = 30.0) -> RunTiming:
+    """A ready run of ten scanned pages read by RapidOCR."""
+    return RunTiming("rapidocr 3.4", 10, 0, 0, 10 * seconds_per_page, 10 * seconds_per_page, after)
+
+
+def test_a_steady_rate_is_learned_by_page_3() -> None:
+    """Three earlier runs at 3 s a page: by page 3 of 20, within 10% and confident."""
+    estimate = reading(rates([scan_run()] * 3, "rapidocr"), T0, 3, 20, (9.0, 3), NONE)
+    assert estimate.item_s == pytest.approx(96 / 29.4)  # (2 * 6.9 + 2.44 * 30 + 9) / (2 + 24.4 + 3)
+    assert abs(estimate.item_s - 3.0) / 3.0 < 0.1 and estimate.confidence == "high"
+    assert estimate.finish_at == T0 + timedelta(seconds=17 * estimate.item_s + 30.0)
+
+
+def test_a_cold_start_is_low_confidence_on_the_constants() -> None:
+    cold = rates([], "rapidocr")
+    first = reading(cold, T0, 0, 4, NONE, NONE)
+    assert first.item_s == pytest.approx(0.5 * 6.9 + 0.5 * 0.15)  # half OCR until pages say
+    assert (first.after_s, first.slow_after_s, first.confidence) == (45.0, 20.0, "low")
+    assert reading(cold, T0, 3, 4, (21.0, 3), NONE).confidence == "low"  # no after-reading history
+    assert after_reading(cold, T0).confidence == "low"
+
+
+def test_text_layer_pages_then_scans_raise_the_rate() -> None:
+    cold = rates([], "rapidocr")
+    text = reading(cold, T0, 3, 6, NONE, (0.3, 3))
+    assert text.item_s == pytest.approx(0.2 * 6.9 + 0.8 * 0.12)
+    mixed = reading(cold, T0, 5, 6, (14.0, 2), (0.3, 3))
+    assert mixed.item_s == pytest.approx(3 / 7 * 6.95 + 4 / 7 * 0.12)
+    assert mixed.item_s > 2 * text.item_s
+
+
+def test_a_stall_is_three_pages_long_and_at_least_20_s() -> None:
+    slow = reading(rates([scan_run(10.0)] * 3, "rapidocr"), T0, 3, 5, (30.0, 3), NONE)
+    assert slow.slow_after_s == pytest.approx(3 * slow.item_s)
+    assert reading(rates([scan_run(1.0)] * 3, "rapidocr"), T0, 0, 5, NONE, NONE).slow_after_s == 20.0
+
+
+def test_after_reading_is_the_median_and_slow_the_90th_percentile() -> None:
+    history = [scan_run(after=after) for after in (50.0, 10.0, 40.0, 20.0, 30.0)]
+    estimate = after_reading(rates(history, "rapidocr"), T0)
+    assert (estimate.after_s, estimate.slow_after_s, estimate.confidence) == (30.0, 50.0, "high")
+    assert estimate.finish_at == T0 + timedelta(seconds=30)
+    assert after_reading(rates(history[:1], "rapidocr"), T0).slow_after_s == 70.0  # A50 + 20
+
+
+def test_only_this_engines_runs_and_the_last_20_count() -> None:
+    other = RunTiming("paddleocr-vl 1.0", 10, 0, 0, 900.0, 900.0, 30.0)
+    assert mean(rates([other] * 3, "rapidocr").ocr) == pytest.approx(6.9)
+    old = [scan_run(3.0)] * 20 + [scan_run(100.0)] * 5
+    assert rates(old, "rapidocr") == rates(old[:20], "rapidocr")
+
+
+def test_a_sheet_is_one_file_with_no_pages() -> None:
+    assert reading(rates([], None), T0, 0, 0, NONE, NONE).finish_at == T0 + timedelta(seconds=2 + 45)
+    sheet = RunTiming(None, 0, 0, 1, None, 1.0, 5.0)
+    assert reading(rates([sheet], None), T0, 0, 0, NONE, NONE).item_s == pytest.approx(5 / 3)
+
+
+def stored(**changes: object) -> dict[str, object]:
+    moved, finish = T0 - timedelta(seconds=4), T0 + timedelta(seconds=60)
+    progress = {"step": "reading", "done": 2, "total": 10, "moved_at": moved.isoformat()}
+    timing = {"finish_at": finish.isoformat(), "item_s": 5.0, "after_s": 20.0, "slow_after_s": 20.0}
+    return {**progress, **timing, "confidence": "high", **changes}
+
+
+def test_time_left_counts_from_one_now_and_never_below_0() -> None:
+    left = time_left(stored(), now=T0)
+    assert left is not None
+    assert (left["seconds"], left["since_move_seconds"], left["items_left"]) == (60.0, 4.0, 8)
+    assert (left["slow_after_seconds"], left["item_seconds"], left["after_seconds"]) == (20.0, 5.0, 20.0)
+    late = time_left(stored(), now=T0 + timedelta(minutes=5))
+    after = time_left(stored(step="understanding"), now=T0)
+    assert late is not None and late["seconds"] == 0.0
+    assert after is not None and after["items_left"] == 0
+
+
+def test_a_worker_clock_30_s_ahead_never_shows_more_than_its_estimate() -> None:
+    moved, finish = (T0 + timedelta(seconds=30)).isoformat(), (T0 + timedelta(seconds=90)).isoformat()
+    left = time_left(stored(moved_at=moved, finish_at=finish), now=T0)
+    assert left is not None and (left["seconds"], left["since_move_seconds"]) == (60.0, 0.0)
+
+
+BAD = [{"step": "indexing"}, {"confidence": "sure"}, {"moved_at": "2026-10-04T10:00:00"}, {"finish_at": None}]
+BAD += [{"finish_at": (T0 - timedelta(minutes=1)).isoformat()}, {"item_s": float("nan")}, {"after_s": True}]
+BAD += [{"slow_after_s": "20"}, {"done": "2"}]
+
+
+@pytest.mark.parametrize("changes", BAD)  # no time zone; no estimate; finish before move; ...
+def test_time_left_is_none_unless_every_key_is_well_formed(changes: dict[str, object]) -> None:
+    assert time_left(stored(**changes), now=T0) is None
