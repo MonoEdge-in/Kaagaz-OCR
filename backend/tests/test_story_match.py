@@ -48,11 +48,16 @@ def words(question: str) -> list[tuple[str, tuple[str, ...]]]:
 
 
 def ranked(
-    question: str, *stories: str, meaning: Sequence[float | None] = (), threshold: float | None = None
+    question: str,
+    *stories: str,
+    meaning: Sequence[float | None] = (),
+    threshold: float | None = None,
+    mode: m.Mode = "cards",
+    most: int = m.MATCHES_MAX,
 ) -> list[tuple[str, str]]:
     cosines = list(meaning) or [None] * len(stories)
     candidates = [Candidate(str(i), f"doc {i}", None, story, cosines[i]) for i, story in enumerate(stories)]
-    found = m.rank(m.question_words(question), candidates, threshold=threshold)
+    found = m.rank(m.question_words(question), candidates, threshold=threshold, mode=mode, most=most)
     return [(match.document_id, match.band) for match in found]
 
 
@@ -161,11 +166,10 @@ def test_a_story_found_by_a_glossary_word_never_outranks_the_real_one() -> None:
     assert ranked("loan papers", "Rinku ke school papers", STORY) == [("1", "maybe")]
 
 
-def test_meaning_band() -> None:
-    assert m.meaning_band(0.9, 0.1, None) is None  # uncalibrated: OFF
-    assert m.meaning_band(0.5, None, 0.6) is m.meaning_band(None, None, 0.6) is None
-    assert m.meaning_band(0.7, None, 0.6) == m.meaning_band(0.7, 0.66, 0.6) == "match"  # alone, 0.04 ahead
-    assert m.meaning_band(0.7, 0.68, 0.6) == m.meaning_band(0.7, 0.7, 0.6) == "maybe"  # 0.02 ahead, a tie
+def test_meaning_band_is_maybe_at_most() -> None:
+    assert m.meaning_band(0.9, None) is None  # uncalibrated: OFF
+    assert m.meaning_band(0.5, 0.6) is m.meaning_band(None, 0.6) is None
+    assert m.meaning_band(0.7, 0.6) == m.meaning_band(0.99, 0.6) == "maybe"  # never "match"
 
 
 def test_the_worked_example() -> None:
@@ -183,6 +187,8 @@ def test_ties_order_and_at_most_three() -> None:
     assert ranked("bank loan papa", STORY, "bank loan papers") == [("0", "match"), ("1", "maybe")]
     stories = ["gold loan", "bank loan", "loan papers 2018", "loan", "gold bank loan"]
     assert ranked("gold bank loan", *stories) == [("4", "match"), ("0", "maybe"), ("1", "maybe")]
+    # As many words, more of them exact: still no margin, so neither is "match".
+    assert ranked("daregaon jamin", STORY, "daregav jamin") == [("0", "maybe"), ("1", "maybe")]
     assert len(ranked("loan", *stories)) == m.MATCHES_MAX == 3
     assert m.rank(m.question_words("loan"), [], threshold=None) == []
     assert m.rank([], [Candidate("0", "a", None, STORY, 0.9)], threshold=None) == []
@@ -191,11 +197,56 @@ def test_ties_order_and_at_most_three() -> None:
 def test_meaning_counts_only_when_calibrated() -> None:
     house = ("sale deed of the house", "kharedikhat", "bijli bill")
     assert ranked(*house, meaning=[0.9, 0.2]) == []
-    assert ranked(*house, meaning=[0.9, 0.2], threshold=0.6) == [("0", "match")]
+    assert ranked(*house, meaning=[0.9, 0.2], threshold=0.6) == [("0", "maybe")]  # never "match"
     assert ranked(*house, meaning=[0.7, 0.69], threshold=0.6) == [("0", "maybe"), ("1", "maybe")]
-    # Words and meaning: the better band; fusion puts the one both lists hold first.
+    # Words and meaning: the better band; the one word "match" first.
     found = ranked("bijli bill", "kharedikhat", "bijli bill", meaning=[0.9, None], threshold=0.6)
-    assert found == [("0", "match"), ("1", "match")]
+    assert found == [("1", "match"), ("0", "maybe")]
+
+
+def test_at_most_one_match_after_meaning_too() -> None:
+    """The recurring documents (council 3 Oct 2026): this year's receipt and last
+    year's tell nearly the same story. Only a story that matched strictly more words
+    than every other read keeps "match", in both modes."""
+    fees = ("rohit school fees 2023 pehla term", "rohit school fees 2024 dusra term")
+    for mode in ("cards", "stories"):
+        assert ranked("rohit school fees 2024", *fees, mode=mode) == [("1", "match"), ("0", "maybe")]
+        assert ranked("rohit school fees", *fees, mode=mode) == [("0", "maybe"), ("1", "maybe")]
+    # A third story as good by meaning alone never takes "match" from the words.
+    found = ranked("rohit fees 2024", *fees, "rohit", meaning=[None, None, 0.95], threshold=0.6)
+    assert found[0] == ("1", "match") and sorted(found[1:]) == [("0", "maybe"), ("2", "maybe")]
+
+
+def test_story_mode_one_word_rule() -> None:
+    """Mode "stories": one word is still "maybe" at most; exact with 3+ letters, or by
+    trigram or sound with 5+ letters; never by a glossary alternative or a number."""
+    for word, story, cards, stories in [
+        ("car", "car insurance", [], [("0", "maybe")]),  # exact, 3 letters
+        ("jameen", STORY, [], [("0", "maybe")]),  # sound, 6 letters
+        ("daregav", STORY, [], [("0", "maybe")]),  # trigram, 7 letters
+        ("loan", STORY, [("0", "maybe")], [("0", "maybe")]),  # exact: both modes
+        ("bil", "dukan ka bill", [], []),  # sound, 3 letters
+        ("zamin", STORY, [], [("0", "maybe")]),  # sound, 5 letters
+        ("land", STORY, [], []),  # only the alternative jamin
+        ("2018", STORY, [], []),  # a number alone
+    ]:
+        assert ranked(word, story) == cards, word
+        assert ranked(word, story, mode="stories") == stories, word
+
+
+def test_story_mode_orders_a_band_by_idf_and_shows_up_to_ten() -> None:
+    # "loan" is in every story, "muthoot" in one: the rarer word's story comes first,
+    # though the fixed order (and the side cards) put story 0 first.
+    stories = ["bank loan", "home loan bank", "muthoot loan", "car loan bank"]
+    assert ranked("muthoot loan bank", *stories) == [("0", "maybe"), ("1", "maybe"), ("2", "maybe")]
+    found = ranked("muthoot loan bank", *stories, mode="stories", most=10)
+    assert found == [("2", "maybe"), ("0", "maybe"), ("1", "maybe"), ("3", "maybe")]
+    assert ranked("muthoot loan", *stories, mode="stories")[0] == ("2", "match")
+    assert m.idf(4, 4) < m.idf(4, 1) and m.idf(1, 1) > 0  # IDF only orders: never below 0
+    many = [f"loan {i}" for i in range(15)]
+    assert len(ranked("loan", *many, mode="stories", most=10)) == m.MOST_MAX == 10
+    assert len(ranked("loan", *many, mode="stories", most=1)) == 1
+    assert len(ranked("loan", *many, most=50)) == 10  # never past MOST_MAX
 
 
 def test_a_match_holds_no_score_and_no_story() -> None:
@@ -214,9 +265,10 @@ def test_500_stories_of_1000_characters_rank_in_under_1_5_s() -> None:
         text = " ".join(vocabulary[int(5000 ** next(numbers)) - 1] for _ in range(220))
         stories.append(Candidate(str(index), "d", None, f"{index} 7/12 {text}"[:1000], None))
     asked = m.question_words("daregaon jamin papa loan bank 7/12 2018 kharedikhat pune ghar nondani rasid")
-    times = []
-    for _ in range(3):
-        start = time.perf_counter()
-        m.rank(asked, stories, threshold=None)
-        times.append(time.perf_counter() - start)
-    assert min(times) < 1.5  # about 0.2 s on the laptop: room for a slow CI runner
+    for mode in ("cards", "stories"):
+        times = []
+        for _ in range(3):
+            start = time.perf_counter()
+            m.rank(asked, stories, threshold=None, mode=mode, most=m.MOST_MAX)
+            times.append(time.perf_counter() - start)
+        assert min(times) < 1.5, mode  # about 0.2 s on the laptop: room for a slow CI runner
