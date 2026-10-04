@@ -151,7 +151,7 @@
 }
 
 /* A button may wrap its words rather than leave its column. */
-.actions .btn {
+.actions :global(.btn) {
   max-width: 100%;
   white-space: normal;
 }
@@ -181,11 +181,11 @@
    User column has the rest. tests/layout-guards.test.ts checks the sum. */
 @container reflow (min-width: 48rem) {
   .roleColumn {
-    width: 9rem;
+    width: 9.5rem; /* "Reviewer" fits beside the select's arrow */
   }
 
   .statusColumn {
-    width: 10rem;
+    width: 9.5rem;
   }
 
   .addedColumn {
