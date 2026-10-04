@@ -58,6 +58,31 @@ RUN case "$PADDLE_EXTRA" in \
       *) \
         echo "PADDLE_EXTRA must be paddle or paddle-gpu, not: $PADDLE_EXTRA" >&2; exit 1 ;; \
     esac
+
+# The weights at pinned revisions (FINDINGS), then sha256 checked: the sums are VERIFIED
+# against the files the scratch venv downloaded at these revisions on 30 Sep. Licence: both
+# are Apache-2.0 (their Hugging Face cards, read 30 Sep). The models' own Python files are
+# removed, so nothing in /opt/models can run, and it is read-only. PaddleOCR-VL-1.6's four
+# (configuration_, image_processing_, modeling_ and processing_paddleocr_vl.py) are for
+# Hugging Face transformers' remote code; PaddleX builds the model and processor from its own
+# classes and reads the weights, configs, tokenizer and chat template only (INFERRED from
+# PaddleX's develop branch, inference/models/doc_vlm/predictor.py, not from 3.7.2 itself).
+# VERIFY: that `hf` (huggingface-hub 1.33.0) runs here, and that PaddleOCR-VL loads with
+# the .py files gone (the scratch run had them).
+# Above COPY kaagaz, so a change to our own code reuses this layer instead of downloading
+# the weights again (about 2 GB).
+RUN hf download PaddlePaddle/PaddleOCR-VL-1.6 --revision c5630abae1d940eafe0697512a0325494b02ab42 \
+        --local-dir /opt/models/PaddleOCR-VL-1.6 \
+    && hf download PaddlePaddle/PP-DocLayoutV3 --revision 241f8bdfc77a7c7bee915a5057aaee58c235a8d3 \
+        --local-dir /opt/models/PP-DocLayoutV3 \
+    && printf '%s\n' \
+        "85a479d506a11e724e7285d395c551be69f41dbc16b6342d3cacfb189aed71db  /opt/models/PaddleOCR-VL-1.6/model.safetensors" \
+        "70bd316b0582769ec968829fd1feb1a6a58b7c941b938327e551b6b12b45c137  /opt/models/PP-DocLayoutV3/inference.pdiparams" \
+        | sha256sum -c - \
+    && rm -rf /opt/models/*/.cache \
+    && find /opt/models -name "*.py" -delete \
+    && chmod -R a-w /opt/models
+
 COPY kaagaz kaagaz
 RUN pip install --no-deps .
 
@@ -70,28 +95,6 @@ RUN python -c "import importlib.util as u; bad = [m for m in ('transformers', 'p
 # and the module is built for CUDA exactly when it is the GPU image. Both checks need no
 # GPU (VERIFY on the first GPU build: importing paddle without a driver only warns).
 RUN python -c "import importlib.metadata as m, os, paddle; gpu = os.environ['PADDLE_EXTRA'] == 'paddle-gpu'; names = {d.metadata['Name'].lower().replace('_', '-') for d in m.distributions()}; assert ('paddlepaddle' in names, 'paddlepaddle-gpu' in names) == (not gpu, gpu), sorted(names); assert paddle.is_compiled_with_cuda() == gpu"
-
-# The weights at pinned revisions (FINDINGS), then sha256 checked: the sums are VERIFIED
-# against the files the scratch venv downloaded at these revisions on 30 Sep. Licence: both
-# are Apache-2.0 (their Hugging Face cards, read 30 Sep). The models' own Python files are
-# removed, so nothing in /opt/models can run, and it is read-only. PaddleOCR-VL-1.6's four
-# (configuration_, image_processing_, modeling_ and processing_paddleocr_vl.py) are for
-# Hugging Face transformers' remote code; PaddleX builds the model and processor from its own
-# classes and reads the weights, configs, tokenizer and chat template only (INFERRED from
-# PaddleX's develop branch, inference/models/doc_vlm/predictor.py, not from 3.7.2 itself).
-# VERIFY: that `hf` (huggingface-hub 1.33.0) runs here, and that PaddleOCR-VL loads with
-# the .py files gone (the scratch run had them).
-RUN hf download PaddlePaddle/PaddleOCR-VL-1.6 --revision c5630abae1d940eafe0697512a0325494b02ab42 \
-        --local-dir /opt/models/PaddleOCR-VL-1.6 \
-    && hf download PaddlePaddle/PP-DocLayoutV3 --revision 241f8bdfc77a7c7bee915a5057aaee58c235a8d3 \
-        --local-dir /opt/models/PP-DocLayoutV3 \
-    && printf '%s\n' \
-        "85a479d506a11e724e7285d395c551be69f41dbc16b6342d3cacfb189aed71db  /opt/models/PaddleOCR-VL-1.6/model.safetensors" \
-        "70bd316b0582769ec968829fd1feb1a6a58b7c941b938327e551b6b12b45c137  /opt/models/PP-DocLayoutV3/inference.pdiparams" \
-        | sha256sum -c - \
-    && rm -rf /opt/models/*/.cache \
-    && find /opt/models -name "*.py" -delete \
-    && chmod -R a-w /opt/models
 
 # Offline from here on: VERIFIED in the scratch venv, where with these set the pipeline
 # built and read a page with nothing downloaded. Paddle's cache and HOME live on the /tmp

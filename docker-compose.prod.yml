@@ -1,0 +1,96 @@
+# The EC2 server only (Deployment PRD, WP-B), laid over docker-compose.yml and
+# docker-compose.gpu.yml. Laptops never use this file.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod.yml --profile ollama --profile paddle up -d --build
+#
+# What it changes:
+#   - Only caddy publishes ports (80 and 443). Every other port is cleared with
+#     `!reset` (Docker Compose 2.24.4 or newer), so the services meet only on
+#     Docker's own networks.
+#   - Every long-running service restarts after a crash or a reboot.
+#   - Every service's log is rotated (5 files of 20 MB), so logs never fill the disk.
+#   - SeaweedFS reads its access keys from the server's own file, not from git.
+#
+# The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL and SEAWEEDFS_S3_CONFIG (the
+# path of its s3.json); compose stops with the name of any that is missing.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  postgres:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+
+  seaweedfs:
+    ports: !reset []
+    # Same target as docker-compose.yml's ./infra/seaweedfs/s3.json, so this one
+    # takes its place (compose merges volumes by target path).
+    volumes:
+      - ${SEAWEEDFS_S3_CONFIG:?set SEAWEEDFS_S3_CONFIG in .env}:/etc/seaweedfs/s3.json:ro
+    restart: unless-stopped
+    logging: *logging
+
+  elasticmq:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+
+  clamav:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+
+  # One-shot: it runs once per deploy and exits, so it gets no restart policy.
+  migrate:
+    logging: *logging
+
+  api:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+
+  worker:
+    logging: *logging # restart: unless-stopped is already in docker-compose.yml
+
+  frontend:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+
+  ollama:
+    restart: unless-stopped # its port is already cleared by docker-compose.gpu.yml
+    logging: *logging
+
+  ocr:
+    logging: *logging # restart: unless-stopped is already in docker-compose.yml
+
+  # HTTPS in front of everything (infra/caddy/Caddyfile): the Let's Encrypt
+  # certificate for KAAGAZ_DOMAIN, /api/* to api, the rest to frontend.
+  caddy:
+    # caddy:2 (Apache-2.0), pinned to its multi-arch index digest on 4 Oct 2026:
+    # Caddy 2.11.6.
+    image: caddy:2@sha256:13b7fbadd017b042956fddbceedeeea12bb1e560534f9b3df281269dbcc61813
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data # the certificate and its key
+      - caddy-config:/config
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      KAAGAZ_DOMAIN: ${KAAGAZ_DOMAIN:?set KAAGAZ_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  caddy-data:
+  caddy-config:

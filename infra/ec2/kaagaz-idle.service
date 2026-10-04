@@ -1,0 +1,11 @@
+# Stops the server when nobody is using it (infra/ec2/idle-stop.sh). Started by
+# kaagaz-idle.timer. Copy to /etc/systemd/system/ (EC2 PRD section 9).
+[Unit]
+Description=Kaagaz: stop this server when idle
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/ubuntu/kaagaz/infra/ec2/idle-stop.sh

@@ -7,18 +7,19 @@ placeholder**, never a real secret.
 
 ## What runs where
 
-| Service | Port | What it is | In AWS |
+| Service | Port | What it is | On the EC2 server |
 |---|---|---|---|
-| `frontend` | 3000 | Next.js web app (open this) | the same image |
-| `api` | 8000 | FastAPI, `/api/*` | the same image |
+| `frontend` | 3000 | Next.js web app (open this) | the same image, behind Caddy |
+| `api` | 8000 | FastAPI, `/api/*` | the same image, behind Caddy |
 | `worker` | none | `python -m kaagaz.worker_main`, one job at a time | the same image |
-| `migrate` | none | one-shot: `alembic upgrade head`, then makes the storage bucket | a deploy step |
-| `postgres` | 5432 | PostgreSQL 17 with pgvector | Amazon RDS |
-| `seaweedfs` | 8333 | file storage, S3 API | Amazon S3 |
-| `elasticmq` | 9324 | job queue `kaagaz-jobs` and its failure bin `kaagaz-jobs-failed`, SQS API | Amazon SQS |
-| `clamav` | 3310 | clamd virus scanner | ClamAV (PROVISIONAL) |
-| `ollama` | 11434 | local AI, optional (`--profile ollama`) | PROVISIONAL |
-| `ocr` | none | PaddleOCR-VL scan reader, optional (`--profile paddle`) | PROVISIONAL |
+| `migrate` | none | one-shot: `alembic upgrade head`, then makes the storage bucket | on every deploy |
+| `postgres` | 5432 | PostgreSQL 17 with pgvector | the same container (no RDS in this phase) |
+| `seaweedfs` | 8333 | file storage, S3 API | the same container (no S3 in this phase) |
+| `elasticmq` | 9324 | job queue `kaagaz-jobs` and its failure bin `kaagaz-jobs-failed`, SQS API; messages kept in the volume `elasticmq-data` | the same container (no SQS in this phase) |
+| `clamav` | 3310 | clamd virus scanner | the same container |
+| `ollama` | 11434 | local AI, optional (`--profile ollama`) | on the GPU, no port |
+| `ocr` | none | PaddleOCR-VL scan reader, optional (`--profile paddle`) | on the GPU |
+| `caddy` | none | HTTPS in front of `frontend` and `api` (`docker-compose.prod.yml` only) | 80 and 443, the only open ports |
 
 ## 1. Settings
 
@@ -162,8 +163,9 @@ It forwards `/api/*` to `BACKEND_URL` (default `http://localhost:8000`).
 
 PaddleOCR-VL and Ollama on one NVIDIA GPU (a g4dn's T4, 16 GB), with
 `docker-compose.gpu.yml` laid over `docker-compose.yml`. Laptops never use it.
-**NOT RUN yet:** nothing here has run on a GPU (PROVISIONAL, and
-`paddlepaddle-gpu` and the NVIDIA wheels wait for Vrushit's approval).
+The production server adds a third file (Production on EC2, below).
+**NOT RUN yet:** nothing here has run on a GPU. `paddlepaddle-gpu` and the
+NVIDIA wheels are approved (EC2 PRD D5, 4 Oct 2026).
 
 **The host, once.**
 
@@ -176,12 +178,13 @@ PaddleOCR-VL and Ollama on one NVIDIA GPU (a g4dn's T4, 16 GB), with
 * A 4 to 8 GB swapfile: a g4dn.xlarge has 16 GB of memory for everything.
   `sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`,
   and a `/swapfile none swap sw 0 0` line in `/etc/fstab`.
-* The security group lets in 22 (your own address only) and 443, nothing else.
-  `docker-compose.yml` still publishes 3000, 8000, 5432, 8333, 9324 and 3310 on
-  the host, and Docker's ports go around the host's own firewall, so the
-  security group is what keeps them closed; it must stay that way. (TLS on 443
-  and closing those ports in compose are follow-ups.) The override already
-  removes Ollama's 11434, and `ocr` never had a port.
+* The security group lets in 443 and 80, nothing else: no SSH, use Session
+  Manager (EC2 PRD D8). With `docker-compose.prod.yml` only Caddy publishes
+  ports (80 and 443, Production on EC2 below). Without it, `docker-compose.yml`
+  still publishes 3000, 8000, 5432, 8333, 9324 and 3310 on the host, and
+  Docker's ports go around the host's own firewall, so the security group is
+  what keeps them closed. The GPU override removes Ollama's 11434, and `ocr`
+  never had a port.
 
 **Start.** From the repository root, with `.env` made as in section 1:
 
@@ -226,8 +229,8 @@ changed them), then `dc up -d --force-recreate api worker`.
    docker compose exec worker python -m kaagaz.cli measure --file /tmp/scan.png
    ```
 
-   Write the numbers into docs/architecture.md, Decisions ("to be measured on
-   g4dn" there now).
+   Write the numbers into docs/architecture.md, Decisions (the row "OCR and
+   Qwen share the T4", PROVISIONAL until then).
 
 **RapidOCR, the fallback.** If PaddleOCR-VL misbehaves on the GPU, change the
 worker's `OCR_ENGINE: paddleocr_vl` in `docker-compose.gpu.yml` to `rapidocr`
@@ -239,6 +242,159 @@ Change it back the same way.
 chat question can wait while a document's facts are being read. The T4 has no
 bfloat16, so Paddle runs in fp32. The GPU is shared by `ocr` and `ollama`
 (an accepted risk, docs/architecture.md, Decisions).
+
+### Production on EC2
+
+The production server (EC2 Deployment PRD, approved by Vrushit, 4 Oct 2026):
+one g4dn.xlarge in Mumbai (`ap-south-1`) runs everything above in Docker
+Compose, on one domain over HTTPS. It deploys only the `production` branch.
+**NOT RUN yet:** each go-live check below is NOT RUN until it has run there.
+
+Below, `dc` is the three files and both profiles, run in `/home/ubuntu/kaagaz`:
+
+```
+alias dc='docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod.yml --profile ollama --profile paddle'
+```
+
+`docker-compose.prod.yml` adds `caddy` (`caddy:2` pinned by digest, Caddy
+2.11.6; `infra/caddy/Caddyfile`), the only service that publishes ports: 80
+and 443. Caddy gets and renews the Let's Encrypt certificate for
+`KAAGAZ_DOMAIN`, redirects HTTP to HTTPS, sends `/api/*` to `api:8000` and the
+rest to `frontend:3000`, refuses a body over 60 MB, and logs one JSON line per
+request. Every other port is cleared, every long-running service restarts after
+a crash or a reboot, and every log is rotated (5 files of 20 MB). The job queue
+keeps its messages in the volume `elasticmq-data`, so a job survives a restart;
+one that was being read comes back after its lease (`QUEUE_LEASE_SECONDS`,
+1,200 s).
+
+**Secrets, on the server only.** Two files, both mode 600, never in git:
+`/home/ubuntu/kaagaz/.env` and `/home/ubuntu/kaagaz-secrets/s3.json` (the shape
+of `infra/seaweedfs/s3.json`, with new keys). Start `.env` from `.env.example`:
+every setting is required, so a missing one (`MODEL_ANSWER_MAX_TOKENS`, for
+example) stops the start with its name. Then set these (names and rules only;
+make random values with `openssl rand -base64 48`, or `openssl rand -hex 24`
+for passwords):
+
+| Name | Value or rule |
+|---|---|
+| `SESSION_SECRET` | Random. Changing it signs everyone out |
+| `TOTP_ENCRYPTION_KEY` | Random. If it is lost, every admin's 2FA must be reset |
+| `POSTGRES_PASSWORD`, and the same password in `DATABASE_URL` | Random hex. Postgres takes it only when its volume is first made |
+| `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY` | Random. Must equal the keys in `s3.json` |
+| `COOKIE_SECURE=true`, `MODEL_ENABLED=true`, `OCR_TIMEOUT_SECONDS=300` | As shown. The GPU file sets `OCR_ENGINE` and the Ollama address itself |
+| `KAAGAZ_DOMAIN`, `ACME_EMAIL`, `SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json` | Read by `docker-compose.prod.yml`, which stops with the name of any that is missing |
+
+Keep an offline copy of `.env` and `s3.json` in a password manager. The EBS
+snapshots hold the secrets too, so never share or copy a snapshot out. The Wake
+Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
+
+**The server, once.** Through Session Manager, as `ubuntu` (`sudo -iu ubuntu`):
+
+1. The host checks of "The host, once" above: `docker compose version` 2.24.4
+   or newer, `nvidia-smi` and `docker run --rm --gpus all ubuntu nvidia-smi`
+   show the T4, and `swapon --show` shows the 8 GB swapfile.
+2. The code, with the read-only deploy key `~/.ssh/kaagaz_deploy` (the deploy
+   unit sets the same `GIT_SSH_COMMAND`):
+   `GIT_SSH_COMMAND="ssh -i ~/.ssh/kaagaz_deploy -o IdentitiesOnly=yes" git clone git@github.com:MonoEdge-in/Kaagaz-OCR.git ~/kaagaz`,
+   then `git checkout production` inside it.
+3. The two secret files, as above.
+4. The units. The first line keeps the idle stop off until WP-C (the queue
+   keeps its messages) has been checked on the server: a message sent before
+   `dc restart elasticmq` is received after it. Then delete the file.
+
+   ```
+   sudo mkdir -p /etc/kaagaz && sudo touch /etc/kaagaz/no-idle-stop
+   sudo cp ~/kaagaz/infra/ec2/*.service ~/kaagaz/infra/ec2/*.timer /etc/systemd/system/
+   sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-deploy.timer kaagaz-pgdump.timer kaagaz-idle.timer
+   ```
+
+5. The first deploy (30 to 60 minutes):
+   `sudo systemctl start --no-block kaagaz-deploy.service && journalctl -u kaagaz-deploy -f`.
+6. The models, once:
+   `dc exec ollama ollama pull qwen3.5:4b && dc exec ollama ollama pull qwen3-embedding:0.6b`.
+7. The first customer and admin:
+   `dc exec api python -m kaagaz.cli create-customer --name "<Company>" --admin-email <email> --admin-name "<Name>"`
+   (it asks for the admin's password at a hidden prompt). The admin signs in at
+   `https://<DOMAIN>/admin/login` and turns on 2FA (needed to delete forever).
+
+**What runs by itself.** `kaagaz-deploy.timer` runs `infra/ec2/deploy.sh` 2
+minutes after boot and every 5 minutes: when `origin/production` has a new
+commit it rebuilds and starts everything (migrations included; 1 to 2 minutes
+of downtime), otherwise it starts anything that is down. Each run logs one line,
+the commit and `deployed`, `unchanged` or `failed`
+(`journalctl -u kaagaz-deploy -n 50`); a failed build is tried again on the
+next run. `kaagaz-pgdump.timer` writes `~/backups/kaagaz-YYYYMMDD.dump` (mode
+600, the last 7 kept) at 20:00 UTC (01:30 IST), or at the next boot if the
+server was stopped then. Data Lifecycle Manager takes a daily EBS snapshot at
+20:30 UTC (02:00 IST), keeping 7. Restore from a snapshot (the whole disk) or
+a dump (section 6). Logs: `dc logs --since 1h <service>`.
+
+**Releases** (EC2 PRD section 6).
+
+* `production` started at `7c6b72d` (#97). It changes only through pull
+  requests whose CI (`ci.yml`, `pr.yml`) passes; no force-push, and only
+  Vrushit may bypass.
+* Deployment PRs branch from `production` and are squash-merged into it, with
+  the usual title (`infra(s2): ...`).
+* After each merge into `production`, open a PR from `production` into `main`
+  and merge it as a merge commit, not a squash, so `main` always contains
+  `production`.
+* Releasing app work: once a `main` commit has fully green CI, fast-forward
+  `production` to it with `git push origin <sha>:production`. Never release a
+  commit with failing CI. The server deploys it within 5 minutes.
+
+**Stop when idle, Wake and the weekday schedule.** `kaagaz-idle.timer` runs
+`infra/ec2/idle-stop.sh` as root every minute, from 20 minutes after boot. It
+powers off (the instance's shutdown behaviour is Stop) only when the server has
+been up 20 minutes, Caddy logged no signed-in request to `/api/` (one with a
+Cookie header, other than `/api/health`) in the last 15 minutes, `kaagaz-jobs`
+has nothing waiting or being read, no deploy holds `/tmp/kaagaz-deploy.lock`,
+and `/etc/kaagaz/no-idle-stop` does not exist. A check that fails to run keeps
+it on. Each run logs why (`journalctl -u kaagaz-idle -n 5`), and
+`sudo ~/kaagaz/infra/ec2/idle-stop.sh --dry-run` prints the decision without
+stopping. For maintenance, `sudo touch /etc/kaagaz/no-idle-stop`, and delete it
+afterwards. Two things start the server:
+
+* The weekday schedule: EventBridge Scheduler, `cron(30 9 ? * MON-FRI *)`, time
+  zone `Asia/Kolkata`, target EC2 StartInstances with this instance id.
+* The Wake link: the Lambda `kaagaz-wake` (Python 3.12, the code of
+  `infra/aws/wake/handler.py` on `production`) behind a Function URL with auth
+  type NONE; its token protects it. Users bookmark
+  `https://<function-url>/?key=<WAKE_TOKEN>`. A wrong or missing key gets a
+  404 and no AWS call. Its role allows only `ec2:StartInstances` on this
+  instance, `ec2:DescribeInstances` and CloudWatch Logs. After a start the site
+  opens in about 3 minutes, and documents are read after about 10.
+
+**Go-live checks** (EC2 PRD section 10). Report each one with its command and
+its output; until then it is NOT RUN.
+
+* **10.1** `https://<DOMAIN>` has a valid certificate, and `http://` redirects
+  to it.
+* **10.2** From outside AWS, only ports 80 and 443 answer. Ports 3000, 8000,
+  5432, 8333, 9324, 3310 and 11434 all refuse.
+* **10.3** `dc ps -a`: every service is running or healthy, and `migrate` shows
+  exited (0).
+* **10.4** `dc exec ocr nvidia-smi` shows the T4. After one chat question,
+  `dc exec ollama ollama ps` shows `100% GPU`.
+* **10.5** While a dense made-up scan is read, the `nvidia-smi` peak stays under
+  16 GB. Measure seconds per page with `cli measure` (Check, step 5, above) and
+  record both in docs/architecture.md, Decisions ("OCR and Qwen share the T4").
+* **10.6** A made-up Marathi scan reaches Ready, its pages show the route `ocr`,
+  its text is Devanagari, and searching its Latin spelling finds it.
+* **10.7** A made-up 45 MB PDF uploads, and a 60 MB one is refused with the
+  size message. A chat answer cites the page with the spot highlighted, and an
+  unanswerable question says not found.
+* **10.8** After `sudo reboot`, the site is back within about 3 minutes and
+  documents are read again within about 10. A document queued before the
+  reboot still finishes (WP-C).
+* **10.9** With nobody signed in and the queue empty, the instance is Stopped
+  about 15 minutes later. While a document is being read, it stays on. The Wake
+  link starts it, and the site works afterwards with all data intact. The
+  schedule starts it on a weekday at 09:30 IST.
+* **10.10** The next day, one snapshot exists and `~/backups` has a dump. Once
+  in week 1: make a volume from that snapshot, attach it, mount it read-only,
+  run `pg_restore --list` on its newest dump, then detach and delete the
+  volume.
 
 ## 3. Demo customers
 

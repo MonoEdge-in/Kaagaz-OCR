@@ -22,6 +22,7 @@ import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { useHydrated } from "@/components/ui/useHydrated";
 import { ApiError, ask, getConversation, listConversations, listDocuments } from "@/lib/api";
 import { findStoryMatches, latestOnly, STORY_NOTE_CHAT, storyStatusText } from "@/lib/storyMatches";
 import type { ConversationSummary, Message, StoryMatch } from "@/lib/types";
@@ -38,9 +39,11 @@ import {
   isNearBottom,
   STILL_LOOKING_AFTER_MS,
 } from "./logic";
+import { ModeSwitch } from "./ModeSwitch";
 import { QuestionBox } from "./QuestionBox";
 import {
   answeredScope,
+  chipScope,
   chooseScope,
   keptScope,
   restoredScope,
@@ -49,6 +52,10 @@ import {
   startScope,
 } from "./scope";
 import { ScopePicker } from "./ScopePicker";
+import { storyPlace, storySlot } from "./storySlot";
+import type { StorySlot, StorySlotEvent } from "./storySlot";
+import { StorySearchView } from "./StorySearchView";
+import type { StorySearchState } from "./StorySearchView";
 import styles from "./Chat.module.css";
 
 const DRAWER_ID = "chat-conversations";
@@ -80,6 +87,15 @@ function PendingAnswer() {
       </div>
     </div>
   );
+}
+
+/** The tab's own storage, or null where the browser refuses it. */
+function tabStorage(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
 }
 
 /** Keep the address bar on the open conversation, without a navigation. */
@@ -290,7 +306,38 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     if (noDocuments !== true) focusComposerOnDesktop(inputRef.current);
   };
 
+  /** "Search my stories": no answer, nothing saved. False when it failed, so the box gets the question back. */
+  const searchStories = async (question: string): Promise<boolean> => {
+    searchAbort.current?.abort();
+    const controller = new AbortController();
+    searchAbort.current = controller;
+    const token = searchRequests.next();
+    setSearch({ kind: "loading", question });
+    setStatus(SEARCH_PENDING);
+    try {
+      const found = await searchStoryMatches(
+        question,
+        chipScope(scope),
+        STORY_SEARCH_LIMIT,
+        "stories",
+        controller.signal,
+      );
+      if (searchRequests.isLatest(token)) {
+        setSearch({ kind: "done", question, found });
+        setStatus(searchStatusText(found));
+      }
+      return true;
+    } catch {
+      if (!searchRequests.isLatest(token)) return true;
+      setSearch({ kind: "error", question });
+      setStatus("");
+      return false;
+    }
+  };
+
   const onAsk = async (question: string): Promise<boolean> => {
+    const plan = sendPlan(mode);
+    if (!plan.chat) return searchStories(question);
     setPending(question);
     setAskError(null);
     setStatus(ASKING_STATUS);
@@ -342,6 +389,11 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   const questions = questionsByAnswer(messages);
   const busy = pending !== null;
+  const place = storyPlace(slot);
+  const storyCards = (question?: string) =>
+    slot?.matches ? (
+      <StoryMatches matches={slot.matches} note={STORY_NOTE_CHAT} headingLevel={2} question={question} />
+    ) : null;
   const empty = messages.length === 0 && threadState === "idle" && !busy;
   const activeTitle = conversations?.find((item) => item.id === activeId)?.title ?? null;
 
@@ -424,17 +476,25 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       >
         <div className={styles.threadInner}>
           <div className={styles.threadBody}>
-            {heading}
+            {mode === "documents" ? heading : null}
             <p className="visually-hidden" role="status">
               {status}
             </p>
-            {threadState === "loading" ? (
+            {mode === "stories" ? (
+              <StorySearchView
+                state={search}
+                onRetry={() => {
+                  if (search.kind === "error") void searchStories(search.question);
+                }}
+              />
+            ) : null}
+            {mode === "documents" && threadState === "loading" ? (
               <p className={`${styles.threadStatus} delayed`}>
                 <span className="spinner" aria-hidden="true" />
                 Loading the conversation…
               </p>
             ) : null}
-            {threadState === "error" ? (
+            {mode === "documents" && threadState === "error" ? (
               <div className={styles.threadError}>
                 <p className="error-text" role="alert">
                   Could not load this conversation.
@@ -457,6 +517,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
               role="log"
               aria-live="off"
               aria-label="Conversation"
+              hidden={mode === "stories"}
             >
               {messages.map((message) =>
                 message.role === "user" ? (
@@ -480,17 +541,28 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                     <p className={styles.plain}>{pending}</p>
                   </div>
                   <PendingAnswer />
+                  {place.at === "pending" ? storyCards() : null}
                 </>
               ) : null}
+              {place.at === "end" ? storyCards(place.question) : null}
             </div>
           </div>
           <div ref={composerRef} className={styles.composer}>
-            <ScopePicker
-              state={scope}
-              locked={scopeLockedText(busy, threadState === "loading")}
-              onChoose={(next) => setScope((current) => chooseScope(current, next))}
+            <div className={styles.composerTools}>
+              <ModeSwitch mode={mode} locked={modeLockedText(busy)} onChange={chooseMode} />
+              <ScopePicker
+                state={scope}
+                locked={scopeLockedText(busy, threadState === "loading")}
+                onChoose={(next) => setScope((current) => chooseScope(current, next))}
+              />
+            </div>
+            <QuestionBox
+              pending={busy || search.kind === "loading"}
+              error={mode === "documents" ? askError : null}
+              onAsk={onAsk}
+              inputRef={inputRef}
+              texts={MODE_TEXTS[mode]}
             />
-            <QuestionBox pending={busy} error={askError} onAsk={onAsk} inputRef={inputRef} />
           </div>
         </div>
       </section>

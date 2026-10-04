@@ -119,3 +119,17 @@ def test_the_paddle_gpu_extra_is_the_paddle_extra_with_one_swap() -> None:
     swapped = [pin.replace("paddlepaddle==", "paddlepaddle-gpu==") for pin in extras["paddle"]]
     assert extras["paddle-gpu"] == swapped
     assert "paddlepaddle-gpu==3.3.1" in extras["paddle-gpu"]  # the wheel's version
+
+
+def test_the_weights_are_downloaded_before_our_own_code_is_copied() -> None:
+    """A change to kaagaz/ must not download the weights again (the layer cache, EC2 PRD WP-D)."""
+    lines = code_lines("Dockerfile.ocr")
+    install = next(i for i, line in enumerate(lines) if line.startswith('RUN case "$PADDLE_EXTRA" in'))
+    weights = next(i for i, line in enumerate(lines) if line.startswith("RUN hf download PaddlePaddle/"))
+    weights_end = lines.index("    && chmod -R a-w /opt/models")  # the same step's last line
+    code = lines.index("COPY kaagaz kaagaz")
+    assert install < weights < weights_end < code < lines.index("RUN pip install --no-deps .")
+    # `hf` comes from the Paddle install, and the step needs no file copied after it.
+    assert [line for line in lines[:weights] if line.startswith("COPY ")] == [
+        "COPY constraints-ocr.txt constraints-ocr-gpu.txt paddle-gpu-wheel.txt pyproject.toml ./"
+    ]

@@ -15,18 +15,19 @@ Customers upload business documents (invoices, registers, receipts, statements) 
 
 ## The parts
 
-| Part | On the laptop | In AWS (Mumbai) |
+| Part | On the laptop | On the EC2 server (Mumbai, Docker Compose) |
 |---|---|---|
-| Web app: Next.js with PDF.js | `frontend` container, port 3000 | the same image |
-| API: FastAPI, under `/api/*` | `api` container, port 8000 | the same image |
+| HTTPS: Caddy with Let's Encrypt | none | `caddy` container, ports 80 and 443 only |
+| Web app: Next.js with PDF.js | `frontend` container, port 3000 | the same image, no published port |
+| API: FastAPI, under `/api/*` | `api` container, port 8000 | the same image, no published port |
 | Worker: one job at a time | `worker` container | the same image |
-| Database: PostgreSQL 17 with pgvector 0.8 and pg_trgm | `postgres` | Amazon RDS |
-| File storage, through the S3 API | SeaweedFS | Amazon S3 |
-| Job queue, through the SQS API, with a failure bin | ElasticMQ | Amazon SQS |
-| Virus scanner | ClamAV | ClamAV (provisional) |
-| Local AI: chat, embeddings and an optional vision reader | Ollama; everything works without it | provisional |
+| Database: PostgreSQL 17 with pgvector 0.8 and pg_trgm | `postgres` | the same container (no RDS in this phase) |
+| File storage, through the S3 API | SeaweedFS | SeaweedFS (no S3 in this phase) |
+| Job queue, through the SQS API, with a failure bin | ElasticMQ, messages kept in the volume `elasticmq-data` | the same (no SQS in this phase) |
+| Virus scanner | ClamAV | ClamAV |
+| Local AI: chat, embeddings and an optional vision reader | Ollama; everything works without it | Ollama on the GPU, beside PaddleOCR-VL |
 
-The browser talks only to the web app, which forwards `/api/*` to the API, so the session cookie stays first-party.
+The browser talks only to the web app, which forwards `/api/*` to the API, so the session cookie stays first-party. On the EC2 server, Caddy sends `/api/*` straight to the API and everything else to the web app, on the same domain (docs/running-locally.md, 2c, Production on EC2).
 
 **Search, in simple terms** (PRD 3, `search/hybrid.py`). Three lists of at most 50 pieces each, merged by reciprocal rank fusion (k = 60), so a piece found two ways ranks above one found one way:
 1. **Words:** full text on `tsv` (english) and `tsv_simple` (the text and its Latin spelling, unstemmed), plus the Marathi and Hindi equivalents of an English question's words from a fixed glossary (`answering/glossary.py`) on `tsv_simple`, plus the sound keys of the question's words (`chunking/script.py::sound_key`, so "bhogwatdar" finds भोगवटादार) on `tsv_sound` (migration 0011: `kaagaz_sound_key_v1(coalesce(text_latin, text))`, stored); a piece scores the highest, and pieces an exact query matched come first. Marathi and Hindi typed in English letters reuse the glossary through its Romanised spellings (malak is owner), and their fillers (ahe, kiti) are left out of the keywords. An answer only the glossary or a sound match let through is needs review (PROVISIONAL, 2 Oct 2026; sound keys and Romanised words 3 Oct 2026).
@@ -142,7 +143,7 @@ The `isolation` tests prove both on every pull request.
 |---|---|
 | Several customers in one database, kept apart by row level security plus a customer filter in every query | Cheaper than a database per customer, and still safe |
 | SQS-style queue with a failure bin and at-least-once delivery; jobs are safe to run twice | Simple, scales by adding workers, and one bad file never blocks the rest |
-| SeaweedFS on the laptop (MinIO is AGPL) and S3 in AWS, through the same code | One storage client everywhere |
+| SeaweedFS on the laptop and the EC2 server (MinIO is AGPL); S3 only in a later phase, through the same code | One storage client everywhere |
 | Numbers only come from fixed, tested queries | AI-written SQL can be confidently wrong |
 | No masking of Aadhaar or PAN numbers: they're kept and shown exactly as read (decided 28 Sep 2026) | Replaces the earlier mask-at-capture rule; the masking code is removed |
 | Everything works with the AI off (`MODEL_ENABLED=false`) | The laptop and CI run without models; a model that's down only loses meaning search |
@@ -150,7 +151,7 @@ The `isolation` tests prove both on every pull request.
 | Documents in English, Hindi and Marathi; answers in English only (29 Sep 2026) | Customers' papers include Hindi and Marathi; one answer language keeps checking simple |
 | Scans are read by PaddleOCR-VL, in its own container, on a GPU or demo machine; laptops keep `OCR_ENGINE=rapidocr` (30 Sep 2026) | PaddleOCR-VL reads the three languages with layout and tables, but took 3 to 11 minutes a page on a laptop CPU. Hindi and Marathi scans need it, so on a laptop they read poorly until a GPU is used |
 | The second reading of a scanned value is Qwen vision on that value's cropped box | Independent of the OCR engine, and only as costly as the number of values |
-| Models: `qwen3.5:4b` for chat, extraction and vision (`MODEL_CHAT`, `MODEL_VISION`); `qwen3-embedding:0.6b` for meaning vectors, all through Ollama 0.17.7 or later (compose runs 0.34.4) | Fits a 16 GB laptop next to the OCR model; one model reads text and images; 9B is a setting change for a demo machine |
+| Models: `qwen3.5:4b` for chat, extraction and vision (`MODEL_CHAT`, `MODEL_VISION`); `qwen3-embedding:0.6b` for meaning vectors, all through Ollama 0.17.7 or later (compose runs 0.35.0) | Fits a 16 GB laptop next to the OCR model; one model reads text and images; 9B is a setting change for a demo machine |
 | The queue worker stays; Temporal isn't used | Retries, leases and a failure bin already work; Temporal pays off only for hosted workflows that wait days |
 | Vectors live in the same PostgreSQL (pgvector) | One place for customer separation, filters and backups; revisit past a few million pieces |
 | A job is tried 5 times (`JOB_MAX_ATTEMPTS`), and each try shows in the file list (29 Sep 2026) | The queue's own limit (10) leaves spare deliveries to mark a document failed even if the database is down |
@@ -166,8 +167,8 @@ The `isolation` tests prove both on every pull request.
 | Database access for the PRD 2 tables is narrower than the PRD asked (only the writes the code makes), and a document's processing runs are deleted with it (30 Sep 2026) | When a document is deleted, everything about it is forgotten; the audit log keeps only ids |
 | Latin spellings use the adjusted rules in `chunking/script.py`, not the PRD's literal recipe (30 Sep 2026) | The literal recipe gives "simde" for शिंदे; search (PRD 3) matches spellings fuzzily |
 | Dependencies approved in the PRDs: `cryptography` (PRD 1); `paddleocr`, `paddlepaddle` and PaddleOCR's own `paddlex` (in the OCR image only, pinned by `constraints-ocr.txt`) and `indic-transliteration` (PRD 2), with what it brings in pinned by `constraints.txt` in the image and CI, and a mypy exception because it ships no types (30 Sep 2026) | Everything else still needs approval. The OCR model files are PaddleOCR-VL-1.6 (Apache-2.0) |
-| GPU mode dependencies, in the GPU OCR image only (3 Oct 2026, PROVISIONAL: each needs Vrushit's approval): `paddlepaddle-gpu` 3.3.1 (Apache-2.0; from Paddle's cu126 index by direct URL and sha256, `paddle-gpu-wheel.txt`) and the 15 `nvidia-*-cu12` wheels it asks for, from PyPI (`constraints-ocr-gpu.txt`): `nvidia-cublas`, `-cuda-cccl`, `-cuda-cupti`, `-cuda-nvrtc`, `-cuda-runtime`, `-cudnn`, `-cufft`, `-cufile`, `-curand`, `-cusolver`, `-cusparse`, `-cusparselt` and `-nvjitlink` under NVIDIA's proprietary licence (not open source; its terms are for Vrushit to review), `nvidia-nccl-cu12` BSD-3-Clause, `nvidia-nvtx-cu12` Apache-2.0 | None is AGPL, SSPL or GPL v3. CI's licence check never sees them (it installs `.[dev,ocr]` only), so this row is where they are recorded |
-| GPU mode: on a GPU server (an EC2 g4dn, a T4 with 16 GB), `docker-compose.gpu.yml` over `docker-compose.yml` runs PaddleOCR-VL (`OCR_DEVICE=gpu:0`, image `kaagaz-ocr-gpu:local` with `paddlepaddle-gpu`) and Ollama on the one GPU; laptops are unchanged, and RapidOCR stays the manual fallback (docs/running-locally.md, 2c) (3 Oct 2026, PROVISIONAL until Vrushit approves `paddlepaddle-gpu` and the NVIDIA wheels) | PaddleOCR-VL took 3 to 11 minutes a page on a CPU. The T4 has no bfloat16, so Paddle runs in fp32. Accepted risk: `ocr` and `ollama` share the GPU and its driver, so a flaw in one could reach the other's memory; `ocr` keeps every other wall (no `.env`, no network out, read-only, no capabilities, no core dumps). Known limit: `OLLAMA_NUM_PARALLEL=1`, so a chat question can wait while a document's facts are read. Seconds per page on g4dn: to be measured (`cli measure`) and written here |
+| GPU mode dependencies, in the GPU OCR image only (3 Oct 2026; approved by Vrushit, EC2 PRD D5, 4 Oct 2026): `paddlepaddle-gpu` 3.3.1 (Apache-2.0; from Paddle's cu126 index by direct URL and sha256, `paddle-gpu-wheel.txt`) and the 15 `nvidia-*-cu12` wheels it asks for, from PyPI (`constraints-ocr-gpu.txt`): `nvidia-cublas`, `-cuda-cccl`, `-cuda-cupti`, `-cuda-nvrtc`, `-cuda-runtime`, `-cudnn`, `-cufft`, `-cufile`, `-curand`, `-cusolver`, `-cusparse`, `-cusparselt` and `-nvjitlink` under NVIDIA's proprietary licence (not open source), `nvidia-nccl-cu12` BSD-3-Clause, `nvidia-nvtx-cu12` Apache-2.0 | None is AGPL, SSPL or GPL v3. CI's licence check never sees them (it installs `.[dev,ocr]` only), so this row is where they are recorded |
+| GPU mode: on a GPU server (an EC2 g4dn, a T4 with 16 GB), `docker-compose.gpu.yml` over `docker-compose.yml` runs PaddleOCR-VL (`OCR_DEVICE=gpu:0`, image `kaagaz-ocr-gpu:local` with `paddlepaddle-gpu`) and Ollama on the one GPU; laptops are unchanged, and RapidOCR stays the manual fallback (docs/running-locally.md, 2c) (3 Oct 2026; `paddlepaddle-gpu` and the NVIDIA wheels approved 4 Oct 2026, EC2 PRD D5) | PaddleOCR-VL took 3 to 11 minutes a page on a CPU. The T4 has no bfloat16, so Paddle runs in fp32. Accepted risk: `ocr` and `ollama` share the GPU and its driver, so a flaw in one could reach the other's memory; `ocr` keeps every other wall (no `.env`, no network out, read-only, no capabilities, no core dumps). Known limit: `OLLAMA_NUM_PARALLEL=1`, so a chat question can wait while a document's facts are read. Seconds per page on g4dn: in the row "OCR and Qwen share the T4" |
 | Seconds per page, measured with `python -m kaagaz.cli measure` on the build laptop on 30 Sep 2026 (RapidOCR, made-up files, AI off): a scanned page 5.4 to 10.1 (6.9 on average), a photo 6.6, a text-layer PDF page 0.05, a 200-row sheet 0.01. PaddleOCR-VL on the same CPU: 178 to 653 | The upload estimate uses 7 s a page for a PDF or photo (a PDF is estimated as a scan) and 1 for a sheet. The card and invoice calls add time when the AI is on; measure them once Ollama runs |
 | Meaning search: `halfvec(1024)` on HNSW (m 16, ef_construction 64), iterative scan `relaxed_order`, `SEARCH_EF` 100; 50 candidates a list, RRF k 60, a 3 s statement timeout (2 Oct 2026, PROVISIONAL starting values) | The index is used even for a small customer, and vectors take half the space |
 | 0006 casts the old vectors to `halfvec` instead of clearing them (2 Oct 2026, PROVISIONAL) | 3.1b's first PR shipped before `reembed` existed. They keep their old tag, so meaning search leaves them out until `reembed` |
@@ -179,12 +180,17 @@ The `isolation` tests prove both on every pull request.
 | Review paging stays OFFSET (the plan asked for keyset); `links` is capped at 50 rows; the invoice panel shows for any document with an `invoices` row (2 Oct 2026, PROVISIONAL) | The screen's "Show more" asks by offset; a model-off fallback row is still worth showing |
 | Every table and column carries a comment (0007, `alembic_version` too), and every later migration comments its own new columns (2 Oct 2026) | The NL-to-SQL agent reads `pg_description`; `test_every_table_and_column_has_a_comment` fails otherwise |
 | Golden questions: 30, frozen by `QUESTIONS_SHA256`, never tuned on; each run scores right, wrong, correct and missed not-found, wrong-but-verified and recall@5, and the worst of 3 runs counts (2 Oct 2026, the `tags` and "right or not-found" count PROVISIONAL) | Measured before any search change, so later parts can't drift unseen |
-
 | A follow-up keeps the previous scope, and `{}` widens it; a saved scope that no longer parses matches nothing (2 Oct 2026, PROVISIONAL) | A follow-up asks about the same documents; a scope is never widened by accident |
 | A sentence backed only by a neighbour, or holding a number no cited hit holds, is needs review; an invoice whose check failed makes that document's pieces needs review on the search route and its figures on the fixed route (2 Oct 2026, PROVISIONAL) | Context is not evidence, and a figure from a failed check is never verified |
 | The follow-up guard compares sets of words, so it can't see word order: "What did Mehta pay to Patil?" after "What did Patil pay to Mehta?" is accepted, and a metric can carry over from an earlier question (2 Oct 2026, PROVISIONAL) | Both show as "Searching for: …", so the person sees what was searched |
 | H2 is partial: the chat picker offers all documents, one folder, or the documents chat was opened for; no picker of several documents from the list (2 Oct 2026, PROVISIONAL) | Vrushit decides whether that picker is wanted |
 | "Ask about this document" shows only on the ready version in use, outside Trash (2 Oct 2026, PROVISIONAL) | Chat would find nothing in any other version |
+| The EC2 server runs only the `production` branch, which starts at `7c6b72d` (#97, the last commit whose CI was green). It changes only through pull requests; after each merge, a merge-commit PR takes `production` into `main`, and a release fast-forwards `production` to a `main` commit with green CI (4 Oct 2026, EC2 PRD D1) | The server never runs code that skipped review or failed CI, and `main` always contains `production` |
+| Everything runs on one EC2 g4dn.xlarge in Mumbai, in Docker Compose: Postgres, file storage, the queue, the scanner, OCR and AI. No RDS, S3, SQS or autoscaling in this phase (4 Oct 2026, EC2 PRD D2) | The laptop's compose file plus two overlays (GPU, production), and one server is the cheapest start. Known limits: no failover, and each deploy brings 1 to 2 minutes of downtime |
+| One domain over HTTPS, served by Caddy (`caddy:2`, Apache-2.0, pinned by digest: 2.11.6) with Let's Encrypt. Only 80 and 443 are open, to everyone, and the app requires sign-in; no inbound SSH, only Session Manager (4 Oct 2026, EC2 PRD D3 and D8) | Certificates renew themselves, and `docker-compose.prod.yml` clears every other port, so the security group is not the only wall. Known limit: visitors who are not signed in share one rate-limit bucket behind the proxy; per-account lockout still applies |
+| Backups: a daily EBS snapshot (Data Lifecycle Manager, 20:30 UTC, keep 7) plus a nightly `pg_dump` at 20:00 UTC into `~/backups` on the disk (keep 7) (4 Oct 2026, EC2 PRD D7) | The snapshot holds the whole disk (files, models, certificate, secrets); a dump restores the database alone |
+| The server stops itself after 15 idle minutes (no signed-in API request, an empty job queue, no deploy running). A weekday schedule starts it at 09:30 IST (EventBridge Scheduler), and a secret Wake link starts it any time (Lambda `kaagaz-wake`) (4 Oct 2026, EC2 PRD D9) | The server is billed by the hour only while it runs (the disk, snapshots and Elastic IP are billed even while it is stopped). The first use after a start is slow: about 3 minutes until the site loads, about 10 until documents are read |
+| OCR and Qwen share the T4: PaddleOCR-VL and both Qwen models in its 16 GB (4 Oct 2026, PROVISIONAL: the numbers come from go-live check 10.5) | One GPU keeps the cost down; if they don't fit, the next size is g5.xlarge (24 GB). Peak GPU memory: to be measured. Seconds per page: to be measured |
 
 **Golden run (G3): not yet run (needs the model on).** Record the date, the git SHA, the models and the worst run's totals here.
 
@@ -193,7 +199,7 @@ The `isolation` tests prove both on every pull request.
 | Decision | Blocks |
 |---|---|
 | What "verified" promises, in writing | The labels users see |
-| The virus scanner and upload limits in AWS (values marked PROVISIONAL in `.env.example`) | Hosting |
+| The virus scanner's settings and the upload limits on the EC2 server (values marked PROVISIONAL in `.env.example`) | Hosting |
 | The go or no-go bar for launch, as a number | Launch |
 | PRD 3 sign-off, and each PROVISIONAL row of 2 Oct 2026 above | Merging PRD 3 |
 

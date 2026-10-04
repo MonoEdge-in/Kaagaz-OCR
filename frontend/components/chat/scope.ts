@@ -100,6 +100,14 @@ export function sentScope(state: ScopeState): ScopeBody | undefined {
   return state.changed && state.scope.kind !== "kept" ? scopeBody(state.scope) : undefined;
 }
 
+/**
+ * The chip's scope as a body, for story matches (council 3 Oct 2026): what the
+ * chip shows, sent every time. A conversation still loading ("kept") sends none.
+ */
+export function chipScope(state: ScopeState): ScopeBody {
+  return state.scope.kind === "kept" ? {} : scopeBody(state.scope);
+}
+
 /** After an answer: the scope the server saved on the question, which a follow-up keeps. */
 export function answeredScope(state: ScopeState, question: Message): ScopeState {
   return stateOf(scopeFromBody(question.scope), false, state.documents);
