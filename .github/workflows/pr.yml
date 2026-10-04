@@ -6,7 +6,7 @@ name: Pull request
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, production]
     types: [opened, edited, reopened, synchronize]
 
 permissions:
