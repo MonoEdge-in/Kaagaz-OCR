@@ -47,7 +47,8 @@ OnPage = Callable[[RouteDecision | None], None]
 
 
 class Reader(Protocol):
-    name: str
+    @property
+    def name(self) -> str: ...  # read-only: the image reader's is its engine's
 
     @property
     def version(self) -> str: ...  # read-only: asked for after reading
