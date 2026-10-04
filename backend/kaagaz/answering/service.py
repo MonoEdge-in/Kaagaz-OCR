@@ -53,6 +53,8 @@ every sentence cites at least one source, and every source has a region.
 
 Nothing here logs the question or any document text: a model error is logged
 as its code, and each model answer as the model's tag and ANSWER_PROMPT_HASH.
+Every not-found answer logs one line, "answer not found", with a fixed reason
+code only (``_not_found``'s ``reason``).
 
 Time: one ``available_fields`` query only for a question with an aggregate
 word and no unknown topic word, then either one fixed query or one search
@@ -261,7 +263,7 @@ class AnswerService:
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
         asker, whose own words (only) may help the search (None: nobody's)."""
         if scope.matches_nothing:
-            return _not_found("search", question.strip(), [], model_used=False)
+            return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         turns = self._settings.chat_history_turns
         rewritten = None
         if self._model is not None and history and turns:
@@ -321,12 +323,12 @@ class AnswerService:
     def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
         rows = self._run_plan(fixed, customer_id, plan)
         if not rows:
-            return _not_found("fixed_query", shown, [], model_used=False)
+            return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_rows")
         top = [row for row in rows if row.number == rows[0].number]  # a tie is shown, never broken
         cited = _cited_values(top)
         sentence = _fixed_sentence(plan, top)
         if not cited or sentence is None:
-            return _not_found("fixed_query", shown, [], model_used=False)
+            return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
         citations = [
             Citation(
                 n=index,
@@ -398,7 +400,7 @@ class AnswerService:
         if not query_text and has_other_script_letters(question):
             query_text = question.strip()  # typed in another script: searched as asked (council 4 Oct)
         if not query_text:
-            return _not_found("search", shown, [], model_used=False)
+            return _not_found("search", shown, [], model_used=False, reason="notfound_empty_question")
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         # A question in another script is embedded as asked (W3): its Latin spelling means little.
         vector = self._embed(question if has_other_script_letters(question) else normalised.english)
@@ -417,7 +419,7 @@ class AnswerService:
         closest = closest_documents([item.hit for item in evidence])
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
         if gate is None and not (translated is not None and any_hit_scores(evidence, min_score, numbers)):
-            return _not_found("search", shown, closest, model_used=False)
+            return _not_found("search", shown, closest, model_used=False, reason="notfound_gate")
         # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
         # while they fit the room the hits and the question leave in MODEL_NUM_CTX: every
         # hit is kept, the neighbours go first. ponytail: fit_evidence (perf/s2-query-wins)
@@ -433,14 +435,15 @@ class AnswerService:
                 break
             evidence.append(item)
 
-        draft, model_used, seen = self._draft(question, normalised, evidence, expansion)
+        draft, model_used, seen, why = self._draft(question, normalised, evidence, expansion)
         # Only the evidence the draft saw. Line by line: joined, "12" and a next
         # line's "August 2026" would read as a date.
         texts = {item.n: "\n".join(map(clean_text, item.hit.text.splitlines())) for item in seen}
         cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
         kept = verify([s for s in cleaned if s.text], texts) if draft.status == "answered" else []
         if not kept:
-            return _not_found("search", shown, closest, model_used=model_used)
+            why = why if draft.status != "answered" else "notfound_verify_dropped_all"
+            return _not_found("search", shown, closest, model_used=model_used, reason=why)
 
         renumber: dict[int, int] = {}
         for sentence in kept:
@@ -534,9 +537,10 @@ class AnswerService:
         normalised: NormalisedQuestion,
         evidence: Sequence[Evidence],
         expansion: Expansion = NO_EXPANSION,
-    ) -> tuple[Draft, bool, Sequence[Evidence]]:
+    ) -> tuple[Draft, bool, Sequence[Evidence], str]:
         """The model's draft (and True), or the extractive one (and False), with the
-        evidence it was drafted from: for the model, the best pieces that fit its window.
+        evidence it was drafted from: for the model, the best pieces that fit its window,
+        and the reason code a not-found draft would give.
         The model sees the question and the evidence only, never a user's word or meaning;
         ``expansion`` helps the extractive draft choose its lines."""
         if self._model is not None:
@@ -551,17 +555,20 @@ class AnswerService:
                     code = error.code
                 else:
                     _log.info("answer drafted by %s with prompt %s", model.chat_model, ANSWER_PROMPT_HASH)
-                    return draft, True, seen
+                    return draft, True, seen, "notfound_model"
             # Quoting the evidence needs no model.
             _log.warning("answer drafted without the model", extra={"code": code})
+        why = "notfound_no_model" if self._model is None else f"notfound_model_error:{code}"
         if mentions_date(normalised):
-            return Draft("not_found", []), False, evidence  # a quoted line cannot be checked against a date
+            # A quoted line cannot be checked against a date.
+            return Draft("not_found", []), False, evidence, f"{why}:date"
         return (
             extractive_draft(
                 normalised.keywords, evidence, _numbers(question, normalised.keywords, expansion), expansion
             ),
             False,
             evidence,
+            why,
         )
 
     def _today(self) -> date:
@@ -689,7 +696,17 @@ def _quoted_through_glossary(
     )  # numbers: numbers_asked
 
 
-def _not_found(route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool) -> Answer:
+def _not_found(
+    route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool, reason: str
+) -> Answer:
+    """A not-found answer, and one log line with its fixed ``reason`` code (never the
+    question or page text): notfound_empty_scope, notfound_fixed_no_rows,
+    notfound_fixed_no_sentence, notfound_empty_question, notfound_gate (no evidence
+    passed), notfound_model (the model said so), notfound_model_error:<code> (it failed
+    and the quoted lines held nothing), notfound_no_model (the same, model off),
+    notfound_verify_dropped_all (the checker kept no sentence); ":date" after the
+    last two: a date question, never quoted."""
+    _log.info("answer not found", extra={"code": reason})
     return Answer(
         status="not_found",
         label=None,
