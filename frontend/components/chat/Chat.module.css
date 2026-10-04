@@ -29,6 +29,7 @@
 .subbar {
   grid-area: subbar;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
@@ -632,6 +633,15 @@
   padding-top: var(--space-2);
   padding-bottom: max(var(--space-3), env(safe-area-inset-bottom));
   background: var(--bg);
+}
+
+/* A short window (a phone on its side, a big zoom): the box scrolls with the
+   thread instead of covering it. The thread stays the one scroll area.
+   Relative, not static, so what is placed inside the box stays inside it. */
+@media (max-height: 30rem) {
+  .composer {
+    position: relative;
+  }
 }
 
 /* The scope chip and its choices, above the question box (PRD 3 H2). */
