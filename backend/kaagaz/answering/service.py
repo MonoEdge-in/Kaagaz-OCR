@@ -39,6 +39,14 @@ The steps (docs/architecture.md):
    (``"personal"``). An answer that used one carries them as ``understood_words``
    and is never verified. They never reach ``normalise``, the fixed queries, the
    model's prompt or the sentences.
+8. Translation (council 4 Oct 2026, PROVISIONAL; ANSWER_TRANSLATE_QUESTION, off by
+   default): on the search route, an all-Latin question whose first hits are mostly in
+   another script is translated into that script (``translate.py``) and searched again,
+   the question and its translations fused (``TranslatedSearch``). The gate may then pass
+   on any hit's score (``any_hit_scores``). The answer is never verified when the first
+   search alone would not pass the gate, or a cited hit was found, or lifted over the
+   score, by the translation only. The translation is never in the model's prompt, the
+   answer or the logs. A question typed in another script is searched as asked.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
@@ -85,8 +93,12 @@ from kaagaz.answering.draft import (
 from kaagaz.answering.evidence import (
     CAPPED,
     Evidence,
+    Gate,
     PgRetriever,
     Retriever,
+    Translated,
+    TranslatedSearch,
+    any_hit_scores,
     closest_documents,
     enough_evidence,
     has_word,
@@ -102,9 +114,10 @@ from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
+from kaagaz.answering.translate import target_scripts, translate
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
-from kaagaz.chunking.script import ascii_digits, has_devanagari_letters, has_other_script_letters
+from kaagaz.chunking.script import ascii_digits, has_other_script_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.indexing import query_input, recipe_tag
@@ -196,8 +209,9 @@ class Answer:
 
 
 class AnswerService:
-    """``retriever``, ``fixed_queries``, ``unchecked`` and ``words`` default to the
-    PostgreSQL ones; tests pass fakes."""
+    """``retriever``, ``translated_search``, ``fixed_queries``, ``unchecked`` and ``words``
+    default to the PostgreSQL ones; tests pass fakes. ``translator``: the client the question
+    is translated with (its own timeout), used only with ANSWER_TRANSLATE_QUESTION on."""
 
     def __init__(
         self,
@@ -210,8 +224,11 @@ class AnswerService:
         fixed_queries: FixedQueries | None = None,
         unchecked: UncheckedValues | None = None,
         words: WordSource | None = None,
+        translator: ModelClient | None = None,
+        translated_search: TranslatedSearch | None = None,
     ) -> None:
         self._model = model
+        self._translator = translator if settings.answer_translate_question else None
         self._settings = settings
         self._clock = clock
         self._zone = ZoneInfo(settings.timezone)
@@ -219,16 +236,14 @@ class AnswerService:
         self._evidence_budget = input_token_budget(
             num_ctx=settings.model_num_ctx, max_tokens=settings.model_answer_max_tokens, system=SYSTEM_PROMPT
         )
-        self._retriever = (
-            retriever
-            if retriever is not None
-            else PgRetriever(
-                db,
-                recipe=recipe_tag(settings.model_embed),
-                ef_search=settings.search_ef,
-                neighbours=settings.answer_neighbours,
-            )
+        pg = PgRetriever(
+            db,
+            recipe=recipe_tag(settings.model_embed),
+            ef_search=settings.search_ef,
+            neighbours=settings.answer_neighbours,
         )
+        self._retriever: Retriever = pg if retriever is None else retriever
+        self._translated: TranslatedSearch | None = pg if retriever is None else translated_search
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
         self._words = words if words is not None else PgWords(db)
@@ -380,19 +395,28 @@ class AnswerService:
         # are left out of every step below, never out of normalise (PR 2b-2).
         normalised = replace(normalised, keywords=glossary.content_words(normalised.keywords))
         query_text = " ".join(normalised.keywords) or normalised.english
+        if not query_text and has_other_script_letters(question):
+            query_text = question.strip()  # typed in another script: searched as asked (council 4 Oct)
         if not query_text:
             return _not_found("search", shown, [], model_used=False)
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
-        # A Devanagari question is embedded as asked (W3): its Latin spelling means little to the model.
-        meant = question if has_devanagari_letters(question) else normalised.english
-        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit, scope, expansion)
+        # A question in another script is embedded as asked (W3): its Latin spelling means little.
+        vector = self._embed(question if has_other_script_letters(question) else normalised.english)
+        hits = self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
+        numbers = _numbers(question, normalised.keywords, expansion)
+        min_score = self._settings.answer_min_evidence_score
+        translated = self._translated_search(
+            customer_id, question, query_text, vector, hits, scope, expansion
+        )
+        first: Gate | None = None  # how the question's own search passed the gate, when translated
+        if translated is not None:
+            first = enough_evidence(number_evidence(hits), normalised.keywords, min_score, numbers, expansion)
+            hits = translated.hits
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
-        numbers = _numbers(question, normalised.keywords, expansion)
-        min_score = self._settings.answer_min_evidence_score
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
-        if gate is None:
+        if gate is None and not (translated is not None and any_hit_scores(evidence, min_score, numbers)):
             return _not_found("search", shown, closest, model_used=False)
         # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
         # while they fit the room the hits and the question leave in MODEL_NUM_CTX: every
@@ -443,6 +467,15 @@ class AnswerService:
             or any(unchecked_cross_script(s, texts) for s in kept)
             or any(_unbacked_latin(s, texts, asked) for s in kept)
             or (not model_used and any(_quoted_through_glossary(s, by_n, normalised.keywords) for s in kept))
+            # The translation (council 4 Oct 2026): it alone let the question through, or found
+            # a cited hit, or lifted its score; capped here, never through CAPPED.
+            or (
+                translated is not None
+                and (
+                    first not in ("score", "keywords")
+                    or any(_translated_only(by_n[n], translated, min_score) for s in kept for n in s.evidence)
+                )
+            )
         )
         verified = all(c.label == "verified" for c in citations) and not (on_neighbours or unchecked)
         return Answer(
@@ -454,6 +487,32 @@ class AnswerService:
             route="search",
             normalized_question=shown,
             model_used=model_used,
+        )
+
+    def _translated_search(
+        self,
+        customer_id: str,
+        question: str,
+        query_text: str,
+        vector: list[float] | None,
+        hits: Sequence[Any],
+        scope: Scope,
+        expansion: Expansion,
+    ) -> Translated | None:
+        """The search again with the question's translations into the script of its first
+        ``hits`` (translate.py), decided before any draft; None to answer as today: the
+        setting off, no other script, or no usable translation. The texts are search
+        parameters and embeddings only. At most one model call and one search."""
+        if self._translator is None or self._translated is None:
+            return None
+        scripts = target_scripts(question, [hit.text for hit in hits])
+        queries = translate(self._translator, question, scripts) if scripts else None
+        if not queries:
+            return None
+        texts = [(query.text, self._embed(query.text)) for query in queries]
+        limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+        return self._translated.search_translated(
+            customer_id, query_text, vector, texts, limit, scope, expansion
         )
 
     def _embed(self, english: str) -> list[float] | None:
@@ -521,6 +580,17 @@ def _numbers(question: str, keywords: Sequence[str], expansion: Expansion) -> li
 def _tokens(item: Evidence) -> int:
     """About how many prompt tokens a piece takes: its header and text, and its fence."""
     return estimate_tokens(item.hit.context_header + item.hit.text) + _FENCE_TOKENS
+
+
+def _translated_only(item: Evidence, translated: Translated, min_score: float) -> bool:
+    """A cited hit (not a neighbour) only a translation found, or whose meaning score only a
+    translation brought to ``min_score``."""
+    if item.neighbour:
+        return False
+    if item.hit.piece_id not in translated.original:
+        return True
+    own, score = translated.original[item.hit.piece_id], item.hit.meaning_score
+    return score is not None and score >= min_score and (own is None or own < min_score)
 
 
 def _rests_on_neighbours(sentence: DraftSentence, by_n: dict[int, Evidence], texts: dict[int, str]) -> bool:

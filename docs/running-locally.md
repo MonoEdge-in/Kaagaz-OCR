@@ -67,6 +67,10 @@ pieces on each side of an evidence piece also given to the draft; and
 `CHAT_HISTORY_TURNS` (3, 0 to 10), the question and answer pairs a follow-up
 is rewritten with (0: no rewrite).
 
+Two optional settings (council 4 Oct 2026): `ANSWER_TRANSLATE_QUESTION` (false when
+unset) also searches an English or Romanised question in the script of its scans, with
+one model call that times out after `MODEL_TRANSLATE_TIMEOUT_SECONDS` (20, PROVISIONAL).
+
 **Upgrading an install to PRD 3.** Migration 0006 is offline: it locks
 `pieces` and `messages` while it rewrites the vectors and builds the indexes.
 

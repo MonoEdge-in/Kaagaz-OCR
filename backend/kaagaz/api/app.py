@@ -149,4 +149,8 @@ def _default_answers(settings: Settings, db: Database, clock: Callable[[], datet
     from kaagaz.ai.client import build_model_client
     from kaagaz.answering.service import AnswerService
 
-    return AnswerService(db=db, model=build_model_client(settings), settings=settings, clock=clock)
+    # The question translation (council 4 Oct 2026) waits at most its own timeout; the service
+    # uses it only with ANSWER_TRANSLATE_QUESTION on.
+    translator = build_model_client(settings, chat_timeout_seconds=settings.model_translate_timeout_seconds)
+    model = build_model_client(settings)
+    return AnswerService(db=db, model=model, settings=settings, clock=clock, translator=translator)
