@@ -47,6 +47,7 @@ ADMIN_COLUMNS = {
     "totp_enabled_at",
     "must_change_password",
     "session_version",
+    "delete_forever_allowed_at",
 }
 
 # --- helpers ---------------------------------------------------------------------------
@@ -561,3 +562,42 @@ def test_bump_session_version_raises_for_a_user_that_is_not_there(db: Database) 
     customer_id, _ = _user(db)
     with pytest.raises(NoResultFound), db.customer(customer_id) as conn:
         users.bump_session_version(conn, customer_id, str(uuid.uuid4()))
+
+
+# --- Delete forever, granted (council 4 Oct 2026) ------------------------------------------------
+
+
+def _grant(db: Database, customer_id: str, user_id: str, allowed: bool, now: datetime = NOW) -> Any:
+    with db.customer(customer_id) as conn:
+        return users.set_delete_forever(conn, customer_id, user_id, allowed=allowed, now=now)
+
+
+def test_set_delete_forever_grants_keeps_the_first_time_and_stops(db: Database) -> None:
+    customer_id, user_id = _user(db, "reviewer")
+    granted = _grant(db, customer_id, user_id, True)
+    assert set(granted.keys()) == ADMIN_COLUMNS
+    assert granted["delete_forever_allowed_at"] == NOW
+    later = NOW + timedelta(days=1)
+    assert _grant(db, customer_id, user_id, True, later)["delete_forever_allowed_at"] == NOW
+    stopped = _grant(db, customer_id, user_id, False)
+    assert (stopped["delete_forever_allowed_at"], stopped["session_version"]) == (None, 1)  # sessions stay
+
+
+def test_set_delete_forever_never_touches_an_admin_or_a_missing_user(db: Database) -> None:
+    customer_id, admin_id = _user(db, "admin")
+    missing = str(uuid.uuid4())
+    assert _grant(db, customer_id, admin_id, True) is None
+    assert _grant(db, customer_id, missing, True) is None
+    with db.customer(customer_id) as conn:
+        assert users.role_of(conn, customer_id, admin_id) == "admin"
+        assert users.role_of(conn, customer_id, missing) is None
+
+
+def test_a_role_change_clears_the_grant_and_the_same_role_keeps_it(db: Database) -> None:
+    customer_id, user_id = _user(db, "member")
+    _grant(db, customer_id, user_id, True)
+    with db.customer(customer_id) as conn:
+        same = users.update_user(conn, customer_id, user_id, role="member", disabled=None, password_hash=None)
+        assert same is not None and same["delete_forever_allowed_at"] == NOW
+        moved = users.update_user(conn, customer_id, user_id, role="admin", disabled=None, password_hash=None)
+    assert moved is not None and moved["delete_forever_allowed_at"] is None

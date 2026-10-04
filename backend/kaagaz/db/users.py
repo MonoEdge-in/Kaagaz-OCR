@@ -23,9 +23,10 @@ lock. Times always come in as ``now`` from the injected clock, never SQL
 ``now()``, so tests move the clock instead of sleeping.
 
 Every admin-facing statement (list, create, update, set_password, unlock,
-reset_totp) returns the same columns: the ``AdminUser`` columns plus
-``locked_until``, ``totp_enabled_at``, ``must_change_password`` and
-``session_version``. None means there is no such user in this customer (404).
+reset_totp, set_delete_forever) returns the same columns: the ``AdminUser``
+columns plus ``locked_until``, ``totp_enabled_at``, ``must_change_password``,
+``session_version`` and ``delete_forever_allowed_at``. None means there is no
+such user in this customer (404).
 
 Each call is one indexed statement: O(log n) in the number of users, except
 ``list_users``, which is O(users of this customer).
@@ -215,7 +216,8 @@ def unlock(conn: Connection, customer_id: str, user_id: str) -> RowMapping | Non
                 "UPDATE users AS u SET failed_logins = 0, locked_until = NULL"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version"
+                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
+                " u.delete_forever_allowed_at"
             ),
             {"c": customer_id, "u": user_id},
         )
@@ -257,7 +259,8 @@ def set_password(
                 " session_version = u.session_version + 1"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version"
+                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
+                " u.delete_forever_allowed_at"
             ),
             {"c": customer_id, "u": user_id, "hash": password_hash, "must_change": must_change},
         )
@@ -324,7 +327,8 @@ def reset_totp(conn: Connection, customer_id: str, user_id: str) -> RowMapping |
                 " totp_last_step = NULL, session_version = u.session_version + 1"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version"
+                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
+                " u.delete_forever_allowed_at"
             ),
             {"c": customer_id, "u": user_id},
         )
@@ -343,6 +347,7 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
             text(
                 "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"
                 " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
+                " u.delete_forever_allowed_at IS NOT NULL AS delete_forever_allowed,"
                 " c.id AS customer_id, c.name AS customer_name"
                 " FROM users u JOIN customers c ON c.id = u.customer_id"
                 " WHERE u.customer_id = :c AND u.id = :u"
@@ -359,7 +364,8 @@ def list_users(conn: Connection, customer_id: str) -> Sequence[RowMapping]:
         conn.execute(
             text(
                 "SELECT u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version"
+                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
+                " u.delete_forever_allowed_at"
                 " FROM users u WHERE u.customer_id = :c"
                 " ORDER BY u.created_at, u.email"
             ),
@@ -392,7 +398,8 @@ def create_user(
                     " (customer_id, email, display_name, role, password_hash, must_change_password)"
                     " VALUES (:c, :email, :name, :role, :hash, :must_change)"
                     " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                    " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version"
+                    " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
+                    " u.delete_forever_allowed_at"
                 ),
                 {
                     "c": customer_id,
@@ -427,7 +434,8 @@ def update_user(
     ``session_version`` (every session ends). The role counts even though every
     request re-checks it: an admin demoted and later made admin again must not
     get their old cookies back. A password set here is an admin's, so it is
-    temporary and ``must_change_password`` is set."""
+    temporary and ``must_change_password`` is set. A role change also clears the
+    Delete forever grant (``set_delete_forever``), so it never survives a promotion."""
     return (
         conn.execute(
             text(
@@ -439,10 +447,14 @@ def update_user(
                 " session_version = u.session_version + CASE"
                 "   WHEN CAST(:hash AS text) IS NOT NULL OR CAST(:disabled AS boolean) IS TRUE"
                 "   OR (CAST(:role AS text) IS NOT NULL AND CAST(:role AS text) <> u.role) THEN 1"
-                "   ELSE 0 END"
+                "   ELSE 0 END,"
+                " delete_forever_allowed_at = CASE"
+                "   WHEN CAST(:role AS text) IS NOT NULL AND CAST(:role AS text) <> u.role THEN NULL"
+                "   ELSE u.delete_forever_allowed_at END"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version"
+                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
+                " u.delete_forever_allowed_at"
             ),
             {
                 "c": customer_id,
@@ -455,3 +467,35 @@ def update_user(
         .mappings()
         .first()
     )
+
+
+def set_delete_forever(
+    conn: Connection, customer_id: str, user_id: str, *, allowed: bool, now: datetime
+) -> RowMapping | None:
+    """Allow (from ``now``, or keep the first time) or stop a member's or reviewer's
+    Delete forever. None for an admin or no such user (``role_of`` tells which):
+    the role is checked in the WHERE, so a promotion racing this can't keep a
+    grant. Sessions stay: every request reads the grant again. O(log n)."""
+    return (
+        conn.execute(
+            text(
+                "UPDATE users AS u SET delete_forever_allowed_at = CASE WHEN CAST(:allowed AS boolean)"
+                "   THEN COALESCE(u.delete_forever_allowed_at, :now) ELSE NULL END"
+                " WHERE u.customer_id = :c AND u.id = :u AND u.role <> 'admin'"
+                " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
+                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
+                " u.delete_forever_allowed_at"
+            ),
+            {"c": customer_id, "u": user_id, "allowed": allowed, "now": now},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def role_of(conn: Connection, customer_id: str, user_id: str) -> str | None:
+    """This customer's user's role, or None if there is no such user. O(log n)."""
+    role: object = conn.execute(
+        text("SELECT role FROM users WHERE customer_id = :c AND id = :u"), {"c": customer_id, "u": user_id}
+    ).scalar()
+    return None if role is None else str(role)

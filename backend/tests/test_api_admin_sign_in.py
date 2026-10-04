@@ -561,6 +561,7 @@ def test_every_admin_route_refuses_an_app_session(db: Database) -> None:
         ("POST", f"/api/admin/users/{ANY_ID}/unlock"),
         ("POST", f"/api/admin/users/{ANY_ID}/reset-password"),
         ("POST", f"/api/admin/users/{ANY_ID}/reset-2fa"),
+        ("PUT", f"/api/admin/users/{ANY_ID}/delete-forever"),
         ("GET", "/api/admin/settings"),
         ("PATCH", "/api/admin/settings"),
         ("GET", "/api/admin/audit"),

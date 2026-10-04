@@ -159,6 +159,9 @@ export const turnOffTwoStep = (password: string) =>
 export const changePassword = (current: string, next: string) =>
   request<Me>("POST", "/auth/password", { current_password: current, new_password: next });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
+/** A granted member or reviewer types their password before Delete forever (a 5-minute cookie). */
+export const confirmPassword = (password: string) =>
+  request<void>("POST", "/auth/confirm-password", { password });
 
 // --- documents -----------------------------------------------------------------
 
@@ -184,8 +187,9 @@ export const restoreDocument = (id: string) =>
 export const reprocessDocument = (id: string) =>
   request<DocumentSummary>("POST", `/documents/${id}/reprocess`);
 /**
- * Only in an admin session (403 admin_session_required otherwise), and only
- * from Trash (409 not_in_trash otherwise). Every version goes.
+ * An admin session with two-step sign-in, or a granted user who just confirmed
+ * their password (403 otherwise), and only from Trash (409 not_in_trash
+ * otherwise). Every version goes.
  */
 export const deleteDocumentForever = (id: string) =>
   request<void>("DELETE", `/documents/${id}/permanent`);
@@ -383,6 +387,9 @@ export const resetUserPassword = (id: string) =>
   request<PasswordReset>("POST", `/admin/users/${id}/reset-password`);
 export const resetUser2fa = (id: string) =>
   request<AdminUser>("POST", `/admin/users/${id}/reset-2fa`);
+/** Allow or stop a member's or reviewer's Delete forever; allowing needs your two-step sign-in. */
+export const setDeleteForever = (id: string, allowed: boolean) =>
+  request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
 export const updateSettings = (maxUploadMb: number | null) =>
   request<CustomerSettings>("PATCH", "/admin/settings", { max_upload_mb: maxUploadMb });
