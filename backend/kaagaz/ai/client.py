@@ -46,9 +46,10 @@ Either raises ``ModelOutputError`` with no repair retry: a cut reply would be
 cut again. UNVERIFIED: that Ollama 0.34.4 sends both counts on a
 non-streaming chat reply, and whether a cached prompt prefix is left out of
 ``prompt_eval_count`` (that would only make the first guard fire later).
-``estimate_tokens`` and ``input_token_budget`` let callers cut their input to
-fit before calling. The worker's chat calls (the card and the invoice windows)
-may use their own timeout, ``MODEL_EXTRACT_TIMEOUT_SECONDS``.
+``estimate_tokens`` (``estimate_tokens_cautiously`` for the answer's evidence) and
+``input_token_budget`` let callers cut their input to fit before calling. The
+worker's chat calls (the card and the invoice windows) may use their own timeout,
+``MODEL_EXTRACT_TIMEOUT_SECONDS``.
 
 Cost: ``embed`` makes ceil(n / 32) requests for n texts and holds O(n * dim)
 floats. ``chat_json`` makes at most two requests; checking a reply against the
@@ -58,6 +59,7 @@ schema is O(size of the reply). ``estimate_tokens`` is O(n) in the text.
 import base64
 import json
 import math
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -166,6 +168,21 @@ def estimate_tokens(text: str) -> int:
     quarter of a token, any other (Devanagari) two thirds of one. Rounded up. O(n)."""
     other = sum(1 for ch in text if ch >= "\x80")
     return -(-(3 * (len(text) - other) + 8 * other) // 12)  # ascii / 4 + other / 1.5, rounded up
+
+
+def estimate_tokens_cautiously(text: str) -> int:
+    """``estimate_tokens``, but a letter or mark that is not ASCII (Unicode categories L
+    and M: the letters and vowel signs of Devanagari, Gujarati, Tamil, Arabic... alike) is
+    one whole token. Never below ``estimate_tokens``. Rounded up. O(n).
+    PROVISIONAL (council 4 Oct 2026, PR C), for the answer's evidence: a small model's
+    tokenizer splits the letters of most scripts into more than two thirds of a token
+    each, so evidence counted the first way could fill the window; counting more only
+    leaves out more low-ranked evidence (``draft.fit_evidence``). The card and invoice
+    windows keep ``estimate_tokens``."""
+    if text.isascii():
+        return estimate_tokens(text)
+    twelfths = sum(3 if ch < "\x80" else 12 if unicodedata.category(ch)[0] in "LM" else 8 for ch in text)
+    return -(-twelfths // 12)
 
 
 def input_token_budget(*, num_ctx: int, max_tokens: int, system: str) -> int:
