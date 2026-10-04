@@ -84,12 +84,19 @@ Runs and progress (PRD 2 R6, X2, X3), when the processor is given them:
 * The pages are counted by route as each is read (``on_page``), so a run that
   fails part way records the pages it read; once every page has its route, the
   counts are those of the stored routes.
+* The scan reader the upload chose (``documents.ocr_choice``, PRD 4 #17) reads
+  this delivery's scans (``OcrChooser.choose``) until its run is closed, and
+  then Auto again, whatever happened. A run of a document with a choice keeps
+  ``ocr_choice`` and ``ocr_choice_honoured`` in its config; a choice this worker
+  does not have is read with Auto and logged with its code only
+  (``ocr_choice_unavailable``).
 
 Memory: the file's bytes, its spans and one decoded page picture at a time
 (vision readings). Time is linear in the spans apart from the sorts in the
 chunkers and extractors (O(n log n)).
 """
 
+import contextlib
 import functools
 import hashlib
 import io
@@ -326,7 +333,8 @@ class ProgressStore(Protocol):
 class OcrMeter(Protocol):
     """kaagaz.reading.ocr.MeteredOcrEngine in production: the engine the readers use."""
 
-    name: str
+    @property
+    def name(self) -> str: ...  # the engine in use: a chosen one's while its job runs
 
     @property
     def version(self) -> str: ...
@@ -337,6 +345,14 @@ class OcrMeter(Protocol):
 
     def take_fallback_pages(self) -> int:
         """Pages the fallback engine read since the last take, then zero again."""
+        ...
+
+
+class OcrChooser(Protocol):
+    """kaagaz.reading.ocr.OcrEngines in production: which engine reads one job's scans."""
+
+    def choose(self, choice: str | None) -> contextlib.AbstractContextManager[bool]:
+        """Read with ``choice`` (None: Auto) inside the block; True when it was honoured."""
         ...
 
 
@@ -435,6 +451,7 @@ class _Run:
     moved: float = 0.0  # the timer when the last page was read
     measured: dict[str, Pair] = field(default_factory=dict)  # "ocr", "fast": (seconds, pages)
     after: Estimate | None = None  # from the end of reading, kept for each understanding step
+    ocr_choice: dict[str, str | bool] = field(default_factory=dict)  # the upload's reader, when it chose one
 
 
 class DocumentProcessor:
@@ -455,6 +472,7 @@ class DocumentProcessor:
         runs: RunStore | None = None,
         progress: ProgressStore | None = None,
         ocr_meter: OcrMeter | None = None,
+        ocr_engines: OcrChooser | None = None,
         clock: Callable[[], datetime] | None = None,
         timer: Callable[[], float] | None = None,
         max_vision_crops: int = MAX_VISION_CROPS,
@@ -473,7 +491,8 @@ class DocumentProcessor:
         The rest are for PRD 2 and all optional: ``runs`` keeps one run per delivery
         (it needs ``clock`` for its times and ``timer`` for its seconds);
         ``progress`` shows how far a document has got; ``ocr_meter`` is the OCR
-        engine the readers use, counted; ``run_config`` is the run's plain JSON set-up
+        engine the readers use, counted, and ``ocr_engines`` picks the engine behind it
+        for each job (the upload's choice); ``run_config`` is the run's plain JSON set-up
         (ML 10); ``vision_model`` and ``embed_model`` are the tags a run records
         when it used them. ``chat`` is the model stage's chat model (PRD 2 D1, E2),
         with its ``model_budget``; ``chat_model`` is the tag a run records when a
@@ -499,6 +518,7 @@ class DocumentProcessor:
         self._runs = runs
         self._progress_store = progress
         self._ocr_meter = ocr_meter
+        self._ocr_engines = ocr_engines
         self._clock = clock or _utc_now
         self._timer = timer or time.perf_counter
         self._max_vision_crops = max_vision_crops
@@ -517,7 +537,9 @@ class DocumentProcessor:
             raise JobFailed("document_missing", retryable=False)
         run = self._start_run(job)
         settled = False  # the run was finished, or is being, on a known path
+        chosen = contextlib.ExitStack()  # the upload's reader, until the run is closed
         try:
+            self._choose_reader(job, record, run, chosen)
             self._process(job, record, heartbeat, run)
             settled = True
         except Superseded:
@@ -544,6 +566,27 @@ class DocumentProcessor:
                 # Anything else is a bug: it is not caught (no blanket except) and goes on
                 # up to the worker, but its run ends failed rather than staying open.
                 self._close_run(job, run, "failed", "internal_error")
+            chosen.close()  # Auto again for the next job, whatever happened
+
+    def _choose_reader(
+        self, job: Job, record: DocumentRecord, run: _Run, chosen: contextlib.ExitStack[bool | None]
+    ) -> None:
+        """Read this job's scans with the reader its upload chose (NULL: Auto). A choice
+        this worker doesn't have (not set up, or no OCR at all) is read with Auto."""
+        choice = record.ocr_choice
+        if choice is None:
+            return  # Auto: exactly as before, and the run's config is unchanged
+        honoured = self._ocr_engines is not None and chosen.enter_context(self._ocr_engines.choose(choice))
+        run.ocr_choice = {"ocr_choice": choice, "ocr_choice_honoured": honoured}
+        if not honoured:
+            _log.warning(
+                "ocr choice not available, read with auto",
+                extra={
+                    "customer_id": job.customer_id,
+                    "document_id": job.document_id,
+                    "code": "ocr_choice_unavailable",
+                },
+            )
 
     def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
@@ -876,6 +919,7 @@ class DocumentProcessor:
                 **run.quote_config,
                 **({} if run.lowest_ocr_dpi is None else {"ocr_dpi_lowest": run.lowest_ocr_dpi}),
                 **({"pages_ocr_fallback": fallback_pages} if fallback_pages else {}),
+                **run.ocr_choice,
                 **_step_seconds(run, ended),
             },
         )
@@ -1110,7 +1154,7 @@ def build_processor(
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
-    from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
+    from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engines
     from kaagaz.reading.wiring import build_reader_socket, reader_config
     from kaagaz.search.indexing import embed_pieces
 
@@ -1131,8 +1175,8 @@ def build_processor(
     embed: Embedder | None = None
     if model is not None:
         embed = functools.partial(embed_pieces, db, model=model)
-    engine = build_ocr_engine(settings)
-    meter = None if engine is None else MeteredOcrEngine(engine, timer=time.perf_counter)
+    engines = build_ocr_engines(settings)
+    meter = None if engines is None else MeteredOcrEngine(engines, timer=time.perf_counter)
     vision = model if model is not None and settings.model_vision else None
 
     return DocumentProcessor(
@@ -1150,6 +1194,7 @@ def build_processor(
         runs=PgRuns(db),
         progress=documents,
         ocr_meter=meter,
+        ocr_engines=engines,
         clock=_utc_now,
         timer=time.perf_counter,
         run_config={

@@ -115,7 +115,8 @@ def test_the_gpu_file_points_the_worker_at_paddle_and_both_at_ollama() -> None:
     worker = environment(service("worker", "docker-compose.gpu.yml"))
     api = environment(service("api", "docker-compose.gpu.yml"))
     assert worker == {"OCR_ENGINE": "paddleocr_vl", "OCR_DPI": "400", "MODEL_BASE_URL": "http://ollama:11434"}
-    assert api == {"MODEL_BASE_URL": "http://ollama:11434"}
+    assert api == {"OCR_ENGINE": "paddleocr_vl", "MODEL_BASE_URL": "http://ollama:11434"}
+    assert api["OCR_ENGINE"] == worker["OCR_ENGINE"]  # /upload-limits offers what the worker reads with
     # The shared block sets MODEL_BASE_URL by name too, so the override's wins (compose
     # merges environment by name).
     assert re.search(r"^    MODEL_BASE_URL: ", (ROOT / "docker-compose.yml").read_text("utf-8"), re.M)

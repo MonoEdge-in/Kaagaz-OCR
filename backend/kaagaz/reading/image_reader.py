@@ -64,7 +64,10 @@ class ImageReader:
         self._max_image_pixels = max_image_pixels
         self._max_short_side = max(1, round(ocr_dpi * _A4_SHORT_SIDE_INCHES))
         self._max_ocr_pixels = MAX_OCR_PIXELS
-        self.name = ocr.name  # "paddleocr-vl" or "rapidocr" in the product
+
+    @property
+    def name(self) -> str:
+        return self._ocr.name  # "paddleocr-vl" or "rapidocr" in the product: the engine in use
 
     @property
     def version(self) -> str:

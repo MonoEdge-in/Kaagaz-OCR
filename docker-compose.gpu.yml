@@ -61,6 +61,7 @@ services:
   # x-backend block's MODEL_BASE_URL in docker-compose.yml (environment merges by name).
   api:
     environment:
+      OCR_ENGINE: paddleocr_vl # the same as the worker's, so the upload screen offers the readers it has
       MODEL_BASE_URL: http://ollama:11434
 
   worker:
