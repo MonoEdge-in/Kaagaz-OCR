@@ -117,7 +117,13 @@ def kept(text: str, cited: tuple[int, ...] = (1,)) -> bool:
             pytest.param(f"The total is Rs. 9{ch}9,000.", id=f"U+{ord(ch):04X} inside a number")
             for ch in INVISIBLE
         ],
-        *[pytest.param(f"The grand total is Rs. {d}.", id=f"{name} digits") for name, d in FOREIGN.items()],
+        pytest.param(
+            "The grand total is Rs. 1,\u0ae7\u0aee,000.", id="ASCII and Gujarati digits in one token"
+        ),
+        pytest.param("The grand total is Rs. \u0967,\u0ae7\u0aee,000.", id="Devanagari and Gujarati digits"),
+        pytest.param(
+            "The grand total is Rs. \u0ae8,\u0ae7\u0aee,\u0ae6\u0ae6\u0ae6.", id="an invented Gujarati number"
+        ),
         pytest.param("The grand total is Rs. 1,18,000².", id="a superscript"),
         pytest.param("CGST is ½ of the tax.", id="a fraction"),
         pytest.param("It is invoice ① of the year.", id="a circled digit"),
@@ -150,6 +156,13 @@ def kept(text: str, cited: tuple[int, ...] = (1,)) -> bool:
 )
 def test_must_drop(text: str) -> None:
     assert not kept(text)
+
+
+@pytest.mark.parametrize("digits", list(FOREIGN.values()), ids=list(FOREIGN))
+def test_the_digits_of_any_one_script_read_by_value(digits: str) -> None:
+    # Council 4 Oct 2026 (a change: these were dropped as unreadable): ascii_digits on both sides.
+    assert kept(f"The grand total is Rs. {digits}.")
+    assert verify([DraftSentence("The total is Rs. 1,18,000.", [1])], {1: f"Total {digits}"}) != []
 
 
 @pytest.mark.parametrize(
@@ -296,7 +309,11 @@ def _kept(sentence: str, evidence: str) -> bool:
         ("The area is ४५१ R.", "क्षेत्र ४५०", False),
         ("The area is ४५० R.", "Area 450", True),
         ("The area is 450 R.", "क्षेत्र ४५०", True),
-        ("The area is ૪૫૧ R.", "क्षेत्र ४५०", False),  # Gujarati digits cannot be checked: dropped
+        (
+            "The area is \u0aea\u0aeb\u0ae7 R.",
+            "\u0915\u094d\u0937\u0947\u0924\u094d\u0930 \u096a\u096b\u0966",
+            False,
+        ),  # 451 is not 450
         ("The total is " + "1,20,000.00.".translate(DEVANAGARI), "Total: 1,20,000", True),
         ("Gat ४५/२.", "Gat No. 45/2", True),
         ("Gat ४५/३.", "Gat No. 45/2", False),
@@ -362,3 +379,40 @@ def test_only_closed_function_words_may_be_added(sentence: str, kept: bool) -> N
 def test_function_words_are_whole_nfc_words_and_no_negation() -> None:
     assert all(unicodedata.is_normalized("NFC", word) for word in FUNCTION_WORDS)
     assert not {"नहीं", "नाही", "न", "नका", "नये", "नव्हे", "या", "किंवा"} & FUNCTION_WORDS
+
+
+# --- any script but Latin (council 4 Oct 2026: the other-script hole) --------------------------
+
+GUJARATI_OWNER = (
+    "\u0aae\u0abe\u0ab2\u0abf\u0a95: \u0ab0\u0aae\u0ac7\u0ab6 \u0aaa\u0a9f\u0ac7\u0ab2"  # owner: Ramesh Patel
+)
+SURESH = "\u0ab8\u0ac1\u0ab0\u0ac7\u0ab6"
+
+
+def test_a_made_up_gujarati_quote_is_a_missing_word(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="kaagaz.answering.verify")
+    invented = DraftSentence(f"The owner is {SURESH} \u0aaa\u0a9f\u0ac7\u0ab2.", [1])
+    assert verify([invented], {1: GUJARATI_OWNER}) == []
+    assert [record.getMessage() for record in caplog.records] == ["answer sentences dropped: missing_word=1"]
+    quoted = DraftSentence("The owner is \u0ab0\u0aae\u0ac7\u0ab6 \u0aaa\u0a9f\u0ac7\u0ab2.", [1])
+    assert verify([quoted], {1: GUJARATI_OWNER}) == [quoted]
+
+
+def test_an_english_sentence_over_gujarati_or_tamil_evidence_is_unchecked() -> None:
+    # owner Raman
+    tamil = "\u0b89\u0bb0\u0bbf\u0bae\u0bc8\u0baf\u0bbe\u0bb3\u0bb0\u0bcd \u0bb0\u0bbe\u0bae\u0ba9\u0bcd"
+    texts = {1: GUJARATI_OWNER, 2: tamil, 3: "Owner: Ramesh Patel"}
+    for n in (1, 2):
+        sentence = DraftSentence("The owner is Ramesh Patel.", [n])
+        assert verify([sentence], texts) == [sentence] and unchecked_cross_script(sentence, texts)
+    assert not unchecked_cross_script(DraftSentence("The owner is Ramesh Patel.", [3]), texts)
+    assert not unchecked_cross_script(
+        DraftSentence("\u0ab0\u0aae\u0ac7\u0ab6 \u0aaa\u0a9f\u0ac7\u0ab2.", [1]), texts
+    )
+
+
+def test_gujarati_letters_may_sit_next_to_gujarati_digits_but_cyrillic_never() -> None:
+    evidence = "\u0a97\u0aa4 \u0aa8\u0a82. \u0aea\u0aed\u0aae\u0acb"  # gat no. 47th, in Gujarati
+    assert verify([DraftSentence("It is gat 47.", [1])], {1: evidence}) != []
+    assert verify([DraftSentence("It is gat 48.", [1])], {1: evidence}) == []
+    assert verify([DraftSentence("It is 47\u0434.", [1])], {1: "47"}) == []  # a Cyrillic letter: odd

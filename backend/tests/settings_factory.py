@@ -83,6 +83,8 @@ _BASE: dict[str, Any] = {
     "answer_min_evidence_score": 0.2,
     "answer_neighbours": 1,
     "chat_history_turns": 3,
+    "answer_translate_question": False,
+    "model_translate_timeout_seconds": 20.0,
     "timezone": "Asia/Kolkata",
     "rate_limit_per_minute": 1000,
     "log_level": "WARNING",

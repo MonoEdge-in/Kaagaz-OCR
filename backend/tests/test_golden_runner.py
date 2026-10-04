@@ -7,9 +7,21 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from scripts.golden_scoring import Hit
-from scripts.run_golden import GOLDEN, GoldenError, check_local, hits, load_golden, main
+from scripts.run_golden import (
+    GOLDEN,
+    SETS,
+    GoldenError,
+    Http,
+    _parser,
+    check_local,
+    hits,
+    load_golden,
+    main,
+    upload,
+)
 
 LOCAL_DB = "postgresql://kaagaz@127.0.0.1:5432/kaagaz"
 
@@ -35,6 +47,36 @@ class RunnerTest(unittest.TestCase):
             (copy / "hindi-bill.csv").write_bytes(b"changed\n")
             with self.assertRaisesRegex(GoldenError, "hindi-bill.csv is missing from --docs or differs"):
                 load_golden(copy)
+
+    def test_the_xlang_set_loads_its_own_questions_and_documents(self) -> None:
+        self.assertEqual(_parser().parse_args(["--git-sha", "abc"]).question_set, "golden")
+        questions, documents = load_golden(chosen=SETS["xlang"])
+        self.assertEqual((len(questions), len(documents)), (60, 6))
+        self.assertIn("dev", questions[0].slices)
+        with tempfile.TemporaryDirectory() as folder:
+            copy = Path(folder) / "xlang"
+            shutil.copytree(GOLDEN / "xlang", copy)
+            (copy / "ta-bill.pdf").write_bytes(b"changed")
+            with self.assertRaisesRegex(GoldenError, "ta-bill.pdf is missing from --docs or differs"):
+                load_golden(copy, SETS["xlang"])
+
+    def test_an_unread_xlang_document_is_listed_not_fatal(self) -> None:
+        class Api(Http):
+            """Every upload is ready at once, but b.pdf, which no reader could read."""
+
+            def call(self, method: str, path: str, body: Any = None, **kwargs: Any) -> Any:
+                if method == "POST":
+                    return {"document": {"id": kwargs["files"][0]}}
+                return {"status": "needs_reader" if path.endswith("b.pdf") else "ready"}
+
+        out = io.StringIO()
+        files = {"a.pdf": b"a", "b.pdf": b"b"}
+        api = Api("http://127.0.0.1:1")
+        self.assertEqual(upload(api, files, 1, out, all_ready=False), {"a.pdf": "a.pdf", "b.pdf": "b.pdf"})
+        self.assertIn("NOT READY, their questions are still asked: {'b.pdf': 'needs_reader'}", out.getvalue())
+        self.assertIn("1 documents ready", out.getvalue())
+        with self.assertRaisesRegex(GoldenError, "not ready"):
+            upload(api, files, 1, io.StringIO(), all_ready=True)
 
     def test_a_citation_is_a_hit_spanning_its_regions_pages(self) -> None:
         answer = {

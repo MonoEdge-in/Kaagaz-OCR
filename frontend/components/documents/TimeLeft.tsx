@@ -1,37 +1,84 @@
 "use client";
 
-// "Ready in about 40 s" beside a document being read (PRD 4 #13; the rules are in
-// lib/timeLeft.ts). The counting text is hidden from screen readers, which get
-// words that change only by the minute. No live region: nothing is announced.
+// A progress bar with "42%" and "Ready in about 40 s" beside a document being read
+// (PRD 4 #13; the rules are in lib/progress.ts and lib/timeLeft.ts). The bar is a
+// native <progress> named for its document; the visible percent and the counting
+// text are hidden from screen readers, which get words that change only by the
+// minute. No live region: nothing is announced.
 
 import { memo, useState } from "react";
 import { useMediaQuery } from "@/components/chat/hooks";
-import { WAITING, describe, hold, receivedAt } from "@/lib/timeLeft";
+import { advance, barValue, fractionAt } from "@/lib/progress";
+import type { ShownProgress } from "@/lib/progress";
+import { ESTIMATING, STARTING, WAITING, describe, hold, receivedAt } from "@/lib/timeLeft";
 import type { Held } from "@/lib/timeLeft";
 import { useTick } from "@/lib/tick";
 import type { DocumentSummary, TimeLeft as TimeLeftValue } from "@/lib/types";
 import styles from "./Documents.module.css";
+import { formatProgressPercent } from "./logic";
 
-export function TimeLeft({ document }: { document: Pick<DocumentSummary, "status" | "progress" | "time_left"> }) {
-  if (document.time_left && document.progress) {
-    return <Countdown value={document.time_left} step={document.progress.step} />;
+type Shown = Pick<DocumentSummary, "status" | "progress" | "time_left" | "attempts" | "deleted_at" | "display_name">;
+
+export function TimeLeft({ document }: { document: Shown }) {
+  const { progress } = document;
+  if (progress && document.deleted_at === null) {
+    // A new attempt starts a new bar and countdown (keyed), from 0.
+    return (
+      <Progressing
+        key={document.attempts}
+        value={document.time_left}
+        step={progress.step}
+        attempt={document.attempts}
+        name={document.display_name}
+      />
+    );
   }
-  const waiting = document.status === "received" && document.progress === null;
+  const waiting = document.status === "received" && progress === null;
   return waiting ? <Words text={WAITING.text} spoken={WAITING.spoken} /> : null;
 }
 
-function Countdown({ value, step }: { value: TimeLeftValue; step: Held["step"] }) {
+interface ProgressingProps {
+  value: TimeLeftValue | null; // null while scanning, or with no estimate
+  step: Held["step"];
+  attempt: number;
+  name: string;
+}
+
+function Progressing({ value, step, attempt, name }: ProgressingProps) {
   const now = useTick();
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [held, setHeld] = useState<Held | null>(null);
-  let current = held;
-  if (current === null || current.value !== value) {
-    // A new answer, kept from render to render ("storing information from previous renders").
-    current = hold(held, value, step, receivedAt(value));
-    setHeld(current);
+  const [shown, setShown] = useState<ShownProgress | null>(null);
+  let current: Held | null = null;
+  if (value !== null) {
+    current = held;
+    if (current === null || current.value !== value) {
+      // A new answer, kept from render to render ("storing information from previous renders").
+      current = hold(held, value, step, receivedAt(value));
+      setHeld(current);
+    }
   }
-  const view = describe(current, now, reducedMotion);
-  return <Words text={view.text} spoken={view.spoken} />;
+  const scanning = step === "scanning";
+  const view = current !== null ? describe(current, now, reducedMotion) : scanning ? STARTING : ESTIMATING;
+  const fraction = current !== null ? fractionAt(current, now) : scanning ? 0 : null;
+  const next = advance(shown, attempt, fraction, view.state === "longer");
+  if (next !== shown) setShown(next);
+  return (
+    <>
+      <span className={styles.readBar}>
+        <progress
+          className={styles.readMeter}
+          max={100}
+          value={barValue(next.percent)}
+          aria-label={`Progress: ${name}`}
+        />
+        <span className={styles.readPercent} aria-hidden="true">
+          {formatProgressPercent(next.percent, 100)}
+        </span>
+      </span>
+      <Words text={view.text} spoken={view.spoken} />
+    </>
+  );
 }
 
 // Renders again only when the words change, not on every tick.

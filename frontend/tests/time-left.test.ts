@@ -2,11 +2,11 @@
 // plain numbers: times are performance.now() milliseconds.
 
 import { describe as group, expect, it } from "vitest";
-import { WAITING, describe, hold, markReceived, receivedAt } from "@/lib/timeLeft";
+import { ESTIMATING, STARTING, WAITING, describe, hold, markReceived, receivedAt } from "@/lib/timeLeft";
 import type { Held } from "@/lib/timeLeft";
 import type { TimeLeft } from "@/lib/types";
 
-const base = { since_move_seconds: 0, slow_after_seconds: 1000, items_left: 0, item_seconds: 0, after_seconds: 0 };
+const base = { since_move_seconds: 0, slow_after_seconds: 1000, items_left: 0, item_seconds: 0, after_seconds: 0, elapsed_seconds: 0 };
 const value = (seconds: number, more: Partial<TimeLeft> = {}): TimeLeft => ({
   ...base,
   seconds,
@@ -45,14 +45,27 @@ group("time left", () => {
     expect(hold(first(30, "reading"), value(300), "understanding", 1000).seconds).toBe(300); // a new step
   });
 
-  it("says Taking longer once nothing has moved past slow_after_seconds, and Estimating when unsure", () => {
+  it("says Taking longer once nothing has moved past slow_after_seconds", () => {
     const held = first(100, "understanding", { since_move_seconds: 15, slow_after_seconds: 20 });
     expect([describe(held, 4_000, false).state, describe(held, 6_000, false).state]).toEqual(["counting", "longer"]);
-    expect(textAt(first(100, "reading", { confidence: "low" }), 0)).toBe("Estimating\u2026");
   });
 
-  it("never counts below the time after reading while still reading", () => {
+  // Changed on purpose (council of 4 Oct 2026, progress %): low confidence said
+  // "Estimating..." for ever; now it shows the number, labelled a rough guess.
+  it("labels a low-confidence number a rough guess; Estimating only with no estimate at all", () => {
+    const rough = describe(first(180, "reading", { confidence: "low" }), 0, false);
+    expect(rough).toEqual({ state: "rough", text: "About 3 min (rough guess)", spoken: "Rough guess: ready in about 3 minutes" });
+    const soon = describe(first(45, "understanding", { confidence: "low" }), 0, false);
+    expect([soon.text, soon.spoken]).toEqual(["About 45 s (rough guess)", "Rough guess: ready in less than a minute"]);
+    expect(textAt(first(5, "understanding", { confidence: "low" }), 0)).toBe("Almost done");
+    expect(describe(first(180), 0, false).text).toBe("Ready in about 3 min"); // high confidence
+    expect([ESTIMATING.text, STARTING.text]).toEqual(["Estimating\u2026", "Starting\u2026"]);
+  });
+
+  it("never counts below the time after the step's pages while preparing or reading", () => {
     expect(textAt(first(60, "reading", { after_seconds: 30 }), 50_000)).toBe("Ready in about 30 s");
+    expect(textAt(first(60, "preparing", { after_seconds: 30 }), 50_000)).toBe("Ready in about 30 s");
+    expect(textAt(first(60, "understanding", { after_seconds: 30 }), 50_000)).toBe("Ready in about 10 s");
   });
 
   it("anchors each answer when it arrived", () => {

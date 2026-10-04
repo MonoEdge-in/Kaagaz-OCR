@@ -243,22 +243,27 @@ def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
     assert in_progress("clean", None) is None
 
 
-# A progress as the worker writes it while reading (kaagaz.eta), 10 s ago, 50 s before ready.
+# A progress as the worker writes it while reading (kaagaz.eta), 10 s ago, 50 s before ready,
+# in a run that started 70 s ago.
 MOVED, FINISH = (NOW - timedelta(seconds=10)).isoformat(), (NOW + timedelta(seconds=50)).isoformat()
 TIMED: dict[str, object] = {"step": "reading", "done": 2, "total": 40, "confidence": "high"}
+TIMED["started_at"] = (NOW - timedelta(seconds=70)).isoformat()
 TIMED |= {"moved_at": MOVED, "finish_at": FINISH, "item_s": 1.25, "after_s": 10.0, "slow_after_s": 20.0}
 TIME_LEFT: dict[str, object] = {"seconds": 50.0, "since_move_seconds": 10.0, "items_left": 38}
 TIME_LEFT |= {"slow_after_seconds": 20.0, "item_seconds": 1.25, "after_seconds": 10.0, "confidence": "high"}
+TIME_LEFT |= {"elapsed_seconds": 70.0}
 
 
-def test_time_left_only_while_read_and_out_of_trash() -> None:
+def test_time_left_from_preparing_on_and_out_of_trash() -> None:
     def left(status: str, deleted_at: datetime | None = None, **progress: object) -> object:
         row = {"status": status, "progress": {**TIMED, **progress}, "deleted_at": deleted_at}
         return document_time_left(row, now=NOW)
 
     assert left("clean") == left("received") == TIME_LEFT
-    gone = [left("ready"), left("failed"), left("clean", deleted_at=NOW), left("clean", step="indexing")]
-    assert gone == [None, None, None, None]
+    assert left("clean", step="preparing") == TIME_LEFT  # from preparing on: 38 pages left to draw
+    assert left("clean", step="indexing") == {**TIME_LEFT, "items_left": 0}
+    gone = [left("ready"), left("failed"), left("clean", deleted_at=NOW), left("clean", step="scanning")]
+    assert gone == [None, None, None, None]  # scanning: no estimate yet, the screen says Starting
     assert document_time_left({"status": "clean", "progress": None, "deleted_at": None}, now=NOW) is None
 
 

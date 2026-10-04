@@ -121,7 +121,8 @@ _OPEN = (
 # The time left's history (kaagaz.eta): the newest ready runs, on processing_runs_started.
 _RECENT = (
     "SELECT ocr_engine, pages_ocr, pages_text_layer + pages_blank AS pages_fast, pages_cells, seconds_ocr,"
-    " config -> 'seconds_reading' AS seconds_reading, config -> 'seconds_after_reading' AS seconds_after"
+    " config -> 'seconds_reading' AS seconds_reading, config -> 'seconds_after_reading' AS seconds_after,"
+    " config -> 'seconds_preparing' AS seconds_preparing"
     " FROM processing_runs WHERE customer_id = :c AND status = 'ready'"
     " ORDER BY started_at DESC LIMIT :k"
 )
@@ -186,8 +187,10 @@ def recent_timings(conn: Connection, customer_id: str) -> list[RunTiming]:
     missing or not a number is None. On processing_runs_started: O(log R + runs passed)."""
     rows = conn.execute(text(_RECENT), {"c": customer_id, "k": HISTORY_RUNS}).all()
     return [
-        RunTiming(engine, ocr, fast, cells, seconds_ocr, as_seconds(reading), as_seconds(after))
-        for engine, ocr, fast, cells, seconds_ocr, reading, after in rows
+        RunTiming(
+            engine, ocr, fast, cells, seconds_ocr, as_seconds(reading), as_seconds(after), as_seconds(prep)
+        )
+        for engine, ocr, fast, cells, seconds_ocr, reading, after, prep in rows
     ]
 
 
