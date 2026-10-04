@@ -3,7 +3,7 @@
 A family is the unit (plan 9.3): each test's document has two versions, and
 every route acts on both. Moving to Trash keeps every row and file, so a
 restore brings everything back; only "delete forever" removes them, only for
-a document already in Trash, and only with an admin session. A family in
+a document already in Trash, and only with an admin session (or an admin's grant). A family in
 Trash can't be renamed, moved, tagged or given a new version.
 """
 
@@ -255,9 +255,10 @@ def test_only_an_admin_session_deletes_forever(db: Database) -> None:
     assert _trash(uploader, first) == 204
     admin_app_session = api.sign_in(uploader.customer_id, "admin")
 
-    for signed in (uploader, admin_app_session):
+    # A member needs an admin's grant (test_api_delete_forever_grant.py); an admin, their admin session.
+    for signed, code in ((uploader, "forbidden"), (admin_app_session, "admin_session_required")):
         refused = signed.client.delete(f"/api/documents/{first}/permanent", headers=CSRF)
-        assert (refused.status_code, refused.json()["error"]["code"]) == (403, "admin_session_required")
+        assert (refused.status_code, refused.json()["error"]["code"]) == (403, code)
     assert _counts(db, uploader.customer_id) == (2, 2, 2)
     admin = api.admin_sign_in(uploader.customer_id)
     assert admin.client.delete(f"/api/documents/{first}/permanent", headers=CSRF).status_code == 204

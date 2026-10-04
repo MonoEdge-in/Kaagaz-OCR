@@ -31,6 +31,8 @@ MESSAGES = {
     "forbidden": "You don't have permission to do this.",
     "admin_session_required": "Sign in on the admin screen to use this.",
     "password_change_required": "Set a new password to continue.",
+    # Council 4 Oct 2026 (PROVISIONAL): a member or reviewer allowed to delete forever.
+    "password_confirm_required": "Type your password again to delete forever.",
     "csrf": "This request was refused. Reload the page and try again.",
     "not_found": "We couldn't find that.",
     "method_not_allowed": "This action is not available here.",

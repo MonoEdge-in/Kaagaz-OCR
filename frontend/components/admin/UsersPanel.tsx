@@ -4,7 +4,9 @@
 // role, disabling or enabling an account, unlocking it, resetting its password
 // or its 2FA, and adding a new user. An admin cannot disable themselves, drop
 // their own admin role or reset their own 2FA; the controls for that are not
-// shown, and the server refuses it anyway.
+// shown, and the server refuses it anyway. An admin may allow a member or
+// reviewer to delete forever (asked first; needs the admin's own two-step
+// sign-in), and stop it again.
 //
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
@@ -21,6 +23,7 @@ import {
   listUsers,
   resetUser2fa,
   resetUserPassword,
+  setDeleteForever,
   unlockUser,
   updateUser,
 } from "@/lib/api";
@@ -32,7 +35,9 @@ import {
   MIN_PASSWORD_LENGTH,
   NEW_USER_FIELD_IDS,
   ROLES,
+  allowForeverQuestion,
   firstInvalidField,
+  foreverControl,
   userActions,
   userStatus,
   validateNewUser,
@@ -48,7 +53,13 @@ interface Revealed {
   password: string;
 }
 
-export function UsersPanel({ currentUserId }: { currentUserId: string }) {
+export function UsersPanel({
+  currentUserId,
+  adminTwoStep,
+}: {
+  currentUserId: string;
+  adminTwoStep: boolean;
+}) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
@@ -150,6 +161,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
                   key={user.id}
                   user={user}
                   isSelf={user.id === currentUserId}
+                  adminTwoStep={adminTwoStep}
                   now={now}
                   onChanged={replace}
                   onPasswordReset={setRevealed}
@@ -166,8 +178,9 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
   );
 }
 
-/** The two resets ask first: each signs the user out on every device. */
-type Confirming = "password" | "2fa";
+/** The two resets ask first (each signs the user out on every device), and so does
+ * allowing Delete forever. */
+type Confirming = "password" | "2fa" | "forever";
 
 const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
   password: (name) =>
@@ -175,17 +188,20 @@ const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
   "2fa": (name) =>
     `Reset ${name}'s 2FA? They are signed out and set up the app again at their next ` +
     "admin sign-in.",
+  forever: allowForeverQuestion,
 };
 
 function UserRow({
   user,
   isSelf,
+  adminTwoStep,
   now,
   onChanged,
   onPasswordReset,
 }: {
   user: AdminUser;
   isSelf: boolean;
+  adminTwoStep: boolean;
   now: number;
   onChanged: (user: AdminUser) => void;
   onPasswordReset: (revealed: Revealed) => void;
@@ -223,15 +239,21 @@ function UserRow({
     act(() => updateUser(user.id, changes), done);
 
   const confirmed = (kind: Confirming) =>
-    kind === "password"
-      ? act(async () => {
-          const reset = await resetUserPassword(user.id);
-          onPasswordReset({ name: user.display_name, password: reset.temporary_password });
-          return reset.user;
-        }, "Password reset.")
-      : act(() => resetUser2fa(user.id), "2FA reset.");
+    kind === "forever"
+      ? act(() => setDeleteForever(user.id, true), "Delete forever allowed.")
+      : kind === "password"
+        ? act(async () => {
+            const reset = await resetUserPassword(user.id);
+            onPasswordReset({ name: user.display_name, password: reset.temporary_password });
+            return reset.user;
+          }, "Password reset.")
+        : act(() => resetUser2fa(user.id), "2FA reset.");
 
   const can = userActions(user, { isSelf, now });
+  const forever = foreverControl(user, { isSelf, adminTwoStep });
+  const reasonId = `forever-reason-${user.id}`;
+  const reason = forever.kind === "allow" ? forever.disabledReason : null;
+  const foreverWord = forever.kind === "stop" ? "Stop" : "Allow";
   const selectId = `role-${user.id}`;
   const confirmId = `confirm-${user.id}`;
   return (
@@ -290,8 +312,10 @@ function UserRow({
                 {busy ? (
                   <>
                     <span className="spinner" aria-hidden="true" />
-                    Resetting…
+                    {confirming === "forever" ? "Saving…" : "Resetting…"}
                   </>
+                ) : confirming === "forever" ? (
+                  "Yes, allow"
                 ) : (
                   "Yes, reset"
                 )}
@@ -357,6 +381,27 @@ function UserRow({
               >
                 Reset 2FA
               </button>
+            )}
+            {forever.kind !== "none" && (
+              <button
+                type="button"
+                className="btn"
+                disabled={busy || reason !== null}
+                onClick={() =>
+                  forever.kind === "stop"
+                    ? void act(() => setDeleteForever(user.id, false), "Delete forever stopped.")
+                    : setConfirming("forever")
+                }
+                aria-label={`${foreverWord} Delete forever for ${user.display_name}`}
+                aria-describedby={reason ? reasonId : undefined}
+              >
+                {foreverWord} Delete forever
+              </button>
+            )}
+            {reason && (
+              <span id={reasonId} className="muted">
+                {reason}
+              </span>
             )}
           </div>
         )}

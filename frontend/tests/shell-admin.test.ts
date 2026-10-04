@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   TABS,
   adminGate,
+  allowForeverQuestion,
   describeAction,
   describeDetails,
   firstInvalidField,
+  foreverControl,
   isLocked,
   lastRunText,
   lockedUntilText,
@@ -34,6 +36,7 @@ const user = (changes: Partial<AdminUser> = {}): AdminUser => ({
   locked_until: null,
   totp_enabled: false,
   must_change_password: false,
+  can_delete_forever: false,
   ...changes,
 });
 
@@ -125,6 +128,34 @@ describe("userActions", () => {
   });
 });
 
+describe("Delete forever, granted (council 4 Oct 2026)", () => {
+  const control = (u: AdminUser, isSelf = false, adminTwoStep = true) =>
+    foreverControl(u, { isSelf, adminTwoStep });
+
+  it("offers Allow, or Stop once allowed, for a member or reviewer; nothing for an admin or yourself", () => {
+    expect(control(user())).toEqual({ kind: "allow", disabledReason: null });
+    expect(control(user({ role: "reviewer", can_delete_forever: true }), false, false).kind).toBe("stop");
+    expect([control(user({ role: "admin" })).kind, control(user(), true).kind]).toEqual(["none", "none"]);
+    expect(control(user(), false, false)).toEqual({
+      kind: "allow",
+      disabledReason: "Turn on your two-step sign-in in Settings to allow this.",
+    });
+  });
+
+  it("asks first, says it covers all of Trash, and shows the chip and the audit words", () => {
+    expect(allowForeverQuestion("Ravi")).toBe(
+      "Let Ravi delete documents in Trash forever? This covers every document in Trash, " +
+        "not only theirs, and can't be undone. They will type their password each time.",
+    );
+    expect(userStatus(user({ can_delete_forever: true }), NOW).map((part) => part.text)).toEqual([
+      "Active",
+      "Can delete forever",
+    ]);
+    expect(describeAction("user.delete_forever_on")).toBe("Allowed a user to delete forever");
+    expect(describeAction("user.delete_forever_off")).toBe("Stopped a user deleting forever");
+  });
+});
+
 describe("adminGate", () => {
   const me = (role: Role, scope: SessionScope): Me => ({
     user: {
@@ -134,6 +165,7 @@ describe("adminGate", () => {
       role,
       must_change_password: false,
       totp_enabled: false,
+      can_delete_forever: false,
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
