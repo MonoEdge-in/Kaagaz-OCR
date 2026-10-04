@@ -1,0 +1,28 @@
+# Caddy in front of Kaagaz on the EC2 server (docker-compose.prod.yml). It gets and
+# renews the Let's Encrypt certificate for KAAGAZ_DOMAIN, redirects HTTP to HTTPS,
+# sends /api/* to the API unchanged and everything else to the Next.js server.
+# Both values come from the server's .env; nothing secret is in this file.
+{
+	email {$ACME_EMAIL}
+}
+
+{$KAAGAZ_DOMAIN} {
+	# Above the 50 MB upload limit; the API refuses a bigger file with its own message.
+	request_body {
+		max_size 60MB
+	}
+
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+
+	# One JSON line per request on stdout; the idle check reads these (WP-G).
+	log {
+		output stdout
+		format json
+	}
+}
