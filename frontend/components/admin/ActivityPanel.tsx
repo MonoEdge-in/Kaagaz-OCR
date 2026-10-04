@@ -11,6 +11,7 @@ import { formatDateTime } from "@/lib/format";
 import type { AuditEntry } from "@/lib/types";
 import { pageInfo } from "@/components/documents/logic";
 import table from "@/components/documents/Table.module.css";
+import { WrapName } from "@/components/documents/WrapName";
 import { AUDIT_PAGE_SIZE, describeAction, describeDetails } from "./logic";
 import styles from "./Admin.module.css";
 
@@ -120,7 +121,7 @@ export function ActivityPanel() {
                     {entry.actor_name ?? "—"}
                   </td>
                   <td role="cell" data-label="What" className={styles.strong}>
-                    {describeAction(entry.action)}
+                    <WrapName name={describeAction(entry.action)} />
                   </td>
                   <td role="cell" data-label="On" className={styles.wrap}>
                     {entry.target_type ?? "—"}

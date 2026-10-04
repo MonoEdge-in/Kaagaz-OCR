@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { StatusChip } from "@/components/documents/StatusChip";
 import { pageInfo } from "@/components/documents/logic";
 import table from "@/components/documents/Table.module.css";
+import { WrapName } from "@/components/documents/WrapName";
 import { Icon } from "@/components/ui/Icon";
 import { listFailed, reprocessDocument } from "@/lib/api";
 import type { FailedDocument } from "@/lib/types";
@@ -110,7 +111,9 @@ export function FailedPanel() {
                       data-label="Document"
                       className={`${styles.strong} ${styles.wrap}`}
                     >
-                      <Link href={`/documents/${item.id}`}>{item.display_name}</Link>
+                      <Link href={`/documents/${item.id}`}>
+                        <WrapName name={item.display_name} />
+                      </Link>
                     </td>
                     <td role="cell" data-label="Status">
                       <StatusChip status={item.status} />

@@ -636,10 +636,11 @@
 }
 
 /* A short window (a phone on its side, a big zoom): the box scrolls with the
-   thread instead of covering it. The thread stays the one scroll area. */
+   thread instead of covering it. The thread stays the one scroll area.
+   Relative, not static, so what is placed inside the box stays inside it. */
 @media (max-height: 30rem) {
   .composer {
-    position: static;
+    position: relative;
   }
 }
 
