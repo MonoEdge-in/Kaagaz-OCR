@@ -30,9 +30,9 @@ The steps (docs/architecture.md):
    when every value or piece behind the answer is verified, and no sentence
    rests on neighbours alone (PROVISIONAL, plan decision 8: the gate never
    judged them). Nor is it verified when the gate passed only through the
-   glossary's Marathi and Hindi words, or a sentence citing Devanagari
-   evidence was checked against nothing (``verify.unchecked_cross_script``;
-   council 2 Oct 2026, PR2).
+   glossary's Marathi and Hindi words, or a sentence citing evidence in a script
+   other than Latin was checked against nothing (``verify.unchecked_cross_script``;
+   council 2 Oct 2026, PR2; any script, council 4 Oct 2026).
 7. My words (council 3 Oct 2026, A3, PROVISIONAL): on the search route only, the
    asking user's own words the question uses (``expansion.expand``, read once inside
    ``Database.user``) are searched as OR alternatives and may count at the gate
@@ -104,7 +104,7 @@ from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
-from kaagaz.chunking.script import ascii_digits, has_devanagari_letters
+from kaagaz.chunking.script import ascii_digits, has_devanagari_letters, has_other_script_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.indexing import query_input, recipe_tag
@@ -432,7 +432,7 @@ class AnswerService:
         on_neighbours = any(_rests_on_neighbours(s, by_n, texts) for s in kept)
         # Nor is one the glossary or a sound alone let through or chose the quote of, one
         # checked against nothing, one a cited hit does not pass the gate on its own, or one
-        # with an English word that Devanagari evidence cannot back (council, PR2 and PR 2b,
+        # with an English word that evidence in another script cannot back (council, PR2 and PR 2b,
         # and their code reviews). Only the question's dropped words (who, is, ka...): a
         # content word of it, a name the question puts forward, must be in the cited text
         # itself, by sound, or through the glossary's English.
@@ -582,19 +582,19 @@ def _latin_words(text: str) -> set[str]:
 
 
 def _unbacked_latin(sentence: DraftSentence, texts: dict[int, str], asked: set[str]) -> bool:
-    """True when a text the sentence cites has Devanagari letters and the sentence holds an
-    English word that neither the question's dropped words (``asked``), ``_FUNCTION_WORDS``,
-    the English side of a glossary word in the cited text, nor the cited texts themselves
-    have: "The owner (भोगवटादार) is Sita Deshmukh" names nobody the evidence names. Fail
-    closed: Latin words in the cited text ("Page 1 of 1", "GSTIN") only add to what is
-    allowed; they never turn the check off. A word written the Romanised way (PR 2b) is
-    backed only when its sound key equals that of a word of the cited text's Latin spelling
-    ("Ramchandra" for रामचंद्र; never "Ramchandran", ``glossary.sounds_like`` strict); never by
-    its glossary meaning (Malik, Kisan and Bhumika are names), nor because the question has it
-    ("... is malak patil" for "malak kon ahe?"). O(s * w + e * g) for w words and g glossary
-    words."""
+    """True when a text the sentence cites has letters of a script other than Latin (Devanagari,
+    Gujarati...) and the sentence holds an English word that neither the question's dropped
+    words (``asked``), ``_FUNCTION_WORDS``, the English side of a glossary word in the cited
+    text, nor the cited texts themselves have: "The owner (भोगवटादार) is Sita Deshmukh" names
+    nobody the evidence names. Fail closed: Latin words in the cited text ("Page 1 of 1",
+    "GSTIN") only add to what is allowed; they never turn the check off. A word written the
+    Romanised way (PR 2b) is backed only when its sound key equals that of a word of the cited
+    text's Latin spelling ("Ramchandra" for रामचंद्र; never "Ramchandran",
+    ``glossary.sounds_like`` strict); never by its glossary meaning (Malik, Kisan and Bhumika
+    are names), nor because the question has it ("... is malak patil" for "malak kon ahe?").
+    O(s * w + e * g) for w words and g glossary words."""
     cited = [texts[n] for n in sentence.evidence if n in texts]
-    if not any(has_devanagari_letters(text) for text in cited):
+    if not any(has_other_script_letters(text) for text in cited):
         return False
     found: set[str] = set().union(*(_latin_words(text) for text in cited))
     english = glossary.english_for("\n".join(cited))
