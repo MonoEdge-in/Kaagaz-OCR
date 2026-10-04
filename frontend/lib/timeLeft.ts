@@ -1,4 +1,4 @@
-// "Ready in about 40 s" next to a document being read (PRD 4 #13, council 4 Oct
+// "Ready in about 40 s" next to a document being read (PRD 4 #13, councils of 4 Oct
 // 2026; wording and thresholds PROVISIONAL). Pure: given performance.now() times.
 //
 // - Each answer counts down from when it arrived (markReceived), on the shared
@@ -6,9 +6,12 @@
 // - A lower estimate applies at once; a higher one within max(10 s, 20%) of what
 //   is shown is absorbed; a bigger rise in the same step says "Taking longer than
 //   usual" until the next answer, which then applies. A new step applies at once.
-// - While reading, it never counts below the time after reading (the floor).
+// - While preparing or reading, it never counts below the time after that step's
+//   pages (the floor: after_seconds).
 // - No move past slow_after_seconds: "Taking longer than usual". Low confidence:
-//   "Estimating...", never a number it can't stand behind.
+//   the number is labelled a rough guess, "About 3 min (rough guess)".
+//   "Estimating..." only when there is no estimate at all; "Starting..." while the
+//   file is scanned.
 // - 60 s or more: whole minutes; 10 to 59 s: 5 s steps, rounded up; under 10 s:
 //   "Almost done". Reduced motion: minutes only. Screen-reader words change only
 //   by the minute.
@@ -24,7 +27,11 @@ export interface Held {
   rising: boolean; // a big rise in the same step: "taking longer" until the next answer
 }
 
-export type TimeLeftView = { state: "waiting" | "estimating" | "counting" | "almost" | "longer"; text: string; spoken: string };
+export type TimeLeftView = {
+  state: "waiting" | "starting" | "estimating" | "counting" | "rough" | "almost" | "longer";
+  text: string;
+  spoken: string;
+};
 
 const received = new WeakMap<TimeLeft, number>();
 
@@ -56,21 +63,29 @@ function stalled(held: Held, now: number): boolean {
 }
 
 export const WAITING: TimeLeftView = { state: "waiting", text: "Waiting to start", spoken: "Waiting to start" };
+export const STARTING: TimeLeftView = { state: "starting", text: "Starting\u2026", spoken: "Starting" };
+export const ESTIMATING: TimeLeftView = { state: "estimating", text: "Estimating\u2026", spoken: "Estimating the time left" };
+
+/** The seconds left at ``now``, counted down from the held answer, never below the floor. */
+export function secondsLeft(held: Held, now: number): number {
+  const left = Math.max(0, held.seconds - Math.max(0, now - held.anchor) / 1000);
+  const floored = held.step === "preparing" || held.step === "reading";
+  return floored ? Math.max(left, held.value.after_seconds) : left;
+}
 
 /** What to show at ``now``. */
 export function describe(held: Held, now: number, reducedMotion: boolean): TimeLeftView {
   if (held.rising || stalled(held, now)) {
     return { state: "longer", text: "Taking longer than usual", spoken: "Taking longer than usual" };
   }
-  if (held.value.confidence === "low") {
-    return { state: "estimating", text: "Estimating\u2026", spoken: "Estimating the time left" };
-  }
-  let left = Math.max(0, held.seconds - Math.max(0, now - held.anchor) / 1000);
-  if (held.step === "reading") left = Math.max(left, held.value.after_seconds);
+  const left = secondsLeft(held, now);
   if (left < 10) return { state: "almost", text: "Almost done", spoken: "Almost done" };
   const minutes = Math.max(1, Math.round(left / 60));
-  const spoken = left < 60 ? "Ready in less than a minute" : `Ready in about ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  const when = left < 60 ? "in less than a minute" : `in about ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
   const step = Math.ceil(left / 5) * 5;
-  const text = left >= 60 || reducedMotion || step >= 60 ? `Ready in about ${minutes} min` : `Ready in about ${step} s`;
-  return { state: "counting", text, spoken };
+  const amount = left >= 60 || reducedMotion || step >= 60 ? `${minutes} min` : `${step} s`;
+  if (held.value.confidence === "low") {
+    return { state: "rough", text: `About ${amount} (rough guess)`, spoken: `Rough guess: ready ${when}` };
+  }
+  return { state: "counting", text: `Ready in about ${amount}`, spoken: `Ready ${when}` };
 }

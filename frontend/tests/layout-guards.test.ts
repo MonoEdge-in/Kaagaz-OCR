@@ -186,6 +186,8 @@ describe("layout guards", () => {
       (rule) => selectors(rule).includes(".viewer") && /position:\s*sticky/.test(rule.body),
     );
     expect(sticky.map((rule) => rule.at)).toEqual([`@media ${STICKY_VIEWER_QUERY}`]);
+  });
+
   it("leaves the admin Users table's User column room where it becomes a table", () => {
     const found = budgets(ADMIN_CSS, "reflow", USER_REM);
     expect(found.map((b) => b.start)).toEqual([48]);

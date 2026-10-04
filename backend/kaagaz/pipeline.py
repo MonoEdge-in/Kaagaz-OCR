@@ -110,7 +110,7 @@ from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
-from kaagaz.eta import Estimate, Pair, Rates, RunTiming, after_reading, rates, reading
+from kaagaz.eta import Estimate, Pair, Rates, RunTiming, after_reading, preparing, rates, reading
 from kaagaz.extraction.card import ChatModel
 from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
@@ -234,9 +234,12 @@ class Progress:
     total: int
     # The time-left estimate (kaagaz.eta) written with it: not part of which step this is.
     estimate: Estimate | None = field(default=None, compare=False)
+    started_at: datetime | None = field(default=None, compare=False)  # the run's start, for the percentage
 
     def to_json(self) -> dict[str, object]:
         shown: dict[str, object] = {"step": self.step, "done": self.done, "total": self.total}
+        if self.started_at is not None:
+            shown["started_at"] = self.started_at.isoformat()
         return shown if self.estimate is None else {**shown, **self.estimate.to_json()}
 
 
@@ -411,6 +414,7 @@ class _Run:
 
     run_id: str | None
     started: float
+    started_at: datetime | None = None  # the clock at the start, shown with each progress
     routes: Counter[str] = field(default_factory=Counter)
     vision_crops: int = 0
     values_verified: int = 0
@@ -424,6 +428,8 @@ class _Run:
     quote_config: dict[str, int] = field(default_factory=dict)  # loose, ambiguous, summary_dropped (ML 10)
     # The time left (kaagaz.eta): marks from the timer, and this run's own pages by kind.
     rates: Rates | None = None
+    preparing_started: float | None = None
+    pages_prepared: int = 0
     reading_started: float | None = None
     reading_ended: float | None = None
     moved: float = 0.0  # the timer when the last page was read
@@ -547,6 +553,7 @@ class DocumentProcessor:
             raise JobFailed("content_changed", retryable=False)
         heartbeat()
 
+        run.rates, run.preparing_started = self._rates(job), self._timer()
         pictured: set[int] = set()  # the pages whose picture is stored
 
         def on_picture(page_no: int, count: int, picture: Image.Image) -> None:
@@ -558,7 +565,7 @@ class DocumentProcessor:
         prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data, on_picture))
         pages = [_page_record(info, prepared, pictured) for info in prepared.pages]
 
-        run.rates = self._rates(job)
+        run.pages_prepared = len(pictured)
         run.reading_started = run.moved = self._timer()
         self._progress(job, run, "reading", 0, len(pages))
         reads: list[RouteDecision | None] = []  # how each page was read, as the reader said
@@ -831,10 +838,10 @@ class DocumentProcessor:
         if self._ocr_meter is not None:
             self._ocr_meter.take()
             self._ocr_meter.take_fallback_pages()
-        run_id = None
+        run_id, now = None, self._clock()
         if self._runs is not None:
-            run_id = self._runs.start(job.customer_id, job.document_id, now=self._clock())
-        return _Run(run_id, self._timer())
+            run_id = self._runs.start(job.customer_id, job.document_id, now=now)
+        return _Run(run_id, self._timer(), started_at=now)
 
     def _finished(self, run: _Run, status: str, error_code: str | None) -> FinishedRun | None:
         """The run as it ends now, with everything it counted; None without runs.
@@ -894,7 +901,7 @@ class DocumentProcessor:
         if self._progress_store is None:
             return
         try:
-            progress = Progress(step, done, total, self._estimate(run, step, done, total))
+            progress = Progress(step, done, total, self._estimate(run, step, done, total), run.started_at)
             self._progress_store.set_progress(job.customer_id, job.document_id, progress, run_id=run.run_id)
         except BackendUnavailable:
             _log.warning(
@@ -940,25 +947,32 @@ class DocumentProcessor:
         return rates(history, None if self._ocr_meter is None else self._ocr_meter.name)
 
     def _estimate(self, run: _Run, step: Step, done: int, total: int) -> Estimate | None:
-        """The time left written with this step: while reading, from the pages so far;
-        from the end of reading, one estimate kept for every understanding step."""
-        if run.rates is None or step not in ("reading", "understanding"):
+        """The time left written with this step: while preparing or reading, from the
+        pages so far; from the end of reading, one estimate kept for every later step."""
+        if run.rates is None or step == "scanning":
             return None
-        if step == "understanding":
+        if step in ("understanding", "indexing"):
             if run.after is None:
                 run.after = after_reading(run.rates, self._clock())
             return run.after
+        if step == "preparing":
+            spent = 0.0 if run.preparing_started is None else max(0.0, self._timer() - run.preparing_started)
+            return preparing(run.rates, self._clock(), done, total, (spent, done))
         ocr, fast = run.measured.get("ocr", _NOTHING), run.measured.get("fast", _NOTHING)
         return reading(run.rates, self._clock(), done, total, ocr, fast)
 
 
 def _step_seconds(run: _Run, now: float) -> dict[str, float]:
-    """The run's ``seconds_reading`` and ``seconds_after_reading`` for its config, from the
-    timer's marks; none for a run that did not finish reading."""
+    """The run's ``seconds_preparing`` (when a page was drawn), ``seconds_reading`` and
+    ``seconds_after_reading`` for its config, from the timer's marks; none for a run that
+    did not finish reading."""
     if run.reading_started is None or run.reading_ended is None:
         return {}
     reading, after = max(0.0, run.reading_ended - run.reading_started), max(0.0, now - run.reading_ended)
-    return {"seconds_reading": round(reading, 3), "seconds_after_reading": round(after, 3)}
+    timed = {"seconds_reading": round(reading, 3), "seconds_after_reading": round(after, 3)}
+    if run.pages_prepared and run.preparing_started is not None:
+        timed["seconds_preparing"] = round(max(0.0, run.reading_started - run.preparing_started), 3)
+    return timed
 
 
 def _or_fail[T](call: Callable[[], T]) -> T:
