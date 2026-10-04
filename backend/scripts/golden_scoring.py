@@ -9,10 +9,10 @@ checks the file against the G2 minimums, and ``score`` marks one answer (the
 
 * **right**: a number answer holds the expected value within ``tolerance``
   (absolute, in the value's own unit: rupees for money; 0 by default), read
-  with verify's number parser after Devanagari digits are folded, so
-  "Rs. 11,800.00", "₹11,800", "1,20,000" and Devanagari digits all parse; a text
-  answer holds one of the expected texts as a whole word, any case ("8%" is
-  not in "18%"). Either is wrong when it also holds a value of ``not``: the
+  with verify's number parser after every script's digits are folded, so
+  "Rs. 11,800.00", "₹11,800", "1,20,000" and Devanagari or Bengali digits all parse;
+  a text answer holds one of the expected texts as a whole word, any case, digits
+  folded on both sides ("8%" is not in "18%"). Either is wrong when it also holds a value of ``not``: the
   near answers a list of everything would hold;
 * **wrong**: anything else for a question that has an answer;
 * **correct not-found** when the status is "not_found", else **missed
@@ -25,6 +25,10 @@ handover bar wants 0 of them (G3).
 document and spans an expected page (``page_from <= page <= page_to``).
 Not-found questions and answers on the fixed route (no search) are left out,
 so ``Totals`` keeps its own denominator.
+
+``questions_xlang.json`` (council 4 Oct 2026) has the same entries plus a
+``split`` (dev or test, a slice too) and three tags: the document's language, the
+question's style and its type; ``xlang_problems`` checks it.
 
 Time is O(q) per file and O(s + h) per answer, in its characters and hits.
 """
@@ -40,7 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from kaagaz.answering.verify import numbers_in
-from kaagaz.chunking.script import fold_digits
+from kaagaz.chunking.script import ascii_digits
 
 QUESTION_COUNT = 30
 # G2's minimum counts per slice, plus the 3.1a plan's near misses and topic change.
@@ -59,6 +63,15 @@ KINDS = ("number", "text", "not_found")
 RECALL_K = 5
 # questions.json is frozen (plan 3.1a): any edit must change this line too, and means a new baseline.
 QUESTIONS_SHA256 = "246d31c813a11279cc006e45ce9cae1048da043e12c7a7132ac224824a92d083"
+# questions_xlang.json: English and Romanised questions over scanned non-English pages.
+XLANG_SHA256 = "8e1e0916327bd70d0f5df8b87dce044fb0b26e8bed5161ed4a3b6b0abba71f24"
+XLANG_COUNT, XLANG_NOT_FOUND = 60, 10
+XLANG_TAGS = (
+    frozenset({"hi", "mr", "gu", "bn", "ta", "ur"}),  # the document's language
+    frozenset({"english", "romanised"}),  # how the question is typed
+    frozenset({"name", "number", "date", "topic"}),  # what it asks for
+)
+SPLITS = ("dev", "test")
 # A text matches only as a whole: no letter, digit or "/" (or "." before it) touching it.
 _BEFORE, _AFTER = r"(?<![0-9A-Za-z\u0900-\u097F/.])", r"(?![0-9A-Za-z\u0900-\u097F/])"
 
@@ -134,7 +147,7 @@ def problems(raw: Any, documents: Collection[str]) -> list[str]:
             found.append(f"not a question with an id: {item!r}")
             continue
         qid = item["id"]
-        mine = _question_problems(item, seen, documents)
+        mine = _question_problems(item, seen, documents, TAGS)
         if qid in seen:
             mine.append("the id is used twice")
         found += [f"{qid}: {problem}" for problem in mine]
@@ -148,14 +161,48 @@ def problems(raw: Any, documents: Collection[str]) -> list[str]:
     return found
 
 
-def _question_problems(item: dict[str, Any], seen: set[str], documents: Collection[str]) -> list[str]:
+def xlang_problems(raw: Any, documents: Collection[str]) -> list[str]:
+    """``problems`` for questions_xlang.json: its counts, one tag from each group, a
+    split, the document of every question (not-found ones too), and typed letters only."""
+    if not isinstance(raw, list):
+        return ["the file must be a list of questions"]
+    found: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            found.append(f"not a question with an id: {item!r}")
+            continue
+        qid = item["id"]
+        mine = _question_problems(item, seen, documents, frozenset().union(*XLANG_TAGS))
+        if qid in seen:
+            mine.append("the id is used twice")
+        if not mine and any(len(group.intersection(item["tags"])) != 1 for group in XLANG_TAGS):
+            mine.append("tags must name one language, one style and one type")
+        if item.get("split") not in SPLITS:
+            mine.append(f"split must be one of {SPLITS}")
+        if not mine and item["expect"].get("document") is None:
+            mine.append("every question names its document")
+        if not mine and not item["question"].isascii():
+            mine.append("the question must be typed in English letters")
+        found += [f"{qid}: {problem}" for problem in mine]
+        seen.add(qid)
+    asked = [item for item in raw if isinstance(item, dict) and isinstance(item.get("expect"), dict)]
+    missing = sum(item["expect"].get("kind") == "not_found" for item in asked)
+    if (len(raw), missing) != (XLANG_COUNT, XLANG_NOT_FOUND):
+        found.append(f"{len(raw)} questions and {missing} not-found, not {XLANG_COUNT} and {XLANG_NOT_FOUND}")
+    return found
+
+
+def _question_problems(
+    item: dict[str, Any], seen: set[str], documents: Collection[str], allowed: frozenset[str]
+) -> list[str]:
     expect, tags = item.get("expect"), item.get("tags")
     if not isinstance(item.get("question"), str) or not item["question"].strip():
         return ["no question text"]
     if not isinstance(expect, dict) or expect.get("kind") not in KINDS:
         return [f"expect.kind must be one of {KINDS}"]
-    if not isinstance(tags, list) or not set(tags) <= TAGS:
-        return [f"tags must be a list from {sorted(TAGS)}"]
+    if not isinstance(tags, list) or not set(tags) <= allowed:
+        return [f"tags must be a list from {sorted(allowed)}"]
     pages = expect.get("pages")
     if not isinstance(pages, list) or not all(isinstance(p, int) and p >= 1 for p in pages):
         return ["expect.pages must be a list of page numbers from 1"]
@@ -195,6 +242,7 @@ def question_from(item: Mapping[str, Any]) -> Question:
     expect = item["expect"]
     slices = [*item["tags"], *(["not_found"] if expect["kind"] == "not_found" else [])]
     slices += ["follow_up"] if item.get("follow_up_of") is not None else []
+    slices += [item["split"]] if "split" in item else []
     tolerance = Decimal(str(expect.get("tolerance", 0)))
     return Question(
         item["id"],
@@ -249,8 +297,9 @@ def _holds_value(value: Any, tolerance: Decimal, text: str) -> bool:
     passes unless ``expect.not`` lists them; binding waits for the atom check (Part B)."""
     if not isinstance(value, str):
         target = Decimal(str(value))
-        return any(abs(found - target) <= tolerance for found in numbers_in(fold_digits(text)))
-    plain, wanted = " ".join(text.casefold().split()), " ".join(value.casefold().split())
+        return any(abs(found - target) <= tolerance for found in numbers_in(ascii_digits(text)))
+    plain = " ".join(ascii_digits(text).casefold().split())
+    wanted = " ".join(ascii_digits(value).casefold().split())
     return re.search(_BEFORE + re.escape(wanted) + _AFTER, plain) is not None
 
 
