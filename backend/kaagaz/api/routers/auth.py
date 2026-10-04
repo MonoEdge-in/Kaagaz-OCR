@@ -14,6 +14,9 @@
   other browser is signed out, this one is re-signed.
 * ``POST /auth/password`` {current_password, new_password}: a new password;
   every other browser is signed out, this one is re-signed.
+* ``POST /auth/confirm-password`` {password}: only for a member or reviewer an
+  admin allowed to delete forever; the password, counted like a sign-in, then a
+  5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
 * ``POST /auth/logout``, ``POST /auth/logout-everywhere``, ``GET /auth/me``.
 
 Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
@@ -62,6 +65,7 @@ from kaagaz.api.auth import (
     new_session,
     read_enrol,
     session_claims,
+    set_confirm_cookie,
     set_session_cookie,
     sign_enrol,
     spend_password_time,
@@ -260,6 +264,19 @@ def change_password(
         user, session_version=int(row["session_version"]), must_change_password=False
     )
     return _keep_this_browser(request, context, changed, now)
+
+
+@router.post("/auth/confirm-password", status_code=204)
+def confirm_password(body: CurrentPasswordBody, user: User, context: Context) -> Response:
+    if user.role == "admin" or not user.delete_forever_allowed:
+        raise ApiError(403, "forbidden")  # nothing is counted
+    now = context.clock()
+    _check_current_password(context, user, body.password, now)
+    with context.db.customer(user.customer_id) as conn:
+        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+    response = Response(status_code=204)
+    set_confirm_cookie(response, user, context.settings, now=_unix(now))
+    return response
 
 
 @router.post("/auth/logout", status_code=204)

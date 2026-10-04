@@ -26,6 +26,7 @@ ADMIN_USER_FIELDS = {
     "locked_until",
     "totp_enabled",
     "must_change_password",
+    "can_delete_forever",
 }
 WRONG = "wrong password!!"
 

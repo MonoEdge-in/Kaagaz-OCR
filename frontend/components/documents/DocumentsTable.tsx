@@ -7,7 +7,8 @@
 // first; focus goes to Cancel, and back to Actions if it is cancelled. Restore
 // needs no question: nothing is lost. Ticked rows can be moved to Trash
 // together; in Trash they can be restored together, or deleted forever together
-// in an admin session (asked first). In Trash the list shows when each
+// by whoever may (canDeleteForever, asked first; a granted member or reviewer
+// types their password in that step). In Trash the list shows when each
 // document was trashed. Each row is the family's
 // current version; a newer one still being read, or one that failed, gets a
 // line under the name ("Version 3: ..."), linking to it. The Type column
@@ -17,8 +18,16 @@
 import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { PasswordField } from "@/components/ui/PasswordField";
 import { newerVersionText } from "@/components/viewer/versions";
-import { ApiError, deleteDocument, deleteDocumentForever, restoreDocument } from "@/lib/api";
+import {
+  ApiError,
+  confirmPassword,
+  deleteDocument,
+  deleteDocumentForever,
+  restoreDocument,
+} from "@/lib/api";
+import { useSession } from "@/lib/session";
 import { docTypeLabel, formatBytes, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { EditDialog, RowMenu } from "./DocumentActions";
@@ -35,9 +44,12 @@ import {
   bulkTrashQuestion,
   canDeleteForever,
   deletedForeverMessage,
+  foreverNeedsPassword,
   foreverQuestion,
+  lostTheRight,
   restoredMessage,
-  runEach,
+  runForever,
+  selectable,
   trashQuestion,
 } from "./trash";
 import styles from "./Documents.module.css";
@@ -67,8 +79,14 @@ interface Props extends RowEvents {
 
 export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events }: Props) {
   const { onRemoved } = events;
+  const { refresh } = useSession();
   const canForever = canDeleteForever(me);
-  const deletableItems = useMemo(() => items.filter((item) => item.can_delete), [items]);
+  const askPassword = foreverNeedsPassword(me);
+  const deletableItems = useMemo(
+    () => items.filter((item) => selectable(item, inTrash, canForever)),
+    [items, inTrash, canForever],
+  );
+  const [password, setPassword] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   // The selection's action waiting for its "now" button: Move to Trash or Delete forever.
   const [confirming, setConfirming] = useState<BulkAction | null>(null);
@@ -83,6 +101,10 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
     [selectedIds, visibleIds],
   );
   const selectedCount = visibleSelectedIds.size;
+  // Restore (and Move to Trash) only for rows with can_delete; Delete forever for every ticked row.
+  const restorableIds = items
+    .filter((item) => item.can_delete && visibleSelectedIds.has(item.id))
+    .map((item) => item.id);
   const allSelected = deletableItems.length > 0 && selectedCount === deletableItems.length;
   const partiallySelected = selectedCount > 0 && !allSelected;
 
@@ -105,31 +127,38 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
     setSelectedIds(new Set());
     setConfirming(null);
     setError(null);
+    setPassword("");
   }
 
   // Each selected document in turn. The ones that worked leave the list (it is
   // asked for again); the ones that failed stay ticked, to try again.
   async function runSelected(action: BulkAction) {
-    const ids = Array.from(visibleSelectedIds);
-    const call = BULK_CALLS[action];
+    const ids = action === "forever" ? Array.from(visibleSelectedIds) : restorableIds;
     setBusy(true);
     setBusyAction(action);
     setDeleteProgress({ done: 0, total: ids.length });
     setError(null);
-    const result = await runEach(ids, call, (handled) =>
+    const typed = action === "forever" && askPassword ? password : null;
+    const calls = { confirm: confirmPassword, remove: BULK_CALLS[action] };
+    const outcome = await runForever(ids, typed, calls, (handled) =>
       setDeleteProgress({ done: handled, total: ids.length }),
     );
-    setSelectedIds(new Set(result.failed));
-    setConfirming(null);
+    setPassword("");
     setBusy(false);
     setBusyAction(null);
     setDeleteProgress(null);
+    const failure = outcome.kind === "password" ? outcome.error : outcome.result.firstError;
+    if (lostTheRight(failure)) refresh();
+    // A refused password deleted nothing: the question stays open, with why.
+    if (outcome.kind === "password") {
+      setError(errorText(failure));
+      return;
+    }
+    const { result } = outcome;
+    setSelectedIds(new Set(result.failed));
+    setConfirming(null);
     if (result.failed.length > 0) {
-      const reason =
-        result.firstError instanceof ApiError
-          ? result.firstError.message
-          : "Check your connection, then try again.";
-      setError(bulkFailedMessage(action, result.failed.length, reason));
+      setError(bulkFailedMessage(action, result.failed.length, errorText(result.firstError)));
     }
     if (result.done.length > 0) onRemoved(bulkDoneMessage(action, result.done.length));
     // The buttons pressed are gone now: keep keyboard focus on the selection bar.
@@ -163,15 +192,17 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
             <>
               {inTrash ? (
                 <>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => void runSelected("restore")}
-                    disabled={busy}
-                  >
-                    <Icon name="history" />
-                    {busy ? "Restoring…" : `Restore (${selectedCount})`}
-                  </button>
+                  {restorableIds.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void runSelected("restore")}
+                      disabled={busy}
+                    >
+                      <Icon name="history" />
+                      {busy ? "Restoring…" : `Restore (${restorableIds.length})`}
+                    </button>
+                  )}
                   {canForever && (
                     <button
                       type="button"
@@ -207,11 +238,20 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
                   ? bulkForeverQuestion(selectedCount)
                   : bulkTrashQuestion(selectedCount)}
               </span>
+              {confirming === "forever" && askPassword && (
+                <PasswordField
+                  id="bulk-forever-password"
+                  label="Your password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={setPassword}
+                />
+              )}
               <button
                 type="button"
                 className="btn btn-danger"
                 onClick={() => void runSelected(confirming)}
-                disabled={busy}
+                disabled={busy || (confirming === "forever" && askPassword && password === "")}
               >
                 <Icon name="trash" />
                 {confirming === "forever"
@@ -271,8 +311,9 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
               document={document}
               now={now}
               inTrash={inTrash}
-              deletable={document.can_delete}
+              deletable={selectable(document, inTrash, canForever)}
               canForever={canForever}
+              askPassword={askPassword}
               selected={selectedIds.has(document.id)}
               onToggle={() => toggle(document.id)}
               tree={tree}
@@ -293,6 +334,11 @@ const BULK_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
   forever: deleteDocumentForever,
 };
 
+/** The server's words for a refusal, else a hint about the connection. */
+function errorText(caught: unknown): string {
+  return caught instanceof ApiError ? caught.message : "Check your connection, then try again.";
+}
+
 const PROGRESS_LABEL: Record<BulkAction, string> = {
   trash: "Moving to Trash",
   restore: "Restoring",
@@ -307,6 +353,7 @@ function DocumentRow({
   inTrash,
   deletable,
   canForever,
+  askPassword,
   selected,
   onToggle,
   tree,
@@ -316,8 +363,9 @@ function DocumentRow({
   document: DocumentSummary;
   now: number;
   inTrash: boolean;
-  deletable: boolean;
+  deletable: boolean; // it gets a checkbox (selectable)
   canForever: boolean;
+  askPassword: boolean;
   selected: boolean;
   onToggle: () => void;
   tree: FolderTree;
@@ -328,6 +376,8 @@ function DocumentRow({
   const [editing, setEditing] = useState<EditAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const { refresh } = useSession();
   const actionsButton = useRef<HTMLButtonElement | null>(null);
   const refocusActions = useRef(false);
   const afterEdit = useRef<"actions" | "list">("actions");
@@ -382,6 +432,7 @@ function DocumentRow({
       await call(document.id);
       events.onRemoved(message);
     } catch (caught) {
+      if (lostTheRight(caught)) refresh();
       setError(
         caught instanceof ApiError ? caught.message : `${failed} Check your connection, then try again.`,
       );
@@ -393,8 +444,14 @@ function DocumentRow({
 
   function confirm() {
     if (confirming === "forever") {
+      // A granted user's password is checked first: if it is refused, nothing is deleted.
+      const typed = askPassword ? password : null;
+      setPassword("");
       void act(
-        deleteDocumentForever,
+        async (id) => {
+          if (typed !== null) await confirmPassword(typed);
+          await deleteDocumentForever(id);
+        },
         deletedForeverMessage(document.display_name),
         "Could not delete this document.",
       );
@@ -501,8 +558,22 @@ function DocumentRow({
         {confirming !== null && (
           <div className={styles.confirm} role="group" aria-labelledby={`confirm-${document.id}`}>
             <span id={`confirm-${document.id}`}>{question}</span>
+            {confirming === "forever" && askPassword && (
+              <PasswordField
+                id={`forever-password-${document.id}`}
+                label="Your password"
+                autoComplete="current-password"
+                value={password}
+                onChange={setPassword}
+              />
+            )}
             <div className={styles.confirmButtons}>
-              <button type="button" className="btn btn-danger" onClick={confirm} disabled={busy}>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={confirm}
+                disabled={busy || (confirming === "forever" && askPassword && password === "")}
+              >
                 {busy ? (
                   <>
                     <span className="spinner" aria-hidden="true" />

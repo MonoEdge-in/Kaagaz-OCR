@@ -20,17 +20,22 @@ from fastapi.testclient import TestClient
 
 from kaagaz.api import auth, errors
 from kaagaz.api.auth import (
+    CONFIRM_COOKIE,
+    CONFIRM_SECONDS,
     ENROL_SECONDS,
     SESSION_COOKIE,
+    ConfirmClaims,
     CurrentUser,
     EnrolClaims,
     SessionClaims,
     new_enrol,
     new_session,
+    read_confirm,
     read_enrol,
     read_session,
     session_seconds,
     set_session_cookie,
+    sign_confirm,
     sign_enrol,
     sign_session,
 )
@@ -343,6 +348,40 @@ def test_an_enrol_token_with_a_bad_or_extra_field_is_refused(changes: dict[str, 
     assert read_enrol(_signed(payload, b"enrol"), SECRET, now=NOW) is None
 
 
+# --- the confirm token (council 4 Oct 2026) ----------------------------------------------------
+
+CONFIRM = {"uid": UID, "cid": CID, "ver": 3, "exp": NOW + CONFIRM_SECONDS}
+
+
+def test_confirm_round_trips_and_lasts_5_minutes() -> None:
+    claims = ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=NOW + 300)
+    token = sign_confirm(claims, SECRET)
+    assert CONFIRM_SECONDS == 300
+    assert _payload(token) == CONFIRM
+    assert read_confirm(token, SECRET, now=NOW + 299) == claims
+    assert read_confirm(token, SECRET, now=NOW + 300) is None
+    body, signature = token.split(".")
+    expected = hmac.new(SECRET.encode(), b"confirm\x00" + body.encode("ascii"), hashlib.sha256).digest()
+    assert signature == _b64url(expected)
+
+
+def test_a_confirm_token_is_never_a_session_or_an_enrol_token_and_the_reverse() -> None:
+    confirm = _signed(CONFIRM, b"confirm")
+    assert read_session(confirm, SECRET, now=NOW) is None
+    assert read_enrol(confirm, SECRET, now=NOW) is None
+    assert read_confirm(_signed(CONFIRM, b"session"), SECRET, now=NOW) is None
+    assert read_confirm(_signed(CONFIRM, b"enrol"), SECRET, now=NOW) is None
+    assert read_confirm(sign_session(_session(), SECRET), SECRET, now=NOW) is None
+    assert read_confirm(sign_enrol(_enrol(), SECRET), SECRET, now=NOW) is None
+
+
+def test_a_confirm_token_with_a_missing_bad_or_extra_field_is_refused() -> None:
+    payloads = [{key: value for key, value in CONFIRM.items() if key != missing} for missing in CONFIRM]
+    bad = ({"ver": True}, {"ver": 0}, {"exp": "1"}, {"uid": "x"}, {"role": "member"})
+    for payload in payloads + [{**CONFIRM, **changes} for changes in bad]:
+        assert read_confirm(_signed(payload, b"confirm"), SECRET, now=NOW) is None, payload
+
+
 # --- the settings ------------------------------------------------------------------------------------
 
 
@@ -458,6 +497,7 @@ def _user(**changes: Any) -> CurrentUser:
         "session_version": 3,
         "must_change_password": False,
         "totp_enabled": False,
+        "delete_forever_allowed": False,
     }
     return CurrentUser(**{**fields, **changes})
 
@@ -506,6 +546,10 @@ def _client(
 
     @app.get("/admin-param")
     def admin_param(user: auth.AdminSession) -> dict[str, str]:
+        return {"id": user.user_id}
+
+    @app.delete("/api/documents/forever")
+    def forever(user: auth.CanDeleteForever) -> dict[str, str]:
         return {"id": user.user_id}
 
     return TestClient(app)
@@ -594,3 +638,38 @@ def test_require_admin_session_refuses_a_non_admin_role_even_with_an_admin_scope
         auth.require_admin_session(_user(role="reviewer", scope="admin"))
     assert (caught.value.status, caught.value.code) == (403, "admin_session_required")
     assert auth.require_admin_session(_user(scope="admin")) == _user(scope="admin")
+
+
+def _forever(client: TestClient, confirm: dict[str, Any] | None = None) -> tuple[int, str | None]:
+    if confirm is not None:
+        client.cookies.set(CONFIRM_COOKIE, _signed(confirm, b"confirm", make_settings().session_secret))
+    reply = client.delete("/api/documents/forever")
+    return reply.status_code, reply.json().get("error", {}).get("code")
+
+
+@pytest.mark.parametrize(
+    ("stored", "scope", "expected"),
+    [
+        # A grant never counts for an admin: a password-only admin stays refused.
+        ({"delete_forever_allowed": True}, "app", (403, "admin_session_required")),
+        ({"delete_forever_allowed": True}, "admin", (403, "two_step_required")),
+        ({"totp_enabled": True}, "admin", (200, None)),
+        ({"role": "member"}, "app", (403, "forbidden")),
+        ({"role": "reviewer", "delete_forever_allowed": True}, "app", (200, None)),
+    ],
+)
+def test_who_may_delete_forever(
+    monkeypatch: pytest.MonkeyPatch, stored: dict[str, Any], scope: str, expected: tuple[int, str | None]
+) -> None:
+    client = _client(monkeypatch, _user(**stored))
+    _cookie(client, _session(role=stored.get("role", "admin"), scope=scope, expires_at=NOW + 60))
+    assert _forever(client, CONFIRM) == expected
+
+
+def test_a_granted_member_needs_their_own_fresh_confirm_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, _user(role="member", delete_forever_allowed=True))
+    _cookie(client, _session(role="member", expires_at=NOW + 60))
+    assert _forever(client) == (403, "password_confirm_required")  # none typed
+    for stale in ({"exp": NOW}, {"uid": CID}, {"ver": 2}):  # expired, another user's, an older session's
+        assert _forever(client, {**CONFIRM, **stale}) == (403, "password_confirm_required")
+    assert _forever(client, CONFIRM) == (200, None)

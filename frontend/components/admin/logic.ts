@@ -128,6 +128,7 @@ export function userStatus(user: AdminUser, now: number): StatusPart[] {
   if (user.totp_enabled) parts.push({ text: "2FA on", tone: "neutral" });
   else if (user.role === "admin") parts.push({ text: "2FA off", tone: "neutral" });
   if (user.must_change_password) parts.push({ text: "Temporary password", tone: "neutral" });
+  if (user.can_delete_forever) parts.push({ text: "Can delete forever", tone: "neutral" });
   return parts;
 }
 
@@ -156,6 +157,32 @@ export function userActions(
     resetPassword: true,
     reset2fa: user.totp_enabled,
   };
+}
+
+/** The row's Delete forever button: none for an admin or yourself; Stop when allowed; else
+ * Allow, which needs your own two-step sign-in (the server says 403 two_step_required). */
+export type ForeverControl =
+  | { kind: "none" }
+  | { kind: "stop" }
+  | { kind: "allow"; disabledReason: string | null };
+
+export function foreverControl(
+  user: AdminUser,
+  { isSelf, adminTwoStep }: { isSelf: boolean; adminTwoStep: boolean },
+): ForeverControl {
+  if (isSelf || user.role === "admin") return { kind: "none" };
+  if (user.can_delete_forever) return { kind: "stop" };
+  return {
+    kind: "allow",
+    disabledReason: adminTwoStep ? null : "Turn on your two-step sign-in in Settings to allow this.",
+  };
+}
+
+export function allowForeverQuestion(name: string): string {
+  return (
+    `Let ${name} delete documents in Trash forever? This covers every document in Trash, ` +
+    "not only theirs, and can't be undone. They will type their password each time."
+  );
 }
 
 export type UploadLimit = { ok: true; value: number | null } | { ok: false; message: string };
@@ -294,6 +321,8 @@ const ACTION_WORDS: Record<string, string> = {
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
   "user.reset_totp": "Reset a user's 2FA",
+  "user.delete_forever_on": "Allowed a user to delete forever",
+  "user.delete_forever_off": "Stopped a user deleting forever",
 };
 
 /** The audit action in words; an action this screen does not know is shown as is. */

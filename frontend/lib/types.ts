@@ -41,6 +41,7 @@ export interface Me {
     role: Role;
     must_change_password: boolean;
     totp_enabled: boolean; // two-step sign-in is on (each admin chooses)
+    can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
@@ -526,6 +527,7 @@ export interface AdminUser {
   locked_until: string | null; // ISO 8601; null when not locked (a passed lock is sent as null)
   totp_enabled: boolean;
   must_change_password: boolean;
+  can_delete_forever: boolean; // an admin allowed Delete forever (never set for an admin)
 }
 
 /** A reset password: the temporary password is in this one reply only. */
