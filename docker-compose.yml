@@ -77,6 +77,7 @@ services:
       - "9324:9324"
     volumes:
       - ./infra/elasticmq/elasticmq.conf:/opt/elasticmq.conf:ro
+      - elasticmq-data:/data # the stored messages (messages-storage in elasticmq.conf)
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9324/health"]
       interval: 5s
@@ -250,5 +251,6 @@ networks:
 volumes:
   postgres-data:
   seaweedfs-data:
+  elasticmq-data:
   clamav-data:
   ollama-data:
