@@ -32,6 +32,8 @@ class DocumentRecord:
     folder_id: str | None = None  # None: at the top level, in no folder
     family_id: str | None = None  # None: its own id (a first version)
     version_no: int = 1
+    # The scan reader the upload chose (kaagaz.reading.ocr.ocr_choices); None: Auto.
+    ocr_choice: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

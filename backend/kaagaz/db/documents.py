@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 
 _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
-    " folder_id, family_id, version_no"
+    " folder_id, family_id, version_no, ocr_choice"
     " FROM documents WHERE customer_id = :c"
 )
 
@@ -259,6 +259,7 @@ def _record(row: Sequence[Any]) -> DocumentRecord:
         folder_id=None if row[7] is None else str(row[7]),
         family_id=str(row[8]),
         version_no=int(str(row[9])),
+        ocr_choice=None if row[10] is None else str(row[10]),
     )
 
 
@@ -283,8 +284,8 @@ _NEXT_VERSION = (
 
 _INSERT_VERSION = (
     "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
-    " uploaded_by, folder_id, family_id, version_no, is_current)"
-    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false)"
+    " uploaded_by, folder_id, family_id, version_no, is_current, ocr_choice)"
+    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false, :ocr)"
     " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
 )
 
@@ -332,6 +333,7 @@ def add_version(
         by=stored.uploaded_by,
         folder=stored.folder_id,
         version=stored.version_no,
+        ocr=stored.ocr_choice,
     )
     if conn.execute(text(_INSERT_VERSION), params).first() is None:  # this customer has these bytes
         row = conn.execute(text(_SELECT + " AND sha256 = :h"), params).one()
@@ -377,13 +379,14 @@ class PgDocuments:
                 "folder": record.folder_id,
                 "family": record.family_id or record.document_id,
                 "version": record.version_no,
+                "ocr": record.ocr_choice,
             }
             try:
                 inserted = conn.execute(
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                        " detected_type, uploaded_by, folder_id, family_id, version_no)"
-                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version)"
+                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice)"
+                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version, :ocr)"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,
