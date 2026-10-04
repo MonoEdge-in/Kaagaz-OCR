@@ -15,9 +15,12 @@
 // Each file is sent with who was signed in when it was added, so the server
 // refuses it if another account has signed in since (critical #5); then
 // no file still waiting is sent, and each says why.
+// "Scan with" (ReaderSelect, readers.ts) picks the scan reader for the files
+// added next, new versions included; it is kept for this visit only (a module
+// variable: a reload starts at the server's default again).
 
 import Link from "next/link";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useReducer, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { storyHref, storyTarget } from "@/components/viewer/story";
@@ -30,7 +33,7 @@ import {
 } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { useSession } from "@/lib/session";
-import type { UploadLimits, UploadResult } from "@/lib/types";
+import type { UploadLimits, UploadReader, UploadResult } from "@/lib/types";
 import {
   FALLBACK_UPLOAD_LIMITS,
   estimateIngestSeconds,
@@ -44,12 +47,16 @@ import {
 } from "./logic";
 import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
+import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readerToSend } from "./readers";
 import { EMPTY_QUEUE, isBusy, queueReducer } from "./uploadQueue";
 import type { UploadEntry } from "./uploadQueue";
 import { WrapName } from "./WrapName";
 import styles from "./Documents.module.css";
 
 type Start = (onProgress: (fraction: number) => void) => Promise<UploadResult>;
+
+// The reader picked in "Scan with" during this visit; null: the server's default.
+let sessionReader: string | null = null;
 
 /** The upload queue: add files, watch them go, clear the finished ones. */
 export function useUploads(onUploaded: () => void) {
@@ -59,6 +66,12 @@ export function useUploads(onUploaded: () => void) {
   const stopped = useRef<string | null>(null);
   const [queue, dispatch] = useReducer(queueReducer, EMPTY_QUEUE);
   const [limits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
+  const [reader, setReader] = useState<string | null>(sessionReader);
+
+  function chooseReader(id: string) {
+    sessionReader = id;
+    setReader(id);
+  }
 
   // Asked once. Until it answers, or if it fails, the platform's limits apply;
   // the server checks every file again either way.
@@ -120,6 +133,7 @@ export function useUploads(onUploaded: () => void) {
   /** Queue files for upload into folderId (undefined: the top level). */
   async function addFiles(files: File[], folderId?: string) {
     const userId = me.user.id;
+    const ocrChoice = readerToSend(limits.readers, reader);
     const added = files.map((file) => {
       nextKey.current += 1;
       const problem = validateUpload(file, limits);
@@ -127,6 +141,7 @@ export function useUploads(onUploaded: () => void) {
         key: `upload-${nextKey.current}`,
         name: file.name,
         size: file.size,
+        ocrChoice,
         state: problem ? { kind: "error", message: problem } : { kind: "waiting" },
       };
       return { entry, file };
@@ -136,7 +151,7 @@ export function useUploads(onUploaded: () => void) {
     for (const { entry, file } of added) {
       if (entry.state.kind === "waiting") {
         await checkThenSend(entry.key, file, (onProgress) =>
-          uploadDocument(file, userId, onProgress, folderId),
+          uploadDocument(file, userId, onProgress, folderId, ocrChoice),
         );
       }
     }
@@ -145,6 +160,7 @@ export function useUploads(onUploaded: () => void) {
   /** Queue one file as the next version of a document. */
   async function addVersion(file: File, of: { id: string; display_name: string }) {
     const userId = me.user.id;
+    const ocrChoice = readerToSend(limits.readers, reader);
     nextKey.current += 1;
     const key = `upload-${nextKey.current}`;
     const problem = validateUpload(file, limits);
@@ -156,12 +172,15 @@ export function useUploads(onUploaded: () => void) {
           name: file.name,
           size: file.size,
           versionOf: of.display_name,
+          ocrChoice,
           state: problem ? { kind: "error", message: problem } : { kind: "waiting" },
         },
       ],
     });
     if (!problem) {
-      await checkThenSend(key, file, (onProgress) => uploadVersion(of.id, file, userId, onProgress));
+      await checkThenSend(key, file, (onProgress) =>
+        uploadVersion(of.id, file, userId, onProgress, ocrChoice),
+      );
     }
   }
 
@@ -186,7 +205,59 @@ export function useUploads(onUploaded: () => void) {
   }
 
   const { entries, finished, settled } = queue;
-  return { entries, finished, settled, limits, addFiles, addVersion, restore, clearFinished };
+  return {
+    entries,
+    finished,
+    settled,
+    limits,
+    reader,
+    chooseReader,
+    addFiles,
+    addVersion,
+    restore,
+    clearFinished,
+  };
+}
+
+/**
+ * "Scan with": a labelled native select of the server's readers, with the
+ * picked one's hint below it. Not shown unless the server can use two or more.
+ */
+export function ReaderSelect({
+  readers,
+  picked,
+  onPick,
+}: {
+  readers: readonly UploadReader[];
+  picked: string | null;
+  onPick: (id: string) => void;
+}) {
+  const id = useId();
+  if (!offersChoice(readers)) return null;
+  const current = pickedReader(readers, picked);
+  return (
+    <div className={styles.reader}>
+      <label htmlFor={`${id}-select`} className={styles.readerLabel}>
+        Scan with
+      </label>
+      <select
+        id={`${id}-select`}
+        className={`input ${styles.readerSelect}`}
+        value={current?.id}
+        aria-describedby={`${id}-hint`}
+        onChange={(event) => onPick(event.target.value)}
+      >
+        {readerOptions(readers).map((option) => (
+          <option key={option.id} value={option.id} disabled={option.disabled}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <p id={`${id}-hint`} className={styles.readerHint}>
+        {current?.hint}
+      </p>
+    </div>
+  );
 }
 
 /**
@@ -198,12 +269,14 @@ export function Dropzone({
   limits,
   onFiles,
   onChoose,
+  readerChoice,
   children,
 }: {
   variant: "full" | "slim";
   limits: UploadLimits;
   onFiles: (files: File[]) => void;
   onChoose: () => void;
+  readerChoice?: ReactNode; // "Scan with", beside "Choose files" in the slim strip
   children?: ReactNode;
 }) {
   const [dragging, setDragging] = useState(false);
@@ -252,6 +325,7 @@ export function Dropzone({
           <button type="button" className="btn" onClick={onChoose}>
             Choose files
           </button>
+          {readerChoice}
           <p className={styles.dropHint}>{uploadLimitsHint(limits)}</p>
         </>
       )}
@@ -370,6 +444,9 @@ function UploadRow({
             This file was uploaded before, as “{state.existingName}”. Nothing new was stored.{" "}
             <Link href={`/documents/${state.documentId}`}>Open it</Link>
           </p>
+        )}
+        {state.kind === "duplicate" && entry.ocrChoice !== undefined && (
+          <p className={`muted ${styles.small}`}>{DUPLICATE_READER_NOTE}</p>
         )}
         {(state.kind === "restoring" || (state.kind === "duplicate" && state.inTrash)) && (
           <>

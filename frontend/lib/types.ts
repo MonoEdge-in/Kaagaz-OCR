@@ -313,6 +313,16 @@ export interface UploadLimits {
   image_bytes: number;
   sheet_bytes: number;
   max_pages: number; // for a PDF's pages and a TIFF's frames
+  readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
+}
+
+/** One scan reader the server offers (PRD 4 #17): reason says why it can't be used here. */
+export interface UploadReader {
+  id: string;
+  title: string;
+  hint: string;
+  available: boolean;
+  reason: string | null;
 }
 
 export interface UploadResult {

@@ -54,7 +54,7 @@ import {
   uploadsFinishedText,
 } from "./logic";
 import { foreverNeeds } from "./trash";
-import { Dropzone, UploadList, useUploads } from "./UploadArea";
+import { Dropzone, ReaderSelect, UploadList, useUploads } from "./UploadArea";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
 
@@ -297,6 +297,9 @@ export function DocumentsView({ library }: { library: LibraryState }) {
       Upload files
     </button>
   );
+  const readerSelect = (
+    <ReaderSelect readers={uploads.limits.readers} picked={uploads.reader} onPick={uploads.chooseReader} />
+  );
 
   return (
     <div className={`page ${libraryStyles.libraryPage}`}>
@@ -305,7 +308,12 @@ export function DocumentsView({ library }: { library: LibraryState }) {
           <h1>Documents</h1>
           <p>Upload documents, file them in folders, then ask about them.</p>
         </div>
-        {canUpload && uploadButton}
+        {canUpload && (
+          <div className={styles.uploadControls}>
+            {readerSelect}
+            {uploadButton}
+          </div>
+        )}
       </header>
 
       <label htmlFor="upload-input" className="visually-hidden">
@@ -471,6 +479,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   limits={uploads.limits}
                   onFiles={addFiles}
                   onChoose={openPicker}
+                  readerChoice={readerSelect}
                 />
               )}
 
