@@ -332,6 +332,10 @@ class OcrMeter(Protocol):
         """(pages sent to OCR, seconds) since the last take, then zero again."""
         ...
 
+    def take_fallback_pages(self) -> int:
+        """Pages the fallback engine read since the last take, then zero again."""
+        ...
+
 
 class ReadingSocket(Protocol):
     """kaagaz.reading.socket.ReaderSocket in production."""
@@ -826,6 +830,7 @@ class DocumentProcessor:
         """A new run of this delivery, started now. The OCR meter starts from zero (AR11)."""
         if self._ocr_meter is not None:
             self._ocr_meter.take()
+            self._ocr_meter.take_fallback_pages()
         run_id = None
         if self._runs is not None:
             run_id = self._runs.start(job.customer_id, job.document_id, now=self._clock())
@@ -836,6 +841,7 @@ class DocumentProcessor:
         The OCR meter is read and set back to zero either way (AR11)."""
         meter = self._ocr_meter
         pages_sent, ocr_seconds = meter.take() if meter is not None else (0, 0.0)
+        fallback_pages = meter.take_fallback_pages() if meter is not None else 0
         if run.run_id is None:
             return None
         ended = self._timer()
@@ -862,6 +868,7 @@ class DocumentProcessor:
                 **self._run_config,
                 **run.quote_config,
                 **({} if run.lowest_ocr_dpi is None else {"ocr_dpi_lowest": run.lowest_ocr_dpi}),
+                **({"pages_ocr_fallback": fallback_pages} if fallback_pages else {}),
                 **_step_seconds(run, ended),
             },
         )
