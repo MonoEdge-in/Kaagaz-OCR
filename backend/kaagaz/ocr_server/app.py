@@ -50,6 +50,7 @@ table HTML). Memory: one page, plus the model (GBs, docs/running-locally.md).
 """
 
 import html.parser
+import importlib
 import io
 import logging
 import os
@@ -199,6 +200,9 @@ class PaddleModel:
 
         for name in ("paddle", "paddlex", "paddleocr"):
             logging.getLogger(name).setLevel(logging.ERROR)
+        if self.device != "cpu" and not importlib.import_module("paddle").is_compiled_with_cuda():
+            # The image build can't check this: importing the GPU paddle needs the driver.
+            raise RuntimeError(f"OCR_DEVICE={self.device} but this paddle is not built for CUDA")
         self._pipeline = PaddleOCRVL(
             device=self.device,
             vl_rec_model_dir=str(MODELS / "PaddleOCR-VL-1.6"),

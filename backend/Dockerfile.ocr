@@ -92,9 +92,11 @@ RUN python -c "import importlib.util as u; bad = [m for m in ('transformers', 'p
 
 # One Paddle build only, the one PADDLE_EXTRA asked for: the CPU paddlepaddle is never in
 # the GPU image (both install the same `paddle` module, so one would overwrite the other),
-# and the module is built for CUDA exactly when it is the GPU image. Both checks need no
-# GPU (VERIFY on the first GPU build: importing paddle without a driver only warns).
-RUN python -c "import importlib.metadata as m, os, paddle; gpu = os.environ['PADDLE_EXTRA'] == 'paddle-gpu'; names = {d.metadata['Name'].lower().replace('_', '-') for d in m.distributions()}; assert ('paddlepaddle' in names, 'paddlepaddle-gpu' in names) == (not gpu, gpu), sorted(names); assert paddle.is_compiled_with_cuda() == gpu"
+# and the GPU image carries the CUDA libraries (nvidia-cudnn-cu12). Package names only:
+# importing the GPU paddle needs the NVIDIA driver (libcuda.so.1), which a build never has
+# (seen on the g4dn's first GPU build, 4 Oct 2026). The ocr server checks that paddle is
+# built for CUDA when it loads on a GPU (PaddleModel.load).
+RUN python -c "import importlib.metadata as m, os; gpu = os.environ['PADDLE_EXTRA'] == 'paddle-gpu'; names = {d.metadata['Name'].lower().replace('_', '-') for d in m.distributions()}; assert ('paddlepaddle' in names, 'paddlepaddle-gpu' in names) == (not gpu, gpu), sorted(names); assert ('nvidia-cudnn-cu12' in names) == gpu, sorted(names)"
 
 # Offline from here on: VERIFIED in the scratch venv, where with these set the pipeline
 # built and read a page with nothing downloaded. Paddle's cache and HOME live on the /tmp
