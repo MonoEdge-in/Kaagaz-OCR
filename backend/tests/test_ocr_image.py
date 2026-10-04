@@ -78,7 +78,9 @@ def test_the_gpu_path_installs_hashed_files_only() -> None:
     assert "--no-deps --require-hashes --index-url https://pypi.org/simple" in second
     assert "--requirement constraints-ocr-gpu.txt" in second
     assert "pip check" in gpu
-    assert "paddle.is_compiled_with_cuda() == gpu" in text  # and no CPU paddlepaddle beside it
+    assert "('nvidia-cudnn-cu12' in names) == gpu" in text  # and no CPU paddlepaddle beside it
+    # The build never imports paddle: the GPU paddle needs the driver, which a build has not.
+    assert "import paddle" not in text and "is_compiled_with_cuda" not in text
 
 
 def test_no_second_index_anywhere() -> None:
