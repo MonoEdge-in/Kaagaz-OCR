@@ -198,3 +198,12 @@ def test_the_image_keeps_its_security_checks() -> None:
     downloads = re.findall(r"^(?:RUN|    &&) hf download PaddlePaddle/", text, re.MULTILINE)
     assert len(downloads) == 2  # both models, each with its sha256 below
     assert len(re.findall(r"^        \"[0-9a-f]{64}  /opt/models/", text, re.MULTILINE)) == 2
+
+
+def test_slow_downloads_wait_and_retry_before_the_build_fails() -> None:
+    """The GPU wheel's CDN stalls from AWS; pip's 15 s default failed a deploy (4 Oct)."""
+    _, text = stages()
+    env = text[text.index("ENV PYTHONUNBUFFERED=1") : text.index("WORKDIR /app")]
+    assert "PIP_DEFAULT_TIMEOUT=120" in env
+    assert "PIP_RETRIES=10" in env
+    assert text.count("--require-hashes") == 2  # a cut-off file still stops the build

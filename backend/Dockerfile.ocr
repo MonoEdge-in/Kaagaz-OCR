@@ -43,10 +43,16 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends libgl1 libglib2.0-0t64 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
+# PIP_DEFAULT_TIMEOUT and PIP_RETRIES: the GPU wheel (about 1 GB) comes from Paddle's CDN,
+# which stalls from AWS Mumbai; pip's 15 s default read timeout failed a deploy on 4 Oct.
+# A slow download now waits up to 2 minutes for data, and a dropped connection is tried
+# again; the hashes are still checked, so a cut-off file still stops the build.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 WORKDIR /app
 
