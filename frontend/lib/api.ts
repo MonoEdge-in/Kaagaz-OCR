@@ -231,15 +231,18 @@ export const deleteMyStory = (id: string, userId: string) =>
  * into a folder when one is given, else at the top level. userId is who was
  * signed in when the file was chosen: the server refuses the file (409
  * session_changed) if someone else has signed in since, in another tab.
+ * ocrChoice is the scan reader chosen (readers.ts); none means the server's default.
  */
 export function uploadDocument(
   file: File,
   userId: string,
   onProgress: (fraction: number) => void,
   folderId?: string,
+  ocrChoice?: string,
 ): Promise<UploadResult> {
   const form = new FormData();
   if (folderId) form.append("folder_id", folderId);
+  if (ocrChoice) form.append("ocr_choice", ocrChoice);
   form.append("user_id", userId);
   form.append("file", file);
   return sendForm("/api/documents", form, onProgress);
@@ -248,15 +251,17 @@ export function uploadDocument(
 /**
  * Upload a new version of a document, with progress. The server gives it the
  * next version number and the family's folder and tags; the reply has the
- * same shape as an upload.
+ * same shape as an upload. ocrChoice as for uploadDocument.
  */
 export function uploadVersion(
   documentId: string,
   file: File,
   userId: string,
   onProgress: (fraction: number) => void,
+  ocrChoice?: string,
 ): Promise<UploadResult> {
   const form = new FormData();
+  if (ocrChoice) form.append("ocr_choice", ocrChoice);
   form.append("user_id", userId);
   form.append("file", file);
   return sendForm(`/api/documents/${documentId}/versions`, form, onProgress);

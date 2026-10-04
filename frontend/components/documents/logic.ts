@@ -47,6 +47,7 @@ export const FALLBACK_UPLOAD_LIMITS: Readonly<UploadLimits> = {
   image_bytes: 20 * MB,
   sheet_bytes: 10 * MB,
   max_pages: 100,
+  readers: [], // no "Scan with" until the server says which readers it has
 };
 
 /** The limits in words, shown next to the dropzone. */
