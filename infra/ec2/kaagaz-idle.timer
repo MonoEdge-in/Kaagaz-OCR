@@ -1,0 +1,10 @@
+# Runs kaagaz-idle.service 20 minutes after boot, then every minute.
+[Unit]
+Description=Kaagaz: check every minute whether the server is idle
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
