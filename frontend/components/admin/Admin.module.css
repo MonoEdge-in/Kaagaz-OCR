@@ -109,11 +109,7 @@
 /* --- Table cells ---------------------------------------------------------------- */
 
 .wrap {
-  overflow-wrap: anywhere;
-}
-
-.nowrap {
-  white-space: nowrap;
+  overflow-wrap: break-word;
 }
 
 .strong {
@@ -130,14 +126,21 @@
   color: var(--fg-muted);
 }
 
-.nameCell {
+/* The User column: the name, and the e-mail under it. */
+.userName {
+  display: block;
   font-weight: 600;
-  overflow-wrap: anywhere;
+}
+
+.userEmail {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
 }
 
 .roleSelect {
-  width: auto;
-  min-width: 9rem;
+  width: 100%;
+  min-width: 0;
 }
 
 .actions {
@@ -147,16 +150,17 @@
   align-items: flex-start;
 }
 
+/* A button may wrap its words rather than leave its column. */
+.actions .btn {
+  max-width: 100%;
+  white-space: normal;
+}
+
 /* Status: Active / Locked until 14:05 / Disabled, then 2FA on or off. */
 .statusList {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1);
-}
-
-/* "Saved", errors and the confirm question may wrap inside a no-wrap cell. */
-.rowMessage {
-  white-space: normal;
 }
 
 .confirm {
@@ -165,7 +169,6 @@
   gap: var(--space-2);
   font-size: var(--fs-sm);
   font-weight: 600;
-  white-space: normal;
 }
 
 .confirmButtons {
@@ -174,25 +177,29 @@
   gap: var(--space-2);
 }
 
-@media (min-width: 768px) {
-  .actionsColumn,
-  .actionsCell {
-    width: 11rem;
-    white-space: nowrap;
+/* The Users table's short columns (Table.module.css switches at 48rem); the
+   User column has the rest. tests/layout-guards.test.ts checks the sum. */
+@container reflow (min-width: 48rem) {
+  .roleColumn {
+    width: 9rem;
   }
 
-  .confirm {
-    min-width: 13rem;
+  .statusColumn {
+    width: 10rem;
+  }
+
+  .addedColumn {
+    width: 7.5rem;
+  }
+
+  .actionsColumn {
+    width: 10rem;
   }
 }
 
-@media (max-width: 767.98px) {
-  .nameCell {
+@container reflow (max-width: 47.98rem) {
+  .userName {
     font-size: var(--fs-lg);
-  }
-
-  .roleSelect {
-    width: 100%;
   }
 
   .actionsCell {

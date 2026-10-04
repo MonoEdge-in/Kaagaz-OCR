@@ -90,6 +90,9 @@ function columnsAt(css: string, container: string, width: number): Map<string, n
 /** The least room Name and Status share in the documents table (11rem each). */
 const NAME_AND_STATUS_REM = 22;
 
+/** The least room the admin Users table's User column (name and e-mail) keeps. */
+const USER_REM = 11;
+
 /** Each width a table's container queries start at, with the columns shown there. */
 function budgets(file: string, container: string, keep: number) {
   const css = read(file);
@@ -107,33 +110,43 @@ function budgets(file: string, container: string, keep: number) {
 }
 
 const DOCS_CSS = "components/documents/Documents.module.css";
+const ADMIN_CSS = "components/admin/Admin.module.css";
+const TABLE_FILES = [DOCS_CSS, "components/documents/Table.module.css", ADMIN_CSS];
 
 describe("layout guards", () => {
   it("lets every table cell and its text wrap (a header may stay on one line)", () => {
-    expect(nowrapCells([DOCS_CSS])).toEqual([]);
+    expect(nowrapCells(TABLE_FILES)).toEqual([]);
   });
 
   it("never breaks words anywhere in a table cell, only where they are too long to fit", () => {
-    const offenders = rules(read(DOCS_CSS))
-      .filter((rule) => /overflow-wrap:\s*anywhere/.test(rule.body))
-      .flatMap(selectors)
-      .filter((s) => CELL.test(s));
+    const offenders = TABLE_FILES.flatMap((file) =>
+      rules(read(file))
+        .filter((rule) => /overflow-wrap:\s*anywhere/.test(rule.body))
+        .flatMap(selectors)
+        .filter((s) => CELL.test(s))
+        .map((s) => `${file}: ${s}`),
+    );
     expect(offenders).toEqual([]);
   });
 
-  it("keeps the documents table free of one-line cells in its markup", () => {
-    expect(read("components/documents/DocumentsTable.tsx")).not.toMatch(/styles\.nowrap/);
+  it("keeps the tables free of one-line cells in their markup", () => {
+    const markup = [
+      "components/documents/DocumentsTable.tsx",
+      "components/admin/UsersPanel.tsx",
+      "components/admin/ActivityPanel.tsx",
+      "components/admin/FailedPanel.tsx",
+    ];
+    expect(markup.filter((file) => /styles\.nowrap/.test(read(file)))).toEqual([]);
   });
 
   it("asks container queries in rem, so the switch follows the text size", () => {
-    const px = rules(read(DOCS_CSS))
-      .map((rule) => rule.at)
+    const px = TABLE_FILES.flatMap((file) => rules(read(file)).map((rule) => rule.at))
       .filter((at) => at.includes("@container") && /\d+(\.\d+)?px/.test(at));
     expect(px).toEqual([]);
   });
 
-  it("gives the documents table's short columns rem widths, never percentages", () => {
-    const percent = rules(read(DOCS_CSS))
+  it("gives the tables' short columns rem widths, never percentages", () => {
+    const percent = TABLE_FILES.flatMap((file) => rules(read(file)))
       .filter((rule) => selectors(rule).some((s) => /Column$/.test(s)) && /(?<![-\w])width:\s*[\d.]+%/.test(rule.body))
       .map((rule) => rule.selector);
     expect(percent).toEqual([]);
@@ -143,5 +156,17 @@ describe("layout guards", () => {
     const found = budgets(DOCS_CSS, "docs-list", NAME_AND_STATUS_REM);
     expect(found.map((b) => b.start)).toEqual([48, 64]);
     for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
+  });
+
+  it("leaves the admin Users table's User column room where it becomes a table", () => {
+    const found = budgets(ADMIN_CSS, "reflow", USER_REM);
+    expect(found.map((b) => b.start)).toEqual([48]);
+    for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
+  });
+
+  it("lets a status chip wrap inside its cell", () => {
+    const chip = rules(read("app/globals.css")).filter((rule) => selectors(rule).includes(".status-chip"));
+    expect(chip.length).toBeGreaterThan(0);
+    expect(chip.filter((rule) => NOWRAP.test(rule.body))).toEqual([]);
   });
 });

@@ -88,52 +88,54 @@ export function ActivityPanel() {
       )}
       {page && page.total === 0 && <p className={styles.emptyLine}>No activity yet.</p>}
       {page && page.items.length > 0 && (
-        <table className={`table ${table.reflow}`} role="table">
-          <caption className="visually-hidden">Activity, newest first</caption>
-          <thead role="rowgroup">
-            <tr role="row">
-              <th scope="col" role="columnheader">
-                When
-              </th>
-              <th scope="col" role="columnheader">
-                Who
-              </th>
-              <th scope="col" role="columnheader">
-                What
-              </th>
-              <th scope="col" role="columnheader">
-                On
-              </th>
-              <th scope="col" role="columnheader">
-                Details
-              </th>
-            </tr>
-          </thead>
-          <tbody role="rowgroup">
-            {page.items.map((entry) => (
-              <tr key={entry.id} role="row">
-                <td role="cell" data-label="When" className={`${styles.nowrap} tabular`}>
-                  <time dateTime={entry.created_at}>{formatDateTime(entry.created_at)}</time>
-                </td>
-                <td role="cell" data-label="Who">
-                  {entry.actor_name ?? "—"}
-                </td>
-                <td role="cell" data-label="What" className={styles.strong}>
-                  {describeAction(entry.action)}
-                </td>
-                <td role="cell" data-label="On" className={styles.wrap}>
-                  {entry.target_type ?? "—"}
-                  {entry.target_id && (
-                    <span className={`muted ${styles.id}`}> {entry.target_id}</span>
-                  )}
-                </td>
-                <td role="cell" data-label="Details" className={`${styles.wrap} ${styles.details}`}>
-                  {describeDetails(entry.details) || "—"}
-                </td>
+        <div className={table.reflowWrap}>
+          <table className={`table ${table.reflow}`} role="table">
+            <caption className="visually-hidden">Activity, newest first</caption>
+            <thead role="rowgroup">
+              <tr role="row">
+                <th scope="col" role="columnheader">
+                  When
+                </th>
+                <th scope="col" role="columnheader">
+                  Who
+                </th>
+                <th scope="col" role="columnheader">
+                  What
+                </th>
+                <th scope="col" role="columnheader">
+                  On
+                </th>
+                <th scope="col" role="columnheader">
+                  Details
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody role="rowgroup">
+              {page.items.map((entry) => (
+                <tr key={entry.id} role="row">
+                  <td role="cell" data-label="When" className="tabular">
+                    <time dateTime={entry.created_at}>{formatDateTime(entry.created_at)}</time>
+                  </td>
+                  <td role="cell" data-label="Who">
+                    {entry.actor_name ?? "—"}
+                  </td>
+                  <td role="cell" data-label="What" className={styles.strong}>
+                    {describeAction(entry.action)}
+                  </td>
+                  <td role="cell" data-label="On" className={styles.wrap}>
+                    {entry.target_type ?? "—"}
+                    {entry.target_id && (
+                      <span className={`muted ${styles.id}`}> {entry.target_id}</span>
+                    )}
+                  </td>
+                  <td role="cell" data-label="Details" className={`${styles.wrap} ${styles.details}`}>
+                    {describeDetails(entry.details) || "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       {pages && page && page.total > 0 && (
         <nav className={styles.pager} aria-label="Activity pages">

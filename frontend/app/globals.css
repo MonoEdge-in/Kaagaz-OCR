@@ -579,7 +579,8 @@ select.input {
   font-weight: 600;
   color: var(--fg);
   background: var(--surface);
-  white-space: nowrap;
+  max-width: 100%;
+  white-space: normal;
 }
 
 .status-chip::before {

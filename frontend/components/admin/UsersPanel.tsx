@@ -1,6 +1,7 @@
 "use client";
 
-// Users of this customer: the list with each account's status, changing a
+// Users of this customer: the list (one User column, the name with the e-mail
+// under it, so neither is squeezed) with each account's status, changing a
 // role, disabling or enabling an account, unlocking it, resetting its password
 // or its 2FA, and adding a new user. An admin cannot disable themselves, drop
 // their own admin role or reset their own 2FA; the controls for that are not
@@ -13,6 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useMinuteNow } from "@/components/chat/hooks";
 import { roleName } from "@/components/shell/nav";
+import { WrapName } from "@/components/documents/WrapName";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import {
@@ -120,43 +122,42 @@ export function UsersPanel({ currentUserId }: { currentUserId: string }) {
           </>
         )}
         {users && (
-          <table className={`table ${table.reflow}`} role="table">
-            <caption className="visually-hidden">Users of this customer</caption>
-            <thead role="rowgroup">
-              <tr role="row">
-                <th scope="col" role="columnheader">
-                  Name
-                </th>
-                <th scope="col" role="columnheader">
-                  E-mail
-                </th>
-                <th scope="col" role="columnheader">
-                  Role
-                </th>
-                <th scope="col" role="columnheader">
-                  Status
-                </th>
-                <th scope="col" role="columnheader">
-                  Added
-                </th>
-                <th scope="col" role="columnheader" className={styles.actionsColumn}>
-                  <span className="visually-hidden">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody role="rowgroup">
-              {users.map((user) => (
-                <UserRow
-                  key={user.id}
-                  user={user}
-                  isSelf={user.id === currentUserId}
-                  now={now}
-                  onChanged={replace}
-                  onPasswordReset={setRevealed}
-                />
-              ))}
-            </tbody>
-          </table>
+          <div className={table.reflowWrap}>
+            <table className={`table ${table.reflow}`} role="table">
+              <caption className="visually-hidden">Users of this customer</caption>
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th scope="col" role="columnheader">
+                    User
+                  </th>
+                  <th scope="col" role="columnheader" className={styles.roleColumn}>
+                    Role
+                  </th>
+                  <th scope="col" role="columnheader" className={styles.statusColumn}>
+                    Status
+                  </th>
+                  <th scope="col" role="columnheader" className={styles.addedColumn}>
+                    Added
+                  </th>
+                  <th scope="col" role="columnheader" className={styles.actionsColumn}>
+                    <span className="visually-hidden">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody role="rowgroup">
+                {users.map((user) => (
+                  <UserRow
+                    key={user.id}
+                    user={user}
+                    isSelf={user.id === currentUserId}
+                    now={now}
+                    onChanged={replace}
+                    onPasswordReset={setRevealed}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
       <AddUserForm
@@ -236,12 +237,15 @@ function UserRow({
   const confirmId = `confirm-${user.id}`;
   return (
     <tr role="row">
-      <td role="cell" className={styles.nameCell}>
-        {user.display_name}
-        {isSelf && <span className="muted"> (you)</span>}
-      </td>
-      <td role="cell" data-label="E-mail" className={styles.wrap}>
-        {user.email}
+      <td role="cell" className={styles.wrap}>
+        <span className={styles.userName}>
+          {user.display_name}
+          {isSelf && <span className="muted"> (you)</span>}
+        </span>
+        <span className={styles.userEmail}>
+          <span className="visually-hidden">E-mail: </span>
+          <WrapName name={user.email} />
+        </span>
       </td>
       <td role="cell" data-label="Role">
         <label htmlFor={selectId} className="visually-hidden">
@@ -273,7 +277,7 @@ function UserRow({
           ))}
         </span>
       </td>
-      <td role="cell" data-label="Added" className={`${styles.nowrap} tabular`}>
+      <td role="cell" data-label="Added" className="tabular">
         {formatDate(user.created_at)}
       </td>
       <td role="cell" className={styles.actionsCell}>
@@ -360,11 +364,11 @@ function UserRow({
             )}
           </div>
         )}
-        <span aria-live="polite" className={`${styles.saved} ${styles.rowMessage}`}>
+        <span aria-live="polite" className={styles.saved}>
           {saved ?? ""}
         </span>
         {error && (
-          <p className={`error-text ${styles.rowMessage}`} role="alert">
+          <p className="error-text" role="alert">
             {error}
           </p>
         )}
