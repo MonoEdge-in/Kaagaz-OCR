@@ -401,6 +401,11 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   To delete forever, <Link href="/admin/login">sign in on the admin sign-in screen</Link>.
                 </p>
               )}
+              {library.trash && foreverNeeds(me) === "not_allowed" && (
+                <p className={libraryStyles.placeHint}>
+                  Only admins, and people an admin allows, can delete documents forever.
+                </p>
+              )}
               {library.trash && foreverNeeds(me) === "two_step" && (
                 <p className={libraryStyles.placeHint}>
                   To delete forever, turn on two-step sign-in in <Link href="/admin">Admin, Settings</Link>.

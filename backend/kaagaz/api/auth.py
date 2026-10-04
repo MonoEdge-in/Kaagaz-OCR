@@ -16,8 +16,12 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   session at its next request.
 * **The enrol token** carries a pending TOTP secret between an admin pressing
   "Turn on" (/auth/admin/2fa/start) and their first code: ``{"uid","cid","ver","sec","exp"}``, MAC over
-  ``b"enrol\\x00" + body``, 10 minutes. The two purposes have different MAC
+  ``b"enrol\\x00" + body``, 10 minutes. The purposes have different MAC
   inputs and different fields, so neither token ever reads as the other.
+* **The confirm token** (council 4 Oct 2026, PROVISIONAL): a granted member or
+  reviewer's re-typed password for Delete forever. ``{"uid","cid","ver","exp"}``,
+  MAC over ``b"confirm\\x00" + body``, 5 minutes, an HttpOnly SameSite=Strict
+  cookie for /api/documents only.
 * **Strict claims**: a token with a missing, extra or wrongly typed field is
   refused, so a Sprint 1 cookie (no scope, no ver) is refused and its user
   signs in once more.
@@ -61,6 +65,9 @@ CSRF_VALUE = "kaagaz"
 ROLES = ("member", "reviewer", "admin")
 SCOPES = ("app", "admin")
 ENROL_SECONDS = 10 * 60
+CONFIRM_COOKIE = "kaagaz_confirm"
+CONFIRM_SECONDS = 5 * 60  # PROVISIONAL (council 4 Oct 2026)
+CONFIRM_PATH = "/api/documents"  # the browser calls the API on its own origin, under /api
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_LEN = 2**14, 8, 1, 32
@@ -136,10 +143,20 @@ class EnrolClaims:
     expires_at: int  # seconds since the epoch
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConfirmClaims:
+    user_id: str
+    customer_id: str
+    session_version: int
+    expires_at: int  # seconds since the epoch
+
+
 _SESSION_PURPOSE = b"session"
 _ENROL_PURPOSE = b"enrol"
+_CONFIRM_PURPOSE = b"confirm"
 _SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp"})
 _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
+_CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
 
 
 def session_seconds(scope: str, settings: Settings) -> int:
@@ -222,6 +239,33 @@ def sign_enrol(claims: EnrolClaims, secret: str) -> str:
 def read_enrol(token: str, secret: str, now: int) -> EnrolClaims | None:
     """The claims of a genuine, unexpired enrol token, else None. Constant-time check."""
     return _enrol_claims(_verified(token, _ENROL_PURPOSE, secret), now)
+
+
+def sign_confirm(claims: ConfirmClaims, secret: str) -> str:
+    return _sign(
+        {
+            "uid": claims.user_id,
+            "cid": claims.customer_id,
+            "ver": claims.session_version,
+            "exp": claims.expires_at,
+        },
+        _CONFIRM_PURPOSE,
+        secret,
+    )
+
+
+def read_confirm(token: str, secret: str, now: int) -> ConfirmClaims | None:
+    """The claims of a genuine, unexpired confirm token, else None. Strict: exactly
+    the four fields, each of its type. Constant-time check."""
+    data = _verified(token, _CONFIRM_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _CONFIRM_FIELDS:
+        return None
+    uid, cid, ver, exp = data["uid"], data["cid"], data["ver"], data["exp"]
+    if not (isinstance(uid, str) and isinstance(cid, str) and _is_uuid(uid) and _is_uuid(cid)):
+        return None
+    if not (_is_version(ver) and _is_int(exp)) or exp <= now:
+        return None
+    return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp)
 
 
 def _sign(payload: dict[str, Any], purpose: bytes, secret: str) -> str:
@@ -354,6 +398,26 @@ class CurrentUser:
     session_version: int
     must_change_password: bool
     totp_enabled: bool  # two-step sign-in is on (each admin chooses)
+    delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
+
+
+def set_confirm_cookie(response: Response, user: CurrentUser, settings: Settings, *, now: int) -> None:
+    """A confirm token for this user and session version, CONFIRM_SECONDS long."""
+    claims = ConfirmClaims(
+        user_id=user.user_id,
+        customer_id=user.customer_id,
+        session_version=user.session_version,
+        expires_at=now + CONFIRM_SECONDS,
+    )
+    response.set_cookie(
+        CONFIRM_COOKIE,
+        sign_confirm(claims, settings.session_secret),
+        max_age=CONFIRM_SECONDS,
+        httponly=True,
+        samesite="strict",
+        secure=settings.cookie_secure,
+        path=CONFIRM_PATH,
+    )
 
 
 def current_user(request: Request) -> CurrentUser:
@@ -404,6 +468,7 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         session_version=int(row["session_version"]),
         must_change_password=bool(row["must_change_password"]),
         totp_enabled=bool(row["totp_enabled"]),
+        delete_forever_allowed=bool(row["delete_forever_allowed"]),
     )
 
 
@@ -433,6 +498,30 @@ def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
 
 
 AdminWithTwoStep = Annotated[CurrentUser, Depends(require_admin_with_two_step)]
+
+
+def require_delete_forever(request: Request, user: User) -> CurrentUser:
+    """For deleting a document forever (council 4 Oct 2026). An admin needs what
+    they always did: an admin session with two-step sign-in on; a grant never
+    counts for an admin, so a password-only admin can't route round two-step.
+    Anyone else needs an admin's grant (403 ``forbidden``) and a confirm token
+    from typing their password in the last CONFIRM_SECONDS, for this user and
+    session version (403 ``password_confirm_required``). The grant is read
+    again on every request, so stopping it works at once."""
+    if user.role == "admin":
+        return require_admin_with_two_step(require_admin_session(user))
+    if not user.delete_forever_allowed:
+        raise ApiError(403, "forbidden")
+    context = get_context(request)
+    token = request.cookies.get(CONFIRM_COOKIE) or ""
+    claims = read_confirm(token, context.settings.session_secret, int(context.clock().timestamp()))
+    signed = None if claims is None else (claims.user_id, claims.customer_id, claims.session_version)
+    if signed != (user.user_id, user.customer_id, user.session_version):
+        raise ApiError(403, "password_confirm_required")
+    return user
+
+
+CanDeleteForever = Annotated[CurrentUser, Depends(require_delete_forever)]
 
 
 def require_role(*roles: str) -> Callable[[CurrentUser], CurrentUser]:

@@ -1,8 +1,9 @@
 """The scan reader engine (OCR), behind one small interface.
 
 The scan reader is PaddleOCR-VL (decided 29 Sep, docs/architecture.md), in its
-own container; RapidOCR (Apache-2.0) stays as the fallback for weak laptops. No
-page ever leaves the machine and nothing is downloaded at run time.
+own container; RapidOCR (Apache-2.0) stays as the fallback, for weak laptops and
+for a page PaddleOCR-VL cannot read (``FallbackOcrEngine``). No page ever leaves
+the machine and nothing is downloaded at run time.
 
 * ``OcrEngine`` is what the page readers depend on, so tests use a fake and a
   different engine means one new class here.
@@ -14,13 +15,19 @@ page ever leaves the machine and nothing is downloaded at run time.
 
   * 503 ``busy``: the server is still on another page (one it cannot stop
     after a worker gave up on it), so the call waits and asks again, backing
-    off, until its deadline; only then is it ``BackendUnavailable``;
-  * down, refused, another 5xx (``not_ready``, ``out_of_memory``, ``internal_error``), a 421, cut
-    off, or past ``OCR_TIMEOUT_SECONDS``: ``BackendUnavailable("ocr")``, retried later;
-  * 500 ``read_failed`` (the model raised on this page): ``ocr_failed``; 422:
-    ``corrupt_file``; 413: ``image_too_large``; a 3xx (never followed),
-    another 4xx, a malformed reply or one over ``MAX_OCR_REPLY_BYTES``:
-    ``invalid_reader_output``. The document fails; these are not retried.
+    off, until its deadline; only then is it ``OcrOverloaded("ocr_timeout")``;
+  * 503 ``out_of_memory``: ``OcrOverloaded("ocr_out_of_memory")``; past
+    ``OCR_TIMEOUT_SECONDS``: ``OcrOverloaded("ocr_timeout")``. Both are a
+    ``BackendUnavailable("ocr")``, retried later, that ``FallbackOcrEngine``
+    reads with RapidOCR instead;
+  * down, refused, another 5xx (``not_ready``, ``internal_error``), a 421, or
+    cut off: ``BackendUnavailable("ocr")``, retried later, never read by the
+    fallback, so a fault in the set-up is not hidden behind RapidOCR;
+  * 500 ``read_failed`` (the model raised on this page): ``ocr_failed``, read
+    by the fallback; 422: ``corrupt_file``; 413: ``image_too_large``; a 3xx
+    (never followed), another 4xx, a malformed reply or one over
+    ``MAX_OCR_REPLY_BYTES``: ``invalid_reader_output``. Unless the fallback
+    reads the page, the document fails; these are not retried.
 
   It uses ``http.client``, not urllib's opener: it follows no redirect, reads
   no proxy variable (page images never reach a proxy), and one monotonic
@@ -36,6 +43,19 @@ page ever leaves the machine and nothing is downloaded at run time.
   (``_better``); the version then names that model. Its file is fetched when
   the image is built (``backend/Dockerfile``) and only ever loaded from disk:
   when it is missing (``ocr_model_missing``), the page stays as first read.
+* ``FallbackOcrEngine`` (the product's, for ``paddleocr_vl`` when RapidOCR is
+  installed) reads each page with PaddleOCR-VL and, on ``ocr_failed`` or
+  ``OcrOverloaded``, reads that page with RapidOCR (built on first need, once).
+  After an ``OcrOverloaded``, pages go straight to RapidOCR for
+  ``COOL_DOWN_SECONDS``, so each does not wait out the deadline again; then
+  PaddleOCR-VL is tried again. Any other error is raised as before, and when
+  RapidOCR fails too, the primary's own error is raised. Each fallback page is
+  one warning with its code only. Its name and version are PaddleOCR-VL's (the
+  ETA keys on the name; the run's ``ocr_engine`` is cut at 100 characters);
+  the pages RapidOCR read are counted (``take_fallback_pages``) into the
+  run's config as ``pages_ocr_fallback``. A RapidOCR page has lines with no
+  kind and a real confidence, so ``ocr_spans`` (which decides per page) puts
+  it through the line rule, and a value from it is still needs review.
 * ``MeteredOcrEngine`` wraps any engine and counts the pages sent to it and
   the seconds they took (PRD 2 R6: the run's ``seconds_ocr``; ``cli measure``).
 * ``ocr_spans`` turns an engine's pixel boxes into spans with page fractions
@@ -101,6 +121,10 @@ _SURROGATE = re.compile("[\ud800-\udfff]")
 # RapidOCR's Devanagari recogniser (PP-OCRv5 mobile, 7,940,361 bytes, Apache-2.0),
 # for pages its default one (PP-OCRv6 small, no Devanagari) reads as other scripts.
 DEVANAGARI_REC_MODEL = "devanagari_PP-OCRv5_rec_mobile"
+# After PaddleOCR-VL timed out or ran out of memory, pages go straight to RapidOCR
+# for this long, so each one does not first wait out OCR_TIMEOUT_SECONDS
+# (PROVISIONAL, council 4 Oct 2026).
+COOL_DOWN_SECONDS = 120.0
 
 _log = logging.getLogger(__name__)
 
@@ -143,6 +167,17 @@ class OcrEngine(Protocol):
     def read(self, image: Image.Image) -> list[OcrLine]: ...
 
 
+class OcrOverloaded(BackendUnavailable):
+    """The scan reader was up but did not read this page: it ran out of memory, or the
+    page took past OCR_TIMEOUT_SECONDS. Still ``BackendUnavailable("ocr")`` (retried
+    later); ``FallbackOcrEngine`` reads the page with its fallback instead. ``code``
+    is short and safe to log."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__("ocr")
+        self.code = code
+
+
 class PaddleVlEngine:
     """``OcrEngine`` over the ocr container's ``POST /read`` (see the module notes)."""
 
@@ -175,12 +210,14 @@ class PaddleVlEngine:
             # Still on another page, often one a worker gave up on: nothing is wrong with
             # this one, so it waits here rather than use up one of the job's attempts.
             if time.monotonic() + wait >= deadline:
-                raise BackendUnavailable("ocr")
+                raise OcrOverloaded("ocr_timeout")
             time.sleep(wait)
             wait = min(2 * wait, _BUSY_WAIT_MAX_SECONDS)
             status, body = self._post(buffer.getvalue(), deadline)
         if status == 500 and _error_code(body) == "read_failed":
             raise ReadError("ocr_failed")  # the model raised on this page: asking again fails again
+        if status == 503 and _error_code(body) == "out_of_memory":
+            raise OcrOverloaded("ocr_out_of_memory")  # the page is fine; the GPU memory is shared
         if status >= 500 or status == 421:
             # Down, still loading, or an error outside the model; or 421, a Host the server
             # refuses, which is this set-up's fault, not the file's. Retried later either way.
@@ -199,6 +236,7 @@ class PaddleVlEngine:
         timer: threading.Timer | None = None
         response: HTTPResponse | None = None
         reply: tuple[int, bytes] | None = None
+        timed_out = False
         try:
             connection.timeout = _time_left(deadline)
             connection.connect()
@@ -208,15 +246,19 @@ class PaddleVlEngine:
             connection.request("POST", self._path, body=png, headers={"Content-Type": "image/png"})
             response = connection.getresponse()
             reply = response.status, _body(response)
+        except TimeoutError:
+            timed_out = True  # past the deadline before the timer cut it: raised below
         except (OSError, HTTPException):
-            reply = None  # refused, unreachable, cut off or too slow: raised below, nothing chained
+            reply = None  # refused, unreachable or cut off: raised below, nothing chained
         finally:
             if timer is not None:
                 timer.cancel()
             if response is not None:
                 response.close()
             connection.close()
-        if reply is None or expired.is_set():  # what arrived before the cut is not the reply
+        if timed_out or expired.is_set():  # what arrived before the cut is not the reply
+            raise OcrOverloaded("ocr_timeout")
+        if reply is None:
             raise BackendUnavailable("ocr")
         return reply
 
@@ -493,6 +535,73 @@ def _installed_version(package: str) -> str | None:
         return None
 
 
+class FallbackOcrEngine:
+    """An ``OcrEngine`` that reads a page with ``primary`` and, when it cannot, with the
+    engine ``fallback`` builds (see the module notes). ``timer`` is ``time.monotonic``
+    in the product. One job at a time uses it, so there is no lock. O(1) per page
+    beyond the engines' own time.
+    """
+
+    def __init__(
+        self,
+        primary: OcrEngine,
+        fallback: Callable[[], OcrEngine],
+        *,
+        timer: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._primary = primary
+        self._build_fallback = fallback
+        self._fallback: OcrEngine | None = None
+        self._timer = timer
+        self.name = primary.name  # the ETA's rates key on the name
+        self._cool_until: float | None = None
+        self._fallback_pages = 0
+
+    @property
+    def version(self) -> str:
+        return self._primary.version  # the fallback's pages are counted, not named here
+
+    def take_fallback_pages(self) -> int:
+        """Pages the fallback read since the last take, and start again from zero."""
+        taken, self._fallback_pages = self._fallback_pages, 0
+        return taken
+
+    def read(self, image: Image.Image) -> list[OcrLine]:
+        if self._cool_until is not None and self._timer() < self._cool_until:
+            return self._read_fallback(image, OcrOverloaded("ocr_cooling_down"))
+        self._cool_until = None
+        failure: ReadError | OcrOverloaded
+        try:
+            return self._primary.read(image)
+        except OcrOverloaded as error:
+            failure = error
+        except ReadError as error:
+            if error.code != "ocr_failed":
+                raise  # the file's own failure: the fallback would not read it either
+            failure = error
+        # Outside the handler, so a failing fallback's error is chained onto the primary's once.
+        lines = self._read_fallback(image, failure)
+        if isinstance(failure, OcrOverloaded):
+            self._cool_until = self._timer() + COOL_DOWN_SECONDS  # only once the fallback worked
+        return lines
+
+    def _read_fallback(self, image: Image.Image, failure: ReadError | OcrOverloaded) -> list[OcrLine]:
+        """The page as the fallback reads it. When the fallback cannot be built or fails,
+        ``failure`` (the primary's own error) is raised and any cool-down ends, so the
+        next page tries the primary. Logs codes and type names only, never the page."""
+        try:
+            if self._fallback is None:
+                self._fallback = self._build_fallback()
+            lines = self._fallback.read(image)
+        except Exception as error:
+            self._cool_until = None
+            _log.warning("ocr fallback failed: %s", type(error).__name__, extra={"code": failure.code})
+            raise failure from error
+        self._fallback_pages += 1
+        _log.warning("ocr page read by the fallback", extra={"code": failure.code})
+        return lines
+
+
 class MeteredOcrEngine:
     """An ``OcrEngine`` that passes each page to ``engine`` and counts the pages
     sent and the seconds they took on ``timer`` (``time.perf_counter`` in the
@@ -525,12 +634,21 @@ class MeteredOcrEngine:
         self._pages, self._seconds = 0, 0.0
         return counted
 
+    def take_fallback_pages(self) -> int:
+        """Pages a ``FallbackOcrEngine`` read with its fallback since the last take; 0 for
+        any other engine."""
+        engine = self._engine
+        return engine.take_fallback_pages() if isinstance(engine, FallbackOcrEngine) else 0
+
 
 def build_ocr_engine(settings: Settings) -> OcrEngine | None:
     if settings.ocr_engine == "none":
         return None
     if settings.ocr_engine == "paddleocr_vl":
-        return PaddleVlEngine(settings.ocr_url, timeout_seconds=settings.ocr_timeout_seconds)
+        engine = PaddleVlEngine(settings.ocr_url, timeout_seconds=settings.ocr_timeout_seconds)
+        if _installed_version("rapidocr") is None:
+            return engine  # no ocr extra: no fallback, as before
+        return FallbackOcrEngine(engine, RapidOcrEngine)  # built on its first page, if ever
     return RapidOcrEngine()
 
 

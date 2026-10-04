@@ -18,6 +18,13 @@ their password or their two-step code all raise ``session_version`` (in
 password an admin sets is temporary: the user must choose a new one first.
 A role change raises it too: every request re-checks the role, but a user
 demoted and later promoted again must not get their old sessions back.
+
+Why Delete forever is granted this way (council 4 Oct 2026, PROVISIONAL): an
+admin may allow a member or reviewer to delete documents in Trash forever, and
+stop it again. Allowing needs this admin's two-step sign-in on (403
+``two_step_required``), else a password-only admin could route round two-step by
+allowing a made-up account; an admin is never a target (400), a role change
+clears the grant, and stopping it works at the user's next request.
 """
 
 import re
@@ -77,6 +84,12 @@ class UserChangesBody(BaseModel):
     role: RoleName | None = None
     disabled: bool | None = None
     password: str | None = Field(default=None, min_length=MIN_PASSWORD, max_length=MAX_PASSWORD)
+
+
+class DeleteForeverBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allowed: bool
 
 
 class SettingsBody(BaseModel):
@@ -210,6 +223,27 @@ def reset_two_step(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
         # PROVISIONAL: "user.reset_totp", not the plan's "user.reset_2fa", because audit
         # actions must match ^[a-z_.]{1,64}$ (PRD 1 A7, the audit_log CHECK): no digits.
         _audit_user(conn, user, "user.reset_totp", target)
+    return admin_user(row, now=context.clock())
+
+
+@router.put("/admin/users/{user_id}/delete-forever")
+def set_delete_forever(
+    user_id: uuid.UUID, body: DeleteForeverBody, user: AdminSession, context: Context
+) -> dict[str, Any]:
+    """Allow or stop a member's or reviewer's Delete forever. Audited with ids only."""
+    if body.allowed and not user.totp_enabled:
+        raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Admin, Settings to allow this.")
+    target = str(user_id)
+    with context.db.customer(user.customer_id) as conn:
+        row = users_sql.set_delete_forever(
+            conn, user.customer_id, target, allowed=body.allowed, now=context.clock()
+        )
+        if row is None:
+            if users_sql.role_of(conn, user.customer_id, target) is None:
+                raise ApiError(404, "not_found")
+            raise ApiError(400, "bad_request", "Admins can already delete forever with two-step sign-in.")
+        action = "user.delete_forever_on" if body.allowed else "user.delete_forever_off"
+        _audit_user(conn, user, action, target)
     return admin_user(row, now=context.clock())
 
 

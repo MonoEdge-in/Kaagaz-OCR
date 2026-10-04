@@ -4,23 +4,61 @@
 // The server checks every rule again.
 
 import { sessionScope } from "@/components/shell/gate";
+import { ApiError } from "@/lib/api";
 import type { DocumentSummary, Me } from "@/lib/types";
 
 /**
- * Only an admin session (from /admin/login) whose admin has two-step sign-in on
- * may delete for good; the server says 403 admin_session_required or
- * two_step_required to anyone else. Move to Trash and Restore follow each
- * document's can_delete.
+ * Who may delete for good: an admin session (from /admin/login) whose admin has
+ * two-step sign-in on, or a member or reviewer an admin allowed
+ * (can_delete_forever), who types their password first. The server says 403 to
+ * anyone else. Move to Trash and Restore follow each document's can_delete.
  */
 export function canDeleteForever(me: Me): boolean {
-  return me.user.role === "admin" && sessionScope(me) === "admin" && me.user.totp_enabled;
+  if (me.user.role !== "admin") return me.user.can_delete_forever;
+  return sessionScope(me) === "admin" && me.user.totp_enabled;
 }
 
-/** What an admin must do first to delete forever, for the note in Trash; null if nothing. */
-export function foreverNeeds(me: Me): "admin_sign_in" | "two_step" | null {
-  if (me.user.role !== "admin") return null;
+/** A granted member or reviewer types their password before deleting for good. */
+export function foreverNeedsPassword(me: Me): boolean {
+  return me.user.role !== "admin" && me.user.can_delete_forever;
+}
+
+/** What must happen first to delete forever, for the note in Trash; null if nothing. */
+export function foreverNeeds(me: Me): "admin_sign_in" | "two_step" | "not_allowed" | null {
+  if (me.user.role !== "admin") return me.user.can_delete_forever ? null : "not_allowed";
   if (sessionScope(me) !== "admin") return "admin_sign_in";
   return me.user.totp_enabled ? null : "two_step";
+}
+
+/** A row can be ticked: to move to Trash or restore, or in Trash to delete for good. */
+export function selectable(item: Pick<DocumentSummary, "can_delete">, inTrash: boolean, canForever: boolean) {
+  return item.can_delete || (inTrash && canForever);
+}
+
+/** 403 forbidden: an admin stopped this user's Delete forever; ask who is signed in again. */
+export function lostTheRight(caught: unknown): boolean {
+  return caught instanceof ApiError && caught.code === "forbidden";
+}
+
+export type ForeverOutcome =
+  | { kind: "password"; error: unknown } // the password was refused: nothing was deleted
+  | { kind: "ran"; result: BulkResult };
+
+/** runEach, after checking a granted user's password once (a 5-minute cookie); a refused one deletes nothing. */
+export async function runForever(
+  ids: readonly string[],
+  password: string | null,
+  calls: { confirm(password: string): Promise<unknown>; remove(id: string): Promise<unknown> },
+  onProgress?: (handled: number) => void,
+): Promise<ForeverOutcome> {
+  if (password !== null) {
+    try {
+      await calls.confirm(password);
+    } catch (caught) {
+      return { kind: "password", error: caught };
+    }
+  }
+  return { kind: "ran", result: await runEach(ids, calls.remove, onProgress) };
 }
 
 /** "1 document", "3 documents". */
