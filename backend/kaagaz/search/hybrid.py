@@ -76,6 +76,14 @@ list's own raw score is kept on the hit: ``word_score`` is ``ts_rank_cd``,
 ``fuzzy_score`` is ``word_similarity`` (0 to 1) and ``meaning_score`` is the
 cosine similarity, 1 minus the distance (1 is the same direction).
 
+**A translated search** (``search_translated``, council 4 Oct 2026, PROVISIONAL): the
+same three lists run once for the question and once for each of its translations into
+the script of its scans (kaagaz/answering/translate.py), with the same SQL, filters,
+scope and transaction; every list is fused (``fuse_lists``), and a piece's meaning
+score is the best of its meaning lists. It also says which pieces a list of the
+question itself found, and their own meaning score, so the answer can tell a piece
+only the translation found. ``search_documents`` is never translated.
+
 PROVISIONAL: the search design is Vrushit's (Sprint 2); RRF with k = 60, 50
 candidates per list and the fuzzy threshold are starting values.
 
@@ -338,14 +346,19 @@ class FusedPiece:
     meaning_score: float | None
 
 
-def fuse(
-    word: Sequence[tuple[str, float]],
-    fuzzy: Sequence[tuple[str, float]],
-    meaning: Sequence[tuple[str, float]],
-    *,
-    k: int = RRF_K,
-) -> list[FusedPiece]:
-    """Merge three ranked lists of (piece_id, raw score), each best first.
+Ranked = Sequence[tuple[str, float]]
+_KINDS = ("word", "fuzzy", "meaning")
+
+
+def fuse(word: Ranked, fuzzy: Ranked, meaning: Ranked, *, k: int = RRF_K) -> list[FusedPiece]:
+    """Merge three ranked lists of (piece_id, raw score), each best first (``fuse_lists``)."""
+    return fuse_lists(list(zip(_KINDS, (word, fuzzy, meaning), strict=True)), k=k)
+
+
+def fuse_lists(lists: Sequence[tuple[str, Ranked]], *, k: int = RRF_K) -> list[FusedPiece]:
+    """Merge any number of ranked lists of (piece_id, raw score), each best first and named
+    by its kind (word, fuzzy or meaning); a piece's raw score of a kind is its best in the
+    lists of that kind.
 
     A piece listed twice in one list counts once, at its best rank. The result
     is best first; a tie keeps the order the lists first gave the pieces in (each list
@@ -356,14 +369,16 @@ def fuse(
         raise ValueError("k must not be negative")
     scores: dict[str, float] = {}
     raw: dict[str, dict[str, float]] = {}
-    for name, ranked in (("word", word), ("fuzzy", fuzzy), ("meaning", meaning)):
+    for name, ranked in lists:
         rank = 0
+        seen: set[str] = set()
         for piece_id, raw_score in ranked:
-            own = raw.setdefault(piece_id, {})
-            if name in own:
+            if piece_id in seen:
                 continue
+            seen.add(piece_id)
             rank += 1
-            own[name] = raw_score
+            own = raw.setdefault(piece_id, {})
+            own[name] = max(raw_score, own.get(name, raw_score))
             scores[piece_id] = scores.get(piece_id, 0.0) + 1.0 / (k + rank)
     order = sorted(scores, key=lambda piece_id: -scores[piece_id])  # stable: ties keep first-seen order
     return [
@@ -454,6 +469,39 @@ def search(
     return _hits(conn, customer_id, fused[:limit])
 
 
+def search_translated(
+    conn: Connection,
+    *,
+    customer_id: str,
+    query_text: str,
+    embedding: list[float] | None,
+    translations: Sequence[tuple[str, list[float] | None]],
+    limit: int,
+    recipe: str,
+    ef_search: int,
+    scope: Scope = EVERYTHING,
+    expansion: Expansion = NO_EXPANSION,
+) -> tuple[list[SearchHit], dict[str, float | None]]:
+    """``search`` for the question and for each (text, embedding) of ``translations``, every
+    list fused (the module docstring), and each piece a list of the question itself found,
+    with its own meaning score (None: no meaning list of the question found it). The
+    user's own words (``expansion``) go with the question only. O(t) times ``search``'s
+    cost for t translations."""
+    if not 1 <= limit <= MAX_LIMIT:
+        raise ValueError("limit must be between 1 and 100")
+    if scope.matches_nothing:
+        return [], {}
+    owners: dict[str, str] = {}
+    asked = _lists(conn, customer_id, query_text, embedding, recipe, ef_search, scope, expansion, owners)
+    lists = [*zip(_KINDS, asked, strict=True)]
+    for text_, vector in translations:
+        found = _lists(conn, customer_id, text_, vector, recipe, ef_search, scope, NO_EXPANSION, owners)
+        lists += zip(_KINDS, found, strict=True)
+    meaning = dict(asked[2])
+    original = {piece_id: meaning.get(piece_id) for ranked in asked for piece_id, _ in ranked}
+    return _hits(conn, customer_id, fuse_lists(lists)[:limit]), original
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentResult:
     """A document found (Q2): its best piece, whose score is the document's, and how many
@@ -506,15 +554,34 @@ def _candidates(
     scope: Scope,
     expansion: Expansion = NO_EXPANSION,
 ) -> tuple[list[FusedPiece], dict[str, str]]:
-    """The three lists inside ``scope``, merged best first, and each piece's document id.
-    W3: ``text_latin`` is matched with the question's ``latin_spelling``, and the simple
-    word query takes the ``normalise`` keywords, which spell Devanagari in Latin letters;
-    the glossary query takes their Marathi and Hindi equivalents (the module docstring)."""
+    """The three lists inside ``scope``, merged best first, and each piece's document id."""
+    owners: dict[str, str] = {}
+    word, fuzzy, meaning = _lists(
+        conn, customer_id, query_text, embedding, recipe, ef_search, scope, expansion, owners
+    )
+    return fuse(word, fuzzy, meaning), owners
+
+
+def _lists(
+    conn: Connection,
+    customer_id: str,
+    query_text: str,
+    embedding: list[float] | None,
+    recipe: str,
+    ef_search: int,
+    scope: Scope,
+    expansion: Expansion,
+    owners: dict[str, str],
+) -> tuple[list[tuple[str, float]], list[tuple[str, float]], list[tuple[str, float]]]:
+    """The word, fuzzy and meaning lists inside ``scope``, noting each piece's document id in
+    ``owners``. W3: ``text_latin`` is matched with the question's ``latin_spelling``, and the
+    simple word query takes the ``normalise`` keywords, which spell Devanagari in Latin
+    letters; the glossary query takes their Marathi and Hindi equivalents (the module
+    docstring)."""
     conn.execute(_SET_SEARCH, {"ms": str(STATEMENT_TIMEOUT_MS)})
     word: list[tuple[str, float]] = []
     fuzzy: list[tuple[str, float]] = []
     meaning: list[tuple[str, float]] = []
-    owners: dict[str, str] = {}
     if query_text.strip():
         asked = normalise(query_text).keywords
         latin = latin_spelling(query_text) if has_devanagari_letters(query_text) else query_text
@@ -533,7 +600,7 @@ def _candidates(
     if embedding is not None:
         vector = {"c": customer_id, "vec": vector_literal(embedding), "recipe": recipe, "n": CANDIDATES}
         meaning = _meaning(conn, vector | scope.params(), ef_search, owners)
-    return fuse(word, fuzzy, meaning), owners
+    return word, fuzzy, meaning
 
 
 def _ranked(rows: Iterable[Sequence[Any]], owners: dict[str, str]) -> list[tuple[str, float]]:

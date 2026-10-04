@@ -127,3 +127,19 @@ def test_one_embedding_batch_or_vision_crop_must_end_well_inside_the_lease() -> 
     with pytest.raises(SettingsError, match="MODEL_TIMEOUT_SECONDS") as caught:
         Settings.from_env(shipped(MODEL_TIMEOUT_SECONDS="1126", QUEUE_LEASE_SECONDS="1200"))
     assert "QUEUE_LEASE_SECONDS" in str(caught.value)
+
+
+def test_the_question_translation_is_off_unless_set_and_has_its_own_timeout() -> None:
+    """Council 4 Oct 2026: ANSWER_TRANSLATE_QUESTION is off when unset (an older .env), and
+    MODEL_TRANSLATE_TIMEOUT_SECONDS is 20 (PROVISIONAL)."""
+    shipped_values = Settings.from_env(shipped())
+    unset = Settings.from_env(shipped(ANSWER_TRANSLATE_QUESTION=None, MODEL_TRANSLATE_TIMEOUT_SECONDS=None))
+    for settings in (shipped_values, unset):
+        assert (settings.answer_translate_question, settings.model_translate_timeout_seconds) == (False, 20.0)
+    on = Settings.from_env(shipped(ANSWER_TRANSLATE_QUESTION="true", MODEL_TRANSLATE_TIMEOUT_SECONDS="5"))
+    assert (on.answer_translate_question, on.model_translate_timeout_seconds) == (True, 5.0)
+    with pytest.raises(SettingsError, match="ANSWER_TRANSLATE_QUESTION"):
+        Settings.from_env(shipped(ANSWER_TRANSLATE_QUESTION="yes"))
+    for bad in ("0", "-1", "nan", "soon"):
+        with pytest.raises(SettingsError, match="MODEL_TRANSLATE_TIMEOUT_SECONDS"):
+            Settings.from_env(shipped(MODEL_TRANSLATE_TIMEOUT_SECONDS=bad))

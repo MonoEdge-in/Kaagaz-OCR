@@ -411,6 +411,9 @@ class ProgressTest(unittest.TestCase):
                 Progress("indexing", 0, 1),
             ],
         )
+        # Every write carries the run's start, so the screen can show how far it has got.
+        self.assertEqual({p.started_at for _, _, p in system.progress.history}, {T0})
+        self.assertEqual(system.progress.history[0][2].to_json()["started_at"], T0.isoformat())
 
     def test_a_sheet_is_read_as_a_whole(self) -> None:
         system = rig()
@@ -441,9 +444,10 @@ class ProgressTest(unittest.TestCase):
         steps = [progress for _, _, progress in system.progress.history]
         self.assertEqual(steps[-2:], [Progress("indexing", 1, 2), Progress("indexing", 2, 2)])
 
-    def test_reading_and_understanding_carry_the_time_left(self) -> None:
+    def test_preparing_reading_and_after_carry_the_time_left(self) -> None:
         """PRD 4 #13, cold: the constants (an unknown engine: 7 s a page), then this run's
-        own pages (2.5 s each); from the end of reading, the time after it. Low confidence."""
+        own pages (2.5 s each); from the end of reading, the time after it. Low confidence.
+        Preparing (1 s a page, n0 = 2) also covers reading every page and the time after."""
         system = rig(ocr=TimedOcr)
         system.processor(system.job(make_pdf([SCANNED, SCANNED])), beat)
         by = {(p.step, p.done): p.estimate for _, _, p in system.progress.history}
@@ -455,7 +459,25 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(
             (after.finish_at - T0, after.slow_after_s, after.confidence), (timedelta(seconds=45), 65.0, "low")
         )
-        self.assertEqual((by[("scanning", 0)], by[("indexing", 0)]), (None, None))
+        prep = by[("preparing", 1)]
+        assert prep is not None
+        self.assertAlmostEqual(prep.item_s, 2 / 3)  # the timer stands still: (2 * 1 + 0) / (2 + 1)
+        self.assertAlmostEqual(
+            (prep.finish_at - T0).total_seconds(), prep.item_s + 2 * first.item_s + 45.0, 3
+        )
+        self.assertEqual((by[("scanning", 0)], by[("indexing", 0)]), (None, after))  # indexing keeps it
+
+    def test_a_run_times_its_preparing_and_three_runs_teach_it(self) -> None:
+        """1.5 s a heartbeat: each page drawn beats once, so two pages take 3 s to prepare."""
+        system = rig()
+        for n in range(4):
+            pdf = make_pdf([Page(texts=[Text(72, 700, f"{LONG_LINE} {n} {side}")]) for side in "ab"])
+            system.processor(system.job(pdf), lambda: system.timer.advance(1.5))
+        last = [run.totals for run in system.runs.rows.values() if run.totals is not None][-1]
+        self.assertEqual(last.config["seconds_preparing"], 3.0)
+        prep = [p.estimate for _, _, p in system.progress.history if p.step == "preparing"][-2]
+        assert prep is not None  # the fourth run's first page, after three runs of 3 s for 2 pages
+        self.assertAlmostEqual(prep.item_s, (2 + 2.44 * 3 + 1.5) / (2 + 2.44 * 2 + 1))
 
     def test_three_ready_runs_teach_the_time_after_reading(self) -> None:
         moves: list[Callable[[float], None]] = []
@@ -464,7 +486,7 @@ class ProgressTest(unittest.TestCase):
         for n in range(4):
             job = system.job(make_pdf([Page(texts=[Text(72, 700, f"{LONG_LINE} {n}")])]))
             system.processor(job, beat)
-        timings = {"seconds_reading": 0.0, "seconds_after_reading": 30.0}
+        timings = {"seconds_reading": 0.0, "seconds_after_reading": 30.0, "seconds_preparing": 0.0}
         self.assertEqual(system.totals(job).config, {**CONFIG, **timings})
         after = [p for _, _, p in system.progress.history if p.step == "understanding"][-1].estimate
         assert after is not None
@@ -536,7 +558,7 @@ class RunTotalsTest(unittest.TestCase):
         system = rig(ocr=TimedOcr, settings=make_settings(page_image_dpi=72, ocr_dpi=300))
         job = system.job(make_pdf([SCANNED, a1]))
         system.processor(job, beat)
-        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0}
+        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0, "seconds_preparing": 0.0}
         self.assertEqual(system.totals(job).config, {**CONFIG, "ocr_dpi_lowest": 164, **timings})
 
         letter_only = system.job(make_pdf([SCANNED, SCANNED]))
@@ -557,7 +579,7 @@ class RunTotalsTest(unittest.TestCase):
             return FallbackOcrEngine(FailingOcr(), lambda: TimedOcr(timer), timer=timer)
 
         system = rig(ocr=engine)
-        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0}
+        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0, "seconds_preparing": 0.0}
         job = system.job(make_pdf([SCANNED, SCANNED]))
         system.processor(job, beat)
         totals = system.totals(job)

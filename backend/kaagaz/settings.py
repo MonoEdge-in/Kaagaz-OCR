@@ -60,6 +60,8 @@ def window_for_reply_tokens(max_tokens: int) -> tuple[int, int]:
 CHAT_OVERHEAD_TOKENS = 100
 MAX_SYSTEM_PROMPT_TOKENS = 1000
 MIN_INPUT_TOKENS = 1024
+# Council 4 Oct 2026, PROVISIONAL: the question translation call's timeout when unset.
+TRANSLATE_TIMEOUT_SECONDS = 20.0
 
 
 def _time_zone(name: str) -> str:
@@ -197,6 +199,11 @@ class Settings:
     answer_neighbours: int
     # H1: the question and answer pairs a follow-up is rewritten with, 0 (no rewrite) to 10.
     chat_history_turns: int
+    # Council 4 Oct 2026 (PROVISIONAL): an all-Latin question whose hits are mostly in another
+    # script is also searched as the model's translation into that script. Off unless "true";
+    # the translation call has its own timeout (TRANSLATE_TIMEOUT_SECONDS when unset).
+    answer_translate_question: bool
+    model_translate_timeout_seconds: float
     timezone: str
 
     # API.
@@ -278,6 +285,11 @@ class Settings:
                 f"MODEL_TIMEOUT_SECONDS + {_MODEL_LEASE_MARGIN_SECONDS}"
                 " must not be more than QUEUE_LEASE_SECONDS"
             )
+        translate_timeout = TRANSLATE_TIMEOUT_SECONDS
+        if env.optional("MODEL_TRANSLATE_TIMEOUT_SECONDS") is not None:
+            translate_timeout = env.number("MODEL_TRANSLATE_TIMEOUT_SECONDS")
+        if not (math.isfinite(translate_timeout) and translate_timeout > 0):
+            raise SettingsError("MODEL_TRANSLATE_TIMEOUT_SECONDS must be a number above 0")
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -349,6 +361,9 @@ class Settings:
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             answer_neighbours=env.between("ANSWER_NEIGHBOURS", 0, 3),
             chat_history_turns=env.between("CHAT_HISTORY_TURNS", 0, 10),
+            answer_translate_question=env.optional("ANSWER_TRANSLATE_QUESTION") is not None
+            and env.boolean("ANSWER_TRANSLATE_QUESTION"),
+            model_translate_timeout_seconds=translate_timeout,
             timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             log_level=env.text("LOG_LEVEL"),
