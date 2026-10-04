@@ -488,12 +488,33 @@ def test_the_device_reaches_paddleocr_vl(monkeypatch: pytest.MonkeyPatch) -> Non
             built.append(options)
 
     monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PaddleOCRVL=FakePaddleOCRVL))
+    monkeypatch.setitem(sys.modules, "paddle", types.SimpleNamespace(is_compiled_with_cuda=lambda: True))
     model = PaddleModel("gpu:0")
     model.load()
     assert model.ready()
     (options,) = built
     assert options["device"] == "gpu:0"
     assert options["use_doc_unwarping"] is False  # the other settings are as before
+
+
+def test_a_gpu_device_needs_a_paddle_built_for_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The image build can't import the GPU paddle (no driver), so load checks it."""
+    built: list[dict[str, Any]] = []
+
+    class FakePaddleOCRVL:
+        def __init__(self, **options: Any) -> None:
+            built.append(options)
+
+    monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PaddleOCRVL=FakePaddleOCRVL))
+    monkeypatch.setitem(sys.modules, "paddle", types.SimpleNamespace(is_compiled_with_cuda=lambda: False))
+    model = PaddleModel("gpu:0")
+    with pytest.raises(RuntimeError, match="not built for CUDA"):
+        model.load()
+    assert not model.ready()
+    assert built == []
+    cpu = PaddleModel("cpu")  # the CPU device never asks paddle about CUDA
+    cpu.load()
+    assert cpu.ready()
 
 
 def installed(packages: dict[str, str]) -> Callable[[str], str]:
