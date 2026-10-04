@@ -237,9 +237,11 @@ def test_set_progress_on_a_ready_document_changes_nothing(db: Database) -> None:
     with db.customer(customer) as conn:
         reading, ready = insert_document(conn, customer, status="clean"), insert_document(conn, customer)
     for doc in (reading, ready):
-        PgDocuments(db).set_progress(customer, doc, Progress("reading", 2, 5))
+        PgDocuments(db).set_progress(customer, doc, Progress("reading", 2, 5, started_at=T0))
 
-    assert rows(db, customer, PROGRESS, reading) == [{"progress": {"step": "reading", "done": 2, "total": 5}}]
+    # The CHECK allows extra keys: the run's start goes with each progress (the percentage).
+    shown = {"step": "reading", "done": 2, "total": 5, "started_at": T0.isoformat()}
+    assert rows(db, customer, PROGRESS, reading) == [{"progress": shown}]
     assert rows(db, customer, PROGRESS, ready) == [{"progress": None}]
 
 
@@ -248,7 +250,7 @@ def test_recent_timings_are_this_customers_ready_runs_newest_first(db: Database)
     from before them or one whose number is not a number)."""
     customer, _ = new_customer(db)
     doc = new_document(db, customer)
-    timed = {"seconds_reading": 4.5, "seconds_after_reading": 30.0}
+    timed = {"seconds_reading": 4.5, "seconds_after_reading": 30.0, "seconds_preparing": 2.0}
     ends = [("ready", timed), ("failed", timed), ("ready", {}), ("ready", {"seconds_reading": "4"})]
     for minute, (status, config) in enumerate(ends):
         now = T0 + timedelta(minutes=minute)
@@ -257,7 +259,7 @@ def test_recent_timings_are_this_customers_ready_runs_newest_first(db: Database)
         PgRuns(db).finish(customer, FinishedRun(run, totals(status, error_code=error, config=config), now))
 
     untimed = RunTiming("rapidocr 3.4", 3, 6, 1, 3.25, None, None)
-    timed_run = replace(untimed, seconds_reading=4.5, seconds_after=30.0)
+    timed_run = replace(untimed, seconds_reading=4.5, seconds_after=30.0, seconds_preparing=2.0)
     assert PgRuns(db).recent_timings(customer) == [untimed, untimed, timed_run]
 
 

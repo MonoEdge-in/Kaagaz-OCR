@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from kaagaz.eta import RunTiming, after_reading, mean, rates, reading, time_left
+from kaagaz.eta import RunTiming, after_reading, mean, preparing, rates, reading, time_left
 
 T0 = datetime(2026, 10, 4, 10, 0, tzinfo=UTC)
 NONE = (0.0, 0.0)
@@ -68,9 +68,32 @@ def test_a_sheet_is_one_file_with_no_pages() -> None:
     assert reading(rates([sheet], None), T0, 0, 0, NONE, NONE).item_s == pytest.approx(5 / 3)
 
 
+def test_preparing_covers_the_pages_left_then_all_of_reading_and_after() -> None:
+    """Cold: one page drawn in 2 s of four; the prior (1 s, n0 = 2) and that page give 4/3 s a
+    page; then four pages read at the cold mix and 45 s after reading. Low confidence."""
+    estimate = preparing(rates([], "rapidocr"), T0, 1, 4, (2.0, 1))
+    reading_and_after = 4 * (0.5 * 6.9 + 0.5 * 0.15) + 45.0
+    assert estimate.item_s == pytest.approx(4 / 3)
+    assert estimate.after_s == pytest.approx(reading_and_after)
+    assert estimate.finish_at == T0 + timedelta(seconds=3 * estimate.item_s + estimate.after_s)
+    assert (estimate.slow_after_s, estimate.confidence) == (20.0, "low")
+
+
+def test_preparing_learns_from_seconds_preparing_and_is_confident_with_3_runs() -> None:
+    """Three runs of ten pages drawn in 5 s: (2 * 1 + 2.44 * 5) / (2 + 24.4) s a page."""
+    timed = RunTiming("rapidocr 3.4", 10, 0, 0, 30.0, 30.0, 30.0, 5.0)
+    learned = rates([timed] * 3, "rapidocr")
+    estimate = preparing(learned, T0, 0, 10, NONE)
+    assert estimate.item_s == pytest.approx(14.2 / 26.4) and estimate.confidence == "high"
+    untimed = rates([scan_run()] * 3, "rapidocr")  # runs from before seconds_preparing was kept
+    assert mean(untimed.prepare) == 1.0 and preparing(untimed, T0, 0, 10, NONE).confidence == "low"
+    assert preparing(untimed, T0, 3, 10, (1.5, 3)).confidence == "high"  # three of its own pages
+
+
 def stored(**changes: object) -> dict[str, object]:
     moved, finish = T0 - timedelta(seconds=4), T0 + timedelta(seconds=60)
     progress = {"step": "reading", "done": 2, "total": 10, "moved_at": moved.isoformat()}
+    progress["started_at"] = (T0 - timedelta(seconds=90)).isoformat()
     timing = {"finish_at": finish.isoformat(), "item_s": 5.0, "after_s": 20.0, "slow_after_s": 20.0}
     return {**progress, **timing, "confidence": "high", **changes}
 
@@ -80,6 +103,7 @@ def test_time_left_counts_from_one_now_and_never_below_0() -> None:
     assert left is not None
     assert (left["seconds"], left["since_move_seconds"], left["items_left"]) == (60.0, 4.0, 8)
     assert (left["slow_after_seconds"], left["item_seconds"], left["after_seconds"]) == (20.0, 5.0, 20.0)
+    assert left["elapsed_seconds"] == 90.0
     late = time_left(stored(), now=T0 + timedelta(minutes=5))
     after = time_left(stored(step="understanding"), now=T0)
     assert late is not None and late["seconds"] == 0.0
@@ -90,9 +114,24 @@ def test_a_worker_clock_30_s_ahead_never_shows_more_than_its_estimate() -> None:
     moved, finish = (T0 + timedelta(seconds=30)).isoformat(), (T0 + timedelta(seconds=90)).isoformat()
     left = time_left(stored(moved_at=moved, finish_at=finish), now=T0)
     assert left is not None and (left["seconds"], left["since_move_seconds"]) == (60.0, 0.0)
+    ahead = time_left(stored(started_at=(T0 + timedelta(seconds=30)).isoformat()), now=T0)
+    assert ahead is not None and ahead["elapsed_seconds"] == 0.0
 
 
-BAD = [{"step": "indexing"}, {"confidence": "sure"}, {"moved_at": "2026-10-04T10:00:00"}, {"finish_at": None}]
+def test_time_left_from_preparing_to_indexing_and_never_while_scanning() -> None:
+    """Preparing counts the pages left to draw; understanding and indexing none."""
+    lefts = [time_left(stored(step=step), now=T0) for step in ("preparing", "understanding", "indexing")]
+    assert [None if left is None else left["items_left"] for left in lefts] == [8, 0, 0]
+    assert time_left(stored(step="scanning"), now=T0) is None
+
+
+BAD = [
+    {"step": "scanning"},
+    {"started_at": None},
+    {"confidence": "sure"},
+    {"moved_at": "2026-10-04T10:00:00"},
+    {"finish_at": None},
+]
 BAD += [{"finish_at": (T0 - timedelta(minutes=1)).isoformat()}, {"item_s": float("nan")}, {"after_s": True}]
 BAD += [{"slow_after_s": "20"}, {"done": "2"}]
 

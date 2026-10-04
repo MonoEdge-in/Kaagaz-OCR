@@ -70,7 +70,9 @@ def _estimates(system: Rig, customer: str, text: str) -> list[Estimate]:
     pdf = make_pdf([Page(texts=[Text(72, 700, text)])])
     doc = system.upload.accept(customer, io.BytesIO(pdf)).document_id
     system.processor(Job(customer, doc), beat)
-    return [p.estimate for _, d, p in system.progress.history if d == doc and p.estimate is not None]
+    # Indexing keeps the estimate from the end of reading, written once a batch: the rigs differ there.
+    timed = [p for _, d, p in system.progress.history if d == doc and p.step != "indexing"]
+    return [p.estimate for p in timed if p.estimate is not None]
 
 
 class IsolationTimeLeftTest(unittest.TestCase):

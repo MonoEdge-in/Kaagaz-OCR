@@ -372,7 +372,8 @@ class MemoryRuns:
         mine = [row for row in self.rows.values() if (row.customer_id, row.status) == (customer_id, "ready")]
         mine.sort(key=lambda row: row.started_at, reverse=True)
         totals = [row.totals for row in mine[:HISTORY_RUNS] if row.totals is not None]
-        config = [(t.config.get("seconds_reading"), t.config.get("seconds_after_reading")) for t in totals]
+        keys = ("seconds_reading", "seconds_after_reading", "seconds_preparing")
+        config = [tuple(t.config.get(key) for key in keys) for t in totals]
         return [
             RunTiming(
                 t.ocr_engine,
