@@ -15,7 +15,8 @@ of it looks sound, and a Latin spelling of it for search.
   compared (``kaagaz/reading/ocr.py``).
 * ``has_devanagari_letters`` (ML amendment 1(b)). PROVISIONAL for PRD 2: an
   OCR value with any Devanagari letter is needs review. Digits and the danda
-  do not count.
+  do not count. ``has_other_script_letters`` is the same for any script but Latin, by
+  ``letter_script``: the first word of a letter's Unicode name.
 * ``fold_digits`` (L4). Devanagari digits become ASCII digits for parsing and
   for quote matching. It is one character for one, so offsets still hold. The
   printed text (``value_text``) is never changed.
@@ -147,6 +148,21 @@ def is_devanagari(text: str) -> bool:
 def has_devanagari_letters(text: str) -> bool:
     """True when any letter or sign (L or M) is in U+0900 to U+097F. Digits and the danda are not letters."""
     return any("\u0900" <= ch <= "\u097f" and unicodedata.category(ch)[0] in "LM" for ch in text)
+
+
+def letter_script(ch: str) -> str | None:
+    """The script of a letter or mark (L or M): the first word of its Unicode name (LATIN,
+    DEVANAGARI, GUJARATI, TAMIL, ARABIC...), from the Unicode database, never a table of ours.
+    None for any other character, and for a mark of no script of its own (COMBINING ...)."""
+    if unicodedata.category(ch)[0] not in "LM":
+        return None
+    first = unicodedata.name(ch, "").partition(" ")[0]
+    return None if first in ("", "COMBINING") else first
+
+
+def has_other_script_letters(text: str) -> bool:
+    """True when any letter or mark is of a script other than Latin (council 4 Oct 2026). O(n)."""
+    return not text.isascii() and any(letter_script(ch) not in (None, "LATIN") for ch in text)
 
 
 def malformed_devanagari(text: str) -> int:
