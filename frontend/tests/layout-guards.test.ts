@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { STICKY_VIEWER_QUERY } from "@/components/viewer/viewer";
 
 const ROOT = join(__dirname, "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
@@ -113,6 +114,10 @@ const DOCS_CSS = "components/documents/Documents.module.css";
 const ADMIN_CSS = "components/admin/Admin.module.css";
 const TABLE_FILES = [DOCS_CSS, "components/documents/Table.module.css", ADMIN_CSS];
 
+/** The rules for exactly this selector (one of a list counts), in a CSS file. */
+const rulesFor = (file: string, selector: string) =>
+  rules(read(file)).filter((rule) => selectors(rule).includes(selector));
+
 describe("layout guards", () => {
   it("lets every table cell and its text wrap (a header may stay on one line)", () => {
     expect(nowrapCells(TABLE_FILES)).toEqual([]);
@@ -158,6 +163,29 @@ describe("layout guards", () => {
     for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
   });
 
+  it("lets a badge wrap, so a long label never pushes the page sideways", () => {
+    const badge = rulesFor("app/globals.css", ".badge");
+    expect(badge.length).toBeGreaterThan(0);
+    expect(badge.filter((rule) => NOWRAP.test(rule.body))).toEqual([]);
+  });
+
+  it("stretches the sidebar down the page; only its inner part sticks", () => {
+    const shell = "components/shell/Shell.module.css";
+    expect(rulesFor(shell, ".sidebar").filter((rule) => /position:\s*sticky/.test(rule.body))).toEqual([]);
+    expect(rulesFor(shell, ".sidebarInner").some((rule) => /position:\s*sticky/.test(rule.body))).toBe(true);
+  });
+
+  it("gives the page frame no height limit of its own (no second scrollbar)", () => {
+    const frame = rulesFor("components/viewer/PageViewer.module.css", ".frame");
+    expect(frame.length).toBeGreaterThan(0);
+    expect(frame.filter((rule) => /max-height/.test(rule.body))).toEqual([]);
+  });
+
+  it("sticks the page column under the same media query the page fit uses", () => {
+    const sticky = rules(read("app/(app)/documents/[id]/DocumentView.module.css")).filter(
+      (rule) => selectors(rule).includes(".viewer") && /position:\s*sticky/.test(rule.body),
+    );
+    expect(sticky.map((rule) => rule.at)).toEqual([`@media ${STICKY_VIEWER_QUERY}`]);
   it("leaves the admin Users table's User column room where it becomes a table", () => {
     const found = budgets(ADMIN_CSS, "reflow", USER_REM);
     expect(found.map((b) => b.start)).toEqual([48]);

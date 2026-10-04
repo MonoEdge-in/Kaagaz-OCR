@@ -1,7 +1,7 @@
 "use client";
 
-// The frame around every signed-in screen. From 1024 px up: a sticky sidebar
-// with the wordmark and ShellMenu. Below that: a sticky top bar (menu button,
+// The frame around every signed-in screen. From 1024 px up: a sidebar down the
+// whole page, with the wordmark and ShellMenu sticking to the window. Below that: a sticky top bar (menu button,
 // wordmark, the current page's name) and a Drawer with the same ShellMenu.
 // Both get their links from the one navLinks list for the whole shell.
 // <main id="main"> has no padding; screens use .page (the chat fills it).
@@ -99,10 +99,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         </header>
 
         <div className={styles.sidebar}>
-          <div className={styles.sidebarBrand}>
-            <Wordmark href="/documents" />
+          <div className={styles.sidebarInner}>
+            <div className={styles.sidebarBrand}>
+              <Wordmark href="/documents" />
+            </div>
+            {menu}
           </div>
-          {menu}
         </div>
 
         <main id="main" className={styles.main}>

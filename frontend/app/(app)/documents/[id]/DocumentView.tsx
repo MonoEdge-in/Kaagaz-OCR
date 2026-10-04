@@ -14,11 +14,15 @@
 // document card, related documents and the invoice (DocumentPanels.tsx,
 // PRD 3 Y1 to Y3); a low-resolution page says so above it (Y4). Scanned text:
 // see ScannedTextPanel.tsx. My words: "Add meaning" by a value or a scanned
-// line, and the user's own words on the page (components/words/ViewerWords.tsx).
-// Last beside it: the user's own story about the document (StoryPanel.tsx).
+// line, and the user's own words on the page (components/words/ViewerWords.tsx),
+// listed first beside it. Last beside it: the user's own story about the
+// document (StoryPanel.tsx). On a window at least 1024 px wide and 36rem tall
+// the page column sticks and shows the whole page (STICKY_VIEWER_QUERY,
+// "Fit page"), so it never needs a scrollbar of its own.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { useMediaQuery } from "@/components/chat/hooks";
 import { askAboutHref } from "@/components/chat/logic";
 import { downloadHref, folderTrail } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
@@ -27,6 +31,7 @@ import { StatusChip } from "@/components/documents/StatusChip";
 import { TimeLeft } from "@/components/documents/TimeLeft";
 import { Icon } from "@/components/ui/Icon";
 import { PageViewer } from "@/components/viewer/PageViewer";
+import { STICKY_VIEWER_QUERY } from "@/components/viewer/viewer";
 import { SCANNED_PANEL_ID, ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
@@ -162,6 +167,7 @@ export function DocumentView({
       ? chosen.selection
       : initialSelection(shown, pageParam, regionParam);
   const words = useViewerWords(documentId, selection ? selection.pageNo : null);
+  const stickyViewer = useMediaQuery(STICKY_VIEWER_QUERY);
 
   if (!current) {
     return (
@@ -373,6 +379,7 @@ export function DocumentView({
               onPageChange={changePage}
               marks={words.markers}
               activeMark={words.activeId}
+              fit={stickyViewer ? "page" : "width"}
               tools={
                 hasScannedText && (
                   <button
@@ -406,9 +413,9 @@ export function DocumentView({
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
           )}
-          {page && <PageWordsList words={words} />}
         </section>
         <div className={styles.panels}>
+          {page && <PageWordsList words={words} />}
           <CardPanel {...panel} />
           <RelatedPanel detail={detail} />
           <InvoicePanel {...panel} />

@@ -74,6 +74,11 @@
   margin-top: var(--space-4);
 }
 
+/* Beside the page the list is in a column: only as tall as its words. */
+.pageWords .list {
+  flex: none;
+}
+
 .toggle {
   display: inline-flex;
   align-items: center;
@@ -94,6 +99,7 @@
   gap: var(--space-2);
   width: 100%;
   text-align: start;
+  white-space: normal; /* a long meaning wraps in the narrow column beside the page */
 }
 
 .markerItem[aria-pressed="true"] {
