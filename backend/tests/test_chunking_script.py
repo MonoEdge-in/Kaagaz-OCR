@@ -18,6 +18,7 @@ from kaagaz.chunking.script import (
     malformed_devanagari,
     ocr_script_suspect,
     ocr_suspect_count,
+    word_latin_spelling,
 )
 from kaagaz.reading.spans import BoxLocation
 
@@ -229,6 +230,21 @@ class LanguagesWithoutModelTest(unittest.TestCase):
         self.assertEqual(languages_without_model([piece("محمد")]), ("other",))  # Arabic
         self.assertEqual(languages_without_model([piece("1,180.00 | 12/08/2026")]), ())
         self.assertEqual(languages_without_model([]), ())
+
+
+class WordLatinSpellingTest(unittest.TestCase):
+    """Council 4 Oct 2026, PR C: one word of any script indic-transliteration reads."""
+
+    def test_devanagari_and_gujarati_august_spell_the_same(self) -> None:
+        self.assertEqual(word_latin_spelling("\u0911\u0917\u0938\u094d\u091f"), "ogasta")  # Marathi
+        self.assertEqual(word_latin_spelling("\u0a93\u0a97\u0ab8\u0acd\u0a9f"), "ogasta")  # Gujarati
+
+    def test_a_script_it_cannot_read_two_scripts_or_latin_give_none(self) -> None:
+        self.assertIsNone(word_latin_spelling("\u0627\u06af\u0633\u062a"))  # Arabic: no such scheme
+        self.assertIsNone(word_latin_spelling("\u0911\u0917x"))  # two scripts
+        self.assertIsNone(word_latin_spelling("august"))
+        self.assertIsNone(word_latin_spelling("12"))
+        self.assertIsNone(word_latin_spelling(""))
 
 
 if __name__ == "__main__":

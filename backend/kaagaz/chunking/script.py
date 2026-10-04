@@ -39,6 +39,11 @@ of it looks sound, and a Latin spelling of it for search.
   before it they become plain vowels (ॉ and ऑ as o, ॅ and ऍ as e, ॲ as a) and
   the abbreviation sign ॰ is dropped. So कॉपी gives "kopi". The danda and
   double danda (। ॥) become ".".
+* ``word_latin_spelling`` (council 4 Oct 2026, PR C). One word of any one
+  script indic-transliteration reads (its Unicode script name, lower-cased, is
+  one of its non-Latin schemes: Gujarati, Bengali, Tamil, Oriya...), turned
+  into Devanagari by it, then ``latin_spelling``. None for a word of another
+  script (Arabic) or of two scripts. No table of ours names a script.
 * ``languages_without_model`` (L2). With no model, a Devanagari piece means
   "other" (Hindi and Marathi cannot be told apart), a piece whose letters are
   mostly ASCII means "en", and any other script means "other".
@@ -219,6 +224,23 @@ def latin_spelling(text: str) -> str:
         )
 
     return _RUN.sub(spell, text).lower()
+
+
+def word_latin_spelling(word: str) -> str | None:
+    """The module docstring's ``word_latin_spelling``: ``word``'s Latin spelling, or None. O(n)."""
+    from indic_transliteration import sanscript  # slow to import, as in latin_spelling
+
+    scripts = {letter_script(ch) for ch in word}
+    if len(scripts) != 1:
+        return None
+    script = scripts.pop()
+    scheme = None if script is None else sanscript.SCHEMES.get(script.lower())
+    if script is None or scheme is None or scheme.is_roman:
+        return None
+    text = unicodedata.normalize("NFC", word)
+    if script != "DEVANAGARI":
+        text = str(sanscript.transliterate(text, script.lower(), sanscript.DEVANAGARI))
+    return latin_spelling(text)
 
 
 def sound_key(word: str) -> str:

@@ -11,7 +11,10 @@ A sentence is kept only if:
    1. dates: 12/08/2026 (one separator throughout), 2026-08-12, 12 Aug 2026,
       12th of August 2026, August 12, 2026; "12 August" with no year (its day
       and month); "August 2026" (its month and year); 12/08/26 with a
-      two-digit year, as written (no century is guessed);
+      two-digit year, as written (no century is guessed). In the evidence
+      only, a day, a word of another script and a four-digit year are also
+      that date when the word sounds like one English month name
+      (``other_script_month``); its day and year stay numbers too;
    2. amounts: the rupee sign, Rs, Rs. or INR, then a number (an "/-", "Dr"
       or "Cr" after it changes nothing: Cr is credit, not crore);
    3. percents: %, percent, per cent;
@@ -80,6 +83,19 @@ Nothing left means the answer is "not found". The drops are logged by reason, co
 on the search route whether the sentences came from the model or were quoted;
 fixed-route sentences come from templates filled only from query results.
 
+``other_script_month`` (council 4 Oct 2026, PR C, the ML reviewer's rule, PROVISIONAL).
+A month written in another script (a Marathi page's "12 August 2026" with the month
+in Devanagari) is read by sound, with no list of month words: the word's Latin
+spelling (``word_latin_spelling``), then its ``sound_key``, is compared by edit
+distance with the sound keys of the 12 English month names ``parse_date`` reads. The
+nearest month counts when the distance is at most ``MONTH_SOUND_MAX`` of the longer
+key and the next nearest is at least ``MONTH_SOUND_GAP`` further; else the word is no
+month, as before. Measured on 24 Hindi and Marathi month words (tests): 23 read
+right, none wrong (Hindi "farvari" is too far from february, so a date with it is
+still dropped). This only adds to what evidence backs, and the day and year must
+match exactly. A word near a month by chance (the land unit "gunthe", june) can back a
+wrong month only with the very same day and year beside it.
+
 Known gaps, PROVISIONAL (Part B 1, Vrushit decides): an atom may come from any
 line of the evidence a sentence cites, so the sub total given as the grand
 total, or the buyer's GSTIN given as the seller's, still passes; names in
@@ -98,12 +114,19 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from functools import cache
+from fractions import Fraction
+from functools import cache, lru_cache
 
 from kaagaz.answering.draft import DraftSentence
 from kaagaz.answering.sanitize import strip_ignorable
-from kaagaz.chunking.script import ascii_digits, has_other_script_letters, letter_script
-from kaagaz.extraction.parsing import _INDIAN, _WESTERN, parse_date
+from kaagaz.chunking.script import (
+    ascii_digits,
+    has_other_script_letters,
+    letter_script,
+    sound_key,
+    word_latin_spelling,
+)
+from kaagaz.extraction.parsing import _INDIAN, _MONTHS, _WESTERN, parse_date
 from kaagaz.extraction.quotes import normalise_quote
 
 _log = logging.getLogger(__name__)
@@ -130,6 +153,16 @@ _MONTH_YEAR = re.compile(_START + _MONTH + r"[\s.,/-]*(?P<y>\d{4})" + _END)
 _DAY_MONTH = re.compile(_START + _DAY + r"(?:\s+of)?[\s./-]+" + _MONTH)
 _MONTH_DAY = re.compile(_START + _MONTH + r"\s*" + _DAY + r"\b")
 _DATE_PARTS = re.compile(r"[./-]")
+# A day, a word of another script and a four-digit year (``other_script_month``).
+_OTHER_SCRIPT_DATE = re.compile(
+    _START + r"(?P<d>\d{1,2})[\s./-]+(?P<mon>[^\x00-\x7f\s]+)[\s.,/-]*(?P<y>\d{4})" + _END
+)
+MONTH_SOUND_MAX = Fraction(1, 2)  # PROVISIONAL: edits over the longer key's letters
+MONTH_SOUND_GAP = Fraction(1, 10)  # PROVISIONAL: how much further the next month must be
+# Each month's longest English name (september, not sep), as ``parse_date`` reads it.
+_ENGLISH_MONTHS = {
+    number: max((n for n, m in _MONTHS.items() if m == number), key=len) for number in set(_MONTHS.values())
+}
 
 _NUMBER = r"(?P<n>\d+(?:,\d+)*(?:\.\d+)?)"
 _SCALE_WORDS = r"k|hundred|thousand|lakhs?|lacs?|crores?"  # never "cr": that is credit
@@ -331,9 +364,7 @@ def _backed(text: str) -> _Backing:
             elif kind in ("plain", "year") and isinstance(value, str):
                 backing.atoms.add(("number", Decimal(value)))
             elif kind == "date" and isinstance(value, date):
-                backing.atoms |= {(kind, value), ("day_month", (value.month, value.day))}
-                backing.atoms.add(("month_year", (value.year, value.month)))
-                backing.years.add(value.year)
+                _add_date(backing, value)
             elif kind == "short_date" and isinstance(value, tuple):
                 backing.atoms |= {(kind, value), ("day_month", (value[1], value[0]))}
             elif kind == "month_year" and isinstance(value, tuple):
@@ -341,7 +372,52 @@ def _backed(text: str) -> _Backing:
                 backing.years.add(value[0])
             elif not kind.startswith("bad_"):
                 backing.atoms.add((kind, value))
+        if not line.isascii():
+            for match in _OTHER_SCRIPT_DATE.finditer(line):
+                month = other_script_month(match["mon"])
+                day = (
+                    None
+                    if month is None
+                    else parse_date(f"{match['d']} {_ENGLISH_MONTHS[month]} {match['y']}")
+                )
+                if day is not None:
+                    _add_date(backing, day)  # added only: its day and year stay numbers
     return backing
+
+
+def _add_date(backing: _Backing, day: date) -> None:
+    """A date backs itself, its day and month, and its month and year."""
+    backing.atoms |= {
+        ("date", day),
+        ("day_month", (day.month, day.day)),
+        ("month_year", (day.year, day.month)),
+    }
+    backing.years.add(day.year)
+
+
+@lru_cache(maxsize=4096)  # a page repeats its month words; the cache is bounded
+def other_script_month(word: str) -> int | None:
+    """The month (1 to 12) a word of another script sounds like, or None (the module
+    docstring). O(n) in the word, then 12 edit distances of at most ``SOUND_WORD_MAX`` letters."""
+    latin = word_latin_spelling(word)
+    key = sound_key(latin) if latin else ""
+    if not key:
+        return None
+    (best, month), (second, _) = sorted(
+        (_distance(key, sound_key(name)), number) for number, name in _ENGLISH_MONTHS.items()
+    )[:2]
+    return month if best <= MONTH_SOUND_MAX and second - best >= MONTH_SOUND_GAP else None
+
+
+def _distance(a: str, b: str) -> Fraction:
+    """Levenshtein's edit distance between ``a`` and ``b`` over the longer one's length. O(|a| * |b|)."""
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        previous = current
+    return Fraction(previous[-1], max(len(a), len(b)))
 
 
 def _sentence_lines(text: str) -> list[str] | None:

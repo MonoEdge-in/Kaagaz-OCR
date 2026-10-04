@@ -78,7 +78,7 @@ from kaagaz.ai.client import (
     ModelClient,
     ModelOutputError,
     ModelUnavailable,
-    estimate_tokens,
+    estimate_tokens_cautiously,
     input_token_budget,
 )
 from kaagaz.answering import glossary
@@ -427,7 +427,7 @@ class AnswerService:
         room = input_token_budget(
             num_ctx=self._settings.model_num_ctx, max_tokens=_REPLY_TOKENS, system=SYSTEM_PROMPT
         )
-        room -= estimate_tokens(question) + sum(_tokens(item) for item in evidence)
+        room -= estimate_tokens_cautiously(question) + sum(_tokens(item) for item in evidence)
         near = self._retriever.neighbours(customer_id, [item.hit for item in evidence], scope)
         for item in number_evidence(near, start=len(evidence) + 1, neighbour=True):
             room -= _tokens(item)
@@ -586,7 +586,7 @@ def _numbers(question: str, keywords: Sequence[str], expansion: Expansion) -> li
 
 def _tokens(item: Evidence) -> int:
     """About how many prompt tokens a piece takes: its header and text, and its fence."""
-    return estimate_tokens(item.hit.context_header + item.hit.text) + _FENCE_TOKENS
+    return estimate_tokens_cautiously(item.hit.context_header + item.hit.text) + _FENCE_TOKENS
 
 
 def _translated_only(item: Evidence, translated: Translated, min_score: float) -> bool:
