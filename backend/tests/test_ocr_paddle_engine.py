@@ -179,10 +179,15 @@ def test_refusals_fail_the_document_with_a_code(fake: FakeOcrServer, status: int
     ],  # 421: set-up, not the file
 )
 def test_a_server_that_cannot_read_now_is_unavailable(fake: FakeOcrServer, status: int, error: str) -> None:
+    """Only running out of memory is OcrOverloaded (read by the fallback); the rest are a
+    set-up or server fault, which RapidOCR must not hide."""
     fake.replies.append(Reply(status, b"not json" if error == "not json" else {"error": error}))
-    with pytest.raises(BackendUnavailable):
+    with pytest.raises(BackendUnavailable) as caught:
         engine(fake).read(page())
     assert len(fake.requests) == 1  # the job's own retry asks again, later
+    assert str(caught.value) == "ocr"  # the run's error code stays ocr_unavailable
+    code = caught.value.code if isinstance(caught.value, ocr.OcrOverloaded) else None
+    assert code == ("ocr_out_of_memory" if error == "out_of_memory" else None)
 
 
 def test_a_busy_server_is_asked_again_within_the_deadline(
@@ -201,8 +206,9 @@ def test_a_server_busy_past_the_deadline_is_unavailable(
     monkeypatch.setattr(ocr, "_BUSY_WAIT_SECONDS", 0.05)
     fake.replies += [Reply(503, {"error": "busy"}) for _ in range(20)]
     started = time.monotonic()
-    with pytest.raises(BackendUnavailable):
+    with pytest.raises(ocr.OcrOverloaded, match="ocr") as caught:
         engine(fake, timeout=0.5).read(page())
+    assert caught.value.code == "ocr_timeout"
     assert time.monotonic() - started < 0.5 + 1.0  # one deadline for the whole call
     assert 2 <= len(fake.requests) < 20  # asked again, backing off
 
@@ -217,15 +223,17 @@ def test_an_ocr_service_that_is_not_there_is_unavailable() -> None:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    with pytest.raises(BackendUnavailable):
+    with pytest.raises(BackendUnavailable) as caught:
         ocr.PaddleVlEngine(f"http://127.0.0.1:{port}", timeout_seconds=5).read(page())
+    assert not isinstance(caught.value, ocr.OcrOverloaded)  # down: retried, never the fallback
 
 
 @pytest.mark.parametrize("reply", [Reply(hold=True), Reply(cut=True)], ids=["no reply", "reply stalls"])
 def test_a_reply_past_the_deadline_is_unavailable(fake: FakeOcrServer, reply: Reply) -> None:
     fake.replies.append(reply)
-    with pytest.raises(BackendUnavailable):
+    with pytest.raises(ocr.OcrOverloaded) as caught:
         engine(fake, timeout=0.3).read(page())
+    assert caught.value.code == "ocr_timeout"
 
 
 @pytest.mark.parametrize("where", ["headers", "body"])
@@ -234,7 +242,7 @@ def test_a_reply_that_trickles_in_is_cut_at_the_deadline(fake: FakeOcrServer, wh
     whole call stops it, within the timeout and a small margin."""
     fake.replies.append(Reply(trickle=where))
     started = time.monotonic()
-    with pytest.raises(BackendUnavailable):
+    with pytest.raises(ocr.OcrOverloaded):
         engine(fake, timeout=0.5).read(page())
     assert time.monotonic() - started < 0.5 + 1.0
 
@@ -242,8 +250,9 @@ def test_a_reply_that_trickles_in_is_cut_at_the_deadline(fake: FakeOcrServer, wh
 def test_a_reply_cut_off_mid_body_is_unavailable(fake: FakeOcrServer) -> None:
     fake.replies.append(Reply(cut=True))
     fake.let_go.set()  # the server closes the connection after half the body
-    with pytest.raises(BackendUnavailable):
+    with pytest.raises(BackendUnavailable) as caught:
         engine(fake).read(page())
+    assert not isinstance(caught.value, ocr.OcrOverloaded)
 
 
 @pytest.mark.parametrize(
