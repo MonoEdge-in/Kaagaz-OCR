@@ -22,6 +22,7 @@ from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns, finish_run, is_run_open, pages_by_route, start_run
 from kaagaz.db.trash import lock_family
+from kaagaz.eta import RunTiming
 from kaagaz.ingestion.ports import DocumentRecord
 from kaagaz.jobs.worker import JobFailed, Superseded
 from kaagaz.pipeline import FinishedRun, Progress, RunTotals
@@ -240,6 +241,24 @@ def test_set_progress_on_a_ready_document_changes_nothing(db: Database) -> None:
 
     assert rows(db, customer, PROGRESS, reading) == [{"progress": {"step": "reading", "done": 2, "total": 5}}]
     assert rows(db, customer, PROGRESS, ready) == [{"progress": None}]
+
+
+def test_recent_timings_are_this_customers_ready_runs_newest_first(db: Database) -> None:
+    """PRD 4 #13: ready runs only, newest first, with the config's times (None for a run
+    from before them or one whose number is not a number)."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    timed = {"seconds_reading": 4.5, "seconds_after_reading": 30.0}
+    ends = [("ready", timed), ("failed", timed), ("ready", {}), ("ready", {"seconds_reading": "4"})]
+    for minute, (status, config) in enumerate(ends):
+        now = T0 + timedelta(minutes=minute)
+        error = None if status == "ready" else "corrupt_file"
+        run = PgRuns(db).start(customer, doc, now=now)
+        PgRuns(db).finish(customer, FinishedRun(run, totals(status, error_code=error, config=config), now))
+
+    untimed = RunTiming("rapidocr 3.4", 3, 6, 1, 3.25, None, None)
+    timed_run = replace(untimed, seconds_reading=4.5, seconds_after=30.0)
+    assert PgRuns(db).recent_timings(customer) == [untimed, untimed, timed_run]
 
 
 def test_progress_from_a_superseded_run_changes_nothing(db: Database) -> None:

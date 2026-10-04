@@ -3,10 +3,14 @@
 import io
 import unittest
 
+from kaagaz.eta import Estimate
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.ingestion.ports import Job
 from kaagaz.scanning.gate import DocumentStatus
+from tests.fakes import FakeEmbedder
+from tests.pdf_builder import Page, Text, make_pdf
 from tests.test_pipeline import CSV, build
+from tests.test_pipeline_runs import Rig, beat, rig
 
 A, B = "cust-a", "cust-b"
 
@@ -59,3 +63,22 @@ class IsolationPipelineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _estimates(system: Rig, customer: str, text: str) -> list[Estimate]:
+    """The time left written while one new document of ``customer`` is read."""
+    pdf = make_pdf([Page(texts=[Text(72, 700, text)])])
+    doc = system.upload.accept(customer, io.BytesIO(pdf)).document_id
+    system.processor(Job(customer, doc), beat)
+    return [p.estimate for _, d, p in system.progress.history if d == doc and p.estimate is not None]
+
+
+class IsolationTimeLeftTest(unittest.TestCase):
+    def test_another_customers_runs_never_change_the_time_left(self) -> None:
+        """PRD 4 #13: B's ready runs (30 s after reading each) teach B's estimate, never A's."""
+        fresh = rig()
+        busy = rig(embed=FakeEmbedder(batches=1, during_batch=lambda _: busy.timer.advance(30.0)))
+        for n in range(3):
+            _estimates(busy, B, f"B's page {n}")
+        self.assertEqual(_estimates(busy, A, "A's page"), _estimates(fresh, A, "A's page"))
+        self.assertEqual(_estimates(busy, B, "B's next page")[-1].after_s, 30.0)  # B's own runs count for B

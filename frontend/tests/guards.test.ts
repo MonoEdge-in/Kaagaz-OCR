@@ -127,6 +127,19 @@ describe("guards", () => {
     expect(css).toMatch(/scroll-padding-top:\s*calc\(var\(--topbar-space\) \+ var\(--space-4\)\)/);
   });
 
+  // PRD 4 #13: the countdown is never announced, and every countdown shares one timer.
+  it("counts down without a live region, on the one shared timer", () => {
+    const leaf = readFileSync(join(ROOT, "components/documents/TimeLeft.tsx"), "utf8");
+    expect(leaf).not.toMatch(/aria-live|role="(status|timer|alert)"|setInterval|setTimeout/);
+    for (const file of ["lib/timeLeft.ts", "lib/tick.ts"]) {
+      expect(readFileSync(join(ROOT, file), "utf8"), file).not.toMatch(/from "(@\/lib\/|\.\/)api"/);
+    }
+    const timers = all((p) => /\.(ts|tsx)$/.test(p))
+      .filter((p) => /\bsetInterval\(/.test(readFileSync(p, "utf8")))
+      .map((p) => relative(ROOT, p).replaceAll("\\", "/"));
+    expect(timers.sort()).toEqual(["components/chat/hooks.ts", "lib/tick.ts"]);
+  });
+
   // Critical #5: a module-level Map is a cache that outlives the screen, and
   // grows without end. The viewer keeps PDFs in its LruCache instead.
   it("keeps no module-level Map in components", () => {

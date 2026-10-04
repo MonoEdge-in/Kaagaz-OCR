@@ -784,3 +784,11 @@ table.docs th {
 .storyLink {
   min-height: 44px;
 }
+
+.timeLeft {
+  display: inline-block;
+  min-width: 18ch; /* room for "Ready in about 55 s", so the row does not jump as it counts */
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}

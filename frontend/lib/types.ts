@@ -80,6 +80,7 @@ export interface DocumentSummary {
   max_attempts: number | null;
   newer_version: NewerVersion | null; // a later version still being read, or one that failed
   progress: DocumentProgress | null; // null unless it is being checked or read; status_message already says it
+  time_left: TimeLeft | null; // null unless it is being read or understood (PRD 4 #13); never in Trash
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
 }
@@ -127,6 +128,17 @@ export interface DocumentProgress {
   step: "scanning" | "preparing" | "reading" | "understanding" | "indexing";
   done: number;
   total: number; // 0 for a sheet, which is read as a whole
+}
+
+/** How long until ready (PRD 4 #13), at the moment the server answered. lib/timeLeft.ts counts it down. */
+export interface TimeLeft {
+  seconds: number; // until ready, never below 0
+  since_move_seconds: number; // since a page was last read, or reading ended
+  slow_after_seconds: number; // past this with no move, it is taking longer than usual
+  items_left: number; // pages still to read; 0 once reading has ended
+  item_seconds: number; // expected seconds a page
+  after_seconds: number; // expected seconds from the end of reading until ready
+  confidence: "low" | "high"; // low: not enough of this customer's history to show a number
 }
 
 /** A version newer than the one listed (the family's current), not in use yet. */

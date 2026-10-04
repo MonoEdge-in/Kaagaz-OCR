@@ -15,6 +15,7 @@ from kaagaz.api.auth import CurrentUser
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
+from kaagaz.eta import time_left
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
 _STATUS_MESSAGES = {
@@ -104,6 +105,14 @@ def in_progress(status: str, progress: Mapping[str, Any] | None) -> dict[str, An
     return {"step": progress["step"], "done": int(progress["done"]), "total": int(progress["total"])}
 
 
+def document_time_left(row: Mapping[Any, Any], *, now: datetime) -> dict[str, Any] | None:
+    """``TimeLeft`` (PRD 4 #13): how long until ready, while the document is being read
+    or understood and is out of Trash; else None. Never on a newer version. O(1)."""
+    if row["status"] not in _IN_PROGRESS or row["progress"] is None or row["deleted_at"] is not None:
+        return None
+    return time_left(row["progress"], now=now)
+
+
 def can_delete(row: RowMapping, user: CurrentUser) -> bool:
     """May ``user`` move this document's family to Trash, or bring it back? Both act
     on every version, so: an admin, or the one user who uploaded every version.
@@ -140,11 +149,11 @@ def newer_version(newer: Mapping[str, Any] | None, *, max_pages: int) -> dict[st
 
 
 def document_summary(
-    row: RowMapping, *, max_pages: int, tags: Sequence[TagRow], user: CurrentUser
+    row: RowMapping, *, max_pages: int, tags: Sequence[TagRow], user: CurrentUser, now: datetime
 ) -> dict[str, Any]:
     """``DocumentSummary``. ``max_pages`` is passed on to ``status_message``;
     ``tags`` are the document's own, from one ``tags_for_documents`` call per page;
-    ``user`` decides ``can_delete``."""
+    ``user`` decides ``can_delete``; ``now`` is the request's one clock reading."""
     return {
         "id": str(row["id"]),
         "display_name": row["display_name"],
@@ -163,6 +172,7 @@ def document_summary(
             progress=row["progress"],
         ),
         "progress": in_progress(row["status"], row["progress"]),
+        "time_left": document_time_left(row, now=now),
         "doc_type": row["doc_type"],  # PRD 2 D3: from the document card; null without one
         "languages": list(row["languages"] or []),
         "attempts": int(row["attempts"]),
