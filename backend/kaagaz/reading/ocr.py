@@ -230,7 +230,9 @@ class PaddleVlEngine:
         """One request per page, asked again while the server is busy, all within one
         deadline; the time is the server's (minutes on a CPU)."""
         buffer = io.BytesIO()
-        image.save(buffer, format="PNG")  # our own PNG, never the uploaded bytes (security A5)
+        # Our own PNG, never the uploaded bytes (security A5). compress_level 1 (council 5 Oct
+        # 2026): lossless like any level, a little bigger, and much faster to encode.
+        image.save(buffer, format="PNG", compress_level=1)
         deadline = time.monotonic() + self._timeout
         wait = _BUSY_WAIT_SECONDS
         status, body = self._post(buffer.getvalue(), deadline)

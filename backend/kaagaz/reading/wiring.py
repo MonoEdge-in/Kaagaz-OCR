@@ -6,7 +6,8 @@ socket"). Adding a reader means one new module and one entry here.
 
 * text -> CsvReader, zip -> XlsxReader, pdf -> PdfReader (text layer, and OCR
   for pages whose text layer fails the route check when an engine is set up,
-  drawn at OCR_DPI; PRD 2 R2 and R3 with the TEXT_LAYER_*, SCAN_IMAGE_COVERAGE
+  drawn at OCR_DPI or, by OCR_DPI_RULE, at the DPI its text needs with OCR_DPI
+  as the ceiling; PRD 2 R2 and R3 with the TEXT_LAYER_*, SCAN_IMAGE_COVERAGE
   and BLANK_PAGE_STDDEV settings).
 * png, jpeg, tiff -> ImageReader, only with an OCR engine. Without one they
   have no reader, so they are stored and marked needs_reader.
@@ -18,7 +19,7 @@ from typing import Any
 
 from kaagaz.ingestion import sniff
 from kaagaz.preparing import page_checks
-from kaagaz.reading import text_quality
+from kaagaz.reading import ocr_dpi, text_quality
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.image_reader import ImageReader
 from kaagaz.reading.ocr import OcrEngine
@@ -49,6 +50,9 @@ def reader_config(settings: Settings) -> dict[str, Any]:
     return {
         "ocr_engine": settings.ocr_engine,
         "ocr_dpi": settings.ocr_dpi,
+        "ocr_dpi_rule": settings.ocr_dpi_rule,
+        "ocr_dpi_target_line_px": ocr_dpi.TARGET_LINE_PX,
+        "ocr_dpi_probe_long_side": ocr_dpi.PROBE_LONG_SIDE,
         "page_image_dpi": settings.page_image_dpi,
         "text_layer_min_chars": settings.text_layer_min_chars,
         "text_layer_min_good_ratio": settings.text_layer_min_good_ratio,
@@ -91,6 +95,7 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
             max_image_pixels=settings.max_image_pixels,
             rules=text_layer_rules(settings),
             blank_stddev=settings.blank_page_stddev,
+            dpi_rule=settings.ocr_dpi_rule,
         ),
     }
     if ocr is not None:
@@ -100,6 +105,7 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
             max_image_pixels=settings.max_image_pixels,
             ocr_dpi=settings.ocr_dpi,
             blank_stddev=settings.blank_page_stddev,
+            dpi_rule=settings.ocr_dpi_rule,
         )
         readers.update({sniff.PNG: images, sniff.JPEG: images, sniff.TIFF: images})
     second_readers: dict[str, Reader] = {sniff.PDF: PdfiumReader(max_pages=settings.max_pages)}

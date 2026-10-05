@@ -24,12 +24,22 @@ never enlarged; the stored picture is not changed, and boxes are fractions, so
 they still fit it. A frame still over ``MAX_OCR_PIXELS`` is shrunk to fit it,
 so its PNG stays under the ocr server's body cap.
 
+With ``dpi_rule`` ``text_height`` (OCR_DPI_RULE, council 5 Oct 2026,
+PROVISIONAL), the frame is then shrunk so its lines are about
+``TARGET_LINE_PX`` high, measured on a copy reduced to about 1200 pixels on
+its long side (``kaagaz/reading/ocr_dpi.py``): never enlarged, and never
+under 72 DPI on A4. When the engine finds nothing on the shrunk frame, it
+reads the frame once more as it was. There is no scan cap: a photo is
+already never enlarged.
+
 Refusals are short codes raised outside any ``except`` block:
 ``corrupt_file``, ``too_many_pages`` (more than ``max_pages`` frames) and
 ``image_too_large`` (more than ``max_image_pixels``, checked from the image
 header before its pixels are decoded).
 
-Time is the engine's time per page. Memory is one decoded page at a time.
+Time is the engine's time per page (with ``text_height``, plus O(pixels) for
+the probe and the shrink, and a second reading of a page that gave nothing).
+Memory is one decoded page at a time.
 """
 
 import math
@@ -39,6 +49,7 @@ from PIL import Image
 from kaagaz.preparing.page_checks import is_blank
 from kaagaz.preparing.pages import image_pages
 from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
+from kaagaz.reading.ocr_dpi import DPI_RULES, FIXED, PROBE_LONG_SIDE, line_height_px, photo_scale
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import OnPage
 from kaagaz.reading.spans import ReadError, Span
@@ -51,19 +62,31 @@ _BLANK = RouteDecision("blank", "blank")
 
 class ImageReader:
     def __init__(
-        self, ocr: OcrEngine, *, max_pages: int, max_image_pixels: int, ocr_dpi: int, blank_stddev: float
+        self,
+        ocr: OcrEngine,
+        *,
+        max_pages: int,
+        max_image_pixels: int,
+        ocr_dpi: int,
+        blank_stddev: float,
+        dpi_rule: str = FIXED,
     ) -> None:
         # No defaults: limits are Vrushit's decision (PRD section 6).
         if min(max_pages, max_image_pixels, ocr_dpi) < 1:
             raise ValueError("every limit must be at least 1")
         if not blank_stddev >= 0:
             raise ValueError("blank_stddev must be 0 or more")
+        if dpi_rule not in DPI_RULES:
+            raise ValueError(f"dpi_rule must be one of {sorted(DPI_RULES)}")
+        self._dpi_rule = dpi_rule
         self._blank_stddev = blank_stddev
         self._ocr = ocr
         self._max_pages = max_pages
         self._max_image_pixels = max_image_pixels
         self._max_short_side = max(1, round(ocr_dpi * _A4_SHORT_SIDE_INCHES))
         self._max_ocr_pixels = MAX_OCR_PIXELS
+        self._scale: float | None = None  # the last read's smallest photo_scale under 1
+        self._rereads = 0  # its pages read again as they were
 
     @property
     def name(self) -> str:
@@ -71,16 +94,21 @@ class ImageReader:
 
     @property
     def version(self) -> str:
-        return self._ocr.version  # asked for after reading: PaddleOCR-VL's comes from its reply
+        """Asked for after reading: PaddleOCR-VL's comes from its reply. With the
+        text-height rule, also the smallest scale and the pages read again."""
+        marks = "" if self._scale is None else f";ocr_scale={self._scale:.2f}"
+        marks += f";ocr_reread={self._rereads}" if self._rereads else ""
+        return self._ocr.version + marks
 
     def read(self, data: bytes, *, on_page: OnPage | None = None) -> list[Span]:
+        self._scale, self._rereads = None, 0
         spans: list[Span] = []
         pages = image_pages(data, max_pages=self._max_pages, max_image_pixels=self._max_image_pixels)
         for number, image in enumerate(pages, start=1):
             page = _for_ocr(image, self._max_short_side, self._max_ocr_pixels)
             blank = is_blank(page, self._blank_stddev)
             if not blank:
-                spans.extend(ocr_spans(self._ocr.read(page), number, page.width, page.height))
+                spans.extend(self._scanned(page, number))
             page.close()
             image.close()
             if on_page is not None:
@@ -88,6 +116,22 @@ class ImageReader:
         if not spans:
             raise ReadError("no_text")
         return spans
+
+    def _scanned(self, page: Image.Image, number: int) -> list[Span]:
+        """The page's spans; with the text-height rule, read first shrunk to its text,
+        then once more as it is when that finds nothing (the module notes)."""
+        if self._dpi_rule != FIXED:
+            smaller = _for_text(page)
+            if smaller is not page:
+                self._scale = min(smaller.width / page.width, self._scale or 1.0)
+                try:
+                    spans = ocr_spans(self._ocr.read(smaller), number, smaller.width, smaller.height)
+                finally:
+                    smaller.close()
+                if spans:
+                    return spans
+                self._rereads += 1
+        return ocr_spans(self._ocr.read(page), number, page.width, page.height)
 
 
 def _for_ocr(image: Image.Image, short_side: int, max_pixels: int) -> Image.Image:
@@ -103,3 +147,22 @@ def _for_ocr(image: Image.Image, short_side: int, max_pixels: int) -> Image.Imag
     if (width, height) == image.size:
         return image
     return image.resize((max(1, width), max(1, height)), Image.Resampling.LANCZOS)
+
+
+def _for_text(image: Image.Image) -> Image.Image:
+    """The image shrunk by ``photo_scale`` (LANCZOS), its line height measured
+    on a copy reduced by a whole factor to at most PROBE_LONG_SIDE on its long side;
+    the image itself when nothing is shrunk. O(pixels)."""
+    factor = math.ceil(max(image.size) / PROBE_LONG_SIDE)
+    probe = image.reduce(factor) if factor > 1 else image
+    try:
+        probe_px = line_height_px(probe, dpi=min(probe.size) / _A4_SHORT_SIDE_INCHES)
+        line_px = None if probe_px is None else round(probe_px * image.height / probe.height)
+    finally:
+        if probe is not image:
+            probe.close()
+    scale = photo_scale(line_px, min(image.size))
+    if scale >= 1:
+        return image
+    size = (max(1, math.floor(image.width * scale)), max(1, math.floor(image.height * scale)))
+    return image.resize(size, Image.Resampling.LANCZOS)

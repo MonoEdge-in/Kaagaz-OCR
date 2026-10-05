@@ -70,6 +70,9 @@ is rewritten with (0: no rewrite).
 Two optional settings (council 4 Oct 2026): `ANSWER_TRANSLATE_QUESTION` (false when
 unset) also searches an English or Romanised question in the script of its scans, with
 one model call that times out after `MODEL_TRANSLATE_TIMEOUT_SECONDS` (20, PROVISIONAL).
+One more (council 5 Oct 2026, PROVISIONAL): `OCR_DPI_RULE` (`fixed` when unset) draws each
+scan page at `OCR_DPI`; `text_height` draws it at the DPI its text needs, `OCR_DPI` at most;
+`text_height_no_scan_cap` is the same without the scan cap, for the accuracy test.
 
 **Upgrading an install to PRD 3.** Migration 0006 is offline: it locks
 `pieces` and `messages` while it rewrites the vectors and builds the indexes.

@@ -22,6 +22,7 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading import ocr
 from kaagaz.reading.ocr import OcrLine, OcrTable
 from kaagaz.reading.spans import ReadError
+from tests.picture_support import noise_picture, png_levels
 
 VERSION = (
     "paddleocr=3.7.0;paddlex=3.7.2;paddle=3.3.1;vl=PaddleOCR-VL-1.6@c5630ab;layout=PP-DocLayoutV3@241f8bd"
@@ -142,6 +143,20 @@ def test_blocks_come_back_in_order_as_pixels_with_kind_and_table(fake: FakeOcrSe
     assert (path, content_type) == ("/read", "image/png")
     with Image.open(io.BytesIO(body)) as sent:
         assert (sent.format, sent.size) == ("PNG", (200, 100))
+
+
+def test_the_png_sent_holds_exactly_the_pages_pixels(
+    fake: FakeOcrServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """compress_level 1 (council 5 Oct 2026) is faster, and still lossless."""
+    fake.replies.append(Reply())
+    picture = noise_picture(200, 100)
+    levels = png_levels(monkeypatch)
+    engine(fake).read(picture)
+    assert levels == [1]
+    ((_path, _content_type, body),) = fake.requests
+    with Image.open(io.BytesIO(body)) as sent:
+        assert (sent.mode, sent.size, sent.tobytes()) == ("RGB", (200, 100), picture.tobytes())
 
 
 def test_a_confidence_in_the_reply_is_never_used(fake: FakeOcrServer) -> None:

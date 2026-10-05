@@ -6,6 +6,7 @@ import pytest
 
 from kaagaz import settings as settings_module
 from kaagaz.ocr_server.app import ALLOWED_HOSTS
+from kaagaz.reading import ocr_dpi
 from kaagaz.settings import Settings, SettingsError
 from tests.settings_factory import make_settings
 
@@ -82,6 +83,16 @@ def test_one_ocr_request_must_end_well_inside_the_lease() -> None:
         assert "QUEUE_LEASE_SECONDS" in str(caught.value)
 
 
+def test_a_dpi_rule_needs_two_ocr_requests_inside_the_lease() -> None:
+    """A page read again at the ceiling (OCR_DPI_RULE) makes two requests between heartbeats."""
+    twice = {"OCR_DPI_RULE": "text_height", "QUEUE_LEASE_SECONDS": "1200"}
+    assert Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="532", **twice)).ocr_timeout_seconds == 532.0
+    with pytest.raises(SettingsError, match="2 x OCR_TIMEOUT_SECONDS"):
+        Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="533", **twice))
+    once = Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="533", QUEUE_LEASE_SECONDS="1200"))
+    assert once.ocr_dpi_rule == "fixed"
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -109,6 +120,19 @@ def test_the_host_is_checked_only_for_paddleocr_vl_and_matches_the_server() -> N
         == "rapidocr"
     )
     assert settings_module.OCR_SERVER_HOSTS == ALLOWED_HOSTS
+
+
+def test_the_ocr_dpi_rule_is_fixed_unless_set_to_one_the_readers_know() -> None:
+    """Council 5 Oct 2026: OCR_DPI_RULE is optional, so an older .env keeps today's DPI."""
+    unset = shipped()
+    unset.pop("OCR_DPI_RULE", None)
+    assert Settings.from_env(unset).ocr_dpi_rule == "fixed"
+    assert Settings.from_env(shipped(OCR_DPI_RULE=" ")).ocr_dpi_rule == "fixed"  # empty is unset
+    for rule in sorted(ocr_dpi.DPI_RULES):
+        assert Settings.from_env(shipped(OCR_DPI_RULE=rule)).ocr_dpi_rule == rule
+    for bad in ("auto", "Text_Height", "400"):
+        with pytest.raises(SettingsError, match="OCR_DPI_RULE"):
+            Settings.from_env(shipped(OCR_DPI_RULE=bad))
 
 
 ROUTE_SETTINGS = [
