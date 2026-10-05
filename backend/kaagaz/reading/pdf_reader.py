@@ -84,9 +84,17 @@ from pdfplumber.utils.exceptions import MalformedPDFException, PdfminerException
 from kaagaz.ingestion import sniff
 from kaagaz.preparing.page_checks import is_blank, largest_image_dpi
 from kaagaz.preparing.pages import check_page_count, open_pdf, render_pdf_page
-from kaagaz.reading import ocr_dpi
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
 from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
+from kaagaz.reading.ocr_dpi import (
+    DPI_RULES,
+    FIXED,
+    MIN_DPI,
+    TEXT_HEIGHT,
+    chosen_dpi,
+    line_height_px,
+    probe_dpi,
+)
 from kaagaz.reading.pdf_signals import page_signals, words_left_visible
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage
@@ -141,15 +149,15 @@ class PdfReader:
         max_image_pixels: int,
         rules: TextLayerRules,
         blank_stddev: float,
-        dpi_rule: str = ocr_dpi.FIXED,
+        dpi_rule: str = FIXED,
     ) -> None:
         # No defaults: limits are Vrushit's decision (PRD section 6).
         if min(max_pages, dpi, max_image_pixels) < 1:
             raise ValueError("every limit must be at least 1")
         if not blank_stddev >= 0:
             raise ValueError("blank_stddev must be 0 or more")
-        if dpi_rule not in ocr_dpi.DPI_RULES:
-            raise ValueError(f"dpi_rule must be one of {sorted(ocr_dpi.DPI_RULES)}")
+        if dpi_rule not in DPI_RULES:
+            raise ValueError(f"dpi_rule must be one of {sorted(DPI_RULES)}")
         self._dpi_rule = dpi_rule
         self._ocr = ocr
         self._max_pages = max_pages
@@ -238,18 +246,18 @@ class PdfReader:
         ponytail: the coverage is the union of the page's images (R2's own number), so
         a large low-resolution image beside a sharp one caps the page at the largest
         image's DPI."""
-        if self._dpi_rule == ocr_dpi.FIXED or ceiling <= ocr_dpi.MIN_DPI:
+        if self._dpi_rule == FIXED or ceiling <= MIN_DPI:
             return ceiling
-        probe = ocr_dpi.probe_dpi(pdfium_page.get_size(), ceiling)
+        probe = probe_dpi(pdfium_page.get_size(), ceiling)
         if probe is None:
             return ceiling
         picture = render_pdf_page(pdfium_page, dpi=probe, max_image_pixels=self._max_ocr_pixels)
         try:
-            line_px = ocr_dpi.line_height_px(picture, dpi=probe)
+            line_px = line_height_px(picture, dpi=probe)
         finally:
             picture.close()
-        capped = scan and self._dpi_rule == ocr_dpi.TEXT_HEIGHT
-        return ocr_dpi.chosen_dpi(ceiling, line_px, probe, largest_image_dpi(pdfium_page) if capped else None)
+        capped = scan and self._dpi_rule == TEXT_HEIGHT
+        return chosen_dpi(ceiling, line_px, probe, largest_image_dpi(pdfium_page) if capped else None)
 
 
 def _read_again(ocr: OcrEngine, document: Any, number: int, dpi: int, max_pixels: int) -> list[Span]:
