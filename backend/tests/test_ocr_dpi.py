@@ -243,6 +243,13 @@ class PdfReaderRuleTest(unittest.TestCase):
         ((dpi,), _spans, _version) = pdf_dpis(data, ocr_dpi.TEXT_HEIGHT)
         self.assertTrue(100 < dpi < 300, dpi)
 
+    def test_vector_text_over_a_full_page_tint_is_not_capped_at_the_tints_dpi(self) -> None:
+        # Review fix 1: 8 pt old-font text (legacy_font, over 200 characters) on a 72 dpi tint.
+        texts = [Text(40, 760 - 12 * row, "Ramesh Kumar paid 4,520 for 12 bags", size=8) for row in range(60)]
+        tint = Image.new("RGB", (612, 792), (225, 225, 225))
+        data = make_pdf([Page(texts=texts, picture=Picture(tint, 0, 0, 612, 792), font_name="KrutiDev010")])
+        self.assertEqual(pdf_dpis(data, ocr_dpi.TEXT_HEIGHT)[0], [300])
+
     def test_small_print_stays_at_the_ceiling(self) -> None:
         small = picture_with_bars(1224, 1584, text_lines(1224, 1584, 8))  # 4 pt lines
         data = make_pdf([Page(picture=Picture(small, 0, 0, 612, 792))])

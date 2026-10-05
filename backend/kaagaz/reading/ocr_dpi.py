@@ -17,9 +17,10 @@ chosen:
 
   so the DPI is never above OCR_DPI, never below 72, and the size limit still
   wins. ``scan_dpi`` (the scan cap) is the resolution of the page's largest
-  image, only on a full-page scan (its images cover more than
-  SCAN_IMAGE_COVERAGE): above it there is no new detail, only more pixels. On
-  any other page it is None, so a small logo never decides.
+  image, only on a page R2 calls a scan (``text_quality.scan_like``: images
+  over SCAN_IMAGE_COVERAGE, under 200 visible characters): above it there is
+  no new detail, only more pixels. On any other page it is None, so a small
+  logo or a background tint under vector text never decides.
 * ``text_height_no_scan_cap``: the same without the scan cap, so the accuracy
   test can compare the two.
 

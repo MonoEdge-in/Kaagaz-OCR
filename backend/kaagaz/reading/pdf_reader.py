@@ -41,8 +41,9 @@ by one space, and the file's own signals for the page
 * With ``dpi_rule`` ``text_height`` (OCR_DPI_RULE, council 5 Oct 2026,
   PROVISIONAL), that DPI is only the ceiling: each page is drawn at the DPI
   its text needs (``kaagaz/reading/ocr_dpi.py``), measured on a small probe
-  drawn the same way, with the scan cap on a page whose images cover more
-  than ``scan_image_coverage`` (as R2's ``scan_image``). A page on which the
+  drawn the same way, with the scan cap only on a page R2 would call a scan
+  (``scan_like``: images over ``scan_image_coverage``, under 200 visible
+  characters). A page on which the
   engine finds nothing at a lowered DPI is read once more at the ceiling.
   ``fixed`` (the default) draws every page at the ceiling, as before.
 
@@ -93,6 +94,7 @@ from kaagaz.reading.spans import BoxLocation, ReadError, Span
 from kaagaz.reading.text_quality import (
     PageSignals,
     TextLayerRules,
+    scan_like,
     text_layer_fallback_allowed,
     text_layer_ok,
 )
@@ -196,7 +198,8 @@ class PdfReader:
             if self._ocr is None:  # kept as before; a page with no text was not read
                 return text_spans, _kept(decision) if text_spans else None
             ceiling = _fitting_dpi(pdfium_page.get_size(), self._dpi, self._max_ocr_pixels)
-            dpi = self._page_dpi(pdfium_page, ceiling, signals.coverage)
+            scan = scan_like(" ".join(span.text for span in text_spans), signals, rules)
+            dpi = self._page_dpi(pdfium_page, ceiling, scan)
             image = render_pdf_page(pdfium_page, dpi=dpi, max_image_pixels=self._max_ocr_pixels)
         finally:
             pdfium_page.close()
@@ -215,10 +218,12 @@ class PdfReader:
             return scanned, decision
         return fallback, _kept(decision)
 
-    def _page_dpi(self, pdfium_page: Any, ceiling: int, coverage: float) -> int:
+    def _page_dpi(self, pdfium_page: Any, ceiling: int, scan: bool) -> int:
         """The DPI the page is drawn at for OCR: ``ceiling`` (today's, from OCR_DPI and
         the pixel limits) with ``fixed``, or by the text-height rule, with the scan cap
-        when the page's images cover more than ``scan_image_coverage``.
+        only on a ``scan`` page (R2's ``scan_like``: its images cover more than
+        ``scan_image_coverage`` and it has under 200 visible characters, so vector text
+        over a full-page background image is never capped at the image's DPI).
 
         ponytail: the coverage is the union of the page's images (R2's own number), so
         a large low-resolution image beside a sharp one caps the page at the largest
@@ -233,8 +238,8 @@ class PdfReader:
             line_px = ocr_dpi.line_height_px(picture, dpi=probe)
         finally:
             picture.close()
-        scan = self._dpi_rule == ocr_dpi.TEXT_HEIGHT and coverage > self._rules.scan_image_coverage
-        return ocr_dpi.chosen_dpi(ceiling, line_px, probe, largest_image_dpi(pdfium_page) if scan else None)
+        capped = scan and self._dpi_rule == ocr_dpi.TEXT_HEIGHT
+        return ocr_dpi.chosen_dpi(ceiling, line_px, probe, largest_image_dpi(pdfium_page) if capped else None)
 
 
 def _read_again(ocr: OcrEngine, document: Any, number: int, dpi: int, max_pixels: int) -> list[Span]:
