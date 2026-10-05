@@ -83,6 +83,16 @@ def test_one_ocr_request_must_end_well_inside_the_lease() -> None:
         assert "QUEUE_LEASE_SECONDS" in str(caught.value)
 
 
+def test_a_dpi_rule_needs_two_ocr_requests_inside_the_lease() -> None:
+    """A page read again at the ceiling (OCR_DPI_RULE) makes two requests between heartbeats."""
+    twice = {"OCR_DPI_RULE": "text_height", "QUEUE_LEASE_SECONDS": "1200"}
+    assert Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="532", **twice)).ocr_timeout_seconds == 532.0
+    with pytest.raises(SettingsError, match="2 x OCR_TIMEOUT_SECONDS"):
+        Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="533", **twice))
+    once = Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="533", QUEUE_LEASE_SECONDS="1200"))
+    assert once.ocr_dpi_rule == "fixed"
+
+
 @pytest.mark.parametrize(
     "url",
     [

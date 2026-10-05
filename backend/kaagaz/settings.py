@@ -225,9 +225,18 @@ class Settings:
         ocr_timeout_seconds = env.number("OCR_TIMEOUT_SECONDS")
         if not (math.isfinite(ocr_timeout_seconds) and ocr_timeout_seconds > 0):
             raise SettingsError("OCR_TIMEOUT_SECONDS must be a number above 0")
-        if ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
+        # The values mirror kaagaz.reading.ocr_dpi.DPI_RULES (tests/test_settings.py keeps them the same).
+        ocr_dpi_rule = (
+            "fixed"
+            if env.optional("OCR_DPI_RULE") is None
+            else env.choice("OCR_DPI_RULE", {"fixed", "text_height", "text_height_no_scan_cap"})
+        )
+        # Any other rule may read a page twice (at a lowered DPI, then the ceiling) between heartbeats.
+        ocr_calls = 1 if ocr_dpi_rule == "fixed" else 2
+        if ocr_calls * ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
             raise SettingsError(
-                f"OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS} must not be more than QUEUE_LEASE_SECONDS"
+                f"{'2 x ' if ocr_calls == 2 else ''}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
+                " must not be more than QUEUE_LEASE_SECONDS"
             )
         ocr_engine = env.choice("OCR_ENGINE", {"paddleocr_vl", "rapidocr", "none"})
         ocr_url = env.url("OCR_URL")
@@ -329,9 +338,7 @@ class Settings:
             ocr_url=ocr_url,
             ocr_timeout_seconds=ocr_timeout_seconds,
             ocr_dpi=env.positive("OCR_DPI"),
-            ocr_dpi_rule="fixed"
-            if env.optional("OCR_DPI_RULE") is None
-            else env.choice("OCR_DPI_RULE", {"fixed", "text_height", "text_height_no_scan_cap"}),
+            ocr_dpi_rule=ocr_dpi_rule,
             text_layer_min_chars=env.positive("TEXT_LAYER_MIN_CHARS"),
             text_layer_min_good_ratio=env.share("TEXT_LAYER_MIN_GOOD_RATIO"),
             scan_image_coverage=env.share("SCAN_IMAGE_COVERAGE"),
