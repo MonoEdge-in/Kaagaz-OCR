@@ -42,8 +42,11 @@ refreshed page starts from it, not from 0 (council of 5 Oct 2026, PROVISIONAL):
 for longer than usual, so it never climbs while no work is done. ``floor`` is
 ``after_s`` while preparing or reading and 0 after, as the screen's countdown
 (lib/timeLeft.ts secondsLeft). The worker keeps the highest F it has shown in this
-run as ``reached`` (pipeline ``_progress``), so a new estimate never takes it back:
-``done_fraction = max(reached, F(now))``.
+run as ``reached`` (pipeline ``_progress``), so a new estimate never takes it back,
+and the estimate written before this one as ``prior``: a screen that has not polled
+since still counts on from it, so a refresh never shows less than that screen did
+(review of 5 Oct 2026). ``done_fraction = max(reached, F_prior(now), F(now))``, each
+F held still by its own stall.
 
 Time: ``rates`` O(K) for K runs; the rest O(1). Space: O(1) besides the history.
 """
@@ -209,7 +212,8 @@ def fraction_at(estimate: Estimate, *, started_at: datetime, floored: bool, now:
 def time_left(progress: Mapping[str, Any], *, now: datetime) -> dict[str, Any] | None:
     """The API's ``time_left`` from a stored progress at ``now``; None while scanning (no
     estimate yet) and unless every estimate key is well formed. ``done_fraction`` is
-    the larger of the stored ``reached`` (when it is a number 0 to 1) and F. O(1)."""
+    the largest of the stored ``reached`` (when it is a number 0 to 1), F of a well
+    formed ``prior`` and F. O(1)."""
     step, done, total = progress.get("step"), progress.get("done"), progress.get("total")
     if step not in _TIMED_STEPS or not isinstance(done, int) or not isinstance(total, int):
         return None
@@ -234,7 +238,9 @@ def time_left(progress: Mapping[str, Any], *, now: datetime) -> dict[str, Any] |
         "after_seconds": round(after_s, 1),
         "confidence": progress["confidence"],
         "elapsed_seconds": round(min(MAX_SECONDS, max(0.0, (now - started).total_seconds())), 1),
-        "done_fraction": round(max(_fraction(progress.get("reached")), shown), 4),
+        "done_fraction": round(
+            max(_fraction(progress.get("reached")), _prior(progress, started, now), shown), 4
+        ),
     }
 
 
@@ -248,6 +254,22 @@ def _instant(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed is not None and parsed.tzinfo is not None else None
+
+
+def _prior(progress: Mapping[str, Any], started: datetime, now: datetime) -> float:
+    """F of the stored ``prior`` estimate at ``now``, held still by its own stall; 0
+    without one, or unless each of its keys is well formed (an old row has none)."""
+    prior = progress.get("prior")
+    if not isinstance(prior, Mapping) or prior.get("step") not in _TIMED_STEPS:
+        return 0.0
+    moved, finish = _instant(prior.get("moved_at")), _instant(prior.get("finish_at"))
+    after_s, slow_s = as_seconds(prior.get("after_s")), as_seconds(prior.get("slow_after_s"))
+    if moved is None or finish is None or after_s is None or slow_s is None:
+        return 0.0
+    if not 0 <= (finish - moved).total_seconds() <= MAX_SECONDS:
+        return 0.0
+    estimate = Estimate(moved, finish, 0.0, after_s, slow_s, "low")  # item_s and confidence unused
+    return fraction_at(estimate, started_at=started, floored=prior["step"] in FLOORED_STEPS, now=now)
 
 
 def _fraction(value: object) -> float:

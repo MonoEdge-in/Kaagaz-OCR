@@ -185,3 +185,28 @@ def test_the_runs_reached_wins_when_it_is_higher_and_a_bad_one_is_ignored() -> N
 def test_a_sheet_has_a_done_fraction_too() -> None:
     sheet = time_left(stored(done=0, total=0), now=T0)
     assert sheet is not None and sheet["items_left"] == 0 and sheet["done_fraction"] == 0.6
+
+
+def prior(**changes: object) -> dict[str, object]:
+    """The estimate written before: moved 4 s before T0 too, 30 s left from T0, no floor."""
+    moved, finish = (T0 - timedelta(seconds=4)).isoformat(), (T0 + timedelta(seconds=30)).isoformat()
+    timing = {"moved_at": moved, "finish_at": finish, "after_s": 0.0, "slow_after_s": 20.0}
+    return {"step": "understanding", **timing, **changes}
+
+
+def test_the_prior_estimate_wins_while_a_screen_still_counts_on_from_it() -> None:
+    """Review of 5 Oct 2026: a screen that has not polled since the last write still shows
+    the prior estimate's F, so the API never serves less; held still by its own stall."""
+    assert done(prior=prior()) == round(90 / 120, 4)  # above F's 0.6
+    stall = T0 + timedelta(seconds=16)
+    held = [done(prior=prior(), now=at) for at in (stall, stall + timedelta(seconds=400))]
+    assert held == [round(106 / 120, 4)] * 2
+
+
+BAD_PRIOR: list[object] = ["x", {}, prior(step="scanning"), prior(moved_at=None), prior(after_s=float("nan"))]
+BAD_PRIOR += [prior(finish_at=(T0 - timedelta(minutes=1)).isoformat()), prior(moved_at="2026-10-04T10:00:00")]
+
+
+@pytest.mark.parametrize("bad", BAD_PRIOR)  # not an object; no keys; scanning; no move; NaN; ...
+def test_a_missing_or_malformed_prior_is_ignored(bad: object) -> None:
+    assert done(prior=bad) == done() == 0.6

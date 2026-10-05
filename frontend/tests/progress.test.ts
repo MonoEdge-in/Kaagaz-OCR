@@ -115,6 +115,25 @@ describe("the bar on screen", () => {
   });
 });
 
+// A stored progress as the worker wrote it, in seconds from the run's start: moved at
+// 100 s, ready expected at 160 s, 20 s after reading, taking longer after 20 s.
+const STORED = { moved: 100, finish: 160, after: 20, slow: 20 };
+
+/** The API's time_left for STORED at ``t`` s into the run (kaagaz/eta.py time_left). */
+function answerAt(t: number): TimeLeftValue {
+  const tau = Math.min(Math.max(t, STORED.moved), STORED.moved + STORED.slow);
+  const done = fractionDone(tau, Math.max(STORED.finish - tau, STORED.after));
+  return value({
+    seconds: Math.max(0, STORED.finish - t),
+    since_move_seconds: t - STORED.moved,
+    slow_after_seconds: STORED.slow,
+    items_left: 1,
+    after_seconds: STORED.after,
+    elapsed_seconds: t,
+    done_fraction: Math.round(done * 10_000) / 10_000,
+  });
+}
+
 describe("a refresh", () => {
   it("refresh while taking longer shows the server-derived percent, not 0", () => {
     const html = render({ progress: { step: "reading", done: 0, total: 1 }, time_left: value(STALLED) });
@@ -125,10 +144,12 @@ describe("a refresh", () => {
   });
 
   it("shows the same percent on two fresh mounts at different times", () => {
+    // Two answers from one stored progress at different ``now``, as kaagaz/eta.py gives them.
     const reading = { step: "reading", done: 0, total: 1 } as const;
-    const first = render({ progress: reading, time_left: value(STALLED) });
-    const later = value({ ...STALLED, since_move_seconds: 1600, elapsed_seconds: 1900 }); // 400 s on, nothing moved
-    expect(render({ progress: reading, time_left: later })).toBe(first);
+    const [first, later] = [1300, 1700].map((t) => render({ progress: reading, time_left: answerAt(t) }));
+    expect(first).toContain(">75%<"); // held at 20 s after the move: 120 s in, 40 s left
+    expect(later).toBe(first);
+    expect(fractionShown(answerAt(1700), "reading", 0, 0, false)).toBeGreaterThan(0.98); // live alone: 1700 / 1720
   });
 
   it("never shows less than done_fraction, and a new attempt shows its own run's value", () => {

@@ -497,6 +497,24 @@ class ProgressTest(unittest.TestCase):
             self.assertGreaterEqual(shown(p, now), shown(before, now))  # done_fraction never goes back
         self.assertTrue(any(dropped))  # F alone does, after page 1
         self.assertGreater(shown(timed[-1], T0), 0)
+
+    def test_a_refresh_never_shows_less_than_a_screen_that_has_not_polled_yet(self) -> None:
+        """Review of 5 Oct 2026: after each write, a screen keeps counting on from the old
+        answer until its next poll (3 to 15 s later); a refresh then must not show less."""
+        system = rig(ocr=lambda timer: TimedOcr(timer, seconds=15.0), moving_clock=True)
+        system.processor(system.job(make_pdf([SCANNED] * 6)), beat)
+        timed = [p for _, _, p in system.progress.history if p.estimate is not None]
+        for before, p in itertools.pairwise(timed):
+            assert before.estimate is not None and p.estimate is not None
+            old = time_left(before.to_json(), now=before.estimate.moved_at)  # the screen's answer
+            assert old is not None
+            for wait in (0, 1, 3, 6, 9, 12, 15):
+                at = p.estimate.moved_at + timedelta(seconds=wait)  # a refresh after the write
+                refreshed = time_left(p.to_json(), now=at)
+                assert refreshed is not None
+                self.assertGreaterEqual(
+                    refreshed["done_fraction"] + 1e-4, live(old, before.step, at - before.estimate.moved_at)
+                )
         self.assertTrue(all(p.reached is not None and 0 <= p.reached <= 1 for p in timed))
 
     def test_a_run_times_its_preparing_and_three_runs_teach_it(self) -> None:
@@ -1009,6 +1027,18 @@ class LoggingTest(unittest.TestCase):
         for record in logs.records:
             self.assertNotIn("INV", record.getMessage())
             self.assertEqual(getattr(record, "customer_id", None), CUSTOMER)
+
+
+def live(answer: dict[str, object], step: str, since: timedelta) -> float:
+    """What lib/progress.ts fractionShown shows ``since`` after ``answer`` arrived."""
+    dt = since.total_seconds()
+    numbers = {key: float(value) for key, value in answer.items() if isinstance(value, int | float)}
+    if numbers["since_move_seconds"] + dt > numbers["slow_after_seconds"]:
+        return numbers["done_fraction"]  # taking longer than usual: done_fraction alone
+    left = max(0.0, numbers["seconds"] - dt)
+    left = max(left, numbers["after_seconds"]) if step in FLOORED_STEPS else left
+    elapsed = numbers["elapsed_seconds"] + dt
+    return max(numbers["done_fraction"], elapsed / (elapsed + left) if elapsed + left > 0 else 0.0)
 
 
 if __name__ == "__main__":

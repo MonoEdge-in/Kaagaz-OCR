@@ -263,6 +263,7 @@ class Progress:
     estimate: Estimate | None = field(default=None, compare=False)
     started_at: datetime | None = field(default=None, compare=False)  # the run's start, for the percentage
     reached: float | None = field(default=None, compare=False)  # the run's highest fraction (kaagaz.eta)
+    prior: tuple[Step, Estimate] | None = field(default=None, compare=False)  # the estimate written before
 
     def to_json(self) -> dict[str, object]:
         shown: dict[str, object] = {"step": self.step, "done": self.done, "total": self.total}
@@ -270,6 +271,11 @@ class Progress:
             shown["started_at"] = self.started_at.isoformat()
         if self.reached is not None:
             shown["reached"] = round(self.reached, 4)
+        if self.prior is not None:
+            step, estimate = self.prior
+            timing = estimate.to_json()
+            kept = ("moved_at", "finish_at", "after_s", "slow_after_s")
+            shown["prior"] = {"step": step, **{key: timing[key] for key in kept}}
         return shown if self.estimate is None else {**shown, **self.estimate.to_json()}
 
 
@@ -479,6 +485,7 @@ class _Run:
     measured: dict[str, Pair] = field(default_factory=dict)  # "ocr", "fast": (seconds, pages)
     after: Estimate | None = None  # from the end of reading, kept for each understanding step
     shown: tuple[Step, Estimate] | None = None  # the last estimate written, and its step
+    prior: tuple[Step, Estimate] | None = None  # the one written before it (its ``prior``)
     reached: float = 0.0  # the highest fraction shown so far (kaagaz.eta): it never goes back
     ocr_choice: dict[str, str | bool] = field(default_factory=dict)  # the upload's reader, when it chose one
 
@@ -972,20 +979,25 @@ class DocumentProcessor:
         """Show how far it has got, in its own short transaction. Best effort (AR10), but
         fenced: the Superseded of a run no longer open goes on up. Before each write,
         ``reached`` takes the fraction the last estimate written shows now, so a new
-        estimate (a slow page 1 that raises item_s) never takes the percent back."""
+        estimate (a slow page 1 that raises item_s) never takes the percent back. That
+        estimate goes with the write as ``prior``: a screen still counts on from it
+        until its next poll, so the API serves the larger of the two (kaagaz.eta);
+        ``reached`` takes that prior's fraction too, so it is never lost."""
         if self._progress_store is None:
             return
-        if run.shown is not None and run.started_at is not None:
-            last_step, last = run.shown
-            floored = last_step in FLOORED_STEPS
-            shown = fraction_at(last, started_at=run.started_at, floored=floored, now=self._clock())
-            run.reached = max(run.reached, shown)
+        if run.started_at is not None:
+            now, started = self._clock(), run.started_at
+            for last_step, last in (shown for shown in (run.shown, run.prior) if shown is not None):
+                floored = last_step in FLOORED_STEPS
+                run.reached = max(
+                    run.reached, fraction_at(last, started_at=started, floored=floored, now=now)
+                )
         try:
             estimate = self._estimate(run, step, done, total)
-            progress = Progress(step, done, total, estimate, run.started_at, run.reached)
+            progress = Progress(step, done, total, estimate, run.started_at, run.reached, run.shown)
             self._progress_store.set_progress(job.customer_id, job.document_id, progress, run_id=run.run_id)
             if estimate is not None:
-                run.shown = (step, estimate)  # only once written: it is what the screen has
+                run.prior, run.shown = run.shown, (step, estimate)  # once written: what the screen has
         except BackendUnavailable:
             _log.warning(
                 "progress_not_saved",
