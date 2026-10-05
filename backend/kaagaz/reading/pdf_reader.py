@@ -155,22 +155,29 @@ class PdfReader:
         self._max_pages = max_pages
         self._dpi = dpi
         self._max_ocr_pixels = min(max_image_pixels, MAX_OCR_PIXELS)
-        self._lowered_dpi: int | None = None  # the last read's lowest DPI, when below dpi
+        self._lowered_dpi: int | None = None  # the last read's lowest DPI, when the pixel limits cut dpi
+        self._rule_dpi: int | None = None  # its lowest DPI the text-height rule chose under that
+        self._rereads = 0  # its pages read again at the ceiling
         self._rules = rules
         self._blank_stddev = blank_stddev
 
     @property
     def version(self) -> str:
         """Asked for after reading, so an engine whose version comes from its reply
-        (PaddleOCR-VL) is named as it was, with the DPI when a page had to be drawn lower."""
+        (PaddleOCR-VL) is named as it was, with the DPI when a page had to be drawn lower
+        to fit the pixel limits and, with the text-height rule, the lowest DPI it chose
+        (``;text_dpi=``) and the pages read again (``;ocr_reread=``)."""
         version = str(pdfplumber.__version__)
         if self._ocr is None:
             return version
-        lowered = "" if self._lowered_dpi is None else f";ocr_dpi={self._lowered_dpi}"
-        return f"{version}+{self._ocr.name}-{self._ocr.version}{lowered}"
+        marks = "" if self._lowered_dpi is None else f";ocr_dpi={self._lowered_dpi}"
+        marks += "" if self._rule_dpi is None else f";text_dpi={self._rule_dpi}"
+        marks += f";ocr_reread={self._rereads}" if self._rereads else ""
+        return f"{version}+{self._ocr.name}-{self._ocr.version}{marks}"
 
     def read(self, data: bytes, *, on_page: OnPage | None = None) -> list[Span]:
-        self._lowered_dpi = None
+        self._lowered_dpi = self._rule_dpi = None
+        self._rereads = 0
         spans: list[Span] = []
 
         def visit(pdf: Any, document: Any, number: int) -> None:
@@ -203,8 +210,10 @@ class PdfReader:
             image = render_pdf_page(pdfium_page, dpi=dpi, max_image_pixels=self._max_ocr_pixels)
         finally:
             pdfium_page.close()
-        if dpi < self._dpi:
-            self._lowered_dpi = min(dpi, self._lowered_dpi or dpi)
+        if ceiling < self._dpi:
+            self._lowered_dpi = min(ceiling, self._lowered_dpi or ceiling)
+        if dpi < ceiling:
+            self._rule_dpi = min(dpi, self._rule_dpi or dpi)
         fallback = text_spans if text_layer_fallback_allowed(decision) else []
         try:
             if is_blank(image, self._blank_stddev):  # R3: a blank page is never sent to OCR
@@ -213,6 +222,7 @@ class PdfReader:
         finally:
             image.close()
         if not scanned and dpi < ceiling:  # nothing found at a lowered DPI: once more at the ceiling
+            self._rereads += 1
             scanned = _read_again(self._ocr, document, number, ceiling, self._max_ocr_pixels)
         if scanned or not fallback:
             return scanned, decision

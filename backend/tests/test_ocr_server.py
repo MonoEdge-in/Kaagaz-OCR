@@ -40,7 +40,7 @@ from kaagaz.ocr_server.app import (
 )
 from kaagaz.ocr_server.app import table_cells as cells
 from kaagaz.reading import ocr
-from tests.picture_support import noise_picture
+from tests.picture_support import noise_picture, png_levels
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 URL = "http://ocr:8080"
@@ -521,8 +521,9 @@ def test_the_page_saved_for_paddle_holds_exactly_its_pixels(monkeypatch: pytest.
     model = PaddleModel("cpu", {})
     model.load()
     picture = noise_picture(200, 100)
+    levels = png_levels(monkeypatch)
     model.predict(picture)
-    assert seen == [("RGB", (200, 100), picture.tobytes())]
+    assert (seen, levels) == ([("RGB", (200, 100), picture.tobytes())], [1])
 
 
 def test_a_gpu_device_needs_a_paddle_built_for_cuda(monkeypatch: pytest.MonkeyPatch) -> None:

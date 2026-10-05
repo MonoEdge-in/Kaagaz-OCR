@@ -7,15 +7,18 @@ import itertools
 import math
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 from PIL import Image
 
+from kaagaz.pipeline import version_marks
 from kaagaz.preparing.pages import open_pdf, render_pdf_page
 from kaagaz.reading import ocr_dpi
 from kaagaz.reading.image_reader import ImageReader
 from kaagaz.reading.ocr import OcrLine
 from kaagaz.reading.pdf_reader import PdfReader
-from kaagaz.reading.spans import Span
+from kaagaz.reading.spans import ReadError, Span
 from kaagaz.reading.text_quality import TextLayerRules
 from tests.pdf_builder import Page, Picture, Text, make_pdf
 from tests.picture_support import Bar, noise_picture, picture_with_bars
@@ -122,6 +125,24 @@ class LineHeightTest(unittest.TestCase):
             with self.subTest(name):
                 self.assertIsNone(measure(picture))
 
+    def test_underlines_and_handwriting_never_make_the_text_look_taller(self) -> None:
+        """Measured as the text (None is fine): never more, so the DPI is never lower than it needs."""
+        bars = text_lines(850, 1200, 12)
+        form = bars + [(40, top + 13, 770, 2) for top in sorted({bar[1] for bar in bars})]
+        measured = measure(picture_with_bars(850, 1200, form))
+        self.assertTrue(measured is None or measured <= 13, measured)
+        for pitch in (30, 40):  # letters 10 to 26 px high on a wobbling line, close or apart
+            hand = []
+            for row, top in enumerate(range(60, 1100, pitch)):
+                left, k = 50, row * 3
+                while left < 780:
+                    height, width = (14, 22, 10, 26, 12, 18)[k % 6], _LETTERS[k % 8]
+                    wobble = (0, 3, 6, 4, 1, -2, -5, -3)[k // 5 % 8]
+                    hand.append((left, top + wobble + (26 - height) * (k % 2), width, height))
+                    left, k = left + width + 2 + 8 * (k % 5 == 4), k + 1
+            measured = measure(picture_with_bars(850, 1200, hand))
+            self.assertTrue(measured is None or measured <= 28, (pitch, measured))  # 26 px and a wobble
+
     def test_the_same_picture_gives_the_same_answer_in_grey_and_rgb(self) -> None:
         picture = page_of(11)
         answers = {measure(picture) for _ in range(2)}
@@ -177,6 +198,7 @@ class FakeOcr:
     def __init__(self, *answers: list[OcrLine]) -> None:
         self.answers = list(answers) or [[OcrLine("TOTAL 500", 10, 10, 120, 30, 0.9)]]
         self.seen: list[tuple[int, int]] = []
+        self.reader_version = ""  # the image reader's, after a read
 
     def read(self, image: Image.Image) -> list[OcrLine]:
         self.seen.append(image.size)
@@ -202,9 +224,15 @@ def pdf_dpis(
     return [round(width * 72 / width_pt) for width, _height in engine.seen], spans, reader.version
 
 
+def counted_renders() -> Any:
+    """Counts the pictures PdfReader draws (the probe too)."""
+    return mock.patch("kaagaz.reading.pdf_reader.render_pdf_page", wraps=render_pdf_page)
+
+
 # A scan at 144 dpi (1224 x 1584 pixels on a letter page) with 40-pixel lines, 20 pt: the
 # text rule wants 72 x 48 / 20 = 173 dpi, measured on the 109 dpi probe within a pixel.
 SCAN_144 = picture_with_bars(1224, 1584, text_lines(1224, 1584, 40))
+SMALL_PRINT = picture_with_bars(1224, 1584, text_lines(1224, 1584, 8))  # 4 pt lines at 144 dpi
 
 
 class PdfReaderRuleTest(unittest.TestCase):
@@ -214,7 +242,9 @@ class PdfReaderRuleTest(unittest.TestCase):
         today = PdfReader(
             before, max_pages=2, dpi=300, max_image_pixels=40_000_000, rules=RULES, blank_stddev=3.0
         )
-        self.assertEqual(pdf_dpis(data, ocr_dpi.FIXED, after)[1], today.read(data))
+        with counted_renders() as drawn:
+            self.assertEqual(pdf_dpis(data, ocr_dpi.FIXED, after)[1], today.read(data))
+        self.assertEqual(drawn.call_count, 2)  # one picture a page for each reader: no probe
         self.assertEqual(after.seen, before.seen)
         self.assertEqual(before.seen, [(2550, 3301)])  # 300 dpi, as render_pdf_page rounds up
 
@@ -222,7 +252,7 @@ class PdfReaderRuleTest(unittest.TestCase):
         data = make_pdf([Page(picture=Picture(SCAN_144, 0, 0, 612, 792))])
         dpis, spans, version = pdf_dpis(data, ocr_dpi.TEXT_HEIGHT)
         self.assertEqual(dpis, [144])  # the scan cap
-        self.assertTrue(version.endswith(";ocr_dpi=144"))  # recorded as the lowest DPI used
+        self.assertTrue(version.endswith("+fake-ocr-1;text_dpi=144"))  # not ;ocr_dpi: no pixel limit
         self.assertEqual([span.text for span in spans], ["TOTAL 500"])
         (no_cap,), _spans, _version = pdf_dpis(data, ocr_dpi.TEXT_HEIGHT_NO_SCAN_CAP)
         self.assertTrue(165 <= no_cap <= 181, no_cap)
@@ -250,10 +280,40 @@ class PdfReaderRuleTest(unittest.TestCase):
         data = make_pdf([Page(texts=texts, picture=Picture(tint, 0, 0, 612, 792), font_name="KrutiDev010")])
         self.assertEqual(pdf_dpis(data, ocr_dpi.TEXT_HEIGHT)[0], [300])
 
-    def test_small_print_stays_at_the_ceiling(self) -> None:
-        small = picture_with_bars(1224, 1584, text_lines(1224, 1584, 8))  # 4 pt lines
-        data = make_pdf([Page(picture=Picture(small, 0, 0, 612, 792))])
+    def test_small_print_stays_at_the_ceiling_and_is_read_once(self) -> None:
+        data = make_pdf([Page(picture=Picture(SMALL_PRINT, 0, 0, 612, 792))])
         self.assertEqual(pdf_dpis(data, ocr_dpi.TEXT_HEIGHT_NO_SCAN_CAP)[0], [300])
+        nothing = FakeOcr([])
+        with self.assertRaises(ReadError):  # nothing found at the ceiling: never read again
+            pdf_dpis(data, ocr_dpi.TEXT_HEIGHT_NO_SCAN_CAP, nothing)
+        self.assertEqual(len(nothing.seen), 1)
+
+    def test_a_ceiling_of_72_draws_no_probe(self) -> None:
+        data = make_pdf([Page(picture=Picture(SCAN_144, 0, 0, 612, 792))])
+        reader = PdfReader(
+            FakeOcr(),
+            max_pages=1,
+            dpi=72,
+            max_image_pixels=10**8,
+            rules=RULES,
+            blank_stddev=3.0,
+            dpi_rule="text_height",
+        )
+        with counted_renders() as drawn:
+            reader.read(data)
+        self.assertEqual(drawn.call_count, 1)
+
+    def test_the_version_keeps_the_lowest_rule_dpi_and_counts_the_pages_read_again(self) -> None:
+        # The scan capped at 144 (read again at 300), then the same text on 43% of a page (uncapped).
+        part = Picture(SCAN_144.crop((0, 0, 1224, 680)), 0, 452, 612, 340)
+        pages = [Page(picture=Picture(SCAN_144, 0, 0, 612, 792)), Page(picture=part)]
+        ocr = FakeOcr([], [OcrLine("TOTAL 500", 10, 10, 120, 30, 0.9)])
+        dpis, _spans, version = pdf_dpis(make_pdf(pages), ocr_dpi.TEXT_HEIGHT, ocr)
+        self.assertEqual(dpis[:2], [144, 300])
+        self.assertTrue(165 <= dpis[2] <= 181, dpis)
+        self.assertTrue(version.endswith(";text_dpi=144;ocr_reread=1"), version)  # the lowest, not the last
+        self.assertEqual(version_marks(version), {"ocr_text_dpi_lowest": 144, "pages_ocr_reread": 1})
+        self.assertEqual(version_marks("2;ocr_dpi=164"), {"ocr_dpi_lowest": 164})  # the pixel limit
 
     def test_small_print_on_an_a3_page_stays_at_the_ceiling(self) -> None:
         """The A3 probe is 72 dpi, so 4 pt print is 4 pixels on it, and still counts."""
@@ -289,6 +349,7 @@ def photo_sizes(
         engine, max_pages=1, max_image_pixels=20_000_000, ocr_dpi=dpi, blank_stddev=3.0, dpi_rule=rule
     )
     reader.read(_png(picture))
+    engine.reader_version = reader.version
     return engine.seen
 
 
@@ -318,6 +379,7 @@ class ImageReaderRuleTest(unittest.TestCase):
         ocr = FakeOcr([], [OcrLine("TOTAL 500", 10, 10, 120, 30, 0.9)])
         photo = page_of(96, size=(1600, 2200))
         self.assertEqual(photo_sizes(photo, ocr_dpi.TEXT_HEIGHT, ocr), [(800, 1100), (1600, 2200)])
+        self.assertEqual(ocr.reader_version, "1;ocr_scale=0.50;ocr_reread=1")
 
 
 if __name__ == "__main__":

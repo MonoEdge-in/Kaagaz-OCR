@@ -188,8 +188,14 @@ _WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
 # sent to the vision model; the values past it stay single_reader.
 MAX_VISION_CROPS = 200
 _BACKEND_NAME = re.compile(r"[a-z]{1,32}")  # "ocr", "storage", ...: a run's <backend>_unavailable
-# The PDF reader adds ";ocr_dpi=N" to its version when a page was drawn below OCR_DPI.
-_LOWERED_OCR_DPI = re.compile(r";ocr_dpi=([0-9]{1,5})\b")
+# The run config's keys for the marks a reader adds to its version: ";ocr_dpi=N" when a PDF
+# page was drawn below OCR_DPI to fit the pixel limits; with OCR_DPI_RULE (council 5 Oct
+# 2026), ";text_dpi=N", the rule's lowest DPI, and ";ocr_reread=N", the pages read twice.
+_VERSION_MARKS = (
+    ("ocr_dpi_lowest", re.compile(r";ocr_dpi=([0-9]{1,5})\b")),
+    ("ocr_text_dpi_lowest", re.compile(r";text_dpi=([0-9]{1,5})\b")),
+    ("pages_ocr_reread", re.compile(r";ocr_reread=([0-9]{1,5})\b")),
+)
 
 _NOTHING: Pair = (0.0, 0.0)  # no page of a kind measured yet (kaagaz.eta)
 
@@ -436,7 +442,7 @@ class _Run:
     values_verified: int = 0
     values_needs_review: int = 0
     embedded: bool = False
-    lowest_ocr_dpi: int | None = None  # when a page was drawn for OCR below OCR_DPI
+    version_marks: dict[str, int] = field(default_factory=dict)  # from the first reader's version
     model_calls: int = 0  # the card and the invoice windows called (PRD 2 D1, E2)
     model_error: str | None = None  # "model_<code>" when a call failed; the document still ends ready
     quotes_returned: int = 0
@@ -674,8 +680,7 @@ class DocumentProcessor:
         run.values_needs_review = len(values) - run.values_verified
 
         reader, version = self._socket.reader_id(record.detected_type)
-        lowered = _LOWERED_OCR_DPI.search(version)
-        run.lowest_ocr_dpi = None if lowered is None else int(lowered.group(1))
+        run.version_marks = version_marks(version)
         outputs = [ReaderOutput("first", reader, version, tuple(spans))]
         if second is not None:
             second_reader, second_version = self._socket.reader_id(record.detected_type, second=True)
@@ -917,7 +922,7 @@ class DocumentProcessor:
             config={
                 **self._run_config,
                 **run.quote_config,
-                **({} if run.lowest_ocr_dpi is None else {"ocr_dpi_lowest": run.lowest_ocr_dpi}),
+                **run.version_marks,
                 **({"pages_ocr_fallback": fallback_pages} if fallback_pages else {}),
                 **run.ocr_choice,
                 **_step_seconds(run, ended),
@@ -1004,6 +1009,11 @@ class DocumentProcessor:
             return preparing(run.rates, self._clock(), done, total, (spent, done))
         ocr, fast = run.measured.get("ocr", _NOTHING), run.measured.get("fast", _NOTHING)
         return reading(run.rates, self._clock(), done, total, ocr, fast)
+
+
+def version_marks(version: str) -> dict[str, int]:
+    """The run config's numbers from a reader's version (``_VERSION_MARKS``). O(len)."""
+    return {key: int(found.group(1)) for key, mark in _VERSION_MARKS if (found := mark.search(version))}
 
 
 def _step_seconds(run: _Run, now: float) -> dict[str, float]:

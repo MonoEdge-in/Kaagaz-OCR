@@ -85,6 +85,8 @@ class ImageReader:
         self._max_image_pixels = max_image_pixels
         self._max_short_side = max(1, round(ocr_dpi * _A4_SHORT_SIDE_INCHES))
         self._max_ocr_pixels = MAX_OCR_PIXELS
+        self._scale: float | None = None  # the last read's smallest photo_scale under 1
+        self._rereads = 0  # its pages read again as they were
 
     @property
     def name(self) -> str:
@@ -92,9 +94,14 @@ class ImageReader:
 
     @property
     def version(self) -> str:
-        return self._ocr.version  # asked for after reading: PaddleOCR-VL's comes from its reply
+        """Asked for after reading: PaddleOCR-VL's comes from its reply. With the
+        text-height rule, also the smallest scale and the pages read again."""
+        marks = "" if self._scale is None else f";ocr_scale={self._scale:.2f}"
+        marks += f";ocr_reread={self._rereads}" if self._rereads else ""
+        return self._ocr.version + marks
 
     def read(self, data: bytes, *, on_page: OnPage | None = None) -> list[Span]:
+        self._scale, self._rereads = None, 0
         spans: list[Span] = []
         pages = image_pages(data, max_pages=self._max_pages, max_image_pixels=self._max_image_pixels)
         for number, image in enumerate(pages, start=1):
@@ -116,12 +123,14 @@ class ImageReader:
         if self._dpi_rule != FIXED:
             smaller = _for_text(page)
             if smaller is not page:
+                self._scale = min(smaller.width / page.width, self._scale or 1.0)
                 try:
                     spans = ocr_spans(self._ocr.read(smaller), number, smaller.width, smaller.height)
                 finally:
                     smaller.close()
                 if spans:
                     return spans
+                self._rereads += 1
         return ocr_spans(self._ocr.read(page), number, page.width, page.height)
 
 
