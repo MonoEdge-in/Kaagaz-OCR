@@ -139,3 +139,49 @@ BAD += [{"slow_after_s": "20"}, {"done": "2"}]
 @pytest.mark.parametrize("changes", BAD)  # no time zone; no estimate; finish before move; ...
 def test_time_left_is_none_unless_every_key_is_well_formed(changes: dict[str, object]) -> None:
     assert time_left(stored(**changes), now=T0) is None
+
+
+def done(**changes: object) -> object:
+    """The ``done_fraction`` of ``stored(**changes)``; ``now`` among them, else T0."""
+    now = changes.pop("now", T0)
+    assert isinstance(now, datetime)
+    left = time_left(stored(**changes), now=now)
+    return None if left is None else left["done_fraction"]
+
+
+def test_done_fraction_is_elapsed_over_elapsed_plus_left_before_a_stall() -> None:
+    """Council of 5 Oct 2026: the same number the screen works out live, at T0."""
+    left = time_left(stored(), now=T0)
+    assert left is not None
+    assert left["done_fraction"] == round(90 / (90 + 60), 4)  # 90 s in, 60 s left
+    elapsed, seconds = left["elapsed_seconds"], left["seconds"]
+    assert left["done_fraction"] == round(elapsed / (elapsed + seconds), 4)
+
+
+def test_done_fraction_holds_still_once_it_is_taking_longer() -> None:
+    """Moved 4 s before T0, slow after 20 s: from T0 + 16 s no work is shown as done,
+    so a refresh 400 s later gives the same percent, never 0 and never more."""
+    stall = T0 + timedelta(seconds=16)
+    at_stall, later = done(now=stall), done(now=stall + timedelta(seconds=400))
+    assert at_stall == later == round(106 / (106 + 44), 4)
+    assert isinstance(at_stall, float) and at_stall > 0
+
+
+def test_the_floor_is_after_s_only_while_preparing_or_reading() -> None:
+    soon = (T0 + timedelta(seconds=5)).isoformat()  # 5 s left, after_s 20
+    floored = [done(step=step, finish_at=soon) for step in ("preparing", "reading")]
+    assert floored == [round(90 / 110, 4)] * 2
+    after = [done(step=step, finish_at=soon) for step in ("understanding", "indexing")]
+    assert after == [round(90 / 95, 4)] * 2
+
+
+def test_the_runs_reached_wins_when_it_is_higher_and_a_bad_one_is_ignored() -> None:
+    assert done(reached=0.9) == 0.9
+    assert done(reached=0.1) == done() == round(0.6, 4)  # an old row has no reached
+    for bad in (True, float("nan"), -0.1, 1.5, "0.9", None):
+        assert done(reached=bad) == 0.6
+
+
+def test_a_sheet_has_a_done_fraction_too() -> None:
+    sheet = time_left(stored(done=0, total=0), now=T0)
+    assert sheet is not None and sheet["items_left"] == 0 and sheet["done_fraction"] == 0.6

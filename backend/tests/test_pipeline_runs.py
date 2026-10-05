@@ -8,6 +8,7 @@ The same claims against PostgreSQL are in tests/test_pipeline_db.py.
 
 import functools
 import io
+import itertools
 import logging
 import unittest
 from collections.abc import Callable
@@ -17,6 +18,7 @@ from unittest import mock
 
 from PIL import Image
 
+from kaagaz.eta import FLOORED_STEPS, fraction_at, time_left
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
@@ -202,8 +204,11 @@ def rig(
     max_vision_crops: int = 200,
     settings: Settings = SETTINGS,
     engines: OcrChooser | None = None,
+    moving_clock: bool = False,
 ) -> Rig:
+    """``moving_clock``: the clock moves with the timer, from T0, else it stands at T0."""
     timer = Timer()
+    start = timer()
     statuses, storage = MemoryStatuses(), MemoryStorage()
     repo = MemoryDocuments(statuses)
     runs = MemoryRuns(repo)
@@ -240,7 +245,7 @@ def rig(
             progress=progress,
             ocr_meter=meter,
             ocr_engines=engines,
-            clock=lambda: T0,
+            clock=(lambda: T0 + timedelta(seconds=timer() - start)) if moving_clock else (lambda: T0),
             timer=timer,
             max_vision_crops=max_vision_crops,
             run_config=CONFIG,
@@ -466,6 +471,33 @@ class ProgressTest(unittest.TestCase):
             (prep.finish_at - T0).total_seconds(), prep.item_s + 2 * first.item_s + 45.0, 3
         )
         self.assertEqual((by[("scanning", 0)], by[("indexing", 0)]), (None, after))  # indexing keeps it
+
+    def test_the_percent_never_goes_back_when_a_slow_page_1_raises_item_s(self) -> None:
+        """Council of 5 Oct 2026: page 1 of 6 takes 15 s against the 7 s guess, so the next
+        estimate's finish jumps and its own F drops; the stored ``reached`` keeps the
+        percent the screen had, write after write."""
+        system = rig(ocr=lambda timer: TimedOcr(timer, seconds=15.0), moving_clock=True)
+        system.processor(system.job(make_pdf([SCANNED] * 6)), beat)
+        timed = [p for _, _, p in system.progress.history if p.estimate is not None]
+
+        def fraction(p: Progress, now: datetime) -> float:
+            assert p.estimate is not None and p.started_at is not None
+            return fraction_at(p.estimate, started_at=p.started_at, floored=p.step in FLOORED_STEPS, now=now)
+
+        def shown(p: Progress, now: datetime) -> float:
+            left = time_left(p.to_json(), now=now)
+            assert left is not None
+            return float(left["done_fraction"])
+
+        dropped = []
+        for before, p in itertools.pairwise(timed):
+            assert p.estimate is not None
+            now = p.estimate.moved_at  # the write's own time: the screen had ``before`` until then
+            dropped.append(fraction(p, now) < fraction(before, now))
+            self.assertGreaterEqual(shown(p, now), shown(before, now))  # done_fraction never goes back
+        self.assertTrue(any(dropped))  # F alone does, after page 1
+        self.assertGreater(shown(timed[-1], T0), 0)
+        self.assertTrue(all(p.reached is not None and 0 <= p.reached <= 1 for p in timed))
 
     def test_a_run_times_its_preparing_and_three_runs_teach_it(self) -> None:
         """1.5 s a heartbeat: each page drawn beats once, so two pages take 3 s to prepare."""

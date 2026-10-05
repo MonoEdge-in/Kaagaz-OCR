@@ -117,7 +117,18 @@ from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
-from kaagaz.eta import Estimate, Pair, Rates, RunTiming, after_reading, preparing, rates, reading
+from kaagaz.eta import (
+    FLOORED_STEPS,
+    Estimate,
+    Pair,
+    Rates,
+    RunTiming,
+    after_reading,
+    fraction_at,
+    preparing,
+    rates,
+    reading,
+)
 from kaagaz.extraction.card import ChatModel
 from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
@@ -248,11 +259,14 @@ class Progress:
     # The time-left estimate (kaagaz.eta) written with it: not part of which step this is.
     estimate: Estimate | None = field(default=None, compare=False)
     started_at: datetime | None = field(default=None, compare=False)  # the run's start, for the percentage
+    reached: float | None = field(default=None, compare=False)  # the run's highest fraction (kaagaz.eta)
 
     def to_json(self) -> dict[str, object]:
         shown: dict[str, object] = {"step": self.step, "done": self.done, "total": self.total}
         if self.started_at is not None:
             shown["started_at"] = self.started_at.isoformat()
+        if self.reached is not None:
+            shown["reached"] = round(self.reached, 4)
         return shown if self.estimate is None else {**shown, **self.estimate.to_json()}
 
 
@@ -457,6 +471,8 @@ class _Run:
     moved: float = 0.0  # the timer when the last page was read
     measured: dict[str, Pair] = field(default_factory=dict)  # "ocr", "fast": (seconds, pages)
     after: Estimate | None = None  # from the end of reading, kept for each understanding step
+    shown: tuple[Step, Estimate] | None = None  # the last estimate written, and its step
+    reached: float = 0.0  # the highest fraction shown so far (kaagaz.eta): it never goes back
     ocr_choice: dict[str, str | bool] = field(default_factory=dict)  # the upload's reader, when it chose one
 
 
@@ -946,12 +962,22 @@ class DocumentProcessor:
 
     def _progress(self, job: Job, run: _Run, step: Step, done: int, total: int) -> None:
         """Show how far it has got, in its own short transaction. Best effort (AR10), but
-        fenced: the Superseded of a run no longer open goes on up."""
+        fenced: the Superseded of a run no longer open goes on up. Before each write,
+        ``reached`` takes the fraction the last estimate written shows now, so a new
+        estimate (a slow page 1 that raises item_s) never takes the percent back."""
         if self._progress_store is None:
             return
+        if run.shown is not None and run.started_at is not None:
+            last_step, last = run.shown
+            floored = last_step in FLOORED_STEPS
+            shown = fraction_at(last, started_at=run.started_at, floored=floored, now=self._clock())
+            run.reached = max(run.reached, shown)
         try:
-            progress = Progress(step, done, total, self._estimate(run, step, done, total), run.started_at)
+            estimate = self._estimate(run, step, done, total)
+            progress = Progress(step, done, total, estimate, run.started_at, run.reached)
             self._progress_store.set_progress(job.customer_id, job.document_id, progress, run_id=run.run_id)
+            if estimate is not None:
+                run.shown = (step, estimate)  # only once written: it is what the screen has
         except BackendUnavailable:
             _log.warning(
                 "progress_not_saved",

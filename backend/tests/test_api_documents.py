@@ -252,6 +252,8 @@ TIMED |= {"moved_at": MOVED, "finish_at": FINISH, "item_s": 1.25, "after_s": 10.
 TIME_LEFT: dict[str, object] = {"seconds": 50.0, "since_move_seconds": 10.0, "items_left": 38}
 TIME_LEFT |= {"slow_after_seconds": 20.0, "item_seconds": 1.25, "after_seconds": 10.0, "confidence": "high"}
 TIME_LEFT |= {"elapsed_seconds": 70.0}
+# Added on purpose (council of 5 Oct 2026): 70 s in, 50 s left, the same on every load.
+TIME_LEFT |= {"done_fraction": round(70 / 120, 4)}
 
 
 def test_time_left_from_preparing_on_and_out_of_trash() -> None:
