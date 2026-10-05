@@ -35,7 +35,9 @@ export function TimeLeft({ document }: { document: Shown }) {
       />
     );
   }
-  const waiting = document.status === "received" && progress === null;
+  // After a try with no progress (a backend stopped it), the status message says
+  // "Waiting to try again" (api/views.py), so nothing more is shown here.
+  const waiting = document.status === "received" && progress === null && document.attempts === 0;
   return waiting ? <Words text={WAITING.text} spoken={WAITING.spoken} /> : null;
 }
 

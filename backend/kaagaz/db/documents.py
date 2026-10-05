@@ -505,6 +505,25 @@ class PgDocuments:
                 {"p": json.dumps(progress.to_json()), "c": customer_id, "d": document_id},
             )
 
+    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
+        """No progress shown, on a document still in progress (received or clean) only:
+        a try a backend stopped leaves no stale "Reading page 1" while the job waits to
+        come back. With ``run_id``, the run fence: under the family lock, change nothing
+        unless that run is still open, so a stale delivery never clears the newer run's
+        progress. Its own short transaction, as ``set_progress``."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            if run_id is not None:
+                lock_family(conn, customer_id, document_id)
+                if not is_run_open(conn, customer_id, document_id, run_id):
+                    return
+            conn.execute(
+                text(
+                    "UPDATE documents SET progress = NULL"
+                    " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
+                ),
+                {"c": customer_id, "d": document_id},
+            )
+
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(

@@ -137,4 +137,10 @@ describe("a refresh", () => {
     const retry = value({ ...STALLED, done_fraction: 0.12 });
     expect(render({ attempts: 2, progress: { step: "reading", done: 0, total: 4 }, time_left: retry })).toContain(">12%<");
   });
+
+  it("shows no stale bar while a try a backend stopped waits to come back", () => {
+    expect(render({ status: "received", progress: null, attempts: 0 })).toContain("Waiting to start");
+    expect(render({ status: "received", progress: null, attempts: 1 })).toBe(""); // the status message says it
+    expect(render({ status: "clean", progress: null, attempts: 2 })).toBe("");
+  });
 });

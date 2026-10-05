@@ -80,7 +80,10 @@ Runs and progress (PRD 2 R6, X2, X3), when the processor is given them:
   short transaction between steps, never inside the save, and best effort
   (AR10): a database that is down only means no progress (``progress_not_saved``).
   It is fenced too, so a superseded delivery never overwrites the newer run's
-  progress: it ends there, quietly, as above.
+  progress: it ends there, quietly, as above. A try a backend stopped clears its
+  progress (``clear_progress``, fenced, best effort: ``progress_not_cleared``), so
+  the list says "Waiting to try again", not a stale "Reading page 1", until the
+  job comes back.
 * The pages are counted by route as each is read (``on_page``), so a run that
   fails part way records the pages it read; once every page has its route, the
   counts are those of the stored routes.
@@ -349,6 +352,10 @@ class ProgressStore(Protocol):
         open (the run fence)."""
         ...
 
+    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
+        """No progress shown. With ``run_id``, change nothing unless that run is still open."""
+        ...
+
 
 class OcrMeter(Protocol):
     """kaagaz.reading.ocr.MeteredOcrEngine in production: the engine the readers use."""
@@ -581,6 +588,7 @@ class DocumentProcessor:
             raise
         except BackendUnavailable as error:
             settled = True
+            self._clear_progress(job, run, _unavailable_code(error))  # while the run is still open
             self._close_run(job, run, "failed", _unavailable_code(error))
             raise
         finally:
@@ -982,6 +990,19 @@ class DocumentProcessor:
             _log.warning(
                 "progress_not_saved",
                 extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": step},
+            )
+
+    def _clear_progress(self, job: Job, run: _Run, code: str) -> None:
+        """Clear this run's progress before the job waits to come back. Best effort: a
+        database that is down is logged with the run's error code."""
+        if self._progress_store is None:
+            return
+        try:
+            self._progress_store.clear_progress(job.customer_id, job.document_id, run_id=run.run_id)
+        except BackendUnavailable:
+            _log.warning(
+                "progress_not_cleared",
+                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": code},
             )
 
     def _reading_beat(

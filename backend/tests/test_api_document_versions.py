@@ -253,7 +253,7 @@ def test_a_newer_version_still_reading_or_failed_is_shown_beside_the_current_one
         "version_no": 2,
         "status": "received",
         "failure_code": None,
-        "status_message": "Waiting for the virus check. Try 2 of 5.",
+        "status_message": "Waiting to try again. Try 2 of 5.",  # changed on purpose: no progress after a try
     }
     assert listed[failed]["newer_version"] == {  # the newest of the newer ones
         "id": failed_v3,

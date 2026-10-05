@@ -779,6 +779,55 @@ class EveryPathClosesItsRunTest(unittest.TestCase):
             system.processor(job, beat)
         self.assertEqual(self.closed(system, job), [("failed", "ocr_unavailable")])
 
+    def test_a_backend_that_is_down_clears_the_progress(self) -> None:
+        """Council of 5 Oct 2026: OCR stops page 1; the job waits for its lease to come
+        back, so no stale "Reading page 1" is left on the document meanwhile."""
+        system = rig(ocr=lambda timer: TimedOcr(timer, down_on_call=1))
+        job = system.job(make_pdf([SCANNED]))
+        with self.assertRaises(BackendUnavailable):
+            system.processor(job, beat)
+        self.assertIn(Progress("reading", 0, 1), [p for _, _, p in system.progress.history])
+        self.assertNotIn((CUSTOMER, job.document_id), system.progress.progress)
+        self.assertEqual(self.closed(system, job), [("failed", "ocr_unavailable")])
+
+    def test_a_stale_delivery_never_clears_the_newer_runs_progress(self) -> None:
+        """The fence: a newer run starts and writes its progress while the older one is in
+        OCR; OCR then stops the older one, whose clear changes nothing."""
+        newer: list[str] = []
+
+        class NewerRunThenDown(TimedOcr):
+            def read(self, image: Image.Image) -> list[OcrLine]:
+                newer.append(system.runs.start(CUSTOMER, job.document_id, now=T0))
+                system.progress.set_progress(
+                    CUSTOMER, job.document_id, Progress("reading", 0, 1), run_id=newer[0]
+                )
+                raise BackendUnavailable("ocr")
+
+        system = rig(ocr=NewerRunThenDown)
+        job = system.job(make_pdf([SCANNED]))
+        with self.assertRaises(BackendUnavailable):
+            system.processor(job, beat)
+        self.assertEqual(system.progress.progress[(CUSTOMER, job.document_id)], Progress("reading", 0, 1))
+        self.assertEqual(statuses_of(system.runs_of(job)), [("superseded", None), ("running", None)])
+
+    def test_progress_that_cannot_be_cleared_is_logged_and_the_error_goes_on(self) -> None:
+        system = rig(ocr=lambda timer: TimedOcr(timer, down_on_call=1))
+        job = system.job(make_pdf([SCANNED]))
+        down = mock.patch.object(
+            system.progress, "clear_progress", side_effect=BackendUnavailable("database")
+        )
+        with (
+            down,
+            self.assertLogs("kaagaz.pipeline", level="WARNING") as logs,
+            self.assertRaises(BackendUnavailable),
+        ):
+            system.processor(job, beat)
+        self.assertEqual(
+            [(r.getMessage(), getattr(r, "code", None)) for r in logs.records],
+            [("progress_not_cleared", "ocr_unavailable")],
+        )
+        self.assertEqual(self.closed(system, job), [("failed", "ocr_unavailable")])
+
     def test_a_file_with_no_reader(self) -> None:
         system = rig()
         job = system.job(make_zip({"word/document.xml": b"<document/>"}))
