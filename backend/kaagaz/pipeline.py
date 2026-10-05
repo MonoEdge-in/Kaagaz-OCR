@@ -80,7 +80,10 @@ Runs and progress (PRD 2 R6, X2, X3), when the processor is given them:
   short transaction between steps, never inside the save, and best effort
   (AR10): a database that is down only means no progress (``progress_not_saved``).
   It is fenced too, so a superseded delivery never overwrites the newer run's
-  progress: it ends there, quietly, as above.
+  progress: it ends there, quietly, as above. A try a backend stopped clears its
+  progress (``clear_progress``, fenced, best effort: ``progress_not_cleared``), so
+  the list says "Waiting to try again", not a stale "Reading page 1", until the
+  job comes back.
 * The pages are counted by route as each is read (``on_page``), so a run that
   fails part way records the pages it read; once every page has its route, the
   counts are those of the stored routes.
@@ -117,7 +120,18 @@ from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
-from kaagaz.eta import Estimate, Pair, Rates, RunTiming, after_reading, preparing, rates, reading
+from kaagaz.eta import (
+    FLOORED_STEPS,
+    Estimate,
+    Pair,
+    Rates,
+    RunTiming,
+    after_reading,
+    fraction_at,
+    preparing,
+    rates,
+    reading,
+)
 from kaagaz.extraction.card import ChatModel
 from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
@@ -248,11 +262,20 @@ class Progress:
     # The time-left estimate (kaagaz.eta) written with it: not part of which step this is.
     estimate: Estimate | None = field(default=None, compare=False)
     started_at: datetime | None = field(default=None, compare=False)  # the run's start, for the percentage
+    reached: float | None = field(default=None, compare=False)  # the run's highest fraction (kaagaz.eta)
+    prior: tuple[Step, Estimate] | None = field(default=None, compare=False)  # the estimate written before
 
     def to_json(self) -> dict[str, object]:
         shown: dict[str, object] = {"step": self.step, "done": self.done, "total": self.total}
         if self.started_at is not None:
             shown["started_at"] = self.started_at.isoformat()
+        if self.reached is not None:
+            shown["reached"] = round(self.reached, 4)
+        if self.prior is not None:
+            step, estimate = self.prior
+            timing = estimate.to_json()
+            kept = ("moved_at", "finish_at", "after_s", "slow_after_s")
+            shown["prior"] = {"step": step, **{key: timing[key] for key in kept}}
         return shown if self.estimate is None else {**shown, **self.estimate.to_json()}
 
 
@@ -333,6 +356,10 @@ class ProgressStore(Protocol):
     ) -> None:
         """With ``run_id``, raise Superseded and change nothing unless that run is still
         open (the run fence)."""
+        ...
+
+    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
+        """No progress shown. With ``run_id``, change nothing unless that run is still open."""
         ...
 
 
@@ -457,6 +484,9 @@ class _Run:
     moved: float = 0.0  # the timer when the last page was read
     measured: dict[str, Pair] = field(default_factory=dict)  # "ocr", "fast": (seconds, pages)
     after: Estimate | None = None  # from the end of reading, kept for each understanding step
+    shown: tuple[Step, Estimate] | None = None  # the last estimate written, and its step
+    prior: tuple[Step, Estimate] | None = None  # the one written before it (its ``prior``)
+    reached: float = 0.0  # the highest fraction shown so far (kaagaz.eta): it never goes back
     ocr_choice: dict[str, str | bool] = field(default_factory=dict)  # the upload's reader, when it chose one
 
 
@@ -565,6 +595,7 @@ class DocumentProcessor:
             raise
         except BackendUnavailable as error:
             settled = True
+            self._clear_progress(job, run, _unavailable_code(error))  # while the run is still open
             self._close_run(job, run, "failed", _unavailable_code(error))
             raise
         finally:
@@ -946,16 +977,44 @@ class DocumentProcessor:
 
     def _progress(self, job: Job, run: _Run, step: Step, done: int, total: int) -> None:
         """Show how far it has got, in its own short transaction. Best effort (AR10), but
-        fenced: the Superseded of a run no longer open goes on up."""
+        fenced: the Superseded of a run no longer open goes on up. Before each write,
+        ``reached`` takes the fraction the last estimate written shows now, so a new
+        estimate (a slow page 1 that raises item_s) never takes the percent back. That
+        estimate goes with the write as ``prior``: a screen still counts on from it
+        until its next poll, so the API serves the larger of the two (kaagaz.eta);
+        ``reached`` takes that prior's fraction too, so it is never lost."""
         if self._progress_store is None:
             return
+        if run.started_at is not None:
+            now, started = self._clock(), run.started_at
+            for last_step, last in (shown for shown in (run.shown, run.prior) if shown is not None):
+                floored = last_step in FLOORED_STEPS
+                run.reached = max(
+                    run.reached, fraction_at(last, started_at=started, floored=floored, now=now)
+                )
         try:
-            progress = Progress(step, done, total, self._estimate(run, step, done, total), run.started_at)
+            estimate = self._estimate(run, step, done, total)
+            progress = Progress(step, done, total, estimate, run.started_at, run.reached, run.shown)
             self._progress_store.set_progress(job.customer_id, job.document_id, progress, run_id=run.run_id)
+            if estimate is not None:
+                run.prior, run.shown = run.shown, (step, estimate)  # once written: what the screen has
         except BackendUnavailable:
             _log.warning(
                 "progress_not_saved",
                 extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": step},
+            )
+
+    def _clear_progress(self, job: Job, run: _Run, code: str) -> None:
+        """Clear this run's progress before the job waits to come back. Best effort: a
+        database that is down is logged with the run's error code."""
+        if self._progress_store is None:
+            return
+        try:
+            self._progress_store.clear_progress(job.customer_id, job.document_id, run_id=run.run_id)
+        except BackendUnavailable:
+            _log.warning(
+                "progress_not_cleared",
+                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": code},
             )
 
     def _reading_beat(

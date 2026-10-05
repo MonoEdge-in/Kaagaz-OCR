@@ -6,7 +6,7 @@ import { ESTIMATING, STARTING, WAITING, describe, hold, markReceived, receivedAt
 import type { Held } from "@/lib/timeLeft";
 import type { TimeLeft } from "@/lib/types";
 
-const base = { since_move_seconds: 0, slow_after_seconds: 1000, items_left: 0, item_seconds: 0, after_seconds: 0, elapsed_seconds: 0 };
+const base = { since_move_seconds: 0, slow_after_seconds: 1000, items_left: 0, item_seconds: 0, after_seconds: 0, elapsed_seconds: 0, done_fraction: 0 };
 const value = (seconds: number, more: Partial<TimeLeft> = {}): TimeLeft => ({
   ...base,
   seconds,

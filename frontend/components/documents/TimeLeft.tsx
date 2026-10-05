@@ -4,11 +4,13 @@
 // (PRD 4 #13; the rules are in lib/progress.ts and lib/timeLeft.ts). The bar is a
 // native <progress> named for its document; the visible percent and the counting
 // text are hidden from screen readers, which get words that change only by the
-// minute. No live region: nothing is announced.
+// minute. No live region: nothing is announced. A refresh starts the bar from the
+// server's done_fraction, so "36%" stays beside "Taking longer than usual"; at 0 no
+// percent text is shown (never a bare 0%).
 
 import { memo, useState } from "react";
 import { useMediaQuery } from "@/components/chat/hooks";
-import { advance, barValue, fractionAt } from "@/lib/progress";
+import { advance, barValue, fractionShown } from "@/lib/progress";
 import type { ShownProgress } from "@/lib/progress";
 import { ESTIMATING, STARTING, WAITING, describe, hold, receivedAt } from "@/lib/timeLeft";
 import type { Held } from "@/lib/timeLeft";
@@ -22,7 +24,7 @@ type Shown = Pick<DocumentSummary, "status" | "progress" | "time_left" | "attemp
 export function TimeLeft({ document }: { document: Shown }) {
   const { progress } = document;
   if (progress && document.deleted_at === null) {
-    // A new attempt starts a new bar and countdown (keyed), from 0.
+    // A new attempt starts a new bar and countdown (keyed), from that run's done_fraction.
     return (
       <Progressing
         key={document.attempts}
@@ -33,7 +35,9 @@ export function TimeLeft({ document }: { document: Shown }) {
       />
     );
   }
-  const waiting = document.status === "received" && progress === null;
+  // After a try with no progress (a backend stopped it), the status message says
+  // "Waiting to try again" (api/views.py), so nothing more is shown here.
+  const waiting = document.status === "received" && progress === null && document.attempts === 0;
   return waiting ? <Words text={WAITING.text} spoken={WAITING.spoken} /> : null;
 }
 
@@ -60,8 +64,10 @@ function Progressing({ value, step, attempt, name }: ProgressingProps) {
   }
   const scanning = step === "scanning";
   const view = current !== null ? describe(current, now, reducedMotion) : scanning ? STARTING : ESTIMATING;
-  const fraction = current !== null ? fractionAt(current, now) : scanning ? 0 : null;
-  const next = advance(shown, attempt, fraction, view.state === "longer");
+  const holding = view.state === "longer";
+  const live = current !== null ? fractionShown(current.value, step, current.valueAt, now, holding) : null;
+  const fraction = live ?? (scanning ? 0 : null);
+  const next = advance(shown, attempt, fraction);
   if (next !== shown) setShown(next);
   return (
     <>
@@ -73,7 +79,7 @@ function Progressing({ value, step, attempt, name }: ProgressingProps) {
           aria-label={`Progress: ${name}`}
         />
         <span className={styles.readPercent} aria-hidden="true">
-          {formatProgressPercent(next.percent, 100)}
+          {next.percent > 0 ? formatProgressPercent(next.percent, 100) : ""}
         </span>
       </span>
       <Words text={view.text} spoken={view.spoken} />

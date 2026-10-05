@@ -8,6 +8,7 @@ The same claims against PostgreSQL are in tests/test_pipeline_db.py.
 
 import functools
 import io
+import itertools
 import logging
 import unittest
 from collections.abc import Callable
@@ -17,6 +18,7 @@ from unittest import mock
 
 from PIL import Image
 
+from kaagaz.eta import FLOORED_STEPS, fraction_at, time_left
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
@@ -202,8 +204,11 @@ def rig(
     max_vision_crops: int = 200,
     settings: Settings = SETTINGS,
     engines: OcrChooser | None = None,
+    moving_clock: bool = False,
 ) -> Rig:
+    """``moving_clock``: the clock moves with the timer, from T0, else it stands at T0."""
     timer = Timer()
+    start = timer()
     statuses, storage = MemoryStatuses(), MemoryStorage()
     repo = MemoryDocuments(statuses)
     runs = MemoryRuns(repo)
@@ -240,7 +245,7 @@ def rig(
             progress=progress,
             ocr_meter=meter,
             ocr_engines=engines,
-            clock=lambda: T0,
+            clock=(lambda: T0 + timedelta(seconds=timer() - start)) if moving_clock else (lambda: T0),
             timer=timer,
             max_vision_crops=max_vision_crops,
             run_config=CONFIG,
@@ -466,6 +471,51 @@ class ProgressTest(unittest.TestCase):
             (prep.finish_at - T0).total_seconds(), prep.item_s + 2 * first.item_s + 45.0, 3
         )
         self.assertEqual((by[("scanning", 0)], by[("indexing", 0)]), (None, after))  # indexing keeps it
+
+    def test_the_percent_never_goes_back_when_a_slow_page_1_raises_item_s(self) -> None:
+        """Council of 5 Oct 2026: page 1 of 6 takes 15 s against the 7 s guess, so the next
+        estimate's finish jumps and its own F drops; the stored ``reached`` keeps the
+        percent the screen had, write after write."""
+        system = rig(ocr=lambda timer: TimedOcr(timer, seconds=15.0), moving_clock=True)
+        system.processor(system.job(make_pdf([SCANNED] * 6)), beat)
+        timed = [p for _, _, p in system.progress.history if p.estimate is not None]
+
+        def fraction(p: Progress, now: datetime) -> float:
+            assert p.estimate is not None and p.started_at is not None
+            return fraction_at(p.estimate, started_at=p.started_at, floored=p.step in FLOORED_STEPS, now=now)
+
+        def shown(p: Progress, now: datetime) -> float:
+            left = time_left(p.to_json(), now=now)
+            assert left is not None
+            return float(left["done_fraction"])
+
+        dropped = []
+        for before, p in itertools.pairwise(timed):
+            assert p.estimate is not None
+            now = p.estimate.moved_at  # the write's own time: the screen had ``before`` until then
+            dropped.append(fraction(p, now) < fraction(before, now))
+            self.assertGreaterEqual(shown(p, now), shown(before, now))  # done_fraction never goes back
+        self.assertTrue(any(dropped))  # F alone does, after page 1
+        self.assertGreater(shown(timed[-1], T0), 0)
+
+    def test_a_refresh_never_shows_less_than_a_screen_that_has_not_polled_yet(self) -> None:
+        """Review of 5 Oct 2026: after each write, a screen keeps counting on from the old
+        answer until its next poll (3 to 15 s later); a refresh then must not show less."""
+        system = rig(ocr=lambda timer: TimedOcr(timer, seconds=15.0), moving_clock=True)
+        system.processor(system.job(make_pdf([SCANNED] * 6)), beat)
+        timed = [p for _, _, p in system.progress.history if p.estimate is not None]
+        for before, p in itertools.pairwise(timed):
+            assert before.estimate is not None and p.estimate is not None
+            old = time_left(before.to_json(), now=before.estimate.moved_at)  # the screen's answer
+            assert old is not None
+            for wait in (0, 1, 3, 6, 9, 12, 15):
+                at = p.estimate.moved_at + timedelta(seconds=wait)  # a refresh after the write
+                refreshed = time_left(p.to_json(), now=at)
+                assert refreshed is not None
+                self.assertGreaterEqual(
+                    refreshed["done_fraction"] + 1e-4, live(old, before.step, at - before.estimate.moved_at)
+                )
+        self.assertTrue(all(p.reached is not None and 0 <= p.reached <= 1 for p in timed))
 
     def test_a_run_times_its_preparing_and_three_runs_teach_it(self) -> None:
         """1.5 s a heartbeat: each page drawn beats once, so two pages take 3 s to prepare."""
@@ -747,6 +797,55 @@ class EveryPathClosesItsRunTest(unittest.TestCase):
             system.processor(job, beat)
         self.assertEqual(self.closed(system, job), [("failed", "ocr_unavailable")])
 
+    def test_a_backend_that_is_down_clears_the_progress(self) -> None:
+        """Council of 5 Oct 2026: OCR stops page 1; the job waits for its lease to come
+        back, so no stale "Reading page 1" is left on the document meanwhile."""
+        system = rig(ocr=lambda timer: TimedOcr(timer, down_on_call=1))
+        job = system.job(make_pdf([SCANNED]))
+        with self.assertRaises(BackendUnavailable):
+            system.processor(job, beat)
+        self.assertIn(Progress("reading", 0, 1), [p for _, _, p in system.progress.history])
+        self.assertNotIn((CUSTOMER, job.document_id), system.progress.progress)
+        self.assertEqual(self.closed(system, job), [("failed", "ocr_unavailable")])
+
+    def test_a_stale_delivery_never_clears_the_newer_runs_progress(self) -> None:
+        """The fence: a newer run starts and writes its progress while the older one is in
+        OCR; OCR then stops the older one, whose clear changes nothing."""
+        newer: list[str] = []
+
+        class NewerRunThenDown(TimedOcr):
+            def read(self, image: Image.Image) -> list[OcrLine]:
+                newer.append(system.runs.start(CUSTOMER, job.document_id, now=T0))
+                system.progress.set_progress(
+                    CUSTOMER, job.document_id, Progress("reading", 0, 1), run_id=newer[0]
+                )
+                raise BackendUnavailable("ocr")
+
+        system = rig(ocr=NewerRunThenDown)
+        job = system.job(make_pdf([SCANNED]))
+        with self.assertRaises(BackendUnavailable):
+            system.processor(job, beat)
+        self.assertEqual(system.progress.progress[(CUSTOMER, job.document_id)], Progress("reading", 0, 1))
+        self.assertEqual(statuses_of(system.runs_of(job)), [("superseded", None), ("running", None)])
+
+    def test_progress_that_cannot_be_cleared_is_logged_and_the_error_goes_on(self) -> None:
+        system = rig(ocr=lambda timer: TimedOcr(timer, down_on_call=1))
+        job = system.job(make_pdf([SCANNED]))
+        down = mock.patch.object(
+            system.progress, "clear_progress", side_effect=BackendUnavailable("database")
+        )
+        with (
+            down,
+            self.assertLogs("kaagaz.pipeline", level="WARNING") as logs,
+            self.assertRaises(BackendUnavailable),
+        ):
+            system.processor(job, beat)
+        self.assertEqual(
+            [(r.getMessage(), getattr(r, "code", None)) for r in logs.records],
+            [("progress_not_cleared", "ocr_unavailable")],
+        )
+        self.assertEqual(self.closed(system, job), [("failed", "ocr_unavailable")])
+
     def test_a_file_with_no_reader(self) -> None:
         system = rig()
         job = system.job(make_zip({"word/document.xml": b"<document/>"}))
@@ -928,6 +1027,18 @@ class LoggingTest(unittest.TestCase):
         for record in logs.records:
             self.assertNotIn("INV", record.getMessage())
             self.assertEqual(getattr(record, "customer_id", None), CUSTOMER)
+
+
+def live(answer: dict[str, object], step: str, since: timedelta) -> float:
+    """What lib/progress.ts fractionShown shows ``since`` after ``answer`` arrived."""
+    dt = since.total_seconds()
+    numbers = {key: float(value) for key, value in answer.items() if isinstance(value, int | float)}
+    if numbers["since_move_seconds"] + dt > numbers["slow_after_seconds"]:
+        return numbers["done_fraction"]  # taking longer than usual: done_fraction alone
+    left = max(0.0, numbers["seconds"] - dt)
+    left = max(left, numbers["after_seconds"]) if step in FLOORED_STEPS else left
+    elapsed = numbers["elapsed_seconds"] + dt
+    return max(numbers["done_fraction"], elapsed / (elapsed + left) if elapsed + left > 0 else 0.0)
 
 
 if __name__ == "__main__":
