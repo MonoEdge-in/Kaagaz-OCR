@@ -40,6 +40,7 @@ from kaagaz.ocr_server.app import (
 )
 from kaagaz.ocr_server.app import table_cells as cells
 from kaagaz.reading import ocr
+from tests.picture_support import noise_picture
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 URL = "http://ocr:8080"
@@ -499,6 +500,29 @@ def test_the_device_reaches_paddleocr_vl(monkeypatch: pytest.MonkeyPatch) -> Non
     (options,) = built
     assert options["device"] == "gpu:0"
     assert options["use_doc_unwarping"] is False  # the other settings are as before
+
+
+def test_the_page_saved_for_paddle_holds_exactly_its_pixels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """compress_level 1 (council 5 Oct 2026) is faster, and still lossless."""
+    seen: list[tuple[str, tuple[int, int], bytes]] = []
+
+    class FakePaddleOCRVL:
+        def __init__(self, **options: Any) -> None:
+            pass
+
+        def predict(self, path: str, **options: Any) -> list[Any]:
+            with Image.open(path) as saved:
+                seen.append((saved.mode, saved.size, saved.tobytes()))
+            return [
+                types.SimpleNamespace(json={"res": {"parsing_res_list": [], "width": 200, "height": 100}})
+            ]
+
+    monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PaddleOCRVL=FakePaddleOCRVL))
+    model = PaddleModel("cpu", {})
+    model.load()
+    picture = noise_picture(200, 100)
+    model.predict(picture)
+    assert seen == [("RGB", (200, 100), picture.tobytes())]
 
 
 def test_a_gpu_device_needs_a_paddle_built_for_cuda(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -9,7 +9,8 @@ from blank at every size a test uses (``tests/test_picture_support.py``
 guards that).
 
 ``picture_with_bars`` draws any bars, for tests that model a page with a
-known amount of ink (one text line, a small footer).
+known amount of ink (one text line, a small footer). ``noise_picture`` has
+no pattern at all, for a lossless round trip or a picture with no lines.
 """
 
 from collections.abc import Iterable
@@ -67,6 +68,13 @@ def text_like_bars(width: int, height: int) -> list[Bar]:
             word += 1
         top += pitch
     return bars
+
+
+def noise_picture(width: int, height: int, *, mode: str = "RGB") -> Image.Image:
+    """Grey values with no pattern, from Knuth's multiplicative hash of each byte's
+    place: the same on every run, and no seed (nothing here is a secret)."""
+    size = width * height * len(mode)
+    return Image.frombytes(mode, (width, height), bytes((k * 2654435761 >> 16) & 255 for k in range(size)))
 
 
 def text_like_picture(width: int, height: int, *, mode: str = "RGB") -> Image.Image:

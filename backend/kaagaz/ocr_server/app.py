@@ -289,7 +289,7 @@ class PaddleModel:
     def predict(self, image: Image.Image) -> PageResult:
         with tempfile.TemporaryDirectory() as folder:  # /tmp is a tmpfs in the container
             path = Path(folder) / "page.png"
-            image.save(path, format="PNG")
+            image.save(path, format="PNG", compress_level=1)  # lossless and fast (council 5 Oct 2026)
             (result,) = self._pipeline.predict(str(path), **PADDLE_FLAGS, **self.limits)
         return paddle_page(result.json["res"])
 

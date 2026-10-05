@@ -131,6 +131,10 @@ class Settings:
     ocr_url: str
     ocr_timeout_seconds: float
     ocr_dpi: int
+    # Council 5 Oct 2026 (PROVISIONAL; kaagaz/reading/ocr_dpi.py): how each OCR page's DPI is
+    # chosen. "fixed" (when unset) draws at ocr_dpi; "text_height" from the page's text height,
+    # with ocr_dpi as the ceiling; "text_height_no_scan_cap" the same without the scan cap.
+    ocr_dpi_rule: str
 
     # The page route (PRD 2 R2 to R4). A PDF page's text layer is kept when it has at
     # least text_layer_min_chars letters and digits and text_layer_min_good_ratio good
@@ -325,6 +329,9 @@ class Settings:
             ocr_url=ocr_url,
             ocr_timeout_seconds=ocr_timeout_seconds,
             ocr_dpi=env.positive("OCR_DPI"),
+            ocr_dpi_rule="fixed"
+            if env.optional("OCR_DPI_RULE") is None
+            else env.choice("OCR_DPI_RULE", {"fixed", "text_height", "text_height_no_scan_cap"}),
             text_layer_min_chars=env.positive("TEXT_LAYER_MIN_CHARS"),
             text_layer_min_good_ratio=env.share("TEXT_LAYER_MIN_GOOD_RATIO"),
             scan_image_coverage=env.share("SCAN_IMAGE_COVERAGE"),

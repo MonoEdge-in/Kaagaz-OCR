@@ -47,6 +47,7 @@ _BASE: dict[str, Any] = {
     "ocr_url": "http://localhost:8080",
     "ocr_timeout_seconds": 5.0,
     "ocr_dpi": 100,
+    "ocr_dpi_rule": "fixed",
     "text_layer_min_chars": 40,
     "text_layer_min_good_ratio": 0.9,
     "scan_image_coverage": 0.5,
