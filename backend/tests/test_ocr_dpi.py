@@ -54,25 +54,30 @@ def page_of(line_px: int, *, size: tuple[int, int] = (850, 1200), headline: bool
     return picture_with_bars(*size, text_lines(*size, line_px, headline=headline))
 
 
+def measure(picture: Image.Image, dpi: float | None = None) -> int | None:
+    """The line height, the picture taken as an A4 page across its short side unless ``dpi``."""
+    return ocr_dpi.line_height_px(picture, dpi=min(picture.size) / 8.27 if dpi is None else dpi)
+
+
 class LineHeightTest(unittest.TestCase):
     def test_lines_of_a_known_height_are_measured_within_one_pixel(self) -> None:
         for line_px in (5, 8, 13, 21, 34):
             with self.subTest(line_px=line_px):
-                measured = ocr_dpi.line_height_px(page_of(line_px))
+                measured = measure(page_of(line_px))
                 assert measured is not None
                 self.assertLessEqual(abs(measured - line_px), 1)
 
     def test_devanagari_like_words_are_measured_from_the_headline_down(self) -> None:
         for line_px in (9, 15, 24):
             with self.subTest(line_px=line_px):
-                measured = ocr_dpi.line_height_px(page_of(line_px, headline=True))
+                measured = measure(page_of(line_px, headline=True))
                 assert measured is not None
                 self.assertLessEqual(abs(measured - line_px), 1)
 
     def test_a_table_is_measured_by_its_text_not_its_ruled_lines(self) -> None:
         rules = [(30, top, 790, 2) for top in range(30, 1170, 90)]
         rules += [(left, 30, 2, 1140) for left in range(30, 830, 130)]
-        measured = ocr_dpi.line_height_px(picture_with_bars(850, 1200, text_lines(850, 1200, 12) + rules))
+        measured = measure(picture_with_bars(850, 1200, text_lines(850, 1200, 12) + rules))
         assert measured is not None
         self.assertLessEqual(abs(measured - 12), 1)
 
@@ -89,14 +94,14 @@ class LineHeightTest(unittest.TestCase):
                 page.close()
                 document.close()
             with self.subTest(name):
-                measured = ocr_dpi.line_height_px(picture)
+                measured = measure(picture, dpi=probe)
                 assert measured is not None
                 self.assertTrue(12 <= measured <= 22, measured)  # about 13 pt of ink a line
 
     def test_with_two_sizes_the_smaller_decides(self) -> None:
         small = text_lines(850, 600, 8)
         large = [(left, top + 600, width, height) for left, top, width, height in text_lines(850, 600, 14)]
-        measured = ocr_dpi.line_height_px(picture_with_bars(850, 1200, small + large))
+        measured = measure(picture_with_bars(850, 1200, small + large))
         assert measured is not None
         self.assertLessEqual(abs(measured - 8), 1)
 
@@ -115,12 +120,12 @@ class LineHeightTest(unittest.TestCase):
         }
         for name, picture in cases.items():
             with self.subTest(name):
-                self.assertIsNone(ocr_dpi.line_height_px(picture))
+                self.assertIsNone(measure(picture))
 
     def test_the_same_picture_gives_the_same_answer_in_grey_and_rgb(self) -> None:
         picture = page_of(11)
-        answers = {ocr_dpi.line_height_px(picture) for _ in range(2)}
-        answers.add(ocr_dpi.line_height_px(picture.convert("L")))
+        answers = {measure(picture) for _ in range(2)}
+        answers.add(measure(picture.convert("L")))
         self.assertEqual(len(answers), 1)
         self.assertIsNotNone(answers.pop())
 
@@ -178,9 +183,11 @@ class FakeOcr:
         return self.answers[min(len(self.seen), len(self.answers)) - 1]
 
 
-def pdf_dpis(data: bytes, rule: str, ocr: FakeOcr | None = None) -> tuple[list[int], list[Span], str]:
-    """The DPI of each picture a letter-size page was sent at (from its width), the spans
-    and the reader's version, with OCR_DPI 300."""
+def pdf_dpis(
+    data: bytes, rule: str, ocr: FakeOcr | None = None, *, width_pt: float = 612.0
+) -> tuple[list[int], list[Span], str]:
+    """The DPI of each picture a page ``width_pt`` wide was sent at (from its width), the
+    spans and the reader's version, with OCR_DPI 300."""
     engine = ocr or FakeOcr()
     reader = PdfReader(
         engine,
@@ -192,7 +199,7 @@ def pdf_dpis(data: bytes, rule: str, ocr: FakeOcr | None = None) -> tuple[list[i
         dpi_rule=rule,
     )
     spans = reader.read(data)
-    return [round(width * 72 / 612) for width, _height in engine.seen], spans, reader.version
+    return [round(width * 72 / width_pt) for width, _height in engine.seen], spans, reader.version
 
 
 # A scan at 144 dpi (1224 x 1584 pixels on a letter page) with 40-pixel lines, 20 pt: the
@@ -241,6 +248,14 @@ class PdfReaderRuleTest(unittest.TestCase):
         data = make_pdf([Page(picture=Picture(small, 0, 0, 612, 792))])
         self.assertEqual(pdf_dpis(data, ocr_dpi.TEXT_HEIGHT_NO_SCAN_CAP)[0], [300])
 
+    def test_small_print_on_an_a3_page_stays_at_the_ceiling(self) -> None:
+        """The A3 probe is 72 dpi, so 4 pt print is 4 pixels on it, and still counts."""
+        bars = text_lines(1684, 500, 60) + [(x, y + 500, w, h) for x, y, w, h in text_lines(1684, 1882, 8)]
+        a3 = picture_with_bars(1684, 2382, bars)  # 144 dpi: 30 pt headings over 4 pt print
+        data = make_pdf([Page(width=842, height=1191, picture=Picture(a3, 0, 0, 842, 1191))])
+        dpis, _spans, _version = pdf_dpis(data, ocr_dpi.TEXT_HEIGHT_NO_SCAN_CAP, width_pt=842)
+        self.assertEqual(dpis, [300])
+
     def test_no_lines_at_a_lowered_dpi_reads_the_page_again_at_the_ceiling(self) -> None:
         data = make_pdf([Page(picture=Picture(SCAN_144, 0, 0, 612, 792))])
         ocr = FakeOcr([], [OcrLine("TOTAL 500", 10, 10, 120, 30, 0.9)])
@@ -259,10 +274,12 @@ class PdfReaderRuleTest(unittest.TestCase):
             )
 
 
-def photo_sizes(picture: Image.Image, rule: str, ocr: FakeOcr | None = None) -> list[tuple[int, int]]:
+def photo_sizes(
+    picture: Image.Image, rule: str, ocr: FakeOcr | None = None, *, dpi: int = 300
+) -> list[tuple[int, int]]:
     engine = ocr or FakeOcr()
     reader = ImageReader(
-        engine, max_pages=1, max_image_pixels=10_000_000, ocr_dpi=300, blank_stddev=3.0, dpi_rule=rule
+        engine, max_pages=1, max_image_pixels=20_000_000, ocr_dpi=dpi, blank_stddev=3.0, dpi_rule=rule
     )
     reader.read(_png(picture))
     return engine.seen
@@ -283,6 +300,12 @@ class ImageReaderRuleTest(unittest.TestCase):
     def test_a_photo_with_small_lines_is_never_enlarged(self) -> None:
         photo = page_of(20, size=(1600, 2200))
         self.assertEqual(photo_sizes(photo, ocr_dpi.TEXT_HEIGHT), [(1600, 2200)])
+
+    def test_fine_print_on_a_large_photo_keeps_it_from_being_shrunk(self) -> None:
+        """The probe is the photo reduced 4 times, so the 16 px print is 4 pixels on it."""
+        bars = text_lines(3000, 2000, 80) + [(x, y + 2000, w, h) for x, y, w, h in text_lines(3000, 2000, 16)]
+        photo = picture_with_bars(3000, 4000, bars)
+        self.assertEqual(photo_sizes(photo, ocr_dpi.TEXT_HEIGHT, dpi=400), [(3000, 4000)])
 
     def test_no_lines_on_the_shrunk_photo_reads_it_again_as_it_was(self) -> None:
         ocr = FakeOcr([], [OcrLine("TOTAL 500", 10, 10, 120, 30, 0.9)])

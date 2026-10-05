@@ -41,21 +41,26 @@ above and below it.
    threshold from the histogram: a pixel at or under it is ink.
 2. None when the picture is blank, or more than MAX_INK_SHARE of it is ink
    (noise, a photo, a dark page).
-3. Ruled column lines are taken out: a pixel column that is ink over a whole
-   block of RULE_SPAN_PX rows (one BOX resize, in C) is a table's line or a
-   picture, never text, which has gaps between its lines; with it go the
-   blocks just above and below, where the line ends.
+3. Ruled lines are taken out: a pixel column that is ink over a whole block
+   of RULE_SPAN_PX rows (one BOX resize, in C) is a table's line or a picture,
+   never text, which has gaps between its lines; with it go the blocks just
+   above and below, where the line ends. Then a pixel row that is ink over a
+   block of ROW_RULE_SPAN_PX columns (shorter, so a line drawn at a slight
+   tilt still counts), without its neighbours, so a Devanagari headline keeps
+   the letters hanging from it.
 4. The picture is cut into STRIPS vertical strips, and one BOX resize to
    STRIPS x height (in C) gives each row's ink in each strip; a row with any
    ink is inked. A strip more than MAX_STRIP_INK inked (a picture, a border)
    is left out. In each other strip, a run of inked rows is one line, unless
-   it is under MIN_RUN_PX or at least RULE_FILL of its pixels are ink (a
-   ruled row line). MIN_RUN_PX is 5, not the council's 2: on the six xlang
-   scans (tilted, with noise) the runs of 2 to 4 pixels were specks, the dots
-   and marks of letters, and ruled lines drawn at a slight tilt, and they
-   pulled the 20th percentile down until no page could be measured. 5
-   pixels is about 3.5 pt on a 102 dpi probe of an A4 page, so a line of
-   text is never shorter.
+   it is under MIN_RUN_POINTS (3.5 pt, from the picture's ``dpi``: 5 pixels
+   on an A4 probe, 4 on A3's, 2 on A2's). A shorter run is a speck or a mark,
+   or small print the probe cannot show: it is counted when it holds at least
+   SHORT_RUN_INK of a row's ink, and with more than MAX_SHORT_SHARE of all
+   the runs, None (the page stays at the ceiling). The council's minimum was
+   2 pixels; on the six xlang scans (tilted, with noise) the runs of 2 to 4
+   pixels were specks, the dots and marks of letters, and ruled lines drawn
+   at a slight tilt, and they pulled the 20th percentile down until no page
+   could be measured.
 5. None when the page is turned a quarter (the projection-profile test): over
    the inked area, the ink per column varies more than the ink per row. Lines
    across the page make the rows go from ink to paper and back; the gaps
@@ -77,6 +82,9 @@ a laptop CPU, the eight xlang pages took 18 to 44 ms to draw and 8 to 16 ms to
 measure (5 Oct 2026; not measured on the T4).
 ponytail: a row with any ink is inked, so a speck between two lines joins
 them in its strip; the 20th percentile still comes from the other strips.
+ponytail: small print on fewer than a fifth of the runs (one footer line)
+does not decide; the page is drawn for the rest of its text. A photo's
+``dpi`` takes its short side as A4's.
 """
 
 import math
@@ -97,9 +105,12 @@ PROBE_LONG_SIDE = 1200  # the probe picture's long side, in pixels
 MIN_DPI = 72  # never drawn lower (pdf_reader's lowest)
 STRIPS = 12
 RULE_SPAN_PX = 32  # rows of unbroken ink in one pixel column: a ruled column line
+ROW_RULE_SPAN_PX = 16  # columns of unbroken ink in one pixel row: a ruled row line
+RULE_FILL = 0.9  # of a block's pixels
 MAX_STRIP_INK = 0.8  # of a strip's rows
-MIN_RUN_PX = 5  # a shorter run is a speck, a mark or a ruled line, never a line of text
-RULE_FILL = 0.9  # of the pixels: a ruled line, not text
+MIN_RUN_POINTS = 3.5  # a shorter run is a speck, a mark or small print (step 4)
+SHORT_RUN_INK = 0.5  # of a row: a short run with this much ink may be small print
+MAX_SHORT_SHARE = 0.25  # of the runs: more such short runs, and small print may be missed
 MIN_RUNS = 6
 MAX_SPREAD = 3.0  # the 80th percentile height over the 20th
 MAX_INK_SHARE = 0.4  # of the picture's pixels
@@ -140,9 +151,10 @@ def photo_scale(line_px: int | None, short_side_px: int) -> float:
     return min(1.0, max(TARGET_LINE_PX / line_px, floor))
 
 
-def line_height_px(image: Image.Image) -> int | None:
+def line_height_px(image: Image.Image, *, dpi: float) -> int | None:
     """The height in pixels of the picture's smaller text lines, or None when it
-    cannot be trusted, by the steps in the module notes."""
+    cannot be trusted, by the steps in the module notes; ``dpi`` is the picture's
+    (for a photo, its short side over A4's), for the shortest line. O(P)."""
     if image.width < 1 or image.height < 1:
         return None
     grey = image.convert("L")
@@ -150,9 +162,11 @@ def line_height_px(image: Image.Image) -> int | None:
     cut = otsu_threshold(histogram)
     if cut is None or sum(histogram[: cut + 1]) > MAX_INK_SHARE * grey.width * grey.height:
         return None
-    ink = _without_column_lines(grey.point([_INK if value <= cut else _PAPER for value in range(256)]))
-    heights = sorted(_run_heights(ink))
-    if len(heights) < MIN_RUNS or _turned(ink):
+    ink = _without_lines(grey.point([_INK if value <= cut else _PAPER for value in range(256)]))
+    shortest = max(2, round(MIN_RUN_POINTS * dpi / _POINTS_PER_INCH))
+    heights, short = _run_heights(ink, shortest)
+    heights.sort()
+    if len(heights) < MIN_RUNS or short > MAX_SHORT_SHARE * (len(heights) + short) or _turned(ink):
         return None
     low = heights[(len(heights) - 1) * 20 // 100]
     high = heights[(len(heights) - 1) * 80 // 100]
@@ -181,13 +195,21 @@ def otsu_threshold(histogram: list[int]) -> int | None:
     return None if best is None else best[1]
 
 
-def _without_column_lines(ink: Image.Image) -> Image.Image:
-    """The ink without its ruled column lines (step 3), with the blocks just above and
-    below each line's own, where it ends part way. O(P), in C."""
-    blocks = ink.resize((ink.width, max(1, ink.height // RULE_SPAN_PX)), Image.Resampling.BOX)
+def _without_lines(ink: Image.Image) -> Image.Image:
+    """The ink without its ruled column lines, then its ruled row lines (step 3)."""
+    columns = _without_column_lines(ink, RULE_SPAN_PX, grow=True)
+    rows = _without_column_lines(columns.transpose(Image.Transpose.ROTATE_90), ROW_RULE_SPAN_PX, grow=False)
+    return rows.transpose(Image.Transpose.ROTATE_270)
+
+
+def _without_column_lines(ink: Image.Image, span: int, *, grow: bool) -> Image.Image:
+    """The ink without the pixel columns that are ink over a whole block of ``span``
+    rows; with ``grow``, the blocks just above and below too, where the line ends part
+    way. O(P), in C."""
+    blocks = ink.resize((ink.width, max(1, ink.height // span)), Image.Resampling.BOX)
     lines = blocks.point([_INK if value >= RULE_FILL * _INK else _PAPER for value in range(256)])
     grown = lines
-    for shift in (-1, 1):
+    for shift in (-1, 1) if grow else ():
         moved = Image.new("L", lines.size, _PAPER)
         moved.paste(lines, (0, shift))
         grown = ImageChops.lighter(grown, moved)
@@ -202,11 +224,13 @@ def _turned(ink: Image.Image) -> bool:
     return statistics.pvariance(columns) > statistics.pvariance(rows)
 
 
-def _run_heights(ink: Image.Image) -> list[int]:
-    """The heights of the runs of inked rows in every strip that is not mostly ink,
-    without specks and ruled row lines (step 4). O(rows x STRIPS)."""
+def _run_heights(ink: Image.Image, shortest: int) -> tuple[list[int], int]:
+    """The heights of the runs of inked rows, at least ``shortest``, in every strip
+    that is not mostly ink, and how many shorter runs held at least SHORT_RUN_INK
+    of a row's ink (step 4). O(rows x STRIPS)."""
     profile = ink.resize((STRIPS, ink.height), Image.Resampling.BOX).tobytes()  # row by row
     heights: list[int] = []
+    short = 0
     for strip in range(STRIPS):
         column = profile[strip::STRIPS]  # this strip's ink in each row, 0 to 255
         if len(column) - column.count(_PAPER) > MAX_STRIP_INK * len(column):
@@ -216,13 +240,9 @@ def _run_heights(ink: Image.Image) -> list[int]:
             if value != _PAPER:
                 start = row if start < 0 else start
             elif start >= 0:
-                if row - start >= MIN_RUN_PX and not _ruled(column[start:row]):
+                if row - start >= shortest:
                     heights.append(row - start)
+                elif sum(column[start:row]) >= SHORT_RUN_INK * _INK:
+                    short += 1
                 start = -1
-    return heights
-
-
-def _ruled(run: bytes) -> bool:
-    """Whether a run of rows in one strip is a ruled row line, not text: at least
-    RULE_FILL of its pixels are ink. O(len(run))."""
-    return sum(run) >= RULE_FILL * _INK * len(run)
+    return heights, short

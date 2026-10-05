@@ -147,7 +147,7 @@ def _for_text(image: Image.Image) -> Image.Image:
     factor = math.ceil(max(image.size) / PROBE_LONG_SIDE)
     probe = image.reduce(factor) if factor > 1 else image
     try:
-        probe_px = line_height_px(probe)
+        probe_px = line_height_px(probe, dpi=min(probe.size) / _A4_SHORT_SIDE_INCHES)
         line_px = None if probe_px is None else round(probe_px * image.height / probe.height)
     finally:
         if probe is not image:

@@ -230,7 +230,7 @@ class PdfReader:
             return ceiling
         picture = render_pdf_page(pdfium_page, dpi=probe, max_image_pixels=self._max_ocr_pixels)
         try:
-            line_px = ocr_dpi.line_height_px(picture)
+            line_px = ocr_dpi.line_height_px(picture, dpi=probe)
         finally:
             picture.close()
         scan = self._dpi_rule == ocr_dpi.TEXT_HEIGHT and coverage > self._rules.scan_image_coverage
