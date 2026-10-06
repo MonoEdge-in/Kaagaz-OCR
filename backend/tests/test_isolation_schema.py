@@ -165,6 +165,20 @@ def test_the_app_may_update_only_the_outcome_columns_of_a_run(db: Database) -> N
     assert {name for name, may_update in columns if may_update} == RUN_OUTCOME
 
 
+def test_the_app_may_update_only_the_upload_limit_of_its_customer(db: Database) -> None:
+    """Never its status, so a disabled organisation cannot switch itself back on (0014)."""
+    with db.system() as conn:
+        columns = conn.execute(
+            text(
+                "SELECT attname::text, has_column_privilege(:r, attrelid, attname, 'UPDATE')"
+                " FROM pg_attribute WHERE attrelid = 'customers'::regclass"
+                " AND attnum > 0 AND NOT attisdropped"
+            ),
+            {"r": APP_ROLE},
+        ).all()
+    assert {name for name, may_update in columns if may_update} == {"max_upload_mb"}
+
+
 _FOREIGN_KEYS = text(
     "SELECT con.conname, con.conrelid::regclass::text, con.confrelid::regclass::text,"
     " ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k (num, pos)"

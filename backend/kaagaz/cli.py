@@ -246,7 +246,7 @@ def _set_customer_status(db: Database, command: str, customer_id: str, now: date
     """Disable or enable one customer and write its audit row, in one owner
     transaction. Returns the line to print. O(1)."""
     try:
-        uuid.UUID(customer_id)
+        customer_id = str(uuid.UUID(customer_id))  # one spelling in the audit row and the output
     except ValueError:
         raise CliError("the customer id is not valid") from None
     status, action, done = CUSTOMER_STATUS[command]

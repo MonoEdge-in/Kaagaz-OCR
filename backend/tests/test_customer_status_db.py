@@ -354,3 +354,20 @@ def test_the_cli_needs_a_real_customer_id(db: Database, capsys: pytest.CaptureFi
     assert "no such customer" in capsys.readouterr().err
     assert _cli(db, "enable-customer", "not-a-uuid") == (2, "")
     assert "the customer id is not valid" in capsys.readouterr().err
+
+
+def test_enabling_clears_the_sign_in_locks_counted_while_it_was_off(db: Database) -> None:
+    customer, _ = new_customer(db)
+    other, _ = new_customer(db)
+    _cli(db, "disable-customer", customer)
+    lock = text("UPDATE users SET failed_logins = 5, locked_until = :t WHERE customer_id = :c")
+    with db.engine.begin() as conn:
+        for who in (customer, other):
+            conn.execute(lock, {"c": who, "t": NOW})
+
+    _cli(db, "enable-customer", customer.upper())  # any spelling of the id
+    locks = text("SELECT DISTINCT failed_logins, locked_until FROM users WHERE customer_id = :c")
+    with db.engine.begin() as conn:
+        assert conn.execute(locks, {"c": customer}).all() == [(0, None)]
+        assert conn.execute(locks, {"c": other}).all() == [(5, NOW)]  # another customer's locks stay
+    assert [row[2] for row in _audit(db, customer)] == [customer, customer]  # the id as stored
