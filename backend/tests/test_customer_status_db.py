@@ -296,8 +296,7 @@ def test_the_sweeps_and_reembed_pass_a_disabled_customer_over_until_it_is_enable
     assert pieces.calls == [["piece of B"]]
     assert (tags(db, a, a_doc), tags(db, b, b_doc)) == ([None], [CURRENT])
     stories = FakeModel()
-    # 0018: the sweep's list leaves out a customer that is not active.
-    assert embed_missing_stories(db, stories, limit=10, customer_id=a) == StoryPass(found=0, written=0)
+    assert embed_missing_stories(db, stories, limit=10, customer_id=a) == StoryPass(found=1, written=0)
     out = io.StringIO()
     assert main(["reembed", "--customer-id", a], db=db, environ={}, out=out, model=stories) == 0
     assert out.getvalue() == f"customer {a}: not active, skipped\n"

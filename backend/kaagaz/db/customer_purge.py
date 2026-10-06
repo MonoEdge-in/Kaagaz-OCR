@@ -21,9 +21,12 @@ from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.ports import BlobStorage
 
 _TO_PURGE = text("SELECT t.id FROM kaagaz_customer_ids_to_purge(:now) AS t (id)")
-# Still being deleted and due, read FOR SHARE: a cancel (FOR UPDATE) waits for this family.
+# Still being deleted and due by the caller's clock AND the database's (cancel's clock, so a
+# worker clock running ahead never deletes what a cancel could still give back), read FOR
+# SHARE: a cancel (FOR UPDATE) waits for this family.
 _DUE = text(
-    "SELECT 1 FROM customers WHERE id = :c AND status = 'deleting' AND delete_after <= :now FOR SHARE"
+    "SELECT 1 FROM customers WHERE id = :c AND status = 'deleting'"
+    " AND delete_after <= least(CAST(:now AS timestamptz), now()) FOR SHARE"
 )
 _ANY_DOCUMENT = text("SELECT id FROM documents WHERE customer_id = :c ORDER BY id LIMIT 1")
 _VERSIONS = text(
@@ -36,8 +39,8 @@ _TO_SWEEP = text("SELECT t.id FROM kaagaz_purged_ids_to_sweep(:now) AS t (id)")
 
 
 def ids_to_purge(conn: Connection, *, now: datetime) -> list[str]:
-    """Ids of the customers being deleted whose ``delete_after`` is not after ``now``,
-    longest due first. ``conn`` from ``Database.system()``. O(C) for C customers."""
+    """Ids of the customers being deleted whose ``delete_after`` is not after ``now`` nor
+    the database clock, longest due first. ``conn`` from ``Database.system()``. O(C) for C customers."""
     return [str(row[0]) for row in conn.execute(_TO_PURGE, {"now": now})]
 
 
