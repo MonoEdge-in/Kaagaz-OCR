@@ -71,6 +71,9 @@ OWNER_RIGHTS = {
     # customers row (never a kaagaz_op_* function: the app runs none of those).
     "kaagaz_customer_ids_to_purge": ("SETOF uuid", EMPTY_PATH),
     "kaagaz_finish_customer_delete": ("boolean", EMPTY_PATH),
+    # 0019, the second sweep a day after a purge: ids only, and its org.swept row.
+    "kaagaz_purged_ids_to_sweep": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_customer_swept": ("boolean", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"

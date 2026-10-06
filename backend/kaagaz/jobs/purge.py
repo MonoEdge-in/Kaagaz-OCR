@@ -34,6 +34,8 @@ most ``CUSTOMER_PURGE_FAMILIES`` a run, the next run going on; with no document 
 removes the customers row (due on the DATABASE clock) and writes ``org.purged``.
 A storage error rolls back that family and stops the run, as above; the prefixes and
 the row are touched only once every family is gone, and both are safe to repeat.
+A day after each purge, ``sweep_purged_customers`` empties both prefixes once more (a
+page image a running job wrote meanwhile) and records ``org.swept`` (0019, PR 4b).
 """
 
 import logging
@@ -141,3 +143,18 @@ def purge_customer(
                     return families, customer_purge.finish_delete(conn, customer_id)
             families += 1
     return families, False
+
+
+def sweep_purged_customers(db: Database, storage: CustomerStorage, clock: Callable[[], datetime]) -> int:
+    """Empty both storage prefixes of each customer purged at least a day before
+    ``clock()`` once more, and record it. Returns how many. A storage error stops the run;
+    the next one tries again. O(P) for the id list, plus a paged delete per customer."""
+    swept = 0
+    with unavailable():
+        with db.system() as conn:
+            customers = customer_purge.ids_to_sweep(conn, now=clock())
+        for customer_id in customers:
+            storage.delete_customer(customer_id)
+            with db.system() as conn:
+                swept += customer_purge.mark_swept(conn, customer_id)
+    return swept

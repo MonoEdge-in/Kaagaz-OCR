@@ -7,6 +7,8 @@
   security applies to every row it deletes (by today's ``delete_forever``).
 * ``purge_now`` is the CLI's break-glass, on an OWNER connection: ``kaagaz_app`` may not
   change ``delete_after`` (0014).
+* ``ids_to_sweep`` and ``mark_swept`` (0019, PR 4b): the second sweep of a purged
+  customer's storage, a day later, on a ``Database.system()`` connection (ids only).
 """
 
 from collections.abc import Sequence
@@ -27,10 +29,10 @@ _ANY_DOCUMENT = text("SELECT id FROM documents WHERE customer_id = :c ORDER BY i
 _VERSIONS = text(
     "SELECT id FROM documents WHERE customer_id = :c AND family_id = :f ORDER BY (id <> family_id), id"
 )
-# The grace period ends now, on the database clock (as 0018's functions).
-_PURGE_NOW = text(
-    "UPDATE customers SET delete_after = now() WHERE id = :c AND status = 'deleting' RETURNING delete_after"
-)
+_LOCK = text("SELECT status FROM customers WHERE id = :c FOR UPDATE")
+# The grace period ends now: by both the caller's clock and the database's (0018's finish).
+_PURGE_NOW = text("UPDATE customers SET delete_after = least(now(), :now) WHERE id = :c")
+_TO_SWEEP = text("SELECT t.id FROM kaagaz_purged_ids_to_sweep(:now) AS t (id)")
 
 
 def ids_to_purge(conn: Connection, *, now: datetime) -> list[str]:
@@ -69,8 +71,23 @@ def finish_delete(conn: Connection, customer_id: str) -> bool:
     return bool(conn.execute(text("SELECT kaagaz_finish_customer_delete(:c)"), {"c": customer_id}).scalar())
 
 
-def purge_now(conn: Connection, customer_id: str) -> datetime | None:
-    """End the grace period of a customer being deleted now, on an OWNER connection:
-    the new ``delete_after``, or None when it is not being deleted (nothing changes). O(1)."""
-    value = conn.execute(_PURGE_NOW, {"c": customer_id}).scalar()
-    return value if isinstance(value, datetime) else None
+def purge_now(conn: Connection, customer_id: str, *, now: datetime) -> str | None:
+    """End the grace period of a customer being deleted at ``now``, on an OWNER connection
+    (the CLI's break-glass). Returns its status: None when there is no such customer; only
+    a customer being deleted changes. O(1)."""
+    status = conn.execute(_LOCK, {"c": customer_id}).scalar()
+    if status == "deleting":
+        conn.execute(_PURGE_NOW, {"c": customer_id, "now": now})
+    return None if status is None else str(status)
+
+
+def ids_to_sweep(conn: Connection, *, now: datetime) -> list[str]:
+    """Ids of the customers purged at least a day before ``now`` and not swept yet (0019).
+    ``conn`` from ``Database.system()``. O(P) for the P platform audit rows."""
+    return [str(row[0]) for row in conn.execute(_TO_SWEEP, {"now": now})]
+
+
+def mark_swept(conn: Connection, customer_id: str) -> bool:
+    """Write ``org.swept`` for a purged customer whose prefixes were emptied again. False:
+    not purged, swept already or still there. ``conn`` from ``Database.system()``."""
+    return bool(conn.execute(text("SELECT kaagaz_customer_swept(:c)"), {"c": customer_id}).scalar())

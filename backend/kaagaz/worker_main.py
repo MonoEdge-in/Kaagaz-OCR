@@ -29,7 +29,7 @@ until it is told to stop:
   the jobs go on: the purge can never stop the worker, or crash it again on
   every restart. The same turn then removes the organisations whose deletion
   is due (super admin PR 4, ``purge_deleted_customers``), a batch of families
-  at a time.
+  at a time, and sweeps their storage once more a day after each purge.
 * With the model on, pieces left without a meaning vector (the model was down
   while their document was read) get one later: at most 64 pieces every 10
   minutes, between jobs (``EmbedMissing``, kaagaz/search/indexing.py). A model
@@ -72,7 +72,7 @@ from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import QueueSetupError, WorkQueue
-from kaagaz.jobs.purge import CustomerStorage, purge_deleted_customers, purge_expired
+from kaagaz.jobs.purge import CustomerStorage, purge_deleted_customers, purge_expired, sweep_purged_customers
 from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
 from kaagaz.search.indexing import MissingPass, embed_missing
 from kaagaz.search.story_vectors import StoryKey, StoryPass, embed_missing_stories
@@ -351,9 +351,10 @@ class StoryVectors:
 
 def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     """The hourly turn: old Trash (its count is returned and logged by PurgeHourly), then
-    the organisations whose deletion is due (logged here)."""
+    the organisations whose deletion is due, and their second sweep a day later (logged here)."""
     families = purge_expired(db, storage, _utc_now, trash_days)
     logger.info("deleted organisations: %d families", purge_deleted_customers(db, storage, _utc_now))
+    logger.info("purged organisations swept again: %d", sweep_purged_customers(db, storage, _utc_now))
     return families
 
 
