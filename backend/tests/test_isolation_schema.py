@@ -88,7 +88,22 @@ OPERATOR_RIGHTS = {
         " last_activity_at timestamp with time zone)",
         EMPTY_PATH,
     ),
-    **dict.fromkeys(("kaagaz_op_create_customer", "kaagaz_op_set_customer_status"), ("record", EMPTY_PATH)),
+    # 0017: one organisation's admins, and the changes to one of them.
+    "kaagaz_op_admins": (
+        "TABLE(user_id uuid, display_name text, email text, totp_enabled boolean,"
+        " locked_until timestamp with time zone, disabled boolean, must_change_password boolean,"
+        " last_login_at timestamp with time zone, created_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    **dict.fromkeys(
+        (
+            "kaagaz_op_create_customer",
+            "kaagaz_op_set_customer_status",
+            "kaagaz_op_create_admin",
+            "kaagaz_op_change_admin",
+        ),
+        ("record", EMPTY_PATH),
+    ),
     "kaagaz_op_step_up_failed": ("void", EMPTY_PATH),
 }
 # The only tables without customer_id: the customers themselves, alembic's own and

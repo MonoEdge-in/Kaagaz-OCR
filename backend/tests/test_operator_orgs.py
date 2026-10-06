@@ -42,6 +42,11 @@ ORG_ROUTES = {
     ("POST", ORGS),
     ("POST", f"{ORGS}/{ANY_ID}/disable"),
     ("POST", f"{ORGS}/{ANY_ID}/enable"),
+    # PR 3b: one organisation's admins.
+    ("GET", f"{ORGS}/{ANY_ID}/admins"),
+    ("POST", f"{ORGS}/{ANY_ID}/admins"),
+    *{("POST", f"{ORGS}/{ANY_ID}/admins/{ANY_ID}/{change}") for change in ("disable", "enable", "unlock")},
+    ("POST", f"{ORGS}/{ANY_ID}/admins/{ANY_ID}/reset-2fa"),
 }
 ORG_ROW = {
     "customer_id": CID,
