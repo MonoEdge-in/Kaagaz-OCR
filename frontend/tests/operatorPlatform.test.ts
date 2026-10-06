@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { OPERATOR_TABS } from "@/components/operator/OperatorConsole";
 import {
   ACTION_FILTERS,
+  moreFor,
   actionWords,
   byWords,
   countsInWords,
@@ -44,6 +45,15 @@ describe("activity in words", () => {
     for (const filter of ACTION_FILTERS) expect(filter.value).toMatch(/^([a-z_.]{1,64})?$/);
     expect(ACTION_FILTERS[0]).toEqual({ value: "", label: "All actions" });
     expect(query({ before: "MjAyNi0x", org: "", action: "customer." })).toBe("?before=MjAyNi0x&action=customer.");
+  });
+});
+
+describe("Load more", () => {
+  it("forgets a Load more and its failure once the filter changes", () => {
+    const failed = { key: "o-1|customer.|0", busy: false, failed: "Could not reach Kaagaz." };
+    expect(moreFor(failed, "o-1|customer.|0")).toBe(failed);
+    expect(moreFor(failed, "|customer.|0")).toEqual({ key: "|customer.|0", busy: false, failed: null });
+    expect(moreFor({ ...failed, busy: true }, "o-2||0").busy).toBe(false);
   });
 });
 
