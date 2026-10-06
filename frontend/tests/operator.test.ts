@@ -312,6 +312,16 @@ describe("one organisation's admins", () => {
     const stepUp = (["disable", "enable", "unlock", "reset-2fa"] as const).map((c) => adminConfirm("o-1", admin, c).stepUp);
     expect(stepUp).toEqual([false, false, false, true]);
     expect(adminConfirm("o-1", admin, "reset-2fa").title).toBe("Reset two-step for Asha Rao?");
+    expect(adminConfirm("o-1", admin, "unlock").focusId).toBe("admin-name-u-1"); // the focus after a change
+  });
+
+  it("keeps the admins dialog's replies to their own dialog, and never keeps a used code", () => {
+    const admins = read("components/operator/AdminsDialog.tsx");
+    expect(admins).toContain("afterDone(open, confirm)");
+    expect(admins).toContain("id={adminFocusId(admin.id)} tabIndex={-1}");
+    const create = read("components/operator/CreateDialog.tsx");
+    expect(create).toMatch(/finally \{\s*setInput\(\(was\) => \(\{ \.\.\.was, code: "" \}\)\)/);
+    expect(create).toContain("canCloseDialog({ busy, secretShown: created !== null }, way)");
   });
 
   it("deletes an organisation only with its name typed and a fresh code", () => {
