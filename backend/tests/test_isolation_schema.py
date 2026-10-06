@@ -80,6 +80,31 @@ OPERATOR_RIGHTS = {
     "kaagaz_op_login_succeeded": ("integer", EMPTY_PATH),
     "kaagaz_op_session": ("TABLE(email text, display_name text, session_version integer)", EMPTY_PATH),
     "kaagaz_op_logout": ("void", EMPTY_PATH),
+    # 0016: organisations with counts only, one organisation's admins, and the writes,
+    # each answering (outcome, result_id).
+    "kaagaz_op_customers": (
+        "TABLE(customer_id uuid, name text, status text, disabled_at timestamp with time zone,"
+        " delete_after timestamp with time zone, created_at timestamp with time zone, admins bigint,"
+        " reviewers bigint, members bigint, documents bigint, pages bigint, size_bytes bigint,"
+        " last_activity_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_admins": (
+        "TABLE(user_id uuid, display_name text, email text, totp_enabled boolean,"
+        " locked_until timestamp with time zone, disabled boolean, must_change_password boolean,"
+        " last_login_at timestamp with time zone, created_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    **dict.fromkeys(
+        (
+            "kaagaz_op_create_customer",
+            "kaagaz_op_set_customer_status",
+            "kaagaz_op_create_admin",
+            "kaagaz_op_change_admin",
+        ),
+        ("record", EMPTY_PATH),
+    ),
+    "kaagaz_op_step_up_failed": ("void", EMPTY_PATH),
 }
 # The only tables without customer_id: the customers themselves, alembic's own and
 # the platform operator's (0015), which belong to no customer.

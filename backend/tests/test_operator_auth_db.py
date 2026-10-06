@@ -17,6 +17,7 @@ from kaagaz.db.sqlstate import sqlstate
 from tests import test_migration_0002_db as m0002
 from tests.db_support import migrate
 from tests.test_api_support import CSRF, PASSWORD, Api, TestClient, password_hash_of, route_calls, wrong_code
+from tests.test_operator_orgs import ORG_ROUTES
 
 pytestmark = pytest.mark.db
 
@@ -195,7 +196,8 @@ def test_a_customer_admin_session_with_two_step_opens_no_operator_route(db: Data
     api = Api(db)
     admin = api.new_admin()
     calls = [call for call in route_calls(api.app, "/api/operator") if call not in OPEN_TO_ALL]
-    assert {("GET", "/api/operator/me"), ("POST", "/api/operator/logout")} <= set(calls)
+    # Every signed-in operator route, PR 3's organisation routes included (the walk finds them).
+    assert {("GET", "/api/operator/me"), ("POST", "/api/operator/logout")} | ORG_ROUTES <= set(calls)
     for method, path in calls:
         reply = admin.client.request(method, path, headers=CSRF)
         assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), (method, path)
