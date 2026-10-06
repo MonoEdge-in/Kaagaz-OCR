@@ -10,26 +10,39 @@ import { CODE_INVALID, CODE_MISSING } from "@/app/admin/login/adminSignIn";
 import { EMAIL_INVALID, NETWORK_FAILURE, PASSWORD_MISSING, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS } from "@/app/login/signIn";
 import {
   CHECK_INPUT,
+  CONFLICT,
   DISABLE_EFFECT,
   KEY_HELP,
+  NAME_MISMATCH,
+  OPERATOR_CHANNEL,
   OPERATOR_DOWN,
   OPERATOR_SIGN_IN_FAILED,
   ORG_NOT_FOUND,
+  REFUSALS,
+  SIGN_OUT_FAILED,
   STEP_UP_FAILED,
   TEMPORARY_PASSWORD_NOTE,
+  deleteCountdown,
+  deleteEffect,
+  exitUrl,
+  expiryDelay,
   filterOrgs,
   firstInvalidOperator,
   firstInvalidOrgField,
   lastActivityText,
+  meFailed,
+  nameError,
   operatorErrorMessage,
   operatorSignInError,
   orgStatus,
   searchSummary,
+  signOut,
   userCounts,
   validateNewOrg,
   validateOperatorSignIn,
 } from "@/components/operator/logic";
 import { ApiError } from "@/lib/api";
+import { SESSION_CHANNEL } from "@/lib/sessionChannel";
 import nextConfig from "@/next.config";
 
 const ROOT = join(__dirname, "..");
@@ -86,6 +99,21 @@ describe("operatorErrorMessage", () => {
     expect(operatorErrorMessage(new ApiError(400, "bad_request", "x"))).toBe(CHECK_INPUT);
   });
 
+  it("has words for each refusal code, and a safe sentence for a 409 without one", () => {
+    const said = (code: string, status = 409) => operatorErrorMessage(new ApiError(status, code, "Something went wrong."));
+    expect(said("name_mismatch")).toBe(NAME_MISMATCH);
+    expect(said("not_disabled")).toBe("Disable the organisation before deleting it.");
+    expect(said("deleting")).toBe("This organisation is being deleted.");
+    expect(said("taken")).toBe("That e-mail is already in use.");
+    expect(said("not_found", 404)).toBe(ORG_NOT_FOUND);
+    expect(said("step_up_locked", 403)).toBe(REFUSALS.locked);
+    expect(said("locked", 403)).toMatch(/^Too many wrong codes/);
+    expect(said("conflict")).toBe(CONFLICT); // the client's own fallback is never shown
+    expect(said("constructor")).toBe(CONFLICT); // not a key of the map's prototype
+    const purging = "The grace period is over: the organisation is being removed.";
+    expect(operatorErrorMessage(new ApiError(409, "conflict", purging))).toBe(purging);
+  });
+
   it("says what went wrong loading, in plain words", () => {
     expect(operatorErrorMessage(new ApiError(401, "not_signed_in", "x"))).toMatch(/session ended/);
     expect(operatorErrorMessage(new ApiError(429, "rate_limited", "x"))).toBe(TOO_MANY_ATTEMPTS);
@@ -113,6 +141,63 @@ describe("an organisation in words", () => {
   it("says when the last activity was, or that there was none", () => {
     expect(lastActivityText(null, NOW)).toBe("No activity yet");
     expect(lastActivityText("2026-10-06T08:15:00Z", NOW)).toBe("5 minutes ago");
+  });
+});
+
+describe("deleting an organisation", () => {
+  it("says the date, the cancel and the backups", () => {
+    expect(deleteEffect(NOW)).toBe(
+      "Everything is deleted on 13 Oct 2026. You can cancel until then. Backups keep data for 7 more days.",
+    );
+  });
+
+  it("counts down the days left, never below nothing", () => {
+    expect(deleteCountdown("2026-10-12T09:00:00Z", NOW)).toBe("6 days left");
+    expect(deleteCountdown("2026-10-07T09:00:00Z", NOW)).toBe("1 day left");
+    expect(deleteCountdown("2026-10-06T20:00:00Z", NOW)).toBe("Less than a day left");
+    expect(deleteCountdown("2026-10-06T08:00:00Z", NOW)).toBe("Being removed now");
+    expect(deleteCountdown(null, NOW)).toBeNull();
+    expect(deleteCountdown("not a date", NOW)).toBeNull();
+  });
+
+  it("needs the name typed exactly, as the server compares it", () => {
+    expect(nameError("Sharma Traders", "Sharma Traders")).toBeNull();
+    expect(nameError("sharma traders", "Sharma Traders")).toBe(NAME_MISMATCH);
+    expect(nameError("Sharma Traders ", "Sharma Traders")).toBe(NAME_MISMATCH);
+    expect(nameError("", "Sharma Traders")).toBe("Type the organisation's name.");
+  });
+});
+
+describe("the operator session", () => {
+  it("leaves for sign-in, saying the session ended only when this tab had one", () => {
+    expect(exitUrl("ended", true)).toBe("/operator/login?ended=1");
+    expect(exitUrl("ended", false)).toBe("/operator/login");
+    expect(exitUrl("signed_out", true)).toBe("/operator/login?signed_out=1");
+  });
+
+  it("goes to sign in on a 401 from /me, and shows Try again for anything else", () => {
+    expect(meFailed(new ApiError(401, "not_signed_in", "x"))).toBe("signed_out");
+    expect(meFailed(new ApiError(503, "backend_unavailable", "x"))).toBe("error");
+    expect(meFailed(new TypeError("fetch failed"))).toBe("error");
+  });
+
+  it("times the session's end from expires_at, within one browser timer", () => {
+    const expires = NOW / 1000 + 30 * 60;
+    expect(expiryDelay(expires, NOW)).toBe(30 * 60 * 1000);
+    expect(expiryDelay(NOW / 1000 - 5, NOW)).toBe(0);
+    expect(expiryDelay(NOW / 1000 + 10 ** 9, NOW)).toBe(2 ** 31 - 1);
+  });
+
+  it("signs out on the server, and still leaves when it says the session had ended", async () => {
+    const calls: string[] = [];
+    const leave = { leave: "/operator/login?signed_out=1" };
+    expect(await signOut(async () => calls.push("logout"))).toEqual(leave);
+    expect(calls).toEqual(["logout"]);
+    const ended = async () => Promise.reject(new ApiError(401, "not_signed_in", "x"));
+    expect(await signOut(ended)).toEqual(leave);
+    const down = async () => Promise.reject(new ApiError(503, "backend_unavailable", "x"));
+    expect(await signOut(down)).toEqual({ error: SIGN_OUT_FAILED });
+    expect(await signOut(async () => Promise.reject(new TypeError("x")))).toEqual({ error: SIGN_OUT_FAILED });
   });
 });
 
@@ -159,6 +244,15 @@ describe("operator source guards", () => {
     expect(create).toContain("TEMPORARY_PASSWORD_NOTE");
     expect(create).toContain("<CopyButton");
     const list = read("components/operator/OrganisationsView.tsx");
+    const confirm = read("components/operator/ConfirmDialog.tsx");
+    for (const label of ["Type the organisation name", "<ActionDialog", "A new 6-digit code from your app", 'role="alert"']) {
+      expect(confirm, label).toContain(label);
+    }
+    const confirms = read("components/operator/confirms.ts");
+    for (const label of ["Delete organisation", "Cancel deletion", "typeName: name", "deleteEffect(now)"]) {
+      expect(confirms, label).toContain(label);
+    }
+    expect(read("components/operator/OrganisationsView.tsx")).toContain("deleteCountdown(");
     for (const label of ["Search by name", "Create organisation", "Uploaded size", "Last activity", 'role="status"']) {
       expect(list, label).toContain(label);
     }
@@ -171,6 +265,22 @@ describe("operator source guards", () => {
     expect(offenders).toEqual([]);
     const holders = OPERATOR_FILES.filter((file) => read(file).includes("temporary_password"));
     expect(holders).toEqual(["components/operator/CreateOrgDialog.tsx"]);
+  });
+
+  it("tells other operator tabs on its own channel, never the customer one", () => {
+    expect(OPERATOR_CHANNEL).toBe("kaagaz-operator-session");
+    expect(OPERATOR_CHANNEL).not.toBe(SESSION_CHANNEL);
+    const session = read("lib/operatorSession.tsx");
+    expect(session).toContain("new BroadcastChannel(OPERATOR_CHANNEL)");
+    const customer = /(SESSION_CHANNEL|announceSession|watchSession)|kaagaz-session"|new BroadcastChannel\((?!OPERATOR_CHANNEL\))/;
+    expect(OPERATOR_FILES.filter((file) => customer.test(read(file)))).toEqual([]);
+    const shell = read("components/operator/OperatorShell.tsx");
+    expect(shell).toContain("signOut(operatorLogout)");
+    expect(shell.indexOf("announceSignOut()")).toBeLessThan(shell.indexOf("leavePage(result.leave)"));
+    expect(session).toContain("expiryDelay(expiresAt, Date.now())");
+    // Any later 401 not_signed_in (lib/api.ts) leaves as "ended": ?ended=1 when this tab had a session.
+    expect(session).toContain('onSessionEnded(() => setState({ kind: "signed_out", reason: "ended" }))');
+    expect(session).toContain("leavePage(exitUrl(leaveFor, hadSession.current))");
   });
 
   it("sits outside the customer app, with its own session, and leaves only by full page loads", () => {

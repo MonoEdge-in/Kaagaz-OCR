@@ -50,7 +50,7 @@ export function operatorSignInError(caught: unknown): string {
 // --- The session ---------------------------------------------------------------
 
 export const OPERATOR_SIGN_IN = "/operator/login";
-/** Not the customer app's "kaagaz-session": an operator's sign-out never reaches a customer tab. */
+/** Its own, not the customer app's: an operator's sign-out never reaches a customer tab. */
 export const OPERATOR_CHANNEL = "kaagaz-operator-session";
 export const SIGNED_OUT = "signed_out";
 export const SIGN_OUT_FAILED = "Could not sign out. Check your connection and try again.";
