@@ -1,20 +1,25 @@
-"""The platform operator's organisations (super admin PR 3, council 6 Oct 2026,
-PROVISIONAL). Every route needs the operator cookie (``current_operator`` on the
-router); only ``OperatorDatabase`` here, and each call is one ``kaagaz_op_*`` function,
-which writes its own ``platform_audit`` row. Their admins: PR 3b.
+"""The platform operator's organisations (super admin PR 3) and their admins (PR 3b),
+council 6 Oct 2026, PROVISIONAL. Every route needs the operator cookie
+(``current_operator`` on the router); only ``OperatorDatabase`` here, and each call is
+one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
 
 * ``GET /operator/orgs``: every organisation with counts only (never a document's or a
   user's name). ``POST /operator/orgs`` {name, admin_email, admin_name}: the
   organisation and its first admin; the temporary password is in this reply ONCE
   (stored only as its hash, never logged) and must be changed at the first sign-in.
-* ``POST /operator/orgs/{id}/disable`` {code} (step-up) and ``/enable``. An unknown
-  organisation gets 404 and nothing changes.
+* ``POST /operator/orgs/{id}/disable`` {code} (step-up) and ``/enable``.
+* ``GET /operator/orgs/{id}/admins`` (admins only), ``POST`` one more (a temporary
+  password, as above), and ``POST .../admins/{uid}/disable``, ``/enable``, ``/unlock``
+  and ``/reset-2fa`` {code} (step-up).
 
-Step-up: disabling an organisation needs a fresh code from the operator's own
-authenticator in the body. As at sign-in: the attempt is counted first
-(``kaagaz_op_begin_login``, the same lockout), the code is checked against the
-operator's sealed secret, and the database function uses its step up in the same
-transaction as the change, so a code works once. A refused code gets 403
+An unknown organisation, and an id that is not an admin of THIS organisation (another
+organisation's admin, a member), get the same 404, and nothing changes.
+
+Step-up: disabling an organisation and resetting an admin's two-step code need a fresh
+code from the operator's own authenticator in the body. As at sign-in: the attempt is
+counted first (``kaagaz_op_begin_login``, the same lockout), the code is checked
+against the operator's sealed secret, and the database function uses its step up in
+the same transaction as the change, so a code works once. A refused code gets 403
 ``step_up_failed`` and one ``platform_audit`` row.
 """
 
@@ -40,7 +45,7 @@ from kaagaz.api.views import iso
 from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db.engine import OperatorDatabase
-from kaagaz.db.operator_orgs import Outcome
+from kaagaz.db.operator_orgs import Change, Outcome
 from kaagaz.db.users import EmailTaken
 
 router = APIRouter(prefix="/operator/orgs", dependencies=[Depends(current_operator)])
@@ -63,6 +68,13 @@ class NewOrgBody(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     admin_email: str = Field(min_length=3, max_length=254)
     admin_name: str = Field(min_length=1, max_length=100)
+
+
+class NewAdminBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=3, max_length=254)
+    name: str = Field(min_length=1, max_length=100)
 
 
 class StepUpBody(BaseModel):
@@ -115,6 +127,77 @@ def enable_org(
     return _set_status(db, context, operator, str(customer_id), "active", None)
 
 
+@router.get("/{customer_id}/admins")
+def list_admins(
+    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    with db.operator() as conn:
+        rows = orgs_sql.list_admins(conn, operator.operator_id, str(customer_id))
+    if not rows:  # every organisation keeps an admin: none means no such organisation
+        raise ApiError(404, "not_found")
+    now = context.clock()
+    return {"items": [_admin(row, now) for row in rows]}
+
+
+@router.post("/{customer_id}/admins", status_code=201)
+def create_admin(
+    customer_id: uuid.UUID, body: NewAdminBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> JSONResponse:
+    email, name = valid_email(body.email), _name(body.name)
+    temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
+    try:
+        with db.operator() as conn:
+            outcome = orgs_sql.create_admin(
+                conn,
+                operator.operator_id,
+                str(customer_id),
+                email=email,
+                name=name,
+                password_hash=hash_password(temporary),
+            )
+    except EmailTaken:
+        raise ApiError(409, "conflict", "That e-mail is already in use.") from None
+    _check(db, operator, outcome)
+    admin = {"id": outcome.result_id, "email": email, "name": name}
+    return JSONResponse({"admin": admin, "temporary_password": temporary}, status_code=201)
+
+
+@router.post("/{customer_id}/admins/{user_id}/disable")
+def disable_admin(
+    customer_id: uuid.UUID, user_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Every session of theirs ends."""
+    return _change(db, context, operator, customer_id, user_id, "disable", None)
+
+
+@router.post("/{customer_id}/admins/{user_id}/enable")
+def enable_admin(
+    customer_id: uuid.UUID, user_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    return _change(db, context, operator, customer_id, user_id, "enable", None)
+
+
+@router.post("/{customer_id}/admins/{user_id}/unlock")
+def unlock_admin(
+    customer_id: uuid.UUID, user_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    return _change(db, context, operator, customer_id, user_id, "unlock", None)
+
+
+@router.post("/{customer_id}/admins/{user_id}/reset-2fa")
+def reset_admin_two_step(
+    customer_id: uuid.UUID,
+    user_id: uuid.UUID,
+    body: StepUpBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> dict[str, Any]:
+    """Two-step off (the password alone signs in again), every session ends."""
+    step = _step_up(db, context, operator, body.code)
+    return _change(db, context, operator, customer_id, user_id, "reset_totp", step)
+
+
 def _set_status(
     db: OperatorDatabase,
     context: AppContext,
@@ -129,6 +212,26 @@ def _set_status(
         )
     _check(db, operator, outcome)
     return {"organisation": {"id": customer_id, "status": status, "changed": outcome.code == "done"}}
+
+
+def _change(
+    db: OperatorDatabase,
+    context: AppContext,
+    operator: CurrentOperator,
+    customer_id: uuid.UUID,
+    user_id: uuid.UUID,
+    change: Change,
+    step: int | None,
+) -> dict[str, Any]:
+    """One admin of this organisation, changed and audited; the admin as it is now."""
+    with db.operator() as conn:
+        outcome = orgs_sql.change_admin(
+            conn, operator.operator_id, str(customer_id), str(user_id), change, step=step
+        )
+        rows = orgs_sql.list_admins(conn, operator.operator_id, str(customer_id))
+    _check(db, operator, outcome)  # before the admin is looked for: 404 when it is not one
+    now = context.clock()
+    return {"admin": next(_admin(row, now) for row in rows if str(row["user_id"]) == str(user_id))}
 
 
 def _step_up(db: OperatorDatabase, context: AppContext, operator: CurrentOperator, code: str) -> int:
@@ -198,4 +301,19 @@ def _org(row: RowMapping) -> dict[str, Any]:
         "pages": row["pages"],
         "storage_bytes": row["size_bytes"],
         "last_activity_at": _when(row["last_activity_at"]),
+    }
+
+
+def _admin(row: RowMapping, now: datetime) -> dict[str, Any]:
+    locked_until: datetime | None = row["locked_until"]
+    return {
+        "id": str(row["user_id"]),
+        "name": row["display_name"],
+        "email": row["email"],
+        "two_step": bool(row["totp_enabled"]),
+        "locked": locked_until is not None and locked_until > now,
+        "disabled": bool(row["disabled"]),
+        "must_change_password": bool(row["must_change_password"]),
+        "last_sign_in_at": _when(row["last_login_at"]),
+        "created_at": iso(row["created_at"]),
     }
