@@ -22,6 +22,8 @@ import {
   SIGN_OUT_FAILED,
   STEP_UP_FAILED,
   TEMPORARY_PASSWORD_NOTE,
+  afterDone,
+  canCloseDialog,
   deleteCountdown,
   deleteEffect,
   exitUrl,
@@ -35,6 +37,7 @@ import {
   operatorErrorMessage,
   operatorSignInError,
   orgStatus,
+  recheckAfter,
   searchSummary,
   signOut,
   userCounts,
@@ -188,6 +191,12 @@ describe("the operator session", () => {
     expect(expiryDelay(NOW / 1000 + 10 ** 9, NOW)).toBe(2 ** 31 - 1);
   });
 
+  it("asks again after a check that failed for any reason but a 401", () => {
+    expect(recheckAfter(new ApiError(401, "not_signed_in", "x"))).toBeNull(); // it has left already
+    expect(recheckAfter(new TypeError("fetch failed"))).toBe(30_000);
+    expect(recheckAfter(new ApiError(503, "backend_unavailable", "x"))).toBe(30_000);
+  });
+
   it("signs out on the server, and still leaves when it says the session had ended", async () => {
     const calls: string[] = [];
     const leave = { leave: "/operator/login?signed_out=1" };
@@ -198,6 +207,43 @@ describe("the operator session", () => {
     const down = async () => Promise.reject(new ApiError(503, "backend_unavailable", "x"));
     expect(await signOut(down)).toEqual({ error: SIGN_OUT_FAILED });
     expect(await signOut(async () => Promise.reject(new TypeError("x")))).toEqual({ error: SIGN_OUT_FAILED });
+  });
+});
+
+describe("closing the operator dialogs", () => {
+  it("never closes while the request runs, so its reply (a temporary password) is not lost", () => {
+    for (const way of ["button", "escape", "backdrop"] as const) {
+      expect(canCloseDialog({ busy: true }, way)).toBe(false);
+      expect(canCloseDialog({ busy: true, secretShown: true }, way)).toBe(false);
+      expect(canCloseDialog({ busy: false }, way)).toBe(true);
+    }
+  });
+
+  it("closes a shown temporary password only by a button (Done, Close), not Esc or a click beside it", () => {
+    expect(canCloseDialog({ busy: false, secretShown: true }, "button")).toBe(true);
+    expect(canCloseDialog({ busy: false, secretShown: true }, "escape")).toBe(false);
+    expect(canCloseDialog({ busy: false, secretShown: true }, "backdrop")).toBe(false);
+  });
+
+  it("lets a late reply clear only its own dialog", () => {
+    const first = { title: "Disable A?" };
+    const second = { title: "Enable B?" };
+    expect(afterDone(first, first)).toBeNull();
+    expect(afterDone(second, first)).toBe(second);
+    expect(afterDone(null, first)).toBeNull();
+  });
+
+  it("keeps the dialogs locked in the source, and the customer app's dialogs as before", () => {
+    const dialog = read("components/documents/ActionDialog.tsx");
+    expect(dialog).toContain("canClose = () => true"); // no canClose: every way closes, as before
+    for (const way of ['canClose("escape")', 'canClose("backdrop")', 'disabled={!canClose("button")}']) {
+      expect(dialog, way).toContain(way);
+    }
+    expect(read("components/operator/ConfirmDialog.tsx")).toContain("canCloseDialog({ busy }, way)");
+    expect(read("components/operator/CreateOrgDialog.tsx")).toContain("canCloseDialog({ busy, secretShown: created !== null }, way)");
+    const list = read("components/operator/OrganisationsView.tsx");
+    expect(list).toContain("afterDone(open, changing)");
+    expect(list).toContain("id={orgFocusId(org.id)} tabIndex={-1}"); // focus after a change
   });
 });
 
