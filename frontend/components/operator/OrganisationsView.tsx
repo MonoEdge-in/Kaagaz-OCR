@@ -1,9 +1,10 @@
 "use client";
 
 // Organisations, the operator's home screen: every organisation with its
-// status and counts only (never a document's or a person's name) and a search
-// by name. The table is the shared reflow (Table.module.css): cards below
-// 48rem of room, a table from there. Create, disable and enable come in PR 7.
+// status and counts only (never a document's or a person's name), a search by
+// name, and Create organisation. Disable and Enable open a dialog; disabling
+// asks for a fresh two-step code. The table is the shared reflow
+// (Table.module.css): cards below 48rem of room, a table from there.
 
 import { useEffect, useState } from "react";
 import { useMinuteNow } from "@/components/chat/hooks";
@@ -13,7 +14,9 @@ import { Icon } from "@/components/ui/Icon";
 import { listOrgs } from "@/lib/api";
 import { formatBytes, formatNumber } from "@/lib/format";
 import type { Organisation } from "@/lib/types";
+import { CreateOrgDialog } from "./CreateOrgDialog";
 import { countText, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
+import { OrgStatusDialog } from "./OrgStatusDialog";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
@@ -28,6 +31,7 @@ const COLUMNS: { label: string; className?: string }[] = [
   { label: "Pages", className: styles.pagesColumn },
   { label: "Uploaded size", className: styles.sizeColumn },
   { label: "Last activity", className: styles.activityColumn },
+  { label: "Actions", className: styles.actionsColumn },
 ];
 
 export function OrganisationsView() {
@@ -35,6 +39,9 @@ export function OrganisationsView() {
   const [orgs, setOrgs] = useState<Organisation[] | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
   const [search, setSearch] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [changing, setChanging] = useState<Organisation | null>(null);
+  const [done, setDone] = useState("");
   const now = useMinuteNow();
 
   useEffect(() => {
@@ -53,7 +60,14 @@ export function OrganisationsView() {
   }, [attempt]);
 
   const failed = error !== null && error.attempt === attempt ? error.message : null;
+  const reload = () => setAttempt((n) => n + 1);
   const shown = orgs ? filterOrgs(orgs, search) : [];
+  const create = (
+    <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+      <Icon name="plus" />
+      Create organisation
+    </button>
+  );
 
   return (
     <div className="page">
@@ -62,7 +76,11 @@ export function OrganisationsView() {
           <h1>Organisations</h1>
           <p>Counts only. No document or member is shown here.</p>
         </div>
+        {orgs && orgs.length > 0 && create}
       </div>
+      <p className="visually-hidden" role="status">
+        {done}
+      </p>
 
       {failed && !orgs && (
         <div className={admin.errorBanner} role="alert">
@@ -71,7 +89,7 @@ export function OrganisationsView() {
             <p className={admin.errorTitle}>Could not load the organisations.</p>
             <p>{failed}</p>
           </div>
-          <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
+          <button type="button" className="btn" onClick={reload}>
             <Icon name="refresh" />
             Try again
           </button>
@@ -90,8 +108,8 @@ export function OrganisationsView() {
         </>
       )}
       {orgs && orgs.length === 0 && (
-        <EmptyState icon="admin" title="No organisations yet">
-          An organisation made on the server with its first admin shows here.
+        <EmptyState icon="admin" title="No organisations yet" action={create}>
+          Create the first one with its first admin.
         </EmptyState>
       )}
       {orgs && orgs.length > 0 && (
@@ -124,14 +142,14 @@ export function OrganisationsView() {
                   <tr role="row">
                     {COLUMNS.map((column) => (
                       <th key={column.label} scope="col" role="columnheader" className={column.className}>
-                        {column.label}
+                        {column.label === "Actions" ? <span className="visually-hidden">Actions</span> : column.label}
                       </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody role="rowgroup">
                   {shown.map((org) => (
-                    <OrgRow key={org.id} org={org} now={now} />
+                    <OrgRow key={org.id} org={org} now={now} onChange={() => setChanging(org)} />
                   ))}
                 </tbody>
               </table>
@@ -139,11 +157,32 @@ export function OrganisationsView() {
           )}
         </>
       )}
+
+      {creating && (
+        <CreateOrgDialog
+          onClose={() => setCreating(false)}
+          onCreated={(name) => {
+            setDone(`Created ${name}.`);
+            reload();
+          }}
+        />
+      )}
+      {changing && (
+        <OrgStatusDialog
+          org={changing}
+          onClose={() => setChanging(null)}
+          onChanged={(message) => {
+            setChanging(null);
+            setDone(message);
+            reload();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function OrgRow({ org, now }: { org: Organisation; now: number }) {
+function OrgRow({ org, now, onChange }: { org: Organisation; now: number; onChange: () => void }) {
   const status = orgStatus(org);
   const size = formatBytes(org.storage_bytes);
   return (
@@ -178,6 +217,18 @@ function OrgRow({ org, now }: { org: Organisation; now: number }) {
       </td>
       <td role="cell" data-label="Last activity">
         {lastActivityText(org.last_activity_at, now)}
+      </td>
+      <td role="cell">
+        {org.status !== "deleting" && (
+          <button
+            type="button"
+            className={org.status === "active" ? "btn btn-danger" : "btn"}
+            onClick={onChange}
+            aria-label={`${org.status === "active" ? "Disable" : "Enable"} ${org.name}`}
+          >
+            {org.status === "active" ? "Disable" : "Enable"}
+          </button>
+        )}
       </td>
     </tr>
   );

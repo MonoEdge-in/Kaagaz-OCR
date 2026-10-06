@@ -95,7 +95,7 @@
   }
 
   .documentsColumn {
-    width: 6.5rem;
+    width: 7rem;
   }
 
   .pagesColumn {
@@ -103,11 +103,15 @@
   }
 
   .sizeColumn {
-    width: 8rem;
+    width: 6.5rem;
   }
 
   .activityColumn {
-    width: 8rem;
+    width: 7.5rem;
+  }
+
+  .actionsColumn {
+    width: 7rem;
   }
 }
 
@@ -119,5 +123,45 @@
 
   .extra {
     display: block;
+  }
+}
+
+@container reflow (max-width: 47.98rem) {
+  .orgName {
+    font-size: var(--fs-lg);
+  }
+}
+
+/* --- Dialogs ------------------------------------------------------------------- */
+
+.dialogForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.dialogForm p {
+  margin: 0;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.resultHeading {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.resultHeading:focus-visible {
+  outline-offset: 4px;
+}
+
+@media (pointer: coarse) {
+  .buttons :global(.btn) {
+    min-height: 44px;
   }
 }

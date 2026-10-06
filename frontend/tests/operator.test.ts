@@ -1,6 +1,6 @@
-// The operator (super admin) screens, PR 6: the pure rules, and source guards
-// for what a render test would check (labels, nothing stored, the operator
-// area kept apart from the customer app).
+// The operator (super admin) screens, PRs 6 and 7: the pure rules, and source
+// guards for what a render test would check (labels, the temporary password
+// never stored, the operator area kept apart from the customer app).
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -9,17 +9,24 @@ import { describe, expect, it } from "vitest";
 import { CODE_INVALID, CODE_MISSING } from "@/app/admin/login/adminSignIn";
 import { EMAIL_INVALID, NETWORK_FAILURE, PASSWORD_MISSING, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS } from "@/app/login/signIn";
 import {
+  CHECK_INPUT,
+  DISABLE_EFFECT,
   KEY_HELP,
   OPERATOR_DOWN,
   OPERATOR_SIGN_IN_FAILED,
+  ORG_NOT_FOUND,
+  STEP_UP_FAILED,
+  TEMPORARY_PASSWORD_NOTE,
   filterOrgs,
   firstInvalidOperator,
+  firstInvalidOrgField,
   lastActivityText,
   operatorErrorMessage,
   operatorSignInError,
   orgStatus,
   searchSummary,
   userCounts,
+  validateNewOrg,
   validateOperatorSignIn,
 } from "@/components/operator/logic";
 import { ApiError } from "@/lib/api";
@@ -71,6 +78,14 @@ describe("operator sign-in", () => {
 });
 
 describe("operatorErrorMessage", () => {
+  it("maps each refused change to plain words, a 409 in the server's own sentence", () => {
+    expect(operatorErrorMessage(new ApiError(403, "step_up_failed", "x"))).toBe(STEP_UP_FAILED);
+    const taken = "That e-mail is already in use.";
+    expect(operatorErrorMessage(new ApiError(409, "conflict", taken))).toBe(taken);
+    expect(operatorErrorMessage(new ApiError(404, "not_found", "x"))).toBe(ORG_NOT_FOUND);
+    expect(operatorErrorMessage(new ApiError(400, "bad_request", "x"))).toBe(CHECK_INPUT);
+  });
+
   it("says what went wrong loading, in plain words", () => {
     expect(operatorErrorMessage(new ApiError(401, "not_signed_in", "x"))).toMatch(/session ended/);
     expect(operatorErrorMessage(new ApiError(429, "rate_limited", "x"))).toBe(TOO_MANY_ATTEMPTS);
@@ -117,22 +132,45 @@ describe("search", () => {
   });
 });
 
+describe("a new organisation", () => {
+  it("needs a name, the first admin's e-mail and name, within the server's lengths", () => {
+    const empty = validateNewOrg({ name: " ", admin_email: "", admin_name: "" });
+    const words = { name: "Enter the organisation's name.", admin_email: "Enter the first admin's e-mail address." };
+    expect(empty).toEqual({ ...words, admin_name: "Enter the first admin's name." });
+    expect(firstInvalidOrgField(empty)).toBe("name");
+    const long = validateNewOrg({ name: "x".repeat(201), admin_email: "a@b", admin_name: "y".repeat(101) });
+    expect(long).toEqual({ name: "Use at most 200 characters.", admin_name: "Use at most 100 characters." });
+    const bad = validateNewOrg({ name: "Org", admin_email: "nope", admin_name: "Asha" });
+    expect(bad).toEqual({ admin_email: EMAIL_INVALID });
+    expect(firstInvalidOrgField(bad)).toBe("admin_email");
+    expect(validateNewOrg({ name: "Org", admin_email: " a@b.in ", admin_name: "Asha" })).toEqual({});
+  });
+});
+
 describe("operator source guards", () => {
   it("shows the agreed words", () => {
     expect(read("components/operator/OperatorShell.tsx")).toContain("Kaagaz · Platform");
     expect(KEY_HELP).toBe("Your two-step key is given to you on the server when your account is made.");
     expect(read("app/operator/login/OperatorSignInForm.tsx")).toContain("KEY_HELP");
+    expect(DISABLE_EFFECT).toBe("Its users are signed out now and its jobs stop.");
+    expect(read("components/operator/OrgStatusDialog.tsx")).toContain("DISABLE_EFFECT");
+    expect(TEMPORARY_PASSWORD_NOTE).toBe("Give this to the admin privately. They must change it at first sign-in.");
+    const create = read("components/operator/CreateOrgDialog.tsx");
+    expect(create).toContain("TEMPORARY_PASSWORD_NOTE");
+    expect(create).toContain("<CopyButton");
     const list = read("components/operator/OrganisationsView.tsx");
-    for (const label of ["Search by name", "Uploaded size", "Last activity", 'role="status"']) {
+    for (const label of ["Search by name", "Create organisation", "Uploaded size", "Last activity", 'role="status"']) {
       expect(list, label).toContain(label);
     }
   });
 
-  it("never stores or logs anything", () => {
+  it("never stores or logs anything, the temporary password included", () => {
     const offenders = OPERATOR_FILES.filter((file) =>
       /localStorage|sessionStorage|indexedDB|document\.cookie|console\.|caches\./.test(read(file)),
     );
     expect(offenders).toEqual([]);
+    const holders = OPERATOR_FILES.filter((file) => read(file).includes("temporary_password"));
+    expect(holders).toEqual(["components/operator/CreateOrgDialog.tsx"]);
   });
 
   it("sits outside the customer app, with its own session, and leaves only by full page loads", () => {
