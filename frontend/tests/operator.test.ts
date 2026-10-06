@@ -155,7 +155,7 @@ describe("operator source guards", () => {
     expect(DISABLE_EFFECT).toBe("Its users are signed out now and its jobs stop.");
     expect(read("components/operator/confirms.ts")).toContain("DISABLE_EFFECT");
     expect(TEMPORARY_PASSWORD_NOTE).toBe("Give this to the admin privately. They must change it at first sign-in.");
-    const create = read("components/operator/CreateDialog.tsx");
+    const create = read("components/operator/CreateOrgDialog.tsx");
     expect(create).toContain("TEMPORARY_PASSWORD_NOTE");
     expect(create).toContain("<CopyButton");
     const list = read("components/operator/OrganisationsView.tsx");
@@ -170,7 +170,7 @@ describe("operator source guards", () => {
     );
     expect(offenders).toEqual([]);
     const holders = OPERATOR_FILES.filter((file) => read(file).includes("temporary_password"));
-    expect(holders).toEqual(["components/operator/CreateDialog.tsx"]);
+    expect(holders).toEqual(["components/operator/CreateOrgDialog.tsx"]);
   });
 
   it("sits outside the customer app, with its own session, and leaves only by full page loads", () => {

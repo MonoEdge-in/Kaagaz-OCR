@@ -7,7 +7,7 @@ import { NETWORK_FAILURE, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS, emailError, passwordE
 import { ApiError } from "@/lib/api";
 import { formatDate, formatNumber, formatRelative } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import type { OrgAdmin, OrgStatus, Organisation } from "@/lib/types";
+import type { Organisation } from "@/lib/types";
 
 export const KEY_HELP = "Your two-step key is given to you on the server when your account is made.";
 export const DISABLE_EFFECT = "Its users are signed out now and its jobs stop.";
@@ -163,71 +163,32 @@ export function searchSummary(shown: number, total: number, search: string): str
   return search.trim() ? `${formatNumber(shown)} of ${all} match.` : `${all}.`;
 }
 
-// --- A new organisation, or one more admin of one -------------------------------
+// --- A new organisation ---------------------------------------------------------
 
 export interface NewOrgInput {
   name: string;
   admin_email: string;
   admin_name: string;
-  /** One more admin: a fresh code (step-up). */
-  code?: string;
 }
 
 export type NewOrgErrors = Partial<Record<keyof NewOrgInput, string>>;
 
-export const NEW_ORG_FIELDS = ["name", "admin_email", "admin_name", "code"] as const;
+export const NEW_ORG_FIELDS = ["name", "admin_email", "admin_name"] as const;
 
-/** As the server: names trimmed, 1 to 200 characters (organisation) or 1 to 100
- * (admin). One more admin (adminOnly) needs no organisation name, but a code. */
-export function validateNewOrg(input: NewOrgInput, adminOnly = false): NewOrgErrors {
+/** As the server: names trimmed, 1 to 200 characters (organisation) or 1 to 100 (admin). */
+export function validateNewOrg(input: NewOrgInput): NewOrgErrors {
   const errors: NewOrgErrors = {};
-  const who = adminOnly ? "the admin's" : "the first admin's";
   const name = input.name.trim();
   const adminName = input.admin_name.trim();
-  if (adminOnly) {
-    const code = codeError(input.code ?? "");
-    if (code) errors.code = code;
-  } else if (!name) errors.name = "Enter the organisation's name.";
+  if (!name) errors.name = "Enter the organisation's name.";
   else if (name.length > 200) errors.name = "Use at most 200 characters.";
   const email = emailError(input.admin_email);
-  if (email) errors.admin_email = input.admin_email.trim() ? email : `Enter ${who} e-mail address.`;
-  if (!adminName) errors.admin_name = `Enter ${who} name.`;
+  if (email) errors.admin_email = input.admin_email.trim() ? email : "Enter the first admin's e-mail address.";
+  if (!adminName) errors.admin_name = "Enter the first admin's name.";
   else if (adminName.length > 100) errors.admin_name = "Use at most 100 characters.";
   return errors;
 }
 
-/** A 409 for an e-mail in use: said under the e-mail field. */
-export function isTakenEmail(caught: unknown): boolean {
-  return caught instanceof ApiError && (caught.code === "taken" || caught.message === REFUSALS.taken);
-}
-
 export function firstInvalidOrgField(errors: NewOrgErrors): keyof NewOrgInput | null {
   return NEW_ORG_FIELDS.find((field) => errors[field]) ?? null;
-}
-
-// --- One organisation's admins ---------------------------------------------------
-
-/** The short facts beside an admin's name: two-step, locked, disabled, first sign-in. */
-export function adminFacts(admin: Pick<OrgAdmin, "two_step" | "locked" | "disabled" | "must_change_password">): string[] {
-  return [
-    admin.two_step ? "Two-step on" : "Two-step off",
-    ...(admin.locked ? ["Locked"] : []),
-    ...(admin.disabled ? ["Disabled"] : []),
-    ...(admin.must_change_password ? ["Has a temporary password"] : []),
-  ];
-}
-
-export function lastSignInText(iso: string | null, now: number): string {
-  const when = iso ? formatRelative(iso, now) : "";
-  return when ? `Last sign-in ${when}` : "Never signed in";
-}
-
-/** Which changes fit an admin as they are now (none while the organisation is being deleted). */
-export function adminActions(admin: Pick<OrgAdmin, "two_step" | "locked" | "disabled">, orgStatus: OrgStatus) {
-  if (orgStatus === "deleting") return [];
-  return [
-    admin.disabled ? ("enable" as const) : ("disable" as const),
-    ...(admin.locked ? (["unlock"] as const) : []),
-    ...(admin.two_step ? (["reset-2fa"] as const) : []),
-  ];
 }
