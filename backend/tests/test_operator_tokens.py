@@ -59,12 +59,6 @@ def test_operator_and_customer_tokens_never_read_as_each_other() -> None:
     assert read_operator(_signed(_operator(), b"session"), SECRET, AT) is None  # right fields, other purpose
     assert read_session(_signed(customer, b"operator"), SECRET, AT) is None
     assert read_session(_signed({**customer, "scope": "operator"}, b"session"), SECRET, AT) is None
-    enrol = sign_operator(
-        OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 60, sealed_secret="v1:x"), SECRET
-    )
-    assert read_operator(enrol, SECRET, AT) is None
-    assert read_operator(sign_operator(OPERATOR, SECRET), SECRET, AT, enrol=True) is None
-    assert read_operator(enrol, SECRET, AT, enrol=True) is not None
 
 
 @pytest.mark.parametrize(
@@ -77,6 +71,7 @@ def test_operator_and_customer_tokens_never_read_as_each_other() -> None:
         _operator(ver=True),
         _operator(ver=0),
         _operator(exp="soon"),
+        _operator(sec="v1:x"),  # the old enrol token's field
     ],
 )
 def test_an_operator_token_with_a_wrong_extra_or_missing_claim_is_refused(payload: dict[str, Any]) -> None:
