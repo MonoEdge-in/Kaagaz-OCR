@@ -10,8 +10,12 @@ import { DISABLE_EFFECT, deleteEffect } from "./logic";
 
 export type OrgChange = "disable" | "enable" | "delete" | "cancel";
 
+/** The organisation's name in its row, where the focus goes after a change. */
+export const orgFocusId = (id: string) => `org-name-${id}`;
+
 export function orgConfirm(org: Organisation, change: OrgChange, now: number): Confirm {
   const name = org.name;
+  const focusId = orgFocusId(org.id);
   switch (change) {
     case "disable":
       return {
@@ -22,6 +26,7 @@ export function orgConfirm(org: Organisation, change: OrgChange, now: number): C
         danger: true,
         stepUp: true,
         run: (code) => disableOrg(org.id, code),
+        focusId,
       };
     case "enable":
       return {
@@ -32,6 +37,7 @@ export function orgConfirm(org: Organisation, change: OrgChange, now: number): C
         danger: false,
         stepUp: false,
         run: () => enableOrg(org.id),
+        focusId,
       };
     case "delete":
       return {
@@ -43,6 +49,7 @@ export function orgConfirm(org: Organisation, change: OrgChange, now: number): C
         stepUp: true,
         typeName: name,
         run: (code, typed) => scheduleDelete(org.id, typed, code),
+        focusId,
       };
     case "cancel":
       return {
@@ -53,15 +60,20 @@ export function orgConfirm(org: Organisation, change: OrgChange, now: number): C
         danger: false,
         stepUp: true,
         run: (code) => cancelDelete(org.id, code),
+        focusId,
       };
   }
 }
+
+/** The admin's name in the admins dialog, where the focus goes after a change. */
+export const adminFocusId = (id: string) => `admin-name-${id}`;
 
 export type AdminAction = "disable" | "enable" | "unlock" | "reset-2fa";
 
 export function adminConfirm(orgId: string, admin: OrgAdmin, change: AdminAction): Confirm {
   const name = admin.name;
   const run = (code: string) => changeAdmin(orgId, admin.id, change, code);
+  const focusId = adminFocusId(admin.id);
   switch (change) {
     case "disable":
       return {
@@ -72,6 +84,7 @@ export function adminConfirm(orgId: string, admin: OrgAdmin, change: AdminAction
         danger: true,
         stepUp: false,
         run,
+        focusId,
       };
     case "enable":
       return {
@@ -82,6 +95,7 @@ export function adminConfirm(orgId: string, admin: OrgAdmin, change: AdminAction
         danger: false,
         stepUp: false,
         run,
+        focusId,
       };
     case "unlock":
       return {
@@ -92,6 +106,7 @@ export function adminConfirm(orgId: string, admin: OrgAdmin, change: AdminAction
         danger: false,
         stepUp: false,
         run,
+        focusId,
       };
     case "reset-2fa":
       return {
@@ -104,6 +119,7 @@ export function adminConfirm(orgId: string, admin: OrgAdmin, change: AdminAction
         danger: true,
         stepUp: true,
         run,
+        focusId,
       };
   }
 }
