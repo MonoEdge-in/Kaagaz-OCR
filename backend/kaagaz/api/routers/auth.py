@@ -34,6 +34,11 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
   codes count toward the lockout too.
 * **The e-mail lookup** is the one SECURITY DEFINER function made for it,
   inside ``db.system()``; everything after it runs as the found customer.
+* **A disabled organisation** (0014) is refused like a disabled user: the
+  counted attempt says whether the customer is active, so even a right
+  password gets the one 401, before the temporary-password 403 could tell it
+  was right. ``load_user`` (``users.session_user``) checks it again when the
+  session starts, and on every request after.
 * **Nothing is stored before the first code is confirmed.** The pending secret
   travels sealed (``SecretBox``, bound to the user id) inside the signed enrol
   token, which also carries the session version: ``users.enrol_totp`` is
@@ -179,6 +184,7 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if (
         attempt.role != "admin"
         or attempt.disabled
+        or not attempt.customer_active
         or attempt.must_change_password
         or attempt.totp_enabled_at is not None
         or attempt.session_version != claims.session_version
@@ -335,6 +341,9 @@ def _check_password(
         raise _refused(context)
     if attempt.disabled:
         _failed(context, attempt, "disabled")
+        raise _refused(context)
+    if not attempt.customer_active:  # its organisation is disabled or being deleted (0014)
+        _failed(context, attempt, "customer_disabled")
         raise _refused(context)
     return attempt
 

@@ -451,8 +451,9 @@ def _signed_in(request: Request) -> CurrentUser:
 
 
 def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> CurrentUser | None:
-    """The enabled user with this id in this customer, or None. ``scope`` is the
-    session's (at sign-in, the one being started). One indexed query."""
+    """The enabled user with this id in this customer, or None (also while the
+    customer is not active, 0014). ``scope`` is the session's (at sign-in, the
+    one being started). One indexed query."""
     with db.customer(customer_id) as conn:
         row = users_sql.session_user(conn, customer_id, user_id)
     if row is None or row["disabled"]:

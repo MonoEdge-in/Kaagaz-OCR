@@ -71,6 +71,8 @@ class AttemptRow:
     totp_enabled_at: datetime | None
     totp_last_step: int | None
     failed_logins: int
+    # False while the customer is disabled or being deleted (0014): sign-in is refused.
+    customer_active: bool
 
 
 def login_lookup(conn: Connection, email: str) -> LoginRow | None:
@@ -134,6 +136,10 @@ def begin_attempt(
     PROVISIONAL (plan 7.5, PRD A3): anyone who knows an e-mail can keep that
     account locked; an admin can unlock it (``unlock``).
 
+    ``customer_active`` comes in the same statement (0014), so the sign-in can
+    refuse a disabled customer's user like a disabled user, before any reply
+    says the password was right.
+
     O(log n): one indexed row.
     """
     row = (
@@ -148,7 +154,8 @@ def begin_attempt(
                 " AND (u.locked_until IS NULL OR u.locked_until <= :now)"
                 " RETURNING u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"
                 " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
-                " u.failed_logins"
+                " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
+                " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active"
             ),
             {
                 "c": customer_id,
@@ -176,6 +183,7 @@ def begin_attempt(
         totp_enabled_at=row["totp_enabled_at"],
         totp_last_step=None if last_step is None else int(last_step),
         failed_logins=int(row["failed_logins"]),
+        customer_active=bool(row["customer_active"]),
     )
 
 
@@ -341,7 +349,11 @@ def reset_totp(conn: Connection, customer_id: str, user_id: str) -> RowMapping |
 
 
 def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping | None:
-    """The signed-in user with their customer's name, or None. One query per request."""
+    """The signed-in user with their customer's name, or None. One query per request.
+
+    None too while the customer is not active (0014): every sign-in starts its
+    session through here (``api.auth.load_user``) and every request checks it,
+    so a disabled customer's sessions end at their next request."""
     return (
         conn.execute(
             text(
@@ -350,7 +362,7 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
                 " u.delete_forever_allowed_at IS NOT NULL AS delete_forever_allowed,"
                 " c.id AS customer_id, c.name AS customer_name"
                 " FROM users u JOIN customers c ON c.id = u.customer_id"
-                " WHERE u.customer_id = :c AND u.id = :u"
+                " WHERE u.customer_id = :c AND u.id = :u AND c.status = 'active'"
             ),
             {"c": customer_id, "u": user_id},
         )
