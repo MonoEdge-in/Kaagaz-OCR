@@ -93,8 +93,8 @@ export function CreateDialog({
       const message = operatorErrorMessage(caught);
       if (isTakenEmail(caught)) setErrors({ admin_email: message });
       else setFailure(message);
-      setInput((was) => ({ ...was, code: "" }));
     } finally {
+      setInput((was) => ({ ...was, code: "" })); // a code works once: never kept
       setBusy(false);
     }
   }
