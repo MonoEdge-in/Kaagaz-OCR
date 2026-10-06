@@ -4,6 +4,10 @@ A table is a customer table when it has a ``customer_id`` column. Finding them
 from the catalog means a new table can't be left out of this check: it needs
 row level security, the ``customer_only`` policy with USING and WITH CHECK, and
 grants to the app role, which must not own it (an owner skips the policy).
+
+Super admin PR 2 (0015, NEEDS VRUSHIT'S APPROVAL): the platform operator's
+tables have no customer_id and nobody's grants; the role ``kaagaz_operator``
+has no table rights; each owner-rights function may be run by exactly one role.
 """
 
 import pytest
@@ -53,21 +57,47 @@ RUN_OUTCOME = {
     "seconds_ocr", "finished_at",
 }  # fmt: skip
 # The owner-rights (SECURITY DEFINER) functions, the only ways past the policies,
-# each narrow: {name: (what it returns, its search path)}. Those that list across
-# customers or users give ids only.
+# each narrow: {name: (what it returns, its search path, the ONE role that may run
+# it)}. Those that list across customers or users give ids only. The app may never
+# run an operator's function, nor the operator an app's.
 EMPTY_PATH = ['search_path=""']
+OPERATOR = "kaagaz_operator"
 OWNER_RIGHTS = {
     "kaagaz_login_lookup": (
         "TABLE(user_id uuid, customer_id uuid, password_hash text, role text, disabled boolean)",
         ["search_path=public, pg_temp"],
+        APP_ROLE,
     ),  # 0001, sign-in
-    "kaagaz_create_customer": ("uuid", ["search_path=public, pg_temp"]),  # 0001
-    "kaagaz_customer_ids_with_trash": ("SETOF uuid", EMPTY_PATH),  # 0002, the purge
-    "kaagaz_customer_ids": ("SETOF uuid", EMPTY_PATH),  # 0006, reembed
-    "kaagaz_stories_to_embed": ("TABLE(customer_id uuid, user_id uuid, family_id uuid)", EMPTY_PATH),  # 0010
+    "kaagaz_create_customer": ("uuid", ["search_path=public, pg_temp"], APP_ROLE),  # 0001
+    "kaagaz_customer_ids_with_trash": ("SETOF uuid", EMPTY_PATH, APP_ROLE),  # 0002, the purge
+    "kaagaz_customer_ids": ("SETOF uuid", EMPTY_PATH, APP_ROLE),  # 0006, reembed
+    "kaagaz_stories_to_embed": (
+        "TABLE(customer_id uuid, user_id uuid, family_id uuid)",
+        EMPTY_PATH,
+        APP_ROLE,
+    ),  # 0010
+    # 0015, the platform operator's sign-in
+    "kaagaz_op_begin_login": (
+        "TABLE(operator_id uuid, email text, display_name text, password_hash text, disabled boolean,"
+        " session_version integer, totp_secret_enc text, totp_enabled boolean, totp_last_step bigint,"
+        " failed_logins integer)",
+        EMPTY_PATH,
+        OPERATOR,
+    ),
+    "kaagaz_op_login_failed": ("void", EMPTY_PATH, OPERATOR),
+    "kaagaz_op_login_succeeded": ("integer", EMPTY_PATH, OPERATOR),
+    "kaagaz_op_enrol": ("integer", EMPTY_PATH, OPERATOR),
+    "kaagaz_op_session": (
+        "TABLE(email text, display_name text, session_version integer)",
+        EMPTY_PATH,
+        OPERATOR,
+    ),
+    "kaagaz_op_logout": ("void", EMPTY_PATH, OPERATOR),
 }
-# The only tables without customer_id: the customers themselves, and alembic's own.
-NO_CUSTOMER_ID = {"customers", "alembic_version"}
+# The only tables without customer_id: the customers themselves, alembic's own, and
+# the platform operator's (0015), which belong to no customer.
+OPERATOR_TABLES = {"operators", "platform_audit"}
+NO_CUSTOMER_ID = {"customers", "alembic_version"} | OPERATOR_TABLES
 
 _CUSTOMER_TABLES = text(
     "SELECT c.relname, c.relrowsecurity, pg_get_userbyid(c.relowner)"
@@ -214,19 +244,59 @@ def test_only_the_listed_tables_have_no_customer_id(db: Database) -> None:
     assert names - set(_customer_tables(db)) == NO_CUSTOMER_ID
 
 
-def test_only_the_listed_owner_rights_functions_exist_and_only_the_app_may_run_them(db: Database) -> None:
+def test_only_the_listed_owner_rights_functions_exist_and_only_their_role_may_run_them(db: Database) -> None:
     """Found from the catalog, so a new one can't be left out: what it returns, its
-    fixed search path, and never runnable by PUBLIC."""
+    fixed search path, never runnable by PUBLIC, and by exactly one of the app and
+    the operator."""
     with db.system() as conn:
         functions = conn.execute(
             text(
                 "SELECT p.proname, pg_get_function_result(p.oid), p.proconfig,"
                 " has_function_privilege('public', p.oid, 'EXECUTE'),"
-                " has_function_privilege(:r, p.oid, 'EXECUTE')"
+                " has_function_privilege(:r, p.oid, 'EXECUTE'), has_function_privilege(:o, p.oid, 'EXECUTE')"
                 " FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.prosecdef"
             ),
-            {"r": APP_ROLE},
+            {"r": APP_ROLE, "o": OPERATOR},
         ).all()
-    assert {name: (result, config) for name, result, config, *_ in functions} == OWNER_RIGHTS
-    for name, *_, public_may_run, app_may_run in functions:
-        assert (public_may_run, app_may_run) == (False, True), name
+    assert {name for name, *_ in functions} == set(OWNER_RIGHTS)
+    for name, result, config, public_may_run, app_may_run, operator_may_run in functions:
+        role = OWNER_RIGHTS[name][2]
+        assert (result, config, role) == OWNER_RIGHTS[name], name
+        assert (public_may_run, app_may_run, operator_may_run) == (
+            False,
+            role == APP_ROLE,
+            role == OPERATOR,
+        ), name
+
+
+def test_the_operator_role_has_no_table_rights_and_its_tables_no_grants_and_no_policy(db: Database) -> None:
+    """kaagaz_operator reaches data only through its functions; nobody but the owner
+    reads or writes operators and platform_audit, and with no policy, row level
+    security shows them to nobody else either."""
+    with db.system() as conn:
+        role = conn.execute(
+            text("SELECT rolsuper, rolbypassrls, rolcanlogin FROM pg_roles WHERE rolname = :o"),
+            {"o": OPERATOR},
+        ).one()
+        granted = conn.execute(
+            text(
+                "SELECT c.relname, r.rolname FROM pg_class c CROSS JOIN pg_roles r"
+                " WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm')"
+                " AND (r.rolname = :o OR (r.rolname = :a AND c.relname = ANY(:t)))"
+                " AND (has_table_privilege(r.oid, c.oid,"
+                " 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')"
+                " OR has_any_column_privilege(r.oid, c.oid, 'SELECT,INSERT,UPDATE,REFERENCES'))"
+            ),
+            {"o": OPERATOR, "a": APP_ROLE, "t": sorted(OPERATOR_TABLES)},
+        ).all()
+        locked = conn.execute(
+            text(
+                "SELECT c.relname, c.relrowsecurity,"
+                " (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid)"
+                " FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY(:t)"
+            ),
+            {"t": sorted(OPERATOR_TABLES)},
+        ).all()
+    assert tuple(role) == (False, False, False)
+    assert granted == []
+    assert sorted(tuple(row) for row in locked) == [("operators", True, 0), ("platform_audit", True, 0)]
