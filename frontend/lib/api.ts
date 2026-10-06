@@ -32,6 +32,8 @@ import type {
   OrganisationCreated,
   PageReadings,
   PasswordReset,
+  PlatformEvent,
+  PlatformHealth,
   ReviewChoice,
   ReviewItem,
   ReviewList,
@@ -440,3 +442,7 @@ export const changeAdmin = (orgId: string, userId: string, change: AdminChange, 
     `/operator/orgs/${orgId}/admins/${userId}/${change}`,
     change === "reset-2fa" ? { code } : undefined,
   );
+/** Newest first; `before` is the reply's `next` (a keyset cursor); `action` keeps the actions starting with it. */
+export const listActivity = (params: { before?: string; org?: string; action?: string }) =>
+  request<{ items: PlatformEvent[]; next: string | null }>("GET", `/operator/activity${query(params)}`);
+export const getHealth = () => request<PlatformHealth>("GET", "/operator/health");

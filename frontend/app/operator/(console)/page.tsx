@@ -1,5 +1,5 @@
-import { OrganisationsView } from "@/components/operator/OrganisationsView";
+import { OperatorConsole } from "@/components/operator/OperatorConsole";
 
 export default function OperatorHome() {
-  return <OrganisationsView />;
+  return <OperatorConsole />;
 }

@@ -1,0 +1,19 @@
+/* The operator's Activity and Health tables (the shared reflow in
+   components/documents/Table.module.css). The words columns share the room
+   the short ones leave. Tokens only. */
+
+@container reflow (min-width: 48rem) {
+  .whenColumn {
+    width: 9.5rem;
+  }
+
+  .statusColumn,
+  .targetColumn {
+    width: 8rem;
+  }
+
+  .byColumn,
+  .waitColumn {
+    width: 7.5rem;
+  }
+}

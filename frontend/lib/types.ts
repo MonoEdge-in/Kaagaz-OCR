@@ -639,3 +639,31 @@ export interface AdminCreated {
   admin: { id: string; email: string; name: string };
   temporary_password: string;
 }
+
+/** One row of GET /operator/activity: no details, target id, person or document. */
+export interface PlatformEvent {
+  source: "organisation" | "platform";
+  at: string;
+  action: string;
+  organisation_id: string | null;
+  organisation_name: string | null;
+  target_type: string | null;
+  by: "user" | "operator" | "system";
+}
+
+type Counts = Record<string, number>;
+
+/** GET /operator/health: counts only. */
+export interface PlatformHealth {
+  organisations: {
+    id: string;
+    name: string;
+    status: OrgStatus;
+    documents_by_status: Counts;
+    failed_by_code: Counts;
+    in_progress: number;
+    oldest_in_progress_seconds: number | null;
+  }[];
+  totals: { documents_by_status: Counts; failed_by_code: Counts; in_progress: number; oldest_in_progress_seconds: number | null };
+  purges: { purged: number; last_purged_at: string | null; swept: number; last_swept_at: string | null };
+}

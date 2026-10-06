@@ -1,11 +1,11 @@
 "use client";
 
-// Organisations, the operator's home screen: every organisation with its
+// Organisations, the first tab of /operator: every organisation with its
 // status and counts only (never a document's or a person's name), a search by
 // name, and Create organisation. Admins opens one organisation's admins
-// (AdminsDialog). Each change opens a dialog (ConfirmDialog):
-// disable, enable, delete (only a disabled organisation) and cancel the
-// deletion; a row being deleted shows its date and the days left. The table is the shared reflow
+// (AdminsDialog). Each change opens a dialog (ConfirmDialog): disable, enable,
+// delete (only a disabled organisation) and cancel the deletion; a row being
+// deleted shows its date and the days left. The table is the shared reflow
 // (Table.module.css): cards below 48rem of room, a table from there.
 
 import { useEffect, useState } from "react";
@@ -77,10 +77,12 @@ export function OrganisationsView() {
   );
 
   return (
-    <div className="page">
+    <section className={admin.section} aria-labelledby="orgs-heading">
       <div className="page-header">
         <div>
-          <h1>Organisations</h1>
+          <h2 id="orgs-heading" className={admin.sectionHeading}>
+            Organisations
+          </h2>
           <p>Counts only. No document or member is shown here.</p>
         </div>
         {orgs && orgs.length > 0 && create}
@@ -192,7 +194,7 @@ export function OrganisationsView() {
           }}
         />
       )}
-    </div>
+    </section>
   );
 }
 
