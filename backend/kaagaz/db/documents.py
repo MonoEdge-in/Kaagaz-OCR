@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
+from kaagaz.db import customers
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
@@ -355,6 +356,12 @@ class PgDocuments:
                 {"c": customer_id, "d": document_id},
             ).first()
         return None if row is None else _record(row)
+
+    def customer_active(self, customer_id: str) -> bool:
+        """Is this customer active (0014)? The worker asks at the start of each job;
+        a database that is down is BackendUnavailable, so the job is tried again. O(1)."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            return customers.is_active(conn, customer_id)
 
     def find_by_fingerprint(self, customer_id: str, sha256: str) -> DocumentRecord | None:
         with unavailable(), self._db.customer(customer_id) as conn:

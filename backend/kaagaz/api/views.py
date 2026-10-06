@@ -77,6 +77,9 @@ def status_message(
     if status == "failed" and failure_code == "ocr_failed":
         # The scan reader failed on a page of this file (kaagaz/reading/ocr.py): not an outage.
         return "The scan reader couldn't read a page of this file. Upload a clearer scan, or read it again."
+    if status == "failed" and failure_code == "customer_disabled":
+        # The worker came to it while the organisation was turned off (0014): nothing was read.
+        return "This file was not read because your organisation was turned off. Read it again."
     if status == "failed":
         return "This file could not be read." + (f" ({failure_code})" if failure_code else "")
     message = _STATUS_MESSAGES.get(status, "")

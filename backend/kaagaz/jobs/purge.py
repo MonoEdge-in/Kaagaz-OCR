@@ -20,6 +20,10 @@ the next run (an hour later) starts again from the oldest family. Families
 purged before the error stay purged. Storage has no transactions, so files
 deleted just before the error stay deleted; the next run deletes the rest.
 
+A customer that is disabled or being deleted (0014) is purged all the same, on
+purpose: the purge only deletes and calls no model, and what its users put in
+Trash still goes when they were told it would (super admin plan, 6 Oct 2026).
+
 Time comes from the injected clock, never SQL ``now()``.
 """
 

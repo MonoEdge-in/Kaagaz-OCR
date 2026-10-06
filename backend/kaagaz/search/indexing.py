@@ -40,6 +40,7 @@ from typing import NamedTuple
 from sqlalchemy import Connection, text
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
+from kaagaz.db.customers import is_active
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.search.hybrid import vector_literal
 
@@ -220,7 +221,9 @@ def embed_missing(
     """Give at most ``limit`` pieces their missing vectors, through ``embed_pieces``,
     walking (customer, document) in id order from just after the cursor ``after``.
 
-    Only the pieces of ready, current documents out of Trash (``_MISSING``). The
+    Only the pieces of ready, current documents out of Trash (``_MISSING``), of
+    active customers: one that is disabled or being deleted (0014) is passed
+    over, so it costs no model call, and is picked up once enabled. The
     customers come from ``kaagaz_customer_ids()`` through ``Database.system()``;
     everything else runs inside ``Database.customer``, one customer at a time.
     The cursor moves past a document once it has no piece left without a vector,
@@ -235,9 +238,9 @@ def embed_missing(
     Database errors propagate: the caller logs them. Running it again changes
     nothing that is done: ``_WRITE`` only fills a NULL vector.
 
-    Cost: one statement for the C customers, one ``_MISSING`` per customer
-    after the cursor (O(D) over its documents, each with an index probe of its
-    pieces), then ``embed_pieces`` per document: at most ``limit`` pieces sent,
+    Cost: one statement for the C customers, one status lookup and one
+    ``_MISSING`` per customer after the cursor (O(D) over its documents, each
+    with an index probe of its pieces), then ``embed_pieces`` per document: at most ``limit`` pieces sent,
     in batches of 32 within a document (counted by pieces written: a piece
     another run fills at the same moment is sent but not counted).
     Memory O(C + limit * dim).
@@ -249,7 +252,8 @@ def embed_missing(
         start = after[1] if after is not None and after[0] == customer else _FIRST
         with db.customer(customer) as conn:
             params = {"c": customer, "after": start, "n": limit - written}
-            documents = [str(row[0]) for row in conn.execute(_MISSING, params)]
+            active = is_active(conn, customer)
+            documents = [str(row[0]) for row in conn.execute(_MISSING, params)] if active else []
         for document in documents:
             budget = limit - written
             try:
