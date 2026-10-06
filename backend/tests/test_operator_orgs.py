@@ -45,6 +45,9 @@ ORG_ROUTES = {
     ("POST", f"{ORGS}/{ANY_ID}/admins"),
     *{("POST", f"{ORGS}/{ANY_ID}/admins/{ANY_ID}/{change}") for change in ("disable", "enable", "unlock")},
     ("POST", f"{ORGS}/{ANY_ID}/admins/{ANY_ID}/reset-2fa"),
+    # PR 4: deleting an organisation.
+    ("POST", f"{ORGS}/{ANY_ID}/schedule-delete"),
+    ("POST", f"{ORGS}/{ANY_ID}/cancel-delete"),
 }
 ORG_ROW = {
     "customer_id": CID,
