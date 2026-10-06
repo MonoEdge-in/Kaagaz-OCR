@@ -393,7 +393,7 @@ def _purge_customer(db: Database, storage: CustomerStorage, customer_id: str, no
             target_id=customer_id,
             subject_customer_id=customer_id,
         )
-    families, gone = purge_customer(db, storage, customer_id, now=now, most=sys.maxsize)
+    families, gone = purge_customer(db, storage, customer_id, now=now, keep_going=lambda: True)
     if not gone:
         return f"customer {customer_id}: not finished, document families removed: {families}; run it again"
     return f"customer {customer_id}: purged, document families removed: {families}"
