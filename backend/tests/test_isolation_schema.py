@@ -67,6 +67,10 @@ OWNER_RIGHTS = {
     "kaagaz_customer_ids_with_trash": ("SETOF uuid", EMPTY_PATH),  # 0002, the purge
     "kaagaz_customer_ids": ("SETOF uuid", EMPTY_PATH),  # 0006, reembed
     "kaagaz_stories_to_embed": ("TABLE(customer_id uuid, user_id uuid, family_id uuid)", EMPTY_PATH),  # 0010
+    # 0018, the worker's purge of deleted organisations: ids only, and the one due, empty
+    # customers row (never a kaagaz_op_* function: the app runs none of those).
+    "kaagaz_customer_ids_to_purge": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_finish_customer_delete": ("boolean", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -101,6 +105,8 @@ OPERATOR_RIGHTS = {
             "kaagaz_op_set_customer_status",
             "kaagaz_op_create_admin",
             "kaagaz_op_change_admin",
+            "kaagaz_op_schedule_delete",  # 0018
+            "kaagaz_op_cancel_delete",
         ),
         ("record", EMPTY_PATH),
     ),

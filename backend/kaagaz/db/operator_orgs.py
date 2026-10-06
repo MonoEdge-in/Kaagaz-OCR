@@ -1,13 +1,14 @@
-"""What a platform operator does to organisations (0016, super admin PR 3) and to their
-admins (0017, PR 3b), PROVISIONAL: the API's calls, on ``OperatorDatabase.operator()``
-connections only. ``kaagaz_operator`` has no table rights, so each is one ``kaagaz_op_*``
-function, which checks the operator, names its one customer (and its one admin) and
-writes its own ``platform_audit`` row.
+"""What a platform operator does to organisations (0016, super admin PR 3; deleting
+one: 0018, PR 4) and to their admins (0017, PR 3b), PROVISIONAL: the API's calls, on
+``OperatorDatabase.operator()`` connections only. ``kaagaz_operator`` has no table
+rights, so each is one ``kaagaz_op_*`` function, which checks the operator, names its
+one customer (and its one admin) and writes its own ``platform_audit`` row.
 
 A write returns an ``Outcome``: ``done`` (changed and audited), ``unchanged``,
 ``missing``, ``deleting``, ``step_up`` (the fresh code's step was not accepted) or
-``signed_out``. The organisation list returns counts only; the admin list, one
-customer's admins only.
+``signed_out``; scheduling a deletion also ``not_disabled`` or ``name_mismatch``
+(audited), cancelling one ``not_deleting`` or ``purging`` (its grace period is over).
+The organisation list returns counts only; the admin list, one customer's admins only.
 
 Time: each write is O(log n) on primary keys, except disabling or enabling a customer,
 O(u) for its u users. ``list_customers`` is O(all users, documents and audit rows):
@@ -56,6 +57,25 @@ def set_customer_status(
         conn,
         text("SELECT outcome, result_id FROM kaagaz_op_set_customer_status(:o, :c, :s, :now, :step)"),
         {"o": operator_id, "c": customer_id, "s": status, "now": now, "step": step},
+    )
+
+
+def schedule_delete(conn: Connection, operator_id: str, customer_id: str, *, name: str, step: int) -> Outcome:
+    """Schedule the deletion of one disabled customer whose name is ``name`` exactly
+    (``step`` of a fresh code required): removed for good after the grace period (0018)."""
+    return _write(
+        conn,
+        text("SELECT outcome, result_id FROM kaagaz_op_schedule_delete(:o, :c, :step, :name)"),
+        {"o": operator_id, "c": customer_id, "step": step, "name": name},
+    )
+
+
+def cancel_delete(conn: Connection, operator_id: str, customer_id: str, *, step: int) -> Outcome:
+    """Cancel a scheduled deletion during its grace period (``step`` required): disabled again."""
+    return _write(
+        conn,
+        text("SELECT outcome, result_id FROM kaagaz_op_cancel_delete(:o, :c, :step)"),
+        {"o": operator_id, "c": customer_id, "step": step},
     )
 
 
