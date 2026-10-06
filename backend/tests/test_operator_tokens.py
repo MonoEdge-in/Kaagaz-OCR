@@ -99,3 +99,16 @@ def test_a_forged_operator_cookie_is_refused_without_the_database() -> None:
     forged = sign_operator(OPERATOR, SECRET + "x")
     reply = _offline_client().get("/api/operator/me", headers={"Cookie": f"{OPERATOR_COOKIE}={forged}"})
     assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in")
+
+
+def test_operator_requests_are_rate_limited_per_operator() -> None:
+    client = _offline_client(rate_limit_per_minute=1)
+
+    def login(oid: str) -> int:
+        token = sign_operator(OperatorClaims(operator_id=oid, session_version=1, expires_at=AT + 60), SECRET)
+        headers = {"X-Requested-With": "kaagaz", "Cookie": f"{OPERATOR_COOKIE}={token}"}
+        return client.post("/api/operator/login", json={}, headers=headers).status_code
+
+    assert login(OID) == 400  # refused before the database (no body), but counted for op:OID
+    assert login(OID) == 429
+    assert login(OTHER) == 400  # another operator has its own bucket
