@@ -34,13 +34,14 @@ from kaagaz.api.routers import (
     documents,
     folders,
     health,
+    operator,
     review,
     search,
     stories,
     tags,
     words,
 )
-from kaagaz.db.engine import Database, make_engine
+from kaagaz.db.engine import Database, OperatorDatabase, make_engine
 from kaagaz.settings import Settings
 
 
@@ -86,6 +87,8 @@ def create_app(
         dependencies=[Depends(csrf_guard)],
     )
     app.state.kaagaz = context
+    # The operator's own way in (super admin PR 2): only /api/operator asks for it.
+    app.state.kaagaz_operator = OperatorDatabase(database.engine)
     errors.install(app)
     app.add_middleware(RequestMiddleware, limiter=RateLimiter(settings.rate_limit_per_minute))
     app.add_middleware(ErrorMiddleware)  # added last, so it is the outermost
@@ -102,6 +105,8 @@ def create_app(
         words.router,
         stories.router,
         words.router,
+        operator.router,
+        operator.signed_in,
     ):
         app.include_router(router, prefix="/api")
     return app

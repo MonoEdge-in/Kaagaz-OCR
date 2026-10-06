@@ -53,8 +53,9 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Request, Response
 
-from kaagaz.api.context import get_context
+from kaagaz.api.context import get_context, get_operator_db
 from kaagaz.api.errors import ApiError
+from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
 from kaagaz.settings import Settings
@@ -68,6 +69,9 @@ ENROL_SECONDS = 10 * 60
 CONFIRM_COOKIE = "kaagaz_confirm"
 CONFIRM_SECONDS = 5 * 60  # PROVISIONAL (council 4 Oct 2026)
 CONFIRM_PATH = "/api/documents"  # the browser calls the API on its own origin, under /api
+OPERATOR_COOKIE = "kaagaz_operator"
+OPERATOR_PATH = "/api/operator"
+OPERATOR_SESSION_SECONDS = 30 * 60  # absolute, PROVISIONAL (change plan question 4)
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_LEN = 2**14, 8, 1, 32
@@ -157,6 +161,10 @@ _CONFIRM_PURPOSE = b"confirm"
 _SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp"})
 _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
 _CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
+_OPERATOR_PURPOSE = b"operator"
+_OPERATOR_ENROL_PURPOSE = b"operator_enrol"
+_OP_FIELDS = frozenset({"oid", "ver", "exp"})
+_ENROL_OP_FIELDS = frozenset({"oid", "ver", "sec", "exp"})
 
 
 def session_seconds(scope: str, settings: Settings) -> int:
@@ -266,6 +274,68 @@ def read_confirm(token: str, secret: str, now: int) -> ConfirmClaims | None:
     if not (_is_version(ver) and _is_int(exp)) or exp <= now:
         return None
     return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp)
+
+
+# --- the platform operator's tokens (super admin PR 2, PROVISIONAL) -------------------------
+# Same signing, other purposes and fields, so no customer token ever reads as an
+# operator's and the reverse. One SESSION_SECRET for both (change plan question 6).
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OperatorClaims:
+    operator_id: str
+    session_version: int
+    expires_at: int  # seconds since the epoch
+    sealed_secret: str = ""  # enrol tokens only: SecretBox.seal(pending secret, aad=operator_id)
+
+
+def sign_operator(claims: OperatorClaims, secret: str) -> str:
+    """An operator session token ``{oid, ver, exp}``, or with ``sealed_secret`` an
+    operator enrol token (one more field, ``sec``, and its own purpose)."""
+    payload: dict[str, Any] = {
+        "oid": claims.operator_id,
+        "ver": claims.session_version,
+        "exp": claims.expires_at,
+    }
+    if claims.sealed_secret:
+        return _sign({**payload, "sec": claims.sealed_secret}, _OPERATOR_ENROL_PURPOSE, secret)
+    return _sign(payload, _OPERATOR_PURPOSE, secret)
+
+
+def read_operator(token: str, secret: str, now: int, *, enrol: bool = False) -> OperatorClaims | None:
+    """The claims of a genuine, unexpired operator session (or ``enrol``) token, else
+    None. Strict: exactly its fields, each of its type. Constant-time check."""
+    purpose, fields = (
+        (_OPERATOR_ENROL_PURPOSE, _ENROL_OP_FIELDS) if enrol else (_OPERATOR_PURPOSE, _OP_FIELDS)
+    )
+    data = _verified(token, purpose, secret)
+    if not isinstance(data, dict) or set(data) != fields:
+        return None
+    oid, ver, exp, sec = data["oid"], data["ver"], data["exp"], data.get("sec", "")
+    if not (isinstance(oid, str) and _is_uuid(oid) and isinstance(sec, str)) or (enrol and not sec):
+        return None
+    if not (_is_version(ver) and _is_int(exp)) or exp <= now:
+        return None
+    return OperatorClaims(operator_id=oid, session_version=ver, expires_at=exp, sealed_secret=sec)
+
+
+def set_operator_cookie(response: Response, claims: OperatorClaims, settings: Settings, *, now: int) -> None:
+    """HttpOnly, SameSite=Strict, sent only to /api/operator, for the token's own lifetime."""
+    response.set_cookie(
+        OPERATOR_COOKIE,
+        sign_operator(claims, settings.session_secret),
+        max_age=claims.expires_at - now,
+        httponly=True,
+        samesite="strict",
+        secure=settings.cookie_secure,
+        path=OPERATOR_PATH,
+    )
+
+
+def clear_operator_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie(
+        OPERATOR_COOKIE, path=OPERATOR_PATH, httponly=True, samesite="strict", secure=settings.cookie_secure
+    )
 
 
 def _sign(payload: dict[str, Any], purpose: bytes, secret: str) -> str:
@@ -539,6 +609,39 @@ def require_role(*roles: str) -> Callable[[CurrentUser], CurrentUser]:
 
 Reviewer = Annotated[CurrentUser, Depends(require_role("reviewer", "admin"))]
 Admin = Annotated[CurrentUser, Depends(require_role("admin"))]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CurrentOperator:
+    operator_id: str
+    email: str
+    display_name: str
+    expires_at: int  # the session's, seconds since the epoch
+
+
+def current_operator(request: Request) -> CurrentOperator:
+    """For the signed-in /api/operator routes: the operator cookie ONLY (a customer
+    session is never read here), re-checked in the database on every request (the
+    operator is enabled, set up for two-step and on the same session version),
+    else 401 ``not_signed_in``. Customer routes never read the operator cookie."""
+    context = get_context(request)
+    token = request.cookies.get(OPERATOR_COOKIE) or ""
+    claims = read_operator(token, context.settings.session_secret, int(context.clock().timestamp()))
+    if claims is None:
+        raise ApiError(401, "not_signed_in")
+    with get_operator_db(request).operator() as conn:
+        found = operators_sql.session_operator(conn, claims.operator_id)
+    if found is None or found.session_version != claims.session_version:
+        raise ApiError(401, "not_signed_in")
+    return CurrentOperator(
+        operator_id=claims.operator_id,
+        email=found.email,
+        display_name=found.display_name,
+        expires_at=claims.expires_at,
+    )
+
+
+OperatorSession = Annotated[CurrentOperator, Depends(current_operator)]
 
 
 def csrf_guard(request: Request) -> None:
