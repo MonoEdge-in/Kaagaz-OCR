@@ -7,6 +7,7 @@ operator cookie: ``test_operator_orgs.py`` walks them all. The SQL and the purge
 import pytest
 
 from kaagaz.api import totp
+from kaagaz.cli import main
 from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db.operator_orgs import Outcome
 from tests.test_operator_orgs import CID, OWN, STEP, _Offline
@@ -69,3 +70,10 @@ def test_each_outcome_gets_its_reply(
     _, body, _, _ = ROUTES[route]
     reply = offline.post(f"/{CID}/{route}", {**body, "code": totp.code_at(OWN, STEP)})
     assert (reply.status_code, reply.json()["error"]["code"]) == (status, error)
+
+
+def test_the_cli_purge_needs_now_and_stops_before_any_database() -> None:
+    """``purge-customer`` (PR 4b) without ``--now`` is a usage error: nothing is built."""
+    with pytest.raises(SystemExit) as stopped:
+        main(["purge-customer", "--customer-id", CID], db=None, environ={})
+    assert stopped.value.code == 2

@@ -395,8 +395,8 @@ def _purge_customer(db: Database, storage: CustomerStorage, customer_id: str, no
         )
     families, gone = purge_customer(db, storage, customer_id, now=now, most=sys.maxsize)
     if not gone:
-        return f"customer {customer_id}: {families} document families removed, not finished; run it again"
-    return f"customer {customer_id}: purged ({families} document families)"
+        return f"customer {customer_id}: not finished, document families removed: {families}; run it again"
+    return f"customer {customer_id}: purged, document families removed: {families}"
 
 
 def _seed_demo(db: Database, password: str, out: TextIO) -> None:
