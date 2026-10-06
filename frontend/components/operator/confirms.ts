@@ -13,11 +13,8 @@ export type OrgChange = "disable" | "enable" | "delete" | "cancel";
 export const orgFocusId = (id: string) => `org-name-${id}`;
 
 export function orgConfirm(org: Organisation, change: OrgChange, now: number): Confirm {
-  return { ...orgChange(org, change, now), focusId: orgFocusId(org.id) };
-}
-
-function orgChange(org: Organisation, change: OrgChange, now: number): Omit<Confirm, "focusId"> {
   const name = org.name;
+  const focusId = orgFocusId(org.id);
   switch (change) {
     case "disable":
       return {
@@ -28,6 +25,7 @@ function orgChange(org: Organisation, change: OrgChange, now: number): Omit<Conf
         danger: true,
         stepUp: true,
         run: (code) => disableOrg(org.id, code),
+        focusId,
       };
     case "enable":
       return {
@@ -38,6 +36,7 @@ function orgChange(org: Organisation, change: OrgChange, now: number): Omit<Conf
         danger: false,
         stepUp: false,
         run: () => enableOrg(org.id),
+        focusId,
       };
     case "delete":
       return {
@@ -49,6 +48,7 @@ function orgChange(org: Organisation, change: OrgChange, now: number): Omit<Conf
         stepUp: true,
         typeName: name,
         run: (code, typed) => scheduleDelete(org.id, typed, code),
+        focusId,
       };
     case "cancel":
       return {
@@ -59,6 +59,7 @@ function orgChange(org: Organisation, change: OrgChange, now: number): Omit<Conf
         danger: false,
         stepUp: true,
         run: (code) => cancelDelete(org.id, code),
+        focusId,
       };
   }
 }

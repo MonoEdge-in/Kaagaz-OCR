@@ -14,15 +14,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import styles from "@/components/shell/Shell.module.css";
-import {
-  OPERATOR_CHANNEL,
-  RECHECK_MS,
-  SIGNED_OUT,
-  exitUrl,
-  expiryDelay,
-  meFailed,
-  recheckAfter,
-} from "@/components/operator/logic";
+import { OPERATOR_CHANNEL, RECHECK_MS, SIGNED_OUT, exitUrl, expiryDelay, meFailed, recheckAfter } from "@/components/operator/logic";
 import type { ExitReason } from "@/components/operator/logic";
 import { onSessionEnded, operatorMe } from "./api";
 import { sessionErrorMessage } from "./session";

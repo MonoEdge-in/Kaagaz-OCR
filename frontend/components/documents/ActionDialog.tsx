@@ -67,13 +67,7 @@ export function ActionDialog({ title, onClose, onClosed, canClose = () => true, 
           <h2 id={titleId} className={styles.title}>
             {title}
           </h2>
-          <IconButton
-            icon="close"
-            label="Close"
-            className="btn-quiet"
-            onClick={onClose}
-            disabled={!canClose("button")}
-          />
+          <IconButton icon="close" label="Close" className="btn-quiet" onClick={onClose} disabled={!canClose("button")} />
         </div>
         <div className={styles.body}>{children}</div>
       </div>

@@ -94,16 +94,10 @@ describe("operator sign-in", () => {
 });
 
 describe("operatorErrorMessage", () => {
-  it("maps each refused change to plain words, a 409 in the server's own sentence", () => {
-    expect(operatorErrorMessage(new ApiError(403, "step_up_failed", "x"))).toBe(STEP_UP_FAILED);
-    const taken = "That e-mail is already in use.";
-    expect(operatorErrorMessage(new ApiError(409, "conflict", taken))).toBe(taken);
-    expect(operatorErrorMessage(new ApiError(404, "not_found", "x"))).toBe(ORG_NOT_FOUND);
-    expect(operatorErrorMessage(new ApiError(400, "bad_request", "x"))).toBe(CHECK_INPUT);
-  });
-
-  it("has words for each refusal code, and a safe sentence for a 409 without one", () => {
+  it("has words for each refusal code, the server's sentence for a 409, and a safe one without", () => {
     const said = (code: string, status = 409) => operatorErrorMessage(new ApiError(status, code, "Something went wrong."));
+    expect(said("step_up_failed", 403)).toBe(STEP_UP_FAILED);
+    expect(said("bad_request", 400)).toBe(CHECK_INPUT);
     expect(said("name_mismatch")).toBe(NAME_MISMATCH);
     expect(said("not_disabled")).toBe("Disable the organisation before deleting it.");
     expect(said("deleting")).toBe("This organisation is being deleted.");
@@ -149,9 +143,8 @@ describe("an organisation in words", () => {
 
 describe("deleting an organisation", () => {
   it("says the date, the cancel and the backups", () => {
-    expect(deleteEffect(NOW)).toBe(
-      "Everything is deleted on 13 Oct 2026. You can cancel until then. Backups keep data for 7 more days.",
-    );
+    const said = "Everything is deleted on 13 Oct 2026. You can cancel until then. Backups keep data for 7 more days.";
+    expect(deleteEffect(NOW)).toBe(said);
   });
 
   it("counts down the days left, never below nothing", () => {
@@ -211,39 +204,26 @@ describe("the operator session", () => {
 });
 
 describe("closing the operator dialogs", () => {
-  it("never closes while the request runs, so its reply (a temporary password) is not lost", () => {
-    for (const way of ["button", "escape", "backdrop"] as const) {
-      expect(canCloseDialog({ busy: true }, way)).toBe(false);
-      expect(canCloseDialog({ busy: true, secretShown: true }, way)).toBe(false);
-      expect(canCloseDialog({ busy: false }, way)).toBe(true);
-    }
-  });
-
-  it("closes a shown temporary password only by a button (Done, Close), not Esc or a click beside it", () => {
-    expect(canCloseDialog({ busy: false, secretShown: true }, "button")).toBe(true);
-    expect(canCloseDialog({ busy: false, secretShown: true }, "escape")).toBe(false);
-    expect(canCloseDialog({ busy: false, secretShown: true }, "backdrop")).toBe(false);
+  it("never closes while busy (the temporary password would be lost); a shown password only by a button", () => {
+    const ways = ["button", "escape", "backdrop"] as const;
+    const can = (state: { busy: boolean; secretShown?: boolean }) => ways.map((way) => canCloseDialog(state, way));
+    expect([can({ busy: true }), can({ busy: true, secretShown: true })]).toEqual([[false, false, false], [false, false, false]]);
+    expect([can({ busy: false }), can({ busy: false, secretShown: true })]).toEqual([[true, true, true], [true, false, false]]);
   });
 
   it("lets a late reply clear only its own dialog", () => {
-    const first = { title: "Disable A?" };
-    const second = { title: "Enable B?" };
-    expect(afterDone(first, first)).toBeNull();
-    expect(afterDone(second, first)).toBe(second);
-    expect(afterDone(null, first)).toBeNull();
+    const [first, second] = [{ title: "Disable A?" }, { title: "Enable B?" }];
+    expect([afterDone(first, first), afterDone(second, first), afterDone(null, first)]).toEqual([null, second, null]);
   });
 
   it("keeps the dialogs locked in the source, and the customer app's dialogs as before", () => {
-    const dialog = read("components/documents/ActionDialog.tsx");
-    expect(dialog).toContain("canClose = () => true"); // no canClose: every way closes, as before
-    for (const way of ['canClose("escape")', 'canClose("backdrop")', 'disabled={!canClose("button")}']) {
-      expect(dialog, way).toContain(way);
+    const dialog = read("components/documents/ActionDialog.tsx"); // no canClose: every way closes, as before
+    for (const part of ["canClose = () => true", 'canClose("escape")', 'canClose("backdrop")', '!canClose("button")']) {
+      expect(dialog, part).toContain(part);
     }
     expect(read("components/operator/ConfirmDialog.tsx")).toContain("canCloseDialog({ busy }, way)");
     expect(read("components/operator/CreateOrgDialog.tsx")).toContain("canCloseDialog({ busy, secretShown: created !== null }, way)");
-    const list = read("components/operator/OrganisationsView.tsx");
-    expect(list).toContain("afterDone(open, changing)");
-    expect(list).toContain("id={orgFocusId(org.id)} tabIndex={-1}"); // focus after a change
+    expect(read("components/operator/OrganisationsView.tsx")).toMatch(/afterDone\(open, changing\)[\s\S]*id=\{orgFocusId\(org\.id\)\} tabIndex=\{-1\}/);
   });
 });
 

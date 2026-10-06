@@ -4,9 +4,8 @@
 // reply carries the admin's temporary password ONCE: it is shown here with
 // Copy and kept only in this dialog's memory (never stored, never logged), so
 // it is gone when the dialog closes. The admin must change it at first sign-in.
-// So the dialog cannot close while the request runs (the reply would be lost),
-// and once the password shows only Done or Close shut it (not Esc or a click
-// beside it).
+// So it cannot close while the request runs, and a shown password closes only
+// by Done or Close (canCloseDialog).
 
 import { useCallback, useState } from "react";
 import type { FormEvent } from "react";
@@ -14,13 +13,7 @@ import { CopyButton } from "@/components/admin/CopyButton";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { ApiError, createOrg } from "@/lib/api";
 import type { OrganisationCreated } from "@/lib/types";
-import {
-  TEMPORARY_PASSWORD_NOTE,
-  canCloseDialog,
-  firstInvalidOrgField,
-  operatorErrorMessage,
-  validateNewOrg,
-} from "./logic";
+import { TEMPORARY_PASSWORD_NOTE, canCloseDialog, firstInvalidOrgField, operatorErrorMessage, validateNewOrg } from "./logic";
 import type { NewOrgErrors, NewOrgInput } from "./logic";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";

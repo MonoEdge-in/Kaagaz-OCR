@@ -7,8 +7,7 @@
 // operator's own authenticator (step-up; the code used to sign in does not
 // work again); deleting also asks for the organisation's name, typed exactly.
 // A refusal is said in plain words in the dialog, and the code is cleared.
-// While the request runs it cannot be closed (canCloseDialog). After a change
-// the focus goes to the row's name (focusId), as its buttons may have changed.
+// It cannot close while busy; after a change the focus goes to the row's name.
 
 import { useRef, useState } from "react";
 import type { FormEvent } from "react";
@@ -118,13 +117,7 @@ export function ConfirmDialog({ confirm, onClose, onDone }: { confirm: Confirm; 
           </p>
         )}
         <div className={styles.buttons}>
-          <button
-            type="button"
-            className="btn"
-            onClick={onClose}
-            disabled={busy}
-            data-autofocus={confirm.stepUp ? undefined : true}
-          >
+          <button type="button" className="btn" onClick={onClose} disabled={busy} data-autofocus={!confirm.stepUp || undefined}>
             Cancel
           </button>
           <button

@@ -89,9 +89,7 @@ export async function signOut(logout: () => Promise<unknown>): Promise<{ leave: 
 
 // --- Dialogs ---------------------------------------------------------------------
 
-/** Never while its request runs (the reply would be lost: a temporary password
- * forever); while a temporary password shows, only by a button (Done, Close),
- * never by Esc or a click beside it. */
+/** Never while busy (the reply, a temporary password, would be lost); a shown password only by a button. */
 export function canCloseDialog(state: { busy: boolean; secretShown?: boolean }, way: CloseWay): boolean {
   if (state.busy) return false;
   return !state.secretShown || way === "button";
@@ -102,8 +100,7 @@ export function afterDone<T>(open: T | null, finished: T): T | null {
   return open === finished ? null : open;
 }
 
-/** After asking /me at the session's end: a 401 has left already (onSessionEnded),
- * a yes or any other failure (no network) asks again a little later. */
+/** After a failed /me at the session's end: a 401 has left already; anything else asks again later. */
 export function recheckAfter(caught: unknown): number | null {
   return meFailed(caught) === "signed_out" ? null : RECHECK_MS;
 }
