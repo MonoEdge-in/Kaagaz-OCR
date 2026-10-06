@@ -6,6 +6,13 @@
 * ``seed-demo``: two made-up customers for the laptop, "Sharma Traders" and
   "Mehta Textiles", each with an admin, a reviewer and a member. Safe to run
   again: a customer whose admin already exists is skipped.
+* ``disable-customer --customer-id`` and ``enable-customer --customer-id``: turn
+  an organisation off or on again (super admin PR 1, 0014, PROVISIONAL). While
+  it is off its users can't sign in, their sessions end at the next request,
+  the worker fails its jobs (``customer_disabled``) and no model is called for
+  it. A customer being deleted is refused, and nothing changes. Each change
+  writes one audit row in that customer's log (``customer.disable``,
+  ``customer.enable``). These two run as the table owner (``_owner``).
 * ``reset-admin-2fa --email``: turn an admin's two-step code off (PRD 1 A6), for
   the last admin of a customer, who has no other admin to do it. Their sessions
   end; they can turn it on again in Admin, Settings. It needs no password:
@@ -30,7 +37,7 @@
   Then each customer's stories (Story of this PDF) with no vector, or one
   with another tag, are embedded, 32 at a time, each as its own user, each
   story tried once a run; ``--all`` does not embed a story again whose vector
-  is current.
+  is current. A customer that is not active is skipped and named.
   Prints ids and counts only.
 
 Why passwords are never flags: a flag lands in the shell history and the
@@ -48,13 +55,18 @@ import sys
 import time
 import unicodedata
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
+
+from sqlalchemy import Connection
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.db import audit
+from kaagaz.db import customers as customers_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.document_stories import recipe_tag as story_tag
 from kaagaz.db.engine import Database, make_engine
@@ -87,6 +99,11 @@ DEMO_CUSTOMERS = (
     ("Mehta Textiles", "mehta-textiles.example"),
 )
 DEMO_ROLES = ("admin", "reviewer", "member")
+# disable-customer and enable-customer: the status each sets, its audit action and what it is called.
+CUSTOMER_STATUS = {
+    "disable-customer": (customers_sql.DISABLED, "customer.disable", "disabled"),
+    "enable-customer": (customers_sql.ACTIVE, "customer.enable", "enabled"),
+}
 
 
 class CliError(Exception):
@@ -109,6 +126,11 @@ def _parser() -> argparse.ArgumentParser:
     user.add_argument("--role", required=True, choices=ROLES)
 
     commands.add_parser("seed-demo", help="two made-up customers for the laptop")
+
+    disable = commands.add_parser("disable-customer", help="turn an organisation off: no sign-in, no jobs")
+    disable.add_argument("--customer-id", required=True)
+    enable = commands.add_parser("enable-customer", help="turn a disabled organisation on again")
+    enable.add_argument("--customer-id", required=True)
 
     reset = commands.add_parser("reset-admin-2fa", help="turn an admin's two-step code off")
     reset.add_argument("--email", required=True)
@@ -207,6 +229,46 @@ def _reset_admin_2fa(db: Database, email: str) -> str:
     return found.user_id
 
 
+@contextmanager
+def _owner(db: Database) -> Iterator[Connection]:
+    """One transaction as the login role itself, with NO ``SET LOCAL ROLE``: the
+    table owner, which row level security does not filter. Only for changing a
+    customer's status, which ``kaagaz_app`` may not do (0014), so no code on the
+    customer side can. Every statement in it names the one customer by id.
+    PROVISIONAL: it needs DATABASE_URL to log in as the owner, as it does today
+    (change plan, open question 8)."""
+    with db.engine.begin() as conn:
+        yield conn
+
+
+def _set_customer_status(db: Database, command: str, customer_id: str, now: datetime) -> str:
+    """Disable or enable one customer and write its audit row, in one owner
+    transaction. Returns the line to print. O(1)."""
+    try:
+        uuid.UUID(customer_id)
+    except ValueError:
+        raise CliError("the customer id is not valid") from None
+    status, action, done = CUSTOMER_STATUS[command]
+    with _owner(db) as conn:
+        before = customers_sql.set_status(conn, customer_id, status, now=now)
+        if before is None:
+            raise CliError("no such customer")
+        if before == customers_sql.DELETING:
+            raise CliError("this customer is being deleted; nothing was changed (cancel the deletion first)")
+        if before == status:
+            return f"customer {customer_id}: already {done}, nothing changed"
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=None,
+            action=action,
+            target_type="customer",
+            target_id=customer_id,
+            details={"by": "cli"},
+        )
+    return f"customer {customer_id}: {done}"
+
+
 def _seed_demo(db: Database, password: str, out: TextIO) -> None:
     for name, domain in DEMO_CUSTOMERS:
         emails = {role: f"{role}@{domain}" for role in DEMO_ROLES}
@@ -244,7 +306,11 @@ def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: b
         raise CliError(f"the model is not answering ({error}); nothing was changed") from None
     for customer in customers:
         with db.customer(customer) as conn:
-            documents = indexing.document_ids(conn, customer)
+            active = customers_sql.is_active(conn, customer)
+            documents = indexing.document_ids(conn, customer) if active else []
+        if not active:  # disabled or being deleted (0014): no model calls for it
+            out.write(f"customer {customer}: not active, skipped\n")
+            continue
         cleared = written = 0
         for document in documents:
             with db.customer(customer) as conn:
@@ -476,6 +542,9 @@ def main(
             if model is None:
                 raise CliError("reembed needs the model: set MODEL_ENABLED=true")
             _reembed(db, model, args.customer_id, args.all, stdout)
+        elif args.command in CUSTOMER_STATUS:
+            line = _set_customer_status(db, args.command, args.customer_id, datetime.now(UTC))
+            stdout.write(line + "\n")
         elif args.command == "reset-admin-2fa":
             user_id = _reset_admin_2fa(db, args.email)
             stdout.write(f"user {user_id}: 2FA is off; they can turn it on again in Admin, Settings\n")
