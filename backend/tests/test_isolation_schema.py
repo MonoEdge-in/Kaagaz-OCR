@@ -118,6 +118,23 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_step_up_failed": ("void", EMPTY_PATH),
+    # 0020, read-only: the feed (no details, target id, person or document) and counts.
+    "kaagaz_op_activity": (
+        "TABLE(source text, entry_id bigint, created_at timestamp with time zone, action text,"
+        " customer_id uuid, customer_name text, target_type text, actor text)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_health": (
+        "TABLE(customer_id uuid, name text, status text, delete_after timestamp with time zone,"
+        " documents_by_status jsonb, failed_by_code jsonb, in_progress bigint,"
+        " oldest_in_progress_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_purges": (
+        "TABLE(purged bigint, last_purged_at timestamp with time zone, swept bigint,"
+        " last_swept_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
 }
 # The only tables without customer_id: the customers themselves, alembic's own and
 # the platform operator's (0015), which belong to no customer.
