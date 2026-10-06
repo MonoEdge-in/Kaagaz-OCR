@@ -42,6 +42,9 @@ _SET = text(
 # Disabling also ends every session of its users for good (as "Sign out everywhere"
 # does), so enabling it again never brings an old cookie back.
 _END_SESSIONS = text("UPDATE users SET session_version = session_version + 1 WHERE customer_id = :c")
+# Enabling it again clears the sign-in failures counted while it was off: a right
+# password is refused then, so a user who kept trying would stay locked out after.
+_CLEAR_LOCKS = text("UPDATE users SET failed_logins = 0, locked_until = NULL WHERE customer_id = :c")
 
 
 def is_active(conn: Connection, customer_id: str) -> bool:
@@ -56,7 +59,8 @@ def set_status(conn: Connection, customer_id: str, status: str, *, now: datetime
     customer, and then nothing changes; nothing changes either when it already
     had ``status``, or when it is being deleted (cancelling a deletion is PR 4's).
     The row is locked first, so two runs at once change it once. O(1), and
-    disabling also raises every user's session version: O(u) for its u users."""
+    disabling also raises every user's session version and enabling clears their sign-in
+    locks: O(u) for its u users."""
     if status not in (ACTIVE, DISABLED):
         raise ValueError("status must be active or disabled")
     before = conn.execute(_LOCK, {"c": customer_id}).scalar()
@@ -64,6 +68,5 @@ def set_status(conn: Connection, customer_id: str, status: str, *, now: datetime
         return None
     if before not in (status, DELETING):
         conn.execute(_SET, {"c": customer_id, "s": status, "now": now})
-        if status == DISABLED:
-            conn.execute(_END_SESSIONS, {"c": customer_id})
+        conn.execute(_END_SESSIONS if status == DISABLED else _CLEAR_LOCKS, {"c": customer_id})
     return str(before)
