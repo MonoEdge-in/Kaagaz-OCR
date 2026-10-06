@@ -89,6 +89,10 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     **dict.fromkeys(("kaagaz_op_create_customer", "kaagaz_op_set_customer_status"), ("record", EMPTY_PATH)),
+    "kaagaz_op_begin_step_up": (
+        "TABLE(totp_secret_enc text, totp_last_step bigint, step_up_failures integer)",
+        EMPTY_PATH,
+    ),
     "kaagaz_op_step_up_failed": ("void", EMPTY_PATH),
 }
 # The only tables without customer_id: the customers themselves, alembic's own and

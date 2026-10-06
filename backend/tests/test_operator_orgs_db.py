@@ -13,7 +13,7 @@ from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as m0002
 from tests.db_support import migrate
 from tests.test_api_support import CSRF, NOW, PDF_BYTES, Api, TestClient, wrong_code
-from tests.test_operator_auth_db import _Operator
+from tests.test_operator_auth_db import _UNLOCK, WRONG, _Operator
 
 pytestmark = pytest.mark.db
 
@@ -81,7 +81,8 @@ def test_a_new_organisation_whose_first_admin_must_change_the_temporary_password
     created = client.post(ORGS, json=body, headers=CSRF)
     assert created.status_code == 201, created.text
     customer_id, temporary = created.json()["organisation"]["id"], created.json()["temporary_password"]
-    assert client.post(ORGS, json=body, headers=CSRF).status_code == 409  # the e-mail is taken
+    taken = client.post(ORGS, json={**body, "name": "Org Probe"}, headers=CSRF)
+    assert taken.json()["error"]["message"] == "That e-mail is already in use."  # and nothing is made
 
     admin = api.client()
     signed = admin.post("/api/auth/login", json={"email": email, "password": temporary}, headers=CSRF)
@@ -89,7 +90,11 @@ def test_a_new_organisation_whose_first_admin_must_change_the_temporary_password
     assert signed.json()["customer"]["id"] == customer_id  # this organisation only
     assert (signed.json()["user"]["role"], signed.json()["user"]["must_change_password"]) == ("admin", True)
     assert admin.get("/api/documents").json()["error"]["code"] == "password_change_required"
-    assert _platform(operator) == [("customer.create", customer_id, "customer", customer_id)]
+    assert _platform(operator) == [
+        ("customer.create", customer_id, "customer", customer_id),
+        ("customer.create_refused", None, "customer", None),  # the probe leaves a trace, no e-mail
+    ]
+    assert "Org Probe" not in client.get(ORGS).text
 
 
 def test_disabling_takes_a_fresh_code_once_and_ends_only_that_organisations_sessions(db: Database) -> None:
@@ -131,4 +136,31 @@ def test_disabling_takes_a_fresh_code_once_and_ends_only_that_organisations_sess
     assert [row[:3] for row in by_operator] == [
         ("customer.disable", "customer", a.customer_id),
         ("customer.enable", "customer", a.customer_id),
+    ]
+
+
+def test_a_sign_in_lock_never_blocks_a_step_up_and_a_step_up_lock_never_blocks_sign_in(db: Database) -> None:
+    api = Api(db)
+    operator, client = _signed_in(api)
+    a = api.new_admin("Org L")
+    limit = api.settings.login_max_failures
+    for _ in range(limit):  # anyone who knows the e-mail can lock the sign-in
+        assert operator.login(api.client(), password=WRONG).status_code == 401
+    disable = f"{ORGS}/{a.customer_id}/disable"
+    assert client.post(disable, json={"code": api.code(operator.secret)}, headers=CSRF).status_code == 200
+
+    operator.sql(_UNLOCK)
+    for _ in range(limit):
+        assert (
+            client.post(disable, json={"code": wrong_code(api, operator.secret)}, headers=CSRF).status_code
+            == 403
+        )
+    api.clock.advance(totp.STEP_SECONDS)
+    assert client.post(disable, json={"code": api.code(operator.secret)}, headers=CSRF).status_code == 403
+    assert operator.login(api.client()).status_code == 200  # the sign-in is not locked
+    failed = ("operator.step_up_failed", None, "operator", operator.id)
+    assert _platform(operator) == [
+        ("customer.disable", a.customer_id, "customer", a.customer_id),
+        *[failed] * (limit - 1),
+        ("operator.step_up_locked", None, "operator", operator.id),
     ]
