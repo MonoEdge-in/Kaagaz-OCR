@@ -3,7 +3,10 @@
 The steps, in order, for one (customer, document):
 
 1. Look up this customer's record. A job naming another customer's document
-   stops here, before any file is read, and nothing is written.
+   stops here, before any file is read, and nothing is written. A customer that
+   is disabled or being deleted (0014) stops here too, before any file is read
+   or any model called: the document is marked failed with
+   ``customer_disabled``, and the job is not retried.
 2. Scan the file (ScanGate). Nothing below runs unless it is clean, and the
    bytes used below are exactly the bytes that were scanned.
 3. Check the scanned bytes still match the fingerprint taken at upload.
@@ -519,6 +522,7 @@ class DocumentProcessor:
         chat_model: str | None = None,
         model_budget: ModelBudget | None = None,
         timezone: str = "UTC",
+        customer_active: Callable[[str], bool] | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         ``vision`` reads scanned boxes again. Either failing with one of
@@ -533,7 +537,9 @@ class DocumentProcessor:
         when it used them. ``chat`` is the model stage's chat model (PRD 2 D1, E2),
         with its ``model_budget``; ``chat_model`` is the tag a run records when a
         chat call was made. ``timezone`` (settings.timezone) says which day it is for
-        the invoice checks (PRD 2 ML 6(j)): today is the clock's date there."""
+        the invoice checks (PRD 2 ML 6(j)): today is the clock's date there.
+        ``customer_active(customer_id)`` (``PgDocuments.customer_active``) is asked
+        at the start of every job; None (tests with fakes) asks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_vision_crops < 0:
@@ -565,6 +571,7 @@ class DocumentProcessor:
         self._chat_model = chat_model
         self._model_budget = model_budget
         self._timezone = timezone
+        self._customer_active = customer_active
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -575,6 +582,8 @@ class DocumentProcessor:
         settled = False  # the run was finished, or is being, on a known path
         chosen = contextlib.ExitStack()  # the upload's reader, until the run is closed
         try:
+            if self._customer_active is not None and not self._customer_active(job.customer_id):
+                raise JobFailed("customer_disabled", retryable=False)  # marked failed below, never read
             self._choose_reader(job, record, run, chosen)
             self._process(job, record, heartbeat, run)
             settled = True
@@ -1278,6 +1287,7 @@ def build_processor(
         chat_model=settings.model_chat if model is not None else None,
         model_budget=ModelBudget.from_settings(settings) if model is not None else None,
         timezone=settings.timezone,
+        customer_active=documents.customer_active,
     )
 
 

@@ -13,7 +13,7 @@ from fastapi import Request
 
 from kaagaz.ai.client import ModelClient
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, OperatorDatabase
 from kaagaz.settings import Settings
 
 
@@ -27,6 +27,15 @@ class AppContext:
     clock: Callable[[], datetime]
     # The model GET /api/search embeds questions with; None with the model off.
     model: ModelClient | None = None
+
+
+def get_operator_db(request: Request) -> OperatorDatabase:
+    """The operator's database. ``create_app`` keeps it beside the context, not in
+    it, so only the /api/operator routes, which ask for it, can reach it."""
+    database = request.app.state.kaagaz_operator
+    if not isinstance(database, OperatorDatabase):
+        raise TypeError("the app was not built by create_app")
+    return database
 
 
 def get_context(request: Request) -> AppContext:

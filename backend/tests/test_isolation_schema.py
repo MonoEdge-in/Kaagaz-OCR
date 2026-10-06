@@ -4,6 +4,8 @@ A table is a customer table when it has a ``customer_id`` column. Finding them
 from the catalog means a new table can't be left out of this check: it needs
 row level security, the ``customer_only`` policy with USING and WITH CHECK, and
 grants to the app role, which must not own it (an owner skips the policy).
+
+Super admin PR 2 (0015, NEEDS VRUSHIT'S APPROVAL): the operator's tables, role and functions.
 """
 
 import pytest
@@ -66,8 +68,52 @@ OWNER_RIGHTS = {
     "kaagaz_customer_ids": ("SETOF uuid", EMPTY_PATH),  # 0006, reembed
     "kaagaz_stories_to_embed": ("TABLE(customer_id uuid, user_id uuid, family_id uuid)", EMPTY_PATH),  # 0010
 }
-# The only tables without customer_id: the customers themselves, and alembic's own.
-NO_CUSTOMER_ID = {"customers", "alembic_version"}
+# The platform operator's (0015): only kaagaz_operator may run these, never the app.
+OPERATOR = "kaagaz_operator"
+OPERATOR_RIGHTS = {
+    "kaagaz_op_begin_login": (
+        "TABLE(operator_id uuid, email text, display_name text, password_hash text, disabled boolean,"
+        " totp_secret_enc text, totp_last_step bigint, failed_logins integer)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_login_failed": ("void", EMPTY_PATH),
+    "kaagaz_op_login_succeeded": ("integer", EMPTY_PATH),
+    "kaagaz_op_session": ("TABLE(email text, display_name text, session_version integer)", EMPTY_PATH),
+    "kaagaz_op_logout": ("void", EMPTY_PATH),
+    # 0016: organisations with counts only, and the writes, each answering (outcome, result_id).
+    "kaagaz_op_customers": (
+        "TABLE(customer_id uuid, name text, status text, disabled_at timestamp with time zone,"
+        " delete_after timestamp with time zone, created_at timestamp with time zone, admins bigint,"
+        " reviewers bigint, members bigint, documents bigint, pages bigint, size_bytes bigint,"
+        " last_activity_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    # 0017: one organisation's admins, and the changes to one of them.
+    "kaagaz_op_admins": (
+        "TABLE(user_id uuid, display_name text, email text, totp_enabled boolean,"
+        " locked_until timestamp with time zone, disabled boolean, must_change_password boolean,"
+        " last_login_at timestamp with time zone, created_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    **dict.fromkeys(
+        (
+            "kaagaz_op_create_customer",
+            "kaagaz_op_set_customer_status",
+            "kaagaz_op_create_admin",
+            "kaagaz_op_change_admin",
+        ),
+        ("record", EMPTY_PATH),
+    ),
+    "kaagaz_op_begin_step_up": (
+        "TABLE(totp_secret_enc text, totp_last_step bigint, step_up_failures integer)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_step_up_failed": ("void", EMPTY_PATH),
+}
+# The only tables without customer_id: the customers themselves, alembic's own and
+# the platform operator's (0015), which belong to no customer.
+OPERATOR_TABLES = {"operators", "platform_audit"}
+NO_CUSTOMER_ID = {"customers", "alembic_version"} | OPERATOR_TABLES
 
 _CUSTOMER_TABLES = text(
     "SELECT c.relname, c.relrowsecurity, pg_get_userbyid(c.relowner)"
@@ -165,6 +211,20 @@ def test_the_app_may_update_only_the_outcome_columns_of_a_run(db: Database) -> N
     assert {name for name, may_update in columns if may_update} == RUN_OUTCOME
 
 
+def test_the_app_may_update_only_the_upload_limit_of_its_customer(db: Database) -> None:
+    """Never its status, so a disabled organisation cannot switch itself back on (0014)."""
+    with db.system() as conn:
+        columns = conn.execute(
+            text(
+                "SELECT attname::text, has_column_privilege(:r, attrelid, attname, 'UPDATE')"
+                " FROM pg_attribute WHERE attrelid = 'customers'::regclass"
+                " AND attnum > 0 AND NOT attisdropped"
+            ),
+            {"r": APP_ROLE},
+        ).all()
+    assert {name for name, may_update in columns if may_update} == {"max_upload_mb"}
+
+
 _FOREIGN_KEYS = text(
     "SELECT con.conname, con.conrelid::regclass::text, con.confrelid::regclass::text,"
     " ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k (num, pos)"
@@ -200,19 +260,52 @@ def test_only_the_listed_tables_have_no_customer_id(db: Database) -> None:
     assert names - set(_customer_tables(db)) == NO_CUSTOMER_ID
 
 
-def test_only_the_listed_owner_rights_functions_exist_and_only_the_app_may_run_them(db: Database) -> None:
+def test_only_the_listed_owner_rights_functions_exist_and_only_their_role_may_run_them(db: Database) -> None:
     """Found from the catalog, so a new one can't be left out: what it returns, its
-    fixed search path, and never runnable by PUBLIC."""
+    fixed search path, never runnable by PUBLIC, and by the app (OWNER_RIGHTS) or
+    the operator (OPERATOR_RIGHTS), never both."""
     with db.system() as conn:
         functions = conn.execute(
             text(
                 "SELECT p.proname, pg_get_function_result(p.oid), p.proconfig,"
                 " has_function_privilege('public', p.oid, 'EXECUTE'),"
-                " has_function_privilege(:r, p.oid, 'EXECUTE')"
+                " has_function_privilege(:r, p.oid, 'EXECUTE'), has_function_privilege(:o, p.oid, 'EXECUTE')"
                 " FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.prosecdef"
             ),
-            {"r": APP_ROLE},
+            {"r": APP_ROLE, "o": OPERATOR},
         ).all()
-    assert {name: (result, config) for name, result, config, *_ in functions} == OWNER_RIGHTS
-    for name, *_, public_may_run, app_may_run in functions:
-        assert (public_may_run, app_may_run) == (False, True), name
+    assert {
+        name: (result, config) for name, result, config, *_ in functions
+    } == OWNER_RIGHTS | OPERATOR_RIGHTS
+    for name, *_, public_may_run, app_may_run, operator_may_run in functions:
+        expected = (False, name in OWNER_RIGHTS, name in OPERATOR_RIGHTS)
+        assert (public_may_run, app_may_run, operator_may_run) == expected, name
+
+
+def test_the_operator_role_has_no_table_rights_and_its_tables_no_grants_and_no_policy(db: Database) -> None:
+    """kaagaz_operator reaches data only through its functions; the app has no right on
+    the operator's tables; and with no policy, row level security shows them to no one."""
+    with db.system() as conn:
+        role = conn.execute(
+            text("SELECT rolsuper, rolbypassrls, rolcanlogin FROM pg_roles WHERE rolname = :o"),
+            {"o": OPERATOR},
+        ).one()
+        granted = conn.execute(
+            text(
+                "SELECT c.relname, r.rolname FROM pg_class c CROSS JOIN pg_roles r"
+                " WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm')"
+                " AND (r.rolname = :o OR (r.rolname = :a AND c.relname = ANY(:t)))"
+                " AND (has_table_privilege(r.oid, c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES')"
+                " OR has_any_column_privilege(r.oid, c.oid, 'SELECT,INSERT,UPDATE,REFERENCES'))"
+            ),
+            {"o": OPERATOR, "a": APP_ROLE, "t": sorted(OPERATOR_TABLES)},
+        ).all()
+        locked = conn.execute(
+            text(
+                "SELECT c.relname, c.relrowsecurity, (SELECT count(*) FROM pg_policy WHERE polrelid = c.oid)"
+                " FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY(:t)"
+            ),
+            {"t": sorted(OPERATOR_TABLES)},
+        ).all()
+    assert (tuple(role), granted) == ((False, False, False), [])
+    assert sorted(tuple(row) for row in locked) == [("operators", True, 0), ("platform_audit", True, 0)]

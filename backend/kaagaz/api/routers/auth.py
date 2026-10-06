@@ -34,6 +34,11 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
   codes count toward the lockout too.
 * **The e-mail lookup** is the one SECURITY DEFINER function made for it,
   inside ``db.system()``; everything after it runs as the found customer.
+* **A disabled organisation** (0014) is refused like a disabled user: the
+  counted attempt says whether the customer is active, so even a right
+  password gets the one 401, before the temporary-password 403 could tell it
+  was right. ``load_user`` (``users.session_user``) checks it again when the
+  session starts, and on every request after.
 * **Nothing is stored before the first code is confirmed.** The pending secret
   travels sealed (``SecretBox``, bound to the user id) inside the signed enrol
   token, which also carries the session version: ``users.enrol_totp`` is
@@ -44,7 +49,6 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 
 import dataclasses
 from datetime import datetime
-from functools import cache
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -72,9 +76,13 @@ from kaagaz.api.auth import (
     verify_password,
 )
 from kaagaz.api.context import AppContext, get_context
-from kaagaz.api.errors import ApiError, bad_credentials
+from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD
-from kaagaz.api.secret_box import SecretBox, SecretBoxError
+from kaagaz.api.secret_box import SecretBoxError
+from kaagaz.api.twostep import box as _box
+from kaagaz.api.twostep import digits as _digits
+from kaagaz.api.twostep import refused as _refused
+from kaagaz.api.twostep import unix as _unix
 from kaagaz.api.views import me_json
 from kaagaz.db import audit
 from kaagaz.db import users as users_sql
@@ -179,6 +187,7 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if (
         attempt.role != "admin"
         or attempt.disabled
+        or not attempt.customer_active
         or attempt.must_change_password
         or attempt.totp_enabled_at is not None
         or attempt.session_version != claims.session_version
@@ -336,6 +345,9 @@ def _check_password(
     if attempt.disabled:
         _failed(context, attempt, "disabled")
         raise _refused(context)
+    if not attempt.customer_active:  # its organisation is disabled or being deleted (0014)
+        _failed(context, attempt, "customer_disabled")
+        raise _refused(context)
     return attempt
 
 
@@ -481,22 +493,3 @@ def _record(
         target_id=target,
         details=details,
     )
-
-
-def _refused(context: AppContext) -> ApiError:
-    return bad_credentials(context.settings.login_lock_minutes)
-
-
-def _digits(code: str | None) -> str:
-    """The code without the spaces people type ("123 456"); "" when none was sent."""
-    return "" if code is None else "".join(code.split())
-
-
-def _unix(moment: datetime) -> int:
-    return int(moment.timestamp())
-
-
-@cache
-def _box(key_text: str) -> SecretBox:
-    """One SecretBox per key, so the key derivation runs once."""
-    return SecretBox(key_text)
