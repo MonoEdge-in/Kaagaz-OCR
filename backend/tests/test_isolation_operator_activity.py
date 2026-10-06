@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Connection, text
 
 from kaagaz.db import operator_activity as activity_sql
 from kaagaz.db.engine import Database, OperatorDatabase
@@ -18,7 +18,7 @@ from tests import test_migration_0002_db as m0002
 from tests.db_support import migrate
 from tests.test_api_support import Api, TestClient
 from tests.test_operator_activity import ACTIVITY, ENTRY_KEYS, HEALTH
-from tests.test_operator_auth_db import _owner
+from tests.test_operator_auth_db import _DISABLED, _Operator, _owner
 from tests.test_operator_orgs_db import _signed_in
 
 pytestmark = pytest.mark.db
@@ -107,7 +107,6 @@ def test_the_feed_merges_both_logs_newest_first_by_pages_and_filters_and_names_n
     operator, client = _signed_in(api)
     (a, a_admin), (b, _) = api.customer("Org A feed"), api.customer("Org B feed")
     gone, prefix = str(uuid.uuid4()), f"feed.{_letters()}."
-    details = json.dumps(SECRETS)
     for customer, actor, action, target, minutes in (
         (a, a_admin, "upload", "document", 3),
         (b, None, "disable", "customer", 2),
@@ -119,7 +118,8 @@ def test_the_feed_merges_both_logs_newest_first_by_pages_and_filters_and_names_n
             "a": prefix + action,
             "t": target,
             "i": "secret-target-1",
-            "d": details,
+            # The organisation's copy of an operator's change is marked by: operator (0016).
+            "d": json.dumps(SECRETS if actor else {**SECRETS, "by": "operator"}),
         }
         _owner(db, _AUDIT, {**row, "at": BASE + timedelta(minutes=minutes)})
     for by, action, customer, minutes in ((operator.id, "disable", b, 2), (None, "purged", gone, 0)):
@@ -129,7 +129,15 @@ def test_the_feed_merges_both_logs_newest_first_by_pages_and_filters_and_names_n
     every = [
         ("organisation", timedelta(minutes=3), "upload", a, "Org A feed", "document", "user"),
         ("platform", timedelta(minutes=2), "disable", b, "Org B feed", "customer", "operator"),
-        ("organisation", timedelta(minutes=2), "disable", b, "Org B feed", "customer", "system"),  # same time
+        (
+            "organisation",
+            timedelta(minutes=2),
+            "disable",
+            b,
+            "Org B feed",
+            "customer",
+            "operator",
+        ),  # same time
         ("organisation", timedelta(minutes=1), "rename", a, "Org A feed", "document", "user"),
         ("platform", timedelta(0), "purged", gone, None, "customer", "system"),  # its organisation is gone
     ]
@@ -144,20 +152,50 @@ def test_the_feed_merges_both_logs_newest_first_by_pages_and_filters_and_names_n
         assert hidden not in reply.text
 
 
-def test_a_customer_admin_cookie_opens_neither_route_and_a_disabled_operator_gets_nothing(
+def test_a_customer_admin_cookie_opens_neither_route_and_only_an_enabled_operator_gets_rows(
     db: Database,
 ) -> None:
     api = Api(db)
-    _, client = _signed_in(api)
+    operator, client = _signed_in(api)
     admin = api.new_admin()
     for path in (ACTIVITY, HEALTH):
         reply = admin.client.get(path)
         assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), path
         assert client.get(path).status_code == 200, path
-    nobody = str(uuid.uuid4())
+    disabled, unconfirmed = _Operator(api), _Operator(api, confirmed=False)
+    disabled.sql(_DISABLED, d=True)
     with OperatorDatabase(db.engine).operator() as conn:
-        feed = activity_sql.activity(conn, nobody, before=None, customer_id=None, action_prefix=None, limit=5)
-        assert (feed, activity_sql.health(conn, nobody), activity_sql.purges(conn, nobody)) == ([], [], None)
+        assert _everything(conn, operator.id) != ([], [], None)
+        for refused in (str(uuid.uuid4()), disabled.id, unconfirmed.id):
+            assert _everything(conn, refused) == ([], [], None), refused
+
+
+def _everything(conn: Connection, operator_id: str) -> tuple[Any, ...]:
+    feed = activity_sql.activity(
+        conn, operator_id, before=None, customer_id=None, action_prefix=None, limit=5
+    )
+    return list(feed), list(activity_sql.health(conn, operator_id)), activity_sql.purges(conn, operator_id)
+
+
+def test_a_page_is_never_more_than_100_rows_and_no_limit_is_50(db: Database) -> None:
+    api = Api(db)
+    operator, (a, _) = _Operator(api), api.customer("Org many rows")
+    prefix = f"many.{_letters()}."
+    _owner(
+        db,
+        "INSERT INTO audit_log (customer_id, action, created_at)"
+        " SELECT :c, :a, :at + n * interval '1 second' FROM generate_series(1, 120) AS n",
+        {"c": a, "a": prefix + "upload", "at": BASE},
+    )
+    with OperatorDatabase(db.engine).operator() as conn:
+        rows = activity_sql.activity(
+            conn, operator.id, before=None, customer_id=a, action_prefix=prefix, limit=1000
+        )
+        unset = conn.execute(
+            text("SELECT count(*) FROM kaagaz_op_activity(:o, NULL, NULL, NULL, :c, :a, NULL)"),
+            {"o": operator.id, "c": a, "a": prefix},
+        ).scalar_one()
+    assert (len(rows), unset) == (100, 50)
 
 
 def test_health_counts_every_version_out_of_trash_and_names_no_document(db: Database) -> None:

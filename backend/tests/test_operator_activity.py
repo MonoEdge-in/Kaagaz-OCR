@@ -179,6 +179,16 @@ def test_a_forged_cursor_or_a_bad_filter_is_refused_before_the_database(
     assert offline.calls == []
 
 
+def test_an_empty_feed_is_401_when_the_operator_was_disabled_after_the_cookie_check(
+    offline: _Offline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert offline.get(ACTIVITY).json() == {"items": [], "next": None}  # still enabled: just empty
+    answers = iter([("ops@example.test", "Ops", 2), None])  # the cookie check, then after the feed
+    monkeypatch.setattr(operators_sql, "session_operator", lambda conn, oid: next(answers))
+    reply = offline.get(ACTIVITY)
+    assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in")
+
+
 def test_the_cursor_round_trips_microseconds_and_ids_beyond_a_32_bit_number() -> None:
     before = Before(NOW.replace(microsecond=123456), "platform", 2**40)
     assert decode_cursor(encode_cursor(before)) == before
