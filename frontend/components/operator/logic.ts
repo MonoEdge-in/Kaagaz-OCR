@@ -47,6 +47,45 @@ export function operatorSignInError(caught: unknown): string {
   return caught instanceof TypeError ? NETWORK_FAILURE : SIGN_IN_DOWN;
 }
 
+// --- The session ---------------------------------------------------------------
+
+export const OPERATOR_SIGN_IN = "/operator/login";
+/** Not the customer app's "kaagaz-session": an operator's sign-out never reaches a customer tab. */
+export const OPERATOR_CHANNEL = "kaagaz-operator-session";
+export const SIGNED_OUT = "signed_out";
+export const SIGN_OUT_FAILED = "Could not sign out. Check your connection and try again.";
+/** After the session's end, ask the server again this often while it still says yes (clocks differ). */
+export const RECHECK_MS = 30_000;
+
+export type ExitReason = "ended" | "signed_out";
+
+/** Where to go once the session is gone. "Your session ended" only when this tab had one. */
+export function exitUrl(reason: ExitReason, hadSession: boolean): string {
+  if (reason === "signed_out") return `${OPERATOR_SIGN_IN}?signed_out=1`;
+  return hadSession ? `${OPERATOR_SIGN_IN}?ended=1` : OPERATOR_SIGN_IN;
+}
+
+/** GET /me failed: no session (401) leaves for sign-in; anything else shows Try again. */
+export function meFailed(caught: unknown): "signed_out" | "error" {
+  return caught instanceof ApiError && caught.status === 401 ? "signed_out" : "error";
+}
+
+/** Milliseconds until the session ends (expires_at in Unix seconds), within one browser timer. */
+export function expiryDelay(expiresAt: number, now: number): number {
+  return Math.min(2 ** 31 - 1, Math.max(0, expiresAt * 1000 - now));
+}
+
+/** Sign out on the server (it ends every session of this operator); a 401 means
+ * it already had. The page to leave for, or what to say. */
+export async function signOut(logout: () => Promise<unknown>): Promise<{ leave: string } | { error: string }> {
+  try {
+    await logout();
+  } catch (caught) {
+    if (!(caught instanceof ApiError && caught.status === 401)) return { error: SIGN_OUT_FAILED };
+  }
+  return { leave: exitUrl("signed_out", true) };
+}
+
 // --- Any other refusal -------------------------------------------------------
 
 export const STEP_UP_FAILED =
