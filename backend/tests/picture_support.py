@@ -9,11 +9,14 @@ from blank at every size a test uses (``tests/test_picture_support.py``
 guards that).
 
 ``picture_with_bars`` draws any bars, for tests that model a page with a
-known amount of ink (one text line, a small footer).
+known amount of ink (one text line, a small footer). ``noise_picture`` has
+no pattern at all, for a lossless round trip or a picture with no lines.
 """
 
 from collections.abc import Iterable
+from typing import Any
 
+import pytest
 from PIL import Image, ImageDraw
 
 PAPER = (255, 255, 255)
@@ -67,6 +70,26 @@ def text_like_bars(width: int, height: int) -> list[Bar]:
             word += 1
         top += pitch
     return bars
+
+
+def noise_picture(width: int, height: int, *, mode: str = "RGB") -> Image.Image:
+    """Grey values with no pattern, from Knuth's multiplicative hash of each byte's
+    place: the same on every run, and no seed (nothing here is a secret)."""
+    size = width * height * len(mode)
+    return Image.frombytes(mode, (width, height), bytes((k * 2654435761 >> 16) & 255 for k in range(size)))
+
+
+def png_levels(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """The ``compress_level`` of every ``Image.save`` from now on (None: Pillow's default)."""
+    levels: list[object] = []
+    save = Image.Image.save
+
+    def spy(image: Image.Image, *args: Any, **options: Any) -> None:
+        levels.append(options.get("compress_level"))
+        save(image, *args, **options)
+
+    monkeypatch.setattr(Image.Image, "save", spy)
+    return levels
 
 
 def text_like_picture(width: int, height: int, *, mode: str = "RGB") -> Image.Image:

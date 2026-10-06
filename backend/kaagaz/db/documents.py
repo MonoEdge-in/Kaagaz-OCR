@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
+from kaagaz.db import customers
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
@@ -49,7 +50,7 @@ if TYPE_CHECKING:
 
 _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
-    " folder_id, family_id, version_no"
+    " folder_id, family_id, version_no, ocr_choice"
     " FROM documents WHERE customer_id = :c"
 )
 
@@ -259,6 +260,7 @@ def _record(row: Sequence[Any]) -> DocumentRecord:
         folder_id=None if row[7] is None else str(row[7]),
         family_id=str(row[8]),
         version_no=int(str(row[9])),
+        ocr_choice=None if row[10] is None else str(row[10]),
     )
 
 
@@ -283,8 +285,8 @@ _NEXT_VERSION = (
 
 _INSERT_VERSION = (
     "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
-    " uploaded_by, folder_id, family_id, version_no, is_current)"
-    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false)"
+    " uploaded_by, folder_id, family_id, version_no, is_current, ocr_choice)"
+    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false, :ocr)"
     " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
 )
 
@@ -332,6 +334,7 @@ def add_version(
         by=stored.uploaded_by,
         folder=stored.folder_id,
         version=stored.version_no,
+        ocr=stored.ocr_choice,
     )
     if conn.execute(text(_INSERT_VERSION), params).first() is None:  # this customer has these bytes
         row = conn.execute(text(_SELECT + " AND sha256 = :h"), params).one()
@@ -353,6 +356,12 @@ class PgDocuments:
                 {"c": customer_id, "d": document_id},
             ).first()
         return None if row is None else _record(row)
+
+    def customer_active(self, customer_id: str) -> bool:
+        """Is this customer active (0014)? The worker asks at the start of each job;
+        a database that is down is BackendUnavailable, so the job is tried again. O(1)."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            return customers.is_active(conn, customer_id)
 
     def find_by_fingerprint(self, customer_id: str, sha256: str) -> DocumentRecord | None:
         with unavailable(), self._db.customer(customer_id) as conn:
@@ -377,13 +386,14 @@ class PgDocuments:
                 "folder": record.folder_id,
                 "family": record.family_id or record.document_id,
                 "version": record.version_no,
+                "ocr": record.ocr_choice,
             }
             try:
                 inserted = conn.execute(
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                        " detected_type, uploaded_by, folder_id, family_id, version_no)"
-                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version)"
+                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice)"
+                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version, :ocr)"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,
@@ -500,6 +510,25 @@ class PgDocuments:
                     " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
                 ),
                 {"p": json.dumps(progress.to_json()), "c": customer_id, "d": document_id},
+            )
+
+    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
+        """No progress shown, on a document still in progress (received or clean) only:
+        a try a backend stopped leaves no stale "Reading page 1" while the job waits to
+        come back. With ``run_id``, the run fence: under the family lock, change nothing
+        unless that run is still open, so a stale delivery never clears the newer run's
+        progress. Its own short transaction, as ``set_progress``."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            if run_id is not None:
+                lock_family(conn, customer_id, document_id)
+                if not is_run_open(conn, customer_id, document_id, run_id):
+                    return
+            conn.execute(
+                text(
+                    "UPDATE documents SET progress = NULL"
+                    " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
+                ),
+                {"c": customer_id, "d": document_id},
             )
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:

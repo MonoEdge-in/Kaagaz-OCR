@@ -1,5 +1,7 @@
 /* The app shell. Below 1024 px: a 56 px sticky top bar and a menu drawer.
-   From 1024 px: a sticky full-height 240 px sidebar beside the content. */
+   From 1024 px: a 240 px sidebar beside the content. The sidebar stretches
+   down the whole page, so its colour never ends early; the wordmark and menu
+   inside it stick to the window (.sidebarInner). */
 
 .frame {
   min-height: 100dvh;
@@ -55,14 +57,19 @@
 
 @media (min-width: 1024px) {
   .sidebar {
+    display: block;
+    align-self: stretch;
+    background: var(--surface-2);
+    border-inline-end: 1px solid var(--border);
+  }
+
+  .sidebarInner {
     position: sticky;
     top: 0;
     display: flex;
     flex-direction: column;
     height: 100dvh;
     overflow-y: auto;
-    background: var(--surface-2);
-    border-inline-end: 1px solid var(--border);
   }
 }
 
@@ -284,6 +291,9 @@
   color: var(--accent-fg);
   font-weight: 600;
   text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h);
   transform: translateY(-200%);
 }
 

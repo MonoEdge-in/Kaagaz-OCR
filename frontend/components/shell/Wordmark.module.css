@@ -20,6 +20,17 @@ a.wordmark:hover {
   color: var(--fg);
 }
 
+/* The link's target: 24 px, 44 px for touch. */
+a.wordmark {
+  min-height: 24px;
+}
+
+@media (pointer: coarse) {
+  a.wordmark {
+    min-height: 44px;
+  }
+}
+
 .reader {
   position: absolute;
   inset-inline-start: calc(100% + var(--space-2));

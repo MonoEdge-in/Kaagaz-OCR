@@ -15,7 +15,8 @@ of it looks sound, and a Latin spelling of it for search.
   compared (``kaagaz/reading/ocr.py``).
 * ``has_devanagari_letters`` (ML amendment 1(b)). PROVISIONAL for PRD 2: an
   OCR value with any Devanagari letter is needs review. Digits and the danda
-  do not count.
+  do not count. ``has_other_script_letters`` is the same for any script but Latin, by
+  ``letter_script``: the first word of a letter's Unicode name.
 * ``fold_digits`` (L4). Devanagari digits become ASCII digits for parsing and
   for quote matching. It is one character for one, so offsets still hold. The
   printed text (``value_text``) is never changed.
@@ -38,6 +39,11 @@ of it looks sound, and a Latin spelling of it for search.
   before it they become plain vowels (ॉ and ऑ as o, ॅ and ऍ as e, ॲ as a) and
   the abbreviation sign ॰ is dropped. So कॉपी gives "kopi". The danda and
   double danda (। ॥) become ".".
+* ``word_latin_spelling`` (council 4 Oct 2026, PR C). One word of any one
+  script indic-transliteration reads (its Unicode script name, lower-cased, is
+  one of its non-Latin schemes: Gujarati, Bengali, Tamil, Oriya...), turned
+  into Devanagari by it, then ``latin_spelling``. None for a word of another
+  script (Arabic) or of two scripts. No table of ours names a script.
 * ``languages_without_model`` (L2). With no model, a Devanagari piece means
   "other" (Hindi and Marathi cannot be told apart), a piece whose letters are
   mostly ASCII means "en", and any other script means "other".
@@ -149,6 +155,21 @@ def has_devanagari_letters(text: str) -> bool:
     return any("\u0900" <= ch <= "\u097f" and unicodedata.category(ch)[0] in "LM" for ch in text)
 
 
+def letter_script(ch: str) -> str | None:
+    """The script of a letter or mark (L or M): the first word of its Unicode name (LATIN,
+    DEVANAGARI, GUJARATI, TAMIL, ARABIC...), from the Unicode database, never a table of ours.
+    None for any other character, and for a mark of no script of its own (COMBINING ...)."""
+    if unicodedata.category(ch)[0] not in "LM":
+        return None
+    first = unicodedata.name(ch, "").partition(" ")[0]
+    return None if first in ("", "COMBINING") else first
+
+
+def has_other_script_letters(text: str) -> bool:
+    """True when any letter or mark is of a script other than Latin (council 4 Oct 2026). O(n)."""
+    return not text.isascii() and any(letter_script(ch) not in (None, "LATIN") for ch in text)
+
+
 def malformed_devanagari(text: str) -> int:
     """How many vowel signs and viramas do not directly follow a consonant or a nukta.
     Two vowel signs in a row count too, because the second follows a vowel sign."""
@@ -203,6 +224,23 @@ def latin_spelling(text: str) -> str:
         )
 
     return _RUN.sub(spell, text).lower()
+
+
+def word_latin_spelling(word: str) -> str | None:
+    """The module docstring's ``word_latin_spelling``: ``word``'s Latin spelling, or None. O(n)."""
+    from indic_transliteration import sanscript  # slow to import, as in latin_spelling
+
+    scripts = {letter_script(ch) for ch in word}
+    if len(scripts) != 1:
+        return None
+    script = scripts.pop()
+    scheme = None if script is None else sanscript.SCHEMES.get(script.lower())
+    if script is None or scheme is None or scheme.is_roman:
+        return None
+    text = unicodedata.normalize("NFC", word)
+    if script != "DEVANAGARI":
+        text = str(sanscript.transliterate(text, script.lower(), sanscript.DEVANAGARI))
+    return latin_spelling(text)
 
 
 def sound_key(word: str) -> str:

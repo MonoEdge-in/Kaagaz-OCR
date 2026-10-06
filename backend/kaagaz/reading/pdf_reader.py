@@ -38,6 +38,14 @@ by one space, and the file's own signals for the page
   hidden text (ML 4): a hidden layer is never the fallback. If the whole
   document gives nothing, it is ``ReadError("no_text")``: it was read and
   holds no text.
+* With ``dpi_rule`` ``text_height`` (OCR_DPI_RULE, council 5 Oct 2026,
+  PROVISIONAL), that DPI is only the ceiling: each page is drawn at the DPI
+  its text needs (``kaagaz/reading/ocr_dpi.py``), measured on a small probe
+  drawn the same way, with the scan cap only on a page R2 would call a scan
+  (``scan_like``: images over ``scan_image_coverage``, under 200 visible
+  characters). A page on which the
+  engine finds nothing at a lowered DPI is read once more at the ceiling.
+  ``fixed`` (the default) draws every page at the ceiling, as before.
 
 ``on_page`` (if given) is called after every page, text pages too, so the
 worker's heartbeat and the progress move once per page (PRD 2 X3).
@@ -51,9 +59,11 @@ error can quote the file, so nothing is chained on):
 * ``image_too_large``: a page to OCR would be too many pixels even at 72 dpi.
 
 Time is O(characters + images) per page, plus the engine's time per OCR'd
-page. Memory is one page at a time: the pdfplumber and pypdfium2 documents are
-open together, each page's parsed objects are released after it is read, and
-an OCR'd page's picture after the engine has read it.
+page (with ``text_height``, plus one probe picture, and a second reading of a
+page that gave nothing at a lowered DPI). Memory is one page at a time: the
+pdfplumber and pypdfium2 documents are open together, each page's parsed
+objects are released after it is read, and an OCR'd page's picture after the
+engine has read it.
 """
 
 import io
@@ -72,10 +82,19 @@ from pdfminer.psexceptions import PSException
 from pdfplumber.utils.exceptions import MalformedPDFException, PdfminerException
 
 from kaagaz.ingestion import sniff
-from kaagaz.preparing.page_checks import is_blank
+from kaagaz.preparing.page_checks import is_blank, largest_image_dpi
 from kaagaz.preparing.pages import check_page_count, open_pdf, render_pdf_page
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
 from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
+from kaagaz.reading.ocr_dpi import (
+    DPI_RULES,
+    FIXED,
+    MIN_DPI,
+    TEXT_HEIGHT,
+    chosen_dpi,
+    line_height_px,
+    probe_dpi,
+)
 from kaagaz.reading.pdf_signals import page_signals, words_left_visible
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage
@@ -83,6 +102,7 @@ from kaagaz.reading.spans import BoxLocation, ReadError, Span
 from kaagaz.reading.text_quality import (
     PageSignals,
     TextLayerRules,
+    scan_like,
     text_layer_fallback_allowed,
     text_layer_ok,
 )
@@ -129,32 +149,43 @@ class PdfReader:
         max_image_pixels: int,
         rules: TextLayerRules,
         blank_stddev: float,
+        dpi_rule: str = FIXED,
     ) -> None:
         # No defaults: limits are Vrushit's decision (PRD section 6).
         if min(max_pages, dpi, max_image_pixels) < 1:
             raise ValueError("every limit must be at least 1")
         if not blank_stddev >= 0:
             raise ValueError("blank_stddev must be 0 or more")
+        if dpi_rule not in DPI_RULES:
+            raise ValueError(f"dpi_rule must be one of {sorted(DPI_RULES)}")
+        self._dpi_rule = dpi_rule
         self._ocr = ocr
         self._max_pages = max_pages
         self._dpi = dpi
         self._max_ocr_pixels = min(max_image_pixels, MAX_OCR_PIXELS)
-        self._lowered_dpi: int | None = None  # the last read's lowest DPI, when below dpi
+        self._lowered_dpi: int | None = None  # the last read's lowest DPI, when the pixel limits cut dpi
+        self._rule_dpi: int | None = None  # its lowest DPI the text-height rule chose under that
+        self._rereads = 0  # its pages read again at the ceiling
         self._rules = rules
         self._blank_stddev = blank_stddev
 
     @property
     def version(self) -> str:
         """Asked for after reading, so an engine whose version comes from its reply
-        (PaddleOCR-VL) is named as it was, with the DPI when a page had to be drawn lower."""
+        (PaddleOCR-VL) is named as it was, with the DPI when a page had to be drawn lower
+        to fit the pixel limits and, with the text-height rule, the lowest DPI it chose
+        (``;text_dpi=``) and the pages read again (``;ocr_reread=``)."""
         version = str(pdfplumber.__version__)
         if self._ocr is None:
             return version
-        lowered = "" if self._lowered_dpi is None else f";ocr_dpi={self._lowered_dpi}"
-        return f"{version}+{self._ocr.name}-{self._ocr.version}{lowered}"
+        marks = "" if self._lowered_dpi is None else f";ocr_dpi={self._lowered_dpi}"
+        marks += "" if self._rule_dpi is None else f";text_dpi={self._rule_dpi}"
+        marks += f";ocr_reread={self._rereads}" if self._rereads else ""
+        return f"{version}+{self._ocr.name}-{self._ocr.version}{marks}"
 
     def read(self, data: bytes, *, on_page: OnPage | None = None) -> list[Span]:
-        self._lowered_dpi = None
+        self._lowered_dpi = self._rule_dpi = None
+        self._rereads = 0
         spans: list[Span] = []
 
         def visit(pdf: Any, document: Any, number: int) -> None:
@@ -176,17 +207,21 @@ class PdfReader:
         pdfium_page = document[number - 1]
         try:
             rules = self._rules
-            text_spans, decision, _signals = _parsed(lambda: _text_layer(pdf, pdfium_page, number, rules))
+            text_spans, decision, signals = _parsed(lambda: _text_layer(pdf, pdfium_page, number, rules))
             if decision.route == "text_layer":
                 return text_spans, decision
             if self._ocr is None:  # kept as before; a page with no text was not read
                 return text_spans, _kept(decision) if text_spans else None
-            dpi = _fitting_dpi(pdfium_page.get_size(), self._dpi, self._max_ocr_pixels)
+            ceiling = _fitting_dpi(pdfium_page.get_size(), self._dpi, self._max_ocr_pixels)
+            scan = scan_like(" ".join(span.text for span in text_spans), signals, rules)
+            dpi = self._page_dpi(pdfium_page, ceiling, scan)
             image = render_pdf_page(pdfium_page, dpi=dpi, max_image_pixels=self._max_ocr_pixels)
         finally:
             pdfium_page.close()
-        if dpi < self._dpi:
-            self._lowered_dpi = min(dpi, self._lowered_dpi or dpi)
+        if ceiling < self._dpi:
+            self._lowered_dpi = min(ceiling, self._lowered_dpi or ceiling)
+        if dpi < ceiling:
+            self._rule_dpi = min(dpi, self._rule_dpi or dpi)
         fallback = text_spans if text_layer_fallback_allowed(decision) else []
         try:
             if is_blank(image, self._blank_stddev):  # R3: a blank page is never sent to OCR
@@ -194,9 +229,48 @@ class PdfReader:
             scanned = ocr_spans(self._ocr.read(image), number, image.width, image.height)
         finally:
             image.close()
+        if not scanned and dpi < ceiling:  # nothing found at a lowered DPI: once more at the ceiling
+            self._rereads += 1
+            scanned = _read_again(self._ocr, document, number, ceiling, self._max_ocr_pixels)
         if scanned or not fallback:
             return scanned, decision
         return fallback, _kept(decision)
+
+    def _page_dpi(self, pdfium_page: Any, ceiling: int, scan: bool) -> int:
+        """The DPI the page is drawn at for OCR: ``ceiling`` (today's, from OCR_DPI and
+        the pixel limits) with ``fixed``, or by the text-height rule, with the scan cap
+        only on a ``scan`` page (R2's ``scan_like``: its images cover more than
+        ``scan_image_coverage`` and it has under 200 visible characters, so vector text
+        over a full-page background image is never capped at the image's DPI).
+
+        ponytail: the coverage is the union of the page's images (R2's own number), so
+        a large low-resolution image beside a sharp one caps the page at the largest
+        image's DPI."""
+        if self._dpi_rule == FIXED or ceiling <= MIN_DPI:
+            return ceiling
+        probe = probe_dpi(pdfium_page.get_size(), ceiling)
+        if probe is None:
+            return ceiling
+        picture = render_pdf_page(pdfium_page, dpi=probe, max_image_pixels=self._max_ocr_pixels)
+        try:
+            line_px = line_height_px(picture, dpi=probe)
+        finally:
+            picture.close()
+        capped = scan and self._dpi_rule == TEXT_HEIGHT
+        return chosen_dpi(ceiling, line_px, probe, largest_image_dpi(pdfium_page) if capped else None)
+
+
+def _read_again(ocr: OcrEngine, document: Any, number: int, dpi: int, max_pixels: int) -> list[Span]:
+    """Page ``number`` drawn again at ``dpi`` and read by ``ocr``. O(pixels) plus the engine."""
+    pdfium_page = document[number - 1]
+    try:
+        image = render_pdf_page(pdfium_page, dpi=dpi, max_image_pixels=max_pixels)
+    finally:
+        pdfium_page.close()
+    try:
+        return ocr_spans(ocr.read(image), number, image.width, image.height)
+    finally:
+        image.close()
 
 
 def text_layer_checks(

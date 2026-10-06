@@ -173,6 +173,13 @@ export function InvoicePanel({ detail, active, onShow }: PanelProps) {
           {chip.text}
         </span>
       </p>
+      {chip.reasons.length > 0 && (
+        <ul className={styles.checkReasons} aria-label="Why it needs review">
+          {chip.reasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      )}
       <dl className={styles.facts}>
         {INVOICE_FIELDS.map(([name, stored]) => (
           <div key={name} className={styles.factRow}>

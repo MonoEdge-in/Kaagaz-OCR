@@ -30,21 +30,31 @@ The steps (docs/architecture.md):
    when every value or piece behind the answer is verified, and no sentence
    rests on neighbours alone (PROVISIONAL, plan decision 8: the gate never
    judged them). Nor is it verified when the gate passed only through the
-   glossary's Marathi and Hindi words, or a sentence citing Devanagari
-   evidence was checked against nothing (``verify.unchecked_cross_script``;
-   council 2 Oct 2026, PR2).
+   glossary's Marathi and Hindi words, or a sentence citing evidence in a script
+   other than Latin was checked against nothing (``verify.unchecked_cross_script``;
+   council 2 Oct 2026, PR2; any script, council 4 Oct 2026).
 7. My words (council 3 Oct 2026, A3, PROVISIONAL): on the search route only, the
    asking user's own words the question uses (``expansion.expand``, read once inside
    ``Database.user``) are searched as OR alternatives and may count at the gate
    (``"personal"``). An answer that used one carries them as ``understood_words``
    and is never verified. They never reach ``normalise``, the fixed queries, the
    model's prompt or the sentences.
+8. Translation (council 4 Oct 2026, PROVISIONAL; ANSWER_TRANSLATE_QUESTION, off by
+   default): on the search route, an all-Latin question whose first hits are mostly in
+   another script is translated into that script (``translate.py``) and searched again,
+   the question and its translations fused (``TranslatedSearch``). The gate may then pass
+   on any hit's score (``any_hit_scores``). The answer is never verified when the first
+   search alone would not pass the gate, or a cited hit was found, or lifted over the
+   score, by the translation only. The translation is never in the model's prompt, the
+   answer or the logs. A question typed in another script is searched as asked.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
 
 Nothing here logs the question or any document text: a model error is logged
 as its code, and each model answer as the model's tag and ANSWER_PROMPT_HASH.
+Every not-found answer logs one line, "answer not found", with a fixed reason
+code only (``_not_found``'s ``reason``).
 
 Time: one ``available_fields`` query only for a question with an aggregate
 word and no unknown topic word, then either one fixed query or one search
@@ -68,7 +78,7 @@ from kaagaz.ai.client import (
     ModelClient,
     ModelOutputError,
     ModelUnavailable,
-    estimate_tokens,
+    estimate_tokens_cautiously,
     input_token_budget,
 )
 from kaagaz.answering import glossary
@@ -85,8 +95,12 @@ from kaagaz.answering.draft import (
 from kaagaz.answering.evidence import (
     CAPPED,
     Evidence,
+    Gate,
     PgRetriever,
     Retriever,
+    Translated,
+    TranslatedSearch,
+    any_hit_scores,
     closest_documents,
     enough_evidence,
     has_word,
@@ -102,9 +116,10 @@ from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
+from kaagaz.answering.translate import target_scripts, translate
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
-from kaagaz.chunking.script import ascii_digits, has_devanagari_letters
+from kaagaz.chunking.script import ascii_digits, has_other_script_letters
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.indexing import query_input, recipe_tag
@@ -196,8 +211,9 @@ class Answer:
 
 
 class AnswerService:
-    """``retriever``, ``fixed_queries``, ``unchecked`` and ``words`` default to the
-    PostgreSQL ones; tests pass fakes."""
+    """``retriever``, ``translated_search``, ``fixed_queries``, ``unchecked`` and ``words``
+    default to the PostgreSQL ones; tests pass fakes. ``translator``: the client the question
+    is translated with (its own timeout), used only with ANSWER_TRANSLATE_QUESTION on."""
 
     def __init__(
         self,
@@ -210,8 +226,11 @@ class AnswerService:
         fixed_queries: FixedQueries | None = None,
         unchecked: UncheckedValues | None = None,
         words: WordSource | None = None,
+        translator: ModelClient | None = None,
+        translated_search: TranslatedSearch | None = None,
     ) -> None:
         self._model = model
+        self._translator = translator if settings.answer_translate_question else None
         self._settings = settings
         self._clock = clock
         self._zone = ZoneInfo(settings.timezone)
@@ -219,16 +238,14 @@ class AnswerService:
         self._evidence_budget = input_token_budget(
             num_ctx=settings.model_num_ctx, max_tokens=settings.model_answer_max_tokens, system=SYSTEM_PROMPT
         )
-        self._retriever = (
-            retriever
-            if retriever is not None
-            else PgRetriever(
-                db,
-                recipe=recipe_tag(settings.model_embed),
-                ef_search=settings.search_ef,
-                neighbours=settings.answer_neighbours,
-            )
+        pg = PgRetriever(
+            db,
+            recipe=recipe_tag(settings.model_embed),
+            ef_search=settings.search_ef,
+            neighbours=settings.answer_neighbours,
         )
+        self._retriever: Retriever = pg if retriever is None else retriever
+        self._translated: TranslatedSearch | None = pg if retriever is None else translated_search
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
         self._words = words if words is not None else PgWords(db)
@@ -246,7 +263,7 @@ class AnswerService:
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
         asker, whose own words (only) may help the search (None: nobody's)."""
         if scope.matches_nothing:
-            return _not_found("search", question.strip(), [], model_used=False)
+            return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         turns = self._settings.chat_history_turns
         rewritten = None
         if self._model is not None and history and turns:
@@ -306,12 +323,12 @@ class AnswerService:
     def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
         rows = self._run_plan(fixed, customer_id, plan)
         if not rows:
-            return _not_found("fixed_query", shown, [], model_used=False)
+            return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_rows")
         top = [row for row in rows if row.number == rows[0].number]  # a tie is shown, never broken
         cited = _cited_values(top)
         sentence = _fixed_sentence(plan, top)
         if not cited or sentence is None:
-            return _not_found("fixed_query", shown, [], model_used=False)
+            return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
         citations = [
             Citation(
                 n=index,
@@ -380,20 +397,29 @@ class AnswerService:
         # are left out of every step below, never out of normalise (PR 2b-2).
         normalised = replace(normalised, keywords=glossary.content_words(normalised.keywords))
         query_text = " ".join(normalised.keywords) or normalised.english
+        if not query_text and has_other_script_letters(question):
+            query_text = question.strip()  # typed in another script: searched as asked (council 4 Oct)
         if not query_text:
-            return _not_found("search", shown, [], model_used=False)
+            return _not_found("search", shown, [], model_used=False, reason="notfound_empty_question")
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
-        # A Devanagari question is embedded as asked (W3): its Latin spelling means little to the model.
-        meant = question if has_devanagari_letters(question) else normalised.english
-        hits = self._retriever.search(customer_id, query_text, self._embed(meant), limit, scope, expansion)
+        # A question in another script is embedded as asked (W3): its Latin spelling means little.
+        vector = self._embed(question if has_other_script_letters(question) else normalised.english)
+        hits = self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
+        numbers = _numbers(question, normalised.keywords, expansion)
+        min_score = self._settings.answer_min_evidence_score
+        translated = self._translated_search(
+            customer_id, question, query_text, vector, hits, scope, expansion
+        )
+        first: Gate | None = None  # how the question's own search passed the gate, when translated
+        if translated is not None:
+            first = enough_evidence(number_evidence(hits), normalised.keywords, min_score, numbers, expansion)
+            hits = translated.hits
         evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
-        numbers = _numbers(question, normalised.keywords, expansion)
-        min_score = self._settings.answer_min_evidence_score
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
-        if gate is None:
-            return _not_found("search", shown, closest, model_used=False)
+        if gate is None and not (translated is not None and any_hit_scores(evidence, min_score, numbers)):
+            return _not_found("search", shown, closest, model_used=False, reason="notfound_gate")
         # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
         # while they fit the room the hits and the question leave in MODEL_NUM_CTX: every
         # hit is kept, the neighbours go first. ponytail: fit_evidence (perf/s2-query-wins)
@@ -401,7 +427,7 @@ class AnswerService:
         room = input_token_budget(
             num_ctx=self._settings.model_num_ctx, max_tokens=_REPLY_TOKENS, system=SYSTEM_PROMPT
         )
-        room -= estimate_tokens(question) + sum(_tokens(item) for item in evidence)
+        room -= estimate_tokens_cautiously(question) + sum(_tokens(item) for item in evidence)
         near = self._retriever.neighbours(customer_id, [item.hit for item in evidence], scope)
         for item in number_evidence(near, start=len(evidence) + 1, neighbour=True):
             room -= _tokens(item)
@@ -409,14 +435,15 @@ class AnswerService:
                 break
             evidence.append(item)
 
-        draft, model_used, seen = self._draft(question, normalised, evidence, expansion)
+        draft, model_used, seen, why = self._draft(question, normalised, evidence, expansion)
         # Only the evidence the draft saw. Line by line: joined, "12" and a next
         # line's "August 2026" would read as a date.
         texts = {item.n: "\n".join(map(clean_text, item.hit.text.splitlines())) for item in seen}
         cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
         kept = verify([s for s in cleaned if s.text], texts) if draft.status == "answered" else []
         if not kept:
-            return _not_found("search", shown, closest, model_used=model_used)
+            why = why if draft.status != "answered" else "notfound_verify_dropped_all"
+            return _not_found("search", shown, closest, model_used=model_used, reason=why)
 
         renumber: dict[int, int] = {}
         for sentence in kept:
@@ -432,7 +459,7 @@ class AnswerService:
         on_neighbours = any(_rests_on_neighbours(s, by_n, texts) for s in kept)
         # Nor is one the glossary or a sound alone let through or chose the quote of, one
         # checked against nothing, one a cited hit does not pass the gate on its own, or one
-        # with an English word that Devanagari evidence cannot back (council, PR2 and PR 2b,
+        # with an English word that evidence in another script cannot back (council, PR2 and PR 2b,
         # and their code reviews). Only the question's dropped words (who, is, ka...): a
         # content word of it, a name the question puts forward, must be in the cited text
         # itself, by sound, or through the glossary's English.
@@ -443,6 +470,15 @@ class AnswerService:
             or any(unchecked_cross_script(s, texts) for s in kept)
             or any(_unbacked_latin(s, texts, asked) for s in kept)
             or (not model_used and any(_quoted_through_glossary(s, by_n, normalised.keywords) for s in kept))
+            # The translation (council 4 Oct 2026): it alone let the question through, or found
+            # a cited hit, or lifted its score; capped here, never through CAPPED.
+            or (
+                translated is not None
+                and (
+                    first not in ("score", "keywords")
+                    or any(_translated_only(by_n[n], translated, min_score) for s in kept for n in s.evidence)
+                )
+            )
         )
         verified = all(c.label == "verified" for c in citations) and not (on_neighbours or unchecked)
         return Answer(
@@ -454,6 +490,32 @@ class AnswerService:
             route="search",
             normalized_question=shown,
             model_used=model_used,
+        )
+
+    def _translated_search(
+        self,
+        customer_id: str,
+        question: str,
+        query_text: str,
+        vector: list[float] | None,
+        hits: Sequence[Any],
+        scope: Scope,
+        expansion: Expansion,
+    ) -> Translated | None:
+        """The search again with the question's translations into the script of its first
+        ``hits`` (translate.py), decided before any draft; None to answer as today: the
+        setting off, no other script, or no usable translation. The texts are search
+        parameters and embeddings only. At most one model call and one search."""
+        if self._translator is None or self._translated is None:
+            return None
+        scripts = target_scripts(question, [hit.text for hit in hits])
+        queries = translate(self._translator, question, scripts) if scripts else None
+        if not queries:
+            return None
+        texts = [(query.text, self._embed(query.text)) for query in queries]
+        limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+        return self._translated.search_translated(
+            customer_id, query_text, vector, texts, limit, scope, expansion
         )
 
     def _embed(self, english: str) -> list[float] | None:
@@ -475,9 +537,10 @@ class AnswerService:
         normalised: NormalisedQuestion,
         evidence: Sequence[Evidence],
         expansion: Expansion = NO_EXPANSION,
-    ) -> tuple[Draft, bool, Sequence[Evidence]]:
+    ) -> tuple[Draft, bool, Sequence[Evidence], str]:
         """The model's draft (and True), or the extractive one (and False), with the
-        evidence it was drafted from: for the model, the best pieces that fit its window.
+        evidence it was drafted from: for the model, the best pieces that fit its window,
+        and the reason code a not-found draft would give.
         The model sees the question and the evidence only, never a user's word or meaning;
         ``expansion`` helps the extractive draft choose its lines."""
         if self._model is not None:
@@ -492,17 +555,20 @@ class AnswerService:
                     code = error.code
                 else:
                     _log.info("answer drafted by %s with prompt %s", model.chat_model, ANSWER_PROMPT_HASH)
-                    return draft, True, seen
+                    return draft, True, seen, "notfound_model"
             # Quoting the evidence needs no model.
             _log.warning("answer drafted without the model", extra={"code": code})
+        why = "notfound_no_model" if self._model is None else f"notfound_model_error:{code}"
         if mentions_date(normalised):
-            return Draft("not_found", []), False, evidence  # a quoted line cannot be checked against a date
+            # A quoted line cannot be checked against a date.
+            return Draft("not_found", []), False, evidence, f"{why}:date"
         return (
             extractive_draft(
                 normalised.keywords, evidence, _numbers(question, normalised.keywords, expansion), expansion
             ),
             False,
             evidence,
+            why,
         )
 
     def _today(self) -> date:
@@ -520,7 +586,18 @@ def _numbers(question: str, keywords: Sequence[str], expansion: Expansion) -> li
 
 def _tokens(item: Evidence) -> int:
     """About how many prompt tokens a piece takes: its header and text, and its fence."""
-    return estimate_tokens(item.hit.context_header + item.hit.text) + _FENCE_TOKENS
+    return estimate_tokens_cautiously(item.hit.context_header + item.hit.text) + _FENCE_TOKENS
+
+
+def _translated_only(item: Evidence, translated: Translated, min_score: float) -> bool:
+    """A cited hit (not a neighbour) only a translation found, or whose meaning score only a
+    translation brought to ``min_score``."""
+    if item.neighbour:
+        return False
+    if item.hit.piece_id not in translated.original:
+        return True
+    own, score = translated.original[item.hit.piece_id], item.hit.meaning_score
+    return score is not None and score >= min_score and (own is None or own < min_score)
 
 
 def _rests_on_neighbours(sentence: DraftSentence, by_n: dict[int, Evidence], texts: dict[int, str]) -> bool:
@@ -582,19 +659,19 @@ def _latin_words(text: str) -> set[str]:
 
 
 def _unbacked_latin(sentence: DraftSentence, texts: dict[int, str], asked: set[str]) -> bool:
-    """True when a text the sentence cites has Devanagari letters and the sentence holds an
-    English word that neither the question's dropped words (``asked``), ``_FUNCTION_WORDS``,
-    the English side of a glossary word in the cited text, nor the cited texts themselves
-    have: "The owner (भोगवटादार) is Sita Deshmukh" names nobody the evidence names. Fail
-    closed: Latin words in the cited text ("Page 1 of 1", "GSTIN") only add to what is
-    allowed; they never turn the check off. A word written the Romanised way (PR 2b) is
-    backed only when its sound key equals that of a word of the cited text's Latin spelling
-    ("Ramchandra" for रामचंद्र; never "Ramchandran", ``glossary.sounds_like`` strict); never by
-    its glossary meaning (Malik, Kisan and Bhumika are names), nor because the question has it
-    ("... is malak patil" for "malak kon ahe?"). O(s * w + e * g) for w words and g glossary
-    words."""
+    """True when a text the sentence cites has letters of a script other than Latin (Devanagari,
+    Gujarati...) and the sentence holds an English word that neither the question's dropped
+    words (``asked``), ``_FUNCTION_WORDS``, the English side of a glossary word in the cited
+    text, nor the cited texts themselves have: "The owner (भोगवटादार) is Sita Deshmukh" names
+    nobody the evidence names. Fail closed: Latin words in the cited text ("Page 1 of 1",
+    "GSTIN") only add to what is allowed; they never turn the check off. A word written the
+    Romanised way (PR 2b) is backed only when its sound key equals that of a word of the cited
+    text's Latin spelling ("Ramchandra" for रामचंद्र; never "Ramchandran",
+    ``glossary.sounds_like`` strict); never by its glossary meaning (Malik, Kisan and Bhumika
+    are names), nor because the question has it ("... is malak patil" for "malak kon ahe?").
+    O(s * w + e * g) for w words and g glossary words."""
     cited = [texts[n] for n in sentence.evidence if n in texts]
-    if not any(has_devanagari_letters(text) for text in cited):
+    if not any(has_other_script_letters(text) for text in cited):
         return False
     found: set[str] = set().union(*(_latin_words(text) for text in cited))
     english = glossary.english_for("\n".join(cited))
@@ -619,7 +696,17 @@ def _quoted_through_glossary(
     )  # numbers: numbers_asked
 
 
-def _not_found(route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool) -> Answer:
+def _not_found(
+    route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool, reason: str
+) -> Answer:
+    """A not-found answer, and one log line with its fixed ``reason`` code (never the
+    question or page text): notfound_empty_scope, notfound_fixed_no_rows,
+    notfound_fixed_no_sentence, notfound_empty_question, notfound_gate (no evidence
+    passed), notfound_model (the model said so), notfound_model_error:<code> (it failed
+    and the quoted lines held nothing), notfound_no_model (the same, model off),
+    notfound_verify_dropped_all (the checker kept no sentence); ":date" after the
+    last two: a date question, never quoted."""
+    _log.info("answer not found", extra={"code": reason})
     return Answer(
         status="not_found",
         label=None,

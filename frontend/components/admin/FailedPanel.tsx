@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { StatusChip } from "@/components/documents/StatusChip";
 import { pageInfo } from "@/components/documents/logic";
 import table from "@/components/documents/Table.module.css";
+import { WrapName } from "@/components/documents/WrapName";
 import { Icon } from "@/components/ui/Icon";
 import { listFailed, reprocessDocument } from "@/lib/api";
 import type { FailedDocument } from "@/lib/types";
@@ -88,63 +89,67 @@ export function FailedPanel() {
         <p className={styles.emptyLine}>No failed jobs. Every document was read.</p>
       )}
       {page && page.items.length > 0 && (
-        <table className={`table ${table.reflow}`} role="table">
-          <caption className="visually-hidden">Failed jobs, newest first</caption>
-          <thead role="rowgroup">
-            <tr role="row">
-              {["Document", "Status", "What happened", "Last run", "Retry"].map((name) => (
-                <th key={name} scope="col" role="columnheader">
-                  {name}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody role="rowgroup">
-            {page.items.map((item) => {
-              const state = retries[item.id];
-              return (
-                <tr key={item.id} role="row">
-                  <td
-                    role="cell"
-                    data-label="Document"
-                    className={`${styles.strong} ${styles.wrap}`}
-                  >
-                    <Link href={`/documents/${item.id}`}>{item.display_name}</Link>
-                  </td>
-                  <td role="cell" data-label="Status">
-                    <StatusChip status={item.status} />
-                  </td>
-                  <td role="cell" data-label="What happened" className={styles.wrap}>
-                    {item.message}
-                  </td>
-                  <td role="cell" data-label="Last run" className={styles.nowrap}>
-                    {lastRunText(item.last_run_at)}
-                  </td>
-                  <td role="cell" data-label="Retry">
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={state?.busy === true || (state && !state.busy && state.started)}
-                      aria-describedby={state && !state.busy ? `retry-${item.id}` : undefined}
-                      onClick={() => void retry(item.id)}
+        <div className={table.reflowWrap}>
+          <table className={`table ${table.reflow}`} role="table">
+            <caption className="visually-hidden">Failed jobs, newest first</caption>
+            <thead role="rowgroup">
+              <tr role="row">
+                {["Document", "Status", "What happened", "Last run", "Retry"].map((name) => (
+                  <th key={name} scope="col" role="columnheader">
+                    {name}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody role="rowgroup">
+              {page.items.map((item) => {
+                const state = retries[item.id];
+                return (
+                  <tr key={item.id} role="row">
+                    <td
+                      role="cell"
+                      data-label="Document"
+                      className={`${styles.strong} ${styles.wrap}`}
                     >
-                      {state?.busy ? (
-                        <span className="spinner" aria-hidden="true" />
-                      ) : (
-                        <Icon name="refresh" />
-                      )}
-                      Retry
-                      <span className="visually-hidden">{` ${item.display_name}`}</span>
-                    </button>
-                    <p id={`retry-${item.id}`} className={styles.wrap} aria-live="polite">
-                      {state && !state.busy ? state.message : ""}
-                    </p>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                      <Link href={`/documents/${item.id}`}>
+                        <WrapName name={item.display_name} />
+                      </Link>
+                    </td>
+                    <td role="cell" data-label="Status">
+                      <StatusChip status={item.status} />
+                    </td>
+                    <td role="cell" data-label="What happened" className={styles.wrap}>
+                      {item.message}
+                    </td>
+                    <td role="cell" data-label="Last run">
+                      {lastRunText(item.last_run_at)}
+                    </td>
+                    <td role="cell" data-label="Retry">
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={state?.busy === true || (state && !state.busy && state.started)}
+                        aria-describedby={state && !state.busy ? `retry-${item.id}` : undefined}
+                        onClick={() => void retry(item.id)}
+                      >
+                        {state?.busy ? (
+                          <span className="spinner" aria-hidden="true" />
+                        ) : (
+                          <Icon name="refresh" />
+                        )}
+                        Retry
+                        <span className="visually-hidden">{` ${item.display_name}`}</span>
+                      </button>
+                      <p id={`retry-${item.id}`} className={styles.wrap} aria-live="polite">
+                        {state && !state.busy ? state.message : ""}
+                      </p>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
       {pages && page && page.total > FAILED_PAGE_SIZE && (
         <nav className={styles.pager} aria-label="Failed jobs pages">

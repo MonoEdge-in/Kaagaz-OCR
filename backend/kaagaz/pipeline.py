@@ -3,7 +3,10 @@
 The steps, in order, for one (customer, document):
 
 1. Look up this customer's record. A job naming another customer's document
-   stops here, before any file is read, and nothing is written.
+   stops here, before any file is read, and nothing is written. A customer that
+   is disabled or being deleted (0014) stops here too, before any file is read
+   or any model called: the document is marked failed with
+   ``customer_disabled``, and the job is not retried.
 2. Scan the file (ScanGate). Nothing below runs unless it is clean, and the
    bytes used below are exactly the bytes that were scanned.
 3. Check the scanned bytes still match the fingerprint taken at upload.
@@ -80,16 +83,26 @@ Runs and progress (PRD 2 R6, X2, X3), when the processor is given them:
   short transaction between steps, never inside the save, and best effort
   (AR10): a database that is down only means no progress (``progress_not_saved``).
   It is fenced too, so a superseded delivery never overwrites the newer run's
-  progress: it ends there, quietly, as above.
+  progress: it ends there, quietly, as above. A try a backend stopped clears its
+  progress (``clear_progress``, fenced, best effort: ``progress_not_cleared``), so
+  the list says "Waiting to try again", not a stale "Reading page 1", until the
+  job comes back.
 * The pages are counted by route as each is read (``on_page``), so a run that
   fails part way records the pages it read; once every page has its route, the
   counts are those of the stored routes.
+* The scan reader the upload chose (``documents.ocr_choice``, PRD 4 #17) reads
+  this delivery's scans (``OcrChooser.choose``) until its run is closed, and
+  then Auto again, whatever happened. A run of a document with a choice keeps
+  ``ocr_choice`` and ``ocr_choice_honoured`` in its config; a choice this worker
+  does not have is read with Auto and logged with its code only
+  (``ocr_choice_unavailable``).
 
 Memory: the file's bytes, its spans and one decoded page picture at a time
 (vision readings). Time is linear in the spans apart from the sorts in the
 chunkers and extractors (O(n log n)).
 """
 
+import contextlib
 import functools
 import hashlib
 import io
@@ -110,7 +123,18 @@ from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
-from kaagaz.eta import Estimate, Pair, Rates, RunTiming, after_reading, rates, reading
+from kaagaz.eta import (
+    FLOORED_STEPS,
+    Estimate,
+    Pair,
+    Rates,
+    RunTiming,
+    after_reading,
+    fraction_at,
+    preparing,
+    rates,
+    reading,
+)
 from kaagaz.extraction.card import ChatModel
 from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
@@ -181,8 +205,14 @@ _WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
 # sent to the vision model; the values past it stay single_reader.
 MAX_VISION_CROPS = 200
 _BACKEND_NAME = re.compile(r"[a-z]{1,32}")  # "ocr", "storage", ...: a run's <backend>_unavailable
-# The PDF reader adds ";ocr_dpi=N" to its version when a page was drawn below OCR_DPI.
-_LOWERED_OCR_DPI = re.compile(r";ocr_dpi=([0-9]{1,5})\b")
+# The run config's keys for the marks a reader adds to its version: ";ocr_dpi=N" when a PDF
+# page was drawn below OCR_DPI to fit the pixel limits; with OCR_DPI_RULE (council 5 Oct
+# 2026), ";text_dpi=N", the rule's lowest DPI, and ";ocr_reread=N", the pages read twice.
+_VERSION_MARKS = (
+    ("ocr_dpi_lowest", re.compile(r";ocr_dpi=([0-9]{1,5})\b")),
+    ("ocr_text_dpi_lowest", re.compile(r";text_dpi=([0-9]{1,5})\b")),
+    ("pages_ocr_reread", re.compile(r";ocr_reread=([0-9]{1,5})\b")),
+)
 
 _NOTHING: Pair = (0.0, 0.0)  # no page of a kind measured yet (kaagaz.eta)
 
@@ -234,9 +264,21 @@ class Progress:
     total: int
     # The time-left estimate (kaagaz.eta) written with it: not part of which step this is.
     estimate: Estimate | None = field(default=None, compare=False)
+    started_at: datetime | None = field(default=None, compare=False)  # the run's start, for the percentage
+    reached: float | None = field(default=None, compare=False)  # the run's highest fraction (kaagaz.eta)
+    prior: tuple[Step, Estimate] | None = field(default=None, compare=False)  # the estimate written before
 
     def to_json(self) -> dict[str, object]:
         shown: dict[str, object] = {"step": self.step, "done": self.done, "total": self.total}
+        if self.started_at is not None:
+            shown["started_at"] = self.started_at.isoformat()
+        if self.reached is not None:
+            shown["reached"] = round(self.reached, 4)
+        if self.prior is not None:
+            step, estimate = self.prior
+            timing = estimate.to_json()
+            kept = ("moved_at", "finish_at", "after_s", "slow_after_s")
+            shown["prior"] = {"step": step, **{key: timing[key] for key in kept}}
         return shown if self.estimate is None else {**shown, **self.estimate.to_json()}
 
 
@@ -319,11 +361,16 @@ class ProgressStore(Protocol):
         open (the run fence)."""
         ...
 
+    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
+        """No progress shown. With ``run_id``, change nothing unless that run is still open."""
+        ...
+
 
 class OcrMeter(Protocol):
     """kaagaz.reading.ocr.MeteredOcrEngine in production: the engine the readers use."""
 
-    name: str
+    @property
+    def name(self) -> str: ...  # the engine in use: a chosen one's while its job runs
 
     @property
     def version(self) -> str: ...
@@ -334,6 +381,14 @@ class OcrMeter(Protocol):
 
     def take_fallback_pages(self) -> int:
         """Pages the fallback engine read since the last take, then zero again."""
+        ...
+
+
+class OcrChooser(Protocol):
+    """kaagaz.reading.ocr.OcrEngines in production: which engine reads one job's scans."""
+
+    def choose(self, choice: str | None) -> contextlib.AbstractContextManager[bool]:
+        """Read with ``choice`` (None: Auto) inside the block; True when it was honoured."""
         ...
 
 
@@ -411,12 +466,13 @@ class _Run:
 
     run_id: str | None
     started: float
+    started_at: datetime | None = None  # the clock at the start, shown with each progress
     routes: Counter[str] = field(default_factory=Counter)
     vision_crops: int = 0
     values_verified: int = 0
     values_needs_review: int = 0
     embedded: bool = False
-    lowest_ocr_dpi: int | None = None  # when a page was drawn for OCR below OCR_DPI
+    version_marks: dict[str, int] = field(default_factory=dict)  # from the first reader's version
     model_calls: int = 0  # the card and the invoice windows called (PRD 2 D1, E2)
     model_error: str | None = None  # "model_<code>" when a call failed; the document still ends ready
     quotes_returned: int = 0
@@ -424,11 +480,17 @@ class _Run:
     quote_config: dict[str, int] = field(default_factory=dict)  # loose, ambiguous, summary_dropped (ML 10)
     # The time left (kaagaz.eta): marks from the timer, and this run's own pages by kind.
     rates: Rates | None = None
+    preparing_started: float | None = None
+    pages_prepared: int = 0
     reading_started: float | None = None
     reading_ended: float | None = None
     moved: float = 0.0  # the timer when the last page was read
     measured: dict[str, Pair] = field(default_factory=dict)  # "ocr", "fast": (seconds, pages)
     after: Estimate | None = None  # from the end of reading, kept for each understanding step
+    shown: tuple[Step, Estimate] | None = None  # the last estimate written, and its step
+    prior: tuple[Step, Estimate] | None = None  # the one written before it (its ``prior``)
+    reached: float = 0.0  # the highest fraction shown so far (kaagaz.eta): it never goes back
+    ocr_choice: dict[str, str | bool] = field(default_factory=dict)  # the upload's reader, when it chose one
 
 
 class DocumentProcessor:
@@ -449,6 +511,7 @@ class DocumentProcessor:
         runs: RunStore | None = None,
         progress: ProgressStore | None = None,
         ocr_meter: OcrMeter | None = None,
+        ocr_engines: OcrChooser | None = None,
         clock: Callable[[], datetime] | None = None,
         timer: Callable[[], float] | None = None,
         max_vision_crops: int = MAX_VISION_CROPS,
@@ -459,6 +522,7 @@ class DocumentProcessor:
         chat_model: str | None = None,
         model_budget: ModelBudget | None = None,
         timezone: str = "UTC",
+        customer_active: Callable[[str], bool] | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         ``vision`` reads scanned boxes again. Either failing with one of
@@ -467,12 +531,15 @@ class DocumentProcessor:
         The rest are for PRD 2 and all optional: ``runs`` keeps one run per delivery
         (it needs ``clock`` for its times and ``timer`` for its seconds);
         ``progress`` shows how far a document has got; ``ocr_meter`` is the OCR
-        engine the readers use, counted; ``run_config`` is the run's plain JSON set-up
+        engine the readers use, counted, and ``ocr_engines`` picks the engine behind it
+        for each job (the upload's choice); ``run_config`` is the run's plain JSON set-up
         (ML 10); ``vision_model`` and ``embed_model`` are the tags a run records
         when it used them. ``chat`` is the model stage's chat model (PRD 2 D1, E2),
         with its ``model_budget``; ``chat_model`` is the tag a run records when a
         chat call was made. ``timezone`` (settings.timezone) says which day it is for
-        the invoice checks (PRD 2 ML 6(j)): today is the clock's date there."""
+        the invoice checks (PRD 2 ML 6(j)): today is the clock's date there.
+        ``customer_active(customer_id)`` (``PgDocuments.customer_active``) is asked
+        at the start of every job; None (tests with fakes) asks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_vision_crops < 0:
@@ -493,6 +560,7 @@ class DocumentProcessor:
         self._runs = runs
         self._progress_store = progress
         self._ocr_meter = ocr_meter
+        self._ocr_engines = ocr_engines
         self._clock = clock or _utc_now
         self._timer = timer or time.perf_counter
         self._max_vision_crops = max_vision_crops
@@ -503,6 +571,7 @@ class DocumentProcessor:
         self._chat_model = chat_model
         self._model_budget = model_budget
         self._timezone = timezone
+        self._customer_active = customer_active
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -511,7 +580,11 @@ class DocumentProcessor:
             raise JobFailed("document_missing", retryable=False)
         run = self._start_run(job)
         settled = False  # the run was finished, or is being, on a known path
+        chosen = contextlib.ExitStack()  # the upload's reader, until the run is closed
         try:
+            if self._customer_active is not None and not self._customer_active(job.customer_id):
+                raise JobFailed("customer_disabled", retryable=False)  # marked failed below, never read
+            self._choose_reader(job, record, run, chosen)
             self._process(job, record, heartbeat, run)
             settled = True
         except Superseded:
@@ -531,6 +604,7 @@ class DocumentProcessor:
             raise
         except BackendUnavailable as error:
             settled = True
+            self._clear_progress(job, run, _unavailable_code(error))  # while the run is still open
             self._close_run(job, run, "failed", _unavailable_code(error))
             raise
         finally:
@@ -538,6 +612,27 @@ class DocumentProcessor:
                 # Anything else is a bug: it is not caught (no blanket except) and goes on
                 # up to the worker, but its run ends failed rather than staying open.
                 self._close_run(job, run, "failed", "internal_error")
+            chosen.close()  # Auto again for the next job, whatever happened
+
+    def _choose_reader(
+        self, job: Job, record: DocumentRecord, run: _Run, chosen: contextlib.ExitStack[bool | None]
+    ) -> None:
+        """Read this job's scans with the reader its upload chose (NULL: Auto). A choice
+        this worker doesn't have (not set up, or no OCR at all) is read with Auto."""
+        choice = record.ocr_choice
+        if choice is None:
+            return  # Auto: exactly as before, and the run's config is unchanged
+        honoured = self._ocr_engines is not None and chosen.enter_context(self._ocr_engines.choose(choice))
+        run.ocr_choice = {"ocr_choice": choice, "ocr_choice_honoured": honoured}
+        if not honoured:
+            _log.warning(
+                "ocr choice not available, read with auto",
+                extra={
+                    "customer_id": job.customer_id,
+                    "document_id": job.document_id,
+                    "code": "ocr_choice_unavailable",
+                },
+            )
 
     def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
@@ -547,6 +642,7 @@ class DocumentProcessor:
             raise JobFailed("content_changed", retryable=False)
         heartbeat()
 
+        run.rates, run.preparing_started = self._rates(job), self._timer()
         pictured: set[int] = set()  # the pages whose picture is stored
 
         def on_picture(page_no: int, count: int, picture: Image.Image) -> None:
@@ -558,7 +654,7 @@ class DocumentProcessor:
         prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data, on_picture))
         pages = [_page_record(info, prepared, pictured) for info in prepared.pages]
 
-        run.rates = self._rates(job)
+        run.pages_prepared = len(pictured)
         run.reading_started = run.moved = self._timer()
         self._progress(job, run, "reading", 0, len(pages))
         reads: list[RouteDecision | None] = []  # how each page was read, as the reader said
@@ -624,8 +720,7 @@ class DocumentProcessor:
         run.values_needs_review = len(values) - run.values_verified
 
         reader, version = self._socket.reader_id(record.detected_type)
-        lowered = _LOWERED_OCR_DPI.search(version)
-        run.lowest_ocr_dpi = None if lowered is None else int(lowered.group(1))
+        run.version_marks = version_marks(version)
         outputs = [ReaderOutput("first", reader, version, tuple(spans))]
         if second is not None:
             second_reader, second_version = self._socket.reader_id(record.detected_type, second=True)
@@ -831,10 +926,10 @@ class DocumentProcessor:
         if self._ocr_meter is not None:
             self._ocr_meter.take()
             self._ocr_meter.take_fallback_pages()
-        run_id = None
+        run_id, now = None, self._clock()
         if self._runs is not None:
-            run_id = self._runs.start(job.customer_id, job.document_id, now=self._clock())
-        return _Run(run_id, self._timer())
+            run_id = self._runs.start(job.customer_id, job.document_id, now=now)
+        return _Run(run_id, self._timer(), started_at=now)
 
     def _finished(self, run: _Run, status: str, error_code: str | None) -> FinishedRun | None:
         """The run as it ends now, with everything it counted; None without runs.
@@ -867,8 +962,9 @@ class DocumentProcessor:
             config={
                 **self._run_config,
                 **run.quote_config,
-                **({} if run.lowest_ocr_dpi is None else {"ocr_dpi_lowest": run.lowest_ocr_dpi}),
+                **run.version_marks,
                 **({"pages_ocr_fallback": fallback_pages} if fallback_pages else {}),
+                **run.ocr_choice,
                 **_step_seconds(run, ended),
             },
         )
@@ -890,16 +986,44 @@ class DocumentProcessor:
 
     def _progress(self, job: Job, run: _Run, step: Step, done: int, total: int) -> None:
         """Show how far it has got, in its own short transaction. Best effort (AR10), but
-        fenced: the Superseded of a run no longer open goes on up."""
+        fenced: the Superseded of a run no longer open goes on up. Before each write,
+        ``reached`` takes the fraction the last estimate written shows now, so a new
+        estimate (a slow page 1 that raises item_s) never takes the percent back. That
+        estimate goes with the write as ``prior``: a screen still counts on from it
+        until its next poll, so the API serves the larger of the two (kaagaz.eta);
+        ``reached`` takes that prior's fraction too, so it is never lost."""
         if self._progress_store is None:
             return
+        if run.started_at is not None:
+            now, started = self._clock(), run.started_at
+            for last_step, last in (shown for shown in (run.shown, run.prior) if shown is not None):
+                floored = last_step in FLOORED_STEPS
+                run.reached = max(
+                    run.reached, fraction_at(last, started_at=started, floored=floored, now=now)
+                )
         try:
-            progress = Progress(step, done, total, self._estimate(run, step, done, total))
+            estimate = self._estimate(run, step, done, total)
+            progress = Progress(step, done, total, estimate, run.started_at, run.reached, run.shown)
             self._progress_store.set_progress(job.customer_id, job.document_id, progress, run_id=run.run_id)
+            if estimate is not None:
+                run.prior, run.shown = run.shown, (step, estimate)  # once written: what the screen has
         except BackendUnavailable:
             _log.warning(
                 "progress_not_saved",
                 extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": step},
+            )
+
+    def _clear_progress(self, job: Job, run: _Run, code: str) -> None:
+        """Clear this run's progress before the job waits to come back. Best effort: a
+        database that is down is logged with the run's error code."""
+        if self._progress_store is None:
+            return
+        try:
+            self._progress_store.clear_progress(job.customer_id, job.document_id, run_id=run.run_id)
+        except BackendUnavailable:
+            _log.warning(
+                "progress_not_cleared",
+                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": code},
             )
 
     def _reading_beat(
@@ -940,25 +1064,37 @@ class DocumentProcessor:
         return rates(history, None if self._ocr_meter is None else self._ocr_meter.name)
 
     def _estimate(self, run: _Run, step: Step, done: int, total: int) -> Estimate | None:
-        """The time left written with this step: while reading, from the pages so far;
-        from the end of reading, one estimate kept for every understanding step."""
-        if run.rates is None or step not in ("reading", "understanding"):
+        """The time left written with this step: while preparing or reading, from the
+        pages so far; from the end of reading, one estimate kept for every later step."""
+        if run.rates is None or step == "scanning":
             return None
-        if step == "understanding":
+        if step in ("understanding", "indexing"):
             if run.after is None:
                 run.after = after_reading(run.rates, self._clock())
             return run.after
+        if step == "preparing":
+            spent = 0.0 if run.preparing_started is None else max(0.0, self._timer() - run.preparing_started)
+            return preparing(run.rates, self._clock(), done, total, (spent, done))
         ocr, fast = run.measured.get("ocr", _NOTHING), run.measured.get("fast", _NOTHING)
         return reading(run.rates, self._clock(), done, total, ocr, fast)
 
 
+def version_marks(version: str) -> dict[str, int]:
+    """The run config's numbers from a reader's version (``_VERSION_MARKS``). O(len)."""
+    return {key: int(found.group(1)) for key, mark in _VERSION_MARKS if (found := mark.search(version))}
+
+
 def _step_seconds(run: _Run, now: float) -> dict[str, float]:
-    """The run's ``seconds_reading`` and ``seconds_after_reading`` for its config, from the
-    timer's marks; none for a run that did not finish reading."""
+    """The run's ``seconds_preparing`` (when a page was drawn), ``seconds_reading`` and
+    ``seconds_after_reading`` for its config, from the timer's marks; none for a run that
+    did not finish reading."""
     if run.reading_started is None or run.reading_ended is None:
         return {}
     reading, after = max(0.0, run.reading_ended - run.reading_started), max(0.0, now - run.reading_ended)
-    return {"seconds_reading": round(reading, 3), "seconds_after_reading": round(after, 3)}
+    timed = {"seconds_reading": round(reading, 3), "seconds_after_reading": round(after, 3)}
+    if run.pages_prepared and run.preparing_started is not None:
+        timed["seconds_preparing"] = round(max(0.0, run.reading_started - run.preparing_started), 3)
+    return timed
 
 
 def _or_fail[T](call: Callable[[], T]) -> T:
@@ -1096,7 +1232,7 @@ def build_processor(
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
-    from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
+    from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engines
     from kaagaz.reading.wiring import build_reader_socket, reader_config
     from kaagaz.search.indexing import embed_pieces
 
@@ -1117,8 +1253,8 @@ def build_processor(
     embed: Embedder | None = None
     if model is not None:
         embed = functools.partial(embed_pieces, db, model=model)
-    engine = build_ocr_engine(settings)
-    meter = None if engine is None else MeteredOcrEngine(engine, timer=time.perf_counter)
+    engines = build_ocr_engines(settings)
+    meter = None if engines is None else MeteredOcrEngine(engines, timer=time.perf_counter)
     vision = model if model is not None and settings.model_vision else None
 
     return DocumentProcessor(
@@ -1136,6 +1272,7 @@ def build_processor(
         runs=PgRuns(db),
         progress=documents,
         ocr_meter=meter,
+        ocr_engines=engines,
         clock=_utc_now,
         timer=time.perf_counter,
         run_config={
@@ -1150,6 +1287,7 @@ def build_processor(
         chat_model=settings.model_chat if model is not None else None,
         model_budget=ModelBudget.from_settings(settings) if model is not None else None,
         timezone=settings.timezone,
+        customer_active=documents.customer_active,
     )
 
 

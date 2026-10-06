@@ -4,6 +4,7 @@ Every time comes from the test (the injected clock). The concurrency tests force
 the order with ``wait_until_blocked``, never with sleeps.
 """
 
+import json
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -237,9 +238,11 @@ def test_set_progress_on_a_ready_document_changes_nothing(db: Database) -> None:
     with db.customer(customer) as conn:
         reading, ready = insert_document(conn, customer, status="clean"), insert_document(conn, customer)
     for doc in (reading, ready):
-        PgDocuments(db).set_progress(customer, doc, Progress("reading", 2, 5))
+        PgDocuments(db).set_progress(customer, doc, Progress("reading", 2, 5, started_at=T0))
 
-    assert rows(db, customer, PROGRESS, reading) == [{"progress": {"step": "reading", "done": 2, "total": 5}}]
+    # The CHECK allows extra keys: the run's start goes with each progress (the percentage).
+    shown = {"step": "reading", "done": 2, "total": 5, "started_at": T0.isoformat()}
+    assert rows(db, customer, PROGRESS, reading) == [{"progress": shown}]
     assert rows(db, customer, PROGRESS, ready) == [{"progress": None}]
 
 
@@ -248,7 +251,7 @@ def test_recent_timings_are_this_customers_ready_runs_newest_first(db: Database)
     from before them or one whose number is not a number)."""
     customer, _ = new_customer(db)
     doc = new_document(db, customer)
-    timed = {"seconds_reading": 4.5, "seconds_after_reading": 30.0}
+    timed = {"seconds_reading": 4.5, "seconds_after_reading": 30.0, "seconds_preparing": 2.0}
     ends = [("ready", timed), ("failed", timed), ("ready", {}), ("ready", {"seconds_reading": "4"})]
     for minute, (status, config) in enumerate(ends):
         now = T0 + timedelta(minutes=minute)
@@ -257,7 +260,7 @@ def test_recent_timings_are_this_customers_ready_runs_newest_first(db: Database)
         PgRuns(db).finish(customer, FinishedRun(run, totals(status, error_code=error, config=config), now))
 
     untimed = RunTiming("rapidocr 3.4", 3, 6, 1, 3.25, None, None)
-    timed_run = replace(untimed, seconds_reading=4.5, seconds_after=30.0)
+    timed_run = replace(untimed, seconds_reading=4.5, seconds_after=30.0, seconds_preparing=2.0)
     assert PgRuns(db).recent_timings(customer) == [untimed, untimed, timed_run]
 
 
@@ -275,6 +278,29 @@ def test_progress_from_a_superseded_run_changes_nothing(db: Database) -> None:
     assert rows(db, customer, PROGRESS, doc) == [{"progress": {"step": "reading", "done": 1, "total": 5}}]
     PgDocuments(db).set_progress(customer, doc, Progress("reading", 2, 5), run_id=new)
     assert rows(db, customer, PROGRESS, doc) == [{"progress": {"step": "reading", "done": 2, "total": 5}}]
+
+
+def test_clear_progress_is_fenced_and_only_on_a_document_in_progress(db: Database) -> None:
+    """A try a backend stopped clears its progress (council of 5 Oct 2026); a stale
+    delivery's clear never touches the newer run's, nor a ready document's."""
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        doc, ready = insert_document(conn, customer, status="clean"), insert_document(conn, customer)
+    old = PgRuns(db).start(customer, doc, now=T0)
+    new = PgRuns(db).start(customer, doc, now=T1)
+    PgDocuments(db).set_progress(customer, doc, Progress("reading", 1, 5), run_id=new)
+
+    PgDocuments(db).clear_progress(customer, doc, run_id=old)
+    assert rows(db, customer, PROGRESS, doc) == [{"progress": {"step": "reading", "done": 1, "total": 5}}]
+    PgDocuments(db).clear_progress(customer, doc, run_id=new)
+    assert rows(db, customer, PROGRESS, doc) == [{"progress": None}]
+    left = json.dumps({"step": "reading", "done": 1, "total": 5})  # an old one, left on a ready document
+    with db.customer(customer) as conn:
+        conn.execute(
+            text("UPDATE documents SET progress = CAST(:p AS jsonb) WHERE id = :d"), {"p": left, "d": ready}
+        )
+    PgDocuments(db).clear_progress(customer, ready)
+    assert rows(db, customer, PROGRESS, ready) == [{"progress": json.loads(left)}]
 
 
 def test_progress_waits_for_the_family_lock_and_is_then_written(db: Database) -> None:

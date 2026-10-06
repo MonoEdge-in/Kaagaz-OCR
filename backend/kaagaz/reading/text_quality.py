@@ -112,11 +112,17 @@ def text_layer_ok(text: str, signals: PageSignals, rules: TextLayerRules) -> Rou
         return RouteDecision("ocr", "few_chars")
     if _ratio(good, counted) < rules.min_good_ratio:
         return RouteDecision("ocr", "bad_chars")
-    if signals.coverage > rules.scan_image_coverage and len(text.strip()) < SCAN_FOOTER_MAX_CHARS:
+    if scan_like(text, signals, rules):
         return RouteDecision("ocr", "scan_image")
     if malformed_devanagari_share(text) > MALFORMED_DEVANAGARI_MAX_SHARE:
         return RouteDecision("ocr", "malformed_devanagari")
     return TEXT_LAYER_OK
+
+
+def scan_like(text: str, signals: PageSignals, rules: TextLayerRules) -> bool:
+    """R2's ``scan_image`` test: an image covers more than ``scan_image_coverage`` of
+    the page and the text has fewer than SCAN_FOOTER_MAX_CHARS characters. O(c)."""
+    return signals.coverage > rules.scan_image_coverage and len(text.strip()) < SCAN_FOOTER_MAX_CHARS
 
 
 def text_layer_fallback_allowed(decision: RouteDecision) -> bool:

@@ -153,24 +153,36 @@ describe("checkChip", () => {
     expect(checkChip({ check_status: "passed", check_reasons: [] })).toEqual({
       text: "Checks passed",
       label: "verified",
+      reasons: [],
     });
   });
 
-  it("names every failed check in plain words, in the needs review look", () => {
+  it("keeps the badge short and lists every failed check in plain words", () => {
     const chip = checkChip({
       check_status: "failed",
       check_reasons: ["lines_sum_mismatch", "bad_gstin"],
     });
     expect(chip).toEqual({
-      text: "Needs review: line items don't add up to the subtotal; a GSTIN isn't valid",
+      text: "Needs review",
       label: "needs_review",
+      reasons: ["Line items don't add up to the subtotal", "A GSTIN isn't valid"],
     });
   });
 
-  it("never says passed when no check could run", () => {
-    expect(checkChip({ check_status: "not_checked", check_reasons: [] }).label).toBe(
-      "needs_review",
-    );
+  it("never says passed when no check could run, and says why", () => {
+    expect(checkChip({ check_status: "not_checked", check_reasons: [] })).toEqual({
+      text: "Needs review",
+      label: "needs_review",
+      reasons: ["The amounts couldn't be checked"],
+    });
+  });
+
+  it("still says needs review when a failed check gives no reason", () => {
+    expect(checkChip({ check_status: "failed", check_reasons: [] })).toEqual({
+      text: "Needs review",
+      label: "needs_review",
+      reasons: [],
+    });
   });
 
   it("has words for a reason it does not know", () => {

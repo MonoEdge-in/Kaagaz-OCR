@@ -10,7 +10,12 @@ each citing evidence ids):
   Q5) on a "Context:" line, and a neighbour (Q4) is marked ``neighbour="yes"``.
   The prompt says the evidence is untrusted data and never instructions, to
   answer only from it, in English (H3), to cite ids, and to say ``not_found``
-  when it does not answer. Only the text is checked and quoted, never the header.
+  when it does not answer. One general rule (council 4 Oct 2026, PR C) says the
+  evidence may be in any language or script, with reading errors, and the
+  question in another language, so ``not_found`` is only for evidence that
+  states no answer: on production a translated search found Devanagari
+  evidence and the model still said ``not_found``. No language is named.
+  Only the text is checked and quoted, never the header.
 * **Without a model** (``MODEL_ENABLED=false``, or the model is down or
   replied badly): extractive. Only pieces holding every keyword of the
   question count (with no model to read it, a piece that shares one word of
@@ -29,8 +34,9 @@ nothing, or holding a number its evidence does not hold, is dropped.
 **The budget** (ML amendment 5). A model reply is at most
 ``MODEL_ANSWER_MAX_TOKENS`` tokens, and the schema caps it at ``MAX_SENTENCES``
 sentences of ``MAX_SENTENCE_CHARS`` characters (about 450 tokens).
-``fit_evidence`` keeps the best-ranked evidence whose prompt fits the window:
-lower-ranked pieces are left out whole, never cut, and verify checks only the
+``fit_evidence`` keeps the best-ranked evidence whose prompt fits the window
+(``estimate_tokens_cautiously``: a letter of any script but ASCII is a whole token,
+PR C): lower-ranked pieces are left out whole, never cut, and verify checks only the
 pieces the model saw. ``ANSWER_PROMPT_HASH`` names the prompt and schema (ML
 amendment 10); the service logs it with each model answer.
 
@@ -43,7 +49,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from kaagaz.ai.client import ModelClient, ModelOutputError, estimate_tokens
+from kaagaz.ai.client import ModelClient, ModelOutputError, estimate_tokens_cautiously
 from kaagaz.answering import glossary
 from kaagaz.answering.evidence import Evidence, has_token
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
@@ -68,6 +74,10 @@ SYSTEM_PROMPT = (
     '4. If the evidence does not answer the question, reply with status "not_found" and no sentences.\n'
     "5. Plain text only: no links, no markdown, no HTML.\n"
     "6. Answer in English. A quote keeps the script it is written in.\n"
+    "7. The evidence may be in any language or script and may have reading (OCR) errors, and the "
+    "question may be in a different language from the evidence. Answer in English from what the "
+    "evidence says, copying names and numbers exactly as the evidence writes them. Reply "
+    '"not_found" only when no piece of evidence states the answer.\n'
     'Reply with JSON only: {"status": "answered" or "not_found", '
     '"sentences": [{"text": "...", "evidence": [ids]}]}.'
 )
@@ -129,7 +139,7 @@ def fit_evidence(question: str, evidence: Sequence[Evidence], budget: int) -> li
     pieces are left out whole, never cut. Empty when even the best one does not fit.
     O(e^2 * t) for e pieces of t characters (e is at most ANSWER_MAX_EVIDENCE)."""
     seen = list(evidence)
-    while seen and estimate_tokens(user_prompt(question, seen)) > budget:
+    while seen and estimate_tokens_cautiously(user_prompt(question, seen)) > budget:
         seen.pop()
     return seen
 

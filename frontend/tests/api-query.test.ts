@@ -224,7 +224,8 @@ describe("upload limits and a session that ends", () => {
   });
 
   it("asks GET /upload-limits for the limits", async () => {
-    const limits = { pdf_bytes: 1, image_bytes: 2, sheet_bytes: 3, max_pages: 4 };
+    const readers = [{ id: "auto", title: "Auto", hint: "The usual reader", available: true, reason: null }];
+    const limits = { pdf_bytes: 1, image_bytes: 2, sheet_bytes: 3, max_pages: 4, readers };
     reply(200, limits);
     expect(await getUploadLimits()).toEqual(limits);
     expect(urls).toEqual(["/api/upload-limits"]);

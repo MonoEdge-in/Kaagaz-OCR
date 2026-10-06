@@ -70,7 +70,40 @@ def test_deploy_prints_one_line_per_run() -> None:
     outcomes = ["failed", "failed", "failed", "deployed", "failed", "unchanged"]  # the last one: plain up
     assert re.findall(r"report \S+ (\w+)", script) == outcomes
     assert 'printf \'%s %s\\n\' "$1" "$2"' in script
-    assert "echo " not in script.replace('echo "docker image prune failed', "")  # nothing else on stdout
+    # Nothing else on stdout: every other line goes to stderr (the journal still has it).
+    assert [line.strip() for line in re.findall(r"^ *echo .*", script, re.MULTILINE)] == [
+        'echo "docker builder prune failed; carrying on" >&2',
+        'echo "low disk: $free_gb GB free; the OCR build needs about $MIN_FREE_GB GB" >&2',
+        'echo "docker image prune failed; the deploy itself is done" >&2',
+    ]
+
+
+def test_deploy_prunes_old_build_cache_and_never_volumes() -> None:
+    """A full disk cut a pip download short and failed a deploy (g4dn, 4 Oct 2026)."""
+    script = text("deploy.sh")
+    assert "\nBUILD_CACHE_KEEP=168h\nMIN_FREE_GB=20\n" in script
+    prune = (
+        "prune_build_cache() {\n"
+        '  if ! docker builder prune -f --filter "until=$BUILD_CACHE_KEEP" >/dev/null; then\n'
+        '    echo "docker builder prune failed; carrying on" >&2\n'
+        "  fi\n"
+        "}\n"
+    )
+    assert prune in script  # bounded (7 days), not --all, and never fatal
+    assert re.findall(r"if ! (docker \w+ prune.*)", script) == [
+        'docker builder prune -f --filter "until=$BUILD_CACHE_KEEP" >/dev/null; then',
+        "docker image prune -f >/dev/null; then",
+    ]
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    assert "volume" not in code.lower() and "system prune" not in code and "--all" not in code
+    assert code.count("prune_build_cache") == 3  # defined once, called twice
+    build = script.index("up -d --build --remove-orphans")
+    low = script.index("  free_gb=\"$(df --output=avail -BG / | tail -n 1 | tr -dc '0-9' || true)\"\n")
+    check = script.index('  if [[ -n "$free_gb" ]] && ((free_gb < MIN_FREE_GB)); then\n    echo "low disk: ')
+    before = script.index("    prune_build_cache\n  fi\n")
+    after = script.index('  fi\n  prune_build_cache\n  report "$target" deployed\n')
+    assert script.index("git reset ") < low < check < before < build
+    assert build < script.index("docker image prune -f") < after
 
 
 def test_pgdump_writes_a_private_custom_format_dump_and_keeps_seven_days() -> None:

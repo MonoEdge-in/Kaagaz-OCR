@@ -60,6 +60,8 @@ def window_for_reply_tokens(max_tokens: int) -> tuple[int, int]:
 CHAT_OVERHEAD_TOKENS = 100
 MAX_SYSTEM_PROMPT_TOKENS = 1000
 MIN_INPUT_TOKENS = 1024
+# Council 4 Oct 2026, PROVISIONAL: the question translation call's timeout when unset.
+TRANSLATE_TIMEOUT_SECONDS = 20.0
 
 
 def _time_zone(name: str) -> str:
@@ -129,6 +131,10 @@ class Settings:
     ocr_url: str
     ocr_timeout_seconds: float
     ocr_dpi: int
+    # Council 5 Oct 2026 (PROVISIONAL; kaagaz/reading/ocr_dpi.py): how each OCR page's DPI is
+    # chosen. "fixed" (when unset) draws at ocr_dpi; "text_height" from the page's text height,
+    # with ocr_dpi as the ceiling; "text_height_no_scan_cap" the same without the scan cap.
+    ocr_dpi_rule: str
 
     # The page route (PRD 2 R2 to R4). A PDF page's text layer is kept when it has at
     # least text_layer_min_chars letters and digits and text_layer_min_good_ratio good
@@ -197,6 +203,11 @@ class Settings:
     answer_neighbours: int
     # H1: the question and answer pairs a follow-up is rewritten with, 0 (no rewrite) to 10.
     chat_history_turns: int
+    # Council 4 Oct 2026 (PROVISIONAL): an all-Latin question whose hits are mostly in another
+    # script is also searched as the model's translation into that script. Off unless "true";
+    # the translation call has its own timeout (TRANSLATE_TIMEOUT_SECONDS when unset).
+    answer_translate_question: bool
+    model_translate_timeout_seconds: float
     timezone: str
 
     # API.
@@ -214,9 +225,18 @@ class Settings:
         ocr_timeout_seconds = env.number("OCR_TIMEOUT_SECONDS")
         if not (math.isfinite(ocr_timeout_seconds) and ocr_timeout_seconds > 0):
             raise SettingsError("OCR_TIMEOUT_SECONDS must be a number above 0")
-        if ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
+        # The values mirror kaagaz.reading.ocr_dpi.DPI_RULES (tests/test_settings.py keeps them the same).
+        ocr_dpi_rule = (
+            "fixed"
+            if env.optional("OCR_DPI_RULE") is None
+            else env.choice("OCR_DPI_RULE", {"fixed", "text_height", "text_height_no_scan_cap"})
+        )
+        # Any other rule may read a page twice (at a lowered DPI, then the ceiling) between heartbeats.
+        ocr_calls = 1 if ocr_dpi_rule == "fixed" else 2
+        if ocr_calls * ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
             raise SettingsError(
-                f"OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS} must not be more than QUEUE_LEASE_SECONDS"
+                f"{'2 x ' if ocr_calls == 2 else ''}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
+                " must not be more than QUEUE_LEASE_SECONDS"
             )
         ocr_engine = env.choice("OCR_ENGINE", {"paddleocr_vl", "rapidocr", "none"})
         ocr_url = env.url("OCR_URL")
@@ -278,6 +298,11 @@ class Settings:
                 f"MODEL_TIMEOUT_SECONDS + {_MODEL_LEASE_MARGIN_SECONDS}"
                 " must not be more than QUEUE_LEASE_SECONDS"
             )
+        translate_timeout = TRANSLATE_TIMEOUT_SECONDS
+        if env.optional("MODEL_TRANSLATE_TIMEOUT_SECONDS") is not None:
+            translate_timeout = env.number("MODEL_TRANSLATE_TIMEOUT_SECONDS")
+        if not (math.isfinite(translate_timeout) and translate_timeout > 0):
+            raise SettingsError("MODEL_TRANSLATE_TIMEOUT_SECONDS must be a number above 0")
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -313,6 +338,7 @@ class Settings:
             ocr_url=ocr_url,
             ocr_timeout_seconds=ocr_timeout_seconds,
             ocr_dpi=env.positive("OCR_DPI"),
+            ocr_dpi_rule=ocr_dpi_rule,
             text_layer_min_chars=env.positive("TEXT_LAYER_MIN_CHARS"),
             text_layer_min_good_ratio=env.share("TEXT_LAYER_MIN_GOOD_RATIO"),
             scan_image_coverage=env.share("SCAN_IMAGE_COVERAGE"),
@@ -349,6 +375,9 @@ class Settings:
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             answer_neighbours=env.between("ANSWER_NEIGHBOURS", 0, 3),
             chat_history_turns=env.between("CHAT_HISTORY_TURNS", 0, 10),
+            answer_translate_question=env.optional("ANSWER_TRANSLATE_QUESTION") is not None
+            and env.boolean("ANSWER_TRANSLATE_QUESTION"),
+            model_translate_timeout_seconds=translate_timeout,
             timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             log_level=env.text("LOG_LEVEL"),

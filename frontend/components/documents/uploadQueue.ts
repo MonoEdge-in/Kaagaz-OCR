@@ -13,6 +13,7 @@ export interface UploadEntry {
   size: number;
   versionOf?: string; // for a new version: the name of the document it updates
   pages?: number | null; // a PDF's or TIFF's pages, counted just before sending; null when not known
+  ocrChoice?: string; // the scan reader chosen for it, when not the server's default
   state: UploadState;
 }
 

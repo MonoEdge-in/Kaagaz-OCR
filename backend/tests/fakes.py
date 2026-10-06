@@ -372,7 +372,8 @@ class MemoryRuns:
         mine = [row for row in self.rows.values() if (row.customer_id, row.status) == (customer_id, "ready")]
         mine.sort(key=lambda row: row.started_at, reverse=True)
         totals = [row.totals for row in mine[:HISTORY_RUNS] if row.totals is not None]
-        config = [(t.config.get("seconds_reading"), t.config.get("seconds_after_reading")) for t in totals]
+        keys = ("seconds_reading", "seconds_after_reading", "seconds_preparing")
+        config = [tuple(t.config.get(key) for key in keys) for t in totals]
         return [
             RunTiming(
                 t.ocr_engine,
@@ -436,6 +437,16 @@ class MemoryProgress:
             return
         self.progress[(customer_id, document_id)] = progress
         self.history.append((customer_id, document_id, progress))
+
+    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
+        """As PgDocuments.clear_progress: with ``run_id``, nothing unless that run is open."""
+        if self.down:
+            raise BackendUnavailable("database")
+        runs = self._statuses.runs
+        if run_id is not None and runs is not None and not runs.is_open(customer_id, document_id, run_id):
+            return
+        if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
+            self.progress.pop((customer_id, document_id), None)
 
 
 class MemoryPipelineStore:

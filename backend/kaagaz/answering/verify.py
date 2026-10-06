@@ -11,7 +11,10 @@ A sentence is kept only if:
    1. dates: 12/08/2026 (one separator throughout), 2026-08-12, 12 Aug 2026,
       12th of August 2026, August 12, 2026; "12 August" with no year (its day
       and month); "August 2026" (its month and year); 12/08/26 with a
-      two-digit year, as written (no century is guessed);
+      two-digit year, as written (no century is guessed). In the evidence
+      only, a day, a word of another script and a four-digit year are also
+      that date when the word sounds like one English month name
+      (``other_script_month``); its day and year stay numbers too;
    2. amounts: the rupee sign, Rs, Rs. or INR, then a number (an "/-", "Dr"
       or "Cr" after it changes nothing: Cr is credit, not crore);
    3. percents: %, percent, per cent;
@@ -42,14 +45,16 @@ A sentence is kept only if:
      id, so "Rs. 1042" is not backed by INV-1042 or No. 1042.
 
 Both sides lose their default-ignorable code points (``sanitize.strip_ignorable``)
-and are normalised as the quote rule does (``quotes.normalise_quote``):
-Devanagari digits read as ASCII ones, Latin letters case-folded. A sentence is
+and are normalised as the quote rule does (``quotes.normalise_quote``): the digits
+of any one script read as ASCII ones (``ascii_digits``: Devanagari, Gujarati,
+Bengali...; council 4 Oct 2026), Latin letters case-folded. A sentence is
 dropped outright when it holds what cannot be checked:
 
-* a token with a digit and another script's digit, a numeric symbol
-  (superscripts, fractions, circled digits, Roman numerals), ASCII and
-  Devanagari digits together, or any other character that is not ASCII,
-  Devanagari, the rupee sign, the minus sign or punctuation (a hidden mark);
+* a token with a digit and a numeric symbol (superscripts, fractions, circled
+  digits, Roman numerals), digits of two scripts together (ASCII and Devanagari,
+  Devanagari and Gujarati), or any other character that is not ASCII, a drawn
+  letter or mark of a script with digits of its own in Unicode (Devanagari,
+  Gujarati, Tamil...), the rupee sign, the minus sign or punctuation (a hidden mark, a Cyrillic O);
 * a letter next to a comma in a number (2,OOO, l,18,000), or a currency
   marker whose number has a space inside (Rs. 2 18,000);
 * a date that is not a real one (12/26/2026), bad digit grouping, or two
@@ -61,21 +66,35 @@ dropped outright when it holds what cannot be checked:
 
 In the evidence, such tokens are simply not atoms.
 
-3. Every Devanagari word in it (letters and marks, NFC, ignorable code points
-   removed), however short, is a word of its cited evidence: a name may be
-   quoted, never respelled or invented, and न ("not") never added (council
-   2 Oct 2026, PR2; ``missing_word``). Only the closed ``FUNCTION_WORDS`` (है,
+3. Every word in it of a script other than Latin (a run of one script's letters
+   and marks, by ``letter_script``, NFC, ignorable code points removed: Devanagari,
+   Gujarati, Tamil...; council 4 Oct 2026), however short, is a word of its cited
+   evidence: a name may be quoted, never respelled or invented, and न ("not")
+   never added (council 2 Oct 2026, PR2; ``missing_word``). Only the closed ``FUNCTION_WORDS`` (है,
    आहे, आणि, और, का, चा, व...) may be added; no negation (नहीं, नाही, न, नका,
    नये, नव्हे), या, किंवा or की ("or" in Marathi; PROVISIONAL) is one.
 
-``unchecked_cross_script``: a kept sentence citing Devanagari evidence that
-quotes none of its words ("The owner is Ram Patil", or "The owner of gat 47
+``unchecked_cross_script``: a kept sentence citing evidence with letters of a
+script other than Latin that quotes none of its words ("The owner is Ram Patil", or "The owner of gat 47
 is Sita Deshmukh" over "गट क्रमांक ४७": a number is no quote) was checked
 against nothing for its words; the service labels its answer needs review.
 
 Nothing left means the answer is "not found". The drops are logged by reason, codes only. This runs
 on the search route whether the sentences came from the model or were quoted;
 fixed-route sentences come from templates filled only from query results.
+
+``other_script_month`` (council 4 Oct 2026, PR C, the ML reviewer's rule, PROVISIONAL).
+A month written in another script (a Marathi page's "12 August 2026" with the month
+in Devanagari) is read by sound, with no list of month words: the word's Latin
+spelling (``word_latin_spelling``), then its ``sound_key``, is compared by edit
+distance with the sound keys of the 12 English month names ``parse_date`` reads. The
+nearest month counts when the distance is at most ``MONTH_SOUND_MAX`` of the longer
+key and the next nearest is at least ``MONTH_SOUND_GAP`` further; else the word is no
+month, as before. Measured on 24 Hindi and Marathi month words (tests): 23 read
+right, none wrong (Hindi "farvari" is too far from february, so a date with it is
+still dropped). This only adds to what evidence backs, and the day and year must
+match exactly. A word near a month by chance (the land unit "gunthe", june) can back a
+wrong month only with the very same day and year beside it.
 
 Known gaps, PROVISIONAL (Part B 1, Vrushit decides): an atom may come from any
 line of the evidence a sentence cites, so the sub total given as the grand
@@ -95,11 +114,19 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
+from fractions import Fraction
+from functools import cache, lru_cache
 
 from kaagaz.answering.draft import DraftSentence
 from kaagaz.answering.sanitize import strip_ignorable
-from kaagaz.chunking.script import has_devanagari_letters
-from kaagaz.extraction.parsing import _INDIAN, _WESTERN, parse_date
+from kaagaz.chunking.script import (
+    ascii_digits,
+    has_other_script_letters,
+    letter_script,
+    sound_key,
+    word_latin_spelling,
+)
+from kaagaz.extraction.parsing import _INDIAN, _MONTHS, _WESTERN, parse_date
 from kaagaz.extraction.quotes import normalise_quote
 
 _log = logging.getLogger(__name__)
@@ -108,9 +135,7 @@ Atom = tuple[str, Decimal | date | tuple[int, ...] | str]
 Read = Callable[[re.Match[str]], Atom | None]
 
 _NUMERIC = ("Nd", "No", "Nl")  # digits, other numbers (superscripts, fractions) and Roman numerals
-_DEVANAGARI_FIRST, _DEVANAGARI_LAST = "ऀ", "ॿ"
-_DEVANAGARI_ZERO, _DEVANAGARI_NINE = "\N{DEVANAGARI DIGIT ZERO}", "\N{DEVANAGARI DIGIT NINE}"
-_ALLOWED_NEXT_TO_DIGITS = frozenset("\N{INDIAN RUPEE SIGN}\N{MINUS SIGN}")  # with ASCII, Devanagari, P*
+_ALLOWED_NEXT_TO_DIGITS = frozenset("\N{INDIAN RUPEE SIGN}\N{MINUS SIGN}")  # with ASCII, P* and letters
 
 _MONTH = (
     r"(?P<mon>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
@@ -128,6 +153,16 @@ _MONTH_YEAR = re.compile(_START + _MONTH + r"[\s.,/-]*(?P<y>\d{4})" + _END)
 _DAY_MONTH = re.compile(_START + _DAY + r"(?:\s+of)?[\s./-]+" + _MONTH)
 _MONTH_DAY = re.compile(_START + _MONTH + r"\s*" + _DAY + r"\b")
 _DATE_PARTS = re.compile(r"[./-]")
+# A day, a word of another script and a four-digit year (``other_script_month``).
+_OTHER_SCRIPT_DATE = re.compile(
+    _START + r"(?P<d>\d{1,2})[\s./-]+(?P<mon>[^\x00-\x7f\s]+)[\s.,/-]*(?P<y>\d{4})" + _END
+)
+MONTH_SOUND_MAX = Fraction(1, 2)  # PROVISIONAL: edits over the longer key's letters
+MONTH_SOUND_GAP = Fraction(1, 10)  # PROVISIONAL: how much further the next month must be
+# Each month's longest English name (september, not sep), as ``parse_date`` reads it.
+_ENGLISH_MONTHS = {
+    number: max((n for n, m in _MONTHS.items() if m == number), key=len) for number in set(_MONTHS.values())
+}
 
 _NUMBER = r"(?P<n>\d+(?:,\d+)*(?:\.\d+)?)"
 _SCALE_WORDS = r"k|hundred|thousand|lakhs?|lacs?|crores?"  # never "cr": that is credit
@@ -148,8 +183,6 @@ _NOT_ID = re.compile(r"\d[\d.]*(?:st|nd|rd|th|pcs?|nos|kgs?|k)")  # a number wit
 _TOKEN = re.compile(r"[a-z0-9]+(?:[-/.,][a-z0-9]+)*")  # a token as an id in a sentence may name it
 _LETTER = re.compile("[a-z]")
 _DIGIT = re.compile("[0-9]")
-# Devanagari letters and marks: the block less the danda, the digits and the abbreviation sign.
-_DEVANAGARI_WORD = re.compile(r"[ऀ-ॣॱ-ॿ]+")
 # Whole NFC words a sentence may add (the module docstring): never a negation, या or किंवा.
 # PROVISIONAL (Vrushit decides): की is left out, because in Marathi it means "or".
 FUNCTION_WORDS = frozenset({"है", "हैं", "आहे", "आहेत", "आणि", "और", "का", "के", "चा", "ची", "चे", "व"})
@@ -193,7 +226,7 @@ class _Backing:
     tokens: set[str] = field(default_factory=set)  # every token with a digit, however read
     years: set[int] = field(default_factory=set)  # the years of its dates
     words: set[str] = field(default_factory=set)  # its runs of number words
-    devanagari: set[str] = field(default_factory=set)  # its Devanagari words (check 3)
+    quoted: set[str] = field(default_factory=set)  # its words of other scripts (check 3)
 
     def add(self, other: "_Backing") -> None:
         self.atoms |= other.atoms
@@ -201,7 +234,7 @@ class _Backing:
         self.tokens |= other.tokens
         self.years |= other.years
         self.words |= other.words
-        self.devanagari |= other.devanagari
+        self.quoted |= other.quoted
 
 
 def verify(sentences: Sequence[DraftSentence], evidence_text: Mapping[int, str]) -> list[DraftSentence]:
@@ -254,30 +287,47 @@ def _drop_reason(
         missing = next((kind for kind, value in atoms if not _is_backed(kind, value, backing)), None)
         if missing is not None:
             return f"missing_{_KIND_CODES.get(missing, missing)}"
-    if not _quoted(text) <= backing.devanagari:
+    if not _quoted(text) <= backing.quoted:
         return "missing_word"
     return None
 
 
 def unchecked_cross_script(sentence: DraftSentence, evidence_text: Mapping[int, str]) -> bool:
-    """True when a kept sentence cites Devanagari evidence but quotes no Devanagari word of
-    it (the module docstring). A number does not count: "The owner of gat 47 is Sita
-    Deshmukh" over गट क्रमांक ४७ checks the 47, never the name. O(s + e)."""
+    """True when a kept sentence cites evidence with letters of a script other than Latin but
+    quotes no word of that script (the module docstring). A number does not count: "The owner of
+    gat 47 is Sita Deshmukh" over गट क्रमांक ४७ checks the 47, never the name. O(s + e)."""
     cited = [evidence_text[n] for n in sentence.evidence if n in evidence_text]
     quoted = any(len(word) >= 2 for word in _quoted(sentence.text))  # one letter is no quote
-    return any(has_devanagari_letters(text) for text in cited) and not quoted
+    return any(has_other_script_letters(text) for text in cited) and not quoted
 
 
 def _quoted(text: str) -> set[str]:
-    """The Devanagari words of a sentence that must be in its evidence: every one, however
-    short (न is "not"), but the FUNCTION_WORDS. O(n)."""
-    return devanagari_words(text) - FUNCTION_WORDS
+    """The words of other scripts of a sentence that must be in its evidence: every one,
+    however short (न is "not"), but the FUNCTION_WORDS. O(n)."""
+    return script_words(text) - FUNCTION_WORDS
 
 
-def devanagari_words(text: str) -> set[str]:
-    """The runs of Devanagari letters and marks in ``text``, NFC, ignorable code points
+def script_words(text: str) -> set[str]:
+    """The runs of one script's letters and marks in ``text`` (``letter_script``; a mark of no
+    script stays with its letter), for every script but Latin, NFC, ignorable code points
     removed. O(n)."""
-    return set(_DEVANAGARI_WORD.findall(unicodedata.normalize("NFC", strip_ignorable(text))))
+    words: set[str] = set()
+    run: list[str] = []
+    script = None
+    for ch in unicodedata.normalize("NFC", strip_ignorable(text)):
+        found = letter_script(ch)
+        if found is None and run and unicodedata.category(ch)[0] == "M":
+            run.append(ch)
+            continue
+        if found != script:
+            if run and script != "LATIN":
+                words.add("".join(run))
+            run, script = [], found
+        if found is not None:
+            run.append(ch)
+    if run and script != "LATIN":
+        words.add("".join(run))
+    return words
 
 
 # The drop code of a missing atom, by kind.
@@ -302,7 +352,7 @@ def _is_backed(kind: str, value: object, backing: _Backing) -> bool:
 
 def _backed(text: str) -> _Backing:
     """What one piece of evidence backs: its atoms, ids, tokens, years and number words."""
-    backing = _Backing(devanagari=devanagari_words(text))
+    backing = _Backing(quoted=script_words(text))
     for raw in text.splitlines():
         tokens = [token for token in strip_ignorable(raw).split() if not _unreadable(token)]
         line = _normalised(" ".join(tokens))
@@ -314,9 +364,7 @@ def _backed(text: str) -> _Backing:
             elif kind in ("plain", "year") and isinstance(value, str):
                 backing.atoms.add(("number", Decimal(value)))
             elif kind == "date" and isinstance(value, date):
-                backing.atoms |= {(kind, value), ("day_month", (value.month, value.day))}
-                backing.atoms.add(("month_year", (value.year, value.month)))
-                backing.years.add(value.year)
+                _add_date(backing, value)
             elif kind == "short_date" and isinstance(value, tuple):
                 backing.atoms |= {(kind, value), ("day_month", (value[1], value[0]))}
             elif kind == "month_year" and isinstance(value, tuple):
@@ -324,7 +372,52 @@ def _backed(text: str) -> _Backing:
                 backing.years.add(value[0])
             elif not kind.startswith("bad_"):
                 backing.atoms.add((kind, value))
+        if not line.isascii():
+            for match in _OTHER_SCRIPT_DATE.finditer(line):
+                month = other_script_month(match["mon"])
+                day = (
+                    None
+                    if month is None
+                    else parse_date(f"{match['d']} {_ENGLISH_MONTHS[month]} {match['y']}")
+                )
+                if day is not None:
+                    _add_date(backing, day)  # added only: its day and year stay numbers
     return backing
+
+
+def _add_date(backing: _Backing, day: date) -> None:
+    """A date backs itself, its day and month, and its month and year."""
+    backing.atoms |= {
+        ("date", day),
+        ("day_month", (day.month, day.day)),
+        ("month_year", (day.year, day.month)),
+    }
+    backing.years.add(day.year)
+
+
+@lru_cache(maxsize=4096)  # a page repeats its month words; the cache is bounded
+def other_script_month(word: str) -> int | None:
+    """The month (1 to 12) a word of another script sounds like, or None (the module
+    docstring). O(n) in the word, then 12 edit distances of at most ``SOUND_WORD_MAX`` letters."""
+    latin = word_latin_spelling(word)
+    key = sound_key(latin) if latin else ""
+    if not key:
+        return None
+    (best, month), (second, _) = sorted(
+        (_distance(key, sound_key(name)), number) for number, name in _ENGLISH_MONTHS.items()
+    )[:2]
+    return month if best <= MONTH_SOUND_MAX and second - best >= MONTH_SOUND_GAP else None
+
+
+def _distance(a: str, b: str) -> Fraction:
+    """Levenshtein's edit distance between ``a`` and ``b`` over the longer one's length. O(|a| * |b|)."""
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        previous = current
+    return Fraction(previous[-1], max(len(a), len(b)))
 
 
 def _sentence_lines(text: str) -> list[str] | None:
@@ -341,7 +434,7 @@ def _sentence_lines(text: str) -> list[str] | None:
 def _normalised(line: str) -> str:
     # On ASCII text normalise_quote only lower-cases here (the tokens are already
     # joined by one space), so its per-character work is skipped.
-    return line.lower() if line.isascii() else normalise_quote(line)
+    return line.lower() if line.isascii() else normalise_quote(ascii_digits(line))
 
 
 def _line_problem(line: str, words: Collection[str]) -> str | None:
@@ -372,21 +465,34 @@ def _unreadable(token: str) -> bool:
     """A token with a digit that cannot be checked (the module docstring)."""
     if token.isascii():
         return False
-    digit = devanagari_digit = ascii_digit = odd = False
+    digits: set[str] = set()  # the scripts of its digits: DIGIT (ASCII), DEVANAGARI, GUJARATI...
+    odd = False
     for ch in token:
-        if "0" <= ch <= "9":
-            digit = ascii_digit = True
-        elif _DEVANAGARI_ZERO <= ch <= _DEVANAGARI_NINE:
-            digit = devanagari_digit = True
-        elif ch >= "\x80" and unicodedata.category(ch) in _NUMERIC:
+        category = unicodedata.category(ch)
+        if category == "Nd":
+            digits.add(unicodedata.name(ch, "").partition(" ")[0])
+        elif category in _NUMERIC:
             return True
         elif ch >= "\x80" and not (
-            _DEVANAGARI_FIRST <= ch <= _DEVANAGARI_LAST
-            or ch in _ALLOWED_NEXT_TO_DIGITS
-            or unicodedata.category(ch).startswith("P")
+            ch in _ALLOWED_NEXT_TO_DIGITS
+            or category.startswith("P")
+            or (_has_digits(letter_script(ch)) and strip_ignorable(ch) == ch)  # drawn, not hidden
         ):
             odd = True
-    return (ascii_digit and devanagari_digit) or (digit and odd)
+    return len(digits) > 1 or (bool(digits) and odd)
+
+
+@cache
+def _has_digits(script: str | None) -> bool:
+    """True when Unicode gives ``script`` digits of its own (DEVANAGARI DIGIT ZERO), so its
+    letters may sit next to digits; Latin and Cyrillic have none. O(1) after the first call."""
+    if script is None:
+        return False
+    try:
+        unicodedata.lookup(f"{script} DIGIT ZERO")
+    except KeyError:
+        return False
+    return True
 
 
 def _atoms(line: str, *, known: Collection[str] = (), tokens: set[str] | None = None) -> list[Atom]:

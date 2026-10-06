@@ -34,13 +34,16 @@ from kaagaz.api.routers import (
     documents,
     folders,
     health,
+    operator,
+    operator_activity,
+    operator_orgs,
     review,
     search,
     stories,
     tags,
     words,
 )
-from kaagaz.db.engine import Database, make_engine
+from kaagaz.db.engine import Database, OperatorDatabase, make_engine
 from kaagaz.settings import Settings
 
 
@@ -86,6 +89,8 @@ def create_app(
         dependencies=[Depends(csrf_guard)],
     )
     app.state.kaagaz = context
+    # The operator's own way in (super admin PR 2): only /api/operator asks for it.
+    app.state.kaagaz_operator = OperatorDatabase(database.engine)
     errors.install(app)
     app.add_middleware(RequestMiddleware, limiter=RateLimiter(settings.rate_limit_per_minute))
     app.add_middleware(ErrorMiddleware)  # added last, so it is the outermost
@@ -102,6 +107,10 @@ def create_app(
         words.router,
         stories.router,
         words.router,
+        operator.router,
+        operator.signed_in,
+        operator_orgs.router,
+        operator_activity.router,
     ):
         app.include_router(router, prefix="/api")
     return app
@@ -149,4 +158,8 @@ def _default_answers(settings: Settings, db: Database, clock: Callable[[], datet
     from kaagaz.ai.client import build_model_client
     from kaagaz.answering.service import AnswerService
 
-    return AnswerService(db=db, model=build_model_client(settings), settings=settings, clock=clock)
+    # The question translation (council 4 Oct 2026) waits at most its own timeout; the service
+    # uses it only with ANSWER_TRANSLATE_QUESTION on.
+    translator = build_model_client(settings, chat_timeout_seconds=settings.model_translate_timeout_seconds)
+    model = build_model_client(settings)
+    return AnswerService(db=db, model=model, settings=settings, clock=clock, translator=translator)

@@ -67,6 +67,13 @@ pieces on each side of an evidence piece also given to the draft; and
 `CHAT_HISTORY_TURNS` (3, 0 to 10), the question and answer pairs a follow-up
 is rewritten with (0: no rewrite).
 
+Two optional settings (council 4 Oct 2026): `ANSWER_TRANSLATE_QUESTION` (false when
+unset) also searches an English or Romanised question in the script of its scans, with
+one model call that times out after `MODEL_TRANSLATE_TIMEOUT_SECONDS` (20, PROVISIONAL).
+One more (council 5 Oct 2026, PROVISIONAL): `OCR_DPI_RULE` (`fixed` when unset) draws each
+scan page at `OCR_DPI`; `text_height` draws it at the DPI its text needs, `OCR_DPI` at most;
+`text_height_no_scan_cap` is the same without the scan cap, for the accuracy test.
+
 **Upgrading an install to PRD 3.** Migration 0006 is offline: it locks
 `pieces` and `messages` while it rewrites the vectors and builds the indexes.
 
@@ -174,7 +181,9 @@ NVIDIA wheels are approved (EC2 PRD D5, 4 Oct 2026).
   Docker Compose 2.24.4 or newer (`docker compose version`; the override uses
   `!reset`). Check: `nvidia-smi` shows the T4 on the host.
 * A 100 GB disk: the GPU OCR image (Paddle, the NVIDIA libraries and the
-  weights) and the Ollama models are tens of GB.
+  weights) and the Ollama models are tens of GB. A rebuild of the Paddle layers
+  needs about 20 GB free; they stay cached unless the `paddle` or `paddle-gpu`
+  pins in `pyproject.toml` (or the constraints files) change.
 * A 4 to 8 GB swapfile: a g4dn.xlarge has 16 GB of memory for everything.
   `sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`,
   and a `/swapfile none swap sw 0 0` line in `/etc/fstab`.
@@ -323,7 +332,10 @@ commit it rebuilds and starts everything (migrations included; 1 to 2 minutes
 of downtime), otherwise it starts anything that is down. Each run logs one line,
 the commit and `deployed`, `unchanged` or `failed`
 (`journalctl -u kaagaz-deploy -n 50`); a failed build is tried again on the
-next run. `kaagaz-pgdump.timer` writes `~/backups/kaagaz-YYYYMMDD.dump` (mode
+next run. After a good deploy it removes build cache unused for 7 days
+(`docker builder prune --filter until=168h`, never volumes), and before a build
+with under 20 GB free on `/` it logs `low disk: ...` and does the same first;
+`docker system df` shows what is left. `kaagaz-pgdump.timer` writes `~/backups/kaagaz-YYYYMMDD.dump` (mode
 600, the last 7 kept) at 20:00 UTC (01:30 IST), or at the next boot if the
 server was stopped then. Data Lifecycle Manager takes a daily EBS snapshot at
 20:30 UTC (02:00 IST), keeping 7. Restore from a snapshot (the whole disk) or

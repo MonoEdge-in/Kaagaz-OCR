@@ -2,7 +2,7 @@
 
     cd backend
     python -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" [--api http://127.0.0.1:8000]
-        [--docs DIR] [--runs 3]
+        [--set golden|xlang] [--docs DIR] [--runs 3]
 
 Run it with the stack's settings loaded in the shell, as for ``kaagaz.cli``
 (docs/running-locally.md), and the model on for a real baseline. Never in CI.
@@ -24,6 +24,12 @@ regions' pages; a not-found answer cites nothing, so it is a miss. Part 3.2
 adds GET /api/search, and recall then comes from its top 5: a new baseline,
 not comparable with this one.
 
+``--set`` picks the questions, each file frozen by its own sha256, with its own
+documents: ``golden`` (the default) is questions.json over docs/; ``xlang`` is
+questions_xlang.json over the synthetic scans in xlang/ (council 4 Oct 2026). An
+xlang document that is not ready is reported and its questions are still asked:
+an unread page is part of what that set measures.
+
 A command line report, so it writes to standard output, not to the log.
 """
 
@@ -34,7 +40,8 @@ import os
 import secrets
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Collection, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from http.client import HTTPConnection, HTTPException, HTTPSConnection
 from pathlib import Path
@@ -54,6 +61,36 @@ CHAT_TIMEOUT = 600.0  # seconds: one answer may wait on the model
 CALL_TIMEOUT = 30.0  # seconds, for every other call; an upload gets 4 times this
 
 Row = tuple[scoring.Question, scoring.Score, bool | None]
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionSet:
+    questions: str  # a file in tests/golden
+    sha256: str
+    docs: Path  # the default --docs
+    manifest: Path  # the committed sha256 of every document
+    check: Callable[[Any, Collection[str]], list[str]]
+    all_ready: bool  # every document must be ready before a question is asked
+
+
+SETS = {
+    "golden": QuestionSet(
+        "questions.json",
+        scoring.QUESTIONS_SHA256,
+        GOLDEN / "docs",
+        GOLDEN / "documents.sha256",
+        scoring.problems,
+        all_ready=True,
+    ),
+    "xlang": QuestionSet(
+        "questions_xlang.json",
+        scoring.XLANG_SHA256,
+        GOLDEN / "xlang",
+        GOLDEN / "xlang" / "documents.sha256",
+        scoring.xlang_problems,
+        all_ready=False,
+    ),
+}
 
 
 class GoldenError(Exception):
@@ -112,7 +149,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m scripts.run_golden", description=__doc__.split("\n")[0])
     parser.add_argument("--git-sha", required=True, help='the commit under test: "$(git rev-parse HEAD)"')
     parser.add_argument("--api", default="http://127.0.0.1:8000")
-    parser.add_argument("--docs", type=Path, default=GOLDEN / "docs")
+    parser.add_argument("--set", choices=sorted(SETS), default="golden", dest="question_set")
+    parser.add_argument("--docs", type=Path, help="default: the set's own folder")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--wait-minutes", type=float, default=30.0)
     parser.add_argument(
@@ -127,17 +165,21 @@ def check_local(api: str, database_url: str, allow_remote: bool) -> None:
         raise GoldenError("the API and database must be on this machine (or pass --allow-remote)")
 
 
-def load_golden(docs: Path) -> tuple[list[scoring.Question], dict[str, bytes]]:
+def load_golden(
+    docs: Path | None = None, chosen: QuestionSet = SETS["golden"]
+) -> tuple[list[scoring.Question], dict[str, bytes]]:
     """The questions and the documents, refused unless both match what is committed."""
-    raw = json.loads((GOLDEN / "questions.json").read_text(encoding="utf-8"))
-    manifest = scoring.sha256_manifest((GOLDEN / "documents.sha256").read_text(encoding="utf-8"))
-    found = scoring.problems(raw, manifest)
-    if scoring.file_sha256(GOLDEN / "questions.json") != scoring.QUESTIONS_SHA256:
-        found.append("questions.json differs from golden_scoring.QUESTIONS_SHA256")
+    docs = chosen.docs if docs is None else docs
+    raw = json.loads((GOLDEN / chosen.questions).read_text(encoding="utf-8"))
+    manifest = scoring.sha256_manifest(chosen.manifest.read_text(encoding="utf-8"))
+    found = chosen.check(raw, manifest)
+    if scoring.file_sha256(GOLDEN / chosen.questions) != chosen.sha256:
+        found.append(f"{chosen.questions} differs from its sha256 in golden_scoring")
+    listed = chosen.manifest.relative_to(GOLDEN.parent).as_posix()
     for name, digest in manifest.items():
         path = docs / name
         if not path.is_file() or scoring.file_sha256(path) != digest:
-            found.append(f"{name} is missing from --docs or differs from tests/golden/documents.sha256")
+            found.append(f"{name} is missing from --docs or differs from tests/{listed}")
     if found:
         raise GoldenError("; ".join(found))
     documents = {name: (docs / name).read_bytes() for name in manifest}
@@ -156,9 +198,9 @@ def model_digests(settings: Settings) -> str:
     )
 
 
-def header(out: TextIO, settings: Settings, api: str, sha: str) -> None:
+def header(out: TextIO, settings: Settings, api: str, sha: str, questions: str = "questions.json") -> None:
     out.write(f"Golden run {datetime.now(UTC).isoformat(timespec='seconds')}  git {sha}  api {api}\n")
-    out.write(f"questions.json sha256 {scoring.file_sha256(GOLDEN / 'questions.json')}\n")
+    out.write(f"{questions} sha256 {scoring.file_sha256(GOLDEN / questions)}\n")
     out.write(
         f"MODEL_ENABLED={settings.model_enabled} MODEL_CHAT={settings.model_chat}"
         f" MODEL_EMBED={settings.model_embed} ({model_digests(settings)}) OCR_ENGINE={settings.ocr_engine}"
@@ -178,8 +220,11 @@ def sign_in(api: Http, password: str, out: TextIO) -> None:
     api.call("POST", "/api/auth/login", {"email": email, "password": password})
 
 
-def upload(api: Http, documents: dict[str, bytes], wait_minutes: float, out: TextIO) -> dict[str, str]:
-    """Upload every document and wait until none is still being read. {document id: file name}."""
+def upload(
+    api: Http, documents: dict[str, bytes], wait_minutes: float, out: TextIO, all_ready: bool = True
+) -> dict[str, str]:
+    """Upload every document and wait until none is still being read. {document id: file name}.
+    Without ``all_ready``, only none ready stops the run; the others are listed."""
     names = {}
     for name, data in documents.items():
         reply = api.call("POST", "/api/documents", files=(name, data), timeout=4 * CALL_TIMEOUT)
@@ -191,9 +236,11 @@ def upload(api: Http, documents: dict[str, bytes], wait_minutes: float, out: Tex
             break
         time.sleep(5)
     not_ready = {names[i]: s for i, s in status.items() if s != "ready"}
-    if not_ready:
+    if not_ready and (all_ready or len(not_ready) == len(names)):
         raise GoldenError(f"documents not ready after {wait_minutes} minutes: {not_ready}")
-    out.write(f"{len(names)} documents ready\n\n")
+    if not_ready:
+        out.write(f"NOT READY, their questions are still asked: {not_ready}\n")
+    out.write(f"{len(names) - len(not_ready)} documents ready\n\n")
     return names
 
 
@@ -261,11 +308,12 @@ def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout) -> int:
             raise GoldenError("--runs must be at least 1 and --wait-minutes above 0")
         settings = Settings.from_env(os.environ)
         check_local(args.api, settings.database_url, args.allow_remote)
-        questions, documents = load_golden(args.docs)
-        header(out, settings, args.api, args.git_sha)
+        chosen = SETS[args.question_set]
+        questions, documents = load_golden(args.docs, chosen)
+        header(out, settings, args.api, args.git_sha, chosen.questions)
         api = Http(args.api)
         sign_in(api, os.environ.get(cli.ADMIN_ENV_VAR) or secrets.token_urlsafe(24), out)
-        names = upload(api, documents, args.wait_minutes, out)
+        names = upload(api, documents, args.wait_minutes, out, chosen.all_ready)
         runs: list[scoring.Totals] = []
         for run in range(1, args.runs + 1):
             out.write(f"Run {run} of {args.runs}\n")

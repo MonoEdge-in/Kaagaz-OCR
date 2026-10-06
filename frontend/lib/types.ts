@@ -81,7 +81,7 @@ export interface DocumentSummary {
   max_attempts: number | null;
   newer_version: NewerVersion | null; // a later version still being read, or one that failed
   progress: DocumentProgress | null; // null unless it is being checked or read; status_message already says it
-  time_left: TimeLeft | null; // null unless it is being read or understood (PRD 4 #13); never in Trash
+  time_left: TimeLeft | null; // null until preparing (PRD 4 #13): while scanning, waiting or done; never in Trash
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
 }
@@ -134,12 +134,14 @@ export interface DocumentProgress {
 /** How long until ready (PRD 4 #13), at the moment the server answered. lib/timeLeft.ts counts it down. */
 export interface TimeLeft {
   seconds: number; // until ready, never below 0
-  since_move_seconds: number; // since a page was last read, or reading ended
+  since_move_seconds: number; // since a page was last drawn or read, or reading ended
   slow_after_seconds: number; // past this with no move, it is taking longer than usual
-  items_left: number; // pages still to read; 0 once reading has ended
+  items_left: number; // pages still to draw (preparing) or read; 0 once reading has ended
   item_seconds: number; // expected seconds a page
-  after_seconds: number; // expected seconds from the end of reading until ready
-  confidence: "low" | "high"; // low: not enough of this customer's history to show a number
+  after_seconds: number; // expected seconds from the end of this step's pages until ready
+  confidence: "low" | "high"; // low: not enough of this customer's history; shown as a rough guess
+  elapsed_seconds: number; // since this run started: the percentage is elapsed / (elapsed + left)
+  done_fraction: number; // 0 to 1, the server's, the same on every load: a refreshed bar starts from it
 }
 
 /** A version newer than the one listed (the family's current), not in use yet. */
@@ -312,6 +314,16 @@ export interface UploadLimits {
   image_bytes: number;
   sheet_bytes: number;
   max_pages: number; // for a PDF's pages and a TIFF's frames
+  readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
+}
+
+/** One scan reader the server offers (PRD 4 #17): reason says why it can't be used here. */
+export interface UploadReader {
+  id: string;
+  title: string;
+  hint: string;
+  available: boolean;
+  reason: string | null;
 }
 
 export interface UploadResult {
@@ -575,4 +587,83 @@ export interface MyStory {
   embedded: boolean; // it has a vector of today's model (search can use it)
   created_at: string;
   updated_at: string;
+}
+
+// --- The platform operator (super admin, PR 6). Not a customer user. -----------
+
+export interface OperatorMe {
+  operator: { id: string; email: string; name: string };
+  session: { expires_at: number }; // Unix seconds; the session lasts 30 minutes
+}
+
+export type OrgStatus = "active" | "disabled" | "deleting";
+
+/** One organisation in GET /operator/orgs: its metadata and counts only. */
+export interface Organisation {
+  id: string;
+  name: string;
+  status: OrgStatus;
+  disabled_at: string | null;
+  delete_after: string | null; // when it is deleted for good (status "deleting")
+  created_at: string;
+  users: { admins: number; reviewers: number; members: number };
+  documents: number;
+  pages: number;
+  storage_bytes: number;
+  last_activity_at: string | null;
+}
+
+/** POST /operator/orgs: the temporary password is in this one reply only. */
+export interface OrganisationCreated {
+  organisation: { id: string; name: string; admin: { email: string; name: string } };
+  temporary_password: string;
+}
+
+/** One admin of one organisation (GET /operator/orgs/{id}/admins). Never members or reviewers. */
+export interface OrgAdmin {
+  id: string;
+  name: string;
+  email: string;
+  two_step: boolean;
+  locked: boolean;
+  disabled: boolean;
+  must_change_password: boolean;
+  last_sign_in_at: string | null;
+  created_at: string;
+}
+
+export type AdminChange = "disable" | "enable" | "unlock" | "reset-2fa";
+
+/** POST /operator/orgs/{id}/admins: the temporary password is in this one reply only. */
+export interface AdminCreated {
+  admin: { id: string; email: string; name: string };
+  temporary_password: string;
+}
+
+/** One row of GET /operator/activity: no details, target id, person or document. */
+export interface PlatformEvent {
+  source: "organisation" | "platform";
+  at: string;
+  action: string;
+  organisation_id: string | null;
+  organisation_name: string | null;
+  target_type: string | null;
+  by: "user" | "operator" | "system";
+}
+
+type Counts = Record<string, number>;
+
+/** GET /operator/health: counts only. */
+export interface PlatformHealth {
+  organisations: {
+    id: string;
+    name: string;
+    status: OrgStatus;
+    documents_by_status: Counts;
+    failed_by_code: Counts;
+    in_progress: number;
+    oldest_in_progress_seconds: number | null;
+  }[];
+  totals: { documents_by_status: Counts; failed_by_code: Counts; in_progress: number; oldest_in_progress_seconds: number | null };
+  purges: { purged: number; last_purged_at: string | null; swept: number; last_swept_at: string | null };
 }

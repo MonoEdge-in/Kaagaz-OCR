@@ -149,6 +149,7 @@ describe("upload limits by type (PRD U2)", () => {
     image_bytes: 20 * MB,
     sheet_bytes: 10 * MB,
     max_pages: 40,
+    readers: [],
   };
 
   it("uses the platform's limits until the server's arrive", () => {
@@ -157,6 +158,7 @@ describe("upload limits by type (PRD U2)", () => {
       image_bytes: 20 * MB,
       sheet_bytes: 10 * MB,
       max_pages: 100,
+      readers: [], // no "Scan with" until the server says which readers it has
     });
     expect(limitFor("pdf")).toBe(50 * MB);
     expect(limitFor("image")).toBe(20 * MB);
@@ -524,6 +526,18 @@ describe("uploadDocument into a folder", () => {
     expect(lastForm().get("user_id")).toBe("u1");
     void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {});
     expect(lastForm().get("user_id")).toBe("u1");
+  });
+
+  it("sends the scan reader chosen as ocr_choice on both routes, and nothing for the default", () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, undefined, "rapidocr");
+    expect(lastForm().get("ocr_choice")).toBe("rapidocr");
+    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, "rapidocr");
+    expect(lastForm().get("ocr_choice")).toBe("rapidocr");
+    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, FOLDER, undefined);
+    expect(lastForm().has("ocr_choice")).toBe(false);
+    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {});
+    expect(lastForm().has("ocr_choice")).toBe(false);
   });
 
   it("gives the server's words when someone else has signed in since", async () => {

@@ -1,17 +1,25 @@
 /* One <table> for every width (council 2026-09-27, decision 7).
 
-   768 px and up: a normal table, 48 px rows, the header sticky under the top
-   bar, and no overflow wrapper (so the sticky header works and nothing
-   scrolls sideways; long text wraps instead).
+   The table sits in a .reflowWrap div, a size container: the table follows
+   the room it has, not the window's width (council 2026-10-04).
 
-   Below 768 px: the same table reflowed into cards with CSS. Changing a table's
+   48rem and up: a normal table with fixed column widths (each table sets its
+   own short columns in rem), 48 px rows, the header sticky under the top bar,
+   and no overflow wrapper (so the sticky header works and nothing scrolls
+   sideways; long text wraps instead).
+
+   Below 48rem: the same table reflowed into cards with CSS. Changing a table's
    display drops its semantics in some browsers, so the markup carries
    role="table|rowgroup|row|columnheader|cell" to put them back. A cell with
    data-label shows that label above its value.
 
-   Used by the admin Users and Activity tables. The documents list has the same
-   rules in Documents.module.css, asking the list's width instead of the
-   window's, because the folder tree sits beside it. */
+   Used by the admin Users, Activity and Failed jobs tables. The documents list
+   has the same rules in Documents.module.css. */
+
+.reflowWrap {
+  container: reflow / inline-size;
+  min-width: 0;
+}
 
 .reflow {
   width: 100%;
@@ -22,12 +30,18 @@
   border-radius: var(--r-md);
 }
 
+/* Long words break only when they cannot fit on a line of their own. */
 .reflow td,
 .reflow th {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 
-@media (min-width: 768px) {
+@container reflow (min-width: 48rem) {
+  .reflow {
+    table-layout: fixed;
+  }
+
   .reflow thead th {
     position: sticky;
     top: var(--topbar-space);
@@ -63,7 +77,7 @@
   }
 }
 
-@media (max-width: 767.98px) {
+@container reflow (max-width: 47.98rem) {
   .reflow,
   .reflow tbody,
   .reflow tr,

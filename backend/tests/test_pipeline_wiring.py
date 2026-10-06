@@ -48,6 +48,19 @@ class RunConfigTest(unittest.TestCase):
         )
         self.assertEqual((config["hidden_text_max_share"], config["blank_dark_pixels"]), (0.05, 20))
 
+    def test_a_run_records_the_ocr_dpi_rule_and_its_numbers(self) -> None:
+        """Council 5 Oct 2026: the accuracy test compares runs by how their DPI was chosen."""
+        config = reader_config(make_settings(ocr_dpi_rule="text_height", ocr_dpi=400))
+        self.assertEqual(
+            {key: config[key] for key in config if key.startswith("ocr_dpi")},
+            {
+                "ocr_dpi": 400,
+                "ocr_dpi_rule": "text_height",
+                "ocr_dpi_target_line_px": 48,
+                "ocr_dpi_probe_long_side": 1200,
+            },
+        )
+
     def test_a_run_records_the_card_prompt_and_the_model_budgets(self) -> None:
         """ML 10: which prompt made the card, and the budgets the calls ran with."""
         settings = make_settings(model_num_ctx=6000, model_card_max_tokens=900, card_max_chars=9000)

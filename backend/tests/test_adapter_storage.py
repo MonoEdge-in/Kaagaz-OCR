@@ -171,6 +171,54 @@ class StubbedStorageTest(unittest.TestCase):
         with self.assertRaises(BackendUnavailable):
             self.storage.delete(CUSTOMER, DOCUMENT)
 
+    # --- a deleted organisation (super admin PR 4) ----------------------------
+
+    def _delete_expected(self, keys: list[str], errors: list[dict[str, str]] | None = None) -> None:
+        reply = {"Errors": errors} if errors else {}
+        objects = {"Objects": [{"Key": key} for key in keys], "Quiet": True}
+        self.stub.add_response("delete_objects", reply, {"Bucket": BUCKET, "Delete": objects})
+
+    def test_delete_customer_empties_both_prefixes_one_listing_page_at_a_time(self) -> None:
+        own, held = f"customers/{CUSTOMER}/", f"quarantine/{CUSTOMER}/"
+        first, second = [PREFIX + "original", PREFIX + "pages/1.webp"], [own + "documents/x/pages/9.webp"]
+        page = {
+            "Contents": [{"Key": key} for key in first],
+            "IsTruncated": True,
+            "NextContinuationToken": "t1",
+        }
+        self.stub.add_response("list_objects_v2", page, {"Bucket": BUCKET, "Prefix": own})
+        self._delete_expected(first)  # before the next page is asked for
+        last = {"Contents": [{"Key": key} for key in second], "IsTruncated": False}
+        self.stub.add_response(
+            "list_objects_v2", last, {"Bucket": BUCKET, "Prefix": own, "ContinuationToken": "t1"}
+        )
+        self._delete_expected(second)
+        quarantined = {"Contents": [{"Key": held + DOCUMENT}], "IsTruncated": False}
+        self.stub.add_response("list_objects_v2", quarantined, {"Bucket": BUCKET, "Prefix": held})
+        self._delete_expected([held + DOCUMENT])
+        self.storage.delete_customer(CUSTOMER.upper())  # written in standard form
+
+    def test_delete_customer_again_lists_nothing_and_deletes_nothing(self) -> None:
+        for prefix in (f"customers/{CUSTOMER}/", f"quarantine/{CUSTOMER}/"):
+            self.stub.add_response(
+                "list_objects_v2", {"IsTruncated": False}, {"Bucket": BUCKET, "Prefix": prefix}
+            )
+        self.storage.delete_customer(CUSTOMER)
+
+    def test_delete_customer_reports_a_key_storage_could_not_remove(self) -> None:
+        listed = {"Contents": [{"Key": PREFIX + "original"}], "IsTruncated": False}
+        self.stub.add_response(
+            "list_objects_v2", listed, {"Bucket": BUCKET, "Prefix": f"customers/{CUSTOMER}/"}
+        )
+        self._delete_expected([PREFIX + "original"], [{"Key": PREFIX + "original", "Code": "InternalError"}])
+        with self.assertRaises(BackendUnavailable):
+            self.storage.delete_customer(CUSTOMER)
+
+    def test_delete_customer_takes_a_uuid_only(self) -> None:
+        for bad in ("", "../other", f"{CUSTOMER}/.."):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.storage.delete_customer(bad)  # no storage call is expected
+
     # --- quarantine ---------------------------------------------------------
 
     def test_quarantine_copies_then_deletes_the_original(self) -> None:

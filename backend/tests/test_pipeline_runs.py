@@ -8,6 +8,7 @@ The same claims against PostgreSQL are in tests/test_pipeline_db.py.
 
 import functools
 import io
+import itertools
 import logging
 import unittest
 from collections.abc import Callable
@@ -17,15 +18,16 @@ from unittest import mock
 
 from PIL import Image
 
+from kaagaz.eta import FLOORED_STEPS, fraction_at, time_left
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import JobFailed
-from kaagaz.pipeline import DocumentContent, DocumentProcessor, Progress, ReadingSocket, RunTotals
+from kaagaz.pipeline import DocumentContent, DocumentProcessor, OcrChooser, Progress, ReadingSocket, RunTotals
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.preparing.pages import prepare_pages
-from kaagaz.reading.ocr import FallbackOcrEngine, MeteredOcrEngine, OcrEngine, OcrLine
+from kaagaz.reading.ocr import FallbackOcrEngine, MeteredOcrEngine, OcrEngine, OcrEngines, OcrLine
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.spans import PageInfo, ReadError, Span
 from kaagaz.reading.wiring import build_reader_socket
@@ -201,8 +203,12 @@ def rig(
     log: list[str] | None = None,
     max_vision_crops: int = 200,
     settings: Settings = SETTINGS,
+    engines: OcrChooser | None = None,
+    moving_clock: bool = False,
 ) -> Rig:
+    """``moving_clock``: the clock moves with the timer, from T0, else it stands at T0."""
     timer = Timer()
+    start = timer()
     statuses, storage = MemoryStatuses(), MemoryStorage()
     repo = MemoryDocuments(statuses)
     runs = MemoryRuns(repo)
@@ -238,7 +244,8 @@ def rig(
             runs=runs,
             progress=progress,
             ocr_meter=meter,
-            clock=lambda: T0,
+            ocr_engines=engines,
+            clock=(lambda: T0 + timedelta(seconds=timer() - start)) if moving_clock else (lambda: T0),
             timer=timer,
             max_vision_crops=max_vision_crops,
             run_config=CONFIG,
@@ -409,6 +416,9 @@ class ProgressTest(unittest.TestCase):
                 Progress("indexing", 0, 1),
             ],
         )
+        # Every write carries the run's start, so the screen can show how far it has got.
+        self.assertEqual({p.started_at for _, _, p in system.progress.history}, {T0})
+        self.assertEqual(system.progress.history[0][2].to_json()["started_at"], T0.isoformat())
 
     def test_a_sheet_is_read_as_a_whole(self) -> None:
         system = rig()
@@ -439,9 +449,10 @@ class ProgressTest(unittest.TestCase):
         steps = [progress for _, _, progress in system.progress.history]
         self.assertEqual(steps[-2:], [Progress("indexing", 1, 2), Progress("indexing", 2, 2)])
 
-    def test_reading_and_understanding_carry_the_time_left(self) -> None:
+    def test_preparing_reading_and_after_carry_the_time_left(self) -> None:
         """PRD 4 #13, cold: the constants (an unknown engine: 7 s a page), then this run's
-        own pages (2.5 s each); from the end of reading, the time after it. Low confidence."""
+        own pages (2.5 s each); from the end of reading, the time after it. Low confidence.
+        Preparing (1 s a page, n0 = 2) also covers reading every page and the time after."""
         system = rig(ocr=TimedOcr)
         system.processor(system.job(make_pdf([SCANNED, SCANNED])), beat)
         by = {(p.step, p.done): p.estimate for _, _, p in system.progress.history}
@@ -453,7 +464,70 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(
             (after.finish_at - T0, after.slow_after_s, after.confidence), (timedelta(seconds=45), 65.0, "low")
         )
-        self.assertEqual((by[("scanning", 0)], by[("indexing", 0)]), (None, None))
+        prep = by[("preparing", 1)]
+        assert prep is not None
+        self.assertAlmostEqual(prep.item_s, 2 / 3)  # the timer stands still: (2 * 1 + 0) / (2 + 1)
+        self.assertAlmostEqual(
+            (prep.finish_at - T0).total_seconds(), prep.item_s + 2 * first.item_s + 45.0, 3
+        )
+        self.assertEqual((by[("scanning", 0)], by[("indexing", 0)]), (None, after))  # indexing keeps it
+
+    def test_the_percent_never_goes_back_when_a_slow_page_1_raises_item_s(self) -> None:
+        """Council of 5 Oct 2026: page 1 of 6 takes 15 s against the 7 s guess, so the next
+        estimate's finish jumps and its own F drops; the stored ``reached`` keeps the
+        percent the screen had, write after write."""
+        system = rig(ocr=lambda timer: TimedOcr(timer, seconds=15.0), moving_clock=True)
+        system.processor(system.job(make_pdf([SCANNED] * 6)), beat)
+        timed = [p for _, _, p in system.progress.history if p.estimate is not None]
+
+        def fraction(p: Progress, now: datetime) -> float:
+            assert p.estimate is not None and p.started_at is not None
+            return fraction_at(p.estimate, started_at=p.started_at, floored=p.step in FLOORED_STEPS, now=now)
+
+        def shown(p: Progress, now: datetime) -> float:
+            left = time_left(p.to_json(), now=now)
+            assert left is not None
+            return float(left["done_fraction"])
+
+        dropped = []
+        for before, p in itertools.pairwise(timed):
+            assert p.estimate is not None
+            now = p.estimate.moved_at  # the write's own time: the screen had ``before`` until then
+            dropped.append(fraction(p, now) < fraction(before, now))
+            self.assertGreaterEqual(shown(p, now), shown(before, now))  # done_fraction never goes back
+        self.assertTrue(any(dropped))  # F alone does, after page 1
+        self.assertGreater(shown(timed[-1], T0), 0)
+
+    def test_a_refresh_never_shows_less_than_a_screen_that_has_not_polled_yet(self) -> None:
+        """Review of 5 Oct 2026: after each write, a screen keeps counting on from the old
+        answer until its next poll (3 to 15 s later); a refresh then must not show less."""
+        system = rig(ocr=lambda timer: TimedOcr(timer, seconds=15.0), moving_clock=True)
+        system.processor(system.job(make_pdf([SCANNED] * 6)), beat)
+        timed = [p for _, _, p in system.progress.history if p.estimate is not None]
+        for before, p in itertools.pairwise(timed):
+            assert before.estimate is not None and p.estimate is not None
+            old = time_left(before.to_json(), now=before.estimate.moved_at)  # the screen's answer
+            assert old is not None
+            for wait in (0, 1, 3, 6, 9, 12, 15):
+                at = p.estimate.moved_at + timedelta(seconds=wait)  # a refresh after the write
+                refreshed = time_left(p.to_json(), now=at)
+                assert refreshed is not None
+                self.assertGreaterEqual(
+                    refreshed["done_fraction"] + 1e-4, live(old, before.step, at - before.estimate.moved_at)
+                )
+        self.assertTrue(all(p.reached is not None and 0 <= p.reached <= 1 for p in timed))
+
+    def test_a_run_times_its_preparing_and_three_runs_teach_it(self) -> None:
+        """1.5 s a heartbeat: each page drawn beats once, so two pages take 3 s to prepare."""
+        system = rig()
+        for n in range(4):
+            pdf = make_pdf([Page(texts=[Text(72, 700, f"{LONG_LINE} {n} {side}")]) for side in "ab"])
+            system.processor(system.job(pdf), lambda: system.timer.advance(1.5))
+        last = [run.totals for run in system.runs.rows.values() if run.totals is not None][-1]
+        self.assertEqual(last.config["seconds_preparing"], 3.0)
+        prep = [p.estimate for _, _, p in system.progress.history if p.step == "preparing"][-2]
+        assert prep is not None  # the fourth run's first page, after three runs of 3 s for 2 pages
+        self.assertAlmostEqual(prep.item_s, (2 + 2.44 * 3 + 1.5) / (2 + 2.44 * 2 + 1))
 
     def test_three_ready_runs_teach_the_time_after_reading(self) -> None:
         moves: list[Callable[[float], None]] = []
@@ -462,7 +536,7 @@ class ProgressTest(unittest.TestCase):
         for n in range(4):
             job = system.job(make_pdf([Page(texts=[Text(72, 700, f"{LONG_LINE} {n}")])]))
             system.processor(job, beat)
-        timings = {"seconds_reading": 0.0, "seconds_after_reading": 30.0}
+        timings = {"seconds_reading": 0.0, "seconds_after_reading": 30.0, "seconds_preparing": 0.0}
         self.assertEqual(system.totals(job).config, {**CONFIG, **timings})
         after = [p for _, _, p in system.progress.history if p.step == "understanding"][-1].estimate
         assert after is not None
@@ -534,7 +608,7 @@ class RunTotalsTest(unittest.TestCase):
         system = rig(ocr=TimedOcr, settings=make_settings(page_image_dpi=72, ocr_dpi=300))
         job = system.job(make_pdf([SCANNED, a1]))
         system.processor(job, beat)
-        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0}
+        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0, "seconds_preparing": 0.0}
         self.assertEqual(system.totals(job).config, {**CONFIG, "ocr_dpi_lowest": 164, **timings})
 
         letter_only = system.job(make_pdf([SCANNED, SCANNED]))
@@ -555,7 +629,7 @@ class RunTotalsTest(unittest.TestCase):
             return FallbackOcrEngine(FailingOcr(), lambda: TimedOcr(timer), timer=timer)
 
         system = rig(ocr=engine)
-        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0}
+        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0, "seconds_preparing": 0.0}
         job = system.job(make_pdf([SCANNED, SCANNED]))
         system.processor(job, beat)
         totals = system.totals(job)
@@ -589,6 +663,75 @@ class RunTotalsTest(unittest.TestCase):
                 store=system.store,
                 runs=system.runs,
             )
+
+
+class OcrChoiceTest(unittest.TestCase):
+    """The upload's reader (PRD 4 #17): it reads this job only, and the run says so."""
+
+    def engines(self, timer: Timer, rapid: OcrEngine, *, rapidocr: str | None = "3.9.2") -> OcrEngines:
+        paddle = TimedOcr(timer)
+        paddle.name = "paddleocr-vl"
+        installed = mock.patch("kaagaz.reading.ocr._installed_version", return_value=rapidocr)
+        installed.start()
+        self.addCleanup(installed.stop)
+        settings = make_settings(ocr_engine="paddleocr_vl", ocr_url="http://ocr:8080")
+        return OcrEngines(settings, engine={"paddleocr_vl": paddle, "rapidocr": rapid}.__getitem__)
+
+    def chosen_job(self, system: Rig, choice: str) -> Job:
+        upload = system.upload.accept(CUSTOMER, io.BytesIO(make_pdf([SCANNED])), ocr_choice=choice)
+        return Job(CUSTOMER, upload.document_id)
+
+    def test_a_chosen_reader_reads_the_job_and_the_run_keeps_the_choice(self) -> None:
+        timer = Timer()
+        rapid = TimedOcr(timer)
+        rapid.name = "rapidocr"
+        engines = self.engines(timer, rapid)
+        system = rig(ocr=engines, engines=engines)
+        job = self.chosen_job(system, "rapidocr")
+        system.processor(job, beat)
+        totals = system.totals(job)
+        self.assertEqual((totals.ocr_engine, rapid.calls), ("rapidocr 7", 1))
+        self.assertEqual(
+            {key: totals.config[key] for key in ("ocr_choice", "ocr_choice_honoured")},
+            {"ocr_choice": "rapidocr", "ocr_choice_honoured": True},
+        )
+        self.assertEqual(engines.name, "paddleocr-vl")  # Auto again for the next job
+        auto = system.job(make_pdf([SCANNED, WHITE]))
+        system.processor(auto, beat)
+        self.assertNotIn("ocr_choice", system.totals(auto).config)  # an Auto run is as before
+        self.assertEqual(system.totals(auto).ocr_engine, "paddleocr-vl 7")
+
+    def test_a_job_that_fails_still_ends_its_choice_after_its_run(self) -> None:
+        timer = Timer()
+
+        class BrokenRapid:
+            name, version = "rapidocr", "3"
+
+            def read(self, image: Image.Image) -> list[OcrLine]:
+                raise ReadError("corrupt_file")
+
+        engines = self.engines(timer, BrokenRapid())
+        system = rig(ocr=engines, engines=engines)
+        job = self.chosen_job(system, "rapidocr")
+        with self.assertRaises(JobFailed):
+            system.processor(job, beat)
+        totals = system.totals(job)
+        self.assertEqual((totals.status, totals.ocr_engine), ("failed", "rapidocr 3"))
+        self.assertTrue(totals.config["ocr_choice_honoured"])
+        self.assertEqual(engines.name, "paddleocr-vl")
+
+    def test_a_choice_this_worker_lacks_is_read_with_auto_and_logged_by_code(self) -> None:
+        timer = Timer()
+        engines = self.engines(timer, TimedOcr(timer), rapidocr=None)
+        for system in (rig(ocr=engines, engines=engines), rig()):  # RapidOCR not installed; no OCR at all
+            job = self.chosen_job(system, "rapidocr")
+            with self.assertLogs("kaagaz.pipeline", level="WARNING") as logs:
+                system.processor(job, beat)
+            config = system.totals(job).config
+            self.assertEqual((config["ocr_choice"], config["ocr_choice_honoured"]), ("rapidocr", False))
+            (record,) = [r for r in logs.records if r.__dict__.get("code") == "ocr_choice_unavailable"]
+            self.assertEqual(record.getMessage(), "ocr choice not available, read with auto")
+            self.assertEqual(record.__dict__["document_id"], job.document_id)
 
 
 class VisionTest(unittest.TestCase):
@@ -652,6 +795,55 @@ class EveryPathClosesItsRunTest(unittest.TestCase):
         job = system.job(make_pdf([SCANNED]))
         with self.assertRaises(BackendUnavailable):
             system.processor(job, beat)
+        self.assertEqual(self.closed(system, job), [("failed", "ocr_unavailable")])
+
+    def test_a_backend_that_is_down_clears_the_progress(self) -> None:
+        """Council of 5 Oct 2026: OCR stops page 1; the job waits for its lease to come
+        back, so no stale "Reading page 1" is left on the document meanwhile."""
+        system = rig(ocr=lambda timer: TimedOcr(timer, down_on_call=1))
+        job = system.job(make_pdf([SCANNED]))
+        with self.assertRaises(BackendUnavailable):
+            system.processor(job, beat)
+        self.assertIn(Progress("reading", 0, 1), [p for _, _, p in system.progress.history])
+        self.assertNotIn((CUSTOMER, job.document_id), system.progress.progress)
+        self.assertEqual(self.closed(system, job), [("failed", "ocr_unavailable")])
+
+    def test_a_stale_delivery_never_clears_the_newer_runs_progress(self) -> None:
+        """The fence: a newer run starts and writes its progress while the older one is in
+        OCR; OCR then stops the older one, whose clear changes nothing."""
+        newer: list[str] = []
+
+        class NewerRunThenDown(TimedOcr):
+            def read(self, image: Image.Image) -> list[OcrLine]:
+                newer.append(system.runs.start(CUSTOMER, job.document_id, now=T0))
+                system.progress.set_progress(
+                    CUSTOMER, job.document_id, Progress("reading", 0, 1), run_id=newer[0]
+                )
+                raise BackendUnavailable("ocr")
+
+        system = rig(ocr=NewerRunThenDown)
+        job = system.job(make_pdf([SCANNED]))
+        with self.assertRaises(BackendUnavailable):
+            system.processor(job, beat)
+        self.assertEqual(system.progress.progress[(CUSTOMER, job.document_id)], Progress("reading", 0, 1))
+        self.assertEqual(statuses_of(system.runs_of(job)), [("superseded", None), ("running", None)])
+
+    def test_progress_that_cannot_be_cleared_is_logged_and_the_error_goes_on(self) -> None:
+        system = rig(ocr=lambda timer: TimedOcr(timer, down_on_call=1))
+        job = system.job(make_pdf([SCANNED]))
+        down = mock.patch.object(
+            system.progress, "clear_progress", side_effect=BackendUnavailable("database")
+        )
+        with (
+            down,
+            self.assertLogs("kaagaz.pipeline", level="WARNING") as logs,
+            self.assertRaises(BackendUnavailable),
+        ):
+            system.processor(job, beat)
+        self.assertEqual(
+            [(r.getMessage(), getattr(r, "code", None)) for r in logs.records],
+            [("progress_not_cleared", "ocr_unavailable")],
+        )
         self.assertEqual(self.closed(system, job), [("failed", "ocr_unavailable")])
 
     def test_a_file_with_no_reader(self) -> None:
@@ -835,6 +1027,18 @@ class LoggingTest(unittest.TestCase):
         for record in logs.records:
             self.assertNotIn("INV", record.getMessage())
             self.assertEqual(getattr(record, "customer_id", None), CUSTOMER)
+
+
+def live(answer: dict[str, object], step: str, since: timedelta) -> float:
+    """What lib/progress.ts fractionShown shows ``since`` after ``answer`` arrived."""
+    dt = since.total_seconds()
+    numbers = {key: float(value) for key, value in answer.items() if isinstance(value, int | float)}
+    if numbers["since_move_seconds"] + dt > numbers["slow_after_seconds"]:
+        return numbers["done_fraction"]  # taking longer than usual: done_fraction alone
+    left = max(0.0, numbers["seconds"] - dt)
+    left = max(left, numbers["after_seconds"]) if step in FLOORED_STEPS else left
+    elapsed = numbers["elapsed_seconds"] + dt
+    return max(numbers["done_fraction"], elapsed / (elapsed + left) if elapsed + left > 0 else 0.0)
 
 
 if __name__ == "__main__":

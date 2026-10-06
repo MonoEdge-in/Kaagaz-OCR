@@ -1,0 +1,201 @@
+/* The operator (super admin) screens. Tokens only (app/globals.css). The table
+   uses the shared reflow in components/documents/Table.module.css. */
+
+/* --- The top bar: wraps onto two lines on a phone, never scrolls sideways --- */
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: max(var(--space-2), env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-right))
+    var(--space-2) max(var(--space-4), env(safe-area-inset-left));
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  margin-inline-end: auto;
+  padding-inline-start: var(--space-3);
+  border-inline-start: 2px solid var(--brand-lal);
+  font-family: var(--font-display);
+  font-size: var(--fs-xl);
+  font-weight: 700;
+}
+
+.who {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.topbarError {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* The top bar does not stick, so the table header sticks to the very top. */
+.main {
+  --topbar-space: 0px;
+}
+
+/* --- The organisations list ------------------------------------------------- */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-4);
+}
+
+.search {
+  flex: 1 1 16rem;
+  max-width: 28rem;
+}
+
+.summary {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.orgName {
+  font-weight: 600;
+}
+
+.statusNote,
+.extra {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
+  font-size: var(--fs-sm);
+}
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* "Cancel deletion" wraps onto two lines in the narrow Actions column. */
+.rowActions :global(.btn) {
+  white-space: normal;
+}
+
+/* --- One organisation's admins ----------------------------------------------- */
+
+.adminList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.adminItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-block-start: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.email {
+  overflow-wrap: anywhere;
+}
+
+/* Pages and size have their own columns from 64rem and on the cards; between
+   48rem and 64rem they sit under the document count instead. */
+.extra {
+  display: none;
+}
+
+@container reflow (min-width: 48rem) {
+  .statusColumn {
+    width: 8rem;
+  }
+
+  .usersColumn {
+    width: 7.5rem;
+  }
+
+  .documentsColumn {
+    width: 7rem;
+  }
+
+  .pagesColumn {
+    width: 5rem;
+  }
+
+  .sizeColumn {
+    width: 6.5rem;
+  }
+
+  .activityColumn {
+    width: 7.5rem;
+  }
+
+  .actionsColumn {
+    width: 7rem;
+  }
+}
+
+@container reflow (min-width: 48rem) and (max-width: 63.98rem) {
+  .pagesColumn,
+  .sizeColumn {
+    display: none;
+  }
+
+  .extra {
+    display: block;
+  }
+}
+
+@container reflow (max-width: 47.98rem) {
+  .orgName {
+    font-size: var(--fs-lg);
+  }
+}
+
+/* --- Dialogs ------------------------------------------------------------------- */
+
+.dialogForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.dialogForm p {
+  margin: 0;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.resultHeading {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.resultHeading:focus-visible {
+  outline-offset: 4px;
+}
+
+@media (pointer: coarse) {
+  .buttons :global(.btn) {
+    min-height: 44px;
+  }
+}

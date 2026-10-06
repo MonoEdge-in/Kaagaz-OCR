@@ -22,6 +22,7 @@ from kaagaz.db import folders as folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.pipeline_store import span_to_json
+from kaagaz.reading import ocr
 from kaagaz.reading.spans import CellLocation, Span
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 from kaagaz.settings import Settings, SettingsError
@@ -136,12 +137,13 @@ def test_status_messages_name_the_tries_and_the_real_page_count() -> None:
             max_attempts=max_attempts,
         )
 
-    # From the second try on, a file still in progress says which try it is.
-    assert message("received", attempts=1, max_attempts=5) == "Waiting for the virus check."
-    assert message("received", attempts=2, max_attempts=5) == "Waiting for the virus check. Try 2 of 5."
-    assert message("clean", attempts=5, max_attempts=5) == "Reading the document… Try 5 of 5."
-    assert message("clean", attempts=7, max_attempts=5) == "Reading the document… Try 5 of 5."
-    assert message("clean", attempts=3, max_attempts=None) == "Reading the document…"
+    # From the second try on, a file still in progress says which try it is. Changed on
+    # purpose (council of 5 Oct 2026): with no progress after a try, it waits to try again.
+    assert message("received", attempts=1, max_attempts=5) == "Waiting to try again."
+    assert message("received", attempts=2, max_attempts=5) == "Waiting to try again. Try 2 of 5."
+    assert message("clean", attempts=5, max_attempts=5) == "Waiting to try again. Try 5 of 5."
+    assert message("clean", attempts=7, max_attempts=5) == "Waiting to try again. Try 5 of 5."
+    assert message("clean", attempts=3, max_attempts=None) == "Waiting to try again."
     assert message("ready", attempts=3, max_attempts=5) == "Ready. You can ask about it."
     # The tries ran out.
     assert message("failed", "retries_exhausted", attempts=5, max_attempts=5) == (
@@ -228,6 +230,22 @@ def test_status_messages_say_how_far_the_worker_has_got() -> None:
     assert message("clean", "reading", 2, 40, attempts=2) == "Reading page 3 of 40… Try 2 of 5."
 
 
+def test_a_try_a_backend_stopped_says_waiting_to_try_again() -> None:
+    """The worker clears the progress of a try the OCR (or another backend) stopped; until
+    the job comes back the list says so, not a stale "Reading page 1" (council of 5 Oct 2026)."""
+
+    def message(status: str, attempts: int, progress: dict[str, object] | None = None) -> str:
+        return status_message(
+            status, None, detected_type="pdf", max_pages=100, attempts=attempts, progress=progress
+        )
+
+    assert message("received", 1) == message("clean", 1) == "Waiting to try again."
+    assert message("received", 0) == "Waiting for the virus check."  # no try yet
+    assert message("clean", 1, {"step": "reading", "done": 0, "total": 4}) == "Reading page 1 of 4\u2026"
+    assert message("ready", 1) == "Ready. You can ask about it."
+    assert document_time_left({"status": "clean", "progress": None, "deleted_at": None}, now=NOW) is None
+
+
 def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
     progress = {"step": "reading", "done": 2, "total": 40}
 
@@ -242,22 +260,29 @@ def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
     assert in_progress("clean", None) is None
 
 
-# A progress as the worker writes it while reading (kaagaz.eta), 10 s ago, 50 s before ready.
+# A progress as the worker writes it while reading (kaagaz.eta), 10 s ago, 50 s before ready,
+# in a run that started 70 s ago.
 MOVED, FINISH = (NOW - timedelta(seconds=10)).isoformat(), (NOW + timedelta(seconds=50)).isoformat()
 TIMED: dict[str, object] = {"step": "reading", "done": 2, "total": 40, "confidence": "high"}
+TIMED["started_at"] = (NOW - timedelta(seconds=70)).isoformat()
 TIMED |= {"moved_at": MOVED, "finish_at": FINISH, "item_s": 1.25, "after_s": 10.0, "slow_after_s": 20.0}
 TIME_LEFT: dict[str, object] = {"seconds": 50.0, "since_move_seconds": 10.0, "items_left": 38}
 TIME_LEFT |= {"slow_after_seconds": 20.0, "item_seconds": 1.25, "after_seconds": 10.0, "confidence": "high"}
+TIME_LEFT |= {"elapsed_seconds": 70.0}
+# Added on purpose (council of 5 Oct 2026): 70 s in, 50 s left, the same on every load.
+TIME_LEFT |= {"done_fraction": round(70 / 120, 4)}
 
 
-def test_time_left_only_while_read_and_out_of_trash() -> None:
+def test_time_left_from_preparing_on_and_out_of_trash() -> None:
     def left(status: str, deleted_at: datetime | None = None, **progress: object) -> object:
         row = {"status": status, "progress": {**TIMED, **progress}, "deleted_at": deleted_at}
         return document_time_left(row, now=NOW)
 
     assert left("clean") == left("received") == TIME_LEFT
-    gone = [left("ready"), left("failed"), left("clean", deleted_at=NOW), left("clean", step="indexing")]
-    assert gone == [None, None, None, None]
+    assert left("clean", step="preparing") == TIME_LEFT  # from preparing on: 38 pages left to draw
+    assert left("clean", step="indexing") == {**TIME_LEFT, "items_left": 0}
+    gone = [left("ready"), left("failed"), left("clean", deleted_at=NOW), left("clean", step="scanning")]
+    assert gone == [None, None, None, None]  # scanning: no estimate yet, the screen says Starting
     assert document_time_left({"status": "clean", "progress": None, "deleted_at": None}, now=NOW) is None
 
 
@@ -483,18 +508,115 @@ def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Data
     reply = signed.client.get("/api/upload-limits")
     assert reply.status_code == 200
     max_pages = api.settings.max_pages
+    readers = ocr.ocr_choices(api.settings)
     assert reply.json() == {
         "pdf_bytes": 5 * MB,
         "image_bytes": 2 * MB,
         "sheet_bytes": MB,
         "max_pages": max_pages,
+        "readers": readers,
     }
 
     with db.customer(signed.customer_id) as conn:
         conn.execute(text("UPDATE customers SET max_upload_mb = 4"))
     lowered = signed.client.get("/api/upload-limits").json()
-    assert lowered == {"pdf_bytes": 4 * MB, "image_bytes": 2 * MB, "sheet_bytes": MB, "max_pages": max_pages}
+    assert lowered == {
+        "pdf_bytes": 4 * MB,
+        "image_bytes": 2 * MB,
+        "sheet_bytes": MB,
+        "max_pages": max_pages,
+        "readers": readers,
+    }
     assert api.client().get("/api/upload-limits").status_code == 401
+
+
+# --- the scan reader an upload chose (PRD 4 #17) ------------------------------------------
+
+
+@pytest.fixture
+def rapidocr_server(monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """A laptop's settings with RapidOCR installed: Auto and RapidOCR are offered."""
+    monkeypatch.setattr(ocr, "_installed_version", lambda package: "3.9.2")
+    return make_settings(ocr_engine="rapidocr")
+
+
+OTHER_PDF = b"%PDF-1.7\n" + b"3" * 200
+VERSION_PDF = b"%PDF-1.7\n" + b"4" * 200
+
+
+def _choose(
+    client: TestClient, choice: str, data: bytes = PDF_BYTES, url: str = "/api/documents"
+) -> httpx.Response:
+    reply: httpx.Response = client.post(
+        url, data={"ocr_choice": choice}, files={"file": ("bill.pdf", data, "application/pdf")}, headers=CSRF
+    )
+    return reply
+
+
+def _stored_choices(db: Database, customer_id: str) -> list[str | None]:
+    with db.customer(customer_id) as conn:
+        return list(conn.execute(text("SELECT ocr_choice FROM documents ORDER BY version_no")).scalars())
+
+
+@pytest.mark.db
+def test_upload_limits_offer_the_readers_this_server_has(db: Database, rapidocr_server: Settings) -> None:
+    signed = Api(db, settings=rapidocr_server).new_signed()
+    readers = signed.client.get("/api/upload-limits").json()["readers"]
+    assert [(r["id"], r["title"], r["available"]) for r in readers] == [
+        ("auto", "Auto", True),
+        ("paddleocr_vl", "PaddleOCR-VL", False),
+        ("rapidocr", "RapidOCR", True),
+    ]
+    assert readers[1]["reason"] == "Not set up on this server"
+
+
+@pytest.mark.db
+def test_a_chosen_reader_is_stored_and_audited_and_auto_is_null(
+    db: Database, rapidocr_server: Settings
+) -> None:
+    api = Api(db, settings=rapidocr_server)
+    signed = api.new_signed()
+    chosen = _choose(signed.client, "rapidocr")
+    auto = _choose(signed.client, "auto", OTHER_PDF)
+    assert (chosen.status_code, auto.status_code) == (201, 201)
+    chosen_id, auto_id = chosen.json()["document"]["id"], auto.json()["document"]["id"]
+    version = _choose(signed.client, "rapidocr", VERSION_PDF, f"/api/documents/{auto_id}/versions")
+    assert version.status_code == 201
+    with db.customer(signed.customer_id) as conn:
+        rows = conn.execute(text("SELECT id::text, ocr_choice FROM documents")).all()
+    stored = {str(row[0]): row[1] for row in rows}
+    assert stored == {chosen_id: "rapidocr", auto_id: None, version.json()["document"]["id"]: "rapidocr"}
+    audited = [(row[0], row[3].get("ocr_choice")) for row in api.audit_rows(signed.customer_id)]
+    assert [row for row in audited if row[0].startswith("document.")] == [
+        ("document.upload", "rapidocr"),
+        ("document.upload", None),
+        ("document.version", "rapidocr"),
+    ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("choice", ["paddleocr_vl", "tesseract", "", "RAPIDOCR"])
+def test_a_reader_not_offered_is_400_and_nothing_is_stored(
+    db: Database, rapidocr_server: Settings, choice: str
+) -> None:
+    api = Api(db, settings=rapidocr_server)
+    signed = api.new_signed()
+    reply = _choose(signed.client, choice)
+    assert reply.status_code == 400
+    assert reply.json()["error"] == {"code": "bad_request", "message": "Choose one of the readers offered."}
+    assert _stored_choices(db, signed.customer_id) == []
+    assert api.queue.jobs == []
+    assert api.audit_actions(signed.customer_id).count("document.upload") == 0
+
+
+@pytest.mark.db
+def test_a_duplicate_keeps_the_reader_it_was_read_with(db: Database, rapidocr_server: Settings) -> None:
+    api = Api(db, settings=rapidocr_server)
+    signed = api.new_signed()
+    first = _choose(signed.client, "rapidocr")
+    again = _choose(signed.client, "auto")
+    assert (again.status_code, again.json()["document"]["id"]) == (200, first.json()["document"]["id"])
+    assert _stored_choices(db, signed.customer_id) == ["rapidocr"]
 
 
 @pytest.mark.db

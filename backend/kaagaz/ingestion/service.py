@@ -101,16 +101,19 @@ class UploadService:
         display_name: str = "document",
         uploaded_by: str | None = None,
         folder_id: str | None = None,
+        ocr_choice: str | None = None,
     ) -> UploadResult:
         """``display_name`` must already be cleaned by the caller (the API).
         ``folder_id`` files a new document there (None: the top level); a
-        duplicate stays where it is."""
+        duplicate stays where it is. ``ocr_choice`` is the scan reader the API
+        checked (None: Auto); a duplicate keeps the one it was read with."""
         return self._accept(
             customer_id,
             stream,
             display_name=display_name,
             uploaded_by=uploaded_by,
             folder_id=folder_id,
+            ocr_choice=ocr_choice,
             add=self._repository.add_if_absent,
         )
 
@@ -122,6 +125,7 @@ class UploadService:
         of_document_id: str,
         display_name: str,
         uploaded_by: str | None,
+        ocr_choice: str | None = None,
     ) -> UploadResult:
         """A new version of ``of_document_id``'s family: the checks, duplicate
         rule and undo steps of ``accept``. The repository gives it the family's
@@ -141,6 +145,7 @@ class UploadService:
             display_name=display_name,
             uploaded_by=uploaded_by,
             folder_id=None,
+            ocr_choice=ocr_choice,
             add=add_version,
         )
 
@@ -152,6 +157,7 @@ class UploadService:
         display_name: str,
         uploaded_by: str | None,
         folder_id: str | None,
+        ocr_choice: str | None,
         add: Callable[[DocumentRecord], tuple[DocumentRecord, bool]],
     ) -> UploadResult:
         """The steps in the module docstring; ``add`` records the new document."""
@@ -185,6 +191,7 @@ class UploadService:
                 display_name=display_name,
                 uploaded_by=uploaded_by,
                 folder_id=folder_id,
+                ocr_choice=ocr_choice,
             )
             # Store the exact bytes that were hashed.
             self._storage.put(customer_id, record.document_id, spooled.file)

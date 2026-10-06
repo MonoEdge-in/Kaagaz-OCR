@@ -62,6 +62,11 @@ what to say after it ("... बताएं कि ..."); and "do not ignore" (�
 first line of defence next to the fenced prompt (draft.py) and the number
 check (verify.py); it is not the only one.
 
+A translated search (council 4 Oct 2026, PROVISIONAL; kaagaz/answering/translate.py):
+the default gate first; failing it, ``any_hit_scores`` passes when any hit, not only the
+best, holds every number asked and reaches the meaning score. The service caps such an
+answer at needs review.
+
 A hit with no valid region cannot be pointed at, so it is not evidence
 (CLAUDE.md never-do 5).
 
@@ -75,7 +80,7 @@ expressions and substring checks per hit.
 
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal, Protocol
@@ -209,9 +214,33 @@ class Retriever(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class Translated:
+    """A translated search's hits, and the pieces a list of the question itself found, with
+    their own meaning score (a piece not in ``original`` only the translation found)."""
+
+    hits: Sequence[Hit]
+    original: Mapping[str, float | None]
+
+
+class TranslatedSearch(Protocol):
+    def search_translated(
+        self,
+        customer_id: str,
+        text: str,
+        embedding: list[float] | None,
+        translations: Sequence[tuple[str, list[float] | None]],
+        limit: int,
+        scope: Scope,
+        expansion: Expansion = NO_EXPANSION,
+    ) -> Translated:
+        """``Retriever.search`` for the question and each (text, embedding) translation, fused."""
+        ...
+
+
 class PgRetriever:
-    """``Retriever`` over PostgreSQL: hybrid search, and the hits' neighbours, each inside
-    ``db.customer``."""
+    """``Retriever`` and ``TranslatedSearch`` over PostgreSQL: hybrid search, and the hits'
+    neighbours, each inside ``db.customer``."""
 
     def __init__(self, db: Database, *, recipe: str, ef_search: int, neighbours: int) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
@@ -247,6 +276,33 @@ class PgRetriever:
                 scope=scope,
                 expansion=expansion,
             )
+
+    def search_translated(
+        self,
+        customer_id: str,
+        text: str,
+        embedding: list[float] | None,
+        translations: Sequence[tuple[str, list[float] | None]],
+        limit: int,
+        scope: Scope,
+        expansion: Expansion = NO_EXPANSION,
+    ) -> Translated:
+        from kaagaz.search.hybrid import search_translated
+
+        with self._db.customer(customer_id) as conn:
+            hits, original = search_translated(
+                conn,
+                customer_id=customer_id,
+                query_text=text,
+                embedding=embedding,
+                translations=translations,
+                limit=limit,
+                recipe=self._recipe,
+                ef_search=self._ef_search,
+                scope=scope,
+                expansion=expansion,
+            )
+        return Translated(hits, original)
 
     def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
         from kaagaz.search.hybrid import neighbours
@@ -341,6 +397,18 @@ def enough_evidence(
         return None
     mine = [found or expansion.found(keyword, haystack) for keyword, found in zip(wanted, heard, strict=True)]
     return "personal" if sum(mine) * 2 >= len(wanted) else None
+
+
+def any_hit_scores(evidence: Sequence[Evidence], min_score: float, numbers: Sequence[str]) -> bool:
+    """A translated search's gate: any hit (not a neighbour) whose meaning score reaches
+    ``min_score`` and that holds every number asked as a whole token. O(h * t)."""
+    return any(
+        not item.neighbour
+        and item.hit.meaning_score is not None
+        and item.hit.meaning_score >= min_score
+        and all(has_token(number, ascii_digits(item.hit.text).casefold()) for number in numbers)
+        for item in evidence
+    )
 
 
 def numbers_asked(question: str, keywords: Sequence[str]) -> list[str]:

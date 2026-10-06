@@ -9,7 +9,13 @@ from decimal import Decimal
 import pytest
 
 from kaagaz.answering.draft import DraftSentence
-from kaagaz.answering.verify import FUNCTION_WORDS, numbers_in, unchecked_cross_script, verify
+from kaagaz.answering.verify import (
+    FUNCTION_WORDS,
+    numbers_in,
+    other_script_month,
+    unchecked_cross_script,
+    verify,
+)
 
 EVIDENCE = {
     1: "Invoice No: INV-1042\nInvoice Date: 12/08/2026\nGrand Total: Rs. 1,20,000",
@@ -117,7 +123,13 @@ def kept(text: str, cited: tuple[int, ...] = (1,)) -> bool:
             pytest.param(f"The total is Rs. 9{ch}9,000.", id=f"U+{ord(ch):04X} inside a number")
             for ch in INVISIBLE
         ],
-        *[pytest.param(f"The grand total is Rs. {d}.", id=f"{name} digits") for name, d in FOREIGN.items()],
+        pytest.param(
+            "The grand total is Rs. 1,\u0ae7\u0aee,000.", id="ASCII and Gujarati digits in one token"
+        ),
+        pytest.param("The grand total is Rs. \u0967,\u0ae7\u0aee,000.", id="Devanagari and Gujarati digits"),
+        pytest.param(
+            "The grand total is Rs. \u0ae8,\u0ae7\u0aee,\u0ae6\u0ae6\u0ae6.", id="an invented Gujarati number"
+        ),
         pytest.param("The grand total is Rs. 1,18,000².", id="a superscript"),
         pytest.param("CGST is ½ of the tax.", id="a fraction"),
         pytest.param("It is invoice ① of the year.", id="a circled digit"),
@@ -150,6 +162,13 @@ def kept(text: str, cited: tuple[int, ...] = (1,)) -> bool:
 )
 def test_must_drop(text: str) -> None:
     assert not kept(text)
+
+
+@pytest.mark.parametrize("digits", list(FOREIGN.values()), ids=list(FOREIGN))
+def test_the_digits_of_any_one_script_read_by_value(digits: str) -> None:
+    # Council 4 Oct 2026 (a change: these were dropped as unreadable): ascii_digits on both sides.
+    assert kept(f"The grand total is Rs. {digits}.")
+    assert verify([DraftSentence("The total is Rs. 1,18,000.", [1])], {1: f"Total {digits}"}) != []
 
 
 @pytest.mark.parametrize(
@@ -296,7 +315,11 @@ def _kept(sentence: str, evidence: str) -> bool:
         ("The area is ४५१ R.", "क्षेत्र ४५०", False),
         ("The area is ४५० R.", "Area 450", True),
         ("The area is 450 R.", "क्षेत्र ४५०", True),
-        ("The area is ૪૫૧ R.", "क्षेत्र ४५०", False),  # Gujarati digits cannot be checked: dropped
+        (
+            "The area is \u0aea\u0aeb\u0ae7 R.",
+            "\u0915\u094d\u0937\u0947\u0924\u094d\u0930 \u096a\u096b\u0966",
+            False,
+        ),  # 451 is not 450
         ("The total is " + "1,20,000.00.".translate(DEVANAGARI), "Total: 1,20,000", True),
         ("Gat ४५/२.", "Gat No. 45/2", True),
         ("Gat ४५/३.", "Gat No. 45/2", False),
@@ -362,3 +385,147 @@ def test_only_closed_function_words_may_be_added(sentence: str, kept: bool) -> N
 def test_function_words_are_whole_nfc_words_and_no_negation() -> None:
     assert all(unicodedata.is_normalized("NFC", word) for word in FUNCTION_WORDS)
     assert not {"नहीं", "नाही", "न", "नका", "नये", "नव्हे", "या", "किंवा"} & FUNCTION_WORDS
+
+
+# --- any script but Latin (council 4 Oct 2026: the other-script hole) --------------------------
+
+GUJARATI_OWNER = (
+    "\u0aae\u0abe\u0ab2\u0abf\u0a95: \u0ab0\u0aae\u0ac7\u0ab6 \u0aaa\u0a9f\u0ac7\u0ab2"  # owner: Ramesh Patel
+)
+SURESH = "\u0ab8\u0ac1\u0ab0\u0ac7\u0ab6"
+
+
+def test_a_made_up_gujarati_quote_is_a_missing_word(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="kaagaz.answering.verify")
+    invented = DraftSentence(f"The owner is {SURESH} \u0aaa\u0a9f\u0ac7\u0ab2.", [1])
+    assert verify([invented], {1: GUJARATI_OWNER}) == []
+    assert [record.getMessage() for record in caplog.records] == ["answer sentences dropped: missing_word=1"]
+    quoted = DraftSentence("The owner is \u0ab0\u0aae\u0ac7\u0ab6 \u0aaa\u0a9f\u0ac7\u0ab2.", [1])
+    assert verify([quoted], {1: GUJARATI_OWNER}) == [quoted]
+
+
+def test_an_english_sentence_over_gujarati_or_tamil_evidence_is_unchecked() -> None:
+    # owner Raman
+    tamil = "\u0b89\u0bb0\u0bbf\u0bae\u0bc8\u0baf\u0bbe\u0bb3\u0bb0\u0bcd \u0bb0\u0bbe\u0bae\u0ba9\u0bcd"
+    texts = {1: GUJARATI_OWNER, 2: tamil, 3: "Owner: Ramesh Patel"}
+    for n in (1, 2):
+        sentence = DraftSentence("The owner is Ramesh Patel.", [n])
+        assert verify([sentence], texts) == [sentence] and unchecked_cross_script(sentence, texts)
+    assert not unchecked_cross_script(DraftSentence("The owner is Ramesh Patel.", [3]), texts)
+    assert not unchecked_cross_script(
+        DraftSentence("\u0ab0\u0aae\u0ac7\u0ab6 \u0aaa\u0a9f\u0ac7\u0ab2.", [1]), texts
+    )
+
+
+def test_gujarati_letters_may_sit_next_to_gujarati_digits_but_cyrillic_never() -> None:
+    evidence = "\u0a97\u0aa4 \u0aa8\u0a82. \u0aea\u0aed\u0aae\u0acb"  # gat no. 47th, in Gujarati
+    assert verify([DraftSentence("It is gat 47.", [1])], {1: evidence}) != []
+    assert verify([DraftSentence("It is gat 48.", [1])], {1: evidence}) == []
+    assert verify([DraftSentence("It is 47\u0434.", [1])], {1: "47"}) == []  # a Cyrillic letter: odd
+
+
+# --- a month written in another script, read by sound (council 4 Oct 2026, PR C) ---------
+# Test data only (the code has no list of month words): Hindi, then Marathi, January to December.
+HINDI_MONTHS = [
+    "\u091c\u0928\u0935\u0930\u0940",
+    "\u092b\u093c\u0930\u0935\u0930\u0940",
+    "\u092e\u093e\u0930\u094d\u091a",
+    "\u0905\u092a\u094d\u0930\u0948\u0932",
+    "\u092e\u0908",
+    "\u091c\u0942\u0928",
+    "\u091c\u0941\u0932\u093e\u0908",
+    "\u0905\u0917\u0938\u094d\u0924",
+    "\u0938\u093f\u0924\u0902\u092c\u0930",
+    "\u0905\u0915\u094d\u091f\u0942\u092c\u0930",
+    "\u0928\u0935\u0902\u092c\u0930",
+    "\u0926\u093f\u0938\u0902\u092c\u0930",
+]
+MARATHI_MONTHS = [
+    "\u091c\u093e\u0928\u0947\u0935\u093e\u0930\u0940",
+    "\u092b\u0947\u092c\u094d\u0930\u0941\u0935\u093e\u0930\u0940",
+    "\u092e\u093e\u0930\u094d\u091a",
+    "\u090f\u092a\u094d\u0930\u093f\u0932",
+    "\u092e\u0947",
+    "\u091c\u0942\u0928",
+    "\u091c\u0941\u0932\u0948",
+    "\u0911\u0917\u0938\u094d\u091f",
+    "\u0938\u092a\u094d\u091f\u0947\u0902\u092c\u0930",
+    "\u0911\u0915\u094d\u091f\u094b\u092c\u0930",
+    "\u0928\u094b\u0935\u094d\u0939\u0947\u0902\u092c\u0930",
+    "\u0921\u093f\u0938\u0947\u0902\u092c\u0930",
+]
+MARATHI_AUGUST = MARATHI_MONTHS[7]
+GUNTHE = "\u0917\u0941\u0902\u0920\u0947"  # a land unit, near "june" by sound
+
+
+def test_month_words_of_the_table_are_read_right_or_not_at_all() -> None:
+    """The measurement: 23 of 24 read as their month, none as a wrong one."""
+    read = [other_script_month(word) for word in HINDI_MONTHS + MARATHI_MONTHS]
+    expected = list(range(1, 13)) * 2
+    assert all(month in (None, right) for month, right in zip(read, expected, strict=True))
+    assert sum(month is not None for month in read) == 23
+    assert read[1] is None  # Hindi February is too far from "february": dropped as before
+
+
+@pytest.mark.parametrize(
+    "word",
+    [
+        pytest.param("\u0a93\u0a97\u0ab8\u0acd\u0a9f", id="gujarati"),
+        pytest.param("\u0986\u0997\u09b8\u09cd\u099f", id="bengali"),
+    ],
+)
+def test_other_indian_scripts_are_read_through_transliteration(word: str) -> None:
+    assert other_script_month(word) == 8
+
+
+@pytest.mark.parametrize(
+    "word",
+    [
+        pytest.param("\u0627\u06af\u0633\u062a", id="arabic script: not transliterated, as before"),
+        pytest.param("\u0926\u093f\u0928", id="day"),
+        pytest.param("\u0930\u0941\u092a\u092f\u0947", id="rupees"),
+        pytest.param("\u0915\u094d\u0937\u0947\u0924\u094d\u0930", id="area"),
+        pytest.param("\u0911\u0917\u0938\u094d\u091fx", id="two scripts in one word"),
+    ],
+)
+def test_other_words_are_no_month(word: str) -> None:
+    assert other_script_month(word) is None
+
+
+@pytest.mark.parametrize("separator", [" ", "-", "/"])
+def test_an_english_date_is_backed_by_the_same_date_with_a_devanagari_month(separator: str) -> None:
+    # "dated 12 August 2026" in Marathi, the digits Devanagari too
+    dated, day, year = "\u0926\u093f\u0928\u093e\u0902\u0915", "\u0967\u0968", "\u0968\u0966\u0968\u096c"
+    evidence = {1: f"{dated} {day}{separator}{MARATHI_AUGUST}{separator}{year}"}
+    for kept in (
+        "Dated 12 August 2026.",
+        "Dated 12 Aug 2026.",
+        "Signed in August 2026.",
+        "Signed on 12 August.",
+    ):
+        assert verify([DraftSentence(kept, [1])], evidence) != [], kept
+
+
+def test_the_day_and_year_must_match_exactly(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG)
+    evidence = {1: f"12 {MARATHI_AUGUST} 2026"}
+    for wrong in ("Dated 13 August 2026.", "Dated 12 August 2025.", "Dated 12 September 2026."):
+        assert verify([DraftSentence(wrong, [1])], evidence) == [], wrong
+    assert [record.getMessage() for record in caplog.records] == [
+        "answer sentences dropped: missing_date=1"
+    ] * 3
+
+
+def test_only_a_day_word_and_four_digit_year_make_a_date() -> None:
+    assert verify([DraftSentence("Signed in August 2026.", [1])], {1: f"{MARATHI_AUGUST} 2026"}) == []
+    assert verify([DraftSentence("Signed on 12 August.", [1])], {1: f"12 {MARATHI_AUGUST}"}) == []
+    assert verify([DraftSentence("Dated 31 February 2026.", [1])], {1: f"31 {MARATHI_MONTHS[1]} 2026"}) == []
+
+
+def test_reading_a_date_only_adds_its_day_and_year_stay_numbers() -> None:
+    # "5 gunthe 2019": read as 5 June 2019 by chance, and 5 and 2019 still back a sentence.
+    evidence = {1: f"5 {GUNTHE} 2019"}
+    for kept in ("The area is 5 gunthe.", "It was bought in 2019.", f"The area is 5 {GUNTHE}."):
+        assert verify([DraftSentence(kept, [1])], evidence) != [], kept
+    quoted = DraftSentence(f"\u0926\u093f\u0928\u093e\u0902\u0915 12 {MARATHI_AUGUST} 2026", [1])
+    assert verify([quoted], {1: quoted.text}) == [quoted]  # a quoted date reads as before

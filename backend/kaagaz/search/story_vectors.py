@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from sqlalchemy import Connection, text
 
 from kaagaz.ai.client import ModelClient, ModelOutputError
+from kaagaz.db.customers import is_active
 from kaagaz.db.document_stories import get_story, recipe_tag, set_embedding, story_hash
 from kaagaz.db.engine import Database, unavailable
 
@@ -119,15 +120,18 @@ def embed_missing_stories(
 ) -> StoryPass:
     """Embed at most ``limit`` stories from ``stories_to_embed`` (after ``after``) in
     one model call. A story deleted meanwhile, or embedded with today's tag
-    meanwhile (its PUT), is skipped. 1 + 2k short transactions for the k stories
-    found; O(k x 1024) memory."""
+    meanwhile (its PUT), is skipped, and so is one whose customer is not active
+    (0014): it costs no model call, and the cursor moves past it all the same.
+    1 + 2k short transactions for the k stories found (each read also looks up
+    its customer's status); O(k x 1024) memory."""
     with unavailable(), db.system() as conn:
         ids = stories_to_embed(conn, limit=limit, tag=tag, customer_id=customer_id, after=after)
     current = recipe_tag(model.embed_model)
     stories: list[tuple[str, str, str, str]] = []
     for customer, user, family in ids:
         with unavailable(), db.user(customer, user) as conn:
-            row = get_story(conn, customer, user, family)  # the family id is its first version's
+            # The family id is its first version's.
+            row = get_story(conn, customer, user, family) if is_active(conn, customer) else None
         if row is not None and row.embedding_model != current:
             stories.append((customer, user, family, row.story))
     following = ids[-1] if ids and len(ids) >= min(limit, PASS_MOST) else None

@@ -53,8 +53,9 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Request, Response
 
-from kaagaz.api.context import get_context
+from kaagaz.api.context import get_context, get_operator_db
 from kaagaz.api.errors import ApiError
+from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
 from kaagaz.settings import Settings
@@ -68,6 +69,9 @@ ENROL_SECONDS = 10 * 60
 CONFIRM_COOKIE = "kaagaz_confirm"
 CONFIRM_SECONDS = 5 * 60  # PROVISIONAL (council 4 Oct 2026)
 CONFIRM_PATH = "/api/documents"  # the browser calls the API on its own origin, under /api
+OPERATOR_COOKIE = "kaagaz_operator"
+OPERATOR_PATH = "/api/operator"
+OPERATOR_SESSION_SECONDS = 30 * 60  # absolute, PROVISIONAL (change plan question 4)
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_LEN = 2**14, 8, 1, 32
@@ -157,6 +161,8 @@ _CONFIRM_PURPOSE = b"confirm"
 _SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp"})
 _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
 _CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
+_OPERATOR_PURPOSE = b"operator"
+_OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
 
 
 def session_seconds(scope: str, settings: Settings) -> int:
@@ -266,6 +272,54 @@ def read_confirm(token: str, secret: str, now: int) -> ConfirmClaims | None:
     if not (_is_version(ver) and _is_int(exp)) or exp <= now:
         return None
     return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp)
+
+
+# --- the platform operator's tokens (super admin PR 2, PROVISIONAL): other purposes and
+# fields, so customer and operator tokens never read as each other. One SESSION_SECRET.
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OperatorClaims:
+    operator_id: str
+    session_version: int
+    expires_at: int  # seconds since the epoch
+
+
+def sign_operator(claims: OperatorClaims, secret: str) -> str:
+    """An operator session token: exactly ``{oid, ver, exp}``, MAC purpose ``operator``."""
+    payload = {"oid": claims.operator_id, "ver": claims.session_version, "exp": claims.expires_at}
+    return _sign(payload, _OPERATOR_PURPOSE, secret)
+
+
+def read_operator(token: str, secret: str, now: int) -> OperatorClaims | None:
+    """The claims of a genuine, unexpired operator session token, else None. Strict:
+    exactly its three fields, each of its type. Constant-time check."""
+    data = _verified(token, _OPERATOR_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _OPERATOR_FIELDS:
+        return None
+    oid, ver, exp = data["oid"], data["ver"], data["exp"]
+    if not (isinstance(oid, str) and _is_uuid(oid) and _is_version(ver) and _is_int(exp)) or exp <= now:
+        return None
+    return OperatorClaims(operator_id=oid, session_version=ver, expires_at=exp)
+
+
+def set_operator_cookie(response: Response, claims: OperatorClaims, settings: Settings, *, now: int) -> None:
+    """HttpOnly, SameSite=Strict, sent only to /api/operator, for the token's own lifetime."""
+    response.set_cookie(
+        OPERATOR_COOKIE,
+        sign_operator(claims, settings.session_secret),
+        max_age=claims.expires_at - now,
+        httponly=True,
+        samesite="strict",
+        secure=settings.cookie_secure,
+        path=OPERATOR_PATH,
+    )
+
+
+def clear_operator_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie(
+        OPERATOR_COOKIE, path=OPERATOR_PATH, httponly=True, samesite="strict", secure=settings.cookie_secure
+    )
 
 
 def _sign(payload: dict[str, Any], purpose: bytes, secret: str) -> str:
@@ -451,8 +505,9 @@ def _signed_in(request: Request) -> CurrentUser:
 
 
 def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> CurrentUser | None:
-    """The enabled user with this id in this customer, or None. ``scope`` is the
-    session's (at sign-in, the one being started). One indexed query."""
+    """The enabled user with this id in this customer, or None (also while the
+    customer is not active, 0014). ``scope`` is the session's (at sign-in, the
+    one being started). One indexed query."""
     with db.customer(customer_id) as conn:
         row = users_sql.session_user(conn, customer_id, user_id)
     if row is None or row["disabled"]:
@@ -538,6 +593,33 @@ def require_role(*roles: str) -> Callable[[CurrentUser], CurrentUser]:
 
 Reviewer = Annotated[CurrentUser, Depends(require_role("reviewer", "admin"))]
 Admin = Annotated[CurrentUser, Depends(require_role("admin"))]
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentOperator:
+    operator_id: str
+    email: str
+    display_name: str
+    expires_at: int  # the session's, seconds since the epoch
+
+
+def current_operator(request: Request) -> CurrentOperator:
+    """For the signed-in /api/operator routes: the operator cookie ONLY (never the
+    customer session), re-checked in the database on every request: enabled, set up
+    for two-step, same session version. Else 401 ``not_signed_in``."""
+    context = get_context(request)
+    token = request.cookies.get(OPERATOR_COOKIE) or ""
+    claims = read_operator(token, context.settings.session_secret, int(context.clock().timestamp()))
+    if claims is None:
+        raise ApiError(401, "not_signed_in")
+    with get_operator_db(request).operator() as conn:
+        found = operators_sql.session_operator(conn, claims.operator_id)
+    if found is None or found[2] != claims.session_version:
+        raise ApiError(401, "not_signed_in")
+    return CurrentOperator(claims.operator_id, found[0], found[1], claims.expires_at)
+
+
+OperatorSession = Annotated[CurrentOperator, Depends(current_operator)]
 
 
 def csrf_guard(request: Request) -> None:

@@ -149,6 +149,7 @@ def test_begin_attempt_counts_before_the_password_check_and_returns_the_sign_in_
         totp_enabled_at=None,
         totp_last_step=None,
         failed_logins=1,
+        customer_active=True,
     )
     assert _state(db, customer_id, user_id)["failed_logins"] == 1
 

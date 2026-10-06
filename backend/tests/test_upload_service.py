@@ -67,6 +67,7 @@ class AcceptTest(unittest.TestCase):
                 "folder_id",
                 "family_id",
                 "version_no",
+                "ocr_choice",
             },
         )
 

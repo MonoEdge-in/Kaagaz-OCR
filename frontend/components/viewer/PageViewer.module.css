@@ -43,10 +43,11 @@
   color: var(--fg-muted);
 }
 
-/* The full page: fits the frame's content width (measured), zooms from there. */
+/* The full page: fits the frame's content width (measured), zooms from there.
+   No height limit of its own: the page scrolls, not a box inside it. Zoomed
+   in, the frame scrolls sideways (and, in "Fit page", within its height). */
 .frame {
   max-width: 100%;
-  max-height: min(80vh, calc(100dvh - 9rem));
   overflow: auto;
   padding: var(--space-3);
   border: 1px solid var(--border);
@@ -190,6 +191,26 @@
   position: relative;
   overflow: hidden;
   background: var(--paper);
+}
+
+/* "Fit page" (DocumentView's sticky column): the viewer fills the column's
+   height, and the frame or sheet takes what the toolbar leaves, so the whole
+   page shows with no second scrollbar beside the window's. */
+.fitPage {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.fitPage .frame,
+.fitPage .sheetStack {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.fitPage .sheetFrame {
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: none;
 }
 
 /* Spreadsheets */

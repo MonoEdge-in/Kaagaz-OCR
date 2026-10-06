@@ -141,16 +141,25 @@ class S3Storage:
         keys = self._list_keys(_document_prefix(customer_id, document_id))
         keys.append(quarantine_key(customer_id, document_id))  # deleting a missing key is fine
         for start in range(0, len(keys), _DELETE_BATCH):
-            batch = keys[start : start + _DELETE_BATCH]
-            try:
-                response = self._client.delete_objects(
-                    Bucket=self._bucket,
-                    Delete={"Objects": [{"Key": key} for key in batch], "Quiet": True},
-                )
-            except _ANY_ERROR as error:
-                raise BackendUnavailable("storage") from error
-            if response.get("Errors"):
-                raise BackendUnavailable("storage")
+            self._delete_keys(keys[start : start + _DELETE_BATCH])
+
+    def delete_customer(self, customer_id: str) -> None:
+        """Remove everything stored for one customer, ``customers/{id}/`` and
+        ``quarantine/{id}/`` (deleting an organisation, super admin PR 4): each listing
+        page (at most 1000 keys) is deleted before the next is asked for, so memory is
+        O(1000) and time O(k) for its k objects. Safe to repeat."""
+        customer = _canonical_id(customer_id)
+        for prefix in (f"customers/{customer}/", f"quarantine/{customer}/"):
+            arguments: dict[str, Any] = {"Bucket": self._bucket, "Prefix": prefix}
+            while True:
+                response = self._list_page(arguments)
+                keys = [str(item["Key"]) for item in response.get("Contents", [])]
+                if keys:
+                    self._delete_keys(keys)
+                token = response.get("NextContinuationToken")
+                if not response.get("IsTruncated") or not token:
+                    break
+                arguments["ContinuationToken"] = token
 
     # --- Quarantine --------------------------------------------------------
 
@@ -240,15 +249,29 @@ class S3Storage:
         except _UNREACHABLE as error:
             raise BackendUnavailable("storage") from error
 
+    def _list_page(self, arguments: dict[str, Any]) -> Any:
+        try:
+            return self._client.list_objects_v2(**arguments)
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("storage") from error
+
+    def _delete_keys(self, keys: list[str]) -> None:
+        """At most ``_DELETE_BATCH`` keys in one call; any key not deleted is an error."""
+        try:
+            response = self._client.delete_objects(
+                Bucket=self._bucket, Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True}
+            )
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("storage") from error
+        if response.get("Errors"):
+            raise BackendUnavailable("storage")
+
     def _list_keys(self, prefix: str) -> list[str]:
         """Every key under ``prefix``, page by page (1000 keys per page)."""
         keys: list[str] = []
         arguments: dict[str, Any] = {"Bucket": self._bucket, "Prefix": prefix}
         while True:
-            try:
-                response = self._client.list_objects_v2(**arguments)
-            except _ANY_ERROR as error:
-                raise BackendUnavailable("storage") from error
+            response = self._list_page(arguments)
             keys.extend(str(item["Key"]) for item in response.get("Contents", []))
             token = response.get("NextContinuationToken")
             if not response.get("IsTruncated") or not token:

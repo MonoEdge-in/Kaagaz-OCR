@@ -54,6 +54,11 @@ Why some choices:
   stored file is removed. The list shows each family's current version, with a newer one
   that is still being read or failed beside it (``newer_version``); by id, any
   version opens. A duplicate in Trash says ``in_trash: true``.
+* **The scan reader** (PRD 4 #17, PROVISIONAL): upload and versions take an optional
+  ``ocr_choice``, one of the available ``readers`` ``/upload-limits`` lists
+  (``ocr_choices``, from this server's settings, never a fixed list); anything else
+  is 400 before anything is stored. "auto" is stored as NULL; a duplicate keeps
+  the reader it was read with. The audit row names a choice that is not Auto.
 """
 
 import uuid
@@ -103,6 +108,7 @@ from kaagaz.ingestion.messages import over_every_limit_message, too_large_messag
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import BlobNotFound, Job, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
+from kaagaz.reading.ocr import AUTO, ocr_choices
 from kaagaz.settings import Settings
 
 router = APIRouter()
@@ -247,10 +253,11 @@ def _upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
 
 
 @router.get("/upload-limits")
-def get_upload_limits(user: User, context: Context) -> dict[str, int]:
+def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
     """``UploadLimits``: the limits this user's uploads are checked against, each
     already lowered by the customer's own limit, so the browser can refuse a file
     before sending it (PRD 1 U2) and count a PDF's pages first (``max_pages``).
+    ``readers`` are the scan readers an upload may choose (``ocr_choices``).
     The server still checks everything itself. One query."""
     policy = _upload_policy(context, user)
     return {
@@ -258,6 +265,7 @@ def get_upload_limits(user: User, context: Context) -> dict[str, int]:
         "image_bytes": policy.limit_for(sniff.PNG),
         "sheet_bytes": policy.limit_for(sniff.ZIP),
         "max_pages": context.settings.max_pages,
+        "readers": ocr_choices(context.settings),
     }
 
 
@@ -282,6 +290,17 @@ def _form_folder_id(value: str | UploadFile | None) -> str | None:
         raise ApiError(400, "bad_request") from None
 
 
+def _form_ocr_choice(value: str | UploadFile | None, settings: Settings) -> str | None:
+    """The optional ``ocr_choice`` form field: None (Auto) when not sent or "auto", else
+    an available reader's id; anything else is 400, never stored as something else."""
+    if value is None:
+        return None
+    offered = {reader["id"] for reader in ocr_choices(settings) if reader["available"]}
+    if not isinstance(value, str) or value not in offered:
+        raise ApiError(400, "bad_request", "Choose one of the readers offered.")
+    return None if value == AUTO else value
+
+
 def _same_user(value: str | UploadFile | None, user: CurrentUser, message: str | None = None) -> None:
     """The optional ``user_id`` form field: who the browser tab had signed in when
         the file was chosen. Someone else signed in since (in another tab, critical
@@ -302,7 +321,12 @@ def _uuid_or_none(value: str | UploadFile) -> uuid.UUID | None:
 
 
 def _accept(
-    context: AppContext, user: CurrentUser, upload: UploadFile, policy: UploadPolicy, folder_id: str | None
+    context: AppContext,
+    user: CurrentUser,
+    upload: UploadFile,
+    policy: UploadPolicy,
+    folder_id: str | None,
+    ocr_choice: str | None,
 ) -> dict[str, Any]:
     if folder_id is not None:
         with context.db.customer(user.customer_id) as conn:
@@ -316,13 +340,15 @@ def _accept(
             display_name=display_name(upload.filename),
             uploaded_by=user.user_id,
             folder_id=folder_id,
+            ocr_choice=ocr_choice,
         )
     except UploadRejected as rejected:
         message = _refusal_message(rejected, policy)
         raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
     except UnknownFolder:  # deleted since the check; the service removed the stored file
         raise ApiError(404, "not_found") from None
-    return _upload_reply(context, user, result, action="document.upload")
+    details = {} if ocr_choice is None else {"ocr_choice": ocr_choice}
+    return _upload_reply(context, user, result, action="document.upload", details=details)
 
 
 def _upload_reply(
@@ -372,12 +398,18 @@ async def upload_document(request: Request, user: User, context: Context) -> JSO
             raise ApiError(400, "bad_request", "Choose a file to upload.")
         _same_user(form.get("user_id"), user)
         folder_id = _form_folder_id(form.get("folder_id"))
-        body = await run_in_threadpool(_accept, context, user, upload, policy, folder_id)
+        ocr_choice = _form_ocr_choice(form.get("ocr_choice"), context.settings)
+        body = await run_in_threadpool(_accept, context, user, upload, policy, folder_id, ocr_choice)
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
 
 def _accept_version(
-    context: AppContext, user: CurrentUser, upload: UploadFile, policy: UploadPolicy, of_document_id: str
+    context: AppContext,
+    user: CurrentUser,
+    upload: UploadFile,
+    policy: UploadPolicy,
+    of_document_id: str,
+    ocr_choice: str | None,
 ) -> dict[str, Any]:
     customer_id = user.customer_id
     with context.db.customer(customer_id) as conn:
@@ -394,6 +426,7 @@ def _accept_version(
             of_document_id=of_document_id,
             display_name=display_name(upload.filename),
             uploaded_by=user.user_id,
+            ocr_choice=ocr_choice,
         )
     except UploadRejected as rejected:
         message = _refusal_message(rejected, policy)
@@ -401,6 +434,8 @@ def _accept_version(
     except UnknownFamily:  # gone or moved to Trash since the check; the service removed the stored file
         raise ApiError(404, "not_found") from None
     details = {"family_id": str(target["family_id"])}
+    if ocr_choice is not None:
+        details["ocr_choice"] = ocr_choice
     return _upload_reply(context, user, result, action="document.version", details=details)
 
 
@@ -416,7 +451,10 @@ async def upload_version(
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
         _same_user(form.get("user_id"), user)
-        body = await run_in_threadpool(_accept_version, context, user, upload, policy, str(document_id))
+        ocr_choice = _form_ocr_choice(form.get("ocr_choice"), context.settings)
+        body = await run_in_threadpool(
+            _accept_version, context, user, upload, policy, str(document_id), ocr_choice
+        )
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
 

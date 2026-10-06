@@ -174,9 +174,21 @@
   }
 
   .viewer {
+    grid-row: span 2;
+  }
+}
+
+/* A window tall enough: the page column sticks, exactly the window's height,
+   and the page fits inside it ("Fit page", PageViewer). The same query is
+   STICKY_VIEWER_QUERY in components/viewer/viewer.ts. */
+@media (min-width: 1024px) and (min-height: 36rem) {
+  .viewer {
     position: sticky;
     top: var(--space-4);
-    grid-row: span 2;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    height: calc(100dvh - 2 * var(--space-4));
   }
 }
 
@@ -328,6 +340,14 @@
   margin: 0;
   padding-inline-start: var(--space-3);
   border-inline-start: 3px dashed var(--review-solid);
+}
+
+/* Why the invoice needs review, one reason a line, under its short badge. */
+.checkReasons {
+  margin: 0;
+  padding-inline-start: var(--space-5);
+  font-size: var(--fs-sm);
+  overflow-wrap: break-word;
 }
 
 .facts {

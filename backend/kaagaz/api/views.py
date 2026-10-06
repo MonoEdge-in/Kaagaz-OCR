@@ -34,6 +34,8 @@ _STEP_MESSAGES = {
     "indexing": "Making it searchable…",
 }
 _PAGE_STEPS = {"preparing": "Preparing", "reading": "Reading"}
+# A try has run (attempts) and its progress was cleared: a backend stopped it (pipeline).
+_WAITING_AGAIN = "Waiting to try again."
 
 
 def iso(value: datetime) -> str:
@@ -57,7 +59,8 @@ def status_message(
     ``max_attempts`` are the worker's tries: shown from the second try on, and
     named when they ran out (``retries_exhausted``). ``progress`` is the worker's
     ``{step, done, total}`` (PRD 2 X3), used only while the document is being
-    checked or read, so an old one on a finished document is ignored."""
+    checked or read, so an old one on a finished document is ignored. In progress
+    with no progress after a try: "Waiting to try again." (council of 5 Oct 2026)."""
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
@@ -74,11 +77,16 @@ def status_message(
     if status == "failed" and failure_code == "ocr_failed":
         # The scan reader failed on a page of this file (kaagaz/reading/ocr.py): not an outage.
         return "The scan reader couldn't read a page of this file. Upload a clearer scan, or read it again."
+    if status == "failed" and failure_code == "customer_disabled":
+        # The worker came to it while the organisation was turned off (0014): nothing was read.
+        return "This file was not read because your organisation was turned off. Read it again."
     if status == "failed":
         return "This file could not be read." + (f" ({failure_code})" if failure_code else "")
     message = _STATUS_MESSAGES.get(status, "")
     if status in _IN_PROGRESS and progress is not None:
         message = progress_message(progress) or message
+    elif status in _IN_PROGRESS and attempts >= 1:
+        message = _WAITING_AGAIN
     if status in _IN_PROGRESS and attempts >= 2 and max_attempts:
         message += f" Try {min(attempts, max_attempts)} of {max_attempts}."
     return message

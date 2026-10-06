@@ -296,3 +296,17 @@ def test_a_sentence_whose_cited_piece_passes_only_through_the_glossary_is_needs_
     sure = dataclasses.replace(english, fuzzy_score=0.2)
     answer = ask(OWNER_QUESTION, [sure, OWNER], says("The owner is रामचंद्र गणपत पाटील.", 2))
     assert (answer.status, answer.label) == ("answered", "needs_review")
+
+
+def test_an_answer_over_gujarati_evidence_is_checked_like_one_over_devanagari() -> None:
+    """Council 4 Oct 2026: an English sentence over Gujarati text was checked against nothing,
+    yet came out verified; a made-up Gujarati quote was never a missing word."""
+    # owner: Ramesh Patel
+    owner = "\u0aae\u0abe\u0ab2\u0abf\u0a95: \u0ab0\u0aae\u0ac7\u0ab6 \u0aaa\u0a9f\u0ac7\u0ab2"
+    sure = dataclasses.replace(piece("deed.pdf", owner), meaning_score=0.9)
+    english = ask(OWNER_QUESTION, [sure], says("The owner is Ramesh Patel."))
+    assert (english.status, english.label) == ("answered", "needs_review")
+    quoted = ask(OWNER_QUESTION, [sure], says("\u0ab0\u0aae\u0ac7\u0ab6 \u0aaa\u0a9f\u0ac7\u0ab2."))
+    assert (quoted.status, quoted.label) == ("answered", "verified")
+    invented = ask(OWNER_QUESTION, [sure], says("\u0ab8\u0ac1\u0ab0\u0ac7\u0ab6 \u0aaa\u0a9f\u0ac7\u0ab2."))
+    assert invented.status == "not_found"

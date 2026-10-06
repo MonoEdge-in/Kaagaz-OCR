@@ -6,6 +6,13 @@ import type { DocumentSummary, PageRoute, PageSummary, SheetCells } from "@/lib/
 
 export const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
 
+/**
+ * When the document screen's page column sticks beside the panels, and fits
+ * the whole page in the window ("Fit page"). DocumentView.module.css uses this
+ * same media query (tests/layout-guards.test.ts checks they match).
+ */
+export const STICKY_VIEWER_QUERY = "(min-width: 1024px) and (min-height: 36rem)";
+
 /** The next zoom step in or out; stays put at either end. */
 export function stepZoom(current: number, direction: "in" | "out"): number {
   const index = ZOOM_STEPS.findIndex((step) => step >= current - 1e-9);
@@ -19,16 +26,21 @@ export function stepZoom(current: number, direction: "in" | "out"): number {
 }
 
 /**
- * The size a page is drawn at: zoom 1 fits the container's width exactly,
- * other zoom steps scale from there. Whole pixels, and never below 1.
+ * The size a page is drawn at: zoom 1 fits the container's width exactly or,
+ * given the container's height too, the whole page inside the container
+ * ("Fit page"); other zoom steps scale from there. Whole pixels, never below 1.
  */
 export function fitPageSize(
   containerWidth: number,
   aspect: number,
   zoom: number,
+  containerHeight?: number,
 ): { width: number; height: number } {
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1 / Math.SQRT2;
-  const base = Number.isFinite(containerWidth) && containerWidth > 0 ? containerWidth : 1;
+  let base = Number.isFinite(containerWidth) && containerWidth > 0 ? containerWidth : 1;
+  if (containerHeight !== undefined && Number.isFinite(containerHeight) && containerHeight > 0) {
+    base = Math.min(base, containerHeight * safeAspect);
+  }
   const width = Math.max(1, Math.floor(base * zoom));
   return { width, height: width / safeAspect };
 }

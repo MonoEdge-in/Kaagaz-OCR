@@ -7,11 +7,13 @@
 // lib/regions.ts, so they land on the same spot at any size.
 //
 // The full page fits the width of its container (measured with a
-// ResizeObserver) and zooms from there; beside its number it says how the
-// page was read (PRD 2, R1). The user's own words (marks) are dashed, numbered
-// outlines, drawn on the full page only. A crop preview fills its reserved box
-// without clipping the spot, and is drawn only once it comes near the screen
-// (IntersectionObserver); until then a skeleton holds its space.
+// ResizeObserver), or with fit="page" the whole page inside the container
+// (the document screen's sticky column), and zooms from there. Beside its
+// number it says how the page was read (PRD 2, R1). The user's own words
+// (marks) are dashed, numbered outlines, drawn on the full page only. A crop
+// preview fills its reserved box without clipping the spot, and is drawn only
+// once it comes near the screen (IntersectionObserver); until then a skeleton
+// holds its space.
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
@@ -57,6 +59,8 @@ export interface PageViewerProps {
   /** My words on this page (ViewerWords.tsx) and the one its list marked. */
   marks?: Marker[];
   activeMark?: string | null;
+  /** "page": fill the parent's height and fit the whole page in it; "width" (default): fit the width. */
+  fit?: "page" | "width";
 }
 
 export function PageViewer({
@@ -70,6 +74,7 @@ export function PageViewer({
   belowToolbar,
   marks = [],
   activeMark = null,
+  fit = "width",
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -233,7 +238,7 @@ export function PageViewer({
   } else if (mode === "none") {
     body = <div className={styles.frame}>{failed}</div>;
   } else {
-    const size = box ? fitPageSize(box.width, aspect, zoom) : null;
+    const size = box ? fitPageSize(box.width, aspect, zoom, fit === "page" ? box.height : undefined) : null;
     body = (
       <>
         <div
@@ -274,9 +279,10 @@ export function PageViewer({
   const canZoom = mode === "pdf" || mode === "image";
   const showPages = onPageChange !== undefined && numbers.length > 0;
   const route = routeText(page.route);
+  const fitName = fit === "page" ? "Fit page" : "Fit width";
 
   return (
-    <div className={styles.viewer}>
+    <div className={fit === "page" ? `${styles.viewer} ${styles.fitPage}` : styles.viewer}>
       {showPages || canZoom || tools ? (
         <div className={styles.toolbar}>
           {showPages ? (
@@ -310,7 +316,7 @@ export function PageViewer({
                 disabled={zoom <= MIN_ZOOM}
               />
               <span className={`tabular ${styles.readout}`} aria-live="polite">
-                {zoom === 1 ? "Fit width" : `${Math.round(zoom * 100)}%`}
+                {zoom === 1 ? fitName : `${Math.round(zoom * 100)}%`}
               </span>
               <IconButton
                 icon="zoom-in"
@@ -320,7 +326,7 @@ export function PageViewer({
               />
               {zoom !== 1 ? (
                 <button type="button" className="btn btn-quiet" onClick={() => setZoom(1)}>
-                  Fit width
+                  {fitName}
                 </button>
               ) : null}
             </div>

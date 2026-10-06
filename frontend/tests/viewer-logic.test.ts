@@ -73,6 +73,20 @@ describe("fitPageSize", () => {
     expect(fitPageSize(0, 1, 1).width).toBe(1);
     expect(fitPageSize(400, 0, 1).height).toBeCloseTo(400 * Math.SQRT2);
   });
+
+  it("fits the whole page inside the container's height too (Fit page)", () => {
+    // A portrait page in a wide, short frame: the height decides.
+    expect(fitPageSize(800, 0.5, 1, 600)).toEqual({ width: 300, height: 600 });
+    // A landscape page in a tall frame: the width still decides.
+    expect(fitPageSize(600, 2, 1, 900)).toEqual({ width: 600, height: 300 });
+    // Zoom scales from the fitted page.
+    expect(fitPageSize(800, 0.5, 2, 600)).toEqual({ width: 600, height: 1200 });
+  });
+
+  it("fits the width alone when the height is missing or not a size", () => {
+    expect(fitPageSize(600, 0.5, 1, 0)).toEqual({ width: 600, height: 1200 });
+    expect(fitPageSize(600, 0.5, 1, Number.NaN)).toEqual({ width: 600, height: 1200 });
+  });
 });
 
 describe("pageMode", () => {
