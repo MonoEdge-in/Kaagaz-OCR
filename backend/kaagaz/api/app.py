@@ -35,6 +35,7 @@ from kaagaz.api.routers import (
     folders,
     health,
     operator,
+    operator_activity,
     operator_orgs,
     review,
     search,
@@ -109,6 +110,7 @@ def create_app(
         operator.router,
         operator.signed_in,
         operator_orgs.router,
+        operator_activity.router,
     ):
         app.include_router(router, prefix="/api")
     return app
