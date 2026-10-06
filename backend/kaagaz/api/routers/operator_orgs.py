@@ -11,15 +11,18 @@ which writes its own ``platform_audit`` row. Their admins: PR 3b.
   organisation gets 404 and nothing changes.
 
 Step-up: disabling an organisation needs a fresh code from the operator's own
-authenticator in the body. As at sign-in: the attempt is counted first
-(``kaagaz_op_begin_login``, the same lockout), the code is checked against the
+authenticator in the body. As at sign-in, but on the step-up's OWN count and lock
+(``kaagaz_op_begin_step_up``, the sign-in's thresholds; a sign-in lock never blocks a
+step-up, nor the reverse): the attempt is counted first, the code is checked against the
 operator's sealed secret, and the database function uses its step up in the same
 transaction as the change, so a code works once. A refused code gets 403
-``step_up_failed`` and one ``platform_audit`` row.
+``step_up_failed`` and one ``platform_audit`` row. A taken e-mail gets 409 and one
+``customer.create_refused`` row (no e-mail stored), so probing for e-mails leaves a trace.
 """
 
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
@@ -38,10 +41,8 @@ from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.api.twostep import box, digits, unix
 from kaagaz.api.views import iso
 from kaagaz.db import operator_orgs as orgs_sql
-from kaagaz.db import operators as operators_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_orgs import Outcome
-from kaagaz.db.users import EmailTaken
 
 router = APIRouter(prefix="/operator/orgs", dependencies=[Depends(current_operator)])
 
@@ -54,7 +55,14 @@ _REFUSALS = {
     "signed_out": (401, "not_signed_in", None),
     "missing": (404, "not_found", None),
     "deleting": (409, "conflict", "This organisation is being deleted."),
+    "taken": (409, "conflict", "That e-mail is already in use."),  # audited in the function
 }
+
+
+@dataclass(frozen=True, slots=True)
+class StepUp:
+    step: int  # of the fresh code, for the database function to use up
+    locks: bool  # this attempt reached the limit: a refusal is audited operator.step_up_locked
 
 
 class NewOrgBody(BaseModel):
@@ -82,18 +90,15 @@ def list_orgs(operator: OperatorSession, db: OperatorDb) -> dict[str, Any]:
 def create_org(body: NewOrgBody, operator: OperatorSession, db: OperatorDb, context: Context) -> JSONResponse:
     name, email, admin_name = _name(body.name), valid_email(body.admin_email), _name(body.admin_name)
     temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
-    try:
-        with db.operator() as conn:
-            outcome = orgs_sql.create_customer(
-                conn,
-                operator.operator_id,
-                name=name,
-                admin_email=email,
-                admin_name=admin_name,
-                password_hash=hash_password(temporary),
-            )
-    except EmailTaken:
-        raise ApiError(409, "conflict", "That e-mail is already in use.") from None
+    with db.operator() as conn:
+        outcome = orgs_sql.create_customer(
+            conn,
+            operator.operator_id,
+            name=name,
+            admin_email=email,
+            admin_name=admin_name,
+            password_hash=hash_password(temporary),
+        )
     _check(db, operator, outcome)
     reply = {"id": outcome.result_id, "name": name, "admin": {"email": email, "name": admin_name}}
     return JSONResponse({"organisation": reply, "temporary_password": temporary}, status_code=201)
@@ -104,8 +109,8 @@ def disable_org(
     customer_id: uuid.UUID, body: StepUpBody, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> dict[str, Any]:
     """Its users can't sign in, their sessions end; the worker refuses its jobs (PR 1)."""
-    step = _step_up(db, context, operator, body.code)
-    return _set_status(db, context, operator, str(customer_id), "disabled", step)
+    step_up = _step_up(db, context, operator, body.code)
+    return _set_status(db, context, operator, str(customer_id), "disabled", step_up)
 
 
 @router.post("/{customer_id}/enable")
@@ -121,41 +126,40 @@ def _set_status(
     operator: CurrentOperator,
     customer_id: str,
     status: str,
-    step: int | None,
+    step_up: StepUp | None,
 ) -> dict[str, Any]:
+    step = None if step_up is None else step_up.step
     with db.operator() as conn:
         outcome = orgs_sql.set_customer_status(
             conn, operator.operator_id, customer_id, status, now=context.clock(), step=step
         )
-    _check(db, operator, outcome)
+    _check(db, operator, outcome, step_up)
     return {"organisation": {"id": customer_id, "status": status, "changed": outcome.code == "done"}}
 
 
-def _step_up(db: OperatorDatabase, context: AppContext, operator: CurrentOperator, code: str) -> int:
-    """The step of a fresh code from this operator's own secret, else 403. The attempt
-    is counted first (committed), as a sign-in is; the change uses the step up."""
+def _step_up(db: OperatorDatabase, context: AppContext, operator: CurrentOperator, code: str) -> StepUp:
+    """The step of a fresh code from this operator's own secret, else 403. The attempt is
+    counted first (committed) on the step-up's own count and lock, never the sign-in's;
+    the change uses the step up and clears the count."""
     settings = context.settings
     now = context.clock()
     lock_end = now + timedelta(minutes=settings.login_lock_minutes)
     with db.operator() as conn:
-        attempt = operators_sql.begin_login(conn, operator.email, now, settings.login_max_failures, lock_end)
+        attempt = orgs_sql.begin_step_up(
+            conn, operator.operator_id, now=now, max_failures=settings.login_max_failures, lock_end=lock_end
+        )
     if attempt is None:  # locked: refused, and no row (the lock was audited when it began)
         raise ApiError(403, "step_up_failed", STEP_UP_MESSAGE)
+    sealed, last_step, failures = attempt
     try:
-        secret = box(settings.totp_encryption_key).open(
-            attempt.totp_secret_enc or "", aad=attempt.operator_id
-        )
+        secret = box(settings.totp_encryption_key).open(sealed or "", aad=operator.operator_id)
     except SecretBoxError:
         secret = None
-    step = (
-        None
-        if secret is None
-        else totp.matching_step(secret, digits(code), unix(now), attempt.totp_last_step)
-    )
+    step = None if secret is None else totp.matching_step(secret, digits(code), unix(now), last_step)
+    locks = failures >= settings.login_max_failures  # this attempt began the lock
     if step is None:
-        locked = attempt.failed_logins >= settings.login_max_failures
-        raise _step_up_failed(db, operator, locked=locked)
-    return step
+        raise _step_up_failed(db, operator, locked=locks)
+    return StepUp(step, locks)
 
 
 def _step_up_failed(db: OperatorDatabase, operator: CurrentOperator, *, locked: bool) -> ApiError:
@@ -164,10 +168,12 @@ def _step_up_failed(db: OperatorDatabase, operator: CurrentOperator, *, locked: 
     return ApiError(403, "step_up_failed", STEP_UP_MESSAGE)
 
 
-def _check(db: OperatorDatabase, operator: CurrentOperator, outcome: Outcome) -> None:
+def _check(
+    db: OperatorDatabase, operator: CurrentOperator, outcome: Outcome, step_up: StepUp | None = None
+) -> None:
     """Nothing to do for ``done`` and ``unchanged``; the reply for every other outcome."""
     if outcome.code == "step_up":  # the step was used meanwhile, by a request at the same time
-        raise _step_up_failed(db, operator, locked=False)
+        raise _step_up_failed(db, operator, locked=step_up is not None and step_up.locks)
     if outcome.code in _REFUSALS:
         status, code, message = _REFUSALS[outcome.code]
         raise ApiError(status, code, message)

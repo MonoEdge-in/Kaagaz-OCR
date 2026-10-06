@@ -18,15 +18,11 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, TextClause, text
-from sqlalchemy.exc import IntegrityError
-
-from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
-from kaagaz.db.users import EmailTaken
 
 
 @dataclass(frozen=True, slots=True)
 class Outcome:
-    code: str  # done, unchanged, missing, deleting, step_up or signed_out
+    code: str  # done, unchanged, missing, deleting, step_up, taken or signed_out
     result_id: str | None  # the customer acted on or made
 
 
@@ -39,7 +35,8 @@ def list_customers(conn: Connection, operator_id: str) -> Sequence[RowMapping]:
 def create_customer(
     conn: Connection, operator_id: str, *, name: str, admin_email: str, admin_name: str, password_hash: str
 ) -> Outcome:
-    """A customer and its first admin, whose password is temporary. Raises EmailTaken."""
+    """A customer and its first admin, whose password is temporary. ``taken``: the e-mail
+    is in use (audited, nothing made)."""
     return _write(
         conn,
         text("SELECT outcome, result_id FROM kaagaz_op_create_customer(:o, :name, :email, :admin, :hash)"),
@@ -58,16 +55,23 @@ def set_customer_status(
     )
 
 
+def begin_step_up(
+    conn: Connection, operator_id: str, *, now: datetime, max_failures: int, lock_end: datetime
+) -> tuple[str | None, int | None, int] | None:
+    """Count one step-up attempt on the step-up's own count, before the code is checked:
+    (sealed secret, last step used, failures including this one). None: locked or disabled."""
+    row = conn.execute(
+        text("SELECT * FROM kaagaz_op_begin_step_up(:o, :now, :max, :lock_end)"),
+        {"o": operator_id, "now": now, "max": max_failures, "lock_end": lock_end},
+    ).first()
+    return None if row is None else (row[0], None if row[1] is None else int(row[1]), int(row[2]))
+
+
 def step_up_failed(conn: Connection, operator_id: str, *, locked: bool) -> None:
-    """The audit row of a refused step-up code (``operator.locked`` when it began the lock)."""
+    """The audit row of a refused step-up code (``operator.step_up_locked`` when it began the lock)."""
     conn.execute(text("SELECT kaagaz_op_step_up_failed(:o, :locked)"), {"o": operator_id, "locked": locked})
 
 
 def _write(conn: Connection, call: TextClause, params: dict[str, Any]) -> Outcome:
-    try:
-        row = conn.execute(call, params).one()
-    except IntegrityError as error:
-        if sqlstate(error) == UNIQUE_VIOLATION:
-            raise EmailTaken from None
-        raise
+    row = conn.execute(call, params).one()
     return Outcome(str(row[0]), None if row[1] is None else str(row[1]))

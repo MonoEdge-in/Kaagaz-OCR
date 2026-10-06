@@ -3,7 +3,10 @@
 awaiting Vrushit's approval: these are the first functions under the never-do 1 exception).
 Their admins are 0017's (PR 3b).
 
-Functions only, no table or column. Each ``kaagaz_op_*`` is SECURITY DEFINER with an
+Two ``operators`` columns, ``step_up_failures`` and ``step_up_locked_until``: the
+step-up's own count and lock (review fix), so nobody who knows an operator's e-mail can
+block a step-up by locking the sign-in, and wrong step-up codes never lock the sign-in.
+Same thresholds as sign-in (PROVISIONAL). Each ``kaagaz_op_*`` is SECURITY DEFINER with an
 empty search path and schema-qualified names, revoked from PUBLIC and runnable by
 ``kaagaz_operator`` ONLY (0015). Each takes ``p_operator`` and acts only for an
 enabled operator whose two-step secret is confirmed.
@@ -15,17 +18,19 @@ enabled operator whose two-step secret is confirmed.
   own ``audit_log`` (``{"by": "operator"}``), as the CLI's do, so its admins see it.
 * A write answers ``(outcome, result_id)``: ``done``, ``unchanged``, ``missing``,
   ``deleting`` (being deleted: PR 4), ``step_up`` (the fresh two-step code was not
-  accepted) or ``signed_out`` (the operator is disabled). Only ``done`` changes
-  anything (``missing`` may still use up the code's step).
+  accepted), ``taken`` (the e-mail is in use: one ``platform_audit`` row, no e-mail
+  stored) or ``signed_out`` (the operator is disabled). Only ``done`` changes anything
+  (``missing`` may still use up the code's step).
 * Step-up: disabling a customer takes the step of a fresh code the API checked against
-  the operator's own secret. The function uses it up (never twice: the UPDATE locks
-  the operator row) and clears the sign-in count, as ``kaagaz_op_login_succeeded`` does.
+  the operator's own secret, after ``kaagaz_op_begin_step_up`` counted the attempt. The
+  function uses the step up (never twice: the UPDATE locks the operator row) and clears
+  the step-up count.
 
 Disable and enable mirror ``db.customers.set_status`` (PR 1): the row is locked
 first; disabling raises every user's session version, enabling clears their sign-in
 locks; a customer being deleted is refused. Schedule and cancel delete are PR 4's.
 
-The downgrade drops the functions; nothing else changes.
+The downgrade drops the functions and the two columns; nothing else changes.
 
 Revision ID: 0016
 Revises: 0015 (operators)
@@ -52,7 +57,8 @@ _ACTOR = f"""
 """
 # Step-up: use up the fresh code's step (later than the last one used), clear the count.
 _STEP_UP = f"""
-        UPDATE public.operators AS o SET totp_last_step = p_step, failed_logins = 0, locked_until = NULL
+        UPDATE public.operators AS o
+        SET totp_last_step = p_step, step_up_failures = 0, step_up_locked_until = NULL
         WHERE {_ENABLED} AND p_step IS NOT NULL
           AND (o.totp_last_step IS NULL OR o.totp_last_step < p_step);
         IF NOT FOUND THEN
@@ -104,7 +110,8 @@ FUNCTIONS = {
     $$
     """,
     # A customer and its first admin, whose password is temporary (as kaagaz_create_customer,
-    # plus must_change_password). A taken e-mail raises 23505 and nothing is written.
+    # plus must_change_password). A taken e-mail (any user's): nothing made, outcome taken
+    # and one refusal row, so probing for e-mails leaves a trace.
     "kaagaz_op_create_customer(uuid, text, text, text, text)": f"""
     CREATE FUNCTION public.kaagaz_op_create_customer(
         p_operator uuid, p_name text, p_admin_email text, p_admin_name text, p_password_hash text, {_WRITE}
@@ -112,9 +119,16 @@ FUNCTIONS = {
     {_HEAD}
     BEGIN
         {_ACTOR}
-        INSERT INTO public.customers (name) VALUES (p_name) RETURNING id INTO result_id;
-        INSERT INTO public.users (customer_id, email, display_name, role, password_hash, must_change_password)
-        VALUES (result_id, lower(p_admin_email), p_admin_name, 'admin', p_password_hash, true);
+        BEGIN
+            INSERT INTO public.customers (name) VALUES (p_name) RETURNING id INTO result_id;
+            INSERT INTO public.users (customer_id, email, display_name, role, password_hash, must_change_password)
+            VALUES (result_id, lower(p_admin_email), p_admin_name, 'admin', p_password_hash, true);
+        EXCEPTION WHEN unique_violation THEN
+            {_PLATFORM} VALUES (p_operator, 'customer.create_refused', NULL, 'customer', NULL);
+            outcome := 'taken';
+            result_id := NULL;
+            RETURN;
+        END;
         {_PLATFORM} VALUES (p_operator, 'customer.create', result_id, 'customer', result_id::text);
         outcome := 'done';
     END
@@ -163,30 +177,64 @@ FUNCTIONS = {
     END
     $$
     """,
-    # A step-up code that was refused (counted by kaagaz_op_begin_login first): one row,
-    # operator.locked when that attempt started the lock.
+    # One step-up attempt counted before the code is checked (as kaagaz_op_begin_login, on
+    # the step-up's own count and lock). The secret and last step; no row: locked or disabled.
+    "kaagaz_op_begin_step_up(uuid, timestamptz, integer, timestamptz)": f"""
+    CREATE FUNCTION public.kaagaz_op_begin_step_up(
+        p_operator uuid, p_now timestamptz, p_max_failures integer, p_lock_end timestamptz
+    )
+    RETURNS TABLE (totp_secret_enc text, totp_last_step bigint, step_up_failures integer)
+    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$
+        UPDATE public.operators AS o SET
+            step_up_failures = CASE WHEN o.step_up_locked_until <= p_now THEN 1 ELSE o.step_up_failures + 1 END,
+            step_up_locked_until = CASE
+                WHEN (CASE WHEN o.step_up_locked_until <= p_now THEN 1 ELSE o.step_up_failures + 1 END)
+                    >= p_max_failures
+                THEN p_lock_end ELSE NULL END
+        WHERE {_ENABLED} AND (o.step_up_locked_until IS NULL OR o.step_up_locked_until <= p_now)
+        RETURNING o.totp_secret_enc, o.totp_last_step, o.step_up_failures
+    $$
+    """,
+    # A step-up code that was refused: one row, operator.step_up_locked when that attempt
+    # started the step-up lock (the API knows: its count reached the limit).
     "kaagaz_op_step_up_failed(uuid, boolean)": """
     CREATE FUNCTION public.kaagaz_op_step_up_failed(p_operator uuid, p_locked boolean) RETURNS void
     LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$
         INSERT INTO public.platform_audit (operator_id, action, target_type, target_id)
-        SELECT o.id, CASE WHEN p_locked THEN 'operator.locked' ELSE 'operator.step_up_failed' END,
+        SELECT o.id, CASE WHEN p_locked THEN 'operator.step_up_locked' ELSE 'operator.step_up_failed' END,
                'operator', o.id::text
         FROM public.operators o WHERE o.id = p_operator
     $$
     """,
 }
 
+COLUMNS = {
+    "step_up_failures": "Wrong step-up codes in a row, counted apart from failed_logins (the sign-in).",
+    "step_up_locked_until": "Step-up codes are refused until this time. NULL = not locked.",
+}
+
 UPGRADE = [
-    statement
-    for signature, create in FUNCTIONS.items()
-    for statement in (
-        create,
-        f"REVOKE ALL ON FUNCTION public.{signature} FROM PUBLIC",
-        f"GRANT EXECUTE ON FUNCTION public.{signature} TO {OPERATOR_ROLE}",
-    )
+    """
+    ALTER TABLE operators
+        ADD COLUMN step_up_failures integer NOT NULL DEFAULT 0 CHECK (step_up_failures >= 0),
+        ADD COLUMN step_up_locked_until timestamptz NULL
+    """,
+    *[f"COMMENT ON COLUMN operators.{column} IS '{comment}'" for column, comment in COLUMNS.items()],
+    *[
+        statement
+        for signature, create in FUNCTIONS.items()
+        for statement in (
+            create,
+            f"REVOKE ALL ON FUNCTION public.{signature} FROM PUBLIC",
+            f"GRANT EXECUTE ON FUNCTION public.{signature} TO {OPERATOR_ROLE}",
+        )
+    ],
 ]
 
-DOWNGRADE = [f"DROP FUNCTION IF EXISTS public.{signature}" for signature in FUNCTIONS]
+DOWNGRADE = [
+    *[f"DROP FUNCTION IF EXISTS public.{signature}" for signature in FUNCTIONS],
+    "ALTER TABLE operators DROP COLUMN step_up_locked_until, DROP COLUMN step_up_failures",
+]
 
 
 def upgrade() -> None:
