@@ -1,27 +1,25 @@
-"""What a platform operator may do to organisations and their admins (super admin PR 3,
-council 6 Oct 2026, PROVISIONAL; change plan Outside-Folder/docs/plans/2026-10-06-super-admin.md,
+"""What a platform operator may do to organisations (super admin PR 3, council 6 Oct
+2026, PROVISIONAL; change plan Outside-Folder/docs/plans/2026-10-06-super-admin.md,
 awaiting Vrushit's approval: these are the first functions under the never-do 1 exception).
+Their admins are 0017's (PR 3b).
 
 Functions only, no table or column. Each ``kaagaz_op_*`` is SECURITY DEFINER with an
 empty search path and schema-qualified names, revoked from PUBLIC and runnable by
 ``kaagaz_operator`` ONLY (0015). Each takes ``p_operator`` and acts only for an
 enabled operator whose two-step secret is confirmed.
 
-* Reads return counts and admin rows only: never a document's name or content, never
-  a member's or reviewer's name or e-mail, never ``audit_log.details`` or ``target_id``.
-* Every write names its one customer (and its one admin: ``role = 'admin'`` in that
-  customer, so a member's id or another customer's admin is "missing"), and writes
-  exactly one ``platform_audit`` row in the same transaction. A change to a customer
-  or its admin also writes one row in that customer's own ``audit_log``
-  (``{"by": "operator"}``), as the CLI's do, so its admins see it.
+* The list returns counts only: never a document's name or content, never a user's
+  name or e-mail, never ``audit_log.details`` or ``target_id``.
+* Every write names its one customer and writes exactly one ``platform_audit`` row in
+  the same transaction. Disabling or enabling also writes one row in that customer's
+  own ``audit_log`` (``{"by": "operator"}``), as the CLI's do, so its admins see it.
 * A write answers ``(outcome, result_id)``: ``done``, ``unchanged``, ``missing``,
   ``deleting`` (being deleted: PR 4), ``step_up`` (the fresh two-step code was not
   accepted) or ``signed_out`` (the operator is disabled). Only ``done`` changes
-  anything (``step_up`` and ``missing`` may still use up the code's step).
-* Step-up: disabling a customer and resetting an admin's two-step code take the step
-  of a fresh code the API checked against the operator's own secret. The function
-  uses it up (never twice, the operator row is locked by the UPDATE) and clears the
-  sign-in count, as ``kaagaz_op_login_succeeded`` does.
+  anything (``missing`` may still use up the code's step).
+* Step-up: disabling a customer takes the step of a fresh code the API checked against
+  the operator's own secret. The function uses it up (never twice: the UPDATE locks
+  the operator row) and clears the sign-in count, as ``kaagaz_op_login_succeeded`` does.
 
 Disable and enable mirror ``db.customers.set_status`` (PR 1): the row is locked
 first; disabling raises every user's session version, enabling clears their sign-in
@@ -161,91 +159,6 @@ FUNCTIONS = {
         {_CUSTOMER_LOG}
         VALUES (p_customer, NULL, v_action, 'customer', p_customer::text, jsonb_build_object('by', 'operator'));
         {_PLATFORM} VALUES (p_operator, v_action, p_customer, 'customer', p_customer::text);
-        outcome := 'done';
-    END
-    $$
-    """,
-    # One customer's admins (role admin only). Empty: no such customer (each keeps an admin).
-    "kaagaz_op_admins(uuid, uuid)": f"""
-    CREATE FUNCTION public.kaagaz_op_admins(p_operator uuid, p_customer uuid)
-    RETURNS TABLE (user_id uuid, display_name text, email text, totp_enabled boolean,
-                   locked_until timestamptz, disabled boolean, must_change_password boolean,
-                   last_login_at timestamptz, created_at timestamptz)
-    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
-        SELECT u.id, u.display_name, u.email, u.totp_enabled_at IS NOT NULL, u.locked_until, u.disabled,
-               u.must_change_password, u.last_login_at, u.created_at
-        FROM public.users u
-        WHERE u.customer_id = p_customer AND u.role = 'admin'
-          AND EXISTS (SELECT 1 FROM public.operators o WHERE {_ENABLED})
-        ORDER BY u.created_at, u.email
-    $$
-    """,
-    # One more admin of one customer, with a temporary password. 23505: e-mail taken.
-    "kaagaz_op_create_admin(uuid, uuid, text, text, text)": f"""
-    CREATE FUNCTION public.kaagaz_op_create_admin(
-        p_operator uuid, p_customer uuid, p_email text, p_name text, p_password_hash text, {_WRITE}
-    )
-    {_HEAD}
-    DECLARE
-        v_status text;
-    BEGIN
-        {_ACTOR}
-        SELECT c.status INTO v_status FROM public.customers c WHERE c.id = p_customer;
-        IF NOT FOUND OR v_status = 'deleting' THEN
-            outcome := CASE WHEN v_status = 'deleting' THEN 'deleting' ELSE 'missing' END;
-            RETURN;
-        END IF;
-        INSERT INTO public.users (customer_id, email, display_name, role, password_hash, must_change_password)
-        VALUES (p_customer, lower(p_email), p_name, 'admin', p_password_hash, true)
-        RETURNING id INTO result_id;
-        {_CUSTOMER_LOG}
-        VALUES (p_customer, NULL, 'user.create', 'user', result_id::text,
-                jsonb_build_object('role', 'admin', 'by', 'operator'));
-        {_PLATFORM} VALUES (p_operator, 'admin.create', p_customer, 'user', result_id::text);
-        outcome := 'done';
-    END
-    $$
-    """,
-    # Disable, enable, unlock or reset the two-step code (step-up) of ONE admin of ONE
-    # customer, as the admin screen does: disabling and the reset end every session.
-    "kaagaz_op_change_admin(uuid, uuid, uuid, text, bigint)": f"""
-    CREATE FUNCTION public.kaagaz_op_change_admin(
-        p_operator uuid, p_customer uuid, p_user uuid, p_change text, p_step bigint, {_WRITE}
-    )
-    {_HEAD}
-    BEGIN
-        IF p_change NOT IN ('disable', 'enable', 'unlock', 'reset_totp') THEN
-            RAISE EXCEPTION 'unknown change' USING ERRCODE = 'check_violation';
-        END IF;
-        IF p_change = 'reset_totp' THEN
-            {_STEP_UP}
-        ELSE
-            {_ACTOR}
-        END IF;
-        UPDATE public.users AS u SET
-            disabled = CASE p_change WHEN 'disable' THEN true WHEN 'enable' THEN false ELSE u.disabled END,
-            totp_secret_enc = CASE WHEN p_change = 'reset_totp' THEN NULL ELSE u.totp_secret_enc END,
-            totp_enabled_at = CASE WHEN p_change = 'reset_totp' THEN NULL ELSE u.totp_enabled_at END,
-            totp_last_step = CASE WHEN p_change = 'reset_totp' THEN NULL ELSE u.totp_last_step END,
-            failed_logins = CASE WHEN p_change = 'unlock' THEN 0 ELSE u.failed_logins END,
-            locked_until = CASE WHEN p_change = 'unlock' THEN NULL ELSE u.locked_until END,
-            session_version = u.session_version + CASE WHEN p_change IN ('disable', 'reset_totp') THEN 1 ELSE 0 END
-        WHERE u.customer_id = p_customer AND u.id = p_user AND u.role = 'admin'
-        RETURNING u.id INTO result_id;
-        IF NOT FOUND THEN
-            outcome := 'missing';
-            RETURN;
-        END IF;
-        {_CUSTOMER_LOG}
-        VALUES (p_customer, NULL,
-                CASE p_change WHEN 'unlock' THEN 'user.unlock' WHEN 'reset_totp' THEN 'user.reset_totp'
-                    ELSE 'user.update' END,
-                'user', p_user::text,
-                jsonb_build_object('by', 'operator') || CASE WHEN p_change IN ('disable', 'enable')
-                    THEN jsonb_build_object('role', 'admin', 'disabled', p_change = 'disable',
-                                            'password_changed', false)
-                    ELSE jsonb_build_object() END);
-        {_PLATFORM} VALUES (p_operator, 'admin.' || p_change, p_customer, 'user', p_user::text);
         outcome := 'done';
     END
     $$
