@@ -588,3 +588,33 @@ export interface MyStory {
   created_at: string;
   updated_at: string;
 }
+
+// --- The platform operator (super admin, PR 6). Not a customer user. -----------
+
+export interface OperatorMe {
+  operator: { id: string; email: string; name: string };
+  session: { expires_at: number }; // Unix seconds; the session lasts 30 minutes
+}
+
+export type OrgStatus = "active" | "disabled" | "deleting";
+
+/** One organisation in GET /operator/orgs: its metadata and counts only. */
+export interface Organisation {
+  id: string;
+  name: string;
+  status: OrgStatus;
+  disabled_at: string | null;
+  delete_after: string | null; // when it is deleted for good (status "deleting")
+  created_at: string;
+  users: { admins: number; reviewers: number; members: number };
+  documents: number;
+  pages: number;
+  storage_bytes: number;
+  last_activity_at: string | null;
+}
+
+/** POST /operator/orgs: the temporary password is in this one reply only. */
+export interface OrganisationCreated {
+  organisation: { id: string; name: string; admin: { email: string; name: string } };
+  temporary_password: string;
+}
