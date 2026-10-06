@@ -13,7 +13,8 @@ from kaagaz.api import totp
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as m0002
 from tests.db_support import migrate
-from tests.test_api_support import CSRF, PASSWORD, Api
+from tests.test_api_support import CSRF, PASSWORD, Api, wrong_code
+from tests.test_operator_auth_db import _owner
 from tests.test_operator_orgs_db import ORGS, _platform, _signed_in
 
 pytestmark = pytest.mark.db
@@ -75,10 +76,20 @@ def test_an_operator_manages_one_admin_with_one_row_per_change(db: Database) -> 
     a, uid = admin.customer_id, admin.user_id
     base = f"{ORGS}/{a}/admins"
 
-    email = f"new-{uuid.uuid4().hex[:12]}@example.test"
-    created = client.post(base, json={"email": email, "name": "New admin"}, headers=CSRF)
+    email, other = (f"{who}-{uuid.uuid4().hex[:12]}@example.test" for who in ("new", "other"))
+    new = {"email": email, "name": "New admin"}
+    assert client.post(base, json=new, headers=CSRF).status_code == 400  # no code
+    wrong = client.post(base, json={**new, "code": wrong_code(api, operator.secret)}, headers=CSRF)
+    assert wrong.json()["error"]["code"] == "step_up_failed"
+    code = api.code(operator.secret)
+    created = client.post(base, json={**new, "code": code}, headers=CSRF)
     assert created.status_code == 201, created.text
     new_id, temporary = created.json()["admin"]["id"], created.json()["temporary_password"]
+    assert client.post(base, json={**new, "email": other, "code": code}, headers=CSRF).status_code == 403
+    api.clock.advance(totp.STEP_SECONDS)
+    taken = client.post(base, json={**new, "code": api.code(operator.secret)}, headers=CSRF)
+    assert taken.json()["error"]["message"] == "That e-mail is already in use."
+    assert other not in client.get(base).text  # the reused code made nothing
     signed = api.client().post("/api/auth/login", json={"email": email, "password": temporary}, headers=CSRF)
     assert (signed.json()["customer"]["id"], signed.json()["user"]["must_change_password"]) == (a, True)
 
@@ -93,14 +104,19 @@ def test_an_operator_manages_one_admin_with_one_row_per_change(db: Database) -> 
         )
     assert [item["locked"] for item in client.get(base).json()["items"] if item["id"] == uid] == [True]
     assert client.post(f"{base}/{uid}/unlock", headers=CSRF).json()["admin"]["locked"] is False
+    api.clock.advance(totp.STEP_SECONDS)
     reset = client.post(f"{base}/{uid}/reset-2fa", json={"code": api.code(operator.secret)}, headers=CSRF)
     assert reset.json()["admin"]["two_step"] is False
     state = api.user_state(a, uid)
     assert (state["failed_logins"], state["totp_secret_enc"], state["totp_enabled_at"]) == (0, None, None)
     assert api.admin_login(api.client(), admin.email, password=PASSWORD).status_code == 200  # password alone
 
+    failed = ("operator.step_up_failed", None, "operator", operator.id)
     assert _platform(operator) == [
+        failed,
         ("admin.create", a, "user", new_id),
+        failed,
+        ("admin.create_refused", a, "user", None),  # no e-mail stored
         *[(f"admin.{change}", a, "user", uid) for change in ("disable", "enable", "unlock", "reset_totp")],
     ]
     by_operator = [row[:3] for row in api.audit_rows(a) if row[3].get("by") == "operator"]
@@ -111,3 +127,24 @@ def test_an_operator_manages_one_admin_with_one_row_per_change(db: Database) -> 
         ("user.unlock", "user", uid),
         ("user.reset_totp", "user", uid),
     ]
+
+
+def test_nothing_is_made_or_changed_in_an_organisation_being_deleted(db: Database) -> None:
+    api = Api(db)
+    operator, client = _signed_in(api)
+    a, a_admin = api.customer("Org D")
+    deleting = "UPDATE customers SET status = :s, disabled_at = :d, delete_after = :d WHERE id = :c"
+    _owner(db, deleting, {"s": "deleting", "d": api.clock(), "c": a})  # as PR 4's schedule-delete
+    try:
+        for change in CHANGES:
+            assert client.post(f"{ORGS}/{a}/admins/{a_admin}/{change}", headers=CSRF).status_code == 409
+        new = {
+            "email": f"d-{uuid.uuid4().hex[:8]}@example.test",
+            "name": "D",
+            "code": api.code(operator.secret),
+        }
+        assert client.post(f"{ORGS}/{a}/admins", json=new, headers=CSRF).status_code == 409
+        assert len(client.get(f"{ORGS}/{a}/admins").json()["items"]) == 1
+        assert _platform(operator) == []
+    finally:
+        _owner(db, deleting, {"s": "active", "d": None, "c": a})

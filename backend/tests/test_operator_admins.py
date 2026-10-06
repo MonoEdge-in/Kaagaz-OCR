@@ -27,6 +27,7 @@ ADMIN_ROW = {
     "created_at": NOW,
 }
 ADMIN = f"/{CID}/admins/{UID}"
+NEW = {"email": "Boss@Mehta.Example", "name": " Boss "}
 
 
 @pytest.fixture
@@ -39,26 +40,34 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> _Offline:
     return offline
 
 
-def test_resetting_an_admins_two_step_needs_a_fresh_code_from_the_operators_own_secret(
-    offline: _Offline,
+@pytest.mark.parametrize(
+    ("path", "body", "call"),
+    [
+        (f"{ADMIN}/reset-2fa", {}, ("change_admin", (CID, UID, "reset_totp"))),
+        (f"/{CID}/admins", NEW, ("create_admin", (CID,))),  # its password signs in as an admin
+    ],
+    ids=["reset-2fa", "create-admin"],
+)
+def test_resetting_or_creating_an_admin_needs_a_fresh_code_from_the_operators_own_secret(
+    offline: _Offline, path: str, body: dict[str, str], call: tuple[str, tuple[str, ...]]
 ) -> None:
-    path = f"{ADMIN}/reset-2fa"
-    assert offline.post(path).status_code == 400  # no code at all
-    assert offline.post(path, {"code": totp.code_at(totp.new_secret(), STEP)}).status_code == 403
+    assert offline.post(path, body).status_code == 400  # no code at all
+    assert offline.post(path, {**body, "code": totp.code_at(totp.new_secret(), STEP)}).status_code == 403
     offline.last_step = STEP  # the code's step was used already
-    assert offline.post(path, {"code": totp.code_at(OWN, STEP)}).status_code == 403
-    assert offline.names() == ["step_up_failed", "step_up_failed"]
+    assert offline.post(path, {**body, "code": totp.code_at(OWN, STEP)}).status_code == 403
+    assert offline.names() == ["step_up_failed", "step_up_failed"]  # nothing made or changed
     offline.calls.clear()
     offline.last_step = None
-    reply = offline.post(path, {"code": totp.code_at(OWN, STEP)})
-    assert reply.status_code == 200, reply.text
+    reply = offline.post(path, {**body, "code": totp.code_at(OWN, STEP)})
+    assert reply.status_code in (200, 201), reply.text
     [(name, args, kwargs)] = offline.calls
-    assert (name, args[1:], kwargs) == ("change_admin", (CID, UID, "reset_totp"), {"step": STEP})
+    assert ((name, args[1:]), kwargs["step"]) == (call, STEP)
 
 
 @pytest.mark.parametrize("change", ["disable", "enable", "unlock"])
 @pytest.mark.parametrize(
-    ("code", "status"), [("done", 200), ("missing", 404), ("signed_out", 401), ("step_up", 403)]
+    ("code", "status"),
+    [("done", 200), ("missing", 404), ("deleting", 409), ("signed_out", 401), ("step_up", 403)],
 )
 def test_each_change_names_its_organisation_and_admin_and_gets_its_reply(
     offline: _Offline, change: str, code: str, status: int
@@ -88,7 +97,7 @@ def test_a_new_admins_temporary_password_is_shown_once_and_only_its_hash_is_stor
     offline: _Offline, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG)
-    body: dict[str, Any] = {"email": "Boss@Mehta.Example", "name": " Boss "}
+    body: dict[str, Any] = {**NEW, "code": totp.code_at(OWN, STEP)}
     reply = offline.post(f"/{CID}/admins", body)
     assert reply.status_code == 201, reply.text
     temporary = reply.json()["temporary_password"]
@@ -98,8 +107,9 @@ def test_a_new_admins_temporary_password_is_shown_once_and_only_its_hash_is_stor
     assert verify_password(temporary, kwargs["password_hash"]) and temporary not in caplog.text
     offline.outcome = Outcome("missing", None)
     assert offline.post(f"/{CID}/admins", body).status_code == 404
-    offline.outcome = Outcome("taken", None)
-    assert offline.post(f"/{CID}/admins", body).status_code == 409
+    for code in ("taken", "deleting"):  # taken: audited in the function, no e-mail stored
+        offline.outcome = Outcome(code, None)
+        assert offline.post(f"/{CID}/admins", body).status_code == 409
 
 
 def test_an_organisation_with_no_admin_row_is_not_found(
