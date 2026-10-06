@@ -9,7 +9,14 @@ import { DISABLE_EFFECT, deleteEffect } from "./logic";
 
 export type OrgChange = "disable" | "enable" | "delete" | "cancel";
 
+/** The organisation's name in its row, where the focus goes after a change. */
+export const orgFocusId = (id: string) => `org-name-${id}`;
+
 export function orgConfirm(org: Organisation, change: OrgChange, now: number): Confirm {
+  return { ...orgChange(org, change, now), focusId: orgFocusId(org.id) };
+}
+
+function orgChange(org: Organisation, change: OrgChange, now: number): Omit<Confirm, "focusId"> {
   const name = org.name;
   switch (change) {
     case "disable":

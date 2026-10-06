@@ -4,6 +4,9 @@
 // reply carries the admin's temporary password ONCE: it is shown here with
 // Copy and kept only in this dialog's memory (never stored, never logged), so
 // it is gone when the dialog closes. The admin must change it at first sign-in.
+// So the dialog cannot close while the request runs (the reply would be lost),
+// and once the password shows only Done or Close shut it (not Esc or a click
+// beside it).
 
 import { useCallback, useState } from "react";
 import type { FormEvent } from "react";
@@ -11,7 +14,13 @@ import { CopyButton } from "@/components/admin/CopyButton";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { ApiError, createOrg } from "@/lib/api";
 import type { OrganisationCreated } from "@/lib/types";
-import { TEMPORARY_PASSWORD_NOTE, firstInvalidOrgField, operatorErrorMessage, validateNewOrg } from "./logic";
+import {
+  TEMPORARY_PASSWORD_NOTE,
+  canCloseDialog,
+  firstInvalidOrgField,
+  operatorErrorMessage,
+  validateNewOrg,
+} from "./logic";
 import type { NewOrgErrors, NewOrgInput } from "./logic";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -73,7 +82,11 @@ export function CreateOrgDialog({ onClose, onCreated }: { onClose(): void; onCre
   );
 
   return (
-    <ActionDialog title="Create organisation" onClose={onClose}>
+    <ActionDialog
+      title="Create organisation"
+      onClose={onClose}
+      canClose={(way) => canCloseDialog({ busy, secretShown: created !== null }, way)}
+    >
       {created ? (
         <section className={styles.dialogForm} aria-labelledby="org-created-heading">
           <h3 id="org-created-heading" ref={focusOnMount} tabIndex={-1} className={styles.resultHeading}>
@@ -108,7 +121,7 @@ export function CreateOrgDialog({ onClose, onCreated }: { onClose(): void; onCre
             </p>
           )}
           <div className={styles.buttons}>
-            <button type="button" className="btn" onClick={onClose}>
+            <button type="button" className="btn" onClick={onClose} disabled={busy}>
               Cancel
             </button>
             <button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy || undefined}>

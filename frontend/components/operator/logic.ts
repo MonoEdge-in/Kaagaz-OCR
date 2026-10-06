@@ -4,6 +4,7 @@
 
 import { codeError } from "@/app/admin/login/adminSignIn";
 import { NETWORK_FAILURE, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS, emailError, passwordError } from "@/app/login/signIn";
+import type { CloseWay } from "@/components/documents/ActionDialog";
 import { ApiError } from "@/lib/api";
 import { formatDate, formatNumber, formatRelative } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
@@ -84,6 +85,27 @@ export async function signOut(logout: () => Promise<unknown>): Promise<{ leave: 
     if (!(caught instanceof ApiError && caught.status === 401)) return { error: SIGN_OUT_FAILED };
   }
   return { leave: exitUrl("signed_out", true) };
+}
+
+// --- Dialogs ---------------------------------------------------------------------
+
+/** Never while its request runs (the reply would be lost: a temporary password
+ * forever); while a temporary password shows, only by a button (Done, Close),
+ * never by Esc or a click beside it. */
+export function canCloseDialog(state: { busy: boolean; secretShown?: boolean }, way: CloseWay): boolean {
+  if (state.busy) return false;
+  return !state.secretShown || way === "button";
+}
+
+/** A change's reply clears the open dialog only if it is still that change's. */
+export function afterDone<T>(open: T | null, finished: T): T | null {
+  return open === finished ? null : open;
+}
+
+/** After asking /me at the session's end: a 401 has left already (onSessionEnded),
+ * a yes or any other failure (no network) asks again a little later. */
+export function recheckAfter(caught: unknown): number | null {
+  return meFailed(caught) === "signed_out" ? null : RECHECK_MS;
 }
 
 // --- Any other refusal -------------------------------------------------------
