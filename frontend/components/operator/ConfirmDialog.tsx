@@ -7,13 +7,14 @@
 // operator's own authenticator (step-up; the code used to sign in does not
 // work again); deleting also asks for the organisation's name, typed exactly.
 // A refusal is said in plain words in the dialog, and the code is cleared.
+// It cannot close while busy; after a change the focus goes to the row's name.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { CodeField } from "@/app/admin/login/CodeField";
 import { codeError, normalizeCode } from "@/app/admin/login/adminSignIn";
 import { ActionDialog } from "@/components/documents/ActionDialog";
-import { nameError, operatorErrorMessage } from "./logic";
+import { canCloseDialog, nameError, operatorErrorMessage } from "./logic";
 import styles from "./Operator.module.css";
 
 export interface Confirm {
@@ -27,6 +28,8 @@ export interface Confirm {
   stepUp: boolean;
   /** Deleting: this name must be typed exactly. */
   typeName?: string;
+  /** Where the focus goes after the change: the row's name. */
+  focusId: string;
   run(code: string, name: string): Promise<unknown>;
 }
 
@@ -39,6 +42,7 @@ export function ConfirmDialog({ confirm, onClose, onDone }: { confirm: Confirm; 
   const [problems, setProblems] = useState<{ name: string | null; code: string | null }>({ name: null, code: null });
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const changed = useRef(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -56,6 +60,7 @@ export function ConfirmDialog({ confirm, onClose, onDone }: { confirm: Confirm; 
     setBusy(true);
     try {
       await confirm.run(normalizeCode(code), name);
+      changed.current = true;
       onDone(confirm.done);
     } catch (caught) {
       setFailure(operatorErrorMessage(caught));
@@ -65,7 +70,12 @@ export function ConfirmDialog({ confirm, onClose, onDone }: { confirm: Confirm; 
   }
 
   return (
-    <ActionDialog title={confirm.title} onClose={onClose}>
+    <ActionDialog
+      title={confirm.title}
+      onClose={onClose}
+      canClose={(way) => canCloseDialog({ busy }, way)}
+      onClosed={() => changed.current && document.getElementById(confirm.focusId)?.focus()}
+    >
       <form className={styles.dialogForm} onSubmit={submit} noValidate>
         <p>{confirm.effect}</p>
         {confirm.typeName !== undefined && (
@@ -107,7 +117,7 @@ export function ConfirmDialog({ confirm, onClose, onDone }: { confirm: Confirm; 
           </p>
         )}
         <div className={styles.buttons}>
-          <button type="button" className="btn" onClick={onClose} data-autofocus={confirm.stepUp ? undefined : true}>
+          <button type="button" className="btn" onClick={onClose} disabled={busy} data-autofocus={!confirm.stepUp || undefined}>
             Cancel
           </button>
           <button

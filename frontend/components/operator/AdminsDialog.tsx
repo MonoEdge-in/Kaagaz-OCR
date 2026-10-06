@@ -5,7 +5,8 @@
 // (the list shows them as counts). Create admin (a fresh code; the temporary
 // password is shown once), and per admin Disable or Enable, Unlock and Reset
 // two-step (a fresh code). No delete: admins are disabled instead. While the
-// organisation is being deleted the list is read only, as the server.
+// organisation is being deleted the list is read only, as the server. After a
+// change the focus goes to that admin's name, as their buttons may change.
 
 import { useEffect, useState } from "react";
 import { useMinuteNow } from "@/components/chat/hooks";
@@ -14,9 +15,9 @@ import { listAdmins } from "@/lib/api";
 import type { OrgAdmin, Organisation } from "@/lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
-import { adminConfirm } from "./confirms";
+import { adminConfirm, adminFocusId } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
-import { adminActions, adminFacts, lastSignInText, operatorErrorMessage } from "./logic";
+import { adminActions, adminFacts, afterDone, lastSignInText, operatorErrorMessage } from "./logic";
 import styles from "./Operator.module.css";
 
 const ACTION_LABELS = { disable: "Disable", enable: "Enable", unlock: "Unlock", "reset-2fa": "Reset two-step" };
@@ -42,8 +43,8 @@ export function AdminsDialog({ org, onClose }: { org: Organisation; onClose(): v
   }, [org.id, attempt]);
 
   const failed = error !== null && error.attempt === attempt ? error.message : null;
-  const finished = (message: string) => {
-    setChanging(null);
+  const finished = (message: string, confirm?: Confirm) => {
+    if (confirm) setChanging((open) => afterDone(open, confirm));
     setDone(message);
     setAttempt((n) => n + 1);
   };
@@ -79,7 +80,9 @@ export function AdminsDialog({ org, onClose }: { org: Organisation; onClose(): v
             <ul className={styles.adminList} aria-label="Admins">
               {admins.map((admin) => (
                 <li key={admin.id} className={styles.adminItem}>
-                  <span className={styles.orgName}>{admin.name}</span>
+                  <span className={styles.orgName} id={adminFocusId(admin.id)} tabIndex={-1}>
+                    {admin.name}
+                  </span>
                   <span className={styles.email}>{admin.email}</span>
                   <span className={styles.counts}>
                     {adminFacts(admin).map((fact) => (
@@ -107,7 +110,7 @@ export function AdminsDialog({ org, onClose }: { org: Organisation; onClose(): v
         </div>
       </ActionDialog>
       {creating && <CreateDialog org={org} onClose={() => setCreating(false)} onCreated={finished} />}
-      {changing && <ConfirmDialog confirm={changing} onClose={() => setChanging(null)} onDone={finished} />}
+      {changing && <ConfirmDialog confirm={changing} onClose={() => setChanging(null)} onDone={(message) => finished(message, changing)} />}
     </>
   );
 }

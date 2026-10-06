@@ -7,6 +7,8 @@
 // here with Copy and kept only in this dialog's memory (never stored, never
 // logged), so it is gone when the dialog closes. The admin must change it at
 // first sign-in.
+// So it cannot close while the request runs, and a shown password closes only
+// by Done or Close (canCloseDialog).
 
 import { useCallback, useState } from "react";
 import type { FormEvent } from "react";
@@ -18,6 +20,7 @@ import { createAdmin, createOrg } from "@/lib/api";
 import type { Organisation } from "@/lib/types";
 import {
   TEMPORARY_PASSWORD_NOTE,
+  canCloseDialog,
   firstInvalidOrgField,
   isTakenEmail,
   operatorErrorMessage,
@@ -90,8 +93,8 @@ export function CreateDialog({
       const message = operatorErrorMessage(caught);
       if (isTakenEmail(caught)) setErrors({ admin_email: message });
       else setFailure(message);
-      setInput((was) => ({ ...was, code: "" }));
     } finally {
+      setInput((was) => ({ ...was, code: "" })); // a code works once: never kept
       setBusy(false);
     }
   }
@@ -109,7 +112,11 @@ export function CreateDialog({
   );
 
   return (
-    <ActionDialog title={org ? `New admin of ${org.name}` : "Create organisation"} onClose={onClose}>
+    <ActionDialog
+      title={org ? `New admin of ${org.name}` : "Create organisation"}
+      onClose={onClose}
+      canClose={(way) => canCloseDialog({ busy, secretShown: created !== null }, way)}
+    >
       {created ? (
         <section className={styles.dialogForm} aria-labelledby="created-heading">
           <h3 id="created-heading" ref={focusOnMount} tabIndex={-1} className={styles.resultHeading}>
@@ -151,7 +158,7 @@ export function CreateDialog({
             </p>
           )}
           <div className={styles.buttons}>
-            <button type="button" className="btn" onClick={onClose}>
+            <button type="button" className="btn" onClick={onClose} disabled={busy}>
               Cancel
             </button>
             <button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy || undefined}>

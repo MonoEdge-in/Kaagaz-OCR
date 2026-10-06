@@ -19,10 +19,10 @@ import type { Organisation } from "@/lib/types";
 import { AdminsDialog } from "./AdminsDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
-import { orgConfirm } from "./confirms";
+import { orgConfirm, orgFocusId } from "./confirms";
 import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
-import { countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
+import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
@@ -188,7 +188,7 @@ export function OrganisationsView() {
           confirm={changing}
           onClose={() => setChanging(null)}
           onDone={(message) => {
-            setChanging(null);
+            setChanging((open) => afterDone(open, changing));
             setDone(message);
             reload();
           }}
@@ -216,7 +216,9 @@ function OrgRow(props: { org: Organisation; now: number; onAdmins(): void; onCha
   return (
     <tr role="row">
       <td role="cell" className={styles.orgName}>
-        {org.name}
+        <span id={orgFocusId(org.id)} tabIndex={-1}>
+          {org.name}
+        </span>
       </td>
       <td role="cell" data-label="Status">
         <span className="status-chip" data-tone={status.tone}>

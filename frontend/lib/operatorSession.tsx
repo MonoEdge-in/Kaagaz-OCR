@@ -14,7 +14,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import styles from "@/components/shell/Shell.module.css";
-import { OPERATOR_CHANNEL, RECHECK_MS, SIGNED_OUT, exitUrl, expiryDelay, meFailed } from "@/components/operator/logic";
+import { OPERATOR_CHANNEL, RECHECK_MS, SIGNED_OUT, exitUrl, expiryDelay, meFailed, recheckAfter } from "@/components/operator/logic";
 import type { ExitReason } from "@/components/operator/logic";
 import { onSessionEnded, operatorMe } from "./api";
 import { sessionErrorMessage } from "./session";
@@ -78,14 +78,16 @@ export function OperatorSessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // The session's end: ask the server, whose 401 leaves (onSessionEnded); a
-  // yes means this computer's clock is ahead, so ask again a little later.
+  // yes means this computer's clock is ahead, and no answer (no network) means
+  // nothing yet, so either way ask again a little later.
   const expiresAt = state.kind === "signed_in" ? state.me.session.expires_at : null;
   useEffect(() => {
     if (expiresAt === null) return;
     let timer = 0;
     let stopped = false;
     const check = (delay: number) => {
-      timer = window.setTimeout(() => operatorMe().then(() => !stopped && check(RECHECK_MS), () => undefined), delay);
+      const again = (next: number | null) => !stopped && next !== null && check(next);
+      timer = window.setTimeout(() => operatorMe().then(() => again(RECHECK_MS), (caught) => again(recheckAfter(caught))), delay);
     };
     check(expiryDelay(expiresAt, Date.now()));
     return () => {
