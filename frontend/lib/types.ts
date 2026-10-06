@@ -618,24 +618,3 @@ export interface OrganisationCreated {
   organisation: { id: string; name: string; admin: { email: string; name: string } };
   temporary_password: string;
 }
-
-/** One admin of one organisation (GET /operator/orgs/{id}/admins). Never members or reviewers. */
-export interface OrgAdmin {
-  id: string;
-  name: string;
-  email: string;
-  two_step: boolean;
-  locked: boolean;
-  disabled: boolean;
-  must_change_password: boolean;
-  last_sign_in_at: string | null;
-  created_at: string;
-}
-
-export type AdminChange = "disable" | "enable" | "unlock" | "reset-2fa";
-
-/** POST /operator/orgs/{id}/admins: the temporary password is in this one reply only. */
-export interface AdminCreated {
-  admin: { id: string; email: string; name: string };
-  temporary_password: string;
-}
