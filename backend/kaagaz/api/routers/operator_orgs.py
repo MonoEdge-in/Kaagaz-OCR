@@ -8,6 +8,10 @@ one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
   organisation and its first admin; the temporary password is in this reply ONCE
   (stored only as its hash, never logged) and must be changed at the first sign-in.
 * ``POST /operator/orgs/{id}/disable`` {code} (step-up) and ``/enable``.
+* ``POST /operator/orgs/{id}/schedule-delete`` {name, code} (PR 4, step-up): a DISABLED
+  organisation whose name is typed exactly is removed for good after a grace period
+  (7 days, PROVISIONAL), by the worker; ``/cancel-delete`` {code} (step-up) during it
+  makes it disabled again. There is no "delete now" here (the CLI's break-glass only).
 * ``GET /operator/orgs/{id}/admins`` (admins only), ``POST`` one more {email, name,
   code} (a temporary password, as above; step-up), and ``POST .../admins/{uid}/disable``,
   ``/enable``, ``/unlock`` and ``/reset-2fa`` {code} (step-up).
@@ -62,6 +66,10 @@ _REFUSALS = {
     "missing": (404, "not_found", None),
     "deleting": (409, "conflict", "This organisation is being deleted."),
     "taken": (409, "conflict", "That e-mail is already in use."),  # audited in the function
+    "not_disabled": (409, "conflict", "Disable the organisation before deleting it."),
+    "name_mismatch": (409, "name_mismatch", "Type the organisation's name exactly."),  # audited
+    "not_deleting": (409, "conflict", "This organisation is not being deleted."),
+    "purging": (409, "conflict", "The grace period is over: the organisation is being removed."),
 }
 
 
@@ -77,6 +85,13 @@ class NewOrgBody(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     admin_email: str = Field(min_length=3, max_length=254)
     admin_name: str = Field(min_length=1, max_length=100)
+
+
+class ScheduleDeleteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)  # compared exactly, never trimmed
+    code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
 class NewAdminBody(BaseModel):
@@ -132,6 +147,35 @@ def enable_org(
     customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> dict[str, Any]:
     return _set_status(db, context, operator, str(customer_id), "active", None)
+
+
+@router.post("/{customer_id}/schedule-delete")
+def schedule_delete(
+    customer_id: uuid.UUID,
+    body: ScheduleDeleteBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> dict[str, Any]:
+    """Removed for good, with every user, row and file, once the grace period ends."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = orgs_sql.schedule_delete(
+            conn, operator.operator_id, str(customer_id), name=body.name, step=step_up.step
+        )
+    _check(db, operator, outcome, step_up)
+    return {"organisation": {"id": str(customer_id), "status": "deleting", "changed": True}}
+
+
+@router.post("/{customer_id}/cancel-delete")
+def cancel_delete(
+    customer_id: uuid.UUID, body: StepUpBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = orgs_sql.cancel_delete(conn, operator.operator_id, str(customer_id), step=step_up.step)
+    _check(db, operator, outcome, step_up)
+    return {"organisation": {"id": str(customer_id), "status": "disabled", "changed": True}}
 
 
 @router.get("/{customer_id}/admins")

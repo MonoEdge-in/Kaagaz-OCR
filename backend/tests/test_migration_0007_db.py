@@ -37,6 +37,11 @@ _COMMENTS = text(
     "SELECT d.description FROM pg_description d JOIN pg_class c ON c.oid = d.objoid"
     " WHERE d.classoid = 'pg_class'::regclass AND c.relnamespace = 'public'::regnamespace"
 )
+# How many of those are on an index (0020's audit_log_feed): the dictionary has no indexes.
+_ON_INDEXES = text(
+    "SELECT count(*) FROM pg_description d JOIN pg_class c ON c.oid = d.objoid"
+    " WHERE d.classoid = 'pg_class'::regclass AND c.relnamespace = 'public'::regnamespace AND c.relkind = 'i'"
+)
 # What must never be in a comment: identity numbers (an Aadhaar's 12 digits, in
 # ASCII or Devanagari digits, run together or in groups of four, or a PAN in either
 # case), e-mail addresses and links.
@@ -92,7 +97,9 @@ def test_0007_up_down_up_sets_and_clears_every_comment(fresh: tuple[str, Databas
     assert _current(url) == _head()
     at_head = _dictionary(database)
     assert None not in at_head.values()
-    assert len(_comments(database)) == len(at_head)
+    with database.system() as conn:
+        on_indexes = conn.execute(_ON_INDEXES).scalar_one()
+    assert len(_comments(database)) == len(at_head) + on_indexes
 
     m0002._downgrade(url, "0006")
     assert _comments(database) == []

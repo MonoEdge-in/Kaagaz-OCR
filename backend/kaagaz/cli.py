@@ -14,6 +14,13 @@
   being deleted is refused, and nothing changes. Each change
   writes one audit row in that customer's log (``customer.disable``,
   ``customer.enable``). These two run as the table owner (``_owner``).
+* ``purge-customer --customer-id --now``: break-glass for a legal request (super admin
+  PR 4b, PROVISIONAL): an organisation whose deletion is ALREADY scheduled (the operator
+  console: disabled, its name typed, a fresh code) is removed for good NOW instead of at
+  the end of its grace period, by the worker's own purge (``purge_customer``). Refused
+  for any other organisation. One ``platform_audit`` row (``org.purge_now``, no
+  operator) before it starts, and the purge's own ``org.purged`` at the end. There is no
+  "delete now" in the console.
 * ``create-operator --email --name``: a platform operator (super admin, 0015,
   PROVISIONAL). The password is typed twice at a hidden prompt, never a flag or
   the environment, with the users' rules (12 to 1024 characters). Two-step is
@@ -79,14 +86,16 @@ from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, bu
 from kaagaz.api import totp
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.api.twostep import box
-from kaagaz.db import audit
+from kaagaz.db import audit, customer_purge
 from kaagaz.db import customers as customers_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.document_stories import recipe_tag as story_tag
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion import sniff
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.spool import HEAD_SIZE
+from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
 from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
@@ -149,6 +158,10 @@ def _parser() -> argparse.ArgumentParser:
     disable.add_argument("--customer-id", required=True)
     enable = commands.add_parser("enable-customer", help="turn a disabled organisation on again")
     enable.add_argument("--customer-id", required=True)
+
+    purge = commands.add_parser("purge-customer", help="remove an organisation being deleted, NOW")
+    purge.add_argument("--customer-id", required=True)
+    purge.add_argument("--now", action="store_true", required=True, help="no grace period: for good")
 
     operator = commands.add_parser("create-operator", help="a platform operator (asks for the password)")
     operator.add_argument("--email", required=True)
@@ -359,6 +372,35 @@ def _set_customer_status(db: Database, command: str, customer_id: str, now: date
             conn, action, target_type="customer", target_id=customer_id, subject_customer_id=customer_id
         )
     return f"customer {customer_id}: {done}"
+
+
+def _purge_customer(db: Database, storage: CustomerStorage, customer_id: str, now: datetime) -> str:
+    """End the grace period of one customer being deleted, audited, then remove it at once
+    by the worker's purge. Returns the line to print."""
+    try:
+        customer_id = str(uuid.UUID(customer_id))
+    except ValueError:
+        raise CliError("the customer id is not valid") from None
+    with _owner(db) as conn:
+        status = customer_purge.purge_now(conn, customer_id, now=now)
+        if status is None:
+            raise CliError("no such customer")
+        if status != customers_sql.DELETING:
+            raise CliError("its deletion is not scheduled (the operator console does that); nothing changed")
+        operators_sql.record(
+            conn,
+            "org.purge_now",
+            target_type="customer",
+            target_id=customer_id,
+            subject_customer_id=customer_id,
+        )
+    try:
+        families, gone = purge_customer(db, storage, customer_id, now=now, keep_going=lambda: True)
+    except BackendUnavailable as error:  # review: a line, never a traceback
+        raise CliError(f"{error} unavailable; the worker or a re-run will finish it") from None
+    if not gone:
+        return f"customer {customer_id}: not finished, document families removed: {families}; run it again"
+    return f"customer {customer_id}: purged, document families removed: {families}"
 
 
 def _seed_demo(db: Database, password: str, out: TextIO) -> None:
@@ -609,9 +651,10 @@ def main(
     timer: Callable[[], float] = time.perf_counter,
     model: ModelClient | None = None,
     settings: Settings | None = None,
+    storage: CustomerStorage | None = None,
 ) -> int:
     """Run one command. Tests pass ``db``, ``environ``, ``out``, ``ask``, ``timer``,
-    ``model`` and ``settings``."""
+    ``model``, ``settings`` and ``storage``."""
     args = _parser().parse_args(argv)
     env = os.environ if environ is None else environ
     stdout = sys.stdout if out is None else out
@@ -640,6 +683,13 @@ def main(
             _reembed(db, model, args.customer_id, args.all, stdout)
         elif args.command in CUSTOMER_STATUS:
             line = _set_customer_status(db, args.command, args.customer_id, datetime.now(UTC))
+            stdout.write(line + "\n")
+        elif args.command == "purge-customer":
+            if storage is None:
+                from kaagaz.adapters.storage import S3Storage
+
+                storage = S3Storage(settings or Settings.from_env(env))
+            line = _purge_customer(db, storage, args.customer_id, datetime.now(UTC))
             stdout.write(line + "\n")
         elif args.command == "create-operator":
             password = _operator_password(ask)

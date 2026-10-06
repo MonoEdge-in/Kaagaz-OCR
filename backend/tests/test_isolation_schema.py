@@ -67,6 +67,13 @@ OWNER_RIGHTS = {
     "kaagaz_customer_ids_with_trash": ("SETOF uuid", EMPTY_PATH),  # 0002, the purge
     "kaagaz_customer_ids": ("SETOF uuid", EMPTY_PATH),  # 0006, reembed
     "kaagaz_stories_to_embed": ("TABLE(customer_id uuid, user_id uuid, family_id uuid)", EMPTY_PATH),  # 0010
+    # 0018, the worker's purge of deleted organisations: ids only, and the one due, empty
+    # customers row (never a kaagaz_op_* function: the app runs none of those).
+    "kaagaz_customer_ids_to_purge": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_finish_customer_delete": ("boolean", EMPTY_PATH),
+    # 0019, the second sweep a day after a purge: ids only, and its org.swept row.
+    "kaagaz_purged_ids_to_sweep": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_customer_swept": ("boolean", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -101,6 +108,8 @@ OPERATOR_RIGHTS = {
             "kaagaz_op_set_customer_status",
             "kaagaz_op_create_admin",
             "kaagaz_op_change_admin",
+            "kaagaz_op_schedule_delete",  # 0018
+            "kaagaz_op_cancel_delete",
         ),
         ("record", EMPTY_PATH),
     ),
@@ -109,6 +118,23 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_step_up_failed": ("void", EMPTY_PATH),
+    # 0020, read-only: the feed (no details, target id, person or document) and counts.
+    "kaagaz_op_activity": (
+        "TABLE(source text, entry_id bigint, created_at timestamp with time zone, action text,"
+        " customer_id uuid, customer_name text, target_type text, actor text)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_health": (
+        "TABLE(customer_id uuid, name text, status text, delete_after timestamp with time zone,"
+        " documents_by_status jsonb, failed_by_code jsonb, in_progress bigint,"
+        " oldest_in_progress_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_purges": (
+        "TABLE(purged bigint, last_purged_at timestamp with time zone, swept bigint,"
+        " last_swept_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
 }
 # The only tables without customer_id: the customers themselves, alembic's own and
 # the platform operator's (0015), which belong to no customer.
