@@ -4,11 +4,21 @@ database exactly as typed, and each outcome gets its reply. Every route needs th
 operator cookie: ``test_operator_orgs.py`` walks them all. The SQL and the purge:
 ``test_isolation_customer_purge.py``."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any, cast
+
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.api import totp
+from kaagaz.db import customer_purge
 from kaagaz.db import operator_orgs as orgs_sql
+from kaagaz.db.engine import Database
 from kaagaz.db.operator_orgs import Outcome
+from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.jobs import purge
+from tests.test_api_support import NOW
 from tests.test_operator_orgs import CID, OWN, STEP, _Offline
 
 NAME = " Sharma Traders "  # spaces and all: compared exactly, never trimmed
@@ -69,3 +79,43 @@ def test_each_outcome_gets_its_reply(
     _, body, _, _ = ROUTES[route]
     reply = offline.post(f"/{CID}/{route}", {**body, "code": totp.code_at(OWN, STEP)})
     assert (reply.status_code, reply.json()["error"]["code"]) == (status, error)
+
+
+class _System:
+    @contextmanager
+    def system(self) -> Iterator[None]:
+        yield None
+
+
+@pytest.mark.parametrize(
+    ("failure", "purged"),
+    [
+        (BackendUnavailable("storage"), ["d"]),
+        (SQLAlchemyError("bug"), ["d"]),
+        (BackendUnavailable("database"), []),
+    ],
+)
+def test_one_organisation_failing_never_stops_the_next_but_the_database_down_does(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, purged: list[str]
+) -> None:
+    done: list[str] = []
+
+    def purge_customer(db: Any, storage: Any, customer_id: str, **kwargs: Any) -> tuple[int, bool]:
+        if customer_id == "c":
+            raise failure
+        assert kwargs["keep_going"]()  # within the time
+        done.append(customer_id)
+        return 2, True
+
+    monkeypatch.setattr(customer_purge, "ids_to_purge", lambda conn, now: ["c", "d"])
+    monkeypatch.setattr(purge, "purge_customer", purge_customer)
+    db, storage = cast(Database, _System()), cast(Any, None)
+    if purged:
+        assert purge.purge_deleted_customers(db, storage, lambda: NOW) == 2
+    else:
+        with pytest.raises(BackendUnavailable):
+            purge.purge_deleted_customers(db, storage, lambda: NOW)
+    assert done == purged
+    done.clear()
+    assert purge.purge_deleted_customers(db, storage, lambda: NOW, seconds=0) == 0
+    assert done == []  # no time left: nothing starts

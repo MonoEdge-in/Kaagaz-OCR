@@ -26,32 +26,36 @@ Trash still goes when they were told it would (super admin plan, 6 Oct 2026).
 
 Time comes from the injected clock, never SQL ``now()``.
 
-Deleted organisations (super admin PR 4, 0018, PROVISIONAL), in the same hourly turn:
-the ids come from ``kaagaz_customer_ids_to_purge``; then one family per transaction
-inside ``Database.customer`` (checked still deleting and due, so a cancel waits), at
-most ``CUSTOMER_PURGE_FAMILIES`` a run, the next run going on; with no document left,
-``delete_customer`` empties both storage prefixes, then ``kaagaz_finish_customer_delete``
-removes the customers row (due on the DATABASE clock) and writes ``org.purged``.
-A storage error rolls back that family and stops the run, as above; the prefixes and
-the row are touched only once every family is gone, and both are safe to repeat.
+Deleted organisations (super admin PR 4, 0018, PROVISIONAL), in the same hourly turn, for
+at most ``CUSTOMER_PURGE_SECONDS``: ids from ``kaagaz_customer_ids_to_purge``; one family
+per transaction inside ``Database.customer`` (still deleting and due on both clocks; a
+cancel waits); with no document left, ``delete_customer`` empties both prefixes and
+``kaagaz_finish_customer_delete`` removes the customers row and writes ``org.purged``.
+A storage error rolls that family back and ends that organisation's turn (the next goes
+on, the database down ends the run); the next run resumes; the last two steps repeat safely.
 """
 
 import logging
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Protocol
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.db import customer_purge
 from kaagaz.db.documents import delete_forever
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.trash import customer_ids_with_trash, purge_next_family
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage
 
 logger = logging.getLogger(__name__)
 
-# PROVISIONAL: the most families of deleted organisations one hourly run removes, so a
-# large organisation never holds the jobs up for long; the next run goes on.
-CUSTOMER_PURGE_FAMILIES = 500
+# PROVISIONAL: how long one hourly run removes deleted organisations' families (the jobs
+# wait meanwhile; the family in hand is finished first). The next run goes on: at about
+# 10 families a second, 100,000 families take some 34 runs.
+CUSTOMER_PURGE_SECONDS = 300
 
 
 class CustomerStorage(BlobStorage, Protocol):
@@ -99,22 +103,34 @@ def purge_deleted_customers(
     db: Database,
     storage: CustomerStorage,
     clock: Callable[[], datetime],
-    batch: int = CUSTOMER_PURGE_FAMILIES,
+    seconds: float = CUSTOMER_PURGE_SECONDS,
+    timer: Callable[[], float] = time.monotonic,
 ) -> int:
-    """Remove the organisations whose deletion is due at ``clock()``: at most ``batch``
-    document families in all, longest due first. Returns how many families went. Cost:
-    O(C) for the id list, a transaction of O(v) statements and storage deletes per
-    family, and per finished customer a paged delete of its k stored objects."""
+    """Remove the organisations due at ``clock()``, longest due first, for about ``seconds``
+    on ``timer``; returns how many families went. One that fails is logged (id and error
+    type) and the next goes on; the database down raises. O(C) for the list, then O(v)
+    statements and storage deletes per family and a paged prefix delete per customer."""
     now = clock()
     if now.tzinfo is None:
         raise ValueError("the clock must give a time with a time zone")
+    deadline = timer() + seconds
     purged = 0
     with unavailable(), db.system() as conn:
         customers = customer_purge.ids_to_purge(conn, now=now)
     for customer_id in customers:
-        if purged >= batch:
+        if timer() >= deadline:
             break
-        families, finished = purge_customer(db, storage, customer_id, now=now, most=batch - purged)
+        try:
+            families, finished = purge_customer(
+                db, storage, customer_id, now=now, keep_going=lambda: timer() < deadline
+            )
+        except (BackendUnavailable, SQLAlchemyError) as error:
+            if isinstance(error, BackendUnavailable) and str(error) == "database":
+                raise
+            logger.error(
+                "organisation purge failed", extra={"customer_id": customer_id, "code": type(error).__name__}
+            )
+            continue
         purged += families
         if finished:
             logger.info("organisation purged", extra={"customer_id": customer_id})
@@ -122,15 +138,20 @@ def purge_deleted_customers(
 
 
 def purge_customer(
-    db: Database, storage: CustomerStorage, customer_id: str, *, now: datetime, most: int
+    db: Database,
+    storage: CustomerStorage,
+    customer_id: str,
+    *,
+    now: datetime,
+    keep_going: Callable[[], bool],
 ) -> tuple[int, bool]:
-    """Remove up to ``most`` families of one customer being deleted and due at ``now``;
-    once none is left, its two storage prefixes and its customers row. Returns (families
-    removed, whether the customer is gone). Nothing happens unless it is being deleted
-    and due."""
+    """Remove the families of one customer being deleted and due at ``now`` while
+    ``keep_going()``; once none is left, its two storage prefixes and its customers row.
+    Returns (families removed, whether the customer is gone). Nothing happens unless it
+    is being deleted and due."""
     families = 0
     with unavailable():
-        while families < most:
+        while keep_going():
             with db.customer(customer_id) as conn:
                 removed = customer_purge.next_family_to_purge(conn, storage, customer_id, now=now)
             if removed is None:  # not due, cancelled or gone: nothing more to do

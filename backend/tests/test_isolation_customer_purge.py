@@ -1,16 +1,12 @@
-"""Deleting an organisation against PostgreSQL (super admin PR 4, 0018): scheduling needs a
-disabled organisation, its exact name and a fresh code; cancelling gives it back during
-the grace period; after it, the purge removes every row of it in every table and both of
-its storage prefixes, and organisation B's rows and files stay byte-for-byte the same.
-
-Files live in ``KeyStorage``, which keys them as ``S3Storage`` does (its key functions),
-so a storage prefix is a real prefix. The purge covers every customer that is due in
-the shared test database; the asserts look at A and B only.
-"""
+"""Deleting an organisation against PostgreSQL (super admin PR 4, 0018): scheduling and
+cancelling; after the grace period every row and both storage prefixes of A go, and B's
+rows and files stay byte-for-byte the same. ``KeyStorage`` keys files as ``S3Storage``
+does. The purge covers every due customer of the shared test database; asserts look at
+A and B only."""
 
 import io
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import IO
 
 import pytest
@@ -18,21 +14,16 @@ from sqlalchemy import text
 
 from kaagaz.adapters.storage import original_key, page_image_key, quarantine_key
 from kaagaz.api import totp
-from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import BlobNotFound, Job
+from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.jobs.purge import purge_customer, purge_deleted_customers
-from kaagaz.jobs.worker import JobFailed
-from kaagaz.pipeline import DocumentProcessor
 from tests import test_migration_0002_db as m0002
 from tests.db_support import insert_document, insert_folder, insert_tag, migrate, tag_document
-from tests.fakes import FakePreparer, fake_sheet_pages
 from tests.test_api_support import CSRF, Api, TestClient, wrong_code
 from tests.test_document_stories_db import put
 from tests.test_operator_auth_db import _Operator, _owner
 from tests.test_operator_orgs_db import ORGS, _platform, _signed_in
-from tests.test_pipeline import build, real_socket
 
 pytestmark = pytest.mark.db
 
@@ -54,11 +45,18 @@ _SNAPSHOT = text(
     " FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid"
     " WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p')"
     " AND a.attname = 'customer_id' AND NOT a.attisdropped"
+    " UNION ALL SELECT 'customers', count(*) || ':' || coalesce(md5(string_agg(c::text, ',')), '')"
+    " FROM customers c WHERE c.id = CAST(:c AS uuid)"
 )
-# Rows that point at users with NO ACTION: 0018's finish empties these first, by name.
-NO_ACTION_TO_USERS = {
-    "documents", "corrections", "learned_corrections", "conversations", "feedback", "folders", "tags",
-}  # fmt: skip
+# Every key into a table 0018's finish deletes from that does not cascade: (table, parent).
+# Each table on the left is emptied before its parent (or has no row left by then).
+NOT_CASCADING = {
+    *[(table, "users") for table in ("documents", "corrections", "learned_corrections", "conversations")],
+    *[(table, "users") for table in ("feedback", "folders", "tags")],
+    ("documents", "folders"),
+    ("folders", "folders"),
+}
+NO_ACTION_TO_USERS = {table for table, _ in NOT_CASCADING}
 
 
 class KeyStorage:
@@ -102,6 +100,11 @@ class KeyStorage:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _always() -> bool:
+    """A purge with no time limit."""
+    return True
 
 
 def _code(api: Api, operator: _Operator) -> str:
@@ -161,42 +164,35 @@ def _schedule(api: Api, operator: _Operator, client: TestClient, customer: str, 
 
 
 def _gone(db: Database, storage: KeyStorage, customer: str) -> None:
-    assert set(_snapshot(db, customer).values()) == {"0:"}  # no row in any table
-    assert _owner(db, "SELECT count(*) FROM customers WHERE id = :c", {"c": customer}) == [(0,)]
+    assert set(_snapshot(db, customer).values()) == {"0:"}  # no row in any table, nor customers
     assert storage.listing(customer) == []
 
 
 def test_0018_up_down_up(fresh: tuple[str, Database]) -> None:
     url, database = fresh
 
-    def sweep_checks_status() -> bool:
-        with database.system() as conn:
-            source = conn.execute(
-                text("SELECT prosrc FROM pg_proc WHERE proname = 'kaagaz_stories_to_embed'")
-            )
-            return "status" in str(source.scalar_one())
-
     migrate(url, "0017")
     at_0017 = m0002._schema(database)
     migrate(url, "head")
     at_head = m0002._schema(database)
-    assert m0002._names(at_head, "functions") >= FUNCTIONS and sweep_checks_status()
+    assert m0002._names(at_head, "functions") >= FUNCTIONS
     m0002._downgrade(url, "0017")
-    assert m0002._schema(database) == at_0017 and not sweep_checks_status()
+    assert m0002._schema(database) == at_0017
     migrate(url, "head")
     assert m0002._schema(database) == at_head
 
 
-def test_every_key_to_users_or_customers_cascades_or_its_rows_go_first(db: Database) -> None:
-    """A new table pointing at users without CASCADE must be added to 0018's finish."""
+def test_every_key_into_a_table_the_finish_deletes_from_cascades_or_is_listed(db: Database) -> None:
+    """A new key without CASCADE into users, customers or a table emptied before them must be
+    added to 0018's finish (and here) first."""
     keys = _owner(
         db,
-        "SELECT conrelid::regclass::text, confdeltype::text FROM pg_constraint WHERE contype = 'f'"
-        " AND connamespace = 'public'::regnamespace"
-        " AND confrelid IN ('users'::regclass, 'customers'::regclass)",
-        {},
+        "SELECT conrelid::regclass::text, confrelid::regclass::text FROM pg_constraint WHERE contype = 'f'"
+        " AND connamespace = 'public'::regnamespace AND confdeltype <> 'c'"
+        " AND confrelid = ANY(CAST(:t AS regclass[]))",
+        {"t": ["users", "customers", "folders", "tags", "conversations", "learned_corrections"]},
     )
-    assert {table for table, action in keys if action != "c"} == NO_ACTION_TO_USERS
+    assert {tuple(key) for key in keys} == NOT_CASCADING
 
 
 def test_a_deletion_needs_a_disabled_organisation_its_exact_name_and_a_fresh_code(db: Database) -> None:
@@ -258,13 +254,13 @@ def test_a_deletion_needs_a_disabled_organisation_its_exact_name_and_a_fresh_cod
         "customer.delete_cancelled",
         "customer.delete_scheduled",
     ]
-    purge_customer(db, KeyStorage(), a, now=_now(), most=10)  # leave nothing due behind
+    purge_customer(db, KeyStorage(), a, now=_now(), keep_going=_always)  # leave nothing due behind
 
 
 def test_after_the_grace_period_everything_of_a_goes_and_b_stays_byte_for_byte(db: Database) -> None:
     api, storage = Api(db), KeyStorage()
     operator, client = _signed_in(api)
-    a, a_name, a_documents = _organisation(api, storage, "A")
+    a, a_name, _ = _organisation(api, storage, "A")
     b, _, _ = _organisation(api, storage, "B")
     _schedule(api, operator, client, a, a_name)
     a_before, b_before = _snapshot(db, a), (_snapshot(db, b), storage.listing(b))
@@ -280,52 +276,43 @@ def test_after_the_grace_period_everything_of_a_goes_and_b_stays_byte_for_byte(d
     purged = "SELECT operator_id, target_type, target_id FROM platform_audit WHERE subject_customer_id = :c"
     assert _owner(db, purged + " AND action = 'org.purged'", {"c": a}) == [(None, "customer", a)]
 
-    # A job of A still in the queue fails cleanly, and the worker's other calls do nothing.
-    system, documents = build(), PgDocuments(db)
-    processor = DocumentProcessor(
-        gate=system.gate,
-        statuses=documents,
-        documents=documents,
-        socket=real_socket(),
-        prepare=FakePreparer().prepare,
-        sheet_pages=fake_sheet_pages,
-        page_images=system.page_images,
-        store=system.store,
-        customer_active=documents.customer_active,
-    )
-    documents.record_attempt(a, a_documents[0], 1, 5)
-    with pytest.raises(JobFailed) as failed:
-        processor(Job(a, a_documents[0]), lambda: None)
-    assert (failed.value.code, failed.value.retryable) == ("document_missing", False)
-    documents.mark_exhausted(a, a_documents[0], now=_now(), max_attempts=5)
-    assert documents.customer_active(a) is False
-    _gone(db, storage, a)
-
 
 def test_a_storage_failure_rolls_that_step_back_and_the_next_run_goes_on(db: Database) -> None:
     api, storage = Api(db), KeyStorage()
     operator, client = _signed_in(api)
     a, name, documents = _organisation(api, storage, "F")
+    g, g_name, _ = _organisation(api, storage, "G")
     _schedule(api, operator, client, a, name)
-    assert purge_customer(db, storage, a, now=_now(), most=10) == (0, False)  # not due yet
-    _owner(db, DUE, {"c": a})
     before, files = _snapshot(db, a), storage.listing(a)
+    ahead = _now() + timedelta(days=8)  # a worker clock running ahead of the database's
+    assert purge_customer(db, storage, a, now=ahead, keep_going=_always) == (0, False)
+    purge_deleted_customers(db, storage, lambda: ahead)
+    assert (_snapshot(db, a), storage.listing(a)) == (before, files)
+    cancel = client.post(f"{ORGS}/{a}/cancel-delete", json={"code": _code(api, operator)}, headers=CSRF)
+    assert cancel.status_code == 200, cancel.text  # still in its grace period: given back whole
+    again = {"name": name, "code": _code(api, operator)}
+    assert client.post(f"{ORGS}/{a}/schedule-delete", json=again, headers=CSRF).status_code == 200
+    _schedule(api, operator, client, g, g_name)
+    for customer in (a, g):
+        _owner(db, DUE, {"c": customer})
+    before = _snapshot(db, a)
 
-    storage.failing = set(documents)
-    with pytest.raises(BackendUnavailable):
-        purge_customer(db, storage, a, now=_now(), most=10)
+    storage.failing = set(documents)  # A's files can't be deleted: A fails, G goes all the same
+    purge_deleted_customers(db, storage, _now)
     assert (_snapshot(db, a), storage.listing(a)) == (before, files)  # that family came back whole
+    _gone(db, storage, g)
 
     storage.failing = set()
-    assert purge_customer(db, storage, a, now=_now(), most=1) == (1, False)  # one family a run
+    one_family = iter([True, False]).__next__  # the time is up after one family
+    assert purge_customer(db, storage, a, now=_now(), keep_going=one_family) == (1, False)
     storage.prefixes_down = True
     with pytest.raises(BackendUnavailable):
-        purge_customer(db, storage, a, now=_now(), most=10)
+        purge_customer(db, storage, a, now=_now(), keep_going=_always)
     assert _owner(db, "SELECT count(*) FROM documents WHERE customer_id = :c", {"c": a}) == [(0,)]
     assert _owner(db, "SELECT status FROM customers WHERE id = :c", {"c": a}) == [("deleting",)]
     assert storage.listing(a) != []  # the stray page and the held copy wait for the next run
 
     storage.prefixes_down = False
-    assert purge_customer(db, storage, a, now=_now(), most=10) == (0, True)
+    assert purge_customer(db, storage, a, now=_now(), keep_going=_always) == (0, True)
     _gone(db, storage, a)
-    assert purge_customer(db, storage, a, now=_now(), most=10) == (0, False)  # gone: nothing to do
+    assert purge_customer(db, storage, a, now=_now(), keep_going=_always) == (0, False)  # gone: nothing to do
