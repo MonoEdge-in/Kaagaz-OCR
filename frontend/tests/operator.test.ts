@@ -22,6 +22,8 @@ import {
   SIGN_OUT_FAILED,
   STEP_UP_FAILED,
   TEMPORARY_PASSWORD_NOTE,
+  adminActions,
+  adminFacts,
   deleteCountdown,
   deleteEffect,
   exitUrl,
@@ -29,7 +31,9 @@ import {
   filterOrgs,
   firstInvalidOperator,
   firstInvalidOrgField,
+  isTakenEmail,
   lastActivityText,
+  lastSignInText,
   meFailed,
   nameError,
   operatorErrorMessage,
@@ -41,6 +45,7 @@ import {
   validateNewOrg,
   validateOperatorSignIn,
 } from "@/components/operator/logic";
+import { adminConfirm, orgConfirm } from "@/components/operator/confirms";
 import { ApiError } from "@/lib/api";
 import { SESSION_CHANNEL } from "@/lib/sessionChannel";
 import nextConfig from "@/next.config";
@@ -230,6 +235,66 @@ describe("a new organisation", () => {
     expect(firstInvalidOrgField(bad)).toBe("admin_email");
     expect(validateNewOrg({ name: "Org", admin_email: " a@b.in ", admin_name: "Asha" })).toEqual({});
   });
+
+  it("asks one more admin for an e-mail, a name and a fresh code, and no organisation name", () => {
+    const empty = validateNewOrg({ name: "", admin_email: "", admin_name: "", code: "" }, true);
+    const words = { admin_email: "Enter the admin's e-mail address.", admin_name: "Enter the admin's name." };
+    expect(empty).toEqual({ ...words, code: CODE_MISSING });
+    expect(firstInvalidOrgField(empty)).toBe("admin_email");
+    expect(validateNewOrg({ name: "", admin_email: "a@b.in", admin_name: "Asha", code: "123 456" }, true)).toEqual({});
+    expect(validateNewOrg({ name: "", admin_email: "a@b.in", admin_name: "Asha", code: "12345" }, true).code).toBe(
+      CODE_INVALID,
+    );
+  });
+
+  it("puts a taken e-mail under the e-mail field, and nothing else", () => {
+    expect(isTakenEmail(new ApiError(409, "conflict", "That e-mail is already in use."))).toBe(true);
+    expect(isTakenEmail(new ApiError(409, "taken", "x"))).toBe(true);
+    expect(isTakenEmail(new ApiError(409, "conflict", "This organisation is being deleted."))).toBe(false);
+    expect(isTakenEmail(new TypeError("x"))).toBe(false);
+  });
+});
+
+describe("one organisation's admins", () => {
+  const admin = {
+    id: "u-1",
+    name: "Asha Rao",
+    email: "asha@sharma.in",
+    two_step: true,
+    locked: true,
+    disabled: false,
+    must_change_password: true,
+    last_sign_in_at: "2026-10-06T07:20:00Z",
+    created_at: "2026-10-01T00:00:00Z",
+  };
+
+  it("says two-step, locked, disabled and the last sign-in in words", () => {
+    expect(adminFacts(admin)).toEqual(["Two-step on", "Locked", "Has a temporary password"]);
+    const plain = { two_step: false, locked: false, disabled: true, must_change_password: false };
+    expect(adminFacts(plain)).toEqual(["Two-step off", "Disabled"]);
+    expect(lastSignInText(admin.last_sign_in_at, NOW)).toBe("Last sign-in 1 hour ago");
+    expect(lastSignInText(null, NOW)).toBe("Never signed in");
+  });
+
+  it("offers only the changes that fit, and none while the organisation is being deleted", () => {
+    expect(adminActions(admin, "active")).toEqual(["disable", "unlock", "reset-2fa"]);
+    expect(adminActions({ two_step: false, locked: false, disabled: true }, "disabled")).toEqual(["enable"]);
+    expect(adminActions(admin, "deleting")).toEqual([]);
+  });
+
+  it("asks a fresh code where the server does: reset two-step, not disable, enable or unlock", () => {
+    const stepUp = (["disable", "enable", "unlock", "reset-2fa"] as const).map((c) => adminConfirm("o-1", admin, c).stepUp);
+    expect(stepUp).toEqual([false, false, false, true]);
+    expect(adminConfirm("o-1", admin, "reset-2fa").title).toBe("Reset two-step for Asha Rao?");
+  });
+
+  it("deletes an organisation only with its name typed and a fresh code", () => {
+    const org = { id: "o-1", name: "Sharma Traders", status: "disabled" } as Parameters<typeof orgConfirm>[0];
+    const remove = orgConfirm(org, "delete", NOW);
+    expect([remove.typeName, remove.stepUp, remove.effect]).toEqual(["Sharma Traders", true, deleteEffect(NOW)]);
+    expect(orgConfirm(org, "cancel", NOW).stepUp).toBe(true);
+    expect(orgConfirm(org, "enable", NOW).stepUp).toBe(false);
+  });
 });
 
 describe("operator source guards", () => {
@@ -253,6 +318,13 @@ describe("operator source guards", () => {
       expect(confirms, label).toContain(label);
     }
     expect(read("components/operator/OrganisationsView.tsx")).toContain("deleteCountdown(");
+    const admins = read("components/operator/AdminsDialog.tsx");
+    for (const label of ["Create admin", "Reset two-step", "Unlock", "lastSignInText(", 'role="status"', "<ActionDialog"]) {
+      expect(admins, label).toContain(label);
+    }
+    // No delete for an admin in v1: no such call or button.
+    expect(read("lib/api.ts")).not.toMatch(/admins\/\$\{userId\}\/delete|"DELETE", `\/operator/);
+    expect(admins).not.toMatch(/>\s*Delete/);
     for (const label of ["Search by name", "Create organisation", "Uploaded size", "Last activity", 'role="status"']) {
       expect(list, label).toContain(label);
     }
