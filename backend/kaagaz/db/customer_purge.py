@@ -5,8 +5,6 @@
   customers row that is being deleted, due on the database clock and has no document.
 * ``next_family_to_purge`` runs inside ``Database.customer(customer_id)``, so row level
   security applies to every row it deletes (by today's ``delete_forever``).
-* ``purge_now`` is the CLI's break-glass, on an OWNER connection: ``kaagaz_app`` may not
-  change ``delete_after`` (0014).
 """
 
 from collections.abc import Sequence
@@ -26,10 +24,6 @@ _DUE = text(
 _ANY_DOCUMENT = text("SELECT id FROM documents WHERE customer_id = :c ORDER BY id LIMIT 1")
 _VERSIONS = text(
     "SELECT id FROM documents WHERE customer_id = :c AND family_id = :f ORDER BY (id <> family_id), id"
-)
-# The grace period ends now, on the database clock (as 0018's functions).
-_PURGE_NOW = text(
-    "UPDATE customers SET delete_after = now() WHERE id = :c AND status = 'deleting' RETURNING delete_after"
 )
 
 
@@ -67,10 +61,3 @@ def finish_delete(conn: Connection, customer_id: str) -> bool:
     ``org.purged``: only when it is being deleted, due on the database clock and has no
     document. False: nothing was done. ``conn`` from ``Database.system()``. O(rows left)."""
     return bool(conn.execute(text("SELECT kaagaz_finish_customer_delete(:c)"), {"c": customer_id}).scalar())
-
-
-def purge_now(conn: Connection, customer_id: str) -> datetime | None:
-    """End the grace period of a customer being deleted now, on an OWNER connection:
-    the new ``delete_after``, or None when it is not being deleted (nothing changes). O(1)."""
-    value = conn.execute(_PURGE_NOW, {"c": customer_id}).scalar()
-    return value if isinstance(value, datetime) else None
