@@ -8,6 +8,8 @@ import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type { StoryMatchBody } from "./storyMatches";
 import type {
+  AdminChange,
+  AdminCreated,
   AdminUser,
   AuditEntry,
   ChatResponse,
@@ -25,6 +27,7 @@ import type {
   MyStory,
   MyWord,
   OperatorMe,
+  OrgAdmin,
   Organisation,
   OrganisationCreated,
   PageReadings,
@@ -427,3 +430,13 @@ export const scheduleDelete = (id: string, name: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/schedule-delete`, { name, code });
 export const cancelDelete = (id: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/cancel-delete`, { code });
+export const listAdmins = (orgId: string) => request<{ items: OrgAdmin[] }>("GET", `/operator/orgs/${orgId}/admins`);
+export const createAdmin = (orgId: string, admin: { email: string; name: string; code: string }) =>
+  request<AdminCreated>("POST", `/operator/orgs/${orgId}/admins`, admin);
+/** Reset two-step needs a fresh code (step-up); the others none. */
+export const changeAdmin = (orgId: string, userId: string, change: AdminChange, code: string) =>
+  request<{ admin: OrgAdmin }>(
+    "POST",
+    `/operator/orgs/${orgId}/admins/${userId}/${change}`,
+    change === "reset-2fa" ? { code } : undefined,
+  );

@@ -143,7 +143,7 @@ describe("layout guards", () => {
       "components/admin/FailedPanel.tsx",
       "components/operator/OrganisationsView.tsx",
       "components/operator/ConfirmDialog.tsx",
-      "components/operator/CreateOrgDialog.tsx",
+      "components/operator/CreateDialog.tsx",
     ];
     expect(markup.filter((file) => /styles\.nowrap/.test(read(file)))).toEqual([]);
   });
