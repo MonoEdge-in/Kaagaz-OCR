@@ -161,11 +161,8 @@ _CONFIRM_PURPOSE = b"confirm"
 _SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp"})
 _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
 _CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
-# {is an enrol token: (MAC purpose, fields)} of the platform operator's tokens.
-_OPERATOR_TOKENS = {
-    False: (b"operator", frozenset({"oid", "ver", "exp"})),
-    True: (b"operator_enrol", frozenset({"oid", "ver", "sec", "exp"})),
-}
+_OPERATOR_PURPOSE = b"operator"
+_OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
 
 
 def session_seconds(scope: str, settings: Settings) -> int:
@@ -286,32 +283,24 @@ class OperatorClaims:
     operator_id: str
     session_version: int
     expires_at: int  # seconds since the epoch
-    sealed_secret: str = ""  # enrol tokens only: SecretBox.seal(pending secret, aad=operator_id)
 
 
 def sign_operator(claims: OperatorClaims, secret: str) -> str:
-    """An operator session token ``{oid, ver, exp}``, or with ``sealed_secret`` an
-    operator enrol token (one more field, ``sec``, and its own purpose)."""
-    payload: dict[str, Any] = {"oid": claims.operator_id, "ver": claims.session_version}
-    payload["exp"] = claims.expires_at
-    if claims.sealed_secret:
-        return _sign({**payload, "sec": claims.sealed_secret}, _OPERATOR_TOKENS[True][0], secret)
-    return _sign(payload, _OPERATOR_TOKENS[False][0], secret)
+    """An operator session token: exactly ``{oid, ver, exp}``, MAC purpose ``operator``."""
+    payload = {"oid": claims.operator_id, "ver": claims.session_version, "exp": claims.expires_at}
+    return _sign(payload, _OPERATOR_PURPOSE, secret)
 
 
-def read_operator(token: str, secret: str, now: int, *, enrol: bool = False) -> OperatorClaims | None:
-    """The claims of a genuine, unexpired operator session (or ``enrol``) token, else
-    None. Strict: exactly its fields, each of its type. Constant-time check."""
-    purpose, fields = _OPERATOR_TOKENS[enrol]
-    data = _verified(token, purpose, secret)
-    if not isinstance(data, dict) or set(data) != fields:
+def read_operator(token: str, secret: str, now: int) -> OperatorClaims | None:
+    """The claims of a genuine, unexpired operator session token, else None. Strict:
+    exactly its three fields, each of its type. Constant-time check."""
+    data = _verified(token, _OPERATOR_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _OPERATOR_FIELDS:
         return None
-    oid, ver, exp, sec = data["oid"], data["ver"], data["exp"], data.get("sec", "")
-    if not (isinstance(oid, str) and _is_uuid(oid) and isinstance(sec, str)) or (enrol and not sec):
+    oid, ver, exp = data["oid"], data["ver"], data["exp"]
+    if not (isinstance(oid, str) and _is_uuid(oid) and _is_version(ver) and _is_int(exp)) or exp <= now:
         return None
-    if not (_is_version(ver) and _is_int(exp)) or exp <= now:
-        return None
-    return OperatorClaims(operator_id=oid, session_version=ver, expires_at=exp, sealed_secret=sec)
+    return OperatorClaims(operator_id=oid, session_version=ver, expires_at=exp)
 
 
 def set_operator_cookie(response: Response, claims: OperatorClaims, settings: Settings, *, now: int) -> None:

@@ -73,13 +73,11 @@ OPERATOR = "kaagaz_operator"
 OPERATOR_RIGHTS = {
     "kaagaz_op_begin_login": (
         "TABLE(operator_id uuid, email text, display_name text, password_hash text, disabled boolean,"
-        " session_version integer, totp_secret_enc text, totp_enabled boolean, totp_last_step bigint,"
-        " failed_logins integer)",
+        " totp_secret_enc text, totp_last_step bigint, failed_logins integer)",
         EMPTY_PATH,
     ),
     "kaagaz_op_login_failed": ("void", EMPTY_PATH),
     "kaagaz_op_login_succeeded": ("integer", EMPTY_PATH),
-    "kaagaz_op_enrol": ("integer", EMPTY_PATH),
     "kaagaz_op_session": ("TABLE(email text, display_name text, session_version integer)", EMPTY_PATH),
     "kaagaz_op_logout": ("void", EMPTY_PATH),
 }

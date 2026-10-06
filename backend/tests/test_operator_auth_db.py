@@ -1,7 +1,6 @@
 """The platform operator's sign-in against PostgreSQL (super admin PR 2, 0015). Every
 outcome writes exactly one ``platform_audit`` row (``actions``); sessions never cross."""
 
-import base64
 import uuid
 from typing import Any
 
@@ -28,11 +27,13 @@ OPEN_TO_ALL = {
     ("POST", "/api/auth/admin/login"),
     ("POST", "/api/auth/admin/enrol"),
     ("POST", "/api/operator/login"),
-    ("POST", "/api/operator/enrol"),
 }
 WRONG = "not the password!!"
 _INSERT = "INSERT INTO operators (email, display_name, password_hash) VALUES (:e, 'Ops', :h) RETURNING id"
-_ENROLLED = "UPDATE operators SET totp_secret_enc = :s, totp_enabled_at = now() WHERE id = :o"
+# As the CLI issues a secret (pending) and as the first valid code leaves it (confirmed).
+_ISSUED = (
+    "UPDATE operators SET totp_secret_enc = :s, totp_enabled_at = CASE WHEN :c THEN now() END WHERE id = :o"
+)
 _DISABLED = "UPDATE operators SET disabled = :d WHERE id = :o"
 _UNLOCK = "UPDATE operators SET locked_until = NULL, failed_logins = 0 WHERE id = :o"
 _ACTIONS = "SELECT operator_id IS NOT NULL, action FROM platform_audit WHERE target_id = :o ORDER BY id"
@@ -47,14 +48,15 @@ def _owner(db: Database, statement: str, params: dict[str, Any]) -> list[Any]:
 
 
 class _Operator:
-    """A new operator; ``enrolled``: two-step set up by SQL, as enrolment leaves it."""
+    """A new operator with a two-step secret: ``confirmed`` (a code was already accepted)
+    or pending (as the CLI leaves it); ``secret=False``: none issued at all."""
 
-    def __init__(self, api: Api, *, enrolled: bool = True) -> None:
+    def __init__(self, api: Api, *, confirmed: bool = True, secret: bool = True) -> None:
         self.api, self.email, self.secret = api, f"op-{uuid.uuid4().hex[:12]}@example.test", totp.new_secret()
         self.id = str(_owner(api.db, _INSERT, {"e": self.email, "h": password_hash_of(PASSWORD)})[0][0])
-        if enrolled:
+        if secret:
             sealed = SecretBox(api.settings.totp_encryption_key).seal(self.secret, aad=self.id)
-            self.sql(_ENROLLED, s=sealed)
+            self.sql(_ISSUED, s=sealed, c=confirmed)
 
     def sql(self, statement: str, **params: Any) -> list[Any]:
         return _owner(self.api.db, statement, {"o": self.id, **params})
@@ -109,29 +111,26 @@ def test_neither_role_reaches_the_operator_tables_or_the_other_roles_functions(d
         assert sqlstate(error.value) == "42501", statement  # insufficient privilege
 
 
-def test_no_session_before_two_step_is_set_up_then_the_first_code_starts_it(db: Database) -> None:
+def test_no_session_before_the_first_code_from_the_server_issued_secret(db: Database) -> None:
     api = Api(db)
-    operator = _Operator(api, enrolled=False)
+    operator = _Operator(api, confirmed=False)
     client = api.client()
-
-    offer = operator.login(client, code=None)
-    assert offer.status_code == 200, offer.text
-    assert set(offer.json()) == {"state", "enrol_token", "secret", "otpauth_uri"}
-    assert offer.json()["state"] == "enrol_required" and "set-cookie" not in offer.headers
+    _refused(operator.login(client, code=None))  # the password alone never signs in or enrols
+    _refused(operator.login(client, code=wrong_code(api, operator.secret)))
     assert client.get("/api/operator/me").status_code == 401
-    secret = base64.b32decode(offer.json()["secret"].replace(" ", ""))
 
-    def enrol(code: str, on: TestClient = client) -> httpx.Response:
-        body = {"enrol_token": offer.json()["enrol_token"], "code": code}
-        return on.post("/api/operator/enrol", json=body, headers=CSRF)
-
-    _refused(enrol(wrong_code(api, secret)))
-    signed = enrol(api.code(secret))
+    signed = operator.login(client)  # the first valid code confirms the secret and signs in
     assert signed.status_code == 200, signed.text
     assert "Path=/api/operator" in signed.headers["set-cookie"]  # all the flags: test_operator_tokens.py
     assert client.get("/api/operator/me").json()["operator"]["id"] == operator.id
-    _refused(enrol(api.code(secret), api.client()))  # the token works once
-    assert operator.actions() == [FAILED, (True, "operator.enrol"), FAILED]
+    _refused(operator.login(api.client()))  # the same code again
+    api.clock.advance(totp.STEP_SECONDS)
+    assert operator.login(api.client()).status_code == 200
+    assert operator.actions() == [FAILED, FAILED, (True, "operator.enrolled"), FAILED, LOGIN]
+
+    unissued = _Operator(api, secret=False)
+    _refused(unissued.login(api.client()))  # no secret issued: no way in
+    assert unissued.actions() == [FAILED]
 
 
 def test_a_password_and_a_fresh_code_one_401_for_every_failure_and_the_lockout(db: Database) -> None:
