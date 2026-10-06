@@ -144,11 +144,10 @@ class S3Storage:
             self._delete_keys(keys[start : start + _DELETE_BATCH])
 
     def delete_customer(self, customer_id: str) -> None:
-        """Remove everything stored for one customer: ``customers/{id}/`` and
-        ``quarantine/{id}/`` (super admin PR 4, the last storage step of deleting an
-        organisation). One listing page (at most 1000 keys) is deleted before the next
-        is asked for, so memory stays O(1000). Safe to run again: an empty prefix lists
-        nothing. Time O(k) for the customer's k stored objects."""
+        """Remove everything stored for one customer, ``customers/{id}/`` and
+        ``quarantine/{id}/`` (deleting an organisation, super admin PR 4): each listing
+        page (at most 1000 keys) is deleted before the next is asked for, so memory is
+        O(1000) and time O(k) for its k objects. Safe to repeat."""
         customer = _canonical_id(customer_id)
         for prefix in (f"customers/{customer}/", f"quarantine/{customer}/"):
             arguments: dict[str, Any] = {"Bucket": self._bucket, "Prefix": prefix}

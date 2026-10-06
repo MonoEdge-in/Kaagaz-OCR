@@ -2,38 +2,25 @@
 PROVISIONAL; change plan Outside-Folder/docs/plans/2026-10-06-super-admin.md, awaiting
 Vrushit's approval; the plan's 0017, one later because PR 3b took 0017).
 
-The timeline: an operator disables the organisation (0016), then schedules its deletion
-(typed name + a fresh two-step code): status ``deleting``, ``delete_after`` = now + 7 days
-(PROVISIONAL). Until then the operator may cancel (back to ``disabled``). After it, the
-worker removes it (``kaagaz.jobs.purge.purge_deleted_customers``): every document family
-inside ``Database.customer`` by today's delete forever (rows + files, row level security
-applies), then both storage prefixes, then the customers row through
-``kaagaz_finish_customer_delete``.
-
-1. ``kaagaz_op_schedule_delete`` and ``kaagaz_op_cancel_delete``: made as 0016's
-   (SECURITY DEFINER, empty search path, ``kaagaz_operator`` ONLY), each a step-up: the
-   fresh code's step is used up first, in the same transaction. The customer row is
-   locked FOR UPDATE, so a running admin change (0017, FOR SHARE) is waited for. The
-   times come from the DATABASE clock (``now()``), not from the caller: no clock of the
-   API can shorten the grace period of a delete that cannot be undone.
-2. Two narrow owner-rights functions for the worker, runnable by ``kaagaz_app`` ONLY
-   (as 0002's ``kaagaz_customer_ids_with_trash``), named outside ``kaagaz_op_*`` so the
-   app still runs no operator function:
-   * ``kaagaz_customer_ids_to_purge(now)``: ids only, of customers being deleted whose
-     ``delete_after`` has passed. Nothing else about any customer.
-   * ``kaagaz_finish_customer_delete(customer)``: deletes ONE customers row, and only
-     when it is being deleted, its ``delete_after`` has passed on the database clock and
-     it has no document left (the worker deleted them under row level security first),
-     so it can only do what the purge was going to do. The tables whose rows point at
-     ``users`` with NO ACTION are emptied first, in an order that never trips those
-     keys; then ``users``; then the customers row, whose cascade takes the rest
-     (``audit_log``, ``processing_runs``, ...). Writes ``org.purged`` in
-     ``platform_audit`` (``subject_customer_id`` has no foreign key: it stays).
-3. The story vector sweep (``kaagaz_stories_to_embed``, 0010) skips customers that are
-   not active (PR 1's review): their stories no longer take the sweep's slots.
+1. ``kaagaz_op_schedule_delete`` (a DISABLED customer, its name typed exactly) and
+   ``kaagaz_op_cancel_delete`` (during the grace period): made as 0016's (SECURITY
+   DEFINER, empty search path, ``kaagaz_operator`` ONLY), each a step-up that uses the
+   fresh code's step first. The row is locked FOR UPDATE, so a running admin change
+   (0017, FOR SHARE) is waited for. ``delete_after`` = now + 7 days (PROVISIONAL) on the
+   DATABASE clock: no API clock can shorten the grace of a delete that cannot be undone.
+2. For the worker (``kaagaz.jobs.purge``), ``kaagaz_app`` ONLY, as 0002's
+   ``kaagaz_customer_ids_with_trash``, and named outside ``kaagaz_op_*`` (the app runs
+   none of those): ``kaagaz_customer_ids_to_purge(now)`` gives ids only, of customers
+   being deleted and due; ``kaagaz_finish_customer_delete(customer)`` deletes ONE
+   customers row, only when it is being deleted, due on the database clock and has no
+   document left (the worker deleted them under row level security), so it can do only
+   what the purge was going to do. Rows pointing at ``users`` with NO ACTION go first,
+   then ``users``, then the customer (its cascade takes the rest); ``org.purged`` is
+   written in ``platform_audit``, whose ``subject_customer_id`` has no foreign key.
+3. The story vector sweep (0010) skips customers that are not active (PR 1's review).
 
 The downgrade drops the four functions and puts 0010's sweep and 0015's comment back.
-Data a purge removed cannot come back: that is what the grace period is for.
+What a purge removed cannot come back: that is what the grace period is for.
 
 Revision ID: 0018
 Revises: 0017 (operator admins)

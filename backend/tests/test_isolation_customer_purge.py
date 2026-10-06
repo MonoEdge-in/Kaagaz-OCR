@@ -57,14 +57,8 @@ _SNAPSHOT = text(
 )
 # Rows that point at users with NO ACTION: 0018's finish empties these first, by name.
 NO_ACTION_TO_USERS = {
-    "documents",
-    "corrections",
-    "learned_corrections",
-    "conversations",
-    "feedback",
-    "folders",
-    "tags",
-}
+    "documents", "corrections", "learned_corrections", "conversations", "feedback", "folders", "tags",
+}  # fmt: skip
 
 
 class KeyStorage:
@@ -127,7 +121,7 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
     name = f"Org {label} {uuid.uuid4().hex[:8]}"
     customer, admin = api.customer(name)
     member, _ = api.add_user(customer, "member")
-    with api.db.customer(customer) as conn:
+    with api.db.user(customer, member) as conn:  # the member's own rows (my words) too
         folder = insert_folder(conn, customer, member, "GST")
         tag = insert_tag(conn, customer, member, "Paid")
         first = insert_document(conn, customer, folder_id=folder, uploaded_by=member)
@@ -144,16 +138,10 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
             " VALUES (:c, 'total', '1O0', '100', :u)",
             "INSERT INTO corrections (customer_id, document_id, field, old_value, new_value, choice,"
             " corrected_by) VALUES (:c, :d, 'total', '1O0', '100', 'typed', :u)",
+            "INSERT INTO user_words (customer_id, user_id, word, word_fold, meaning, meaning_fold,"
+            " source) VALUES (:c, :u, 'Daregaon', 'daregaon', 'village', 'village', 'manual')",
         ):
             conn.execute(text(statement), {"c": customer, "u": member, "d": first})
-    with api.db.user(customer, member) as conn:
-        conn.execute(
-            text(
-                "INSERT INTO user_words (customer_id, user_id, word, word_fold, meaning, meaning_fold,"
-                " source) VALUES (:c, :u, 'Daregaon', 'daregaon', 'village', 'village', 'manual')"
-            ),
-            {"c": customer, "u": member},
-        )
     put(api.db, customer, admin, first, f"The papers of {label}")
     documents = [first, second, trashed]
     for document in documents:

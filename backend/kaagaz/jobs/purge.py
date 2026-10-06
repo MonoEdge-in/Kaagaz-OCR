@@ -26,18 +26,14 @@ Trash still goes when they were told it would (super admin plan, 6 Oct 2026).
 
 Time comes from the injected clock, never SQL ``now()``.
 
-Deleted organisations (super admin PR 4, 0018, PROVISIONAL): ``purge_deleted_customers``
-runs in the same hourly turn. The customers whose grace period has ended come from
-``kaagaz_customer_ids_to_purge`` (ids only). For each, one family per transaction inside
-``Database.customer``: the customer is checked still being deleted and due (a cancel
-waits for the family), then every version goes by ``delete_forever``, rows and files.
-At most ``CUSTOMER_PURGE_FAMILIES`` families a run; the next run goes on where it
-stopped. With no document left, ``delete_customer`` removes both storage prefixes, then
-``kaagaz_finish_customer_delete`` the customers row (everything left cascades) and writes
-``org.purged``. A storage error rolls back that family and stops the run, as above; the
-prefixes and the row are only touched once every family is gone, and both steps are safe
-to run again. ``purge_customer`` is that same work for one customer, which the CLI's
-break-glass ``purge-customer --now`` also runs.
+Deleted organisations (super admin PR 4, 0018, PROVISIONAL), in the same hourly turn:
+the ids come from ``kaagaz_customer_ids_to_purge``; then one family per transaction
+inside ``Database.customer`` (checked still deleting and due, so a cancel waits), at
+most ``CUSTOMER_PURGE_FAMILIES`` a run, the next run going on; with no document left,
+``delete_customer`` empties both storage prefixes, then ``kaagaz_finish_customer_delete``
+removes the customers row (due on the DATABASE clock) and writes ``org.purged``.
+A storage error rolls back that family and stops the run, as above; the prefixes and
+the row are touched only once every family is gone, and both are safe to repeat.
 """
 
 import logging
@@ -106,11 +102,9 @@ def purge_deleted_customers(
     batch: int = CUSTOMER_PURGE_FAMILIES,
 ) -> int:
     """Remove the organisations whose deletion is due at ``clock()``: at most ``batch``
-    document families in all, oldest due first. Returns how many families went.
-
-    Cost: one statement for the id list, O(C); then per family one transaction of
-    O(v) statements and storage deletes; per finished customer one paged listing and
-    delete of its k stored objects and one function call."""
+    document families in all, longest due first. Returns how many families went. Cost:
+    O(C) for the id list, a transaction of O(v) statements and storage deletes per
+    family, and per finished customer a paged delete of its k stored objects."""
     now = clock()
     if now.tzinfo is None:
         raise ValueError("the clock must give a time with a time zone")
