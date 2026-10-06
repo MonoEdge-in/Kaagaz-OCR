@@ -69,13 +69,28 @@ def list_admins(conn: Connection, operator_id: str, customer_id: str) -> Sequenc
 
 
 def create_admin(
-    conn: Connection, operator_id: str, customer_id: str, *, email: str, name: str, password_hash: str
+    conn: Connection,
+    operator_id: str,
+    customer_id: str,
+    *,
+    email: str,
+    name: str,
+    password_hash: str,
+    step: int,
 ) -> Outcome:
-    """One more admin of this customer, with a temporary password. Raises EmailTaken."""
+    """One more admin of this customer, with a temporary password (``step`` of a fresh code
+    required). ``taken``: the e-mail is in use (audited, nothing made)."""
     return _write(
         conn,
-        text("SELECT outcome, result_id FROM kaagaz_op_create_admin(:o, :c, :email, :name, :hash)"),
-        {"o": operator_id, "c": customer_id, "email": email, "name": name, "hash": password_hash},
+        text("SELECT outcome, result_id FROM kaagaz_op_create_admin(:o, :c, :email, :name, :hash, :step)"),
+        {
+            "o": operator_id,
+            "c": customer_id,
+            "email": email,
+            "name": name,
+            "hash": password_hash,
+            "step": step,
+        },
     )
 
 

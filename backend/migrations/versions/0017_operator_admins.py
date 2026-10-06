@@ -15,8 +15,12 @@ ONLY, and acting only for an enabled operator whose two-step secret is confirmed
   member's id is ``missing`` and nothing changes. Each writes exactly one
   ``platform_audit`` row and one row in that customer's own ``audit_log``
   (``{"by": "operator"}``, the actions the admin screen writes), in the same transaction.
-* As 0016, a write answers ``(outcome, result_id)``. Resetting an admin's two-step
-  code is a step-up: it uses up the fresh code's step first.
+* As 0016, a write answers ``(outcome, result_id)``. Creating an admin (its temporary
+  password signs in as that customer's admin) and resetting an admin's two-step code
+  are step-ups: they use up the fresh code's step first (review fix). A taken e-mail is
+  ``taken`` with one ``admin.create_refused`` row (no e-mail stored).
+* Every write locks the customer row FOR SHARE first and refuses a customer being
+  deleted (``deleting``), so PR 4's schedule-delete cannot race it.
 * As the admin screen (``db.users``): disabling and the two-step reset raise the
   session version (every session ends); the reset clears the secret, so the password
   alone signs in again; unlocking clears the count and the lock. A new admin's
@@ -48,11 +52,22 @@ _ACTOR = f"""
         END IF;
 """
 _STEP_UP = f"""
-        UPDATE public.operators AS o SET totp_last_step = p_step, failed_logins = 0, locked_until = NULL
+        UPDATE public.operators AS o
+        SET totp_last_step = p_step, step_up_failures = 0, step_up_locked_until = NULL
         WHERE {_ENABLED} AND p_step IS NOT NULL
           AND (o.totp_last_step IS NULL OR o.totp_last_step < p_step);
         IF NOT FOUND THEN
             outcome := 'step_up';
+            RETURN;
+        END IF;
+"""
+# The customer row, locked FOR SHARE so PR 4's schedule-delete (FOR UPDATE) waits for this
+# change, or this one sees "deleting": no admin is made or changed in a customer that is
+# being deleted. Several admin changes in one customer still run side by side.
+_CUSTOMER_OPEN = """
+        SELECT c.status INTO v_status FROM public.customers c WHERE c.id = p_customer FOR SHARE;
+        IF NOT FOUND OR v_status = 'deleting' THEN
+            outcome := CASE WHEN v_status = 'deleting' THEN 'deleting' ELSE 'missing' END;
             RETURN;
         END IF;
 """
@@ -79,24 +94,29 @@ FUNCTIONS = {
         ORDER BY u.created_at, u.email
     $$
     """,
-    # One more admin of one customer, with a temporary password. 23505: e-mail taken.
-    "kaagaz_op_create_admin(uuid, uuid, text, text, text)": f"""
+    # One more admin of one customer, with a temporary password. Step-up: the password
+    # signs in as an admin of that customer (review). A taken e-mail (any user's): nothing
+    # made, outcome taken and one refusal row with no e-mail.
+    "kaagaz_op_create_admin(uuid, uuid, text, text, text, bigint)": f"""
     CREATE FUNCTION public.kaagaz_op_create_admin(
-        p_operator uuid, p_customer uuid, p_email text, p_name text, p_password_hash text, {_WRITE}
+        p_operator uuid, p_customer uuid, p_email text, p_name text, p_password_hash text, p_step bigint,
+        {_WRITE}
     )
     {_HEAD}
     DECLARE
         v_status text;
     BEGIN
-        {_ACTOR}
-        SELECT c.status INTO v_status FROM public.customers c WHERE c.id = p_customer;
-        IF NOT FOUND OR v_status = 'deleting' THEN
-            outcome := CASE WHEN v_status = 'deleting' THEN 'deleting' ELSE 'missing' END;
+        {_STEP_UP}
+        {_CUSTOMER_OPEN}
+        BEGIN
+            INSERT INTO public.users (customer_id, email, display_name, role, password_hash, must_change_password)
+            VALUES (p_customer, lower(p_email), p_name, 'admin', p_password_hash, true)
+            RETURNING id INTO result_id;
+        EXCEPTION WHEN unique_violation THEN
+            {_PLATFORM} VALUES (p_operator, 'admin.create_refused', p_customer, 'user', NULL);
+            outcome := 'taken';
             RETURN;
-        END IF;
-        INSERT INTO public.users (customer_id, email, display_name, role, password_hash, must_change_password)
-        VALUES (p_customer, lower(p_email), p_name, 'admin', p_password_hash, true)
-        RETURNING id INTO result_id;
+        END;
         {_CUSTOMER_LOG}
         VALUES (p_customer, NULL, 'user.create', 'user', result_id::text,
                 jsonb_build_object('role', 'admin', 'by', 'operator'));
@@ -107,11 +127,14 @@ FUNCTIONS = {
     """,
     # Disable, enable, unlock or reset the two-step code (step-up) of ONE admin of ONE
     # customer, as the admin screen does: disabling and the reset end every session.
+    # A customer being deleted: deleting, nothing changes.
     "kaagaz_op_change_admin(uuid, uuid, uuid, text, bigint)": f"""
     CREATE FUNCTION public.kaagaz_op_change_admin(
         p_operator uuid, p_customer uuid, p_user uuid, p_change text, p_step bigint, {_WRITE}
     )
     {_HEAD}
+    DECLARE
+        v_status text;
     BEGIN
         IF p_change NOT IN ('disable', 'enable', 'unlock', 'reset_totp') THEN
             RAISE EXCEPTION 'unknown change' USING ERRCODE = 'check_violation';
@@ -121,6 +144,7 @@ FUNCTIONS = {
         ELSE
             {_ACTOR}
         END IF;
+        {_CUSTOMER_OPEN}
         UPDATE public.users AS u SET
             disabled = CASE p_change WHEN 'disable' THEN true WHEN 'enable' THEN false ELSE u.disabled END,
             totp_secret_enc = CASE WHEN p_change = 'reset_totp' THEN NULL ELSE u.totp_secret_enc END,

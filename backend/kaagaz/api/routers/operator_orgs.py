@@ -8,21 +8,22 @@ one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
   organisation and its first admin; the temporary password is in this reply ONCE
   (stored only as its hash, never logged) and must be changed at the first sign-in.
 * ``POST /operator/orgs/{id}/disable`` {code} (step-up) and ``/enable``.
-* ``GET /operator/orgs/{id}/admins`` (admins only), ``POST`` one more (a temporary
-  password, as above), and ``POST .../admins/{uid}/disable``, ``/enable``, ``/unlock``
-  and ``/reset-2fa`` {code} (step-up).
+* ``GET /operator/orgs/{id}/admins`` (admins only), ``POST`` one more {email, name,
+  code} (a temporary password, as above; step-up), and ``POST .../admins/{uid}/disable``,
+  ``/enable``, ``/unlock`` and ``/reset-2fa`` {code} (step-up).
 
 An unknown organisation, and an id that is not an admin of THIS organisation (another
 organisation's admin, a member), get the same 404, and nothing changes.
 
-Step-up: disabling an organisation and resetting an admin's two-step code need a fresh
-code from the operator's own authenticator in the body. As at sign-in, but on the
-step-up's OWN count and lock (``kaagaz_op_begin_step_up``, the sign-in's thresholds; a
-sign-in lock never blocks a step-up, nor the reverse): the attempt is counted first, the
-code is checked against the operator's sealed secret, and the database function uses its
-step up in the same transaction as the change, so a code works once. A refused code gets
-403 ``step_up_failed`` and one ``platform_audit`` row. A taken e-mail gets 409 and one
-``*.create_refused`` row (no e-mail stored), so probing for e-mails leaves a trace.
+Step-up: disabling an organisation, creating an admin and resetting an admin's two-step
+code need a fresh code from the operator's own authenticator in the body. As at
+sign-in, but on the step-up's OWN count and lock (``kaagaz_op_begin_step_up``, the
+sign-in's thresholds; a sign-in lock never blocks a step-up, nor the reverse): the
+attempt is counted first, the code is checked against the operator's sealed secret, and
+the database function uses its step up in the same transaction as the change, so a
+code works once. A refused code gets 403 ``step_up_failed`` and one ``platform_audit``
+row. A taken e-mail gets 409 and one ``*.create_refused`` row (no e-mail stored), so
+probing for e-mails leaves a trace.
 """
 
 import secrets
@@ -48,7 +49,6 @@ from kaagaz.api.views import iso
 from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_orgs import Change, Outcome
-from kaagaz.db.users import EmailTaken
 
 router = APIRouter(prefix="/operator/orgs", dependencies=[Depends(current_operator)])
 
@@ -84,6 +84,7 @@ class NewAdminBody(BaseModel):
 
     email: str = Field(min_length=3, max_length=254)
     name: str = Field(min_length=1, max_length=100)
+    code: str = Field(min_length=1, max_length=MAX_CODE)  # step-up: the password signs in as an admin
 
 
 class StepUpBody(BaseModel):
@@ -150,20 +151,19 @@ def create_admin(
     customer_id: uuid.UUID, body: NewAdminBody, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> JSONResponse:
     email, name = valid_email(body.email), _name(body.name)
+    step_up = _step_up(db, context, operator, body.code)
     temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
-    try:
-        with db.operator() as conn:
-            outcome = orgs_sql.create_admin(
-                conn,
-                operator.operator_id,
-                str(customer_id),
-                email=email,
-                name=name,
-                password_hash=hash_password(temporary),
-            )
-    except EmailTaken:
-        raise ApiError(409, "conflict", "That e-mail is already in use.") from None
-    _check(db, operator, outcome)
+    with db.operator() as conn:
+        outcome = orgs_sql.create_admin(
+            conn,
+            operator.operator_id,
+            str(customer_id),
+            email=email,
+            name=name,
+            password_hash=hash_password(temporary),
+            step=step_up.step,
+        )
+    _check(db, operator, outcome, step_up)
     admin = {"id": outcome.result_id, "email": email, "name": name}
     return JSONResponse({"admin": admin, "temporary_password": temporary}, status_code=201)
 
