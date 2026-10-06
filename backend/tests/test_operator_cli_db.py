@@ -1,10 +1,14 @@
-"""The platform operator's command line (super admin, follow-up to PR 2) against PostgreSQL.
+"""The platform operator's command line (super admin PR 2b).
 
-create-operator (the password twice, at a hidden prompt, with the users' rules),
-reset-operator-2fa and unlock-operator, and the ``platform_audit`` rows that
-these and create-customer and disable-customer write (no operator: the CLI).
+create-operator (the password twice, at a hidden prompt, with the users' rules)
+and reset-operator-2fa issue the two-step secret ON THE SERVER and print it once;
+the first valid code at sign-in confirms it. unlock-operator. Neither secret
+command runs without a terminal. Each writes one ``platform_audit`` row (no
+operator), as do create-customer and disable-customer.
 """
 
+import base64
+import getpass
 import io
 import uuid
 from datetime import timedelta
@@ -14,21 +18,45 @@ import pytest
 from kaagaz.api.auth import verify_password
 from kaagaz.cli import main
 from kaagaz.db.engine import Database
-from tests.test_api_support import PASSWORD, Api
-from tests.test_operator_auth_db import _Operator, _owner
-
-pytestmark = pytest.mark.db
+from tests.settings_factory import make_settings
+from tests.test_api_support import CSRF, PASSWORD, Api
+from tests.test_operator_auth_db import _ACTIONS, FAILED, LOGIN, _Operator, _owner, _refused
 
 _LOCK = "UPDATE operators SET locked_until = :t, failed_logins = 5 WHERE id = :o"
+ENROLLED = (True, "operator.enrolled")
 
 
 def _cli(db: Database, *argv: str, passwords: tuple[str, ...] = ()) -> tuple[int, str]:
     answers = iter(passwords)
+
+    def ask(prompt: str) -> str:
+        return next(answers)
+
     out = io.StringIO()
-    return main(list(argv), db=db, environ={}, out=out, ask=lambda prompt: next(answers)), out.getvalue()
+    return main(list(argv), db=db, environ={}, out=out, ask=ask, settings=make_settings()), out.getvalue()
 
 
-def test_create_operator_asks_twice_with_the_users_rules_and_is_audited(db: Database) -> None:
+def _shown_secret(out: str) -> bytes:
+    """The secret from the printed key line, as an authenticator app reads it."""
+    line = next(line for line in out.splitlines() if line.startswith("two-step key (shown once): "))
+    return base64.b32decode(line.split(": ", 1)[1].replace(" ", ""))
+
+
+@pytest.mark.parametrize("command", ["create-operator", "reset-operator-2fa"])
+def test_the_secret_commands_refuse_to_run_without_a_terminal(
+    command: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))  # a pipe, not a terminal
+    argv = [command, "--email", "op@example.test"] + (
+        ["--name", "Ops"] if command == "create-operator" else []
+    )
+    out = io.StringIO()
+    assert main(argv, environ={}, out=out, ask=getpass.getpass) == 2  # before any database or prompt
+    assert out.getvalue() == "" and "WITHOUT -T" in capsys.readouterr().err
+
+
+@pytest.mark.db
+def test_create_operator_issues_a_pending_secret_and_its_first_code_signs_in(db: Database) -> None:
     email = f"op-{uuid.uuid4().hex[:12]}@example.test"
     command = ("create-operator", "--email", email.upper(), "--name", "Ops")
     assert _cli(db, *command, passwords=(PASSWORD, PASSWORD + "x"))[0] == 2  # they do not match
@@ -37,20 +65,27 @@ def test_create_operator_asks_twice_with_the_users_rules_and_is_audited(db: Data
     assert _owner(db, "SELECT count(*) FROM operators WHERE email = :e", {"e": email}) == [(0,)]
 
     code, out = _cli(db, *command, passwords=(PASSWORD, PASSWORD))
-    assert code == 0 and PASSWORD not in out
+    assert code == 0 and PASSWORD not in out and "otpauth://totp/" in out
     operator_id = out.split()[1].rstrip(":")
     assert _cli(db, *command, passwords=(PASSWORD, PASSWORD))[0] == 2  # taken
-    [(stored, enrolled)] = _owner(
-        db, "SELECT password_hash, totp_enabled_at FROM operators WHERE id = :o", {"o": operator_id}
+    [(stored, sealed, confirmed)] = _owner(
+        db,
+        "SELECT password_hash, totp_secret_enc, totp_enabled_at FROM operators WHERE id = :o",
+        {"o": operator_id},
     )
-    assert verify_password(PASSWORD, stored) and enrolled is None
-    rows = _owner(
-        db, "SELECT operator_id, action FROM platform_audit WHERE target_id = :o", {"o": operator_id}
-    )
-    assert rows == [(None, "operator.create")]
+    assert verify_password(PASSWORD, stored) and sealed.startswith("v1:") and confirmed is None
+
+    api = Api(db)
+    body = {"email": email, "password": PASSWORD}
+    _refused(api.client().post("/api/operator/login", json=body, headers=CSRF))  # the password alone
+    body["code"] = api.code(_shown_secret(out))
+    assert api.client().post("/api/operator/login", json=body, headers=CSRF).status_code == 200
+    actions = [(bool(by), str(action)) for by, action in _owner(db, _ACTIONS, {"o": operator_id})]
+    assert actions == [(False, "operator.create"), FAILED, ENROLLED]
 
 
-def test_reset_operator_2fa_ends_every_session_and_asks_to_set_it_up_again(db: Database) -> None:
+@pytest.mark.db
+def test_reset_operator_2fa_issues_a_new_secret_and_the_old_one_stops_working(db: Database) -> None:
     api = Api(db)
     operator = _Operator(api)
     client = api.client()
@@ -58,12 +93,16 @@ def test_reset_operator_2fa_ends_every_session_and_asks_to_set_it_up_again(db: D
 
     code, out = _cli(db, "reset-operator-2fa", "--email", operator.email)
     assert (code, out.startswith(f"operator {operator.id}: ")) == (0, True)
-    assert client.get("/api/operator/me").status_code == 401
-    assert operator.login(client, code=None).json()["state"] == "enrol_required"
-    assert operator.actions()[-1] == (False, "operator.reset_totp")
+    assert client.get("/api/operator/me").status_code == 401  # every session ended
+    api.clock.advance(30)
+    _refused(operator.login(api.client()))  # the old authenticator
+    operator.secret = _shown_secret(out)
+    assert operator.login(api.client()).status_code == 200
+    assert operator.actions() == [LOGIN, (False, "operator.reset_totp"), FAILED, ENROLLED]
     assert _cli(db, "reset-operator-2fa", "--email", "nobody@example.test")[0] == 2
 
 
+@pytest.mark.db
 def test_unlock_operator_ends_the_lock(db: Database) -> None:
     api = Api(db)
     operator = _Operator(api)
@@ -74,10 +113,11 @@ def test_unlock_operator_ends_the_lock(db: Database) -> None:
         f"operator {operator.id}: unlocked\n",
     )
     assert operator.login(api.client()).status_code == 200
-    assert operator.actions() == [(False, "operator.unlock"), (True, "operator.login")]
+    assert operator.actions() == [(False, "operator.unlock"), LOGIN]
     assert _cli(db, "unlock-operator", "--email", "nobody@example.test")[0] == 2
 
 
+@pytest.mark.db
 def test_create_customer_and_disable_customer_write_platform_audit(db: Database) -> None:
     out = io.StringIO()
     argv = ["create-customer", "--name", "Gupta Stores", "--admin-name", "Owner"]
