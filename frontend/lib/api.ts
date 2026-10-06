@@ -26,7 +26,6 @@ import type {
   MyWord,
   OperatorMe,
   Organisation,
-  OrganisationCreated,
   PageReadings,
   PasswordReset,
   ReviewChoice,
@@ -416,9 +415,3 @@ export const operatorLogin = (email: string, password: string, code: string) =>
 export const operatorLogout = () => request<void>("POST", "/operator/logout");
 export const operatorMe = () => request<OperatorMe>("GET", "/operator/me");
 export const listOrgs = () => request<{ items: Organisation[] }>("GET", "/operator/orgs");
-export const createOrg = (org: { name: string; admin_email: string; admin_name: string }) =>
-  request<OrganisationCreated>("POST", "/operator/orgs", org);
-/** Needs a fresh code from the operator's own authenticator (step-up). */
-export const disableOrg = (id: string, code: string) =>
-  request<unknown>("POST", `/operator/orgs/${id}/disable`, { code });
-export const enableOrg = (id: string) => request<unknown>("POST", `/operator/orgs/${id}/enable`);

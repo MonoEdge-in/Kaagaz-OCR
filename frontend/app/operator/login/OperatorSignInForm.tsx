@@ -1,12 +1,10 @@
 "use client";
 
-// The operator sign-in form: e-mail, password and the 6-digit code, all
-// needed (two-step is always on for operators). There is no set-up step: the
-// two-step key is issued on the server when the account is made. As the
-// other sign-in forms: method="post" and no name attributes; the password is
-// masked again on submit; the code is cleared after a failure (it works once).
-// Every 401 reads the same, whatever was wrong. Signed in, a full page load
-// to /operator.
+// The operator sign-in: e-mail, password and the 6-digit code, all needed.
+// No set-up step: the two-step key is issued on the server. As the other
+// sign-in forms: method="post", no name attributes, the password masked again
+// on submit, the code cleared after a failure (it works once). Every 401 reads
+// the same. Signed in, a full page load to /operator.
 
 import { useState } from "react";
 import type { FormEvent } from "react";

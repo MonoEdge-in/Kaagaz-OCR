@@ -8,7 +8,7 @@
 // later reply says it has ended (401 not_signed_in). Always a full page load,
 // so nothing of the console stays in the tab's memory.
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import styles from "@/components/shell/Shell.module.css";
 import { ApiError, onSessionEnded, operatorMe } from "./api";
@@ -31,24 +31,20 @@ export function OperatorSessionProvider({ children }: { children: ReactNode }) {
   const [attempt, setAttempt] = useState(0);
   const hadSession = useRef(false);
 
-  const load = useCallback(async (): Promise<Loaded> => {
-    try {
-      return { kind: "signed_in", me: await operatorMe() };
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) return { kind: "signed_out" };
-      return { kind: "error", message: sessionErrorMessage(error) };
-    }
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
-    load().then((next) => {
-      if (!cancelled) setState(next);
-    });
+    operatorMe().then(
+      (me) => !cancelled && setState({ kind: "signed_in", me }),
+      (error: unknown) => {
+        if (cancelled) return;
+        const ended = error instanceof ApiError && error.status === 401;
+        setState(ended ? { kind: "signed_out" } : { kind: "error", message: sessionErrorMessage(error) });
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [load, attempt]);
+  }, [attempt]);
 
   // The session ends while a screen is open (30 minutes, or signed out elsewhere).
   useEffect(() => {
@@ -82,36 +78,25 @@ export function OperatorSessionProvider({ children }: { children: ReactNode }) {
     return <OperatorContext.Provider value={state.me}>{children}</OperatorContext.Provider>;
   }
 
-  if (state.kind === "error") {
-    return (
-      <main className={styles.centered}>
+  return (
+    <main className={styles.centered}>
+      {state.kind === "error" ? (
         <div className={`card stack ${styles.centeredBox}`}>
           <p className="error-text" role="alert">
             {state.message}
           </p>
           <div>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => {
-                setState({ kind: "loading" });
-                setAttempt((n) => n + 1);
-              }}
-            >
+            <button type="button" className="btn" onClick={() => { setState({ kind: "loading" }); setAttempt((n) => n + 1); }}>
               Try again
             </button>
           </div>
         </div>
-      </main>
-    );
-  }
-
-  return (
-    <main className={styles.centered}>
-      <p className={`delayed ${styles.loading}`} role="status" aria-live="polite">
-        <span className="spinner" aria-hidden="true" />
-        {state.kind === "signed_out" ? "Taking you to sign in…" : "Loading…"}
-      </p>
+      ) : (
+        <p className={`delayed ${styles.loading}`} role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" />
+          {state.kind === "signed_out" ? "Taking you to sign in…" : "Loading…"}
+        </p>
+      )}
     </main>
   );
 }

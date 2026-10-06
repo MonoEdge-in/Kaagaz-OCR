@@ -15,7 +15,6 @@ export function CodeField({
   error,
   hint,
   enterKeyHint = "go",
-  autofocus = false,
 }: {
   id: string;
   label: string;
@@ -25,8 +24,6 @@ export function CodeField({
   error: string | null;
   hint?: string;
   enterKeyHint?: "go" | "done";
-  /** Focused when an ActionDialog opens (its data-autofocus). */
-  autofocus?: boolean;
 }) {
   const errorId = `${id}-error`;
   const hintId = `${id}-hint`;
@@ -46,7 +43,6 @@ export function CodeField({
         autoCorrect="off"
         spellCheck={false}
         enterKeyHint={enterKeyHint}
-        data-autofocus={autofocus || undefined}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onBlur={onBlur}

@@ -1,6 +1,6 @@
 // The operator (super admin) screens' rules, kept pure so vitest can prove
 // them: the sign-in form, an organisation's status and counts in words, the
-// search, the new-organisation form, and what to say when the server says no.
+// search, and what to say when the server says no.
 
 import { codeError } from "@/app/admin/login/adminSignIn";
 import { NETWORK_FAILURE, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS, emailError, passwordError } from "@/app/login/signIn";
@@ -10,9 +10,6 @@ import type { StatusTone } from "@/lib/format";
 import type { Organisation } from "@/lib/types";
 
 export const KEY_HELP = "Your two-step key is given to you on the server when your account is made.";
-export const DISABLE_EFFECT = "Its users are signed out now and its jobs stop.";
-export const TEMPORARY_PASSWORD_NOTE =
-  "Give this to the admin privately. They must change it at first sign-in.";
 
 // --- Sign-in -----------------------------------------------------------------
 
@@ -47,23 +44,13 @@ export function operatorSignInError(caught: unknown): string {
   return caught instanceof TypeError ? NETWORK_FAILURE : SIGN_IN_DOWN;
 }
 
-// --- Any other refusal -------------------------------------------------------
+// --- Loading the list ---------------------------------------------------------
 
-export const STEP_UP_FAILED =
-  "That code was not accepted. Wait for the next code in your app and try again. " +
-  "After many wrong codes, this stops for a while.";
-export const ORG_NOT_FOUND = "We couldn't find this organisation. Reload the list.";
-export const CHECK_INPUT = "Check what you typed and try again.";
 export const OPERATOR_DOWN = "Something went wrong on our side. Try again in a minute.";
 
-/** Plain words for a refused change. A 409 keeps the server's own sentence
- * ("This organisation is being deleted.", "That e-mail is already in use."). */
+/** Plain words for a failed request. A 401 also sends the browser to sign in. */
 export function operatorErrorMessage(caught: unknown): string {
   if (!(caught instanceof ApiError)) return caught instanceof TypeError ? NETWORK_FAILURE : OPERATOR_DOWN;
-  if (caught.code === "step_up_failed") return STEP_UP_FAILED;
-  if (caught.status === 409) return caught.message;
-  if (caught.status === 404) return ORG_NOT_FOUND;
-  if (caught.status === 400) return CHECK_INPUT;
   if (caught.status === 401) return "Your session ended. Sign in again.";
   if (caught.status === 429) return TOO_MANY_ATTEMPTS;
   if (caught.status === 0) return NETWORK_FAILURE;
@@ -116,34 +103,4 @@ export function filterOrgs<T extends { name: string }>(items: readonly T[], sear
 export function searchSummary(shown: number, total: number, search: string): string {
   const all = countText(total, "organisation", "organisations");
   return search.trim() ? `${formatNumber(shown)} of ${all} match.` : `${all}.`;
-}
-
-// --- A new organisation ---------------------------------------------------------
-
-export interface NewOrgInput {
-  name: string;
-  admin_email: string;
-  admin_name: string;
-}
-
-export type NewOrgErrors = Partial<Record<keyof NewOrgInput, string>>;
-
-export const NEW_ORG_FIELDS = ["name", "admin_email", "admin_name"] as const;
-
-/** As the server: names trimmed, 1 to 200 characters (organisation) or 1 to 100 (admin). */
-export function validateNewOrg(input: NewOrgInput): NewOrgErrors {
-  const errors: NewOrgErrors = {};
-  const name = input.name.trim();
-  const adminName = input.admin_name.trim();
-  if (!name) errors.name = "Enter the organisation's name.";
-  else if (name.length > 200) errors.name = "Use at most 200 characters.";
-  const email = emailError(input.admin_email);
-  if (email) errors.admin_email = input.admin_email.trim() ? email : "Enter the first admin's e-mail address.";
-  if (!adminName) errors.admin_name = "Enter the first admin's name.";
-  else if (adminName.length > 100) errors.admin_name = "Use at most 100 characters.";
-  return errors;
-}
-
-export function firstInvalidOrgField(errors: NewOrgErrors): keyof NewOrgInput | null {
-  return NEW_ORG_FIELDS.find((field) => errors[field]) ?? null;
 }

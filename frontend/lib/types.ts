@@ -612,9 +612,3 @@ export interface Organisation {
   storage_bytes: number;
   last_activity_at: string | null;
 }
-
-/** POST /operator/orgs: the temporary password is in this one reply only. */
-export interface OrganisationCreated {
-  organisation: { id: string; name: string; admin: { email: string; name: string } };
-  temporary_password: string;
-}
