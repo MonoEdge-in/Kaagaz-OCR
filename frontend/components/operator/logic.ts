@@ -52,16 +52,33 @@ export function operatorSignInError(caught: unknown): string {
 export const STEP_UP_FAILED =
   "That code was not accepted. Wait for the next code in your app and try again. " +
   "After many wrong codes, this stops for a while.";
-export const ORG_NOT_FOUND = "We couldn't find this organisation. Reload the list.";
+export const ORG_NOT_FOUND = "We couldn't find that organisation or admin. Reload the list.";
 export const CHECK_INPUT = "Check what you typed and try again.";
+const SERVER_FALLBACK = "Something went wrong."; // lib/api.ts, when the reply has no message
 export const OPERATOR_DOWN = "Something went wrong on our side. Try again in a minute.";
+export const NAME_MISMATCH = "That is not the organisation's name. Type it exactly, with the same capitals and spaces.";
+export const CONFLICT = "That change is not possible now. Reload the list and try again.";
+
+/** The server's error codes in plain words (the server sends most refusals as
+ * 409 "conflict" with its own sentence, which is used then). */
+export const REFUSALS: Record<string, string> = {
+  step_up_failed: STEP_UP_FAILED,
+  step_up_locked: "Too many wrong codes. Wait a few minutes, then try again with a new code.",
+  locked: "Too many wrong codes. Wait a few minutes, then try again with a new code.",
+  name_mismatch: NAME_MISMATCH,
+  not_disabled: "Disable the organisation before deleting it.",
+  deleting: "This organisation is being deleted.",
+  taken: "That e-mail is already in use.",
+  not_found: ORG_NOT_FOUND,
+};
 
 /** Plain words for a refused change. A 409 keeps the server's own sentence
  * ("This organisation is being deleted.", "That e-mail is already in use."). */
 export function operatorErrorMessage(caught: unknown): string {
   if (!(caught instanceof ApiError)) return caught instanceof TypeError ? NETWORK_FAILURE : OPERATOR_DOWN;
-  if (caught.code === "step_up_failed") return STEP_UP_FAILED;
-  if (caught.status === 409) return caught.message;
+  const known = Object.hasOwn(REFUSALS, caught.code) ? REFUSALS[caught.code] : undefined;
+  if (known) return known;
+  if (caught.status === 409) return caught.message && caught.message !== SERVER_FALLBACK ? caught.message : CONFLICT;
   if (caught.status === 404) return ORG_NOT_FOUND;
   if (caught.status === 400) return CHECK_INPUT;
   if (caught.status === 401) return "Your session ended. Sign in again.";
@@ -99,6 +116,34 @@ export function userCounts(users: Organisation["users"]): string[] {
     countText(users.reviewers, "reviewer", "reviewers"),
     countText(users.members, "member", "members"),
   ];
+}
+
+// --- Deleting an organisation ----------------------------------------------------
+
+/** The server's grace period (PR 4, PROVISIONAL); the server sets the real date. */
+export const GRACE_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The words of the delete dialog, with the date it would be deleted on. */
+export function deleteEffect(now: number): string {
+  const date = formatDate(new Date(now + GRACE_DAYS * DAY_MS).toISOString());
+  return `Everything is deleted on ${date}. You can cancel until then. Backups keep data for 7 more days.`;
+}
+
+/** The countdown on a row being deleted: "6 days left", "Less than a day left". */
+export function deleteCountdown(deleteAfter: string | null, now: number): string | null {
+  if (!deleteAfter) return null;
+  const left = Date.parse(deleteAfter) - now;
+  if (Number.isNaN(left)) return null;
+  if (left <= 0) return "Being removed now";
+  if (left < DAY_MS) return "Less than a day left";
+  return countText(Math.floor(left / DAY_MS), "day left", "days left");
+}
+
+/** The name must be typed exactly: same capitals and spaces (the server compares it as typed). */
+export function nameError(typed: string, name: string): string | null {
+  if (!typed) return "Type the organisation's name.";
+  return typed === name ? null : NAME_MISMATCH;
 }
 
 export function lastActivityText(iso: string | null, now: number): string {

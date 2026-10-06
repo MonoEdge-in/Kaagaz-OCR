@@ -1,0 +1,109 @@
+// What each change on the operator screens says and does, for ConfirmDialog.
+// Taking something away (disable an organisation, delete it, cancel its
+// deletion, reset an admin's two-step) needs a fresh code (step-up), as the
+// server does; giving it back (enable, unlock) and disabling an admin do not.
+
+import { cancelDelete, changeAdmin, disableOrg, enableOrg, scheduleDelete } from "@/lib/api";
+import type { OrgAdmin, Organisation } from "@/lib/types";
+import type { Confirm } from "./ConfirmDialog";
+import { DISABLE_EFFECT, deleteEffect } from "./logic";
+
+export type OrgChange = "disable" | "enable" | "delete" | "cancel";
+
+export function orgConfirm(org: Organisation, change: OrgChange, now: number): Confirm {
+  const name = org.name;
+  switch (change) {
+    case "disable":
+      return {
+        title: `Disable ${name}?`,
+        effect: DISABLE_EFFECT,
+        action: "Disable organisation",
+        done: `Disabled ${name}.`,
+        danger: true,
+        stepUp: true,
+        run: (code) => disableOrg(org.id, code),
+      };
+    case "enable":
+      return {
+        title: `Enable ${name}?`,
+        effect: "Its users can sign in again. Their old sessions stay ended.",
+        action: "Enable organisation",
+        done: `Enabled ${name}.`,
+        danger: false,
+        stepUp: false,
+        run: () => enableOrg(org.id),
+      };
+    case "delete":
+      return {
+        title: `Delete ${name}?`,
+        effect: deleteEffect(now),
+        action: "Delete organisation",
+        done: `${name} will be deleted. You can cancel until then.`,
+        danger: true,
+        stepUp: true,
+        typeName: name,
+        run: (code, typed) => scheduleDelete(org.id, typed, code),
+      };
+    case "cancel":
+      return {
+        title: `Cancel deleting ${name}?`,
+        effect: "Nothing is deleted. It stays disabled: enable it when its users should come back.",
+        action: "Cancel deletion",
+        done: `${name} will not be deleted. It is disabled.`,
+        danger: false,
+        stepUp: true,
+        run: (code) => cancelDelete(org.id, code),
+      };
+  }
+}
+
+export type AdminAction = "disable" | "enable" | "unlock" | "reset-2fa";
+
+export function adminConfirm(orgId: string, admin: OrgAdmin, change: AdminAction): Confirm {
+  const name = admin.name;
+  const run = (code: string) => changeAdmin(orgId, admin.id, change, code);
+  switch (change) {
+    case "disable":
+      return {
+        title: `Disable ${name}?`,
+        effect: "They are signed out now and cannot sign in until you enable them again.",
+        action: "Disable admin",
+        done: `Disabled ${name}.`,
+        danger: true,
+        stepUp: false,
+        run,
+      };
+    case "enable":
+      return {
+        title: `Enable ${name}?`,
+        effect: "They can sign in again.",
+        action: "Enable admin",
+        done: `Enabled ${name}.`,
+        danger: false,
+        stepUp: false,
+        run,
+      };
+    case "unlock":
+      return {
+        title: `Unlock ${name}?`,
+        effect: "They can try to sign in again now, without waiting for the lock to end.",
+        action: "Unlock admin",
+        done: `Unlocked ${name}.`,
+        danger: false,
+        stepUp: false,
+        run,
+      };
+    case "reset-2fa":
+      return {
+        title: `Reset two-step for ${name}?`,
+        effect:
+          "Their two-step sign-in is turned off and they are signed out. They sign in with their password " +
+          "alone, then can turn two-step on again in Admin, Settings.",
+        action: "Reset two-step",
+        done: `Two-step is off for ${name}.`,
+        danger: true,
+        stepUp: true,
+        run,
+      };
+  }
+}

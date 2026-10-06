@@ -153,7 +153,7 @@ describe("operator source guards", () => {
     expect(KEY_HELP).toBe("Your two-step key is given to you on the server when your account is made.");
     expect(read("app/operator/login/OperatorSignInForm.tsx")).toContain("KEY_HELP");
     expect(DISABLE_EFFECT).toBe("Its users are signed out now and its jobs stop.");
-    expect(read("components/operator/OrgStatusDialog.tsx")).toContain("DISABLE_EFFECT");
+    expect(read("components/operator/confirms.ts")).toContain("DISABLE_EFFECT");
     expect(TEMPORARY_PASSWORD_NOTE).toBe("Give this to the admin privately. They must change it at first sign-in.");
     const create = read("components/operator/CreateOrgDialog.tsx");
     expect(create).toContain("TEMPORARY_PASSWORD_NOTE");

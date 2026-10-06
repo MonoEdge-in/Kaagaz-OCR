@@ -2,8 +2,9 @@
 
 // Organisations, the operator's home screen: every organisation with its
 // status and counts only (never a document's or a person's name), a search by
-// name, and Create organisation. Disable and Enable open a dialog; disabling
-// asks for a fresh two-step code. The table is the shared reflow
+// name, and Create organisation. Each change opens a dialog (ConfirmDialog):
+// disable, enable, delete (only a disabled organisation) and cancel the
+// deletion; a row being deleted shows its date and the days left. The table is the shared reflow
 // (Table.module.css): cards below 48rem of room, a table from there.
 
 import { useEffect, useState } from "react";
@@ -14,9 +15,12 @@ import { Icon } from "@/components/ui/Icon";
 import { listOrgs } from "@/lib/api";
 import { formatBytes, formatNumber } from "@/lib/format";
 import type { Organisation } from "@/lib/types";
+import { ConfirmDialog } from "./ConfirmDialog";
+import type { Confirm } from "./ConfirmDialog";
+import { orgConfirm } from "./confirms";
+import type { OrgChange } from "./confirms";
 import { CreateOrgDialog } from "./CreateOrgDialog";
-import { countText, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
-import { OrgStatusDialog } from "./OrgStatusDialog";
+import { countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
@@ -40,7 +44,7 @@ export function OrganisationsView() {
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
-  const [changing, setChanging] = useState<Organisation | null>(null);
+  const [changing, setChanging] = useState<Confirm | null>(null);
   const [done, setDone] = useState("");
   const now = useMinuteNow();
 
@@ -149,7 +153,12 @@ export function OrganisationsView() {
                 </thead>
                 <tbody role="rowgroup">
                   {shown.map((org) => (
-                    <OrgRow key={org.id} org={org} now={now} onChange={() => setChanging(org)} />
+                    <OrgRow
+                      key={org.id}
+                      org={org}
+                      now={now}
+                      onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
+                    />
                   ))}
                 </tbody>
               </table>
@@ -168,10 +177,10 @@ export function OrganisationsView() {
         />
       )}
       {changing && (
-        <OrgStatusDialog
-          org={changing}
+        <ConfirmDialog
+          confirm={changing}
           onClose={() => setChanging(null)}
-          onChanged={(message) => {
+          onDone={(message) => {
             setChanging(null);
             setDone(message);
             reload();
@@ -182,8 +191,19 @@ export function OrganisationsView() {
   );
 }
 
-function OrgRow({ org, now, onChange }: { org: Organisation; now: number; onChange: () => void }) {
+// The changes each status allows, as the server: delete only a disabled one.
+const CHANGES: Record<Organisation["status"], { change: OrgChange; label: string; danger?: boolean }[]> = {
+  active: [{ change: "disable", label: "Disable", danger: true }],
+  disabled: [
+    { change: "enable", label: "Enable" },
+    { change: "delete", label: "Delete", danger: true },
+  ],
+  deleting: [{ change: "cancel", label: "Cancel deletion" }],
+};
+
+function OrgRow({ org, now, onChange }: { org: Organisation; now: number; onChange: (change: OrgChange) => void }) {
   const status = orgStatus(org);
+  const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
   return (
     <tr role="row">
@@ -195,6 +215,7 @@ function OrgRow({ org, now, onChange }: { org: Organisation; now: number; onChan
           {status.text}
         </span>
         {status.note && <span className={styles.statusNote}>{status.note}</span>}
+        {countdown && <span className={styles.statusNote}>{countdown}</span>}
       </td>
       <td role="cell" data-label="Users">
         <span className={styles.counts}>
@@ -219,16 +240,19 @@ function OrgRow({ org, now, onChange }: { org: Organisation; now: number; onChan
         {lastActivityText(org.last_activity_at, now)}
       </td>
       <td role="cell">
-        {org.status !== "deleting" && (
-          <button
-            type="button"
-            className={org.status === "active" ? "btn btn-danger" : "btn"}
-            onClick={onChange}
-            aria-label={`${org.status === "active" ? "Disable" : "Enable"} ${org.name}`}
-          >
-            {org.status === "active" ? "Disable" : "Enable"}
-          </button>
-        )}
+        <span className={styles.rowActions}>
+          {CHANGES[org.status].map(({ change, label, danger }) => (
+            <button
+              key={change}
+              type="button"
+              className={danger ? "btn btn-danger" : "btn"}
+              onClick={() => onChange(change)}
+              aria-label={`${label} ${org.name}`}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
       </td>
     </tr>
   );
