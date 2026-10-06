@@ -228,12 +228,8 @@ def _change(
         outcome = orgs_sql.change_admin(
             conn, operator.operator_id, str(customer_id), str(user_id), change, step=step
         )
-        rows = (
-            orgs_sql.list_admins(conn, operator.operator_id, str(customer_id))
-            if outcome.code == "done"
-            else []
-        )
-    _check(db, context, operator, outcome)
+        rows = orgs_sql.list_admins(conn, operator.operator_id, str(customer_id))
+    _check(db, context, operator, outcome)  # before the admin is looked for: 404 when it is not one
     now = context.clock()
     return {"admin": next(_admin(row, now) for row in rows if str(row["user_id"]) == str(user_id))}
 

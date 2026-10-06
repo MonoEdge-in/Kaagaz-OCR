@@ -1,0 +1,284 @@
+"""The operator's organisation routes without a database (super admin PR 3): every route
+needs the operator cookie, the step-up, each outcome's reply, the temporary password,
+and what a reply may hold. The SQL itself: ``test_operator_orgs_db.py``."""
+
+import logging
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from typing import Any, cast
+
+import pytest
+from fastapi import FastAPI
+from sqlalchemy import Connection, Engine
+
+from kaagaz.api import totp
+from kaagaz.api.auth import (
+    OPERATOR_COOKIE,
+    SESSION_COOKIE,
+    OperatorClaims,
+    SessionClaims,
+    sign_operator,
+    sign_session,
+    verify_password,
+)
+from kaagaz.api.secret_box import SecretBox
+from kaagaz.db import operator_orgs as orgs_sql
+from kaagaz.db import operators as operators_sql
+from kaagaz.db.engine import OperatorDatabase
+from kaagaz.db.operator_orgs import Outcome
+from kaagaz.db.operators import OperatorAttempt
+from kaagaz.db.users import EmailTaken
+from tests.test_api_auth import _offline_client
+from tests.test_api_support import ANY_ID, CSRF, NOW, route_calls
+
+OID, CID = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+UID = "44444444-4444-4444-8444-444444444444"
+AT = int(NOW.timestamp())
+STEP = AT // totp.STEP_SECONDS
+OWN = totp.new_secret()  # the operator's own authenticator
+ORGS = "/api/operator/orgs"
+ORG_ROUTES = {
+    ("GET", ORGS),
+    ("POST", ORGS),
+    ("POST", f"{ORGS}/{ANY_ID}/disable"),
+    ("POST", f"{ORGS}/{ANY_ID}/enable"),
+    ("GET", f"{ORGS}/{ANY_ID}/admins"),
+    ("POST", f"{ORGS}/{ANY_ID}/admins"),
+    *{("POST", f"{ORGS}/{ANY_ID}/admins/{ANY_ID}/{change}") for change in ("disable", "enable", "unlock")},
+    ("POST", f"{ORGS}/{ANY_ID}/admins/{ANY_ID}/reset-2fa"),
+}
+ADMIN_ROW = {
+    "user_id": UID,
+    "display_name": "Asha",
+    "email": "asha@example.test",
+    "totp_enabled": True,
+    "locked_until": None,
+    "disabled": False,
+    "must_change_password": False,
+    "last_login_at": NOW,
+    "created_at": NOW,
+}
+ORG_ROW = {
+    "customer_id": CID,
+    "name": "Sharma Traders",
+    "status": "active",
+    "disabled_at": None,
+    "delete_after": None,
+    "created_at": NOW,
+    "admins": 1,
+    "reviewers": 2,
+    "members": 3,
+    "documents": 4,
+    "pages": 9,
+    "size_bytes": 1234,
+    "last_activity_at": NOW,
+}
+
+
+class _NoDatabase(OperatorDatabase):
+    """Every call the routes make is replaced below; no connection is ever opened."""
+
+    def __init__(self) -> None:
+        super().__init__(cast(Engine, None))
+
+    @contextmanager
+    def operator(self) -> Iterator[Connection]:
+        yield cast(Connection, None)
+
+
+class _Offline:
+    """An app with a signed-in operator; the database calls are recorded in ``calls``."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.client = _offline_client()
+        app = cast(FastAPI, self.client.app)
+        app.state.kaagaz_operator = _NoDatabase()
+        self.settings = app.state.kaagaz.settings
+        self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+        self.outcome = Outcome("done", CID)
+        self.last_step: int | None = None
+        self.failed_logins, self.locked, self.taken = 1, False, False
+        monkeypatch.setattr(
+            operators_sql, "session_operator", lambda conn, oid: ("ops@example.test", "Ops", 2)
+        )
+        monkeypatch.setattr(operators_sql, "begin_login", self._begin)
+        monkeypatch.setattr(orgs_sql, "list_admins", lambda conn, oid, cid: [ADMIN_ROW])
+        monkeypatch.setattr(orgs_sql, "list_customers", lambda conn, oid: [ORG_ROW])
+        for name in (
+            "create_customer",
+            "set_customer_status",
+            "create_admin",
+            "change_admin",
+            "step_up_failed",
+        ):
+            monkeypatch.setattr(orgs_sql, name, self._recorder(name))
+        token = sign_operator(
+            OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 600),
+            self.settings.session_secret,
+        )
+        self.headers = {**CSRF, "Cookie": f"{OPERATOR_COOKIE}={token}"}
+
+    def _begin(self, conn: Connection, email: str, *args: Any) -> OperatorAttempt | None:
+        sealed = SecretBox(self.settings.totp_encryption_key).seal(OWN, aad=OID)
+        return (
+            None
+            if self.locked
+            else OperatorAttempt(
+                operator_id=OID,
+                email=email,
+                display_name="Ops",
+                password_hash="unused",
+                disabled=False,
+                totp_secret_enc=sealed,
+                totp_last_step=self.last_step,
+                failed_logins=self.failed_logins,
+            )
+        )
+
+    def _recorder(self, name: str) -> Callable[..., Outcome]:
+        def record(conn: Connection, *args: Any, **kwargs: Any) -> Outcome:
+            self.calls.append((name, args, kwargs))
+            if self.taken:
+                raise EmailTaken
+            return self.outcome
+
+        return record
+
+    def post(self, path: str, body: dict[str, Any] | None = None) -> Any:
+        return self.client.post(f"{ORGS}{path}", json=body, headers=self.headers)
+
+    def names(self) -> list[str]:
+        return [name for name, _, _ in self.calls]
+
+
+@pytest.fixture
+def offline(monkeypatch: pytest.MonkeyPatch) -> _Offline:
+    return _Offline(monkeypatch)
+
+
+def test_every_org_route_needs_the_operator_cookie_not_a_customer_admin_one(offline: _Offline) -> None:
+    calls = route_calls(cast(FastAPI, offline.client.app), ORGS)
+    assert set(calls) == ORG_ROUTES
+    admin = SessionClaims(
+        user_id=UID, customer_id=CID, role="admin", scope="admin", session_version=2, expires_at=AT + 600
+    )
+    customer = {**CSRF, "Cookie": f"{SESSION_COOKIE}={sign_session(admin, offline.settings.session_secret)}"}
+    for method, path in calls:
+        for headers in (CSRF, customer):
+            reply = offline.client.request(method, path, headers=headers, json={"code": "123456"})
+            assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), (
+                method,
+                path,
+            )
+    assert offline.calls == []
+
+
+@pytest.mark.parametrize(
+    "path", [f"/{CID}/disable", f"/{CID}/admins/{UID}/reset-2fa"], ids=["disable-org", "reset-2fa"]
+)
+def test_a_destructive_action_needs_a_fresh_code_from_the_operators_own_secret(
+    offline: _Offline, path: str
+) -> None:
+    assert offline.post(path).status_code == 400  # no code at all
+    accepted = {totp.code_at(OWN, STEP + offset) for offset in (-1, 0, 1)}
+    wrong = next(code for code in ("000000", "111111", "222222") if code not in accepted)
+    assert offline.post(path, {"code": wrong}).json()["error"]["code"] == "step_up_failed"
+    assert offline.post(path, {"code": totp.code_at(totp.new_secret(), STEP)}).status_code == 403
+    offline.failed_logins = offline.settings.login_max_failures
+    assert offline.post(path, {"code": "12 34 5x"}).status_code == 403
+    assert [kwargs for name, _, kwargs in offline.calls] == [{"locked": False}] * 2 + [{"locked": True}]
+    offline.calls.clear()
+    offline.locked = True  # a lock refuses even the right code, with no new row
+    assert offline.post(path, {"code": totp.code_at(OWN, STEP)}).status_code == 403
+    offline.locked, offline.last_step = False, STEP  # the code's step was used already
+    assert offline.post(path, {"code": totp.code_at(OWN, STEP)}).status_code == 403
+    assert offline.names() == ["step_up_failed"]
+    offline.calls.clear()
+    offline.last_step = STEP - 1
+    reply = offline.post(path, {"code": totp.code_at(OWN, STEP)[:3] + " " + totp.code_at(OWN, STEP)[3:]})
+    assert reply.status_code == 200, reply.text
+    [(name, _, kwargs)] = offline.calls
+    assert (name, kwargs["step"]) == ("set_customer_status" if "disable" in path else "change_admin", STEP)
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [
+        ("done", 200),
+        ("unchanged", 200),
+        ("missing", 404),
+        ("deleting", 409),
+        ("signed_out", 401),
+        ("step_up", 403),
+    ],
+)
+def test_each_outcome_gets_its_reply(offline: _Offline, code: str, status: int) -> None:
+    offline.outcome = Outcome(code, CID)
+    reply = offline.post(f"/{CID}/enable")
+    assert reply.status_code == status, reply.text
+    if status == 200:
+        assert reply.json() == {"organisation": {"id": CID, "status": "active", "changed": code == "done"}}
+    offline.outcome = Outcome(code, UID)
+    assert offline.post(f"/{CID}/admins/{UID}/unlock").status_code == status
+    if code == "step_up":  # the step was used meanwhile: the refused step-up's row too
+        assert offline.names() == ["set_customer_status", "step_up_failed", "change_admin", "step_up_failed"]
+    else:
+        assert offline.names() == ["set_customer_status", "change_admin"]
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "call"),
+    [
+        (
+            "",
+            {"name": " Mehta ", "admin_email": "Boss@Mehta.Example", "admin_name": "Boss"},
+            "create_customer",
+        ),
+        (f"/{CID}/admins", {"email": "Boss@Mehta.Example", "name": "Boss"}, "create_admin"),
+    ],
+)
+def test_a_new_admins_temporary_password_is_shown_once_and_only_its_hash_is_stored(
+    offline: _Offline, caplog: pytest.LogCaptureFixture, path: str, body: dict[str, str], call: str
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    reply = offline.post(path, body)
+    assert reply.status_code == 201, reply.text
+    temporary = reply.json()["temporary_password"]
+    assert len(temporary) == 16
+    [(name, _, kwargs)] = offline.calls
+    assert name == call and verify_password(temporary, kwargs["password_hash"])
+    assert temporary not in str(kwargs) and temporary not in caplog.text
+    assert "boss@mehta.example" in reply.text and reply.headers["Cache-Control"] == "no-store"
+    offline.taken = True
+    assert offline.post(path, body).status_code == 409
+    assert offline.post(path, {**body, "extra": "x"}).status_code == 400
+
+
+def test_replies_hold_counts_and_admin_rows_only(offline: _Offline) -> None:
+    [org] = offline.client.get(ORGS, headers=offline.headers).json()["items"]
+    assert org["users"] == {"admins": 1, "reviewers": 2, "members": 3}
+    assert set(org) == {
+        "id",
+        "name",
+        "status",
+        "disabled_at",
+        "delete_after",
+        "created_at",
+        "users",
+        "documents",
+        "pages",
+        "storage_bytes",
+        "last_activity_at",
+    }
+    [admin] = offline.client.get(f"{ORGS}/{CID}/admins", headers=offline.headers).json()["items"]
+    assert admin == {
+        "id": UID,
+        "name": "Asha",
+        "email": "asha@example.test",
+        "two_step": True,
+        "locked": False,
+        "disabled": False,
+        "must_change_password": False,
+        "last_sign_in_at": NOW.isoformat(),
+        "created_at": NOW.isoformat(),
+    }
