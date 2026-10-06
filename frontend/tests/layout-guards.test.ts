@@ -113,7 +113,8 @@ function budgets(file: string, container: string, keep: number) {
 const DOCS_CSS = "components/documents/Documents.module.css";
 const ADMIN_CSS = "components/admin/Admin.module.css";
 const OPERATOR_CSS = "components/operator/Operator.module.css";
-const TABLE_FILES = [DOCS_CSS, "components/documents/Table.module.css", ADMIN_CSS, OPERATOR_CSS];
+const PLATFORM_CSS = "components/operator/Platform.module.css";
+const TABLE_FILES = [DOCS_CSS, "components/documents/Table.module.css", ADMIN_CSS, OPERATOR_CSS, PLATFORM_CSS];
 
 /** The rules for exactly this selector (one of a list counts), in a CSS file. */
 const rulesFor = (file: string, selector: string) =>
@@ -145,6 +146,8 @@ describe("layout guards", () => {
       "components/operator/ConfirmDialog.tsx",
       "components/operator/CreateDialog.tsx",
       "components/operator/AdminsDialog.tsx",
+      "components/operator/ActivityView.tsx",
+      "components/operator/HealthView.tsx",
     ];
     expect(markup.filter((file) => /styles\.nowrap/.test(read(file)))).toEqual([]);
   });
@@ -207,6 +210,14 @@ describe("layout guards", () => {
     }
     expect(columnsAt(css, "reflow", 48).has("pagesColumn")).toBe(false);
     expect(columnsAt(css, "reflow", 64).has("pagesColumn")).toBe(true);
+  });
+
+  it("leaves the activity and health tables' words columns 11rem each where they are tables", () => {
+    const widths = columnsAt(read(PLATFORM_CSS), "reflow", 48);
+    const sum = (columns: string[]) => columns.reduce((total, column) => total + (widths.get(column) ?? 0), 0);
+    // Activity: Organisation and Action share the rest; Health: Name, Documents and Failed.
+    expect(sum(["whenColumn", "targetColumn", "byColumn"]) + 2 * USER_REM).toBeLessThanOrEqual(48);
+    expect(sum(["statusColumn", "waitColumn"]) + 3 * USER_REM).toBeLessThanOrEqual(48);
   });
 
   it("lets a status chip wrap inside its cell", () => {

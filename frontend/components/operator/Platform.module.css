@@ -12,8 +12,11 @@
     width: 8rem;
   }
 
-  .byColumn,
-  .waitColumn {
+  .byColumn {
     width: 7.5rem;
+  }
+
+  .waitColumn {
+    width: 7rem;
   }
 }

@@ -44,8 +44,8 @@ function plain(code: string): string {
 
 export function actionWords(action: string): string {
   if (Object.hasOwn(PLATFORM_ACTIONS, action)) return PLATFORM_ACTIONS[action]!;
-  const known = describeAction(action);
-  return known !== action ? known : plain(action);
+  const known: unknown = describeAction(action); // its map is a plain object: "constructor" is not a word
+  return typeof known === "string" && known !== action ? known : plain(action);
 }
 
 /** The action filter: actions starting with the value (the server's `action`). */
