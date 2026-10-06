@@ -48,6 +48,17 @@ export function actionWords(action: string): string {
   return typeof known === "string" && known !== action ? known : plain(action);
 }
 
+/** A Load more and its failure belong to the filter they were asked under. */
+export interface LoadMore {
+  key: string;
+  busy: boolean;
+  failed: string | null;
+}
+
+export function moreFor(state: LoadMore, key: string): LoadMore {
+  return state.key === key ? state : { key, busy: false, failed: null };
+}
+
 /** The action filter: actions starting with the value (the server's `action`). */
 export const ACTION_FILTERS = [
   { value: "", label: "All actions" },

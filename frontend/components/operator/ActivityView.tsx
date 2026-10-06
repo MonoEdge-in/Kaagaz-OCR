@@ -14,7 +14,8 @@ import { formatDateTime, formatNumber } from "@/lib/format";
 import type { Organisation, PlatformEvent } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { operatorErrorMessage } from "./logic";
-import { ACTION_FILTERS, actionWords, byWords, targetWords } from "./platform";
+import { ACTION_FILTERS, actionWords, byWords, moreFor, targetWords } from "./platform";
+import type { LoadMore } from "./platform";
 import admin from "@/components/admin/Admin.module.css";
 import columns from "./Platform.module.css";
 import styles from "./Operator.module.css";
@@ -40,7 +41,7 @@ export function ActivityView() {
   const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState<Page | null>(null);
   const [error, setError] = useState<{ key: string; message: string } | null>(null);
-  const [more, setMore] = useState<{ busy: boolean; failed: string | null }>({ busy: false, failed: null });
+  const [moreState, setMore] = useState<LoadMore>({ key: "", busy: false, failed: null });
   const key = `${org}|${action}|${attempt}`;
 
   useEffect(() => {
@@ -59,17 +60,18 @@ export function ActivityView() {
   }, [org, action, key]);
 
   const current = page?.key === key ? page : null;
+  const more = moreFor(moreState, key); // a Load more of another filter is forgotten
   const failed = !current && error?.key === key ? error.message : null;
 
   async function loadMore() {
     if (!current?.next || more.busy) return;
-    setMore({ busy: true, failed: null });
+    setMore({ key, busy: true, failed: null });
     try {
       const result = await listActivity({ before: current.next, org, action });
       setPage((was) => (was?.key === key ? { key, items: [...was.items, ...result.items], next: result.next } : was));
-      setMore({ busy: false, failed: null });
+      setMore({ key, busy: false, failed: null });
     } catch (caught) {
-      setMore({ busy: false, failed: operatorErrorMessage(caught) });
+      setMore({ key, busy: false, failed: operatorErrorMessage(caught) });
     }
   }
 
