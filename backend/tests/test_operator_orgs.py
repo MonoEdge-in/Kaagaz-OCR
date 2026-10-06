@@ -26,8 +26,6 @@ from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_orgs import Outcome
-from kaagaz.db.operators import OperatorAttempt
-from kaagaz.db.users import EmailTaken
 from tests.test_api_auth import _offline_client
 from tests.test_api_support import ANY_ID, CSRF, NOW, route_calls
 
@@ -87,11 +85,12 @@ class _Offline:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self.outcome = Outcome("done", CID)
         self.last_step: int | None = None
-        self.failed_logins, self.locked, self.taken = 1, False, False
+        self.failures, self.locked = 1, False
         monkeypatch.setattr(
             operators_sql, "session_operator", lambda conn, oid: ("ops@example.test", "Ops", 2)
         )
-        monkeypatch.setattr(operators_sql, "begin_login", self._begin)
+        monkeypatch.setattr(operators_sql, "begin_login", None)  # never the sign-in's count
+        monkeypatch.setattr(orgs_sql, "begin_step_up", self._begin)
         monkeypatch.setattr(orgs_sql, "list_customers", lambda conn, oid: [ORG_ROW])
         for name in ("create_customer", "set_customer_status", "step_up_failed"):
             monkeypatch.setattr(orgs_sql, name, self._recorder(name))
@@ -101,28 +100,13 @@ class _Offline:
         )
         self.headers = {**CSRF, "Cookie": f"{OPERATOR_COOKIE}={token}"}
 
-    def _begin(self, conn: Connection, email: str, *args: Any) -> OperatorAttempt | None:
+    def _begin(self, conn: Connection, oid: str, **_: Any) -> tuple[str, int | None, int] | None:
         sealed = SecretBox(self.settings.totp_encryption_key).seal(OWN, aad=OID)
-        return (
-            None
-            if self.locked
-            else OperatorAttempt(
-                operator_id=OID,
-                email=email,
-                display_name="Ops",
-                password_hash="unused",
-                disabled=False,
-                totp_secret_enc=sealed,
-                totp_last_step=self.last_step,
-                failed_logins=self.failed_logins,
-            )
-        )
+        return None if self.locked else (sealed, self.last_step, self.failures)
 
     def _recorder(self, name: str) -> Callable[..., Outcome]:
         def record(conn: Connection, *args: Any, **kwargs: Any) -> Outcome:
             self.calls.append((name, args, kwargs))
-            if self.taken:
-                raise EmailTaken
             return self.outcome
 
         return record
@@ -163,7 +147,7 @@ def test_disabling_needs_a_fresh_code_from_the_operators_own_secret(offline: _Of
     wrong = next(code for code in ("000000", "111111", "222222") if code not in accepted)
     assert offline.post(path, {"code": wrong}).json()["error"]["code"] == "step_up_failed"
     assert offline.post(path, {"code": totp.code_at(totp.new_secret(), STEP)}).status_code == 403
-    offline.failed_logins = offline.settings.login_max_failures
+    offline.failures = offline.settings.login_max_failures
     assert offline.post(path, {"code": "12 34 5x"}).status_code == 403
     assert [kwargs for name, _, kwargs in offline.calls] == [{"locked": False}] * 2 + [{"locked": True}]
     offline.calls.clear()
@@ -178,6 +162,10 @@ def test_disabling_needs_a_fresh_code_from_the_operators_own_secret(offline: _Of
     assert reply.status_code == 200, reply.text
     [(name, _, kwargs)] = offline.calls
     assert (name, kwargs["step"]) == ("set_customer_status", STEP)
+    offline.calls.clear()  # the attempt that reached the limit lost its step to a parallel one
+    offline.failures, offline.outcome = offline.settings.login_max_failures, Outcome("step_up", CID)
+    assert offline.post(path, {"code": totp.code_at(OWN, STEP)}).status_code == 403
+    assert offline.calls[-1] == ("step_up_failed", (OID,), {"locked": True})
 
 
 @pytest.mark.parametrize(
@@ -187,6 +175,7 @@ def test_disabling_needs_a_fresh_code_from_the_operators_own_secret(offline: _Of
         ("unchanged", 200),
         ("missing", 404),
         ("deleting", 409),
+        ("taken", 409),
         ("signed_out", 401),
         ("step_up", 403),
     ],
@@ -215,8 +204,9 @@ def test_the_first_admins_temporary_password_is_shown_once_and_only_its_hash_is_
     assert verify_password(temporary, kwargs["password_hash"])
     assert temporary not in str(kwargs) and temporary not in caplog.text
     assert "boss@mehta.example" in reply.text and reply.headers["Cache-Control"] == "no-store"
-    offline.taken = True
-    assert offline.post(path, body).status_code == 409
+    offline.outcome = Outcome("taken", None)  # audited in the function, no e-mail stored
+    taken = offline.post(path, body)
+    assert (taken.status_code, taken.json()["error"]["message"]) == (409, "That e-mail is already in use.")
     assert offline.post(path, {**body, "extra": "x"}).status_code == 400
 
 

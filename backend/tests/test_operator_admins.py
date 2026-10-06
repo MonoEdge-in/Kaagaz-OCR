@@ -98,7 +98,7 @@ def test_a_new_admins_temporary_password_is_shown_once_and_only_its_hash_is_stor
     assert verify_password(temporary, kwargs["password_hash"]) and temporary not in caplog.text
     offline.outcome = Outcome("missing", None)
     assert offline.post(f"/{CID}/admins", body).status_code == 404
-    offline.taken = True
+    offline.outcome = Outcome("taken", None)
     assert offline.post(f"/{CID}/admins", body).status_code == 409
 
 
