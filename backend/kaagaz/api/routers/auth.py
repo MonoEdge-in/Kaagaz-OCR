@@ -49,7 +49,6 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 
 import dataclasses
 from datetime import datetime
-from functools import cache
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -77,9 +76,13 @@ from kaagaz.api.auth import (
     verify_password,
 )
 from kaagaz.api.context import AppContext, get_context
-from kaagaz.api.errors import ApiError, bad_credentials
+from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD
-from kaagaz.api.secret_box import SecretBox, SecretBoxError
+from kaagaz.api.secret_box import SecretBoxError
+from kaagaz.api.twostep import box as _box
+from kaagaz.api.twostep import digits as _digits
+from kaagaz.api.twostep import refused as _refused
+from kaagaz.api.twostep import unix as _unix
 from kaagaz.api.views import me_json
 from kaagaz.db import audit
 from kaagaz.db import users as users_sql
@@ -490,22 +493,3 @@ def _record(
         target_id=target,
         details=details,
     )
-
-
-def _refused(context: AppContext) -> ApiError:
-    return bad_credentials(context.settings.login_lock_minutes)
-
-
-def _digits(code: str | None) -> str:
-    """The code without the spaces people type ("123 456"); "" when none was sent."""
-    return "" if code is None else "".join(code.split())
-
-
-def _unix(moment: datetime) -> int:
-    return int(moment.timestamp())
-
-
-@cache
-def _box(key_text: str) -> SecretBox:
-    """One SecretBox per key, so the key derivation runs once."""
-    return SecretBox(key_text)
