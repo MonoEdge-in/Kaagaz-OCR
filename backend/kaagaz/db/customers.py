@@ -39,6 +39,9 @@ _SET = text(
     " disabled_at = CASE WHEN :s = 'active' THEN NULL ELSE CAST(:now AS timestamptz) END"
     " WHERE id = :c"
 )
+# Disabling also ends every session of its users for good (as "Sign out everywhere"
+# does), so enabling it again never brings an old cookie back.
+_END_SESSIONS = text("UPDATE users SET session_version = session_version + 1 WHERE customer_id = :c")
 
 
 def is_active(conn: Connection, customer_id: str) -> bool:
@@ -52,7 +55,8 @@ def set_status(conn: Connection, customer_id: str, status: str, *, now: datetime
     connection. Returns the status it had before: None when there is no such
     customer, and then nothing changes; nothing changes either when it already
     had ``status``, or when it is being deleted (cancelling a deletion is PR 4's).
-    The row is locked first, so two runs at once change it once. O(1)."""
+    The row is locked first, so two runs at once change it once. O(1), and
+    disabling also raises every user's session version: O(u) for its u users."""
     if status not in (ACTIVE, DISABLED):
         raise ValueError("status must be active or disabled")
     before = conn.execute(_LOCK, {"c": customer_id}).scalar()
@@ -60,4 +64,6 @@ def set_status(conn: Connection, customer_id: str, status: str, *, now: datetime
         return None
     if before not in (status, DELETING):
         conn.execute(_SET, {"c": customer_id, "s": status, "now": now})
+        if status == DISABLED:
+            conn.execute(_END_SESSIONS, {"c": customer_id})
     return str(before)

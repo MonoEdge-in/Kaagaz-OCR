@@ -8,9 +8,10 @@
   again: a customer whose admin already exists is skipped.
 * ``disable-customer --customer-id`` and ``enable-customer --customer-id``: turn
   an organisation off or on again (super admin PR 1, 0014, PROVISIONAL). While
-  it is off its users can't sign in, their sessions end at the next request,
-  the worker fails its jobs (``customer_disabled``) and no model is called for
-  it. A customer being deleted is refused, and nothing changes. Each change
+  it is off its users can't sign in, their sessions end at the next request
+  (for good: after enabling, everyone signs in again), the worker fails its
+  jobs (``customer_disabled``) and no model is called for it. A customer
+  being deleted is refused, and nothing changes. Each change
   writes one audit row in that customer's log (``customer.disable``,
   ``customer.enable``). These two run as the table owner (``_owner``).
 * ``reset-admin-2fa --email``: turn an admin's two-step code off (PRD 1 A6), for
