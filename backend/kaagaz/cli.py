@@ -93,6 +93,7 @@ from kaagaz.db import users as users_sql
 from kaagaz.db.document_stories import recipe_tag as story_tag
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion import sniff
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
@@ -393,7 +394,10 @@ def _purge_customer(db: Database, storage: CustomerStorage, customer_id: str, no
             target_id=customer_id,
             subject_customer_id=customer_id,
         )
-    families, gone = purge_customer(db, storage, customer_id, now=now, keep_going=lambda: True)
+    try:
+        families, gone = purge_customer(db, storage, customer_id, now=now, keep_going=lambda: True)
+    except BackendUnavailable as error:  # review: a line, never a traceback
+        raise CliError(f"{error} unavailable; the worker or a re-run will finish it") from None
     if not gone:
         return f"customer {customer_id}: not finished, document families removed: {families}; run it again"
     return f"customer {customer_id}: purged, document families removed: {families}"
