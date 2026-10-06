@@ -9,9 +9,11 @@ functions under the never-do 1 exception). Read-only: nothing here writes a row.
   organisation, an action prefix. A row holds ONLY the action, the time, the
   organisation (id, name) and the target TYPE, and who acted as a kind: ``user`` (one of
   the organisation's own people, never which one or their role), ``operator`` (never
-  which one) or ``system`` (nobody recorded: the command line, the worker, a failed
-  sign-in). NEVER ``audit_log.details``, ``target_id``, an actor's id or e-mail, nor
-  anything of a document (security, binding).
+  which one; an operator's change shows in both logs, the organisation's copy found by
+  its ``{"by": "operator"}`` mark, read inside the function only) or ``system`` (no
+  person or operator recorded: the command line, the worker's purge, a failed sign-in).
+  NEVER ``audit_log.details``, ``target_id``, an actor's id or e-mail, nor anything of a
+  document (security, binding). A NULL limit is 50 (the API's default page).
 * ``kaagaz_op_health``: one row per organisation with COUNTS only: every version out of
   Trash by status, the failed ones by ``failure_code`` (never ``admin_sql.failed_documents``,
   which returns file names), how many are being read and since when the oldest one.
@@ -50,7 +52,7 @@ OPERATOR_ROLE = "kaagaz_operator"
 INDEX = "audit_log_feed"
 LOCK_TIMEOUT = "10s"  # as env.py's
 _ENABLED = "o.id = p_operator AND NOT o.disabled AND o.totp_enabled_at IS NOT NULL"
-_LIMIT = "least(greatest(p_limit, 1), 100)"
+_LIMIT = "least(greatest(coalesce(p_limit, 50), 1), 100)"  # NULL: 50
 
 
 def _page(alias: str, source: str) -> str:
@@ -68,7 +70,8 @@ def _page(alias: str, source: str) -> str:
 
 _ORGANISATION = (
     "SELECT 'organisation'::text AS source, a.id, a.created_at, a.action, a.customer_id, a.target_type,"
-    " CASE WHEN a.actor_user_id IS NULL THEN 'system' ELSE 'user' END AS actor"
+    " CASE WHEN a.details ->> 'by' = 'operator' THEN 'operator'"
+    " WHEN a.actor_user_id IS NULL THEN 'system' ELSE 'user' END AS actor"
     " FROM public.audit_log a"
 )
 
@@ -77,6 +80,8 @@ FUNCTIONS = {
     # one organisation's log (0001's audit_log_listing) and the platform log. A filter on
     # the parameters alone is decided once per call, so only the right audit_log read runs.
     # ponytail: platform_audit has no index but its key; it holds operator actions only.
+    # ponytail: an action prefix without an organisation walks audit_log_feed newest first
+    # and filters, so a rare prefix reads the whole log; an (action, created_at) index if so.
     "kaagaz_op_activity(uuid, timestamptz, text, bigint, uuid, text, integer)": f"""
     CREATE FUNCTION public.kaagaz_op_activity(
         p_operator uuid, p_before_time timestamptz, p_before_source text, p_before_id bigint,
@@ -105,7 +110,8 @@ FUNCTIONS = {
     """,
     # Counts per organisation, oldest organisation first. Every version out of Trash (a
     # newer version being read or failed is not current yet). Failed: failed, rejected and
-    # cannot-be-read ones by their code. Being read: received or clean.
+    # cannot-be-read ones by their code. Being read: received or clean. One read of each
+    # organisation's documents: grouped by status and, apart, by code (grouping sets).
     # ponytail: O(all documents) on every call, through documents_listing per organisation.
     "kaagaz_op_health(uuid)": f"""
     CREATE FUNCTION public.kaagaz_op_health(p_operator uuid)
@@ -113,24 +119,26 @@ FUNCTIONS = {
                    documents_by_status jsonb, failed_by_code jsonb, in_progress bigint,
                    oldest_in_progress_at timestamptz)
     LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
-        SELECT c.id, c.name, c.status, c.delete_after, s.by_status, f.by_code, r.in_progress, r.oldest
+        SELECT c.id, c.name, c.status, c.delete_after, h.by_status, h.by_code, h.in_progress, h.oldest
         FROM public.customers c
         CROSS JOIN LATERAL (
-            SELECT coalesce(jsonb_object_agg(x.status, x.n), '{{}}'::jsonb) AS by_status
-            FROM (SELECT d.status, count(*) AS n FROM public.documents d
-                  WHERE d.customer_id = c.id AND d.deleted_at IS NULL GROUP BY d.status) x
-        ) s
-        CROSS JOIN LATERAL (
-            SELECT coalesce(jsonb_object_agg(x.code, x.n), '{{}}'::jsonb) AS by_code
-            FROM (SELECT coalesce(d.failure_code, 'unknown') AS code, count(*) AS n FROM public.documents d
-                  WHERE d.customer_id = c.id AND d.deleted_at IS NULL
-                    AND d.status IN ('failed', 'rejected', 'needs_reader')
-                  GROUP BY 1) x
-        ) f
-        CROSS JOIN LATERAL (
-            SELECT count(*) AS in_progress, min(d.created_at) AS oldest FROM public.documents d
-            WHERE d.customer_id = c.id AND d.deleted_at IS NULL AND d.status IN ('received', 'clean')
-        ) r
+            SELECT coalesce(jsonb_object_agg(x.status, x.n) FILTER (WHERE x.per_status), '{{}}'::jsonb)
+                       AS by_status,
+                   coalesce(jsonb_object_agg(x.code, x.failed) FILTER (WHERE NOT x.per_status AND x.failed > 0),
+                            '{{}}'::jsonb) AS by_code,
+                   coalesce(sum(x.reading) FILTER (WHERE x.per_status), 0)::bigint AS in_progress,
+                   min(x.oldest) AS oldest
+            FROM (
+                SELECT d.status, coalesce(d.failure_code, 'unknown') AS code,
+                       GROUPING(d.status) = 0 AS per_status, count(*) AS n,
+                       count(*) FILTER (WHERE d.status IN ('failed', 'rejected', 'needs_reader')) AS failed,
+                       count(*) FILTER (WHERE d.status IN ('received', 'clean')) AS reading,
+                       min(d.created_at) FILTER (WHERE d.status IN ('received', 'clean')) AS oldest
+                FROM public.documents d
+                WHERE d.customer_id = c.id AND d.deleted_at IS NULL
+                GROUP BY GROUPING SETS ((d.status), (coalesce(d.failure_code, 'unknown')))
+            ) x
+        ) h
         WHERE EXISTS (SELECT 1 FROM public.operators o WHERE {_ENABLED})
         ORDER BY c.created_at, c.id
     $$

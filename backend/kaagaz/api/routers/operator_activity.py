@@ -6,10 +6,12 @@ router); only ``OperatorDatabase`` here, and each read is one ``kaagaz_op_*`` fu
 * ``GET /operator/activity?before=&org=&action=&limit=``: both audit logs, newest first,
   at most 100 rows a page (50 by default). Each row: which log, the time, the action,
   the organisation (id, name) and the target TYPE, and who acted as a kind (``user``,
-  ``operator`` or ``system``). Never ``audit_log.details``, a ``target_id``, a person's
-  id or e-mail, nor a document's name. ``next`` is an opaque cursor (base64url of the
+  ``operator`` in either log, or ``system``: no person recorded). Never
+  ``audit_log.details``, a ``target_id``, a person's id or e-mail, nor a document's
+  name. ``next`` is an opaque cursor (base64url of the
   last row's time, log and id) for the next page; null on the last page. ``org``
-  keeps one organisation's rows, ``action`` the actions starting with it.
+  keeps one organisation's rows, ``action`` the actions starting with it. An operator
+  disabled since the cookie was checked gets 401, as on ``/health``.
 * ``GET /operator/health``: per organisation, document counts by status, the failed ones
   by failure code, how many are being read and how long the oldest has waited; the
   totals; organisations purged and swept again. Counts only.
@@ -29,6 +31,7 @@ from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
 from kaagaz.api.views import iso
 from kaagaz.db import operator_activity as activity_sql
+from kaagaz.db import operators as operators_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_activity import SOURCES, Before
 
@@ -60,6 +63,10 @@ def list_activity(
             action_prefix=action,
             limit=limit,
         )
+        # No row is also what the function gives an operator disabled since current_operator.
+        signed_out = not rows and operators_sql.session_operator(conn, operator.operator_id) is None
+    if signed_out:
+        raise ApiError(401, "not_signed_in")
     last = rows[-1] if len(rows) == limit else None
     following = None if last is None else Before(last["created_at"], last["source"], int(last["entry_id"]))
     return {
