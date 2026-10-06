@@ -1,24 +1,14 @@
 """The platform operator's sign-in (super admin PR 2, council 6 Oct 2026, PROVISIONAL).
 
-* ``POST /operator/login`` {email, password, code?}: two-step sign-in is
-  MANDATORY. While the operator has not set it up, the right password gets
-  ``{"state": "enrol_required", enrol_token, secret, otpauth_uri}`` and no
-  session; after that, the right password and code get
-  ``{"state": "signed_in", operator}`` and the ``kaagaz_operator`` cookie
-  (30 minutes, absolute; ``api/auth.py``).
-* ``POST /operator/enrol`` {enrol_token, code}: the first code sets two-step
-  sign-in up and starts the session. The token (10 minutes) carries the sealed
-  secret and the session version, so it works once.
-* ``POST /operator/logout``: ends every session of this operator. 204.
-* ``GET /operator/me``.
+* ``POST /operator/login`` {email, password, code?}: two-step is MANDATORY. Until it
+  is set up the right password gets ``{"state": "enrol_required", enrol_token,
+  secret, otpauth_uri}`` and NO session; then password and code get the cookie.
+* ``POST /operator/enrol`` {enrol_token, code}: the first code sets it up and signs in.
+* ``POST /operator/logout`` (ends every session of this operator), ``GET /operator/me``.
 
-As the customers' sign-in (``routers/auth.py``): one 401 ``bad_credentials``
-for every failure, one scrypt hash on every path, the attempt counted before
-the password is checked, the lockout, a code used once. Each outcome writes one
-``platform_audit`` row inside its own database function (never a password, a
-code or a secret). Every route here uses ``OperatorDatabase`` (the
-``kaagaz_operator`` role) and never ``Database``; ``signed_in``'s routes all
-need ``current_operator``, which reads only the operator cookie.
+As ``routers/auth.py``: one 401 for every failure, one scrypt hash on every path,
+the attempt counted first, the lockout, a code used once. Each outcome writes one
+``platform_audit`` row in its database function. Only ``OperatorDatabase`` here.
 """
 
 from datetime import datetime, timedelta
@@ -69,8 +59,8 @@ class OperatorLoginBody(BaseModel):
 @router.post("/login")
 def login(body: OperatorLoginBody, db: OperatorDb, context: Context) -> JSONResponse:
     now = context.clock()
-    attempt = _begin(db, context, now, email=body.email)
-    if attempt is None:  # unknown or locked: no audit row (the lock was audited when it started)
+    attempt = _begin(db, context, now, body.email, None)
+    if attempt is None:  # unknown or locked: no audit row (the lock was audited when it began)
         spend_password_time(body.password)
         raise _refused(context)
     if not verify_password(body.password, attempt.password_hash) or attempt.disabled:
@@ -82,13 +72,13 @@ def login(body: OperatorLoginBody, db: OperatorDb, context: Context) -> JSONResp
             attempt.totp_secret_enc or "", aad=attempt.operator_id
         )
     except SecretBoxError:
-        raise _failed(db, context, attempt) from None  # reset-operator-2fa fixes it
+        raise _failed(db, context, attempt) from None
     step = totp.matching_step(secret, _digits(body.code), _unix(now), attempt.totp_last_step)
-    with db.operator() as conn:
-        version = (
-            None if step is None else operators_sql.login_succeeded(conn, attempt.operator_id, step, now)
-        )
-    if version is None:  # a wrong code, or one used a moment ago
+    version = None
+    if step is not None:  # the function refuses a step already used, even by a request at the same time
+        with db.operator() as conn:
+            version = operators_sql.login_succeeded(conn, attempt.operator_id, step, now)
+    if version is None:
         raise _failed(db, context, attempt)
     return _start_session(context, attempt, version, now)
 
@@ -99,7 +89,7 @@ def enrol(body: EnrolBody, db: OperatorDb, context: Context) -> JSONResponse:
     claims = read_operator(body.enrol_token, context.settings.session_secret, _unix(now), enrol=True)
     if claims is None:
         raise ApiError(401, "not_signed_in")
-    attempt = _begin(db, context, now, operator_id=claims.operator_id)
+    attempt = _begin(db, context, now, None, claims.operator_id)
     if attempt is None:
         raise _refused(context)
     try:
@@ -107,20 +97,13 @@ def enrol(body: EnrolBody, db: OperatorDb, context: Context) -> JSONResponse:
     except SecretBoxError:
         raise _failed(db, context, attempt) from None
     step = totp.matching_step(secret, _digits(body.code), _unix(now), None)
-    with db.operator() as conn:
-        version = (
-            None
-            if step is None
-            else operators_sql.enrol(
-                conn,
-                claims.operator_id,
-                secret_enc=claims.sealed_secret,
-                step=step,
-                now=now,
-                version=claims.session_version,
+    version = None
+    if step is not None:  # refused unless still not set up, enabled and on the token's version
+        with db.operator() as conn:
+            version = operators_sql.enrol(
+                conn, claims.operator_id, claims.sealed_secret, step, now, claims.session_version
             )
-        )
-    if version is None:  # a wrong code, a used token, or the operator changed since
+    if version is None:
         raise _failed(db, context, attempt)
     return _start_session(context, attempt, version, now)
 
@@ -137,38 +120,23 @@ def logout(operator: OperatorSession, db: OperatorDb, context: Context) -> Respo
 @signed_in.get("/me")
 def me(operator: OperatorSession) -> dict[str, Any]:
     return {
-        "operator": {
-            "id": operator.operator_id,
-            "email": operator.email,
-            "display_name": operator.display_name,
-        },
+        "operator": {"id": operator.operator_id, "email": operator.email, "name": operator.display_name},
         "session": {"expires_at": operator.expires_at},
     }
 
 
 def _begin(
-    db: OperatorDatabase,
-    context: AppContext,
-    now: datetime,
-    *,
-    email: str | None = None,
-    operator_id: str | None = None,
+    db: OperatorDatabase, context: AppContext, now: datetime, email: str | None, oid: str | None
 ) -> OperatorAttempt | None:
-    """Count one attempt (by e-mail or by id), committed before any check."""
+    """Count one attempt (by e-mail or id), committed before any check. None: unknown or locked."""
     settings = context.settings
+    lock_end = now + timedelta(minutes=settings.login_lock_minutes)
     with db.operator() as conn:
-        return operators_sql.begin_login(
-            conn,
-            email=email,
-            operator_id=operator_id,
-            now=now,
-            max_failures=settings.login_max_failures,
-            lock_end=now + timedelta(minutes=settings.login_lock_minutes),
-        )
+        return operators_sql.begin_login(conn, email, oid, now, settings.login_max_failures, lock_end)
 
 
 def _failed(db: OperatorDatabase, context: AppContext, attempt: OperatorAttempt) -> ApiError:
-    """Audit a counted failure (``operator.locked`` when it started the lock); the one 401."""
+    """Audit a counted failure (``operator.locked`` when it began the lock); the one 401."""
     with db.operator() as conn:
         locked = attempt.failed_logins >= context.settings.login_max_failures
         operators_sql.login_failed(conn, attempt.operator_id, locked=locked)
@@ -176,13 +144,14 @@ def _failed(db: OperatorDatabase, context: AppContext, attempt: OperatorAttempt)
 
 
 def _enrol_offer(context: AppContext, attempt: OperatorAttempt, now: datetime) -> dict[str, str]:
-    """A new secret, sealed into a 10-minute enrol token. Nothing is stored yet."""
+    """A new secret, sealed (bound to the operator) into a 10-minute enrol token. Nothing is stored."""
     secret = totp.new_secret()
+    sealed = _box(context.settings.totp_encryption_key).seal(secret, aad=attempt.operator_id)
     claims = OperatorClaims(
         operator_id=attempt.operator_id,
         session_version=attempt.session_version,
         expires_at=_unix(now) + ENROL_SECONDS,
-        sealed_secret=_box(context.settings.totp_encryption_key).seal(secret, aad=attempt.operator_id),
+        sealed_secret=sealed,
     )
     return {
         "enrol_token": sign_operator(claims, context.settings.session_secret),
@@ -194,12 +163,9 @@ def _enrol_offer(context: AppContext, attempt: OperatorAttempt, now: datetime) -
 def _start_session(
     context: AppContext, attempt: OperatorAttempt, version: int, now: datetime
 ) -> JSONResponse:
-    claims = OperatorClaims(
-        operator_id=attempt.operator_id,
-        session_version=version,
-        expires_at=_unix(now) + OPERATOR_SESSION_SECONDS,
-    )
-    operator = {"id": attempt.operator_id, "email": attempt.email, "display_name": attempt.display_name}
+    expires = _unix(now) + OPERATOR_SESSION_SECONDS
+    claims = OperatorClaims(operator_id=attempt.operator_id, session_version=version, expires_at=expires)
+    operator = {"id": attempt.operator_id, "email": attempt.email, "name": attempt.display_name}
     response = JSONResponse({"state": "signed_in", "operator": operator})
     set_operator_cookie(response, claims, context.settings, now=_unix(now))
     return response

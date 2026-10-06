@@ -1,26 +1,20 @@
-"""Platform operators (super admin PR 2, council 6 Oct 2026, PROVISIONAL).
+"""Platform operators (super admin PR 2, council 6 Oct 2026, PROVISIONAL; change plan
+Outside-Folder/docs/plans/2026-10-06-super-admin.md, awaiting Vrushit's approval).
 
-Change plan: Outside-Folder/docs/plans/2026-10-06-super-admin.md (awaiting
-Vrushit's approval).
+* ``operators`` (no ``customer_id``: not customer users) and ``platform_audit``
+  (ids and codes only; ``subject_customer_id`` has no foreign key, so a row
+  outlives its customer). Row level security ENABLED with NO policy, and no
+  grants: only the owner (the CLI, the functions below) touches them.
+* The role ``kaagaz_operator``: NOLOGIN, NOBYPASSRLS, no table privileges. The
+  API takes it only on /api/operator (``db.engine.OperatorDatabase``).
+* ``kaagaz_op_*``: SECURITY DEFINER, empty search path, names schema-qualified;
+  each that settles an outcome writes its own ``platform_audit`` row in the same
+  statement. EXECUTE for ``kaagaz_operator`` only (never PUBLIC or the app), and
+  every older owner-rights function is already revoked from PUBLIC.
 
-* ``operators``: who runs the platform. Not customer users: no ``customer_id``.
-* ``platform_audit``: one row per operator or CLI action, ids and codes only.
-  ``subject_customer_id`` has no foreign key, so a row outlives its customer.
-* Both have row level security ENABLED and NO policy, and no grants at all: the
-  app role sees nothing, and only the table owner (the CLI, the functions
-  below) touches them.
-* The role ``kaagaz_operator``: NOLOGIN, NOBYPASSRLS, no table privileges.
-  The API takes it (``SET LOCAL ROLE``, ``db.engine.OperatorDatabase``) only on
-  /api/operator. It may run the ``kaagaz_op_*`` functions and nothing else
-  (every older SECURITY DEFINER function is revoked from PUBLIC).
-* The ``kaagaz_op_*`` functions: SECURITY DEFINER with an empty search path,
-  every table name schema-qualified. Each that decides an outcome writes its own
-  ``platform_audit`` row in the same statement. Only ``kaagaz_operator`` may
-  run them, never PUBLIC or ``kaagaz_app``.
-
-Every new table and column is commented (0007's rule). The downgrade drops the
-functions and tables (operators and their audit rows are lost; customer data
-is untouched). The role stays, like ``kaagaz_app``: roles belong to the server.
+Every table and column is commented (0007's rule). The downgrade drops the
+functions and tables (operators and their audit rows are lost, customer data is
+untouched); the role stays, like ``kaagaz_app``.
 
 Revision ID: 0015
 Revises: 0014 (customer status)
@@ -38,8 +32,7 @@ _RECORD = "INSERT INTO public.platform_audit (operator_id, action, target_type, 
 
 COMMENTS = {
     "operators": (
-        "Platform operators (super admins). Not customer users: they belong to no customer and"
-        " never see document content. Created only by the command line.",
+        "Platform operators (super admins): no customer, never document content. Made by the command line.",
         {
             "id": "Primary key.",
             "email": "Sign-in name, lower case, unique among operators.",
@@ -71,8 +64,7 @@ COMMENTS = {
 }
 
 FUNCTIONS = {
-    # Count one sign-in attempt before the password is checked (as users.begin_attempt):
-    # by e-mail (sign-in) or by id (enrolment). No row: unknown or locked.
+    # One sign-in attempt counted before any check (as users.begin_attempt), by e-mail or id.
     "kaagaz_op_begin_login(text, uuid, timestamptz, integer, timestamptz)": """
     CREATE FUNCTION public.kaagaz_op_begin_login(
         p_email text, p_operator uuid, p_now timestamptz, p_max_failures integer, p_lock_end timestamptz
@@ -80,8 +72,7 @@ FUNCTIONS = {
     RETURNS TABLE (operator_id uuid, email text, display_name text, password_hash text, disabled boolean,
                    session_version integer, totp_secret_enc text, totp_enabled boolean,
                    totp_last_step bigint, failed_logins integer)
-    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS
-    $$
+    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$
         UPDATE public.operators AS o SET
             failed_logins = CASE WHEN o.locked_until <= p_now THEN 1 ELSE o.failed_logins + 1 END,
             locked_until = CASE
@@ -96,21 +87,18 @@ FUNCTIONS = {
     # A refused attempt: one row, operator.locked when it started the lock.
     "kaagaz_op_login_failed(uuid, boolean)": """
     CREATE FUNCTION public.kaagaz_op_login_failed(p_operator uuid, p_locked boolean) RETURNS void
-    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS
-    $$
+    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$
         INSERT INTO public.platform_audit (action, target_type, target_id)
         SELECT CASE WHEN p_locked THEN 'operator.locked' ELSE 'operator.login_failed' END,
                'operator', o.id::text
         FROM public.operators o WHERE o.id = p_operator
     $$
     """,
-    # A right password and code: the code's step is used up (never twice), the count
-    # is cleared. The session version, or NULL (code used, disabled, not set up).
+    # Right password and code: the step is used up (never twice). The session version, or NULL.
     "kaagaz_op_login_succeeded(uuid, bigint, timestamptz)": f"""
     CREATE FUNCTION public.kaagaz_op_login_succeeded(p_operator uuid, p_step bigint, p_now timestamptz)
     RETURNS integer
-    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS
-    $$
+    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$
         WITH signed AS (
             UPDATE public.operators AS o
             SET totp_last_step = p_step, failed_logins = 0, locked_until = NULL, last_login_at = p_now
@@ -123,14 +111,12 @@ FUNCTIONS = {
         SELECT s.session_version FROM signed s
     $$
     """,
-    # Two-step set up with its first code; only while not set up, enabled and on the
-    # enrol token's session version, so a token works once.
+    # Two-step set up with its first code, once, on the enrol token's session version.
     "kaagaz_op_enrol(uuid, text, bigint, timestamptz, integer)": f"""
     CREATE FUNCTION public.kaagaz_op_enrol(
         p_operator uuid, p_secret_enc text, p_step bigint, p_now timestamptz, p_version integer
     ) RETURNS integer
-    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS
-    $$
+    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$
         WITH enrolled AS (
             UPDATE public.operators AS o
             SET totp_secret_enc = p_secret_enc, totp_enabled_at = p_now, totp_last_step = p_step,
@@ -148,8 +134,7 @@ FUNCTIONS = {
     "kaagaz_op_session(uuid)": """
     CREATE FUNCTION public.kaagaz_op_session(p_operator uuid)
     RETURNS TABLE (email text, display_name text, session_version integer)
-    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS
-    $$
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
         SELECT o.email, o.display_name, o.session_version FROM public.operators o
         WHERE o.id = p_operator AND NOT o.disabled AND o.totp_enabled_at IS NOT NULL
     $$
@@ -157,8 +142,7 @@ FUNCTIONS = {
     # Sign-out ends every session of this operator.
     "kaagaz_op_logout(uuid)": f"""
     CREATE FUNCTION public.kaagaz_op_logout(p_operator uuid) RETURNS void
-    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS
-    $$
+    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$
         WITH ended AS (
             UPDATE public.operators AS o SET session_version = o.session_version + 1
             WHERE o.id = p_operator RETURNING o.id

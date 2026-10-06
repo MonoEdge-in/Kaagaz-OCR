@@ -161,10 +161,11 @@ _CONFIRM_PURPOSE = b"confirm"
 _SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp"})
 _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
 _CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
-_OPERATOR_PURPOSE = b"operator"
-_OPERATOR_ENROL_PURPOSE = b"operator_enrol"
-_OP_FIELDS = frozenset({"oid", "ver", "exp"})
-_ENROL_OP_FIELDS = frozenset({"oid", "ver", "sec", "exp"})
+# {is an enrol token: (MAC purpose, fields)} of the platform operator's tokens.
+_OPERATOR_TOKENS = {
+    False: (b"operator", frozenset({"oid", "ver", "exp"})),
+    True: (b"operator_enrol", frozenset({"oid", "ver", "sec", "exp"})),
+}
 
 
 def session_seconds(scope: str, settings: Settings) -> int:
@@ -276,9 +277,8 @@ def read_confirm(token: str, secret: str, now: int) -> ConfirmClaims | None:
     return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp)
 
 
-# --- the platform operator's tokens (super admin PR 2, PROVISIONAL) -------------------------
-# Same signing, other purposes and fields, so no customer token ever reads as an
-# operator's and the reverse. One SESSION_SECRET for both (change plan question 6).
+# --- the platform operator's tokens (super admin PR 2, PROVISIONAL): other purposes and
+# fields, so customer and operator tokens never read as each other. One SESSION_SECRET.
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -292,22 +292,17 @@ class OperatorClaims:
 def sign_operator(claims: OperatorClaims, secret: str) -> str:
     """An operator session token ``{oid, ver, exp}``, or with ``sealed_secret`` an
     operator enrol token (one more field, ``sec``, and its own purpose)."""
-    payload: dict[str, Any] = {
-        "oid": claims.operator_id,
-        "ver": claims.session_version,
-        "exp": claims.expires_at,
-    }
+    payload: dict[str, Any] = {"oid": claims.operator_id, "ver": claims.session_version}
+    payload["exp"] = claims.expires_at
     if claims.sealed_secret:
-        return _sign({**payload, "sec": claims.sealed_secret}, _OPERATOR_ENROL_PURPOSE, secret)
-    return _sign(payload, _OPERATOR_PURPOSE, secret)
+        return _sign({**payload, "sec": claims.sealed_secret}, _OPERATOR_TOKENS[True][0], secret)
+    return _sign(payload, _OPERATOR_TOKENS[False][0], secret)
 
 
 def read_operator(token: str, secret: str, now: int, *, enrol: bool = False) -> OperatorClaims | None:
     """The claims of a genuine, unexpired operator session (or ``enrol``) token, else
     None. Strict: exactly its fields, each of its type. Constant-time check."""
-    purpose, fields = (
-        (_OPERATOR_ENROL_PURPOSE, _ENROL_OP_FIELDS) if enrol else (_OPERATOR_PURPOSE, _OP_FIELDS)
-    )
+    purpose, fields = _OPERATOR_TOKENS[enrol]
     data = _verified(token, purpose, secret)
     if not isinstance(data, dict) or set(data) != fields:
         return None
@@ -611,7 +606,7 @@ Reviewer = Annotated[CurrentUser, Depends(require_role("reviewer", "admin"))]
 Admin = Annotated[CurrentUser, Depends(require_role("admin"))]
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True)
 class CurrentOperator:
     operator_id: str
     email: str
@@ -620,10 +615,9 @@ class CurrentOperator:
 
 
 def current_operator(request: Request) -> CurrentOperator:
-    """For the signed-in /api/operator routes: the operator cookie ONLY (a customer
-    session is never read here), re-checked in the database on every request (the
-    operator is enabled, set up for two-step and on the same session version),
-    else 401 ``not_signed_in``. Customer routes never read the operator cookie."""
+    """For the signed-in /api/operator routes: the operator cookie ONLY (never the
+    customer session), re-checked in the database on every request: enabled, set up
+    for two-step, same session version. Else 401 ``not_signed_in``."""
     context = get_context(request)
     token = request.cookies.get(OPERATOR_COOKIE) or ""
     claims = read_operator(token, context.settings.session_secret, int(context.clock().timestamp()))
@@ -631,14 +625,9 @@ def current_operator(request: Request) -> CurrentOperator:
         raise ApiError(401, "not_signed_in")
     with get_operator_db(request).operator() as conn:
         found = operators_sql.session_operator(conn, claims.operator_id)
-    if found is None or found.session_version != claims.session_version:
+    if found is None or found[2] != claims.session_version:
         raise ApiError(401, "not_signed_in")
-    return CurrentOperator(
-        operator_id=claims.operator_id,
-        email=found.email,
-        display_name=found.display_name,
-        expires_at=claims.expires_at,
-    )
+    return CurrentOperator(claims.operator_id, found[0], found[1], claims.expires_at)
 
 
 OperatorSession = Annotated[CurrentOperator, Depends(current_operator)]

@@ -6,8 +6,7 @@ Why:
 * **Request id**: support can match a customer's report to the log line. A
   well-formed incoming ``X-Request-ID`` is kept, otherwise a new one is made.
 * **Rate limit**: a token bucket per signed-in user (per client address before
-  sign-in; per operator, ``op:{oid}``, on /api/operator), ``rate_limit_per_minute``
-  tokens refilled evenly over a minute,
+  sign-in), ``rate_limit_per_minute`` tokens refilled evenly over a minute,
   held in memory. PROVISIONAL: behind the Next.js proxy every visitor who is
   not signed in shares the proxy's address; trusting ``X-Forwarded-For`` is a
   security setting for Vrushit.
@@ -35,7 +34,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from kaagaz.api.auth import OPERATOR_COOKIE, OPERATOR_PATH, read_operator, session_claims
+from kaagaz.api.auth import session_claims
 from kaagaz.api.context import get_context
 from kaagaz.api.errors import error_response
 
@@ -109,11 +108,7 @@ class RequestMiddleware(BaseHTTPMiddleware):
         request.state.request_id = request_id
 
         user_id = self._caller(request)
-        operator_id = self._operator(request)
-        if operator_id:
-            key = f"op:{operator_id}"
-        else:
-            key = f"user:{user_id}" if user_id else f"ip:{request.client.host if request.client else '-'}"
+        key = f"user:{user_id}" if user_id else f"ip:{request.client.host if request.client else '-'}"
         if self._limiter.allow(key):
             response = await call_next(request)
         else:
@@ -133,7 +128,6 @@ class RequestMiddleware(BaseHTTPMiddleware):
                     "status": response.status_code,
                     "ms": round((time.perf_counter() - started) * 1000, 1),
                     "user_id": user_id,
-                    "operator_id": operator_id,
                 },
                 separators=(",", ":"),
             )
@@ -146,18 +140,6 @@ class RequestMiddleware(BaseHTTPMiddleware):
         context = get_context(request)
         claims = session_claims(request, context.settings, int(context.clock().timestamp()))
         return None if claims is None else claims.user_id
-
-    @staticmethod
-    def _operator(request: Request) -> str | None:
-        """The operator id from a genuine operator cookie, without the database, on
-        /api/operator only (the only path its browser cookie is sent to)."""
-        path = request.url.path
-        token = request.cookies.get(OPERATOR_COOKIE)
-        if not token or not (path == OPERATOR_PATH or path.startswith(OPERATOR_PATH + "/")):
-            return None
-        context = get_context(request)
-        claims = read_operator(token, context.settings.session_secret, int(context.clock().timestamp()))
-        return None if claims is None else claims.operator_id
 
 
 class ErrorMiddleware:

@@ -134,18 +134,14 @@ class Database:
             yield conn
 
 
-# The platform operator's role (0015): no table privileges at all, EXECUTE on the
-# kaagaz_op_* functions only. A fixed name, like the migration's.
+# The platform operator's role (0015), a fixed name like the migration's.
 _SET_OPERATOR_ROLE = text("SET LOCAL ROLE kaagaz_operator")
 
 
 class OperatorDatabase:
-    """The /api/operator routes' only way to PostgreSQL (super admin, PROVISIONAL).
-
-    Every transaction takes ``kaagaz_operator``, which can do nothing but run
-    the ``kaagaz_op_*`` functions. There is deliberately no ``customer``,
-    ``user`` or ``system``: an operator never works as a customer, and a
-    customer route never gets this object (it is not in ``AppContext``)."""
+    """The /api/operator routes' only way to PostgreSQL (super admin, PROVISIONAL): every
+    transaction takes ``kaagaz_operator``, which can only run the ``kaagaz_op_*``
+    functions. Deliberately no ``customer``, ``user`` or ``system``."""
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine

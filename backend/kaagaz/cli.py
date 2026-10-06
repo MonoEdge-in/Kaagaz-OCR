@@ -1,7 +1,7 @@
 """Set-up commands: ``python -m kaagaz.cli <command>``.
 
 * ``create-customer --name --admin-email --admin-name``: a new customer and its
-  first admin, and a ``platform_audit`` row (``customer.create``).
+  first admin.
 * ``create-user --customer-id --email --name --role``: one more user.
 * ``seed-demo``: two made-up customers for the laptop, "Sharma Traders" and
   "Mehta Textiles", each with an admin, a reviewer and a member. Safe to run
@@ -14,14 +14,6 @@
   being deleted is refused, and nothing changes. Each change
   writes one audit row in that customer's log (``customer.disable``,
   ``customer.enable``). These two run as the table owner (``_owner``).
-* ``create-operator --email --name``: a platform operator (super admin, 0015,
-  PROVISIONAL). The password is typed twice at a hidden prompt, never taken
-  from a flag or the environment, with the users' rules (12 to 1024
-  characters). They set up two-step sign-in at their first sign-in.
-* ``reset-operator-2fa --email``: their two-step sign-in is set up again at the
-  next sign-in, and every session ends. ``unlock-operator --email``: ends a
-  sign-in lock. Each operator command, and disable-customer and
-  enable-customer, writes one ``platform_audit`` row with no operator.
 * ``reset-admin-2fa --email``: turn an admin's two-step code off (PRD 1 A6), for
   the last admin of a customer, who has no other admin to do it. Their sessions
   end; they can turn it on again in Admin, Settings. It needs no password:
@@ -76,7 +68,6 @@ from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, bu
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.db import audit
 from kaagaz.db import customers as customers_sql
-from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.document_stories import recipe_tag as story_tag
 from kaagaz.db.engine import Database, make_engine
@@ -93,7 +84,6 @@ from kaagaz.search import indexing, story_vectors
 from kaagaz.settings import Settings, SettingsError
 
 MIN_PASSWORD = 12
-MAX_PASSWORD = 1024  # the API's (routers/admin.py)
 # measure --truth: each page's texts are cut to these before the edit distance (council PR 3, low 10).
 MAX_TRUTH_CHARS = 5000
 MAX_TRUTH_WORDS = 1000
@@ -114,11 +104,6 @@ DEMO_ROLES = ("admin", "reviewer", "member")
 CUSTOMER_STATUS = {
     "disable-customer": (customers_sql.DISABLED, "customer.disable", "disabled"),
     "enable-customer": (customers_sql.ACTIVE, "customer.enable", "enabled"),
-}
-# reset-operator-2fa and unlock-operator: the statement, the audit action and what it did.
-OPERATOR_CHANGES = {
-    "reset-operator-2fa": (operators_sql.RESET_TOTP, "operator.reset_totp", "2FA is set up again at sign-in"),
-    "unlock-operator": (operators_sql.UNLOCK, "operator.unlock", "unlocked"),
 }
 
 
@@ -147,12 +132,6 @@ def _parser() -> argparse.ArgumentParser:
     disable.add_argument("--customer-id", required=True)
     enable = commands.add_parser("enable-customer", help="turn a disabled organisation on again")
     enable.add_argument("--customer-id", required=True)
-
-    operator = commands.add_parser("create-operator", help="a platform operator (asks for the password)")
-    operator.add_argument("--email", required=True)
-    operator.add_argument("--name", required=True)
-    for command in OPERATOR_CHANGES:
-        commands.add_parser(command, help="change a platform operator").add_argument("--email", required=True)
 
     reset = commands.add_parser("reset-admin-2fa", help="turn an admin's two-step code off")
     reset.add_argument("--email", required=True)
@@ -183,63 +162,17 @@ def _password(environ: Mapping[str, str], variable: str, ask: Callable[[str], st
 
 
 def _create_customer(db: Database, name: str, email: str, admin_name: str, password: str) -> str:
-    """As the owner (``_owner``), so the ``platform_audit`` row goes in the same transaction."""
     try:
-        with _owner(db) as conn:
-            customer_id = users_sql.create_customer(
+        with db.system() as conn:
+            return users_sql.create_customer(
                 conn,
                 name=name,
                 admin_email=email,
                 admin_name=admin_name,
                 password_hash=hash_password(password),
             )
-            operators_sql.record(
-                conn,
-                "customer.create",
-                target_type="customer",
-                target_id=customer_id,
-                subject_customer_id=customer_id,
-            )
     except users_sql.EmailTaken:
         raise CliError("that e-mail is already in use") from None
-    return customer_id
-
-
-def _operator_password(ask: Callable[[str], str] | None) -> str:
-    """Typed twice at a hidden prompt; never a flag or the environment."""
-    if ask is None:
-        raise CliError("type the password at the prompt")
-    password = ask("Password: ")
-    if password != ask("Repeat password: "):
-        raise CliError("the passwords do not match")
-    if not MIN_PASSWORD <= len(password) <= MAX_PASSWORD:
-        raise CliError(f"the password must be {MIN_PASSWORD} to {MAX_PASSWORD} characters")
-    return password
-
-
-def _create_operator(db: Database, email: str, name: str, password: str) -> str:
-    email = email.strip().lower()
-    if not (3 <= len(email) <= 254 and "@" in email and 1 <= len(name) <= 100):
-        raise CliError("the e-mail or the name is not valid")
-    try:
-        with _owner(db) as conn:
-            operator_id = operators_sql.create(
-                conn, email=email, display_name=name, password_hash=hash_password(password)
-            )
-            operators_sql.record(conn, "operator.create", target_type="operator", target_id=operator_id)
-    except users_sql.EmailTaken:
-        raise CliError("that e-mail is already in use") from None
-    return operator_id
-
-
-def _change_operator(db: Database, command: str, email: str) -> str:
-    statement, action, done = OPERATOR_CHANGES[command]
-    with _owner(db) as conn:
-        operator_id = operators_sql.change(conn, statement, email)
-        if operator_id is None:
-            raise CliError("no operator has that e-mail")
-        operators_sql.record(conn, action, target_type="operator", target_id=operator_id)
-    return f"operator {operator_id}: {done}"
 
 
 def _create_user(db: Database, customer_id: str, email: str, name: str, role: str, password: str) -> str:
@@ -333,9 +266,6 @@ def _set_customer_status(db: Database, command: str, customer_id: str, now: date
             target_type="customer",
             target_id=customer_id,
             details={"by": "cli"},
-        )
-        operators_sql.record(
-            conn, action, target_type="customer", target_id=customer_id, subject_customer_id=customer_id
         )
     return f"customer {customer_id}: {done}"
 
@@ -616,11 +546,6 @@ def main(
         elif args.command in CUSTOMER_STATUS:
             line = _set_customer_status(db, args.command, args.customer_id, datetime.now(UTC))
             stdout.write(line + "\n")
-        elif args.command == "create-operator":
-            operator_id = _create_operator(db, args.email, args.name, _operator_password(ask))
-            stdout.write(f"operator {operator_id}: sets up two-step sign-in at the first sign-in\n")
-        elif args.command in OPERATOR_CHANGES:
-            stdout.write(_change_operator(db, args.command, args.email) + "\n")
         elif args.command == "reset-admin-2fa":
             user_id = _reset_admin_2fa(db, args.email)
             stdout.write(f"user {user_id}: 2FA is off; they can turn it on again in Admin, Settings\n")
