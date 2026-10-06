@@ -15,13 +15,16 @@
   writes one audit row in that customer's log (``customer.disable``,
   ``customer.enable``). These two run as the table owner (``_owner``).
 * ``create-operator --email --name``: a platform operator (super admin, 0015,
-  PROVISIONAL). The password is typed twice at a hidden prompt, never taken
-  from a flag or the environment, with the users' rules (12 to 1024
-  characters). They set up two-step sign-in at their first sign-in.
-* ``reset-operator-2fa --email``: their two-step sign-in is set up again at the
-  next sign-in, and every session ends. ``unlock-operator --email``: ends a
-  sign-in lock. Each operator command, and disable-customer and
-  enable-customer, writes one ``platform_audit`` row with no operator.
+  PROVISIONAL). The password is typed twice at a hidden prompt, never a flag or
+  the environment, with the users' rules (12 to 1024 characters). Two-step is
+  mandatory and its secret is issued ONLY here: it is printed once (the key and
+  the otpauth link) for an authenticator app; the first valid code at sign-in
+  confirms it. ``reset-operator-2fa --email`` issues a new one the same way (the
+  old one stops working, every session ends). Both refuse to run without a
+  terminal, so neither the password nor the secret goes to a pipe or a log.
+* ``unlock-operator --email``: ends a sign-in lock. Each operator command, and
+  create-customer, disable-customer and enable-customer, writes one
+  ``platform_audit`` row with no operator.
 * ``reset-admin-2fa --email``: turn an admin's two-step code off (PRD 1 A6), for
   the last admin of a customer, who has no other admin to do it. Their sessions
   end; they can turn it on again in Admin, Settings. It needs no password:
@@ -73,7 +76,9 @@ from typing import TextIO
 from sqlalchemy import Connection
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
+from kaagaz.api import totp
 from kaagaz.api.auth import ROLES, hash_password
+from kaagaz.api.twostep import box
 from kaagaz.db import audit
 from kaagaz.db import customers as customers_sql
 from kaagaz.db import operators as operators_sql
@@ -115,11 +120,8 @@ CUSTOMER_STATUS = {
     "disable-customer": (customers_sql.DISABLED, "customer.disable", "disabled"),
     "enable-customer": (customers_sql.ACTIVE, "customer.enable", "enabled"),
 }
-# reset-operator-2fa and unlock-operator: the statement, the audit action and what it did.
-OPERATOR_CHANGES = {
-    "reset-operator-2fa": (operators_sql.RESET_TOTP, "operator.reset_totp", "2FA is set up again at sign-in"),
-    "unlock-operator": (operators_sql.UNLOCK, "operator.unlock", "unlocked"),
-}
+# The operator commands that print a new two-step secret: only at a terminal.
+SECRET_COMMANDS = ("create-operator", "reset-operator-2fa")
 
 
 class CliError(Exception):
@@ -151,7 +153,7 @@ def _parser() -> argparse.ArgumentParser:
     operator = commands.add_parser("create-operator", help="a platform operator (asks for the password)")
     operator.add_argument("--email", required=True)
     operator.add_argument("--name", required=True)
-    for command in OPERATOR_CHANGES:
+    for command in ("reset-operator-2fa", "unlock-operator"):
         commands.add_parser(command, help="change a platform operator").add_argument("--email", required=True)
 
     reset = commands.add_parser("reset-admin-2fa", help="turn an admin's two-step code off")
@@ -217,7 +219,8 @@ def _operator_password(ask: Callable[[str], str] | None) -> str:
     return password
 
 
-def _create_operator(db: Database, email: str, name: str, password: str) -> str:
+def _create_operator(db: Database, key: str, email: str, name: str, password: str) -> str:
+    """The operator and its first pending two-step secret, in one owner transaction."""
     email = email.strip().lower()
     if not (3 <= len(email) <= 254 and "@" in email and 1 <= len(name) <= 100):
         raise CliError("the e-mail or the name is not valid")
@@ -227,19 +230,36 @@ def _create_operator(db: Database, email: str, name: str, password: str) -> str:
                 conn, email=email, display_name=name, password_hash=hash_password(password)
             )
             operators_sql.record(conn, "operator.create", target_type="operator", target_id=operator_id)
+            shown = _issue_secret(conn, key, operator_id, email)
     except users_sql.EmailTaken:
         raise CliError("that e-mail is already in use") from None
-    return operator_id
+    return f"operator {operator_id}: created\n{shown}"
 
 
-def _change_operator(db: Database, command: str, email: str) -> str:
-    statement, action, done = OPERATOR_CHANGES[command]
+def _change_operator(db: Database, key: str, command: str, email: str) -> str:
+    """reset-operator-2fa (a new pending secret) or unlock-operator, with its audit row."""
+    reset = command == "reset-operator-2fa"
     with _owner(db) as conn:
-        operator_id = operators_sql.change(conn, statement, email)
+        operator_id = operators_sql.change(conn, operators_sql.FIND if reset else operators_sql.UNLOCK, email)
         if operator_id is None:
             raise CliError("no operator has that e-mail")
+        action = "operator.reset_totp" if reset else "operator.unlock"
         operators_sql.record(conn, action, target_type="operator", target_id=operator_id)
-    return f"operator {operator_id}: {done}"
+        shown = _issue_secret(conn, key, operator_id, email.strip().lower()) if reset else ""
+    done = "new two-step secret, every session ended" if reset else "unlocked"
+    return f"operator {operator_id}: {done}\n{shown}"
+
+
+def _issue_secret(conn: Connection, key: str, operator_id: str, email: str) -> str:
+    """Store a new secret sealed for this operator (as admins' are) and return the
+    lines that show it ONCE: the key to type and the otpauth link for a QR code."""
+    secret = totp.new_secret()
+    operators_sql.issue_secret(conn, operator_id, box(key).seal(secret, aad=operator_id))
+    return (
+        f"two-step key (shown once): {totp.grouped(totp.b32(secret))}\n"
+        f"authenticator link: {totp.otpauth_uri(secret, email)}\n"
+        "the first code from it at sign-in confirms it\n"
+    )
 
 
 def _create_user(db: Database, customer_id: str, email: str, name: str, role: str, password: str) -> str:
@@ -300,9 +320,10 @@ def _reset_admin_2fa(db: Database, email: str) -> str:
 @contextmanager
 def _owner(db: Database) -> Iterator[Connection]:
     """One transaction as the login role itself, with NO ``SET LOCAL ROLE``: the
-    table owner, which row level security does not filter. Only for changing a
-    customer's status, which ``kaagaz_app`` may not do (0014), so no code on the
-    customer side can. Every statement in it names the one customer by id.
+    table owner, which row level security does not filter. Only for what
+    ``kaagaz_app`` may not do, so no code on the customer side can: a customer's
+    status (0014), create-customer's and every command's ``platform_audit`` row and
+    the operator commands (0015). Every statement names its one customer or operator.
     PROVISIONAL: it needs DATABASE_URL to log in as the owner, as it does today
     (change plan, open question 8)."""
     with db.engine.begin() as conn:
@@ -587,17 +608,21 @@ def main(
     ask: Callable[[str], str] | None = getpass.getpass,
     timer: Callable[[], float] = time.perf_counter,
     model: ModelClient | None = None,
+    settings: Settings | None = None,
 ) -> int:
-    """Run one command. Tests pass ``db``, ``environ``, ``out``, ``ask``, ``timer`` and ``model``."""
+    """Run one command. Tests pass ``db``, ``environ``, ``out``, ``ask``, ``timer``,
+    ``model`` and ``settings``."""
     args = _parser().parse_args(argv)
     env = os.environ if environ is None else environ
     stdout = sys.stdout if out is None else out
     try:
+        if args.command in SECRET_COMMANDS and ask is getpass.getpass and not sys.stdin.isatty():
+            raise CliError("run it at a terminal (docker compose exec WITHOUT -T): it shows a secret")
         if args.command == "measure":  # before any database is built: it never uses one
             _measure(Settings.from_env(env), args.file, args.truth, stdout, timer=timer)
             return 0
         if db is None:
-            settings = Settings.from_env(env)
+            settings = settings or Settings.from_env(env)
             db = Database(make_engine(settings.database_url), settings.db_app_role)
         if args.command == "create-customer":
             password = _password(env, ADMIN_ENV_VAR, ask)
@@ -617,10 +642,13 @@ def main(
             line = _set_customer_status(db, args.command, args.customer_id, datetime.now(UTC))
             stdout.write(line + "\n")
         elif args.command == "create-operator":
-            operator_id = _create_operator(db, args.email, args.name, _operator_password(ask))
-            stdout.write(f"operator {operator_id}: sets up two-step sign-in at the first sign-in\n")
-        elif args.command in OPERATOR_CHANGES:
-            stdout.write(_change_operator(db, args.command, args.email) + "\n")
+            password = _operator_password(ask)
+            key = (settings or Settings.from_env(env)).totp_encryption_key
+            stdout.write(_create_operator(db, key, args.email, args.name, password))
+        elif args.command in ("reset-operator-2fa", "unlock-operator"):
+            reset = args.command == "reset-operator-2fa"
+            key = (settings or Settings.from_env(env)).totp_encryption_key if reset else ""
+            stdout.write(_change_operator(db, key, args.command, args.email))
         elif args.command == "reset-admin-2fa":
             user_id = _reset_admin_2fa(db, args.email)
             stdout.write(f"user {user_id}: 2FA is off; they can turn it on again in Admin, Settings\n")

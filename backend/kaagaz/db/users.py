@@ -6,11 +6,12 @@ reviewable. Every function except the two named below takes a connection from
 ``Database.customer(customer_id)`` and also filters on ``customer_id`` (two
 locks, docs/architecture.md).
 
-The exceptions use ``Database.system()``, because there is no customer yet:
+The exceptions have no customer yet:
 
-* ``login_lookup``: signing in starts from an e-mail only. It calls the
-  SECURITY DEFINER function ``kaagaz_login_lookup``, which returns one row.
-* ``create_customer``: calls ``kaagaz_create_customer`` (the CLI only).
+* ``login_lookup`` (``Database.system()``): signing in starts from an e-mail only.
+  It calls the SECURITY DEFINER function ``kaagaz_login_lookup``, which returns one row.
+* ``create_customer``: calls ``kaagaz_create_customer`` (the CLI only, on its owner
+  connection ``cli._owner``, so its ``platform_audit`` row is in the same transaction).
 
 E-mails are unique across all customers (the ``users.email`` constraint), so
 adding a taken e-mail raises ``EmailTaken`` even when another customer holds it.
@@ -95,7 +96,7 @@ def login_lookup(conn: Connection, email: str) -> LoginRow | None:
 def create_customer(
     conn: Connection, *, name: str, admin_email: str, admin_name: str, password_hash: str
 ) -> str:
-    """Create a customer and its first admin. ``conn`` comes from ``Database.system()``.
+    """Create a customer and its first admin. ``conn`` is the CLI's owner connection.
     Raises EmailTaken if the admin's e-mail is in use."""
     try:
         customer_id: object = conn.execute(

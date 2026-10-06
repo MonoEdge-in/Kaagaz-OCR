@@ -78,15 +78,18 @@ def logout(conn: Connection, operator_id: str) -> None:
 
 # --- the command line, as the table owner ------------------------------------------------
 
-RESET_TOTP = text(
-    "UPDATE operators SET totp_secret_enc = NULL, totp_enabled_at = NULL, totp_last_step = NULL,"
-    " session_version = session_version + 1 WHERE email = :e RETURNING id"
-)
+FIND = text("SELECT id FROM operators WHERE email = :e FOR UPDATE")
 UNLOCK = text("UPDATE operators SET failed_logins = 0, locked_until = NULL WHERE email = :e RETURNING id")
+# A new pending two-step secret: the old one stops working, every session ends, and the
+# first valid code from the new one confirms it at sign-in (kaagaz_op_login_succeeded).
+_ISSUE_SECRET = text(
+    "UPDATE operators SET totp_secret_enc = :s, totp_enabled_at = NULL, totp_last_step = NULL,"
+    " session_version = session_version + 1 WHERE id = :o"
+)
 
 
 def create(conn: Connection, *, email: str, display_name: str, password_hash: str) -> str:
-    """A new operator, not yet set up for two-step. Raises EmailTaken."""
+    """A new operator, with no two-step secret yet (``issue_secret``). Raises EmailTaken."""
     try:
         new_id = conn.execute(
             text(
@@ -102,9 +105,13 @@ def create(conn: Connection, *, email: str, display_name: str, password_hash: st
 
 
 def change(conn: Connection, statement: TextClause, email: str) -> str | None:
-    """``RESET_TOTP`` (also ends every session) or ``UNLOCK``. The id, or None."""
+    """``FIND`` (locks the row) or ``UNLOCK``. The operator's id, or None."""
     found = conn.execute(statement, {"e": email.strip().lower()}).scalar()
     return None if found is None else str(found)
+
+
+def issue_secret(conn: Connection, operator_id: str, sealed: str) -> None:
+    conn.execute(_ISSUE_SECRET, {"o": operator_id, "s": sealed})
 
 
 def record(
