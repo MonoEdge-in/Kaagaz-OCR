@@ -6,7 +6,9 @@
 // only while mounted: the caller renders it to open it and removes it to close
 // it. It focuses the field marked data-autofocus, closes on a backdrop click
 // (the same rule as the Drawer), and calls onClosed once it is shut, when the
-// page can take focus again.
+// page can take focus again. canClose, when given, can refuse a way of closing
+// (the Close button, Esc, a backdrop click), e.g. while a request runs; without
+// it every way closes, as before.
 
 import { useEffect, useEffectEvent, useId, useRef } from "react";
 import type { ReactNode } from "react";
@@ -14,14 +16,17 @@ import { isBackdropClick } from "@/components/ui/drawerLogic";
 import { IconButton } from "@/components/ui/IconButton";
 import styles from "./ActionDialog.module.css";
 
+export type CloseWay = "button" | "escape" | "backdrop";
+
 export interface ActionDialogProps {
   title: string;
   onClose(): void;
   onClosed?(): void;
+  canClose?(way: CloseWay): boolean;
   children: ReactNode;
 }
 
-export function ActionDialog({ title, onClose, onClosed, children }: ActionDialogProps) {
+export function ActionDialog({ title, onClose, onClosed, canClose = () => true, children }: ActionDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
   const titleId = useId();
@@ -47,13 +52,13 @@ export function ActionDialog({ title, onClose, onClosed, children }: ActionDialo
       onCancel={(event) => {
         // Esc: let the caller's state close it, so the two never disagree.
         event.preventDefault();
-        onClose();
+        if (canClose("escape")) onClose();
       }}
       onPointerDown={(event) => {
         pressTarget.current = event.target;
       }}
       onClick={(event) => {
-        if (isBackdropClick(pressTarget.current, event.target, event.currentTarget)) onClose();
+        if (isBackdropClick(pressTarget.current, event.target, event.currentTarget) && canClose("backdrop")) onClose();
         pressTarget.current = null;
       }}
     >
@@ -62,7 +67,7 @@ export function ActionDialog({ title, onClose, onClosed, children }: ActionDialo
           <h2 id={titleId} className={styles.title}>
             {title}
           </h2>
-          <IconButton icon="close" label="Close" className="btn-quiet" onClick={onClose} />
+          <IconButton icon="close" label="Close" className="btn-quiet" onClick={onClose} disabled={!canClose("button")} />
         </div>
         <div className={styles.body}>{children}</div>
       </div>

@@ -18,7 +18,7 @@ async function headersFor(path: string): Promise<Record<string, string>> {
 
 describe("response headers", () => {
   it("say no-store on every app page", async () => {
-    for (const path of ["/", "/login", "/admin/login", "/documents", "/documents/d-1", "/chat", "/admin"]) {
+    for (const path of ["/", "/login", "/admin/login", "/documents", "/documents/d-1", "/chat", "/admin", "/operator", "/operator/login"]) {
       expect((await headersFor(path))["Cache-Control"], path).toBe("no-store");
     }
   });

@@ -8,6 +8,8 @@ import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type { StoryMatchBody } from "./storyMatches";
 import type {
+  AdminChange,
+  AdminCreated,
   AdminUser,
   AuditEntry,
   ChatResponse,
@@ -24,8 +26,14 @@ import type {
   MySpot,
   MyStory,
   MyWord,
+  OperatorMe,
+  OrgAdmin,
+  Organisation,
+  OrganisationCreated,
   PageReadings,
   PasswordReset,
+  PlatformEvent,
+  PlatformHealth,
   ReviewChoice,
   ReviewItem,
   ReviewList,
@@ -404,3 +412,37 @@ export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);
+
+// --- the platform operator (super admin) -----------------------------------------
+// Its own cookie (path /api/operator), sent only to these routes.
+
+export const operatorLogin = (email: string, password: string, code: string) =>
+  request<OperatorMe>("POST", "/operator/login", { email, password, code });
+export const operatorLogout = () => request<void>("POST", "/operator/logout");
+export const operatorMe = () => request<OperatorMe>("GET", "/operator/me");
+export const listOrgs = () => request<{ items: Organisation[] }>("GET", "/operator/orgs");
+export const createOrg = (org: { name: string; admin_email: string; admin_name: string }) =>
+  request<OrganisationCreated>("POST", "/operator/orgs", org);
+/** Needs a fresh code from the operator's own authenticator (step-up). */
+export const disableOrg = (id: string, code: string) =>
+  request<unknown>("POST", `/operator/orgs/${id}/disable`, { code });
+export const enableOrg = (id: string) => request<unknown>("POST", `/operator/orgs/${id}/enable`);
+/** A disabled organisation, its name typed exactly (step-up); deleted after the grace period. */
+export const scheduleDelete = (id: string, name: string, code: string) =>
+  request<unknown>("POST", `/operator/orgs/${id}/schedule-delete`, { name, code });
+export const cancelDelete = (id: string, code: string) =>
+  request<unknown>("POST", `/operator/orgs/${id}/cancel-delete`, { code });
+export const listAdmins = (orgId: string) => request<{ items: OrgAdmin[] }>("GET", `/operator/orgs/${orgId}/admins`);
+export const createAdmin = (orgId: string, admin: { email: string; name: string; code: string }) =>
+  request<AdminCreated>("POST", `/operator/orgs/${orgId}/admins`, admin);
+/** Reset two-step needs a fresh code (step-up); the others none. */
+export const changeAdmin = (orgId: string, userId: string, change: AdminChange, code: string) =>
+  request<{ admin: OrgAdmin }>(
+    "POST",
+    `/operator/orgs/${orgId}/admins/${userId}/${change}`,
+    change === "reset-2fa" ? { code } : undefined,
+  );
+/** Newest first; `before` is the reply's `next` (a keyset cursor); `action` keeps the actions starting with it. */
+export const listActivity = (params: { before?: string; org?: string; action?: string }) =>
+  request<{ items: PlatformEvent[]; next: string | null }>("GET", `/operator/activity${query(params)}`);
+export const getHealth = () => request<PlatformHealth>("GET", "/operator/health");

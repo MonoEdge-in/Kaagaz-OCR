@@ -588,3 +588,82 @@ export interface MyStory {
   created_at: string;
   updated_at: string;
 }
+
+// --- The platform operator (super admin, PR 6). Not a customer user. -----------
+
+export interface OperatorMe {
+  operator: { id: string; email: string; name: string };
+  session: { expires_at: number }; // Unix seconds; the session lasts 30 minutes
+}
+
+export type OrgStatus = "active" | "disabled" | "deleting";
+
+/** One organisation in GET /operator/orgs: its metadata and counts only. */
+export interface Organisation {
+  id: string;
+  name: string;
+  status: OrgStatus;
+  disabled_at: string | null;
+  delete_after: string | null; // when it is deleted for good (status "deleting")
+  created_at: string;
+  users: { admins: number; reviewers: number; members: number };
+  documents: number;
+  pages: number;
+  storage_bytes: number;
+  last_activity_at: string | null;
+}
+
+/** POST /operator/orgs: the temporary password is in this one reply only. */
+export interface OrganisationCreated {
+  organisation: { id: string; name: string; admin: { email: string; name: string } };
+  temporary_password: string;
+}
+
+/** One admin of one organisation (GET /operator/orgs/{id}/admins). Never members or reviewers. */
+export interface OrgAdmin {
+  id: string;
+  name: string;
+  email: string;
+  two_step: boolean;
+  locked: boolean;
+  disabled: boolean;
+  must_change_password: boolean;
+  last_sign_in_at: string | null;
+  created_at: string;
+}
+
+export type AdminChange = "disable" | "enable" | "unlock" | "reset-2fa";
+
+/** POST /operator/orgs/{id}/admins: the temporary password is in this one reply only. */
+export interface AdminCreated {
+  admin: { id: string; email: string; name: string };
+  temporary_password: string;
+}
+
+/** One row of GET /operator/activity: no details, target id, person or document. */
+export interface PlatformEvent {
+  source: "organisation" | "platform";
+  at: string;
+  action: string;
+  organisation_id: string | null;
+  organisation_name: string | null;
+  target_type: string | null;
+  by: "user" | "operator" | "system";
+}
+
+type Counts = Record<string, number>;
+
+/** GET /operator/health: counts only. */
+export interface PlatformHealth {
+  organisations: {
+    id: string;
+    name: string;
+    status: OrgStatus;
+    documents_by_status: Counts;
+    failed_by_code: Counts;
+    in_progress: number;
+    oldest_in_progress_seconds: number | null;
+  }[];
+  totals: { documents_by_status: Counts; failed_by_code: Counts; in_progress: number; oldest_in_progress_seconds: number | null };
+  purges: { purged: number; last_purged_at: string | null; swept: number; last_swept_at: string | null };
+}
