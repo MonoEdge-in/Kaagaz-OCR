@@ -63,7 +63,7 @@ from kaagaz.reading.page_quality import (
 from kaagaz.reading.rapid_pool import PixelBox, RapidOcrPool
 from tests.settings_factory import make_settings
 
-MODEL = "gemini-3.1-pro-preview"
+MODEL = "google/gemini-3.1-pro-preview"
 W, H = 1000, 2000
 CUSTOMER = "11111111-1111-1111-1111-111111111111"
 DOCUMENT = "22222222-2222-2222-2222-222222222222"
@@ -810,7 +810,7 @@ class G7CacheTest(unittest.TestCase):
             read_one = again.engine.read_page(image, page_no=1)
             read_two = again.engine.read_page(image, page_no=2)
         (call,) = again.client.calls  # page 2 came from the cache: never billed again
-        self.assertEqual((call.media_resolution, call.thinking_level), ("ultra_high", "high"))
+        self.assertEqual((call.media_resolution, call.thinking_level), ("high", "high"))
         self.assertEqual([item.text for item in read_one.lines], ["harder read"])
         self.assertFalse(read_one.cached)
         self.assertTrue(read_two.cached)
