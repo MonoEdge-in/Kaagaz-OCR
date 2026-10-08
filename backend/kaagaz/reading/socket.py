@@ -21,7 +21,8 @@ Every span from either reader is checked before it leaves the socket: text
 present, a real cell or a box inside the page, a confidence that is None or
 between 0 and 1, and its layout fields (PRD 2 P4): a known kind and origin; a
 cell has no kind and no table; a table cell has all its table fields, and
-nothing else has any.
+nothing else has any. Its word marks (PRD 5 F3): a known quality and box
+source, set only on a span read by OCR.
 
 ``read`` takes an optional ``on_page`` callback. A reader that reads page by
 page (PDFs, scans and photos) calls it after each page, so a long reading
@@ -40,7 +41,17 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Protocol
 
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.spans import BLOCK_KINDS, ORIGINS, TABLE_ID, BoxLocation, CellLocation, ReadError, Span
+from kaagaz.reading.spans import (
+    BLOCK_KINDS,
+    BOX_SOURCES,
+    ORIGINS,
+    QUALITIES,
+    TABLE_ID,
+    BoxLocation,
+    CellLocation,
+    ReadError,
+    Span,
+)
 
 # After each page: how it was read (its route and why), or None when it was not read.
 OnPage = Callable[[RouteDecision | None], None]
@@ -118,7 +129,15 @@ def _is_valid(span: Span) -> bool:
         and isinstance(span.raw, str)
         and _is_valid_confidence(span.confidence)
         and _is_valid_layout(span)
+        and _is_valid_marks(span)
     )
+
+
+def _is_valid_marks(span: Span) -> bool:
+    """PRD 5 F3: a known quality and box source, and only on a span read by OCR."""
+    if not (_is_one_of(span.quality, QUALITIES) and _is_one_of(span.box_source, BOX_SOURCES)):
+        return False
+    return span.origin == "ocr" or (span.quality is None and span.box_source is None)
 
 
 def _is_valid_layout(span: Span) -> bool:

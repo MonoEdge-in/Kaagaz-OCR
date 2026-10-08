@@ -15,7 +15,7 @@ from kaagaz.db.pipeline_store import span_to_json
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.reading import ocr, spans
 from kaagaz.reading.ocr import OcrLine
-from kaagaz.reading.spans import BoxLocation, CellLocation, Span
+from kaagaz.reading.spans import BoxLocation, CellLocation, Span, location_to_json
 
 BOX = BoxLocation(2, 0.125, 0.25, 0.5, 0.375)
 NEW_KEYS = ("kind", "origin", "table_id", "row", "col", "header")
@@ -43,6 +43,15 @@ class SpanFieldsTest(unittest.TestCase):
             ),
         )
         self.assertEqual(spans.ORIGINS, frozenset({"cell", "text_layer", "ocr"}))
+
+    def test_the_word_marks_are_the_prds(self) -> None:
+        """PRD 5 F3: quality ok, unsure or illegible; box_source found or model (G5)."""
+        self.assertEqual(spans.QUALITIES, frozenset({"ok", "unsure", "illegible"}))
+        self.assertEqual(spans.BOX_SOURCES, frozenset({"found", "model"}))
+        span = Span("Total 500", "Total 500", BOX, origin="ocr")
+        self.assertEqual((span.quality, span.box_source), (None, None))
+        names = [field.name for field in dataclasses.fields(Span)]
+        self.assertEqual(names[-2:], ["quality", "box_source"])  # after the PRD 2 fields
 
     def test_the_new_fields_default_to_none(self) -> None:
         span = Span("Total 500", "Total 500", BOX)
@@ -82,12 +91,26 @@ class SpanJsonTest(unittest.TestCase):
         loaded = pipeline_store.span_from_json({**old, "confidence": None})
         self.assertEqual(loaded, Span("500", "500", CellLocation(1, 4, 2)))
 
+    def test_span_json_writes_the_word_marks_only_when_set(self) -> None:
+        """PRD 5 F3: like kind and origin, so every output stored before still loads."""
+        marked = span_to_json(Span("Patil", "Patil", BOX, None, "paragraph", "ocr", quality="unsure"))
+        self.assertEqual((marked["quality"], "box_source" in marked), ("unsure", False))
+        pinned = span_to_json(Span("Total 500", "Total 500", BOX, origin="ocr", box_source="found"))
+        self.assertEqual(("quality" in pinned, pinned["box_source"]), (False, "found"))
+        plain = span_to_json(Span("Total 500", "Total 500", BOX, origin="ocr"))
+        self.assertEqual([key for key in ("quality", "box_source") if key in plain], [])
+        old = {"text": "500", "raw": "500", "region": location_to_json(BOX), "confidence": None}
+        loaded = pipeline_store.span_from_json({**old, "origin": "ocr"})
+        self.assertEqual((loaded.quality, loaded.box_source), (None, None))
+
     def test_every_field_survives_a_round_trip_through_json_text(self) -> None:
         for span in (
             Span("Tax Invoice", "Tax Invoice", BOX, None, "heading", "ocr"),
             Span("Qty", "Qty", BOX, None, "table_cell", "ocr", table_id="t2", row=0, col=1, header=True),
             Span("500", "500", CellLocation(1, 4, 2), origin="cell"),
             Span("scan", "scan", BOX, 0.75),
+            Span("[?]", "[?]", BOX, None, "paragraph", "ocr", quality="illegible", box_source="model"),
+            Span("7/12", "7/12", BOX, None, "heading", "ocr", quality="ok", box_source="found"),
         ):
             with self.subTest(span=span):
                 stored = json.loads(json.dumps(span_to_json(span)))

@@ -261,6 +261,34 @@ class SpanValidationTest(unittest.TestCase):
                 self.read_one(span)
             self.assertEqual(ctx.exception.code, "invalid_reader_output")
 
+    def test_word_marks_are_checked_and_set_only_on_ocr_spans(self) -> None:
+        """PRD 5 F3: quality and box_source are validated in the socket."""
+        good = [
+            Span("a", "a", box(), kind="paragraph", origin="ocr", quality="unsure", box_source="found"),
+            Span("a", "a", box(), origin="ocr", quality="illegible"),
+            Span("a", "a", box(), origin="ocr", quality="ok", box_source="model"),
+            Span("a", "a", box(), None, "table_cell", "ocr", "t1", 0, 0, False, "ok", "found"),
+        ]
+        for span in good:
+            with self.subTest(span=span):
+                self.assertEqual(self.read_one(span), [span])
+        cell = CellLocation(1, 1, 1)
+        bad = {
+            "unknown quality": Span("a", "a", box(), origin="ocr", quality="blurry"),
+            "unknown box source": Span("a", "a", box(), origin="ocr", box_source="guessed"),
+            "a quality that is not a str": Span("a", "a", box(), origin="ocr", quality=cast(str, ["ok"])),
+            "a quality on a text layer line": Span("a", "a", box(), origin="text_layer", quality="unsure"),
+            "a box source on a text layer line": Span(
+                "a", "a", box(), origin="text_layer", box_source="found"
+            ),
+            "a quality on a cell": Span("a", "a", cell, origin="cell", quality="ok"),
+            "a box source on a cell": Span("a", "a", cell, box_source="model"),
+        }
+        for name, span in bad.items():
+            with self.subTest(name), self.assertRaises(ReadError) as ctx:
+                self.read_one(span)
+            self.assertEqual(ctx.exception.code, "invalid_reader_output")
+
     def test_confidence_outside_zero_to_one_is_refused(self) -> None:
         for confidence in (-0.01, 1.01, float("nan"), float("inf"), cast(float, True), cast(float, "0.5")):
             with self.subTest(confidence=confidence), self.assertRaises(ReadError) as ctx:

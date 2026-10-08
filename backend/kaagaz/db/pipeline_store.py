@@ -44,9 +44,10 @@ A reader output is stored as a JSON array of spans, each
 ``{"text", "raw", "region", "confidence"}`` with ``region`` as in
 kaagaz.reading.spans.location_to_json, plus ``"kind"``, ``"origin"``,
 ``"table_id"``, ``"row"``, ``"col"`` and ``"header"`` only when they are set
-(PRD 2 P4). Outputs stored before PRD 2 have none of them and still load
-(``span_from_json``). A table ``row`` is a top-level key, so it never mixes
-with a cell's ``region.row``, which is all ``listing.sheet_cells`` reads.
+(PRD 2 P4), and ``"quality"`` and ``"box_source"`` likewise (PRD 5 F3). Outputs
+stored before PRD 2 have none of them and still load (``span_from_json``). A table
+``row`` is a top-level key, so it never mixes with a cell's ``region.row``, which
+is all ``listing.sheet_cells`` reads.
 
 Cost per save: one family lock, 1 update, 5 deletes; per SAVE_CHUNK rows, one
 batched insert of pages and one of pieces (pipelined, a row each) and one insert
@@ -223,6 +224,8 @@ def span_to_json(span: Span) -> dict[str, Any]:
         "row": span.row,
         "col": span.col,
         "header": span.header,
+        "quality": span.quality,
+        "box_source": span.box_source,
     }
     data.update({key: value for key, value in optional.items() if value is not None})
     return data
@@ -241,6 +244,8 @@ def span_from_json(data: Mapping[str, Any]) -> Span:
         row=data.get("row"),
         col=data.get("col"),
         header=data.get("header"),
+        quality=data.get("quality"),
+        box_source=data.get("box_source"),
     )
 
 
