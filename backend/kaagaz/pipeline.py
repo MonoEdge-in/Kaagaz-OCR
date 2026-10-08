@@ -204,7 +204,9 @@ _WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
 # Security A8 (PROVISIONAL): at most this many value boxes of one document are
 # sent to the vision model; the values past it stay single_reader.
 MAX_VISION_CROPS = 200
-_BACKEND_NAME = re.compile(r"[a-z]{1,32}")  # "ocr", "storage", ...: a run's <backend>_unavailable
+# "ocr", "storage", "gemini_key", ...: a run's <backend>_unavailable (PRD 5 G6: a wrong key or a
+# spent cap is BackendUnavailable("gemini_key")).
+_BACKEND_NAME = re.compile(r"[a-z][a-z_]{0,31}")
 # The run config's keys for the marks a reader adds to its version: ";ocr_dpi=N" when a PDF
 # page was drawn below OCR_DPI to fit the pixel limits; with OCR_DPI_RULE (council 5 Oct
 # 2026), ";text_dpi=N", the rule's lowest DPI, and ";ocr_reread=N", the pages read twice.

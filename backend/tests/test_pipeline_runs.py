@@ -797,6 +797,20 @@ class EveryPathClosesItsRunTest(unittest.TestCase):
             system.processor(job, beat)
         self.assertEqual(self.closed(system, job), [("failed", "ocr_unavailable")])
 
+    def test_a_named_backend_with_an_underscore_keeps_its_name_in_the_code(self) -> None:
+        """PRD 5 G6: a wrong Gemini key or a spent cap is BackendUnavailable("gemini_key"),
+        so the run says gemini_key_unavailable, not the catch-all backend_unavailable."""
+
+        class KeyProblem(TimedOcr):
+            def read(self, image: Image.Image) -> list[OcrLine]:
+                raise BackendUnavailable("gemini_key")
+
+        system = rig(ocr=KeyProblem)
+        job = system.job(make_pdf([SCANNED]))
+        with self.assertRaises(BackendUnavailable):
+            system.processor(job, beat)
+        self.assertEqual(self.closed(system, job), [("failed", "gemini_key_unavailable")])
+
     def test_a_backend_that_is_down_clears_the_progress(self) -> None:
         """Council of 5 Oct 2026: OCR stops page 1; the job waits for its lease to come
         back, so no stale "Reading page 1" is left on the document meanwhile."""
