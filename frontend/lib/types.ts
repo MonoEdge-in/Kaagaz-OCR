@@ -225,8 +225,9 @@ export interface PageSummary {
   route: PageRoute | null; // null: not read (yet)
   effective_dpi: number | null; // of the largest image on the page; null when it has none
   low_resolution: boolean; // effective_dpi under LOW_RES_DPI; PRD 3 shows the warning
-  // PRD 5 RT2: the reading model's ID, "rapidocr" (the backup reader), "text_layer" or
-  // "cells"; null for a blank page or one read before PRD 5.
+  // PRD 5 RT2: the reading engine's ID (the model's, "rapidocr" or "paddleocr_vl"),
+  // "text_layer" or "cells"; null for a blank page or one read before PRD 5. A page the
+  // main reader handed to the backup reader has read_locally or reader_refused in read_issues.
   read_by: string | null;
   read_quality: ReadQuality; // F1
   read_issues: ReadIssue[]; // F1; [] when good

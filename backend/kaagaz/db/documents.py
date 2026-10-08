@@ -30,12 +30,14 @@ Read one page again, harder (PRD 5 F5): a queue job carries only a document id, 
 ``request_page_read_again`` marks the page (``pages.read_again_requested_at``, 0021)
 in the same transaction as ``mark_for_reprocess``, and the worker asks which pages
 are marked (``pages_to_read_again``). The save that replaces the pages clears the
-marks (kaagaz.db.pipeline_store); ``clear_read_again`` clears them when a run ends
-without one, behind the run fence like ``clear_progress``. "Keep as is" (F5) is
-``accept_page``.
+marks (kaagaz.db.pipeline_store); a document that fails for good (``set_failed``,
+``mark_exhausted``) clears them in the same transaction as its failure, under the
+family lock. A request is refused while the document is being read, and accepted
+once its failure has committed, so no request can land between the failure and the
+clearing and lose its mark. "Keep as is" (F5) is ``accept_page``.
 
-A document may name its upload batch (``batch_id``, PRD 5 Q1, 0021): the browser's
-id for one drop of files, an optional parameter of the inserts.
+``documents.batch_id`` (PRD 5 Q1, 0021) is written by pull request 2's batches; no
+insert here sets it yet.
 """
 
 import dataclasses
@@ -354,8 +356,8 @@ _NEXT_VERSION = (
 
 _INSERT_VERSION = (
     "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
-    " uploaded_by, folder_id, family_id, version_no, is_current, ocr_choice, batch_id)"
-    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false, :ocr, :batch)"
+    " uploaded_by, folder_id, family_id, version_no, is_current, ocr_choice)"
+    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false, :ocr)"
     " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
 )
 
@@ -369,10 +371,10 @@ _COPY_TAGS = (
 
 
 def add_version(
-    conn: Connection, record: DocumentRecord, *, of_document_id: str, batch_id: str | None = None
+    conn: Connection, record: DocumentRecord, *, of_document_id: str
 ) -> tuple[DocumentRecord, bool] | None:
     """``DocumentRepository.add_version_if_absent`` on a connection from
-    ``Database.customer(record.customer_id)``, in upload batch ``batch_id`` (Q1) when given.
+    ``Database.customer(record.customer_id)``.
 
     The family lock (``trash.lock_family``) comes first, so a second new version
     waits, then sees this one and takes the next number (the unique index
@@ -404,7 +406,6 @@ def add_version(
         folder=stored.folder_id,
         version=stored.version_no,
         ocr=stored.ocr_choice,
-        batch=batch_id,
     )
     if conn.execute(text(_INSERT_VERSION), params).first() is None:  # this customer has these bytes
         row = conn.execute(text(_SELECT + " AND sha256 = :h"), params).one()
@@ -441,12 +442,9 @@ class PgDocuments:
             ).first()
         return None if row is None else _record(row)
 
-    def add_if_absent(
-        self, record: DocumentRecord, *, batch_id: str | None = None
-    ) -> tuple[DocumentRecord, bool]:
+    def add_if_absent(self, record: DocumentRecord) -> tuple[DocumentRecord, bool]:
         """Atomic per (customer, fingerprint): the unique index decides the race.
-        Raises UnknownFolder when the record's folder is not this customer's. A new
-        row is in upload batch ``batch_id`` (Q1) when given; an existing one keeps its own."""
+        Raises UnknownFolder when the record's folder is not this customer's."""
         with unavailable(), self._db.customer(record.customer_id) as conn:
             params = {
                 "d": record.document_id,
@@ -460,15 +458,13 @@ class PgDocuments:
                 "family": record.family_id or record.document_id,
                 "version": record.version_no,
                 "ocr": record.ocr_choice,
-                "batch": batch_id,
             }
             try:
                 inserted = conn.execute(
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice, batch_id)"
-                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version, :ocr,"
-                        " :batch)"
+                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice)"
+                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version, :ocr)"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,
@@ -486,11 +482,11 @@ class PgDocuments:
         return _record(row), False
 
     def add_version_if_absent(
-        self, record: DocumentRecord, *, of_document_id: str, batch_id: str | None = None
+        self, record: DocumentRecord, *, of_document_id: str
     ) -> tuple[DocumentRecord, bool] | None:
         """``add_version`` in its own transaction."""
         with unavailable(), self._db.customer(record.customer_id) as conn:
-            return add_version(conn, record, of_document_id=of_document_id, batch_id=batch_id)
+            return add_version(conn, record, of_document_id=of_document_id)
 
     def remove(self, record: DocumentRecord) -> None:
         with unavailable(), self._db.customer(record.customer_id) as conn:
@@ -537,7 +533,11 @@ class PgDocuments:
         but keeps its code so the file list can say why. With ``run_id``, raise
         Superseded and change nothing unless that run is still open (the run fence,
         read under the family lock), so a stale delivery (a newer run has started,
-        after a "read again", say) never fails the document."""
+        after a "read again", say) never fails the document.
+
+        A document failed for good keeps no read-again mark (F5): they are cleared in
+        this transaction, so a page asked to be read again after it commits (the
+        document is failed, so it may be read again) keeps its mark for the next run."""
         with unavailable(), self._db.customer(customer_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
@@ -552,6 +552,7 @@ class PgDocuments:
                 ),
                 {"code": code, "c": customer_id, "d": document_id},
             )
+            conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})
 
     def mark_ready(
         self, customer_id: str, document_id: str, page_count: int, *, run: "FinishedRun | None" = None
@@ -614,19 +615,6 @@ class PgDocuments:
             rows = conn.execute(text(_PAGES_TO_READ_AGAIN), {"c": customer_id, "d": document_id})
             return tuple(int(row[0]) for row in rows)
 
-    def clear_read_again(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
-        """Clear this document's read-again marks (F5) when a run ends without the save
-        that clears them (it failed), so no mark waits for a later read. With
-        ``run_id``, the run fence, as ``clear_progress``: under the family lock, change
-        nothing unless that run is still open, so a stale delivery never clears a newer
-        request. Its own short transaction, one statement (three with the fence)."""
-        with unavailable(), self._db.customer(customer_id) as conn:
-            if run_id is not None:
-                lock_family(conn, customer_id, document_id)
-                if not is_run_open(conn, customer_id, document_id, run_id):
-                    return
-            conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})
-
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(
@@ -659,7 +647,8 @@ class PgDocuments:
         recorded try is under ``max_attempts``: after "read again" the tries start
         again, so an old job's last delivery must not fail the new one. When it changes,
         its runs still ``running`` end failed with ``retries_exhausted`` at
-        ``now`` (AR11), in the same transaction.
+        ``now`` (AR11), and its read-again marks are cleared (F5, as ``set_failed``),
+        in the same transaction.
         """
         with unavailable(), self._db.customer(customer_id) as conn:
             marked = conn.execute(
@@ -674,3 +663,4 @@ class PgDocuments:
                 close_running(
                     conn, customer_id, document_id, status="failed", error_code="retries_exhausted", now=now
                 )
+                conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})

@@ -71,6 +71,39 @@ class CheckerAgreementTest(unittest.TestCase):
         self.assertEqual(unread.label_reason, "ocr_script")
 
 
+class SharedBoxTest(unittest.TestCase):
+    """PRD 5 section 12: two lines on one found box both keep it, and their values stay
+    needs review unless the checker agrees."""
+
+    def two_in_one_box(self) -> list[ExtractedValue]:
+        return [ocr_value("1,180.00"), ocr_value("Sharma Traders", field="party_name")]
+
+    def test_a_value_the_checker_agrees_with_is_verified(self) -> None:
+        total, party = label_values(self.two_in_one_box(), None, {BOX: "1,180.00"}, checked={BOX})
+        self.assertEqual(reason(total), ("verified", "readers_agree", "1,180.00"))
+        # The checker read the other line's value: no disagreement, only no reading of its own.
+        self.assertEqual(reason(party), ("needs_review", "single_reader", None))
+
+    def test_a_devanagari_value_the_checker_reads_exactly_is_verified(self) -> None:
+        values = [ocr_value("1,180.00"), ocr_value("रामचंद्र पाटील", field="party_name")]
+        total, party = label_values(values, None, {BOX: "रामचंद्र पाटील"}, checked={BOX})
+        self.assertEqual(reason(party), ("verified", "readers_agree", "रामचंद्र पाटील"))
+        self.assertEqual(reason(total), ("needs_review", "single_reader", None))
+
+    def test_a_located_value_follows_the_same_rule(self) -> None:
+        values = [
+            ExtractedValue("line:1", "total_amount", "1,180.00", "1,180.00", BOX, origin="ocr"),
+            ExtractedValue("line:1", "buyer_name", "Patil Stores", "Patil Stores", BOX, origin="ocr"),
+        ]
+        total, buyer = label_quoted(values, None, {BOX: "1,180.00"}, checked={BOX})
+        self.assertEqual((total.label_reason, buyer.label_reason), ("readers_agree", "single_reader"))
+
+    def test_a_vision_reading_of_a_shared_box_still_verifies_nothing(self) -> None:
+        """Only the checker's reading (``checked``): a vision reading keeps ML amendment 1."""
+        total, party = label_values(self.two_in_one_box(), None, {BOX: "1,180.00"})
+        self.assertEqual((total.label_reason, party.label_reason), ("single_reader", "single_reader"))
+
+
 class ReadingMarksTest(unittest.TestCase):
     """V4, G5 and Q7, after the labellers."""
 

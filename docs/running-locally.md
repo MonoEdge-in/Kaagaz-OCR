@@ -36,11 +36,15 @@ are too short on purpose, so nothing starts until you do. Run this twice:
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-`MODEL_ENABLED=false` (the default) runs everything with no AI. To use
-Ollama, pull the models first, then set it to `true`: `ollama pull qwen3.5:4b`
-(`MODEL_CHAT` and `MODEL_VISION`) and `ollama pull qwen3-embedding:0.6b`
-(`MODEL_EMBED`, whose vectors have `EMBEDDING_DIM` 1024), the models in
-docs/architecture.md, Decisions.
+`MODEL_ENABLED=false` (the default) runs everything with no AI. The Gemini
+reader and chat use the configured `OCR_MODEL` and `MODEL_CHAT` through
+OpenRouter. They require Vrushit's third-party approval and an
+`OPENROUTER_API_KEY` in the server's `.env`; do not use a free-tier key.
+`MODEL_EMBED` remains `qwen3-embedding:0.6b` through Ollama until PR3, so
+model-backed runs also need that embedding model available locally. For a
+local-only model setup, set `MODEL_CHAT` to `qwen3.5:4b` as well and pull the
+Ollama models with `ollama pull qwen3.5:4b` and
+`ollama pull qwen3-embedding:0.6b`.
 With the model on, the worker reads each document's card with `MODEL_CHAT`
 (PRD 2): a reply may take up to `MODEL_CARD_MAX_TOKENS` tokens, in a window of
 `MODEL_NUM_CTX`, and one card call times out after

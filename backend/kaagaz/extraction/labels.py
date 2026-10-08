@@ -20,8 +20,10 @@ The reasons (the ``label_reason`` column):
   model listed as unsure, or [?]. Needs review, even if the checker agrees.
 * ``box_unanchored`` (PRD 5 G5): the value's line could not be pinned to a box
   RapidOCR's text finder found, so its box is the model's own. Needs review.
-* ``local_reader`` (PRD 5 Q7): the page was read by RapidOCR while the main
-  reader was down. Needs review, and the page is read again later.
+* ``local_reader`` (PRD 5 Q7, G6): the reading model handed the page to RapidOCR,
+  while it was down or after it declined the page (the page's issues say
+  read_locally or reader_refused, never its ``read_by``: a page read with no key is
+  not one). Needs review, and the page is read again later.
 
 PRD 5's checker (V1 to V4): on a page the reading model read, the pipeline crops
 each value's box and RapidOCR reads it (``checked``, the boxes it read). V2's
@@ -45,7 +47,8 @@ Two labellers (ML amendment 2):
 * ``label_values``, for the values the rules found (cells and ``labelled.py``):
   the rules above. For a value read by OCR, ML amendment 1 adds: ``ocr_script``
   first; a box that holds more than one value is ``single_reader`` (its reading
-  is not this value's own); and the reading must equal the value after the D2
+  is not this value's own), unless PRD 5's checker read it and agrees with the
+  value (section 12: two lines on one found box); and the reading must equal the value after the D2
   normalising too (``quotes.normalise_quote``: NFKC, Devanagari digits), never
   just contain it. An OCR value's only second reading is the vision reading of
   its box, never a second-reader line (council fix 1: a hidden text layer under
@@ -201,16 +204,29 @@ def _label_ocr(
     """ML amendment 1 for a value read by OCR: its only second reading is the vision
     reading of its box (council fix 1), or PRD 5's checker's. V3: a value whose only
     untrusted letters are Devanagari is compared with the checker's reading of its own
-    box (exact agreement, V2); with no such reading it stays ``ocr_script``."""
+    box (exact agreement, V2); with no such reading it stays ``ocr_script``.
+
+    A box that holds more than one value (``shared``; PRD 5 section 12: two lines on one
+    found box) is ``single_reader``, or ``ocr_script``, unless the checker read it and
+    agrees with this value (``_checker_agrees``); its reading holds the other value too,
+    so a difference is no disagreement."""
     vision = (readings or {}).get(box)
+    checker = vision if box in checked else None
     if _script_unsound(value.value_text):
         devanagari_only = not ocr_script_suspect(value.value_text)
-        if box in checked and vision is not None and box not in shared and devanagari_only:
-            return _compare(value, vision)
+        if checker is not None and devanagari_only and (box not in shared or _checker_agrees(value, checker)):
+            return _compare(value, checker)
         return _needs_review(value, "ocr_script", _after_label(value, vision))
     if box in shared:
+        if checker is not None and _checker_agrees(value, checker):
+            return _compare(value, checker)
         return _needs_review(value, "single_reader", None)
     return _compare(value, vision)
+
+
+def _checker_agrees(value: ExtractedValue, reading: str) -> bool:
+    """The checker's reading of the box equals the value (``_compare``'s rule)."""
+    return _compare(value, reading).label == VERIFIED
 
 
 def _lines_by_page(second: Sequence[Span] | None) -> _Lines:
@@ -340,7 +356,8 @@ def label_reading_marks(
     values: Iterable[ExtractedValue], lines: Mapping[BoxLocation, LineMarks], local_pages: Collection[int]
 ) -> list[ExtractedValue]:
     """PRD 5's reasons for values read by OCR (the module notes), after ``label_values``
-    and ``label_quoted``: ``local_reader`` on a page in ``local_pages`` (Q7), then
+    and ``label_quoted``: ``local_reader`` on a page in ``local_pages`` (Q7: the pages
+    the reading model handed to its local reader, by their issues), then
     ``unsure_text`` when the value has ``[?]`` or a word of its line's unsure words (V4),
     then ``box_unanchored`` when its line is unpinned (G5). ``lines`` are the marks by the
     line's box, the value's own location. A card value and every value with none of these

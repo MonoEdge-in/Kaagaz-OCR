@@ -104,9 +104,10 @@ The Gemini reader (PRD 5), when the processor is given its parts:
   (``page_cache``, ``PgPageReads``) and the pages a user asked to read again
   (``read_again.pages_to_read_again``), and it is closed when the reading ends,
   whatever happened, before the next job. The save that replaces the pages clears
-  those marks; a document that fails for good clears them too
-  (``clear_read_again``, fenced, best effort: ``read_again_not_cleared``); a try a
-  backend stopped keeps them, so the next try still reads those pages harder.
+  those marks; a document that fails for good clears them too, in the transaction
+  that marks it failed (``set_failed``), so a page asked to be read again once the
+  failure is seen keeps its mark; a try a backend stopped keeps them, so the next
+  try still reads those pages harder.
 * Each page's ``PageRead`` (``ocr_meter.take_page_reads``) gives its reading
   result (RT2, F1, F2): ``read_by``, ``read_quality``, ``read_issues`` and the
   counts; the pipeline adds low_resolution and readers_disagree (an ocr page
@@ -125,10 +126,19 @@ The Gemini reader (PRD 5), when the processor is given its parts:
   At most ``max_check_crops`` (MAX_CHECK_CROPS) boxes of one document, both kinds
   together; the run's ``vision_crops`` and ``model_vision`` now hold the checker's
   crop count and name. Then the labels (V2, V3) and ``label_reading_marks`` (V4,
-  G5, Q7: unsure_text, box_unanchored, local_reader).
+  G5, Q7: unsure_text, box_unanchored, local_reader). local_reader and pages_local
+  key on the page's issues (``HANDED_ON``: read_locally or reader_refused), never on
+  ``read_by``: a page read with no key is read by RapidOCR too, and is not "local".
 * The run's reader counters (``kaagaz.db.runs.READER_COUNTERS``) come from the page
-  reads: pages read by the model and not cached, read locally (rapidocr), taken
-  from the cache, read again on request, unreadable, and the tokens billed.
+  reads: pages read by the model and not cached, handed to the local reader, taken
+  from the cache, read again on request, unreadable, and the tokens billed. The
+  run's tokens (G9) add the model client's own calls in the job (the card, the
+  invoice windows, vision crops, embeddings): ``model_usage`` read when the run
+  starts and when it ends, the difference. A worker runs one job at a time
+  (worker_main.run_until_stopped; its sweeps run between jobs), and the page reader
+  has its own client, so the difference is this job's calls and no page twice.
+  ``model_vision`` names the model that read the crops: OCR_MODEL when the chat
+  model is on OpenRouter (``read_image`` reads with it), else MODEL_VISION.
 * ``BackendUnavailable("gemini")`` (an outage) and ``BackendUnavailable("gemini_key")``
   (a wrong key or a spent cap, logged at error) come out of the reading as any
   backend that is down: the document waits for the next try, nothing falls back
@@ -154,7 +164,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from importlib import metadata
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from PIL import Image
 
@@ -203,7 +213,14 @@ from kaagaz.jobs.ports import LeaseLost
 from kaagaz.jobs.worker import Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.reading.ocr import LOCAL_READ_BY, DocumentPages, PageCache, PageRead, is_word_mark
-from kaagaz.reading.page_quality import ISSUES, LOW_RESOLUTION, READ_LOCALLY, READERS_DISAGREE, grade
+from kaagaz.reading.page_quality import (
+    ISSUES,
+    LOW_RESOLUTION,
+    READ_LOCALLY,
+    READER_REFUSED,
+    READERS_DISAGREE,
+    grade,
+)
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage
 from kaagaz.reading.spans import (
@@ -225,6 +242,7 @@ from kaagaz.scanning.gate import (
     StatusStore,
     require_clean,
 )
+from kaagaz.settings import is_gemini_model
 
 if TYPE_CHECKING:
     from kaagaz.ai.client import ModelClient
@@ -373,7 +391,8 @@ class RunTotals:
     values_needs_review: int = 0
     config: Mapping[str, Any] = field(default_factory=dict)  # how the run was set up, plain JSON (ML10)
     # PRD 5 (kaagaz.db.runs.READER_COUNTERS): pages read by the reading model and billed, read
-    # locally, taken from the page cache, read again on request and unreadable; tokens billed.
+    # locally, taken from the page cache, read again on request and unreadable; tokens billed:
+    # the page reads' and the model client's own calls in the job (G9).
     pages_gemini: int = 0
     pages_local: int = 0
     pages_cached: int = 0
@@ -399,7 +418,8 @@ class DocumentStore(Protocol):
     def get(self, customer_id: str, document_id: str) -> DocumentRecord | None: ...
 
     def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
-        """Failed with ``code``. With ``run_id``, raise Superseded and change nothing
+        """Failed with ``code``, and the document's read-again marks (PRD 5 F5) cleared
+        in the same transaction. With ``run_id``, raise Superseded and change nothing
         unless that run is still open (the run fence)."""
         ...
 
@@ -475,10 +495,6 @@ class ReadAgainStore(Protocol):
     again, harder (PRD 5 F5)."""
 
     def pages_to_read_again(self, customer_id: str, document_id: str) -> tuple[int, ...]: ...
-
-    def clear_read_again(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
-        """With ``run_id``, change nothing unless that run is still open (the run fence)."""
-        ...
 
 
 class Checker(Protocol):
@@ -556,6 +572,24 @@ class VisionModel(Protocol):
     def read_image(self, *, png: bytes, instruction: str) -> str: ...
 
 
+class TokenUsage(Protocol):
+    """kaagaz.ai.openrouter.Usage in production: tokens counted so far (G9)."""
+
+    @property
+    def input_tokens(self) -> int: ...
+
+    @property
+    def output_tokens(self) -> int: ...
+
+
+@runtime_checkable
+class CountsTokens(Protocol):
+    """A model client that counts the tokens of its replies (G9):
+    kaagaz.ai.openrouter.OpenRouterClient in production."""
+
+    def usage(self) -> TokenUsage: ...
+
+
 class ProcessorStorage(BlobStorage, Quarantine, PageImageStore, Protocol):
     """What build_processor needs from file storage (kaagaz.adapters.storage.S3Storage)."""
 
@@ -601,6 +635,7 @@ class _Run:
     read_again: frozenset[int] = frozenset()
     checker_crops: int = 0
     pages_unreadable: int = 0
+    model_tokens_at_start: tuple[int, int] = (0, 0)  # the model client's (input, output) then
 
 
 class DocumentProcessor:
@@ -638,6 +673,7 @@ class DocumentProcessor:
         checker_model: str | None = None,
         page_cache: PageCache | None = None,
         read_again: ReadAgainStore | None = None,
+        model_usage: Callable[[], TokenUsage] | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         ``vision`` reads scanned boxes again. Either failing with one of
@@ -661,7 +697,9 @@ class DocumentProcessor:
         the model's); ``checker`` reads the boxes of those pages again, at most
         ``max_check_crops`` boxes with the vision model's, and ``checker_model`` is the
         name a run records when it did; ``page_cache`` is the page cache opened around
-        each document's reading, and ``read_again`` says which pages to read harder."""
+        each document's reading, and ``read_again`` says which pages to read harder.
+        ``model_usage`` is the model client's tokens counted so far (G9,
+        ``CountsTokens.usage``): a run adds what its job's calls added."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -699,6 +737,7 @@ class DocumentProcessor:
         self._checker_model = checker_model
         self._page_cache = page_cache
         self._read_again = read_again
+        self._model_usage = model_usage
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -726,8 +765,6 @@ class DocumentProcessor:
             if not failure.retryable and not self._record_failure(job, failure.code, run):
                 self._close_run(job, run, "superseded", None)
                 return  # a newer run has started: this stale delivery fails nothing
-            if not failure.retryable:
-                self._clear_read_again(job, run, failure.code)  # no mark waits for a later read
             status = "rejected" if failure.code in REJECTION_CODES else "failed"
             self._close_run(job, run, status, failure.code)
             raise
@@ -857,13 +894,15 @@ class DocumentProcessor:
         )
         values = label_values(rule, compared, readings, also_located=quoted, checked=checked)
         values += label_quoted(quoted, compared, readings, also_located=rule, checked=checked)
-        local = {page_no for page_no, read in run.page_reads.items() if READ_LOCALLY in read.issues}
-        values = label_reading_marks(values, marks, local)  # V4, G5, Q7
+        # The checker's disagreements (F2) are counted before the reading marks may give
+        # those values another reason (V4, G5, Q7), so the page keeps readers_disagree.
         disputed = Counter(
             value.location.page
             for value in values
             if value.label_reason == "readers_disagree" and isinstance(value.location, BoxLocation)
         )
+        local = {page_no for page_no, read in run.page_reads.items() if _handed_on(read)}
+        values = label_reading_marks(values, marks, local)  # V4, G5, Q7
         pages = _with_results(pages, run.page_reads, disputed)
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
@@ -1116,19 +1155,6 @@ class DocumentProcessor:
         if read and all(page.read_quality == "unreadable" for page in read):
             raise JobFailed("unreadable", retryable=False)
 
-    def _clear_read_again(self, job: Job, run: _Run, code: str) -> None:
-        """Clear the document's read-again marks (F5) when it failed for good, fenced by
-        this run. Best effort: a database that is down is logged with the failure's code."""
-        if self._read_again is None:
-            return
-        try:
-            self._read_again.clear_read_again(job.customer_id, job.document_id, run_id=run.run_id)
-        except BackendUnavailable:
-            _log.warning(
-                "read_again_not_cleared",
-                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": code},
-            )
-
     # --- runs and progress (R6, X2, X3) -----------------------------------------
 
     def _start_run(self, job: Job) -> _Run:
@@ -1140,7 +1166,14 @@ class DocumentProcessor:
         run_id, now = None, self._clock()
         if self._runs is not None:
             run_id = self._runs.start(job.customer_id, job.document_id, now=now)
-        return _Run(run_id, self._timer(), started_at=now)
+        return _Run(run_id, self._timer(), started_at=now, model_tokens_at_start=self._model_tokens())
+
+    def _model_tokens(self) -> tuple[int, int]:
+        """The model client's (input, output) tokens so far (G9); (0, 0) without a count."""
+        if self._model_usage is None:
+            return 0, 0
+        usage = self._model_usage()
+        return usage.input_tokens, usage.output_tokens
 
     def _finished(self, run: _Run, status: str, error_code: str | None) -> FinishedRun | None:
         """The run as it ends now, with everything it counted; None without runs.
@@ -1159,6 +1192,10 @@ class DocumentProcessor:
             checked_by = self._vision_model
         else:
             checked_by = None
+        counters = _reader_counters(page_reads, self._ocr_model, run.read_again)
+        model_in, model_out = self._model_tokens()
+        counters["input_tokens"] += max(0, model_in - run.model_tokens_at_start[0])
+        counters["output_tokens"] += max(0, model_out - run.model_tokens_at_start[1])
         totals = RunTotals(
             status=status,
             error_code=error_code,
@@ -1186,7 +1223,7 @@ class DocumentProcessor:
                 **run.ocr_choice,
                 **_step_seconds(run, ended),
             },
-            **_reader_counters(page_reads, self._ocr_model, run.read_again),
+            **counters,
             pages_unreadable=run.pages_unreadable,
         )
         return FinishedRun(run.run_id, totals, self._clock())
@@ -1417,7 +1454,8 @@ def _reader_counters(
 ) -> dict[str, int]:
     """A run's reader counters (``kaagaz.db.runs.READER_COUNTERS``) but pages_unreadable,
     from its page reads: pages the reading model read and billed (not from the cache),
-    pages read locally, pages from the cache, pages read again on request by the model,
+    pages the reading model handed to its local reader (``_handed_on``: a page read with
+    no key, or by another engine, is not one), pages from the cache, pages read again on request by the model,
     and the tokens billed. With no ``ocr_model`` no page is the model's. O(pages)."""
     reads = list(page_reads.items())
     billed = [
@@ -1425,12 +1463,23 @@ def _reader_counters(
     ]
     return {
         "pages_gemini": len(billed),
-        "pages_local": sum(read.read_by == LOCAL_READ_BY for _, read in reads),
+        "pages_local": sum(_handed_on(read) for _, read in reads),
         "pages_cached": sum(read.cached for _, read in reads),
         "pages_read_again": sum(page_no in read_again for page_no in billed),
         "input_tokens": sum(read.input_tokens for _, read in reads),
         "output_tokens": sum(read.output_tokens for _, read in reads),
     }
+
+
+HANDED_ON: frozenset[str] = frozenset({READ_LOCALLY, READER_REFUSED})
+"""The issues of a page the reading model handed to its local reader (Q7, G6): read
+while the model was down, or after it declined the page or sent a bad reply."""
+
+
+def _handed_on(read: PageRead) -> bool:
+    """The page was read by the backup reader for the reading model (``HANDED_ON``),
+    whatever engine read it: never a page read with no key, nor by PaddleOCR-VL."""
+    return not HANDED_ON.isdisjoint(read.issues)
 
 
 def _line_marks(spans: Sequence[Span]) -> tuple[dict[BoxLocation, LineMarks], dict[BoxLocation, str]]:
@@ -1621,7 +1670,7 @@ def build_processor(
             "max_check_crops": settings.max_check_crops,
             **(model_config(settings) if model is not None else {}),
         },
-        vision_model=settings.model_vision if vision is not None else None,
+        vision_model=_vision_name(settings) if vision is not None else None,
         embed_model=settings.model_embed if embed is not None else None,
         chat=model,
         chat_model=settings.model_chat if model is not None else None,
@@ -1633,7 +1682,16 @@ def build_processor(
         checker_model=_checker_name() if gemini else None,
         page_cache=PgPageReads(db) if gemini else None,  # keyless: no query a job, as before
         read_again=documents,
+        model_usage=model.usage if isinstance(model, CountsTokens) else None,
     )
+
+
+def _vision_name(settings: "Settings") -> str | None:
+    """The model a run records for its vision crops (``model_vision``): OCR_MODEL when the
+    chat model is on OpenRouter, whose ``read_image`` reads with it (G9), else MODEL_VISION."""
+    if is_gemini_model(settings.model_chat):
+        return settings.ocr_model
+    return settings.model_vision
 
 
 def _checker_name() -> str:

@@ -1,12 +1,11 @@
-"""Read one page again and Keep as is (PRD 5 F5), and the upload batch (Q1), in
-kaagaz.db.documents against a real PostgreSQL (migration 0021).
+"""Read one page again and Keep as is (PRD 5 F5), in kaagaz.db.documents against a
+real PostgreSQL (migration 0021).
 
 A page is marked only on this customer's document out of Trash; the worker reads the
-marks in page order; a run that ends without a save clears them behind the run fence,
-like ``clear_progress``. A document stores the batch it came in.
+marks in page order; a failure for good (``set_failed``, ``mark_exhausted``) clears them
+in its own transaction, behind the run fence, so a request after it keeps its mark.
 """
 
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -16,7 +15,8 @@ from kaagaz.db.documents import PgDocuments, accept_page, request_page_read_agai
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns
-from kaagaz.ingestion.ports import DocumentRecord
+from kaagaz.jobs.worker import Superseded
+from kaagaz.scanning.gate import DocumentStatus
 from tests.db_support import new_customer, new_trashed_document
 from tests.test_pipeline_store_db import content, new_document, rows
 
@@ -26,7 +26,6 @@ T0 = datetime(2026, 10, 8, 10, 0, tzinfo=UTC)
 T1 = T0 + timedelta(minutes=5)
 MARKS = "SELECT page_no, read_again_requested_at FROM pages WHERE document_id = :d ORDER BY page_no"
 ACCEPTED = "SELECT page_no, accepted_by::text, accepted_at FROM pages WHERE document_id = :d ORDER BY page_no"
-BATCH = "SELECT batch_id::text FROM documents WHERE id = :d"
 
 
 def _read(db: Database) -> tuple[str, str, str]:
@@ -76,8 +75,9 @@ def test_no_page_of_a_document_in_trash_or_of_another_customer_is_marked(db: Dat
     assert PgDocuments(db).pages_to_read_again(customer, binned) == ()
 
 
-def test_clearing_the_marks_is_fenced_by_the_run(db: Database) -> None:
-    """A stale delivery never clears a newer request; the open run, or no fence, does."""
+def test_a_failure_for_good_clears_the_marks_with_it_behind_the_run_fence(db: Database) -> None:
+    """FY2: set_failed clears the marks in its own transaction, so a request made once the
+    failure has committed keeps its mark; a stale delivery changes nothing at all."""
     customer, _, doc = _read(db)
     with db.customer(customer) as conn:
         assert request_page_read_again(conn, customer, doc, 1, now=T0)
@@ -85,14 +85,25 @@ def test_clearing_the_marks_is_fenced_by_the_run(db: Database) -> None:
     new = PgRuns(db).start(customer, doc, now=T1)
     documents = PgDocuments(db)
 
-    documents.clear_read_again(customer, doc, run_id=old)
+    with pytest.raises(Superseded):
+        documents.set_failed(customer, doc, "unreadable", run_id=old)
     assert documents.pages_to_read_again(customer, doc) == (1,)
-    documents.clear_read_again(customer, doc, run_id=new)
+    documents.set_failed(customer, doc, "unreadable", run_id=new)
     assert documents.pages_to_read_again(customer, doc) == ()
 
-    with db.customer(customer) as conn:
+    with db.customer(customer) as conn:  # the request the API accepts once it sees "failed"
         assert request_page_read_again(conn, customer, doc, 2, now=T1)
-    documents.clear_read_again(customer, doc)
+    assert documents.pages_to_read_again(customer, doc) == (2,)  # nothing left to wipe it
+
+
+def test_the_last_try_failing_clears_the_marks_too(db: Database) -> None:
+    customer, _, doc = _read(db)
+    documents = PgDocuments(db)
+    with db.customer(customer) as conn:
+        assert request_page_read_again(conn, customer, doc, 1, now=T0)
+    documents.record_attempt(customer, doc, 5, 5)
+    documents.mark_exhausted(customer, doc, now=T1, max_attempts=5)
+    assert documents.get_status(customer, doc) is DocumentStatus.FAILED
     assert documents.pages_to_read_again(customer, doc) == ()
 
 
@@ -109,34 +120,3 @@ def test_keep_as_is_names_who_and_when_on_that_page_only(db: Database) -> None:
         {"page_no": 1, "accepted_by": None, "accepted_at": None},
         {"page_no": 2, "accepted_by": user, "accepted_at": T1},
     ]
-
-
-def _record(customer_id: str, sha: str | None = None) -> DocumentRecord:
-    return DocumentRecord(customer_id, str(uuid.uuid4()), sha or uuid.uuid4().hex * 2, 10, "pdf")
-
-
-def test_a_document_stores_the_batch_it_came_in(db: Database) -> None:
-    """Q1: the browser's id for one drop; none for a file sent on its own. A duplicate
-    keeps its own batch."""
-    customer, _ = new_customer(db)
-    documents = PgDocuments(db)
-    batch, later = str(uuid.uuid4()), str(uuid.uuid4())
-    alone, dropped = _record(customer), _record(customer)
-    documents.add_if_absent(alone)
-    assert documents.add_if_absent(dropped, batch_id=batch) == (dropped, True)
-    stored, inserted = documents.add_if_absent(_record(customer, dropped.sha256), batch_id=later)
-    version = documents.add_version_if_absent(
-        _record(customer), of_document_id=alone.document_id, batch_id=later
-    )
-
-    assert (stored.document_id, inserted) == (dropped.document_id, False)
-    assert version is not None and version[1]
-    found = {
-        name: rows(db, customer, BATCH, record)[0]["batch_id"]
-        for name, record in (
-            ("alone", alone.document_id),
-            ("dropped", dropped.document_id),
-            ("version", version[0].document_id),
-        )
-    }
-    assert found == {"alone": None, "dropped": batch, "version": later}

@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { fieldText, labelBadgeClass, labelIcon, labelText, reasonText } from "@/components/viewer/labels";
 import { initialSelection, sameRegion, selectValue } from "@/components/viewer/selection";
 import {
-  BACKUP_READER,
+  BACKUP_ISSUES,
   buildGrid,
   cropRowWindow,
   fitPageSize,
+  GEMINI_READ_BY,
   pageMode,
   routeText,
   sheetRowWindow,
@@ -156,24 +157,42 @@ describe("sheet windows", () => {
 
 describe("routeText (PRD 2, R1; PRD 5 RT2)", () => {
   it("says in words how each page was read", () => {
-    expect(routeText({ route: "cells", read_by: "cells" })).toBe("Read from spreadsheet cells");
-    expect(routeText({ route: "text_layer", read_by: "text_layer" })).toBe("Read from the PDF text");
-    expect(routeText({ route: "blank", read_by: null })).toBe("Blank page");
+    expect(routeText({ route: "cells", read_by: "cells", read_issues: [] })).toBe("Read from spreadsheet cells");
+    expect(routeText({ route: "text_layer", read_by: "text_layer", read_issues: [] })).toBe(
+      "Read from the PDF text",
+    );
+    expect(routeText({ route: "blank", read_by: null, read_issues: [] })).toBe("Blank page");
   });
 
-  it("says who read a scanned page: Gemini or the backup reader, never OCR (RT2)", () => {
-    expect(routeText({ route: "ocr", read_by: "gemini-3.1-pro-preview" })).toBe("Read by Gemini");
-    expect(routeText({ route: "ocr", read_by: "google/gemini-3.8-flash" })).toBe("Read by Gemini");
-    expect(routeText({ route: "ocr", read_by: BACKUP_READER })).toBe("Read by the backup reader");
-    expect(BACKUP_READER).toBe("rapidocr");
+  it("says Read by Gemini when a Gemini model read the page (RT2)", () => {
+    expect(routeText({ route: "ocr", read_by: "google/gemini-3.1-pro-preview", read_issues: [] })).toBe(
+      "Read by Gemini",
+    );
+    expect(routeText({ route: "ocr", read_by: "google/gemini-3.8-flash", read_issues: ["blurry"] })).toBe(
+      "Read by Gemini",
+    );
+    expect(GEMINI_READ_BY).toBe("google/gemini-");
   });
 
-  it("keeps the old words for a scanned page read before PRD 5, which does not say who", () => {
-    expect(routeText({ route: "ocr", read_by: null })).toBe("Read by OCR");
+  it("says the backup reader only when the main reader handed the page on (Q7, G6)", () => {
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["read_locally"] })).toBe(
+      "Read by the backup reader",
+    );
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["reader_refused", "no_text"] })).toBe(
+      "Read by the backup reader",
+    );
+    expect(BACKUP_ISSUES).toEqual(["read_locally", "reader_refused"]);
+  });
+
+  it("keeps the old words for a page read with no key, by PaddleOCR-VL, or before PRD 5", () => {
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: [] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["low_resolution"] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: "paddleocr_vl", read_issues: [] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: null, read_issues: [] })).toBe("Read by OCR");
   });
 
   it("gives nothing for a page with no route, as for one read before PRD 2", () => {
-    expect(routeText({ route: null, read_by: null })).toBeNull();
+    expect(routeText({ route: null, read_by: null, read_issues: [] })).toBeNull();
   });
 });
 
