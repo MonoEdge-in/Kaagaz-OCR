@@ -53,6 +53,13 @@ read. Without a document (``read``, ``cli measure``) there is no cache.
   READER_OUTAGE_FALLBACK_MINUTES, ``BackendUnavailable("gemini")``: the document
   waits and the worker pauses. After that, the page is read locally by RapidOCR
   with the issue ``read_locally`` (the upgrade sweep reads it again later).
+  An idle reader is not a reader that is down: a failure more than the outage gap
+  after the last one starts a new outage. The gap is the longer of
+  READER_OUTAGE_FALLBACK_MINUTES and QUEUE_LEASE_SECONDS + 2 x OCR_TIMEOUT_SECONDS: a
+  document that waits is handed out again when its lease runs out (the job's retry
+  back-off), and each try spends at most OCR_TIMEOUT_SECONDS on its page, with as much
+  again to get there, so the failures of one outage that goes on are never further
+  apart than that, even with a single document in the queue.
 * ``blocked`` (a safety or recitation finish): read locally, issue ``reader_refused``.
 * ``bad_request`` (a 400), ``invalid_output`` and a half cut off again: the model
   will not read this page (``ocr_failed``), so it is read locally and flagged
@@ -316,12 +323,17 @@ class GeminiEngine:
         self._normal = (settings.ocr_media_resolution, settings.ocr_thinking_level)
         self._harder = (settings.ocr_retry_media_resolution, settings.ocr_retry_thinking_level)
         self._fallback_after = 60.0 * settings.reader_outage_fallback_minutes
+        # Q7: a failure longer than this after the last one starts a new outage (module notes).
+        self._outage_gap = max(
+            self._fallback_after, settings.queue_lease_seconds + 2 * settings.ocr_timeout_seconds
+        )
         self._client = client
         self._pool = pool
         self._build_local = local or _rapidocr_pages
         self._local: PageEngine | None = None
         self._lock = threading.Lock()
         self._down_since: float | None = None
+        self._last_failure: float | None = None
         self._pages: DocumentPages | None = None
 
     @classmethod
@@ -375,7 +387,7 @@ class GeminiEngine:
         except ModelOutputError as error:
             return self._read_locally(image, page_no, READER_REFUSED, error.code)
         with self._lock:
-            self._down_since = None
+            self._down_since = self._last_failure = None
         if pages is not None and key is not None:
             pages.cache.put(key, result, input_tokens, output_tokens)
         return self._page(reply, image, page_no, tokens=(input_tokens, output_tokens))
@@ -458,13 +470,17 @@ class GeminiEngine:
 
     def _outage(self, image: Image.Image, page_no: int, code: str, started: float) -> PageRead:
         """A key problem waits; an outage waits until it has lasted
-        READER_OUTAGE_FALLBACK_MINUTES, then the page is read locally."""
+        READER_OUTAGE_FALLBACK_MINUTES, then the page is read locally. A failure more than
+        the outage gap after the last one starts a new outage (see the module notes)."""
         if code in KEY_CODES:
             raise BackendUnavailable(KEY_BACKEND) from None
         with self._lock:
-            if self._down_since is None:
+            now = self._client.now()
+            last = self._last_failure
+            if self._down_since is None or last is None or now - last > self._outage_gap:
                 self._down_since = started
-            down_for = self._client.now() - self._down_since
+            self._last_failure = now
+            down_for = now - self._down_since
         if down_for < self._fallback_after:
             raise BackendUnavailable(GEMINI_BACKEND) from None
         return self._read_locally(image, page_no, READ_LOCALLY, code)

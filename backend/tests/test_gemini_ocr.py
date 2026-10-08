@@ -693,6 +693,37 @@ class Q7FallbackTest(unittest.TestCase):
         with self.assertRaises(BackendUnavailable):
             built.engine.read_page(page(), page_no=1)
 
+    def test_fx2_q7_an_idle_reader_starts_a_new_outage_on_its_next_failure(self) -> None:
+        """Review FX2: one outage page, four idle hours, then one passing failure waits as
+        an outage again; it is not read locally at once."""
+        down = ModelUnavailable("server_error")
+        built = build(down, down, reader_outage_fallback_minutes=15)
+        with self.assertRaises(BackendUnavailable):
+            built.engine.read_page(page(), page_no=1)
+        built.client.clock += 4 * 60 * 60
+        with self.assertRaises(BackendUnavailable) as raised:
+            built.engine.read_page(page(), page_no=1)
+        self.assertEqual(str(raised.exception), "gemini")
+        self.assertEqual(built.local_builds, 0)
+
+    def test_fx2_q7_an_outage_retried_once_a_lease_still_falls_back(self) -> None:
+        """Review FX2: a document that waits is handed out again when its lease runs out
+        (QUEUE_LEASE_SECONDS, 1200 at launch), so failures 20 minutes apart are still one
+        outage, and the page is read locally once it has lasted 15 minutes."""
+        down = ModelUnavailable("timeout")
+        built = build(
+            down,
+            down,
+            reader_outage_fallback_minutes=15,
+            queue_lease_seconds=1200,
+            ocr_timeout_seconds=120.0,
+        )
+        with self.assertRaises(BackendUnavailable):
+            built.engine.read_page(page(), page_no=1)
+        built.client.clock += 1200 + 120
+        read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual((read.read_by, read.issues), ("rapidocr", (READ_LOCALLY,)))
+
     def test_g6_a_blocked_reply_is_read_locally_and_flagged_reader_refused(self) -> None:
         built = build(ModelOutputError("blocked"))
         read = built.engine.read_page(page(), page_no=1)
