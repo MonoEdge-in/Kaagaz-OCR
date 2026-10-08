@@ -68,8 +68,8 @@ def test_a_bad_scan_reader_setting_stops_start_up_by_name(name: str, value: str)
 
 @pytest.mark.parametrize("engine", ["gemini", "paddleocr_vl", "rapidocr", "none"])
 def test_each_engine_name_is_accepted(engine: str) -> None:
-    key = "AIza" + "k" * 35  # gemini needs a key (tests/test_gemini_settings.py)
-    assert Settings.from_env(shipped(OCR_ENGINE=engine, GEMINI_API_KEY=key)).ocr_engine == engine
+    key = "sk-or-v1-" + "k" * 64  # gemini needs a key (tests/test_gemini_settings.py)
+    assert Settings.from_env(shipped(OCR_ENGINE=engine, OPENROUTER_API_KEY=key)).ocr_engine == engine
 
 
 def test_one_ocr_request_must_end_well_inside_the_lease() -> None:
@@ -191,7 +191,7 @@ SECRET_FIELDS = [
     "storage_secret_key",
     "session_secret",
     "totp_encryption_key",
-    "gemini_api_key",  # PRD 5: never in the repo, logs or errors
+    "openrouter_api_key",  # PRD 5: never in the repo, logs or errors
 ]
 
 
