@@ -343,8 +343,10 @@ class NoDirectReaderCallsTest(unittest.TestCase):
     # span types, which everyone may use, the wiring and the OCR engine
     # interface, which the pipeline uses to build the socket, and the page
     # route, which the pipeline works out from the spans after reading
-    # (PRD 2 R1). New readers are covered automatically.
-    ALLOWED: ClassVar[set[str]] = {"__init__", "socket", "spans", "wiring", "ocr", "route"}
+    # (PRD 2 R1), and the page reading result's codes, which the pipeline,
+    # the API and the answers name (PRD 5 F1). New readers are covered
+    # automatically.
+    ALLOWED: ClassVar[set[str]] = {"__init__", "socket", "spans", "wiring", "ocr", "route", "page_quality"}
 
     def reader_modules(self) -> set[str]:
         return {

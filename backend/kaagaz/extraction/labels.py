@@ -16,6 +16,12 @@ The reasons (the ``label_reason`` column):
   trusted yet). Digits and the danda are not letters. Needs review.
 * ``model_chosen`` (Lead's resolution 1, security amendment A1(b)): a value
   of the document card, whose field the model chose. Needs review, always.
+* ``unsure_text`` (PRD 5 V4): the value's text includes a word the reading
+  model listed as unsure, or [?]. Needs review, even if the checker agrees.
+* ``box_unanchored`` (PRD 5 G5): the value's line could not be pinned to a box
+  RapidOCR's text finder found, so its box is the model's own. Needs review.
+* ``local_reader`` (PRD 5 Q7): the page was read by RapidOCR while the main
+  reader was down. Needs review, and the page is read again later.
 
 The second reading of a line box is the second reader's line on the same page
 that overlaps it most, if their intersection over union is at least 0.5 (or,
@@ -78,6 +84,11 @@ from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span
 
 LOW_CONFIDENCE = 0.90
 MIN_OVERLAP = 0.5
+# PRD 5 reasons (the module notes): unsure words (V4), a box no found box confirmed (G5),
+# and a page read by the backup reader during an outage (Q7).
+UNSURE_TEXT = "unsure_text"
+BOX_UNANCHORED = "box_unanchored"
+LOCAL_READER = "local_reader"
 
 # The rupee sign (U+20B9), and Rs / INR standing as words.
 _CURRENCY = re.compile(r"₹|(?<![a-z])(?:rs\.?|inr)(?![a-z])")

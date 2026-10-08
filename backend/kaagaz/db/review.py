@@ -41,8 +41,8 @@ _ITEM = (
     " WHERE v.customer_id = :c"
 )
 
-# Every label_reason the extracted_values CHECK allows (migration 0004): the reasons
-# bound when the queue is not filtered, so the reason filter is never a catch-all.
+# Every label_reason the extracted_values CHECK allows (migrations 0004 and 0021): the
+# reasons bound when the queue is not filtered, so the reason filter is never a catch-all.
 EVERY_REASON = (
     "direct_cell",
     "readers_agree",
@@ -54,6 +54,9 @@ EVERY_REASON = (
     "check_failed",
     "model_chosen",
     "ocr_script",
+    "unsure_text",
+    "box_unanchored",
+    "local_reader",
 )
 
 # The queue and its total repeat the same filter in full, so each can be checked on its own.
