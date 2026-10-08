@@ -49,7 +49,24 @@ stored before PRD 2 have none of them and still load (``span_from_json``). A tab
 ``row`` is a top-level key, so it never mixes with a cell's ``region.row``, which
 is all ``listing.sheet_cells`` reads.
 
-Cost per save: one family lock, 1 update, 5 deletes; per SAVE_CHUNK rows, one
+Each page row carries its reading result (PRD 5 RT2, F1): ``read_by``,
+``read_quality``, ``read_issues`` and the counts ``unsure_words``,
+``illegible_words`` and ``unpinned_lines``, from the ``PageRecord`` fields of those
+names (kaagaz.pipeline); a page record without them is saved with F1's default,
+good with no issues, as a text-layer, cell or blank page is. "Keep as is" (F5,
+``accepted_by`` and ``accepted_at``) is the user's, not the run's, so the save
+carries it forward from the page row it replaces, by page number, unless that page
+was read again: a page whose ``read_again_requested_at`` is set loses it, and the
+save clears the request, since this run read the page again (the council
+architect's finding). A read again of one page is refused while the document is
+being read (F5), so no request can arrive between a run's start and its save. The
+page cache (``page_reads``, kaagaz.db.page_reads) is written outside this save, page
+by page, so a crash keeps it; the save never touches it. Sections and topics
+(``document_sections``, ``document_topics``, PRD 5 CX2 to CX4) are deleted with the
+rest, so a read again never leaves an older run's.
+
+Cost per save: one family lock, 1 update, 1 read of the earlier pages' "Keep as is",
+7 deletes; per SAVE_CHUNK rows, one
 batched insert of pages and one of pieces (pipelined, a row each) and one insert
 of values (an array per column); one insert per reader output, 2 for an invoice,
 and 3 to 7 small link statements; O(rows) data sent, O(SAVE_CHUNK) rows built at
@@ -61,6 +78,7 @@ risk 12). One indexed query for ``load_learned``.
 import json
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Connection, text
@@ -94,7 +112,16 @@ _UPDATE_FACTS = text(
     " summary = :summary, document_date = :document_date, card = CAST(:card AS jsonb)"
     " WHERE customer_id = :c AND id = :d"
 )
+# PRD 5 F5: the pages' "Keep as is" to carry forward, from the rows the save replaces; a
+# page asked to be read again is left out, so it loses its acceptance.
+_ACCEPTED = text(
+    "SELECT page_no, accepted_by, accepted_at FROM pages"
+    " WHERE customer_id = :c AND document_id = :d AND accepted_by IS NOT NULL"
+    " AND read_again_requested_at IS NULL"
+)
 _DELETES = [
+    text("DELETE FROM document_topics WHERE customer_id = :c AND document_id = :d"),
+    text("DELETE FROM document_sections WHERE customer_id = :c AND document_id = :d"),
     text("DELETE FROM invoices WHERE customer_id = :c AND document_id = :d"),  # its lines go with it
     text("DELETE FROM extracted_values WHERE customer_id = :c AND document_id = :d"),
     text("DELETE FROM pieces WHERE customer_id = :c AND document_id = :d"),
@@ -104,8 +131,23 @@ _DELETES = [
 
 _INSERT_PAGE = text(
     "INSERT INTO pages (customer_id, document_id, page_no, width, height, unit, has_image, route,"
-    " effective_dpi, low_resolution) VALUES (:c, :d, :page_no, :width, :height, :unit, :has_image, :route,"
-    " :effective_dpi, :low_resolution)"
+    " effective_dpi, low_resolution, read_by, read_quality, read_issues, unsure_words, illegible_words,"
+    " unpinned_lines, accepted_by, accepted_at) VALUES (:c, :d, :page_no, :width, :height, :unit, :has_image,"
+    " :route, :effective_dpi, :low_resolution, :read_by, :read_quality, CAST(:read_issues AS text[]),"
+    " :unsure_words, :illegible_words, :unpinned_lines, :accepted_by, :accepted_at)"
+)
+# PRD 5 RT2 and F1: a page's reading result, by its PageRecord field name, with the value a
+# page record without it is saved with: good, no issues, nobody named (kaagaz.pipeline
+# builds the records; text-layer, cell and blank pages are good).
+PAGE_READING_DEFAULTS: Mapping[str, Any] = MappingProxyType(
+    {
+        "read_by": None,
+        "read_quality": "good",
+        "read_issues": (),
+        "unsure_words": 0,
+        "illegible_words": 0,
+        "unpinned_lines": 0,
+    }
 )
 _INSERT_OUTPUT = text(
     "INSERT INTO reader_outputs (customer_id, document_id, role, reader, reader_version, output)"
@@ -273,10 +315,11 @@ class PgPipelineStore:
                 family_id = lock_family(conn, customer_id, document_id)
                 if run_id is not None and not is_run_open(conn, customer_id, document_id, run_id):
                     raise Superseded(run_id)
+                accepted = _accepted(conn, ids)  # read before the delete below
                 _replace_facts_and_delete(conn, ids, content.facts)
                 for start in range(0, len(pages), SAVE_CHUNK):
                     chunk = pages[start : start + SAVE_CHUNK]
-                    conn.execute(_INSERT_PAGE, [_page_row(ids, page) for page in chunk])
+                    conn.execute(_INSERT_PAGE, [_page_row(ids, page, accepted) for page in chunk])
                 for output in outputs:  # one at a time: one output's JSON is held at once
                     conn.execute(_INSERT_OUTPUT, _output_row(ids, output))
                 for start in range(0, len(pieces), SAVE_CHUNK):
@@ -311,9 +354,16 @@ class PgPipelineStore:
         return [LearnedCorrection(str(row[0]), str(row[1]), str(row[2])) for row in rows]
 
 
+def _accepted(conn: Connection, ids: dict[str, str]) -> dict[int, tuple[object, object]]:
+    """{page number: (accepted_by, accepted_at)} of the pages the save replaces that were
+    kept as is and not asked to be read again (F5). One statement on the pages key:
+    O(log P + p) for the document's p pages."""
+    return {int(page_no): (by, at) for page_no, by, at in conn.execute(_ACCEPTED, ids)}
+
+
 def _replace_facts_and_delete(conn: Connection, ids: dict[str, str], facts: DocumentFacts) -> None:
     """Write the card columns (always, so no older card stays), then delete the rows
-    an earlier run saved. 6 statements."""
+    an earlier run saved. 8 statements."""
     conn.execute(
         _UPDATE_FACTS,
         {
@@ -387,8 +437,14 @@ def _link_targets(
     ]
 
 
-def _page_row(ids: dict[str, str], page: "PageRecord") -> dict[str, Any]:
+def _page_row(
+    ids: dict[str, str], page: "PageRecord", accepted: Mapping[int, tuple[object, object]]
+) -> dict[str, Any]:
+    """One page's row: its size and route, its reading result (PAGE_READING_DEFAULTS when
+    the record has none) and its "Keep as is" carried forward from ``accepted``."""
     info = page.info
+    reading = {name: getattr(page, name, default) for name, default in PAGE_READING_DEFAULTS.items()}
+    accepted_by, accepted_at = accepted.get(info.page, (None, None))
     return {
         **ids,
         "page_no": info.page,
@@ -399,6 +455,10 @@ def _page_row(ids: dict[str, str], page: "PageRecord") -> dict[str, Any]:
         "route": page.route,
         "effective_dpi": page.effective_dpi,
         "low_resolution": page.low_resolution,
+        **reading,
+        "read_issues": list(reading["read_issues"]),
+        "accepted_by": accepted_by,
+        "accepted_at": accepted_at,
     }
 
 

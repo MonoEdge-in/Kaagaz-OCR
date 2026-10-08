@@ -25,6 +25,17 @@ purge (kaagaz/jobs/purge.py) and ``delete_family_forever`` (the permanent delete
 ready, failed or unreadable document out of Trash goes back to ``received`` with
 its tries reset, within the customer's hourly limit and one document's cooldown
 (security A8). The caller audits it and queues the job in the same transaction.
+
+Read one page again, harder (PRD 5 F5): a queue job carries only a document id, so
+``request_page_read_again`` marks the page (``pages.read_again_requested_at``, 0021)
+in the same transaction as ``mark_for_reprocess``, and the worker asks which pages
+are marked (``pages_to_read_again``). The save that replaces the pages clears the
+marks (kaagaz.db.pipeline_store); ``clear_read_again`` clears them when a run ends
+without one, behind the run fence like ``clear_progress``. "Keep as is" (F5) is
+``accept_page``.
+
+A document may name its upload batch (``batch_id``, PRD 5 Q1, 0021): the browser's
+id for one drop of files, an optional parameter of the inserts.
 """
 
 import dataclasses
@@ -214,6 +225,64 @@ def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, 
     return str(state.status)
 
 
+# --- read one page again, and Keep as is (PRD 5 F5) ----------------------------
+
+# Only a page of a document out of Trash is marked or accepted.
+_REQUEST_PAGE = (
+    "UPDATE pages p SET read_again_requested_at = :now FROM documents d"
+    " WHERE p.customer_id = :c AND p.document_id = :d AND p.page_no = :n"
+    " AND d.customer_id = p.customer_id AND d.id = p.document_id AND d.deleted_at IS NULL"
+    " RETURNING p.page_no"
+)
+_ACCEPT_PAGE = (
+    "UPDATE pages p SET accepted_by = :u, accepted_at = :now FROM documents d"
+    " WHERE p.customer_id = :c AND p.document_id = :d AND p.page_no = :n"
+    " AND d.customer_id = p.customer_id AND d.id = p.document_id AND d.deleted_at IS NULL"
+    " RETURNING p.page_no"
+)
+_PAGES_TO_READ_AGAIN = (
+    "SELECT page_no FROM pages WHERE customer_id = :c AND document_id = :d"
+    " AND read_again_requested_at IS NOT NULL ORDER BY page_no"
+)
+_CLEAR_READ_AGAIN = (
+    "UPDATE pages SET read_again_requested_at = NULL"
+    " WHERE customer_id = :c AND document_id = :d AND read_again_requested_at IS NOT NULL"
+)
+
+
+def request_page_read_again(
+    conn: Connection, customer_id: str, document_id: str, page_no: int, *, now: datetime
+) -> bool:
+    """Mark page ``page_no`` to be read again, harder, by the document's next run (F5),
+    and return True; False when this customer's document, out of Trash, has no such
+    page, and then nothing changes.
+
+    ``conn`` comes from ``Database.customer(customer_id)``, in the transaction in which
+    ``mark_for_reprocess`` (which takes the family lock first, and counts the request
+    against REPROCESS_PER_HOUR) sets the document to be read again, so the mark and the
+    job commit together. One statement on the pages key: O(log P)."""
+    params = {"c": customer_id, "d": document_id, "n": page_no, "now": now}
+    return conn.execute(text(_REQUEST_PAGE), params).first() is not None
+
+
+def accept_page(
+    conn: Connection, customer_id: str, document_id: str, page_no: int, *, user_id: str, now: datetime
+) -> bool:
+    """Keep as is (F5): ``user_id`` accepts page ``page_no`` as it was read, at ``now``;
+    True, or False when this customer's document, out of Trash, has no such page.
+    The page leaves the attention list but keeps its reading result, so it stays
+    flagged on the page and in answers; the save carries the acceptance forward
+    unless the page is read again (kaagaz.db.pipeline_store).
+
+    ``conn`` comes from ``Database.customer(customer_id)``; the family lock
+    (``trash.lock_family``) comes first, so it never races a save. 2 statements:
+    O(v log D) for the family's v versions."""
+    if lock_family(conn, customer_id, document_id) is None:
+        return False
+    params = {"c": customer_id, "d": document_id, "n": page_no, "u": user_id, "now": now}
+    return conn.execute(text(_ACCEPT_PAGE), params).first() is not None
+
+
 class NotInTrash(Exception):
     """A version of the family is not in Trash, so nothing may be deleted forever."""
 
@@ -285,8 +354,8 @@ _NEXT_VERSION = (
 
 _INSERT_VERSION = (
     "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
-    " uploaded_by, folder_id, family_id, version_no, is_current, ocr_choice)"
-    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false, :ocr)"
+    " uploaded_by, folder_id, family_id, version_no, is_current, ocr_choice, batch_id)"
+    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false, :ocr, :batch)"
     " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
 )
 
@@ -300,10 +369,10 @@ _COPY_TAGS = (
 
 
 def add_version(
-    conn: Connection, record: DocumentRecord, *, of_document_id: str
+    conn: Connection, record: DocumentRecord, *, of_document_id: str, batch_id: str | None = None
 ) -> tuple[DocumentRecord, bool] | None:
     """``DocumentRepository.add_version_if_absent`` on a connection from
-    ``Database.customer(record.customer_id)``.
+    ``Database.customer(record.customer_id)``, in upload batch ``batch_id`` (Q1) when given.
 
     The family lock (``trash.lock_family``) comes first, so a second new version
     waits, then sees this one and takes the next number (the unique index
@@ -335,6 +404,7 @@ def add_version(
         folder=stored.folder_id,
         version=stored.version_no,
         ocr=stored.ocr_choice,
+        batch=batch_id,
     )
     if conn.execute(text(_INSERT_VERSION), params).first() is None:  # this customer has these bytes
         row = conn.execute(text(_SELECT + " AND sha256 = :h"), params).one()
@@ -371,9 +441,12 @@ class PgDocuments:
             ).first()
         return None if row is None else _record(row)
 
-    def add_if_absent(self, record: DocumentRecord) -> tuple[DocumentRecord, bool]:
+    def add_if_absent(
+        self, record: DocumentRecord, *, batch_id: str | None = None
+    ) -> tuple[DocumentRecord, bool]:
         """Atomic per (customer, fingerprint): the unique index decides the race.
-        Raises UnknownFolder when the record's folder is not this customer's."""
+        Raises UnknownFolder when the record's folder is not this customer's. A new
+        row is in upload batch ``batch_id`` (Q1) when given; an existing one keeps its own."""
         with unavailable(), self._db.customer(record.customer_id) as conn:
             params = {
                 "d": record.document_id,
@@ -387,13 +460,15 @@ class PgDocuments:
                 "family": record.family_id or record.document_id,
                 "version": record.version_no,
                 "ocr": record.ocr_choice,
+                "batch": batch_id,
             }
             try:
                 inserted = conn.execute(
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice)"
-                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version, :ocr)"
+                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice, batch_id)"
+                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version, :ocr,"
+                        " :batch)"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,
@@ -411,11 +486,11 @@ class PgDocuments:
         return _record(row), False
 
     def add_version_if_absent(
-        self, record: DocumentRecord, *, of_document_id: str
+        self, record: DocumentRecord, *, of_document_id: str, batch_id: str | None = None
     ) -> tuple[DocumentRecord, bool] | None:
         """``add_version`` in its own transaction."""
         with unavailable(), self._db.customer(record.customer_id) as conn:
-            return add_version(conn, record, of_document_id=of_document_id)
+            return add_version(conn, record, of_document_id=of_document_id, batch_id=batch_id)
 
     def remove(self, record: DocumentRecord) -> None:
         with unavailable(), self._db.customer(record.customer_id) as conn:
@@ -530,6 +605,27 @@ class PgDocuments:
                 ),
                 {"c": customer_id, "d": document_id},
             )
+
+    def pages_to_read_again(self, customer_id: str, document_id: str) -> tuple[int, ...]:
+        """The pages a user asked to be read again, harder (F5), in page order: the run
+        that reads the document reads them so. Empty when none (or no such document).
+        Its own short transaction, one statement on the pages key: O(log P + p)."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            rows = conn.execute(text(_PAGES_TO_READ_AGAIN), {"c": customer_id, "d": document_id})
+            return tuple(int(row[0]) for row in rows)
+
+    def clear_read_again(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
+        """Clear this document's read-again marks (F5) when a run ends without the save
+        that clears them (it failed), so no mark waits for a later read. With
+        ``run_id``, the run fence, as ``clear_progress``: under the family lock, change
+        nothing unless that run is still open, so a stale delivery never clears a newer
+        request. Its own short transaction, one statement (three with the fence)."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            if run_id is not None:
+                lock_family(conn, customer_id, document_id)
+                if not is_run_open(conn, customer_id, document_id, run_id):
+                    return
+            conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         with unavailable(), self._db.customer(customer_id) as conn:
