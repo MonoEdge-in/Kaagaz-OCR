@@ -82,6 +82,10 @@ the machine and nothing is downloaded at run time.
   process's ``RapidOcrPool``. ``kaagaz.reading.wiring`` gives the product's
   (``build_gemini_engine``, which imports it by its path only for
   OCR_ENGINE=gemini), so OCR_ENGINE=rapidocr never loads it.
+* The page cache (PRD 5 G7, F5): the pipeline opens ``reading_document(engine,
+  DocumentPages(...))`` around one document's reading. An engine with a page cache
+  (``DocumentEngine``, the Gemini reader) then keys each page by that document; the
+  meter and ``OcrEngines`` pass it on; any other engine has nothing to open.
 * No reader choice at upload (PRD 5 RT3): ``ocr_choices`` offers one reader,
   Auto, so the "Scan with" select hides itself.
 * ``ocr_spans`` turns an engine's pixel boxes into spans with page fractions
@@ -112,7 +116,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from http.client import HTTPConnection, HTTPException, HTTPResponse, HTTPSConnection, IncompleteRead
 from importlib import metadata
-from typing import Any, NoReturn, Protocol, TypeGuard, runtime_checkable
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TypeGuard, runtime_checkable
 
 from PIL import Image
 
@@ -131,6 +135,9 @@ from kaagaz.reading.rapid_pool import (
 )
 from kaagaz.reading.spans import BLOCK_KINDS, BOX_SOURCES, TABLE_ID, BoxLocation, ReadError, Span
 from kaagaz.settings import Settings, SettingsError
+
+if TYPE_CHECKING:
+    from kaagaz.db.page_reads import PageKey
 
 # Caps on a /read reply (security A7). A reply over MAX_OCR_REPLY_BYTES is
 # refused; blocks past MAX_BLOCKS_PER_PAGE, longer than MAX_BLOCK_CHARS, or in a
@@ -781,6 +788,42 @@ def as_page_engine(engine: OcrEngine) -> PageEngine:
     return engine if isinstance(engine, PageEngine) else _LinesAsPages(engine)
 
 
+class PageCache(Protocol):
+    """The page cache (PRD 5 G7): ``kaagaz.db.page_reads.PgPageReads`` in the product."""
+
+    def get(self, key: "PageKey") -> tuple[dict[str, Any], int, int] | None: ...
+
+    def put(self, key: "PageKey", result: dict[str, Any], input_tokens: int, output_tokens: int) -> None: ...
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DocumentPages:
+    """The one document whose pages an engine is reading (PRD 5 G7, F5): its customer and
+    id, which key the page cache with each page's number and image, the cache itself, and
+    the pages a user asked to read again (``pages.read_again_requested_at``), which are
+    read harder and never taken from the cache."""
+
+    customer_id: str
+    document_id: str
+    cache: PageCache
+    read_again: frozenset[int] = frozenset()
+
+
+@runtime_checkable
+class DocumentEngine(Protocol):
+    """An engine that reads one document's pages with its page cache (the Gemini reader),
+    or passes the document on to one that does (``MeteredOcrEngine``, ``OcrEngines``)."""
+
+    def document(self, pages: DocumentPages) -> contextlib.AbstractContextManager[None]: ...
+
+
+def reading_document(engine: OcrEngine, pages: DocumentPages) -> contextlib.AbstractContextManager[None]:
+    """``engine.document(pages)`` when the engine keeps a page cache, else nothing to enter
+    (RapidOCR, PaddleOCR-VL, a test fake): the pipeline opens it around one document's
+    reading, so a page read inside it is looked up and saved under that document. O(1)."""
+    return engine.document(pages) if isinstance(engine, DocumentEngine) else contextlib.nullcontext()
+
+
 class MeteredOcrEngine:
     """An ``OcrEngine`` that passes each page to ``engine`` and counts the pages
     sent and the seconds they took on ``timer`` (``time.perf_counter`` in the
@@ -824,6 +867,10 @@ class MeteredOcrEngine:
             return read
         finally:
             self._count(started, page_no, read)
+
+    def document(self, pages: DocumentPages) -> contextlib.AbstractContextManager[None]:
+        """The engine's own document context (``reading_document``)."""
+        return reading_document(self._engine, pages)
 
     def take(self) -> tuple[int, float]:
         """(pages sent, seconds) since the last take, and start counting again from zero."""
@@ -994,6 +1041,11 @@ class OcrEngines:
     def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
         """The engine in use's ``read_page`` (``as_page_engine``)."""
         return as_page_engine(self._active).read_page(image, page_no=page_no)
+
+    def document(self, pages: DocumentPages) -> contextlib.AbstractContextManager[None]:
+        """Auto's document context (``reading_document``): a chosen chain falls back to
+        Auto, so Auto is the engine that keeps the page cache."""
+        return reading_document(self._auto, pages)
 
     @contextlib.contextmanager
     def choose(self, choice: str | None) -> Iterator[bool]:
