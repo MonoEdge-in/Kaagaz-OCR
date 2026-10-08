@@ -67,7 +67,7 @@ from collections.abc import Mapping
 from http.client import HTTPException
 from typing import Any, Protocol
 
-from kaagaz.ai.gemini import GeminiClient, process_gate
+from kaagaz.ai.openrouter import OpenRouterClient, process_gate
 from kaagaz.ai.replies import EMBED_BATCH_SIZE as EMBED_BATCH_SIZE
 from kaagaz.ai.replies import MAX_RESPONSE_BYTES as MAX_RESPONSE_BYTES
 from kaagaz.ai.replies import REPAIR as _REPAIR
@@ -301,11 +301,11 @@ def build_model_client(
     """The configured model client, or None when the product runs without AI.
     ``chat_timeout_seconds``: see ``OllamaClient``.
 
-    PRD 5 G9 and question 4: with MODEL_ENABLED and a Gemini MODEL_CHAT, chat_json and
-    read_image go to ``GeminiClient`` (MODEL_CHAT and OCR_MODEL); embed stays on Ollama
-    unless MODEL_EMBED is a Gemini model too, which M5 switches in pull request 3 after
+    PRD 5 G9 and question 4: with MODEL_ENABLED and a google/gemini- MODEL_CHAT, chat_json and
+    read_image go to ``OpenRouterClient`` (MODEL_CHAT and OCR_MODEL); embed stays on Ollama
+    unless MODEL_EMBED is a google/gemini- model too, which M5 switches in pull request 3 after
     its Hindi and Marathi search test. Ollama models alone give ``OllamaClient`` as before.
-    Every Gemini client shares the process's gate (``gemini.process_gate``): one limiter
+    Every OpenRouter client shares the process's gate (``openrouter.process_gate``): one limiter
     and one circuit breaker for the process.
     """
     if not settings.model_enabled:
@@ -313,7 +313,9 @@ def build_model_client(
     gemini_chat, gemini_embed = is_gemini_model(settings.model_chat), is_gemini_model(settings.model_embed)
     if not (gemini_chat or gemini_embed):
         return OllamaClient(settings, chat_timeout_seconds=chat_timeout_seconds)
-    gemini = GeminiClient(settings, chat_timeout_seconds=chat_timeout_seconds, gate=process_gate(settings))
+    gemini = OpenRouterClient(
+        settings, chat_timeout_seconds=chat_timeout_seconds, gate=process_gate(settings)
+    )
     if gemini_chat and gemini_embed:
         return gemini
     ollama = OllamaClient(settings, chat_timeout_seconds=chat_timeout_seconds)
