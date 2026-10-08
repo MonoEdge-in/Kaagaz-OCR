@@ -321,8 +321,16 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "time_left",  # PRD 4 #13: null until it is being read
         "doc_type",  # PRD 2 D3 (null until the card, PR 5)
         "languages",
+        "pages_unreadable",  # PRD 5 F4
+        "pages_uncertain",
+        "values_to_review",
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
+    assert (document["pages_unreadable"], document["pages_uncertain"], document["values_to_review"]) == (
+        0,
+        0,
+        0,
+    )
     assert (document["attempts"], document["max_attempts"]) == (0, None)
     assert (document["can_delete"], document["newer_version"]) == (True, None)
     assert (document["deleted_at"], document["version_no"], document["family_id"]) == (
@@ -877,6 +885,15 @@ def test_detail_has_pages_and_values_in_order(db: Database) -> None:
         "route": None,  # PRD 2 R1: not read by a run
         "effective_dpi": None,  # R4
         "low_resolution": False,
+        "read_by": None,  # PRD 5 RT2: not read by a run
+        "read_quality": "good",  # F1: the column's default
+        "read_issues": [],
+        "unsure_words": 0,
+        "illegible_words": 0,
+        "unpinned_lines": 0,
+        "accepted_by": None,  # F5: not kept as is
+        "accepted_at": None,
+        "read_again_requested_at": None,
     }
     assert [value["id"] for value in body["values"]] == [first, second]
     assert body["values"][0] == {

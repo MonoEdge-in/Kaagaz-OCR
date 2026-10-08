@@ -96,6 +96,15 @@ def test_queue_lists_needs_review_values_oldest_first_with_their_page(db: Databa
         "route": None,
         "effective_dpi": None,
         "low_resolution": False,
+        "read_by": None,  # PRD 5 RT2, F1 and F5: a page no run has read
+        "read_quality": "good",
+        "read_issues": [],
+        "unsure_words": 0,
+        "illegible_words": 0,
+        "unpinned_lines": 0,
+        "accepted_by": None,
+        "accepted_at": None,
+        "read_again_requested_at": None,
     }
     assert item["value"]["second_reading"] == "1,250"
 

@@ -32,6 +32,8 @@ _ITEM = (
     " v.label_page_no, v.label_region,"
     " d.display_name AS document_name, d.detected_type,"
     " p.width, p.height, p.unit, p.has_image, p.route, p.effective_dpi, p.low_resolution,"
+    " p.read_by, p.read_quality, p.read_issues, p.unsure_words, p.illegible_words, p.unpinned_lines,"
+    " p.accepted_by, p.accepted_at, p.read_again_requested_at,"
     " coalesce(i.check_reasons, '{}') AS check_reasons"
     " FROM extracted_values v"
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
