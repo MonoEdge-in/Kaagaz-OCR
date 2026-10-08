@@ -354,9 +354,19 @@ class NoDirectReaderCallsTest(unittest.TestCase):
     # interface, which the pipeline uses to build the socket, and the page
     # route, which the pipeline works out from the spans after reading
     # (PRD 2 R1), and the page reading result's codes, which the pipeline,
-    # the API and the answers name (PRD 5 F1). New readers are covered
-    # automatically.
-    ALLOWED: ClassVar[set[str]] = {"__init__", "socket", "spans", "wiring", "ocr", "route", "page_quality"}
+    # the API and the answers name (PRD 5 F1), and RapidOCR's pool, which
+    # the pipeline's checker reads value crops with (PRD 5 V1). New readers
+    # are covered automatically.
+    ALLOWED: ClassVar[set[str]] = {
+        "__init__",
+        "socket",
+        "spans",
+        "wiring",
+        "ocr",
+        "route",
+        "page_quality",
+        "rapid_pool",
+    }
 
     def reader_modules(self) -> set[str]:
         return {
