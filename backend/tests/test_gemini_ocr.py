@@ -689,6 +689,35 @@ class Q7FallbackTest(unittest.TestCase):
             built.engine.read_page(page(), page_no=1)
         self.assertEqual(built.local_builds, 0)
 
+    def test_fx5_g6_a_model_id_that_names_no_model_waits_as_gemini_key_and_never_falls_back(self) -> None:
+        """Review FX5: a 404 (model_not_found) is a wrong OCR_MODEL, a person's fix."""
+        self._waits_as_a_key_problem("model_not_found")
+
+    def test_fx5_g6_a_redirect_waits_as_gemini_key_and_never_falls_back(self) -> None:
+        """Review FX5: a 3xx (redirect_refused) is a wrong OPENROUTER_BASE_URL, a person's fix."""
+        self._waits_as_a_key_problem("redirect_refused")
+
+    def test_fx5_g6_an_unknown_status_is_still_an_outage(self) -> None:
+        """Review FX5: http_error (a 4xx nothing else names) waits as an outage, and is
+        read locally once it has lasted READER_OUTAGE_FALLBACK_MINUTES."""
+        built = build(*[ModelUnavailable("http_error")] * 2, reader_outage_fallback_minutes=15)
+        with self.assertRaises(BackendUnavailable) as raised:
+            built.engine.read_page(page(), page_no=1)
+        self.assertEqual(str(raised.exception), "gemini")
+        built.client.clock += 15 * 60
+        self.assertEqual(built.engine.read_page(page(), page_no=1).issues, (READ_LOCALLY,))
+
+    def _waits_as_a_key_problem(self, code: str) -> None:
+        built = build(*[ModelUnavailable(code)] * 2, reader_outage_fallback_minutes=15)
+        with self.assertRaises(BackendUnavailable) as raised:
+            built.engine.read_page(page(), page_no=1)
+        self.assertEqual(str(raised.exception), "gemini_key")
+        built.client.clock += 60 * 60  # an hour later: still a person's fix, never the backup reader
+        with self.assertRaises(BackendUnavailable) as again:
+            built.engine.read_page(page(), page_no=1)
+        self.assertEqual(str(again.exception), "gemini_key")
+        self.assertEqual(built.local_builds, 0)
+
     def test_q7_an_outage_waits_as_gemini_until_reader_outage_fallback_minutes(self) -> None:
         for code in ("rate_limited", "server_error", "timeout", "unreachable", "circuit_open", "http_error"):
             with self.subTest(code):

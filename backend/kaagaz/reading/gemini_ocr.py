@@ -49,10 +49,14 @@ read. Without a document (``read``, ``cli measure``) there is no cache.
 
 **When the model can't read a page** (G6, Q7), by the client's error code:
 
-* ``key_rejected`` (401, 403): not an outage. ``BackendUnavailable("gemini_key")``:
-  the document waits, nothing falls back, the fix is a person's.
+* ``key_rejected`` (401, 402, a 403 that is not a refusal), ``model_not_found`` (a
+  404: OCR_MODEL names no model) and ``redirect_refused`` (a 3xx: OPENROUTER_BASE_URL
+  points somewhere else): not an outage, and no wait makes them work.
+  ``BackendUnavailable("gemini_key")``: the document waits, nothing falls back, the
+  fix is a person's (review FX5).
 * Any other ``ModelUnavailable`` (rate_limited or server_error after the client's
-  retries, timeout, unreachable, circuit_open, ...): the outage clock starts at the
+  retries, timeout, unreachable, circuit_open, and ``http_error``, a status nothing
+  else names, ...): the outage clock starts at the
   first such page since the last page the model read. Until it has run
   READER_OUTAGE_FALLBACK_MINUTES, ``BackendUnavailable("gemini")``: the document
   waits and the worker pauses. After that, the page is read locally by RapidOCR
@@ -153,8 +157,11 @@ HALF_OVERLAP = 0.05
 # G6, Q7: the backend names a document waits on (the run's <name>_unavailable).
 GEMINI_BACKEND = "gemini"
 KEY_BACKEND = "gemini_key"
-# G6: the client's codes for a key that is wrong or a spend cap reached: a person's fix.
-KEY_CODES = frozenset({"key_rejected"})
+# G6, review FX5: the client's codes only a person can fix, waited on as KEY_BACKEND and
+# never read locally: a key that is wrong or a spend cap reached, a model ID that names no
+# model (404), and a base URL that redirects. http_error (a status nothing else names)
+# stays an outage.
+KEY_CODES = frozenset({"key_rejected", "model_not_found", "redirect_refused"})
 # G6: the client's code for a reply cut off at the output limit.
 TRUNCATED = "output_truncated"
 # G6: the client's code for a reply the model declined to give.
