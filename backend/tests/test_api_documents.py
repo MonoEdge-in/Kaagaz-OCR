@@ -1624,6 +1624,14 @@ def test_a_page_the_scan_reader_failed_on_has_its_own_words() -> None:
     )
 
 
+def test_f4_a_file_none_of_which_could_be_read_says_so_with_the_fix() -> None:
+    """PRD 5 F4: only a document whose every non-blank page is unreadable fails, with the
+    code unreadable and this message."""
+    for detected_type in ("pdf", "jpeg"):
+        message = status_message("failed", "unreadable", detected_type=detected_type, max_pages=100)
+        assert message == "None of this file could be read. Upload a sharper scan."
+
+
 @pytest.mark.db
 def test_the_summary_is_the_details_own_summary_in_fewer_statements(db: Database) -> None:
     """A8a: the viewer polls this while a document is read, then asks for the detail once."""
