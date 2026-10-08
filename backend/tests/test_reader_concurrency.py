@@ -121,6 +121,38 @@ class TurnTakingEngine:
         return [thread for called, thread in self.calls if called == page_no]
 
 
+class FailsWhileOthersRead:
+    """A ``PageEngine`` whose page 1 fails once pages 2 and 3 have started; they take a
+    moment longer, then read as "page n" (review FX1)."""
+
+    name = "gemini"
+    version = "google/gemini-3.1-pro-preview;prompt=1"
+
+    def __init__(self) -> None:
+        self.started = threading.Barrier(3)
+        self.finished: list[int] = []
+
+    def read(self, image: Image.Image) -> list[OcrLine]:
+        raise AssertionError("the readers read numbered pages")
+
+    def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
+        self.started.wait(WAIT)
+        if page_no == 1:
+            raise BackendUnavailable("gemini")
+        time.sleep(0.3)
+        self.finished.append(page_no)
+        line = OcrLine(f"page {page_no}", 1, 1, 5, 5, None, "paragraph")
+        return PageRead(
+            page_no=page_no,
+            lines=(line,),
+            quality="good",
+            handwritten=False,
+            scripts=("latin",),
+            issues=(),
+            read_by="google/gemini-3.1-pro-preview",
+        )
+
+
 def pdf_reader(engine: Any, pages: PagePool | None, *, dpi: int = 72, rule: str = FIXED) -> PdfReader:
     return PdfReader(
         engine,
@@ -205,22 +237,39 @@ class PdfPagesInParallelTest(unittest.TestCase):
     def test_the_first_failure_in_page_order_is_raised_and_the_pages_not_started_are_cancelled(self) -> None:
         """Page 1 fails; page 2 is being read (or cancelled before it started) and page 3
         waits for the one thread: page 3 is never read, no page is finished, and every
-        picture is closed."""
+        picture is closed. A page already being read is waited for (review FX1)."""
         # Page 1 takes a moment before it fails, so pages 2 and 3 are handed over first.
         engine = TurnTakingEngine(fail={1: BackendUnavailable("gemini")}, blocked=frozenset({2}), hold=0.3)
         executor = ThreadPoolExecutor(max_workers=1)
         routes: list[RouteDecision | None] = []
+        let_go = threading.Timer(0.6, engine.go.set)  # page 2, if already being read, ends on its own
+        let_go.start()
         with drawn() as pictures, self.assertRaises(BackendUnavailable) as caught:
             pdf_reader(engine, PagePool(executor, size=3)).read(
                 make_pdf([SCANNED] * 5), on_page=routes.append
             )
         self.assertEqual(caught.exception.args, ("gemini",))
-        engine.go.set()  # page 2, already being read, ends on its own
+        let_go.join()
         executor.shutdown(wait=True)
         self.assertIn(sorted(page for page, _thread in engine.calls), ([1], [1, 2]))
         self.assertEqual(routes, [])
         self.assertEqual(len(pictures), 4)  # page 4 was drawn, then never sent
         self.assertTrue(all(closed(picture) for _thread, picture in pictures))
+
+    def test_fx1_pages_being_read_when_a_document_fails_never_reach_the_next_documents_run(self) -> None:
+        """Review FX1: page 1 fails while pages 2 and 3 are being read on the shared pool.
+        The read waits for them before it raises, so the next job's take (``_start_run``)
+        and the meter after it hold none of this document's reads."""
+        engine = FailsWhileOthersRead()
+        meter = MeteredOcrEngine(engine, timer=time.perf_counter)
+        executor = ThreadPoolExecutor(max_workers=3)
+        with self.assertRaises(BackendUnavailable):
+            pdf_reader(meter, PagePool(executor, size=3)).read(make_pdf([SCANNED] * 3))
+        self.assertEqual(sorted(engine.finished), [2, 3])  # waited for before the read raised
+        meter.take_page_reads()  # this document's run ends with what it read
+        self.assertEqual(meter.take_page_reads(), {})  # the next job's _start_run
+        executor.shutdown(wait=True)
+        self.assertEqual(meter.take_page_reads(), {})  # and nothing arrives later
 
     def test_a_page_read_again_at_the_ceiling_is_read_on_the_readers_thread(self) -> None:
         """The DPI rule's second reading (nothing found at a lowered DPI) draws and reads

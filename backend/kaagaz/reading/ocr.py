@@ -831,6 +831,12 @@ class MeteredOcrEngine:
     page's ``PageRead`` is kept for the run (``take_page_reads``). Pages of one
     document may be read on several threads at once (PRD 5 G8), so the counts are
     kept under a lock. O(1) per page beyond the engine's own time.
+
+    A numbered page is kept only in the run it was started in: entering or leaving
+    ``document`` and every ``take_page_reads`` start a new generation, and a page that
+    ends in a later generation than the one it started in is dropped, neither kept nor
+    counted. ``PagesInOrder`` already waits for every page it drops; this makes sure no
+    page read for one document can reach the next one's run, even so.
     """
 
     def __init__(self, engine: OcrEngine, *, timer: Callable[[], float]) -> None:
@@ -841,6 +847,7 @@ class MeteredOcrEngine:
         self._pages = 0
         self._seconds = 0.0
         self._page_reads: dict[int, PageRead] = {}
+        self._generation = 0
 
     @property
     def name(self) -> str:
@@ -859,18 +866,32 @@ class MeteredOcrEngine:
 
     def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
         """The engine's own ``read_page`` when it is a ``PageEngine``, else its ``read``
-        (``as_page_engine``); counted like ``read``, and kept for ``take_page_reads``."""
+        (``as_page_engine``); counted like ``read``, and kept for ``take_page_reads``
+        unless its generation ended while it was being read (see the class notes)."""
+        with self._lock:
+            generation = self._generation
         started = self._timer()
         read: PageRead | None = None
         try:
             read = self._pages_engine.read_page(image, page_no=page_no)
             return read
         finally:
-            self._count(started, page_no, read)
+            self._count(started, page_no, read, generation)
 
-    def document(self, pages: DocumentPages) -> contextlib.AbstractContextManager[None]:
-        """The engine's own document context (``reading_document``)."""
-        return reading_document(self._engine, pages)
+    @contextlib.contextmanager
+    def document(self, pages: DocumentPages) -> Iterator[None]:
+        """The engine's own document context (``reading_document``), a generation of its
+        own: a page started before it or ending after it is not this document's."""
+        self._next_generation()
+        try:
+            with reading_document(self._engine, pages):
+                yield
+        finally:
+            self._next_generation()
+
+    def _next_generation(self) -> None:
+        with self._lock:
+            self._generation += 1
 
     def take(self) -> tuple[int, float]:
         """(pages sent, seconds) since the last take, and start counting again from zero."""
@@ -881,16 +902,23 @@ class MeteredOcrEngine:
 
     def take_page_reads(self) -> dict[int, PageRead]:
         """Each page read through ``read_page`` since the last take, by page number, and
-        start again from none. A page read twice (again at the DPI ceiling) keeps its
-        last read: the one its spans came from."""
+        start again from none, in a new generation (a page still being read is not kept).
+        A page read twice (again at the DPI ceiling) keeps its last read: the one its spans
+        came from."""
         with self._lock:
             taken, self._page_reads = self._page_reads, {}
+            self._generation += 1
         return taken
 
-    def _count(self, started: float, page_no: int = 0, read: PageRead | None = None) -> None:
-        """One page sent, since ``started``; with ``read``, kept as page ``page_no``."""
+    def _count(
+        self, started: float, page_no: int = 0, read: PageRead | None = None, generation: int | None = None
+    ) -> None:
+        """One page sent, since ``started``; with ``read``, kept as page ``page_no``. A
+        numbered page from an ended ``generation`` is dropped (see the class notes)."""
         seconds = max(0.0, self._timer() - started)
         with self._lock:
+            if generation is not None and generation != self._generation:
+                return
             self._pages += 1
             self._seconds += seconds
             if read is not None:

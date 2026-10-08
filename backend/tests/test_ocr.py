@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from importlib import metadata
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
@@ -19,6 +20,7 @@ from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading import ocr, wiring
 from kaagaz.reading.ocr import (
+    DocumentPages,
     MeteredOcrEngine,
     OcrLine,
     OcrTable,
@@ -30,6 +32,7 @@ from kaagaz.reading.ocr import (
     build_ocr_engines,
     is_word_mark,
     ocr_spans,
+    reading_document,
 )
 from kaagaz.reading.rapid_pool import RapidOcrPool, shared_pool
 from kaagaz.reading.spans import BoxLocation, ReadError, Span
@@ -373,6 +376,36 @@ class FakePageEngine:
         )
 
 
+class HeldPageEngine(FakePageEngine):
+    """A ``PageEngine`` that says when a page is being read and holds it until ``go``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reading = threading.Event()
+        self.go = threading.Event()
+
+    def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
+        self.reading.set()
+        if not self.go.wait(5):
+            raise AssertionError("the page was never let go")
+        return super().read_page(image, page_no=page_no)
+
+
+class NoPageCache:
+    def get(self, key: object) -> None:
+        return None
+
+    def put(self, key: object, result: object, input_tokens: int, output_tokens: int) -> None:
+        raise AssertionError("nothing is saved here")
+
+
+DOCUMENT_A = DocumentPages(
+    customer_id="11111111-1111-1111-1111-111111111111",
+    document_id="22222222-2222-2222-2222-222222222222",
+    cache=NoPageCache(),
+)
+
+
 class LinesOnly:
     """An engine with only ``read``, as RapidOCR and the older test fakes."""
 
@@ -459,6 +492,29 @@ class MeteredPageReadsTest(unittest.TestCase):
         with self.assertRaises(BackendUnavailable):
             meter.read_page(PAGE, page_no=1)
         self.assertEqual((meter.take(), meter.take_page_reads()), ((1, 0.0), {}))
+
+    def test_fx1_a_page_that_ends_after_its_document_is_never_kept_in_the_next_run(self) -> None:
+        """Review FX1, defence in depth: a page still being read when the run's reads are
+        taken (the next job's ``_start_run``) or its document closes is dropped when it
+        ends, never kept or counted in the next document's run."""
+        for ends in ("take_page_reads", "document"):
+            with self.subTest(ends):
+                engine = HeldPageEngine()
+                meter = MeteredOcrEngine(engine, timer=lambda: 0.0)
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    if ends == "document":
+                        with reading_document(meter, DOCUMENT_A):
+                            late = pool.submit(meter.read_page, PAGE, page_no=2)
+                            self.assertTrue(engine.reading.wait(5))
+                    else:
+                        late = pool.submit(meter.read_page, PAGE, page_no=2)
+                        self.assertTrue(engine.reading.wait(5))
+                        meter.take_page_reads()
+                    meter.take()  # the next job's _start_run
+                    engine.go.set()
+                    self.assertEqual(late.result(timeout=5).page_no, 2)  # its caller still gets it
+                self.assertEqual(meter.take_page_reads(), {})
+                self.assertEqual(meter.take(), (0, 0.0))
 
     def test_pages_read_on_many_threads_at_once_are_all_counted(self) -> None:
         """G8: pages of one document are read OCR_PAGE_CONCURRENCY at a time."""

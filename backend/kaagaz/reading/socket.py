@@ -49,7 +49,7 @@ PROVISIONAL until the reader contract (#3) is written. PROVISIONAL (plan
 import math
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
-from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Protocol, Self
@@ -176,10 +176,14 @@ class PagesInOrder:
     notes). ``engine`` reads them, on ``pool``'s threads, or on the spot with no pool.
 
     Use it as a context manager and call ``drain`` at the end of the read: when the
-    block raises, pages not yet started are cancelled and every page left is dropped,
-    unfinished, its picture closed (by its thread, once a page already being read ends).
-    The first failure in page order is the one raised. O(1) per page beyond the
-    engine's time; at most ``pool.size`` pictures waiting or being read at once.
+    block raises, pages not yet started are cancelled, the pages already being read are
+    waited for (each is bounded by the reader's own deadline, OCR_TIMEOUT_SECONDS), and
+    every page left is dropped, unfinished, its picture closed. Nothing of a dropped page
+    is passed on: not its read, not its error. Waiting keeps a dropped page's reading
+    inside this document's read, so it can never land in the next document's (one
+    worker reads another customer's document next). The first failure in page order is
+    the one raised. O(1) per page beyond the engine's time; at most ``pool.size``
+    pictures waiting or being read at once.
     """
 
     def __init__(self, engine: PageEngine | None, pool: PagePool | None) -> None:
@@ -267,8 +271,11 @@ class PagesInOrder:
             page.release()
 
     def _drop(self) -> None:
-        """Every page left, unfinished: a page not yet started is cancelled and its
-        picture closed here; one being read closes its own and is released when done."""
+        """Every page left, unfinished: a page not yet started is cancelled; a page being
+        read is waited for, and what it read or raised is dropped, never passed on. Each
+        page's picture is closed (by its thread when it was being read) and released here,
+        on this thread. Bounded by the reader's deadline for one page."""
+        running: list[_Page] = []
         while self._window:
             page = self._window.popleft()
             if page.future is None or page.future.cancel():
@@ -276,17 +283,13 @@ class PagesInOrder:
                     page.image.close()
                 page.release()
             else:
-                page.future.add_done_callback(_released(page.release))
+                running.append(page)
         self._reading = 0
-
-
-def _released(release: Callable[[], None]) -> Callable[["Future[PageRead]"], None]:
-    """A future's done callback that calls ``release``, whatever the read ended with."""
-
-    def done(_future: "Future[PageRead]") -> None:
-        release()
-
-    return done
+        try:
+            wait(page.future for page in running if page.future is not None)
+        finally:
+            for page in running:
+                page.release()
 
 
 def _checked(output: Iterable[Span]) -> list[Span]:
