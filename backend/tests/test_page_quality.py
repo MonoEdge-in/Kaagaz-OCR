@@ -113,3 +113,38 @@ def test_the_qualities_and_the_models_words_are_the_prds() -> None:
 def test_the_table_cannot_be_changed_at_run_time() -> None:
     with pytest.raises(TypeError):
         cast(MutableMapping[str, Issue], ISSUES)["blurry"] = ISSUES["faint"]
+
+
+def grade(
+    issues: tuple[str, ...] = (),
+    *,
+    model_quality: str | None = "good",
+    words: int = 10,
+    illegible: int = 0,
+    unsure: int = 0,
+) -> str:
+    return page_quality.grade(
+        issues, model_quality=model_quality, words=words, illegible_words=illegible, unsure_words=unsure
+    )
+
+
+def test_f2_unreadable_no_text_or_refused_or_poor_with_over_30_percent_illegible() -> None:
+    assert grade(("no_text",), model_quality=None, words=0) == "unreadable"
+    assert grade(("reader_refused",), model_quality=None) == "unreadable"
+    assert grade(("illegible_words",), model_quality="poor", words=10, illegible=4) == "unreadable"
+    # Exactly 30% is not more than 30%; and a fair page is never unreadable by its [?] alone.
+    assert grade(("illegible_words",), model_quality="poor", words=10, illegible=3) == "uncertain"
+    assert grade(("illegible_words",), model_quality="fair", words=10, illegible=9) == "uncertain"
+
+
+def test_f2_uncertain_unsure_illegible_unpinned_disputed_low_resolution_or_any_issue() -> None:
+    assert grade(unsure=1) == "uncertain"
+    assert grade(illegible=1) == "uncertain"
+    for code in ("unpinned", "readers_disagree", "low_resolution", "read_locally", "blurry"):
+        assert grade((code,)) == "uncertain", code
+
+
+def test_f2_good_none_of_these() -> None:
+    assert grade() == "good"
+    assert grade(model_quality=None, words=0) == "good"
+    assert page_quality.UNREADABLE_ILLEGIBLE_SHARE == 0.30

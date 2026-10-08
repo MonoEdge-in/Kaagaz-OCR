@@ -16,9 +16,13 @@ and ``tilted`` has no row there.
 
 The sentences are the PRD's own. Some hold a number, filled in by ``says``:
 "12 words couldn't be read.", "This page was scanned at 96 DPI, ...".
+
+``grade`` gives a page's ``read_quality`` by F2's rules, from its final issues
+(the reader's, plus low_resolution and readers_disagree from the pipeline) and its
+counts. A page with an issue is never good: ``read_issues`` is empty when good.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
@@ -118,6 +122,32 @@ ISSUES: Mapping[str, Issue] = MappingProxyType(
     }
 )
 ISSUE_CODES: frozenset[str] = frozenset(ISSUES)
+# F2: a page the reading model graded poor is unreadable when more than this share of its
+# words are [?].
+UNREADABLE_ILLEGIBLE_SHARE = 0.30
+
+
+def grade(
+    issues: Collection[str], *, model_quality: str | None, words: int, illegible_words: int, unsure_words: int
+) -> ReadQuality:
+    """A page's ``read_quality`` by F2's rules. ``issues`` are its F1 codes, ``model_quality``
+    the reading model's own grade (None from the local reader), ``words`` the words of its
+    lines (each ``[?]`` is one), ``illegible_words`` its ``[?]`` and ``unsure_words`` the
+    words listed as unsure.
+
+    * unreadable: no text on a page that is not blank (no_text); the reader refused it, or
+      read it only locally after a 400 (reader_refused); or the model said poor and more
+      than UNREADABLE_ILLEGIBLE_SHARE of its words are ``[?]``.
+    * uncertain: any unsure or illegible word, an unpinned line, a disputed value,
+      low_resolution, or any other issue (an issue always says why a page is not good).
+    * good: none of these. O(issues)."""
+    if NO_TEXT in issues or READER_REFUSED in issues:
+        return "unreadable"
+    if model_quality == "poor" and illegible_words > UNREADABLE_ILLEGIBLE_SHARE * words:
+        return "unreadable"
+    if issues or unsure_words or illegible_words:
+        return "uncertain"
+    return "good"
 
 
 def says(code: str, *, count: int | None = None, dpi: int | None = None) -> str:
