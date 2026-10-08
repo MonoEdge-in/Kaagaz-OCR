@@ -144,6 +144,13 @@ class OcrLineFieldsTest(unittest.TestCase):
         self.assertEqual((cell.kind, cell.table), ("table_cell", table))
         self.assertEqual((table.table_id, table.row, table.col, table.header), ("t1", 3, 4, False))
 
+    def test_unsure_words_and_box_source_are_optional(self) -> None:
+        """PRD 5 G3 and G5: an engine that gives neither builds its lines as before."""
+        line = OcrLine("Sunil Patil", 192, 718, 432, 781, 0.97)
+        self.assertEqual((line.unsure, line.box_source), ((), None))
+        marked = OcrLine("Sunil Pat[?]l", 192, 718, 432, 781, None, "paragraph", None, ("Sunil",), "found")
+        self.assertEqual((marked.unsure, marked.box_source), (("Sunil",), "found"))
+
 
 if __name__ == "__main__":
     unittest.main()

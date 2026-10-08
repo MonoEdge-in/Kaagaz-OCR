@@ -97,13 +97,14 @@ from dataclasses import dataclass
 from http.client import HTTPConnection, HTTPException, HTTPResponse, HTTPSConnection, IncompleteRead
 from importlib import metadata
 from pathlib import Path
-from typing import Any, NoReturn, Protocol, TypeGuard
+from typing import Any, NoReturn, Protocol, TypeGuard, runtime_checkable
 
 from PIL import Image
 
 from kaagaz.chunking.script import ocr_script_suspect, ocr_suspect_count
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
+from kaagaz.reading.page_quality import ILLEGIBLE_MARK
 from kaagaz.reading.spans import BLOCK_KINDS, TABLE_ID, BoxLocation, ReadError, Span
 from kaagaz.settings import Settings, SettingsError
 
@@ -162,6 +163,13 @@ class OcrLine:
     A layout engine (PaddleOCR-VL) gives one line per block, with its kind
     (``spans.BLOCK_KINDS``) and, for a table cell, its table. It gives no
     confidence, so that is None: never a made-up number.
+
+    The Gemini reader (PRD 5) also gives ``unsure``: each word in this line it
+    is not sure of, copied exactly (G3; a part it can't read at all is
+    ``page_quality.ILLEGIBLE_MARK`` in the text). ``box_source`` says where the
+    box came from (``spans.BOX_SOURCES``, G5): "found", the union of the boxes
+    RapidOCR's text finder found under the line, or "model", the model's own
+    box when none matched. None for an engine that finds its own boxes.
     """
 
     text: str
@@ -172,6 +180,8 @@ class OcrLine:
     confidence: float | None
     kind: str | None = None
     table: OcrTable | None = None
+    unsure: tuple[str, ...] = ()
+    box_source: str | None = None
 
 
 class OcrEngine(Protocol):
@@ -182,6 +192,70 @@ class OcrEngine(Protocol):
     def version(self) -> str: ...  # read-only: PaddleOCR-VL's comes from its last reply
 
     def read(self, image: Image.Image) -> list[OcrLine]: ...
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PageRead:
+    """One page as the main reader read it (PRD 5 G1 to G7, F1), for ``PageEngine``.
+
+    * ``page_no``: the page, from 1.
+    * ``lines``: in reading order, in pixels of the image given, with their unsure
+      words and box source (G3, G5). Header and footer lines keep their kind, so
+      they are left out of pieces by the existing rule.
+    * ``quality``, ``handwritten``, ``scripts``: the reader's own words about the
+      page (G3): ``quality`` is one of ``page_quality.MODEL_QUALITIES`` (good, fair,
+      poor), or None when the reader gives none (RapidOCR); ``scripts`` are from
+      ``page_quality.MODEL_SCRIPTS``.
+    * ``issues``: codes from the F1 table (``page_quality.ISSUE_CODES``) known when
+      the page is read: the model's own (G3), and illegible_words, unpinned,
+      reader_refused, read_locally and no_text. The pipeline adds low_resolution
+      and readers_disagree, which need the page's DPI and the checker.
+    * ``read_by``: who read it (RT2): the model ID in OCR_MODEL, or "rapidocr".
+    * ``input_tokens``, ``output_tokens``: what this read was billed, from the
+      reply's usage metadata (thinking tokens are output); 0 for a page taken
+      from the page cache or read locally.
+    * ``cached``: taken from the page cache (G7), so no call was made or billed.
+    * ``continues_on_next_page``: the last line's flag (G3, CX1): its sentence
+      goes on at the top of the next page.
+
+    The counts F1 stores are worked out from the lines, so they always agree with
+    them: ``unsure_words`` (every word listed as unsure), ``illegible_words``
+    (every ``[?]``) and ``unpinned_lines`` (lines with box_source "model").
+    """
+
+    page_no: int
+    lines: tuple[OcrLine, ...]
+    quality: str | None
+    handwritten: bool
+    scripts: tuple[str, ...]
+    issues: tuple[str, ...]
+    read_by: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached: bool = False
+    continues_on_next_page: bool = False
+
+    @property
+    def unsure_words(self) -> int:
+        return sum(len(line.unsure) for line in self.lines)
+
+    @property
+    def illegible_words(self) -> int:
+        return sum(line.text.count(ILLEGIBLE_MARK) for line in self.lines)
+
+    @property
+    def unpinned_lines(self) -> int:
+        return sum(line.box_source == "model" for line in self.lines)
+
+
+@runtime_checkable
+class PageEngine(OcrEngine, Protocol):
+    """An ``OcrEngine`` that also reads one numbered page at a time with everything
+    the page cache, the flags and the pinning need (PRD 5 G1, G7): ``read_page``.
+    ``page_no`` keys the page cache, so a retry reuses every page already read.
+    The ``Reader`` protocol does not change: the readers hand pages to it."""
+
+    def read_page(self, image: Image.Image, *, page_no: int) -> PageRead: ...
 
 
 class OcrOverloaded(BackendUnavailable):

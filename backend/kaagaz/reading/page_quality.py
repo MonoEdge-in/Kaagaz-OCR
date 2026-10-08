@@ -30,6 +30,10 @@ READ_QUALITIES: frozenset[str] = frozenset({"good", "uncertain", "unreadable"})
 ModelQuality = Literal["good", "fair", "poor"]
 # G3: the reading model's own grade of the page.
 MODEL_QUALITIES: frozenset[str] = frozenset({"good", "fair", "poor"})
+# G3: the scripts the reading model may name for a page.
+MODEL_SCRIPTS: tuple[str, ...] = ("latin", "devanagari", "other")
+# G3 and G4: what the reading model writes for each part of a line it can't read, never a guess.
+ILLEGIBLE_MARK = "[?]"
 # G3: the issues the reading model may name for a page (its JSON schema's enum).
 MODEL_ISSUES: tuple[str, ...] = (
     "blurry",
