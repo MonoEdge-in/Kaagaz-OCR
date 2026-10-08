@@ -1,4 +1,5 @@
-"""Start-up settings for the Gemini reader (PRD 5 section 9; G2, G6, G8, G9, F5, Q7, Q8).
+"""Start-up settings for the Gemini reader through OpenRouter (PRD 5 section 9; G2, G6, G8,
+G9, F5, Q7, Q8; council 8 Oct 2026).
 
 Every one is checked by name at start-up. The key is a secret: no error and no repr
 ever shows it, and a laptop or CI with OCR_ENGINE=rapidocr and MODEL_ENABLED=false
@@ -8,15 +9,16 @@ starts without one.
 import pytest
 
 from kaagaz import settings as settings_module
-from kaagaz.settings import Settings, SettingsError, is_gemini_model
+from kaagaz.settings import Settings, SettingsError, is_gemini_model, valid_model_id
 from tests.settings_factory import make_settings
 from tests.test_settings import shipped
 
-KEY = "AIza" + "Q" * 35  # the shape of a Google API key; not a real one
-GEMINI = {"OCR_ENGINE": "gemini", "GEMINI_API_KEY": KEY}
-GEMINI_SETTINGS = [
+KEY = "sk-or-v1-" + "q" * 64  # the shape of an OpenRouter key; not a real one
+GEMINI = {"OCR_ENGINE": "gemini", "OPENROUTER_API_KEY": KEY}
+PRO = "google/gemini-3.1-pro-preview"
+READER_SETTINGS = [
     "OCR_MODEL",
-    "GEMINI_BASE_URL",
+    "OPENROUTER_BASE_URL",
     "OCR_MEDIA_RESOLUTION",
     "OCR_THINKING_LEVEL",
     "OCR_RETRY_MEDIA_RESOLUTION",
@@ -24,7 +26,7 @@ GEMINI_SETTINGS = [
     "OCR_PAGE_CONCURRENCY",
     "CPU_WORKERS",
     "MAX_CHECK_CROPS",
-    "GEMINI_RPM",
+    "MODEL_RPM",
     "READER_OUTAGE_FALLBACK_MINUTES",
 ]
 
@@ -32,17 +34,14 @@ GEMINI_SETTINGS = [
 def test_the_shipped_env_example_has_the_prds_starting_values_and_no_key() -> None:
     settings = Settings.from_env(shipped())
     assert settings.ocr_engine == "rapidocr"  # laptops and CI
-    assert settings.gemini_api_key is None
-    assert (settings.ocr_model, settings.gemini_base_url) == (
-        "gemini-3.1-pro-preview",
-        "https://generativelanguage.googleapis.com/v1beta",
-    )
+    assert settings.openrouter_api_key is None
+    assert (settings.ocr_model, settings.openrouter_base_url) == (PRO, "https://openrouter.ai/api/v1")
     assert (
         settings.ocr_media_resolution,
         settings.ocr_thinking_level,
         settings.ocr_retry_media_resolution,
         settings.ocr_retry_thinking_level,
-    ) == ("high", "low", "ultra_high", "high")
+    ) == ("high", "low", "high", "high")  # the "detail" shape sends low or high only
     assert (
         settings.ocr_timeout_seconds,
         settings.ocr_page_concurrency,
@@ -50,11 +49,11 @@ def test_the_shipped_env_example_has_the_prds_starting_values_and_no_key() -> No
         settings.max_check_crops,
         settings.reader_outage_fallback_minutes,
     ) == (120.0, 6, 2, 200, 15)
-    assert settings.gemini_rpm >= 1
+    assert settings.model_rpm >= 1
 
 
-def test_the_test_settings_match_the_shipped_gemini_values() -> None:
-    names = {name.lower() for name in GEMINI_SETTINGS} | {"gemini_api_key"}
+def test_the_test_settings_match_the_shipped_reader_values() -> None:
+    names = {name.lower() for name in READER_SETTINGS} | {"openrouter_api_key"}
     shipped_settings = Settings.from_env(shipped())
     made = make_settings()
     assert {name: getattr(made, name) for name in names} == {
@@ -62,8 +61,8 @@ def test_the_test_settings_match_the_shipped_gemini_values() -> None:
     }
 
 
-@pytest.mark.parametrize("name", GEMINI_SETTINGS)
-def test_a_missing_gemini_setting_stops_start_up_by_name(name: str) -> None:
+@pytest.mark.parametrize("name", READER_SETTINGS)
+def test_a_missing_reader_setting_stops_start_up_by_name(name: str) -> None:
     """No defaults in code: each is Vrushit's setting, so a missing one names itself."""
     with pytest.raises(SettingsError, match=name):
         Settings.from_env(shipped(**{name: None}))
@@ -77,6 +76,7 @@ def test_a_missing_gemini_setting_stops_start_up_by_name(name: str) -> None:
         ("OCR_MEDIA_RESOLUTION", "ultra"),
         ("OCR_MEDIA_RESOLUTION", "HIGH"),
         ("OCR_MEDIA_RESOLUTION", "MEDIA_RESOLUTION_HIGH"),
+        ("OCR_MEDIA_RESOLUTION", "auto"),
         ("OCR_RETRY_MEDIA_RESOLUTION", "max"),
         ("OCR_THINKING_LEVEL", "none"),
         ("OCR_THINKING_LEVEL", "1024"),
@@ -86,21 +86,22 @@ def test_a_missing_gemini_setting_stops_start_up_by_name(name: str) -> None:
         ("CPU_WORKERS", "0"),
         ("CPU_WORKERS", "-2"),
         ("MAX_CHECK_CROPS", "0"),
-        ("GEMINI_RPM", "0"),
-        ("GEMINI_RPM", "1.5"),
+        ("MODEL_RPM", "0"),
+        ("MODEL_RPM", "1.5"),
         ("READER_OUTAGE_FALLBACK_MINUTES", "0"),
         ("READER_OUTAGE_FALLBACK_MINUTES", "15m"),
     ],
 )
-def test_a_bad_gemini_setting_stops_start_up_by_name(name: str, value: str) -> None:
+def test_a_bad_reader_setting_stops_start_up_by_name(name: str, value: str) -> None:
     with pytest.raises(SettingsError, match=name):
         Settings.from_env(shipped(**{name: value}))
 
 
-def test_each_media_resolution_and_thinking_level_is_accepted() -> None:
+def test_the_sendable_media_resolutions_and_every_thinking_level_are_accepted() -> None:
     assert sorted(settings_module.MEDIA_RESOLUTIONS) == ["high", "low", "medium", "ultra_high"]
     assert sorted(settings_module.THINKING_LEVELS) == ["high", "low", "medium", "minimal"]
-    for value in settings_module.MEDIA_RESOLUTIONS:
+    assert settings_module.MEDIA_RESOLUTION_SHAPE == "detail"
+    for value in ("low", "high"):
         made = Settings.from_env(shipped(OCR_MEDIA_RESOLUTION=value, OCR_RETRY_MEDIA_RESOLUTION=value))
         assert (made.ocr_media_resolution, made.ocr_retry_media_resolution) == (value, value)
     for value in settings_module.THINKING_LEVELS:
@@ -108,95 +109,124 @@ def test_each_media_resolution_and_thinking_level_is_accepted() -> None:
         assert (made.ocr_thinking_level, made.ocr_retry_thinking_level) == (value, value)
 
 
+@pytest.mark.parametrize("name", ["OCR_MEDIA_RESOLUTION", "OCR_RETRY_MEDIA_RESOLUTION"])
+@pytest.mark.parametrize("value", ["medium", "ultra_high"])
+def test_a_level_the_detail_shape_cannot_send_stops_start_up_and_is_never_downgraded(
+    name: str, value: str
+) -> None:
+    """image_url.detail takes low or high only: medium and ultra_high are real Gemini
+    levels, but sending them as something else would be a quiet downgrade."""
+    with pytest.raises(SettingsError, match=f"{name}={value} cannot be sent") as caught:
+        Settings.from_env(shipped(**{name: value}))
+    assert "['high', 'low']" in str(caught.value)
+
+
 def test_gemini_reads_with_the_key_and_the_model_in_the_settings() -> None:
-    settings = Settings.from_env(shipped(**GEMINI, OCR_MODEL="gemini-3.8-flash"))
-    assert (settings.ocr_engine, settings.ocr_model, settings.gemini_api_key) == (
+    settings = Settings.from_env(shipped(**GEMINI, OCR_MODEL="google/gemini-3.8-flash"))
+    assert (settings.ocr_engine, settings.ocr_model, settings.openrouter_api_key) == (
         "gemini",
-        "gemini-3.8-flash",
+        "google/gemini-3.8-flash",
         KEY,
     )
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.1-pro-preview",  # Google's own ID, not OpenRouter's
+        "google/gemini-3.1-pro-preview:free",  # a variant changes routing and data policy
+        "google/gemini-3.1-pro-preview:floor",
+        "Google/gemini-3.1-pro-preview",
+        "google/gemini 3",
+        "google/../keys",
+        "google/",
+    ],
+)
+def test_ocr_model_must_be_an_openrouter_model_id(model: str) -> None:
+    with pytest.raises(SettingsError, match="OCR_MODEL must be an OpenRouter model ID"):
+        Settings.from_env(shipped(**GEMINI, OCR_MODEL=model))
+
+
+@pytest.mark.parametrize("name", ["MODEL_CHAT", "MODEL_EMBED", "MODEL_VISION"])
+def test_a_gemini_model_with_a_variant_stops_start_up_by_name(name: str) -> None:
+    with pytest.raises(SettingsError, match=f"{name} must be an OpenRouter model ID"):
+        Settings.from_env(shipped(**GEMINI, **{name: "google/gemini-3.1-pro-preview:free"}))
+
+
 def test_gemini_without_a_key_stops_start_up() -> None:
     for empty in (None, "", "   "):
-        with pytest.raises(SettingsError, match="GEMINI_API_KEY is not set"):
-            Settings.from_env(shipped(OCR_ENGINE="gemini", GEMINI_API_KEY=empty))
+        with pytest.raises(SettingsError, match="OPENROUTER_API_KEY is not set"):
+            Settings.from_env(shipped(OCR_ENGINE="gemini", OPENROUTER_API_KEY=empty))
 
 
 @pytest.mark.parametrize(
     ("changes", "needs_key"),
     [
-        # OCR_ENGINE=rapidocr and MODEL_ENABLED=false: no Gemini call anywhere, so no key.
-        ({"MODEL_ENABLED": "false", "MODEL_CHAT": "gemini-3.1-pro-preview"}, False),
-        ({"MODEL_ENABLED": "false", "MODEL_EMBED": "gemini-embedding-2"}, False),
+        # OCR_ENGINE=rapidocr and MODEL_ENABLED=false: no model call anywhere, so no key.
+        ({"MODEL_ENABLED": "false", "MODEL_CHAT": PRO}, False),
+        ({"MODEL_ENABLED": "false", "MODEL_EMBED": "google/gemini-embedding-2"}, False),
         ({"MODEL_ENABLED": "true", "MODEL_CHAT": "qwen3:4b", "MODEL_EMBED": "qwen3-embedding:0.6b"}, False),
-        ({"MODEL_ENABLED": "true", "MODEL_CHAT": "gemini-3.1-pro-preview"}, True),
-        ({"MODEL_ENABLED": "true", "MODEL_EMBED": "gemini-embedding-2"}, True),
-        ({"MODEL_ENABLED": "true", "MODEL_VISION": "gemini-3.8-flash"}, True),
+        ({"MODEL_ENABLED": "true", "MODEL_CHAT": PRO}, True),
+        ({"MODEL_ENABLED": "true", "MODEL_EMBED": "google/gemini-embedding-2"}, True),
+        ({"MODEL_ENABLED": "true", "MODEL_VISION": "google/gemini-3.8-flash"}, True),
     ],
 )
-def test_the_key_is_needed_only_when_gemini_is_called(changes: dict[str, str], needs_key: bool) -> None:
-    without = shipped(OCR_ENGINE="rapidocr", GEMINI_API_KEY="", **changes)
+def test_the_key_is_needed_only_when_a_model_is_called(changes: dict[str, str], needs_key: bool) -> None:
+    without = shipped(OCR_ENGINE="rapidocr", OPENROUTER_API_KEY="", **changes)
     if needs_key:
-        with pytest.raises(SettingsError, match="GEMINI_API_KEY is not set"):
+        with pytest.raises(SettingsError, match="OPENROUTER_API_KEY is not set"):
             Settings.from_env(without)
     else:
-        assert Settings.from_env(without).gemini_api_key is None
-    assert Settings.from_env({**without, "GEMINI_API_KEY": KEY}).gemini_api_key == KEY
+        assert Settings.from_env(without).openrouter_api_key is None
+    assert Settings.from_env({**without, "OPENROUTER_API_KEY": KEY}).openrouter_api_key == KEY
 
 
 @pytest.mark.parametrize("bad", [KEY[:20] + " " + KEY[20:], KEY + "é", KEY + "\x00", KEY + "\r\nX-Evil: 1"])
 def test_a_key_that_could_break_its_header_is_refused_without_showing_it(bad: str) -> None:
-    with pytest.raises(SettingsError, match="GEMINI_API_KEY") as caught:
-        Settings.from_env(shipped(**{**GEMINI, "GEMINI_API_KEY": bad}))
-    assert KEY[4:] not in str(caught.value)
+    with pytest.raises(SettingsError, match="OPENROUTER_API_KEY") as caught:
+        Settings.from_env(shipped(**{**GEMINI, "OPENROUTER_API_KEY": bad}))
+    assert KEY[9:] not in str(caught.value)
 
 
 def test_repr_never_shows_the_key() -> None:
     settings = Settings.from_env(shipped(**GEMINI))
-    assert settings.gemini_api_key == KEY
+    assert settings.openrouter_api_key == KEY
     assert KEY not in repr(settings)
-    assert KEY not in repr(make_settings(gemini_api_key=KEY))
+    assert KEY not in repr(make_settings(openrouter_api_key=KEY))
 
 
 @pytest.mark.parametrize(
     ("url", "kept"),
     [
-        (
-            "https://generativelanguage.googleapis.com/v1beta",
-            "https://generativelanguage.googleapis.com/v1beta",
-        ),
-        (
-            "https://generativelanguage.googleapis.com/v1beta/",
-            "https://generativelanguage.googleapis.com/v1beta",
-        ),
-        ("http://127.0.0.1:8099/v1beta", "http://127.0.0.1:8099/v1beta"),  # a fake server in tests
-        ("http://localhost:9/v1beta", "http://localhost:9/v1beta"),  # the exit test's closed port
-        ("http://[::1]:8099/v1beta", "http://[::1]:8099/v1beta"),
-        ("https://127.0.0.1:1/v1beta", "https://127.0.0.1:1/v1beta"),
+        ("https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1"),
+        ("https://openrouter.ai/api/v1/", "https://openrouter.ai/api/v1"),
+        ("http://127.0.0.1:8099/api/v1", "http://127.0.0.1:8099/api/v1"),  # a fake server in tests
+        ("http://localhost:9/api/v1", "http://localhost:9/api/v1"),  # the exit test's closed port
+        ("http://[::1]:8099/api/v1", "http://[::1]:8099/api/v1"),
+        ("https://127.0.0.1:1/api/v1", "https://127.0.0.1:1/api/v1"),
     ],
 )
 def test_the_base_url_is_https_or_a_loopback_host(url: str, kept: str) -> None:
-    assert Settings.from_env(shipped(**GEMINI, GEMINI_BASE_URL=url)).gemini_base_url == kept
+    assert Settings.from_env(shipped(**GEMINI, OPENROUTER_BASE_URL=url)).openrouter_base_url == kept
 
 
 @pytest.mark.parametrize(
     "url",
     [
-        "http://generativelanguage.googleapis.com/v1beta",  # the key would cross the network in the clear
-        "http://10.0.0.5:8099/v1beta",
-        "http://localhost.evil.example/v1beta",
-        "ftp://generativelanguage.googleapis.com/v1beta",
-        "generativelanguage.googleapis.com/v1beta",
-        "https:///v1beta",
-        "https://user:secret@generativelanguage.googleapis.com/v1beta",
-        "https://generativelanguage.googleapis.com/v1beta?key=abc",
-        "https://generativelanguage.googleapis.com/v1beta#models",
+        "http://openrouter.ai/api/v1",  # the key would cross the network in the clear
+        "http://10.0.0.5:8099/api/v1",
+        "http://localhost.evil.example/api/v1",
+        "ftp://openrouter.ai/api/v1",
+        "openrouter.ai/api/v1",
+        "https:///api/v1",
+        "https://user:secret@openrouter.ai/api/v1",
+        "https://openrouter.ai/api/v1?key=abc",
+        "https://openrouter.ai/api/v1#models",
     ],
 )
 def test_any_other_base_url_stops_start_up_by_name(url: str) -> None:
-    with pytest.raises(SettingsError, match="GEMINI_BASE_URL"):
-        Settings.from_env(shipped(GEMINI_BASE_URL=url))
+    with pytest.raises(SettingsError, match="OPENROUTER_BASE_URL"):
+        Settings.from_env(shipped(OPENROUTER_BASE_URL=url))
 
 
 def test_a_gemini_page_needs_three_calls_inside_the_lease() -> None:
@@ -226,14 +256,33 @@ def test_a_dpi_rule_doubles_the_gemini_calls_inside_the_lease() -> None:
 @pytest.mark.parametrize(
     ("name", "gemini"),
     [
-        ("gemini-3.1-pro-preview", True),
-        ("gemini-3.8-flash", True),
-        ("gemini-embedding-2", True),
+        ("google/gemini-3.1-pro-preview", True),
+        ("google/gemini-3.8-flash", True),
+        ("google/gemini-embedding-2", True),
+        ("gemini-3.1-pro-preview", False),  # Google's own ID: not an OpenRouter one
         ("qwen3:4b", False),
         ("qwen3-embedding:0.6b", False),
-        ("Gemini-3.1-pro-preview", False),  # model IDs are lowercase; no guessing
-        ("my-gemini-3", False),
+        ("Google/gemini-3.1-pro-preview", False),  # model IDs are lowercase; no guessing
+        ("google/gemma-3-27b-it", False),
+        ("openai/gpt-5", False),
+        ("my-google/gemini-3", False),
     ],
 )
-def test_a_gemini_model_is_named_by_its_id(name: str, gemini: bool) -> None:
+def test_a_gemini_model_is_named_by_its_openrouter_id(name: str, gemini: bool) -> None:
     assert is_gemini_model(name) is gemini
+
+
+@pytest.mark.parametrize(
+    ("name", "valid"),
+    [
+        ("google/gemini-3.1-pro-preview", True),
+        ("google/gemini-embedding-2", True),
+        ("x-ai/grok_4.1", True),
+        ("google/gemini-3.1-pro-preview:free", False),
+        ("gemini-3.1-pro-preview", False),
+        ("google/gemini/3", False),
+        ("qwen3:4b", False),
+    ],
+)
+def test_a_model_id_is_author_slash_slug_with_no_variant(name: str, valid: bool) -> None:
+    assert valid_model_id(name) is valid

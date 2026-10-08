@@ -1,6 +1,6 @@
 """What every model client shares: its two errors and how a JSON reply is checked.
 
-``kaagaz.ai.client`` (Ollama) and ``kaagaz.ai.gemini`` (PRD 5 G9) both raise these
+``kaagaz.ai.client`` (Ollama) and ``kaagaz.ai.openrouter`` (PRD 5 G9) both raise these
 errors and check replies the same way, and ``client.build_model_client`` builds
 either. They live here so the two modules import this one and never each other
 (``tests/test_import_graph.py``). ``kaagaz.ai.client`` re-exports every name, so

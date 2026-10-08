@@ -44,12 +44,13 @@
   names a folder of the right text for each page (``1.txt``, ``2.txt``, ...,
   UTF-8), and adds each page's character and word error rates (CER, WER). It
   prints no text and no file name: only numbers and short codes.
-* ``verify-gemini [--model ID ...] [--embed-model ID]``: check PRD 5's verify items
-  (section 14) against the live Gemini API and the installed RapidOCR, and print
-  ``VERIFY <id> PASS|FAIL|MANUAL <evidence>`` for each (``kaagaz.verify_gemini``).
-  It touches no database, file storage or queue, sends only pictures it draws
-  itself, prints the key only as set or missing, and exits 1 when an item FAILs.
-  ``--model`` adds a model ID to call once (such as gemini-3.8-flash).
+* ``verify-models [--model ID ...] [--embed-model ID]`` (old name ``verify-gemini``):
+  check PRD 5's verify items (section 14) against the live models through OpenRouter
+  and the installed RapidOCR, and print ``VERIFY <id> PASS|FAIL|INFO <evidence>`` for
+  each (``kaagaz.verify_models``). It touches no database, file storage or queue,
+  sends only pictures it draws itself, prints the key only as set or missing, and
+  exits 1 when an item FAILs. ``--model`` adds an OpenRouter model ID to check (such
+  as google/gemini-3.8-flash).
 * ``reembed [--customer-id ID] [--all]``: give pieces their meaning vectors
   again after the model or what is embedded changed (PRD 3 V4), for every
   customer or one. Per document: one short transaction clears the vectors whose
@@ -88,7 +89,7 @@ from typing import TextIO
 
 from sqlalchemy import Connection
 
-from kaagaz import verify_gemini
+from kaagaz import verify_models
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.api import totp
 from kaagaz.api.auth import ROLES, hash_password
@@ -187,10 +188,14 @@ def _parser() -> argparse.ArgumentParser:
         "--truth", type=Path, help="a folder of 1.txt, 2.txt, ...: the right text of each page"
     )
 
-    verify = commands.add_parser("verify-gemini", help="check the Gemini API and RapidOCR (no database)")
-    verify.add_argument("--model", action="append", default=[], help="one more model ID to call once")
+    verify = commands.add_parser(
+        "verify-models",
+        aliases=["verify-gemini"],
+        help="check the models through OpenRouter, and RapidOCR (no database)",
+    )
+    verify.add_argument("--model", action="append", default=[], help="one more OpenRouter model ID to check")
     verify.add_argument(
-        "--embed-model", help="the embedding model to check (default: MODEL_EMBED's Gemini one)"
+        "--embed-model", help="the embedding model to check (default: MODEL_EMBED's google/gemini- one)"
     )
 
     reembed = commands.add_parser("reembed", help="embed pieces again after a model or recipe change")
@@ -677,9 +682,9 @@ def main(
         if args.command == "measure":  # before any database is built: it never uses one
             _measure(Settings.from_env(env), args.file, args.truth, stdout, timer=timer)
             return 0
-        if args.command == "verify-gemini":  # no database either
+        if args.command in ("verify-models", "verify-gemini"):  # no database either
             checked = settings or Settings.from_env(env)
-            return verify_gemini.run(checked, stdout, models=args.model, embed_model=args.embed_model)
+            return verify_models.run(checked, stdout, models=args.model, embed_model=args.embed_model)
         if db is None:
             settings = settings or Settings.from_env(env)
             db = Database(make_engine(settings.database_url), settings.db_app_role)

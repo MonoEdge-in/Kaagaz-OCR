@@ -30,7 +30,18 @@ _GEMINI_PAGE_CALLS = 3
 # PRD 5 G2 and F5: the media_resolution and thinking_level a page is read with.
 MEDIA_RESOLUTIONS = frozenset({"low", "medium", "high", "ultra_high"})
 THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
-# GEMINI_BASE_URL may be plain http only on these hosts (a fake server in tests, or the
+# How a page's media resolution reaches the model through OpenRouter (council 8 Oct 2026).
+# "detail": the image part's image_url.detail, which takes low or high only, so only those
+# two levels can be sent: OCR_MEDIA_RESOLUTION and OCR_RETRY_MEDIA_RESOLUTION refuse medium
+# and ultra_high at start-up, by name, and never send another level instead. "passthrough"
+# (Google's own media_resolution level sent through, all four levels) is the one other
+# value, for when verify-models shows OpenRouter passes it on; it is not built until then.
+MEDIA_RESOLUTION_SHAPE = "detail"
+SENDABLE_MEDIA_RESOLUTIONS = {"detail": frozenset({"low", "high"})}
+# An OpenRouter model ID: author/slug, such as google/gemini-3.1-pro-preview. A ":variant"
+# (":free", ":floor", ...) is refused: it changes the routing and the data policy.
+MODEL_ID = re.compile(r"[a-z0-9-]+/[A-Za-z0-9._-]+")
+# OPENROUTER_BASE_URL may be plain http only on these hosts (a fake server in tests, or the
 # exit test's closed port); anywhere else the key would cross the network in the clear.
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 # The key goes in a request header: printable ASCII with no space, so it can never split one.
@@ -86,22 +97,28 @@ def _time_zone(name: str) -> str:
 
 
 def is_gemini_model(name: str) -> bool:
-    """A model ID the Gemini API serves, such as gemini-3.1-pro-preview or
-    gemini-embedding-2 (PRD 5 M1, M5): calling it needs GEMINI_API_KEY."""
-    return name.startswith("gemini-")
+    """A Google Gemini model ID on OpenRouter, such as google/gemini-3.1-pro-preview or
+    google/gemini-embedding-2 (PRD 5 M1, M5; council 8 Oct 2026): calling it goes through
+    OpenRouter and needs OPENROUTER_API_KEY. The name stays: the reader's tracks use it."""
+    return name.startswith("google/gemini-")
 
 
-def _gemini_base_url(value: str) -> str:
-    """GEMINI_BASE_URL: https, or http on a loopback host only; no user, query or
+def valid_model_id(name: str) -> bool:
+    """``name`` is an OpenRouter model ID (``MODEL_ID``): author/slug, with no ":variant"."""
+    return MODEL_ID.fullmatch(name) is not None
+
+
+def _openrouter_base_url(value: str) -> str:
+    """OPENROUTER_BASE_URL: https, or http on a loopback host only; no user, query or
     fragment, since the key is sent to it. Kept without a trailing slash."""
     parts = urllib.parse.urlsplit(value)
     if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
-        raise SettingsError("GEMINI_BASE_URL must have no user, password, query or fragment")
+        raise SettingsError("OPENROUTER_BASE_URL must have no user, password, query or fragment")
     host = parts.hostname or ""
     secure = parts.scheme == "https" and bool(host)
     if not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS)):
         raise SettingsError(
-            "GEMINI_BASE_URL must be an https URL (http only for localhost, 127.0.0.1 or ::1)"
+            "OPENROUTER_BASE_URL must be an https URL (http only for localhost, 127.0.0.1 or ::1)"
         )
     return value.rstrip("/")
 
@@ -170,19 +187,20 @@ class Settings:
     # with ocr_dpi as the ceiling; "text_height_no_scan_cap" the same without the scan cap.
     ocr_dpi_rule: str
 
-    # PRD 5, the Gemini reader. OCR_ENGINE=gemini reads every ocr page with ocr_model, the
-    # model in .env (no code picks or switches a model), through gemini_base_url with
-    # gemini_api_key: a paid-tier key, a secret repr never shows, needed only when Gemini is
-    # called (OCR_ENGINE=gemini, or MODEL_ENABLED with a Gemini model). A page is sent at
-    # ocr_media_resolution with ocr_thinking_level (G2); "Read this page again" (F5) uses
-    # the retry pair. ocr_page_concurrency pages of a document are read at a time and
-    # RapidOCR work runs on cpu_workers threads (G8). At most max_check_crops values of a
-    # document are read again by the CPU checker (V1). gemini_rpm is the project's calls a
-    # minute, shared by the workers (G9). Pages are read locally once the reader has been
-    # down for reader_outage_fallback_minutes (Q7).
+    # PRD 5, the Gemini reader, through OpenRouter (council 8 Oct 2026). OCR_ENGINE=gemini
+    # reads every ocr page with ocr_model, the OpenRouter model ID in .env (no code picks or
+    # switches a model), through openrouter_base_url with openrouter_api_key: a secret repr
+    # never shows, needed only when a model is called (OCR_ENGINE=gemini, or MODEL_ENABLED
+    # with a google/gemini- model). A page is sent at ocr_media_resolution with
+    # ocr_thinking_level (G2); "Read this page again" (F5) uses the retry pair. Both
+    # resolutions are limited to what MEDIA_RESOLUTION_SHAPE can send. ocr_page_concurrency
+    # pages of a document are read at a time and RapidOCR work runs on cpu_workers threads
+    # (G8). At most max_check_crops values of a document are read again by the CPU checker
+    # (V1). model_rpm is the key's calls a minute, shared by the workers (G9). Pages are
+    # read locally once the reader has been down for reader_outage_fallback_minutes (Q7).
     ocr_model: str
-    gemini_api_key: str | None = field(repr=False)
-    gemini_base_url: str
+    openrouter_api_key: str | None = field(repr=False)
+    openrouter_base_url: str
     ocr_media_resolution: str
     ocr_thinking_level: str
     ocr_retry_media_resolution: str
@@ -190,7 +208,7 @@ class Settings:
     ocr_page_concurrency: int
     cpu_workers: int
     max_check_crops: int
-    gemini_rpm: int
+    model_rpm: int
     reader_outage_fallback_minutes: int
 
     # The page route (PRD 2 R2 to R4). A PDF page's text layer is kept when it has at
@@ -368,15 +386,28 @@ class Settings:
         model_chat = env.text("MODEL_CHAT")
         model_embed = env.text("MODEL_EMBED")
         model_vision = env.optional("MODEL_VISION")
-        gemini_api_key = env.optional("GEMINI_API_KEY")
-        model_names = (model_chat, model_embed, model_vision or "")
-        calls_gemini = ocr_engine == "gemini" or (model_enabled and any(map(is_gemini_model, model_names)))
-        if gemini_api_key is None and calls_gemini:
+        openrouter_api_key = env.optional("OPENROUTER_API_KEY")
+        ocr_model = env.text("OCR_MODEL")
+        if not valid_model_id(ocr_model):
             raise SettingsError(
-                "GEMINI_API_KEY is not set: OCR_ENGINE=gemini, or MODEL_ENABLED with a Gemini model, needs it"
+                "OCR_MODEL must be an OpenRouter model ID such as google/gemini-3.1-pro-preview (no :variant)"
             )
-        if gemini_api_key is not None and _API_KEY.fullmatch(gemini_api_key) is None:
-            raise SettingsError("GEMINI_API_KEY must be printable ASCII with no spaces")
+        named = (("MODEL_CHAT", model_chat), ("MODEL_EMBED", model_embed), ("MODEL_VISION", model_vision))
+        for name, model in named:
+            if model is not None and is_gemini_model(model) and not valid_model_id(model):
+                raise SettingsError(
+                    f"{name} must be an OpenRouter model ID such as google/gemini-3.1-pro-preview"
+                    " (no :variant)"
+                )
+        model_names = (model_chat, model_embed, model_vision or "")
+        calls_model = ocr_engine == "gemini" or (model_enabled and any(map(is_gemini_model, model_names)))
+        if openrouter_api_key is None and calls_model:
+            raise SettingsError(
+                "OPENROUTER_API_KEY is not set: OCR_ENGINE=gemini, or MODEL_ENABLED with a google/gemini-"
+                " model, needs it"
+            )
+        if openrouter_api_key is not None and _API_KEY.fullmatch(openrouter_api_key) is None:
+            raise SettingsError("OPENROUTER_API_KEY must be printable ASCII with no spaces")
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -413,17 +444,17 @@ class Settings:
             ocr_timeout_seconds=ocr_timeout_seconds,
             ocr_dpi=env.positive("OCR_DPI"),
             ocr_dpi_rule=ocr_dpi_rule,
-            ocr_model=env.text("OCR_MODEL"),
-            gemini_api_key=gemini_api_key,
-            gemini_base_url=_gemini_base_url(env.text("GEMINI_BASE_URL")),
-            ocr_media_resolution=env.choice("OCR_MEDIA_RESOLUTION", set(MEDIA_RESOLUTIONS)),
+            ocr_model=ocr_model,
+            openrouter_api_key=openrouter_api_key,
+            openrouter_base_url=_openrouter_base_url(env.text("OPENROUTER_BASE_URL")),
+            ocr_media_resolution=env.media_resolution("OCR_MEDIA_RESOLUTION"),
             ocr_thinking_level=env.choice("OCR_THINKING_LEVEL", set(THINKING_LEVELS)),
-            ocr_retry_media_resolution=env.choice("OCR_RETRY_MEDIA_RESOLUTION", set(MEDIA_RESOLUTIONS)),
+            ocr_retry_media_resolution=env.media_resolution("OCR_RETRY_MEDIA_RESOLUTION"),
             ocr_retry_thinking_level=env.choice("OCR_RETRY_THINKING_LEVEL", set(THINKING_LEVELS)),
             ocr_page_concurrency=env.positive("OCR_PAGE_CONCURRENCY"),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
-            gemini_rpm=env.positive("GEMINI_RPM"),
+            model_rpm=env.positive("MODEL_RPM"),
             reader_outage_fallback_minutes=env.positive("READER_OUTAGE_FALLBACK_MINUTES"),
             text_layer_min_chars=env.positive("TEXT_LAYER_MIN_CHARS"),
             text_layer_min_good_ratio=env.share("TEXT_LAYER_MIN_GOOD_RATIO"),
@@ -551,6 +582,18 @@ class _Env:
         value = self.text(name)
         if value not in allowed:
             raise SettingsError(f"{name} must be one of {sorted(allowed)}")
+        return value
+
+    def media_resolution(self, name: str) -> str:
+        """One of MEDIA_RESOLUTIONS that MEDIA_RESOLUTION_SHAPE can send. A level it cannot
+        send stops start-up by name: it is never quietly sent as another level."""
+        value = self.choice(name, set(MEDIA_RESOLUTIONS))
+        sendable = SENDABLE_MEDIA_RESOLUTIONS[MEDIA_RESOLUTION_SHAPE]
+        if value not in sendable:
+            raise SettingsError(
+                f"{name}={value} cannot be sent through OpenRouter: with the media resolution shape"
+                f" {MEDIA_RESOLUTION_SHAPE!r} it must be one of {sorted(sendable)}"
+            )
         return value
 
     def words(self, name: str) -> frozenset[str]:
