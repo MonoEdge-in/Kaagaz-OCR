@@ -405,6 +405,8 @@ _PAGE_READINGS = text(
     " sum(length(left(e.span ->> 'raw', :max_chars))) OVER (ORDER BY e.ord) AS upto"
     " FROM jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
     " WHERE (e.span -> 'region' ->> 'page')::int = :page_no"
+    " AND NOT (coalesce(e.span ->> 'origin', '') = 'ocr' AND e.span ->> 'kind' IS NULL"
+    " AND coalesce(e.span ->> 'quality', '') IN ('unsure', 'illegible'))"
     " ORDER BY e.ord LIMIT :max_lines + 1) AS s"
     " WHERE s.upto - length(s.text) <= :max_text) AS l ON true"
     " WHERE ro.customer_id = :c AND ro.document_id = :d"
