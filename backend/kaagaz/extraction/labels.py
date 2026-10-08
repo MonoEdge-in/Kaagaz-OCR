@@ -23,6 +23,18 @@ The reasons (the ``label_reason`` column):
 * ``local_reader`` (PRD 5 Q7): the page was read by RapidOCR while the main
   reader was down. Needs review, and the page is read again later.
 
+PRD 5's checker (V1 to V4): on a page the reading model read, the pipeline crops
+each value's box and RapidOCR reads it (``checked``, the boxes it read). V2's
+agreement is ``_compare`` below (NFKC, collapsed spaces, Devanagari digits to 0 to
+9, Latin case ignored). V3: a Devanagari value of such a page is verified only by
+exact agreement with that reading; when RapidOCR read nothing, it stays
+``ocr_script``. ``label_reading_marks`` then applies what the reader said about the
+value's line, after both labellers: a page read locally is ``local_reader``; a value
+with an unsure word or ``[?]`` is ``unsure_text`` (V4: even when the checker
+agrees); a line no found box confirmed is ``box_unanchored`` (G5), in that order. A
+card value (``model_chosen``) keeps its reason. The checker's reading stays as the
+second reading, so the review card shows both.
+
 The second reading of a line box is the second reader's line on the same page
 that overlaps it most, if their intersection over union is at least 0.5 (or,
 for scans, a vision model's reading of the box, passed in by the pipeline).
@@ -73,13 +85,15 @@ containment check; memory O(s + v).
 """
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+import string
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 
 from kaagaz.chunking.script import has_devanagari_letters, ocr_script_suspect
 from kaagaz.extraction.labelled import value_after_label
 from kaagaz.extraction.quotes import find_quote, normalise_quote, reader_text
 from kaagaz.extraction.values import CARD_RECORD, NEEDS_REVIEW, VERIFIED, ExtractedValue
+from kaagaz.reading.page_quality import ILLEGIBLE_MARK
 from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span
 
 LOW_CONFIDENCE = 0.90
@@ -93,6 +107,9 @@ LOCAL_READER = "local_reader"
 # The rupee sign (U+20B9), and Rs / INR standing as words.
 _CURRENCY = re.compile(r"₹|(?<![a-z])(?:rs\.?|inr)(?![a-z])")
 _SPACES = re.compile(r"\s+")
+# V4: punctuation at a word's ends, Latin and Devanagari (danda, double danda), so an unsure
+# "1,180.00." still names the value "1,180.00".
+_WORD_EDGES = string.punctuation + "\u0964\u0965"
 
 _Lines = dict[int, list[tuple[Span, BoxLocation]]]
 
@@ -119,11 +136,13 @@ def label_values(
     readings: Mapping[Location, str] | None = None,
     *,
     also_located: Iterable[ExtractedValue] = (),
+    checked: Collection[Location] = (),
 ) -> list[ExtractedValue]:
     """Label each value the rules found. ``second`` is the second reader's spans (None:
     there is no second reader for this type); ``readings`` are extra second readings by
     box, which win over ``second`` for that box; ``also_located`` are the document's
-    other located values, counted for the shared boxes only."""
+    other located values, counted for the shared boxes only; ``checked`` are the boxes
+    PRD 5's checker read (V3)."""
     values = list(values)
     lines = _lines_by_page(second)
     shared = _shared_boxes([*values, *also_located])
@@ -135,7 +154,7 @@ def label_values(
         elif not isinstance(box, BoxLocation):
             labelled.append(replace(value, label=VERIFIED, label_reason="direct_cell"))
         elif _is_ocr(value):
-            labelled.append(_label_ocr(value, box, shared, readings))
+            labelled.append(_label_ocr(value, box, shared, readings, checked))
         else:
             labelled.append(_label_box(value, _reading(box, lines, readings)))
     return labelled
@@ -147,9 +166,10 @@ def label_quoted(
     readings: Mapping[Location, str] | None = None,
     *,
     also_located: Iterable[ExtractedValue] = (),
+    checked: Collection[Location] = (),
 ) -> list[ExtractedValue]:
     """Label each value the model located by quoting (the module docstring, rules 1 to 7).
-    ``also_located``: as in ``label_values``."""
+    ``also_located`` and ``checked``: as in ``label_values``."""
     values = list(values)
     lines = _lines_by_page(second)
     shared = _shared_boxes([*values, *also_located])
@@ -161,7 +181,7 @@ def label_quoted(
         elif not isinstance(box, BoxLocation):
             labelled.append(replace(value, label=VERIFIED, label_reason="direct_cell"))
         elif _is_ocr(value):
-            labelled.append(_label_ocr(value, box, shared, readings))
+            labelled.append(_label_ocr(value, box, shared, readings, checked))
         elif box in shared:
             labelled.append(_needs_review(value, "single_reader", None))
         elif (readings or {}).get(box) is not None:
@@ -172,12 +192,21 @@ def label_quoted(
 
 
 def _label_ocr(
-    value: ExtractedValue, box: BoxLocation, shared: set[Location], readings: Mapping[Location, str] | None
+    value: ExtractedValue,
+    box: BoxLocation,
+    shared: set[Location],
+    readings: Mapping[Location, str] | None,
+    checked: Collection[Location],
 ) -> ExtractedValue:
     """ML amendment 1 for a value read by OCR: its only second reading is the vision
-    reading of its box (council fix 1)."""
+    reading of its box (council fix 1), or PRD 5's checker's. V3: a value whose only
+    untrusted letters are Devanagari is compared with the checker's reading of its own
+    box (exact agreement, V2); with no such reading it stays ``ocr_script``."""
     vision = (readings or {}).get(box)
     if _script_unsound(value.value_text):
+        devanagari_only = not ocr_script_suspect(value.value_text)
+        if box in checked and vision is not None and box not in shared and devanagari_only:
+            return _compare(value, vision)
         return _needs_review(value, "ocr_script", _after_label(value, vision))
     if box in shared:
         return _needs_review(value, "single_reader", None)
@@ -296,3 +325,52 @@ def _contained(value: ExtractedValue, line: Span | None) -> ExtractedValue:
     if found is None:
         return _agreed(value, line.text.strip(), False)
     return _agreed(value, found.text, True)
+
+
+@dataclass(frozen=True, slots=True)
+class LineMarks:
+    """What the main reader said about one line (PRD 5): the words it was not sure of
+    (G3, V4), and whether no box RapidOCR's text finder found confirmed its spot (G5)."""
+
+    unsure: tuple[str, ...] = ()
+    unpinned: bool = False
+
+
+def label_reading_marks(
+    values: Iterable[ExtractedValue], lines: Mapping[Location, LineMarks], local_pages: Collection[int]
+) -> list[ExtractedValue]:
+    """PRD 5's reasons for values read by OCR (the module notes), after ``label_values``
+    and ``label_quoted``: ``local_reader`` on a page in ``local_pages`` (Q7), then
+    ``unsure_text`` when the value has ``[?]`` or a word of its line's unsure words (V4),
+    then ``box_unanchored`` when its line is unpinned (G5). ``lines`` are the marks by the
+    line's box, the value's own location. A card value and every value with none of these
+    keep their label. O(v x u) for v values and u unsure words of a line."""
+    labelled = []
+    for value in values:
+        box = value.location
+        if not isinstance(box, BoxLocation) or not _is_ocr(value) or value.label_reason == "model_chosen":
+            labelled.append(value)
+            continue
+        marks = lines.get(box, LineMarks())
+        reason: str | None = None
+        if box.page in local_pages:
+            reason = LOCAL_READER
+        elif _has_unsure_word(value.value_text, marks.unsure):
+            reason = UNSURE_TEXT
+        elif marks.unpinned:
+            reason = BOX_UNANCHORED
+        labelled.append(value if reason is None else _needs_review(value, reason, value.second_reading))
+    return labelled
+
+
+def _has_unsure_word(text: str, unsure: Sequence[str]) -> bool:
+    """V4: ``[?]`` in ``text``, or a word of it among the unsure words, compared without
+    case, currency signs or the punctuation at a word's ends."""
+    if ILLEGIBLE_MARK in text:
+        return True
+    words = _words(text)
+    return any(_words(word) & words for word in unsure)
+
+
+def _words(text: str) -> set[str]:
+    return {word for word in (part.strip(_WORD_EDGES) for part in comparable(text).split()) if word}
