@@ -11,6 +11,7 @@ PROVISIONAL: every value marked so in ``.env.example`` waits for Vrushit.
 
 import math
 import os
+import re
 import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -23,6 +24,17 @@ LEASE_RENEW_SECONDS = 15
 # heartbeat) and the job's lease, or a slow page outlives the lease and a second
 # worker starts the same document.
 _OCR_LEASE_MARGIN_SECONDS = 120 + LEASE_RENEW_SECONDS
+# PRD 5 G6: the most Gemini calls one page can take between heartbeats: the read, and when
+# the reply is cut off at the output limit, its top and bottom halves.
+_GEMINI_PAGE_CALLS = 3
+# PRD 5 G2 and F5: the media_resolution and thinking_level a page is read with.
+MEDIA_RESOLUTIONS = frozenset({"low", "medium", "high", "ultra_high"})
+THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
+# GEMINI_BASE_URL may be plain http only on these hosts (a fake server in tests, or the
+# exit test's closed port); anywhere else the key would cross the network in the clear.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# The key goes in a request header: printable ASCII with no space, so it can never split one.
+_API_KEY = re.compile(r"[\x21-\x7e]{1,256}")
 # The Host values the ocr server accepts (ALLOWED_HOSTS in kaagaz/ocr_server/app.py,
 # which must never import this module; a test keeps the two the same).
 OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
@@ -71,6 +83,27 @@ def _time_zone(name: str) -> str:
     except (ZoneInfoNotFoundError, ValueError):
         raise SettingsError("TIMEZONE must be a time zone name such as Asia/Kolkata") from None
     return name
+
+
+def is_gemini_model(name: str) -> bool:
+    """A model ID the Gemini API serves, such as gemini-3.1-pro-preview or
+    gemini-embedding-2 (PRD 5 M1, M5): calling it needs GEMINI_API_KEY."""
+    return name.startswith("gemini-")
+
+
+def _gemini_base_url(value: str) -> str:
+    """GEMINI_BASE_URL: https, or http on a loopback host only; no user, query or
+    fragment, since the key is sent to it. Kept without a trailing slash."""
+    parts = urllib.parse.urlsplit(value)
+    if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
+        raise SettingsError("GEMINI_BASE_URL must have no user, password, query or fragment")
+    host = parts.hostname or ""
+    secure = parts.scheme == "https" and bool(host)
+    if not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS)):
+        raise SettingsError(
+            "GEMINI_BASE_URL must be an https URL (http only for localhost, 127.0.0.1 or ::1)"
+        )
+    return value.rstrip("/")
 
 
 class SettingsError(Exception):
@@ -124,9 +157,10 @@ class Settings:
     page_image_dpi: int
     max_image_pixels: int
 
-    # Scan reader engine: "paddleocr_vl" (the ocr container at ocr_url), "rapidocr",
-    # or "none" (scans are marked needs_reader). OCR pages are drawn at ocr_dpi in
-    # memory, never stored; the stored page picture stays at page_image_dpi.
+    # Scan reader engine: "gemini" (PRD 5, the model in ocr_model), "paddleocr_vl" (the ocr
+    # container at ocr_url), "rapidocr", or "none" (scans are marked needs_reader). OCR pages
+    # are drawn at ocr_dpi in memory, never stored; the stored page picture stays at
+    # page_image_dpi.
     ocr_engine: str
     ocr_url: str
     ocr_timeout_seconds: float
@@ -135,6 +169,29 @@ class Settings:
     # chosen. "fixed" (when unset) draws at ocr_dpi; "text_height" from the page's text height,
     # with ocr_dpi as the ceiling; "text_height_no_scan_cap" the same without the scan cap.
     ocr_dpi_rule: str
+
+    # PRD 5, the Gemini reader. OCR_ENGINE=gemini reads every ocr page with ocr_model, the
+    # model in .env (no code picks or switches a model), through gemini_base_url with
+    # gemini_api_key: a paid-tier key, a secret repr never shows, needed only when Gemini is
+    # called (OCR_ENGINE=gemini, or MODEL_ENABLED with a Gemini model). A page is sent at
+    # ocr_media_resolution with ocr_thinking_level (G2); "Read this page again" (F5) uses
+    # the retry pair. ocr_page_concurrency pages of a document are read at a time and
+    # RapidOCR work runs on cpu_workers threads (G8). At most max_check_crops values of a
+    # document are read again by the CPU checker (V1). gemini_rpm is the project's calls a
+    # minute, shared by the workers (G9). Pages are read locally once the reader has been
+    # down for reader_outage_fallback_minutes (Q7).
+    ocr_model: str
+    gemini_api_key: str | None = field(repr=False)
+    gemini_base_url: str
+    ocr_media_resolution: str
+    ocr_thinking_level: str
+    ocr_retry_media_resolution: str
+    ocr_retry_thinking_level: str
+    ocr_page_concurrency: int
+    cpu_workers: int
+    max_check_crops: int
+    gemini_rpm: int
+    reader_outage_fallback_minutes: int
 
     # The page route (PRD 2 R2 to R4). A PDF page's text layer is kept when it has at
     # least text_layer_min_chars letters and digits and text_layer_min_good_ratio good
@@ -231,14 +288,18 @@ class Settings:
             if env.optional("OCR_DPI_RULE") is None
             else env.choice("OCR_DPI_RULE", {"fixed", "text_height", "text_height_no_scan_cap"})
         )
-        # Any other rule may read a page twice (at a lowered DPI, then the ceiling) between heartbeats.
+        ocr_engine = env.choice("OCR_ENGINE", {"gemini", "paddleocr_vl", "rapidocr", "none"})
+        # Any other rule may read a page twice (at a lowered DPI, then the ceiling) between
+        # heartbeats, and a Gemini page may take three calls (_GEMINI_PAGE_CALLS).
         ocr_calls = 1 if ocr_dpi_rule == "fixed" else 2
+        if ocr_engine == "gemini":
+            ocr_calls *= _GEMINI_PAGE_CALLS
         if ocr_calls * ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
+            times = f"{ocr_calls} x " if ocr_calls > 1 else ""
             raise SettingsError(
-                f"{'2 x ' if ocr_calls == 2 else ''}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
+                f"{times}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
                 " must not be more than QUEUE_LEASE_SECONDS"
             )
-        ocr_engine = env.choice("OCR_ENGINE", {"paddleocr_vl", "rapidocr", "none"})
         ocr_url = env.url("OCR_URL")
         if (
             ocr_engine == "paddleocr_vl"
@@ -303,6 +364,19 @@ class Settings:
             translate_timeout = env.number("MODEL_TRANSLATE_TIMEOUT_SECONDS")
         if not (math.isfinite(translate_timeout) and translate_timeout > 0):
             raise SettingsError("MODEL_TRANSLATE_TIMEOUT_SECONDS must be a number above 0")
+        model_enabled = env.boolean("MODEL_ENABLED")
+        model_chat = env.text("MODEL_CHAT")
+        model_embed = env.text("MODEL_EMBED")
+        model_vision = env.optional("MODEL_VISION")
+        gemini_api_key = env.optional("GEMINI_API_KEY")
+        model_names = (model_chat, model_embed, model_vision or "")
+        calls_gemini = ocr_engine == "gemini" or (model_enabled and any(map(is_gemini_model, model_names)))
+        if gemini_api_key is None and calls_gemini:
+            raise SettingsError(
+                "GEMINI_API_KEY is not set: OCR_ENGINE=gemini, or MODEL_ENABLED with a Gemini model, needs it"
+            )
+        if gemini_api_key is not None and _API_KEY.fullmatch(gemini_api_key) is None:
+            raise SettingsError("GEMINI_API_KEY must be printable ASCII with no spaces")
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -339,16 +413,28 @@ class Settings:
             ocr_timeout_seconds=ocr_timeout_seconds,
             ocr_dpi=env.positive("OCR_DPI"),
             ocr_dpi_rule=ocr_dpi_rule,
+            ocr_model=env.text("OCR_MODEL"),
+            gemini_api_key=gemini_api_key,
+            gemini_base_url=_gemini_base_url(env.text("GEMINI_BASE_URL")),
+            ocr_media_resolution=env.choice("OCR_MEDIA_RESOLUTION", set(MEDIA_RESOLUTIONS)),
+            ocr_thinking_level=env.choice("OCR_THINKING_LEVEL", set(THINKING_LEVELS)),
+            ocr_retry_media_resolution=env.choice("OCR_RETRY_MEDIA_RESOLUTION", set(MEDIA_RESOLUTIONS)),
+            ocr_retry_thinking_level=env.choice("OCR_RETRY_THINKING_LEVEL", set(THINKING_LEVELS)),
+            ocr_page_concurrency=env.positive("OCR_PAGE_CONCURRENCY"),
+            cpu_workers=env.positive("CPU_WORKERS"),
+            max_check_crops=env.positive("MAX_CHECK_CROPS"),
+            gemini_rpm=env.positive("GEMINI_RPM"),
+            reader_outage_fallback_minutes=env.positive("READER_OUTAGE_FALLBACK_MINUTES"),
             text_layer_min_chars=env.positive("TEXT_LAYER_MIN_CHARS"),
             text_layer_min_good_ratio=env.share("TEXT_LAYER_MIN_GOOD_RATIO"),
             scan_image_coverage=env.share("SCAN_IMAGE_COVERAGE"),
             blank_page_stddev=env.not_negative("BLANK_PAGE_STDDEV"),
             low_res_dpi=env.positive("LOW_RES_DPI"),
-            model_enabled=env.boolean("MODEL_ENABLED"),
+            model_enabled=model_enabled,
             model_base_url=env.text("MODEL_BASE_URL"),
-            model_chat=env.text("MODEL_CHAT"),
-            model_embed=env.text("MODEL_EMBED"),
-            model_vision=env.optional("MODEL_VISION"),
+            model_chat=model_chat,
+            model_embed=model_embed,
+            model_vision=model_vision,
             embedding_dim=embedding_dim,
             model_timeout_seconds=model_timeout_seconds,
             model_num_ctx=model_num_ctx,
