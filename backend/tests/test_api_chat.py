@@ -302,8 +302,16 @@ def test_default_wiring_uses_the_real_answer_service_without_a_model(db: Databas
         "model_used",
         "rewritten_question",
         "understood_words",
+        "reading_note",  # PRD 5 F6: null, no page here is flagged
+        "unreadable_pages",
+        "unreadable_page_count",
     }
     assert answer["status"] == "not_found"
+    assert (answer["reading_note"], answer["unreadable_pages"], answer["unreadable_page_count"]) == (
+        None,
+        [],
+        0,
+    )
     assert answer["label"] is None
     assert answer["model_used"] is False
     assert body["answer"]["text"] == NOT_FOUND_TEXT

@@ -36,14 +36,19 @@
   the last admin of a customer, who has no other admin to do it. Their sessions
   end; they can turn it on again in Admin, Settings. It needs no password:
   whoever runs it already has the server.
-* ``measure --file PATH [--truth DIR]``: read one local file the way the worker
-  does and print, per page, its route and why, the route check's numbers, and
-  the time it took (PRD 2 X4, the council's ML 12), to set the thresholds and
-  timeouts from real numbers. It touches no database, file storage or queue, and
-  it does NOT run the virus scan: use it only on files you trust. ``--truth``
-  names a folder of the right text for each page (``1.txt``, ``2.txt``, ...,
-  UTF-8), and adds each page's character and word error rates (CER, WER). It
-  prints no text and no file name: only numbers and short codes.
+* ``measure --file PATH [--truth DIR] [--engine gemini|rapidocr]``: read one local
+  file the way the worker does and print, per page, its route and why, the route
+  check's numbers, and the time it took (PRD 2 X4, the council's ML 12), to set the
+  thresholds and timeouts from real numbers. It touches no database, file storage or
+  queue, and it does NOT run the virus scan: use it only on files you trust.
+  ``--truth`` names a folder of the right text for each page (``1.txt``, ``2.txt``,
+  ..., UTF-8), and adds each page's character and word error rates (CER, WER).
+  ``--engine`` (PRD 5 PR 1, the measurement) reads scans with that reader instead of
+  OCR_ENGINE's, with every OCR_ENGINE check of the settings, and each page read by
+  OCR adds who read it, its tokens (in and out, 0 from the page cache), its unsure
+  and illegible words and the share of its lines pinned to a found box (G5); the
+  totals add the tokens. The engines come from ``kaagaz.reading.wiring``, as the
+  worker's. It prints no text and no file name: only numbers and short codes.
 * ``verify-models [--model ID ...] [--embed-model ID]`` (old name ``verify-gemini``):
   check PRD 5's verify items (section 14) against the live models through OpenRouter
   and the installed RapidOCR, and print ``VERIFY <id> PASS|FAIL|INFO <evidence>`` for
@@ -106,16 +111,18 @@ from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
-from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engine
+from kaagaz.reading.ocr import MeteredOcrEngine, PageRead
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError, Span
-from kaagaz.reading.wiring import PdfPageCheck, build_reader_socket, pdf_text_layer_checks
+from kaagaz.reading.wiring import PdfPageCheck, build_ocr_engine, build_reader_socket, pdf_text_layer_checks
 from kaagaz.search import indexing, story_vectors
 from kaagaz.settings import Settings, SettingsError
 
 MIN_PASSWORD = 12
 MAX_PASSWORD = 1024  # the API's (routers/admin.py)
+# measure --engine (PRD 5 PR 1): the readers the measurement compares, as OCR_ENGINE names them.
+MEASURE_ENGINES = ("gemini", "rapidocr")
 # measure --truth: each page's texts are cut to these before the edit distance (council PR 3, low 10).
 MAX_TRUTH_CHARS = 5000
 MAX_TRUTH_WORDS = 1000
@@ -186,6 +193,9 @@ def _parser() -> argparse.ArgumentParser:
     measure.add_argument("--file", required=True, type=Path)
     measure.add_argument(
         "--truth", type=Path, help="a folder of 1.txt, 2.txt, ...: the right text of each page"
+    )
+    measure.add_argument(
+        "--engine", choices=MEASURE_ENGINES, help="read scans with this reader (default: OCR_ENGINE)"
     )
 
     verify = commands.add_parser(
@@ -553,6 +563,7 @@ def _measure(
         raise CliError("no reader for this kind of file: set OCR_ENGINE for scans and photos") from None
     except ReadError as error:
         raise CliError(f"the file cannot be read ({error.code})") from None
+    page_reads = meter.take_page_reads() if meter is not None else {}
     pages = [(info.page, info.unit) for info in prepared.pages] or sorted(
         {(span.location.page, "cells") for span in spans}
     )
@@ -569,6 +580,7 @@ def _measure(
             else (reads[index] if index < len(reads) else None)
         )
         line = _page_line(page, read, page_spans, prepared, blanks.get(page), check)
+        line += _reader_numbers(page_reads.get(page))
         if len(stamps) == len(pages) + 1:
             line += f" seconds {stamps[index + 1] - stamps[index]:.2f}"
         if truth is not None:
@@ -576,6 +588,8 @@ def _measure(
         out.write(line + "\n")
     ocr_pages, ocr_seconds = meter.take() if meter is not None else (0, 0.0)
     per_page = ocr_seconds / ocr_pages if ocr_pages else 0.0
+    if meter is not None:
+        out.write(_reader_totals(meter.name, list(page_reads.values())) + "\n")
     out.write(
         f"prepare {prepared_at - started:.2f} s, read {read_at - prepared_at:.2f} s,"
         f" OCR {ocr_pages} pages in {ocr_seconds:.2f} s, {per_page:.2f} s per page\n"
@@ -609,6 +623,37 @@ def _page_line(
     if blank is not None:
         line += f" blank_stddev {blank.stddev:.2f} dark_pixels {blank.dark_pixels}"
     return line
+
+
+def _reader_numbers(read: PageRead | None) -> str:
+    """A page read by OCR (PRD 5 PR 1's measurement): who read it, its tokens, its unsure
+    and illegible words and the share of its lines pinned to a found box (G5: a line
+    with box_source "model" is not; a reader that finds its own boxes pins every line),
+    "none" with no line. Empty for a page no OCR read. Short codes and numbers only."""
+    if read is None:
+        return ""
+    lines = len(read.lines)
+    pinned = "none" if not lines else f"{(lines - read.unpinned_lines) / lines:.2f}"
+    return (
+        f" read_by {read.read_by} cached {'yes' if read.cached else 'no'}"
+        f" input_tokens {read.input_tokens} output_tokens {read.output_tokens}"
+        f" unsure {read.unsure_words} illegible {read.illegible_words} pinned {pinned}"
+    )
+
+
+def _reader_totals(engine: str, reads: list[PageRead]) -> str:
+    """The reader's totals over the pages it read: tokens, unsure and illegible words,
+    and the share of all their lines pinned (as ``_reader_numbers``). O(pages)."""
+    lines = sum(len(read.lines) for read in reads)
+    unpinned = sum(read.unpinned_lines for read in reads)
+    pinned = "none" if not lines else f"{(lines - unpinned) / lines:.2f}"
+    return (
+        f"engine {engine} pages {len(reads)} cached {sum(read.cached for read in reads)}"
+        f" input_tokens {sum(read.input_tokens for read in reads)}"
+        f" output_tokens {sum(read.output_tokens for read in reads)}"
+        f" unsure {sum(read.unsure_words for read in reads)}"
+        f" illegible {sum(read.illegible_words for read in reads)} pinned {pinned}"
+    )
 
 
 def _script_shares(text: str) -> tuple[float, float]:
@@ -680,7 +725,8 @@ def main(
         if args.command in SECRET_COMMANDS and ask is getpass.getpass and not sys.stdin.isatty():
             raise CliError("run it at a terminal (docker compose exec WITHOUT -T): it shows a secret")
         if args.command == "measure":  # before any database is built: it never uses one
-            _measure(Settings.from_env(env), args.file, args.truth, stdout, timer=timer)
+            chosen = env if args.engine is None else {**env, "OCR_ENGINE": args.engine}
+            _measure(Settings.from_env(chosen), args.file, args.truth, stdout, timer=timer)
             return 0
         if args.command in ("verify-models", "verify-gemini"):  # no database either
             checked = settings or Settings.from_env(env)

@@ -62,16 +62,25 @@ export function pageMode(
 const ROUTE_WORDS: Record<PageRoute, string> = {
   cells: "Read from spreadsheet cells",
   text_layer: "Read from the PDF text",
-  ocr: "Read by OCR",
+  ocr: "Read by OCR", // a scanned page read before PRD 5, which does not say who read it
   blank: "Blank page",
 };
 
+/** `read_by` of a page the backup reader read (PRD 5 RT2): RapidOCR, on this server's CPU. */
+export const BACKUP_READER = "rapidocr";
+
 /**
- * How a page was read, in words, shown beside its number (PRD 2, R1). null
- * when the page has no route, as for a page read before PRD 2: nothing is shown.
+ * How a page was read, in words, shown beside its number (PRD 2, R1). A scanned
+ * page says who read it (PRD 5 RT2): "Read by Gemini" (`read_by` is the model's ID)
+ * or "Read by the backup reader". null when the page has no route, as for a page
+ * read before PRD 2: nothing is shown.
  */
-export function routeText(route: PageRoute | null): string | null {
-  return route === null ? null : ROUTE_WORDS[route];
+export function routeText(page: Pick<PageSummary, "route" | "read_by">): string | null {
+  if (page.route === null) return null;
+  if (page.route === "ocr" && page.read_by !== null) {
+    return page.read_by === BACKUP_READER ? "Read by the backup reader" : "Read by Gemini";
+  }
+  return ROUTE_WORDS[page.route];
 }
 
 // The backend gives at most 500 rows per call; 200 keeps the table quick.

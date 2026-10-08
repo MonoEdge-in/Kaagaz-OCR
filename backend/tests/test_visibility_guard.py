@@ -16,7 +16,7 @@ from types import ModuleType
 
 from sqlalchemy import TextClause
 
-from kaagaz.answering import fixed_queries, unchecked
+from kaagaz.answering import fixed_queries, hard_to_read, unchecked
 from kaagaz.db import admin, listing, pipeline_store, review
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid, indexing, story_search
@@ -26,6 +26,7 @@ MODULES: tuple[ModuleType, ...] = (
     story_search,
     fixed_queries,
     unchecked,
+    hard_to_read,
     review,
     admin,
     listing,
@@ -53,6 +54,8 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (fixed_queries, "_VALUE_REFS"): LIVE_CURRENT,
     # The documents an unchecked figure points to (decided 30 Sep 2026): the same.
     (unchecked, "_CARD_DOCUMENTS"): LIVE_CURRENT,
+    # The pages a not-found answer names as not read well (PRD 5 F6): the same.
+    (hard_to_read, "_FLAGGED_PAGES"): LIVE_CURRENT,
     # Review: the values of the version answers use, and nothing else.
     (review, "_QUEUE"): LIVE_CURRENT,
     (review, "_COUNT"): LIVE_CURRENT,

@@ -45,12 +45,21 @@ from kaagaz.db.folders import FolderNotFound
 # A DocumentSummary row: the document, its uploader's name, who uploaded each
 # version of its family, and the newest version after it that is not in Trash
 # (one small JSON object, or NULL). Both subqueries use the index
-# documents_family_version on the family's few rows.
+# documents_family_version on the family's few rows. PRD 5 F4: the pages read
+# unreadable or uncertain that are still on the attention list (not kept as is,
+# F5), and the values labelled needs review, each counted on the document's own
+# rows (the pages key, the index extracted_values_record).
 _COLUMNS = (
     "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"
     " d.page_count, d.created_at, d.uploaded_by, d.folder_id, d.deleted_at, d.family_id, d.version_no,"
     " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary,"
     " u.display_name AS uploaded_by_name,"
+    " (SELECT count(*) FROM pages pu WHERE pu.customer_id = d.customer_id AND pu.document_id = d.id"
+    " AND pu.read_quality = 'unreadable' AND pu.accepted_at IS NULL) AS pages_unreadable,"
+    " (SELECT count(*) FROM pages pc WHERE pc.customer_id = d.customer_id AND pc.document_id = d.id"
+    " AND pc.read_quality = 'uncertain' AND pc.accepted_at IS NULL) AS pages_uncertain,"
+    " (SELECT count(*) FROM extracted_values ev WHERE ev.customer_id = d.customer_id"
+    " AND ev.document_id = d.id AND ev.label = 'needs_review') AS values_to_review,"
     " (SELECT array_agg(o.uploaded_by) FROM documents o"
     " WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id) AS family_uploaders,"
     " (SELECT json_build_object('id', n.id, 'version_no', n.version_no, 'status', n.status,"
@@ -217,14 +226,20 @@ def family_versions(conn: Connection, customer_id: str, family_id: str) -> Seque
     return conn.execute(text(_VERSIONS), {"c": customer_id, "f": family_id}).mappings().all()
 
 
+# A PageSummary row: the page, how it was read (PRD 2 R1, R4) and its reading result
+# (PRD 5 RT2, F1), "Keep as is" and a read again asked for (F5).
+_PAGE = (
+    "SELECT page_no, width, height, unit, has_image, route, effective_dpi, low_resolution,"
+    " read_by, read_quality, read_issues, unsure_words, illegible_words, unpinned_lines,"
+    " accepted_by, accepted_at, read_again_requested_at"
+    " FROM pages"
+)
+
+
 def list_pages(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:
     return (
         conn.execute(
-            text(
-                "SELECT page_no, width, height, unit, has_image, route, effective_dpi, low_resolution"
-                " FROM pages"
-                " WHERE customer_id = :c AND document_id = :d ORDER BY page_no"
-            ),
+            text(_PAGE + " WHERE customer_id = :c AND document_id = :d ORDER BY page_no"),
             {"c": customer_id, "d": document_id},
         )
         .mappings()
@@ -235,11 +250,7 @@ def list_pages(conn: Connection, customer_id: str, document_id: str) -> Sequence
 def get_page(conn: Connection, customer_id: str, document_id: str, page_no: int) -> RowMapping | None:
     return (
         conn.execute(
-            text(
-                "SELECT page_no, width, height, unit, has_image, route, effective_dpi, low_resolution"
-                " FROM pages"
-                " WHERE customer_id = :c AND document_id = :d AND page_no = :n"
-            ),
+            text(_PAGE + " WHERE customer_id = :c AND document_id = :d AND page_no = :n"),
             {"c": customer_id, "d": document_id, "n": page_no},
         )
         .mappings()
@@ -394,6 +405,8 @@ _PAGE_READINGS = text(
     " sum(length(left(e.span ->> 'raw', :max_chars))) OVER (ORDER BY e.ord) AS upto"
     " FROM jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
     " WHERE (e.span -> 'region' ->> 'page')::int = :page_no"
+    " AND NOT (coalesce(e.span ->> 'origin', '') = 'ocr' AND e.span ->> 'kind' IS NULL"
+    " AND coalesce(e.span ->> 'quality', '') IN ('unsure', 'illegible'))"
     " ORDER BY e.ord LIMIT :max_lines + 1) AS s"
     " WHERE s.upto - length(s.text) <= :max_text) AS l ON true"
     " WHERE ro.customer_id = :c AND ro.document_id = :d"
