@@ -31,19 +31,42 @@ REPAIR = "Your reply was not valid: {problem}. Reply again with only the JSON ob
 
 
 class ModelUnavailable(Exception):
-    """No usable reply from the model server. ``code`` is short and safe to log."""
+    """No usable reply from the model server. ``code`` is short and safe to log.
 
-    def __init__(self, code: str) -> None:
+    A multi-call page read can have billed earlier replies before a later call becomes
+    unavailable; those totals travel with the error so a local fallback can retain them.
+    """
+
+    def __init__(self, code: str, *, input_tokens: int = 0, output_tokens: int = 0) -> None:
         super().__init__(code)
         self.code = code
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
 
 
 class ModelOutputError(Exception):
-    """The model replied with unusable content. ``code`` is short and safe to log."""
+    """The model replied with unusable content. ``code`` is short and safe to log.
 
-    def __init__(self, code: str) -> None:
+    ``input_tokens`` and ``output_tokens`` are what the replies that ended in this error
+    were billed (PRD 5 G9): a reply that was blocked, cut off or not valid JSON still
+    carries its usage, so it is counted; 0 when no reply said (a refused request, the
+    Ollama client)."""
+
+    def __init__(self, code: str, *, input_tokens: int = 0, output_tokens: int = 0) -> None:
         super().__init__(code)
         self.code = code
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
+def billed(error: ModelOutputError, input_tokens: int, output_tokens: int) -> ModelOutputError:
+    """``error`` again, with ``input_tokens`` and ``output_tokens`` added to its own (the
+    calls made before it, on the same page or question)."""
+    return ModelOutputError(
+        error.code,
+        input_tokens=error.input_tokens + input_tokens,
+        output_tokens=error.output_tokens + output_tokens,
+    )
 
 
 _JSON_TYPES: dict[str, Callable[[object], bool]] = {

@@ -172,10 +172,27 @@ def test_every_item_passes_against_an_api_that_answers_as_documented(fake: OpenR
     assert fake.unanswered == 0
 
 
-def test_the_old_verify_gemini_name_runs_the_same_command(fake: OpenRouterFake) -> None:
-    code, _, lines = _run(_settings(fake), command="verify-gemini")
-    assert code == 0
-    assert list(lines) == ITEMS
+@pytest.mark.parametrize("limit", [None, "unlimited"])
+def test_key_limit_fails_when_openrouter_has_no_numeric_credit_limit(
+    fake: OpenRouterFake, limit: object
+) -> None:
+    def without_limit(request: Recorded) -> Reply:
+        if request.action == "key":
+            return Reply(200, {"data": {"limit": limit, "limit_remaining": 5, "usage": 0}})
+        return openrouter_like(request)
+
+    fake.responder = without_limit
+    code, _, lines = _run(_settings(fake))
+    assert code == 1
+    assert lines["key_limit"] == (
+        "FAIL",
+        "credit limit is missing or not numeric; set a per-key credit limit on openrouter.ai",
+    )
+
+
+def test_the_retired_verify_gemini_command_name_is_not_accepted() -> None:
+    with pytest.raises(SystemExit):
+        cli._parser().parse_args(["verify-gemini"])
 
 
 def test_every_request_carries_the_provider_block(fake: OpenRouterFake) -> None:

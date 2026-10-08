@@ -249,8 +249,11 @@ class PageRead:
       that read it ("rapidocr", "paddleocr_vl"). A page the Gemini reader handed to the
       local reader (Q7) is "rapidocr" with the issue read_locally or reader_refused.
     * ``input_tokens``, ``output_tokens``: what this read was billed, from the
-      reply's usage metadata (thinking tokens are output); 0 for a page taken
-      from the page cache or read locally.
+      reply's usage metadata (thinking tokens are output), every call for the page
+      summed: a cut-off whole page before its halves, and a reply that was blocked,
+      cut off or invalid before the page was read locally, are billed too. 0 for a
+      page taken from the page cache, read locally after an outage, or read by an
+      engine with no model. The meter sums them over every read of a page.
     * ``cached``: taken from the page cache (G7), so no call was made or billed.
     * ``continues_on_next_page``: the last line's flag (G3, CX1): its sentence
       goes on at the top of the next page.
@@ -931,8 +934,8 @@ class MeteredOcrEngine:
     def take_page_reads(self) -> dict[int, PageRead]:
         """Each page read through ``read_page`` since the last take, by page number, and
         start again from none, in a new generation (a page still being read is not kept).
-        A page read twice (again at the DPI ceiling) keeps its last read: the one its spans
-        came from."""
+        A page read twice (again at the DPI ceiling) keeps its last read, the one its spans
+        came from, with the tokens of every read of it summed: each was billed (G9)."""
         with self._lock:
             taken, self._page_reads = self._page_reads, {}
             self._generation += 1
@@ -949,8 +952,16 @@ class MeteredOcrEngine:
                 return
             self._pages += 1
             self._seconds += seconds
-            if read is not None:
-                self._page_reads[page_no] = read
+            if read is None:
+                return
+            earlier = self._page_reads.get(page_no)
+            if earlier is not None:
+                read = dataclasses.replace(
+                    read,
+                    input_tokens=earlier.input_tokens + read.input_tokens,
+                    output_tokens=earlier.output_tokens + read.output_tokens,
+                )
+            self._page_reads[page_no] = read
 
     def take_fallback_pages(self) -> int:
         """Pages a ``FallbackOcrEngine`` (or every one ``OcrEngines`` built) read with its

@@ -463,10 +463,13 @@ BAD_REPLIES: dict[str, Any] = {
     "a table cell with no table": value(line("x", kind="table_cell")),
     "a table id with a space": value(line("x", kind="table_cell", table={**_CELL, "id": "t 1"})),
     "a negative row": value(line("x", kind="table_cell", table={**_CELL, "row": -1})),
+    "a row at the index limit": value(line("x", kind="table_cell", table={**_CELL, "row": 1000})),
+    "a column at the index limit": value(line("x", kind="table_cell", table={**_CELL, "col": 1000})),
     "a table missing header": value(
         line("x", kind="table_cell", table={k: v for k, v in _CELL.items() if k != "header"})
     ),
     "an unsure word not a string": value({**line("x"), "unsure": [3]}),
+    "more distinct unsure entries than words": value(line("only", unsure=("o", "on", "only"))),
     "a half character in the text": value(line("x" + chr(0xD800))),
     "a half character in an unsure word": value(line("x", unsure=(chr(0xD800),))),
     "a line over MAX_BLOCK_CHARS": value(line("x" * (MAX_BLOCK_CHARS + 1))),
@@ -488,6 +491,10 @@ class G3ChecksTest(unittest.TestCase):
         )
         self.assertEqual(len(checked(good).lines), 2)
         self.assertEqual(checked(good).lines[0].table, OcrTable("t1", 0, 1, True))
+
+    def test_fx8_duplicate_unsure_words_are_deduplicated(self) -> None:
+        checked_reply = checked(value(line("Total", unsure=("Total", "Total"))))
+        self.assertEqual(checked_reply.lines[0].unsure, ("Total",))
 
     def test_g6_a_reply_the_checks_refuse_is_read_locally_and_flagged_reader_refused(self) -> None:
         for name, bad in BAD_REPLIES.items():
@@ -639,7 +646,11 @@ class G6HalvesTest(Approx):
             scripts=("devanagari",),
             issues=("glare", "faint"),
         )
-        built = build(ModelOutputError("output_truncated"), reply(top, 100, 1000), reply(bottom, 200, 2000))
+        built = build(
+            ModelOutputError("output_truncated", input_tokens=50, output_tokens=500),
+            reply(top, 100, 1000),
+            reply(bottom, 200, 2000),
+        )
         cache = FakeCache()
         with built.engine.document(pages(cache)):
             read = built.engine.read_page(page(), page_no=4)
@@ -654,11 +665,11 @@ class G6HalvesTest(Approx):
         self.assertEqual(read.quality, "fair")  # the worse half
         self.assertEqual(read.scripts, ("latin", "devanagari"))
         self.assertEqual(read.issues[:2], ("faint", "glare"))
-        self.assertEqual((read.input_tokens, read.output_tokens), (300, 3000))
+        self.assertEqual((read.input_tokens, read.output_tokens), (350, 3500))
         self.assertEqual(read.read_by, MODEL)
         (key,) = cache.puts
         result, tokens_in, tokens_out = cache.rows[key]
-        self.assertEqual((tokens_in, tokens_out), (300, 3000))
+        self.assertEqual((tokens_in, tokens_out), (350, 3500))
         self.assertEqual([item["order"] for item in result["lines"]], [0, 1, 2, 3])
         self.assertAlmostEqual(result["lines"][2]["box_2d"][0], 737.5)  # on the whole page now
         self.assertEqual(len(checked(result).lines), 4)  # the joined result passes the checks again
@@ -673,6 +684,17 @@ class G6HalvesTest(Approx):
         self.assertEqual(read.read_by, "rapidocr")
         self.assertEqual(read.issues[0], READER_REFUSED)
         self.assertEqual(cache.puts, [])
+
+    def test_g6_tokens_from_earlier_calls_survive_an_unavailable_split_and_local_fallback(self) -> None:
+        built = build(
+            ModelOutputError("output_truncated", input_tokens=50, output_tokens=500),
+            reply(value(line("Top line")), 100, 1000),
+            ModelUnavailable("timeout"),
+            reader_outage_fallback_minutes=0,
+        )
+        read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READ_LOCALLY))
+        self.assertEqual((read.input_tokens, read.output_tokens), (150, 1500))
 
 
 # G6, Q7: the fallback ladder.
@@ -783,10 +805,11 @@ class Q7FallbackTest(unittest.TestCase):
         self.assertEqual((read.read_by, read.issues), ("rapidocr", (READ_LOCALLY,)))
 
     def test_g6_a_blocked_reply_is_read_locally_and_flagged_reader_refused(self) -> None:
-        built = build(ModelOutputError("blocked"))
+        built = build(ModelOutputError("blocked", input_tokens=13, output_tokens=17))
         read = built.engine.read_page(page(), page_no=1)
         self.assertEqual(read.read_by, "rapidocr")
         self.assertEqual(read.issues, (READER_REFUSED,))
+        self.assertEqual((read.input_tokens, read.output_tokens), (13, 17))
         self.assertNotIn(READ_LOCALLY, read.issues)
 
     def test_g6_f2_a_400_or_an_invalid_reply_is_read_locally_and_flagged_reader_refused(self) -> None:

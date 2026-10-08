@@ -1,5 +1,5 @@
 """``python -m kaagaz.cli verify-models``: the PRD 5 verify items, checked live through
-OpenRouter (council 8 Oct 2026). ``verify-gemini`` is the same command's old name.
+OpenRouter (council 8 Oct 2026).
 
 PRD 5 says every request field, response field and model ID is checked against the live
 API or the installed package before use (section 14), and never guessed. This command
@@ -499,6 +499,12 @@ class Verifier:
         data = probe.reply.get("data") if probe.reply is not None else None
         if not isinstance(data, dict):
             return Finding("key_limit", FAIL, f"status {_said(probe)}")
+        if _number(data.get("limit")) == "none":
+            return Finding(
+                "key_limit",
+                FAIL,
+                "credit limit is missing or not numeric; set a per-key credit limit on openrouter.ai",
+            )
         # Numbers only: the key's label is made of the key's own characters.
         evidence = (
             f"limit {_number(data.get('limit'))} limit_remaining {_number(data.get('limit_remaining'))}"

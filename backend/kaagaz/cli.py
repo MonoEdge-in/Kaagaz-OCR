@@ -49,7 +49,7 @@
   and illegible words and the share of its lines pinned to a found box (G5); the
   totals add the tokens. The engines come from ``kaagaz.reading.wiring``, as the
   worker's. It prints no text and no file name: only numbers and short codes.
-* ``verify-models [--model ID ...] [--embed-model ID]`` (old name ``verify-gemini``):
+* ``verify-models [--model ID ...] [--embed-model ID]``:
   check PRD 5's verify items (section 14) against the live models through OpenRouter
   and the installed RapidOCR, and print ``VERIFY <id> PASS|FAIL|INFO <evidence>`` for
   each (``kaagaz.verify_models``). It touches no database, file storage or queue,
@@ -200,7 +200,6 @@ def _parser() -> argparse.ArgumentParser:
 
     verify = commands.add_parser(
         "verify-models",
-        aliases=["verify-gemini"],
         help="check the models through OpenRouter, and RapidOCR (no database)",
     )
     verify.add_argument("--model", action="append", default=[], help="one more OpenRouter model ID to check")
@@ -728,7 +727,7 @@ def main(
             chosen = env if args.engine is None else {**env, "OCR_ENGINE": args.engine}
             _measure(Settings.from_env(chosen), args.file, args.truth, stdout, timer=timer)
             return 0
-        if args.command in ("verify-models", "verify-gemini"):  # no database either
+        if args.command == "verify-models":  # no database either
             checked = settings or Settings.from_env(env)
             return verify_models.run(checked, stdout, models=args.model, embed_model=args.embed_model)
         if db is None:

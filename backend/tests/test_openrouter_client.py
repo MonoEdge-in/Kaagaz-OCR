@@ -25,6 +25,7 @@ from kaagaz.ai.openrouter import (
     BREAKER_FAILURES,
     BREAKER_OPEN_SECONDS,
     CHAT_THINKING_TOKENS,
+    IMAGE_MAX_OUTPUT_TOKENS,
     KEY_LATCH_SECONDS,
     PAGE_MAX_OUTPUT_TOKENS,
     PROVIDER,
@@ -47,7 +48,6 @@ from tests.openrouter_fake import (
     chat_reply,
     closed_port_url,
     content_filtered,
-    cut_off,
     embed_reply,
     endpoints_reply,
     error_reply,
@@ -513,11 +513,22 @@ def test_a_blocked_reply_is_blocked_with_no_repair(fake: OpenRouterFake, reply: 
 
 
 def test_a_reply_cut_at_the_length_limit_is_truncated_with_no_repair(fake: OpenRouterFake) -> None:
-    fake.script("completions", cut_off())
+    fake.script(
+        "completions",
+        chat_reply('{"status": "answered", "lines": ["Total', finish="length", counts=usage(19, 23, 0)),
+    )
     with pytest.raises(ModelOutputError) as caught:
         _read(_client(fake.url, Clock()))
     assert caught.value.code == "output_truncated"
+    assert (caught.value.input_tokens, caught.value.output_tokens) == (19, 23)
     assert len(fake.requests) == 1
+
+
+def test_a_blocked_reply_keeps_its_billed_tokens(fake: OpenRouterFake) -> None:
+    fake.script("completions", chat_reply(None, finish="content_filter", counts=usage(13, 17, 0)))
+    with pytest.raises(ModelOutputError) as caught:
+        _read(_client(fake.url, Clock()))
+    assert (caught.value.code, caught.value.input_tokens, caught.value.output_tokens) == ("blocked", 13, 17)
 
 
 @pytest.mark.parametrize(
@@ -770,7 +781,7 @@ def test_pages_read_in_parallel_share_the_client_safely(fake: OpenRouterFake) ->
 # The ModelClient protocol, as the Ollama client's tests pin it.
 
 
-def test_chat_json_sends_the_system_prompt_first_the_schema_and_no_budget(fake: OpenRouterFake) -> None:
+def test_chat_json_sends_the_system_prompt_first_the_schema_and_default_budget(fake: OpenRouterFake) -> None:
     fake.script("completions", json_reply(GOOD))
     assert _client(fake.url, Clock()).chat_json(system="rules", user="question", schema=SCHEMA) == GOOD
     (request,) = fake.requests
@@ -780,6 +791,7 @@ def test_chat_json_sends_the_system_prompt_first_the_schema_and_no_budget(fake: 
         "messages": [{"role": "system", "content": "rules"}, {"role": "user", "content": "question"}],
         "stream": False,
         "reasoning": {"effort": "low", "exclude": True},
+        "max_completion_tokens": 512 + CHAT_THINKING_TOKENS,
         "provider": THE_PROVIDER_BLOCK,
         "response_format": {
             "type": "json_schema",
@@ -831,6 +843,17 @@ def test_chat_json_gives_up_after_two_bad_replies(fake: OpenRouterFake) -> None:
         _client(fake.url, Clock()).chat_json(system="s", user="u", schema=SCHEMA)
     assert caught.value.code == "invalid_output"
     assert len(fake.requests) == 2
+
+
+def test_chat_json_counts_the_bad_reply_and_the_blocked_repair(fake: OpenRouterFake) -> None:
+    fake.script(
+        "completions",
+        chat_reply("not json", counts=usage(3, 5, 0)),
+        chat_reply(None, finish="content_filter", counts=usage(7, 11, 0)),
+    )
+    with pytest.raises(ModelOutputError) as caught:
+        _client(fake.url, Clock()).chat_json(system="s", user="u", schema=SCHEMA)
+    assert (caught.value.code, caught.value.input_tokens, caught.value.output_tokens) == ("blocked", 10, 16)
 
 
 def test_the_worker_chat_timeout_is_used_for_chat_only(fake: OpenRouterFake) -> None:
@@ -921,7 +944,7 @@ def test_read_image_sends_the_crop_to_the_ocr_model_and_strips_the_text(fake: Op
     assert content[0] == {"type": "text", "text": "Read the amount."}
     assert content[1]["image_url"] == {"url": DATA_URL, "detail": "low"}
     assert "response_format" not in request.body
-    assert "max_completion_tokens" not in request.body
+    assert request.body["max_completion_tokens"] == IMAGE_MAX_OUTPUT_TOKENS
 
 
 # The key and page text are secrets.

@@ -59,6 +59,9 @@ the summed ``usage.cost`` when replies carry one.
   ``native_finish_reason`` in ``BLOCKED_FINISH_REASONS``): ``ModelOutputError("blocked")``.
 * ``finish_reason`` ``length``: ``ModelOutputError("output_truncated")``, with no repair
   retry (a cut reply would be cut again).
+* Every ``ModelOutputError`` raised after a reply carries the tokens billed for it
+  (``input_tokens``, ``output_tokens``: this reply's usage, plus the first reply's when a
+  repair was asked for), so a blocked, cut off or invalid reply is still counted (G9).
 * Any other finish reason, or none: ``ModelOutputError("invalid_output")``.
 * JSON that does not follow the schema: one repair retry, as the Ollama client does, then
   ``ModelOutputError("invalid_output")``.
@@ -138,12 +141,10 @@ STRICT_SCHEMA = True
 # The schema's name in response_format.
 SCHEMA_NAME = "page"
 
-# Q8 (cost guard): the most output tokens, thinking included, one page read may take:
-# Gemini 3 Pro's documented output limit. Vrushit sets the tighter cap from the PR 1
-# measure table (question 8); it is this one constant, sent as max_completion_tokens. A
-# reply that reaches it ends "length" (output_truncated), and the reader reads the page in
-# two halves (G6).
-PAGE_MAX_OUTPUT_TOKENS = 65536
+# Q8 (cost guard): an initial page read's output ceiling, thinking included. The PR 1
+# measurement may set a tighter value; it is sent as max_completion_tokens. A reply that
+# reaches it ends "length" (output_truncated), and the reader reads the page in two halves.
+PAGE_MAX_OUTPUT_TOKENS = 32768
 # chat_json and read_image think at this effort: the card, the invoice windows, answers
 # and the follow-up rewrite want a short exact reply. gemini-3.1-pro-preview has no
 # "minimal" level (Google's thinking page), so "low" is the least it accepts.
@@ -152,6 +153,9 @@ CHAT_THINKING_LEVEL = "low"
 # the reply itself (completion_tokens less reasoning_tokens) is then held to the caller's
 # budget, as the Ollama client holds it.
 CHAT_THINKING_TOKENS = 8192
+# A crop contains one value, so its output is capped tightly while retaining room for
+# Gemini 3's reasoning tokens.
+IMAGE_MAX_OUTPUT_TOKENS = 512 + CHAT_THINKING_TOKENS
 
 # Backoff (G6): attempt n waits a random time up to min(BACKOFF_MAX_SECONDS,
 # BACKOFF_BASE_SECONDS * 2**n) ("full jitter"), or the server's Retry-After if longer.
@@ -419,6 +423,17 @@ def reply_text(reply: Mapping[str, Any]) -> tuple[str, str]:
     return content, native or finish
 
 
+def _billed_text(reply: Mapping[str, Any], before: tuple[int, int]) -> tuple[str, str]:
+    """``reply_text``; its ``ModelOutputError`` carries this reply's usage plus ``before``
+    (the tokens of the calls made before it for the same answer), so a blocked or cut off
+    reply is still counted (G9)."""
+    try:
+        return reply_text(reply)
+    except ModelOutputError as error:
+        input_tokens, output_tokens = reply_usage(reply)
+        raise replies.billed(error, before[0] + input_tokens, before[1] + output_tokens) from None
+
+
 def _retry_after(headers: "Message[str, str] | None", now: datetime) -> float | None:
     """Seconds the server asked us to wait (whole seconds or an HTTP date), or None."""
     value = headers.get("Retry-After") if headers is not None else None
@@ -635,6 +650,7 @@ class OpenRouterClient:
         self._host_path = settings.openrouter_base_url.rstrip("/").split("://", 1)[1]
         self._timeout = settings.model_timeout_seconds
         self._chat_timeout = self._timeout if chat_timeout_seconds is None else chat_timeout_seconds
+        self._default_chat_tokens = settings.model_answer_max_tokens
         self._dim = settings.embedding_dim
         self._media_resolution = settings.ocr_media_resolution
         self.ocr_model = settings.ocr_model
@@ -701,23 +717,24 @@ class OpenRouterClient:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
+        output_limit = self._default_chat_tokens if max_tokens is None else max_tokens
         body = chat_request(
             model=self.chat_model,
             messages=messages,
             thinking=CHAT_THINKING_LEVEL,
             schema=schema,
-            max_output_tokens=None if max_tokens is None else max_tokens + CHAT_THINKING_TOKENS,
+            max_output_tokens=output_limit + CHAT_THINKING_TOKENS,
         )
-        content = self._chat_reply(body, max_tokens)
+        content, spent = self._chat_reply(body, output_limit, (0, 0))
         value, problem = parse_reply(content, schema)
         if value is not None:
             return value
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": REPAIR.format(problem=problem)})
-        content = self._chat_reply(body, max_tokens)
+        content, spent = self._chat_reply(body, output_limit, spent)
         value, _ = parse_reply(content, schema)
         if value is None:
-            raise ModelOutputError("invalid_output")
+            raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
         return value
 
     def read_image(self, *, png: bytes, instruction: str) -> str:
@@ -729,10 +746,10 @@ class OpenRouterClient:
             schema=None,
             media_resolution=self._media_resolution,
             thinking=CHAT_THINKING_LEVEL,
-            max_output_tokens=None,
+            max_output_tokens=IMAGE_MAX_OUTPUT_TOKENS,
         )
         reply = self._call(CHAT_PATH, body, self.now() + self._timeout)
-        text, _ = reply_text(reply)
+        text, _ = _billed_text(reply, (0, 0))
         return text.strip()
 
     # The reader's call (G1, G2, G3).
@@ -762,18 +779,20 @@ class OpenRouterClient:
         )
         reply = self._call(CHAT_PATH, body, deadline)
         input_tokens, output_tokens = reply_usage(reply)
-        content, finish = reply_text(reply)
+        content, finish = _billed_text(reply, (0, 0))
         value, problem = parse_reply(content, schema)
         if value is None:
             body["messages"].append({"role": "assistant", "content": content})
             body["messages"].append({"role": "user", "content": REPAIR.format(problem=problem)})
             reply = self._call(CHAT_PATH, body, deadline)
+            content, finish = _billed_text(reply, (input_tokens, output_tokens))
             more_in, more_out = reply_usage(reply)
             input_tokens, output_tokens = input_tokens + more_in, output_tokens + more_out
-            content, finish = reply_text(reply)
             value, _ = parse_reply(content, schema)
             if value is None:
-                raise ModelOutputError("invalid_output")
+                raise ModelOutputError(
+                    "invalid_output", input_tokens=input_tokens, output_tokens=output_tokens
+                )
         return PageReply(value, input_tokens, output_tokens, finish)
 
     # verify-models' raw request.
@@ -798,13 +817,18 @@ class OpenRouterClient:
 
     # Internals.
 
-    def _chat_reply(self, body: dict[str, Any], max_tokens: int | None) -> str:
+    def _chat_reply(
+        self, body: dict[str, Any], max_tokens: int | None, before: tuple[int, int]
+    ) -> tuple[str, tuple[int, int]]:
+        """(the reply's text, the tokens billed so far: ``before`` plus this reply's). Its
+        ``ModelOutputError`` carries the same tokens."""
         reply = self._call(CHAT_PATH, body, self.now() + self._chat_timeout)
-        text, _ = reply_text(reply)
-        reply_tokens = reply_usage(reply)[1] - reasoning_tokens(reply)
-        if max_tokens is not None and reply_tokens > max_tokens:
-            raise ModelOutputError("output_truncated")
-        return text
+        text, _ = _billed_text(reply, before)
+        input_tokens, output_tokens = reply_usage(reply)
+        spent = (before[0] + input_tokens, before[1] + output_tokens)
+        if max_tokens is not None and output_tokens - reasoning_tokens(reply) > max_tokens:
+            raise ModelOutputError("output_truncated", input_tokens=spent[0], output_tokens=spent[1])
+        return text, spent
 
     def _in_order(self, data: list[Any], count: int) -> list[list[float]]:
         """The batch's vectors sorted by ``index``, which must be exactly 0 to count - 1."""

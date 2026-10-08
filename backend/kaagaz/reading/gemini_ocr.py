@@ -74,7 +74,9 @@ read. Without a document (``read``, ``cli measure``) there is no cache.
   ``reader_refused`` too: F2 makes both unreadable, and the F1 table has no other
   code for a page the main reader did not read.
 
-A page read locally is never cached, so the next reading asks the model again.
+A page read locally is never cached, so the next reading asks the model again. Its
+``PageRead`` keeps the tokens the model's calls for it were billed (G9): a blocked, cut
+off or invalid reply, and a whole page cut off before its halves, are paid for too.
 
 **Word marks** (F3): each unsure word, copied exactly and found in its line, goes to
 ``OcrLine.unsure``; ``[?]`` stays in the text (``page_quality.ILLEGIBLE_MARK``).
@@ -109,12 +111,13 @@ from typing import Any, Protocol
 from PIL import Image
 
 from kaagaz.ai.gemini import GeminiClient, PageReply, process_gate
-from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, schema_problem
+from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, billed, schema_problem
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.ocr import (
     MAX_BLOCK_CHARS,
     MAX_BLOCKS_PER_PAGE,
+    MAX_TABLE_INDEX,
     DocumentPages,
     OcrLine,
     OcrTable,
@@ -398,9 +401,16 @@ class GeminiEngine:
         try:
             reply, result, input_tokens, output_tokens = self._ask(image, harder=again)
         except ModelUnavailable as error:
-            return self._outage(image, page_no, error.code, started)
+            return self._outage(
+                image,
+                page_no,
+                error.code,
+                started,
+                tokens=(error.input_tokens, error.output_tokens),
+            )
         except ModelOutputError as error:
-            return self._read_locally(image, page_no, READER_REFUSED, error.code)
+            spent = (error.input_tokens, error.output_tokens)
+            return self._read_locally(image, page_no, READER_REFUSED, error.code, tokens=spent)
         with self._lock:
             self._down_since = self._last_failure = None
         if pages is not None and key is not None:
@@ -419,23 +429,39 @@ class GeminiEngine:
 
     def _ask(self, image: Image.Image, *, harder: bool) -> tuple[_Reply, dict[str, Any], int, int]:
         """(the checked reply, its JSON to cache, input tokens, output tokens); halves when
-        the whole page's reply is cut off (G6)."""
+        the whole page's reply is cut off (G6). The tokens are every call's for the page:
+        the cut-off whole page's too. A ``ModelOutputError`` raised here carries the tokens
+        of every call made for the page before it, its own included (G9)."""
         resolution, thinking = self._harder if harder else self._normal
         try:
             whole = self._call(image, resolution, thinking)
         except ModelOutputError as error:
             if error.code != TRUNCATED or image.height < 2:
                 raise
+            tokens_in, tokens_out = error.input_tokens, error.output_tokens
         else:
-            return checked(whole.value), whole.value, whole.input_tokens, whole.output_tokens
+            try:
+                return checked(whole.value), whole.value, whole.input_tokens, whole.output_tokens
+            except ModelOutputError as error:
+                raise billed(error, whole.input_tokens, whole.output_tokens) from None
         top_end, bottom_start = half_rows(image.height)
-        with image.crop((0, 0, image.width, top_end)) as top_image:
-            top = self._call(top_image, resolution, thinking)
-        with image.crop((0, bottom_start, image.width, image.height)) as bottom_image:
-            bottom = self._call(bottom_image, resolution, thinking)
-        joined = joined_halves(checked(top.value), checked(bottom.value), image.height, top_end, bottom_start)
-        tokens_in = top.input_tokens + bottom.input_tokens
-        tokens_out = top.output_tokens + bottom.output_tokens
+        try:
+            with image.crop((0, 0, image.width, top_end)) as top_image:
+                top = self._call(top_image, resolution, thinking)
+            tokens_in, tokens_out = tokens_in + top.input_tokens, tokens_out + top.output_tokens
+            with image.crop((0, bottom_start, image.width, image.height)) as bottom_image:
+                bottom = self._call(bottom_image, resolution, thinking)
+            tokens_in, tokens_out = tokens_in + bottom.input_tokens, tokens_out + bottom.output_tokens
+            top_reply, bottom_reply = checked(top.value), checked(bottom.value)
+        except ModelUnavailable as error:
+            raise ModelUnavailable(
+                error.code,
+                input_tokens=tokens_in + error.input_tokens,
+                output_tokens=tokens_out + error.output_tokens,
+            ) from None
+        except ModelOutputError as error:
+            raise billed(error, tokens_in, tokens_out) from None
+        joined = joined_halves(top_reply, bottom_reply, image.height, top_end, bottom_start)
         return joined, as_result(joined), tokens_in, tokens_out
 
     def _call(self, image: Image.Image, resolution: str, thinking: str) -> PageReply:
@@ -483,7 +509,15 @@ class GeminiEngine:
 
     # When the model can't read the page (G6, Q7).
 
-    def _outage(self, image: Image.Image, page_no: int, code: str, started: float) -> PageRead:
+    def _outage(
+        self,
+        image: Image.Image,
+        page_no: int,
+        code: str,
+        started: float,
+        *,
+        tokens: tuple[int, int] = (0, 0),
+    ) -> PageRead:
         """A key problem waits; an outage waits until it has lasted
         READER_OUTAGE_FALLBACK_MINUTES, then the page is read locally. A failure more than
         the outage gap after the last one starts a new outage (see the module notes)."""
@@ -498,13 +532,23 @@ class GeminiEngine:
             down_for = now - self._down_since
         if down_for < self._fallback_after:
             raise BackendUnavailable(GEMINI_BACKEND) from None
-        return self._read_locally(image, page_no, READ_LOCALLY, code)
+        return self._read_locally(image, page_no, READ_LOCALLY, code, tokens=tokens)
 
-    def _read_locally(self, image: Image.Image, page_no: int, issue: str, code: str) -> PageRead:
-        """The page as the local reader reads it, with ``issue`` first. Logs the code only."""
+    def _read_locally(
+        self, image: Image.Image, page_no: int, issue: str, code: str, *, tokens: tuple[int, int] = (0, 0)
+    ) -> PageRead:
+        """The page as the local reader reads it, with ``issue`` first and ``tokens``, what
+        the model's calls for the page were billed before it was refused (G9). Logs the
+        code only."""
         read = self._local_reader().read_page(image, page_no=page_no)
         _log.warning("page read by the local reader", extra={"code": code})
-        return dataclasses.replace(read, page_no=page_no, issues=_unique([issue, *read.issues]))
+        return dataclasses.replace(
+            read,
+            page_no=page_no,
+            issues=_unique([issue, *read.issues]),
+            input_tokens=tokens[0],
+            output_tokens=tokens[1],
+        )
 
     def _local_reader(self) -> PageEngine:
         with self._lock:
@@ -589,12 +633,16 @@ def _checked_line(raw: dict[str, Any]) -> _Line | None:
     if not text.strip():
         return None
     unsure = []
+    seen_unsure: set[str] = set()
     for word in raw["unsure"]:
         if _SURROGATE.search(word):
             raise ModelOutputError("invalid_output")
         word = _CONTROL.sub("", word).strip()
-        if word and word != ILLEGIBLE_MARK and word in text:
+        if word and word != ILLEGIBLE_MARK and word in text and word not in seen_unsure:
+            seen_unsure.add(word)
             unsure.append(word)
+    if len(unsure) > len(text.split()):
+        raise ModelOutputError("invalid_output")
     return _Line(raw["order"], kind, text, box, tuple(unsure), raw["continues_on_next_page"], table)
 
 
@@ -618,7 +666,11 @@ def _is_finite(number: object) -> bool:
 def _table(value: dict[str, Any] | None) -> OcrTable | None:
     if value is None:
         return None
-    if TABLE_ID.fullmatch(value["id"]) is None or value["row"] < 0 or value["col"] < 0:
+    if (
+        TABLE_ID.fullmatch(value["id"]) is None
+        or not 0 <= value["row"] < MAX_TABLE_INDEX
+        or not 0 <= value["col"] < MAX_TABLE_INDEX
+    ):
         raise ModelOutputError("invalid_output")
     return OcrTable(value["id"], value["row"], value["col"], value["header"])
 

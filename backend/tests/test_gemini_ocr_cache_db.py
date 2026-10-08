@@ -57,7 +57,8 @@ def test_f5_a_page_read_again_replaces_its_row_in_page_reads(db: Database) -> No
         read = again.engine.read_page(image, page_no=1)
 
     assert [item.text for item in read.lines] == ["harder"]
-    assert again.client.calls[0].media_resolution == "ultra_high"
+    assert again.client.calls[0].media_resolution == again.settings.ocr_retry_media_resolution
+    assert again.client.calls[0].thinking_level == again.settings.ocr_retry_thinking_level
     with db.customer(customer) as conn:
         assert count_rows(conn, _ROWS, {"d": document}) == 1
     key = PageKey(customer, document, 1, pixels_sha256(image), MODEL, GEMINI_OCR_PROMPT_VERSION)
