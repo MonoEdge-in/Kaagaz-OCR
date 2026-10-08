@@ -52,7 +52,7 @@ class TurnTakingEngine:
     It records the most pages in flight, each read's thread, and the pictures given."""
 
     name = "gemini"
-    version = "gemini-3.1-pro-preview;prompt=1"
+    version = "google/gemini-3.1-pro-preview;prompt=1"
 
     def __init__(
         self,
@@ -296,7 +296,7 @@ class ImagePagesInParallelTest(unittest.TestCase):
         first, again = engine.threads_of(1)
         self.assertEqual((first != MAIN, again), (True, MAIN))
         self.assertEqual([picture.size for picture in engine.pictures], [(800, 1100), (1600, 2200)])
-        self.assertEqual(reader.version, "gemini-3.1-pro-preview;prompt=1;ocr_scale=0.50;ocr_reread=1")
+        self.assertEqual(reader.version, "google/gemini-3.1-pro-preview;prompt=1;ocr_scale=0.50;ocr_reread=1")
         self.assertTrue(all(closed(picture) for picture in engine.pictures))
 
     def test_a_failing_frame_stops_the_read(self) -> None:

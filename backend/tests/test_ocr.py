@@ -347,7 +347,7 @@ def page_read(page_no: int, *lines: OcrLine) -> PageRead:
         handwritten=False,
         scripts=("latin",),
         issues=(),
-        read_by="gemini-3.1-pro-preview",
+        read_by="google/gemini-3.1-pro-preview",
     )
 
 
@@ -355,7 +355,7 @@ class FakePageEngine:
     """Stands in for the Gemini reader (PRD 5 G1): a ``PageEngine``."""
 
     name = "gemini"
-    version = "gemini-3.1-pro-preview;prompt=1"
+    version = "google/gemini-3.1-pro-preview;prompt=1"
 
     def __init__(self) -> None:
         self.pages: list[int] = []
@@ -532,7 +532,7 @@ class GeminiFactoryTest(unittest.TestCase):
         assert engines is not None
         meter = MeteredOcrEngine(engines, timer=lambda: 0.0)
         read = meter.read_page(PAGE, page_no=7)
-        self.assertEqual((read.read_by, self.engine.pages), ("gemini-3.1-pro-preview", [7]))
+        self.assertEqual((read.read_by, self.engine.pages), ("google/gemini-3.1-pro-preview", [7]))
         self.assertEqual((meter.name, meter.take_page_reads()), ("gemini", {7: read}))
 
     def test_other_engines_never_build_it(self) -> None:

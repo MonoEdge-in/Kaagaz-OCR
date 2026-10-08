@@ -58,7 +58,7 @@ from tests.test_pipeline import PIPELINE_POLICY
 
 CUSTOMER = "cust-a"
 T0 = datetime(2026, 10, 8, 10, 0, tzinfo=UTC)
-MODEL = "gemini-3.1-pro-preview"
+MODEL = "google/gemini-3.1-pro-preview"
 SETTINGS = make_settings(page_image_dpi=72, ocr_dpi=72)
 # A scan (a picture of text, no text layer): drawn at 72 DPI it is 612 x 792 pixels, and its
 # picture is 153 px over 8.5 in, about 18 DPI, so it is low resolution (R4).

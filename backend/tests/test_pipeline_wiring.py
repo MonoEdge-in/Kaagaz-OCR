@@ -102,7 +102,7 @@ class ThreadNoting:
     """A page engine that notes the thread each page is read on."""
 
     name = "gemini"
-    version = "gemini-3.1-pro-preview;prompt=1"
+    version = "google/gemini-3.1-pro-preview;prompt=1"
 
     def __init__(self) -> None:
         self.threads: list[str] = []
@@ -120,7 +120,7 @@ class ThreadNoting:
             handwritten=False,
             scripts=("latin",),
             issues=(),
-            read_by="gemini-3.1-pro-preview",
+            read_by="google/gemini-3.1-pro-preview",
         )
 
 

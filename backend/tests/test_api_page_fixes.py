@@ -55,7 +55,7 @@ _READ_PAGE = text(
 )
 _GOOD_OCR_PAGE: dict[str, Any] = {
     "route": "ocr",
-    "read_by": "gemini-3.1-pro-preview",
+    "read_by": "google/gemini-3.1-pro-preview",
     "read_quality": "good",
     "read_issues": [],
     "unsure_words": 0,
@@ -374,7 +374,7 @@ def test_rt2_f1_each_page_says_who_read_it_and_how_well(db: Database) -> None:
         c,
         doc,
         1,
-        read_by="gemini-3.1-pro-preview",
+        read_by="google/gemini-3.1-pro-preview",
         read_quality="uncertain",
         read_issues=["handwriting_hard", "illegible_words", "unpinned"],
         unsure_words=4,
@@ -398,7 +398,14 @@ def test_rt2_f1_each_page_says_who_read_it_and_how_well(db: Database) -> None:
         for page in pages
     ]
     assert shown == [
-        ("gemini-3.1-pro-preview", "uncertain", ["handwriting_hard", "illegible_words", "unpinned"], 4, 2, 1),
+        (
+            "google/gemini-3.1-pro-preview",
+            "uncertain",
+            ["handwriting_hard", "illegible_words", "unpinned"],
+            4,
+            2,
+            1,
+        ),
         ("rapidocr", "unreadable", ["read_locally"], 0, 0, 0),
         ("text_layer", "good", [], 0, 0, 0),
     ]

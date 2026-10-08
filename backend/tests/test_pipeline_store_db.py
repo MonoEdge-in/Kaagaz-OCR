@@ -1065,7 +1065,7 @@ def test_save_writes_each_pages_reading_result_and_good_for_a_page_without_one(d
         PageInfo(1, 2480.0, 3508.0, "px"),
         True,
         route="ocr",
-        read_by="gemini-3.1-pro-preview",
+        read_by="google/gemini-3.1-pro-preview",
         read_quality="uncertain",
         read_issues=("handwriting_hard", "illegible_words", "unpinned"),
         unsure_words=4,
@@ -1078,7 +1078,7 @@ def test_save_writes_each_pages_reading_result_and_good_for_a_page_without_one(d
     assert rows(db, customer, READING, doc) == [
         {
             "page_no": 1,
-            "read_by": "gemini-3.1-pro-preview",
+            "read_by": "google/gemini-3.1-pro-preview",
             "read_quality": "uncertain",
             "read_issues": ["handwriting_hard", "illegible_words", "unpinned"],
             "unsure_words": 4,
@@ -1156,7 +1156,7 @@ def test_word_marks_are_stored_with_their_spans_and_load_back(db: Database) -> N
         "पाटील", "पाटील", BOX, 0.4, kind="paragraph", origin="ocr", quality="unsure", box_source="model"
     )
     plain = Span("Total", "Total", BOX, 0.99, kind="paragraph", origin="ocr")
-    output = ReaderOutput("first", "gemini", "gemini-3.1-pro-preview g1", (unsure, plain))
+    output = ReaderOutput("first", "gemini", "google/gemini-3.1-pro-preview g1", (unsure, plain))
     PgPipelineStore(db).save(replace(content(customer, doc), outputs=[output]))
 
     [stored] = rows(db, customer, "SELECT output FROM reader_outputs WHERE document_id = :d", doc)

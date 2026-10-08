@@ -195,7 +195,7 @@ class GeminiLikeOcr:
     and one not (G5), 2 unsure words and one [?], and the tokens it was billed."""
 
     name = "gemini"
-    version = "gemini-3.1-pro-preview;prompt=1"
+    version = "google/gemini-3.1-pro-preview;prompt=1"
 
     def __init__(self, clock: Clock) -> None:
         self.clock = clock
@@ -226,7 +226,7 @@ class GeminiLikeOcr:
             handwritten=False,
             scripts=("latin",),
             issues=("illegible_words", "unpinned"),
-            read_by="gemini-3.1-pro-preview",
+            read_by="google/gemini-3.1-pro-preview",
             input_tokens=1700,
             output_tokens=4000,
         )
@@ -269,7 +269,7 @@ def test_measure_prints_each_ocr_pages_tokens_unsure_words_and_pinned_share(
     for page in (2, 3):
         shown = {name: pages[page][name] for name in ("read_by", "cached", "input_tokens", "output_tokens")}
         assert shown == {
-            "read_by": "gemini-3.1-pro-preview",
+            "read_by": "google/gemini-3.1-pro-preview",
             "cached": "no",
             "input_tokens": "1700",
             "output_tokens": "4000",

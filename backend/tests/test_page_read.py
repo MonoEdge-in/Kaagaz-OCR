@@ -16,7 +16,7 @@ BASE = PageRead(
     handwritten=True,
     scripts=("devanagari", "latin"),
     issues=("handwriting_hard",),
-    read_by="gemini-3.1-pro-preview",
+    read_by="google/gemini-3.1-pro-preview",
 )
 
 
@@ -75,7 +75,7 @@ def test_a_page_read_is_frozen_and_built_by_name_only() -> None:
 
 class FakePageEngine:
     name = "gemini"
-    version = "gemini-3.1-pro-preview;prompt=1"
+    version = "google/gemini-3.1-pro-preview;prompt=1"
 
     def read(self, image: Image.Image) -> list[OcrLine]:
         return list(self.read_page(image, page_no=1).lines)

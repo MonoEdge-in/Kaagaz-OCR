@@ -266,7 +266,9 @@ class G1EngineTest(unittest.TestCase):
         built = build()
         self.assertEqual(built.engine.name, "gemini")
         self.assertEqual(built.engine.version, f"{MODEL};prompt={GEMINI_OCR_PROMPT_VERSION}")
-        self.assertEqual(build(ocr_model="gemini-3.8-flash").engine.version, "gemini-3.8-flash;prompt=g1")
+        self.assertEqual(
+            build(ocr_model="google/gemini-3.8-flash").engine.version, "google/gemini-3.8-flash;prompt=g1"
+        )
 
     def test_g1_it_is_a_page_engine_and_keeps_a_page_cache(self) -> None:
         engine = build().engine

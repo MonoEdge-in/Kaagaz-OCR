@@ -19,7 +19,7 @@ from tests.fakes import MemoryStorage
 
 pytestmark = pytest.mark.db
 
-MODEL = "gemini-3.1-pro-preview"
+MODEL = "google/gemini-3.1-pro-preview"
 RESULT = {
     "page": {"quality": "good", "handwritten": False, "scripts": ["devanagari"], "issues": []},
     "lines": [{"order": 0, "kind": "paragraph", "text": "सर्वे नंबर [?]", "box_2d": [10, 20, 30, 40]}],
@@ -67,7 +67,7 @@ def test_a_saved_read_comes_back_with_its_token_counts(db: Database) -> None:
     ("image_sha256", "model", "prompt_version"),
     [
         ("1" * 64, MODEL, "g1"),  # the page image changed (a new scan, another DPI)
-        ("0" * 64, "gemini-3.8-flash", "g1"),  # OCR_MODEL changed
+        ("0" * 64, "google/gemini-3.8-flash", "g1"),  # OCR_MODEL changed
         ("0" * 64, MODEL, "g2"),  # the reading instructions changed
     ],
 )

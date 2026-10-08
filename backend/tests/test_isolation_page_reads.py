@@ -28,7 +28,7 @@ def _a_with_a_cached_page(db: Database) -> tuple[str, str, str]:
     b, _ = new_customer(db)
     with db.customer(a) as conn:
         doc = insert_document(conn, a)
-    PgPageReads(db).put(PageKey(a, doc, 1, SHA, "gemini-3.1-pro-preview", "g1"), RESULT, 10, 20)
+    PgPageReads(db).put(PageKey(a, doc, 1, SHA, "google/gemini-3.1-pro-preview", "g1"), RESULT, 10, 20)
     return a, b, doc
 
 
@@ -40,7 +40,7 @@ def _seen_by(db: Database, customer_id: str, document_id: str) -> int:
 def test_another_customer_never_gets_a_cached_page(db: Database) -> None:
     a, b, doc = _a_with_a_cached_page(db)
 
-    assert PgPageReads(db).get(PageKey(b, doc, 1, SHA, "gemini-3.1-pro-preview", "g1")) is None
+    assert PgPageReads(db).get(PageKey(b, doc, 1, SHA, "google/gemini-3.1-pro-preview", "g1")) is None
     assert _seen_by(db, b, doc) == 0
     assert _seen_by(db, a, doc) == 1
 
@@ -50,11 +50,19 @@ def test_another_customer_cannot_put_a_page_under_a_document_not_theirs(db: Data
     a, b, doc = _a_with_a_cached_page(db)
 
     with pytest.raises(DBAPIError):
-        PgPageReads(db).put(PageKey(b, doc, 1, SHA, "gemini-3.1-pro-preview", "g1"), {"lines": []}, 0, 0)
+        PgPageReads(db).put(
+            PageKey(b, doc, 1, SHA, "google/gemini-3.1-pro-preview", "g1"), {"lines": []}, 0, 0
+        )
     with pytest.raises(DBAPIError):  # a page A has not cached: the foreign key alone
-        PgPageReads(db).put(PageKey(b, doc, 2, SHA, "gemini-3.1-pro-preview", "g1"), {"lines": []}, 0, 0)
+        PgPageReads(db).put(
+            PageKey(b, doc, 2, SHA, "google/gemini-3.1-pro-preview", "g1"), {"lines": []}, 0, 0
+        )
 
-    assert PgPageReads(db).get(PageKey(a, doc, 1, SHA, "gemini-3.1-pro-preview", "g1")) == (RESULT, 10, 20)
+    assert PgPageReads(db).get(PageKey(a, doc, 1, SHA, "google/gemini-3.1-pro-preview", "g1")) == (
+        RESULT,
+        10,
+        20,
+    )
     assert _seen_by(db, a, doc) == 1
 
 
@@ -99,4 +107,8 @@ def test_another_customer_can_neither_change_nor_delete_a_cached_page(db: Databa
         deleted = conn.execute(text("DELETE FROM page_reads WHERE document_id = :d"), {"d": doc})
         assert (changed.rowcount, deleted.rowcount) == (0, 0)
 
-    assert PgPageReads(db).get(PageKey(a, doc, 1, SHA, "gemini-3.1-pro-preview", "g1")) == (RESULT, 10, 20)
+    assert PgPageReads(db).get(PageKey(a, doc, 1, SHA, "google/gemini-3.1-pro-preview", "g1")) == (
+        RESULT,
+        10,
+        20,
+    )
