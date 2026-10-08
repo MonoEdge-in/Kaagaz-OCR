@@ -60,12 +60,12 @@ describe("confidenceText", () => {
 });
 
 describe("readerHeading", () => {
-  const ocrPage = { route: "ocr" as const, effective_dpi: 200.4 };
+  const ocrPage = { route: "ocr" as const, read_by: "gemini-3.1-pro-preview", effective_dpi: 200.4 };
 
   it("says how the page was read, by which reader, and how many lines it was not sure of", () => {
     const heading = readerHeading(reader({ lines: [line(0.5), line(0.97), line(0.2)] }), ocrPage);
     expect(heading).toEqual({
-      title: "Read by OCR at 200 DPI",
+      title: "Read by Gemini at 200 DPI",
       detail: "paddleocr-vl 1.5",
       notSureCount: "2 of 3 lines: reader not sure",
     });
@@ -75,11 +75,16 @@ describe("readerHeading", () => {
     );
   });
 
+  it("names the backup reader (PRD 5 RT2)", () => {
+    const local = { route: "ocr" as const, read_by: "rapidocr", effective_dpi: 300 };
+    expect(readerHeading(reader(), local).title).toBe("Read by the backup reader at 300 DPI");
+  });
+
   it("names the text layer and a page with no route", () => {
-    expect(readerHeading(reader(), { route: "text_layer", effective_dpi: null }).title).toBe(
+    expect(readerHeading(reader(), { route: "text_layer", read_by: "text_layer", effective_dpi: null }).title).toBe(
       "Read from the PDF text",
     );
-    expect(readerHeading(reader(), { route: null, effective_dpi: null }).title).toBe("First reader");
+    expect(readerHeading(reader(), { route: null, read_by: null, effective_dpi: null }).title).toBe("First reader");
     expect(readerHeading(reader({ role: "second" }), ocrPage).title).toBe("Second reader (PDF text layer)");
   });
 

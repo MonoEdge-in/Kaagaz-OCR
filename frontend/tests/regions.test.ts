@@ -17,7 +17,20 @@ import {
 import type { PageSummary, Region } from "@/lib/types";
 
 // How the page was read does not matter to where a spot sits on it.
-const read = { route: "text_layer", effective_dpi: null, low_resolution: false } as const;
+const read: Omit<PageSummary, "page_no" | "width" | "height" | "unit" | "has_image"> = {
+  route: "text_layer",
+  effective_dpi: null,
+  low_resolution: false,
+  read_by: "text_layer",
+  read_quality: "good",
+  read_issues: [],
+  unsure_words: 0,
+  illegible_words: 0,
+  unpinned_lines: 0,
+  accepted_by: null,
+  accepted_at: null,
+  read_again_requested_at: null,
+};
 const a4: PageSummary = { page_no: 1, width: 595, height: 842, unit: "pt", has_image: true, ...read };
 const wide: PageSummary = { page_no: 1, width: 1000, height: 500, unit: "px", has_image: true, ...read };
 
