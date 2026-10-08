@@ -75,7 +75,8 @@ the machine and nothing is downloaded at run time.
   the seconds are the pages' own, summed, so they can pass the wall time.
 * ``as_page_engine`` gives any engine ``read_page`` (PRD 5): a ``PageEngine``
   (the Gemini reader) as it is, and any other engine through ``read``, as a
-  page read by the local reader (``read_by`` "rapidocr", no grade of its own).
+  page with no grade of its own, ``read_by`` the id of the engine that read it
+  ("rapidocr", "paddleocr_vl"; a ``FallbackOcrEngine`` says which of its two).
 * The Gemini reader (PRD 5 G1, OCR_ENGINE=gemini) lives in its own module,
   ``kaagaz/reading/gemini_ocr.py``, which this module never imports: a
   ``GeminiEngineFactory`` given to ``build_ocr_engine`` builds it, with the
@@ -244,7 +245,9 @@ class PageRead:
       the page is read: the model's own (G3), and illegible_words, unpinned,
       reader_refused, read_locally and no_text. The pipeline adds low_resolution
       and readers_disagree, which need the page's DPI and the checker.
-    * ``read_by``: who read it (RT2): the model ID in OCR_MODEL, or "rapidocr".
+    * ``read_by``: who read it (RT2): the model ID in OCR_MODEL, or the id of the engine
+      that read it ("rapidocr", "paddleocr_vl"). A page the Gemini reader handed to the
+      local reader (Q7) is "rapidocr" with the issue read_locally or reader_refused.
     * ``input_tokens``, ``output_tokens``: what this read was billed, from the
       reply's usage metadata (thinking tokens are output); 0 for a page taken
       from the page cache or read locally.
@@ -698,6 +701,12 @@ class FallbackOcrEngine:
         return taken
 
     def read(self, image: Image.Image) -> list[OcrLine]:
+        return self.read_with_reader(image)[0]
+
+    def read_with_reader(self, image: Image.Image) -> tuple[list[OcrLine], str]:
+        """The page's lines, and the name of the engine that read them: the primary's, or
+        the fallback's (followed through a fallback that is itself a chain), for
+        ``PageRead.read_by`` (PRD 5 RT2)."""
         if self._cool_until is not None and self._timer() < self._cool_until:
             return self._read_fallback(image, OcrOverloaded("ocr_cooling_down"))
         self._cool_until = None
@@ -712,33 +721,33 @@ class FallbackOcrEngine:
             failure = error
         else:
             if lines or not self._empty_fails:
-                return lines
+                return lines, self._primary.name
             return self._read_fallback(image, ReadError("ocr_no_lines"), kept=lines)
         # Outside the handler, so a failing fallback's error is chained onto the primary's once.
-        lines = self._read_fallback(image, failure)
+        read = self._read_fallback(image, failure)
         if isinstance(failure, OcrOverloaded):
             self._cool_until = self._timer() + COOL_DOWN_SECONDS  # only once the fallback worked
-        return lines
+        return read
 
     def _read_fallback(
         self, image: Image.Image, failure: ReadError | OcrOverloaded, *, kept: list[OcrLine] | None = None
-    ) -> list[OcrLine]:
-        """The page as the fallback reads it. When the fallback cannot be built or fails,
-        any cool-down ends, so the next page tries the primary, and ``kept`` (the
-        primary's own lines) is returned or else ``failure`` (its own error) is raised.
-        Logs codes and type names only, never the page."""
+    ) -> tuple[list[OcrLine], str]:
+        """The page as the fallback reads it, with the name of the engine that read it.
+        When the fallback cannot be built or fails, any cool-down ends, so the next page
+        tries the primary, and ``kept`` (the primary's own lines) is returned or else
+        ``failure`` (its own error) is raised. Logs codes and type names only, never the page."""
         try:
-            lines = self._fallback_engine().read(image)
+            read = lines_and_reader(self._fallback_engine(), image)
         except Exception as error:
             self._cool_until = None
             _log.warning("ocr fallback failed: %s", type(error).__name__, extra={"code": failure.code})
             if kept is not None:
-                return kept
+                return kept, self._primary.name
             raise failure from error
         with self._lock:
             self._fallback_pages += 1
         _log.warning("ocr page read by the fallback", extra={"code": failure.code})
-        return lines
+        return read
 
     def _fallback_engine(self) -> OcrEngine:
         """The fallback, built on its first need, once."""
@@ -766,25 +775,44 @@ class _LinesAsPages:
         return self._engine.read(image)
 
     def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
-        """The engine's lines as a page the local reader read (RT2): no grade, scripts or
-        unsure words of its own, and ``no_text`` when it found no line (the readers only
-        send a page with ink on it, R3)."""
-        lines = tuple(self._engine.read(image))
+        """The engine's lines as a page with no grade, scripts or unsure words of its own,
+        and ``no_text`` when it found no line (the readers only send a page with ink on it,
+        R3). ``read_by`` (RT2) is the id of the engine that read it (``read_by_id``):
+        "rapidocr", "paddleocr_vl", or for a ``FallbackOcrEngine`` the one of its two
+        that read this page. Being read by RapidOCR is not, by itself, being read
+        locally: the Gemini reader adds ``read_locally`` or ``reader_refused`` to a page
+        it hands to RapidOCR (Q7), and those issues are what say "the backup reader"."""
+        lines, reader = lines_and_reader(self._engine, image)
         return PageRead(
             page_no=page_no,
-            lines=lines,
+            lines=tuple(lines),
             quality=None,
             handwritten=False,
             scripts=(),
             issues=() if lines else (NO_TEXT,),
-            read_by=LOCAL_READ_BY,
+            read_by=read_by_id(reader),
         )
+
+
+def lines_and_reader(engine: OcrEngine, image: Image.Image) -> tuple[list[OcrLine], str]:
+    """``engine``'s lines for ``image`` and the name of the engine that read them: a
+    ``FallbackOcrEngine`` says which of its two did; any other engine is itself. O(1)
+    beyond the reading."""
+    if isinstance(engine, FallbackOcrEngine):
+        return engine.read_with_reader(image)
+    return engine.read(image), engine.name
+
+
+def read_by_id(name: str) -> str:
+    """``PageRead.read_by`` for an engine's name (RT2): its OCR_ENGINE id, the name with
+    "_" for "-" ("rapidocr", "paddleocr_vl")."""
+    return name.replace("-", "_")
 
 
 def as_page_engine(engine: OcrEngine) -> PageEngine:
     """``engine`` with ``read_page`` (PRD 5 G7, G8): itself when it is a ``PageEngine`` (the
-    Gemini reader, ``MeteredOcrEngine``, ``OcrEngines``), else its ``read`` as a page the
-    local reader read (``read_by`` "rapidocr", ``quality`` None). O(1)."""
+    Gemini reader, ``MeteredOcrEngine``, ``OcrEngines``), else its ``read`` as a page read
+    by that engine (``read_by`` its id, ``quality`` None). O(1)."""
     return engine if isinstance(engine, PageEngine) else _LinesAsPages(engine)
 
 

@@ -406,6 +406,23 @@ DOCUMENT_A = DocumentPages(
 )
 
 
+class PaddleLike:
+    """An engine with only ``read`` and PaddleOCR-VL's name; with ``fails``, a page it
+    can't read (``ocr_failed``)."""
+
+    name = ocr.PaddleVlEngine.name
+    version = "0.1"
+
+    def __init__(self, lines: list[OcrLine]) -> None:
+        self.lines = lines
+        self.fails = False
+
+    def read(self, image: Image.Image) -> list[OcrLine]:
+        if self.fails:
+            raise ReadError("ocr_failed")
+        return self.lines
+
+
 class LinesOnly:
     """An engine with only ``read``, as RapidOCR and the older test fakes."""
 
@@ -450,6 +467,33 @@ class AsPageEngineTest(unittest.TestCase):
         """F1: no lines on a page that is not blank (the readers send only pages with ink)."""
         read = as_page_engine(LinesOnly([])).read_page(PAGE, page_no=2)
         self.assertEqual((read.lines, read.issues), ((), ("no_text",)))
+
+    def test_fx3_rt2_paddleocr_vl_pages_say_paddleocr_vl(self) -> None:
+        """Review FX3: read_by is the id of the engine that read the page, not always
+        "rapidocr"."""
+        read = as_page_engine(PaddleLike([OcrLine("x", 0, 0, 1, 1, None, "paragraph")])).read_page(
+            PAGE, page_no=1
+        )
+        self.assertEqual(read.read_by, "paddleocr_vl")
+
+    def test_fx3_rt2_keyless_rapidocr_pages_say_rapidocr_without_read_locally(self) -> None:
+        """OCR_ENGINE=rapidocr (the keyless mode): RapidOCR is the main reader there, so
+        its pages are "rapidocr" with no read_locally (nothing was handed to a backup)."""
+        read = as_page_engine(LinesOnly([OcrLine("x", 0, 0, 1, 1, 0.9)])).read_page(PAGE, page_no=1)
+        self.assertEqual((read.read_by, read.issues), ("rapidocr", ()))
+        self.assertNotIn("read_locally", read.issues)
+        self.assertNotIn("reader_refused", read.issues)
+
+    def test_fx3_rt2_a_fallback_chain_names_the_engine_that_read_each_page(self) -> None:
+        """FallbackOcrEngine (PaddleOCR-VL, then RapidOCR): a page PaddleOCR-VL read says
+        paddleocr_vl; a page it failed on, read by RapidOCR, says rapidocr."""
+        primary = PaddleLike([OcrLine("x", 0, 0, 1, 1, None, "paragraph")])
+        chain = as_page_engine(
+            ocr.FallbackOcrEngine(primary, lambda: LinesOnly([OcrLine("y", 0, 0, 1, 1, 0.9)]))
+        )
+        self.assertEqual(chain.read_page(PAGE, page_no=1).read_by, "paddleocr_vl")
+        primary.fails = True
+        self.assertEqual(chain.read_page(PAGE, page_no=2).read_by, "rapidocr")
 
 
 class MeteredPageReadsTest(unittest.TestCase):
