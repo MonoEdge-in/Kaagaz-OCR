@@ -59,8 +59,22 @@ Why some choices:
   form field of an upload or a version is still accepted and ignored, whatever it
   holds, so old browsers don't break: nothing is stored for it (NULL, Auto) and the
   audit row names no reader.
-* **Read one page again, and Keep as is** (PRD 5 F5): see ``read_page_again`` and
-  ``keep_page_as_is``.
+* **Read one page again** (PRD 5 F5) is for a reviewer or an admin, and is a read
+  again of its document (above) in every rule: the same states (409
+  ``not_reprocessable`` while the document is being read, until the run ends), one
+  transaction under the family lock (the page's mark, ``pages.read_again_requested_at``,
+  the document back to the start, one ``document.reprocess`` audit row naming the
+  page, then the job), and the same REPROCESS_PER_HOUR and 10-minute cooldown. Each
+  page read again is so counted against the hour, and a page, like its document, is
+  read again at most once in 10 minutes (the council's security finding: a harder
+  read costs more). The worker reads that page again, harder, and the rest of the
+  document from the page cache (G7). Only a page read from a scan or photo (route
+  ``ocr``) can be: another page is 409 ``not_reprocessable``; a page the document
+  does not have is 404, and nothing is counted.
+* **Keep as is** (F5) is for a reviewer or an admin: the page leaves the attention
+  list but stays flagged on the page itself and in answers (``accept_page``, under
+  the family lock). One ``document.page_accept`` audit row names the page. A
+  document in Trash is 409 ``in_trash``; a page it does not have is 404.
 """
 
 import uuid
@@ -101,8 +115,10 @@ from kaagaz.db.documents import (
     NotReprocessable,
     PgDocuments,
     ReprocessLimited,
+    accept_page,
     delete_family_forever,
     mark_for_reprocess,
+    request_page_read_again,
 )
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
@@ -141,6 +157,9 @@ _REPROCESS_LIMITED = {
         "This document was sent to be read again less than 10 minutes ago. Please wait and try again."
     ),
 }
+# PRD 5 F5: a page read from the file itself (its text layer or cells) or blank has no scan
+# to read again.
+_NOT_SCANNED = "Only a page read from a scan or photo can be read again."
 _REJECT_STATUS = {
     RejectCode.EMPTY_FILE: 400,
     RejectCode.UNSUPPORTED_TYPE: 400,
@@ -531,6 +550,83 @@ def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context)
         # Last, inside the transaction: a queue that is down rolls everything back (503).
         context.queue.enqueue(Job(customer_id, target))
     return reply
+
+
+# --- one page: read it again, or keep it as is (PRD 5 F5) ----------------------------
+
+
+@router.post("/documents/{document_id}/pages/{page_no}/read-again")
+def read_page_again(document_id: uuid.UUID, page_no: int, user: Reviewer, context: Context) -> dict[str, Any]:
+    """Read one page again, harder (F5), and return the document's summary, now
+    ``received``. The read again of its document in every rule (the module notes).
+    One transaction: the page checks, the family lock and the counts, the page's
+    mark, the audit row, then the job."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        _document_or_404(conn, user, document_id)
+        page = listing.get_page(conn, customer_id, target, page_no) if page_no >= 1 else None
+        if page is None:
+            raise ApiError(404, "not_found")  # before anything is counted
+        if page["route"] != "ocr":
+            raise ApiError(409, "not_reprocessable", _NOT_SCANNED)
+        try:
+            previous = mark_for_reprocess(
+                conn, customer_id, target, per_hour=context.settings.reprocess_per_hour
+            )
+        except NotReprocessable:
+            raise ApiError(409, "not_reprocessable") from None
+        except ReprocessLimited as limited:
+            raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
+        if previous is None or not request_page_read_again(
+            conn, customer_id, target, page_no, now=context.clock()
+        ):
+            raise ApiError(404, "not_found")  # deleted in the moment since: everything rolls back
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="document.reprocess",
+            target_type="document",
+            target_id=target,
+            details={"status": previous, "page_no": page_no},
+        )
+        row = _document_or_404(conn, user, document_id)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+        reply = document_summary(
+            row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+        )
+        # Last, inside the transaction: a queue that is down rolls everything back (503).
+        context.queue.enqueue(Job(customer_id, target))
+    return reply
+
+
+@router.post("/documents/{document_id}/pages/{page_no}/accept")
+def keep_page_as_is(document_id: uuid.UUID, page_no: int, user: Reviewer, context: Context) -> dict[str, Any]:
+    """Keep as is (F5): accept the page as it was read, and return its ``PageSummary``,
+    still flagged, with who accepted it and when. One transaction: the family lock,
+    the change, the audit row."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        row = _document_or_404(conn, user, document_id)
+        if row["deleted_at"] is not None:
+            raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
+        if page_no < 1 or not accept_page(
+            conn, customer_id, target, page_no, user_id=user.user_id, now=context.clock()
+        ):
+            raise ApiError(404, "not_found")  # no such page, or moved to Trash in the moment since
+        page = listing.get_page(conn, customer_id, target, page_no)
+        if page is None:
+            raise ApiError(404, "not_found")
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="document.page_accept",
+            target_type="document",
+            target_id=target,
+            details={"page_no": page_no, "read_quality": page["read_quality"]},
+        )
+    return page_summary(page)
 
 
 class DocumentChangesBody(BaseModel):
