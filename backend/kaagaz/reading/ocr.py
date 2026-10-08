@@ -69,12 +69,28 @@ the machine and nothing is downloaded at run time.
 * ``MeteredOcrEngine`` wraps any engine and counts the pages sent to it and
   the seconds they took (PRD 2 R6: the run's ``seconds_ocr``; ``cli measure``).
   Its name is the engine's at each moment, so a chosen engine's pages are
-  timed under its own name.
+  timed under its own name. It also keeps each numbered page's ``PageRead``
+  for the run (``take_page_reads``, PRD 5 G7, F1). Pages of one document are
+  read on several threads at once (G8), so its counts are kept under a lock;
+  the seconds are the pages' own, summed, so they can pass the wall time.
+* ``as_page_engine`` gives any engine ``read_page`` (PRD 5): a ``PageEngine``
+  (the Gemini reader) as it is, and any other engine through ``read``, as a
+  page read by the local reader (``read_by`` "rapidocr", no grade of its own).
+* The Gemini reader (PRD 5 G1, OCR_ENGINE=gemini) lives in its own module,
+  ``kaagaz/reading/gemini_ocr.py``, which this module never imports: a
+  ``GeminiEngineFactory`` given to ``build_ocr_engine`` builds it, with the
+  process's ``RapidOcrPool``. ``kaagaz.reading.wiring`` gives the product's
+  (``build_gemini_engine``, which imports it by its path only for
+  OCR_ENGINE=gemini), so OCR_ENGINE=rapidocr never loads it.
+* No reader choice at upload (PRD 5 RT3): ``ocr_choices`` offers one reader,
+  Auto, so the "Scan with" select hides itself.
 * ``ocr_spans`` turns an engine's pixel boxes into spans with page fractions
   and origin "ocr". RapidOCR's boxes go through the same line rule as the PDF
   readers (``kaagaz/reading/lines.py``), so "INVOICE" and "1042" found as two
   boxes on one line become one span. PaddleOCR-VL's blocks are already in
-  reading order, so each becomes one span, in the order given.
+  reading order, so each becomes one span, in the order given. A line's
+  ``box_source`` is copied to its span, and its word marks (PRD 5 F3) become
+  spans of their own (``is_word_mark``).
 
 An engine never logs what it read: RapidOCR's own logger is set to errors
 only, and its messages hold no page text.
@@ -96,7 +112,6 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from http.client import HTTPConnection, HTTPException, HTTPResponse, HTTPSConnection, IncompleteRead
 from importlib import metadata
-from pathlib import Path
 from typing import Any, NoReturn, Protocol, TypeGuard, runtime_checkable
 
 from PIL import Image
@@ -104,8 +119,17 @@ from PIL import Image
 from kaagaz.chunking.script import ocr_script_suspect, ocr_suspect_count
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
-from kaagaz.reading.page_quality import ILLEGIBLE_MARK
-from kaagaz.reading.spans import BLOCK_KINDS, TABLE_ID, BoxLocation, ReadError, Span
+from kaagaz.reading.page_quality import ILLEGIBLE_MARK, NO_TEXT
+from kaagaz.reading.rapid_pool import (
+    DEVANAGARI_REC_MODEL,
+    PixelBox,
+    RapidOcrPool,
+    build_rapidocr,
+    devanagari_model_path,
+    devanagari_params,
+    shared_pool,
+)
+from kaagaz.reading.spans import BLOCK_KINDS, BOX_SOURCES, TABLE_ID, BoxLocation, ReadError, Span
 from kaagaz.settings import Settings, SettingsError
 
 # Caps on a /read reply (security A7). A reply over MAX_OCR_REPLY_BYTES is
@@ -131,9 +155,6 @@ _VERSION = re.compile(r"[A-Za-z0-9._+;=@: -]{1,200}")
 _CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 # Lone surrogates: JSON can carry them, but no database or UTF-8 file can hold them.
 _SURROGATE = re.compile("[\ud800-\udfff]")
-# RapidOCR's Devanagari recogniser (PP-OCRv5 mobile, 7,940,361 bytes, Apache-2.0),
-# for pages its default one (PP-OCRv6 small, no Devanagari) reads as other scripts.
-DEVANAGARI_REC_MODEL = "devanagari_PP-OCRv5_rec_mobile"
 # After PaddleOCR-VL timed out or ran out of memory, pages go straight to RapidOCR
 # for this long, so each one does not first wait out OCR_TIMEOUT_SECONDS
 # (PROVISIONAL, council 4 Oct 2026).
@@ -142,6 +163,12 @@ COOL_DOWN_SECONDS = 120.0
 AUTO = "auto"
 # Why no engine can be chosen with OCR_ENGINE=none.
 _READING_OFF = "Scan reading is off on this server"
+# OCR_ENGINE's value for the Gemini reader (PRD 5 G1).
+GEMINI = "gemini"
+# PRD 5 RT2: pages.read_by for a page the local reader read.
+LOCAL_READ_BY = "rapidocr"
+# PRD 5 F3: the span qualities that mark one word of a line, not the line.
+WORD_MARK_QUALITIES = frozenset({"unsure", "illegible"})
 
 _log = logging.getLogger(__name__)
 
@@ -526,6 +553,9 @@ class RapidOcrEngine:
         self._engine: Any = None
         self._devanagari: Any = None
         self._lock = threading.Lock()
+        # One page at a time: a RapidOCR instance keeps state between calls, and the Gemini
+        # reader may read pages here from several page threads at once (PRD 5 G8, Q7).
+        self._reading = threading.Lock()
         self._kept_devanagari = False  # on a page read since the version was last asked for
         self._version_asked = False
 
@@ -543,28 +573,30 @@ class RapidOcrEngine:
         ponytail: a suspect page is read twice, so it takes about twice as long, and
         the second engine stays in memory once built (its own detector and the
         Devanagari recogniser, about 18 MB of model files). A clean page is read once.
+        Pages wait for each other here (``_reading``).
         """
-        if self._version_asked:  # the first page of the next document
-            self._version_asked = self._kept_devanagari = False
-        picture = image.convert("RGB")
-        lines = _rapid_lines(self._model()(picture))
-        if not ocr_script_suspect(_text(lines)):
-            return lines
-        try:
-            devanagari = self._devanagari_model()
-        except OcrModelMissing as error:
-            _log.warning("ocr model missing, page kept as first read", extra={"code": error.code})
-            return lines
-        again = _rapid_lines(devanagari(picture))
-        if not _better(again, lines):
-            return lines
-        self._kept_devanagari = True
-        return again
+        with self._reading:
+            if self._version_asked:  # the first page of the next document
+                self._version_asked = self._kept_devanagari = False
+            picture = image.convert("RGB")
+            lines = _rapid_lines(self._model()(picture))
+            if not ocr_script_suspect(_text(lines)):
+                return lines
+            try:
+                devanagari = self._devanagari_model()
+            except OcrModelMissing as error:
+                _log.warning("ocr model missing, page kept as first read", extra={"code": error.code})
+                return lines
+            again = _rapid_lines(devanagari(picture))
+            if not _better(again, lines):
+                return lines
+            self._kept_devanagari = True
+            return again
 
     def _model(self) -> Any:
         with self._lock:
             if self._engine is None:
-                self._engine = _rapidocr({"Global.log_level": "error"})
+                self._engine = build_rapidocr({"Global.log_level": "error"})
             return self._engine
 
     def _devanagari_model(self) -> Any:
@@ -574,38 +606,8 @@ class RapidOcrEngine:
                 path = devanagari_model_path()
                 if not path.is_file():
                     raise OcrModelMissing(DEVANAGARI_REC_MODEL)
-                self._devanagari = _rapidocr(_devanagari_params(path))
+                self._devanagari = build_rapidocr(devanagari_params(path))
             return self._devanagari
-
-
-def _rapidocr(params: dict[str, Any]) -> Any:
-    from rapidocr import RapidOCR  # lazy: an optional extra
-
-    return RapidOCR(params=params)
-
-
-def _devanagari_params(path: Path) -> dict[str, Any]:
-    """The second engine's settings. With ``Rec.model_path`` set, RapidOCR loads that
-    file and never reaches its download step; the file holds its own letters. The
-    other ``Rec`` values name the same model, as Enum values (RapidOCR refuses plain
-    strings for them)."""
-    from rapidocr import LangRec, ModelType, OCRVersion
-
-    return {
-        "Global.log_level": "error",
-        "Rec.lang_type": LangRec.DEVANAGARI,
-        "Rec.ocr_version": OCRVersion.PPOCRV5,
-        "Rec.model_type": ModelType.MOBILE,
-        "Rec.model_path": str(path),
-    }
-
-
-def devanagari_model_path() -> Path:
-    """Where the image's build puts the Devanagari model: RapidOCR's own models folder,
-    in its package (backend/Dockerfile checks the file's SHA-256 there)."""
-    import rapidocr  # lazy: an optional extra
-
-    return Path(str(rapidocr.__file__)).parent / "models" / f"{DEVANAGARI_REC_MODEL}.onnx"
 
 
 def _rapid_lines(result: Any) -> list[OcrLine]:
@@ -655,8 +657,9 @@ class FallbackOcrEngine:
     engine ``fallback`` builds (see the module notes). ``timer`` is ``time.monotonic``
     in the product. With ``empty_fails`` (a chosen engine, ``OcrEngines``), a page
     the primary finds no line on is read by the fallback too; when the fallback
-    then fails, the page stays as the primary read it. One job at a time uses it,
-    so there is no lock. O(1) per page beyond the engines' own time.
+    then fails, the page stays as the primary read it. One job at a time uses it;
+    its pages may come from several page threads (PRD 5 G8), so the fallback is built
+    and its pages counted under a lock. O(1) per page beyond the engines' own time.
     """
 
     def __init__(
@@ -675,6 +678,7 @@ class FallbackOcrEngine:
         self.name = primary.name  # the ETA's rates key on the name
         self._cool_until: float | None = None
         self._fallback_pages = 0
+        self._lock = threading.Lock()
 
     @property
     def version(self) -> str:
@@ -682,7 +686,8 @@ class FallbackOcrEngine:
 
     def take_fallback_pages(self) -> int:
         """Pages the fallback read since the last take, and start again from zero."""
-        taken, self._fallback_pages = self._fallback_pages, 0
+        with self._lock:
+            taken, self._fallback_pages = self._fallback_pages, 0
         return taken
 
     def read(self, image: Image.Image) -> list[OcrLine]:
@@ -716,32 +721,83 @@ class FallbackOcrEngine:
         primary's own lines) is returned or else ``failure`` (its own error) is raised.
         Logs codes and type names only, never the page."""
         try:
-            if self._fallback is None:
-                self._fallback = self._build_fallback()
-            lines = self._fallback.read(image)
+            lines = self._fallback_engine().read(image)
         except Exception as error:
             self._cool_until = None
             _log.warning("ocr fallback failed: %s", type(error).__name__, extra={"code": failure.code})
             if kept is not None:
                 return kept
             raise failure from error
-        self._fallback_pages += 1
+        with self._lock:
+            self._fallback_pages += 1
         _log.warning("ocr page read by the fallback", extra={"code": failure.code})
         return lines
+
+    def _fallback_engine(self) -> OcrEngine:
+        """The fallback, built on its first need, once."""
+        with self._lock:
+            if self._fallback is None:
+                self._fallback = self._build_fallback()
+            return self._fallback
+
+
+class _LinesAsPages:
+    """A ``PageEngine`` over an engine with only ``read`` (``as_page_engine``)."""
+
+    def __init__(self, engine: OcrEngine) -> None:
+        self._engine = engine
+
+    @property
+    def name(self) -> str:
+        return self._engine.name
+
+    @property
+    def version(self) -> str:
+        return self._engine.version
+
+    def read(self, image: Image.Image) -> list[OcrLine]:
+        return self._engine.read(image)
+
+    def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
+        """The engine's lines as a page the local reader read (RT2): no grade, scripts or
+        unsure words of its own, and ``no_text`` when it found no line (the readers only
+        send a page with ink on it, R3)."""
+        lines = tuple(self._engine.read(image))
+        return PageRead(
+            page_no=page_no,
+            lines=lines,
+            quality=None,
+            handwritten=False,
+            scripts=(),
+            issues=() if lines else (NO_TEXT,),
+            read_by=LOCAL_READ_BY,
+        )
+
+
+def as_page_engine(engine: OcrEngine) -> PageEngine:
+    """``engine`` with ``read_page`` (PRD 5 G7, G8): itself when it is a ``PageEngine`` (the
+    Gemini reader, ``MeteredOcrEngine``, ``OcrEngines``), else its ``read`` as a page the
+    local reader read (``read_by`` "rapidocr", ``quality`` None). O(1)."""
+    return engine if isinstance(engine, PageEngine) else _LinesAsPages(engine)
 
 
 class MeteredOcrEngine:
     """An ``OcrEngine`` that passes each page to ``engine`` and counts the pages
     sent and the seconds they took on ``timer`` (``time.perf_counter`` in the
-    product). A page whose read fails is counted too: it was sent. One job at a
-    time uses it, so there is no lock. O(1) per page beyond the engine's own time.
+    product). A page whose read fails is counted too: it was sent. Each numbered
+    page's ``PageRead`` is kept for the run (``take_page_reads``). Pages of one
+    document may be read on several threads at once (PRD 5 G8), so the counts are
+    kept under a lock. O(1) per page beyond the engine's own time.
     """
 
     def __init__(self, engine: OcrEngine, *, timer: Callable[[], float]) -> None:
         self._engine = engine
+        self._pages_engine = as_page_engine(engine)
         self._timer = timer
+        self._lock = threading.Lock()
         self._pages = 0
         self._seconds = 0.0
+        self._page_reads: dict[int, PageRead] = {}
 
     @property
     def name(self) -> str:
@@ -756,14 +812,42 @@ class MeteredOcrEngine:
         try:
             return self._engine.read(image)
         finally:
-            self._pages += 1
-            self._seconds += max(0.0, self._timer() - started)
+            self._count(started)
+
+    def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
+        """The engine's own ``read_page`` when it is a ``PageEngine``, else its ``read``
+        (``as_page_engine``); counted like ``read``, and kept for ``take_page_reads``."""
+        started = self._timer()
+        read: PageRead | None = None
+        try:
+            read = self._pages_engine.read_page(image, page_no=page_no)
+            return read
+        finally:
+            self._count(started, page_no, read)
 
     def take(self) -> tuple[int, float]:
         """(pages sent, seconds) since the last take, and start counting again from zero."""
-        counted = (self._pages, self._seconds)
-        self._pages, self._seconds = 0, 0.0
+        with self._lock:
+            counted = (self._pages, self._seconds)
+            self._pages, self._seconds = 0, 0.0
         return counted
+
+    def take_page_reads(self) -> dict[int, PageRead]:
+        """Each page read through ``read_page`` since the last take, by page number, and
+        start again from none. A page read twice (again at the DPI ceiling) keeps its
+        last read: the one its spans came from."""
+        with self._lock:
+            taken, self._page_reads = self._page_reads, {}
+        return taken
+
+    def _count(self, started: float, page_no: int = 0, read: PageRead | None = None) -> None:
+        """One page sent, since ``started``; with ``read``, kept as page ``page_no``."""
+        seconds = max(0.0, self._timer() - started)
+        with self._lock:
+            self._pages += 1
+            self._seconds += seconds
+            if read is not None:
+                self._page_reads[page_no] = read
 
     def take_fallback_pages(self) -> int:
         """Pages a ``FallbackOcrEngine`` (or every one ``OcrEngines`` built) read with its
@@ -772,7 +856,18 @@ class MeteredOcrEngine:
         return engine.take_fallback_pages() if isinstance(engine, FallbackOcrEngine | OcrEngines) else 0
 
 
-# Every engine here, in the order the upload screen offers them.
+class GeminiEngineFactory(Protocol):
+    """Builds the Gemini reader (PRD 5 G1) for OCR_ENGINE=gemini. In the product it is
+    ``wiring.build_gemini_engine``, which imports ``kaagaz.reading.gemini_ocr`` only then;
+    tests give a fake. ``pool`` is the process's ``RapidOcrPool`` (``shared_pool``), for
+    pinning boxes (G5) and reading a page locally (Q7). The engine it returns is a
+    ``PageEngine`` whose ``read_page`` may be called from OCR_PAGE_CONCURRENCY threads
+    at once (G8)."""
+
+    def __call__(self, settings: Settings, *, pool: RapidOcrPool) -> PageEngine: ...
+
+
+# Every engine here, in the order the upload screen offered them.
 _ENGINES: tuple[type[PaddleVlEngine] | type[RapidOcrEngine], ...] = (PaddleVlEngine, RapidOcrEngine)
 
 
@@ -781,8 +876,14 @@ def _engine_id(engine: type[PaddleVlEngine] | type[RapidOcrEngine]) -> str:
     return engine.name.replace("-", "_")
 
 
-def _new_engine(settings: Settings, engine_id: str) -> OcrEngine:
-    """A new engine for an id ``ocr_choices`` offers."""
+def _new_engine(settings: Settings, engine_id: str, gemini: GeminiEngineFactory | None = None) -> OcrEngine:
+    """A new engine for OCR_ENGINE or an id ``_engine_choices`` offers; the Gemini reader
+    from ``gemini``, with the process's RapidOCR pool. Without ``gemini`` there is no
+    Gemini reader: build the engines through ``kaagaz.reading.wiring``."""
+    if engine_id == GEMINI:
+        if gemini is None:
+            raise SettingsError("OCR_ENGINE=gemini: build the engines with kaagaz.reading.wiring")
+        return gemini(settings, pool=shared_pool(settings.cpu_workers))
     (engine,) = (engine for engine in _ENGINES if _engine_id(engine) == engine_id)
     return engine.from_settings(settings)
 
@@ -798,22 +899,30 @@ def _auto_engine(
     """The usual chain for OCR_ENGINE (not "none"), its engines from ``engine(id)``."""
     primary = engine(settings.ocr_engine)
     if not _has_fallback(settings):
-        return primary  # RapidOCR, or PaddleOCR-VL with no ocr extra: no fallback, as before
+        return primary  # Gemini, RapidOCR, or PaddleOCR-VL with no ocr extra: no fallback here
     rapidocr = _engine_id(RapidOcrEngine)
     return FallbackOcrEngine(primary, lambda: engine(rapidocr), timer=timer)  # RapidOCR built on first need
 
 
-def build_ocr_engine(settings: Settings) -> OcrEngine | None:
+def build_ocr_engine(settings: Settings, *, gemini: GeminiEngineFactory | None = None) -> OcrEngine | None:
+    """The engine for OCR_ENGINE, None for "none". The Gemini reader is built by ``gemini``,
+    only for OCR_ENGINE=gemini (``wiring.build_ocr_engine`` gives the product's)."""
     if settings.ocr_engine == "none":
         return None
-    return _auto_engine(settings, lambda engine_id: _new_engine(settings, engine_id))
+    return _auto_engine(settings, lambda engine_id: _new_engine(settings, engine_id, gemini))
 
 
 def ocr_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
-    """The readers an upload may choose, Auto first, then every engine here: ``id``,
-    ``title``, ``hint``, ``available``, and ``reason`` when it is not. Pure: from the
-    settings and what is installed, nothing built or called, so the api and the
-    worker agree. O(engines)."""
+    """The readers an upload may choose (PRD 5 RT3: no reader choice at upload): one,
+    Auto, with ``id``, ``title``, ``hint``, ``available`` and ``reason``, so the "Scan
+    with" select hides itself. Pure: from the settings and what is installed, nothing
+    built or called, so the api and the worker agree. O(1)."""
+    return _engine_choices(settings)[:1]
+
+
+def _engine_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
+    """Auto first, then every engine here, available or with its ``reason``: what a stored
+    choice may still pick in ``OcrEngines.choose``. O(engines)."""
     choices: list[dict[str, str | bool | None]] = [
         {"id": AUTO, "title": "Auto", "hint": _auto_hint(settings), "available": True, "reason": None}
     ]
@@ -835,6 +944,8 @@ def _auto_hint(settings: Settings) -> str:
     """What Auto does on this server, in the engines' own titles."""
     if settings.ocr_engine == "none":
         return "Scans wait until this server has a scan reader"
+    if settings.ocr_engine == GEMINI:
+        return "The usual reader here: Gemini"
     (primary,) = (engine for engine in _ENGINES if _engine_id(engine) == settings.ocr_engine)
     if not _has_fallback(settings):
         return f"The usual reader here: {primary.title}"
@@ -844,9 +955,11 @@ def _auto_hint(settings: Settings) -> str:
 class OcrEngines:
     """The worker's engine (see the module notes): Auto, or for one job the chain
     ``choose`` picks. Engines and chains are built on first need, once each. One
-    job at a time uses it, so there is no lock. O(1) per page beyond the engines'.
+    job at a time uses it; ``choose`` is entered before its pages are read, so the
+    page threads (PRD 5 G8) only read ``_active``. O(1) per page beyond the engines'.
 
-    ``engine(id)`` builds an engine (tests give fakes); ``timer`` is the cool-downs'.
+    ``engine(id)`` builds an engine (tests give fakes); ``timer`` is the cool-downs';
+    ``gemini`` builds the Gemini reader (``build_ocr_engine``).
     """
 
     def __init__(
@@ -855,11 +968,12 @@ class OcrEngines:
         *,
         engine: Callable[[str], OcrEngine] | None = None,
         timer: Callable[[], float] = time.monotonic,
+        gemini: GeminiEngineFactory | None = None,
     ) -> None:
         if settings.ocr_engine == "none":
             raise ValueError("OCR_ENGINE=none has no engine to choose")
         self._settings = settings
-        self._new = engine or (lambda engine_id: _new_engine(settings, engine_id))
+        self._new = engine or (lambda engine_id: _new_engine(settings, engine_id, gemini))
         self._timer = timer
         self._built: dict[str, OcrEngine] = {}
         self._chains: dict[str, FallbackOcrEngine] = {}
@@ -876,6 +990,10 @@ class OcrEngines:
 
     def read(self, image: Image.Image) -> list[OcrLine]:
         return self._active.read(image)
+
+    def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
+        """The engine in use's ``read_page`` (``as_page_engine``)."""
+        return as_page_engine(self._active).read_page(image, page_no=page_no)
 
     @contextlib.contextmanager
     def choose(self, choice: str | None) -> Iterator[bool]:
@@ -898,10 +1016,12 @@ class OcrEngines:
         return self._built[engine_id]
 
     def _chain(self, choice: str | None) -> tuple[OcrEngine, bool]:
-        """(the engine for ``choice``, honoured). Auto's first engine is Auto itself."""
+        """(the engine for ``choice``, honoured). Auto's first engine is Auto itself. Uploads
+        no longer choose (RT3), but a stored choice of an engine this server has is still
+        read with it."""
         if choice in (None, AUTO, self._settings.ocr_engine):
             return self._auto, True
-        offered = {item["id"] for item in ocr_choices(self._settings) if item["available"]}
+        offered = {item["id"] for item in _engine_choices(self._settings) if item["available"]}
         if choice not in offered:
             return self._auto, False
         if choice not in self._chains:
@@ -912,52 +1032,151 @@ class OcrEngines:
         return self._chains[choice], True
 
 
-def build_ocr_engines(settings: Settings) -> OcrEngines | None:
-    """The worker's ``OcrEngines``; None with OCR_ENGINE=none (no scan is read)."""
-    return None if settings.ocr_engine == "none" else OcrEngines(settings)
+def build_ocr_engines(settings: Settings, *, gemini: GeminiEngineFactory | None = None) -> OcrEngines | None:
+    """The worker's ``OcrEngines``; None with OCR_ENGINE=none (no scan is read). ``gemini``
+    as in ``build_ocr_engine``."""
+    return None if settings.ocr_engine == "none" else OcrEngines(settings, gemini=gemini)
 
 
 def ocr_spans(lines: list[OcrLine], page_no: int, width_px: int, height_px: int) -> list[Span]:
     """Pixel boxes to spans with page fractions, clamped to 0..1, origin "ocr".
 
-    Block mode, when any line has a kind (PaddleOCR-VL): one span per line, in
-    the order given, never re-sorted, with its kind and table. Line mode
-    (RapidOCR): through the shared line rule. A line with no text, a box with
-    nothing inside the page, or a confidence that is not a number is left out
-    (never guessed); a confidence is clamped to 0..1, and None stays None.
-    O(n log n) for n lines.
+    Block mode, when any line has a kind (PaddleOCR-VL, the Gemini reader): one
+    span per line, in the order given, never re-sorted, with its kind, table and
+    box source (PRD 5 G5). Line mode (RapidOCR): through the shared line rule. A
+    line with no text, a box with nothing inside the page, or a confidence that is
+    not a number is left out (never guessed); a confidence is clamped to 0..1, and
+    None stays None.
+
+    Word marks (PRD 5 F3): each unsure word of a line, and each ``[?]`` in it,
+    becomes a span of its own after the line's, with quality "unsure" or
+    "illegible", the line's box source, no kind, and a sub-box: the line's box
+    split in proportion to the word's character position (approximate, so the
+    viewer draws it dashed). ``is_word_mark`` tells them apart, so they are kept
+    out of pieces and values in one place. An unsure word not found in its line
+    has no spot, so it gets no mark.
+
+    A box source or unsure list an engine should never give is
+    ``ReadError("invalid_reader_output")``. O(n log n + c) for n lines of c
+    characters in all.
     """
     if width_px <= 0 or height_px <= 0:
         return []
+    for line in lines:
+        if not _has_valid_marks(line):
+            _invalid()
     usable = [line for line in lines if line.confidence is None or math.isfinite(line.confidence)]
     if any(line.kind is not None for line in lines):
-        return [span for line in usable if (span := _block_span(line, page_no, width_px, height_px))]
+        spans: list[Span] = []
+        for line in usable:
+            span = _block_span(line, page_no, width_px, height_px)
+            if span is not None:
+                spans.append(span)
+                spans.extend(_word_marks(line, page_no, width_px, height_px))
+        return spans
     words = [
         WordBox(line.text, line.x0, line.y0, line.x1, line.y1, _clamped(line.confidence))
         for line in usable
         if line.text.strip()
     ]
-    return line_spans(words, page_no, PageFrame(0.0, 0.0, float(width_px), float(height_px)), origin="ocr")
+    spans = line_spans(words, page_no, PageFrame(0.0, 0.0, float(width_px), float(height_px)), origin="ocr")
+    return spans + [mark for line in usable for mark in _word_marks(line, page_no, width_px, height_px)]
+
+
+def is_word_mark(span: Span) -> bool:
+    """Whether ``span`` is a word mark (PRD 5 F3: an unsure or illegible word of a line,
+    with its own sub-box), not a line: drawn on the page, never a piece or a value.
+    ``ocr_spans`` makes them with no kind; a line from a layout reader always has one."""
+    return span.origin == "ocr" and span.kind is None and span.quality in WORD_MARK_QUALITIES
+
+
+def _has_valid_marks(line: OcrLine) -> bool:
+    """A known box source or None, and the unsure words as a tuple of str (G3, G5)."""
+    source = line.box_source
+    source_ok = source is None or (isinstance(source, str) and source in BOX_SOURCES)
+    return source_ok and isinstance(line.unsure, tuple) and all(isinstance(word, str) for word in line.unsure)
 
 
 def _block_span(line: OcrLine, page_no: int, width: int, height: int) -> Span | None:
     text = " ".join(line.text.split())
-    box = BoxLocation(
-        page_no,
-        min(1.0, max(0.0, line.x0 / width)),
-        min(1.0, max(0.0, line.y0 / height)),
-        min(1.0, max(0.0, line.x1 / width)),
-        min(1.0, max(0.0, line.y1 / height)),
-    )
+    box = _page_box(page_no, (line.x0, line.y0, line.x1, line.y1), width, height)
     if not text or not box.is_valid():
         return None
-    span = Span(text, line.text, box, _clamped(line.confidence), line.kind, "ocr")
+    span = Span(text, line.text, box, _clamped(line.confidence), line.kind, "ocr", box_source=line.box_source)
     table = line.table
     if table is None:
         return span
     return dataclasses.replace(
         span, table_id=table.table_id, row=table.row, col=table.col, header=table.header
     )
+
+
+def _page_box(page_no: int, pixels: PixelBox, width: int, height: int) -> BoxLocation:
+    """A pixel box (x0, y0, x1, y1) as page fractions, clamped to 0..1."""
+    x0, y0, x1, y1 = pixels
+    return BoxLocation(
+        page_no,
+        min(1.0, max(0.0, x0 / width)),
+        min(1.0, max(0.0, y0 / height)),
+        min(1.0, max(0.0, x1 / width)),
+        min(1.0, max(0.0, y1 / height)),
+    )
+
+
+def _word_marks(line: OcrLine, page_no: int, width: int, height: int) -> list[Span]:
+    """The line's word marks (F3), in the order they sit in the line. O(c x u) for c
+    characters and u unsure words."""
+    text = line.text
+    found: list[tuple[int, int, str]] = []
+    cursor = 0
+    for word in line.unsure:
+        word = word.strip()
+        if not word or word == ILLEGIBLE_MARK:
+            continue  # [?] is marked below, as illegible
+        start = _find_word(text, word, cursor)
+        if start is None:
+            continue  # no spot to point at: nothing is guessed
+        found.append((start, start + len(word), "unsure"))
+        cursor = start + len(word)
+    start = text.find(ILLEGIBLE_MARK)
+    while start >= 0:
+        found.append((start, start + len(ILLEGIBLE_MARK), "illegible"))
+        start = text.find(ILLEGIBLE_MARK, start + len(ILLEGIBLE_MARK))
+    marks: list[Span] = []
+    step = (line.x1 - line.x0) / len(text) if text else 0.0
+    for start, end, quality in sorted(found):
+        raw = text[start:end]
+        pixels = (line.x0 + step * start, line.y0, line.x0 + step * end, line.y1)
+        box = _page_box(page_no, pixels, width, height)
+        if box.is_valid():
+            marks.append(
+                Span(
+                    " ".join(raw.split()),
+                    raw,
+                    box,
+                    _clamped(line.confidence),
+                    origin="ocr",
+                    quality=quality,
+                    box_source=line.box_source,
+                )
+            )
+    return marks
+
+
+def _find_word(text: str, word: str, cursor: int) -> int | None:
+    """Where ``word`` starts in ``text``: as a whole word (between spaces or the ends)
+    from ``cursor``, then from the start, then anywhere inside a word the same way
+    (a word next to punctuation, such as "1,180."); None when it is not there."""
+    whole = re.compile(rf"(?<!\S){re.escape(word)}(?!\S)")
+    for start in (cursor, 0):
+        match = whole.search(text, start)
+        if match is not None:
+            return match.start()
+    for start in (cursor, 0):
+        found = text.find(word, start)
+        if found >= 0:
+            return found
+    return None
 
 
 def _clamped(confidence: float | None) -> float | None:

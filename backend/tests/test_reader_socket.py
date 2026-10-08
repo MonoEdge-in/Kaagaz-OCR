@@ -8,7 +8,7 @@ from PIL import Image
 
 from kaagaz.ingestion import sniff
 from kaagaz.reading.csv_reader import CsvReader
-from kaagaz.reading.ocr import OcrLine
+from kaagaz.reading.ocr import OcrLine, ocr_spans
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, ReaderSocket
 from kaagaz.reading.spans import BoxLocation, CellLocation, Location, ReadError, Span
@@ -288,6 +288,16 @@ class SpanValidationTest(unittest.TestCase):
             with self.subTest(name), self.assertRaises(ReadError) as ctx:
                 self.read_one(span)
             self.assertEqual(ctx.exception.code, "invalid_reader_output")
+
+    def test_the_word_marks_ocr_spans_makes_pass_the_socket(self) -> None:
+        """PRD 5 F3: a Gemini line's spans, its marks among them, are all valid output."""
+        line = OcrLine("पाटील [?] यांचे", 40, 300, 380, 340, None, "paragraph", None, ("यांचे",), "model")
+        spans = ocr_spans([line], 1, 1000, 1000)
+        self.assertEqual(ReaderSocket({"t": FixedReader(*spans)}).read("t", b""), spans)
+        self.assertEqual(
+            [(s.quality, s.box_source) for s in spans],
+            [(None, "model"), ("illegible", "model"), ("unsure", "model")],
+        )
 
     def test_confidence_outside_zero_to_one_is_refused(self) -> None:
         for confidence in (-0.01, 1.01, float("nan"), float("inf"), cast(float, True), cast(float, "0.5")):

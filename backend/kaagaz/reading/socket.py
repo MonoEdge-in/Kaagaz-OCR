@@ -32,14 +32,31 @@ it, so a stored route is always the reader's), or None for a page it did not
 read. It is keyword-only and optional, so a reader with nothing to beat for
 between pages accepts it and ignores it.
 
+Pages in parallel (PRD 5 G8), with the ``Reader`` protocol unchanged: the PDF
+and image readers may be given a ``PagePool``, OCR_PAGE_CONCURRENCY threads.
+Through ``PagesInOrder``, everything about a page except the engine's
+``read_page`` stays on the reader's own thread (pdfplumber, pypdfium2, drawing
+the page, the blank check, any second reading), only ``read_page`` goes to the
+pool, and each page is finished, ``on_page`` included, strictly in page order,
+so a reader's spans and its ``on_page`` calls are exactly as without a pool. At
+most the pool's size of pages are being read at once; with no pool, each page
+is read and finished on the spot, as before.
+
 PROVISIONAL until the reader contract (#3) is written. PROVISIONAL (plan
 7.4): ``on_page`` is part of that contract, for Vrushit and PRD 2 to agree.
 """
 
 import math
+from collections import deque
 from collections.abc import Callable, Iterable, Mapping
-from typing import Protocol
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from types import TracebackType
+from typing import Protocol, Self
 
+from PIL import Image
+
+from kaagaz.reading.ocr import PageEngine, PageRead
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.spans import (
     BLOCK_KINDS,
@@ -111,6 +128,165 @@ class ReaderSocket:
         if reader is None:
             raise NoReader(detected_type)
         return reader.name, reader.version
+
+
+@dataclass(frozen=True, slots=True)
+class PagePool:
+    """The threads a document's ocr pages are read on at the same time (PRD 5 G8):
+    ``size`` is OCR_PAGE_CONCURRENCY, the most pages read at once. One document is read
+    at a time, so the PDF and image readers share one."""
+
+    executor: Executor
+    size: int
+
+    def __post_init__(self) -> None:
+        if self.size < 1:
+            raise ValueError("a page pool needs at least 1 thread")
+
+    @classmethod
+    def threads(cls, size: int) -> "PagePool":
+        """A pool of ``size`` threads, started as pages need them."""
+        return cls(ThreadPoolExecutor(max_workers=size, thread_name_prefix="kaagaz-page"), size)
+
+
+@dataclass(slots=True)
+class _Page:
+    """A page in the window: being read (``future``, its ``image``), or ready (no future)."""
+
+    future: "Future[PageRead] | None"
+    image: Image.Image | None
+    on_read: Callable[[PageRead], None] | None
+    on_ready: Callable[[], None] | None
+    release: Callable[[], None]
+
+
+def _nothing() -> None:
+    """Nothing to release."""
+
+
+def _read_and_close(engine: PageEngine, image: Image.Image, page_no: int) -> PageRead:
+    try:
+        return engine.read_page(image, page_no=page_no)
+    finally:
+        image.close()
+
+
+class PagesInOrder:
+    """One read's pages, finished strictly in the order they were added (see the module
+    notes). ``engine`` reads them, on ``pool``'s threads, or on the spot with no pool.
+
+    Use it as a context manager and call ``drain`` at the end of the read: when the
+    block raises, pages not yet started are cancelled and every page left is dropped,
+    unfinished, its picture closed (by its thread, once a page already being read ends).
+    The first failure in page order is the one raised. O(1) per page beyond the
+    engine's time; at most ``pool.size`` pictures waiting or being read at once.
+    """
+
+    def __init__(self, engine: PageEngine | None, pool: PagePool | None) -> None:
+        self._engine = engine
+        self._pool = pool
+        self._window: deque[_Page] = deque()
+        self._reading = 0  # pages in the window still with a future
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None
+    ) -> None:
+        if error is not None:
+            self._drop()
+
+    def read(
+        self,
+        image: Image.Image,
+        page_no: int,
+        on_read: Callable[[PageRead], None],
+        *,
+        release: Callable[[], None] = _nothing,
+    ) -> None:
+        """Read ``image`` as page ``page_no`` with the engine, then call ``on_read`` with
+        what was read, on this thread, after every page added before it. ``image`` is
+        the window's: closed once read. ``release`` is called on this thread after
+        ``on_read``, or when the page is dropped. Waits for the oldest page while the
+        pool's size of pages are being read."""
+        engine = self._engine
+        if engine is None:
+            raise ValueError("a read with no engine has no page to read")
+        if self._pool is None:
+            try:
+                on_read(_read_and_close(engine, image, page_no))
+            finally:
+                release()
+            return
+        added = False
+        try:
+            while self._reading >= self._pool.size:
+                self._finish_oldest()
+            future = self._pool.executor.submit(_read_and_close, engine, image, page_no)
+            added = True
+        finally:
+            if not added:  # an older page failed first: this one is never read
+                image.close()
+                release()
+        self._reading += 1
+        self._window.append(_Page(future, image, on_read, None, release))
+        self._finish_ready()
+
+    def ready(self, on_ready: Callable[[], None]) -> None:
+        """A page with nothing to read (a text page, a blank one): ``on_ready`` on this
+        thread, after every page added before it."""
+        if not self._window:
+            on_ready()
+            return
+        self._window.append(_Page(None, None, None, on_ready, _nothing))
+        self._finish_ready()
+
+    def drain(self) -> None:
+        """Finish every page left, in order, waiting for each."""
+        while self._window:
+            self._finish_oldest()
+
+    def _finish_ready(self) -> None:
+        """Finish the oldest pages while they are ready, so ``on_page`` (the heartbeat)
+        moves as soon as it can."""
+        while self._window and (self._window[0].future is None or self._window[0].future.done()):
+            self._finish_oldest()
+
+    def _finish_oldest(self) -> None:
+        page = self._window.popleft()
+        try:
+            if page.future is not None:
+                self._reading -= 1
+                read = page.future.result()  # the page's own error, raised in page order
+                if page.on_read is not None:
+                    page.on_read(read)
+            elif page.on_ready is not None:
+                page.on_ready()
+        finally:
+            page.release()
+
+    def _drop(self) -> None:
+        """Every page left, unfinished: a page not yet started is cancelled and its
+        picture closed here; one being read closes its own and is released when done."""
+        while self._window:
+            page = self._window.popleft()
+            if page.future is None or page.future.cancel():
+                if page.image is not None:
+                    page.image.close()
+                page.release()
+            else:
+                page.future.add_done_callback(_released(page.release))
+        self._reading = 0
+
+
+def _released(release: Callable[[], None]) -> Callable[["Future[PageRead]"], None]:
+    """A future's done callback that calls ``release``, whatever the read ended with."""
+
+    def done(_future: "Future[PageRead]") -> None:
+        release()
+
+    return done
 
 
 def _checked(output: Iterable[Span]) -> list[Span]:
