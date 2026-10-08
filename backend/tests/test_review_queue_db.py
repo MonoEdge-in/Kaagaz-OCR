@@ -126,3 +126,33 @@ def test_an_unfiltered_queue_binds_every_reason_the_table_allows(db: Database) -
             )
         ).scalar_one()
     assert sorted(re.findall(r"'([a-z_]+)'::text", check)) == sorted(review.EVERY_REASON)
+
+
+@pytest.mark.db
+def test_values_with_the_prd5_reasons_are_in_the_queue_and_its_filters(db: Database) -> None:
+    """PRD 5 V4, G5 and Q7 (0021): unsure_text, box_unanchored and local_reader values are
+    listed with no filter, and each by its own reason (U6's filters)."""
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        document = insert_document(conn, customer)
+    _with_pages(db, customer, document, 1)
+    reasons = ("unsure_text", "box_unanchored", "local_reader")
+    add_values(
+        db,
+        customer,
+        document,
+        [{**_needs_review(f"r{n}", "total"), "reason": r} for n, r in enumerate(reasons)],
+    )
+
+    with db.customer(customer) as conn:
+        everything, total = review.list_queue(conn, customer, limit=50, offset=0, document_id=None)
+        each = {
+            reason: review.list_queue(
+                conn, customer, limit=50, offset=0, document_id=document, reasons=[reason]
+            )
+            for reason in reasons
+        }
+    assert (sorted(row["label_reason"] for row in everything), total) == (sorted(reasons), 3)
+    assert {reason: [row["label_reason"] for row in found] for reason, (found, _) in each.items()} == {
+        reason: [reason] for reason in reasons
+    }
