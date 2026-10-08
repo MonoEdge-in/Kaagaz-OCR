@@ -337,7 +337,7 @@ class LineMarks:
 
 
 def label_reading_marks(
-    values: Iterable[ExtractedValue], lines: Mapping[Location, LineMarks], local_pages: Collection[int]
+    values: Iterable[ExtractedValue], lines: Mapping[BoxLocation, LineMarks], local_pages: Collection[int]
 ) -> list[ExtractedValue]:
     """PRD 5's reasons for values read by OCR (the module notes), after ``label_values``
     and ``label_quoted``: ``local_reader`` on a page in ``local_pages`` (Q7), then
