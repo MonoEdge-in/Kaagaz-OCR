@@ -552,14 +552,43 @@ class G5PinningTest(Approx):
         self.assertEqual(with_farther.lines[0].box_source, "model")
         self.assertBoxAlmostEqual(boxes(with_farther)[0], (100.0, 200.0, 600.0, 220.0))
 
-    def test_section12_two_lines_matching_one_wide_found_box_both_keep_it(self) -> None:
+    def test_fx4_section12_two_lines_sharing_one_wide_found_box_each_keep_their_own_part(self) -> None:
+        """Review FX4: the finder gave two lines side by side one box. Each line keeps the
+        part of it inside its own grown box (4% of its size), still "found"."""
         wide = (100.0, 200.0, 900.0, 240.0)
         content = value(
             line("Left column", (100, 100, 120, 450)), line("Right column", (100, 550, 120, 900), order=1)
         )
         read = build(reply(content), finder=FakeFinder(wide)).engine.read_page(page(), page_no=1)
-        self.assertEqual(boxes(read), [wide, wide])
+        self.assertBoxAlmostEqual(boxes(read)[0], (100.0, 200.0, 464.0, 240.0))
+        self.assertBoxAlmostEqual(boxes(read)[1], (536.0, 200.0, 900.0, 240.0))
         self.assertEqual([item.box_source for item in read.lines], ["found", "found"])
+
+    def test_fx4_g5_table_cells_sharing_one_row_box_keep_their_own_boxes(self) -> None:
+        """Review FX4: a found box spanning a whole table row is not every cell's box."""
+        row = (100.0, 200.0, 900.0, 240.0)
+        cells = value(
+            *[
+                line(text, (100, x0, 120, x0 + 200), order=n, kind="table_cell", table={**_CELL, "col": n})
+                for n, (text, x0) in enumerate((("Item", 100), ("Qty", 400), ("1,180", 700)))
+            ]
+        )
+        read = build(reply(cells), finder=FakeFinder(row)).engine.read_page(page(), page_no=1)
+        want = [(100.0, 200.0, 308.0, 240.0), (392.0, 200.0, 608.0, 240.0), (692.0, 200.0, 900.0, 240.0)]
+        for got, expected in zip(boxes(read), want, strict=True):
+            self.assertBoxAlmostEqual(got, expected)
+        self.assertEqual([item.box_source for item in read.lines], ["found"] * 3)
+        self.assertEqual(read.unpinned_lines, 0)
+
+    def test_fx4_g5_a_found_box_over_twice_the_lines_size_is_clipped_to_it(self) -> None:
+        """Review FX4: a found box much bigger than the line (a whole block) is clipped,
+        even with no other line inside it; one the line's size is taken whole."""
+        block = (100.0, 180.0, 900.0, 400.0)  # 800 x 220 around a line of 400 x 40
+        read = build(
+            reply(value(line("Seller: A. Kumar", (100, 100, 120, 500)))), finder=FakeFinder(block)
+        ).engine.read_page(page(), page_no=1)
+        self.assertBoxAlmostEqual(boxes(read)[0], (100.0, 198.4, 516.0, 241.6))
+        self.assertEqual(read.lines[0].box_source, "found")
 
     def test_g5_a_table_cell_is_matched_by_its_own_box(self) -> None:
         cells = FakeFinder((100.0, 200.0, 300.0, 240.0), (500.0, 200.0, 700.0, 240.0))

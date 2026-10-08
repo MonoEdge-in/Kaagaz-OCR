@@ -25,7 +25,11 @@ width and height, question 9) on each side, so a box a few pixels off still meet
 text. The line's box is then the union of its matches, ``box_source`` "found";
 a line with no match keeps the model's box, ``box_source`` "model" (unpinned: its
 values go to review, box_unanchored). A table cell is matched by its own box, like
-any line. Two lines may match one found box; both keep it.
+any line. A found box that is not the line's alone (more than ``SHARED_AREA`` times its
+grown box, or holding the middle of another line's box: the finder can give a whole
+table row one box) is clipped to the line's grown box before the union, so each cell
+or line keeps its own spot and stays "found": ink the finder found, where the model
+says the line is (review FX4).
 
 **A reply cut off at the output limit** (G6, question 8). The page is read again as
 a top and a bottom half, each ``HALF_OVERLAP`` (5%) past the middle, one level deep
@@ -85,6 +89,7 @@ Cost: one model call a page (three when cut off), one box finding, and O(L x F) 
 pin L lines to F found boxes; hashing the pixels is O(pixels).
 """
 
+import bisect
 import contextlib
 import dataclasses
 import hashlib
@@ -140,6 +145,9 @@ MIN_OVERLAP = 0.5
 # G5, question 9: the line's box is grown by this share of its own width and height on
 # each side before it is matched, because the model's boxes are approximate.
 BOX_MARGIN = 0.04
+# G5, review FX4: a matched found box over this many times the line's grown box is not the
+# line's alone, and is clipped to the grown box.
+SHARED_AREA = 2.0
 # G6: each half of a cut-off page reaches this share of the page past the middle.
 HALF_OVERLAP = 0.05
 # G6, Q7: the backend names a document waits on (the run's <name>_unavailable).
@@ -699,18 +707,22 @@ def _words(text: str) -> str:
 
 def pinned(lines: Iterable[_Line], found: list[PixelBox], width: int, height: int) -> list[OcrLine]:
     """Each line in pixels of the page, its box the union of the found boxes it matches
-    ("found"), or the model's own box when none does ("model"). O(lines x found)."""
+    ("found"), or the model's own box when none does ("model"). A matched found box that
+    is not the line's alone is clipped to the line's grown box first (``_own_part``).
+    O(lines x found + matches x log lines), plus the lines whose middles a shared found
+    box holds."""
+    lines = list(lines)
+    boxes = [_pixels(line.box, width, height) for line in lines]
+    middles = sorted(((b[1] + b[3]) / 2, (b[0] + b[2]) / 2, index) for index, b in enumerate(boxes))
+    middle_ys = [middle[0] for middle in middles]
     result = []
-    for line in lines:
-        y0, x0, y1, x1 = line.box
-        box = (
-            x0 / BOX_SCALE * width,
-            y0 / BOX_SCALE * height,
-            x1 / BOX_SCALE * width,
-            y1 / BOX_SCALE * height,
-        )
+    for index, (line, box) in enumerate(zip(lines, boxes, strict=True)):
         grown = _grown(box)
-        matches = [candidate for candidate in found if _overlap_share(grown, candidate) >= MIN_OVERLAP]
+        matches = [
+            _own_part(candidate, grown, index, middles, middle_ys)
+            for candidate in found
+            if _overlap_share(grown, candidate) >= MIN_OVERLAP
+        ]
         source = "model"
         if matches:
             box = (
@@ -732,6 +744,36 @@ def pinned(lines: Iterable[_Line], found: list[PixelBox], width: int, height: in
             )
         )
     return result
+
+
+def _pixels(box: tuple[float, float, float, float], width: int, height: int) -> PixelBox:
+    """A model box (y0, x0, y1, x1) in 0..1000 of the page as (x0, y0, x1, y1) in pixels."""
+    y0, x0, y1, x1 = box
+    return x0 / BOX_SCALE * width, y0 / BOX_SCALE * height, x1 / BOX_SCALE * width, y1 / BOX_SCALE * height
+
+
+def _own_part(
+    found: PixelBox,
+    grown: PixelBox,
+    index: int,
+    middles: list[tuple[float, float, int]],
+    middle_ys: list[float],
+) -> PixelBox:
+    """The part of a matched found box that is line ``index``'s (G5, review FX4). A found
+    box is the line's own unless it is more than ``SHARED_AREA`` times the line's grown
+    box, or holds the middle of another line's box: the text finder may give a whole
+    table row, or two lines side by side, one box. Such a box is clipped to the line's
+    grown box, so each cell keeps its own spot. It is still "found": the clipped box is
+    ink the finder found, inside where the model says the line is. ``middles`` are every
+    line's (middle y, middle x, index), sorted, and ``middle_ys`` their y's."""
+    area = (found[2] - found[0]) * (found[3] - found[1])
+    shared = area > SHARED_AREA * (grown[2] - grown[0]) * (grown[3] - grown[1])
+    if not shared:
+        start, end = bisect.bisect_left(middle_ys, found[1]), bisect.bisect_right(middle_ys, found[3])
+        shared = any(other != index and found[0] <= x <= found[2] for _y, x, other in middles[start:end])
+    if not shared:
+        return found
+    return max(found[0], grown[0]), max(found[1], grown[1]), min(found[2], grown[2]), min(found[3], grown[3])
 
 
 def _grown(box: PixelBox) -> PixelBox:
