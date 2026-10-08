@@ -52,20 +52,22 @@ process's totals.
 * JSON that does not follow the schema: one repair retry, as the Ollama client
   does, then ``ModelOutputError("invalid_output")``.
 
-**Rate limit and circuit breaker** (G9). A per-process limiter spaces calls
-``60 * workers / GEMINI_RPM`` seconds apart, so the workers together stay under
-``GEMINI_RPM``. ``workers`` is the number of processes that share the key; it is 1
-until WORKER_REPLICAS exists (PRD 5 Q3 adds it in pull request 2, and
-``build_model_client`` passes it then). After ``BREAKER_FAILURES`` failed requests
-in a row (429, 5xx or no connection) the breaker opens: for ``BREAKER_OPEN_SECONDS``
-every call fails at once with ``circuit_open``, then one call is let through as a
-probe; its success closes the breaker, its failure opens it again. ``status()``
-gives the reader's state for the operator's Health tab (U9) and the outage clock
-(Q7). Everything here is thread-safe: pages of a document are read in parallel (G8).
+**Rate limit and circuit breaker** (G9) live in a ``GeminiGate``, one per process
+(``process_gate``), shared by every client the process builds: the reader's, the
+chat client and the translator. Its limiter spaces calls ``60 * workers /
+GEMINI_RPM`` seconds apart, so the workers together stay under ``GEMINI_RPM``.
+``workers`` is the number of processes that share the key; it is 1 until
+WORKER_REPLICAS exists (PRD 5 Q3 adds it in pull request 2, and passes it to
+``process_gate`` then). After ``BREAKER_FAILURES`` failed requests in a row (429,
+5xx or no connection) the breaker opens: for ``BREAKER_OPEN_SECONDS`` every call
+fails at once with ``circuit_open``, then one call is let through as a probe; its
+success closes the breaker, its failure opens it again. ``status()`` gives the
+reader's state for the operator's Health tab (U9) and the outage clock (Q7).
+Everything here is thread-safe: pages of a document are read in parallel (G8).
 
-The clock, sleep and random number are injected, so tests run with a fake clock.
-The clock is ``time.monotonic`` by default, and ``read_page``'s deadline is an
-absolute time on it (``now()`` gives the current one).
+The gate's clock, sleep and random number are injected, so tests run with a fake
+clock. The clock is ``time.monotonic`` by default, and ``read_page``'s deadline is
+an absolute time on it (``now()`` gives the current one).
 
 Cost: one ``read_page`` is one request (two with a repair), plus retries inside
 its deadline; ``embed`` makes ceil(n / 32) requests for n texts. Checking a reply
@@ -344,6 +346,125 @@ class _Reply:
     error_status: str | None = None
 
 
+class GeminiGate:
+    """What every Gemini call of one process shares (G9): the limiter, the circuit
+    breaker, the key latch and the reader's status, with the clock, sleep and random
+    number they use (tests inject them). ``process_gate`` gives the process's one gate,
+    and every client ``build_model_client`` makes uses it, so reading, chat and Health
+    see the same state. Thread-safe."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        workers: int = 1,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        random: Callable[[], float] = random_module.random,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        """``workers``: the processes sharing GEMINI_RPM (see the module docstring)."""
+        if workers < 1:
+            raise ValueError("workers must be at least 1")
+        self.clock, self.sleep, self.random, self.wall_clock = clock, sleep, random, wall_clock
+        self._lock = threading.Lock()
+        # The limiter: calls start at least this many seconds apart.
+        self.interval = 60.0 * workers / settings.gemini_rpm
+        self._next_start = -math.inf
+        self._breaker = _CLOSED
+        self._failures = 0
+        self._opened_at = 0.0
+        self._probing = False
+        self._down_since: float | None = None
+        self._key_latched_at: float | None = None
+
+    def status(self) -> tuple[str, float | None]:
+        """(the reader's state, since when on the gate's clock) for Health (U9) and
+        the outage clock (Q7). ``working`` (since None); ``failing``: the last requests
+        failed, since the first of them; ``down``: the breaker is open or probing,
+        since the first failure; ``key_problem``: a 401 or 403 within KEY_LATCH_SECONDS,
+        since it came."""
+        with self._lock:
+            if self._key_latched_at is not None and self.clock() < self._key_latched_at + KEY_LATCH_SECONDS:
+                return KEY_PROBLEM, self._key_latched_at
+            if self._breaker != _CLOSED:
+                return DOWN, self._down_since
+            if self._failures:
+                return FAILING, self._down_since
+            return WORKING, None
+
+    def admit(self) -> None:
+        """Raises at once while the key is latched or the breaker is open; lets one
+        probe through once the breaker has been open BREAKER_OPEN_SECONDS."""
+        with self._lock:
+            now = self.clock()
+            if self._key_latched_at is not None and now < self._key_latched_at + KEY_LATCH_SECONDS:
+                raise ModelUnavailable("key_rejected")
+            if self._breaker == _OPEN and now >= self._opened_at + BREAKER_OPEN_SECONDS:
+                self._breaker = _HALF_OPEN
+            if self._breaker == _OPEN or (self._breaker == _HALF_OPEN and self._probing):
+                raise ModelUnavailable("circuit_open")
+            if self._breaker == _HALF_OPEN:
+                self._probing = True
+
+    def take_slot(self, deadline: float) -> float:
+        """When this request may start under the limiter; the slot is booked only when
+        it starts before ``deadline`` (``ModelUnavailable("rate_limited")`` if not)."""
+        with self._lock:
+            start = max(self.clock(), self._next_start)
+            if start >= deadline:
+                self._probing = False
+                raise ModelUnavailable("rate_limited")
+            self._next_start = start + self.interval
+            return start
+
+    def release_probe(self) -> None:
+        with self._lock:
+            self._probing = False
+
+    def record(self, *, failed: bool) -> None:
+        """One request's outcome: any reply closes the breaker; a failure (429, 5xx,
+        no connection) counts towards opening it."""
+        with self._lock:
+            self._probing = False
+            if not failed:
+                self._breaker, self._failures, self._down_since = _CLOSED, 0, None
+                self._key_latched_at = None
+                return
+            now = self.clock()
+            self._failures += 1
+            if self._down_since is None:
+                self._down_since = now
+            if self._breaker == _HALF_OPEN or self._failures >= BREAKER_FAILURES:
+                if self._breaker != _OPEN:
+                    _log.warning("gemini circuit open", extra={"code": "circuit_open"})
+                self._breaker, self._opened_at = _OPEN, now
+
+    def latch_key(self) -> None:
+        """A 401 or 403: every call fails at once for KEY_LATCH_SECONDS; logged once."""
+        with self._lock:
+            self._probing = False
+            first = self._key_latched_at is None
+            self._key_latched_at = self.clock()
+        if first:
+            _log.error("gemini key rejected", extra={"code": "key_rejected"})
+
+
+_PROCESS_GATES: dict[tuple[str, int, int], GeminiGate] = {}
+_PROCESS_GATES_LOCK = threading.Lock()
+
+
+def process_gate(settings: Settings, *, workers: int = 1) -> GeminiGate:
+    """This process's one gate for GEMINI_BASE_URL at GEMINI_RPM over ``workers``, on
+    the real clock: every client built for the product shares it."""
+    key = (settings.gemini_base_url, settings.gemini_rpm, workers)
+    with _PROCESS_GATES_LOCK:
+        gate = _PROCESS_GATES.get(key)
+        if gate is None:
+            gate = _PROCESS_GATES[key] = GeminiGate(settings, workers=workers)
+        return gate
+
+
 class GeminiClient:
     """``ModelClient`` over the Gemini REST API, with ``read_page`` for the reader (G1, G9)."""
 
@@ -352,15 +473,12 @@ class GeminiClient:
         settings: Settings,
         *,
         chat_timeout_seconds: float | None = None,
-        workers: int = 1,
-        clock: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], None] = time.sleep,
-        random: Callable[[], float] = random_module.random,
-        wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        gate: GeminiGate | None = None,
     ) -> None:
         """``chat_timeout_seconds`` is for ``chat_json`` only (the worker passes
         MODEL_EXTRACT_TIMEOUT_SECONDS); ``embed`` and ``read_image`` use
-        MODEL_TIMEOUT_SECONDS. ``workers``: the processes sharing GEMINI_RPM."""
+        MODEL_TIMEOUT_SECONDS. ``gate``: the limiter and breaker to share; without
+        one the client has its own (``process_gate`` gives the shared one)."""
         if settings.gemini_api_key is None:
             raise ValueError("GEMINI_API_KEY is not set")
         parts = urllib.parse.urlsplit(settings.gemini_base_url)
@@ -371,8 +489,6 @@ class GeminiClient:
         for model in (settings.ocr_model, *filter(is_gemini_model, others)):
             if _MODEL_ID.fullmatch(model) is None:
                 raise ValueError("a model ID may hold letters, digits, dots, dashes and underscores only")
-        if workers < 1:
-            raise ValueError("workers must be at least 1")
         self._key = settings.gemini_api_key
         self._https = parts.scheme == "https"
         self._host_path = settings.gemini_base_url.rstrip("/").split("://", 1)[1]
@@ -383,48 +499,32 @@ class GeminiClient:
         self.ocr_model = settings.ocr_model
         self.chat_model = settings.model_chat
         self.embed_model = settings.model_embed
-        self._clock, self._sleep, self._random, self._wall_clock = clock, sleep, random, wall_clock
+        self.gate = GeminiGate(settings) if gate is None else gate
         self._opener = build_opener()
         self._lock = threading.Lock()
-        # The limiter (G9): the earliest time the next request may start.
-        self.interval = 60.0 * workers / settings.gemini_rpm
-        self._next_start = -math.inf
-        # The circuit breaker and the key latch.
-        self._breaker = _CLOSED
-        self._failures = 0
-        self._opened_at = 0.0
-        self._probing = False
-        self._down_since: float | None = None
-        self._key_latched_at: float | None = None
         self._input_tokens = 0
         self._output_tokens = 0
 
     def __repr__(self) -> str:
         return f"GeminiClient(ocr_model={self.ocr_model!r}, chat_model={self.chat_model!r})"
 
+    @property
+    def interval(self) -> float:
+        """The limiter's spacing between calls, in seconds."""
+        return self.gate.interval
+
     def now(self) -> float:
-        """The client's clock (``time.monotonic`` unless a test injected one)."""
-        return self._clock()
+        """The gate's clock (``time.monotonic`` unless a test injected one)."""
+        return self.gate.clock()
 
     def usage(self) -> Usage:
-        """Tokens counted from every reply since the client was made (G9)."""
+        """Tokens counted from this client's replies since it was made (G9)."""
         with self._lock:
             return Usage(self._input_tokens, self._output_tokens)
 
     def status(self) -> tuple[str, float | None]:
-        """(the reader's state, since when on the client's clock) for Health (U9) and
-        the outage clock (Q7). ``working`` (since None); ``failing``: the last requests
-        failed, since the first of them; ``down``: the breaker is open or probing,
-        since the first failure; ``key_problem``: a 401 or 403 within KEY_LATCH_SECONDS,
-        since it came."""
-        with self._lock:
-            if self._key_latched_at is not None and self._clock() < self._key_latched_at + KEY_LATCH_SECONDS:
-                return KEY_PROBLEM, self._key_latched_at
-            if self._breaker != _CLOSED:
-                return DOWN, self._down_since
-            if self._failures:
-                return FAILING, self._down_since
-            return WORKING, None
+        """The gate's ``status()``."""
+        return self.gate.status()
 
     # The ModelClient protocol.
 
@@ -444,7 +544,7 @@ class GeminiClient:
                 }
                 for text in batch
             ]
-            reply = self._call(path, {"requests": requests}, self._clock() + self._timeout)
+            reply = self._call(path, {"requests": requests}, self.now() + self._timeout)
             embeddings = reply.get("embeddings")
             if not isinstance(embeddings, list):
                 raise ModelUnavailable("bad_response")
@@ -495,7 +595,7 @@ class GeminiClient:
             thinking=CHAT_THINKING_LEVEL,
             max_output_tokens=None,
         )
-        reply = self._call(f"/models/{self.ocr_model}:generateContent", body, self._clock() + self._timeout)
+        reply = self._call(f"/models/{self.ocr_model}:generateContent", body, self.now() + self._timeout)
         text, _ = reply_text(reply)
         return text.strip()
 
@@ -545,19 +645,19 @@ class GeminiClient:
     def probe(self, path: str, body: Mapping[str, Any], *, send_key: bool = True, timeout: float) -> Probe:
         """One request with no retry, limiter, breaker or latch, for verify-gemini only:
         what the live API answers to ``body`` (``send_key=False`` sends no key)."""
-        started = self._clock()
+        started = self.now()
         reply = self._send(path, body, timeout, send_key=send_key)
         headers = {}
         if reply.headers is not None:
             headers = {
                 name.lower(): value for name, value in reply.headers.items() if _RATE_HEADER.fullmatch(name)
             }
-        return Probe(reply.status, reply.error_status, headers, reply.body, self._clock() - started)
+        return Probe(reply.status, reply.error_status, headers, reply.body, self.now() - started)
 
     # Internals.
 
     def _chat_reply(self, path: str, body: dict[str, Any], max_tokens: int | None) -> str:
-        reply = self._call(path, body, self._clock() + self._chat_timeout)
+        reply = self._call(path, body, self.now() + self._chat_timeout)
         text, _ = reply_text(reply)
         usage = reply.get("usageMetadata")
         reply_tokens = _whole(usage.get("candidatesTokenCount")) if isinstance(usage, dict) else 0
@@ -581,31 +681,32 @@ class GeminiClient:
     def _call(self, path: str, body: Mapping[str, Any], deadline: float) -> dict[str, Any]:
         """One request with the latch, the breaker, the limiter and retries (G6, G9).
         Returns the reply object of a 200; raises a coded error otherwise."""
+        gate = self.gate
         attempt = 0
         while True:
-            self._admit()
-            start = self._take_slot(deadline)
-            if start > self._clock():
-                self._sleep(start - self._clock())
-            remaining = deadline - self._clock()
+            gate.admit()
+            start = gate.take_slot(deadline)
+            if start > gate.clock():
+                gate.sleep(start - gate.clock())
+            remaining = deadline - gate.clock()
             if remaining <= 0:
-                self._release_probe()
+                gate.release_probe()
                 raise ModelUnavailable("timeout")
             reply = self._send(path, body, remaining)
             if 200 <= reply.status < 300:
-                self._record(failed=False)
+                gate.record(failed=False)
                 if reply.body is None:
                     raise ModelUnavailable(reply.failure or "bad_response")
                 self._count(reply.body)
                 return reply.body
             if reply.status in _KEY_STATUSES:
-                self._latch_key()
+                gate.latch_key()
                 raise ModelUnavailable("key_rejected")
             code = _RETRY_STATUSES.get(reply.status) or ("server_error" if reply.status >= 500 else None)
             if reply.status == 0:
                 code = reply.failure
             if code is None:  # the server answered: it is up, but this request is wrong
-                self._record(failed=False)
+                gate.record(failed=False)
                 if reply.status == 400:
                     raise ModelOutputError("bad_request")
                 if reply.status == 404:
@@ -613,70 +714,17 @@ class GeminiClient:
                 if 300 <= reply.status < 400:
                     raise ModelUnavailable("redirect_refused")
                 raise ModelUnavailable("http_error")
-            self._record(failed=True)
+            gate.record(failed=True)
             if code == "timeout":
                 raise ModelUnavailable("timeout")
-            wait = self._random() * min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2**attempt)
-            asked = _retry_after(reply.headers, self._wall_clock())
+            wait = gate.random() * min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2**attempt)
+            asked = _retry_after(reply.headers, gate.wall_clock())
             if asked is not None:
                 wait = max(wait, asked)
-            if self._clock() + wait >= deadline:
+            if gate.clock() + wait >= deadline:
                 raise ModelUnavailable(code)
-            self._sleep(wait)
+            gate.sleep(wait)
             attempt += 1
-
-    def _admit(self) -> None:
-        """Raises at once while the key is latched or the breaker is open; lets one
-        probe through once the breaker has been open BREAKER_OPEN_SECONDS."""
-        with self._lock:
-            now = self._clock()
-            if self._key_latched_at is not None and now < self._key_latched_at + KEY_LATCH_SECONDS:
-                raise ModelUnavailable("key_rejected")
-            if self._breaker == _OPEN and now >= self._opened_at + BREAKER_OPEN_SECONDS:
-                self._breaker = _HALF_OPEN
-            if self._breaker == _OPEN or (self._breaker == _HALF_OPEN and self._probing):
-                raise ModelUnavailable("circuit_open")
-            if self._breaker == _HALF_OPEN:
-                self._probing = True
-
-    def _take_slot(self, deadline: float) -> float:
-        """When this request may start under the limiter; the slot is booked only when
-        it starts before ``deadline`` (``ModelUnavailable("rate_limited")`` if not)."""
-        with self._lock:
-            start = max(self._clock(), self._next_start)
-            if start >= deadline:
-                self._probing = False
-                raise ModelUnavailable("rate_limited")
-            self._next_start = start + self.interval
-            return start
-
-    def _release_probe(self) -> None:
-        with self._lock:
-            self._probing = False
-
-    def _record(self, *, failed: bool) -> None:
-        with self._lock:
-            self._probing = False
-            if not failed:
-                self._breaker, self._failures, self._down_since = _CLOSED, 0, None
-                self._key_latched_at = None
-                return
-            now = self._clock()
-            self._failures += 1
-            if self._down_since is None:
-                self._down_since = now
-            if self._breaker == _HALF_OPEN or self._failures >= BREAKER_FAILURES:
-                if self._breaker != _OPEN:
-                    _log.warning("gemini circuit open", extra={"code": "circuit_open"})
-                self._breaker, self._opened_at = _OPEN, now
-
-    def _latch_key(self) -> None:
-        with self._lock:
-            self._probing = False
-            first = self._key_latched_at is None
-            self._key_latched_at = self._clock()
-        if first:
-            _log.error("gemini key rejected", extra={"code": "key_rejected"})
 
     def _count(self, reply: Mapping[str, Any]) -> None:
         input_tokens, output_tokens = reply_usage(reply)

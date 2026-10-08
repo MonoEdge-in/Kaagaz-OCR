@@ -27,8 +27,10 @@ from kaagaz.ai.gemini import (
     KEY_LATCH_SECONDS,
     PAGE_MAX_OUTPUT_TOKENS,
     GeminiClient,
+    GeminiGate,
     PageReply,
     Usage,
+    process_gate,
 )
 from kaagaz.settings import Settings
 from tests import gemini_fake
@@ -105,16 +107,18 @@ def _settings(url: str, **overrides: Any) -> Settings:
 
 
 def _client(url: str, clock: Clock | None = None, *, workers: int = 1, **overrides: Any) -> GeminiClient:
+    settings = _settings(url, **overrides)
     if clock is None:
-        return GeminiClient(_settings(url, **overrides), workers=workers)
-    return GeminiClient(
-        _settings(url, **overrides),
+        return GeminiClient(settings, gate=GeminiGate(settings, workers=workers))
+    gate = GeminiGate(
+        settings,
         workers=workers,
         clock=clock,
         sleep=clock.sleep,
         random=lambda: 0.5,
         wall_clock=lambda: datetime(2026, 10, 8, 10, 0, 0, tzinfo=UTC),
     )
+    return GeminiClient(settings, gate=gate)
 
 
 def _read(client: GeminiClient, *, deadline: float | None = None, **options: Any) -> PageReply:
@@ -255,7 +259,7 @@ def test_backoff_never_waits_more_than_its_cap(fake: GeminiFake, monkeypatch: py
     fake.script("generateContent", *[error_reply(503, "UNAVAILABLE")] * 4, json_reply(GOOD))
     clock = Clock()
     client = _client(fake.url, clock)
-    client._random = lambda: 1.0
+    client.gate.random = lambda: 1.0
     _read(client, deadline=clock.now + 1000)
     assert clock.backoffs() == [1.0, 2.0, 3.0, 3.0]
 
@@ -268,7 +272,7 @@ def test_retries_stop_at_the_pages_deadline(fake: GeminiFake, reply: Reply, code
     fake.responder = lambda request: reply
     clock = Clock()
     client = _client(fake.url, clock)
-    client._random = lambda: 1.0
+    client.gate.random = lambda: 1.0
     deadline = clock.now + 10
     with pytest.raises(ModelUnavailable) as caught:
         _read(client, deadline=deadline)
@@ -818,3 +822,17 @@ def test_the_fake_answers_only_what_a_test_scripted(fake: GeminiFake) -> None:
     assert fake.unanswered >= 1
     assert isinstance(fake.requests[0], Recorded)
     assert gemini_fake.API_PATH in fake.url
+
+
+def test_every_client_of_the_process_shares_one_gate(fake: GeminiFake) -> None:
+    """G9 per process: the reader's client, chat and the translator share one limiter
+    and one breaker, so their calls together stay under GEMINI_RPM."""
+    settings = _settings(fake.url)
+    chat = build_model_client(settings)
+    translator = build_model_client(settings, chat_timeout_seconds=1.0)
+    assert isinstance(chat, GeminiClient) and isinstance(translator, GeminiClient)
+    assert chat.gate is translator.gate is process_gate(settings)
+    assert process_gate(settings, workers=3) is not chat.gate
+    assert process_gate(settings, workers=3).interval == pytest.approx(3 * chat.interval)
+    with pytest.raises(ValueError, match="workers"):
+        GeminiGate(settings, workers=0)
