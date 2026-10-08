@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import ModuleType
@@ -1021,3 +1021,185 @@ def test_devanagari_and_ascii_digits_of_one_number_link(db: Database) -> None:
         (first, second, "survey_number", "45/2"),
         (second, first, "survey_number", "45/2"),
     }
+
+
+# --- PRD 5 (0021): each page's reading result, Keep as is, word marks, sections and topics ---
+
+
+@dataclass(frozen=True, slots=True)
+class ReadPage(PageRecord):
+    """A page record with PRD 5's reading result (RT2, F1), in the fields the store reads
+    by name (pipeline_store.PAGE_READING_DEFAULTS)."""
+
+    read_by: str | None = None
+    read_quality: str = "good"
+    read_issues: tuple[str, ...] = ()
+    unsure_words: int = 0
+    illegible_words: int = 0
+    unpinned_lines: int = 0
+
+
+READING = (
+    "SELECT page_no, read_by, read_quality, read_issues, unsure_words, illegible_words, unpinned_lines"
+    " FROM pages WHERE document_id = :d ORDER BY page_no"
+)
+ACCEPTED = (
+    "SELECT page_no, accepted_by::text, accepted_at, read_again_requested_at FROM pages"
+    " WHERE document_id = :d ORDER BY page_no"
+)
+T_ACCEPTED = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
+T_ASKED = datetime(2026, 10, 8, 9, 30, tzinfo=UTC)
+
+
+def test_the_reading_fields_are_the_ones_the_store_reads() -> None:
+    names = [item.name for item in fields(ReadPage)][len(fields(PageRecord)) :]
+    assert names == list(pipeline_store.PAGE_READING_DEFAULTS)
+
+
+def test_save_writes_each_pages_reading_result_and_good_for_a_page_without_one(db: Database) -> None:
+    """RT2 and F1: who read the page, its quality, issues and counts. A text-layer page
+    (no reading result) is good, with no issues and nobody named."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    scanned = ReadPage(
+        PageInfo(1, 2480.0, 3508.0, "px"),
+        True,
+        route="ocr",
+        read_by="gemini-3.1-pro-preview",
+        read_quality="uncertain",
+        read_issues=("handwriting_hard", "illegible_words", "unpinned"),
+        unsure_words=4,
+        illegible_words=2,
+        unpinned_lines=1,
+    )
+    printed = PageRecord(PageInfo(2, 612.0, 792.0, "pt"), False, route="text_layer")
+    PgPipelineStore(db).save(replace(content(customer, doc), pages=[scanned, printed]))
+
+    assert rows(db, customer, READING, doc) == [
+        {
+            "page_no": 1,
+            "read_by": "gemini-3.1-pro-preview",
+            "read_quality": "uncertain",
+            "read_issues": ["handwriting_hard", "illegible_words", "unpinned"],
+            "unsure_words": 4,
+            "illegible_words": 2,
+            "unpinned_lines": 1,
+        },
+        {
+            "page_no": 2,
+            "read_by": None,
+            "read_quality": "good",
+            "read_issues": [],
+            "unsure_words": 0,
+            "illegible_words": 0,
+            "unpinned_lines": 0,
+        },
+    ]
+
+
+def test_an_issue_outside_the_f1_table_is_refused_and_the_save_keeps_nothing(db: Database) -> None:
+    """``tilted`` is the model's own word (G3), never a stored issue (F1)."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    page = ReadPage(PageInfo(1, 10.0, 10.0, "px"), True, read_quality="unreadable", read_issues=("tilted",))
+    with pytest.raises(IntegrityError):
+        PgPipelineStore(db).save(replace(content(customer, doc), pages=[page]))
+    assert counts(db, customer, doc) == EMPTY
+
+
+def test_keep_as_is_is_carried_forward_unless_that_page_is_read_again(db: Database) -> None:
+    """F5 and the council architect's finding: a rebuild keeps the user's Keep as is; a
+    page asked to be read again loses it, and the save clears the request."""
+    customer, user = new_customer(db)
+    doc = new_document(db, customer)
+    store = PgPipelineStore(db)
+    store.save(content(customer, doc))
+    with db.customer(customer) as conn:
+        for page_no in (1, 2):
+            assert documents_module.accept_page(conn, customer, doc, page_no, user_id=user, now=T_ACCEPTED)
+        assert documents_module.request_page_read_again(conn, customer, doc, 2, now=T_ASKED)
+
+    store.save(content(customer, doc, total="2,000.00"))
+    kept = [
+        {"page_no": 1, "accepted_by": user, "accepted_at": T_ACCEPTED, "read_again_requested_at": None},
+        {"page_no": 2, "accepted_by": None, "accepted_at": None, "read_again_requested_at": None},
+    ]
+    assert rows(db, customer, ACCEPTED, doc) == kept
+
+    store.save(content(customer, doc))  # and again: page 1 is still kept as is
+    assert rows(db, customer, ACCEPTED, doc) == kept
+    store.clear(customer, doc)
+    assert rows(db, customer, ACCEPTED, doc) == []
+
+
+def test_keep_as_is_goes_with_a_page_the_new_read_does_not_have(db: Database) -> None:
+    customer, user = new_customer(db)
+    doc = new_document(db, customer)
+    store = PgPipelineStore(db)
+    store.save(content(customer, doc))
+    with db.customer(customer) as conn:
+        assert documents_module.accept_page(conn, customer, doc, 2, user_id=user, now=T_ACCEPTED)
+    one_page = replace(content(customer, doc), pages=[PageRecord(PageInfo(1, 612.0, 792.0, "pt"), True)])
+
+    store.save(one_page)
+    store.save(content(customer, doc))
+
+    assert [row["accepted_by"] for row in rows(db, customer, ACCEPTED, doc)] == [None, None]
+
+
+def test_word_marks_are_stored_with_their_spans_and_load_back(db: Database) -> None:
+    """PRD 5 F3 and G5: an OCR span's quality and box source are in the stored output,
+    and only when set."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    unsure = Span(
+        "पाटील", "पाटील", BOX, 0.4, kind="paragraph", origin="ocr", quality="unsure", box_source="model"
+    )
+    plain = Span("Total", "Total", BOX, 0.99, kind="paragraph", origin="ocr")
+    output = ReaderOutput("first", "gemini", "gemini-3.1-pro-preview g1", (unsure, plain))
+    PgPipelineStore(db).save(replace(content(customer, doc), outputs=[output]))
+
+    [stored] = rows(db, customer, "SELECT output FROM reader_outputs WHERE document_id = :d", doc)
+    first, second = stored["output"]
+    assert (first["quality"], first["box_source"]) == ("unsure", "model")
+    assert "quality" not in second and "box_source" not in second
+    assert [pipeline_store.span_from_json(span) for span in stored["output"]] == [unsure, plain]
+
+
+SECTIONS_AND_TOPICS = {
+    "sections": text("SELECT count(*) FROM document_sections WHERE document_id = :d"),
+    "topics": text("SELECT count(*) FROM document_topics WHERE document_id = :d"),
+}
+
+
+@pytest.mark.parametrize("step", ["save", "clear"])
+def test_a_save_or_clear_deletes_the_earlier_sections_and_topics(db: Database, step: str) -> None:
+    """CX4: a read again replaces them all, so no older run's section or topic is left."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    store = PgPipelineStore(db)
+    store.save(content(customer, doc))
+    with db.customer(customer) as conn:
+        conn.execute(
+            text(
+                "INSERT INTO document_sections (customer_id, document_id, seq, path, page_from, page_to,"
+                " piece_seq_from, piece_seq_to) VALUES (:c, :d, 0, '{}', 1, 2, 0, 1)"
+            ),
+            {"c": customer, "d": doc},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO document_topics (customer_id, document_id, topic, piece_seqs)"
+                " VALUES (:c, :d, 'leave', '{0, 1}')"
+            ),
+            {"c": customer, "d": doc},
+        )
+
+    if step == "save":
+        store.save(content(customer, doc))
+    else:
+        store.clear(customer, doc)
+
+    with db.customer(customer) as conn:
+        left = {name: conn.execute(sql, {"d": doc}).scalar_one() for name, sql in SECTIONS_AND_TOPICS.items()}
+    assert left == {"sections": 0, "topics": 0}
