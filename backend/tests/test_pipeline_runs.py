@@ -201,7 +201,7 @@ def rig(
     vision: FakeVision | None = None,
     embed: FakeEmbedder | None = None,
     log: list[str] | None = None,
-    max_vision_crops: int = 200,
+    max_check_crops: int = 200,
     settings: Settings = SETTINGS,
     engines: OcrChooser | None = None,
     moving_clock: bool = False,
@@ -247,7 +247,7 @@ def rig(
             ocr_engines=engines,
             clock=(lambda: T0 + timedelta(seconds=timer() - start)) if moving_clock else (lambda: T0),
             timer=timer,
-            max_vision_crops=max_vision_crops,
+            max_check_crops=max_check_crops,
             run_config=CONFIG,
             vision_model="qwen-vision" if vision is not None else None,
             embed_model="embed-tag" if embed is not None else None,
@@ -736,7 +736,7 @@ class OcrChoiceTest(unittest.TestCase):
 
 class VisionTest(unittest.TestCase):
     def test_a_heartbeat_follows_each_vision_crop_and_crops_stop_at_the_limit(self) -> None:
-        """Security A8: one heartbeat per crop; past MAX_VISION_CROPS a value stays single_reader."""
+        """Security A8: one heartbeat per crop; past MAX_CHECK_CROPS a value stays single_reader."""
         log: list[str] = []
 
         class LoggedVision(FakeVision):
@@ -749,7 +749,7 @@ class VisionTest(unittest.TestCase):
             OcrLine("Total: 1,180.00", 60, 400, 400, 420, None, "paragraph"),
         ]
         vision = LoggedVision("Total: 1,180.00")
-        system = rig(ocr=lambda timer: TimedOcr(timer, lines=lines), vision=vision, max_vision_crops=1)
+        system = rig(ocr=lambda timer: TimedOcr(timer, lines=lines), vision=vision, max_check_crops=1)
         job = system.job(make_pdf([SCANNED]))
         system.processor(job, lambda: log.append("beat"))
 
