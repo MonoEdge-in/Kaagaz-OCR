@@ -56,6 +56,9 @@ ANSWER_KEYS = {
     "model_used",
     "rewritten_question",
     "understood_words",
+    "reading_note",  # PRD 5 F6
+    "unreadable_pages",
+    "unreadable_page_count",
 }
 CITATION_KEYS = {
     "n",
@@ -72,6 +75,7 @@ CITATION_KEYS = {
     "page_to",
     "label_page_no",
     "label_regions",
+    "hard_to_read",  # PRD 5 F6
 }
 
 

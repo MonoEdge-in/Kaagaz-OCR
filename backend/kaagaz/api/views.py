@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy import RowMapping
 
+from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
 from kaagaz.api.auth import CurrentUser
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import MAX_READING_LINES, MAX_READING_TEXT
@@ -426,11 +427,15 @@ _GONE = ("in_trash", "deleted")
 
 
 def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
-    """Every document a saved answer points at: its citations and closest documents."""
+    """Every document a saved answer points at: its citations and closest documents, and
+    the documents of the pages that couldn't be read it names (PRD 5 F6)."""
     if not answer:
         return []
     ids = [str(each["document_id"]) for each in answer.get("citations", []) if each.get("document_id")]
     ids += [str(each["id"]) for each in answer.get("closest_documents", []) if each.get("id")]
+    ids += [
+        str(each["document_id"]) for each in answer.get("unreadable_pages", []) if each.get("document_id")
+    ]
     return ids
 
 
@@ -443,9 +448,12 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
       so its words and its place on the page must not show any more.
     * A sentence whose every citation is gone is replaced by ``GONE_SENTENCE``.
     * Closest documents that are gone are left out.
+    * PRD 5 F6: a page that couldn't be read, of a document that is gone, is left out
+      of ``unreadable_pages``, its count and the note, so a deleted document's name
+      never shows again (the note is written again from the pages left).
     A citation of an older version keeps its text and link, marked
     ``older_version``: it was true of that version. The stored answer is never
-    changed, so a restore brings everything back. O(citations + sentences).
+    changed, so a restore brings everything back. O(citations + sentences + pages).
     """
     citations = []
     gone: set[int] = set()
@@ -468,7 +476,24 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
         for each in answer.get("closest_documents", [])
         if states.get(str(each.get("id"))) not in (None, *_GONE)
     ]
-    return {**answer, "citations": citations, "sentences": sentences, "closest_documents": closest}
+    shown = {**answer, "citations": citations, "sentences": sentences, "closest_documents": closest}
+    pages = answer.get("unreadable_pages") or []
+    kept = [page for page in pages if states.get(str(page.get("document_id"))) not in (None, *_GONE)]
+    if len(kept) != len(pages):
+        total = int(answer.get("unreadable_page_count") or 0) - (len(pages) - len(kept)) if kept else 0
+        named = [
+            FlaggedPage(
+                str(page["document_id"]),
+                str(page["document_name"]),
+                int(page["page_no"]),
+                str(page["read_quality"]),
+            )
+            for page in kept
+        ]
+        shown.update(
+            unreadable_pages=kept, unreadable_page_count=total, reading_note=not_found_note(named, total)
+        )
+    return shown
 
 
 def conversation_summary(row: RowMapping) -> dict[str, Any]:
