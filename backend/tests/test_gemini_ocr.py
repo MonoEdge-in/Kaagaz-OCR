@@ -453,6 +453,7 @@ BAD_REPLIES: dict[str, Any] = {
     "a box upside down": value(line("x", (120, 100, 100, 500))),
     "a box with no area": value(line("x", (100, 100, 100, 500))),
     "a box that is not a number": value(line("x", (float("nan"), 100, 120, 500))),
+    "a box with a number too big for a float": value({**line("x"), "box_2d": [10**400, 100, 120, 500]}),
     "a box of booleans": value({**line("x"), "box_2d": [True, 1, 2, 3]}),
     "order not a whole number": value({**line("x"), "order": 1.5}),
     "continues not a boolean": value({**line("x"), "continues_on_next_page": "no"}),

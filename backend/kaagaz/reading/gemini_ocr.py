@@ -569,14 +569,19 @@ def _checked_line(raw: dict[str, Any]) -> _Line | None:
 
 def _box(value: list[Any]) -> tuple[float, float, float, float]:
     """[ymin, xmin, ymax, xmax] within 0..1000 with an area (G3); else invalid_output."""
-    if len(value) != 4 or not all(
-        isinstance(number, int | float) and math.isfinite(number) for number in value
-    ):
+    if len(value) != 4 or not all(map(_is_finite, value)):
         raise ModelOutputError("invalid_output")
-    y0, x0, y1, x1 = (float(number) for number in value)
+    y0, x0, y1, x1 = value  # compared before any float(): a huge whole number can't overflow
     if not (0 <= y0 < y1 <= BOX_SCALE and 0 <= x0 < x1 <= BOX_SCALE):
         raise ModelOutputError("invalid_output")
-    return y0, x0, y1, x1
+    return float(y0), float(x0), float(y1), float(x1)
+
+
+def _is_finite(number: object) -> bool:
+    """A whole number or a finite float; a boolean is neither."""
+    if isinstance(number, bool):
+        return False
+    return isinstance(number, int) or (isinstance(number, float) and math.isfinite(number))
 
 
 def _table(value: dict[str, Any] | None) -> OcrTable | None:
