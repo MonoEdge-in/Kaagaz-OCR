@@ -89,6 +89,7 @@ the machine and nothing is downloaded at run time.
   meter and ``OcrEngines`` pass it on; any other engine has nothing to open.
 * No reader choice at upload (PRD 5 RT3): ``ocr_choices`` offers one reader,
   Auto, so the "Scan with" select hides itself.
+  timed under its own name.
 * ``ocr_spans`` turns an engine's pixel boxes into spans with page fractions
   and origin "ocr". RapidOCR's boxes go through the same line rule as the PDF
   readers (``kaagaz/reading/lines.py``), so "INVOICE" and "1042" found as two
@@ -673,6 +674,8 @@ class FallbackOcrEngine:
     then fails, the page stays as the primary read it. One job at a time uses it;
     its pages may come from several page threads (PRD 5 G8), so the fallback is built
     and its pages counted under a lock. O(1) per page beyond the engines' own time.
+    then fails, the page stays as the primary read it. One job at a time uses it,
+    so there is no lock. O(1) per page beyond the engines' own time.
     """
 
     def __init__(
@@ -725,6 +728,7 @@ class FallbackOcrEngine:
         else:
             if lines or not self._empty_fails:
                 return lines, self._primary.name
+                return lines
             return self._read_fallback(image, ReadError("ocr_no_lines"), kept=lines)
         # Outside the handler, so a failing fallback's error is chained onto the primary's once.
         read = self._read_fallback(image, failure)
@@ -739,6 +743,15 @@ class FallbackOcrEngine:
         When the fallback cannot be built or fails, any cool-down ends, so the next page
         tries the primary, and ``kept`` (the primary's own lines) is returned or else
         ``failure`` (its own error) is raised. Logs codes and type names only, never the page."""
+        return lines
+
+    def _read_fallback(
+        self, image: Image.Image, failure: ReadError | OcrOverloaded, *, kept: list[OcrLine] | None = None
+    ) -> list[OcrLine]:
+        """The page as the fallback reads it. When the fallback cannot be built or fails,
+        any cool-down ends, so the next page tries the primary, and ``kept`` (the
+        primary's own lines) is returned or else ``failure`` (its own error) is raised.
+        Logs codes and type names only, never the page."""
         try:
             read = lines_and_reader(self._fallback_engine(), image)
         except Exception as error:
@@ -746,6 +759,7 @@ class FallbackOcrEngine:
             _log.warning("ocr fallback failed: %s", type(error).__name__, extra={"code": failure.code})
             if kept is not None:
                 return kept, self._primary.name
+                return kept
             raise failure from error
         with self._lock:
             self._fallback_pages += 1
@@ -885,6 +899,10 @@ class MeteredOcrEngine:
         return self._engine.name  # asked each time: ``OcrEngines`` changes engine per job
 
     @property
+    def name(self) -> str:
+        return self._engine.name  # asked each time: ``OcrEngines`` changes engine per job
+
+    @property
     def version(self) -> str:
         return self._engine.version  # asked for late: PaddleOCR-VL's comes from its reply
 
@@ -982,12 +1000,35 @@ class GeminiEngineFactory(Protocol):
 
 
 # Every engine here, in the order the upload screen offered them.
+# Every engine here, in the order the upload screen offers them.
 _ENGINES: tuple[type[PaddleVlEngine] | type[RapidOcrEngine], ...] = (PaddleVlEngine, RapidOcrEngine)
 
 
 def _engine_id(engine: type[PaddleVlEngine] | type[RapidOcrEngine]) -> str:
     """An engine's id: its OCR_ENGINE value, which is its name with "_" for "-"."""
     return engine.name.replace("-", "_")
+
+
+def _new_engine(settings: Settings, engine_id: str) -> OcrEngine:
+    """A new engine for an id ``ocr_choices`` offers."""
+    (engine,) = (engine for engine in _ENGINES if _engine_id(engine) == engine_id)
+    return engine.from_settings(settings)
+
+
+def _has_fallback(settings: Settings) -> bool:
+    """Whether Auto reads a page PaddleOCR-VL can't with RapidOCR: only with the ocr extra."""
+    return settings.ocr_engine == _engine_id(PaddleVlEngine) and _installed_version("rapidocr") is not None
+
+
+def _auto_engine(
+    settings: Settings, engine: Callable[[str], OcrEngine], timer: Callable[[], float] = time.monotonic
+) -> OcrEngine:
+    """The usual chain for OCR_ENGINE (not "none"), its engines from ``engine(id)``."""
+    primary = engine(settings.ocr_engine)
+    if not _has_fallback(settings):
+        return primary  # RapidOCR, or PaddleOCR-VL with no ocr extra: no fallback, as before
+    rapidocr = _engine_id(RapidOcrEngine)
+    return FallbackOcrEngine(primary, lambda: engine(rapidocr), timer=timer)  # RapidOCR built on first need
 
 
 def _new_engine(settings: Settings, engine_id: str, gemini: GeminiEngineFactory | None = None) -> OcrEngine:
@@ -1037,6 +1078,14 @@ def ocr_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
 def _engine_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
     """Auto first, then every engine here, available or with its ``reason``: what a stored
     choice may still pick in ``OcrEngines.choose``. O(engines)."""
+    return _auto_engine(settings, lambda engine_id: _new_engine(settings, engine_id))
+
+
+def ocr_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
+    """The readers an upload may choose, Auto first, then every engine here: ``id``,
+    ``title``, ``hint``, ``available``, and ``reason`` when it is not. Pure: from the
+    settings and what is installed, nothing built or called, so the api and the
+    worker agree. O(engines)."""
     choices: list[dict[str, str | bool | None]] = [
         {"id": AUTO, "title": "Auto", "hint": _auto_hint(settings), "available": True, "reason": None}
     ]
@@ -1074,6 +1123,9 @@ class OcrEngines:
 
     ``engine(id)`` builds an engine (tests give fakes); ``timer`` is the cool-downs';
     ``gemini`` builds the Gemini reader (``build_ocr_engine``).
+    job at a time uses it, so there is no lock. O(1) per page beyond the engines'.
+
+    ``engine(id)`` builds an engine (tests give fakes); ``timer`` is the cool-downs'.
     """
 
     def __init__(
@@ -1088,6 +1140,7 @@ class OcrEngines:
             raise ValueError("OCR_ENGINE=none has no engine to choose")
         self._settings = settings
         self._new = engine or (lambda engine_id: _new_engine(settings, engine_id, gemini))
+        self._new = engine or (lambda engine_id: _new_engine(settings, engine_id))
         self._timer = timer
         self._built: dict[str, OcrEngine] = {}
         self._chains: dict[str, FallbackOcrEngine] = {}
@@ -1141,6 +1194,10 @@ class OcrEngines:
         if choice in (None, AUTO, self._settings.ocr_engine):
             return self._auto, True
         offered = {item["id"] for item in _engine_choices(self._settings) if item["available"]}
+        """(the engine for ``choice``, honoured). Auto's first engine is Auto itself."""
+        if choice in (None, AUTO, self._settings.ocr_engine):
+            return self._auto, True
+        offered = {item["id"] for item in ocr_choices(self._settings) if item["available"]}
         if choice not in offered:
             return self._auto, False
         if choice not in self._chains:
@@ -1155,6 +1212,9 @@ def build_ocr_engines(settings: Settings, *, gemini: GeminiEngineFactory | None 
     """The worker's ``OcrEngines``; None with OCR_ENGINE=none (no scan is read). ``gemini``
     as in ``build_ocr_engine``."""
     return None if settings.ocr_engine == "none" else OcrEngines(settings, gemini=gemini)
+def build_ocr_engines(settings: Settings) -> OcrEngines | None:
+    """The worker's ``OcrEngines``; None with OCR_ENGINE=none (no scan is read)."""
+    return None if settings.ocr_engine == "none" else OcrEngines(settings)
 
 
 def ocr_spans(lines: list[OcrLine], page_no: int, width_px: int, height_px: int) -> list[Span]:

@@ -316,6 +316,11 @@ class Settings:
             times = f"{ocr_calls} x " if ocr_calls > 1 else ""
             raise SettingsError(
                 f"{times}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
+        # Any other rule may read a page twice (at a lowered DPI, then the ceiling) between heartbeats.
+        ocr_calls = 1 if ocr_dpi_rule == "fixed" else 2
+        if ocr_calls * ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
+            raise SettingsError(
+                f"{'2 x ' if ocr_calls == 2 else ''}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
                 " must not be more than QUEUE_LEASE_SECONDS"
             )
         ocr_url = env.url("OCR_URL")
