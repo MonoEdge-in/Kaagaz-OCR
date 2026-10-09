@@ -36,8 +36,9 @@ family lock. A request is refused while the document is being read, and accepted
 once its failure has committed, so no request can land between the failure and the
 clearing and lose its mark. "Keep as is" (F5) is ``accept_page``.
 
-``documents.batch_id`` (PRD 5 Q1, 0021) is written by pull request 2's batches; no
-insert here sets it yet.
+``documents.batch_id`` (PRD 5 Q1, 0021) is the drop a new upload came in:
+``add_if_absent`` writes the record's ``batch_id`` (None: in none). A new version is
+in no batch.
 """
 
 import dataclasses
@@ -458,13 +459,15 @@ class PgDocuments:
                 "family": record.family_id or record.document_id,
                 "version": record.version_no,
                 "ocr": record.ocr_choice,
+                "batch": record.batch_id,
             }
             try:
                 inserted = conn.execute(
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice)"
-                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version, :ocr)"
+                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice,"
+                        " batch_id) VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family,"
+                        " :version, :ocr, :batch)"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,
