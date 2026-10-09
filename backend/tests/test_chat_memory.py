@@ -6,9 +6,11 @@ tested against PostgreSQL in test_chat_memory_db.py and test_isolation_chat_memo
 
 import logging
 import uuid
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable, estimate_tokens_cautiously
 from kaagaz.answering import memory as memory_module
@@ -28,6 +30,8 @@ from kaagaz.answering.memory import (
 )
 from kaagaz.answering.rewrite import Turn, guard, history_text, rewrite
 from kaagaz.answering.service import AnswerService
+from kaagaz.api.context import AppContext
+from kaagaz.ingestion.errors import BackendUnavailable
 from tests.settings_factory import make_settings
 from tests.test_answering_context import Routed, cites, page
 from tests.test_answering_golden import NOW, UNUSED_DB, A, FakeFixedQueries, FakeRetriever, FakeUnchecked
@@ -267,3 +271,38 @@ def test_m3_an_item_must_be_whole_words_of_the_chat_never_part_of_one() -> None:
     assert remembered.names == ("Ramesh Patil", "Ramesh")
     assert remembered.numbers == ("1,20,000", "Rs. 1,20,000")
     assert (remembered.dates, remembered.topics) == (("12/08/2026",), ("deed",))
+
+
+def test_m3_the_memory_is_due_every_chat_summary_every_questions_and_a_failure_waits() -> None:
+    """After a failed write ``summary_turn`` stays, so the next try is CHAT_SUMMARY_EVERY
+    questions later (12), never every question after it (7, 8...)."""
+    from kaagaz.api.routers.chat import summary_due
+
+    assert [turn for turn in range(1, 20) if summary_due(turn, 0, 6)] == [6, 12, 18]
+    assert [turn for turn in range(7, 20) if summary_due(turn, 6, 6)] == [12, 18]
+    assert [turn for turn in range(1, 4) if summary_due(turn, 0, 1)] == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OperationalError("SELECT summary FROM conversations", {"s": "Sharma Traders"}, Exception("Sharma")),
+        BackendUnavailable("database"),
+    ],
+)
+def test_m3_a_background_write_that_fails_logs_only_its_code(
+    caplog: pytest.LogCaptureFixture, error: Exception
+) -> None:
+    """It runs after the reply: a database error must not escape, and the log holds the
+    error's code, never its message or a traceback (either could hold the chat's words)."""
+    from kaagaz.api.routers.chat import _remember
+
+    class Down:
+        def customer(self, customer_id: str) -> Any:
+            raise error
+
+    context = cast(AppContext, SimpleNamespace(settings=make_settings(), db=Down(), answers=None))
+    with caplog.at_level(logging.INFO, logger="kaagaz.api.routers.chat"):
+        _remember(context, A, str(uuid.uuid4()), str(uuid.uuid4()), 0, 6)
+    assert [getattr(record, "code", None) for record in caplog.records] == [type(error).__name__]
+    assert "Sharma" not in caplog.text and all(record.exc_info is None for record in caplog.records)

@@ -98,3 +98,17 @@ def test_m3_a_model_that_fails_writes_nothing(db: Database) -> None:
     assert len(api.answers.summarised) == 1
     state = _state(db, signed, conversation)
     assert (state["summary"], state["memory"], state["summary_turn"]) == (None, None, 0)
+
+
+def test_m3_after_a_failed_write_the_next_try_waits_chat_summary_every_questions(db: Database) -> None:
+    api = Api(db, settings=make_settings(chat_summary_every=3))
+    signed = api.new_signed()
+    api.answers.remembered = None  # the model is down or replied badly
+
+    conversation = _ask(signed, "Question 1")
+    for n in range(2, 6):
+        _ask(signed, f"Question {n}", conversation)
+    assert len(api.answers.summarised) == 1  # at question 3 only, not again at 4 and 5
+    _ask(signed, "Question 6", conversation)
+    assert len(api.answers.summarised) == 2
+    assert _state(db, signed, conversation)["summary_turn"] == 0
