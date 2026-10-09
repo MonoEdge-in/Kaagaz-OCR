@@ -37,7 +37,7 @@ x-backend: &backend
 
 services:
   postgres:
-    image: pgvector/pgvector:0.8.6-pg17
+    image: pgvector/pgvector:0.8.7-pg17
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kaagaz}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kaagaz}
@@ -200,7 +200,7 @@ services:
   # DOCKER_MODEL_BASE_URL=http://ollama:11434 in .env. Pull the models once:
   #   docker compose exec ollama ollama pull <MODEL_CHAT>   (and MODEL_EMBED)
   ollama:
-    image: ollama/ollama:0.35.0
+    image: ollama/ollama:0.35.1
     profiles: ["ollama"]
     ports:
       - "11434:11434"
