@@ -146,6 +146,29 @@ export function unreadableWords(
   return { title: `Couldn't read page ${page.page_no}`, detail: detail || null };
 }
 
+/**
+ * What the tray's one live region says (role=status): the ready, attention, failed and
+ * stopped totals of all its drops, so it speaks only when a file ends one way or another,
+ * never as files move from stage to stage, and never a percent. "" while none has ended.
+ */
+export function announcement(drops: readonly (readonly Pick<UploadEntry, "state">[])[]): string {
+  const total = { ready: 0, attention: 0, failed: 0, stopped: 0 };
+  for (const rows of drops) {
+    const counts = trayCounts(rows);
+    total.ready += counts.ready;
+    total.attention += counts.attention;
+    total.failed += counts.failed;
+    total.stopped += counts.stopped;
+  }
+  const parts = [
+    total.ready > 0 ? `${total.ready} ready` : "",
+    total.attention > 0 ? `${total.attention} ${total.attention === 1 ? "needs" : "need"} attention` : "",
+    total.failed > 0 ? `${total.failed} failed` : "",
+    total.stopped > 0 ? `${total.stopped} stopped` : "",
+  ].filter(Boolean);
+  return parts.length > 0 ? `Uploads: ${parts.join(" · ")}` : "";
+}
+
 /** "about 6 min left" for the whole drop; null when nothing is left to read or it is not known. */
 export function leftText(view: Pick<BatchView, "time_left"> | null): string | null {
   const seconds = view?.time_left?.seconds;

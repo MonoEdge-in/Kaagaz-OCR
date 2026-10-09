@@ -4,9 +4,13 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BatchTray } from "@/components/documents/UploadArea";
 import {
   KEEP_MS,
+  announcement,
   MAX_FILES_PER_BATCH,
   STORE_KEY,
   TOO_MANY_FILES,
@@ -211,6 +215,40 @@ describe("each file's place in the tray", () => {
   it("keeps a reload's counts the batch API does not have: already uploaded and not sent", () => {
     const counts = trayCounts([row("ready", done(doc("r")))], { already: 2, notSent: 1 });
     expect(counts).toMatchObject({ total: 4, ready: 1, already: 2, failed: 1 });
+  });
+});
+
+describe("what the tray says out loud", () => {
+  it("changes only when the ready, attention or failed totals change, never as files move on", () => {
+    const sending = [row("a", { kind: "sending", fraction: 0.2 }), row("b", done(doc("b")))];
+    const moved = [row("a", reading(doc("a", { status: "clean", progress: null }))), row("b", done(doc("b")))];
+    expect(announcement([sending])).toBe(announcement([moved])); // a stage change says nothing
+    expect(announcement([sending])).toBe("Uploads: 1 ready");
+    const more = [row("a", done(doc("a", { pages_unreadable: 1 }))), row("b", done(doc("b")))];
+    const other = [row("c", done(doc("c", { status: "failed" }))), row("d", { kind: "error", message: "No." })];
+    expect(announcement([more, other])).toBe("Uploads: 1 ready · 1 needs attention · 2 failed");
+    expect(announcement([[row("w", { kind: "waiting" })]])).toBe("");
+  });
+
+  it("has one live region for the whole tray; the batch lines are not live", () => {
+    const html = renderToStaticMarkup(
+      createElement(BatchTray, {
+        entries: [
+          row("a", done(doc("a"))),
+          row("b", { kind: "waiting" }),
+          row("c", done(doc("c")), { batchId: "6f1c2d3e-4a5b-4c6d-8e7f-901a2b3c4d5f" }),
+        ],
+        views: {},
+        stored: [],
+        tooMany: false,
+        onClearFinished: () => undefined,
+        onRestore: () => undefined,
+        onRetry: () => undefined,
+      }),
+    );
+    expect(html.match(/role="status"/g)).toHaveLength(1);
+    expect(html).toMatch(/<p [^>]*role="status"[^>]*>Uploads: 2 ready<\/p>/);
+    expect(html).toContain("Batch of 2 files · 1 ready · 1 sending"); // still shown, not announced
   });
 });
 

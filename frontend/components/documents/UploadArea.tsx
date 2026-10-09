@@ -50,6 +50,7 @@ import { usePoll } from "@/lib/usePoll";
 import {
   MAX_FILES_PER_BATCH,
   TOO_MANY_FILES,
+  announcement,
   batchFraction,
   batchStore,
   leftText,
@@ -467,10 +468,12 @@ export function Dropzone({
 }
 
 /**
- * The batch tray (PRD 5 U1): for each drop, newest first, one line (role=status, so
- * it is read out as files change stage, never by percent), the time left, one bar
- * (pages read over all pages), then its files worst first. A new version, which has
- * no batch, is listed after them. "Up to 100 files at a time" is said as an alert.
+ * The batch tray (PRD 5 U1): for each drop, newest first, one line, the time left, one
+ * bar (pages read over all pages), then its files worst first. A new version, which has
+ * no batch, is listed after them. One live region for the whole tray (role=status, kept
+ * while the tray is shown) says the ready, attention and failed totals, so it speaks
+ * only when one of them changes, never as files change stage or by percent (WCAG 4.1.3).
+ * "Up to 100 files at a time" is said as an alert.
  */
 export function BatchTray({
   entries,
@@ -513,6 +516,9 @@ export function BatchTray({
           </button>
         )}
       </div>
+      <p className="visually-hidden" role="status">
+        {announcement([...batches.values(), loose])}
+      </p>
       {tooMany && (
         <p className={`error-text ${styles.small}`} role="alert">
           {TOO_MANY_FILES}
@@ -525,7 +531,7 @@ export function BatchTray({
         return (
           <div key={id} className={styles.batch}>
             <div className={styles.batchHead}>
-              <p className={styles.batchSummary} role="status">
+              <p className={styles.batchSummary}>
                 {summaryText(trayCounts(rows, stored.find((batch) => batch.id === id)))}
               </p>
               {left && <span className={`muted ${styles.small}`}>{left}</span>}
