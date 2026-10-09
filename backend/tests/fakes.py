@@ -224,7 +224,7 @@ class MemoryQueue:
         self.jobs: list[Job] = []
         self.fail_enqueue = False
 
-    def enqueue(self, job: Job) -> None:
+    def enqueue(self, job: Job, *, express: bool = False) -> None:
         if self.fail_enqueue:
             raise BackendUnavailable("queue down")
         self.jobs.append(job)

@@ -63,6 +63,17 @@ class JobFailed(Exception):
         self.retryable = retryable
 
 
+class Deferred(Exception):
+    """Not now: hand the job back to the queue for ``seconds`` without running it
+    (PRD 5 Q5: its customer is at MAX_ACTIVE_PER_CUSTOMER, or the reader has a key
+    problem). ``code`` is short and safe to log, and never names another customer."""
+
+    def __init__(self, seconds: int, code: str) -> None:
+        super().__init__(code)
+        self.seconds = seconds
+        self.code = code
+
+
 class Superseded(Exception):
     """A newer run of this document has started (the run fence), so this run's results
     are not saved and it does not mark the document ready. Not a failure: the newer

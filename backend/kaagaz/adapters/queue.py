@@ -8,7 +8,12 @@ worker takes it out), with the lease model described in kaagaz/jobs/ports.py:
 * ``receive`` long-polls for up to ``queue_wait_seconds`` and hides the job
   for ``queue_lease_seconds``. The attempt number is SQS's own receive count,
   so it counts crashed deliveries too.
-* ``ack`` deletes the message; ``extend`` resets its lease.
+* ``ack`` deletes the message; ``extend`` resets its lease; ``defer`` sets it to
+  the given seconds, so the job is handed out again then (PRD 5 Q5).
+* ``enqueue`` takes ``express`` (PRD 5 Q4); this queue reads one lane,
+  ``queue_url``, so every job is sent there.
+* ``depth`` counts the jobs waiting in each lane, for the operator's Health
+  screen (PRD 5 U9).
 * ``bury`` puts the job in the failure bin (``queue_url + "-failed"``) with its
   code, then deletes it. It first renews the lease, so a worker whose lease
   already ran out cannot put a job in the failure bin that another worker is
@@ -150,6 +155,7 @@ class SqsQueue:
         else:
             self._client = self._send_client = client
         self._url = settings.queue_url
+        self._express_url = settings.queue_express_url
         self._failed_url = settings.queue_url + "-failed"
         self._wait = settings.queue_wait_seconds
         self._lease = settings.queue_lease_seconds
@@ -157,7 +163,7 @@ class SqsQueue:
 
     # --- JobQueue ----------------------------------------------------------
 
-    def enqueue(self, job: Job) -> None:
+    def enqueue(self, job: Job, *, express: bool = False) -> None:
         body = json.dumps({"customer_id": job.customer_id, "document_id": job.document_id})
         try:
             self._send_client.send_message(QueueUrl=self._url, MessageBody=body)
@@ -205,9 +211,19 @@ class SqsQueue:
         self._bodies.pop(receipt, None)
 
     def extend(self, receipt: str) -> None:
+        self._set_visibility(receipt, self._lease)
+
+    def defer(self, receipt: str, seconds: int) -> None:
+        """Hand the job back, to be handed out again after ``seconds`` (0 to the SQS
+        limit of 12 hours). SQS counts the next delivery as an attempt."""
+        if not 0 <= seconds <= _MAX_LEASE_SECONDS:
+            raise ValueError(f"seconds must be 0 to {_MAX_LEASE_SECONDS}")
+        self._set_visibility(receipt, seconds)
+
+    def _set_visibility(self, receipt: str, seconds: int) -> None:
         try:
             self._client.change_message_visibility(
-                QueueUrl=self._url, ReceiptHandle=receipt, VisibilityTimeout=self._lease
+                QueueUrl=self._url, ReceiptHandle=receipt, VisibilityTimeout=seconds
             )
         except ClientError as error:
             if error.response.get("Error", {}).get("Code") in _STALE_RECEIPT_CODES:
@@ -241,6 +257,22 @@ class SqsQueue:
             self._client.get_queue_attributes(QueueUrl=self._url, AttributeNames=["QueueArn"])
         except _ANY_ERROR as error:
             raise BackendUnavailable("queue") from error
+
+    def depth(self) -> dict[str, int]:
+        """The jobs waiting in each lane, ``{"express": n, "main": n}``: SQS's
+        approximate count of visible messages, not counting leased ones. 0 for
+        express when there is no express lane. One call a lane."""
+        express = 0 if self._express_url is None else self._waiting(self._express_url)
+        return {"express": express, "main": self._waiting(self._url)}
+
+    def _waiting(self, url: str) -> int:
+        try:
+            response = self._client.get_queue_attributes(
+                QueueUrl=url, AttributeNames=["ApproximateNumberOfMessages"]
+            )
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("queue") from error
+        return int(response.get("Attributes", {}).get("ApproximateNumberOfMessages", "0"))
 
     # --- Settings ----------------------------------------------------------
 

@@ -34,6 +34,8 @@ class DocumentRecord:
     version_no: int = 1
     # The scan reader the upload chose (kaagaz.reading.ocr.ocr_choices); None: Auto.
     ocr_choice: str | None = None
+    # PRD 5 Q1: the drop it was uploaded in (the browser's id for it); None: in none.
+    batch_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,4 +118,7 @@ class BlobStorage(Protocol):
 
 
 class JobQueue(Protocol):
-    def enqueue(self, job: Job) -> None: ...
+    def enqueue(self, job: Job, *, express: bool = False) -> None:
+        """Queue ``job``. ``express`` asks for the express lane (PRD 5 Q4); the server
+        alone decides it, from the page count it stored."""
+        ...

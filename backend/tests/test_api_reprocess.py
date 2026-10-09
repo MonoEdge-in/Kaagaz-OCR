@@ -257,10 +257,10 @@ class HeldQueue(ApiFakeQueue):
         super().__init__()
         self.entered, self.release = threading.Event(), threading.Event()
 
-    def enqueue(self, job: Job) -> None:
+    def enqueue(self, job: Job, *, express: bool = False) -> None:
         self.entered.set()
         assert self.release.wait(timeout=10), "the test never released the queue"
-        super().enqueue(job)
+        super().enqueue(job, express=express)
 
 
 def test_reprocess_waiting_behind_trash_gets_409_and_queues_nothing(db: Database) -> None:

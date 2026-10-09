@@ -92,6 +92,18 @@ export interface DocumentSummary {
   pages_unreadable: number;
   pages_uncertain: number;
   values_to_review: number;
+  words_unsure?: number; // PRD 5 U2: the unsure words on its pages, for the "14 words unsure" chip
+}
+
+/** GET /api/batches/{id} (PRD 5 Q1): one drop of files, the uploader's own only, at most
+ *  MAX_FILES_PER_BATCH. A file refused as a duplicate is not in it: the tray keeps those. */
+export interface BatchView {
+  id: string;
+  documents: DocumentSummary[]; // in upload order; the tray sorts them worst first
+  counts: { total: number; ready: number; reading: number; waiting: number; attention: number; failed: number };
+  pages_read: number; // the batch bar is pages_read / pages_total (U1)
+  pages_total: number;
+  time_left: TimeLeft | null; // until the whole drop is ready; null when nothing is left to read
 }
 
 /** GET /api/search (PRD 3 Q2): the documents found, best first, at most SEARCH_MAX_DOCUMENTS. */
@@ -237,6 +249,21 @@ export interface PageSummary {
   accepted_by: string | null; // F5 "Keep as is": the user, with accepted_at; the page stays flagged
   accepted_at: string | null; // ISO 8601
   read_again_requested_at: string | null; // F5: asked to be read again, until it is
+  problems?: PageProblem[]; // PRD 5 U4: one per issue in read_issues, for the page's banner
+}
+
+/** A problem on a page (PRD 5 U4), in the words of F1's issue table. */
+export interface PageProblem {
+  code: ReadIssue;
+  says: string; // what happened, in one line
+  fix: string; // what the user can do
+}
+
+/** A reading problem drawn on the page (PRD 5 U3): dashed, hatched or dotted, with a label. */
+export interface ReadingMark {
+  quality: "unsure" | "illegible" | "unpinned";
+  region: Region;
+  text: string; // the word or line as read: plain text only, through visibleText
 }
 
 export interface ExtractedValue {
@@ -383,6 +410,7 @@ export interface SheetCells {
 export interface PageReadings {
   page_no: number;
   readers: PageReader[]; // the first reader first; [] when the page was not read yet
+  marks?: ReadingMark[]; // PRD 5 U3: the page's reading problems; [] when it has none
 }
 
 export interface PageReader {
@@ -633,6 +661,10 @@ export interface Stats {
   older_versions: number; // versions kept that are not the current one
   in_trash: number;
   pages_this_month: Record<PageRoute, number>; // pages read this month, by route (PRD 2, R6); 0 when none
+  // PRD 5 U9: this month's OCR pages by who read them (read_again: pages read again), and the
+  // model's spend estimate from its tokens; usd is null while MODEL_PRICE_* are 0 (not known).
+  reader_pages?: { gemini: number; local: number; cached: number; read_again: number };
+  spend_estimate?: { input_tokens: number; output_tokens: number; usd: number | null };
 }
 
 /** The signed-in user's own story about a document's family (GET / PUT /documents/{id}/my-story).
@@ -722,4 +754,18 @@ export interface PlatformHealth {
   }[];
   totals: { documents_by_status: Counts; failed_by_code: Counts; in_progress: number; oldest_in_progress_seconds: number | null };
   purges: { purged: number; last_purged_at: string | null; swept: number; last_swept_at: string | null };
+  // PRD 5 U9: each worker's reader status, from its reports of the last 10 minutes (none
+  // for 2 minutes shows "not reporting"; failing shows "slow"), and the jobs waiting in each
+  // lane (null when the queue did not answer). Status only: never an error, key or customer.
+  reader?: ReaderReport[];
+  queues?: { express: number; main: number } | null;
+}
+
+export type ReaderState = "working" | "failing" | "down" | "key_problem";
+
+export interface ReaderReport {
+  worker: string;
+  state: ReaderState;
+  since: string | null; // ISO 8601: in this state since
+  seen_at: string; // ISO 8601: its last report
 }

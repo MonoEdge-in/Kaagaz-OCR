@@ -26,6 +26,7 @@ x-backend: &backend
     STORAGE_ENDPOINT_URL: http://seaweedfs:8333
     QUEUE_ENDPOINT_URL: http://elasticmq:9324
     QUEUE_URL: http://elasticmq:9324/000000000000/kaagaz-jobs
+    QUEUE_EXPRESS_URL: http://elasticmq:9324/000000000000/kaagaz-jobs-express
     CLAMAV_HOST: clamav
     CLAMAV_PORT: "3310"
     # Ollama on the laptop by default; http://ollama:11434 with the profile.

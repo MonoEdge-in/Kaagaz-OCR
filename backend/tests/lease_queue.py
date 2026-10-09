@@ -66,7 +66,8 @@ class LeaseQueue:
 
     # -- producer side ----------------------------------------------------
 
-    def enqueue(self, job: Job) -> None:
+    def enqueue(self, job: Job, *, express: bool = False) -> None:
+        """One lane: ``express`` (PRD 5 Q4) puts the job in the same line."""
         job_id = next(self._ids)
         self._entries[job_id] = _Entry(job)
         self._ready.append(job_id)
@@ -97,6 +98,11 @@ class LeaseQueue:
         self.failed[job_id] = FailedJob(entry.job, entry.attempts, code)
         del self._entries[job_id]
 
+    def defer(self, receipt: str, seconds: int) -> None:
+        """Like SQS's visibility change: handed out again after ``seconds``, as one more attempt."""
+        job_id, entry = self._check(receipt)
+        self._lease(job_id, entry, seconds)
+
     # -- helpers for tests ------------------------------------------------
 
     def pending(self) -> int:
@@ -105,8 +111,8 @@ class LeaseQueue:
 
     # -- internals --------------------------------------------------------
 
-    def _lease(self, job_id: int, entry: _Entry) -> None:
-        entry.expires_at = self._clock.now() + self._lease_seconds
+    def _lease(self, job_id: int, entry: _Entry, seconds: float | None = None) -> None:
+        entry.expires_at = self._clock.now() + (self._lease_seconds if seconds is None else seconds)
         assert entry.token is not None
         heapq.heappush(self._leased, (entry.expires_at, next(self._seq), job_id, entry.token))
 

@@ -102,11 +102,14 @@ class UploadService:
         uploaded_by: str | None = None,
         folder_id: str | None = None,
         ocr_choice: str | None = None,
+        batch_id: str | None = None,
     ) -> UploadResult:
         """``display_name`` must already be cleaned by the caller (the API).
         ``folder_id`` files a new document there (None: the top level); a
         duplicate stays where it is. ``ocr_choice`` is the scan reader the API
-        checked (None: Auto); a duplicate keeps the one it was read with."""
+        checked (None: Auto); a duplicate keeps the one it was read with.
+        ``batch_id`` is the drop the API checked (PRD 5 Q1; None: in none); a
+        duplicate stays in its own."""
         return self._accept(
             customer_id,
             stream,
@@ -114,6 +117,7 @@ class UploadService:
             uploaded_by=uploaded_by,
             folder_id=folder_id,
             ocr_choice=ocr_choice,
+            batch_id=batch_id,
             add=self._repository.add_if_absent,
         )
 
@@ -146,6 +150,7 @@ class UploadService:
             uploaded_by=uploaded_by,
             folder_id=None,
             ocr_choice=ocr_choice,
+            batch_id=None,
             add=add_version,
         )
 
@@ -158,6 +163,7 @@ class UploadService:
         uploaded_by: str | None,
         folder_id: str | None,
         ocr_choice: str | None,
+        batch_id: str | None,
         add: Callable[[DocumentRecord], tuple[DocumentRecord, bool]],
     ) -> UploadResult:
         """The steps in the module docstring; ``add`` records the new document."""
@@ -192,6 +198,7 @@ class UploadService:
                 uploaded_by=uploaded_by,
                 folder_id=folder_id,
                 ocr_choice=ocr_choice,
+                batch_id=batch_id,
             )
             # Store the exact bytes that were hashed.
             self._storage.put(customer_id, record.document_id, spooled.file)

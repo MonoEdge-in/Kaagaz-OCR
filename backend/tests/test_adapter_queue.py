@@ -103,6 +103,41 @@ class StubbedQueueTest(unittest.TestCase):
         )
         self.queue.extend("r-1")
 
+    def test_defer_hands_the_job_back_after_the_seconds(self) -> None:
+        self.stub.add_response(
+            "change_message_visibility",
+            {},
+            {"QueueUrl": URL, "ReceiptHandle": "r-1", "VisibilityTimeout": 30},
+        )
+        self.queue.defer("r-1", 30)
+        self.stub.add_client_error(
+            "change_message_visibility", "ReceiptHandleIsInvalid", http_status_code=400
+        )
+        with self.assertRaises(LeaseLost):
+            self.queue.defer("old", 30)
+        for seconds in (-1, 12 * 60 * 60 + 1):
+            with self.subTest(seconds=seconds), self.assertRaises(ValueError):
+                self.queue.defer("r-1", seconds)
+
+    def test_depth_counts_the_waiting_jobs_of_each_lane(self) -> None:
+        def waiting(stub: Stubber, url: str, count: str) -> None:
+            answer = {"Attributes": {"ApproximateNumberOfMessages": count}}
+            params = {"QueueUrl": url, "AttributeNames": ["ApproximateNumberOfMessages"]}
+            stub.add_response("get_queue_attributes", answer, params)
+
+        waiting(self.stub, URL, "7")
+        self.assertEqual(self.queue.depth(), {"express": 0, "main": 7})  # no express lane
+
+        client = make_client()
+        stub = Stubber(client)
+        stub.activate()
+        self.addCleanup(stub.deactivate)
+        settings = make_settings(queue_url=URL, queue_express_url=URL + "-express", queue_wait_seconds=WAIT)
+        waiting(stub, URL + "-express", "2")
+        waiting(stub, URL, "0")
+        self.assertEqual(SqsQueue(settings, client=client).depth(), {"express": 2, "main": 0})
+        stub.assert_no_pending_responses()
+
     def test_stale_receipt_is_lease_lost(self) -> None:
         for code in ("ReceiptHandleIsInvalid", "AWS.SimpleQueueService.MessageNotInflight"):
             with self.subTest(code=code):
@@ -323,6 +358,8 @@ class UnreachableQueueTest(unittest.TestCase):
             "extend": lambda: queue.extend("r-1"),
             "ping": queue.ping,
             "max_receives": queue.max_receives,
+            "defer": lambda: queue.defer("r-1", 30),
+            "depth": queue.depth,
         }
         for name, call in calls.items():
             with self.subTest(call=name), self.assertRaises(BackendUnavailable):

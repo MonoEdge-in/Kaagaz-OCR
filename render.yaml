@@ -24,11 +24,11 @@ services:
     # compose's migrate service, before every deploy.
     preDeployCommand: >-
       /bin/sh -c 'if [ -n "$SEAWEEDFS_HOST" ]; then export STORAGE_ENDPOINT_URL=http://$SEAWEEDFS_HOST:8333; fi;
-      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs;
+      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs QUEUE_EXPRESS_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs-express;
       alembic upgrade head && python -c "from kaagaz.adapters.storage import S3Storage; from kaagaz.settings import Settings; S3Storage(Settings.from_env()).ensure_bucket()"'
     dockerCommand: >-
       /bin/sh -c 'if [ -n "$SEAWEEDFS_HOST" ]; then export STORAGE_ENDPOINT_URL=http://$SEAWEEDFS_HOST:8333; fi;
-      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs;
+      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs QUEUE_EXPRESS_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs-express;
       exec uvicorn kaagaz.api.main:app --host 0.0.0.0 --port 8000'
     envVars:
       - key: PORT # Render sends the web traffic here
@@ -73,7 +73,7 @@ services:
     dockerContext: ./backend
     dockerCommand: >-
       /bin/sh -c 'if [ -n "$SEAWEEDFS_HOST" ]; then export STORAGE_ENDPOINT_URL=http://$SEAWEEDFS_HOST:8333; fi;
-      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs;
+      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs QUEUE_EXPRESS_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs-express;
       exec python -m kaagaz.worker_main'
     # compose's stop_grace_period: the job in hand finishes first.
     maxShutdownDelaySeconds: 60
@@ -225,7 +225,9 @@ envVarGroups:
   # ANSWER_TRANSLATE_QUESTION MODEL_TRANSLATE_TIMEOUT_SECONDS OCR_DPI_RULE
   # OCR_MODEL OPENROUTER_API_KEY OPENROUTER_BASE_URL OCR_MEDIA_RESOLUTION OCR_THINKING_LEVEL
   # OCR_RETRY_MEDIA_RESOLUTION OCR_RETRY_THINKING_LEVEL OCR_PAGE_CONCURRENCY CPU_WORKERS
-  # MAX_CHECK_CROPS MODEL_RPM READER_OUTAGE_FALLBACK_MINUTES
+  # MAX_CHECK_CROPS MODEL_RPM READER_OUTAGE_FALLBACK_MINUTES WORKER_REPLICAS
+  # MAX_ACTIVE_PER_CUSTOMER EXPRESS_MAX_PAGES MAX_FILES_PER_BATCH
+  # MODEL_PRICE_INPUT_USD_PER_M MODEL_PRICE_OUTPUT_USD_PER_M
   - name: kaagaz-settings
     envVars:
       - key: SEARCH_EF

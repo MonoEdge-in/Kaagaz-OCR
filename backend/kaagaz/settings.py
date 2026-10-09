@@ -211,6 +211,21 @@ class Settings:
     model_rpm: int
     reader_outage_fallback_minutes: int
 
+    # PRD 5 E, the queue and bulk upload; each takes the PRD's value (section 9) when unset.
+    # worker_replicas copies of the worker run (Q3); a customer has at most
+    # max_active_per_customer documents being read at once (Q5). A document of at most
+    # express_max_pages pages goes to queue_express_url, the express lane (Q4); None: no
+    # express lane, every job goes to queue_url. One drop holds at most max_files_per_batch
+    # files (Q1). The model's price in US dollars per million input and output tokens gives
+    # the Numbers tab's spend estimate (U9); 0 means not known, and no estimate is shown.
+    worker_replicas: int
+    max_active_per_customer: int
+    queue_express_url: str | None
+    express_max_pages: int
+    max_files_per_batch: int
+    model_price_input_usd_per_m: float
+    model_price_output_usd_per_m: float
+
     # The page route (PRD 2 R2 to R4). A PDF page's text layer is kept when it has at
     # least text_layer_min_chars letters and digits and text_layer_min_good_ratio good
     # characters, and is not a scan (an image over scan_image_coverage of the page with
@@ -408,6 +423,12 @@ class Settings:
             )
         if openrouter_api_key is not None and _API_KEY.fullmatch(openrouter_api_key) is None:
             raise SettingsError("OPENROUTER_API_KEY must be printable ASCII with no spaces")
+        queue_url = env.text("QUEUE_URL")
+        queue_express_url = (
+            None if env.optional("QUEUE_EXPRESS_URL") is None else env.url("QUEUE_EXPRESS_URL")
+        )
+        if queue_express_url == queue_url:
+            raise SettingsError("QUEUE_EXPRESS_URL must name a queue other than QUEUE_URL")
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -417,7 +438,7 @@ class Settings:
             storage_access_key=env.optional("STORAGE_ACCESS_KEY"),
             storage_secret_key=env.optional("STORAGE_SECRET_KEY"),
             queue_endpoint_url=env.optional("QUEUE_ENDPOINT_URL"),
-            queue_url=env.text("QUEUE_URL"),
+            queue_url=queue_url,
             queue_region=env.text("QUEUE_REGION"),
             queue_lease_seconds=queue_lease_seconds,
             queue_wait_seconds=env.integer("QUEUE_WAIT_SECONDS"),
@@ -456,6 +477,13 @@ class Settings:
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
             model_rpm=env.positive("MODEL_RPM"),
             reader_outage_fallback_minutes=env.positive("READER_OUTAGE_FALLBACK_MINUTES"),
+            worker_replicas=env.positive_or("WORKER_REPLICAS", 3),
+            max_active_per_customer=env.positive_or("MAX_ACTIVE_PER_CUSTOMER", 2),
+            queue_express_url=queue_express_url,
+            express_max_pages=env.positive_or("EXPRESS_MAX_PAGES", 3),
+            max_files_per_batch=env.positive_or("MAX_FILES_PER_BATCH", 100),
+            model_price_input_usd_per_m=env.not_negative_or("MODEL_PRICE_INPUT_USD_PER_M", 0.0),
+            model_price_output_usd_per_m=env.not_negative_or("MODEL_PRICE_OUTPUT_USD_PER_M", 0.0),
             text_layer_min_chars=env.positive("TEXT_LAYER_MIN_CHARS"),
             text_layer_min_good_ratio=env.share("TEXT_LAYER_MIN_GOOD_RATIO"),
             scan_image_coverage=env.share("SCAN_IMAGE_COVERAGE"),
@@ -551,6 +579,14 @@ class _Env:
 
     def optional_integer(self, name: str) -> int | None:
         return None if self.optional(name) is None else self.integer(name)
+
+    def positive_or(self, name: str, default: int) -> int:
+        """``positive``, or ``default`` when unset or empty."""
+        return default if self.optional(name) is None else self.positive(name)
+
+    def not_negative_or(self, name: str, default: float) -> float:
+        """``not_negative``, or ``default`` when unset or empty."""
+        return default if self.optional(name) is None else self.not_negative(name)
 
     def number(self, name: str) -> float:
         value = self.text(name)
