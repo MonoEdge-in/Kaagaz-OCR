@@ -69,13 +69,16 @@ def test_rt3_the_one_reader_says_what_this_server_reads_with(rapidocr_installed:
     }
     assert hints == {
         "none": "Scans wait until this server has a scan reader",
-        "gemini": "The usual reader here: Gemini",
+        "gemini": "The usual reader here: the main reader",  # U8: no engine named
     }
     assert ocr_choices(RAPID)[0]["hint"] == "The usual reader here: the backup reader"
     assert ocr_choices(PADDLE)[0]["hint"] == (
         "The usual reader here: the layout reader, then the backup reader for a page it can't read"
     )
     assert ocr_choices(RAPID)[0]["title"] == "Auto"
+    for settings in (NONE, GEMINI, RAPID, PADDLE):  # U8: words people know, never an engine's name
+        hint = str(ocr_choices(settings)[0]["hint"]).lower()
+        assert not any(name in hint for name in ("gemini", "rapidocr", "paddle")), hint
 
 
 @pytest.mark.parametrize(

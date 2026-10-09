@@ -1060,7 +1060,7 @@ def _auto_hint(settings: Settings) -> str:
     if settings.ocr_engine == "none":
         return "Scans wait until this server has a scan reader"
     if settings.ocr_engine == GEMINI:
-        return "The usual reader here: Gemini"
+        return "The usual reader here: the main reader"
     (primary,) = (engine for engine in _ENGINES if _engine_id(engine) == settings.ocr_engine)
     if not _has_fallback(settings):
         return f"The usual reader here: the {primary.title.lower()}"
