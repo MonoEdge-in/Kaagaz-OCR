@@ -25,6 +25,17 @@ PRD 2 §2 lists them:
    "$12,000". Every page has at least 40 letters and digits, so it stays text_layer
    (test-engineer amendment 15).
 
+Not a PRD 2 exit file: **the 20-page offer letter (PRD 5 CX7)**, made up, with a "Page n
+of 20" footer on every page: public holidays on page 4, casual leave on page 9, the
+sentence about the notice period split across pages 11 and 12, maternity leave on page
+18, and unrelated pages between. Each leave paragraph has a blank gap above and below it,
+so it is a piece of its own page; the notice sentence starts after a gap at the foot of
+page 11 and ends before one on page 12, so it is one piece over both. It comes as a
+digital PDF (``offer_letter_pdf``) and as scanned pages (``offer_letter_scan_pdf``) with
+what the Gemini reader replies for each (``offer_letter_scan_replies``, the G3 schema:
+footers of kind footer, and page 11's notice line continuing on the next page), so both
+paths give the same pieces.
+
 The scans carry no readable text, so their pictures are dark bars where the
 lines are (never Devanagari drawn with Pillow, test-engineer amendment 9), and
 ``ScriptedOcr`` stands in for the OCR engine: it answers each page it is given
@@ -278,6 +289,197 @@ def broken_font_pdf() -> bytes:
 
 # PR 4's C7 fixture (tests/test_cross_page_pieces.py), the one its piece rule was built on.
 PROFIT_LABEL, PROFIT_VALUE = PROFIT, AMOUNT
+
+
+# --- the 20-page offer letter (PRD 5 CX7) -----------------------------------------------------------
+
+OFFER_PAGES = 20
+OFFER_LEAVE_PAGES = {"holidays": 4, "casual leave": 9, "maternity leave": 18}
+OFFER_NOTICE_PAGES = (11, 12)
+HOLIDAYS = "Public holidays: you get 12 paid public holidays in a calendar year."
+CASUAL_LEAVE = "Casual leave: you get 8 days of casual leave in a calendar year."
+MATERNITY_LEAVE = "Maternity leave: a woman employee gets 26 weeks of paid maternity leave."
+NOTICE_START = "The notice period for either side to end this employment is"
+NOTICE_END = "ninety (90) days, or the salary for those days paid in its place."
+_TOP, _MIDDLE, _LOW, _FOOT = 700.0, 500.0, 300.0, 90.0  # paragraph baselines, far enough apart to be gaps
+_LINE = 14.0  # baseline to baseline within a paragraph
+_BODY, _FOOTER = 10.0, 9.0  # font sizes
+
+
+def _paragraphs(*paragraphs: tuple[float, tuple[str, ...]]) -> list[tuple[float, str]]:
+    return [(top - _LINE * i, line) for top, lines in paragraphs for i, line in enumerate(lines)]
+
+
+def offer_letter_pages() -> list[list[tuple[float, str]]]:
+    """Each page's body lines as (baseline in points from the bottom, text), top to bottom.
+    The footer "Page n of 20" is not listed: every page has it at the foot."""
+    body: dict[int, tuple[tuple[float, tuple[str, ...]], ...]] = {
+        1: (
+            (_TOP, ("Patil Textiles Private Limited, 14 Mill Road, Pune 411002", "Date: 1 October 2026")),
+            (
+                _MIDDLE,
+                ("Dear Ms. Anjali Deshmukh,", "We are pleased to offer you the post of Senior Accountant."),
+            ),
+        ),
+        2: (
+            (_TOP, ("Your joining date is 2 November 2026 at our Pune head office.",)),
+            (_MIDDLE, ("Your gross salary is Rs. 7,20,000 a year, paid every month.",)),
+        ),
+        3: (
+            (_TOP, ("The salary is reviewed every April by the finance team.",)),
+            (_MIDDLE, ("Working hours are 9:30 am to 6:00 pm, Monday to Saturday.",)),
+        ),
+        4: (
+            (_TOP, ("The second and fourth Saturdays of each month are off.",)),
+            (_MIDDLE, (HOLIDAYS, "The list of these holidays is put up each January.")),
+            (_LOW, ("Your place of work is the Pune head office.",)),
+        ),
+        5: (
+            (_TOP, ("You will report to the Finance Manager of the company.",)),
+            (_MIDDLE, ("Your duties are listed in the job description attached to this letter.",)),
+        ),
+        6: (
+            (_TOP, ("Travel for work is paid as per the travel policy of the company.",)),
+            (_MIDDLE, ("Expense claims must be sent within 30 days of the travel.",)),
+        ),
+        7: (
+            (_TOP, ("Your probation period is six months from the date of joining.",)),
+            (_MIDDLE, ("Your work is reviewed at the end of the probation period.",)),
+        ),
+        8: (
+            (_TOP, ("A medical insurance cover of Rs. 3,00,000 a year is given to you.",)),
+            (_MIDDLE, ("The cover includes your spouse and two children.",)),
+        ),
+        9: (
+            (_TOP, ("Your provident fund is deducted from the salary as the law requires.",)),
+            (_MIDDLE, (CASUAL_LEAVE, "Casual leave cannot be carried forward to the next year.")),
+            (_LOW, ("Salary slips are sent to your email each month.",)),
+        ),
+        10: (
+            (_TOP, ("You must keep all company information confidential.",)),
+            (_MIDDLE, ("This duty holds during your job and after it ends.",)),
+        ),
+        11: (
+            (_TOP, ("The company may withdraw this offer if any document you give is found false.",)),
+            (_FOOT, (NOTICE_START,)),
+        ),
+        12: (
+            (_TOP, (NOTICE_END,)),
+            (_MIDDLE, ("Any dispute is settled by the courts in Pune, Maharashtra.",)),
+        ),
+        13: (
+            (_TOP, ("You must follow the code of conduct in the employee handbook.",)),
+            (_MIDDLE, ("A copy of the handbook is given on your first day.",)),
+        ),
+        14: (
+            (_TOP, ("The laptop given to you stays the property of the company.",)),
+            (_MIDDLE, ("It must be returned on your last working day.",)),
+        ),
+        15: (
+            (_TOP, ("The company may transfer you to any of its branches in India.",)),
+            (_MIDDLE, ("A transfer allowance is paid as per the transfer policy.",)),
+        ),
+        16: (
+            (_TOP, ("Your performance is reviewed once a year by your manager.",)),
+            (_MIDDLE, ("A yearly bonus may be paid based on that review.",)),
+        ),
+        17: (
+            (_TOP, ("You must not take up any other paid work while employed here.",)),
+            (_MIDDLE, ("Any outside directorship needs written approval.",)),
+        ),
+        18: (
+            (_TOP, ("The company follows the Prevention of Sexual Harassment Act, 2013.",)),
+            (_MIDDLE, (MATERNITY_LEAVE, "This follows the Maternity Benefit Act, 1961.")),
+            (_LOW, ("Creche facilities are available at the Pune office.",)),
+        ),
+        19: (
+            (_TOP, ("Please sign and return a copy of this letter by 25 October 2026.",)),
+            (_MIDDLE, ("This offer lapses if it is not accepted by that date.",)),
+        ),
+        20: (
+            (_TOP, ("Yours sincerely,", "for Patil Textiles Private Limited")),
+            (_MIDDLE, ("Rohan Patil, Head of Human Resources",)),
+        ),
+    }
+    return [_paragraphs(*body[n]) for n in range(1, OFFER_PAGES + 1)]
+
+
+def _offer_footer(page: int) -> str:
+    return f"Page {page} of {OFFER_PAGES}"
+
+
+def offer_letter_pdf() -> bytes:
+    """The offer letter as a digital PDF: 10 pt Helvetica, its footer in 9 pt at the foot."""
+    return make_pdf(
+        [
+            Page(
+                texts=[
+                    *(Text(72, y, line, _BODY) for y, line in lines),
+                    Text(72, 30, _offer_footer(n), _FOOTER),
+                ]
+            )
+            for n, lines in enumerate(offer_letter_pages(), start=1)
+        ]
+    )
+
+
+def _offer_boxes(page: int) -> list[tuple[str, Box, str]]:
+    """Each line of the page, the footer last, with its box as page fractions (top left
+    origin) where the PDF draws it, and its kind."""
+    lines = [(line, y, _BODY, "paragraph") for y, line in offer_letter_pages()[page - 1]]
+    lines.append((_offer_footer(page), 30.0, _FOOTER, "footer"))
+    return [
+        (
+            text,
+            (
+                72 / 612,
+                (792 - y - size) / 792,
+                min(560.0, 72 + 0.5 * size * len(text)) / 612,
+                (792 - y + 2) / 792,
+            ),
+            kind,
+        )
+        for text, y, size, kind in lines
+    ]
+
+
+def offer_letter_scan_pdf() -> bytes:
+    """The offer letter scanned: each page a picture only (150 DPI), a dark bar where each
+    line is, so it has no text layer and the Gemini reader reads it."""
+    pages = []
+    for n in range(1, OFFER_PAGES + 1):
+        picture = _scan_picture([(text, box) for text, box, _ in _offer_boxes(n)], 1275, 1650)
+        pages.append(Page(picture=Picture(picture, 0, 0, 612, 792)))
+    return make_pdf(pages)
+
+
+def offer_letter_scan_replies() -> list[dict[str, Any]]:
+    """What the Gemini reader replies for each scanned page (the G3 schema), in page order:
+    every line in reading order with its box_2d ([ymin, xmin, ymax, xmax] in 0..1000), the
+    footer last as kind footer, and page 11's notice line continuing on the next page
+    (CX1). Wrap each in ``openrouter_fake.json_reply`` for the fake server."""
+    replies = []
+    for n in range(1, OFFER_PAGES + 1):
+        lines = [
+            {
+                "order": order,
+                "kind": kind,
+                "text": text,
+                "box_2d": [
+                    round(1000 * y0, 1),
+                    round(1000 * x0, 1),
+                    round(1000 * y1, 1),
+                    round(1000 * x1, 1),
+                ],
+                "unsure": [],
+                "continues_on_next_page": text == NOTICE_START,
+                "table": None,
+            }
+            for order, (text, (x0, y0, x1, y1), kind) in enumerate(_offer_boxes(n))
+        ]
+        page = {"quality": "good", "handwritten": False, "scripts": ["latin"], "issues": []}
+        replies.append({"page": page, "lines": lines})
+    return replies
 
 
 # --- all six ------------------------------------------------------------------------------------

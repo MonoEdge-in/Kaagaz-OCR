@@ -6,13 +6,17 @@ These test the fixtures, not new product code, so they were never red.
 
 import io
 import unittest
+from typing import Any
 
 import pdfplumber
 import pypdfium2
 from PIL import Image, ImageStat
 
+from kaagaz.chunking.lines import pieces_from_lines
+from kaagaz.chunking.piece import Piece
 from kaagaz.ingestion import sniff
 from kaagaz.reading.image_reader import ImageReader
+from kaagaz.reading.ocr import ocr_spans
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
@@ -20,14 +24,29 @@ from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
 from tests.exit_fixtures import (
     BROKEN_FONT_OCR,
     BROKEN_FONT_TEXT,
+    CASUAL_LEAVE,
     HINDI_BILL_LINES,
+    HOLIDAYS,
     LAND_RECORD_LINES,
     LEGACY_FONT,
+    MATERNITY_LEAVE,
+    NOTICE_END,
+    NOTICE_START,
+    OFFER_LEAVE_PAGES,
+    OFFER_NOTICE_PAGES,
+    OFFER_PAGES,
     PROFIT_LABEL,
     PROFIT_VALUE,
     ScriptedOcr,
     exit_files,
+    offer_letter_pdf,
+    offer_letter_scan_pdf,
+    offer_letter_scan_replies,
 )
+from tests.test_gemini_ocr import MODEL as GEMINI_MODEL
+from tests.test_gemini_ocr import build as gemini_build
+from tests.test_gemini_ocr import page as gemini_page
+from tests.test_gemini_ocr import reply as gemini_reply
 from tests.test_pdf_reader import BLANK_PAGE_STDDEV, RULES
 
 FILES = exit_files()
@@ -154,3 +173,80 @@ class BankStatementTest(unittest.TestCase):
         self.assertEqual(cells[(3, 2)], "NEFT from Patil Garments")
         self.assertEqual(cells[(3, 4)], "11800")
         self.assertEqual({span.location.page for span in spans}, {1})
+
+
+class OfferLetterTest(unittest.TestCase):
+    """PRD 5 CX7: the made-up 20-page offer letter, as a digital PDF and as Gemini-read scans."""
+
+    def pieces(self) -> list[Piece]:
+        return pieces_from_lines("cust-a", "doc-1", pdf_text(offer_letter_pdf()))
+
+    def test_cx7_twenty_text_pages_each_with_its_footer_and_40_letters_and_digits(self) -> None:
+        spans = pdf_text(offer_letter_pdf())
+        self.assertEqual({span.origin for span in spans}, {"text_layer"})
+        footers = [span.text for span in spans if span.text.startswith("Page ")]
+        self.assertEqual(footers, [f"Page {n} of {OFFER_PAGES}" for n in range(1, OFFER_PAGES + 1)])
+        letters: dict[int, int] = {}
+        for span in spans:
+            if not span.text.startswith("Page "):
+                page = span.location.page
+                letters[page] = letters.get(page, 0) + sum(ch.isalnum() for ch in span.text)
+        self.assertEqual(sorted(letters), list(range(1, OFFER_PAGES + 1)))
+        self.assertGreaterEqual(min(letters.values()), 40)  # each stays on the text layer (R2)
+
+    def test_cx7_each_kind_of_leave_is_a_piece_of_its_own_page(self) -> None:
+        pieces = self.pieces()
+        for text, page in ((HOLIDAYS, 4), (CASUAL_LEAVE, 9), (MATERNITY_LEAVE, 18)):
+            (piece,) = [p for p in pieces if text in p.text]
+            self.assertEqual((piece.page_from, piece.page_to), (page, page), text)
+        self.assertEqual(sorted(OFFER_LEAVE_PAGES.values()), [4, 9, 18])
+        leave = [p for p in pieces if "leave" in p.text.casefold() or "holiday" in p.text.casefold()]
+        self.assertEqual([(p.page_from, p.page_to) for p in leave], [(4, 4), (9, 9), (18, 18)])
+        self.assertEqual([p for p in pieces if f"of {OFFER_PAGES}" in p.text], [])  # no footer in a piece
+
+    def test_cx7_the_notice_sentence_is_one_piece_over_pages_11_and_12(self) -> None:
+        pieces = self.pieces()
+        (piece,) = [p for p in pieces if NOTICE_START in p.text]
+        self.assertEqual([p for p in pieces if NOTICE_END in p.text], [piece])
+        self.assertEqual(piece.text, f"{NOTICE_START}\n{NOTICE_END}")
+        self.assertEqual((piece.page_from, piece.page_to), OFFER_NOTICE_PAGES)
+        self.assertEqual({region["page"] for region in piece.regions()}, set(OFFER_NOTICE_PAGES))
+        self.assertEqual([p for p in pieces if "notice" in p.text.casefold()], [piece])
+
+    def test_cx7_the_scans_have_no_text_layer_and_ocr_reads_every_page(self) -> None:
+        engine = ScriptedOcr([[(line["text"], _box(line)) for line in reply["lines"]] for reply in REPLIES])
+        spans = pdf_text(offer_letter_scan_pdf(), engine)
+        self.assertEqual(len(engine.seen), OFFER_PAGES)
+        self.assertEqual({span.origin for span in spans}, {"ocr"})
+        self.assertLess(len(offer_letter_scan_pdf()), 200_000)
+
+    def test_cx7_the_scans_read_by_gemini_give_the_same_pieces(self) -> None:
+        """Each reply through the Gemini reader (fake client, no network), its lines made spans
+        as the reader socket makes them, and its continues flags passed on (CX1)."""
+        built = gemini_build(*(gemini_reply(reply) for reply in REPLIES))
+        spans: list[Span] = []
+        continued = set()
+        for n in range(1, OFFER_PAGES + 1):
+            read = built.engine.read_page(gemini_page(), page_no=n)
+            self.assertEqual(read.read_by, GEMINI_MODEL)  # read by the model, never the backup reader
+            spans += ocr_spans(list(read.lines), n, *gemini_page().size)
+            if read.continues_on_next_page:
+                continued.add(n)
+        self.assertEqual(
+            continued, {OFFER_NOTICE_PAGES[0]}
+        )  # the footer after the flagged line hides nothing
+        scanned = pieces_from_lines("cust-a", "doc-1", spans, continues=continued)
+        typed = self.pieces()
+        self.assertEqual(
+            [(p.text, p.page_from, p.page_to) for p in scanned],
+            [(p.text, p.page_from, p.page_to) for p in typed],
+        )
+
+
+REPLIES = offer_letter_scan_replies()
+
+
+def _box(line: dict[str, Any]) -> tuple[float, float, float, float]:
+    """A G3 line's box_2d ([ymin, xmin, ymax, xmax] in 0..1000) as (x0, y0, x1, y1) fractions."""
+    y0, x0, y1, x1 = line["box_2d"]
+    return x0 / 1000, y0 / 1000, x1 / 1000, y1 / 1000
