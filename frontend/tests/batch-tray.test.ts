@@ -124,9 +124,10 @@ describe("each file's place in the tray", () => {
     ]);
     expect(rowKind(row("old", { kind: "done", documentId: "d" }))).toBe("ready");
     expect(rowKind(row("w2", { kind: "waiting" }))).toBe("sending");
-    expect(rowKind(row("scan", reading(doc("s", { status: "received", progress: { step: "scanning", done: 0, total: 0 } }))))).toBe(
-      "waiting",
-    );
+    const held = doc("h", { status: "received", progress: { step: "waiting", done: 0, total: 0 } });
+    expect(rowKind(row("held", reading(held)))).toBe("waiting");
+    const scanning = doc("s", { status: "received", progress: { step: "scanning", done: 0, total: 0 } });
+    expect(rowKind(row("scan", reading(scanning)))).toBe("reading");
   });
 
   it("lists the files worst first, keeping upload order within each kind", () => {

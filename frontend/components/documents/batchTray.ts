@@ -48,8 +48,9 @@ export function rowKind(entry: Pick<UploadEntry, "state">): RowKind {
     case "saving":
       return "sending";
     case "reading": {
+      // As the batch API counts it: no progress yet, or held back (Q6), is waiting.
       const step = state.document.progress?.step;
-      return step === undefined || step === "scanning" ? "waiting" : "reading";
+      return step === undefined || step === "waiting" ? "waiting" : "reading";
     }
     case "done":
       if (!state.document) return "ready";

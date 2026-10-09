@@ -146,7 +146,8 @@ export type DocType =
 
 /** How far the worker has got (PRD 2, X3), e.g. step "reading", done 3, total 40. */
 export interface DocumentProgress {
-  step: "scanning" | "preparing" | "reading" | "understanding" | "indexing";
+  // "waiting" (PRD 5 Q6): held back in its batch or for the reader; the status message says why.
+  step: "scanning" | "preparing" | "reading" | "understanding" | "indexing" | "waiting";
   done: number;
   total: number; // 0 for a sheet, which is read as a whole
 }

@@ -12,8 +12,9 @@ import {
   normaliseIdentifier,
   spotNote,
 } from "@/components/viewer/panels";
+import { ALL_CLEAR, attentionPages } from "@/components/viewer/pageProblems";
 import { highlightsOf, pageChange, selectSpot } from "@/components/viewer/selection";
-import type { DocumentCard, ExtractedValue, Region } from "@/lib/types";
+import type { DocumentCard, ExtractedValue, PageSummary, Region } from "@/lib/types";
 
 const box = (page: number, x = 0.1): Region => ({
   kind: "box",
@@ -42,7 +43,7 @@ const value = (overrides: Partial<ExtractedValue>): ExtractedValue => ({
 const card: DocumentCard = {
   version: 1,
   run_id: null,
-  model: "qwen",
+  model: "the AI model",
   prompt: "p",
   doc_type: "land_record",
   languages: ["mr", "en"],
@@ -261,5 +262,56 @@ describe("spotNote and noCardText", () => {
   it("explains a missing card without calling it an error", () => {
     expect(noCardText("ready")).toMatch(/^No document card\. The AI model was off/);
     expect(noCardText("clean")).toBe("The document card comes once the document is read.");
+  });
+});
+
+describe("the Attention panel (PRD 5 U5)", () => {
+  const page = (page_no: number, more: Partial<PageSummary> = {}): PageSummary => ({
+    page_no,
+    width: 595,
+    height: 842,
+    unit: "px",
+    has_image: true,
+    route: "ocr",
+    effective_dpi: 300,
+    low_resolution: false,
+    read_by: null,
+    read_quality: "good",
+    read_issues: [],
+    unsure_words: 0,
+    illegible_words: 0,
+    unpinned_lines: 0,
+    accepted_by: null,
+    accepted_at: null,
+    read_again_requested_at: null,
+    ...more,
+  });
+
+  it("says so when every page was read clearly", () => {
+    expect(attentionPages([page(1), page(2)])).toEqual([]);
+    expect(ALL_CLEAR).toBe("Everything on these pages was read clearly.");
+  });
+
+  it("lists every problem by page, in page order, in the issue table's words", () => {
+    const blurry = { code: "blurry" as const, says: "This page is blurry.", fix: "Scan it again." };
+    const pages = [
+      page(1),
+      page(2, { read_quality: "unreadable", read_issues: ["blurry"], problems: [blurry] }),
+      page(3, { read_quality: "uncertain", unsure_words: 14, unpinned_lines: 1, accepted_at: "2026-10-09T10:00:00Z" }),
+    ];
+    expect(attentionPages(pages)).toEqual([
+      { pageNo: 2, lines: ["This page is blurry."], kept: false },
+      {
+        pageNo: 3,
+        lines: ["14 words unsure", "The exact spot of 1 line couldn't be confirmed."],
+        kept: true,
+      },
+    ]);
+  });
+
+  it("says an unreadable page with no problems listed couldn't be read", () => {
+    expect(attentionPages([page(4, { read_quality: "unreadable", illegible_words: 3 })])).toEqual([
+      { pageNo: 4, lines: ["This page couldn't be read.", "3 words couldn't be read."], kept: false },
+    ]);
   });
 });

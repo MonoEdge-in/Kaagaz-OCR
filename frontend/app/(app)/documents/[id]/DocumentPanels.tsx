@@ -1,7 +1,9 @@
 "use client";
 
 // The panels beside the page (PRD 3 Y1 to Y3): the document card, the related
-// documents and the invoice. Each item with a spot is a button that shows it
+// documents and the invoice; and first, the Attention panel (PRD 5 U5): every
+// reading problem in the document, by page, each page a jump link, with the
+// shown page's marks as a list of the same buttons as on the page. Each item with a spot is a button that shows it
 // on its page, with its label's spot too. Every text came from the document or
 // the AI model, so it is shown as plain text; the AI's own words sit under a
 // heading that says so.
@@ -24,11 +26,13 @@ import {
 } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
 import { fieldText } from "@/components/viewer/labels";
+import { ALL_CLEAR, attentionPages } from "@/components/viewer/pageProblems";
+import { markName, marksOnPage } from "@/components/viewer/readingMarks";
 import { valueAt } from "@/components/viewer/scanned";
 import { sameRegion } from "@/components/viewer/selection";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import { docTypeLabel } from "@/lib/format";
-import type { DocumentDetail, ExtractedValue, Region } from "@/lib/types";
+import type { DocumentDetail, ExtractedValue, PageSummary, ReadingMark, Region } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
 interface PanelProps {
@@ -226,6 +230,70 @@ export function InvoicePanel({ detail, active, onShow }: PanelProps) {
             </tbody>
           </table>
         </div>
+      )}
+    </section>
+  );
+}
+
+/** PRD 5 U5: the document's reading problems by page, with jump links; the shown page's marks as buttons. */
+export function AttentionPanel({
+  pages,
+  current,
+  marks,
+  onPage,
+  onMark,
+}: {
+  pages: PageSummary[];
+  current: number | null; // the page shown
+  marks: ReadingMark[]; // the shown page's marks
+  onPage: (pageNo: number) => void;
+  onMark: (mark: ReadingMark, name: string) => void;
+}) {
+  const problemPages = attentionPages(pages);
+  const shownMarks = current === null ? [] : marksOnPage(marks, current); // as numbered on the page
+  return (
+    <section className={styles.panel} aria-labelledby="attention-heading">
+      <h2 id="attention-heading" className={styles.valuesHeading}>
+        Attention
+      </h2>
+      {problemPages.length === 0 ? (
+        <p className="muted">{ALL_CLEAR}</p>
+      ) : (
+        <ul className={styles.panelList}>
+          {problemPages.map((item) => (
+            <li key={item.pageNo}>
+              <button
+                type="button"
+                className={styles.valueButton}
+                aria-current={item.pageNo === current ? "page" : undefined}
+                onClick={() => onPage(item.pageNo)}
+              >
+                Page {item.pageNo}
+                <span className="visually-hidden">, show it</span>
+              </button>
+              {item.kept && <span className={styles.pageNote}> Kept as is</span>}
+              <ul className={styles.checkReasons}>
+                {item.lines.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+              {item.pageNo === current && shownMarks.length > 0 && (
+                <ul className={styles.panelList} aria-label={`Marks on page ${item.pageNo}`}>
+                  {shownMarks.map((mark, index) => {
+                    const name = markName(mark, index, shownMarks.length);
+                    return (
+                      <li key={index}>
+                        <button type="button" className={styles.valueButton} onClick={() => onMark(mark, name)}>
+                          {name}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </section>
   );
