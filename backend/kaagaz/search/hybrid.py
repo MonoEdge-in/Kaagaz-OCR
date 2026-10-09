@@ -319,10 +319,14 @@ _NEIGHBOURS = text(
     " ORDER BY h.rank, p.seq"
 )
 
-# PRD 5 CX5: how big the scope's pieces are, in bytes of text and header (at least their
-# characters), so whole-document mode is skipped before any text is read.
+# PRD 5 CX5: whether the scope's pieces are more than :most bytes of text and header (at
+# least their characters), so whole-document mode is skipped before any text is read. A
+# running sum in scan order (ROWS UNBOUNDED PRECEDING needs no row after the current one),
+# so EXISTS stops at the first piece past :most: about :most bytes are counted, never the
+# whole scope. octet_length reads a stored text's size, not the text.
 _WHOLE_SIZE = text(
-    "SELECT coalesce(sum(octet_length(p.text) + octet_length(p.context_header)), 0)"
+    "SELECT EXISTS (SELECT 1 FROM (SELECT sum(octet_length(p.text) + octet_length(p.context_header))"
+    " OVER (ROWS UNBOUNDED PRECEDING) AS running"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -336,6 +340,7 @@ _WHOLE_SIZE = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    ") AS w WHERE w.running > :most)"
 )
 
 # CX5: every piece of the scope, in reading order (oldest document first). _DETAILS's columns.
@@ -792,15 +797,15 @@ def _unseen(rows: Iterable[Sequence[Any]], hits: "Sequence[Hit]") -> list[Search
 def whole(conn: Connection, *, customer_id: str, scope: Scope, max_bytes: int) -> list[SearchHit] | None:
     """CX5: every piece of ``scope``, in reading order, or None when there is none or their
     text and headers are more than ``max_bytes`` bytes (UTF-8, so at least as many as their
-    characters), which is checked first, reading no text. Two statements, O(n) for the
-    scope's n pieces."""
+    characters), which is checked first, reading no text and stopping past ``max_bytes``
+    (``_WHOLE_SIZE``). Two statements: O(k) for the k pieces in the first ``max_bytes``,
+    then O(n) for the scope's n pieces only when they fit."""
     if scope.matches_nothing:
         return None
     params = {"c": customer_id} | scope.params()
-    size = int(conn.execute(_WHOLE_SIZE, params).scalar_one())
-    if not 0 < size <= max_bytes:
+    if conn.execute(_WHOLE_SIZE, params | {"most": max_bytes}).scalar_one():
         return None
-    return _unseen(conn.execute(_WHOLE, params), [])
+    return _unseen(conn.execute(_WHOLE, params), []) or None
 
 
 def topic_pieces(

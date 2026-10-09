@@ -8,6 +8,7 @@ are in test_isolation_context_db.py.
 """
 
 import json
+import uuid
 from datetime import UTC, datetime
 
 import pytest
@@ -107,6 +108,28 @@ def test_cx5_whole_gives_every_piece_in_reading_order_and_skips_a_big_scope(db: 
     assert found is not None and [hit.text for hit in found] == [*OFFER, "Notice period: 30 days."]
     assert only_first is not None and [hit.seq for hit in only_first] == [0, 1, 2, 3, 4]
     assert too_big is None
+
+
+def test_cx5_the_size_check_takes_an_exact_fit_and_refuses_one_byte_less(db: Database) -> None:
+    """``_WHOLE_SIZE`` stops at the first piece past the limit (a running sum), so it answers
+    "more than max_bytes" without summing the whole scope; the edge is exact."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer, name="one.pdf")
+    add_pieces(db, customer, document, [("Casual leave: 8 days.", None), ("Notice: 30 days.", None)])
+    size_sql = text(
+        "SELECT sum(octet_length(text) + octet_length(context_header)) FROM pieces WHERE customer_id = :c"
+    )
+    with db.customer(customer) as conn:
+        size = int(conn.execute(size_sql, {"c": customer}).scalar_one())
+        exact = hybrid.whole(conn, customer_id=customer, scope=EVERYTHING, max_bytes=size)
+        short = hybrid.whole(conn, customer_id=customer, scope=EVERYTHING, max_bytes=size - 1)
+        first_only = hybrid.whole(conn, customer_id=customer, scope=EVERYTHING, max_bytes=1)
+        nothing = hybrid.whole(
+            conn, customer_id=customer, scope=Scope(document_ids=(str(uuid.uuid4()),)), max_bytes=size
+        )
+
+    assert exact is not None and [hit.seq for hit in exact] == [0, 1]
+    assert short is None and first_only is None and nothing is None
 
 
 def test_cx6_topic_pieces_stay_inside_each_document_and_are_capped(db: Database) -> None:
