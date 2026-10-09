@@ -26,6 +26,7 @@ Set these once in the AWS shell:
 ```
 export AWS_REGION=ap-south-1
 IID=<the Kaagaz instance id, i-...>
+EIP=<the Elastic IP>
 ```
 
 ## A. Before release
@@ -78,7 +79,7 @@ IID=<the Kaagaz instance id, i-...>
    set_env OCR_DPI 300
    set_env OCR_TIMEOUT_SECONDS 120
    set_env MODEL_ENABLED true
-   grep -E '^(OCR_ENGINE|OCR_DPI|OCR_TIMEOUT_SECONDS|MODEL_ENABLED|OCR_MODEL|MODEL_CHAT|MODEL_EMBED)=' .env
+   grep -E '^(OCR_ENGINE|OCR_DPI|OCR_TIMEOUT_SECONDS|MODEL_ENABLED|OCR_MODEL|MODEL_CHAT|MODEL_EMBED|EXTRACT_WINDOW_CHARS|EXTRACT_WINDOW_OVERLAP)=' .env
    grep -c '^OPENROUTER_API_KEY=.' .env
    ```
 
@@ -87,6 +88,11 @@ IID=<the Kaagaz instance id, i-...>
      `google/gemini-embedding-2`); with any other, the api and worker stop at
      start-up naming it. Copy the line from `.env.example` with `set_env` if
      one is not.
+   * `EXTRACT_WINDOW_CHARS` and `EXTRACT_WINDOW_OVERLAP`, if listed, must be
+     empty, or `EXTRACT_WINDOW_CHARS` 1700 or less with `EXTRACT_WINDOW_OVERLAP`
+     below it. They are now checked against the fixed 2048-token invoice
+     reply, and with any other value the api and worker stop at start-up
+     naming it. Empty, the windows are 1700 characters with a 400 overlap.
    * The second `grep` prints `1`: the OpenRouter key is set. It never prints
      the key.
    * Until step 5, the old compose files still choose the old reader and
@@ -153,8 +159,9 @@ Quiet time; the site is down for about 15 minutes.
    sudo mv /etc/kaagaz/no-idle-stop /etc/kaagaz/no-idle-stop.hold; sudo ~/kaagaz/infra/ec2/idle-stop.sh --dry-run; sudo mv /etc/kaagaz/no-idle-stop.hold /etc/kaagaz/no-idle-stop
    ```
 
-   `job queue ... busy` means wait and run it again. Any other answer (signed-in
-   requests, or "would stop") means both queues are empty.
+   Only `would stop` or `N signed-in API requests` proves both queues are
+   empty. Any other `staying on:` answer (a busy job queue, a queue it could
+   not read, a running deploy) means wait and run it again.
 
 8. Stop the instance, in the AWS shell:
 
@@ -202,15 +209,41 @@ Quiet time; the site is down for about 15 minutes.
 
     Expect `t3.xlarge running`.
 
-13. The Elastic IP stays on the instance through a stop and start:
+13. Update the Wake Lambda. `kaagaz-wake` is set up by hand, so a deploy never
+    changes it: give it `infra/aws/wake/handler.py` as it is on `production`
+    now (PR 4 changed its message). First check which file and function it
+    runs:
 
     ```
-    aws ec2 describe-addresses --public-ips 35.154.137.223 --query 'Addresses[0].InstanceId' --output text
+    aws lambda get-function-configuration --function-name kaagaz-wake --query Handler --output text
+    ```
+
+    Expect `handler.handler` (the file `handler.py`, its function `handler`).
+    Then either paste the file over that file in the Lambda console's code
+    editor and choose Deploy, or upload it to AWS CloudShell (Actions, Upload
+    file) and run:
+
+    ```
+    zip wake.zip handler.py
+    aws lambda update-function-code --function-name kaagaz-wake --zip-file fileb://wake.zip
+    aws lambda wait function-updated --function-name kaagaz-wake
+    ```
+
+    If the Handler names another file, use the console way, in that file, and
+    set the Handler to `<that file, without .py>.handler`. The settings
+    (`INSTANCE_ID`, `WAKE_TOKEN`) are not in the code and stay as they are.
+    Then open the Wake link: with the server running it says "Already
+    running."
+
+14. The Elastic IP stays on the instance through a stop and start:
+
+    ```
+    aws ec2 describe-addresses --public-ips "$EIP" --query 'Addresses[0].InstanceId' --output text
     ```
 
     Expect the same `$IID`.
 
-14. On the server:
+15. On the server:
 
     ```
     nproc
@@ -240,7 +273,7 @@ Quiet time; the site is down for about 15 minutes.
       done
       ```
 
-15. Lower the Budgets and alarm thresholds to the new monthly cost (the
+16. Lower the Budgets and alarm thresholds to the new monthly cost (the
     amount is Vrushit's call):
 
     ```
@@ -257,7 +290,7 @@ Quiet time; the site is down for about 15 minutes.
 
 ## D. Cleanup, 7 days later
 
-16. On the server, remove the old images and the old model store volume. Volumes
+17. On the server, remove the old images and the old model store volume. Volumes
     are never pruned in bulk.
 
     ```
@@ -276,7 +309,7 @@ Quiet time; the site is down for about 15 minutes.
     df -h /
     ```
 
-17. In the AWS shell, deregister the rollback image and delete its snapshots:
+18. In the AWS shell, deregister the rollback image and delete its snapshots:
 
     ```
     SNAPS=$(aws ec2 describe-images --image-ids "$AMI" --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)
@@ -284,32 +317,39 @@ Quiet time; the site is down for about 15 minutes.
     for snap in $SNAPS; do aws ec2 delete-snapshot --snapshot-id "$snap"; done
     ```
 
-18. On the server: `rm ~/env-before-pr4`. Update the offline copy of `.env` in
+19. On the server: `rm ~/env-before-pr4`. Update the offline copy of `.env` in
     the password manager.
 
 ## Rollback
 
 * **Gemini problems** (any instance type): set `OCR_ENGINE=rapidocr` in `.env`
   (`set_env OCR_ENGINE rapidocr`, step 4), then `dc up -d api worker`. Scans
-  are read by RapidOCR until it is set back.
+  are read by RapidOCR until it is set back. While it is in effect no checker
+  reads their values again, so every scanned value shows needs review.
 * **Hardware problems:** stop the instance (step 8), set
   `--instance-type Value=g4dn.xlarge` (step 10), and start it (step 12). PR 4
   runs on the g4dn too. Or launch a new instance from the step 9 image with
   `aws ec2 run-instances --image-id "$AMI" --instance-type g4dn.xlarge` and the
-  old instance's subnet, security group and instance profile, then
-  `aws ec2 associate-address --public-ip 35.154.137.223 --instance-id <new id>`.
+  old instance's subnet, security group and instance profile, then move the
+  Elastic IP to it by its allocation id:
+
+  ```
+  ALLOC=$(aws ec2 describe-addresses --public-ips "$EIP" --query 'Addresses[0].AllocationId' --output text)
+  aws ec2 associate-address --allocation-id "$ALLOC" --instance-id <new id>
+  ```
+
   A new instance has a new id: update the Wake Lambda's `INSTANCE_ID` and the
   weekday schedule's target.
 * **Back to the old reader stack:** first back to the g4dn (above), then
   revert PR 4 through a pull request into `production`, and restore the old
   `.env` with `cp -p ~/env-before-pr4 .env`. The first deploy after the revert
   starts the stack without the old reader containers; the next run, within 5
-  minutes, starts them. After step 16, the old images and model store are
+  minutes, starts them. After step 17, the old images and model store are
   gone, so the first deploy rebuilds them and the models must be fetched again.
 
 ## Known risks
 
-* **Disk:** tens of GB come back only at step 16.
+* **Disk:** tens of GB come back only at step 17.
 * **Old reads:** pages read before PR 4 say "Read by OCR" (an unknown reader);
   Read again reads them with Gemini.
 * **Old runs:** `processing_runs` keeps the old reader names as history; the
@@ -318,6 +358,6 @@ Quiet time; the site is down for about 15 minutes.
   worker's missing-vector pass (PRD 5 M5), or at once with
   `dc exec api python -m kaagaz.cli reembed`.
 * **CPU credits:** Standard credits would slow the workers once spent, so the
-  instance runs Unlimited; watch CPUSurplusCreditsCharged (step 14).
+  instance runs Unlimited; watch CPUSurplusCreditsCharged (step 15).
 * **The machine image:** the disk was set up on a Deep Learning AMI for the
   g4dn, untested on a CPU instance. Step 9's image is the safety net.
