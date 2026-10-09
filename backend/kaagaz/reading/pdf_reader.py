@@ -50,6 +50,15 @@ by one space, and the file's own signals for the page
 ``on_page`` (if given) is called after every page, text pages too, so the
 worker's heartbeat and the progress move once per page (PRD 2 X3).
 
+Pages in parallel (PRD 5 G8): given a ``PagePool`` (``pages``), the engine's
+``read_page`` for up to its size of pages runs on the pool's threads while
+this thread goes on parsing and drawing the next pages; pdfplumber, pypdfium2,
+drawing, the blank check and the second reading at the ceiling all stay on
+this thread, and pages are finished, ``on_page`` included, strictly in page
+order (``socket.PagesInOrder``), so the spans are the same as without a pool.
+The engine is asked through ``read_page`` (``ocr.as_page_engine``), so the
+meter keeps each page's ``PageRead``.
+
 Refusals, as short codes raised outside any ``except`` block (the library
 error can quote the file, so nothing is chained on):
 
@@ -63,7 +72,8 @@ page (with ``text_height``, plus one probe picture, and a second reading of a
 page that gave nothing at a lowered DPI). Memory is one page at a time: the
 pdfplumber and pypdfium2 documents are open together, each page's parsed
 objects are released after it is read, and an OCR'd page's picture after the
-engine has read it.
+engine has read it; with a pool, up to its size of pictures plus the one being
+drawn.
 """
 
 import io
@@ -72,7 +82,7 @@ import statistics
 import struct
 import zlib
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pdfplumber
@@ -80,12 +90,13 @@ from pdfminer.pdfdocument import PDFEncryptionError
 from pdfminer.pdfexceptions import PDFException
 from pdfminer.psexceptions import PSException
 from pdfplumber.utils.exceptions import MalformedPDFException, PdfminerException
+from PIL import Image
 
 from kaagaz.ingestion import sniff
 from kaagaz.preparing.page_checks import is_blank, largest_image_dpi
 from kaagaz.preparing.pages import check_page_count, open_pdf, render_pdf_page
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
-from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
+from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, PageEngine, PageRead, as_page_engine, ocr_spans
 from kaagaz.reading.ocr_dpi import (
     DPI_RULES,
     FIXED,
@@ -97,7 +108,7 @@ from kaagaz.reading.ocr_dpi import (
 )
 from kaagaz.reading.pdf_signals import page_signals, words_left_visible
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.socket import NoReader, OnPage
+from kaagaz.reading.socket import NoReader, OnPage, PagePool, PagesInOrder
 from kaagaz.reading.spans import BoxLocation, ReadError, Span
 from kaagaz.reading.text_quality import (
     PageSignals,
@@ -136,6 +147,21 @@ _DAMAGED = (
     zlib.error,
 )
 
+# One page's spans and how it was read (its route), or None when it gave nothing unread.
+_PageResult = tuple[list[Span], RouteDecision | None]
+
+
+@dataclass(frozen=True, slots=True)
+class _ScanPage:
+    """A page drawn for the engine, waiting to be read: its picture, the DPI it was drawn
+    at and the ceiling, the route check's decision, and the text layer to fall back to."""
+
+    image: Image.Image
+    dpi: int
+    ceiling: int
+    decision: RouteDecision
+    fallback: list[Span]
+
 
 class PdfReader:
     name = "pdfplumber"
@@ -150,6 +176,7 @@ class PdfReader:
         rules: TextLayerRules,
         blank_stddev: float,
         dpi_rule: str = FIXED,
+        pages: PagePool | None = None,
     ) -> None:
         # No defaults: limits are Vrushit's decision (PRD section 6).
         if min(max_pages, dpi, max_image_pixels) < 1:
@@ -160,6 +187,8 @@ class PdfReader:
             raise ValueError(f"dpi_rule must be one of {sorted(DPI_RULES)}")
         self._dpi_rule = dpi_rule
         self._ocr = ocr
+        self._reads: PageEngine | None = None if ocr is None else as_page_engine(ocr)
+        self._pool = pages
         self._max_pages = max_pages
         self._dpi = dpi
         self._max_ocr_pixels = min(max_image_pixels, MAX_OCR_PIXELS)
@@ -171,10 +200,9 @@ class PdfReader:
 
     @property
     def version(self) -> str:
-        """Asked for after reading, so an engine whose version comes from its reply
-        (PaddleOCR-VL) is named as it was, with the DPI when a page had to be drawn lower
-        to fit the pixel limits and, with the text-height rule, the lowest DPI it chose
-        (``;text_dpi=``) and the pages read again (``;ocr_reread=``)."""
+        """Asked for after reading, so the engine is named as it was, with the DPI when a
+        page had to be drawn lower to fit the pixel limits and, with the text-height rule,
+        the lowest DPI it chose (``;text_dpi=``) and the pages read again (``;ocr_reread=``)."""
         version = str(pdfplumber.__version__)
         if self._ocr is None:
             return version
@@ -188,22 +216,34 @@ class PdfReader:
         self._rereads = 0
         spans: list[Span] = []
 
-        def visit(pdf: Any, document: Any, number: int) -> None:
-            page_spans, read = self._read_page(pdf, document, number)
+        def finish(page: _PageResult) -> None:
+            page_spans, read = page
             spans.extend(page_spans)
             if on_page is not None:
                 on_page(read)
 
-        _for_each_page(data, self._max_pages, visit)
+        with PagesInOrder(self._reads, self._pool) as pages:
+
+            def visit(pdf: Any, document: Any, number: int) -> None:
+                page = self._read_page(pdf, document, number)
+                if isinstance(page, _ScanPage):
+                    self._read_scan(page, document, number, pages, finish)
+                else:
+                    pages.ready(lambda: finish(page))
+
+            # The pages left are finished while the documents are still open: the second
+            # reading at the ceiling draws its page again.
+            _for_each_page(data, self._max_pages, visit, end=pages.drain)
         if not spans:
             if self._ocr is None:
                 raise NoReader(sniff.PDF)
             raise ReadError("no_text")
         return spans
 
-    def _read_page(self, pdf: Any, document: Any, number: int) -> tuple[list[Span], RouteDecision | None]:
+    def _read_page(self, pdf: Any, document: Any, number: int) -> _PageResult | _ScanPage:
         """One page's spans, by the rules in the module notes, and how it was read
-        (its route and the check's reason), or None when it gave nothing unread."""
+        (its route and the check's reason), or None when it gave nothing unread; or,
+        for a page the engine must read, the page drawn for it (``_read_scan``)."""
         pdfium_page = document[number - 1]
         try:
             rules = self._rules
@@ -223,18 +263,38 @@ class PdfReader:
         if dpi < ceiling:
             self._rule_dpi = min(dpi, self._rule_dpi or dpi)
         fallback = text_spans if text_layer_fallback_allowed(decision) else []
-        try:
-            if is_blank(image, self._blank_stddev):  # R3: a blank page is never sent to OCR
-                return fallback, _kept(decision) if fallback else RouteDecision("blank", "blank")
-            scanned = ocr_spans(self._ocr.read(image), number, image.width, image.height)
-        finally:
+        if is_blank(image, self._blank_stddev):  # R3: a blank page is never sent to OCR
             image.close()
-        if not scanned and dpi < ceiling:  # nothing found at a lowered DPI: once more at the ceiling
-            self._rereads += 1
-            scanned = _read_again(self._ocr, document, number, ceiling, self._max_ocr_pixels)
-        if scanned or not fallback:
-            return scanned, decision
-        return fallback, _kept(decision)
+            return fallback, _kept(decision) if fallback else RouteDecision("blank", "blank")
+        return _ScanPage(image, dpi, ceiling, decision, fallback)
+
+    def _read_scan(
+        self,
+        page: _ScanPage,
+        document: Any,
+        number: int,
+        pages: PagesInOrder,
+        finish: Callable[[_PageResult], None],
+    ) -> None:
+        """Hand ``page`` to the engine through ``pages``; when its turn comes, on this
+        thread, read it once more at the ceiling if it gave nothing at a lowered DPI, and
+        fall back to its text layer if it still gave nothing (the module notes)."""
+        reads = self._reads
+        if reads is None:
+            raise ValueError("a page is drawn for OCR only with an engine")
+        width, height = page.image.size
+
+        def on_read(read: PageRead) -> None:
+            scanned = ocr_spans(list(read.lines), number, width, height)
+            if not scanned and page.dpi < page.ceiling:  # nothing at a lowered DPI: once more at the ceiling
+                self._rereads += 1
+                scanned = _read_again(reads, document, number, page.ceiling, self._max_ocr_pixels)
+            if scanned or not page.fallback:
+                finish((scanned, page.decision))
+            else:
+                finish((page.fallback, _kept(page.decision)))
+
+        pages.read(page.image, number, on_read)
 
     def _page_dpi(self, pdfium_page: Any, ceiling: int, scan: bool) -> int:
         """The DPI the page is drawn at for OCR: ``ceiling`` (today's, from OCR_DPI and
@@ -260,15 +320,17 @@ class PdfReader:
         return chosen_dpi(ceiling, line_px, probe, largest_image_dpi(pdfium_page) if capped else None)
 
 
-def _read_again(ocr: OcrEngine, document: Any, number: int, dpi: int, max_pixels: int) -> list[Span]:
-    """Page ``number`` drawn again at ``dpi`` and read by ``ocr``. O(pixels) plus the engine."""
+def _read_again(reads: PageEngine, document: Any, number: int, dpi: int, max_pixels: int) -> list[Span]:
+    """Page ``number`` drawn again at ``dpi`` and read by ``reads``, on this thread.
+    O(pixels) plus the engine."""
     pdfium_page = document[number - 1]
     try:
         image = render_pdf_page(pdfium_page, dpi=dpi, max_image_pixels=max_pixels)
     finally:
         pdfium_page.close()
     try:
-        return ocr_spans(ocr.read(image), number, image.width, image.height)
+        width, height = image.size
+        return ocr_spans(list(reads.read_page(image, page_no=number).lines), number, width, height)
     finally:
         image.close()
 
@@ -294,9 +356,16 @@ def text_layer_checks(
     return checks
 
 
-def _for_each_page(data: bytes, max_pages: int, visit: Callable[[Any, Any, int], None]) -> None:
+def _for_each_page(
+    data: bytes,
+    max_pages: int,
+    visit: Callable[[Any, Any, int], None],
+    *,
+    end: Callable[[], None] | None = None,
+) -> None:
     """``visit(pdfplumber document, pypdfium2 document, page number)`` for each page
-    in turn, both documents open together, after the page count check."""
+    in turn, both documents open together, after the page count check; then ``end()``,
+    with both still open."""
     pdf = _parsed(lambda: pdfplumber.open(io.BytesIO(data)))
     try:
         count = _parsed(lambda: len(pdf.pages))
@@ -307,6 +376,8 @@ def _for_each_page(data: bytes, max_pages: int, visit: Callable[[Any, Any, int],
                 raise ReadError("corrupt_file")
             for number in range(1, count + 1):
                 visit(pdf, document, number)
+            if end is not None:
+                end()
         finally:
             document.close()
     finally:

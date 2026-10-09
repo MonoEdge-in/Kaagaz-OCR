@@ -149,7 +149,7 @@ describe("words in these files", () => {
   it("links the files that finished and were not linked yet", () => {
     const entries = [entry("a", { kind: "done", documentId: "d1" }), entry("c", { kind: "error", message: "no" }),
       entry("b", { kind: "duplicate", documentId: "d2", existingName: "x", inTrash: false }),
-      entry("d", { kind: "uploading", fraction: 0.5 }), entry("e", { kind: "restored", documentId: "d3", existingName: "x" })];
+      entry("d", { kind: "sending", fraction: 0.5 }), entry("e", { kind: "restored", documentId: "d3", existingName: "x" })];
     expect(uploadedIds(entries, new Set())).toEqual(["d1", "d2", "d3"]);
     expect(uploadedIds(entries, new Set(["d1", "d3"]))).toEqual(["d2"]);
   });

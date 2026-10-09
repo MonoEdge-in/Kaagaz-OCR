@@ -26,16 +26,11 @@ def test_a_missing_max_windows_stops_start_up_by_name() -> None:
 
 @pytest.mark.parametrize("name", ["EXTRACT_WINDOW_CHARS", "EXTRACT_WINDOW_OVERLAP"])
 def test_an_empty_or_missing_window_size_follows_the_reply_budget(name: str) -> None:
-    """Decided 30 Sep 2026: the window follows MODEL_WINDOW_MAX_TOKENS, so a bigger
-    model is one setting. 2048 gives the starting 1700 and 400."""
+    """Decided 30 Sep 2026: the window follows the reply budget, INVOICE_REPLY_TOKENS
+    (PRD 5 M1: 2048, as before), which gives the starting 1700 and 400."""
     for value in (None, ""):
         settings = Settings.from_env(shipped(**{name: value}))
         assert (settings.extract_window_chars, settings.extract_window_overlap) == (1700, 400)
-
-
-def test_a_bigger_reply_budget_gives_bigger_windows() -> None:
-    bigger = Settings.from_env(shipped(MODEL_NUM_CTX="16384", MODEL_WINDOW_MAX_TOKENS="4096"))
-    assert (bigger.extract_window_chars, bigger.extract_window_overlap) == (3750, 900)  # 75 lines, a quarter
 
 
 @pytest.mark.parametrize(
@@ -43,11 +38,6 @@ def test_a_bigger_reply_budget_gives_bigger_windows() -> None:
 )
 def test_window_for_reply_tokens(max_tokens: int, window: tuple[int, int]) -> None:
     assert window_for_reply_tokens(max_tokens) == window
-
-
-def test_a_reply_budget_too_small_for_one_line_stops_start_up() -> None:
-    with pytest.raises(SettingsError, match="EXTRACT_WINDOW_CHARS must be at least 1"):
-        Settings.from_env(shipped(MODEL_WINDOW_MAX_TOKENS="300"))
 
 
 def test_an_overlap_as_large_as_the_window_is_refused() -> None:
@@ -62,14 +52,13 @@ def test_an_overlap_as_large_as_the_window_is_refused() -> None:
 def test_a_window_too_long_for_its_reply_budget_is_refused() -> None:
     """Council 5 (PROVISIONAL): a window's reply needs about 50 tokens per line item, one line
     per 50 characters, plus 300 for the fields. 1,700 characters need 34 * 50 + 300 = 2,000 of
-    MODEL_WINDOW_MAX_TOKENS 2,048; 1,750 need 2,050."""
-    message = "EXTRACT_WINDOW_CHARS is too long for MODEL_WINDOW_MAX_TOKENS"
+    the 2,048-token reply (INVOICE_REPLY_TOKENS); 1,750 need 2,050."""
+    message = "EXTRACT_WINDOW_CHARS is too long for an invoice window's 2048 token reply"
     with pytest.raises(SettingsError, match=message):
         Settings.from_env(shipped(EXTRACT_WINDOW_CHARS="1750"))
     with pytest.raises(SettingsError, match=message):
         Settings.from_env(shipped(EXTRACT_WINDOW_CHARS="6000"))
-    bigger = shipped(EXTRACT_WINDOW_CHARS="3700", MODEL_NUM_CTX="16384", MODEL_WINDOW_MAX_TOKENS="4000")
-    assert Settings.from_env(bigger).extract_window_chars == 3700  # 74 * 50 + 300 = 4,000
+    assert Settings.from_env(shipped(EXTRACT_WINDOW_CHARS="1700")).extract_window_chars == 1700
 
 
 @pytest.mark.parametrize(

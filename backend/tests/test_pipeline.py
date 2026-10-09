@@ -28,7 +28,6 @@ from tests.fakes import (
     FakePrepared,
     FakePreparer,
     FakeScanner,
-    FakeVision,
     MemoryDocuments,
     MemoryPageImages,
     MemoryPipelineStore,
@@ -108,7 +107,6 @@ def build(
     socket: ReadingSocket | None = None,
     preparer: FakePreparer | None = None,
     embed: FakeEmbedder | None = None,
-    vision: FakeVision | None = None,
 ) -> System:
     clock = FakeClock()
     queue = LeaseQueue(clock, lease_seconds=LEASE_SECONDS, max_attempts=MAX_ATTEMPTS + 3)
@@ -132,7 +130,6 @@ def build(
         page_images=page_images,
         store=store,
         embed=embed,
-        vision=vision,
         model_errors=(ModelDown,),
     )
     return System(
@@ -277,10 +274,40 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(len(system.store.for_document(CUSTOMER, doc)), 3)
 
         system.scanner.verdict = Verdict.INFECTED  # new signatures on a rerun
+        system.statuses.set_status(CUSTOMER, doc, DocumentStatus.RECEIVED)  # a rerun is a read again
         with self.assertRaises(JobFailed):
             system.processor(Job(CUSTOMER, doc), lambda: None)
         self.assertEqual(system.store.for_document(CUSTOMER, doc), [])
         self.assertIsNone(system.store.content(CUSTOMER, doc))  # values and pages too
+
+    def test_a_duplicate_delivery_of_a_settled_document_is_acked_and_reads_nothing(self) -> None:
+        """At least once: a delete that failed hands the job out again after the document
+        was read. Ready, failed or needs_reader: acked, nothing scanned, read or saved."""
+        system = build()
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
+        self.assertTrue(system.worker.run_once())
+        scanned, saves = len(system.scanner.scanned), system.store.saves
+        for status in (DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.NEEDS_READER):
+            with self.subTest(status=status.value):
+                system.statuses.set_status(CUSTOMER, doc, status)
+                system.queue.enqueue(Job(CUSTOMER, doc))
+                self.assertTrue(system.worker.run_once())
+                self.assertEqual((len(system.scanner.scanned), system.store.saves), (scanned, saves))
+                self.assertIs(system.statuses.get_status(CUSTOMER, doc), status)
+                self.assertEqual((system.queue.pending(), system.queue.failed), (0, {}))
+
+    def test_a_read_again_sets_received_first_so_it_is_read(self) -> None:
+        """Read again, one page again and the upgrade sweep set the document to received
+        before queueing it, so the skip of settled documents never stops them."""
+        system = build()
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
+        system.worker.run_once()
+        saves = system.store.saves
+        system.statuses.set_status(CUSTOMER, doc, DocumentStatus.RECEIVED)  # as mark_for_reprocess
+        system.queue.enqueue(Job(CUSTOMER, doc))
+        self.assertTrue(system.worker.run_once())
+        self.assertEqual(system.store.saves, saves + 1)
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
 
     def test_rejected_document_is_never_rescanned_or_read(self) -> None:
         system = build()
@@ -430,7 +457,10 @@ class SavedContentTest(unittest.TestCase):
         system.worker.run_once()
         first = system.store.content(CUSTOMER, doc)
 
-        system.processor(Job(CUSTOMER, doc), lambda: None)  # delivered again
+        # Delivered again while still in progress (the worker died after saving, before
+        # marking it ready): a ready one's duplicate is skipped, so the status is clean.
+        system.statuses.set_status(CUSTOMER, doc, DocumentStatus.CLEAN)
+        system.processor(Job(CUSTOMER, doc), lambda: None)
         again = system.store.content(CUSTOMER, doc)
         assert first is not None and again is not None
         self.assertEqual(system.store.saves, 2)

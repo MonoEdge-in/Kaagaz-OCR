@@ -25,7 +25,7 @@ def sheet_and_row(piece: Piece) -> tuple[int, int]:
 class PieceLabelTest(unittest.TestCase):
     def test_an_ocr_span_is_never_a_direct_read_even_with_no_confidence(self) -> None:
         box = BoxLocation(1, 0.1, 0.1, 0.5, 0.2)
-        self.assertEqual(piece_label([Span("x", "x", box, origin="ocr")]), NEEDS_REVIEW)  # PaddleOCR-VL
+        self.assertEqual(piece_label([Span("x", "x", box, origin="ocr")]), NEEDS_REVIEW)  # the main reader
         self.assertEqual(piece_label([Span("x", "x", box, origin="text_layer")]), VERIFIED)
         self.assertEqual(piece_label([Span("x", "x", CellLocation(1, 1, 1), origin="cell")]), VERIFIED)
         self.assertEqual(piece_label([Span("x", "x", box, 0.99, origin="ocr")]), NEEDS_REVIEW)  # RapidOCR

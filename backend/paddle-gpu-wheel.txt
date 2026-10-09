@@ -1,7 +1,0 @@
-# paddlepaddle-gpu 3.3.1 (Apache-2.0), CUDA 12.6, CPython 3.12, Linux x86_64: the one
-# package the GPU OCR image takes from outside PyPI, where it is not (PyPI stops at 2.6.2).
-# backend/Dockerfile.ocr installs this file alone: --no-index --no-deps --require-hashes.
-# Paddle's index publishes no hash, so the sha256 is of the file downloaded on 3 Oct 2026
-# (2,021,398,367 bytes; its CRC32 matched the server's x-bce-content-crc32 header).
-# PROVISIONAL: Vrushit approves paddlepaddle-gpu.
-paddlepaddle-gpu @ https://paddle-whl.cdn.bcebos.com/stable/cu126/paddlepaddle-gpu/paddlepaddle_gpu-3.3.1-cp312-cp312-linux_x86_64.whl --hash=sha256:b1500120002c2bf4542c841e25296cf10c52e0d395053aa395f79bd9c0303cce

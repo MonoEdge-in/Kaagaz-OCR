@@ -15,18 +15,23 @@
 // gives the file type, and under it what kind of document it is ("Invoice",
 // or "Unknown" without the AI model's card: PRD 2, D6). Names wrap in full at
 // their _ . - and @ marks (WrapName.tsx). The By cell says "Uploaded by" in
-// words; the full table hides those words under its By header.
+// words; the full table hides those words under its By header. A document with
+// reading problems gets chips in its status ("2 pages unreadable", PRD 5 U2), and
+// a reviewer or an admin can have ticked documents read again, one at a time,
+// after an inline question.
 
 import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
+import { canReprocess } from "@/components/viewer/reprocess";
 import { newerVersionText } from "@/components/viewer/versions";
 import {
   ApiError,
   confirmPassword,
   deleteDocument,
   deleteDocumentForever,
+  reprocessDocument,
   restoreDocument,
 } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -34,6 +39,7 @@ import { docTypeLabel, formatBytes, formatDateTime, formatRelative, typeLabel } 
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { EditDialog, RowMenu } from "./DocumentActions";
 import type { FolderTree } from "./folderTree";
+import { attentionWords } from "./library";
 import type { EditAction, RowAction } from "./library";
 import { deletedMessage, formatProgressPercent } from "./logic";
 import { StatusChip } from "./StatusChip";
@@ -44,6 +50,7 @@ import {
   bulkDoneMessage,
   bulkFailedMessage,
   bulkForeverQuestion,
+  bulkReadQuestion,
   bulkTrashQuestion,
   canDeleteForever,
   deletedForeverMessage,
@@ -85,9 +92,14 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
   const { refresh } = useSession();
   const canForever = canDeleteForever(me);
   const askPassword = foreverNeedsPassword(me);
+  // Read again (PRD 5 U2): a reviewer or an admin, for a document that can be read again.
+  const readable = useCallback(
+    (item: DocumentSummary) => !inTrash && canReprocess(me.user.role, item),
+    [inTrash, me.user.role],
+  );
   const deletableItems = useMemo(
-    () => items.filter((item) => selectable(item, inTrash, canForever)),
-    [items, inTrash, canForever],
+    () => items.filter((item) => selectable(item, inTrash, canForever) || readable(item)),
+    [items, inTrash, canForever, readable],
   );
   const [password, setPassword] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -107,6 +119,9 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
   // Restore (and Move to Trash) only for rows with can_delete; Delete forever for every ticked row.
   const restorableIds = items
     .filter((item) => item.can_delete && visibleSelectedIds.has(item.id))
+    .map((item) => item.id);
+  const readableIds = items
+    .filter((item) => readable(item) && visibleSelectedIds.has(item.id))
     .map((item) => item.id);
   const allSelected = deletableItems.length > 0 && selectedCount === deletableItems.length;
   const partiallySelected = selectedCount > 0 && !allSelected;
@@ -136,7 +151,8 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
   // Each selected document in turn. The ones that worked leave the list (it is
   // asked for again); the ones that failed stay ticked, to try again.
   async function runSelected(action: BulkAction) {
-    const ids = action === "forever" ? Array.from(visibleSelectedIds) : restorableIds;
+    const ids =
+      action === "forever" ? Array.from(visibleSelectedIds) : action === "read" ? readableIds : restorableIds;
     setBusy(true);
     setBusyAction(action);
     setDeleteProgress({ done: 0, total: ids.length });
@@ -163,7 +179,11 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
     if (result.failed.length > 0) {
       setError(bulkFailedMessage(action, result.failed.length, errorText(result.firstError)));
     }
-    if (result.done.length > 0) onRemoved(bulkDoneMessage(action, result.done.length));
+    if (result.done.length > 0) {
+      // Read again keeps the rows (they are read again); the others leave the list.
+      if (action === "read") events.onSaved(bulkDoneMessage(action, result.done.length));
+      else onRemoved(bulkDoneMessage(action, result.done.length));
+    }
     // The buttons pressed are gone now: keep keyboard focus on the selection bar.
     selectAll.current?.focus();
   }
@@ -219,10 +239,20 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
                   )}
                 </>
               ) : (
-                <button type="button" className="btn btn-danger" onClick={() => setConfirming("trash")}>
-                  <Icon name="trash" />
-                  Move to Trash ({selectedCount})
-                </button>
+                <>
+                  {readableIds.length > 0 && (
+                    <button type="button" className="btn" onClick={() => setConfirming("read")}>
+                      <Icon name="refresh" />
+                      Read again ({readableIds.length})
+                    </button>
+                  )}
+                  {restorableIds.length > 0 && (
+                    <button type="button" className="btn btn-danger" onClick={() => setConfirming("trash")}>
+                      <Icon name="trash" />
+                      Move to Trash ({restorableIds.length})
+                    </button>
+                  )}
+                </>
               )}
               <button type="button" className="btn btn-quiet" onClick={clearSelection} disabled={busy}>
                 <Icon name="close" />
@@ -234,12 +264,14 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
             <div
               className={styles.bulkConfirm}
               role="group"
-              aria-label={confirming === "forever" ? "Confirm deleting for good" : "Confirm moving to Trash"}
+              aria-label={CONFIRM_LABEL[confirming]}
             >
               <span>
                 {confirming === "forever"
                   ? bulkForeverQuestion(selectedCount)
-                  : bulkTrashQuestion(selectedCount)}
+                  : confirming === "read"
+                    ? bulkReadQuestion(readableIds.length)
+                    : bulkTrashQuestion(restorableIds.length)}
               </span>
               {confirming === "forever" && askPassword && (
                 <PasswordField
@@ -252,18 +284,12 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
               )}
               <button
                 type="button"
-                className="btn btn-danger"
+                className={confirming === "read" ? "btn btn-primary" : "btn btn-danger"}
                 onClick={() => void runSelected(confirming)}
                 disabled={busy || (confirming === "forever" && askPassword && password === "")}
               >
-                <Icon name="trash" />
-                {confirming === "forever"
-                  ? busy
-                    ? "Deleting…"
-                    : "Delete now"
-                  : busy
-                    ? "Moving…"
-                    : "Move now"}
+                <Icon name={confirming === "read" ? "refresh" : "trash"} />
+                {busy ? BUSY_WORDS[confirming] : NOW_WORDS[confirming]}
               </button>
               <button type="button" className="btn" onClick={clearSelection} disabled={busy}>
                 <Icon name="close" />
@@ -314,7 +340,7 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
               document={document}
               now={now}
               inTrash={inTrash}
-              deletable={selectable(document, inTrash, canForever)}
+              deletable={selectable(document, inTrash, canForever) || readable(document)}
               canForever={canForever}
               askPassword={askPassword}
               selected={selectedIds.has(document.id)}
@@ -335,6 +361,26 @@ const BULK_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
   trash: deleteDocument,
   restore: restoreDocument,
   forever: deleteDocumentForever,
+  read: reprocessDocument,
+};
+
+const CONFIRM_LABEL: Record<BulkAction, string> = {
+  trash: "Confirm moving to Trash",
+  restore: "Confirm restoring",
+  forever: "Confirm deleting for good",
+  read: "Confirm reading again",
+};
+const NOW_WORDS: Record<BulkAction, string> = {
+  trash: "Move now",
+  restore: "Restore now",
+  forever: "Delete now",
+  read: "Read again now",
+};
+const BUSY_WORDS: Record<BulkAction, string> = {
+  trash: "Moving…",
+  restore: "Restoring…",
+  forever: "Deleting…",
+  read: "Starting…",
 };
 
 /** The server's words for a refusal, else a hint about the connection. */
@@ -346,6 +392,7 @@ const PROGRESS_LABEL: Record<BulkAction, string> = {
   trash: "Moving to Trash",
   restore: "Restoring",
   forever: "Deleting for good",
+  read: "Starting to read again",
 };
 
 type Confirming = "trash" | "forever" | null;
@@ -523,6 +570,13 @@ function DocumentRow({
           <StatusChip status={document.status} />
           <span className={styles.statusMessage}>{document.status_message}</span>
           <TimeLeft document={document} />
+          {!inTrash &&
+            attentionWords(document).map((words) => (
+              <span key={words} className={styles.attentionChip}>
+                <Icon name="eye-alert" size={16} />
+                {words}
+              </span>
+            ))}
         </span>
       </td>
       <td role="cell" className={styles.meta}>

@@ -18,7 +18,10 @@
 // listed first beside it. Last beside it: the user's own story about the
 // document (StoryPanel.tsx). On a window at least 1024 px wide and 36rem tall
 // the page column sticks and shows the whole page (STICKY_VIEWER_QUERY,
-// "Fit page"), so it never needs a scrollbar of its own.
+// "Fit page"), so it never needs a scrollbar of its own. A page with reading
+// problems (PRD 5) gets a banner with its fixes (PageProblems.tsx, U4), its marks
+// drawn on it (U3, from the page's readings) and the Attention panel (U5); a mark
+// pressed shows its spot and opens the Scanned text panel, with both readings.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -52,15 +55,17 @@ import { beingRead, canReprocess, settledText, valuesNote } from "@/components/v
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
 import { selectSpot, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
-import { ApiError, getDocument, getDocumentSummary } from "@/lib/api";
+import { canReview } from "@/components/review/review";
+import { ApiError, getDocument, getDocumentSummary, getPageReadings } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
 import { decodeRegion } from "@/lib/regions";
 import { useSession } from "@/lib/session";
-import type { DocumentDetail, DocumentSummary, ExtractedValue, Region } from "@/lib/types";
+import type { DocumentDetail, DocumentSummary, ExtractedValue, PageSummary, ReadingMark, Region } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
-import { CardPanel, InvoicePanel, RelatedPanel } from "./DocumentPanels";
+import { AttentionPanel, CardPanel, InvoicePanel, RelatedPanel } from "./DocumentPanels";
+import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
 import { StoryPanel } from "./StoryPanel";
 import styles from "./DocumentView.module.css";
@@ -168,6 +173,8 @@ export function DocumentView({
       : initialSelection(shown, pageParam, regionParam);
   const words = useViewerWords(documentId, selection ? selection.pageNo : null);
   const stickyViewer = useMediaQuery(STICKY_VIEWER_QUERY);
+  const markedPage = shown && selection ? shown.pages.find((p) => p.page_no === selection.pageNo) : undefined;
+  const readingMarks = usePageMarks(documentId, markedPage, reloads);
 
   if (!current) {
     return (
@@ -223,6 +230,25 @@ export function DocumentView({
     viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
   const changePage = (pageNo: number) => choose(pageChange(selection, pageNo));
+  // A reading problem pressed (U3): its spot on the page, and the line with both readings.
+  const showMark = (mark: ReadingMark, name: string) => {
+    choose(selectSpot(mark.region, null));
+    setAnnouncement(`Showing ${name} on page ${mark.region.page}.`);
+    if (mark.region.kind === "box") setScanned(true);
+  };
+  // Keep as is (F5): the page's new summary, still flagged, off the attention list.
+  const keepPage = (kept: PageSummary) =>
+    setLoaded((now) =>
+      now && "detail" in now
+        ? {
+            ...now,
+            detail: {
+              ...now.detail,
+              pages: now.detail.pages.map((p) => (p.page_no === kept.page_no ? kept : p)),
+            },
+          }
+        : now,
+    );
   const addMeaning = (text: string, region: Region, from: HTMLElement) => {
     opener.current = from;
     setAdding({ text, region });
@@ -364,7 +390,23 @@ export function DocumentView({
       </p>
       <div className={styles.layout}>
         <section ref={viewerRef} className={styles.viewer} aria-label="Page">
-          {lowResolution && (
+          {page && (
+            <PageProblems
+              key={`${page.page_no}:${reloads}`}
+              documentId={detail.id}
+              page={page}
+              userId={me.user.id}
+              canFix={canReview(me.user.role) && detail.deleted_at === null}
+              canUpload={detail.deleted_at === null}
+              onReadAgain={(reply) => {
+                merge(reply);
+                readingAgain.current = true;
+                poll.later();
+              }}
+              onKept={keepPage}
+            />
+          )}
+          {lowResolution && !page?.problems?.length && (
             <p className={styles.trashNotice} role="note">
               <Icon name="alert" />
               <span>{lowResolution}</span>
@@ -380,6 +422,8 @@ export function DocumentView({
               marks={words.markers}
               activeMark={words.activeId}
               fit={stickyViewer ? "page" : "width"}
+              readingMarks={readingMarks}
+              onMark={showMark}
               tools={
                 hasScannedText && (
                   <button
@@ -416,6 +460,13 @@ export function DocumentView({
         </section>
         <div className={styles.panels}>
           {page && <PageWordsList words={words} />}
+          <AttentionPanel
+            pages={detail.pages}
+            current={page?.page_no ?? null}
+            marks={readingMarks}
+            onPage={changePage}
+            onMark={showMark}
+          />
           <CardPanel {...panel} />
           <RelatedPanel detail={detail} />
           <InvoicePanel {...panel} />
@@ -525,3 +576,30 @@ export function DocumentView({
     </div>
   );
 }
+
+/**
+ * The reading problems of the page shown (PRD 5 U3), from its readings: only for an
+ * uncertain or unreadable page, asked again after each reload. [] until they come, and
+ * if they can't be loaded (the banner still says what is wrong).
+ */
+function usePageMarks(documentId: string, page: PageSummary | undefined, version: number): ReadingMark[] {
+  const pageNo = page && page.read_quality !== "good" ? page.page_no : null;
+  const key = pageNo === null ? null : `${documentId}:${pageNo}:${version}`;
+  const [loaded, setLoaded] = useState<{ key: string; marks: ReadingMark[] } | null>(null);
+  useEffect(() => {
+    if (key === null || pageNo === null) return;
+    let cancelled = false;
+    getPageReadings(documentId, pageNo).then(
+      (readings) => {
+        if (!cancelled) setLoaded({ key, marks: readings.marks ?? [] });
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId, pageNo, key]);
+  return loaded && loaded.key === key ? loaded.marks : NO_MARKS;
+}
+
+const NO_MARKS: ReadingMark[] = [];

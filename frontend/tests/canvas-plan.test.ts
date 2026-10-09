@@ -74,7 +74,20 @@ describe("canvasPlan", () => {
 
   it("makes a review card's crop about 1 MiB of canvas, not the whole page", () => {
     // A small amount on an A4 page, shown in a 560 x 180 card at dpr 2.
-    const read = { route: "text_layer", effective_dpi: null, low_resolution: false } as const;
+    const read: Omit<PageSummary, "page_no" | "width" | "height" | "unit" | "has_image"> = {
+      route: "text_layer",
+      effective_dpi: null,
+      low_resolution: false,
+      read_by: "text_layer",
+      read_quality: "good",
+      read_issues: [],
+      unsure_words: 0,
+      illegible_words: 0,
+      unpinned_lines: 0,
+      accepted_by: null,
+      accepted_at: null,
+      read_again_requested_at: null,
+    };
     const a4: PageSummary = { page_no: 1, width: 595, height: 842, unit: "pt", has_image: true, ...read };
     const rect = cropRect({ kind: "box", page: 1, box: [0.6, 0.7, 0.75, 0.72] }, a4);
     if (!rect) throw new Error("no crop");

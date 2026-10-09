@@ -27,7 +27,16 @@ _RUN = text(
     "INSERT INTO processing_runs (customer_id, document_id, started_at, finished_at, status)"
     " VALUES (:c, :d, :at, :at, 'failed')"
 )
-REASONS = ("check_failed", "readers_disagree", "low_confidence", "single_reader")
+REASONS = (
+    "check_failed",
+    "readers_disagree",
+    "low_confidence",
+    "single_reader",
+    "unsure_text",  # PRD 5 U6: the reading model's marks
+    "box_unanchored",
+    "local_reader",
+    "ocr_script",
+)
 FAILED_FIELDS = {"id", "display_name", "status", "failure_code", "message", "last_run_at"}
 
 
@@ -151,7 +160,9 @@ def test_several_reasons_page_by_offset_inside_the_filter(db: Database) -> None:
         ids["single_reader"],
     ]
     assert first["total"] == rest["total"] == 3
-    assert reviewer.client.get("/api/review").json()["total"] == 4  # no filter: every reason
+    assert reviewer.client.get("/api/review").json()["total"] == len(REASONS)  # no filter: every reason
+    every = reviewer.client.get("/api/review", params={"reason": list(REASONS)}).json()
+    assert every["total"] == len(REASONS)  # all of them at once
 
 
 @pytest.mark.parametrize("reason", ["corrected", "nope", ""])

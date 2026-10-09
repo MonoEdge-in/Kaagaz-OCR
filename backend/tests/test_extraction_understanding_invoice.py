@@ -168,9 +168,8 @@ class WindowSettingsTest(unittest.TestCase):
             extract_window_chars=5000,
             extract_window_overlap=500,
             extract_max_windows=4,
-            model_window_max_tokens=1500,
         )
-        self.assertEqual(WindowSettings.from_settings(settings), WindowSettings(5000, 500, 4, 1500))
+        self.assertEqual(WindowSettings.from_settings(settings), WindowSettings(5000, 500, 4, 2048))
 
 
 class PromptHashTest(unittest.TestCase):

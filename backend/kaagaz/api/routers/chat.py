@@ -14,19 +14,31 @@ The audit row holds only the ids and ``answer.status``.
 The asker's own words (My words, A3) may help the answer, which then lists them in
 ``understood_words``; they are never in a message's text, so never in the history.
 
+A chat that remembers (PRD 5 M3): the first transaction also reads the conversation's
+summary and memory (its documents that are no longer live left out), which go to the
+follow-up rewrite only. When this question is a multiple of CHAT_SUMMARY_EVERY questions
+past the last summary (``summary_due``: after a failed one, the next try is that many
+questions later), a background task writes a new one after the reply (``_remember``); it
+gives up quietly when the model fails or another reply wrote it first, and logs only the
+code of a database or model error. Neither is ever in a reply or a log.
+
 A conversation belongs to the user who started it; anyone else, in this
 customer or another, gets "not found".
 """
 
 import json
+import logging
 import uuid
 from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import RowMapping
+from sqlalchemy import Connection, RowMapping
+from sqlalchemy.exc import SQLAlchemyError
 
+from kaagaz.ai.client import ModelOutputError, ModelUnavailable
+from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.rewrite import Turn
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
@@ -34,9 +46,11 @@ from kaagaz.api.errors import ApiError
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
 from kaagaz.db import audit
 from kaagaz.db import chat as chat_sql
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.scope import EVERYTHING, ScopeBody, resolve
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 Context = Annotated[AppContext, Depends(get_context)]
 
@@ -70,17 +84,21 @@ def answer_text(answer: dict[str, Any]) -> str:
 
 
 @router.post("/chat")
-def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
+def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks) -> dict[str, Any]:
     question = body.question.strip()
     if not question:
         raise ApiError(400, "bad_request", "Type a question first.")
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
     chosen = body.scope
     recent: Sequence[RowMapping] = []
+    memory, summary_turn, turns = NO_MEMORY, 0, 0
     with context.db.customer(user.customer_id) as conn:
         if conversation_id is not None:
-            if chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
+            state = chat_sql.conversation_memory(conn, user.customer_id, conversation_id, user.user_id)
+            if state is None:
                 raise ApiError(404, "not_found")
+            memory = _live_memory(conn, user.customer_id, state)
+            summary_turn, turns = int(state["summary_turn"]), int(state["turns"])
             pairs = max(context.settings.chat_history_turns, 1)
             recent = chat_sql.recent_messages(conn, user.customer_id, conversation_id, 2 * pairs)
             if chosen is None:
@@ -97,7 +115,7 @@ def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
 
     history = _history(recent)
     answer = context.answers.answer(
-        user.customer_id, question, scope=scope, history=history, user_id=user.user_id
+        user.customer_id, question, scope=scope, history=history, user_id=user.user_id, memory=memory
     ).to_json()
 
     with context.db.customer(user.customer_id) as conn:
@@ -139,7 +157,76 @@ def ask(body: AskBody, user: User, context: Context) -> dict[str, Any]:
                 "status": status if isinstance(status, str) else None,
             },
         )
+    if summary_due(turns + 1, summary_turn, context.settings.chat_summary_every):
+        background.add_task(
+            _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
+        )
     return {"conversation_id": conversation_id, "question": message(asked), "answer": message(answered)}
+
+
+def _live_memory(conn: Connection, customer_id: str, state: RowMapping) -> Memory:
+    """The stored summary and memory, without the documents that are no longer live
+    (Trash, an older version, deleted forever), with the live ones' names. One query when
+    it names documents."""
+    stored = from_row(state["summary"], state["memory"])
+    return live(stored, chat_sql.live_document_names(conn, customer_id, stored.documents))
+
+
+def summary_due(turn: int, summary_turn: int, every: int) -> bool:
+    """M3: question ``turn`` (from 1) writes the memory when it is a multiple of
+    CHAT_SUMMARY_EVERY (``every``) questions past the last written one, ``summary_turn``.
+    After a failed write the next try is ``every`` questions later, never every question."""
+    since = turn - summary_turn
+    return since > 0 and since % every == 0
+
+
+def _remember(
+    context: AppContext, customer_id: str, user_id: str, conversation_id: str, expected_turn: int, turn: int
+) -> None:
+    """M3, after the reply (``_write_memory``). It runs after the response is sent, so
+    nothing can be shown: a database, connection or model error is logged as its code only
+    (never a traceback, which could hold the chat's words) and nothing is written."""
+    try:
+        _write_memory(context, customer_id, user_id, conversation_id, expected_turn, turn)
+    except (SQLAlchemyError, BackendUnavailable, ModelUnavailable, ModelOutputError) as error:
+        logger.warning("memory not written", extra={"code": type(error).__name__})
+
+
+def _write_memory(
+    context: AppContext, customer_id: str, user_id: str, conversation_id: str, expected_turn: int, turn: int
+) -> None:
+    """The summary and memory rewritten from the memory so far and the last
+    CHAT_SUMMARY_EVERY turns, with the documents their answers cited, written at ``turn``
+    only if ``summary_turn`` is still ``expected_turn``. Nothing is written when the model
+    fails or another reply wrote first. The model call is outside any transaction."""
+    every = context.settings.chat_summary_every
+    with context.db.customer(customer_id) as conn:
+        state = chat_sql.conversation_memory(conn, customer_id, conversation_id, user_id)
+        if state is None or state["summary_turn"] != expected_turn:
+            return
+        previous = _live_memory(conn, customer_id, state)
+        recent = chat_sql.recent_messages(conn, customer_id, conversation_id, 2 * every)
+    cited = [
+        str(citation["document_id"])
+        for row in reversed(recent)
+        if row["role"] == "assistant" and (row["answer"] or {}).get("status") == "answered"
+        for citation in row["answer"].get("citations", [])
+        if isinstance(citation, dict) and citation.get("document_id")
+    ]
+    memory = context.answers.remember(_history(recent), previous, cited)
+    if memory is None:
+        return
+    with context.db.customer(customer_id) as conn:
+        chat_sql.save_memory(
+            conn,
+            customer_id,
+            conversation_id,
+            user_id,
+            summary=memory.summary,
+            memory=memory.to_json(),
+            turn=turn,
+            expected_turn=expected_turn,
+        )
 
 
 def _history(recent: Sequence[RowMapping]) -> list[Turn]:

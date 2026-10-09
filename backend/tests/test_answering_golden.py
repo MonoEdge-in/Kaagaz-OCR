@@ -56,6 +56,9 @@ ANSWER_KEYS = {
     "model_used",
     "rewritten_question",
     "understood_words",
+    "reading_note",  # PRD 5 F6
+    "unreadable_pages",
+    "unreadable_page_count",
 }
 CITATION_KEYS = {
     "n",
@@ -72,6 +75,7 @@ CITATION_KEYS = {
     "page_to",
     "label_page_no",
     "label_regions",
+    "hard_to_read",  # PRD 5 F6
 }
 
 
@@ -411,9 +415,6 @@ class FakeModel:
             raise self.chat_error
         return self.reply(system, user)
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise ModelUnavailable("no_vision")
-
 
 class FakeUnchecked:
     """unchecked.py's rule over in-memory card documents: {customer: {field: [documents]}}."""
@@ -641,13 +642,8 @@ def test_a_model_answer_is_used_and_cited() -> None:
     assert answer.model_used is True
     assert [s.text for s in answer.sentences] == ["The grand total of INV-1042 is Rs. 1,20,000."]
     assert answer.citations[0].ref_id == INVOICE.piece_id
-    # PRD 3 V3: the model card's query format, no space after "Query:".
-    assert model.embedded == [
-        [
-            "Instruct: Given a question about business documents, retrieve passages that answer it"
-            "\nQuery:what is grand total of inv-1042"
-        ]
-    ]
+    # PRD 5 M5: the question is embedded as plain text.
+    assert model.embedded == [["what is grand total of inv-1042"]]
 
 
 def test_a_model_inventing_a_number_loses_that_sentence() -> None:
@@ -733,7 +729,7 @@ def test_a_devanagari_question_reaches_search_and_is_embedded_as_asked() -> None
     answer = answer_service.answer(A, "पाटील का बिल")
 
     assert [call[1] for call in retriever.calls] == ["patil invoice"]
-    assert model.embedded[0][0].endswith("\nQuery:पाटील का बिल")
+    assert model.embedded[0][0] == "पाटील का बिल"
     assert answer.normalized_question == "patil invoice"
 
 
@@ -932,14 +928,14 @@ COPY = piece("bill-1042-copy.pdf", INVOICE.text.replace("Tax Invoice", "Duplicat
 
 
 def window_for(pieces: list[FakeHit]) -> int:
-    """A MODEL_NUM_CTX that leaves the evidence exactly the room ``pieces`` take
+    """A MODEL_CONTEXT_TOKENS that leaves the evidence exactly the room ``pieces`` take
     (with the factory's MODEL_ANSWER_MAX_TOKENS, 512)."""
     evidence = estimate_tokens(user_prompt(QUESTION, number_evidence(pieces)))
     return evidence + 2 * 512 + estimate_tokens(SYSTEM_PROMPT) + CHAT_OVERHEAD_TOKENS
 
 
 def windowed(num_ctx: int) -> Settings:
-    return make_settings(answer_min_evidence_score=0.6, answer_max_evidence=5, model_num_ctx=num_ctx)
+    return make_settings(answer_min_evidence_score=0.6, answer_max_evidence=5, model_context_tokens=num_ctx)
 
 
 def test_the_answer_call_has_a_reply_budget() -> None:
@@ -1011,8 +1007,9 @@ def test_each_model_answer_logs_the_model_and_the_prompt_hash(caplog: pytest.Log
 def test_the_answer_prompt_and_schema_are_pinned() -> None:
     pinned = SYSTEM_PROMPT + "\n" + json.dumps(ANSWER_SCHEMA, sort_keys=True)
     assert hashlib.sha256(pinned.encode("utf-8")).hexdigest() == ANSWER_PROMPT_HASH
-    # Changed on purpose in PR C (fix/s2-xlang-answer): rule 7, evidence in any language.
-    assert ANSWER_PROMPT_HASH == "dc4a3004b9098dd3b562c3d9b8c7684c76a7d381f23e26f0e7396ab67ec14742"
+    # Changed on purpose in PR C (fix/s2-xlang-answer): rule 7, evidence in any language; and in
+    # PRD 5 PR 3: rules 8 to 10 (CX7, answers that combine) and 11 (M2, the cards).
+    assert ANSWER_PROMPT_HASH == "e199829c7fd2eabdb08ecf3e9c8bd06ad7c21a6449ed7ee2a6f671f7f0463340"
     assert "Answer in English. A quote keeps the script it is written in." in SYSTEM_PROMPT  # PRD 3 H3
     sentences = ANSWER_SCHEMA["properties"]["sentences"]
     assert (sentences.get("maxItems"), sentences["items"]["properties"]["text"].get("maxLength")) == (5, 300)

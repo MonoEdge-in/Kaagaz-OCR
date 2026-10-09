@@ -2,8 +2,9 @@
 tests/exit_fixtures.py, uploaded and read to the end by the real pipeline on a real
 PostgreSQL, each asserting its exit claim. The model is a fake (``QuotingChat``: the
 card, then the invoice windows) and the OCR engine is ``ScriptedOcr``. The model-off
-twin runs the same six with MODEL_ENABLED=false. Where a test asks for it, the vision
-model is ``EchoVision``, which reads each cropped box back as the OCR line there.
+twin runs the same six with MODEL_ENABLED=false. Where a test asks for it, a file's page
+is the reading model's (``read_by`` is ``ocr_model``) and the checker is ``EchoChecker``,
+which reads each cropped box back as the OCR line there.
 """
 
 import functools
@@ -16,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PIL import Image
 from sqlalchemy import text
 
 from kaagaz import pipeline
@@ -42,8 +42,9 @@ from tests.db_support import new_customer
 from tests.exit_fixtures import (
     PROFIT_LABEL,
     PROFIT_VALUE,
+    SCRIPTED_READ_BY,
     TEXTILE_FIELDS,
-    EchoVision,
+    EchoChecker,
     ExitFile,
     QuotingChat,
     ScriptedOcr,
@@ -122,21 +123,6 @@ CARDS: dict[str, dict[str, Any]] = {
 }
 
 
-@pytest.fixture
-def cropped(monkeypatch: pytest.MonkeyPatch) -> list[BoxLocation]:
-    """Each box the pipeline crops for the vision model, in order, so EchoVision knows
-    where it looks. The pipeline's own crop still runs, and its PNG is what is sent."""
-    boxes: list[BoxLocation] = []
-    crop = pipeline._crop
-
-    def recorded(page: Image.Image, box: BoxLocation) -> bytes:
-        boxes.append(box)
-        return crop(page, box)
-
-    monkeypatch.setattr(pipeline, "_crop", recorded)
-    return boxes
-
-
 def chat_for(key: str) -> QuotingChat:
     if key.startswith("textile_invoice"):
         silk = "3,500.00" if key.endswith("mismatched") else "3,000.00"
@@ -147,17 +133,15 @@ def chat_for(key: str) -> QuotingChat:
 
 
 class Read:
-    """Every exit file uploaded and read to the end, for one new customer; ``visions``
-    are the files' echo vision models, when they had one."""
+    """Every exit file uploaded and read to the end, for one new customer."""
 
     def __init__(
         self,
         customer: str,
         ids: dict[str, str],
         makers: dict[str, Callable[[], DocumentProcessor]],
-        visions: dict[str, EchoVision],
     ) -> None:
-        self.customer, self.ids, self.makers, self.visions = customer, ids, makers, visions
+        self.customer, self.ids, self.makers = customer, ids, makers
 
     def again(self, db: Database, key: str) -> None:
         """PRD 2 X1: read one file again (reprocess), with new readers (the scripted OCR
@@ -171,26 +155,24 @@ def read_files(
     db: Database,
     *,
     model: bool,
-    cropped: list[BoxLocation] | None = None,
     files: Mapping[str, ExitFile] | None = None,
+    checkers: Mapping[str, EchoChecker] | None = None,
 ) -> Read:
-    """``files`` (the exit files by default), each with an EchoVision given ``cropped``."""
+    """``files``, the exit files by default; a file with one of ``checkers`` is read as
+    the reading model's, with that checker."""
     files = exit_files() if files is None else files
-    visions = (
-        {} if cropped is None else {key: EchoVision(file.ocr_pages, cropped) for key, file in files.items()}
-    )
-    customer, ids, makers = _read(db, model=model, files=files, visions=visions)
-    return Read(customer, ids, makers, visions)
+    customer, ids, makers = _read(db, model=model, files=files, checkers=checkers or {})
+    return Read(customer, ids, makers)
 
 
 def read_all(db: Database, *, model: bool) -> tuple[str, dict[str, str]]:
     """(customer, document id by file key): every exit file uploaded and read to the end."""
-    customer, ids, _ = _read(db, model=model, files=exit_files(), visions={})
+    customer, ids, _ = _read(db, model=model, files=exit_files(), checkers={})
     return customer, ids
 
 
 def _read(
-    db: Database, *, model: bool, files: Mapping[str, ExitFile], visions: Mapping[str, EchoVision]
+    db: Database, *, model: bool, files: Mapping[str, ExitFile], checkers: Mapping[str, EchoChecker]
 ) -> tuple[str, dict[str, str], dict[str, Callable[[], DocumentProcessor]]]:
     customer, _ = new_customer(db)
     storage = MemoryStorage()
@@ -203,8 +185,10 @@ def _read(
     makers: dict[str, Callable[[], DocumentProcessor]] = {}
     for key, file in files.items():
         doc = upload.accept(customer, io.BytesIO(file.data)).document_id
-        vision = visions.get(key)
-        makers[key] = functools.partial(_processor, db, storage, documents, prepare, key, file, model, vision)
+        checker = checkers.get(key)
+        makers[key] = functools.partial(
+            _processor, db, storage, documents, prepare, key, file, model, checker
+        )
         makers[key]()(Job(customer, doc), lambda: None)
         ids[key] = doc
     return customer, ids, makers
@@ -218,10 +202,10 @@ def _processor(
     key: str,
     file: ExitFile,
     model: bool,
-    vision: EchoVision | None,
+    checker: EchoChecker | None,
 ) -> DocumentProcessor:
     """A processor for one exit file: its scripted OCR, its fake model when ``model``, and
-    its vision model when one is given."""
+    with a ``checker`` its pages are the reading model's (PRD 5 V1), read again by it."""
     chat = chat_for(key) if model else None
     timer = Timer()
     return DocumentProcessor(
@@ -237,8 +221,9 @@ def _processor(
         progress=documents,
         clock=moving_clock,
         timer=timer,
-        vision=vision,
-        vision_model=None if vision is None else "echo-vision",
+        ocr_model=None if checker is None else SCRIPTED_READ_BY,
+        checker=checker,
+        checker_model=None if checker is None else "echo-checker",
         chat=chat,
         chat_model=None if chat is None else chat.chat_model,
         model_budget=None if chat is None else BUDGET,
@@ -466,17 +451,14 @@ LABELS = (
 DEVANAGARI_OCR_SCRIPT = {"hindi_retail_bill": 5, "marathi_land_record": 0, "broken_font_pdf": 0}
 
 
-def test_what_the_model_chose_or_ocr_read_from_devanagari_is_never_verified(
-    db: Database, cropped: list[BoxLocation]
-) -> None:
+def test_what_the_model_chose_or_ocr_read_from_devanagari_is_never_verified(db: Database) -> None:
     """Security A1 and ML 1 across the exit files (final council 2): no card value is
     verified anywhere; nothing read by OCR from Hindi or Marathi, or from the broken font,
-    is verified, though the echo vision reads each box back as OCR read it (the next test
-    is the positive control); and the mismatched copy's document values are all in review.
+    is verified (the next test is the positive control); and the mismatched copy's
+    document values are all in review.
     Each of the land record card's spots is its OCR line's box (IoU at least 0.5)."""
-    files = read_files(db, model=True, cropped=cropped)
+    files = read_files(db, model=True)
     customer, ids = files.customer, files.ids
-    assert files.visions["hindi_retail_bill"].calls == 6  # each of its 6 lines holds a value
     with db.customer(customer) as conn:
         cards: int = conn.execute(
             text(
@@ -502,24 +484,31 @@ def test_what_the_model_chose_or_ocr_read_from_devanagari_is_never_verified(
         (item["value"], item["region"]) for item in [*land_card["identifiers"], land_card["document_date"]]
     ]
     assert len(spots) == 4
-    ocr_lines = files.visions["marathi_land_record"].pages[0]
+    ocr_lines = exit_files()["marathi_land_record"].ocr_pages[0]
     for value, region in spots:
         (line,) = [box for line_text, box in ocr_lines if value in line_text]
         assert region["page"] == 1 and region["kind"] == "box", value
         assert overlap(BoxLocation(1, *region["box"]), BoxLocation(1, *line)) >= 0.5, value
 
 
-def test_the_echo_vision_verifies_the_same_bill_in_english(db: Database, cropped: list[BoxLocation]) -> None:
-    """The positive control for the test above: the same scripted OCR and echo vision on
-    the bill in English (model off) verify its three labelled values, so the Devanagari
-    scans' 0 verified comes from the rules, not from a vision reading that never agrees."""
-    files = read_files(db, model=False, cropped=cropped, files={"english_bill": english_bill()})
-    assert files.visions["english_bill"].calls == 3
+def test_the_checker_verifies_the_same_bill_in_english(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The positive control for the test above: the same scripted OCR on the bill in
+    English (model off), its page read by the reading model, and a checker that reads
+    each box back as the OCR line there, verify its three labelled values through the
+    checker (PRD 5 V1). So the Devanagari scans' 0 verified comes from the rules, not
+    from a pipeline that can no longer verify a scanned value."""
+    bill = english_bill()
+    checker = EchoChecker(bill.ocr_pages)
+    monkeypatch.setattr(pipeline, "_check_crop", checker.crop)
+    files = read_files(db, model=False, files={"english_bill": bill}, checkers={"english_bill": checker})
+    assert len(checker.crops) == 3
     assert sorted(rows(db, files.customer, LABELS, files.ids["english_bill"])) == [
         ("document", "invoice_date", "05/09/2026", "verified", "readers_agree"),
         ("document", "invoice_number", "245", "verified", "readers_agree"),
         ("document", "total_amount", "450.00", "verified", "readers_agree"),
     ]
+    runs = "SELECT vision_crops, model_vision FROM processing_runs WHERE document_id = :d"
+    assert rows(db, files.customer, runs, files.ids["english_bill"]) == [(3, "echo-checker")]
 
 
 # Everything a read leaves for one document, apart from ids and times.
@@ -556,10 +545,10 @@ def results(db: Database, files: Read) -> dict[str, list[list[str]]]:
     }
 
 
-def test_two_reads_of_the_exit_files_give_the_same_results(db: Database, cropped: list[BoxLocation]) -> None:
-    """Two customers read the exit files with the model and the echo vision: every row
+def test_two_reads_of_the_exit_files_give_the_same_results(db: Database) -> None:
+    """Two customers read the exit files with the model: every row
     either read leaves is the same as the other's, apart from ids and times."""
-    first, second = (read_files(db, model=True, cropped=cropped) for _ in range(2))
+    first, second = (read_files(db, model=True) for _ in range(2))
     assert results(db, first) == results(db, second)
 
 
@@ -575,12 +564,14 @@ def labels_json(db: Database, files: Read) -> str:
     return "[\n" + ",\n".join(json.dumps(row, ensure_ascii=False) for row in found) + "\n]\n"
 
 
-def test_the_exit_labels_match_the_committed_snapshot(db: Database, cropped: list[BoxLocation]) -> None:
+def test_the_exit_labels_match_the_committed_snapshot(db: Database) -> None:
     """A characterization snapshot for A9's clean-up, which must keep it byte for byte: each
-    value's label and reason when the exit files are read with the model and the echo vision.
-    It was generated from the code at de36d96 (W6). A change to it changes what is verified,
-    so it needs its own reason and review, never a refactor's."""
-    files = read_files(db, model=True, cropped=cropped)
+    value's label and reason when the exit files are read with the model.
+    It was generated from the code at de36d96 (W6), and again in PRD 5 PR 4, when the scans'
+    second reading went (the Hindi bill's three readers_disagree became model_chosen). A
+    change to it changes what is verified, so it needs its own reason and review, never a
+    refactor's."""
+    files = read_files(db, model=True)
     assert labels_json(db, files) == SNAPSHOT.read_text(encoding="utf-8")
 
 

@@ -10,6 +10,8 @@ import {
   listParams,
 } from "@/components/documents/libraryQuery";
 import type { LibraryState } from "@/components/documents/libraryQuery";
+import { attentionWords } from "@/components/documents/library";
+import { bulkDoneMessage, bulkFailedMessage, bulkReadQuestion } from "@/components/documents/trash";
 import { listDocuments } from "@/lib/api";
 
 const FOLDER = "0b4f7a8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
@@ -73,6 +75,7 @@ describe("the library in the page address", () => {
     type: "pdf",
     from: "2026-09-01",
     to: "2026-09-30",
+    attention: true,
   };
 
   it("is plain /documents for all documents with no filter", () => {
@@ -83,7 +86,7 @@ describe("the library in the page address", () => {
   it("writes the folder and filters, and reads them back the same", () => {
     const href = libraryHref(everything);
     expect(href).toBe(
-      `/documents?folder=${FOLDER}&sub=1&tag=${GST}&tag=${PAID}&type=pdf&from=2026-09-01&to=2026-09-30`,
+      `/documents?folder=${FOLDER}&sub=1&tag=${GST}&tag=${PAID}&type=pdf&from=2026-09-01&to=2026-09-30&attention=1`,
     );
     expect(libraryFromSearch(new URLSearchParams(href.split("?")[1]))).toEqual(everything);
   });
@@ -161,5 +164,49 @@ describe("isFiltered", () => {
     expect(isFiltered({ ...ALL_DOCUMENTS, tagIds: [GST] })).toBe(true);
     expect(isFiltered({ ...ALL_DOCUMENTS, type: "pdf" })).toBe(true);
     expect(isFiltered({ ...ALL_DOCUMENTS, to: "2026-09-30" })).toBe(true);
+  });
+});
+
+describe("Needs attention (PRD 5 U2)", () => {
+  it("is a filter in the page address, never in Trash, and sent as attention=true", async () => {
+    const attention: LibraryState = { ...ALL_DOCUMENTS, attention: true };
+    expect(libraryHref(attention)).toBe("/documents?attention=1");
+    expect(libraryFromSearch(new URLSearchParams("attention=1"))).toEqual(attention);
+    expect(libraryFromSearch(new URLSearchParams("attention=yes")).attention).toBe(false);
+    expect(libraryFromSearch(new URLSearchParams("trash=1&attention=1")).attention).toBe(false);
+    expect(isFiltered(attention)).toBe(true);
+    expect(listParams(attention, "", 0)).toEqual({ limit: 25, offset: 0, attention: true });
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ items: [], total: 0 }), { status: 200 });
+    });
+    await listDocuments(listParams(attention, "", 0));
+    expect(urls).toEqual(["/api/documents?limit=25&offset=0&attention=true"]);
+  });
+
+  it("puts a chip on a row with problems, in the PRD's words, and none on a clean one", () => {
+    const none = { pages_unreadable: 0, pages_uncertain: 0, values_to_review: 0, words_unsure: 0 };
+    expect(attentionWords(none)).toEqual([]);
+    expect(attentionWords({ ...none, pages_unreadable: 2, pages_uncertain: 1, words_unsure: 14, values_to_review: 3 })).toEqual([
+      "2 pages unreadable",
+      "14 words unsure",
+      "3 values to check",
+    ]);
+    expect(attentionWords({ ...none, pages_unreadable: 1, words_unsure: 1, values_to_review: 1 })).toEqual([
+      "1 page unreadable",
+      "1 word unsure",
+      "1 value to check",
+    ]);
+    // An uncertain page with no unsure word (a spot not confirmed), or a reply from before words_unsure.
+    expect(attentionWords({ pages_unreadable: 0, pages_uncertain: 2, values_to_review: 0 })).toEqual(["2 pages to check"]);
+  });
+
+  it("asks before a selection is read again, then says what happened", () => {
+    expect(bulkReadQuestion(3)).toBe(
+      "Read 3 documents again? Reviewer fixes come back only if they were saved as remembered fixes, and each one is out of search until it is read.",
+    );
+    expect(bulkDoneMessage("read", 1)).toBe("Reading 1 document again.");
+    expect(bulkFailedMessage("read", 2, "Try later.")).toBe("2 documents could not be read again. Try later.");
   });
 });

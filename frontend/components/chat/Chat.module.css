@@ -805,3 +805,10 @@
   flex: none;
   margin-top: 0.15em;
 }
+
+/* PRD 5 U7: F6's note under an answer, with the pages that couldn't be read. */
+.readingNote {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}

@@ -52,7 +52,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
         _box(1, 0.4, "Sharma\u200dTraders <b>", confidence=0.97, origin="ocr"),
         _box(1, 0.1, "Invoice", origin="ocr"),
     ]
-    api.add_reader_output(signed.customer_id, document_id, spans, reader="paddleocr-vl", reader_version="1.5")
+    api.add_reader_output(signed.customer_id, document_id, spans, reader="old-reader", reader_version="1.5")
 
     body = _readings(signed, document_id)
 
@@ -61,7 +61,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
         "readers": [
             {
                 "role": "first",
-                "reader": "paddleocr-vl",
+                "reader": "old-reader",
                 "reader_version": "1.5",
                 "truncated": False,
                 "lines": [
@@ -89,6 +89,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
                 ],
             }
         ],
+        "marks": [],  # PRD 5 U3: no word mark and no unpinned line
     }
     assert [line["text"] for line in _readings(signed, document_id, 2)["readers"][0]["lines"]] == [
         "other page"
@@ -223,7 +224,7 @@ def test_a_page_not_read_yet_has_no_readers(db: Database) -> None:
     signed = api.new_signed()
     document_id = _scan(api, signed)
 
-    assert _readings(signed, document_id) == {"page_no": 1, "readers": []}
+    assert _readings(signed, document_id) == {"page_no": 1, "readers": [], "marks": []}
 
 
 def test_the_text_is_never_logged(db: Database, caplog: pytest.LogCaptureFixture) -> None:
@@ -246,3 +247,22 @@ def test_answering_and_search_never_read_the_scanned_text() -> None:
         for source in (KAAGAZ / folder).rglob("*.py"):
             words = source.read_text(encoding="utf-8")
             assert "page_readings" not in words and "MAX_READING" not in words, source
+
+
+def test_word_marks_are_not_scanned_lines(db: Database) -> None:
+    """PRD 5 F3: an unsure or illegible word is stored as a word mark of its own after its
+    line (``ocr.is_word_mark``); the scanned text lists the line once, never the marks."""
+    api = Api(db)
+    signed = api.new_signed()
+    document_id = _scan(api, signed)
+    spans = [
+        _box(1, 0.1, "TOTAL 1180 [?]", origin="ocr", kind="paragraph", box_source="found"),
+        _box(1, 0.1, "1180", origin="ocr", quality="unsure", box_source="found"),
+        _box(1, 0.1, "[?]", origin="ocr", quality="illegible", box_source="found"),
+        _box(1, 0.5, "Paid", confidence=0.9, origin="ocr"),
+    ]
+    api.add_reader_output(signed.customer_id, document_id, spans, reader="gemini", reader_version="1")
+
+    (reader,) = _readings(signed, document_id)["readers"]
+
+    assert [line["text"] for line in reader["lines"]] == ["TOTAL 1180 [?]", "Paid"]

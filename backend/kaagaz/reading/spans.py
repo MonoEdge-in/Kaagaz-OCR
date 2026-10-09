@@ -19,11 +19,18 @@ As JSON (the ``regions`` and ``region`` columns, and the API), a location is:
 * ``{"kind": "cell", "page": sheet, "row": r, "column": c}``
 * ``{"kind": "box", "page": p, "box": [x0, y0, x1, y1]}``
 
-A span may also say what kind of block it is (``BLOCK_KINDS``, from a layout
-engine such as PaddleOCR-VL), how it was read (``ORIGINS``), and, for a table
+A span may also say what kind of block it is (``BLOCK_KINDS``, from the main
+reader), how it was read (``ORIGINS``), and, for a table
 cell, its table, row and column from 0 (PRD 2 P4). All of them are optional.
 PROVISIONAL: P4 names ``table_id``, ``row`` and ``col``; ``header`` is added
 because the OCR contract (P2) already sends it and table pieces need it.
+
+Word marks in the stored output (PRD 5 F3): a span read by OCR may also say how
+well it was read (``QUALITIES``: ok, unsure or illegible) and where its box came
+from (``BOX_SOURCES``: "found" when it is the union of the boxes RapidOCR's text
+finder found under it, "model" when no found box matched and it is the reading
+model's own approximate box, G5). Both are optional, checked in the socket, and
+written to JSON only when set, like kind and origin.
 """
 
 import re
@@ -49,6 +56,12 @@ BLOCK_KINDS = frozenset(
 ORIGINS = frozenset({"cell", "text_layer", "ocr"})
 # Direct reads: exactly what the file holds. A span with no origin is not one (fail closed).
 DIRECT_ORIGINS = frozenset({"cell", "text_layer"})
+# PRD 5 F3: how well a span read by OCR was read. "unsure": the reader listed it as a word
+# it is not sure of; "illegible": it could not be read at all ([?] in the line).
+QUALITIES = frozenset({"ok", "unsure", "illegible"})
+# PRD 5 G5: "found", pinned to boxes RapidOCR's text finder found on the page; "model", the
+# reading model's own box, which no found box confirmed (its values go to review, box_unanchored).
+BOX_SOURCES = frozenset({"found", "model"})
 TABLE_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")  # a table's id on its page, such as "t1"
 
 
@@ -101,6 +114,8 @@ class Span:
     row: int | None = None
     col: int | None = None
     header: bool | None = None
+    quality: str | None = None  # one of QUALITIES, only on a span read by OCR (PRD 5 F3)
+    box_source: str | None = None  # one of BOX_SOURCES, only on a span read by OCR (PRD 5 G5)
 
 
 @dataclass(frozen=True, slots=True)

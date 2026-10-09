@@ -477,11 +477,17 @@ class _Queue(MemoryQueue):
     def ping(self) -> None:
         return None
 
+    def depth(self) -> dict[str, int]:
+        return {"express": 0, "main": 0}
+
 
 class _NoAnswers:
     def answer(
-        self, customer_id: str, question: str, *, scope: Scope, history: Any, user_id: str
+        self, customer_id: str, question: str, *, scope: Scope, history: Any, user_id: str, memory: Any
     ) -> AnswerLike:
+        raise AssertionError("not used here")
+
+    def remember(self, turns: Any, memory: Any, cited: Any) -> Any:
         raise AssertionError("not used here")
 
 

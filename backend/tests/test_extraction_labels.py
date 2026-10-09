@@ -3,6 +3,8 @@
 import unittest
 from dataclasses import replace
 
+from kaagaz.db import review
+from kaagaz.extraction import labels
 from kaagaz.extraction.labels import comparable, label_quoted, label_values, overlap, spot_unsure
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
 from kaagaz.extraction.quotes import find_quote, located_value, reader_text
@@ -34,6 +36,18 @@ def second_line(text: str, box: BoxLocation = BOX) -> Span:
 
 def reason(value: ExtractedValue) -> tuple[str, str, str | None]:
     return value.label, value.label_reason, value.second_reading
+
+
+class ReasonsTest(unittest.TestCase):
+    def test_the_prd5_reasons_are_named_and_listed_for_the_review_queue(self) -> None:
+        """PRD 5 V4, G5 and Q7: the three new reasons, each one the queue can list."""
+        self.assertEqual(
+            (labels.UNSURE_TEXT, labels.BOX_UNANCHORED, labels.LOCAL_READER),
+            ("unsure_text", "box_unanchored", "local_reader"),
+        )
+        for reason in (labels.UNSURE_TEXT, labels.BOX_UNANCHORED, labels.LOCAL_READER):
+            self.assertIn(reason, review.EVERY_REASON)
+        self.assertEqual(len(set(review.EVERY_REASON)), len(review.EVERY_REASON))
 
 
 class OverlapTest(unittest.TestCase):

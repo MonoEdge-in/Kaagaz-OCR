@@ -44,6 +44,7 @@
   --hl-border: #b86e00;
   --hl-halo: transparent;
   --mine-on-paper: #233f8c; /* my words markers: pages are paper white in both themes */
+  --illegible-on-paper: #9e2219; /* PRD 5 U3 (V8): "couldn't read" marks; the light --danger-fg, kept in dark */
 
   /* Type: rem plus vw, so text still grows at 200% zoom */
   --font-sans: system-ui, "Segoe UI Variable Text", "Segoe UI", -apple-system, Roboto, "Noto Sans",

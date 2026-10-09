@@ -65,6 +65,7 @@ from kaagaz.extraction.links import link_identifiers
 from kaagaz.extraction.quotes import ReaderText
 from kaagaz.extraction.values import DocumentFacts, ExtractedValue, LinkIdentifier
 from kaagaz.reading.spans import Span
+from kaagaz.settings import INVOICE_REPLY_TOKENS
 
 if TYPE_CHECKING:
     from kaagaz.settings import Settings
@@ -77,7 +78,7 @@ class ModelBudget:
 
     card_max_chars: int  # CARD_MAX_CHARS
     card_max_tokens: int  # MODEL_CARD_MAX_TOKENS
-    num_ctx: int  # MODEL_NUM_CTX
+    num_ctx: int  # MODEL_CONTEXT_TOKENS (PRD 5 M1)
     invoice_windows: WindowSettings | None
 
     @classmethod
@@ -85,7 +86,7 @@ class ModelBudget:
         return cls(
             settings.card_max_chars,
             settings.model_card_max_tokens,
-            settings.model_num_ctx,
+            settings.model_context_tokens,
             WindowSettings.from_settings(settings),
         )
 
@@ -96,13 +97,13 @@ def model_config(settings: "Settings") -> dict[str, Any]:
     return {
         "card_prompt": CARD_PROMPT_HASH,
         "invoice_prompt": INVOICE_PROMPT_HASH,
-        "model_num_ctx": settings.model_num_ctx,
+        "model_context_tokens": settings.model_context_tokens,
         "card_max_chars": settings.card_max_chars,
         "card_max_tokens": settings.model_card_max_tokens,
         "extract_window_chars": settings.extract_window_chars,
         "extract_window_overlap": settings.extract_window_overlap,
         "extract_max_windows": settings.extract_max_windows,
-        "window_max_tokens": settings.model_window_max_tokens,
+        "window_max_tokens": INVOICE_REPLY_TOKENS,
     }
 
 

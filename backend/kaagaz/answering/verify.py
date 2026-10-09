@@ -62,7 +62,10 @@ dropped outright when it holds what cannot be checked:
 * a number written in words: before percent, lakh, crore, thousand, hundred
   or rupees, or an ordinal or number word next to a month, unless the whole
   run of number words is copied from a cited line as printed ("Rupees One
-  Lakh Eighteen Thousand" from a Tally bill's amount in words).
+  Lakh Eighteen Thousand" from a Tally bill's amount in words);
+* an English number word from two to ninety-nine ("twelve days", "twenty-six weeks";
+  PRD 5 CX7) whose value is not a number of its cited evidence and whose words are not
+  in it either (``missing_number_word``).
 
 In the evidence, such tokens are simply not atoms.
 
@@ -212,6 +215,15 @@ _NUMBER_WORD = re.compile(
     rf"|(?:{_ORDINAL})[\s-]+(?:of\s+)?(?:{_MONTH_WORD}|may|mar)"
     rf"|(?:{_MONTH_WORD})[\s-]+(?:the\s+)?(?:{_ORDINAL}))\b"
 )
+# PRD 5 CX7: an English number word from two to ninety-nine ("twelve", "twenty-six"); "one"
+# alone is left out ("one of the documents").
+_UNITS = dict(zip(_CARDINAL.split("|")[:9], range(1, 10), strict=True))  # one to nine
+_TEENS = dict(zip(_CARDINAL.split("|")[9:19], range(10, 20), strict=True))  # ten to nineteen
+_TENS = dict(zip(_CARDINAL.split("|")[19:27], range(20, 100, 10), strict=True))  # twenty to ninety
+_COUNT_WORD = re.compile(
+    rf"\b(?:(?P<tens>{'|'.join(_TENS)})(?:[\s-]+(?P<unit>{'|'.join(_UNITS)}))?"
+    rf"|(?P<teen>{'|'.join(_TEENS)})|(?P<small>{'|'.join(list(_UNITS)[1:])}))\b"
+)
 # A run of number words, as an amount in words prints it ("rupees one lakh eighteen thousand").
 _RUN_WORD = rf"(?:{_CARDINAL}|hundreds?|thousands?|lakhs?|lacs?|crores?|rupees?|paise|percent|per\s+cent|and)"
 _WORD_RUN = re.compile(rf"\b{_RUN_WORD}(?:[\s-]+{_RUN_WORD})*\b")
@@ -287,6 +299,8 @@ def _drop_reason(
         missing = next((kind for kind, value in atoms if not _is_backed(kind, value, backing)), None)
         if missing is not None:
             return f"missing_{_KIND_CODES.get(missing, missing)}"
+        if not all(_word_backed(line, match, backing) for match in _COUNT_WORD.finditer(line)):
+            return "missing_number_word"
     if not _quoted(text) <= backing.quoted:
         return "missing_word"
     return None
@@ -449,6 +463,21 @@ def _line_problem(line: str, words: Collection[str]) -> str | None:
         if run is None or run not in words:
             return "number_word"
     return None
+
+
+def _word_backed(line: str, match: re.Match[str], backing: _Backing) -> bool:
+    """PRD 5 CX7: an English number word from two to ninety-nine is backed by its value as a
+    number of the cited evidence, or when the whole run of number words around it in ``line``
+    is one of the evidence's runs ("twenty" is not "twenty six", "rupees one lakh eighteen
+    thousand" is itself). O(n)."""
+    if match["tens"]:
+        value = _TENS[match["tens"]] + (_UNITS[match["unit"]] if match["unit"] else 0)
+    else:
+        value = _TEENS[match["teen"]] if match["teen"] else _UNITS[match["small"]]
+    if ("number", Decimal(value)) in backing.atoms or str(value) in backing.ids:
+        return True
+    runs = (run for run in _WORD_RUN.finditer(line) if run.start() <= match.start() < run.end())
+    return any(_run_text(run[0]) in backing.words for run in runs)
 
 
 def _run_text(run: str) -> str:

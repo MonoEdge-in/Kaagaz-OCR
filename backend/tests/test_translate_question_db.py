@@ -12,7 +12,6 @@ from typing import Any
 
 import pytest
 
-from kaagaz.ai.client import ModelUnavailable
 from kaagaz.answering import translate
 from kaagaz.answering.service import AnswerService
 from kaagaz.api.app import create_app
@@ -31,7 +30,12 @@ QUESTION = "Who is the cultivator?"
 A_WORD = "\u0915\u0938\u0923\u093e\u0930"  # only in A's piece
 A_NAME = "\u0938\u0940\u0924\u093e \u0926\u0947\u0936\u092e\u0941\u0916"
 B_NAME = "\u0917\u0923\u092a\u0924 \u091c\u093e\u0927\u0935"
-SETTINGS = make_settings(answer_translate_question=True, model_embed="test-embed")
+SETTINGS = make_settings(
+    answer_translate_question=True,
+    model_embed="test-embed",
+    answer_whole_doc_tokens=0,  # PRD 3's search: no whole documents or aspects (PRD 5 CX5, CX6)
+    query_aspects_max=0,
+)
 
 
 class Model:
@@ -54,9 +58,6 @@ class Model:
         ]
         sentences = [{"text": f"{name}.", "evidence": [n]} for n, name in found]
         return {"status": "answered" if found else "not_found", "sentences": sentences}
-
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise ModelUnavailable("no_vision")
 
 
 def _world(db: Database) -> tuple[str, str, dict[str, list[str]]]:
@@ -120,3 +121,25 @@ def test_library_search_is_never_translated(db: Database) -> None:
     assert reply.status_code == 200, reply.text
     assert model.translated == 0
     assert reply.json()["documents"][0]["best"]["snippet"].endswith(A_NAME)
+
+
+def test_whole_document_mode_answers_the_english_question_from_marathi_text_alone(db: Database) -> None:
+    """PRD 5 CX5: the same question, the scope's pieces given whole (no search, so no
+    translation): it shares no word with the Marathi text and the pieces have no score, so
+    only the numbers asked gate it. B still gets only its own owner."""
+    a, b, pieces = _world(db)
+    whole = make_settings(model_embed="test-embed", query_aspects_max=0)  # ANSWER_WHOLE_DOC_TOKENS on
+
+    def ask(customer: str) -> tuple[dict[str, Any], Model]:
+        model = Model()
+        service = AnswerService(db=db, model=model, settings=whole, clock=lambda: NOW)
+        return service.answer(customer, QUESTION).to_json(), model
+
+    for_a, model = ask(a)
+    assert model.translated == 0 and for_a["status"] == "answered"
+    assert {c["ref_id"] for c in for_a["citations"]} == {pieces[a][0]}
+    assert for_a["label"] == "needs_review"
+    for_b, _ = ask(b)
+    dumped = json.dumps(for_b, ensure_ascii=False)
+    assert A_NAME not in dumped and pieces[a][0] not in dumped
+    assert [s["text"] for s in for_b["sentences"]] == [f"{B_NAME}."]

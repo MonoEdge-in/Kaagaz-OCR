@@ -16,7 +16,7 @@ from types import ModuleType
 
 from sqlalchemy import TextClause
 
-from kaagaz.answering import fixed_queries, unchecked
+from kaagaz.answering import fixed_queries, hard_to_read, unchecked
 from kaagaz.db import admin, listing, pipeline_store, review
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid, indexing, story_search
@@ -26,6 +26,7 @@ MODULES: tuple[ModuleType, ...] = (
     story_search,
     fixed_queries,
     unchecked,
+    hard_to_read,
     review,
     admin,
     listing,
@@ -42,6 +43,12 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (hybrid, "_MEANING_EXACT"): LIVE_CURRENT,
     (hybrid, "_DETAILS"): LIVE_CURRENT,
     (hybrid, "_NEIGHBOURS"): LIVE_CURRENT,  # Q4: the pieces next to an answer's hits
+    # PRD 5: whole documents (CX5), topic and section pieces (CX6) and cards (M2).
+    (hybrid, "_WHOLE_SIZE"): LIVE_CURRENT,
+    (hybrid, "_WHOLE"): LIVE_CURRENT,
+    (hybrid, "_TOPIC_PIECES"): LIVE_CURRENT,
+    (hybrid, "_SECTION_PIECES"): LIVE_CURRENT,  # in the sections' step and the pieces' step
+    (hybrid, "_CARDS"): LIVE_CURRENT,
     # Story matches (S3): the family's current version of a story, read and out of Trash.
     (story_search, "_STORIES"): LIVE_CURRENT,
     # The numbers in answers: the same, in every CTE.
@@ -53,6 +60,8 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (fixed_queries, "_VALUE_REFS"): LIVE_CURRENT,
     # The documents an unchecked figure points to (decided 30 Sep 2026): the same.
     (unchecked, "_CARD_DOCUMENTS"): LIVE_CURRENT,
+    # The pages a not-found answer names as not read well (PRD 5 F6): the same.
+    (hard_to_read, "_FLAGGED_PAGES"): LIVE_CURRENT,
     # Review: the values of the version answers use, and nothing else.
     (review, "_QUEUE"): LIVE_CURRENT,
     (review, "_COUNT"): LIVE_CURRENT,
@@ -70,6 +79,9 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # or only Trash (trashed=true).
     (listing, "_LIST"): LISTED,
     (listing, "_TRASH_LIST"): TRASHED_LISTED,
+    # A batch (PRD 5 Q1) and its size for the upload's cap: the uploader's files out of Trash.
+    (listing, "_BATCH"): LIVE,
+    (listing, "_BATCH_SIZE"): LIVE,
     # The detail's related documents (PRD 3 Y2): only a current, ready one out of Trash.
     (listing, "_LINKS"): LIVE_CURRENT,
     # Links (PRD 2 D5): only to a current, ready document out of Trash, never an older

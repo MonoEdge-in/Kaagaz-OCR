@@ -15,8 +15,7 @@ set -euo pipefail
 KAAGAZ_DIR=/home/ubuntu/kaagaz
 BACKUP_DIR=/home/ubuntu/backups
 KEEP_DAYS=7
-COMPOSE=(-f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod.yml)
-PROFILES=(--profile ollama --profile paddle)
+COMPOSE=(-f docker-compose.yml -f docker-compose.prod.yml)
 
 # One key's value from .env, as docker compose reads it: the last line that
 # sets it wins, one pair of surrounding quotes is removed, and an unquoted
@@ -57,13 +56,13 @@ trap 'rm -f "$partial"' EXIT
 # A dump missed while the server was stopped runs right after boot, before
 # postgres may be up: wait for it for up to 10 minutes.
 for _ in $(seq 60); do
-  if docker compose "${COMPOSE[@]}" "${PROFILES[@]}" exec -T postgres pg_isready -q >/dev/null 2>&1; then
+  if docker compose "${COMPOSE[@]}" exec -T postgres pg_isready -q >/dev/null 2>&1; then
     break
   fi
   sleep 10
 done
 
-docker compose "${COMPOSE[@]}" "${PROFILES[@]}" exec -T postgres \
+docker compose "${COMPOSE[@]}" exec -T postgres \
   pg_dump -U "$pg_user" -Fc "$pg_db" >"$partial"
 if [[ ! -s "$partial" ]]; then
   echo "pg_dump wrote nothing; no dump saved" >&2

@@ -122,7 +122,7 @@ class ImageReaderTest(unittest.TestCase):
         ocr = FakeOcr()
         reader = reader_of(ocr, max_pages=1, max_image_pixels=1)
         self.assertEqual((reader.name, reader.version), ("fake-ocr", "3"))
-        ocr.version = "4"  # PaddleOCR-VL's version comes from its reply, so it is read late
+        ocr.version = "4"  # a version may change after a page, so it is read late
         self.assertEqual(reader.version, "4")
 
     def test_limits_must_be_positive(self) -> None:

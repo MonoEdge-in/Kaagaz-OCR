@@ -27,7 +27,7 @@ const line = (confidence: number | null, region: Region = box(1, [0.1, 0.1, 0.9,
 
 const reader = (overrides: Partial<PageReader> = {}): PageReader => ({
   role: "first",
-  reader: "paddleocr-vl",
+  reader: "old-reader",
   reader_version: "1.5",
   truncated: false,
   lines: [line(0.97)],
@@ -60,30 +60,43 @@ describe("confidenceText", () => {
 });
 
 describe("readerHeading", () => {
-  const ocrPage = { route: "ocr" as const, effective_dpi: 200.4 };
+  const ocrPage = {
+    route: "ocr" as const,
+    read_by: "google/gemini-3.1-pro-preview",
+    read_issues: [],
+    effective_dpi: 200.4,
+  };
 
   it("says how the page was read, by which reader, and how many lines it was not sure of", () => {
     const heading = readerHeading(reader({ lines: [line(0.5), line(0.97), line(0.2)] }), ocrPage);
     expect(heading).toEqual({
-      title: "Read by OCR at 200 DPI",
-      detail: "paddleocr-vl 1.5",
+      title: "Read by Gemini at 200 DPI",
       notSureCount: "2 of 3 lines: reader not sure",
     });
+    // PRD 5 U8: no engine's name, whatever the server calls its reader.
+    expect(JSON.stringify(heading)).not.toMatch(/old-reader|rapid/i);
     expect(readerHeading(reader(), ocrPage).notSureCount).toBeNull();
     expect(readerHeading(reader({ lines: [line(0.5)] }), ocrPage).notSureCount).toBe(
       "1 of 1 line: reader not sure",
     );
   });
 
-  it("names the text layer and a page with no route", () => {
-    expect(readerHeading(reader(), { route: "text_layer", effective_dpi: null }).title).toBe(
-      "Read from the PDF text",
-    );
-    expect(readerHeading(reader(), { route: null, effective_dpi: null }).title).toBe("First reader");
-    expect(readerHeading(reader({ role: "second" }), ocrPage).title).toBe("Second reader (PDF text layer)");
+  it("names the backup reader only for a page the main reader handed on (PRD 5 RT2, Q7)", () => {
+    const keyless = { route: "ocr" as const, read_by: "rapidocr", read_issues: [], effective_dpi: 300 };
+    const local = { ...keyless, read_issues: ["read_locally" as const] };
+    expect(readerHeading(reader(), local).title).toBe("Read by the backup reader at 300 DPI");
+    expect(readerHeading(reader(), keyless).title).toBe("Read by OCR at 300 DPI");
   });
 
-  it("says when the second reader did not count", () => {
+  it("names the text layer and a page with no route", () => {
+    const textLayer = { route: "text_layer" as const, read_by: "text_layer", read_issues: [], effective_dpi: null };
+    expect(readerHeading(reader(), textLayer).title).toBe("Read from the PDF text");
+    const unread = { route: null, read_by: null, read_issues: [], effective_dpi: null };
+    expect(readerHeading(reader(), unread).title).toBe("Main reader");
+    expect(readerHeading(reader({ role: "second" }), ocrPage).title).toBe("Checker (PDF text layer)");
+  });
+
+  it("says when the checker did not count", () => {
     expect(secondReaderNote("ocr")).toBe("Not used for this page: it was read by OCR.");
     expect(secondReaderNote("blank")).toBe("Not used for this page: it is blank.");
     expect(secondReaderNote("text_layer")).toBeNull();
@@ -124,7 +137,7 @@ describe("emptyState", () => {
     expect(emptyState({ status: "ready", reader: reader() }, "ocr")).toBeNull();
   });
 
-  it("never asks for a sharper scan when the second reader found nothing", () => {
+  it("never asks for a sharper scan when the checker found nothing", () => {
     const second = reader({ role: "second", lines: [] });
     expect(emptyState({ status: "ready", reader: second }, "ocr")?.text).toBe(
       "No text was found on this page.",

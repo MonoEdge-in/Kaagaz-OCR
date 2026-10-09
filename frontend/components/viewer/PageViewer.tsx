@@ -13,7 +13,10 @@
 // (marks) are dashed, numbered outlines, drawn on the full page only. A crop
 // preview fills its reserved box without clipping the spot, and is drawn only
 // once it comes near the screen (IntersectionObserver); until then a skeleton
-// holds its space.
+// holds its space. Reading problems (PRD 5 U3, readingMarks.ts) are a second
+// layer of marks on the full page, each a button with its own pattern, with a
+// legend and a "Show reading problems" checkbox, on at first for an uncertain or
+// unreadable page.
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
@@ -26,7 +29,8 @@ import type { Marker } from "@/components/words/spots";
 import { pageImageUrl } from "@/lib/api";
 import { boxToPixels, cropRect, fitCropView, pageAspect, regionsOnPage } from "@/lib/regions";
 import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
-import type { DocumentSummary, PageSummary, Region } from "@/lib/types";
+import type { DocumentSummary, PageSummary, ReadingMark, Region } from "@/lib/types";
+import { MARK_WORDS, legend, markName, markRect, marksOnPage, showByDefault } from "./readingMarks";
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
 import { ZOOM_STEPS, fitPageSize, pageMode, routeText, stepZoom } from "./viewer";
@@ -61,6 +65,9 @@ export interface PageViewerProps {
   activeMark?: string | null;
   /** "page": fill the parent's height and fit the whole page in it; "width" (default): fit the width. */
   fit?: "page" | "width";
+  /** PRD 5 U3: the page's reading problems, and what a mark does when pressed (with its name). */
+  readingMarks?: ReadingMark[];
+  onMark?: (mark: ReadingMark, name: string) => void;
 }
 
 export function PageViewer({
@@ -75,6 +82,8 @@ export function PageViewer({
   marks = [],
   activeMark = null,
   fit = "width",
+  readingMarks,
+  onMark,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -85,6 +94,8 @@ export function PageViewer({
   const [drawnFor, setDrawnFor] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const onPdfFailed = useCallback(() => setPdfFailedFor(pageKey), [pageKey]);
+  // "Show reading problems", chosen on this page; until then, on for a page with problems.
+  const [problemsChoice, setProblemsChoice] = useState<{ key: string; on: boolean } | null>(null);
 
   const pdfFailed = pdfFailedFor === pageKey;
   const imageFailed = imageFailedFor === pageKey;
@@ -99,6 +110,10 @@ export function PageViewer({
   const label = `Page ${page.page_no} of ${document.display_name}`;
   const aspect = pageAspect(page);
   const boxes = onThisPage.filter((r): r is BoxRegion => r.kind === "box");
+  const problems = isCrop ? [] : marksOnPage(readingMarks, page.page_no);
+  const marksKey = `${document.id}:${page.page_no}`;
+  const showProblems =
+    problemsChoice && problemsChoice.key === marksKey ? problemsChoice.on : showByDefault(page);
 
   const failed = (
     <div className={styles.failed} role="status">
@@ -179,6 +194,25 @@ export function PageViewer({
               >
                 <span className={styles.mineNumber}>{mark.n}</span>
               </div>
+            );
+          })}
+      {crop || !showProblems
+        ? null
+        : problems.map((mark, index) => {
+            const px = markRect(mark, width, height);
+            if (!px) return null;
+            const name = markName(mark, index, problems.length);
+            return (
+              <button
+                key={index}
+                type="button"
+                className={styles.problem}
+                data-quality={mark.quality}
+                aria-label={name}
+                title={name}
+                style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
+                onClick={() => onMark?.(mark, name)}
+              />
             );
           })}
     </div>
@@ -278,7 +312,7 @@ export function PageViewer({
   const next = at >= 0 && at < numbers.length - 1 ? numbers[at + 1] : undefined;
   const canZoom = mode === "pdf" || mode === "image";
   const showPages = onPageChange !== undefined && numbers.length > 0;
-  const route = routeText(page.route);
+  const route = routeText(page);
   const fitName = fit === "page" ? "Fit page" : "Fit width";
 
   return (
@@ -335,6 +369,28 @@ export function PageViewer({
         </div>
       ) : null}
       {belowToolbar}
+      {problems.length > 0 && canZoom ? (
+        <div className={styles.problemBar}>
+          <label className={styles.problemToggle}>
+            <input
+              type="checkbox"
+              checked={showProblems}
+              onChange={() => setProblemsChoice({ key: marksKey, on: !showProblems })}
+            />
+            Show reading problems
+          </label>
+          {showProblems ? (
+            <ul className={styles.legend} aria-label="What the marks mean">
+              {legend(problems).map((quality) => (
+                <li key={quality}>
+                  <span className={styles.swatch} data-quality={quality} aria-hidden="true" />
+                  {MARK_WORDS[quality].legend}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       {body}
     </div>
   );

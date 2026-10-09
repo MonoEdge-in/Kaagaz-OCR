@@ -8,7 +8,7 @@ import json
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -21,17 +21,17 @@ import kaagaz
 from kaagaz.db.documents import PgDocuments, delete_family_forever
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
-from kaagaz.db.runs import PgRuns, finish_run, is_run_open, pages_by_route, start_run
+from kaagaz.db.runs import READER_COUNTERS, PgRuns, finish_run, is_run_open, pages_by_route, start_run
 from kaagaz.db.trash import lock_family
 from kaagaz.eta import RunTiming
 from kaagaz.ingestion.ports import DocumentRecord
 from kaagaz.jobs.worker import JobFailed, Superseded
 from kaagaz.pipeline import FinishedRun, Progress, RunTotals
+from kaagaz.reading.rapid_pool import DEVANAGARI_REC_MODEL
 from kaagaz.scanning.gate import REJECTION_CODES, DocumentStatus
 from tests.db_support import insert_document, new_customer, violation, wait_until_blocked
 from tests.fakes import MemoryDocuments, MemoryProgress, MemoryRuns, MemoryStatuses, MemoryStorage
 from tests.test_api_review import _named_database
-from tests.test_ocr_server import VERSION as OCR_VERSION
 from tests.test_pipeline_store_db import EMPTY, content, counts, new_document, new_session, rows
 
 pytestmark = pytest.mark.db
@@ -48,7 +48,7 @@ RUNS = (
 def totals(status: str = "ready", **changes: Any) -> RunTotals:
     """Run totals with a different number in every counter, so a swapped column shows."""
     base = RunTotals(
-        status, None, "rapidocr 3.4", "qwen3:4b", None, "bge-m3", 1, 2, 3, 4, 5, 6, 7, 12.5, 3.25
+        status, None, "rapidocr 3.4", "fake-chat", None, "bge-m3", 1, 2, 3, 4, 5, 6, 7, 12.5, 3.25
     )
     return replace(base, **changes)
 
@@ -133,7 +133,7 @@ def test_finish_run_writes_every_total_and_never_ends_before_it_started(db: Data
     names += ["seconds_ocr", "quotes_returned", "values_verified", "values_needs_review"]
     assert [row[name] for name in names] == [
         "rapidocr 3.4",
-        "qwen3:4b",
+        "fake-chat",
         None,
         "bge-m3",
         *range(1, 8),
@@ -162,9 +162,10 @@ def test_finish_run_keeps_a_long_engine_name_and_cuts_a_longer_one(db: Database)
     assert {name: stored[cut][name] for name in long} == {name: value[:300] for name, value in long.items()}
 
 
-def test_finish_run_keeps_the_real_paddleocr_vl_engine_name_untouched(db: Database) -> None:
-    """The name a PaddleOCR-VL run records: the engine, a space, and its reply's version."""
-    engine = "paddleocr-vl " + OCR_VERSION
+def test_finish_run_keeps_a_real_engine_name_untouched(db: Database) -> None:
+    """The name a RapidOCR run records: the engine, a space, and its version with the
+    Devanagari model it used."""
+    engine = f"rapidocr 3.9.2;rec={DEVANAGARI_REC_MODEL}"
     customer, _ = new_customer(db)
     doc = new_document(db, customer)
     run = PgRuns(db).start(customer, doc, now=T0)
@@ -611,4 +612,98 @@ def test_memory_and_postgresql_runs_and_progress_agree(db: Database) -> None:
     )
     assert [row[1] for row in runs(db, customer, reading)] == [
         row.status for row in memory_runs.for_document(customer, reading)
+    ]
+
+
+# --- PRD 5 (0021): who read the pages, and the tokens billed --------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ReaderTotals(RunTotals):
+    """Run totals with PRD 5's counters, in the fields finish_run reads by name
+    (runs.READER_COUNTERS)."""
+
+    pages_gemini: int = 0
+    pages_local: int = 0
+    pages_cached: int = 0
+    pages_read_again: int = 0
+    pages_unreadable: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+def reader_totals(**counters: int) -> ReaderTotals:
+    """``totals()`` with PRD 5's counters; any not given is 0."""
+    base = totals()
+    given: dict[str, Any] = {item.name: getattr(base, item.name) for item in fields(RunTotals)}
+    given.update(counters)
+    return ReaderTotals(**given)
+
+
+READER = (
+    "SELECT pages_gemini, pages_local, pages_cached, pages_read_again, pages_unreadable, input_tokens,"
+    " output_tokens FROM processing_runs WHERE document_id = :d ORDER BY started_at"
+)
+
+
+def test_the_reader_counters_are_the_ones_finish_run_reads() -> None:
+    names = [item.name for item in fields(ReaderTotals)][len(fields(RunTotals)) :]
+    assert names == list(READER_COUNTERS)
+
+
+def test_finish_run_writes_who_read_the_pages_and_the_tokens_billed(db: Database) -> None:
+    """G7, G9, F2, F5, Q7: a different number in every counter, so a swapped column shows;
+    tokens past 2**31 fit (bigint)."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    run = PgRuns(db).start(customer, doc, now=T0)
+    counted = reader_totals(
+        pages_gemini=11,
+        pages_local=12,
+        pages_cached=13,
+        pages_read_again=14,
+        pages_unreadable=15,
+        input_tokens=3_000_000_000,
+        output_tokens=4_000_000_000,
+    )
+    PgRuns(db).finish(customer, FinishedRun(run, counted, T1))
+
+    assert rows(db, customer, READER, doc) == [
+        {
+            "pages_gemini": 11,
+            "pages_local": 12,
+            "pages_cached": 13,
+            "pages_read_again": 14,
+            "pages_unreadable": 15,
+            "input_tokens": 3_000_000_000,
+            "output_tokens": 4_000_000_000,
+        }
+    ]
+
+
+def test_totals_without_the_reader_counters_write_zero(db: Database) -> None:
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    run = PgRuns(db).start(customer, doc, now=T0)
+    PgRuns(db).finish(customer, FinishedRun(run, totals(), T1))
+
+    assert rows(db, customer, READER, doc) == [dict.fromkeys(READER_COUNTERS, 0)]
+
+
+def test_a_superseded_run_gets_its_reader_counters_once(db: Database) -> None:
+    """Like the other counts: the pages a superseded delivery read still count, once."""
+    customer, _ = new_customer(db)
+    doc = new_document(db, customer)
+    old = PgRuns(db).start(customer, doc, now=T0)
+    new = PgRuns(db).start(customer, doc, now=T1)
+    first = reader_totals(pages_gemini=30, pages_cached=0, input_tokens=51_000)
+    later = reader_totals(pages_gemini=99)
+    PgRuns(db).finish(customer, FinishedRun(old, first, T2))
+    PgRuns(db).finish(customer, FinishedRun(old, later, T2))
+    PgRuns(db).finish(customer, FinishedRun(new, reader_totals(pages_cached=30), T2))
+
+    counted = rows(db, customer, READER, doc)
+    assert [(row["pages_gemini"], row["pages_cached"], row["input_tokens"]) for row in counted] == [
+        (30, 0, 51_000),
+        (0, 30, 0),
     ]
