@@ -40,6 +40,12 @@ until it is told to stop:
   between jobs, waiting longer while the model is down (``StoryVectors``,
   kaagaz/search/story_vectors.py). Like the purge, it never stops the jobs or
   crashes the worker.
+* Before a job runs, ``admission`` (PRD 5 Q5) hands it back to the queue, with no
+  attempt counted: for KEY_PROBLEM_DEFER_SECONDS (300) while the reader's gate
+  has a key problem, and for 30 s when its customer already has
+  MAX_ACTIVE_PER_CUSTOMER documents being read in any copy of the worker (the
+  fair-share slots, kaagaz/jobs/fair_share.py), so one customer's batch never
+  blocks another's. The worker then takes the next job.
 
 Logs are JSON lines holding ids, codes and counts only: never file names,
 document text or an exception's message (it could quote a document). An
@@ -49,6 +55,7 @@ PROVISIONAL: the pause after an outage reuses QUEUE_WAIT_SECONDS rather than
 adding a setting; back-off with jitter needs Vrushit's queue settings.
 """
 
+import contextlib
 import functools
 import json
 import logging
@@ -56,7 +63,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from types import FrameType
 from typing import TYPE_CHECKING, Protocol
@@ -67,13 +74,25 @@ from kaagaz.adapters.queue import SqsQueue
 from kaagaz.adapters.scanner import build_scanner
 from kaagaz.adapters.storage import S3Storage
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
+from kaagaz.ai.openrouter import KEY_PROBLEM as READER_KEY_PROBLEM
+from kaagaz.ai.openrouter import process_gate
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.fair_share import FairShare, first_free_lock
 from kaagaz.jobs.ports import QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import CustomerStorage, purge_deleted_customers, purge_expired, sweep_purged_customers
-from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
+from kaagaz.jobs.worker import (
+    KEY_PROBLEM_DEFER_SECONDS,
+    RETRIES_EXHAUSTED,
+    Admit,
+    Deferred,
+    Handler,
+    Heartbeat,
+    JobFailed,
+    Worker,
+)
 from kaagaz.search.indexing import MissingPass, embed_missing
 from kaagaz.search.story_vectors import StoryKey, StoryPass, embed_missing_stories
 from kaagaz.settings import Settings
@@ -188,6 +207,29 @@ class MarkExhausted:
         )
 
 
+def admission(reader_state: Callable[[], str], slot: Admit) -> Admit:
+    """The worker's ``admit`` (PRD 5 Q5): while ``reader_state()`` (the gate's state) is
+    ``key_problem``, every job is handed back for KEY_PROBLEM_DEFER_SECONDS; otherwise
+    ``slot(job)`` (FairShare.slot) holds the customer's slot for the try, or hands the
+    job back. Each hand-back is logged at debug with the job's ids and a fixed code,
+    never another customer's count. O(1) besides the slot."""
+
+    @contextlib.contextmanager
+    def admit(job: Job) -> Iterator[None]:
+        ids = {"customer_id": job.customer_id, "document_id": job.document_id}
+        with contextlib.ExitStack() as held:
+            try:
+                if reader_state() == READER_KEY_PROBLEM:
+                    raise Deferred(KEY_PROBLEM_DEFER_SECONDS, READER_KEY_PROBLEM)
+                held.enter_context(slot(job))
+            except Deferred as deferred:
+                logger.debug("job deferred", extra={**ids, "outcome": "deferred", "code": deferred.code})
+                raise
+            yield
+
+    return admit
+
+
 def job_worker(
     queue: WorkQueue,
     handler: Handler,
@@ -195,10 +237,11 @@ def job_worker(
     max_attempts: int,
     mark_exhausted: Callable[[str, str], None],
     record_attempt: Callable[[str, str, int, int], None],
+    admit: Admit | None = None,
 ) -> Worker:
     """The Worker _serve runs: each outcome logged, each try recorded, the delivery after
-    the last attempt marked, and a lease renewed at most every LEASE_RENEW_SECONDS on
-    time.monotonic."""
+    the last attempt marked, a lease renewed at most every LEASE_RENEW_SECONDS on
+    time.monotonic, and ``admit`` (``admission``) around each try."""
     return Worker(
         queue,
         LoggedHandler(handler),
@@ -206,6 +249,7 @@ def job_worker(
         on_exhausted=MarkExhausted(mark_exhausted),
         on_attempt=RecordAttempt(record_attempt, max_attempts),
         clock=time.monotonic,
+        admit=admit,
     )
 
 
@@ -439,6 +483,8 @@ def _serve(settings: Settings) -> None:
     storage.ensure_bucket()  # the laptop's first start; in AWS it only checks
     logger.info("worker started")
     documents = PgDocuments(db)
+    gate = process_gate(settings)  # the one every model client of this process shares
+    fair_share = FairShare(functools.partial(first_free_lock, db.engine), settings.max_active_per_customer)
     jobs = job_worker(
         queue,
         processor,
@@ -448,6 +494,7 @@ def _serve(settings: Settings) -> None:
             customer, document, now=_utc_now(), max_attempts=settings.job_max_attempts
         ),
         record_attempt=documents.record_attempt,
+        admit=admission(lambda: gate.status()[0], fair_share.slot),
     )
     purge = functools.partial(_purge, db, storage, settings.trash_days)
     embed = None if model is None else functools.partial(embed_missing, db, model, limit=EMBED_PASS_PIECES)
