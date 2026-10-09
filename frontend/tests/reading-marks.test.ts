@@ -69,6 +69,23 @@ describe("how the marks look", () => {
     expect(css).toMatch(/\.problem::before \{[^}]*top: min\(0px, calc\(50% - 12px\)\)/);
   });
 
+  it("rings a focused mark in paper-fixed ink on a paper halo: 3:1 or more on white, in both themes", () => {
+    const focus = css.match(/\.problem:focus-visible \{([^}]*)\}/)?.[1] ?? "";
+    expect(focus).toMatch(/outline: 2px solid var\(--mine-on-paper\);/);
+    expect(focus).toMatch(/box-shadow: 0 0 0 4px var\(--paper\);/); // fills the offset: the ring sits on paper
+    // After .problem and .problem:hover at no lower specificity, so their box-shadow never replaces it.
+    expect(css.indexOf(".problem:focus-visible {")).toBeGreaterThan(css.indexOf(".problem:hover {"));
+    // Both tokens are set once, so the dark theme keeps them: pages are paper white in both.
+    expect(globals.match(/--mine-on-paper: #[0-9a-f]+/g)).toEqual(["--mine-on-paper: #233f8c"]);
+    expect(globals.match(/--paper: #[0-9a-f]+/g)).toEqual(["--paper: #ffffff"]);
+    const channel = (hex: string) => {
+      const value = parseInt(hex, 16) / 255;
+      return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    };
+    const ink = 0.2126 * channel("23") + 0.7152 * channel("3f") + 0.0722 * channel("8c");
+    expect((1 + 0.05) / (ink + 0.05)).toBeGreaterThanOrEqual(3); // WCAG 1.4.11 against white
+  });
+
   it("uses one paper-fixed red, the light theme's #9e2219, the same in dark (V8)", () => {
     const tokens = globals.match(/--illegible-on-paper: (#[0-9a-f]+)/g) ?? [];
     expect(tokens).toEqual(["--illegible-on-paper: #9e2219"]);
