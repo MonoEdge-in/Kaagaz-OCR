@@ -70,8 +70,8 @@ the summed ``usage.cost`` when replies carry one.
 (``process_gate``), shared by every client the process builds: the reader's, the chat
 client and the translator. Its limiter spaces calls ``60 * workers / MODEL_RPM`` seconds
 apart, so the workers together stay under ``MODEL_RPM``. ``workers`` is the number of
-processes that share the key; it is 1 until WORKER_REPLICAS exists (PRD 5 Q3 adds it in
-pull request 2, and passes it to ``process_gate`` then). After ``BREAKER_FAILURES`` failed
+processes that share the key: WORKER_REPLICAS copies of the worker plus the API (PRD 5 Q3,
+V7), which ``process_gate`` uses unless told otherwise. After ``BREAKER_FAILURES`` failed
 requests in a row (408, 429, 5xx, a mid-reply error or no connection) the breaker opens:
 for ``BREAKER_OPEN_SECONDS`` every call fails at once with ``circuit_open``, then one call
 is let through as a probe; its success closes the breaker, its failure opens it again.
@@ -610,9 +610,12 @@ _PROCESS_GATES: dict[tuple[str, int, int], ModelGate] = {}
 _PROCESS_GATES_LOCK = threading.Lock()
 
 
-def process_gate(settings: Settings, *, workers: int = 1) -> ModelGate:
+def process_gate(settings: Settings, *, workers: int | None = None) -> ModelGate:
     """This process's one gate for OPENROUTER_BASE_URL at MODEL_RPM over ``workers``, on the
-    real clock: every client built for the product shares it."""
+    real clock: every client built for the product shares it. ``workers`` None is
+    WORKER_REPLICAS + 1, the worker copies and the API (PRD 5 V7)."""
+    if workers is None:
+        workers = settings.worker_replicas + 1
     key = (settings.openrouter_base_url, settings.model_rpm, workers)
     with _PROCESS_GATES_LOCK:
         gate = _PROCESS_GATES.get(key)

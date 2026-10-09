@@ -40,6 +40,11 @@ until it is told to stop:
   between jobs, waiting longer while the model is down (``StoryVectors``,
   kaagaz/search/story_vectors.py). Like the purge, it never stops the jobs or
   crashes the worker.
+* WORKER_REPLICAS copies of this process run at once (PRD 5 Q3). Each sweep
+  between jobs (the purge, EmbedMissing, StoryVectors, UpgradeLocalReads) takes
+  its Postgres advisory lock ``kaagaz.sweep:<name>`` first (``sweep_lock``), on a
+  connection of its own, and a copy that cannot get it skips that pass: only one
+  copy runs a sweep at a time.
 * Before a job runs, ``admission`` (PRD 5 Q5) hands it back to the queue, with no
   attempt counted: for KEY_PROBLEM_DEFER_SECONDS (300) while the reader's gate
   has a key problem, and for 30 s when its customer already has
@@ -64,10 +69,12 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from types import FrameType
 from typing import TYPE_CHECKING, Protocol
 
+from sqlalchemy import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.adapters.queue import SqsQueue
@@ -257,6 +264,29 @@ class RunsJobs(Protocol):
     def run_once(self) -> bool: ...
 
 
+# PRD 5 Q3: takes the named sweep's lock for the block, and says whether this copy has it.
+SweepLock = Callable[[str], AbstractContextManager[bool]]
+
+
+def no_lock(name: str) -> AbstractContextManager[bool]:
+    """Every pass runs: one copy alone (the tests' default)."""
+    return contextlib.nullcontext(True)
+
+
+def sweep_lock(engine: Engine) -> SweepLock:
+    """The sweeps' lock: ``pg_try_advisory_lock(hashtextextended('kaagaz.sweep:<name>', 0))``
+    on a connection of its own (``first_free_lock``), held for the pass. A copy that
+    cannot get it skips that pass. A database that cannot be reached is
+    BackendUnavailable, as the pass's own would be."""
+
+    @contextlib.contextmanager
+    def lock(name: str) -> Iterator[bool]:
+        with first_free_lock(engine, [f"kaagaz.sweep:{name}"]) as held:
+            yield held is not None
+
+    return lock
+
+
 class PurgeHourly:
     """Wraps the worker: before a turn, runs ``purge`` (returns how many families
     it purged) if an hour has passed on ``clock`` since the last run. The first
@@ -269,13 +299,23 @@ class PurgeHourly:
     statement, say) is logged by its type and swallowed here: the purge is
     housekeeping, and it must not stop the jobs, or, since the first turn after
     a restart purges, crash the worker on every restart.
+    The pass runs under ``lock("purge")`` (PRD 5 Q3): a copy that cannot get it
+    skips this hour's.
     O(1) per turn, plus the purge's own cost once an hour.
     """
 
-    def __init__(self, worker: RunsJobs, purge: Callable[[], int], clock: Callable[[], datetime]) -> None:
+    def __init__(
+        self,
+        worker: RunsJobs,
+        purge: Callable[[], int],
+        clock: Callable[[], datetime],
+        *,
+        lock: SweepLock = no_lock,
+    ) -> None:
         self._worker = worker
         self._purge = purge
         self._clock = clock
+        self._lock = lock
         self._last: datetime | None = None
 
     def run_once(self) -> bool:
@@ -283,7 +323,9 @@ class PurgeHourly:
         if self._last is None or now - self._last >= PURGE_EVERY:
             self._last = now
             try:
-                logger.info("trash purged: %d families", self._purge())
+                with self._lock("purge") as mine:
+                    if mine:
+                        logger.info("trash purged: %d families", self._purge())
             except SQLAlchemyError as error:
                 logger.error("trash purge failed", extra={"code": type(error).__name__})
         return self._worker.run_once()
@@ -301,7 +343,8 @@ class EmbedMissing:
     answers sets the wait back. A database error (SQLAlchemyError, or
     BackendUnavailable when the database cannot be reached) is logged by its
     type and swallowed, as in PurgeHourly: the jobs go on, and the next pass is
-    EMBED_EVERY later. Logs hold ids, codes and counts only.
+    EMBED_EVERY later. Logs hold ids, codes and counts only. The pass runs under
+    ``lock("embed_missing")`` (PRD 5 Q3): a copy that cannot get it skips it.
     O(1) per turn, plus one pass's own cost at most every EMBED_EVERY.
     """
 
@@ -310,10 +353,13 @@ class EmbedMissing:
         worker: RunsJobs,
         embed: Callable[[tuple[str, str] | None], MissingPass] | None,
         clock: Callable[[], datetime],
+        *,
+        lock: SweepLock = no_lock,
     ) -> None:
         self._worker = worker
         self._embed = embed
         self._clock = clock
+        self._lock = lock
         self._next: datetime | None = None
         self._backoff = EMBED_EVERY
         self._after: tuple[str, str] | None = None
@@ -323,25 +369,31 @@ class EmbedMissing:
         if self._embed is not None and (self._next is None or now >= self._next):
             self._next = now + EMBED_EVERY  # noted first: a pass that fails waits too
             try:
-                done = self._embed(self._after)
+                with self._lock("embed_missing") as mine:
+                    done = self._embed(self._after) if mine else None
             except (SQLAlchemyError, BackendUnavailable) as error:
                 logger.error("missing vectors failed", extra={"code": type(error).__name__})
             else:
-                self._after = done.after
-                if done.skipped is not None:
-                    customer, document, code = done.skipped
-                    logger.warning(
-                        "vectors skipped",
-                        extra={"customer_id": customer, "document_id": document, "code": code},
-                    )
-                if done.down is None:
-                    self._backoff = EMBED_EVERY
-                else:
-                    logger.warning("model unavailable, vectors wait", extra={"code": done.down})
-                    self._next = now + self._backoff
-                    self._backoff = min(self._backoff * 2, EMBED_BACKOFF_MOST)
-                logger.info("missing vectors: %d pieces", done.written)
+                if done is not None:
+                    self._note(done, now)
         return self._worker.run_once()
+
+    def _note(self, done: MissingPass, now: datetime) -> None:
+        """Keep the pass's cursor and wait, and log it."""
+        self._after = done.after
+        if done.skipped is not None:
+            customer, document, code = done.skipped
+            logger.warning(
+                "vectors skipped",
+                extra={"customer_id": customer, "document_id": document, "code": code},
+            )
+        if done.down is None:
+            self._backoff = EMBED_EVERY
+        else:
+            logger.warning("model unavailable, vectors wait", extra={"code": done.down})
+            self._next = now + self._backoff
+            self._backoff = min(self._backoff * 2, EMBED_BACKOFF_MOST)
+        logger.info("missing vectors: %d pieces", done.written)
 
 
 class StoryVectors:
@@ -357,8 +409,9 @@ class StoryVectors:
     it answers sets the wait back. A database error (SQLAlchemyError, or
     BackendUnavailable when the database cannot be reached) or a ValueError is
     logged by its type and swallowed, as in PurgeHourly: the jobs go on. Logs hold
-    codes and counts only, never a story. O(1) per turn, plus one pass at most
-    every STORY_EVERY.
+    codes and counts only, never a story. The pass runs under ``lock("story_vectors")``
+    (PRD 5 Q3): a copy that cannot get it skips it. O(1) per turn, plus one pass at
+    most every STORY_EVERY.
     """
 
     def __init__(
@@ -366,10 +419,13 @@ class StoryVectors:
         worker: RunsJobs,
         embed: Callable[[StoryKey | None], StoryPass] | None,
         clock: Callable[[], datetime],
+        *,
+        lock: SweepLock = no_lock,
     ) -> None:
         self._worker = worker
         self._embed = embed
         self._clock = clock
+        self._lock = lock
         self._next: datetime | None = None
         self._backoff = STORY_EVERY
         self._after: StoryKey | None = None
@@ -379,7 +435,8 @@ class StoryVectors:
         if self._embed is not None and (self._next is None or now >= self._next):
             self._next = now + STORY_EVERY
             try:
-                done = self._embed(self._after)
+                with self._lock("story_vectors") as mine:
+                    done = self._embed(self._after) if mine else None
             except (SQLAlchemyError, BackendUnavailable, ValueError) as error:
                 logger.error("story vectors failed", extra={"code": type(error).__name__})
             except (ModelUnavailable, ModelOutputError) as error:
@@ -387,9 +444,10 @@ class StoryVectors:
                 self._next = now + self._backoff
                 self._backoff = min(self._backoff * 2, STORY_BACKOFF_MOST)
             else:
-                self._after = done.after
-                self._backoff = STORY_EVERY
-                logger.info("story vectors: %d of %d stories", done.written, done.found)
+                if done is not None:
+                    self._after = done.after
+                    self._backoff = STORY_EVERY
+                    logger.info("story vectors: %d of %d stories", done.written, done.found)
         return self._worker.run_once()
 
 
@@ -501,8 +559,9 @@ def _serve(settings: Settings) -> None:
     stories: Callable[[StoryKey | None], StoryPass] | None = None
     if model is not None:
         stories = functools.partial(_story_pass, db, model)
-    pieces = EmbedMissing(PurgeHourly(jobs, purge, _utc_now), embed, _utc_now)
-    worker = StoryVectors(pieces, stories, _utc_now)
+    lock = sweep_lock(db.engine)
+    pieces = EmbedMissing(PurgeHourly(jobs, purge, _utc_now, lock=lock), embed, _utc_now, lock=lock)
+    worker = StoryVectors(pieces, stories, _utc_now, lock=lock)
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
     db.engine.dispose()
     logger.info("worker stopped")

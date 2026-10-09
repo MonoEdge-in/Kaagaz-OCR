@@ -1142,14 +1142,18 @@ def test_the_fake_answers_only_what_a_test_scripted(fake: OpenRouterFake) -> Non
 
 def test_every_client_of_the_process_shares_one_gate(fake: OpenRouterFake) -> None:
     """G9 per process: the reader's client, chat and the translator share one limiter and
-    one breaker, so their calls together stay under MODEL_RPM."""
+    one breaker, so their calls together stay under MODEL_RPM. PRD 5 V7: MODEL_RPM is
+    shared by WORKER_REPLICAS worker copies and the API, so each process's calls are
+    60 * (WORKER_REPLICAS + 1) / MODEL_RPM seconds apart."""
     settings = _settings(fake.url)
     chat = build_model_client(settings)
     translator = build_model_client(settings, chat_timeout_seconds=1.0)
     assert isinstance(chat, OpenRouterClient) and isinstance(translator, OpenRouterClient)
     assert chat.gate is translator.gate is process_gate(settings)
-    assert process_gate(settings, workers=3) is not chat.gate
-    assert process_gate(settings, workers=3).interval == pytest.approx(3 * chat.interval)
+    assert chat.interval == pytest.approx(60.0 * (settings.worker_replicas + 1) / settings.model_rpm)
+    assert process_gate(settings, workers=settings.worker_replicas + 1) is chat.gate
+    assert process_gate(settings, workers=1) is not chat.gate
+    assert process_gate(settings, workers=1).interval == pytest.approx(chat.interval / 4)
     with pytest.raises(ValueError, match="workers"):
         ModelGate(settings, workers=0)
 
