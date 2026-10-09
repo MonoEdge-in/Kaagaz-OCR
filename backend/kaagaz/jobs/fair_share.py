@@ -14,8 +14,8 @@ job runs:
   back (``Deferred``, FAIR_SHARE_DEFER_SECONDS 30) without counting an attempt, and
   the worker takes the next one. So one customer's batch of 50 never blocks
   another customer's work.
-* Each sweep between jobs takes ``kaagaz.sweep:<name>`` (worker_main), so with
-  WORKER_REPLICAS copies only one runs it at a time.
+* Each sweep between jobs takes ``kaagaz.sweep:<name>`` (``sweep_lock``), so with
+  WORKER_REPLICAS copies only one runs it at a time (Q3).
 
 The keys are hashed with ``hashtextextended(key, 0)``, as the other advisory locks
 here (db/documents.py). Nothing is read from any table, so no customer's data and
@@ -26,6 +26,7 @@ Cost: one connection and up to MAX ``pg_try_advisory_lock`` calls per job, one
 unlock after it.
 """
 
+import contextlib
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 
@@ -72,6 +73,29 @@ def first_free_lock(engine: Engine, keys: Sequence[str]) -> Iterator[str | None]
                     conn.invalidate()
     finally:
         conn.close()
+
+
+# PRD 5 Q3: takes the named sweep's lock for the block, and says whether this copy has it.
+SweepLock = Callable[[str], AbstractContextManager[bool]]
+
+
+def no_lock(name: str) -> AbstractContextManager[bool]:
+    """Every pass runs: one copy alone (the tests' default)."""
+    return contextlib.nullcontext(True)
+
+
+def sweep_lock(engine: Engine) -> SweepLock:
+    """The sweeps' lock: ``pg_try_advisory_lock(hashtextextended('kaagaz.sweep:<name>', 0))``
+    on a connection of its own (``first_free_lock``), held for the pass. A copy that
+    cannot get it skips that pass. A database that cannot be reached is
+    BackendUnavailable, as the pass's own would be."""
+
+    @contextlib.contextmanager
+    def lock(name: str) -> Iterator[bool]:
+        with first_free_lock(engine, [f"kaagaz.sweep:{name}"]) as held:
+            yield held is not None
+
+    return lock
 
 
 class FairShare:

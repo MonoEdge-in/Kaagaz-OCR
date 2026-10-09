@@ -26,6 +26,13 @@ ready, failed or unreadable document out of Trash goes back to ``received`` with
 its tries reset, within the customer's hourly limit and one document's cooldown
 (security A8). The caller audits it and queues the job in the same transaction.
 
+``mark_for_upgrade`` is the upgrade sweep's read again (PRD 5 Q7, V9): a ready
+document with a page the backup reader read while the main one was down
+(``read_locally``) goes back to ``received`` as ``mark_for_reprocess`` sets it, under
+the family lock, but outside the users' limits (the sweep has its own, 20 an hour),
+audited as ``document.read_upgrade`` with no actor. ``oldest_read_locally`` finds a
+customer's oldest such document.
+
 Read one page again, harder (PRD 5 F5): a queue job carries only a document id, so
 ``request_page_read_again`` marks the page (``pages.read_again_requested_at``, 0021)
 in the same transaction as ``mark_for_reprocess``, and the worker asks which pages
@@ -50,7 +57,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import customers
+from kaagaz.db import audit, customers
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
@@ -229,6 +236,55 @@ def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, 
         raise ReprocessLimited("cooldown")
     conn.execute(text(_REPROCESS), params)
     return str(state.status)
+
+
+# --- the upgrade sweep's read again (PRD 5 Q7) -----------------------------------
+
+# A ready document out of Trash with a page read by the backup reader, oldest first. The
+# pages side uses pages_read_locally (0022), the documents side their primary key.
+_OLDEST_READ_LOCALLY = (
+    "SELECT d.id, d.created_at FROM documents d"
+    " WHERE d.customer_id = :c AND d.status = 'ready' AND d.deleted_at IS NULL"
+    " AND d.id IN (SELECT p.document_id FROM pages p"
+    " WHERE p.customer_id = :c AND 'read_locally' = ANY (p.read_issues))"
+    " ORDER BY d.created_at, d.id LIMIT 1"
+)
+
+
+def oldest_read_locally(conn: Connection, customer_id: str) -> tuple[str, datetime] | None:
+    """This customer's oldest ready document out of Trash with a page read locally
+    (``read_locally``, PRD 5 Q7), as (id, uploaded at); None when there is none.
+    ``conn`` comes from ``Database.customer(customer_id)``. One statement: O(L log D)
+    for the customer's L locally read pages."""
+    row = conn.execute(text(_OLDEST_READ_LOCALLY), {"c": customer_id}).first()
+    return None if row is None else (str(row[0]), row[1])
+
+
+def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bool:
+    """Set a document read locally to be read again by the main reader (PRD 5 Q7):
+    True when it was set and audited as ``document.read_upgrade`` (no actor, the
+    sweep's own); False when this customer has no such document, or it is being read,
+    rejected or in Trash, and then nothing changes.
+
+    ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes first,
+    as in ``mark_for_reprocess``, then the same change (``_REPROCESS``), with none of
+    the users' limits: REPROCESS_PER_HOUR and the cooldown count ``document.reprocess``
+    rows only. The caller queues the job (the main lane) in the same transaction.
+    3 statements; O(v log D) for the family's v versions."""
+    if lock_family(conn, customer_id, document_id) is None:
+        return False
+    params = {"c": customer_id, "d": document_id}
+    if conn.execute(text(_REPROCESS + " RETURNING id"), params).first() is None:
+        return False
+    audit.record(
+        conn,
+        customer_id,
+        actor_user_id=None,
+        action="document.read_upgrade",
+        target_type="document",
+        target_id=document_id,
+    )
+    return True
 
 
 # --- read one page again, and Keep as is (PRD 5 F5) ----------------------------

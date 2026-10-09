@@ -53,6 +53,7 @@ jobs.)
 import contextlib
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from typing import Protocol
 
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
@@ -73,6 +74,12 @@ KEY_PROBLEM_DEFER_SECONDS = 300
 
 # Holds what a job needs for its whole try (its fair-share slot), or raises Deferred.
 Admit = Callable[[Job], AbstractContextManager[object]]
+
+
+class RunsJobs(Protocol):
+    """A Worker, or a sweep wrapped around one (kaagaz/worker_main.py)."""
+
+    def run_once(self) -> bool: ...
 
 
 class JobFailed(Exception):

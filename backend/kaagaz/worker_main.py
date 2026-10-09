@@ -45,6 +45,10 @@ until it is told to stop:
   its Postgres advisory lock ``kaagaz.sweep:<name>`` first (``sweep_lock``), on a
   connection of its own, and a copy that cannot get it skips that pass: only one
   copy runs a sweep at a time.
+* With OCR_ENGINE=gemini, documents with pages the backup reader read during an
+  outage are read again by Gemini once it is back, oldest first, at most 20 an hour
+  across the copies, in the main lane (``UpgradeLocalReads``, kaagaz/jobs/upgrade.py,
+  PRD 5 Q7).
 * Before a job runs, ``admission`` (PRD 5 Q5) hands it back to the queue, with no
   attempt counted: for KEY_PROBLEM_DEFER_SECONDS (300) while the reader's gate
   has a key problem, and for 30 s when its customer already has
@@ -69,12 +73,10 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from types import FrameType
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.adapters.queue import SqsQueue
@@ -87,9 +89,10 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.fair_share import FairShare, first_free_lock
+from kaagaz.jobs.fair_share import FairShare, SweepLock, first_free_lock, no_lock, sweep_lock
 from kaagaz.jobs.ports import QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import CustomerStorage, purge_deleted_customers, purge_expired, sweep_purged_customers
+from kaagaz.jobs.upgrade import UpgradeLocalReads, upgrade_oldest
 from kaagaz.jobs.worker import (
     KEY_PROBLEM_DEFER_SECONDS,
     RETRIES_EXHAUSTED,
@@ -98,6 +101,7 @@ from kaagaz.jobs.worker import (
     Handler,
     Heartbeat,
     JobFailed,
+    RunsJobs,
     Worker,
 )
 from kaagaz.search.indexing import MissingPass, embed_missing
@@ -258,33 +262,6 @@ def job_worker(
         clock=time.monotonic,
         admit=admit,
     )
-
-
-class RunsJobs(Protocol):
-    def run_once(self) -> bool: ...
-
-
-# PRD 5 Q3: takes the named sweep's lock for the block, and says whether this copy has it.
-SweepLock = Callable[[str], AbstractContextManager[bool]]
-
-
-def no_lock(name: str) -> AbstractContextManager[bool]:
-    """Every pass runs: one copy alone (the tests' default)."""
-    return contextlib.nullcontext(True)
-
-
-def sweep_lock(engine: Engine) -> SweepLock:
-    """The sweeps' lock: ``pg_try_advisory_lock(hashtextextended('kaagaz.sweep:<name>', 0))``
-    on a connection of its own (``first_free_lock``), held for the pass. A copy that
-    cannot get it skips that pass. A database that cannot be reached is
-    BackendUnavailable, as the pass's own would be."""
-
-    @contextlib.contextmanager
-    def lock(name: str) -> Iterator[bool]:
-        with first_free_lock(engine, [f"kaagaz.sweep:{name}"]) as held:
-            yield held is not None
-
-    return lock
 
 
 class PurgeHourly:
@@ -561,7 +538,12 @@ def _serve(settings: Settings) -> None:
         stories = functools.partial(_story_pass, db, model)
     lock = sweep_lock(db.engine)
     pieces = EmbedMissing(PurgeHourly(jobs, purge, _utc_now, lock=lock), embed, _utc_now, lock=lock)
-    worker = StoryVectors(pieces, stories, _utc_now, lock=lock)
+    vectors = StoryVectors(pieces, stories, _utc_now, lock=lock)
+    # Q7: only Gemini's pages are ever read locally (its outage fallback).
+    upgrade = functools.partial(upgrade_oldest, db, queue) if settings.ocr_engine == "gemini" else None
+    worker = UpgradeLocalReads(
+        vectors, upgrade, lambda: gate.status()[0], _utc_now, copies=settings.worker_replicas, lock=lock
+    )
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
     db.engine.dispose()
     logger.info("worker stopped")

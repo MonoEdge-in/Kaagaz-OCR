@@ -4,7 +4,7 @@ copy at a time, each sweep's on its own, and is let go after the pass."""
 import pytest
 
 from kaagaz.db.engine import Database
-from kaagaz.worker_main import sweep_lock
+from kaagaz.jobs.fair_share import sweep_lock
 
 pytestmark = pytest.mark.db
 
