@@ -217,13 +217,14 @@ def map_document(
     model: ChatModel | None, pieces: Sequence[Piece], sections: tuple[Section, ...], budget: MapBudget
 ) -> DocumentMap:
     """The sections with their summaries and the document's topics, from one call (the
-    module docstring). No call with no model, no sections, or when not even one section
-    fits the window."""
+    module docstring). No call with no model, no sections, no room in the reply for one
+    (``summary_room``), or when not even one section fits the window."""
     unmapped = DocumentMap(sections, (), 0, None)
-    if model is None or not sections:
+    asked = sections[: summary_room(budget.topic_max)]
+    if model is None or not asked:
         return unmapped
     system = MAP_SYSTEM_PROMPT.format(topic_max=budget.topic_max)
-    user = map_input(pieces, sections[: summary_room(budget.topic_max)], budget, system=system)
+    user = map_input(pieces, asked, budget, system=system)
     if user is None:
         return unmapped
     try:

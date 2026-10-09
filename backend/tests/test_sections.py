@@ -169,6 +169,8 @@ class MapInputTest(unittest.TestCase):
             self.assertEqual([s.summary for s in found.sections[:room]], [f"Term {n}." for n in range(room)])
             self.assertEqual({s.summary for s in found.sections[room:]}, {None})
             self.assertEqual(len(found.sections), 100)
+        crowded = MapBudget(whole_tokens=120_000, context_tokens=200_000, topic_max=1000)
+        self.assertEqual((summary_room(1000), mapped(FakeChat(), pieces, crowded).model_calls), (0, 0))
 
 
 class MapReplyTest(unittest.TestCase):
