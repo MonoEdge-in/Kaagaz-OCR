@@ -268,6 +268,8 @@ class AnswerService:
     one with the PostgreSQL retriever, else only the one a test passes, as
     ``translated_search``; so is ``context``, PRD 5's whole documents, topics, sections
     and cards (step 10 of the module docstring)."""
+    ``translated_search``."""
+    is translated with (its own timeout), used only with ANSWER_TRANSLATE_QUESTION on."""
 
     def __init__(
         self,
@@ -726,6 +728,31 @@ class AnswerService:
         topics = self._context.topic_pieces(customer_id, topic_terms(texts), hits, scope)
         sections = self._context.section_pieces(customer_id, keywords, vector, [*hits, *topics], scope)
         return [*topics, *sections]
+    def _translated_search(
+        self,
+        customer_id: str,
+        question: str,
+        query_text: str,
+        vector: list[float] | None,
+        hits: Sequence[Any],
+        scope: Scope,
+        expansion: Expansion,
+    ) -> Translated | None:
+        """The search again with the question's translations into the script of its first
+        ``hits`` (translate.py), decided before any draft; None to answer as today: the
+        setting off, no other script, or no usable translation. The texts are search
+        parameters and embeddings only. At most one model call and one search."""
+        if self._translator is None or self._translated is None:
+            return None
+        scripts = target_scripts(question, [hit.text for hit in hits])
+        queries = translate(self._translator, question, scripts) if scripts else None
+        if not queries:
+            return None
+        texts = [(query.text, self._embed(query.text)) for query in queries]
+        limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+        return self._translated.search_translated(
+            customer_id, query_text, vector, texts, limit, scope, expansion
+        )
 
     def _embed(self, english: str) -> list[float] | None:
         """One text's vector (``_embed_all``)."""

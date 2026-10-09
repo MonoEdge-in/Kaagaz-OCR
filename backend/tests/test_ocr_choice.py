@@ -2,6 +2,10 @@
 one reader since PRD 5 RT3, and ``OcrEngines``, which reads a job whose stored choice
 names an engine this server has with that engine and falls back to Auto. Engines are
 fakes; the timer is a fake clock.
+"""The scan reader an upload chose (PRD 4 #17, kaagaz/reading/ocr.py): ``ocr_choices``
+from the settings and what is installed, and ``OcrEngines``, which reads one job
+with the chosen engine and falls back to Auto. Engines are fakes; the timer is a
+fake clock.
 """
 
 import logging
@@ -19,6 +23,8 @@ from kaagaz.reading.ocr import (
     OcrEngines,
     OcrLine,
     OcrOverloaded,
+    PaddleVlEngine,
+    RapidOcrEngine,
     build_ocr_engines,
     ocr_choices,
 )
@@ -88,6 +94,41 @@ def test_rt3_listing_the_reader_builds_and_calls_nothing(
 
     monkeypatch.setattr(ocr, "_new_engine", never)
     assert offered(GEMINI) == [("auto", True, None)]
+# --- ocr_choices ---------------------------------------------------------------------
+
+
+def test_with_no_scan_reader_only_auto_is_offered(rapidocr_installed: None) -> None:
+    off = "Scan reading is off on this server"
+    assert offered(NONE) == [("auto", True, None), ("paddleocr_vl", False, off), ("rapidocr", False, off)]
+
+
+def test_a_laptop_with_rapidocr_offers_auto_and_rapidocr(rapidocr_installed: None) -> None:
+    assert offered(RAPID) == [
+        ("auto", True, None),
+        ("paddleocr_vl", False, "Not set up on this server"),
+        ("rapidocr", True, None),
+    ]
+    assert ocr_choices(RAPID)[0]["hint"] == "The usual reader here: RapidOCR"
+
+
+def test_the_gpu_server_offers_both_and_auto_says_what_it_does(rapidocr_installed: None) -> None:
+    assert offered(PADDLE) == [("auto", True, None), ("paddleocr_vl", True, None), ("rapidocr", True, None)]
+    assert ocr_choices(PADDLE)[0]["hint"] == (
+        "The usual reader here: PaddleOCR-VL, then RapidOCR for a page it can't read"
+    )
+
+
+def test_paddle_without_the_ocr_extra_cannot_offer_rapidocr(no_rapidocr: None) -> None:
+    assert offered(PADDLE)[2] == ("rapidocr", False, "Not installed on this server")
+    assert ocr_choices(PADDLE)[0]["hint"] == "The usual reader here: PaddleOCR-VL"
+
+
+def test_each_reader_brings_its_own_title_and_hint(rapidocr_installed: None) -> None:
+    """No fixed list: the words come from the engine classes."""
+    _, paddle, rapid = ocr_choices(PADDLE)
+    assert (paddle["title"], paddle["hint"]) == (PaddleVlEngine.title, PaddleVlEngine.hint)
+    assert (rapid["title"], rapid["hint"]) == (RapidOcrEngine.title, RapidOcrEngine.hint)
+    assert all(str(item["id"]).isidentifier() and str(item["id"]).islower() for item in ocr_choices(PADDLE))
 
 
 # --- OcrEngines ------------------------------------------------------------------------

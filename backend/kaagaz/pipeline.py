@@ -293,6 +293,10 @@ _DEVANAGARI = re.compile("[ऀ-ॿ]")
 # "ocr", "storage", "gemini_key", ...: a run's <backend>_unavailable (PRD 5 G6: a wrong key or a
 # spent cap is BackendUnavailable("gemini_key")).
 _BACKEND_NAME = re.compile(r"[a-z][a-z_]{0,31}")
+# Security A8 (PROVISIONAL): at most this many value boxes of one document are
+# sent to the vision model; the values past it stay single_reader.
+MAX_VISION_CROPS = 200
+_BACKEND_NAME = re.compile(r"[a-z]{1,32}")  # "ocr", "storage", ...: a run's <backend>_unavailable
 # The run config's keys for the marks a reader adds to its version: ";ocr_dpi=N" when a PDF
 # page was drawn below OCR_DPI to fit the pixel limits; with OCR_DPI_RULE (council 5 Oct
 # 2026), ";text_dpi=N", the rule's lowest DPI, and ";ocr_reread=N", the pages read twice.
@@ -526,6 +530,14 @@ class OcrChooser(Protocol):
         ...
 
 
+class OcrChooser(Protocol):
+    """kaagaz.reading.ocr.OcrEngines in production: which engine reads one job's scans."""
+
+    def choose(self, choice: str | None) -> contextlib.AbstractContextManager[bool]:
+        """Read with ``choice`` (None: Auto) inside the block; True when it was honoured."""
+        ...
+
+
 class ReadingSocket(Protocol):
     """kaagaz.reading.socket.ReaderSocket in production."""
 
@@ -717,6 +729,8 @@ class DocumentProcessor:
         ``CountsTokens.usage``): a run adds what its job's calls added. ``map_budget``
         (CX2, CX3): the budget of the one ``chat`` call that writes the document's section
         summaries and topics; None makes no call, and the sections come from the headings."""
+        ``CountsTokens.usage``): a run adds what its job's calls added."""
+        at the start of every job; None (tests with fakes) asks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -797,6 +811,8 @@ class DocumentProcessor:
                 )
             self._clear_progress(job, run, code)  # while the run is still open
             self._close_run(job, run, "failed", code)
+            self._clear_progress(job, run, _unavailable_code(error))  # while the run is still open
+            self._close_run(job, run, "failed", _unavailable_code(error))
             raise
         finally:
             if not settled:
@@ -1212,6 +1228,10 @@ class DocumentProcessor:
             return 0, 0
         usage = self._model_usage()
         return usage.input_tokens, usage.output_tokens
+        run_id, now = None, self._clock()
+        if self._runs is not None:
+            run_id = self._runs.start(job.customer_id, job.document_id, now=now)
+        return _Run(run_id, self._timer(), started_at=now)
 
     def _finished(self, run: _Run, status: str, error_code: str | None) -> FinishedRun | None:
         """The run as it ends now, with everything it counted; None without runs.
@@ -1655,6 +1675,8 @@ def build_processor(
     from kaagaz.reading.ocr import GEMINI, MeteredOcrEngine
     from kaagaz.reading.rapid_pool import shared_pool
     from kaagaz.reading.wiring import build_ocr_engines, build_reader_socket, reader_config
+    from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engines
+    from kaagaz.reading.wiring import build_reader_socket, reader_config
     from kaagaz.search.indexing import embed_pieces
 
     documents = PgDocuments(db)

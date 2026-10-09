@@ -279,6 +279,7 @@ export function PageViewer({
   const canZoom = mode === "pdf" || mode === "image";
   const showPages = onPageChange !== undefined && numbers.length > 0;
   const route = routeText(page);
+  const route = routeText(page.route);
   const fitName = fit === "page" ? "Fit page" : "Fit width";
 
   return (
