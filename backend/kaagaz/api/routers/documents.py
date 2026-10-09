@@ -131,6 +131,7 @@ from kaagaz.db.documents import (
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
+from kaagaz.ingestion.pagecount import goes_express
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import BlobNotFound, Job, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
@@ -361,7 +362,13 @@ def _accept(
                 raise ApiError(
                     409, "batch_full", f"Up to {cap} files at a time. Drop the rest after these start."
                 )
-    service = UploadService(policy, PgDocuments(context.db), context.storage, context.queue)
+    service = UploadService(
+        policy,
+        PgDocuments(context.db),
+        context.storage,
+        context.queue,
+        express_max_pages=context.settings.express_max_pages,
+    )
     try:
         result = service.accept(
             user.customer_id,
@@ -445,7 +452,13 @@ def _accept_version(
         raise ApiError(404, "not_found")  # before anything is stored or queued
     if target["deleted_at"] is not None:
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
-    service = UploadService(policy, PgDocuments(context.db), context.storage, context.queue)
+    service = UploadService(
+        policy,
+        PgDocuments(context.db),
+        context.storage,
+        context.queue,
+        express_max_pages=context.settings.express_max_pages,
+    )
     try:
         result = service.accept_version(
             customer_id,
@@ -570,8 +583,14 @@ def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context)
             row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
         )
         # Last, inside the transaction: a queue that is down rolls everything back (503).
-        context.queue.enqueue(Job(customer_id, target))
+        context.queue.enqueue(Job(customer_id, target), express=_read_again_express(context, row))
     return reply
+
+
+def _read_again_express(context: AppContext, row: RowMapping) -> bool:
+    """Read again goes to the express lane by the page count its last read stored (PRD 5
+    Q4); a document never counted goes to the main lane."""
+    return goes_express(row["page_count"], context.settings.express_max_pages)
 
 
 # --- one page: read it again, or keep it as is (PRD 5 F5) ----------------------------
@@ -618,7 +637,7 @@ def read_page_again(document_id: uuid.UUID, page_no: int, user: Reviewer, contex
             row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
         )
         # Last, inside the transaction: a queue that is down rolls everything back (503).
-        context.queue.enqueue(Job(customer_id, target))
+        context.queue.enqueue(Job(customer_id, target), express=_read_again_express(context, row))
     return reply
 
 

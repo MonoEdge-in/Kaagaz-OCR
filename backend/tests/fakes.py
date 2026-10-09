@@ -218,16 +218,18 @@ class FakeScanner:
 
 
 class MemoryQueue:
-    """Records enqueued jobs in order."""
+    """Records enqueued jobs in order, and in ``lanes`` whether each went express."""
 
     def __init__(self) -> None:
         self.jobs: list[Job] = []
+        self.lanes: list[bool] = []
         self.fail_enqueue = False
 
     def enqueue(self, job: Job, *, express: bool = False) -> None:
         if self.fail_enqueue:
             raise BackendUnavailable("queue down")
         self.jobs.append(job)
+        self.lanes.append(express)
 
 
 class MemoryDocuments(MemoryRepository):
