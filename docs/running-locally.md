@@ -166,8 +166,8 @@ It forwards `/api/*` to `BACKEND_URL` (default `http://localhost:8000`).
 
 ## 2c. On the EC2 server
 
-One t3.xlarge (4 vCPU, 16 GB, Unlimited CPU credits; PROVISIONAL, Vrushit's
-call) runs `docker-compose.yml` with `docker-compose.prod.yml` laid over it
+One t3.xlarge (4 vCPU, 16 GB, Unlimited CPU credits; pending Vrushit)
+runs `docker-compose.yml` with `docker-compose.prod.yml` laid over it
 (Production on EC2, below). Laptops never use the second file. Scans are read
 by Gemini and the models answer through OpenRouter, so nothing on the server
 needs more than its CPU; RapidOCR runs in the worker as the checker and the
@@ -203,8 +203,8 @@ docs/runbooks/prd5-cpu-server-switch.md.
    docker compose exec worker python -m kaagaz.cli measure --file /tmp/scan.png
    ```
 
-   Write the numbers into docs/architecture.md, Decisions (the t3.xlarge row,
-   PROVISIONAL until then).
+   Write the numbers into docs/architecture.md, Decisions (the t3.xlarge
+   row).
 
 **RapidOCR, the fallback.** If Gemini misbehaves, set `OCR_ENGINE=rapidocr` in
 `.env` and restart both: `dc up -d api worker`. Change it back the same way.
