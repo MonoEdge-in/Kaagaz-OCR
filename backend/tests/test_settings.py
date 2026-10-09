@@ -315,3 +315,19 @@ def test_the_whole_documents_must_fit_the_context_window() -> None:
         Settings.from_env(shipped(MODEL_CONTEXT_TOKENS=context, ANSWER_WHOLE_DOC_TOKENS="120001"))
     off = Settings.from_env(shipped(MODEL_CONTEXT_TOKENS=str(room), ANSWER_WHOLE_DOC_TOKENS="0"))
     assert off.answer_whole_doc_tokens == 0
+
+
+def test_a_local_chat_model_uses_model_num_ctx_everywhere_and_never_whole_documents() -> None:
+    """M1: with a MODEL_CHAT that is not google/gemini- (Ollama), every budget uses the smaller
+    of MODEL_CONTEXT_TOKENS and MODEL_NUM_CTX, the window every call sends, and whole-document
+    mode (CX5) is off; the answers, the card and invoice windows and the map read it."""
+    from kaagaz.chunking.sections import MapBudget
+    from kaagaz.extraction.understanding import ModelBudget
+
+    local = Settings.from_env(shipped(MODEL_CHAT="qwen3:4b", MODEL_NUM_CTX="8192"))
+    assert (local.model_context_tokens, local.answer_whole_doc_tokens) == (8192, 0)
+    assert MapBudget.from_settings(local).context_tokens == ModelBudget.from_settings(local).num_ctx == 8192
+    smaller = shipped(MODEL_CHAT="qwen3:4b", MODEL_NUM_CTX="8192", MODEL_CONTEXT_TOKENS="6000")
+    assert Settings.from_env(smaller).model_context_tokens == 6000
+    gemini = Settings.from_env(shipped(MODEL_NUM_CTX="8192"))
+    assert (gemini.model_context_tokens, gemini.answer_whole_doc_tokens) == (200_000, 120_000)

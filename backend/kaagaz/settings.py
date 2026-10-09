@@ -285,7 +285,9 @@ class Settings:
     model_translate_timeout_seconds: float
     # PRD 5 context and memory (sections CX and M; council 9 Oct 2026). Optional: unset is
     # the PRD's value, so an older .env keeps working. model_context_tokens is the chat
-    # model's context window (M1). The chat's documents are given whole when they add up to
+    # model's context window (M1), the one every budget uses: with a MODEL_CHAT that is not
+    # google/gemini- (Ollama), the smaller of MODEL_CONTEXT_TOKENS and MODEL_NUM_CTX, and
+    # answer_whole_doc_tokens is then 0. The chat's documents are given whole when they add up to
     # answer_whole_doc_tokens or fewer, and a document's map reads its whole text under the
     # same limit (CX2, CX5; 0 turns both off). At most topic_max_per_doc topics a document
     # (CX3); a topic pulls in at most topic_expand_max_pieces pieces a document, and a
@@ -398,8 +400,14 @@ class Settings:
             raise SettingsError("MODEL_TRANSLATE_TIMEOUT_SECONDS must be a number above 0")
         # PRD 5 CX and M: unset is the PRD's value. The whole documents (CX5) must fit the
         # context window with the answer's reply, its repair retry and the system prompt.
+        model_chat = env.text("MODEL_CHAT")
         model_context_tokens = env.at_least("MODEL_CONTEXT_TOKENS", 1, default=200_000)
         whole_doc_tokens = env.at_least("ANSWER_WHOLE_DOC_TOKENS", 0, default=120_000)
+        if not is_gemini_model(model_chat):
+            # A local (Ollama) chat model's window is MODEL_NUM_CTX, which every call sends:
+            # every budget uses the smaller of the two, and whole documents never fit it.
+            model_context_tokens = min(model_context_tokens, model_num_ctx)
+            whole_doc_tokens = 0
         prompt_tokens = MAX_SYSTEM_PROMPT_TOKENS + CHAT_OVERHEAD_TOKENS
         room = 2 * answer_max_tokens + prompt_tokens
         if whole_doc_tokens + room > model_context_tokens:
@@ -408,7 +416,6 @@ class Settings:
                 " must not be more than MODEL_CONTEXT_TOKENS"
             )
         model_enabled = env.boolean("MODEL_ENABLED")
-        model_chat = env.text("MODEL_CHAT")
         model_embed = env.text("MODEL_EMBED")
         model_vision = env.optional("MODEL_VISION")
         openrouter_api_key = env.optional("OPENROUTER_API_KEY")
