@@ -20,7 +20,7 @@ from kaagaz.reading.socket import ReaderSocket
 from kaagaz.reading.spans import BoxLocation, PageInfo, ReadError, Span
 from kaagaz.reading.text_quality import TextLayerRules
 from kaagaz.scanning.gate import DocumentStatus
-from tests.fakes import FakeEmbedder, FakePrepared, FakePreparer, FakeVision, PresetSocket
+from tests.fakes import FakeEmbedder, FakePrepared, FakePreparer, PresetSocket
 from tests.lease_queue import FakeClock
 from tests.pdf_builder import Page, Picture, make_pdf
 from tests.picture_support import text_like_picture
@@ -192,73 +192,11 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(reasons, {"invoice_number": "single_reader", "total_amount": "low_confidence"})
         self.assertTrue(all(p.label == "needs_review" for p in system.store.for_document(CUSTOMER, doc)))
 
-    def test_a_vision_reading_that_agrees_verifies_a_scanned_value(self) -> None:
-        vision = FakeVision("Total: 1,180.00")
-        system = build(socket=PresetSocket({sniff.PDF: SCANNED[1:]}), preparer=scan_preparer(), vision=vision)
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
-        system.worker.run_once()
 
-        (value,) = system.store.values_for(CUSTOMER, doc)
-        self.assertEqual(
-            (value.label, value.label_reason, value.second_reading), ("verified", "readers_agree", "1,180.00")
-        )
-        (picture,) = vision.pictures
-        with Image.open(io.BytesIO(picture)) as crop:  # the value's box, not the whole page
-            self.assertEqual(crop.format, "PNG")
-            self.assertLess(crop.height, 50)
-            self.assertGreater(crop.width, 300)
+class NoConfidenceScanTest(unittest.TestCase):
+    """The main reader gives no confidence, so its spans are known as a scan by origin "ocr"."""
 
-    def test_a_vision_reading_that_differs_needs_review(self) -> None:
-        vision = FakeVision("Total: 1,130.00")
-        system = build(socket=PresetSocket({sniff.PDF: SCANNED[1:]}), preparer=scan_preparer(), vision=vision)
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
-        system.worker.run_once()
-        (value,) = system.store.values_for(CUSTOMER, doc)
-        self.assertEqual((value.label_reason, value.second_reading), ("readers_disagree", "1,130.00"))
-
-    def test_a_vision_model_that_is_down_leaves_single_reader_and_the_document_ready(self) -> None:
-        vision = FakeVision(down=True)
-        system = build(socket=PresetSocket({sniff.PDF: SCANNED}), preparer=scan_preparer(), vision=vision)
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
-        with self.assertLogs("kaagaz.pipeline", level="WARNING") as logs:
-            system.worker.run_once()
-
-        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
-        reasons = {v.field: v.label_reason for v in system.store.values_for(CUSTOMER, doc)}
-        self.assertEqual(reasons, {"invoice_number": "single_reader", "total_amount": "low_confidence"})
-        self.assertEqual(len(vision.pictures), 1)  # stops asking once it is down
-        self.assertEqual([getattr(r, "code", None) for r in logs.records], ["model_down"])
-
-    def test_a_line_with_an_identity_number_goes_to_the_vision_model_like_any_other(self) -> None:
-        lines = [line("GSTIN: 27ABCDE1234F1Z5", 0.1, confidence=0.95)]  # FAKE
-        vision = FakeVision("GSTIN: 27ABCDE1234F1Z5")
-        socket = PresetSocket({sniff.PDF: lines})
-        system = build(socket=socket, preparer=scan_preparer(), vision=vision)
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
-        system.worker.run_once()
-        self.assertEqual(len(vision.pictures), 1)
-        (value,) = system.store.values_for(CUSTOMER, doc)
-        self.assertEqual(value.value_text, "27ABCDE1234F1Z5")
-
-    def test_the_vision_reading_is_kept_as_read(self) -> None:
-        lines = [line("Seller: Sharma Traders", 0.1, confidence=0.95)]
-        vision = FakeVision("Seller: Sharma Traders ABCDE1234F")  # FAKE number the model "saw"
-        system = build(
-            socket=PresetSocket({sniff.PDF: lines}),
-            preparer=scan_preparer(),
-            vision=vision,
-        )
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
-        system.worker.run_once()
-        (value,) = system.store.values_for(CUSTOMER, doc)
-        self.assertEqual(value.second_reading, "Sharma Traders ABCDE1234F")
-        self.assertEqual(value.label_reason, "readers_disagree")
-
-
-class PaddleOcrVlScanTest(unittest.TestCase):
-    """PaddleOCR-VL gives no confidence, so its spans are known as a scan by origin "ocr"."""
-
-    def test_a_paddle_piece_needs_review_and_its_value_gets_a_vision_reading(self) -> None:
+    def test_a_scanned_piece_needs_review_and_its_value_has_no_second_reading(self) -> None:
         typed = BoxLocation(1, 0.1, 0.1, 0.9, 0.12)
         spans = [
             Span(
@@ -271,43 +209,24 @@ class PaddleOcrVlScanTest(unittest.TestCase):
             ),
             Span("Invoice No: INV-17", "Invoice No: INV-17", typed, origin="text_layer"),
         ]
-        vision = FakeVision("Total: 1,180.00")
-        system = build(socket=PresetSocket({sniff.PDF: spans}), preparer=scan_preparer(), vision=vision)
+        system = build(socket=PresetSocket({sniff.PDF: spans}), preparer=scan_preparer())
         doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
         system.worker.run_once()
 
         pieces = system.store.for_document(CUSTOMER, doc)
         self.assertEqual({p.label for p in pieces}, {"needs_review"})  # the scanned line is in every piece
         values = {v.field: v for v in system.store.values_for(CUSTOMER, doc)}
-        total = values["total_amount"]
-        self.assertEqual((total.second_reading, total.label_reason), ("1,180.00", "readers_agree"))
-        self.assertEqual(len(vision.pictures), 1)  # the text-layer line is a direct read: no crop
-        self.assertEqual(values["invoice_number"].label_reason, "single_reader")
+        self.assertIsNone(values["total_amount"].second_reading)
+        self.assertEqual(values["total_amount"].label, "needs_review")
 
-    def test_a_value_that_does_not_say_how_it_was_read_gets_a_vision_reading(self) -> None:
+    def test_a_value_that_does_not_say_how_it_was_read_is_not_a_direct_read(self) -> None:
         # Fail closed (council): no origin and no confidence is not taken as a direct read.
         spans = [Span("Total: 1,180.00", "Total: 1,180.00", BoxLocation(1, 0.1, 0.4, 0.9, 0.42))]
-        vision = FakeVision("Total: 1,180.00")
-        system = build(socket=PresetSocket({sniff.PDF: spans}), preparer=scan_preparer(), vision=vision)
+        system = build(socket=PresetSocket({sniff.PDF: spans}), preparer=scan_preparer())
         doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
         system.worker.run_once()
 
-        self.assertEqual(len(vision.pictures), 1)
         self.assertEqual({p.label for p in system.store.for_document(CUSTOMER, doc)}, {"needs_review"})
-
-
-def checkerboard(width: int, height: int) -> Image.Image:
-    """One-pixel black and white squares: any lossy step blurs them into greys."""
-    black_first = bytes([0, 0, 0, 255, 255, 255] * (width // 2))
-    white_first = bytes([255, 255, 255, 0, 0, 0] * (width // 2))
-    return Image.frombytes("RGB", (width, height), (black_first + white_first) * (height // 2))
-
-
-def colours(data: bytes) -> set[tuple[int, ...] | float]:
-    """Every colour in a picture (Pillow gives RGB colours as tuples)."""
-    with Image.open(io.BytesIO(data)) as picture:
-        found = picture.convert("RGB").getcolors(maxcolors=1 << 24) or []
-    return {colour for _, colour in found}
 
 
 class PagePictureTest(unittest.TestCase):
@@ -326,23 +245,6 @@ class PagePictureTest(unittest.TestCase):
                 # The page keeps its real size; boxes are fractions of it.
                 (saved,) = system.store.pages_for(CUSTOMER, doc)
                 self.assertEqual((saved.info, saved.has_image), (page, True))
-
-    def test_vision_crops_come_from_the_lossless_page_not_the_stored_webp(self) -> None:
-        png = io.BytesIO()
-        checkerboard(400, 500).save(png, format="PNG")
-        page = PageInfo(1, 400.0, 500.0, "px")
-        preparer = FakePreparer({sniff.PDF: FakePrepared([page], {1: png.getvalue()})})
-        vision = FakeVision("Total: 1,180.00")
-        system = build(socket=PresetSocket({sniff.PDF: SCANNED[1:]}), preparer=preparer, vision=vision)
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
-        system.worker.run_once()
-
-        (crop,) = vision.pictures
-        self.assertEqual(colours(crop), {(0, 0, 0), (255, 255, 255)})  # exactly the page's pixels
-        stored = system.page_images.images[(CUSTOMER, doc, 1)]
-        self.assertGreater(len(colours(stored)), 2)  # the stored WebP is lossy, so it was not used
-        (value,) = system.store.values_for(CUSTOMER, doc)
-        self.assertEqual(value.label_reason, "readers_agree")
 
 
 class VectorsTest(unittest.TestCase):

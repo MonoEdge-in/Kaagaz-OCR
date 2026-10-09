@@ -28,7 +28,6 @@ from tests.fakes import (
     FakePrepared,
     FakePreparer,
     FakeScanner,
-    FakeVision,
     MemoryDocuments,
     MemoryPageImages,
     MemoryPipelineStore,
@@ -108,7 +107,6 @@ def build(
     socket: ReadingSocket | None = None,
     preparer: FakePreparer | None = None,
     embed: FakeEmbedder | None = None,
-    vision: FakeVision | None = None,
 ) -> System:
     clock = FakeClock()
     queue = LeaseQueue(clock, lease_seconds=LEASE_SECONDS, max_attempts=MAX_ATTEMPTS + 3)
@@ -132,7 +130,6 @@ def build(
         page_images=page_images,
         store=store,
         embed=embed,
-        vision=vision,
         model_errors=(ModelDown,),
     )
     return System(

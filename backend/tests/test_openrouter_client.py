@@ -25,7 +25,6 @@ from kaagaz.ai.openrouter import (
     BREAKER_FAILURES,
     BREAKER_OPEN_SECONDS,
     CHAT_THINKING_TOKENS,
-    IMAGE_MAX_OUTPUT_TOKENS,
     KEY_LATCH_SECONDS,
     PAGE_MAX_OUTPUT_TOKENS,
     PROVIDER,
@@ -202,12 +201,11 @@ def test_the_key_goes_in_its_bearer_header_and_never_in_the_url_or_body(fake: Op
 
 def test_no_attribution_header_is_sent(fake: OpenRouterFake) -> None:
     """Security (council 8 Oct 2026): no HTTP-Referer or X-Title tells OpenRouter who we are."""
-    fake.script("completions", json_reply(GOOD), json_reply(GOOD), chat_reply("12"))
+    fake.script("completions", json_reply(GOOD), json_reply(GOOD))
     fake.script("embeddings", embed_reply([[0.1, 0.2, 0.3, 0.4]]))
     client = _client(fake.url, Clock())
     _read(client)
     client.chat_json(system="s", user="u", schema=SCHEMA)
-    client.read_image(png=PNG, instruction="Read.")
     client.embed(["one"])
     for request in fake.requests:
         assert not {"http-referer", "referer", "x-title"} & set(request.headers)
@@ -215,16 +213,15 @@ def test_no_attribution_header_is_sent(fake: OpenRouterFake) -> None:
 
 def test_every_request_kind_carries_the_provider_block(fake: OpenRouterFake) -> None:
     """Google Vertex only, no fallback, every parameter honoured, no data collection and
-    zero data retention: on read_page, its repair, chat_json, read_image and embed."""
+    zero data retention: on read_page, its repair, chat_json and embed."""
     assert dict(PROVIDER) == THE_PROVIDER_BLOCK
-    fake.script("completions", chat_reply("not json"), json_reply(GOOD), json_reply(GOOD), chat_reply("12"))
+    fake.script("completions", chat_reply("not json"), json_reply(GOOD), json_reply(GOOD))
     fake.script("embeddings", embed_reply([[0.1, 0.2, 0.3, 0.4]]))
     client = _client(fake.url, Clock())
     _read(client)
     client.chat_json(system="s", user="u", schema=SCHEMA)
-    client.read_image(png=PNG, instruction="Read.")
     client.embed(["one"])
-    assert [request.action for request in fake.requests] == ["completions"] * 4 + ["embeddings"]
+    assert [request.action for request in fake.requests] == ["completions"] * 3 + ["embeddings"]
     for request in fake.requests:
         assert request.body["provider"] == THE_PROVIDER_BLOCK
 
@@ -933,19 +930,6 @@ def test_an_embedding_reply_without_data_is_unavailable(fake: OpenRouterFake) ->
     with pytest.raises(ModelUnavailable) as caught:
         _client(fake.url, Clock()).embed(["one"])
     assert caught.value.code == "bad_response"
-
-
-def test_read_image_sends_the_crop_to_the_ocr_model_and_strips_the_text(fake: OpenRouterFake) -> None:
-    fake.script("completions", chat_reply("  1,23,456.00\n"))
-    client = _client(fake.url, Clock(), ocr_model="google/gemini-3.8-flash", ocr_media_resolution="low")
-    assert client.read_image(png=PNG, instruction="Read the amount.") == "1,23,456.00"
-    (request,) = fake.requests
-    assert request.body["model"] == "google/gemini-3.8-flash"
-    content = request.body["messages"][0]["content"]
-    assert content[0] == {"type": "text", "text": "Read the amount."}
-    assert content[1]["image_url"] == {"url": DATA_URL, "detail": "low"}
-    assert "response_format" not in request.body
-    assert request.body["max_completion_tokens"] == IMAGE_MAX_OUTPUT_TOKENS
 
 
 # The key and page text are secrets.

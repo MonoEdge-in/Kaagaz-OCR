@@ -415,9 +415,6 @@ class FakeModel:
             raise self.chat_error
         return self.reply(system, user)
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise ModelUnavailable("no_vision")
-
 
 class FakeUnchecked:
     """unchecked.py's rule over in-memory card documents: {customer: {field: [documents]}}."""

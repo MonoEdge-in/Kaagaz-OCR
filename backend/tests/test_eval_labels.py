@@ -20,9 +20,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from PIL import Image
 
-from kaagaz import pipeline
 from kaagaz.ai.client import ModelUnavailable
 from kaagaz.answering.draft import DraftSentence
 from kaagaz.answering.evidence import Hit, PgRetriever
@@ -32,7 +30,6 @@ from kaagaz.answering.verify import verify
 from kaagaz.db.engine import Database
 from kaagaz.extraction.invoice import INVOICE_SYSTEM_PROMPT
 from kaagaz.ingestion import sniff
-from kaagaz.reading.spans import BoxLocation
 from kaagaz.search.indexing import recipe_tag
 from kaagaz.search.scope import Scope
 from tests import test_exit_files_db as exit_db
@@ -278,9 +275,6 @@ class AnswerModel:
     def embed(self, texts: list[str]) -> list[list[float]]:
         raise ModelUnavailable("no_embedder")  # PROVISIONAL: search by words and fuzzy only
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise ModelUnavailable("no_vision")
-
     def chat_json(
         self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
     ) -> dict[str, Any]:
@@ -415,20 +409,12 @@ class Report:
 @pytest.fixture(scope="module")
 def reports(db: Database) -> dict[str, Report]:
     """ "on" and "on_again" (model on, for the determinism gate) and "off", each read for a
-    new customer, with the echo vision given each box the pipeline crops."""
+    new customer."""
     found = {}
     with pytest.MonkeyPatch.context() as patch:
-        cropped: list[BoxLocation] = []
-        crop = pipeline._crop
-
-        def recorded(page: Image.Image, box: BoxLocation) -> bytes:
-            cropped.append(box)
-            return crop(page, box)
-
-        patch.setattr(pipeline, "_crop", recorded)
         patch.setattr(exit_db, "chat_for", obeying_chat_for)
         for name, mode in (("on", "model_on"), ("on_again", "model_on"), ("off", "model_off")):
-            read = exit_db.read_files(db, model=mode == "model_on", cropped=cropped, files=eval_files())
+            read = exit_db.read_files(db, model=mode == "model_on", files=eval_files())
             assert all(exit_db.rows(db, read.customer, READY, doc) == [(1,)] for doc in read.ids.values())
             quotes = {key: exit_db.rows(db, read.customer, QUOTES, doc)[0] for key, doc in read.ids.items()}
             answers = [answer_outcomes(db, read, mode) for _ in range(2)]
@@ -446,7 +432,9 @@ def both(reports: dict[str, Report]) -> Report:
 SLICES: tuple[str, ...] = ("text_layer", "ocr_en", "ocr_deva", "sheet", "card", "E4", "fixed_query")
 SLICES += ("search", "model_on", "model_off")
 # Ratchets: each may move only with a reason stated in its commit, never to let a change pass.
-VERIFIED_RIGHT_VALUES = 80  # verified and right, both reads: 48 with the model off, 32 with it on
+# PRD 5 PR 4 (80 to 68): the second reading of a scan's value boxes is gone, so the bill in
+# English's and the hidden scan's three values each are no longer verified, in both reads.
+VERIFIED_RIGHT_VALUES = 68  # verified and right, both reads: 42 with the model off, 26 with it on
 VERIFIED_RIGHT_ANSWERS = 8  # verified and right, both reads: 4 with the model on, 4 off
 UNANSWERABLE_NOT_FOUND = 12  # UNANSWERABLE asked in both reads: all 12 not found
 # Of the 14 PARAPHRASES: number words not copied from the evidence, and an ordinal day, are dropped.

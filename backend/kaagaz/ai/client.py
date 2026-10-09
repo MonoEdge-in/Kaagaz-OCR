@@ -53,10 +53,6 @@ class ModelClient(Protocol):
         """One JSON object that follows ``schema``, in at most ``max_tokens`` reply tokens."""
         ...
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        """The text the vision model reads in ``png``; empty if it sees none."""
-        ...
-
 
 def estimate_tokens(text: str) -> int:
     """About how many tokens ``text`` is (ML amendment 5): an ASCII character is a

@@ -51,9 +51,6 @@ class Recorder:
     ) -> dict[str, Any]:
         raise AssertionError("never chats")
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise AssertionError("never reads images")
-
 
 @pytest.mark.parametrize(
     ("model", "sent"), [("google/gemini-embedding-2", "how many leaves?"), ("qwen3-embedding:0.6b", None)]

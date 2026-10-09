@@ -76,9 +76,6 @@ class DraftModel:
         sentences = [{"text": self.sentence, "evidence": found}] if found else []
         return {"status": "answered" if found else "not_found", "sentences": sentences}
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise ModelUnavailable("no_vision")
-
 
 def ask(db: Database, customer: str, model: DraftModel) -> dict[str, Any]:
     # PRD 3's search: no whole documents or aspects (PRD 5 CX5, CX6).

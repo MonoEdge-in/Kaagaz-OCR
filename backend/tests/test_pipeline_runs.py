@@ -38,7 +38,6 @@ from tests.fakes import (
     FakePrepared,
     FakePreparer,
     FakeScanner,
-    FakeVision,
     MemoryDocuments,
     MemoryPageImages,
     MemoryPipelineStore,
@@ -198,7 +197,6 @@ def rig(
     socket: ReadingSocket | None = None,
     preparer: FakePreparer | None = None,
     scanner: FakeScanner | None = None,
-    vision: FakeVision | None = None,
     embed: FakeEmbedder | None = None,
     log: list[str] | None = None,
     max_check_crops: int = 200,
@@ -238,7 +236,6 @@ def rig(
             page_images=MemoryPageImages(),
             store=store,
             embed=embed,
-            vision=vision,
             model_errors=(ModelDown,),
             runs=runs,
             progress=progress,
@@ -247,7 +244,6 @@ def rig(
             timer=timer,
             max_check_crops=max_check_crops,
             run_config=CONFIG,
-            vision_model="qwen-vision" if vision is not None else None,
             embed_model="embed-tag" if embed is not None else None,
         )
 
@@ -589,15 +585,13 @@ class RunTotalsTest(unittest.TestCase):
         (run,) = system.runs_of(job)
         self.assertEqual((run.started_at, run.finished_at), (T0, T0))
 
-    def test_a_scan_counts_its_ocr_pages_seconds_and_vision_crops(self) -> None:
-        vision = FakeVision("Total: 1,180.00")
-        system = rig(ocr=TimedOcr, vision=vision)
+    def test_a_scan_counts_its_ocr_pages_and_seconds(self) -> None:
+        system = rig(ocr=TimedOcr)
         job = system.job(make_pdf([SCANNED, SCANNED]))
         system.processor(job, beat)
         totals = system.totals(job)
         self.assertEqual((totals.pages_ocr, totals.seconds_ocr, totals.seconds_total), (2, 5.0, 5.0))
-        self.assertEqual((totals.vision_crops, totals.model_vision), (2, "qwen-vision"))
-        self.assertEqual((totals.values_verified, totals.values_needs_review), (2, 0))  # the crops agree
+        self.assertEqual((totals.vision_crops, totals.model_vision), (0, None))  # no checker here
 
     def test_a_run_records_the_lowest_ocr_dpi_a_page_was_drawn_at(self) -> None:
         """PR 2 draws a page too big for the OCR budget at a lower DPI (the reader's
@@ -650,33 +644,6 @@ class OcrChoiceTest(unittest.TestCase):
         totals = system.totals(job)
         self.assertEqual((totals.status, totals.pages_ocr), ("ready", 1))
         self.assertFalse({"ocr_choice", "ocr_choice_honoured"} & set(totals.config))
-
-
-class VisionTest(unittest.TestCase):
-    def test_a_heartbeat_follows_each_vision_crop_and_crops_stop_at_the_limit(self) -> None:
-        """Security A8: one heartbeat per crop; past MAX_CHECK_CROPS a value stays single_reader."""
-        log: list[str] = []
-
-        class LoggedVision(FakeVision):
-            def read_image(self, *, png: bytes, instruction: str) -> str:
-                log.append("crop")
-                return super().read_image(png=png, instruction=instruction)
-
-        lines = [
-            OcrLine("Invoice No: INV-17", 60, 100, 400, 120, None, "paragraph"),
-            OcrLine("Total: 1,180.00", 60, 400, 400, 420, None, "paragraph"),
-        ]
-        vision = LoggedVision("Total: 1,180.00")
-        system = rig(ocr=lambda timer: TimedOcr(timer, lines=lines), vision=vision, max_check_crops=1)
-        job = system.job(make_pdf([SCANNED]))
-        system.processor(job, lambda: log.append("beat"))
-
-        self.assertEqual(len(vision.pictures), 1)
-        crop = log.index("crop")
-        self.assertEqual(log[crop + 1], "beat")
-        reasons = {v.field: v.label_reason for v in system.store.values_for(CUSTOMER, job.document_id)}
-        self.assertEqual(reasons["total_amount"], "single_reader")  # its box was past the limit
-        self.assertEqual(system.totals(job).vision_crops, 1)
 
 
 class EveryPathClosesItsRunTest(unittest.TestCase):

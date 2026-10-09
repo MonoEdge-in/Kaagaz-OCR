@@ -49,9 +49,6 @@ class FakeModel:
     ) -> dict[str, Any]:
         raise AssertionError("indexing never chats")
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise AssertionError("indexing never reads images")
-
 
 class GoesDown(Database):
     """The test database, until transaction number ``down_at``: from then on the server

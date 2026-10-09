@@ -13,7 +13,6 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
-from kaagaz.ai.client import ModelUnavailable
 from kaagaz.answering import rewrite
 from kaagaz.answering.evidence import PgRetriever
 from kaagaz.answering.service import AnswerService
@@ -101,9 +100,6 @@ class CitesEverything:
         found = [(n, body.splitlines()[-1]) for n, (_, body) in blocks(user).items()]
         sentences = [{"text": quoted, "evidence": [n]} for n, quoted in found]
         return {"status": "answered" if found else "not_found", "sentences": sentences}
-
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise ModelUnavailable("no_vision")
 
 
 def test_the_answer_service_with_default_settings_gives_b_nothing_of_as_document(db: Database) -> None:
