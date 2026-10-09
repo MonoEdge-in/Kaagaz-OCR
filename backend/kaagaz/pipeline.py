@@ -37,12 +37,15 @@ The steps, in order, for one (customer, document):
    model off or down there is none, the languages come from the pieces (L2),
    and the document is saved exactly as with no model (the run keeps the
    error code, ``model_<code>``). Each piece gets its context header (with the
-   card's type and date, C4), and a Latin spelling when it is Devanagari. For
-   scans, when a vision model is set, it reads each value's box again as the
-   second reading. The rule values are labelled by ``label_values`` and the
-   values the model located by ``label_quoted`` (ML 2), each counting the
-   other's boxes (council fix 2); a card value is never verified, and no box is
-   cropped for a card value or an unsure quote. This customer's remembered
+   card's type and date, C4), and a Latin spelling when it is Devanagari. Then
+   the document's map (PRD 5 CX2, CX3, ``chunking.sections``): its sections from
+   the headings, with their summaries and the topics from one more chat call when
+   the processor has its ``map_budget``. For scans, when a vision model is set,
+   it reads each value's box again as the second reading. The rule values are
+   labelled by ``label_values`` and the values the model located by
+   ``label_quoted`` (ML 2), each counting the other's boxes (council fix 2); a
+   card value is never verified, and no box is cropped for a card value or an
+   unsure quote. This customer's remembered
    corrections are applied, then the invoice stage (PRD 2 E5, K1 to K3,
    ``extraction.invoice.finish_invoice``): the invoice row and its checks, from
    the E4 values or, with no type or an invoice type, from labelled.py's values
@@ -51,7 +54,7 @@ The steps, in order, for one (customer, document):
 7. Just before saving, the document must still be clean. Everything is saved
    in one transaction that replaces what an earlier run saved, so running the
    same job twice is safe (queues deliver at least once).
-8. Meaning vectors for the pieces, if a model is set, with the heartbeat and
+8. Meaning vectors for the pieces and the section summaries, if a model is set, with the heartbeat and
    progress "indexing i of n" after each batch is written (a 20k-row sheet is
    about 626 batches, longer than one lease). A model that is down only means
    no vectors: word and typo search still work.
@@ -173,6 +176,15 @@ from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
+from kaagaz.chunking.sections import (
+    MAP_PROMPT_HASH,
+    DocumentMap,
+    MapBudget,
+    Section,
+    Topic,
+    map_document,
+    sections_from_pieces,
+)
 from kaagaz.eta import (
     FLOORED_STEPS,
     Estimate,
@@ -290,6 +302,10 @@ _DEVANAGARI = re.compile("[ऀ-ॿ]")
 # "ocr", "storage", "gemini_key", ...: a run's <backend>_unavailable (PRD 5 G6: a wrong key or a
 # spent cap is BackendUnavailable("gemini_key")).
 _BACKEND_NAME = re.compile(r"[a-z][a-z_]{0,31}")
+# Security A8 (PROVISIONAL): at most this many value boxes of one document are
+# sent to the vision model; the values past it stay single_reader.
+MAX_VISION_CROPS = 200
+_BACKEND_NAME = re.compile(r"[a-z]{1,32}")  # "ocr", "storage", ...: a run's <backend>_unavailable
 # The run config's keys for the marks a reader adds to its version: ";ocr_dpi=N" when a PDF
 # page was drawn below OCR_DPI to fit the pixel limits; with OCR_DPI_RULE (council 5 Oct
 # 2026), ";text_dpi=N", the rule's lowest DPI, and ";ocr_reread=N", the pages read twice.
@@ -346,6 +362,8 @@ class DocumentContent:
     facts: DocumentFacts = field(default_factory=DocumentFacts)
     invoice: InvoiceRow | None = None
     links: tuple[LinkIdentifier, ...] = ()  # this document's own identifiers
+    sections: tuple[Section, ...] = ()  # CX2: the document's map, in reading order
+    topics: tuple[Topic, ...] = ()  # CX3: the topics that join distant pages
 
 
 # --- runs and progress (R6, X2, X3) -------------------------------------------
@@ -524,6 +542,14 @@ class OcrChooser(Protocol):
         ...
 
 
+class OcrChooser(Protocol):
+    """kaagaz.reading.ocr.OcrEngines in production: which engine reads one job's scans."""
+
+    def choose(self, choice: str | None) -> contextlib.AbstractContextManager[bool]:
+        """Read with ``choice`` (None: Auto) inside the block; True when it was honoured."""
+        ...
+
+
 class ReadingSocket(Protocol):
     """kaagaz.reading.socket.ReaderSocket in production."""
 
@@ -623,7 +649,7 @@ class _Run:
     values_needs_review: int = 0
     embedded: bool = False
     version_marks: dict[str, int] = field(default_factory=dict)  # from the first reader's version
-    model_calls: int = 0  # the card and the invoice windows called (PRD 2 D1, E2)
+    model_calls: int = 0  # the card, the invoice windows and the map called (PRD 2 D1, E2; PRD 5 CX2)
     model_error: str | None = None  # "model_<code>" when a call failed; the document still ends ready
     quotes_returned: int = 0
     dropped_quotes: int = 0
@@ -686,6 +712,7 @@ class DocumentProcessor:
         page_cache: PageCache | None = None,
         read_again: ReadAgainStore | None = None,
         model_usage: Callable[[], TokenUsage] | None = None,
+        map_budget: MapBudget | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         ``vision`` reads scanned boxes again. Either failing with one of
@@ -711,7 +738,11 @@ class DocumentProcessor:
         name a run records when it did; ``page_cache`` is the page cache opened around
         each document's reading, and ``read_again`` says which pages to read harder.
         ``model_usage`` is the model client's tokens counted so far (G9,
+        ``CountsTokens.usage``): a run adds what its job's calls added. ``map_budget``
+        (CX2, CX3): the budget of the one ``chat`` call that writes the document's section
+        summaries and topics; None makes no call, and the sections come from the headings."""
         ``CountsTokens.usage``): a run adds what its job's calls added."""
+        at the start of every job; None (tests with fakes) asks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -750,6 +781,7 @@ class DocumentProcessor:
         self._page_cache = page_cache
         self._read_again = read_again
         self._model_usage = model_usage
+        self._map_budget = map_budget
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -797,6 +829,8 @@ class DocumentProcessor:
                 )
             self._clear_progress(job, run, code)  # while the run is still open
             self._close_run(job, run, "failed", code)
+            self._clear_progress(job, run, _unavailable_code(error))  # while the run is still open
+            self._close_run(job, run, "failed", _unavailable_code(error))
             raise
         finally:
             if not settled:
@@ -886,7 +920,9 @@ class DocumentProcessor:
         # The raw second reading is kept as read; only the labels leave pages out.
         compared = None if second is None else _without_unread_pages(second, pages)
         pieces = pieces_from_rows(customer_id, document_id, usable)
-        pieces += pieces_from_lines(customer_id, document_id, usable)
+        # CX1: a page whose sentence goes on onto the next one, as its reader said.
+        continued = {page_no for page_no, read in run.page_reads.items() if read.continues_on_next_page}
+        pieces += pieces_from_lines(customer_id, document_id, usable, continues=continued)
         understanding = self._understand(
             job, run, heartbeat, usable, values_from_cells(usable) + values_from_lines(usable)
         )
@@ -900,6 +936,7 @@ class DocumentProcessor:
             doc_type=facts.doc_type,
             document_date=facts.document_date,
         )
+        document_map = self._map(run, heartbeat, pieces)
         rule, quoted = understanding.rule_values, understanding.quoted_values
         # A card value, or a located value whose spot is unsure (a loose, ambiguous or
         # several-span quote), is never verified, so its box is never cropped (security A8).
@@ -949,6 +986,8 @@ class DocumentProcessor:
             facts=facts,
             invoice=invoice,
             links=links,
+            sections=document_map.sections,
+            topics=document_map.topics,
         )
         self._store.save(content, run_id=run.run_id)
         heartbeat()
@@ -1013,6 +1052,21 @@ class DocumentProcessor:
                 "summary_dropped": understanding.counts.summary_dropped,
             }
         return understanding
+
+    def _map(self, run: _Run, heartbeat: Heartbeat, pieces: list[Piece]) -> DocumentMap:
+        """CX2, CX3: the document's sections (``sections_from_pieces``), with their summaries
+        and the topics from the one map call when the processor has a chat model and its
+        ``map_budget``, counted in the run's model calls. A call that failed leaves the
+        sections from the headings and no topics, and its code on the run, like the card's."""
+        sections = sections_from_pieces(pieces)
+        if self._map_budget is None:
+            return DocumentMap(sections, (), 0, None)
+        found = map_document(self._chat, pieces, sections, self._map_budget)
+        run.model_calls += found.model_calls
+        run.model_error = run.model_error or found.error_code
+        if found.model_calls:
+            heartbeat()
+        return found
 
     def _prepare_or_count(self, job: Job, detected_type: str, data: bytes, on_picture: OnPicture) -> Prepared:
         """``prepare``; a file with too many pages keeps its real page count before
@@ -1192,6 +1246,10 @@ class DocumentProcessor:
             return 0, 0
         usage = self._model_usage()
         return usage.input_tokens, usage.output_tokens
+        run_id, now = None, self._clock()
+        if self._runs is not None:
+            run_id = self._runs.start(job.customer_id, job.document_id, now=now)
+        return _Run(run_id, self._timer(), started_at=now)
 
     def _finished(self, run: _Run, status: str, error_code: str | None) -> FinishedRun | None:
         """The run as it ends now, with everything it counted; None without runs.
@@ -1640,6 +1698,8 @@ def build_processor(
     from kaagaz.reading.ocr import GEMINI, MeteredOcrEngine
     from kaagaz.reading.rapid_pool import shared_pool
     from kaagaz.reading.wiring import build_ocr_engines, build_reader_socket, reader_config
+    from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engines
+    from kaagaz.reading.wiring import build_reader_socket, reader_config
     from kaagaz.search.indexing import embed_pieces
 
     documents = PgDocuments(db)
@@ -1692,6 +1752,7 @@ def build_processor(
             **reader_config(settings),
             "max_check_crops": settings.max_check_crops,
             **(model_config(settings) if model is not None else {}),
+            **({"map_prompt": MAP_PROMPT_HASH} if model is not None else {}),
         },
         vision_model=_vision_name(settings) if vision is not None else None,
         embed_model=settings.model_embed if embed is not None else None,
@@ -1706,6 +1767,7 @@ def build_processor(
         page_cache=PgPageReads(db) if gemini else None,  # keyless: no query a job, as before
         read_again=documents,
         model_usage=model.usage if isinstance(model, CountsTokens) else None,
+        map_budget=MapBudget.from_settings(settings) if model is not None else None,
     )
 
 

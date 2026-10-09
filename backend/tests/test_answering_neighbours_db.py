@@ -81,7 +81,9 @@ class DraftModel:
 
 
 def ask(db: Database, customer: str, model: DraftModel) -> dict[str, Any]:
-    service = AnswerService(db=db, model=model, settings=make_settings(), clock=lambda: NOW)
+    # PRD 3's search: no whole documents or aspects (PRD 5 CX5, CX6).
+    settings = make_settings(answer_whole_doc_tokens=0, query_aspects_max=0)
+    service = AnswerService(db=db, model=model, settings=settings, clock=lambda: NOW)
     return service.answer(customer, "What is the grand total of INV-1042?").to_json()
 
 

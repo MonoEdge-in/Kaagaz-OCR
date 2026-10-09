@@ -298,6 +298,22 @@ class Settings:
     # the translation call has its own timeout (TRANSLATE_TIMEOUT_SECONDS when unset).
     answer_translate_question: bool
     model_translate_timeout_seconds: float
+    # PRD 5 context and memory (sections CX and M; council 9 Oct 2026). Optional: unset is
+    # the PRD's value, so an older .env keeps working. model_context_tokens is the chat
+    # model's context window (M1), the one every budget uses: with a MODEL_CHAT that is not
+    # google/gemini- (Ollama), the smaller of MODEL_CONTEXT_TOKENS and MODEL_NUM_CTX, and
+    # answer_whole_doc_tokens is then 0. The chat's documents are given whole when they add up to
+    # answer_whole_doc_tokens or fewer, and a document's map reads its whole text under the
+    # same limit (CX2, CX5; 0 turns both off). At most topic_max_per_doc topics a document
+    # (CX3); a topic pulls in at most topic_expand_max_pieces pieces a document, and a
+    # question is searched as at most query_aspects_max aspects (CX6). The chat summary and
+    # memory are rewritten every chat_summary_every turns (M3).
+    model_context_tokens: int
+    answer_whole_doc_tokens: int
+    topic_max_per_doc: int
+    topic_expand_max_pieces: int
+    query_aspects_max: int
+    chat_summary_every: int
     timezone: str
 
     # API.
@@ -331,6 +347,11 @@ class Settings:
             times = f"{ocr_calls} x " if ocr_calls > 1 else ""
             raise SettingsError(
                 f"{times}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
+        # Any other rule may read a page twice (at a lowered DPI, then the ceiling) between heartbeats.
+        ocr_calls = 1 if ocr_dpi_rule == "fixed" else 2
+        if ocr_calls * ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
+            raise SettingsError(
+                f"{'2 x ' if ocr_calls == 2 else ''}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
                 " must not be more than QUEUE_LEASE_SECONDS"
             )
         ocr_url = env.url("OCR_URL")
@@ -397,8 +418,24 @@ class Settings:
             translate_timeout = env.number("MODEL_TRANSLATE_TIMEOUT_SECONDS")
         if not (math.isfinite(translate_timeout) and translate_timeout > 0):
             raise SettingsError("MODEL_TRANSLATE_TIMEOUT_SECONDS must be a number above 0")
-        model_enabled = env.boolean("MODEL_ENABLED")
+        # PRD 5 CX and M: unset is the PRD's value. The whole documents (CX5) must fit the
+        # context window with the answer's reply, its repair retry and the system prompt.
         model_chat = env.text("MODEL_CHAT")
+        model_context_tokens = env.at_least("MODEL_CONTEXT_TOKENS", 1, default=200_000)
+        whole_doc_tokens = env.at_least("ANSWER_WHOLE_DOC_TOKENS", 0, default=120_000)
+        if not is_gemini_model(model_chat):
+            # A local (Ollama) chat model's window is MODEL_NUM_CTX, which every call sends:
+            # every budget uses the smaller of the two, and whole documents never fit it.
+            model_context_tokens = min(model_context_tokens, model_num_ctx)
+            whole_doc_tokens = 0
+        prompt_tokens = MAX_SYSTEM_PROMPT_TOKENS + CHAT_OVERHEAD_TOKENS
+        room = 2 * answer_max_tokens + prompt_tokens
+        if whole_doc_tokens + room > model_context_tokens:
+            raise SettingsError(
+                f"ANSWER_WHOLE_DOC_TOKENS + 2 x MODEL_ANSWER_MAX_TOKENS + {prompt_tokens}"
+                " must not be more than MODEL_CONTEXT_TOKENS"
+            )
+        model_enabled = env.boolean("MODEL_ENABLED")
         model_embed = env.text("MODEL_EMBED")
         model_vision = env.optional("MODEL_VISION")
         openrouter_api_key = env.optional("OPENROUTER_API_KEY")
@@ -523,6 +560,12 @@ class Settings:
             answer_translate_question=env.optional("ANSWER_TRANSLATE_QUESTION") is not None
             and env.boolean("ANSWER_TRANSLATE_QUESTION"),
             model_translate_timeout_seconds=translate_timeout,
+            model_context_tokens=model_context_tokens,
+            answer_whole_doc_tokens=whole_doc_tokens,
+            topic_max_per_doc=env.at_least("TOPIC_MAX_PER_DOC", 1, default=40),
+            topic_expand_max_pieces=env.at_least("TOPIC_EXPAND_MAX_PIECES", 0, default=12),
+            query_aspects_max=env.at_least("QUERY_ASPECTS_MAX", 0, default=6),
+            chat_summary_every=env.at_least("CHAT_SUMMARY_EVERY", 1, default=6),
             timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             log_level=env.text("LOG_LEVEL"),
@@ -587,6 +630,13 @@ class _Env:
     def not_negative_or(self, name: str, default: float) -> float:
         """``not_negative``, or ``default`` when unset or empty."""
         return default if self.optional(name) is None else self.not_negative(name)
+    def at_least(self, name: str, low: int, *, default: int) -> int:
+        """An optional whole number of at least ``low``: ``default`` when unset or empty."""
+        number = self.optional_integer(name)
+        number = default if number is None else number
+        if number < low:
+            raise SettingsError(f"{name} must be at least {low}")
+        return number
 
     def number(self, name: str) -> float:
         value = self.text(name)

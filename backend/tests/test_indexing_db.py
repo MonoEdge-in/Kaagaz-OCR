@@ -21,6 +21,8 @@ from tests.test_search_db import RECIPE, add_document, add_pieces, axis, run
 
 pytestmark = pytest.mark.db
 
+CURRENT = recipe_tag("fake-embed")  # FakeModel's tag
+
 
 class FakeModel:
     """Embeds the n-th text it has seen as ``axis(n)``; records each call."""
@@ -135,10 +137,10 @@ def test_a_second_run_does_nothing(db: Database) -> None:
     assert model.calls == []
 
 
-def test_only_pieces_without_a_vector_are_embedded(db: Database) -> None:
+def test_only_pieces_without_a_vector_of_the_current_tag_are_embedded(db: Database) -> None:
     customer, _ = new_customer(db)
     document = add_document(db, customer)
-    add_pieces(db, customer, document, [("kept", axis(9)), ("new", None)])
+    add_pieces(db, customer, document, [("kept", axis(9)), ("new", None)], model=CURRENT)
     other = add_document(db, customer)
     add_pieces(db, customer, other, [("other document", None)])
     model = FakeModel()
@@ -146,8 +148,94 @@ def test_only_pieces_without_a_vector_are_embedded(db: Database) -> None:
     assert embed_pieces(db, customer, document, model) == 1
 
     assert model.calls == [["new"]]
-    assert _embeddings(db, customer, document) == [(True, RECIPE), (True, "fake-embed#ctx1")]
+    assert _embeddings(db, customer, document) == [(True, CURRENT), (True, CURRENT)]
     assert _embeddings(db, customer, other) == [(False, None)]
+
+
+def test_m5_a_stale_tag_is_embedded_again_and_then_left(db: Database) -> None:
+    """PRD 5 M5: a vector of another model or recipe counts as missing."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [("old one", axis(9)), ("old two", axis(8))], model=RECIPE)
+    model = FakeModel()
+
+    assert RECIPE != CURRENT
+    assert embed_pieces(db, customer, document, model) == 2
+    assert model.calls == [["old one", "old two"]]
+    assert _embeddings(db, customer, document) == [(True, CURRENT), (True, CURRENT)]
+    idle = FakeModel()
+    assert embed_pieces(db, customer, document, idle) == 0
+    assert idle.calls == []
+
+
+def test_m5_a_search_over_mixed_tags_sees_only_the_current_tag(db: Database) -> None:
+    customer, _ = new_customer(db)
+    (stale,) = add_pieces(db, customer, add_document(db, customer), [("stale", axis(1))], model=RECIPE)
+    (current,) = add_pieces(db, customer, add_document(db, customer), [("current", axis(1))], model=CURRENT)
+
+    assert [hit.piece_id for hit in run(db, customer, "", embedding=axis(1), recipe=CURRENT)] == [current]
+    assert [hit.piece_id for hit in run(db, customer, "", embedding=axis(1), recipe=RECIPE)] == [stale]
+
+
+def _add_sections(db: Database, customer_id: str, document_id: str, summaries: list[str | None]) -> None:
+    """Sections 0, 1, ... each over piece 0, with a path, a summary (or none) and no vector."""
+    with db.customer(customer_id) as conn:
+        conn.execute(
+            text(
+                "INSERT INTO document_sections (customer_id, document_id, seq, path, page_from, page_to,"
+                " piece_seq_from, piece_seq_to, summary) VALUES (:c, :d, :seq, CAST(:path AS text[]), 1, 1,"
+                " 0, 0, :summary)"
+            ),
+            [
+                {"c": customer_id, "d": document_id, "seq": seq, "path": ["Leave"], "summary": summary}
+                for seq, summary in enumerate(summaries)
+            ],
+        )
+
+
+def _section_tags(db: Database, customer_id: str, document_id: str) -> list[str | None]:
+    with db.customer(customer_id) as conn:
+        found = conn.execute(
+            text(
+                "SELECT embed_recipe FROM document_sections WHERE customer_id = :c AND document_id = :d"
+                " ORDER BY seq"
+            ),
+            {"c": customer_id, "d": document_id},
+        )
+        return [row[0] for row in found]
+
+
+SECTION_INPUT = "Section: Leave\n\nHolidays and casual leave."
+
+
+def test_cx2_section_summaries_are_embedded_after_the_pieces_with_their_tag(db: Database) -> None:
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [("Twelve holidays.", None), ("Eight days.", None)])
+    _add_sections(db, customer, document, ["Holidays and casual leave.", None])
+    reports: list[tuple[int, int]] = []
+    model = FakeModel()
+
+    written = embed_pieces(
+        db, customer, document, model, batch_size=2, on_batch=lambda *report: reports.append(report)
+    )
+
+    assert written == 3
+    assert model.calls == [["Twelve holidays.", "Eight days."], [SECTION_INPUT]]
+    assert reports == [(2, 3), (3, 3)]
+    assert _section_tags(db, customer, document) == [CURRENT, None]  # no summary, no vector
+    with db.customer(customer) as conn:
+        conn.execute(
+            text(
+                "UPDATE document_sections SET embed_recipe = :old"
+                " WHERE customer_id = :c AND document_id = :d AND seq = 0"
+            ),
+            {"c": customer, "d": document, "old": RECIPE},
+        )
+    again = FakeModel()
+    assert embed_pieces(db, customer, document, again) == 1  # the stale section only
+    assert again.calls == [[SECTION_INPUT]]
+    assert _section_tags(db, customer, document) == [CURRENT, None]
 
 
 def test_embedded_pieces_are_found_by_meaning(db: Database) -> None:

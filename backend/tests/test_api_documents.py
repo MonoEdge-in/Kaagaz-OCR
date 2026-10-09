@@ -540,11 +540,13 @@ def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Data
 
 
 # --- no reader choice at upload (PRD 5 RT3) ------------------------------------------------
+# --- the scan reader an upload chose (PRD 4 #17) ------------------------------------------
 
 
 @pytest.fixture
 def rapidocr_server(monkeypatch: pytest.MonkeyPatch) -> Settings:
     """A laptop's settings with RapidOCR installed."""
+    """A laptop's settings with RapidOCR installed: Auto and RapidOCR are offered."""
     monkeypatch.setattr(ocr, "_installed_version", lambda package: "3.9.2")
     return make_settings(ocr_engine="rapidocr")
 
@@ -575,6 +577,14 @@ def test_upload_limits_offer_the_readers_this_server_has(db: Database, rapidocr_
     assert [(r["id"], r["title"], r["available"], r["reason"]) for r in readers] == [
         ("auto", "Auto", True, None)
     ]
+    signed = Api(db, settings=rapidocr_server).new_signed()
+    readers = signed.client.get("/api/upload-limits").json()["readers"]
+    assert [(r["id"], r["title"], r["available"]) for r in readers] == [
+        ("auto", "Auto", True),
+        ("paddleocr_vl", "PaddleOCR-VL", False),
+        ("rapidocr", "RapidOCR", True),
+    ]
+    assert readers[1]["reason"] == "Not set up on this server"
 
 
 @pytest.mark.db
@@ -618,6 +628,28 @@ def test_any_reader_an_old_browser_sends_is_accepted_and_ignored(
     assert _stored_choices(db, signed.customer_id) == [None]
     assert len(api.queue.jobs) == 1
     assert api.audit_actions(signed.customer_id).count("document.upload") == 1
+    assert stored == {chosen_id: "rapidocr", auto_id: None, version.json()["document"]["id"]: "rapidocr"}
+    audited = [(row[0], row[3].get("ocr_choice")) for row in api.audit_rows(signed.customer_id)]
+    assert [row for row in audited if row[0].startswith("document.")] == [
+        ("document.upload", "rapidocr"),
+        ("document.upload", None),
+        ("document.version", "rapidocr"),
+    ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("choice", ["paddleocr_vl", "tesseract", "", "RAPIDOCR"])
+def test_a_reader_not_offered_is_400_and_nothing_is_stored(
+    db: Database, rapidocr_server: Settings, choice: str
+) -> None:
+    api = Api(db, settings=rapidocr_server)
+    signed = api.new_signed()
+    reply = _choose(signed.client, choice)
+    assert reply.status_code == 400
+    assert reply.json()["error"] == {"code": "bad_request", "message": "Choose one of the readers offered."}
+    assert _stored_choices(db, signed.customer_id) == []
+    assert api.queue.jobs == []
+    assert api.audit_actions(signed.customer_id).count("document.upload") == 0
 
 
 @pytest.mark.db
@@ -631,6 +663,7 @@ def test_a_duplicate_keeps_the_reader_it_was_read_with(db: Database, rapidocr_se
     assert (again.status_code, again.json()["document"]["id"]) == (200, first.json()["document"]["id"])
     assert _stored_choices(db, signed.customer_id) == [None]
     assert len(api.queue.jobs) == 1
+    assert _stored_choices(db, signed.customer_id) == ["rapidocr"]
 
 
 @pytest.mark.db

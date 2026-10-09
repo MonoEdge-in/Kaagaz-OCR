@@ -24,6 +24,9 @@ of it looks sound, and a Latin spelling of it for search.
   (Devanagari, Gujarati, any category Nd) as its ASCII digit, for checking
   numbers; one character for one. ``fold_digits`` stays Devanagari only:
   ``hinglish.normalise`` uses it, and its output must not change.
+* ``spaced_words`` (PRD 5 CX6, M3): the words of a text in any script, split at
+  whitespace with the punctuation at their ends removed, for topic terms and the
+  memory's quote check.
 * ``latin_spelling`` (L3, ML amendment 8's recipe, PROVISIONAL). For each run
   of Devanagari letters: NFC, then IAST with indic-transliteration. The final
   "a" is dropped only when the run ends in a bare consonant (a nukta is
@@ -207,6 +210,23 @@ def ascii_digits(text: str) -> str:
     if text.isascii():
         return text
     return _NON_ASCII_DIGIT.sub(lambda match: str(unicodedata.decimal(match[0])), text)
+
+
+def spaced_words(text: str) -> list[str]:
+    """The words of ``text`` split at whitespace only, each without the punctuation and
+    symbols (Unicode categories P and S) at its ends: a Devanagari word keeps its vowel signs
+    and virama (``\\w`` splits मुझे at its vowel sign), and "1,20,000" stays one word. O(n)."""
+    words = (_trimmed(word) for word in text.split())
+    return [word for word in words if word]
+
+
+def _trimmed(word: str) -> str:
+    start, end = 0, len(word)
+    while start < end and unicodedata.category(word[start])[0] in "PS":
+        start += 1
+    while end > start and unicodedata.category(word[end - 1])[0] in "PS":
+        end -= 1
+    return word[start:end]
 
 
 def latin_spelling(text: str) -> str:

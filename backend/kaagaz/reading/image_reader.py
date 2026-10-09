@@ -49,6 +49,7 @@ Time is the engine's time per page (with ``text_height``, plus O(pixels) for
 the probe and the shrink, and a second reading of a page that gave nothing).
 Memory is one decoded page at a time; with a pool, up to its size of pages
 plus the one being decoded.
+Memory is one decoded page at a time.
 """
 
 import math
@@ -59,6 +60,7 @@ from PIL import Image
 from kaagaz.preparing.page_checks import is_blank
 from kaagaz.preparing.pages import image_pages
 from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, PageRead, as_page_engine, ocr_spans
+from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
 from kaagaz.reading.ocr_dpi import DPI_RULES, FIXED, PROBE_LONG_SIDE, line_height_px, photo_scale
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import OnPage, PagePool, PagesInOrder
@@ -119,6 +121,14 @@ class ImageReader:
 
         def finish(page_spans: list[Span], read: RouteDecision) -> None:
             spans.extend(page_spans)
+        pages = image_pages(data, max_pages=self._max_pages, max_image_pixels=self._max_image_pixels)
+        for number, image in enumerate(pages, start=1):
+            page = _for_ocr(image, self._max_short_side, self._max_ocr_pixels)
+            blank = is_blank(page, self._blank_stddev)
+            if not blank:
+                spans.extend(self._scanned(page, number))
+            page.close()
+            image.close()
             if on_page is not None:
                 on_page(read)
 
@@ -168,6 +178,21 @@ class ImageReader:
 
 def _spans(read: PageRead, number: int, width: int, height: int) -> list[Span]:
     return ocr_spans(list(read.lines), number, width, height)
+    def _scanned(self, page: Image.Image, number: int) -> list[Span]:
+        """The page's spans; with the text-height rule, read first shrunk to its text,
+        then once more as it is when that finds nothing (the module notes)."""
+        if self._dpi_rule != FIXED:
+            smaller = _for_text(page)
+            if smaller is not page:
+                self._scale = min(smaller.width / page.width, self._scale or 1.0)
+                try:
+                    spans = ocr_spans(self._ocr.read(smaller), number, smaller.width, smaller.height)
+                finally:
+                    smaller.close()
+                if spans:
+                    return spans
+                self._rereads += 1
+        return ocr_spans(self._ocr.read(page), number, page.width, page.height)
 
 
 def _for_ocr(image: Image.Image, short_side: int, max_pixels: int) -> Image.Image:

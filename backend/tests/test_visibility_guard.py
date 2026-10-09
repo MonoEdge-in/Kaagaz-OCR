@@ -43,6 +43,12 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (hybrid, "_MEANING_EXACT"): LIVE_CURRENT,
     (hybrid, "_DETAILS"): LIVE_CURRENT,
     (hybrid, "_NEIGHBOURS"): LIVE_CURRENT,  # Q4: the pieces next to an answer's hits
+    # PRD 5: whole documents (CX5), topic and section pieces (CX6) and cards (M2).
+    (hybrid, "_WHOLE_SIZE"): LIVE_CURRENT,
+    (hybrid, "_WHOLE"): LIVE_CURRENT,
+    (hybrid, "_TOPIC_PIECES"): LIVE_CURRENT,
+    (hybrid, "_SECTION_PIECES"): LIVE_CURRENT,  # in the sections' step and the pieces' step
+    (hybrid, "_CARDS"): LIVE_CURRENT,
     # Story matches (S3): the family's current version of a story, read and out of Trash.
     (story_search, "_STORIES"): LIVE_CURRENT,
     # The numbers in answers: the same, in every CTE.

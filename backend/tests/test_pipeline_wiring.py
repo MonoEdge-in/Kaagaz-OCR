@@ -81,13 +81,13 @@ class RunConfigTest(unittest.TestCase):
 
     def test_a_run_records_the_card_prompt_and_the_model_budgets(self) -> None:
         """ML 10: which prompt made the card, and the budgets the calls ran with."""
-        settings = make_settings(model_num_ctx=6000, model_card_max_tokens=900, card_max_chars=9000)
+        settings = make_settings(model_context_tokens=6000, model_card_max_tokens=900, card_max_chars=9000)
         self.assertEqual(
             model_config(settings),
             {
                 "card_prompt": CARD_PROMPT_HASH,
                 "invoice_prompt": INVOICE_PROMPT_HASH,  # PR 6: which invoice prompt read the windows
-                "model_num_ctx": 6000,
+                "model_context_tokens": 6000,
                 "card_max_chars": 9000,
                 "card_max_tokens": 900,
                 "extract_window_chars": settings.extract_window_chars,

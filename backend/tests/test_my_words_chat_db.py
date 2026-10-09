@@ -95,7 +95,9 @@ def test_chat_shows_the_note_and_no_meaning_reaches_a_prompt_or_a_message(db: Da
         },
         embed_error=ModelUnavailable("down"),
     )
-    answers = AnswerService(db=db, model=model, settings=make_settings(), clock=lambda: NOW)
+    # PRD 3's search: no whole documents or aspects (PRD 5 CX5, CX6).
+    settings = make_settings(answer_whole_doc_tokens=0, query_aspects_max=0)
+    answers = AnswerService(db=db, model=model, settings=settings, clock=lambda: NOW)
     api = Api(db, answers=answers)
     signed = api.new_signed()
     customer, user = signed.customer_id, signed.user_id
