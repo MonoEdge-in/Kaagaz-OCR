@@ -68,6 +68,7 @@ import contextlib
 import functools
 import json
 import logging
+import re
 import signal
 import sys
 import threading
@@ -443,6 +444,51 @@ def _story_pass(db: Database, model: "ModelClient", after: StoryKey | None) -> S
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+# PRD 5 U9, V4: each copy reports its reader's state this often, on a thread of its own,
+# so a copy busy with a long job still reports (Health says "not reporting" after 2 minutes).
+READER_REPORT_SECONDS = 30.0
+_WORKER_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def worker_name(hostname: str) -> str:
+    """This copy's name for its reader reports: the host name (a container's id under
+    Docker), with anything but letters, digits, ``.``, ``-`` and ``_`` made ``-``, at
+    most 64 characters, as reader_status's CHECK asks; ``worker`` for an empty one."""
+    return _WORKER_NAME_UNSAFE.sub("-", hostname)[:64] or "worker"
+
+
+def report_reader_state(
+    report: Callable[[str, datetime | None], None],
+    status: Callable[[], tuple[str, float | None]],
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+    wall_clock: Callable[[], datetime] = _utc_now,
+) -> None:
+    """One reader report (U9): the gate's ``status()``, its ``since`` (on the gate's
+    monotonic clock) turned into a wall-clock time. A database that is down, or a report
+    it refuses, is logged by its type and the worker goes on. O(1)."""
+    state, since = status()
+    when = None if since is None else wall_clock() - timedelta(seconds=max(0.0, monotonic() - since))
+    try:
+        report(state, when)
+    except (SQLAlchemyError, BackendUnavailable) as error:
+        logger.warning("reader status not reported", extra={"code": type(error).__name__})
+
+
+def keep_reporting(stop: threading.Event, beat: Callable[[], None], every: float) -> threading.Thread:
+    """Run ``beat`` now and then every ``every`` seconds until ``stop`` is set, on a daemon
+    thread of its own (a worker that dies takes it with it). Returns the thread."""
+
+    def loop() -> None:
+        beat()
+        while not stop.wait(every):
+            beat()
+
+    thread = threading.Thread(target=loop, name="reader-status", daemon=True)
+    thread.start()
+    return thread
 
 
 def install_stop_handlers(stop: threading.Event) -> None:
