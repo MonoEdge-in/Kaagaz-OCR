@@ -244,7 +244,7 @@ class ModelOffOrDownTest(unittest.TestCase):
 
 class ModelBudgetTest(unittest.TestCase):
     def test_the_budget_comes_from_the_settings_with_the_invoice_windows(self) -> None:
-        settings = make_settings(card_max_chars=9000, model_card_max_tokens=900, model_num_ctx=6000)
+        settings = make_settings(card_max_chars=9000, model_card_max_tokens=900, model_context_tokens=6000)
         self.assertEqual(
             ModelBudget.from_settings(settings),
             ModelBudget(9000, 900, 6000, WindowSettings.from_settings(settings)),

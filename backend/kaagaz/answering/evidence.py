@@ -72,7 +72,9 @@ A hit with no valid region cannot be pointed at, so it is not evidence
 
 Neighbours (PRD 3 Q4) are fetched only for the usable hits, after the gate passed;
 they pass the same two checks, are numbered after every hit (a window cut drops
-them first) and are marked.
+them first) and are marked. PRD 5's topic and section pieces (CX6, ``Context``) are
+fetched the same way and numbered between the hits and the neighbours; a whole
+document's pieces (CX5) are numbered in reading order, and the gate judges them all.
 
 Time is O(h * t) for h hits of t characters: one pass of fixed regular
 expressions and substring checks per hit.
@@ -238,18 +240,56 @@ class TranslatedSearch(Protocol):
         ...
 
 
-class PgRetriever:
-    """``Retriever`` and ``TranslatedSearch`` over PostgreSQL: hybrid search, and the hits'
-    neighbours, each inside ``db.customer``."""
+class Context(Protocol):
+    """PRD 5: the whole documents (CX5), the pieces topics and sections add (CX6), and the
+    documents' cards (M2), each inside ``scope``."""
 
-    def __init__(self, db: Database, *, recipe: str, ef_search: int, neighbours: int) -> None:
+    def whole(self, customer_id: str, scope: Scope, budget: int) -> Sequence[Hit] | None:
+        """Every piece of ``scope`` in reading order; None when there is none or their text
+        is more than about ``budget`` tokens (characters / 4)."""
+        ...
+
+    def topic_pieces(
+        self, customer_id: str, terms: Sequence[str], hits: Sequence[Hit], scope: Scope
+    ) -> Sequence[Hit]:
+        """The pieces of the topics a term names or a hit belongs to, never a hit."""
+        ...
+
+    def section_pieces(
+        self,
+        customer_id: str,
+        keywords: Sequence[str],
+        embedding: list[float] | None,
+        hits: Sequence[Hit],
+        scope: Scope,
+    ) -> Sequence[Hit]:
+        """The pieces of the two sections the keywords or the vector find, never a hit."""
+        ...
+
+    def cards(
+        self, customer_id: str, document_ids: Sequence[str], scope: Scope
+    ) -> Mapping[str, tuple[str, Any]]:
+        """Each live document's (display name, card JSON or None)."""
+        ...
+
+
+class PgRetriever:
+    """``Retriever``, ``TranslatedSearch`` and ``Context`` over PostgreSQL: hybrid search, the
+    hits' neighbours, and PRD 5's whole documents, topics, sections and cards, each inside
+    ``db.customer``."""
+
+    def __init__(
+        self, db: Database, *, recipe: str, ef_search: int, neighbours: int, topic_pieces: int = 0
+    ) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
-        another tag are left out); ``ef_search``: SEARCH_EF; ``neighbours``:
-        ANSWER_NEIGHBOURS, the pieces on each side of a hit (0: none)."""
+        another tag are left out; a section's ``embed_recipe`` too); ``ef_search``:
+        SEARCH_EF; ``neighbours``: ANSWER_NEIGHBOURS, the pieces on each side of a hit (0:
+        none); ``topic_pieces``: TOPIC_EXPAND_MAX_PIECES, a topic's pieces a document."""
         self._db = db
         self._recipe = recipe
         self._ef_search = ef_search
         self._neighbours = neighbours
+        self._topic_pieces = topic_pieces
 
     def search(
         self,
@@ -311,6 +351,52 @@ class PgRetriever:
             return []
         with self._db.customer(customer_id) as conn:
             return neighbours(conn, customer_id=customer_id, hits=hits, size=self._neighbours, scope=scope)
+
+    def whole(self, customer_id: str, scope: Scope, budget: int) -> Sequence[Hit] | None:
+        from kaagaz.search.hybrid import whole
+
+        with self._db.customer(customer_id) as conn:
+            return whole(conn, customer_id=customer_id, scope=scope, max_bytes=4 * budget)
+
+    def topic_pieces(
+        self, customer_id: str, terms: Sequence[str], hits: Sequence[Hit], scope: Scope
+    ) -> Sequence[Hit]:
+        from kaagaz.search.hybrid import topic_pieces
+
+        per_document = self._topic_pieces
+        with self._db.customer(customer_id) as conn:
+            return topic_pieces(
+                conn, customer_id=customer_id, terms=terms, hits=hits, per_document=per_document, scope=scope
+            )
+
+    def section_pieces(
+        self,
+        customer_id: str,
+        keywords: Sequence[str],
+        embedding: list[float] | None,
+        hits: Sequence[Hit],
+        scope: Scope,
+    ) -> Sequence[Hit]:
+        from kaagaz.search.hybrid import section_pieces
+
+        with self._db.customer(customer_id) as conn:
+            return section_pieces(
+                conn,
+                customer_id=customer_id,
+                keywords=keywords,
+                embedding=embedding,
+                recipe=self._recipe,
+                hits=hits,
+                scope=scope,
+            )
+
+    def cards(
+        self, customer_id: str, document_ids: Sequence[str], scope: Scope
+    ) -> Mapping[str, tuple[str, Any]]:
+        from kaagaz.search.hybrid import cards
+
+        with self._db.customer(customer_id) as conn:
+            return cards(conn, customer_id=customer_id, document_ids=document_ids, scope=scope)
 
 
 @dataclass(frozen=True, slots=True)

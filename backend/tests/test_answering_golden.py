@@ -936,14 +936,14 @@ COPY = piece("bill-1042-copy.pdf", INVOICE.text.replace("Tax Invoice", "Duplicat
 
 
 def window_for(pieces: list[FakeHit]) -> int:
-    """A MODEL_NUM_CTX that leaves the evidence exactly the room ``pieces`` take
+    """A MODEL_CONTEXT_TOKENS that leaves the evidence exactly the room ``pieces`` take
     (with the factory's MODEL_ANSWER_MAX_TOKENS, 512)."""
     evidence = estimate_tokens(user_prompt(QUESTION, number_evidence(pieces)))
     return evidence + 2 * 512 + estimate_tokens(SYSTEM_PROMPT) + CHAT_OVERHEAD_TOKENS
 
 
 def windowed(num_ctx: int) -> Settings:
-    return make_settings(answer_min_evidence_score=0.6, answer_max_evidence=5, model_num_ctx=num_ctx)
+    return make_settings(answer_min_evidence_score=0.6, answer_max_evidence=5, model_context_tokens=num_ctx)
 
 
 def test_the_answer_call_has_a_reply_budget() -> None:
@@ -1015,8 +1015,9 @@ def test_each_model_answer_logs_the_model_and_the_prompt_hash(caplog: pytest.Log
 def test_the_answer_prompt_and_schema_are_pinned() -> None:
     pinned = SYSTEM_PROMPT + "\n" + json.dumps(ANSWER_SCHEMA, sort_keys=True)
     assert hashlib.sha256(pinned.encode("utf-8")).hexdigest() == ANSWER_PROMPT_HASH
-    # Changed on purpose in PR C (fix/s2-xlang-answer): rule 7, evidence in any language.
-    assert ANSWER_PROMPT_HASH == "dc4a3004b9098dd3b562c3d9b8c7684c76a7d381f23e26f0e7396ab67ec14742"
+    # Changed on purpose in PR C (fix/s2-xlang-answer): rule 7, evidence in any language; and in
+    # PRD 5 PR 3: rules 8 to 10 (CX7, answers that combine) and 11 (M2, the cards).
+    assert ANSWER_PROMPT_HASH == "e199829c7fd2eabdb08ecf3e9c8bd06ad7c21a6449ed7ee2a6f671f7f0463340"
     assert "Answer in English. A quote keeps the script it is written in." in SYSTEM_PROMPT  # PRD 3 H3
     sentences = ANSWER_SCHEMA["properties"]["sentences"]
     assert (sentences.get("maxItems"), sentences["items"]["properties"]["text"].get("maxLength")) == (5, 300)

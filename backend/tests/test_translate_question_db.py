@@ -31,7 +31,12 @@ QUESTION = "Who is the cultivator?"
 A_WORD = "\u0915\u0938\u0923\u093e\u0930"  # only in A's piece
 A_NAME = "\u0938\u0940\u0924\u093e \u0926\u0947\u0936\u092e\u0941\u0916"
 B_NAME = "\u0917\u0923\u092a\u0924 \u091c\u093e\u0927\u0935"
-SETTINGS = make_settings(answer_translate_question=True, model_embed="test-embed")
+SETTINGS = make_settings(
+    answer_translate_question=True,
+    model_embed="test-embed",
+    answer_whole_doc_tokens=0,  # PRD 3's search: no whole documents or aspects (PRD 5 CX5, CX6)
+    query_aspects_max=0,
+)
 
 
 class Model:
