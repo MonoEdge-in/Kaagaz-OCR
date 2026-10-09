@@ -7,6 +7,9 @@
   that is down rolls the mark back.
 * The users' "read again" limits do not apply, and the sweep's own rows don't count
   against them.
+* A document the sweep sent lately that still has a page read locally (the main reader
+  failed on it again) is passed over for UPGRADE_RETRY_AFTER_HOURS, so it can't take
+  every pass.
 
 The test database is shared, so this test's documents are dated 1990 to be the oldest.
 """
@@ -17,7 +20,7 @@ import pytest
 from sqlalchemy import Connection, text
 
 from kaagaz.db import customers
-from kaagaz.db.documents import mark_for_reprocess, mark_for_upgrade
+from kaagaz.db.documents import UPGRADE_RETRY_AFTER_HOURS, mark_for_reprocess, mark_for_upgrade
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
@@ -126,3 +129,23 @@ def test_mark_for_upgrade_has_no_user_limits_and_is_not_counted_against_them(db:
         # The user's own read again is not held back by the sweep's.
         assert mark_for_reprocess(conn, customer, doc, per_hour=1) == "ready"
     assert len(upgrade_audits(db, customer)) == 2
+
+
+def test_upgrade_sweep_passes_over_a_document_it_sent_lately(db: Database) -> None:
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        again = read_locally(conn, customer, year=1960)
+        next_one = read_locally(conn, customer, year=1961)
+    assert upgrade_oldest(db, MemoryQueue()) == Job(customer, again)
+    with db.customer(customer) as conn:  # read locally again: back to ready, still read_locally
+        conn.execute(text("UPDATE documents SET status = 'ready' WHERE id = :d"), {"d": again})
+    assert upgrade_oldest(db, MemoryQueue()) == Job(customer, next_one)  # not the same one again
+    with db.engine.begin() as conn:  # the window passes (the owner: the app can't change the audit log)
+        conn.execute(
+            text(
+                "UPDATE audit_log SET created_at = now() - make_interval(hours => :h)"
+                " WHERE customer_id = :c AND target_id = :d"
+            ),
+            {"h": UPGRADE_RETRY_AFTER_HOURS + 1, "c": customer, "d": again},
+        )
+    assert upgrade_oldest(db, MemoryQueue()) == Job(customer, again)

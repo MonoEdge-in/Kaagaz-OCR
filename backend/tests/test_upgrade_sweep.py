@@ -7,6 +7,10 @@
 * A copy that cannot get the sweep lock skips the pass; a database or queue error is
   logged by its type and the jobs go on; the log holds the document's ids and a code.
 
+* The oldest-first pick passes over a document the sweep sent in the last
+  UPGRADE_RETRY_AFTER_HOURS (6), so one the main reader fails on again can't starve
+  the rest.
+
 ``upgrade_oldest`` itself is checked against PostgreSQL in tests/test_upgrade_sweep_db.py.
 """
 
@@ -15,15 +19,33 @@ import logging
 import unittest
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
+from sqlalchemy import Connection
 from sqlalchemy.exc import ProgrammingError
 
+from kaagaz.db.documents import UPGRADE_RETRY_AFTER_HOURS, oldest_read_locally
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.upgrade import PROBE_EVERY, UPGRADE_EVERY, UpgradeLocalReads
 
 START = datetime(2026, 10, 9, 9, 0, tzinfo=UTC)
 JOB = Job("aaaaaaaa-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-0000000000a1")
+
+
+class Recorded:
+    """A connection that notes the one statement it is given and finds nothing."""
+
+    def __init__(self) -> None:
+        self.sql = ""
+        self.params: dict[str, object] = {}
+
+    def execute(self, statement: object, params: dict[str, object]) -> "Recorded":
+        self.sql, self.params = str(statement), params
+        return self
+
+    def first(self) -> None:
+        return None
 
 
 class Idle:
@@ -117,6 +139,15 @@ class UpgradeSweepTest(unittest.TestCase):
             self.assertEqual(
                 fields, {"customer_id": JOB.customer_id, "document_id": JOB.document_id, "code": code}
             )
+
+    def test_upgrade_pick_passes_over_a_document_the_sweep_sent_lately(self) -> None:
+        conn = Recorded()
+        self.assertIsNone(oldest_read_locally(cast(Connection, conn), JOB.customer_id))
+        self.assertEqual(UPGRADE_RETRY_AFTER_HOURS, 6)
+        self.assertEqual(conn.params, {"c": JOB.customer_id, "hours": UPGRADE_RETRY_AFTER_HOURS})
+        self.assertIn("NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.customer_id = :c", conn.sql)
+        self.assertIn("a.action = 'document.read_upgrade' AND a.target_id = d.id::text", conn.sql)
+        self.assertIn("a.created_at > now() - make_interval(hours => :hours)", conn.sql)
 
     def test_copies_must_be_at_least_one(self) -> None:
         with self.assertRaises(ValueError):

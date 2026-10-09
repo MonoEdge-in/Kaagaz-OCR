@@ -31,7 +31,9 @@ document with a page the backup reader read while the main one was down
 (``read_locally``) goes back to ``received`` as ``mark_for_reprocess`` sets it, under
 the family lock, but outside the users' limits (the sweep has its own, 20 an hour),
 audited as ``document.read_upgrade`` with no actor. ``oldest_read_locally`` finds a
-customer's oldest such document.
+customer's oldest such document that the sweep has not sent in the last
+UPGRADE_RETRY_AFTER_HOURS, so a document the main reader fails on again can't starve
+the rest.
 
 Read one page again, harder (PRD 5 F5): a queue job carries only a document id, so
 ``request_page_read_again`` marks the page (``pages.read_again_requested_at``, 0021)
@@ -240,23 +242,36 @@ def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, 
 
 # --- the upgrade sweep's read again (PRD 5 Q7) -----------------------------------
 
-# A ready document out of Trash with a page read by the backup reader, oldest first. The
-# pages side uses pages_read_locally (0022), the documents side their primary key.
+# A document the sweep sent to be read again within this many hours is passed over,
+# even if a page is still read locally (the main reader failed on it again), so one
+# document can't take every pass and starve the rest. 6 hours: about 120 passes at
+# 20 an hour, enough for the rest of a large outage's backlog to be tried first.
+UPGRADE_RETRY_AFTER_HOURS = 6
+
+# A ready document out of Trash with a page read by the backup reader, oldest first,
+# not sent by the sweep in the last UPGRADE_RETRY_AFTER_HOURS. The pages side uses
+# pages_read_locally (0022), the documents side their primary key, the audit side
+# audit_log_listing (customer_id, created_at DESC).
 _OLDEST_READ_LOCALLY = (
     "SELECT d.id, d.created_at FROM documents d"
     " WHERE d.customer_id = :c AND d.status = 'ready' AND d.deleted_at IS NULL"
     " AND d.id IN (SELECT p.document_id FROM pages p"
     " WHERE p.customer_id = :c AND 'read_locally' = ANY (p.read_issues))"
+    " AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.customer_id = :c"
+    " AND a.action = 'document.read_upgrade' AND a.target_id = d.id::text"
+    " AND a.created_at > now() - make_interval(hours => :hours))"
     " ORDER BY d.created_at, d.id LIMIT 1"
 )
 
 
 def oldest_read_locally(conn: Connection, customer_id: str) -> tuple[str, datetime] | None:
     """This customer's oldest ready document out of Trash with a page read locally
-    (``read_locally``, PRD 5 Q7), as (id, uploaded at); None when there is none.
+    (``read_locally``, PRD 5 Q7), as (id, uploaded at); None when there is none. One the
+    sweep sent in the last UPGRADE_RETRY_AFTER_HOURS is passed over (no starving).
     ``conn`` comes from ``Database.customer(customer_id)``. One statement: O(L log D)
-    for the customer's L locally read pages."""
-    row = conn.execute(text(_OLDEST_READ_LOCALLY), {"c": customer_id}).first()
+    for the customer's L locally read pages, plus its audit rows of that window."""
+    params = {"c": customer_id, "hours": UPGRADE_RETRY_AFTER_HOURS}
+    row = conn.execute(text(_OLDEST_READ_LOCALLY), params).first()
     return None if row is None else (str(row[0]), row[1])
 
 
