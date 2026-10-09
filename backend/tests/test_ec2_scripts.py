@@ -1,6 +1,6 @@
 """The EC2 server scripts and systemd units in infra/ec2 (EC2 PRD, WP-E).
 
-The files are read as plain text, as tests/test_compose_ocr.py reads the
+The files are read as plain text, as tests/test_compose_prod.py reads the
 compose files. What the scripts do when run (a new commit, a failed build, an
 unchanged commit, a held lock, a failed dump) is checked by hand in a
 throwaway Linux container; the pull request has the steps.
@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 EC2 = ROOT / "infra" / "ec2"
-COMPOSE_FILES = "(-f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod.yml)"
+COMPOSE_FILES = "(-f docker-compose.yml -f docker-compose.prod.yml)"
 DEPLOY_KEY_SSH = "ssh -i /home/ubuntu/.ssh/kaagaz_deploy -o IdentitiesOnly=yes"
 
 
@@ -46,14 +46,21 @@ def test_deploy_holds_the_lock_and_follows_only_production() -> None:
     assert re.findall(r"git fetch .*", script) == ["git fetch --quiet origin production; then"]
     assert re.findall(r"git reset .*", script) == ["git reset --quiet --hard origin/production; then"]
     assert f"\nCOMPOSE={COMPOSE_FILES}\n" in script
-    assert "\nPROFILES=(--profile ollama --profile paddle)\n" in script
+
+
+def test_every_script_runs_the_base_and_prod_files_with_no_profiles() -> None:
+    """PRD 5 section 7: the stack is two files and every service runs without a profile."""
+    for name in ("deploy.sh", "pgdump.sh", "idle-stop.sh"):
+        script = text(name)
+        assert re.findall(r"-f (docker-compose[\w.]*)", script) == ["docker-compose.yml", "docker-compose.prod.yml"], name
+        assert "--profile" not in script and "PROFILES" not in script, name
 
 
 def test_deploy_records_the_commit_only_after_a_good_build() -> None:
     script = text("deploy.sh")
     assert "\nDEPLOYED_FILE=/home/ubuntu/.kaagaz-deployed\n" in script
     build = script.index(
-        'docker compose "${COMPOSE[@]}" "${PROFILES[@]}" up -d --build --remove-orphans; then\n'
+        'docker compose "${COMPOSE[@]}" up -d --build --remove-orphans; then\n'
         '    report "$target" failed\n'
         "    exit 1\n"
     )
@@ -61,7 +68,7 @@ def test_deploy_records_the_commit_only_after_a_good_build() -> None:
     assert build < record < script.index('mv -f "$DEPLOYED_FILE.tmp" "$DEPLOYED_FILE"')
     assert record < script.index("docker image prune -f") < script.index('report "$target" deployed')
     assert script.count('>"$DEPLOYED_FILE') == 1  # written nowhere else
-    unchanged = script.index('docker compose "${COMPOSE[@]}" "${PROFILES[@]}" up -d; then')
+    unchanged = script.index('docker compose "${COMPOSE[@]}" up -d; then')
     assert unchanged < script.index('report "$target" unchanged')
 
 
@@ -73,7 +80,7 @@ def test_deploy_prints_one_line_per_run() -> None:
     # Nothing else on stdout: every other line goes to stderr (the journal still has it).
     assert [line.strip() for line in re.findall(r"^ *echo .*", script, re.MULTILINE)] == [
         'echo "docker builder prune failed; carrying on" >&2',
-        'echo "low disk: $free_gb GB free; the OCR build needs about $MIN_FREE_GB GB" >&2',
+        'echo "low disk: $free_gb GB free; a build needs about $MIN_FREE_GB GB" >&2',
         'echo "docker image prune failed; the deploy itself is done" >&2',
     ]
 

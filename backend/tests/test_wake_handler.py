@@ -98,7 +98,7 @@ class WakeHandlerTest(unittest.TestCase):
         response = self.call(TOKEN)
         self.assertEqual(response["statusCode"], 200)
         self.assertIn(
-            "Starting. The site opens in about 3 minutes, and documents are read after about 10.",
+            "<p>Starting. The site opens in about 3 minutes.</p>",
             response["body"],
         )
         self.make_client.assert_called_once_with("ec2")
