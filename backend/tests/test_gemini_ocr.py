@@ -23,7 +23,7 @@ from unittest import mock
 
 from PIL import Image
 
-from kaagaz.ai.gemini import PageReply
+from kaagaz.ai.openrouter import PageReply
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -280,7 +280,7 @@ class G1EngineTest(unittest.TestCase):
         pool = RapidOcrPool(1)
         with (
             mock.patch.object(gemini_ocr, "process_gate") as gate,
-            mock.patch.object(gemini_ocr, "GeminiClient") as client,
+            mock.patch.object(gemini_ocr, "OpenRouterClient") as client,
         ):
             engine = GeminiEngine.from_settings(settings, pool=pool)
         gate.assert_called_once_with(settings)
@@ -293,7 +293,7 @@ class G1EngineTest(unittest.TestCase):
         fake = FakeClient(reply(value(line("INVOICE 1042"))))
         with (
             mock.patch.object(gemini_ocr, "process_gate"),
-            mock.patch.object(gemini_ocr, "GeminiClient", return_value=fake),
+            mock.patch.object(gemini_ocr, "OpenRouterClient", return_value=fake),
             mock.patch.object(pool, "find_boxes", return_value=[]),
         ):
             engine = wiring.build_gemini_engine(settings, pool=pool)
@@ -311,7 +311,7 @@ class G1EngineTest(unittest.TestCase):
                     mock.patch(
                         "kaagaz.reading.wiring.importlib.import_module", side_effect=AssertionError
                     ) as imported,
-                    mock.patch.object(gemini_ocr, "GeminiClient", side_effect=AssertionError) as client,
+                    mock.patch.object(gemini_ocr, "OpenRouterClient", side_effect=AssertionError) as client,
                 ):
                     engines = wiring.build_ocr_engines(settings)
                     single = wiring.build_ocr_engine(settings)

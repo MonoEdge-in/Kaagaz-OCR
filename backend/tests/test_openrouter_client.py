@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from kaagaz.ai import gemini, openrouter, replies
+from kaagaz.ai import openrouter, replies
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable, OllamaClient, build_model_client
 from kaagaz.ai.openrouter import (
     BACKOFF_MAX_SECONDS,
@@ -1156,13 +1156,3 @@ def test_every_client_of_the_process_shares_one_gate(fake: OpenRouterFake) -> No
     assert process_gate(settings, workers=1).interval == pytest.approx(chat.interval / 4)
     with pytest.raises(ValueError, match="workers"):
         ModelGate(settings, workers=0)
-
-
-def test_the_old_gemini_names_still_work_until_pr_4() -> None:
-    """The shim: the reader's other tracks code against GeminiClient and GeminiGate."""
-    assert gemini.GeminiClient is OpenRouterClient
-    assert gemini.GeminiGate is ModelGate
-    assert gemini.process_gate is process_gate
-    assert gemini.PageReply is PageReply and gemini.Usage is Usage
-    assert gemini.PAGE_MAX_OUTPUT_TOKENS == PAGE_MAX_OUTPUT_TOKENS
-    assert gemini.MEDIA_RESOLUTION_SHAPE == "detail"

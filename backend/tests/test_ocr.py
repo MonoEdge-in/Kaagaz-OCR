@@ -663,7 +663,7 @@ class KeylessModeTest(unittest.TestCase):
         png = io.BytesIO()
         photo.save(png, format="PNG")
         settings = make_settings(ocr_engine="rapidocr", model_enabled=False)
-        unimportable = {GEMINI_OCR_MODULE: None, "kaagaz.ai.gemini": None}
+        unimportable = {GEMINI_OCR_MODULE: None, "kaagaz.ai.openrouter": None}
         with (
             mock.patch.dict(sys.modules, unimportable),
             mock.patch.object(ocr, "build_rapidocr", lambda params: model),
