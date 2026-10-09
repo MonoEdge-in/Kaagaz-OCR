@@ -64,6 +64,8 @@ select = [
 "kaagaz/reading/xlsx_reader.py" = ["S314"]
 # read_limited hands the open spool to its caller, who closes it with "with".
 "kaagaz/ingestion/spool.py" = ["SIM115"]
+# The removed-names guard runs git, found on PATH by shutil.which, with fixed arguments.
+"tests/test_removed_names_guard.py" = ["S603"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["kaagaz"]
