@@ -95,6 +95,7 @@ export interface DocumentSummary {
   words_unsure?: number; // PRD 5 U2: the unsure words on its pages, for the "14 words unsure" chip
   // PRD 5 U1: from GET /api/batches/{id} only: its first unreadable page still to look at, or null.
   first_unreadable?: FirstUnreadablePage | null;
+  values_found?: number; // PRD 5 U1: from GET /api/batches/{id} only: the values extracted from it
 }
 
 /** A file's first unreadable page, for the tray's "Couldn't read page n" (U1): what

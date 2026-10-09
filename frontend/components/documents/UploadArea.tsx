@@ -60,6 +60,7 @@ import {
   summaryText,
   trayCounts,
   unreadableWords,
+  verifiedWords,
   worstFirst,
   writeStored,
 } from "./batchTray";
@@ -621,6 +622,7 @@ function UploadRow({
   const document = state.kind === "done" ? state.document : undefined;
   const problems = document?.status === "ready" ? attentionWords(document) : [];
   const unreadable = document?.status === "ready" ? unreadableWords(document) : null; // U1
+  const verified = document ? verifiedWords(document) : null; // U1: only with values
   let icon: "alert" | "eye-alert" | "check-seal" | "file" = "file";
   if (failed) icon = "alert";
   else if (kind === "attention") icon = "eye-alert";
@@ -655,9 +657,7 @@ function UploadRow({
             </Link>
           </p>
         )}
-        {document?.status === "ready" && problems.length === 0 && (
-          <p className={`muted ${styles.small}`}>All values verified</p>
-        )}
+        {verified && <p className={`muted ${styles.small}`}>{verified}</p>}
         {document && document.status !== "ready" && (
           <p className={`error-text ${styles.small}`}>{document.status_message}</p>
         )}

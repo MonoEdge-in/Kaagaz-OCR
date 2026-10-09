@@ -23,6 +23,7 @@ import {
   summaryText,
   trayCounts,
   unreadableWords,
+  verifiedWords,
   worstFirst,
   writeStored,
 } from "@/components/documents/batchTray";
@@ -210,6 +211,14 @@ describe("each file's place in the tray", () => {
     expect(unreadableWords(unsaid)).toEqual({ title: "Couldn't read page 3", detail: null });
     expect(unreadableWords(doc("w"))).toBeNull(); // none, or a listing without the field
     expect(uploadStateText(done(doc("w")))).toBe("Ready");
+  });
+
+  it("says All values verified only for a ready file with values and nothing to check", () => {
+    expect(verifiedWords(doc("v", { values_found: 4 }))).toBe("All values verified");
+    expect(verifiedWords(doc("n", { values_found: 0 }))).toBeNull(); // no values: just Ready
+    expect(verifiedWords(doc("u"))).toBeNull(); // a listing without the count
+    expect(verifiedWords(doc("c", { values_found: 4, values_to_review: 1 }))).toBeNull();
+    expect(verifiedWords(doc("f", { values_found: 4, status: "failed" }))).toBeNull();
   });
 
   it("keeps a reload's counts the batch API does not have: already uploaded and not sent", () => {

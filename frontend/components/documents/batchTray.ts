@@ -147,6 +147,21 @@ export function unreadableWords(
 }
 
 /**
+ * "All values verified" (U1) for a ready file with values and nothing on the attention
+ * list; null otherwise, so a file with no values (a letter, a photo of a page), or from a
+ * listing without the count, is just Ready.
+ */
+export function verifiedWords(
+  document: Pick<
+    DocumentSummary,
+    "status" | "values_found" | "pages_unreadable" | "pages_uncertain" | "values_to_review" | "words_unsure"
+  >,
+): string | null {
+  if (document.status !== "ready" || !((document.values_found ?? 0) > 0)) return null;
+  return attentionWords(document).length === 0 ? "All values verified" : null;
+}
+
+/**
  * What the tray's one live region says (role=status): the ready, attention, failed and
  * stopped totals of all its drops, so it speaks only when a file ends one way or another,
  * never as files move from stage to stage, and never a percent. "" while none has ended.
