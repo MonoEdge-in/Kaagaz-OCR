@@ -15,6 +15,7 @@ from sqlalchemy import text
 from kaagaz.api.views import READER_WAITING
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.service import UploadService
+from tests.settings_factory import make_settings
 from tests.test_api_page_fixes import read_page
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 
@@ -122,6 +123,17 @@ def test_a_batch_shows_its_files_in_upload_order_with_counts_and_pages(db: Datab
     assert by_id[flagged]["words_unsure"] == 14
     assert by_id[waiting]["status_message"] == "Waiting: 1 file ahead in your batch"  # the one being read
     assert (by_id[stalled]["status_message"], by_id[stalled]["progress"]) == (READER_WAITING, None)
+
+
+def test_a_batch_lists_at_most_max_files_per_batch(db: Database) -> None:
+    api = Api(db, settings=make_settings(max_files_per_batch=2))
+    signed = api.new_signed()
+    batch = str(uuid.uuid4())
+    first, second = (in_batch(api, signed, batch, minutes=minute) for minute in range(2))
+    in_batch(api, signed, batch, minutes=2)  # one past the cap (parallel uploads, the soft cap)
+    reply = get_batch(signed, batch)
+    assert reply.status_code == 200, reply.text
+    assert [item["id"] for item in reply.json()["documents"]] == [first, second]
 
 
 def test_an_unknown_batch_is_404_and_a_bad_id_is_400(db: Database) -> None:

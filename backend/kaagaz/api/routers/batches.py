@@ -5,7 +5,8 @@ The browser makes the id and sends it with each file of the drop (POST /api/docu
 ``batch_id``). Any signed-in user may read a batch, but only their own files in it: the
 query filters on the customer, the uploader and Trash (``listing.batch_rows``), as well
 as row level security. Another customer's batch, another user's and one that is not
-there are the same 404, so nothing tells them apart. At most MAX_BATCH_ROWS files.
+there are the same 404, so nothing tells them apart. At most MAX_FILES_PER_BATCH files,
+the upload's own cap.
 """
 
 import uuid
@@ -30,12 +31,14 @@ def get_batch(batch_id: uuid.UUID, user: User, context: Context) -> dict[str, An
     """``BatchView``: the files, their counts, pages read over total and the time left.
     Two queries: the files, then their tags (one batch)."""
     customer_id, target = user.customer_id, str(batch_id)
+    settings = context.settings
     with context.db.customer(customer_id) as conn:
-        rows = listing.batch_rows(conn, customer_id, target, user_id=user.user_id)
+        rows = listing.batch_rows(
+            conn, customer_id, target, user_id=user.user_id, limit=settings.max_files_per_batch
+        )
         if not rows:
             raise ApiError(404, "not_found")
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
-    settings = context.settings
     return batch_view(
         target,
         rows,

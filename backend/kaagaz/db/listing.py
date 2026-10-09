@@ -243,7 +243,7 @@ def get_document(conn: Connection, customer_id: str, document_id: str) -> RowMap
 
 # PRD 5 Q1: one drop of files, the uploader's own only, out of Trash, in upload order.
 # Any version: a file uploaded as a duplicate is not in it (it stays in its own batch).
-MAX_BATCH_ROWS = 100  # MAX_FILES_PER_BATCH's PRD value; the upload refuses more (409)
+# At most MAX_FILES_PER_BATCH rows, the upload's own cap (409 past it).
 _BATCH = (
     _COLUMNS + " FROM documents d"
     " LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
@@ -256,12 +256,14 @@ _BATCH_SIZE = (
 )
 
 
-def batch_rows(conn: Connection, customer_id: str, batch_id: str, *, user_id: str) -> Sequence[RowMapping]:
-    """The DocumentSummary rows of ``user_id``'s batch ``batch_id``, at most
-    MAX_BATCH_ROWS; empty for another user's or customer's batch, or one that is not
-    there. On the index documents_batch: O(log D + b) for the batch's b files, each
+def batch_rows(
+    conn: Connection, customer_id: str, batch_id: str, *, user_id: str, limit: int
+) -> Sequence[RowMapping]:
+    """The DocumentSummary rows of ``user_id``'s batch ``batch_id``, at most ``limit``
+    (MAX_FILES_PER_BATCH); empty for another user's or customer's batch, or one that is
+    not there. On the index documents_batch: O(log D + b) for the batch's b files, each
     with _COLUMNS' probes."""
-    params = {"c": customer_id, "b": batch_id, "u": user_id, "limit": MAX_BATCH_ROWS}
+    params = {"c": customer_id, "b": batch_id, "u": user_id, "limit": limit}
     return conn.execute(text(_BATCH), params).mappings().all()
 
 
