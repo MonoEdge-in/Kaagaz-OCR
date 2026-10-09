@@ -298,6 +298,16 @@
   box-shadow: 0 0 0 1px var(--paper), 0 0 0 3px var(--mine-on-paper);
 }
 
+/* Focus (2.4.7, 1.4.11): the page is paper white in both themes, so the global ring
+   (var(--focus), light in the dark theme) could vanish on it. A paper-fixed ring instead,
+   on a paper halo that fills the offset, so it is 3:1 or more whatever is drawn under the
+   mark. After .problem and :hover, so their box-shadow never replaces the halo. */
+.problem:focus-visible {
+  outline: 2px solid var(--mine-on-paper);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--paper);
+}
+
 .problem[data-quality="unsure"],
 .swatch[data-quality="unsure"] {
   border: 2px dashed var(--hl-border);
