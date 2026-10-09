@@ -23,21 +23,17 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.upgrade import upgrade_oldest
 from tests.db_support import insert_document, new_customer
+from tests.fakes import MemoryQueue
 
 pytestmark = pytest.mark.db
 
 NOW = datetime(2026, 10, 9, 10, 0, tzinfo=UTC)
 
 
-class LaneQueue:
-    def __init__(self, *, down: bool = False) -> None:
-        self.sent: list[tuple[Job, bool]] = []
-        self.down = down
-
-    def enqueue(self, job: Job, *, express: bool = False) -> None:
-        if self.down:
-            raise BackendUnavailable("queue")
-        self.sent.append((job, express))
+def _down() -> MemoryQueue:
+    queue = MemoryQueue()
+    queue.fail_enqueue = True
+    return queue
 
 
 def read_locally(conn: Connection, customer_id: str, *, year: int, **columns: object) -> str:
@@ -91,9 +87,9 @@ def test_upgrade_sweep_marks_audits_and_queues_the_oldest_in_the_main_lane(db: D
     with db.customer(second) as conn:
         oldest = read_locally(conn, second, year=1990)
 
-    queue = LaneQueue()
+    queue = MemoryQueue()
     assert upgrade_oldest(db, queue) == Job(second, oldest)
-    assert queue.sent == [(Job(second, oldest), False)]  # never the express lane
+    assert (queue.jobs, queue.lanes) == ([Job(second, oldest)], [False])  # never the express lane
     assert status_of(db, second, oldest) == "received"
     assert upgrade_audits(db, second) == [(None, oldest)]
 
@@ -112,10 +108,10 @@ def test_upgrade_sweep_with_the_queue_down_changes_nothing(db: Database) -> None
     with db.customer(customer) as conn:
         doc = read_locally(conn, customer, year=1970)
     with pytest.raises(BackendUnavailable):
-        upgrade_oldest(db, LaneQueue(down=True))
+        upgrade_oldest(db, _down())
     assert status_of(db, customer, doc) == "ready"
     assert upgrade_audits(db, customer) == []
-    assert upgrade_oldest(db, LaneQueue()) == Job(customer, doc)  # tidy up for the other tests
+    assert upgrade_oldest(db, MemoryQueue()) == Job(customer, doc)  # tidy up for the other tests
 
 
 def test_mark_for_upgrade_has_no_user_limits_and_is_not_counted_against_them(db: Database) -> None:

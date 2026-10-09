@@ -11,9 +11,8 @@ from PIL import Image
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.pagecount import count_pages, goes_express
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
-from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
-from tests.fakes import MemoryRepository, MemoryStorage
+from tests.fakes import MemoryQueue, MemoryRepository, MemoryStorage
 from tests.pdf_builder import Page, make_pdf
 
 MB = 1024 * 1024
@@ -37,23 +36,13 @@ def png() -> bytes:
     return out.getvalue()
 
 
-class LaneQueue:
-    """Notes which lane each job was sent to."""
-
-    def __init__(self) -> None:
-        self.sent: list[tuple[Job, bool]] = []
-
-    def enqueue(self, job: Job, *, express: bool = False) -> None:
-        self.sent.append((job, express))
-
-
 def lane_of(data: bytes, express_max_pages: int = 3) -> bool:
-    queue = LaneQueue()
+    queue = MemoryQueue()
     service = UploadService(
         POLICY, MemoryRepository(), MemoryStorage(), queue, express_max_pages=express_max_pages
     )
     service.accept("cust-a", io.BytesIO(data))
-    ((_, express),) = queue.sent
+    (express,) = queue.lanes
     return express
 
 
