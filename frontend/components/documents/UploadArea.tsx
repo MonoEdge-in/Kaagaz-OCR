@@ -174,9 +174,13 @@ export function useUploads(onUploaded: () => void) {
       round.failed || round.views.some((view) => view.documents.some((document) => beingRead(document.status))),
     signature: (round) => JSON.stringify(round.views.map((view) => [view.id, progressSignature(view.documents)])),
   });
+  // Driven by the list, not by send(): the poll reads the task of the last render, so it
+  // must ask only once a new batch to follow has rendered (a refresh asked for before
+  // that would load the old list and stop).
+  const followKey = following.join(",");
   useEffect(() => {
-    if (restored.size > 0) poll.refresh();
-  }, [poll, restored]);
+    if (followKey) poll.refresh();
+  }, [poll, followKey]);
 
   // Remember each drop with the counts the batch API does not keep: already uploaded, not sent.
   useEffect(() => {
@@ -216,7 +220,6 @@ export function useUploads(onUploaded: () => void) {
           ? followed(result.document)
           : { kind: "done", documentId: result.document.id };
       dispatch({ type: "change", key, change: { state, times: { ...times } } });
-      if (state.kind === "reading") poll.refresh();
       onUploaded();
     } catch (caught) {
       stopped.current ??= sessionChangedMessage(caught);
