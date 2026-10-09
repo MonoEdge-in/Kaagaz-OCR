@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from kaagaz.ai import openrouter, replies
-from kaagaz.ai.client import ModelOutputError, ModelUnavailable, OllamaClient, build_model_client
+from kaagaz.ai.client import ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.ai.openrouter import (
     BACKOFF_MAX_SECONDS,
     BREAKER_FAILURES,
@@ -38,6 +38,7 @@ from kaagaz.ai.openrouter import (
     process_gate,
 )
 from kaagaz.settings import Settings
+from kaagaz.worker_main import worker_model
 from tests import openrouter_fake
 from tests.openrouter_fake import (
     KEY,
@@ -778,7 +779,7 @@ def test_pages_read_in_parallel_share_the_client_safely(fake: OpenRouterFake) ->
     assert fake.max_in_flight > 1
 
 
-# The ModelClient protocol, as the Ollama client's tests pin it.
+# The ModelClient protocol: chat_json and embed.
 
 
 def test_chat_json_sends_the_system_prompt_first_the_schema_and_default_budget(fake: OpenRouterFake) -> None:
@@ -1080,30 +1081,13 @@ def test_the_client_refuses_a_missing_key_a_plain_http_host_or_a_strange_model_i
         OpenRouterClient(_settings("https://openrouter.ai/api/v1", model_chat="google/gemini-3:free"))
 
 
-# build_model_client (PRD 5 question 4).
+# build_model_client (PRD 5 G9, M1, M5).
 
 
 def test_without_ai_there_is_no_client_and_no_model_call(fake: OpenRouterFake) -> None:
     assert build_model_client(make_settings(model_enabled=False)) is None
     assert build_model_client(_settings(fake.url, model_enabled=False)) is None
-    assert isinstance(build_model_client(make_settings(model_enabled=True)), OllamaClient)
     assert fake.requests == []
-
-
-def test_a_gemini_chat_model_reads_through_openrouter_and_embeds_with_ollama(fake: OpenRouterFake) -> None:
-    """Question 4: chat and reading go to OpenRouter in PR 1; embeddings stay on the
-    existing model until M5 switches MODEL_EMBED in PR 3."""
-    settings = _settings(fake.url, model_embed="qwen3-embedding:0.6b", model_base_url=closed_port_url())
-    client = build_model_client(settings)
-    assert client is not None
-    assert (client.chat_model, client.embed_model) == (PRO, "qwen3-embedding:0.6b")
-    fake.script("completions", json_reply(GOOD), chat_reply("12"))
-    assert client.chat_json(system="s", user="u", schema=SCHEMA) == GOOD
-    assert client.read_image(png=PNG, instruction="Read.") == "12"
-    with pytest.raises(ModelUnavailable) as caught:
-        client.embed(["one"])
-    assert caught.value.code == "unreachable"  # Ollama's closed port, not OpenRouter
-    assert [request.action for request in fake.requests] == ["completions"] * 2
 
 
 def test_gemini_chat_and_embed_models_give_the_openrouter_client(fake: OpenRouterFake) -> None:
@@ -1113,21 +1097,15 @@ def test_gemini_chat_and_embed_models_give_the_openrouter_client(fake: OpenRoute
     assert client.embed(["one"]) == [[0.1, 0.2, 0.3, 0.4]]
 
 
-def test_an_ollama_chat_model_with_a_gemini_embed_model_splits_the_other_way(fake: OpenRouterFake) -> None:
-    settings = _settings(fake.url, model_chat="qwen3:4b", model_base_url=closed_port_url())
-    client = build_model_client(settings)
+def test_the_worker_client_uses_model_extract_timeout_seconds_for_chat(fake: OpenRouterFake) -> None:
+    """The worker's client (worker_main.worker_model) times its chat calls out after
+    MODEL_EXTRACT_TIMEOUT_SECONDS, not MODEL_TIMEOUT_SECONDS."""
+    fake.script("completions", slow(json_reply(GOOD), 5))
+    client = worker_model(_settings(fake.url, model_timeout_seconds=30.0, model_extract_timeout_seconds=0.2))
     assert client is not None
-    fake.script("embeddings", embed_reply([[0.1, 0.2, 0.3, 0.4]]))
-    assert client.embed(["one"]) == [[0.1, 0.2, 0.3, 0.4]]
     with pytest.raises(ModelUnavailable) as caught:
         client.chat_json(system="s", user="u", schema=SCHEMA)
-    assert caught.value.code == "unreachable"
-
-
-def test_a_bare_google_model_id_is_not_a_gemini_model_and_stays_on_ollama(fake: OpenRouterFake) -> None:
-    """Google's own IDs (gemini-...) are not OpenRouter IDs: they never reach OpenRouter."""
-    settings = _settings(fake.url, model_chat="gemini-3.1-pro-preview", model_embed="qwen3-embedding:0.6b")
-    assert isinstance(build_model_client(settings), OllamaClient)
+    assert caught.value.code == "timeout"
 
 
 def test_the_fake_answers_only_what_a_test_scripted(fake: OpenRouterFake) -> None:
