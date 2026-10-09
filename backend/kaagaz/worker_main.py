@@ -70,6 +70,7 @@ import json
 import logging
 import re
 import signal
+import socket
 import sys
 import threading
 import time
@@ -86,6 +87,7 @@ from kaagaz.adapters.storage import S3Storage
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.openrouter import KEY_PROBLEM as READER_KEY_PROBLEM
 from kaagaz.ai.openrouter import process_gate
+from kaagaz.db import reader_status
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -491,6 +493,15 @@ def keep_reporting(stop: threading.Event, beat: Callable[[], None], every: float
     return thread
 
 
+def start_reader_reports(
+    stop: threading.Event, db: Database, status: Callable[[], tuple[str, float | None]], hostname: str
+) -> threading.Thread:
+    """This copy's reader reports (U9, V4): the gate's ``status`` into reader_status
+    under this host's worker name, now and every READER_REPORT_SECONDS until ``stop``."""
+    report = functools.partial(reader_status.report, db, worker_name(hostname))
+    return keep_reporting(stop, lambda: report_reader_state(report, status), READER_REPORT_SECONDS)
+
+
 def install_stop_handlers(stop: threading.Event) -> None:
     """SIGINT and SIGTERM set ``stop``. Must be called from the main thread."""
 
@@ -565,6 +576,7 @@ def _serve(settings: Settings) -> None:
     logger.info("worker started")
     documents = PgDocuments(db)
     gate = process_gate(settings)  # the one every model client of this process shares
+    reports = start_reader_reports(stop, db, gate.status, socket.gethostname())
     fair_share = FairShare(functools.partial(first_free_lock, db.engine), settings.max_active_per_customer)
     jobs = job_worker(
         queue,
@@ -591,6 +603,7 @@ def _serve(settings: Settings) -> None:
         vectors, upgrade, lambda: gate.status()[0], _utc_now, copies=settings.worker_replicas, lock=lock
     )
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
+    reports.join(READER_REPORT_SECONDS)  # stop is set: at most the report in flight is left
     db.engine.dispose()
     logger.info("worker stopped")
 

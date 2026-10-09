@@ -6,16 +6,26 @@
 * The reports run on a thread of their own until the worker stops.
 """
 
+import contextlib
 import logging
 import re
 import threading
 import unittest
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
+from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.worker_main import READER_REPORT_SECONDS, keep_reporting, report_reader_state, worker_name
+from kaagaz.worker_main import (
+    READER_REPORT_SECONDS,
+    keep_reporting,
+    report_reader_state,
+    start_reader_reports,
+    worker_name,
+)
 
 NOW = datetime(2026, 10, 9, 10, 0, tzinfo=UTC)
 
@@ -79,6 +89,51 @@ class ReaderReportTest(unittest.TestCase):
         thread.join(5)
         self.assertFalse(thread.is_alive())
         self.assertTrue(thread.daemon)
+
+
+class _Db:
+    """Database.system() as reader_status.report uses it: records each statement's
+    values, or fails to connect while ``down``."""
+
+    def __init__(self, *, down: bool = False) -> None:
+        self.down = down
+        self.sent: list[dict[str, Any]] = []
+        self.tried = threading.Event()
+
+    @contextlib.contextmanager
+    def system(self) -> Iterator["_Db"]:
+        self.tried.set()
+        if self.down:
+            raise OperationalError("connect", {}, Exception("no route"))
+        yield self
+
+    def execute(self, statement: object, values: dict[str, Any]) -> None:
+        self.sent.append(values)
+
+
+class ServedReportsTest(unittest.TestCase):
+    """start_reader_reports, as _serve starts it once the gate is built."""
+
+    def first_report(self, db: _Db, state: str) -> None:
+        """Start the reports, wait for the first, check the thread goes on, then stop it."""
+        stop = threading.Event()
+        thread = start_reader_reports(stop, cast(Database, db), lambda: (state, None), "my host")
+        self.assertTrue(db.tried.wait(5))
+        self.assertTrue(thread.is_alive())
+        stop.set()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+
+    def test_the_gate_state_is_written_at_once_under_this_host_worker_name(self) -> None:
+        db = _Db()
+        self.first_report(db, "down")
+        self.assertEqual(db.sent, [{"w": "my-host", "s": "down", "since": None}])
+
+    def test_a_database_that_is_down_is_logged_by_type_and_the_reports_go_on(self) -> None:
+        with self.assertLogs("kaagaz.worker", logging.WARNING) as logs:
+            self.first_report(_Db(down=True), "working")
+        (record,) = logs.records
+        self.assertEqual(record.__dict__["code"], "BackendUnavailable")
 
 
 if __name__ == "__main__":
