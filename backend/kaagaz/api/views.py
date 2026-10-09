@@ -7,7 +7,7 @@ named after the type it builds, so a reviewer can hold the two side by side.
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import RowMapping
 
@@ -242,7 +242,8 @@ def batch_view(
     max_active: int,
 ) -> dict[str, Any]:
     """``BatchView`` (PRD 5 Q1, U1): the uploader's own files of one drop, in upload
-    order (``listing.batch_rows``), each a ``DocumentSummary``, and the drop's counts:
+    order (``listing.batch_rows``), each a ``DocumentSummary`` with its first unreadable
+    page (``first_unreadable``, U1's "Couldn't read page n"), and the drop's counts:
 
     * failed: failed, rejected or can't be read yet (needs_reader);
     * waiting: in progress with no step yet (queued) or waiting for the reader (Q6);
@@ -289,7 +290,10 @@ def batch_view(
     return {
         "id": batch_id,
         "documents": [
-            document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user, now=now)
+            {
+                **document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user, now=now),
+                "first_unreadable": first_unreadable(row["first_unreadable"]),
+            }
             for row in rows
         ],
         "counts": counts,
@@ -371,6 +375,18 @@ def page_fields(row: RowMapping) -> dict[str, Any]:
         "accepted_at": None if accepted_at is None else iso(accepted_at),
         "read_again_requested_at": None if asked_at is None else iso(asked_at),  # F5, until it is read
     }
+
+
+def first_unreadable(page: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """``UnreadablePage`` (PRD 5 U1): a batch file's first unreadable page still on the
+    attention list (``listing``'s ``first_unreadable``), as ``{page_no, says, fix}`` from
+    its first problem, for the tray's "Couldn't read page n"; ``says`` and ``fix`` are
+    null when no problem can be said. None when it has no such page. O(issues)."""
+    if page is None:
+        return None
+    problems = page_problems(cast(RowMapping, {**page, "values_disputed": 0}))  # no disputed count here
+    said = problems[0] if problems else {"says": None, "fix": None}
+    return {"page_no": int(page["page_no"]), "says": said["says"], "fix": said["fix"]}
 
 
 def page_problems(row: RowMapping) -> list[dict[str, Any]]:

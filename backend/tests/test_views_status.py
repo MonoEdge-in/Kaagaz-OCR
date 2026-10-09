@@ -104,6 +104,7 @@ def _row(
         "batch_ahead": counts.get("ahead", 0),
         "family_uploaders": [USER.user_id],
         "newer": None,
+        "first_unreadable": None,
     }
     return cast(RowMapping, row)
 
@@ -180,3 +181,27 @@ def test_q6_every_reader_of_the_progress_takes_a_wait_for_the_reader(status: str
     )
     view = _view([row])
     assert (view["counts"]["waiting"], view["documents"][0]["progress"], view["time_left"]) == (1, None, None)
+
+
+def test_u1_a_batch_file_names_its_first_unreadable_page_with_the_reason_and_the_fix() -> None:
+    page = {
+        "page_no": 2,
+        "read_issues": ["glare"],
+        "illegible_words": 0,
+        "unpinned_lines": 0,
+        "effective_dpi": 300,
+    }
+    unsayable = {**page, "page_no": 1, "read_issues": ["illegible_words"]}  # its count is 0 now
+    rows = [_row("ready", unreadable=1), _row("ready", unreadable=1), _row("ready")]
+    rows[0] = cast(RowMapping, {**rows[0], "first_unreadable": page})
+    rows[1] = cast(RowMapping, {**rows[1], "first_unreadable": unsayable})
+    documents = _view(rows)["documents"]
+    assert [item["first_unreadable"] for item in documents] == [
+        {
+            "page_no": 2,
+            "says": "Glare or a shadow covers part of the page.",
+            "fix": "Take the photo without flash, away from a window, with the page flat.",
+        },
+        {"page_no": 1, "says": None, "fix": None},  # never a made-up sentence
+        None,
+    ]

@@ -116,11 +116,12 @@ def test_a_batch_shows_its_files_in_upload_order_with_counts_and_pages(db: Datab
     assert set(body) == BATCH_KEYS
     assert body["id"] == batch
     assert [item["id"] for item in body["documents"]] == [ready, flagged, reading, waiting, stalled]
-    assert all(set(item) == SUMMARY_KEYS for item in body["documents"])
+    assert all(set(item) == SUMMARY_KEYS | {"first_unreadable"} for item in body["documents"])
     assert body["counts"] == {"total": 5, "ready": 1, "reading": 1, "waiting": 2, "attention": 1, "failed": 0}
     assert (body["pages_read"], body["pages_total"]) == (2 + 1 + 1, 2 + 1 + 4 + 3 + 1)
     by_id = {item["id"]: item for item in body["documents"]}
     assert by_id[flagged]["words_unsure"] == 14
+    assert by_id[flagged]["first_unreadable"] is None  # uncertain, not unreadable
     assert by_id[waiting]["status_message"] == "Waiting: 1 file ahead in your batch"  # the one being read
     assert (by_id[stalled]["status_message"], by_id[stalled]["progress"]) == (READER_WAITING, None)
 
@@ -134,6 +135,30 @@ def test_a_batch_lists_at_most_max_files_per_batch(db: Database) -> None:
     reply = get_batch(signed, batch)
     assert reply.status_code == 200, reply.text
     assert [item["id"] for item in reply.json()["documents"]] == [first, second]
+
+
+def test_u1_a_file_names_its_first_unreadable_page_still_to_look_at(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    batch = str(uuid.uuid4())
+    document = in_batch(api, signed, batch, page_count=3)
+    read_page(api, signed.customer_id, document, 1)  # read well
+    read_page(api, signed.customer_id, document, 2, read_quality="unreadable", read_issues=["reader_refused"])
+    read_page(api, signed.customer_id, document, 3, read_quality="unreadable", read_issues=["no_text"])
+    with api.db.customer(signed.customer_id) as conn:  # page 2 kept as is: off the attention list
+        conn.execute(
+            text(
+                "UPDATE pages SET accepted_at = now()"
+                " WHERE customer_id = :c AND document_id = :d AND page_no = 2"
+            ),
+            {"c": signed.customer_id, "d": document},
+        )
+    (item,) = get_batch(signed, batch).json()["documents"]
+    assert item["first_unreadable"] == {
+        "page_no": 3,
+        "says": "No text was found on this page.",
+        "fix": "If it has text, upload a sharper scan.",
+    }
 
 
 def test_an_unknown_batch_is_404_and_a_bad_id_is_400(db: Database) -> None:
