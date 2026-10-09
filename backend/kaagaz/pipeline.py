@@ -871,7 +871,9 @@ class DocumentProcessor:
         # The raw second reading is kept as read; only the labels leave pages out.
         compared = None if second is None else _without_unread_pages(second, pages)
         pieces = pieces_from_rows(customer_id, document_id, usable)
-        pieces += pieces_from_lines(customer_id, document_id, usable)
+        # CX1: a page whose sentence goes on onto the next one, as its reader said.
+        continued = {page_no for page_no, read in run.page_reads.items() if read.continues_on_next_page}
+        pieces += pieces_from_lines(customer_id, document_id, usable, continues=continued)
         understanding = self._understand(
             job, run, heartbeat, usable, values_from_cells(usable) + values_from_lines(usable)
         )
