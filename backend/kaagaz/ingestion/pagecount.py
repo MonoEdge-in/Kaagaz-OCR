@@ -12,12 +12,18 @@ a page count from the browser is never asked for or trusted.
 * A spreadsheet or text file is 1: it is read whole.
 * Anything that fails (a damaged or encrypted PDF, a broken TIFF) is None, and None
   goes to the main lane: an unknown count is never express.
+* A file over COUNT_MAX_BYTES (5 MB), of any type, is None without being opened: the
+  count runs on unscanned bytes in the API process, so how much it parses is bounded.
+  A short invoice, a phone photo or a small sheet is well under it; a bigger file is
+  rarely a 3-page document, and the main lane reads it as well, only later.
 
 pdfium is not safe to call from two threads at once, and the API takes uploads in
-parallel (Q2), so the PDF count holds a lock. O(pages) for a TIFF's frame headers;
-the PDF's open and count are pdfium's own cost.
+parallel (Q2), so the PDF count holds a lock. The size cap bounds how long one upload
+holds it. O(pages) for a TIFF's frame headers; the PDF's open and count are pdfium's
+own cost, on at most COUNT_MAX_BYTES.
 """
 
+import io
 import threading
 from typing import IO
 
@@ -26,14 +32,20 @@ from PIL import Image
 
 from kaagaz.ingestion import sniff
 
+# The largest file counted (bytes); anything bigger goes to the main lane uncounted.
+COUNT_MAX_BYTES = 5 * 1024 * 1024
+
 _PDFIUM = threading.Lock()
 _DAMAGED = (OSError, ValueError, SyntaxError, EOFError, Image.DecompressionBombError)
 
 
 def count_pages(file: IO[bytes], detected_type: str) -> int | None:
     """The pages of the upload in ``file`` (any position; rewound to the start after),
-    or None when they cannot be counted. ``detected_type`` is sniff's type."""
+    or None when they cannot be counted or the file is over COUNT_MAX_BYTES.
+    ``detected_type`` is sniff's type."""
     try:
+        if file.seek(0, io.SEEK_END) > COUNT_MAX_BYTES:
+            return None
         if detected_type == sniff.PDF:
             return _pdf_pages(file)
         if detected_type == sniff.TIFF:

@@ -1,15 +1,17 @@
 """PRD 5 Q4, V2: the server counts an upload's pages itself, and only a known count of
 1 to EXPRESS_MAX_PAGES goes to the express lane. Anything it cannot count goes to the
-main lane. The browser's count is never asked for."""
+main lane, and so does a file over COUNT_MAX_BYTES, never opened to be counted. The
+browser's count is never asked for."""
 
 import io
 import tempfile
+from unittest import mock
 
 import pytest
 from PIL import Image
 
 from kaagaz.ingestion import sniff
-from kaagaz.ingestion.pagecount import count_pages, goes_express
+from kaagaz.ingestion.pagecount import COUNT_MAX_BYTES, count_pages, goes_express
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.service import UploadService
 from tests.fakes import MemoryQueue, MemoryRepository, MemoryStorage
@@ -36,10 +38,10 @@ def png() -> bytes:
     return out.getvalue()
 
 
-def lane_of(data: bytes, express_max_pages: int = 3) -> bool:
+def lane_of(data: bytes, express_max_pages: int = 3, policy: UploadPolicy = POLICY) -> bool:
     queue = MemoryQueue()
     service = UploadService(
-        POLICY, MemoryRepository(), MemoryStorage(), queue, express_max_pages=express_max_pages
+        policy, MemoryRepository(), MemoryStorage(), queue, express_max_pages=express_max_pages
     )
     service.accept("cust-a", io.BytesIO(data))
     (express,) = queue.lanes
@@ -92,3 +94,28 @@ def test_the_upload_lane_is_the_servers_own_count() -> None:
     assert lane_of(png()) is True
     assert lane_of(b"%PDF-1.7\n" + b"1" * 50) is False  # cannot be counted: main lane
     assert lane_of(make_pdf([Page()]), express_max_pages=0) is False  # no express lane asked for
+
+
+def test_a_file_over_the_count_cap_is_main_lane_and_never_counted() -> None:
+    """Security (F10): the count runs before the virus scan and pdfium holds a process
+    lock, so a big file is never opened for it: over COUNT_MAX_BYTES (5 MB) it is None."""
+    assert COUNT_MAX_BYTES == 5 * MB
+    big = make_pdf([Page()]) + b"%" + b"1" * COUNT_MAX_BYTES  # a comment after the end
+    with mock.patch("pypdfium2.PdfDocument", side_effect=AssertionError("opened")):
+        file = io.BytesIO(big)
+        assert count_pages(file, sniff.PDF) is None
+        assert file.tell() == 0  # rewound for storage
+    for data, detected in ((b"1" * (COUNT_MAX_BYTES + 1), sniff.TEXT), (b"PK\x03\x04" + big, sniff.ZIP)):
+        assert count_pages(io.BytesIO(data), detected) is None, detected
+    at_cap = b"a,b\n" + b"1" * (COUNT_MAX_BYTES - 4)
+    assert count_pages(io.BytesIO(at_cap), sniff.TEXT) == 1  # at the cap: still counted
+
+
+def test_a_50_mb_csv_goes_to_the_main_lane() -> None:
+    roomy = UploadPolicy(
+        max_bytes=60 * MB,
+        allowed_types=frozenset({sniff.TEXT}),
+        type_limits=limits_by_type(pdf=60 * MB, image=60 * MB, sheet=60 * MB),
+    )
+    assert lane_of(b"a,b\n" + b"1,2\n" * (50 * MB // 4), policy=roomy) is False
+    assert lane_of(b"a,b\n1,2\n", policy=roomy) is True  # a small one is still express
