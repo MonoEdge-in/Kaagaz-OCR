@@ -19,9 +19,6 @@ import json
 from collections.abc import Callable, Mapping
 from typing import Any
 
-# Texts per embedding request: one CPU-sized model call, and no round trip per piece.
-EMBED_BATCH_SIZE = 32
-
 # A reply larger than this is refused. 32 vectors of 1024 floats as JSON are
 # under 1 MB; a chat reply is a few kilobytes.
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024

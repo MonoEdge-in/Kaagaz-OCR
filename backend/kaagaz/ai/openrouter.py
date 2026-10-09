@@ -141,6 +141,13 @@ PROVIDER: Mapping[str, Any] = {
 # retention still hold, and embed() refuses any vector that is not EMBEDDING_DIM long.
 EMBED_PROVIDER: Mapping[str, Any] = {**PROVIDER, "require_parameters": False}
 
+# Google Vertex embeds one text per request: a request with two or more texts is served only
+# by Google AI Studio, which EMBED_PROVIDER refuses (404 "No allowed providers"), found on the
+# server 9 Oct 2026. So every text is its own request, each counted by the rate limiter.
+# ponytail: one call per piece; raise MODEL_RPM for indexing speed, or batch again if Vertex
+# ever serves batches.
+EMBED_TEXTS_PER_REQUEST = 1
+
 # Structured output (G3): response_format json_schema with strict set to this. Whether
 # Google honours strict through OpenRouter is checked by verify-models (strict_schema).
 STRICT_SCHEMA = True
@@ -693,10 +700,11 @@ class OpenRouterClient:
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """One vector per text, in order, ``EMBEDDING_DIM`` long (M5: dimensions 1024, so
-        halfvec(1024) does not change). /embeddings, 32 texts a request."""
+        halfvec(1024) does not change). /embeddings, ``EMBED_TEXTS_PER_REQUEST`` texts a
+        request."""
         vectors: list[list[float]] = []
-        for start in range(0, len(texts), replies.EMBED_BATCH_SIZE):
-            batch = texts[start : start + replies.EMBED_BATCH_SIZE]
+        for start in range(0, len(texts), EMBED_TEXTS_PER_REQUEST):
+            batch = texts[start : start + EMBED_TEXTS_PER_REQUEST]
             body = {
                 "model": self.embed_model,
                 "input": batch,
