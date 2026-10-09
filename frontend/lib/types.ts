@@ -584,8 +584,16 @@ export interface ReviewItem {
   check_reasons: string[]; // why its document's invoice check failed (PRD 3 Y5); [] otherwise
 }
 
-/** The review queue's reason filter (PRD 3 Y5). */
-export type ReviewReason = "check_failed" | "readers_disagree" | "low_confidence" | "single_reader";
+/** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds the last four). */
+export type ReviewReason =
+  | "check_failed"
+  | "readers_disagree"
+  | "low_confidence"
+  | "single_reader"
+  | "unsure_text"
+  | "box_unanchored"
+  | "local_reader"
+  | "ocr_script";
 
 /** A row of the admin's Failed jobs tab (PRD 3 Z1). */
 export interface FailedDocument {
