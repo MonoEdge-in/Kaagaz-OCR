@@ -3,7 +3,9 @@
 // The platform's health, counts only: documents by status, failed ones by
 // reason in plain words, how many are being read and how long the oldest has
 // waited, for the whole platform and per organisation; and how many deleted
-// organisations were removed for good and checked again a day later.
+// organisations were removed for good and checked again a day later. PRD 5 U9:
+// each worker's reader status (working, slow, down, key problem, or not
+// reporting after 2 minutes) and the jobs waiting in each queue lane.
 
 import { useEffect, useState } from "react";
 import table from "@/components/documents/Table.module.css";
@@ -12,7 +14,7 @@ import { formatDateTime, formatNumber } from "@/lib/format";
 import type { PlatformHealth } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { countText, operatorErrorMessage, orgStatus } from "./logic";
-import { countsInWords, failureWords, statusWords, waitWords } from "./platform";
+import { countsInWords, failureWords, queueWords, readerWords, statusWords, waitWords } from "./platform";
 import admin from "@/components/admin/Admin.module.css";
 import columns from "./Platform.module.css";
 import styles from "./Operator.module.css";
@@ -22,12 +24,17 @@ const lastTime = (iso: string | null) => (iso ? `last ${formatDateTime(iso)}` : 
 export function HealthView() {
   const [attempt, setAttempt] = useState(0);
   const [health, setHealth] = useState<PlatformHealth | null>(null);
+  const [loadedAt, setLoadedAt] = useState(0); // Date.now() when it arrived: "Not reporting" is judged then
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     getHealth().then(
-      (result) => !cancelled && setHealth(result),
+      (result) => {
+        if (cancelled) return;
+        setHealth(result);
+        setLoadedAt(Date.now());
+      },
       (caught: unknown) => !cancelled && setError({ attempt, message: operatorErrorMessage(caught) }),
     );
     return () => {
@@ -49,6 +56,7 @@ export function HealthView() {
   const tiles = [
     { label: "Being read now", value: formatNumber(totals.in_progress) },
     { label: "Oldest waiting", value: waitWords(totals.oldest_in_progress_seconds) },
+    ...(health.queues !== undefined ? queueWords(health.queues) : []),
     { label: `Deleted for good, ${lastTime(purges.last_purged_at)}`, value: formatNumber(purges.purged) },
     { label: `Checked again a day later, ${lastTime(purges.last_swept_at)}`, value: formatNumber(purges.swept) },
   ];
@@ -71,6 +79,28 @@ export function HealthView() {
         </dl>
         <WordList heading="Documents by status" items={countsInWords(totals.documents_by_status, statusWords)} />
         <WordList heading="Failed, by reason" items={countsInWords(totals.failed_by_code, failureWords)} />
+        {health.reader !== undefined && (
+          <>
+            <h3 className={admin.tilesHeading}>Reader, by worker</h3>
+            {health.reader.length === 0 ? (
+              <span className="muted">No worker has reported in the last 10 minutes.</span>
+            ) : (
+              <dl className={admin.tiles}>
+                {health.reader.map((report) => (
+                  <div key={report.worker} className={admin.tile}>
+                    <dt className={admin.tileLabel}>{report.worker}</dt>
+                    <dd className={admin.tileValue}>
+                      {readerWords(report, loadedAt)}
+                      {report.since && (
+                        <span className={styles.statusNote}>since {formatDateTime(report.since)}</span>
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </>
+        )}
       </section>
       {health.organisations.length > 0 && (
         <section className={admin.section} aria-labelledby="health-orgs-heading">

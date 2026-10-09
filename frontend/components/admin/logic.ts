@@ -280,6 +280,30 @@ export function pageRouteTiles(stats: Pick<Stats, "pages_this_month">): Tile[] {
 }
 
 /**
+ * PRD 5 U9: this month's OCR pages by who read them, in a fixed order; [] from a server
+ * from before it. The model's spend is an estimate from its token counts, labelled so,
+ * and left out while the prices are not known (usd null).
+ */
+export function readerTiles(stats: Pick<Stats, "reader_pages" | "spend_estimate">): Tile[] {
+  const pages = stats.reader_pages;
+  const tiles: Tile[] = pages
+    ? [
+        { label: "Read by Gemini", value: formatNumber(pages.gemini) },
+        { label: "Read by the backup reader", value: formatNumber(pages.local) },
+        { label: "From the cache", value: formatNumber(pages.cached) },
+        { label: "Read again", value: formatNumber(pages.read_again) },
+      ]
+    : [];
+  const usd = stats.spend_estimate?.usd;
+  if (typeof usd === "number" && Number.isFinite(usd)) {
+    tiles.push({ label: "Gemini spend this month (estimate)", value: USD.format(usd) });
+  }
+  return tiles;
+}
+
+const USD = new Intl.NumberFormat("en-IN", { style: "currency", currency: "USD" });
+
+/**
  * An audit row's details as one line of plain text: "count: 3, status: ready".
  * The server keeps only ids, statuses and counts there; nested values are shown
  * as compact JSON text, never as markup.

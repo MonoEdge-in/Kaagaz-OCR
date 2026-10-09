@@ -4,7 +4,7 @@
 
 import { describeAction } from "@/components/admin/logic";
 import { formatNumber, statusChip } from "@/lib/format";
-import type { DocumentStatus, PlatformEvent } from "@/lib/types";
+import type { DocumentStatus, PlatformEvent, PlatformHealth, ReaderReport, ReaderState } from "@/lib/types";
 
 /** Platform actions (the operator's own log); the organisations' ones use the admin screen's words. */
 const PLATFORM_ACTIONS: Record<string, string> = {
@@ -126,4 +126,32 @@ export function waitWords(seconds: number | null): string {
     if (count >= 1) return `${formatNumber(count)} ${count === 1 ? one : many}`;
   }
   return "under a minute";
+}
+
+// --- The reader and the queues (PRD 5 U9): status only ------------------------------
+
+const READER_STATES: Record<ReaderState, string> = {
+  working: "Working",
+  failing: "Slow",
+  down: "Down",
+  key_problem: "Key problem",
+};
+
+/** A worker that has not reported for this long shows "Not reporting" (V4). */
+export const NOT_REPORTING_MS = 2 * 60 * 1000;
+
+/** A worker's reader status in words; "Not reporting" once its last report is 2 minutes old. */
+export function readerWords(report: Pick<ReaderReport, "state" | "seen_at">, now: number): string {
+  const seen = Date.parse(report.seen_at);
+  if (!Number.isFinite(seen) || now - seen >= NOT_REPORTING_MS) return "Not reporting";
+  return Object.hasOwn(READER_STATES, report.state) ? READER_STATES[report.state] : plain(report.state);
+}
+
+/** The jobs waiting in each lane; "Not answering" when the queue did not answer (null). */
+export function queueWords(queues: PlatformHealth["queues"]): { label: string; value: string }[] {
+  const lane = (count: number | undefined) => (queues ? formatNumber(count ?? 0) : "Not answering");
+  return [
+    { label: "Waiting in the express lane", value: lane(queues?.express) },
+    { label: "Waiting in the main lane", value: lane(queues?.main) },
+  ];
 }
