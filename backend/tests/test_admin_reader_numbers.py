@@ -1,7 +1,7 @@
 """The Numbers tab's reader pages and spend estimate (PRD 5 U9, V5): this month's pages by
 who read them (the reading model, the backup reader, the page cache) and read again, and
-the tokens billed, from this customer's runs only; the dollar figure is null while
-MODEL_PRICE_* are 0 (not known)."""
+the tokens billed; the dollar figure is null while MODEL_PRICE_* are 0 (not known).
+Another customer's runs: ``test_isolation_admin_reader_numbers.py``."""
 
 from datetime import UTC, datetime
 
@@ -32,7 +32,7 @@ def _run(api: Api, customer_id: str, started: datetime, **counts: int) -> None:
 
 
 @pytest.mark.db
-def test_u9_the_reader_pages_and_tokens_this_month_are_this_customers_only(db: Database) -> None:
+def test_u9_the_reader_pages_and_tokens_are_this_months(db: Database) -> None:
     settings = make_settings(model_price_input_usd_per_m=2.0, model_price_output_usd_per_m=12.0)
     api = Api(db, settings=settings, clock=MovingClock(datetime(2026, 10, 20, 6, 0, tzinfo=UTC)))
     admin = api.new_admin()
@@ -41,8 +41,6 @@ def test_u9_the_reader_pages_and_tokens_this_month_are_this_customers_only(db: D
     _run(api, c, this_month, pages_gemini=4, pages_cached=2, input_tokens=1_000_000, output_tokens=100_000)
     _run(api, c, this_month, pages_local=3, pages_read_again=1, pages_gemini=1, input_tokens=500_000)
     _run(api, c, datetime(2026, 9, 29, tzinfo=UTC), pages_gemini=50, input_tokens=9_000_000)  # last month
-    other = api.new_admin()
-    _run(api, other.customer_id, this_month, pages_gemini=70, output_tokens=7_000_000)
 
     stats = admin.client.get("/api/admin/stats").json()
 

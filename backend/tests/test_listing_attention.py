@@ -1,8 +1,8 @@
 """The "Needs attention" filter and the unsure words chip (PRD 5 U2) against PostgreSQL:
 ``attention=true`` lists the documents with a page unreadable or uncertain still on the
 attention list, or a value to review, and the total counts the same; a page kept as is
-has left it; another customer's documents never show. ``words_unsure`` sums the unsure
-words of the pages still on the list."""
+has left it. ``words_unsure`` sums the unsure words of the pages still on the list.
+Another customer's documents: ``test_isolation_listing_attention.py``."""
 
 from datetime import timedelta
 
@@ -38,9 +38,6 @@ def test_needs_attention_lists_only_documents_with_a_problem_left(db: Database) 
     to_check = api.add_document(c, name="values.pdf", created_at=api.clock() + timedelta(minutes=3))
     read_page(api, c, to_check)
     api.add_value(c, to_check)
-    other = api.new_signed()
-    flagged = api.add_document(other.customer_id, name="other.pdf")
-    read_page(api, other.customer_id, flagged, read_quality="unreadable", read_issues=["no_text"])
 
     everything = signed.client.get("/api/documents").json()
     attention = signed.client.get("/api/documents", params={"attention": "true"}).json()
@@ -53,5 +50,4 @@ def test_needs_attention_lists_only_documents_with_a_problem_left(db: Database) 
         "unsure": 14,
         "kept": 0,  # kept as is: off the list, so no chip
     }
-    assert other.client.get("/api/documents", params={"attention": "true"}).json()["total"] == 1
     assert signed.client.get("/api/documents", params={"attention": "maybe"}).status_code == 400
