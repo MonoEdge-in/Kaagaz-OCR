@@ -606,7 +606,7 @@ def test_a_chosen_reader_is_stored_and_audited_and_auto_is_null(
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("choice", ["paddleocr_vl", "tesseract", "", "RAPIDOCR", "gemini"])
+@pytest.mark.parametrize("choice", ["an_old_reader", "tesseract", "", "RAPIDOCR", "gemini"])
 def test_any_reader_an_old_browser_sends_is_accepted_and_ignored(
     db: Database, rapidocr_server: Settings, choice: str
 ) -> None:

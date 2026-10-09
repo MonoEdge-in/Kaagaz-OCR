@@ -610,7 +610,7 @@ class FakeChat:
     order, one per call; an exception in the list is raised at that call instead.
     Records every call's system prompt, user message, schema and reply budget."""
 
-    chat_model = "qwen3:4b"
+    chat_model = "fake-chat"
 
     def __init__(self, *replies: dict[str, Any] | Exception) -> None:
         self.replies = list(replies)

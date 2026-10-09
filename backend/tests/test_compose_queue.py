@@ -1,7 +1,7 @@
 """The job queue keeps its messages across a restart (EC2 PRD WP-C).
 
 elasticmq.conf turns message storage on, and docker-compose.yml mounts a named
-volume where the storage file lives. Plain text, as tests/test_compose_ocr.py
+volume where the storage file lives. Plain text, as tests/test_compose_prod.py
 reads the files: no YAML library.
 """
 

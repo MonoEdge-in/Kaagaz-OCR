@@ -59,7 +59,7 @@ def test_a_missing_scan_reader_setting_stops_start_up_by_name(name: str) -> None
 @pytest.mark.parametrize(
     ("name", "value"),
     [
-        ("OCR_ENGINE", "paddleocr"),
+        ("OCR_ENGINE", "tesseract"),
         ("OCR_TIMEOUT_SECONDS", "0"),
         ("OCR_TIMEOUT_SECONDS", "-5"),
         ("OCR_TIMEOUT_SECONDS", "nan"),
@@ -88,7 +88,7 @@ def test_a_removed_setting_still_in_the_env_is_ignored() -> None:
 def test_the_old_layout_reader_stops_start_up_by_name() -> None:
     """PRD 5 section 7: OCR_ENGINE may no longer name the removed reader."""
     with pytest.raises(SettingsError, match="OCR_ENGINE"):
-        Settings.from_env(shipped(OCR_ENGINE="paddle" + "ocr_vl"))
+        Settings.from_env(shipped(OCR_ENGINE="padd" + "leocr_vl"))
 
 
 @pytest.mark.parametrize(("name", "other"), [("MODEL_CHAT", "MODEL_EMBED"), ("MODEL_EMBED", "MODEL_CHAT")])

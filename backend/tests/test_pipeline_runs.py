@@ -83,7 +83,7 @@ class Timer:
 
 class TimedOcr:
     """An OCR engine that gives each page ``lines`` (pixel boxes, no confidence, like
-    PaddleOCR-VL) and takes ``seconds`` on the timer. Call number ``down_on_call``
+    the main reader) and takes ``seconds`` on the timer. Call number ``down_on_call``
     raises BackendUnavailable("ocr"), as an OCR container that went away."""
 
     name = "fake-ocr"

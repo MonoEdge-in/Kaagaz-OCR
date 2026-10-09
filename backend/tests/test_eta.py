@@ -56,7 +56,7 @@ def test_after_reading_is_the_median_and_slow_the_90th_percentile() -> None:
 
 
 def test_only_this_engines_runs_and_the_last_20_count() -> None:
-    other = RunTiming("paddleocr-vl 1.0", 10, 0, 0, 900.0, 900.0, 30.0)
+    other = RunTiming("an-old-reader 1.0", 10, 0, 0, 900.0, 900.0, 30.0)
     assert mean(rates([other] * 3, "rapidocr").ocr) == pytest.approx(6.9)
     old = [scan_run(3.0)] * 20 + [scan_run(100.0)] * 5
     assert rates(old, "rapidocr") == rates(old[:20], "rapidocr")

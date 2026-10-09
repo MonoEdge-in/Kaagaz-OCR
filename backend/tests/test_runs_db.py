@@ -48,7 +48,7 @@ RUNS = (
 def totals(status: str = "ready", **changes: Any) -> RunTotals:
     """Run totals with a different number in every counter, so a swapped column shows."""
     base = RunTotals(
-        status, None, "rapidocr 3.4", "qwen3:4b", None, "bge-m3", 1, 2, 3, 4, 5, 6, 7, 12.5, 3.25
+        status, None, "rapidocr 3.4", "fake-chat", None, "bge-m3", 1, 2, 3, 4, 5, 6, 7, 12.5, 3.25
     )
     return replace(base, **changes)
 
@@ -133,7 +133,7 @@ def test_finish_run_writes_every_total_and_never_ends_before_it_started(db: Data
     names += ["seconds_ocr", "quotes_returned", "values_verified", "values_needs_review"]
     assert [row[name] for name in names] == [
         "rapidocr 3.4",
-        "qwen3:4b",
+        "fake-chat",
         None,
         "bge-m3",
         *range(1, 8),

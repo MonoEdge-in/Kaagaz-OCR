@@ -164,7 +164,7 @@ def test_a_number_only_a_neighbour_holds_is_never_verified_even_beside_a_hit(db:
 def test_neighbours_that_do_not_fit_the_model_window_are_dropped_and_every_hit_kept(db: Database) -> None:
     customer, _ = new_customer(db)
     terms = "Payment is due within 30 days."
-    add(db, customer, ["x " * 20000, TOTAL, terms])  # the first neighbour alone overfills MODEL_NUM_CTX
+    add(db, customer, ["x " * 20000, TOTAL, terms])  # the first neighbour alone overfills the window
     model = DraftModel("Grand Total")
 
     assert ask(db, customer, model)["label"] == "verified"
