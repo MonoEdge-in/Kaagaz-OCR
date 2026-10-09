@@ -67,7 +67,8 @@ def test_the_base_file_runs_only_the_app_and_its_stand_ins() -> None:
         "CLAMAV_HOST",
         "CLAMAV_PORT",
     ]
-    assert re.findall(r"^  ([a-z_]+):", backend, re.MULTILINE) == ["image", "build", "env_file", "environment"]
+    shared = re.findall(r"^  ([a-z_]+):", backend, re.MULTILINE)
+    assert shared == ["image", "build", "env_file", "environment"]
     assert "networks" not in keys(service("worker"))
 
 

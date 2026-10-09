@@ -52,7 +52,8 @@ def test_every_script_runs_the_base_and_prod_files_with_no_profiles() -> None:
     """PRD 5 section 7: the stack is two files and every service runs without a profile."""
     for name in ("deploy.sh", "pgdump.sh", "idle-stop.sh"):
         script = text(name)
-        assert re.findall(r"-f (docker-compose[\w.]*)", script) == ["docker-compose.yml", "docker-compose.prod.yml"], name
+        files = re.findall(r"-f (docker-compose[\w.]*)", script)
+        assert files == ["docker-compose.yml", "docker-compose.prod.yml"], name
         assert "--profile" not in script and "PROFILES" not in script, name
 
 
