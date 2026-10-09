@@ -18,12 +18,15 @@ import {
   rowKind,
   summaryText,
   trayCounts,
+  unreadableWords,
   worstFirst,
   writeStored,
 } from "@/components/documents/batchTray";
 import type { StoredBatch } from "@/components/documents/batchTray";
+import { estimateIngestSeconds, uploadStateText } from "@/components/documents/logic";
 import type { UploadState } from "@/components/documents/logic";
 import type { UploadEntry } from "@/components/documents/uploadQueue";
+import { NO_TIMES, jobFraction } from "@/components/documents/uploadStages";
 import { getBatch } from "@/lib/api";
 import type { BatchView, DocumentSummary } from "@/lib/types";
 
@@ -146,18 +149,63 @@ describe("each file's place in the tray", () => {
 
   it("sums the drop up in one line", () => {
     const counts = trayCounts(rows);
-    expect(counts).toEqual({ total: 9, ready: 1, reading: 1, waiting: 1, sending: 2, attention: 1, failed: 2, already: 1 });
+    expect(counts).toEqual({
+      total: 9,
+      ready: 1,
+      reading: 1,
+      waiting: 1,
+      sending: 2,
+      attention: 1,
+      failed: 2,
+      stopped: 0,
+      already: 1,
+    });
     expect(summaryText(counts)).toBe(
       "Batch of 9 files · 1 ready · 2 sending · 1 reading · 1 waiting · 1 needs attention · 2 failed · 1 already uploaded",
     );
   });
 
   it("says the PRD's line for a drop of 50", () => {
-    const counts = { total: 50, ready: 31, reading: 12, waiting: 4, sending: 0, attention: 2, failed: 0, already: 1 };
+    const counts = {
+      total: 50,
+      ready: 31,
+      reading: 12,
+      waiting: 4,
+      sending: 0,
+      attention: 2,
+      failed: 0,
+      stopped: 0,
+      already: 1,
+    };
     expect(summaryText(counts)).toBe(
       "Batch of 50 files · 31 ready · 12 reading · 4 waiting · 2 need attention · 1 already uploaded",
     );
     expect(summaryText(trayCounts([row("one", done(doc("o")))]))).toBe("Batch of 1 file · 1 ready");
+  });
+
+  it("says a file of a disabled organisation is stopped, not failed (PRD 12)", () => {
+    const stopped = done(
+      doc("s", { status: "failed", failure_code: "customer_disabled", status_message: "This organisation is disabled." }),
+    );
+    expect(rowKind(row("s", stopped))).toBe("stopped");
+    expect(uploadStateText(stopped)).toBe("Stopped");
+    const counts = trayCounts([row("s", stopped), row("r", done(doc("r")))]);
+    expect(counts).toMatchObject({ total: 2, stopped: 1, failed: 0 });
+    expect(summaryText(counts)).toBe("Batch of 2 files · 1 ready · 1 stopped");
+  });
+
+  it("names an unreadable file's first page, with the reason and the fix (U1)", () => {
+    const page = { page_no: 1, says: "Glare or a shadow covers part of the page.", fix: "Take the photo again." };
+    const unreadable = done(doc("u", { pages_unreadable: 1, first_unreadable: page }));
+    expect(uploadStateText(unreadable)).toBe("Couldn't read page 1");
+    expect(unreadableWords(doc("u", { pages_unreadable: 1, first_unreadable: page }))).toEqual({
+      title: "Couldn't read page 1",
+      detail: "Glare or a shadow covers part of the page. Take the photo again.",
+    });
+    const unsaid = doc("v", { pages_unreadable: 1, first_unreadable: { page_no: 3, says: null, fix: null } });
+    expect(unreadableWords(unsaid)).toEqual({ title: "Couldn't read page 3", detail: null });
+    expect(unreadableWords(doc("w"))).toBeNull(); // none, or a listing without the field
+    expect(uploadStateText(done(doc("w")))).toBe("Ready");
   });
 
   it("keeps a reload's counts the batch API does not have: already uploaded and not sent", () => {
@@ -181,11 +229,17 @@ describe("the drop's bar and time", () => {
     expect(batchFraction(null, [])).toBe(0);
   });
 
-  it("counts a file not stored yet by its expected pages, none read", () => {
+  it("counts a file not stored yet by its expected pages, and one still sending by its bytes", () => {
+    const waiting = row("b", { kind: "waiting" }, { pages: 6 });
+    expect(batchFraction(view, [waiting])).toBe(0.25); // none of it read or sent
+    const unsent = row("b", { kind: "sending", fraction: 0 }, { pages: 6 });
+    expect(batchFraction(view, [unsent])).toBe(0.25);
     const sending = row("b", { kind: "sending", fraction: 0.9 }, { pages: 6 });
-    expect(batchFraction(view, [sending])).toBe(0.25);
-    const photo = row("c", { kind: "saving" }, { name: "c.jpg" });
-    expect(batchFraction(view, [photo])).toBeCloseTo(3 / 7);
+    // Weighed as its own row's bar weighs it (uploadStages.ts): the bytes are part of the job.
+    const sent = jobFraction(sending.state, 1000, estimateIngestSeconds("pdf", 1000, 1, 6), NO_TIMES, 0);
+    expect(sent).toBeGreaterThan(0);
+    expect(batchFraction(view, [sending])).toBeCloseTo((3 + 6 * sent) / 12);
+    expect(batchFraction(view, [sending])).toBeLessThan(0.5); // never as if it were read
   });
 
   it("says the time left for the whole drop, or nothing", () => {

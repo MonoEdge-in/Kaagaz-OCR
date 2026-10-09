@@ -58,6 +58,7 @@ import {
   rowKind,
   summaryText,
   trayCounts,
+  unreadableWords,
   worstFirst,
   writeStored,
 } from "./batchTray";
@@ -78,14 +79,12 @@ import { checkPages } from "./pageCount";
 import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readerToSend } from "./readers";
 import { EMPTY_QUEUE, UPLOADS_AT_ONCE, followed, isBusy, queueReducer, runLimited } from "./uploadQueue";
 import type { UploadEntry } from "./uploadQueue";
-import { jobFraction, nextShown, stageOf, stageText, valueText } from "./uploadStages";
+import { NO_TIMES, jobFraction, nextShown, stageOf, stageText, valueText } from "./uploadStages";
 import type { Shown, Stage, StageTimes } from "./uploadStages";
 import { WrapName } from "./WrapName";
 import styles from "./Documents.module.css";
 
 type Start = (onProgress: (fraction: number) => void, onSent: () => void) => Promise<UploadResult>;
-
-const NO_TIMES: StageTimes = { startedAt: null, sentAt: null, repliedAt: null };
 
 /** What one round of following the batches brought back. */
 interface Followed {
@@ -531,7 +530,7 @@ export function BatchTray({
               </p>
               {left && <span className={`muted ${styles.small}`}>{left}</span>}
             </div>
-            {busy && <BatchBar fraction={batchFraction(view, rows)} />}
+            {busy && <BatchBar view={view} rows={rows} />}
             <ul className={styles.uploads}>{worstFirst(rows).map(row)}</ul>
           </div>
         );
@@ -541,10 +540,14 @@ export function BatchTray({
   );
 }
 
-/** One drop's bar: pages read over all its pages, never moving back, at most 99% (lib/progress.ts). */
-function BatchBar({ fraction }: { fraction: number }) {
+/**
+ * One drop's bar: pages read over all its pages, with the bytes of the files still
+ * sending (batchFraction), on the shared tick; never moving back, at most 99% (lib/progress.ts).
+ */
+function BatchBar({ view, rows }: { view: BatchView | null; rows: UploadEntry[] }) {
+  const now = useTick();
   const [shown, setShown] = useState<ShownProgress | null>(null);
-  const next = advance(shown, 0, fraction);
+  const next = advance(shown, 0, batchFraction(view, rows, now));
   if (next !== shown) setShown(next);
   return (
     <div className={styles.progressRow}>
@@ -606,11 +609,12 @@ function UploadRow({
     element?.focus();
   }, []);
   const kind = rowKind(entry);
-  const failed = kind === "failed";
+  const failed = kind === "failed" || kind === "stopped";
   const stage = stageOf(state);
   const story = storyTarget(state); // a finished file offers its story section, never a dialog
   const document = state.kind === "done" ? state.document : undefined;
   const problems = document?.status === "ready" ? attentionWords(document) : [];
+  const unreadable = document?.status === "ready" ? unreadableWords(document) : null; // U1
   let icon: "alert" | "eye-alert" | "check-seal" | "file" = "file";
   if (failed) icon = "alert";
   else if (kind === "attention") icon = "eye-alert";
@@ -636,6 +640,7 @@ function UploadRow({
         )}
         {stage !== null && <RowBar entry={entry} stage={stage} />}
         {state.kind === "reading" && <p className={`muted ${styles.small}`}>{state.document.status_message}</p>}
+        {unreadable?.detail && <p className={styles.small}>{unreadable.detail}</p>}
         {document && problems.length > 0 && (
           <p className={styles.small}>
             {problems.join(" · ")}.{" "}

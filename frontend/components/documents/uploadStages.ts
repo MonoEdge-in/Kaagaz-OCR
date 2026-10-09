@@ -31,6 +31,8 @@ export interface StageTimes {
   repliedAt: number | null; // the server replied (Reading starts)
 }
 
+export const NO_TIMES: StageTimes = { startedAt: null, sentAt: null, repliedAt: null };
+
 /** What the bar shows: the highest whole percent so far, and the tick it last moved at. */
 export interface Shown {
   percent: number;

@@ -270,9 +270,12 @@ export function uploadStateText(state: UploadState): string {
       return "Saving…";
     case "reading":
       return "Reading";
-    case "done":
-      if (!state.document) return "Uploaded";
-      return state.document.status === "ready" ? "Ready" : "Not read";
+    case "done": {
+      const { document } = state;
+      if (!document) return "Uploaded";
+      if (document.status !== "ready") return document.failure_code === "customer_disabled" ? "Stopped" : "Not read";
+      return document.first_unreadable ? `Couldn't read page ${document.first_unreadable.page_no}` : "Ready";
+    }
     case "duplicate":
       return state.inTrash ? "Already uploaded, in Trash" : "Already uploaded";
     case "restoring":

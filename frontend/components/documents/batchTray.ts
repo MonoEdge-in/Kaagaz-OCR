@@ -6,10 +6,11 @@
 // never a file name. Signing out forgets them (AppShell). Every storage access is
 // wrapped: blocked site data only means the tray does not come back.
 
-import type { BatchView } from "@/lib/types";
+import type { BatchView, DocumentSummary } from "@/lib/types";
 import { attentionWords } from "./library";
-import { estimatePages, uploadKind } from "./logic";
+import { estimateIngestSeconds, estimatePages, uploadKind } from "./logic";
 import type { UploadEntry } from "./uploadQueue";
+import { NO_TIMES, jobFraction } from "./uploadStages";
 
 export const MAX_FILES_PER_BATCH = 100; // the server's MAX_FILES_PER_BATCH (409 batch_full past it)
 export const TOO_MANY_FILES = "Up to 100 files at a time. Drop the rest after these start.";
@@ -29,9 +30,18 @@ export function newBatchId(random: (bytes: Uint8Array) => Uint8Array = (b) => cr
 
 // --- rows -------------------------------------------------------------------------
 
-export type RowKind = "failed" | "attention" | "waiting" | "sending" | "reading" | "already" | "ready";
+export type RowKind = "failed" | "stopped" | "attention" | "waiting" | "sending" | "reading" | "already" | "ready";
 
-const WORST_FIRST: readonly RowKind[] = ["failed", "attention", "waiting", "sending", "reading", "already", "ready"];
+const WORST_FIRST: readonly RowKind[] = [
+  "failed",
+  "stopped",
+  "attention",
+  "waiting",
+  "sending",
+  "reading",
+  "already",
+  "ready",
+];
 
 /** What a file's row is now, for the counts and the order. */
 export function rowKind(entry: Pick<UploadEntry, "state">): RowKind {
@@ -54,12 +64,15 @@ export function rowKind(entry: Pick<UploadEntry, "state">): RowKind {
     }
     case "done":
       if (!state.document) return "ready";
-      if (state.document.status !== "ready") return "failed";
+      if (state.document.status !== "ready") {
+        // PRD 5 section 12: a file of an organisation disabled mid-batch is stopped, not failed.
+        return state.document.failure_code === "customer_disabled" ? "stopped" : "failed";
+      }
       return attentionWords(state.document).length > 0 ? "attention" : "ready";
   }
 }
 
-/** The files worst first: failed, need attention, waiting, sending, reading, already uploaded, ready. */
+/** The files worst first: failed, stopped, need attention, waiting, sending, reading, already uploaded, ready. */
 export function worstFirst<T extends Pick<UploadEntry, "state">>(entries: readonly T[]): T[] {
   return [...entries].sort((a, b) => WORST_FIRST.indexOf(rowKind(a)) - WORST_FIRST.indexOf(rowKind(b)));
 }
@@ -74,6 +87,7 @@ export interface TrayCounts {
   sending: number;
   attention: number;
   failed: number;
+  stopped: number;
   already: number;
 }
 
@@ -82,7 +96,17 @@ export function trayCounts(
   entries: readonly Pick<UploadEntry, "state">[],
   stored: { already: number; notSent: number } = { already: 0, notSent: 0 },
 ): TrayCounts {
-  const counts: TrayCounts = { total: 0, ready: 0, reading: 0, waiting: 0, sending: 0, attention: 0, failed: 0, already: 0 };
+  const counts: TrayCounts = {
+    total: 0,
+    ready: 0,
+    reading: 0,
+    waiting: 0,
+    sending: 0,
+    attention: 0,
+    failed: 0,
+    stopped: 0,
+    already: 0,
+  };
   for (const entry of entries) counts[rowKind(entry)] += 1;
   counts.already = Math.max(counts.already, stored.already);
   counts.failed = Math.max(counts.failed, stored.notSent);
@@ -102,9 +126,24 @@ export function summaryText(counts: TrayCounts): string {
     counts.waiting > 0 ? `${counts.waiting} waiting` : "",
     counts.attention > 0 ? `${counts.attention} ${counts.attention === 1 ? "needs" : "need"} attention` : "",
     counts.failed > 0 ? `${counts.failed} failed` : "",
+    counts.stopped > 0 ? `${counts.stopped} stopped` : "",
     counts.already > 0 ? `${counts.already} already uploaded` : "",
   ];
   return parts.filter(Boolean).join(" · ");
+}
+
+/**
+ * U1's words for a file with an unreadable page: "Couldn't read page n", then what
+ * happened and the fix (null when the server could say neither); null for a file with
+ * no unreadable page to look at, or from a listing without the field.
+ */
+export function unreadableWords(
+  document: Pick<DocumentSummary, "first_unreadable">,
+): { title: string; detail: string | null } | null {
+  const page = document.first_unreadable;
+  if (!page) return null;
+  const detail = [page.says, page.fix].filter(Boolean).join(" ");
+  return { title: `Couldn't read page ${page.page_no}`, detail: detail || null };
 }
 
 /** "about 6 min left" for the whole drop; null when nothing is left to read or it is not known. */
@@ -116,23 +155,33 @@ export function leftText(view: Pick<BatchView, "time_left"> | null): string | nu
 
 /**
  * The drop's bar, 0 to 1: pages read over all its pages (the batch API's), with each
- * file not stored yet counted by its expected pages, none of them read.
+ * file not stored yet counted by its expected pages. A file still sending or saving
+ * counts its bytes (U1, U10), weighed as its own row's bar weighs them (jobFraction at
+ * ``now``), so the bytes are part of the job and never stand in for pages read.
  */
 export function batchFraction(
   view: Pick<BatchView, "pages_read" | "pages_total" | "documents"> | null,
-  entries: readonly Pick<UploadEntry, "state" | "name" | "size" | "pages">[],
+  entries: readonly Pick<UploadEntry, "state" | "name" | "size" | "pages" | "times">[],
+  now = 0,
 ): number {
   const stored = new Set(view?.documents.map((document) => document.id) ?? []);
   let total = view?.pages_total ?? 0;
+  let read = view?.pages_read ?? 0;
   for (const entry of entries) {
     const { state } = entry;
     const kind = uploadKind(entry.name);
     if (kind === null) continue;
-    const waiting = state.kind === "waiting" || state.kind === "sending" || state.kind === "saving";
+    const moving = state.kind === "sending" || state.kind === "saving";
     const unknown = state.kind === "reading" && !stored.has(state.documentId);
-    if (waiting || unknown) total += estimatePages(kind, entry.size, entry.pages ?? null);
+    if (!moving && !unknown && state.kind !== "waiting") continue;
+    const pages = estimatePages(kind, entry.size, entry.pages ?? null);
+    total += pages;
+    if (moving) {
+      const readSeconds = estimateIngestSeconds(kind, entry.size, 1, entry.pages ?? null);
+      read += pages * jobFraction(state, entry.size, readSeconds, entry.times ?? NO_TIMES, now);
+    }
   }
-  return total > 0 ? Math.min(1, Math.max(0, (view?.pages_read ?? 0) / total)) : 0;
+  return total > 0 ? Math.min(1, Math.max(0, read / total)) : 0;
 }
 
 // --- remembered in this browser -------------------------------------------------------

@@ -93,6 +93,16 @@ export interface DocumentSummary {
   pages_uncertain: number;
   values_to_review: number;
   words_unsure?: number; // PRD 5 U2: the unsure words on its pages, for the "14 words unsure" chip
+  // PRD 5 U1: from GET /api/batches/{id} only: its first unreadable page still to look at, or null.
+  first_unreadable?: FirstUnreadablePage | null;
+}
+
+/** A file's first unreadable page, for the tray's "Couldn't read page n" (U1): what
+ *  happened and the fix, from the page's first problem; null when none can be said. */
+export interface FirstUnreadablePage {
+  page_no: number;
+  says: string | null;
+  fix: string | null;
 }
 
 /** GET /api/batches/{id} (PRD 5 Q1): one drop of files, the uploader's own only, at most
