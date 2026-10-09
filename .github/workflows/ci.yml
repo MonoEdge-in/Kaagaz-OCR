@@ -101,15 +101,15 @@ jobs:
       - name: Production compose renders
         run: |
           set -euo pipefail
-          # The three compose files the EC2 server runs (Deployment PRD, WP-B), merged by
+          # The two compose files the EC2 server runs (Deployment PRD, WP-B), merged by
           # Docker Compose itself. Made-up values in a temporary .env: nothing real is read.
           dir="$RUNNER_TEMP/compose-prod"
           mkdir -p "$dir"
           printf '%s\n' KAAGAZ_DOMAIN=kaagaz.example.test ACME_EMAIL=admin@example.test \
             SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json > "$dir/.env"
           docker compose version
-          docker compose --project-directory "$dir" -f docker-compose.yml -f docker-compose.gpu.yml \
-            -f docker-compose.prod.yml --profile ollama --profile paddle config --format json > "$dir/merged.json"
+          docker compose --project-directory "$dir" -f docker-compose.yml -f docker-compose.prod.yml \
+            config --format json > "$dir/merged.json"
           ports=$(jq -c '[.services | to_entries[] | select(.value.ports) | {(.key): [.value.ports[].published]}]' "$dir/merged.json")
           keys=$(jq -c '[.services.seaweedfs.volumes[] | select(.target == "/etc/seaweedfs/s3.json") | .source]' "$dir/merged.json")
           echo "Published ports: $ports"

@@ -1,7 +1,7 @@
-# The EC2 server only (Deployment PRD, WP-B), laid over docker-compose.yml and
-# docker-compose.gpu.yml. Laptops never use this file.
+# The EC2 server only (Deployment PRD, WP-B), laid over docker-compose.yml.
+# Laptops never use this file.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod.yml --profile ollama --profile paddle up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
 # What it changes:
 #   - Only caddy publishes ports (80 and 443). Every other port is cleared with
@@ -72,13 +72,6 @@ services:
     ports: !reset []
     restart: unless-stopped
     logging: *logging
-
-  ollama:
-    restart: unless-stopped # its port is already cleared by docker-compose.gpu.yml
-    logging: *logging
-
-  ocr:
-    logging: *logging # restart: unless-stopped is already in docker-compose.yml
 
   # HTTPS in front of everything (infra/caddy/Caddyfile): the Let's Encrypt
   # certificate for KAAGAZ_DOMAIN, /api/* to api, the rest to frontend.

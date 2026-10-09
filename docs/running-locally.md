@@ -17,8 +17,6 @@ placeholder**, never a real secret.
 | `seaweedfs` | 8333 | file storage, S3 API | the same container (no S3 in this phase) |
 | `elasticmq` | 9324 | job queue `kaagaz-jobs` and its failure bin `kaagaz-jobs-failed`, SQS API; messages kept in the volume `elasticmq-data` | the same container (no SQS in this phase) |
 | `clamav` | 3310 | clamd virus scanner | the same container |
-| `ollama` | 11434 | local AI, optional (`--profile ollama`) | on the GPU, no port |
-| `ocr` | none | PaddleOCR-VL scan reader, optional (`--profile paddle`) | on the GPU |
 | `caddy` | none | HTTPS in front of `frontend` and `api` (`docker-compose.prod.yml` only) | 80 and 443, the only open ports |
 
 ## 1. Settings
@@ -37,27 +35,23 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
 `MODEL_ENABLED=false` (the default) runs everything with no AI. The Gemini
-reader and chat use the configured `OCR_MODEL` and `MODEL_CHAT` through
-OpenRouter. They require Vrushit's third-party approval and an
+reader, chat and embeddings use the configured `OCR_MODEL`, `MODEL_CHAT` and
+`MODEL_EMBED` through OpenRouter. They require Vrushit's third-party approval and an
 `OPENROUTER_API_KEY` in the server's `.env`; do not use a free-tier key.
-`MODEL_EMBED` remains `qwen3-embedding:0.6b` through Ollama until PR3, so
-model-backed runs also need that embedding model available locally. For a
-local-only model setup, set `MODEL_CHAT` to `qwen3.5:4b` as well and pull the
-Ollama models with `ollama pull qwen3.5:4b` and
-`ollama pull qwen3-embedding:0.6b`.
+With `MODEL_ENABLED=true`, `MODEL_CHAT` and `MODEL_EMBED` must be `google/gemini-`
+models, or nothing starts.
 With the model on, the worker reads each document's card with `MODEL_CHAT`
 (PRD 2): a reply may take up to `MODEL_CARD_MAX_TOKENS` tokens, in a window of
-`MODEL_CONTEXT_TOKENS` (PRD 5 M1; with a local Ollama `MODEL_CHAT`, the smaller of it and
-`MODEL_NUM_CTX`, below), and one card call times out after
+`MODEL_CONTEXT_TOKENS` (PRD 5 M1), and one card call times out after
 `MODEL_EXTRACT_TIMEOUT_SECONDS` (twice that plus 75 must fit
 `QUEUE_LEASE_SECONDS`, or nothing starts).
 
 An older `.env` needs these added from `.env.example` (a missing setting stops
 the start with its name): `TOTP_ENCRYPTION_KEY`, `LOGIN_MAX_FAILURES`,
 `LOGIN_LOCK_MINUTES`, `ADMIN_SESSION_MINUTES`, `MAX_IMAGE_MB`, `MAX_SHEET_MB`,
-`TRASH_DAYS`, `JOB_MAX_ATTEMPTS`, `OCR_URL`, `OCR_TIMEOUT_SECONDS` and
-`OCR_DPI`, the model budgets `MODEL_NUM_CTX`, `MODEL_CARD_MAX_TOKENS`,
-`MODEL_WINDOW_MAX_TOKENS`, `MODEL_ANSWER_MAX_TOKENS`, `MODEL_EXTRACT_TIMEOUT_SECONDS` and
+`TRASH_DAYS`, `JOB_MAX_ATTEMPTS`, `OCR_TIMEOUT_SECONDS` and
+`OCR_DPI`, the model budgets `MODEL_CARD_MAX_TOKENS`,
+`MODEL_ANSWER_MAX_TOKENS`, `MODEL_EXTRACT_TIMEOUT_SECONDS` and
 `CARD_MAX_CHARS`,
 the invoice windows `EXTRACT_WINDOW_CHARS`, `EXTRACT_WINDOW_OVERLAP` and
 `EXTRACT_MAX_WINDOWS`,
@@ -88,10 +82,7 @@ it off), the size up to which a chat's documents are given whole, which must lea
 least 1), the topics kept for a document; `TOPIC_EXPAND_MAX_PIECES` (12, 0 or more), the
 pieces a topic adds per document, and a matching section at most; `QUERY_ASPECTS_MAX` (6, 0 or more), the aspects a question
 is also searched as; and `CHAT_SUMMARY_EVERY` (6, at least 1), the turns between chat
-summaries. With a `MODEL_CHAT` that is not a `google/gemini-` model (Ollama), every call
-sends `MODEL_NUM_CTX` as its window, so the window used everywhere is the smaller of
-`MODEL_CONTEXT_TOKENS` and `MODEL_NUM_CTX`, and whole-document mode is off whatever
-`ANSWER_WHOLE_DOC_TOKENS` says.
+summaries.
 
 **Upgrading an install to PRD 3.** Migration 0006 is offline: it locks
 `pieces` and `messages` while it rewrites the vectors and builds the indexes.
@@ -119,20 +110,8 @@ Open http://localhost:3000.
   signatures. The worker waits for it; the web app and API work meanwhile.
 * The frontend image bakes in `BACKEND_URL=http://api:8000` when it is built
   (Next.js writes the `/api` rewrite into the build).
-* The containers reach Ollama on the laptop at `host.docker.internal:11434`.
-  To run Ollama in Docker instead, set `DOCKER_MODEL_BASE_URL=http://ollama:11434`
-  in `.env` and run `docker compose --profile ollama up --build`, then pull the
-  models once: `docker compose exec ollama ollama pull <model>`.
-* PaddleOCR-VL reads scans with `OCR_ENGINE=paddleocr_vl` and
-  `docker compose --profile paddle up --build`. Its container needs 10 GB of
-  memory or more: on a 16 GB laptop, run it without Ollama and raise Docker
-  Desktop's WSL2 memory. It is slow on a CPU: 3 to 11 minutes a page on a
-  4-core laptop, plus about 5 minutes to load, and `OCR_TIMEOUT_SECONDS` is 300,
-  so on a laptop CPU most pages time out: keep `OCR_ENGINE=rapidocr` there and use
-  PaddleOCR-VL on a GPU or demo machine. A worker outside Docker reaches it with
-  `-f docker-compose.ocr-host.yml` added and `--profile paddle up ocr-relay`: a
-  small relay publishes port 8080 on 127.0.0.1, and the ocr container itself stays
-  on its internal network with no way out.
+* Scans are read by the `OCR_ENGINE` in `.env`: `rapidocr` on a laptop with no
+  key, or `gemini` with `OPENROUTER_API_KEY` set (section 1).
 * Stop with `docker compose stop` (the worker finishes the job in hand).
   `docker compose down -v` also deletes the data volumes.
 
@@ -185,25 +164,23 @@ npm run dev                            # http://localhost:3000
 
 It forwards `/api/*` to `BACKEND_URL` (default `http://localhost:8000`).
 
-## 2c. On a GPU server (EC2 g4dn)
+## 2c. On the EC2 server
 
-PaddleOCR-VL and Ollama on one NVIDIA GPU (a g4dn's T4, 16 GB), with
-`docker-compose.gpu.yml` laid over `docker-compose.yml`. Laptops never use it.
-The production server adds a third file (Production on EC2, below).
-**NOT RUN yet:** nothing here has run on a GPU. `paddlepaddle-gpu` and the
-NVIDIA wheels are approved (EC2 PRD D5, 4 Oct 2026).
+One t3.xlarge (4 vCPU, 16 GB, Unlimited CPU credits; pending Vrushit)
+runs `docker-compose.yml` with `docker-compose.prod.yml` laid over it
+(Production on EC2, below). Laptops never use the second file. Scans are read
+by Gemini and the models answer through OpenRouter, so nothing on the server
+needs more than its CPU; RapidOCR runs in the worker as the checker and the
+fallback. The move from the earlier g4dn.xlarge, step by step:
+docs/runbooks/prd5-cpu-server-switch.md.
 
 **The host, once.**
 
-* The NVIDIA driver 570 or newer (Ollama 0.35.0 bundles CUDA 12.8), the NVIDIA
-  Container Toolkit 1.17.8 or newer (older ones have container escapes), and
-  Docker Compose 2.24.4 or newer (`docker compose version`; the override uses
-  `!reset`). Check: `nvidia-smi` shows the T4 on the host.
-* A 100 GB disk: the GPU OCR image (Paddle, the NVIDIA libraries and the
-  weights) and the Ollama models are tens of GB. A rebuild of the Paddle layers
-  needs about 20 GB free; they stay cached unless the `paddle` or `paddle-gpu`
-  pins in `pyproject.toml` (or the constraints files) change.
-* A 4 to 8 GB swapfile: a g4dn.xlarge has 16 GB of memory for everything.
+* Docker Compose 2.24.4 or newer (`docker compose version`;
+  `docker-compose.prod.yml` uses `!reset`).
+* At least 20 GB free on `/` for a build: below that, `deploy.sh` prunes the
+  build cache first.
+* A 4 to 8 GB swapfile: the server has 16 GB of memory for everything.
   `sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`,
   and a `/swapfile none swap sw 0 0` line in `/etc/fstab`.
 * The security group lets in 443 and 80, nothing else: no SSH, use Session
@@ -211,45 +188,14 @@ NVIDIA wheels are approved (EC2 PRD D5, 4 Oct 2026).
   ports (80 and 443, Production on EC2 below). Without it, `docker-compose.yml`
   still publishes 3000, 8000, 5432, 8333, 9324 and 3310 on the host, and
   Docker's ports go around the host's own firewall, so the security group is
-  what keeps them closed. The GPU override removes Ollama's 11434, and `ocr`
-  never had a port.
+  what keeps them closed.
 
-**Start.** From the repository root, with `.env` made as in section 1:
+**Check** (the done-when list; each is NOT RUN until done on the server, with
+`dc` as in Production on EC2, below):
 
-```
-alias dc='docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile paddle --profile ollama'
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile paddle --profile ollama up -d --build
-```
-
-The `ocr` image builds with `PADDLE_EXTRA=paddle-gpu`: `paddlepaddle-gpu` by
-its direct URL with its sha256, then everything else from PyPI, hashed
-(`backend/constraints-ocr-gpu.txt`). It is tagged `kaagaz-ocr-gpu:local`, so it
-never replaces the CPU image. The worker reads scans with PaddleOCR-VL
-(`OCR_ENGINE=paddleocr_vl`), and the api and worker reach Ollama at
-`http://ollama:11434`; the override sets both, whatever `.env` says.
-
-Then the models, once, and the AI on:
-
-```
-dc exec ollama ollama pull qwen3.5:4b              # MODEL_CHAT (and MODEL_VISION)
-dc exec ollama ollama pull qwen3-embedding:0.6b    # MODEL_EMBED
-```
-
-Set `MODEL_ENABLED=true` in `.env` (use the model names `.env` has, if you
-changed them), then `dc up -d --force-recreate api worker`.
-
-**Check** (the done-when list; each is NOT RUN until done on g4dn):
-
-1. `dc exec ocr nvidia-smi` shows the T4 inside the `ocr` container.
-2. `dc ps ocr` says healthy: `/health` is ready (loading can take minutes).
-3. Ask one chat question, then `dc exec ollama ollama ps`: the model shows
-   `100% GPU`.
-4. In a second terminal on the host, `nvidia-smi --query-gpu=memory.used,memory.total --format=csv -l 1`,
-   then upload a dense made-up scan (a full page of small text and a table) and
-   watch the peak while it is read: it must stay under 16 GB with both Qwen
-   models and PaddleOCR-VL loaded. If the page fails with `out_of_memory` in the
-   ocr log, the job is retried later, not failed.
-5. Seconds per page, inside the worker container (it has the settings; the
+1. `dc run --rm worker python -m kaagaz.cli verify-models`: every model and
+   RapidOCR line says PASS.
+2. Seconds per page, inside the worker container (it has the settings; the
    file must be in the container):
 
    ```
@@ -257,31 +203,23 @@ changed them), then `dc up -d --force-recreate api worker`.
    docker compose exec worker python -m kaagaz.cli measure --file /tmp/scan.png
    ```
 
-   Write the numbers into docs/architecture.md, Decisions (the row "OCR and
-   Qwen share the T4", PROVISIONAL until then).
+   Write the numbers into docs/architecture.md, Decisions (the t3.xlarge
+   row).
 
-**RapidOCR, the fallback.** If PaddleOCR-VL misbehaves on the GPU, change the
-worker's `OCR_ENGINE: paddleocr_vl` in `docker-compose.gpu.yml` to `rapidocr`
-(the override wins over `.env`, so `.env` alone cannot do it) and restart the
-worker: `dc up -d worker`. `dc stop ocr` then frees its GPU memory for Ollama.
-Change it back the same way.
-
-**Known limits.** `OLLAMA_NUM_PARALLEL=1`: one model request at a time, so a
-chat question can wait while a document's facts are being read. The T4 has no
-bfloat16, so Paddle runs in fp32. The GPU is shared by `ocr` and `ollama`
-(an accepted risk, docs/architecture.md, Decisions).
+**RapidOCR, the fallback.** If Gemini misbehaves, set `OCR_ENGINE=rapidocr` in
+`.env` and restart both: `dc up -d api worker`. Change it back the same way.
 
 ### Production on EC2
 
 The production server (EC2 Deployment PRD, approved by Vrushit, 4 Oct 2026):
-one g4dn.xlarge in Mumbai (`ap-south-1`) runs everything above in Docker
+one EC2 server in Mumbai (`ap-south-1`, section 2c) runs everything above in Docker
 Compose, on one domain over HTTPS. It deploys only the `production` branch.
 **NOT RUN yet:** each go-live check below is NOT RUN until it has run there.
 
-Below, `dc` is the three files and both profiles, run in `/home/ubuntu/kaagaz`:
+Below, `dc` is the two files, run in `/home/ubuntu/kaagaz`:
 
 ```
-alias dc='docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod.yml --profile ollama --profile paddle'
+alias dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml'
 ```
 
 `docker-compose.prod.yml` adds `caddy` (`caddy:2` pinned by digest, Caddy
@@ -309,7 +247,7 @@ for passwords):
 | `TOTP_ENCRYPTION_KEY` | Random. If it is lost, every admin's 2FA must be reset |
 | `POSTGRES_PASSWORD`, and the same password in `DATABASE_URL` | Random hex. Postgres takes it only when its volume is first made |
 | `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY` | Random. Must equal the keys in `s3.json` |
-| `COOKIE_SECURE=true`, `MODEL_ENABLED=true`, `OCR_TIMEOUT_SECONDS=300` | As shown. The GPU file sets `OCR_ENGINE` and the Ollama address itself |
+| `COOKIE_SECURE=true`, `MODEL_ENABLED=true`, `OCR_ENGINE=gemini`, `OCR_DPI=300`, `OCR_TIMEOUT_SECONDS=120`, and `OPENROUTER_API_KEY` | As shown; the key is the OpenRouter key with its own credit limit (docs/architecture.md, Decisions) |
 | `KAAGAZ_DOMAIN`, `ACME_EMAIL`, `SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json` | Read by `docker-compose.prod.yml`, which stops with the name of any that is missing |
 
 Keep an offline copy of `.env` and `s3.json` in a password manager. The EBS
@@ -319,8 +257,7 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
 **The server, once.** Through Session Manager, as `ubuntu` (`sudo -iu ubuntu`):
 
 1. The host checks of "The host, once" above: `docker compose version` 2.24.4
-   or newer, `nvidia-smi` and `docker run --rm --gpus all ubuntu nvidia-smi`
-   show the T4, and `swapon --show` shows the 8 GB swapfile.
+   or newer, and `swapon --show` shows the 8 GB swapfile.
 2. The code, with the read-only deploy key `~/.ssh/kaagaz_deploy` (the deploy
    unit sets the same `GIT_SSH_COMMAND`):
    `GIT_SSH_COMMAND="ssh -i ~/.ssh/kaagaz_deploy -o IdentitiesOnly=yes" git clone git@github.com:MonoEdge-in/Kaagaz-OCR.git ~/kaagaz`,
@@ -336,10 +273,10 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
    sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-deploy.timer kaagaz-pgdump.timer kaagaz-idle.timer
    ```
 
-5. The first deploy (30 to 60 minutes):
+5. The first deploy (several minutes):
    `sudo systemctl start --no-block kaagaz-deploy.service && journalctl -u kaagaz-deploy -f`.
 6. The models, once:
-   `dc exec ollama ollama pull qwen3.5:4b && dc exec ollama ollama pull qwen3-embedding:0.6b`.
+   `dc run --rm worker python -m kaagaz.cli verify-models` says PASS on every line.
 7. The first customer and admin:
    `dc exec api python -m kaagaz.cli create-customer --name "<Company>" --admin-email <email> --admin-name "<Name>"`
    (it asks for the admin's password at a hidden prompt). The admin signs in at
@@ -378,8 +315,8 @@ a dump (section 6). Logs: `dc logs --since 1h <service>`.
 `infra/ec2/idle-stop.sh` as root every minute, from 20 minutes after boot. It
 powers off (the instance's shutdown behaviour is Stop) only when the server has
 been up 20 minutes, Caddy logged no signed-in request to `/api/` (one with a
-Cookie header, other than `/api/health`) in the last 15 minutes, `kaagaz-jobs`
-has nothing waiting or being read, no deploy holds `/tmp/kaagaz-deploy.lock`,
+Cookie header, other than `/api/health`) in the last 15 minutes, both job queues
+(`kaagaz-jobs` and `kaagaz-jobs-express`) have nothing waiting or being read, no deploy holds `/tmp/kaagaz-deploy.lock`,
 and `/etc/kaagaz/no-idle-stop` does not exist. A check that fails to run keeps
 it on. Each run logs why (`journalctl -u kaagaz-idle -n 5`), and
 `sudo ~/kaagaz/infra/ec2/idle-stop.sh --dry-run` prints the decision without
@@ -394,7 +331,7 @@ afterwards. Two things start the server:
   `https://<function-url>/?key=<WAKE_TOKEN>`. A wrong or missing key gets a
   404 and no AWS call. Its role allows only `ec2:StartInstances` on this
   instance, `ec2:DescribeInstances` and CloudWatch Logs. After a start the site
-  opens in about 3 minutes, and documents are read after about 10.
+  opens in about 3 minutes.
 
 **Go-live checks** (EC2 PRD section 10). Report each one with its command and
 its output; until then it is NOT RUN.
@@ -402,22 +339,24 @@ its output; until then it is NOT RUN.
 * **10.1** `https://<DOMAIN>` has a valid certificate, and `http://` redirects
   to it.
 * **10.2** From outside AWS, only ports 80 and 443 answer. Ports 3000, 8000,
-  5432, 8333, 9324, 3310 and 11434 all refuse.
+  5432, 8333, 9324 and 3310 all refuse.
 * **10.3** `dc ps -a`: every service is running or healthy, and `migrate` shows
   exited (0).
-* **10.4** `dc exec ocr nvidia-smi` shows the T4. After one chat question,
-  `dc exec ollama ollama ps` shows `100% GPU`.
-* **10.5** While a dense made-up scan is read, the `nvidia-smi` peak stays under
-  16 GB. Measure seconds per page with `cli measure` (Check, step 5, above) and
-  record both in docs/architecture.md, Decisions ("OCR and Qwen share the T4").
-* **10.6** A made-up Marathi scan reaches Ready, its pages show the route `ocr`,
-  its text is Devanagari, and searching its Latin spelling finds it.
+* **10.4** `dc run --rm worker python -m kaagaz.cli verify-models`: every line
+  says PASS.
+* **10.5** While the exit batch of made-up documents is read, CloudWatch shows
+  the instance's CPUUtilization and CPUSurplusCreditsCharged. Measure seconds per
+  page with `cli measure` (2c, Check, step 2) and record all three in
+  docs/architecture.md, Decisions (the t3.xlarge row).
+* **10.6** A made-up Marathi scan reaches Ready, its pages show the route `ocr`
+  and "Read by Gemini", its text is Devanagari, and searching its Latin spelling
+  finds it.
 * **10.7** A made-up 45 MB PDF uploads, and a 60 MB one is refused with the
   size message. A chat answer cites the page with the spot highlighted, and an
   unanswerable question says not found.
 * **10.8** After `sudo reboot`, the site is back within about 3 minutes and
-  documents are read again within about 10. A document queued before the
-  reboot still finishes (WP-C).
+  documents are read again. A document queued before the reboot still
+  finishes (WP-C).
 * **10.9** With nobody signed in and the queue empty, the instance is Stopped
   about 15 minutes later. While a document is being read, it stays on. The Wake
   link starts it, and the site works afterwards with all data intact. The
@@ -560,7 +499,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 | PDF text | a digital PDF with "Invoice No: INV-17" and "Grand Total Rs. 1,180.00" | reader `pdfplumber`; a password-protected PDF ends `failed | encrypted` |
 | Second PDF reader | the same PDF | a second `reader_outputs` row, `second | pdfium`; matching values are `verified` with reason `readers_agree` |
 | OCR (scans, photos) | a photo of a printed invoice | reader `rapidocr`; values have a confidence and are `needs_review` (`single_reader` or `low_confidence`). A blank image ends `failed | no_text`; with `OCR_ENGINE=none` a photo ends `needs_reader` |
-| Vision second reading | `MODEL_ENABLED=true` and `MODEL_VISION` set, then the photo again | scanned values get a `second_reading`; with Ollama stopped, the log says "vision reading skipped" and the document still ends `ready` |
+| The checker | `OCR_ENGINE=gemini`, then the photo again | scanned values get a `second_reading` from RapidOCR on each value's crop, with no model call |
 
 - Tests: `test_csv_reader.py`, `test_xlsx_reader.py`, `test_pdf_reader.py`, `test_pdf_second_reader.py`, `test_ocr.py`, `test_image_reader.py`, `test_reader_socket.py`, `test_pipeline_scans.py`.
 
@@ -625,8 +564,8 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Tests: `test_api_chat.py`; `frontend/tests/chat-logic.test.ts`, `chat-answer.test.ts`.
 
 **22. Answers with a model**
-- Check: pull `MODEL_CHAT` and `MODEL_EMBED` into Ollama, set `MODEL_ENABLED=true`, restart `api` and `worker`, and ask a search question.
-- Expect: `model_used:true` and cited sentences. Stop Ollama: answers fall back to quoting lines from the evidence, and nothing fails.
+- Check: set `MODEL_ENABLED=true` with `OPENROUTER_API_KEY` in `.env` (section 1), restart `api` and `worker`, and ask a search question.
+- Expect: `model_used:true` and cited sentences. With `OPENROUTER_BASE_URL` pointed at an address nothing answers on: answers fall back to quoting lines from the evidence, and nothing fails.
 - Tests: `test_answering_golden.py` (`test_a_model_answer_is_used_and_cited`, `test_a_failed_model_falls_back_to_quoting`), `test_ai_client.py`.
 
 ### Administration and safety
@@ -659,12 +598,12 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **28. Settings checks at start-up**
 - Check: `docker compose run --rm -e SESSION_SECRET=short worker`, and again with `-e OCR_ENGINE=x`.
-- Expect: the container stops at start-up naming the problem: "SESSION_SECRET must be at least 32 characters", "OCR_ENGINE must be one of ['none', 'paddleocr_vl', 'rapidocr']".
+- Expect: the container stops at start-up naming the problem: "SESSION_SECRET must be at least 32 characters", "OCR_ENGINE must be one of ['gemini', 'none', 'rapidocr']".
 - Tests: none yet for reading settings from the environment; the adapters' own limits are covered in `test_adapter_queue.py` and `test_adapter_scanner.py`.
 
 ### Document understanding (PRD 2)
 
-Use made-up files only. With `MODEL_ENABLED=true`, pull `qwen3.5:4b` and `qwen3-embedding:0.6b` first.
+Use made-up files only. With `MODEL_ENABLED=true`, set `OPENROUTER_API_KEY` first (section 1).
 
 **29. Page routes**
 - Check: upload a digital PDF, a scanned PDF, a photo, an XLSX, and a PDF with a blank page; then `SQL "SELECT page_no, route, low_resolution FROM pages WHERE document_id='<id>' ORDER BY page_no"`, or open each document: every page shows its route.
@@ -682,7 +621,7 @@ Use made-up files only. With `MODEL_ENABLED=true`, pull `qwen3.5:4b` and `qwen3-
 - Tests: `test_cross_page_pieces.py`, `test_chunking_lines.py`, `test_chunking_context.py`.
 
 **32. Hindi and Marathi**
-- Check: with `OCR_ENGINE=paddleocr_vl` (the ocr container, `--profile paddle`; slow on a laptop CPU), a made-up Marathi scan; `SQL "SELECT text, text_latin FROM pieces WHERE document_id='<id>'"`.
+- Check: with `OCR_ENGINE=gemini` (section 1), a made-up Marathi scan; `SQL "SELECT text, text_latin FROM pieces WHERE document_id='<id>'"`.
 - Expect: Devanagari text, and a Latin spelling beside it (पाटील gives `patil`). Devanagari digits are read as numbers.
 - Tests: `test_chunking_script.py`, `test_extraction_parsing.py`.
 
@@ -719,7 +658,7 @@ The made-up golden documents in `backend/tests/golden/docs/` serve these checks 
 
 **38. The meaning index**
 - Check: `SQL "SET enable_seqscan = off; EXPLAIN SELECT id FROM pieces WHERE embedding IS NOT NULL ORDER BY embedding <=> (SELECT embedding FROM pieces WHERE embedding IS NOT NULL LIMIT 1) LIMIT 5"` (a laptop holds too few pieces for the planner to choose the index by itself), then `SQL "SELECT embedding_model, count(*) FROM pieces GROUP BY 1"`.
-- Expect: `Index Scan using pieces_embedding`; with the model on, every vector tagged `qwen3-embedding:0.6b#ctx1`.
+- Expect: `Index Scan using pieces_embedding`; with the model on, every vector tagged `google/gemini-embedding-2#gem1`.
 - Tests: `test_search_index_db.py` (`test_explain_of_the_production_statement_uses_pieces_embedding`, `test_a_short_index_walk_falls_back_to_the_exact_scan`), `test_migration_0006_db.py`.
 
 **39. Re-embedding**
@@ -768,7 +707,7 @@ Use the golden `monthly-report.pdf` (20 pages, "$12,000" runs from page 15 to pa
 
 **47. The PRD 3 exit test**
 - Check: from `backend/` with `DATABASE_URL` set as in section 4, `.venv/Scripts/python.exe -m pytest -q tests/test_exit_prd3_db.py`.
-- Expect: every test passes: the exit files read by the real pipeline, then exit steps 1 to 5 through the API (a scripted model, no Ollama needed).
+- Expect: every test passes: the exit files read by the real pipeline, then exit steps 1 to 5 through the API (a scripted model, no model service needed).
 - Tests: `test_exit_prd3_db.py`.
 
 ### Handover (PRD 3)
@@ -779,9 +718,9 @@ Use the golden `monthly-report.pdf` (20 pages, "$12,000" runs from page 15 to pa
 - Tests: `test_migration_0007_db.py`.
 
 **49. The golden run**
-- Needs: the whole stack with the model on (both models pulled, `MODEL_ENABLED=true`), the API and database on this machine, and `.env` loaded in a shell in `backend/`. It is never run in CI.
+- Needs: the whole stack with the model on (`OPENROUTER_API_KEY` set, `MODEL_ENABLED=true`), the API and database on this machine, and `.env` loaded in a shell in `backend/`. It is never run in CI.
 - Check: `.venv/Scripts/python.exe -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" --runs 3`.
-- Expect: it makes a new "Golden Test Co" customer, uploads the 7 golden documents and asks the 30 questions 3 times. Then a header (git SHA, date, models with their Ollama digests, settings, the questions' sha256), a row per question, each run's totals and slices, "The model wrote N of M search-route answers" (N must be above 0), and the WORST RUN line with Wilson intervals. The password comes from `KAAGAZ_ADMIN_PASSWORD` or is made up, and is never printed. Record the worst run in docs/architecture.md, Decisions.
+- Expect: it makes a new "Golden Test Co" customer, uploads the 7 golden documents and asks the 30 questions 3 times. Then a header (git SHA, date, models, settings, the questions' sha256), a row per question, each run's totals and slices, "The model wrote N of M search-route answers" (N must be above 0), and the WORST RUN line with Wilson intervals. The password comes from `KAAGAZ_ADMIN_PASSWORD` or is made up, and is never printed. Record the worst run in docs/architecture.md, Decisions.
 - Tests: `test_golden_questions.py`, `test_golden_scoring.py`, `test_golden_runner.py`.
 
 ### Sign-off
@@ -857,8 +796,6 @@ For a real restore on a new laptop, run the same commands without `-p kaagaz-dri
 | `seaweedfs` | `kaagaz-seaweedfs`, private service, 10 GB disk at `/data` | `0.5c-512mb` |
 | `elasticmq` | `kaagaz-elasticmq`, private service, queues in memory | `0.5c-512mb` |
 | `clamav` | `kaagaz-clamav`, private service, 2 GB disk for signatures | `2c-4g`: clamd needs about 2 GB |
-| `ollama` | `kaagaz-ollama`, commented out | `2c-8g` or more: 8 GB+ |
-| `ocr` | none: `OCR_ENGINE=rapidocr` (PaddleOCR-VL's `OCR_URL` must be `ocr:8080`) | |
 
 The web app reaches the api at its public https address (`BACKEND_URL`, built in): a private address would need `http://` joined to a hostname, which a Blueprint cannot do.
 
@@ -872,7 +809,7 @@ The web app reaches the api at its public https address (`BACKEND_URL`, built in
 
 **Amazon S3 or Cloudflare R2 instead of SeaweedFS.** Delete `kaagaz-seaweedfs` and both `SEAWEEDFS_HOST` entries from `render.yaml`. On the api, change the two storage keys from `generateValue: true` to `sync: false` and enter the provider's key; the worker copies them. In `kaagaz-settings` set `STORAGE_BUCKET`, `STORAGE_REGION` and `STORAGE_ENDPOINT_URL` (R2: `https://<account id>.r2.cloudflarestorage.com`; Amazon S3: delete it). The pre-deploy command makes the bucket if the key may; otherwise make it first.
 
-**Turning the model on.** Uncomment `kaagaz-ollama` and change both `MODEL_ENABLED` values to `"true"` in `render.yaml` (a dashboard change would be put back by the next Blueprint sync). In `kaagaz-settings`, set `MODEL_BASE_URL` to `http://<kaagaz-ollama's internal hostname>:11434`; Render adds a random suffix to the name. From Ollama's Shell, pull the two models of section 1, then redeploy the api and the worker and run `python -m kaagaz.cli reembed` from the api's Shell (feature 39). It runs on CPU, so it is slow.
+**Turning the model on.** Change both `MODEL_ENABLED` values to `"true"` (and both `OCR_ENGINE` values to `gemini`, for Gemini scans) in `render.yaml` (a dashboard change would be put back by the next Blueprint sync). In `kaagaz-settings`, set `OPENROUTER_API_KEY` (section 1), then redeploy the api and the worker and run `python -m kaagaz.cli reembed` from the api's Shell (feature 39).
 
 **Backups.** Render keeps point-in-time recovery for a paid database (the past 3 days on a Hobby workspace, 7 on Pro), database exports for 7 days (the database's Recovery page), and a daily snapshot of each disk for at least 7 days. The database and the files are copied at different times, so restoring both can leave a document whose rows and file don't match. For a matching pair, as in section 6: suspend the api and the worker, export the database, copy `/data` off `kaagaz-seaweedfs` (scp over SSH, from Render's disk docs), then resume them. Restoring an export needs `kaagaz_app` made first and keeps owners and grants, as in section 6. The queue is never backed up: before a deploy or restart of `kaagaz-elasticmq`, wait until no document is still being read.
 
@@ -882,5 +819,5 @@ The web app reaches the api at its public https address (`BACKEND_URL`, built in
 - `BACKEND_URL` copies the api's `RENDER_EXTERNAL_URL` when the web app is built. If it comes out empty, set it on `kaagaz-frontend` by hand and Save, rebuild, and deploy.
 - Whether the pre-deploy command runs in a shell; `render.yaml` starts it with `/bin/sh -c` to be safe.
 - Add from .env on a group (Render documents it on a service's Environment page; failing that, add the lines one by one).
-- ClamAV and SeaweedFS writing to a fresh Render disk, and Ollama listening beyond localhost in its image.
+- ClamAV and SeaweedFS writing to a fresh Render disk.
 - R2's region and bucket creation through `STORAGE_REGION`.

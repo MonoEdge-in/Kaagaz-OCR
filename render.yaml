@@ -56,7 +56,7 @@ services:
         value: "3310"
       - key: SCANNER
         value: clamav
-      - key: OCR_ENGINE # PaddleOCR-VL needs OCR_URL to be ocr:8080, which Render cannot give
+      - key: OCR_ENGINE # gemini needs OPENROUTER_API_KEY; section 7 turns it on
         value: rapidocr
       - key: MODEL_ENABLED # the AI model is off; section 7 turns it on
         value: "false"
@@ -183,19 +183,6 @@ services:
       - key: STORAGE_SECRET_KEY
         fromService: { type: web, name: kaagaz-api, envVarKey: STORAGE_SECRET_KEY }
 
-  # Optional, off: the AI model through Ollama (section 7). 8 GB of memory or more.
-  # - type: pserv
-  #   name: kaagaz-ollama
-  #   runtime: image
-  #   image:
-  #     url: docker.io/ollama/ollama:0.35.0
-  #   region: singapore
-  #   plan: 2c-8g
-  #   disk:
-  #     name: ollama-data
-  #     mountPath: /root/.ollama
-  #     sizeGB: 20
-
 databases:
   - name: kaagaz-db
     region: singapore
@@ -214,11 +201,11 @@ envVarGroups:
   # QUEUE_WAIT_SECONDS JOB_MAX_ATTEMPTS SCANNER_TIMEOUT_SECONDS MAX_UPLOAD_MB
   # MAX_IMAGE_MB MAX_SHEET_MB ALLOWED_TYPES CSV_MAX_CELLS XLSX_MAX_ENTRIES
   # XLSX_MAX_MEMBER_BYTES XLSX_MAX_TOTAL_BYTES XLSX_MAX_CELLS XLSX_MAX_TEXT_CHARS
-  # MAX_PAGES PAGE_IMAGE_DPI MAX_IMAGE_PIXELS OCR_URL OCR_TIMEOUT_SECONDS OCR_DPI
+  # MAX_PAGES PAGE_IMAGE_DPI MAX_IMAGE_PIXELS OCR_TIMEOUT_SECONDS OCR_DPI
   # TEXT_LAYER_MIN_CHARS TEXT_LAYER_MIN_GOOD_RATIO SCAN_IMAGE_COVERAGE
-  # BLANK_PAGE_STDDEV LOW_RES_DPI MODEL_BASE_URL MODEL_CHAT MODEL_EMBED
-  # MODEL_VISION EMBEDDING_DIM MODEL_TIMEOUT_SECONDS MODEL_NUM_CTX
-  # MODEL_CARD_MAX_TOKENS MODEL_WINDOW_MAX_TOKENS MODEL_EXTRACT_TIMEOUT_SECONDS
+  # BLANK_PAGE_STDDEV LOW_RES_DPI MODEL_CHAT MODEL_EMBED
+  # EMBEDDING_DIM MODEL_TIMEOUT_SECONDS
+  # MODEL_CARD_MAX_TOKENS MODEL_EXTRACT_TIMEOUT_SECONDS
   # CARD_MAX_CHARS EXTRACT_WINDOW_CHARS EXTRACT_WINDOW_OVERLAP EXTRACT_MAX_WINDOWS
   # SESSION_HOURS LOGIN_MAX_FAILURES LOGIN_LOCK_MINUTES ADMIN_SESSION_MINUTES
   # TRASH_DAYS REPROCESS_PER_HOUR ANSWER_MAX_EVIDENCE ANSWER_MIN_EVIDENCE_SCORE
