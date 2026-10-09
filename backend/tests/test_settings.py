@@ -313,3 +313,14 @@ def test_a_bad_queue_setting_stops_start_up_by_name(name: str, value: str) -> No
 def test_the_express_lane_must_be_another_queue() -> None:
     with pytest.raises(SettingsError, match="QUEUE_EXPRESS_URL"):
         Settings.from_env(shipped(QUEUE_EXPRESS_URL=shipped()["QUEUE_URL"]))
+
+
+def test_q8_the_shipped_reader_timeout_fits_the_lease_with_room_for_a_heartbeat() -> None:
+    """PRD 5 Q8: OCR_TIMEOUT_SECONDS ships at 120 (one Gemini page) and QUEUE_LEASE_SECONDS at
+    1200, and the existing rule OCR_TIMEOUT_SECONDS + 135 <= QUEUE_LEASE_SECONDS holds; a timeout
+    one second past the rule is refused by name."""
+    settings = Settings.from_env(shipped())
+    assert (settings.ocr_timeout_seconds, settings.queue_lease_seconds) == (120.0, 1200)
+    assert settings.ocr_timeout_seconds + 135 <= settings.queue_lease_seconds
+    with pytest.raises(SettingsError, match="OCR_TIMEOUT_SECONDS"):
+        Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="1066"))
