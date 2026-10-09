@@ -7,13 +7,7 @@ import pytest
 from kaagaz.settings import Settings, SettingsError
 
 ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
-MODEL_SETTINGS = [
-    "MODEL_NUM_CTX",
-    "MODEL_CARD_MAX_TOKENS",
-    "MODEL_WINDOW_MAX_TOKENS",
-    "MODEL_EXTRACT_TIMEOUT_SECONDS",
-    "CARD_MAX_CHARS",
-]
+MODEL_SETTINGS = ["MODEL_CARD_MAX_TOKENS", "MODEL_EXTRACT_TIMEOUT_SECONDS", "CARD_MAX_CHARS"]
 
 
 def shipped(**changes: str | None) -> dict[str, str]:
@@ -35,13 +29,13 @@ def shipped(**changes: str | None) -> dict[str, str]:
 def test_the_shipped_env_example_parses_with_the_model_budgets() -> None:
     settings = Settings.from_env(shipped())
     budgets = (
-        settings.model_num_ctx,
         settings.model_card_max_tokens,
-        settings.model_window_max_tokens,
         settings.model_extract_timeout_seconds,
         settings.card_max_chars,
+        settings.extract_window_chars,
+        settings.extract_window_overlap,
     )
-    assert budgets == (8192, 1024, 2048, 300.0, 12000)
+    assert budgets == (1024, 300.0, 12000, 1700, 400)  # the windows a 2048-token reply answers (M1)
     assert settings.queue_lease_seconds == 1200
 
 
@@ -54,10 +48,9 @@ def test_a_missing_model_budget_stops_start_up_by_name(name: str) -> None:
 @pytest.mark.parametrize(
     ("name", "value"),
     [
-        ("MODEL_NUM_CTX", "0"),
-        ("MODEL_NUM_CTX", "8k"),
+        ("MODEL_CONTEXT_TOKENS", "0"),
+        ("MODEL_CONTEXT_TOKENS", "200k"),
         ("MODEL_CARD_MAX_TOKENS", "0"),
-        ("MODEL_WINDOW_MAX_TOKENS", "-1"),
         ("MODEL_EXTRACT_TIMEOUT_SECONDS", "0"),
         ("MODEL_EXTRACT_TIMEOUT_SECONDS", "-5"),
         ("MODEL_EXTRACT_TIMEOUT_SECONDS", "nan"),
@@ -73,24 +66,23 @@ def test_a_bad_model_budget_stops_start_up_by_name(name: str, value: str) -> Non
         Settings.from_env(shipped(**{name: value}))
 
 
-@pytest.mark.parametrize(
-    "name", ["MODEL_CARD_MAX_TOKENS", "MODEL_WINDOW_MAX_TOKENS", "MODEL_ANSWER_MAX_TOKENS"]
-)
+@pytest.mark.parametrize("name", ["MODEL_CARD_MAX_TOKENS", "MODEL_ANSWER_MAX_TOKENS"])
 def test_a_reply_budget_must_leave_1024_tokens_for_the_document(name: str) -> None:
     """Council fix 7: after the system prompt (at most 1000 tokens), a reply and its one
     repair retry, and 100 for the chat template, 1024 tokens stay for the document.
     8192 - 2 x 3034 - 1000 - 100 = 1024."""
-    assert Settings.from_env(shipped(MODEL_NUM_CTX="8192", **{name: "3034"}))
+    small = {"MODEL_CONTEXT_TOKENS": "8192", "ANSWER_WHOLE_DOC_TOKENS": "0"}
+    assert Settings.from_env(shipped(**small, **{name: "3034"}))
     with pytest.raises(SettingsError, match=name) as caught:
-        Settings.from_env(shipped(MODEL_NUM_CTX="8192", **{name: "3035"}))
-    assert "MODEL_NUM_CTX" in str(caught.value)
+        Settings.from_env(shipped(**small, **{name: "3035"}))
+    assert "MODEL_CONTEXT_TOKENS" in str(caught.value)
 
 
 def test_a_4096_window_with_a_2047_token_reply_is_refused() -> None:
     """It passes "under half the window", but leaves the document 2 tokens."""
     with pytest.raises(SettingsError, match="MODEL_CARD_MAX_TOKENS"):
         Settings.from_env(
-            shipped(MODEL_NUM_CTX="4096", MODEL_CARD_MAX_TOKENS="2047", MODEL_WINDOW_MAX_TOKENS="100")
+            shipped(MODEL_CONTEXT_TOKENS="4096", ANSWER_WHOLE_DOC_TOKENS="0", MODEL_CARD_MAX_TOKENS="2047")
         )
 
 
@@ -119,9 +111,9 @@ def test_the_answer_reply_budget_is_a_start_up_setting() -> None:
         Settings.from_env(env)
 
 
-def test_one_embedding_batch_or_vision_crop_must_end_well_inside_the_lease() -> None:
-    """One embedding batch or one vision crop is a single model call (MODEL_TIMEOUT_SECONDS)
-    between two heartbeats, so it gets the same margin as a card call (AR1)."""
+def test_one_embedding_batch_must_end_well_inside_the_lease() -> None:
+    """One embedding batch is a single model call (MODEL_TIMEOUT_SECONDS) between two
+    heartbeats, so it gets the same margin as a card call (AR1)."""
     fits = Settings.from_env(shipped(MODEL_TIMEOUT_SECONDS="1125", QUEUE_LEASE_SECONDS="1200"))
     assert fits.model_timeout_seconds == 1125.0
     with pytest.raises(SettingsError, match="MODEL_TIMEOUT_SECONDS") as caught:

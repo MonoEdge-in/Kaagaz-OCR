@@ -163,7 +163,7 @@ from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
 from kaagaz.chunking.script import ascii_digits, has_other_script_letters, spaced_words
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
-from kaagaz.search.indexing import query_input, recipe_tag
+from kaagaz.search.indexing import recipe_tag
 from kaagaz.search.scope import EVERYTHING, Scope
 from kaagaz.settings import Settings
 
@@ -734,14 +734,12 @@ class AnswerService:
     def _embed_all(self, texts: Sequence[str]) -> list[list[float] | None]:
         """Each text's vector, or None (no model, model down, unusable vectors, or an empty
         text), so search falls back to word and fuzzy matching. One model call for them
-        all, each in MODEL_EMBED's query input (kaagaz.search.indexing.query_input, PRD 3
-        V3, PRD 5 M5)."""
+        all, each as plain text (PRD 5 M5)."""
         wanted = [text for text in texts if text]
         if self._model is None or not wanted:
             return [None] * len(texts)
-        model_embed = self._settings.model_embed
         try:
-            vectors = self._model.embed([query_input(text, model_embed) for text in wanted])
+            vectors = self._model.embed(wanted)
         except (ModelUnavailable, ModelOutputError) as error:
             _log.warning("question searched without its meaning vector", extra={"code": error.code})
             return [None] * len(texts)

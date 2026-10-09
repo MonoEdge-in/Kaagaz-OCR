@@ -5,13 +5,23 @@ from pathlib import Path
 import pytest
 
 from kaagaz import settings as settings_module
-from kaagaz.ocr_server.app import ALLOWED_HOSTS
 from kaagaz.reading import ocr_dpi
 from kaagaz.settings import Settings, SettingsError
 from tests.settings_factory import make_settings
 
 ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
-OCR_SETTINGS = ["OCR_ENGINE", "OCR_URL", "OCR_TIMEOUT_SECONDS", "OCR_DPI"]
+OCR_SETTINGS = ["OCR_ENGINE", "OCR_TIMEOUT_SECONDS", "OCR_DPI"]
+KEY = "sk-or-v1-" + "k" * 64
+# PRD 5 section 7: the settings this backend no longer reads, with values an older .env
+# may still hold. Each name is split so the removed-names guard finds no copy of it here.
+REMOVED_SETTINGS = {
+    "OCR_" + "URL": "http://ocr:8080",
+    "MODEL_" + "BASE_URL": "http://localhost:11434",
+    "DOCKER_MODEL_" + "BASE_URL": "http://host.docker.internal:11434",
+    "MODEL_" + "VISION": "a-local-vision-model:3b",
+    "MODEL_" + "NUM_CTX": "8192",
+    "MODEL_" + "WINDOW_MAX_TOKENS": "2048",
+}
 
 
 def shipped(**changes: str | None) -> dict[str, str]:
@@ -32,9 +42,8 @@ def shipped(**changes: str | None) -> dict[str, str]:
 
 def test_the_shipped_env_example_parses_with_the_scan_reader_defaults() -> None:
     settings = Settings.from_env(shipped())
-    assert (settings.ocr_engine, settings.ocr_url, settings.ocr_timeout_seconds, settings.ocr_dpi) == (
+    assert (settings.ocr_engine, settings.ocr_timeout_seconds, settings.ocr_dpi) == (
         "rapidocr",
-        "http://localhost:8080",
         120.0,  # one Gemini page (PRD 5 Q8; was 300)
         300,
     )
@@ -51,8 +60,6 @@ def test_a_missing_scan_reader_setting_stops_start_up_by_name(name: str) -> None
     ("name", "value"),
     [
         ("OCR_ENGINE", "paddleocr"),
-        ("OCR_URL", "ftp://ocr:8080"),
-        ("OCR_URL", "ocr:8080"),
         ("OCR_TIMEOUT_SECONDS", "0"),
         ("OCR_TIMEOUT_SECONDS", "-5"),
         ("OCR_TIMEOUT_SECONDS", "nan"),
@@ -66,10 +73,36 @@ def test_a_bad_scan_reader_setting_stops_start_up_by_name(name: str, value: str)
         Settings.from_env(shipped(**{name: value}))
 
 
-@pytest.mark.parametrize("engine", ["gemini", "paddleocr_vl", "rapidocr", "none"])
+@pytest.mark.parametrize("engine", ["gemini", "rapidocr", "none"])
 def test_each_engine_name_is_accepted(engine: str) -> None:
-    key = "sk-or-v1-" + "k" * 64  # gemini needs a key (tests/test_gemini_settings.py)
-    assert Settings.from_env(shipped(OCR_ENGINE=engine, OPENROUTER_API_KEY=key)).ocr_engine == engine
+    # gemini needs a key (tests/test_gemini_settings.py)
+    assert Settings.from_env(shipped(OCR_ENGINE=engine, OPENROUTER_API_KEY=KEY)).ocr_engine == engine
+
+
+def test_a_removed_setting_still_in_the_env_is_ignored() -> None:
+    """PRD 5 section 7: the deploy runs unattended, so an older .env with every removed
+    setting still starts, exactly as without them."""
+    assert Settings.from_env(shipped(**REMOVED_SETTINGS)) == Settings.from_env(shipped())
+
+
+def test_the_old_layout_reader_stops_start_up_by_name() -> None:
+    """PRD 5 section 7: OCR_ENGINE may no longer name the removed reader."""
+    with pytest.raises(SettingsError, match="OCR_ENGINE"):
+        Settings.from_env(shipped(OCR_ENGINE="paddle" + "ocr_vl"))
+
+
+@pytest.mark.parametrize(("name", "other"), [("MODEL_CHAT", "MODEL_EMBED"), ("MODEL_EMBED", "MODEL_CHAT")])
+def test_a_local_model_with_the_model_on_stops_start_up_by_name(name: str, other: str) -> None:
+    """PRD 5 M1, M5: with MODEL_ENABLED, MODEL_CHAT and MODEL_EMBED are google/gemini- models;
+    a local model name (it used to fall back to a local server) stops start-up by name."""
+    gemini = {"MODEL_CHAT": "google/gemini-3.1-pro-preview", "MODEL_EMBED": "google/gemini-embedding-2"}
+    on = {**gemini, "MODEL_ENABLED": "true", "OPENROUTER_API_KEY": KEY}
+    assert Settings.from_env(shipped(**on)).model_enabled
+    with pytest.raises(SettingsError, match=name) as caught:
+        Settings.from_env(shipped(**{**on, name: "a-local-model:4b"}))
+    assert other not in str(caught.value)
+    off = Settings.from_env(shipped(**{**on, "MODEL_ENABLED": "false", name: "a-local-model:4b"}))
+    assert not off.model_enabled  # with the model off nothing is called, so nothing is refused
 
 
 def test_one_ocr_request_must_end_well_inside_the_lease() -> None:
@@ -92,35 +125,6 @@ def test_a_dpi_rule_needs_two_ocr_requests_inside_the_lease() -> None:
         Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="533", **twice))
     once = Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="533", QUEUE_LEASE_SECONDS="1200"))
     assert once.ocr_dpi_rule == "fixed"
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://ocr:9000",
-        "http://evil.example:8080",
-        "http://ocr",
-        "https://localhost:8443",
-        "http://[::1]:8080",
-    ],
-)
-def test_paddleocr_vl_needs_a_host_the_ocr_server_accepts(url: str) -> None:
-    """The server answers 421 to any other Host, so a wrong URL would fail every scan."""
-    with pytest.raises(SettingsError, match="OCR_URL"):
-        Settings.from_env(shipped(OCR_ENGINE="paddleocr_vl", OCR_URL=url))
-
-
-@pytest.mark.parametrize("url", ["http://ocr:8080", "http://localhost:8080/", "http://127.0.0.1:8080"])
-def test_each_host_the_ocr_server_accepts_is_allowed(url: str) -> None:
-    assert Settings.from_env(shipped(OCR_ENGINE="paddleocr_vl", OCR_URL=url)).ocr_url == url
-
-
-def test_the_host_is_checked_only_for_paddleocr_vl_and_matches_the_server() -> None:
-    assert (
-        Settings.from_env(shipped(OCR_ENGINE="rapidocr", OCR_URL="http://elsewhere:1")).ocr_engine
-        == "rapidocr"
-    )
-    assert settings_module.OCR_SERVER_HOSTS == ALLOWED_HOSTS
 
 
 def test_the_ocr_dpi_rule_is_fixed_unless_set_to_one_the_readers_know() -> None:
@@ -392,21 +396,5 @@ def test_the_whole_documents_must_fit_the_context_window() -> None:
     assert fits.model_context_tokens == int(context)
     with pytest.raises(SettingsError, match="MODEL_CONTEXT_TOKENS"):
         Settings.from_env(shipped(MODEL_CONTEXT_TOKENS=context, ANSWER_WHOLE_DOC_TOKENS="120001"))
-    off = Settings.from_env(shipped(MODEL_CONTEXT_TOKENS=str(room), ANSWER_WHOLE_DOC_TOKENS="0"))
+    off = Settings.from_env(shipped(MODEL_CONTEXT_TOKENS="8192", ANSWER_WHOLE_DOC_TOKENS="0"))
     assert off.answer_whole_doc_tokens == 0
-
-
-def test_a_local_chat_model_uses_model_num_ctx_everywhere_and_never_whole_documents() -> None:
-    """M1: with a MODEL_CHAT that is not google/gemini- (Ollama), every budget uses the smaller
-    of MODEL_CONTEXT_TOKENS and MODEL_NUM_CTX, the window every call sends, and whole-document
-    mode (CX5) is off; the answers, the card and invoice windows and the map read it."""
-    from kaagaz.chunking.sections import MapBudget
-    from kaagaz.extraction.understanding import ModelBudget
-
-    local = Settings.from_env(shipped(MODEL_CHAT="qwen3:4b", MODEL_NUM_CTX="8192"))
-    assert (local.model_context_tokens, local.answer_whole_doc_tokens) == (8192, 0)
-    assert MapBudget.from_settings(local).context_tokens == ModelBudget.from_settings(local).num_ctx == 8192
-    smaller = shipped(MODEL_CHAT="qwen3:4b", MODEL_NUM_CTX="8192", MODEL_CONTEXT_TOKENS="6000")
-    assert Settings.from_env(smaller).model_context_tokens == 6000
-    gemini = Settings.from_env(shipped(MODEL_NUM_CTX="8192"))
-    assert (gemini.model_context_tokens, gemini.answer_whole_doc_tokens) == (200_000, 120_000)

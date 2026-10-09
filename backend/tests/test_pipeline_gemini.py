@@ -731,7 +731,7 @@ class KeylessTest(unittest.TestCase):
         self.assertEqual((totals.pages_gemini, totals.pages_local, totals.input_tokens), (0, 0, 0))
 
     def test_keyless_a_page_another_engine_read_is_neither_local_nor_local_reader(self) -> None:
-        for engine in ("rapidocr", "paddleocr_vl"):
+        for engine in ("rapidocr", "an_old_reader"):  # an unknown read_by, such as an old row
             with self.subTest(engine=engine):
                 read = page_read(TOTAL, read_by=engine, quality=None)
                 system = rig(ScriptedReader({1: read}), ocr_model=None)

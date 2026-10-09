@@ -642,13 +642,8 @@ def test_a_model_answer_is_used_and_cited() -> None:
     assert answer.model_used is True
     assert [s.text for s in answer.sentences] == ["The grand total of INV-1042 is Rs. 1,20,000."]
     assert answer.citations[0].ref_id == INVOICE.piece_id
-    # PRD 3 V3: the model card's query format, no space after "Query:".
-    assert model.embedded == [
-        [
-            "Instruct: Given a question about business documents, retrieve passages that answer it"
-            "\nQuery:what is grand total of inv-1042"
-        ]
-    ]
+    # PRD 5 M5: the question is embedded as plain text.
+    assert model.embedded == [["what is grand total of inv-1042"]]
 
 
 def test_a_model_inventing_a_number_loses_that_sentence() -> None:
@@ -734,7 +729,7 @@ def test_a_devanagari_question_reaches_search_and_is_embedded_as_asked() -> None
     answer = answer_service.answer(A, "पाटील का बिल")
 
     assert [call[1] for call in retriever.calls] == ["patil invoice"]
-    assert model.embedded[0][0].endswith("\nQuery:पाटील का बिल")
+    assert model.embedded[0][0] == "पाटील का बिल"
     assert answer.normalized_question == "patil invoice"
 
 
