@@ -264,7 +264,8 @@ class Context(Protocol):
         hits: Sequence[Hit],
         scope: Scope,
     ) -> Sequence[Hit]:
-        """The pieces of the two sections the keywords or the vector find, never a hit."""
+        """The pieces of the two sections the keywords or the vector find (near enough),
+        never a hit, at most TOPIC_EXPAND_MAX_PIECES a section."""
         ...
 
     def cards(
@@ -280,17 +281,27 @@ class PgRetriever:
     ``db.customer``."""
 
     def __init__(
-        self, db: Database, *, recipe: str, ef_search: int, neighbours: int, topic_pieces: int = 0
+        self,
+        db: Database,
+        *,
+        recipe: str,
+        ef_search: int,
+        neighbours: int,
+        topic_pieces: int = 0,
+        min_score: float = 1.0,
     ) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
         another tag are left out; a section's ``embed_recipe`` too); ``ef_search``:
         SEARCH_EF; ``neighbours``: ANSWER_NEIGHBOURS, the pieces on each side of a hit (0:
-        none); ``topic_pieces``: TOPIC_EXPAND_MAX_PIECES, a topic's pieces a document."""
+        none); ``topic_pieces``: TOPIC_EXPAND_MAX_PIECES, a topic's pieces a document and a
+        section's pieces (0: none); ``min_score``: ANSWER_MIN_EVIDENCE_SCORE, the cosine
+        similarity a section's summary needs to match by meaning (1: the same direction)."""
         self._db = db
         self._recipe = recipe
         self._ef_search = ef_search
         self._neighbours = neighbours
         self._topic_pieces = topic_pieces
+        self._min_score = min_score
 
     def search(
         self,
@@ -388,6 +399,8 @@ class PgRetriever:
                 embedding=embedding,
                 recipe=self._recipe,
                 hits=hits,
+                min_score=self._min_score,
+                per_section=self._topic_pieces,
                 scope=scope,
             )
 

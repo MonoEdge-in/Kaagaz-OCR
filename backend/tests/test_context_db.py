@@ -9,7 +9,9 @@ are in test_isolation_context_db.py.
 
 import json
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from sqlalchemy import Connection, text
@@ -37,6 +39,7 @@ SECTION = (
     " to_tsvector('simple', array_to_string(CAST(:path AS text[]), ' ') || ' ' || :summary),"
     " CAST(:v AS halfvec(1024)), :r)"
 )
+MIN_SCORE = 0.6  # ANSWER_MIN_EVIDENCE_SCORE: a section's summary as near as a hit must be
 TOPIC = (
     "INSERT INTO document_topics (customer_id, document_id, topic, aliases, piece_seqs)"
     " VALUES (:c, :d, :topic, CAST(:aliases AS text[]), CAST(:seqs AS integer[]))"
@@ -159,19 +162,83 @@ def test_cx6_section_pieces_match_words_first_then_meaning(db: Database) -> None
     _section(db, customer, document, 1, (2, 2), "Pay and salary.", axis(1))
     _section(db, customer, document, 2, (3, 4), "Casual and maternity leave.", axis(2))
     with db.customer(customer) as conn:
-        worded = hybrid.section_pieces(
-            conn, customer_id=customer, keywords=["salary"], embedding=None, recipe=RECIPE, hits=[]
-        )
-        meant = hybrid.section_pieces(
-            conn, customer_id=customer, keywords=["salary"], embedding=axis(2), recipe=RECIPE, hits=[]
-        )
-        other_recipe = hybrid.section_pieces(
-            conn, customer_id=customer, keywords=["nothing"], embedding=axis(2), recipe="other#ctx1", hits=[]
-        )
+        worded = _sections(conn, customer, ["salary"], None)
+        meant = _sections(conn, customer, ["salary"], axis(2))
+        other_recipe = _sections(conn, customer, ["nothing"], axis(2), recipe="other#ctx1")
 
     assert [h.seq for h in worded] == [2]
     assert [h.seq for h in meant] == [2, 3, 4]  # the word match first, then the nearest summary
     assert other_recipe == []
+
+
+def _sections(
+    conn: Connection,
+    customer: str,
+    keywords: list[str],
+    vector: list[float] | None,
+    *,
+    hits: Sequence[Any] = (),
+    per_section: int = 12,
+    recipe: str = RECIPE,
+) -> list[hybrid.SearchHit]:
+    return hybrid.section_pieces(
+        conn,
+        customer_id=customer,
+        keywords=keywords,
+        embedding=vector,
+        recipe=recipe,
+        hits=hits,
+        min_score=MIN_SCORE,
+        per_section=per_section,
+    )
+
+
+def test_cx6_a_section_far_in_meaning_adds_nothing(db: Database) -> None:
+    """A section with no word of the question is taken only when its summary is as near the
+    question as a hit must be to pass the gate (ANSWER_MIN_EVIDENCE_SCORE): LIMIT 2 alone
+    took the second-best summary however far it was."""
+    customer, _ = new_customer(db)
+    document, _ = _offer(db, customer)
+    _section(db, customer, document, 0, (0, 1), "Leave and holidays.", axis(0))
+    _section(db, customer, document, 1, (2, 2), "Pay and salary.", axis(1))
+    _section(db, customer, document, 2, (3, 4), "Casual and maternity leave.", axis(2, 0.8, 1, 0.6))
+    with db.customer(customer) as conn:
+        near = _sections(conn, customer, ["nothing"], axis(2))  # cosine 0.8: near enough
+        far = _sections(conn, customer, ["nothing"], axis(3))  # cosine 0 to every summary
+
+    assert [h.seq for h in near] == [3, 4]
+    assert far == []
+
+
+def test_cx6_a_section_gives_at_most_its_cap_nearest_the_hits_never_a_hit(db: Database) -> None:
+    customer, _ = new_customer(db)
+    document, _ = _offer(db, customer)
+    _section(db, customer, document, 0, (0, 4), "Leave, pay and holidays.", axis(0))
+    with db.customer(customer) as conn:
+        hit = hybrid.whole(conn, customer_id=customer, scope=EVERYTHING, max_bytes=10_000)
+        assert hit is not None
+        capped = _sections(conn, customer, ["leave"], None, per_section=2)
+        near_hit = _sections(conn, customer, ["leave"], None, hits=[hit[4]], per_section=2)
+        none = _sections(conn, customer, ["leave"], None, per_section=0)
+
+    assert [h.seq for h in capped] == [0, 1]  # no hit in the document: from its start
+    assert [h.seq for h in near_hit] == [2, 3]  # the hit (seq 4) takes no place; 3 and 2 are nearest
+    assert none == []
+
+
+def test_cx6_a_hit_takes_no_place_in_a_topics_cap_and_the_nearest_come_first(db: Database) -> None:
+    customer, _ = new_customer(db)
+    document, _ = _offer(db, customer)
+    _topic(db, customer, document, "leave", ["holidays"], [0, 1, 3, 4])
+    with db.customer(customer) as conn:
+        hit = hybrid.whole(conn, customer_id=customer, scope=EVERYTHING, max_bytes=10_000)
+        assert hit is not None
+        found = hybrid.topic_pieces(
+            conn, customer_id=customer, terms=["leave"], hits=[hit[4]], per_document=2
+        )
+
+    # Seq 4 is the hit: 3 (one away) and 1 (three away), not 0 and 1 by seq with the hit counted.
+    assert [h.seq for h in found] == [1, 3]
 
 
 def test_m2_cards_of_current_documents_out_of_trash_only(db: Database) -> None:
@@ -188,18 +255,3 @@ def test_m2_cards_of_current_documents_out_of_trash_only(db: Database) -> None:
         found = hybrid.cards(conn, customer_id=customer, document_ids=[live, binned])
 
     assert found == {live: ("offer.pdf", card)}
-
-
-def test_cx6_a_hit_takes_no_place_in_a_topics_cap_and_the_nearest_come_first(db: Database) -> None:
-    customer, _ = new_customer(db)
-    document, _ = _offer(db, customer)
-    _topic(db, customer, document, "leave", ["holidays"], [0, 1, 3, 4])
-    with db.customer(customer) as conn:
-        hit = hybrid.whole(conn, customer_id=customer, scope=EVERYTHING, max_bytes=10_000)
-        assert hit is not None
-        found = hybrid.topic_pieces(
-            conn, customer_id=customer, terms=["leave"], hits=[hit[4]], per_document=2
-        )
-
-    # Seq 4 is the hit: 3 (one away) and 1 (three away), not 0 and 1 by seq with the hit counted.
-    assert [h.seq for h in found] == [1, 3]

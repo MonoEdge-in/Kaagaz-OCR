@@ -409,7 +409,10 @@ _TOPIC_PIECES = text(
 
 # CX6: the pieces of the two best sections, by their tsv (the heading path and summary,
 # 'simple', written by the save) first, then by the meaning of the summary, only vectors
-# with the search's recipe; then each section's pieces in seq order. _DETAILS's columns.
+# with the search's recipe and a cosine distance of at most :far (a section matches by
+# meaning only as near as a hit must be to pass the evidence gate); then, never a hit,
+# :per_section of each section's pieces, the nearest a hit of its document by seq first (by
+# seq when it has none), in seq order. _DETAILS's columns.
 # ponytail: an exact scan of the scope's sections (about a tenth of its pieces); the HNSW
 # index document_sections_embedding is the upgrade once that scan is slow.
 _SECTION_PIECES = text(
@@ -420,7 +423,8 @@ _SECTION_PIECES = text(
     " JOIN documents d ON d.customer_id = ds.customer_id AND d.id = ds.document_id"
     " CROSS JOIN websearch_to_tsquery('simple', :k) AS q (q)"
     " WHERE ds.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND (ds.tsv @@ q.q OR (CAST(:vec AS text) IS NOT NULL AND ds.embed_recipe = :recipe))"
+    " AND (ds.tsv @@ q.q OR (CAST(:vec AS text) IS NOT NULL AND ds.embed_recipe = :recipe"
+    " AND ds.embedding <=> CAST(:vec AS halfvec(1024)) <= CAST(:far AS float8)))"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
     " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
@@ -431,17 +435,25 @@ _SECTION_PIECES = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
-    " ORDER BY matched DESC, score DESC, distance, ds.document_id, ds.seq LIMIT 2)"
+    " ORDER BY matched DESC, score DESC, distance, ds.document_id, ds.seq LIMIT 2),"
+    " h AS (SELECT * FROM unnest(CAST(:documents AS uuid[]), CAST(:seqs AS integer[]))"
+    " AS h (document_id, seq)),"
+    " r AS (SELECT s.document_id, s.seq AS section_seq, s.matched, s.score, s.distance, n.seq,"
+    " row_number() OVER (PARTITION BY s.document_id, s.seq ORDER BY g.gap, n.seq) AS k"
+    " FROM s CROSS JOIN LATERAL generate_series(s.piece_seq_from, s.piece_seq_to) AS n (seq)"
+    " LEFT JOIN LATERAL (SELECT min(abs(n.seq - h.seq)) AS gap FROM h"
+    " WHERE h.document_id = s.document_id) AS g ON true"
+    " WHERE g.gap IS DISTINCT FROM 0)"
     " SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to, p.text,"
     " p.regions, CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :c"
     " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
     " d.doc_type, p.seq, p.context_header"
-    " FROM s"
-    " JOIN pieces p ON p.customer_id = :c AND p.document_id = s.document_id"
-    " AND p.seq BETWEEN s.piece_seq_from AND s.piece_seq_to"
+    " FROM r"
+    " JOIN pieces p ON p.customer_id = :c AND p.document_id = r.document_id AND p.seq = r.seq"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " ORDER BY s.matched DESC, s.score DESC, s.distance, s.document_id, s.seq, p.seq LIMIT :n"
+    " AND r.k <= :per_section"
+    " ORDER BY r.matched DESC, r.score DESC, r.distance, r.document_id, r.section_seq, p.seq LIMIT :n"
 )
 
 # M2: the cards of the documents that supply evidence, only a current, ready one out of
@@ -847,18 +859,27 @@ def section_pieces(
     embedding: list[float] | None,
     recipe: str,
     hits: "Sequence[Hit]",
+    min_score: float,
+    per_section: int,
     scope: Scope = EVERYTHING,
 ) -> list[SearchHit]:
     """CX6: the pieces of the two sections whose heading path or summary holds any of
     ``keywords``, then whose summary is nearest ``embedding`` in meaning (vectors tagged
-    ``recipe`` only), at most ``MAX_LIMIT``, never a hit. One statement."""
-    if scope.matches_nothing or not (keywords or embedding):
+    ``recipe`` only, with a cosine similarity of at least ``min_score``,
+    ANSWER_MIN_EVIDENCE_SCORE: a summary further than a hit the gate would pass is not
+    relevant), at most ``per_section`` a section (TOPIC_EXPAND_MAX_PIECES, 0: none), the
+    nearest a hit first, and ``MAX_LIMIT`` in all, never a hit. One statement."""
+    if per_section < 1 or scope.matches_nothing or not (keywords or embedding):
         return []
     params = {
         "c": customer_id,
         "k": " or ".join(keywords),  # websearch_to_tsquery never fails on a customer's text
         "vec": None if embedding is None else vector_literal(embedding),
         "recipe": recipe,
+        "far": 1.0 - min_score,  # a cosine distance is 1 - the similarity
+        "documents": [hit.document_id for hit in hits],
+        "seqs": [hit.seq for hit in hits],
+        "per_section": per_section,
         "n": MAX_LIMIT,
     }
     return _unseen(conn.execute(_SECTION_PIECES, params | scope.params()), hits)

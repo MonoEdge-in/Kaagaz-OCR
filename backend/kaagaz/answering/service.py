@@ -61,9 +61,11 @@ The steps (docs/architecture.md):
     is judged per sentence as ever); no search, aspect, topic, section or neighbour.
     Otherwise the rewrite also lists up to QUERY_ASPECTS_MAX aspects (even with no
     history), each searched with the question and fused (``TranslatedSearch``, one
-    batched embed); after the gate, the pieces of the
-    topics the question, an aspect or a hit names (TOPIC_EXPAND_MAX_PIECES a document)
-    and of the two best sections come after the hits, then the neighbours. Each document
+    batched embed); after the gate, the pieces of the topics the question, an aspect or a
+    hit names (TOPIC_EXPAND_MAX_PIECES a document, never a hit, the nearest a hit first)
+    and of the two best sections (a word match, or a summary at least
+    ANSWER_MIN_EVIDENCE_SCORE near in meaning; TOPIC_EXPAND_MAX_PIECES a section) come
+    after the hits, then the neighbours. Each document
     that supplies the model's evidence adds one card line, "AI summary, not evidence",
     with no id, so it is never cited. M4: the evidence is cut from its end (neighbours,
     then topic and section pieces, then hits), and the cards before any of it.
@@ -303,6 +305,7 @@ class AnswerService:
             ef_search=settings.search_ef,
             neighbours=settings.answer_neighbours,
             topic_pieces=settings.topic_expand_max_pieces,
+            min_score=settings.answer_min_evidence_score,
         )
         self._retriever: Retriever = pg if retriever is None else retriever
         self._translated: TranslatedSearch | None = pg if retriever is None else translated_search
