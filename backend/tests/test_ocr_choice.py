@@ -71,11 +71,23 @@ def test_rt3_the_one_reader_says_what_this_server_reads_with(rapidocr_installed:
         "none": "Scans wait until this server has a scan reader",
         "gemini": "The usual reader here: Gemini",
     }
-    assert ocr_choices(RAPID)[0]["hint"] == "The usual reader here: RapidOCR"
+    assert ocr_choices(RAPID)[0]["hint"] == "The usual reader here: the backup reader"
     assert ocr_choices(PADDLE)[0]["hint"] == (
-        "The usual reader here: PaddleOCR-VL, then RapidOCR for a page it can't read"
+        "The usual reader here: the layout reader, then the backup reader for a page it can't read"
     )
     assert ocr_choices(RAPID)[0]["title"] == "Auto"
+
+
+@pytest.mark.parametrize(
+    "settings", [NONE, RAPID, PADDLE, GEMINI], ids=["none", "rapidocr", "paddle", "gemini"]
+)
+def test_u8_no_server_sent_title_or_hint_names_an_engine(
+    settings: Settings, rapidocr_installed: None
+) -> None:
+    """PRD 5 U8: the titles "PaddleOCR-VL" and "RapidOCR" go; words people know instead."""
+    words = [str(item[key]) for item in ocr._engine_choices(settings) for key in ("title", "hint")]
+    assert [word for word in words if "OCR" in word or "Paddle" in word] == []
+    assert {ocr.PaddleVlEngine.title, ocr.RapidOcrEngine.title} == {"Layout reader", "Backup reader"}
 
 
 def test_rt3_listing_the_reader_builds_and_calls_nothing(
