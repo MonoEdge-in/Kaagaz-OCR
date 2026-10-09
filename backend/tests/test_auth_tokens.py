@@ -477,6 +477,9 @@ class _Queue(MemoryQueue):
     def ping(self) -> None:
         return None
 
+    def depth(self) -> dict[str, int]:
+        return {"express": 0, "main": 0}
+
 
 class _NoAnswers:
     def answer(

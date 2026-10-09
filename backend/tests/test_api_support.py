@@ -106,6 +106,12 @@ class ApiFakeQueue(MemoryQueue):
         if self.down:
             raise BackendUnavailable("queue")
 
+    def depth(self) -> dict[str, int]:
+        """Every job queued so far counts as waiting in the main lane."""
+        if self.down:
+            raise BackendUnavailable("queue")
+        return {"express": 0, "main": len(self.jobs)}
+
 
 def answer_json(*, status: str = "answered", label: str | None = "verified") -> dict[str, Any]:
     """An ``Answer`` as frontend/lib/types.ts defines it."""
