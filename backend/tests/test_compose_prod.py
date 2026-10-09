@@ -1,26 +1,37 @@
 """The EC2 server's compose file and Caddy's file (Deployment PRD, WP-B).
 
-docker-compose.prod.yml is laid over docker-compose.yml and docker-compose.gpu.yml.
-The files are read as plain text, as tests/test_compose_ocr.py reads them, so the
-test needs no YAML library and no Docker. What Compose itself makes of the three
-files together (the ``!reset`` tags, volumes merged by target path) is checked by
-CI's "Production compose renders" step, which runs ``docker compose ... config``.
+docker-compose.prod.yml is laid over docker-compose.yml. The files are read as
+plain text, so the test needs no YAML library and no Docker. What Compose itself
+makes of the two files together (the ``!reset`` tags, volumes merged by target
+path) is checked by CI's "Production compose renders" step, which runs
+``docker compose ... config``.
 """
 
 import re
 from pathlib import Path
 
-from tests.test_compose_ocr import keys, service
-
 ROOT = Path(__file__).resolve().parents[2]
 PROD = "docker-compose.prod.yml"
-PROD_COMMAND = (
-    "docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod.yml "
-    "--profile ollama --profile paddle up -d --build"
-)
+PROD_COMMAND = "docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build"
 LOGGING = 'x-logging: &logging\n  driver: json-file\n  options:\n    max-size: "20m"\n    max-file: "5"\n'
 ONE_SHOT = {"migrate"}  # runs once per deploy and exits
 CLEARED = {"postgres", "seaweedfs", "elasticmq", "clamav", "api", "frontend"}
+# PRD 5 section 7: the scan reader and the model run outside the stack, so these are all.
+BASE_SERVICES = ["postgres", "seaweedfs", "elasticmq", "clamav", "migrate", "api", "worker", "frontend"]
+_NEXT_KEY = re.compile(r"^ {0,2}[a-z]", re.MULTILINE)  # the next service, or a top-level key
+
+
+def service(name: str, file: str = "docker-compose.yml") -> str:
+    """One service's block in a compose file, up to the next service or top-level key."""
+    text = (ROOT / file).read_text(encoding="utf-8")
+    block = text[text.index(f"\n  {name}:\n") + 1 :]
+    following = _NEXT_KEY.search(block, block.index("\n") + 1)
+    return block[: following.start()] if following else block
+
+
+def keys(block: str) -> set[str]:
+    """A service block's own keys (four spaces in)."""
+    return set(re.findall(r"^    ([a-z_]+):", block, re.MULTILINE))
 
 
 def services(file: str) -> list[str]:
@@ -37,6 +48,29 @@ def has(block: str, line: str) -> bool:
     return re.search(rf"^    {re.escape(line)}( #.*)?$", block, re.MULTILINE) is not None
 
 
+def test_the_base_file_runs_only_the_app_and_its_stand_ins() -> None:
+    """PRD 5 section 7: no reader or model service, no extra network, and the backend
+    containers get no address for one (the shared x-backend block lists every name)."""
+    text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert services("docker-compose.yml") == BASE_SERVICES
+    assert re.findall(r"^([a-z-]+):", text, re.MULTILINE) == ["name", "x-backend", "services", "volumes"]
+    volumes = r"^volumes:\n  postgres-data:\n  seaweedfs-data:\n  elasticmq-data:\n  clamav-data:\n\Z"
+    assert re.search(volumes, text, re.MULTILINE)
+    backend = text[text.index("x-backend:") : text.index("\nservices:\n")]
+    assert re.findall(r"^    ([A-Z_]+):", backend, re.MULTILINE) == [
+        "DATABASE_URL",
+        "STORAGE_ENDPOINT_URL",
+        "QUEUE_ENDPOINT_URL",
+        "QUEUE_URL",
+        "QUEUE_EXPRESS_URL",
+        "WORKER_REPLICAS",
+        "CLAMAV_HOST",
+        "CLAMAV_PORT",
+    ]
+    assert re.findall(r"^  ([a-z_]+):", backend, re.MULTILINE) == ["image", "build", "env_file", "environment"]
+    assert "networks" not in keys(service("worker"))
+
+
 def test_the_prod_file_covers_every_service_and_adds_only_caddy() -> None:
     text = (ROOT / PROD).read_text(encoding="utf-8")
     assert PROD_COMMAND in text
@@ -46,11 +80,10 @@ def test_the_prod_file_covers_every_service_and_adds_only_caddy() -> None:
 
 
 def test_only_caddy_publishes_ports_and_only_80_and_443() -> None:
-    """Every service that publishes a port in the base file has it cleared by the GPU
-    file (ollama) or this one, so caddy's are the only ports left."""
+    """Every service that publishes a port in the base file has it cleared by this one,
+    so caddy's are the only ports left."""
     published = {name for name in services("docker-compose.yml") if "ports" in keys(service(name))}
-    assert published == CLEARED | {"ollama"}
-    assert has(service("ollama", "docker-compose.gpu.yml"), "ports: !reset []")
+    assert published == CLEARED
     cleared = {name for name in services(PROD) if has(service(name, PROD), "ports: !reset []")}
     assert cleared == CLEARED
     assert {name for name in services(PROD) if "ports" in keys(service(name, PROD))} == CLEARED | {"caddy"}
@@ -75,16 +108,6 @@ def test_every_long_running_service_restarts_and_every_log_is_rotated() -> None:
             assert not any(restarts), name
         else:
             assert restarts.count(True) == 1, name  # set once, in the base file or this one
-
-
-def test_ocr_keeps_its_security_settings() -> None:
-    """The prod file adds only log rotation to ocr, so every security setting stays the
-    base file's (tests/test_compose_ocr.py checks those, and that the GPU file keeps them)."""
-    assert keys(service("ocr", PROD)) == {"logging"}
-    ocr = service("ocr")
-    for line in ("read_only: true", "cap_drop: [ALL]", 'user: "10001:10001"', "networks: [ocr_net]"):
-        assert has(ocr, line), line
-    assert "ports" not in keys(ocr)
 
 
 def test_seaweedfs_reads_the_servers_own_keys_file() -> None:
