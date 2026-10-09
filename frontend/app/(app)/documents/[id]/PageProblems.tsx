@@ -4,7 +4,9 @@
 // what happened in one line from the issue table and the fix, for each problem, then
 // three buttons. Read this page again and Keep as is (a reviewer or an admin) ask
 // first, inside the page, never in a browser dialog; the question takes focus, and
-// focus goes back to the button when it is cancelled or fails. Upload a better scan
+// focus goes back to the button when it is cancelled or fails, or on to the note that
+// says it is done when it goes through (the question and that button are gone then:
+// "Being read again", the live status, or "kept as is"). Upload a better scan
 // sends a new version of the document (the existing upload), which is read in full.
 // The steps and the words are components/viewer/pageProblems.ts.
 
@@ -57,6 +59,8 @@ export function PageProblems({ documentId, page, userId, canFix, canUpload, onRe
   const kept = keptText(page);
   const readingAgain = page.read_again_requested_at !== null || askedAgain;
   const questionId = `page-${page.page_no}-question`;
+  // Set when the fix has just gone through, so the note mounts (or is kept) with focus.
+  const focusIfDone = (fix: Fix) => (state.step === "done" && state.fix === fix ? focusOnMount : undefined);
 
   function open(fix: Fix, button: HTMLButtonElement) {
     opener.current = button;
@@ -118,9 +122,13 @@ export function PageProblems({ documentId, page, userId, canFix, canUpload, onRe
             </li>
           ))}
         </ul>
-        {kept && <p className={styles.problemNote}>{kept}</p>}
+        {kept && (
+          <p ref={focusIfDone("keep")} className={styles.problemNote} tabIndex={-1}>
+            {kept}
+          </p>
+        )}
         {readingAgain && (
-          <p className={styles.problemNote} role="status">
+          <p ref={focusIfDone("read")} className={styles.problemNote} role="status" tabIndex={-1}>
             {READING_AGAIN_TEXT}
           </p>
         )}

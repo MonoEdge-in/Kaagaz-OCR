@@ -38,6 +38,8 @@ export type FixState =
   | { step: "idle" }
   | { step: "confirming"; fix: Fix }
   | { step: "sending"; fix: Fix }
+  // The fix went through: focus goes to its note, as the confirmation it replaces is gone.
+  | { step: "done"; fix: Fix }
   | { step: "error"; message: string };
 
 export type FixEvent =
@@ -51,13 +53,15 @@ export type FixEvent =
 export function fixReducer(state: FixState, event: FixEvent): FixState {
   switch (event.type) {
     case "open":
-      return state.step === "idle" || state.step === "error" ? { step: "confirming", fix: event.fix } : state;
+      return state.step === "idle" || state.step === "error" || state.step === "done"
+        ? { step: "confirming", fix: event.fix }
+        : state;
     case "cancel":
       return state.step === "confirming" ? { step: "idle" } : state;
     case "send":
       return state.step === "confirming" ? { step: "sending", fix: state.fix } : state;
     case "sent":
-      return state.step === "sending" ? { step: "idle" } : state;
+      return state.step === "sending" ? { step: "done", fix: state.fix } : state;
     case "failed":
       return state.step === "sending" ? { step: "error", message: event.message } : state;
   }

@@ -99,14 +99,16 @@ describe("the banner's words", () => {
 describe("the banner's steps", () => {
   const idle: FixState = { step: "idle" };
 
-  it("asks, then sends once, then is idle again", () => {
+  it("asks, then sends once, then says it is done, so focus can go to its note", () => {
     const asking = fixReducer(idle, { type: "open", fix: "keep" });
     expect(asking).toEqual({ step: "confirming", fix: "keep" });
     const sending = fixReducer(asking, { type: "send" });
     expect(sending).toEqual({ step: "sending", fix: "keep" });
     expect(fixReducer(sending, { type: "send" })).toBe(sending); // never twice
     expect(fixReducer(sending, { type: "open", fix: "read" })).toBe(sending);
-    expect(fixReducer(sending, { type: "sent" })).toEqual(idle);
+    const done = fixReducer(sending, { type: "sent" });
+    expect(done).toEqual({ step: "done", fix: "keep" });
+    expect(fixReducer(done, { type: "open", fix: "read" })).toEqual({ step: "confirming", fix: "read" });
   });
 
   it("goes back on Cancel, and keeps the reason on a failure until asked again", () => {
@@ -145,6 +147,10 @@ describe("the banner (PageProblems)", () => {
     const again = render({ page: page({ read_again_requested_at: "2026-10-09T10:00:00Z" }) });
     expect(again).toContain(READING_AGAIN_TEXT);
     expect(again).not.toContain("Read this page again");
+    // Each note can take focus, which goes to it once its fix has gone through (the
+    // confirmation it replaces is gone): the read again note is also the live status.
+    expect(again).toMatch(/<p [^>]*role="status"[^>]*tabindex="-1"[^>]*>Being read again/);
+    expect(kept).toMatch(/<p [^>]*tabindex="-1"[^>]*>[^<]*It stays marked/);
   });
 
   it("shows nothing for a good page", () => {
