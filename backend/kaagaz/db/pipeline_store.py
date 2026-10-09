@@ -63,14 +63,19 @@ being read (F5), so no request can arrive between a run's start and its save. Th
 page cache (``page_reads``, kaagaz.db.page_reads) is written outside this save, page
 by page, so a crash keeps it; the save never touches it. Sections and topics
 (``document_sections``, ``document_topics``, PRD 5 CX2 to CX4) are deleted with the
-rest, so a read again never leaves an older run's.
+rest and inserted after the pieces, in the same transaction, so a read again replaces
+them and none is ever half saved. A section's ``tsv`` is written with it, as
+``to_tsvector('simple', ...)`` of its heading path and summary; its vector comes after
+the save, like a piece's (kaagaz.search.indexing). ``_check_map`` checks them against
+the pieces before the transaction opens (CX4): a bug upstream stops the save before any
+statement, like the card-label check.
 
 Cost per save: one family lock, 1 update, 1 read of the earlier pages' "Keep as is",
-7 deletes; per SAVE_CHUNK rows, one
-batched insert of pages and one of pieces (pipelined, a row each) and one insert
-of values (an array per column); one insert per reader output, 2 for an invoice,
-and 3 to 7 small link statements; O(rows) data sent, O(SAVE_CHUNK) rows built at
-a time. The card-label check runs before the transaction opens. The link lookup
+7 deletes; per SAVE_CHUNK rows, one batched insert of pages, one of pieces and one of
+sections (pipelined, a row each) and one insert of values (an array per column); one
+batched insert of the topics; one insert per reader output, 2 for an invoice, and 3 to 7
+small link statements; O(rows) data sent, O(SAVE_CHUNK) rows built at a time. The
+card-label and map checks run before the transaction opens. The link lookup
 reads this customer's values of the link fields, O(V) for V of them (plan 12,
 risk 12). One indexed query for ``load_learned``.
 """
@@ -101,6 +106,7 @@ from kaagaz.jobs.worker import Superseded
 from kaagaz.reading.spans import Span, location_from_json, location_to_json
 
 if TYPE_CHECKING:
+    from kaagaz.chunking.sections import Section, Topic
     from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput  # pipeline builds this store
 
 # Rows per statement (A6b): the save holds one chunk of row data at a time, not every
@@ -205,6 +211,16 @@ _INSERT_LINE = text(
     " unit, rate, amount, label) VALUES (:c, :invoice_id, :d, :line_no, :description, :hsn, :quantity,"
     " :unit, :rate, :amount, :label)"
 )
+# PRD 5 CX2, CX3 (0021). ``words`` is the heading path and the summary, for the word index.
+_INSERT_SECTION = text(
+    "INSERT INTO document_sections (customer_id, document_id, seq, path, page_from, page_to,"
+    " piece_seq_from, piece_seq_to, summary, tsv) VALUES (:c, :d, :seq, CAST(:path AS text[]),"
+    " :page_from, :page_to, :piece_seq_from, :piece_seq_to, :summary, to_tsvector('simple', :words))"
+)
+_INSERT_TOPIC = text(
+    "INSERT INTO document_topics (customer_id, document_id, topic, aliases, piece_seqs)"
+    " VALUES (:c, :d, :topic, CAST(:aliases AS text[]), CAST(:piece_seqs AS integer[]))"
+)
 _LEARNED = text(
     "SELECT field, raw_value, corrected_value FROM learned_corrections"
     " WHERE customer_id = :c AND field = ANY(CAST(:fields AS text[]))"
@@ -304,6 +320,7 @@ class PgPipelineStore:
                 # The last check (council fix 4): the model chose a card value's field, so it
                 # is never verified. A bug upstream stops the save before any statement.
                 raise ValueError("a card value must be needs_review")
+        _check_map(len(content.pieces), content.sections, content.topics)
         customer_id, document_id = content.customer_id, content.document_id
         ids = {"c": customer_id, "d": document_id}
         pages, outputs, pieces = content.pages, content.outputs, content.pieces
@@ -325,6 +342,7 @@ class PgPipelineStore:
                 for start in range(0, len(pieces), SAVE_CHUNK):
                     seqs = range(start, min(start + SAVE_CHUNK, len(pieces)))
                     conn.execute(_INSERT_PIECE, [_piece_row(ids, seq, pieces[seq]) for seq in seqs])
+                _insert_map(conn, ids, content.sections, content.topics)
                 _insert_values(conn, ids, content.values, content.reader)
                 if content.invoice is not None:
                     _insert_invoice(conn, ids, content.invoice)
@@ -377,6 +395,70 @@ def _replace_facts_and_delete(conn: Connection, ids: dict[str, str], facts: Docu
     )
     for statement in _DELETES:
         conn.execute(statement, ids)
+
+
+def _check_map(pieces: int, sections: Sequence["Section"], topics: Sequence["Topic"]) -> None:
+    """Raise ValueError unless the sections and topics fit the document's ``pieces`` pieces
+    (CX2 to CX4): sections numbered 0 to k-1 in order, each on pages from 1 with
+    page_to >= page_from, its pieces existing and after the section before it's, and a
+    summary of 1 to 400 characters or none; topics unique, lower case, 1 to 200 characters,
+    with casefolded aliases and at least one piece, every one existing. Pure, before any
+    statement. O(sections + topics x (aliases + seqs))."""
+    after = -1  # the last piece of the section before
+    for seq, section in enumerate(sections):
+        if section.seq != seq:
+            raise ValueError(f"section {seq} is numbered {section.seq}")
+        if not 1 <= section.page_from <= section.page_to:
+            raise ValueError(f"section {seq} has bad pages")
+        if not after < section.piece_seq_from <= section.piece_seq_to < pieces:
+            raise ValueError(f"section {seq} has pieces that do not exist or are out of order")
+        if section.summary is not None and not 0 < len(section.summary) <= 400:
+            raise ValueError(f"section {seq} has a summary of {len(section.summary)} characters")
+        after = section.piece_seq_to
+    names: set[str] = set()
+    for topic in topics:
+        if not 0 < len(topic.topic) <= 200 or topic.topic != topic.topic.lower() or topic.topic in names:
+            raise ValueError("a topic name is empty, too long, not lower case or twice")
+        if any(alias != alias.casefold() for alias in topic.aliases):
+            raise ValueError("a topic alias is not casefolded")
+        if not topic.piece_seqs or not all(0 <= seq < pieces for seq in topic.piece_seqs):
+            raise ValueError("a topic has no pieces or a piece that does not exist")
+        names.add(topic.topic)
+
+
+def _insert_map(
+    conn: Connection, ids: dict[str, str], sections: Sequence["Section"], topics: Sequence["Topic"]
+) -> None:
+    """The sections in chunks of SAVE_CHUNK, then the topics in one statement."""
+    for start in range(0, len(sections), SAVE_CHUNK):
+        conn.execute(
+            _INSERT_SECTION, [_section_row(ids, section) for section in sections[start : start + SAVE_CHUNK]]
+        )
+    if topics:
+        rows = [
+            {
+                **ids,
+                "topic": topic.topic,
+                "aliases": list(topic.aliases),
+                "piece_seqs": list(topic.piece_seqs),
+            }
+            for topic in topics
+        ]
+        conn.execute(_INSERT_TOPIC, rows)
+
+
+def _section_row(ids: dict[str, str], section: "Section") -> dict[str, Any]:
+    return {
+        **ids,
+        "seq": section.seq,
+        "path": list(section.path),
+        "page_from": section.page_from,
+        "page_to": section.page_to,
+        "piece_seq_from": section.piece_seq_from,
+        "piece_seq_to": section.piece_seq_to,
+        "summary": section.summary,
+        "words": " ".join([*section.path, section.summary or ""]),
+    }
 
 
 def _insert_invoice(conn: Connection, ids: dict[str, str], invoice: InvoiceRow) -> None:
