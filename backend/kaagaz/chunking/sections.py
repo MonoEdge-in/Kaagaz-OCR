@@ -22,7 +22,8 @@ summary per section and the topics with their pieces; it is checked for shape, t
   is cut to 400 characters; one that looks like instructions
   (``evidence.looks_like_instructions``) is dropped, so its section has none;
 * a topic is lower case, an alias casefolded, each 1 to 200 characters, cleaned the same
-  way, and dropped when it looks like instructions; at most 20 aliases a topic;
+  way, and dropped when it looks like instructions or its lower case is not stable (a
+  character such as "İ" whose lower case is longer); at most 20 aliases a topic;
 * a piece_seq outside this document's 0 to n-1 is dropped, and a topic left with none is
   dropped; a topic named twice keeps its first; at most TOPIC_MAX_PER_DOC topics.
 
@@ -300,8 +301,14 @@ def _summary(text: str) -> str | None:
 
 
 def _name(text: str, fold: Callable[[str], str]) -> str | None:
-    name = fold(_clean(text))
-    return name if 0 < len(name) <= NAME_MAX and not looks_like_instructions(name) else None
+    """``text`` cleaned and folded, or None. Only a stable lower case is kept, so the save's
+    CHECK (topic = lower(topic)) never fails a whole document: no character whose lower
+    case changes its length ("İ" lowers to "i" and a combining dot), and folding twice
+    gives the same. O(length)."""
+    cleaned = _clean(text)
+    name = fold(cleaned)
+    stable = name == fold(name) and all(len(ch.lower()) == 1 for ch in cleaned)
+    return name if stable and 0 < len(name) <= NAME_MAX and not looks_like_instructions(name) else None
 
 
 def _topics(items: Sequence[dict[str, Any]], pieces: int, most: int) -> tuple[Topic, ...]:

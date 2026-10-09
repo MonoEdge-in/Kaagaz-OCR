@@ -229,6 +229,20 @@ class MapReplyTest(unittest.TestCase):
             ),
         )
 
+    def test_cx3_a_name_whose_lower_case_is_not_stable_is_dropped(self) -> None:
+        """ "İ" lowers to "i" and a combining dot (two characters): such a topic or alias is
+        dropped, so the topic = lower(topic) CHECK can never fail the whole save."""
+        self.assertNotEqual(len("İ".lower()), 1)
+        answer = reply(
+            topics=[
+                topic("İzin", [1], ["leave"]),  # Turkish "leave": dropped, with its aliases
+                topic("notice", [3], ["İhbar", "Notice period"]),
+            ]
+        )
+        self.assertEqual(
+            mapped(FakeChat(answer), headed()).topics, (Topic("notice", ("notice period",), (3,)),)
+        )
+
     def test_cx3_at_most_20_aliases_a_topic(self) -> None:
         answer = reply(topics=[topic("leave", [1], [f"alias {n}" for n in range(25)])])
         (leave,) = mapped(FakeChat(answer), headed()).topics
