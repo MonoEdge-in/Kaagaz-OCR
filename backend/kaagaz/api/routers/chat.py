@@ -166,9 +166,10 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
 
 def _live_memory(conn: Connection, customer_id: str, state: RowMapping) -> Memory:
     """The stored summary and memory, without the documents that are no longer live
-    (Trash, an older version, deleted forever). One query when it names documents."""
+    (Trash, an older version, deleted forever), with the live ones' names. One query when
+    it names documents."""
     stored = from_row(state["summary"], state["memory"])
-    return live(stored, chat_sql.document_states(conn, customer_id, stored.documents))
+    return live(stored, chat_sql.live_document_names(conn, customer_id, stored.documents))
 
 
 def summary_due(turn: int, summary_turn: int, every: int) -> bool:

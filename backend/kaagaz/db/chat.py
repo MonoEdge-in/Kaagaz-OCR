@@ -214,6 +214,21 @@ def document_states(conn: Connection, customer_id: str, document_ids: Sequence[s
     }
 
 
+def live_document_names(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> dict[str, str]:
+    """M3: the display name of each of ``document_ids`` that is live (the current version,
+    out of Trash); one replaced, in Trash or deleted forever is missing. One query."""
+    if not document_ids:
+        return {}
+    rows = conn.execute(
+        text(
+            "SELECT id, display_name FROM documents WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+            " AND deleted_at IS NULL AND is_current"
+        ),
+        {"c": customer_id, "ids": sorted(set(document_ids))},
+    ).all()
+    return {str(row.id): str(row.display_name) for row in rows}
+
+
 def upsert_feedback(
     conn: Connection,
     customer_id: str,

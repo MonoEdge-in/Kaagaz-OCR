@@ -83,7 +83,10 @@ def test_m3_every_six_questions_the_memory_is_written_and_then_given_with_live_d
         )
     _ask(signed, "And the second seller you mentioned?", conversation)
     assert api.answers.memories[-1] == Memory(
-        summary="About the sellers.", documents=(kept,), names=("Mehta Textiles",)
+        summary="About the sellers.",
+        documents=(kept,),
+        names=("Mehta Textiles",),
+        document_names=("invoice.pdf",),  # read with the live documents, for the rewrite
     )
     assert len(api.answers.summarised) == 1  # the next one is due at question 12
 

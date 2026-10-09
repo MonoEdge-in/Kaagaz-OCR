@@ -39,8 +39,9 @@ gives none.
 **Memory** (PRD 5 M3, kaagaz/answering/memory.py): the conversation's summary and
 memory come fenced and escaped before the history. The guard also lets through a token
 of the memory's items (``allowed``: names, numbers, dates and topics found in earlier
-questions and answers by the quote rule), never one of the summary's, so "the second
-seller you mentioned" may become the seller's name. **The budget** (M4): the question
+questions and answers by the quote rule, and the names of its live documents), never one
+of the summary's, so "the second seller you mentioned" may become the seller's name and
+"page 12 of the second document you mentioned" that document's name. **The budget** (M4): the question
 always; then the memory and summary; then the last turns, the oldest cut first, then the
 memory, until the message fits.
 

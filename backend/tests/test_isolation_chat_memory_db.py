@@ -84,3 +84,17 @@ def test_the_api_never_returns_the_summary_or_the_memory(db: Database) -> None:
     listed = owner.client.get("/api/conversations").text
     for text in (shown, listed):
         assert "Sharma Traders" not in text and REMEMBERED.summary not in text
+
+
+def test_another_customer_gets_no_name_for_a_document_id(db: Database) -> None:
+    """The memory's document names (for the rewrite) are read for the reader's own live
+    documents only: another customer's id gives nothing, even listed in a memory."""
+    api = Api(db)
+    owner, other = api.new_signed(), api.new_signed()
+    document = api.add_document(owner.customer_id, name="rent-agreement.pdf")
+    with db.customer(other.customer_id) as conn:
+        assert chat_sql.live_document_names(conn, other.customer_id, [document]) == {}
+    with db.customer(owner.customer_id) as conn:  # the control
+        assert chat_sql.live_document_names(conn, owner.customer_id, [document]) == {
+            document: "rent-agreement.pdf"
+        }

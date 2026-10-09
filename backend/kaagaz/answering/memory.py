@@ -22,7 +22,9 @@ The rules (council 9 Oct 2026):
   reads like instructions is dropped too.
 * Its documents are the ids the answers cited, never the model's; one that is no
   longer live (Trash, an older version, deleted forever) is dropped when the memory
-  is read (``live``), so it is never named again.
+  is read (``live``), so it is never named again. The live ones' names are read with
+  them, from the documents themselves, and go to the rewrite as "Documents: ..." (so
+  "the second document you mentioned" and "page 12 of it" resolve); they are never stored.
 * Sizes (the CHECKs of migration 0021): a summary of at most ``MAX_SUMMARY``
   characters; at most ``MAX_ITEMS`` items a list of at most ``MAX_ITEM_CHARS``
   characters each; the JSON at most ``MAX_BYTES`` bytes, the newest items kept.
@@ -35,7 +37,7 @@ import json
 import logging
 import uuid
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
@@ -90,10 +92,13 @@ class Memory:
     numbers: tuple[str, ...] = ()
     dates: tuple[str, ...] = ()
     topics: tuple[str, ...] = ()
+    # The names of the live ``documents``, in their order, read with them (``live``) for the
+    # rewrite; never stored, never from the model.
+    document_names: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, list[str]]:
         """The ``conversations.memory`` object (the summary has its own column)."""
-        return {field.name: list(getattr(self, field.name)) for field in fields(self)[1:]}
+        return {name: list(getattr(self, name)) for name in ("documents", *KINDS)}
 
     def items(self) -> list[str]:
         return [item for kind in KINDS for item in getattr(self, kind)]
@@ -115,16 +120,24 @@ def from_row(summary: str | None, data: Any) -> Memory:
     return _fit(Memory(text, documents, **lists))
 
 
-def live(memory: Memory, states: Mapping[str, str]) -> Memory:
-    """``memory`` without the documents whose state (db/chat.py ``document_states``) is not
-    ``live``: in Trash, an older version, or deleted forever (missing). O(d)."""
-    return replace(memory, documents=tuple(d for d in memory.documents if states.get(d) == "live"))
+def live(memory: Memory, names: Mapping[str, str]) -> Memory:
+    """``memory`` with only its live documents, those in ``names`` (db/chat.py
+    ``live_document_names``: not in Trash, an older version, or deleted forever), and their
+    names in order, so the rewrite can resolve "the second document you mentioned". A name
+    is cleaned, at most ``MAX_ITEM_CHARS``, and left out when it reads like instructions.
+    O(d)."""
+    documents = tuple(document for document in memory.documents if document in names)
+    shown = (clean_text(names[document])[:MAX_ITEM_CHARS] for document in documents)
+    kept = tuple(name for name in shown if name and not looks_like_instructions(name))
+    return replace(memory, documents=documents, document_names=kept)
 
 
 def prompt_text(memory: Memory) -> str:
     """The memory as the rewrite reads it, one line each; "" when it holds nothing. The
     caller fences and escapes it. O(m)."""
     lines = [f"Summary: {memory.summary}"] if memory.summary else []
+    if memory.document_names:
+        lines.append(f"Documents: {'; '.join(memory.document_names)}")
     listed = [(kind, getattr(memory, kind)) for kind in KINDS]
     lines += [f"{kind.capitalize()}: {'; '.join(items)}" for kind, items in listed if items]
     return "\n".join(lines)
@@ -132,8 +145,8 @@ def prompt_text(memory: Memory) -> str:
 
 def allowed_tokens(memory: Memory) -> frozenset[str]:
     """The canonical tokens (``rewrite.tokens``) a rewrite may take from the memory: its
-    items' only, never the summary's. O(m)."""
-    return frozenset().union(*(tokens(item) for item in memory.items()))
+    items' and its live documents' names, never the summary's. O(m)."""
+    return frozenset().union(*(tokens(item) for item in [*memory.items(), *memory.document_names]))
 
 
 def summarise(
