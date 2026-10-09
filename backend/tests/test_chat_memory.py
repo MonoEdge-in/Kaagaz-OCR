@@ -4,6 +4,7 @@ The router's part (reading the memory with the conversation, the background writ
 tested against PostgreSQL in test_chat_memory_db.py and test_isolation_chat_memory_db.py.
 """
 
+import dataclasses
 import logging
 import uuid
 from types import SimpleNamespace
@@ -32,6 +33,7 @@ from kaagaz.answering.rewrite import Turn, guard, history_text, rewrite
 from kaagaz.answering.service import AnswerService
 from kaagaz.api.context import AppContext
 from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.search.scope import EVERYTHING
 from tests.settings_factory import make_settings
 from tests.test_answering_context import Routed, cites, page
 from tests.test_answering_golden import NOW, UNUSED_DB, A, FakeFixedQueries, FakeRetriever, FakeUnchecked
@@ -224,7 +226,9 @@ def test_m3_a_twelve_turn_chat_remembers_the_second_seller_and_drops_a_trashed_d
     """Edge case: a 12-turn chat where turn 4's document is trashed. The memory written at
     turn 6 names the sellers of turn 1's answer; at turn 11, with only turns 8 to 10 in the
     history, "the second seller you mentioned" resolves from it, and turn 4's document is
-    neither remembered nor cited. The memory goes to the rewrite, never the answer's prompt."""
+    neither remembered nor cited, though the search could return it (the fake retriever holds
+    it, as a store would without LIVE_CURRENT) and the draft would cite it if given it. The
+    memory goes to the rewrite, never the answer's prompt."""
     remembered = summarise(MemoryModel(REPLY), FIRST_SIX, NO_MEMORY, [D2, D4])
     assert remembered is not None and remembered.documents == (D2, D4)
     read = live(from_row(remembered.summary, remembered.to_json()), {D2: "mehta-bill.pdf"})
@@ -236,12 +240,21 @@ def test_m3_a_twelve_turn_chat_remembers_the_second_seller_and_drops_a_trashed_d
         Turn("Any bill unpaid?", None),
     ]
     assert "Mehta" not in history_text(later[-3:])  # only the memory still holds the name
-    mehta = page(2, "Seller: Mehta Textiles\nInvoice Grand Total: Rs. 80,000", document="mehta-bill.pdf")
-    rent = page(1, "Rent agreement: rent Rs. 25,000 a month", document="rent.pdf")  # turn 4's, in Trash
+    bill = page(2, "Seller: Mehta Textiles\nInvoice Grand Total: Rs. 80,000", document="mehta-bill.pdf")
+    mehta = dataclasses.replace(bill, document_id=D2)
+    agreement = page(1, "Rent agreement: rent Rs. 25,000 a month", document="rent.pdf")
+    rent = dataclasses.replace(agreement, document_id=D4)  # turn 4's, now in Trash
+    retriever = FakeRetriever({A: [mehta, rent]})
+    assert [hit.piece_id for hit in retriever.search(A, "rent agreement", None, 5, EVERYTHING)] == [
+        rent.piece_id
+    ]
 
     def ask(memory: Memory) -> tuple[Any, Routed]:
         model = Routed(
-            cites(("Mehta Textiles billed Rs. 80,000.", mehta.text)),
+            cites(
+                ("Mehta Textiles billed Rs. 80,000.", mehta.text),
+                ("The rent is Rs. 25,000 a month.", rent.text),
+            ),
             rewritten=REWRITTEN,
         )
         service = AnswerService(
@@ -249,7 +262,7 @@ def test_m3_a_twelve_turn_chat_remembers_the_second_seller_and_drops_a_trashed_d
             model=model,
             settings=make_settings(answer_min_evidence_score=0.6, answer_max_evidence=5),
             clock=lambda: NOW,
-            retriever=FakeRetriever({A: [mehta]}),  # search never sees Trash (LIVE_CURRENT)
+            retriever=retriever,
             fixed_queries=FakeFixedQueries({}),
             unchecked=FakeUnchecked(),
         )
@@ -260,11 +273,10 @@ def test_m3_a_twelve_turn_chat_remembers_the_second_seller_and_drops_a_trashed_d
     assert answer.rewritten_question == REWRITTEN
     assert [s.text for s in answer.sentences] == ["Mehta Textiles billed Rs. 80,000."]
     assert {c.document_id for c in answer.citations} == {mehta.document_id}
-    assert rent.document_id not in {c.document_id for c in answer.citations} and D4 not in str(
-        answer.to_json()
-    )
+    assert rent.piece_id not in str(answer.to_json()) and D4 not in str(answer.to_json())
     (rewrite_prompt,) = model.rewrites
     assert "Names: Sharma Traders; Mehta Textiles" in rewrite_prompt and SUMMARY in rewrite_prompt
+    assert "Documents: mehta-bill.pdf" in rewrite_prompt and "rent.pdf" not in rewrite_prompt
     assert all(SUMMARY not in user and "Names:" not in user for user in model.drafted)
     # Without the memory, the name came from an answer outside the last turns: refused.
     assert ask(NO_MEMORY)[0].rewritten_question is None
