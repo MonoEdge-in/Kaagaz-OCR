@@ -504,7 +504,7 @@ class GeminiEngine:
             input_tokens=tokens[0],
             output_tokens=tokens[1],
             cached=cached,
-            continues_on_next_page=bool(reply.lines) and reply.lines[-1].continues,
+            continues_on_next_page=any(line.continues for line in reply.lines),
         )
 
     # When the model can't read the page (G6, Q7).

@@ -67,6 +67,10 @@ custom plans drop them). A scope that matches nothing returns before any SQL.
 ``search_documents`` (Q2) groups the candidates by document. ``neighbours`` (Q4)
 fetches the pieces next to an answer's hits, with the same filters and scope. A
 piece of an invoice whose check failed comes back needs review (edge case 10).
+PRD 5 adds, with the same filters and scope: ``whole`` (CX5), every piece of the scope
+when it is small enough; ``topic_pieces`` and ``section_pieces`` (CX6), the pieces of
+the topics and sections (migration 0021) a question names or its hits belong to, each
+inside its own document; and ``cards`` (M2), the cards of the documents an answer uses.
 
 The lists are merged with reciprocal rank fusion (``fuse``): a piece scores the
 sum of 1 / (k + rank) over the lists it is in, so a piece found two ways ranks
@@ -313,6 +317,161 @@ _NEIGHBOURS = text(
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
     " ORDER BY h.rank, p.seq"
+)
+
+# PRD 5 CX5: whether the scope's pieces are more than :most bytes of text and header (at
+# least their characters), so whole-document mode is skipped before any text is read. A
+# running sum in scan order (ROWS UNBOUNDED PRECEDING needs no row after the current one),
+# so EXISTS stops at the first piece past :most: about :most bytes are counted, never the
+# whole scope. octet_length reads a stored text's size, not the text.
+_WHOLE_SIZE = text(
+    "SELECT EXISTS (SELECT 1 FROM (SELECT sum(octet_length(p.text) + octet_length(p.context_header))"
+    " OVER (ROWS UNBOUNDED PRECEDING) AS running"
+    " FROM pieces p"
+    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    ") AS w WHERE w.running > :most)"
+)
+
+# CX5: every piece of the scope, in reading order (oldest document first). _DETAILS's columns.
+_WHOLE = text(
+    "SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to, p.text,"
+    " p.regions, CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :c"
+    " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
+    " d.doc_type, p.seq, p.context_header"
+    " FROM pieces p"
+    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    " ORDER BY d.created_at, p.document_id, p.seq"
+)
+
+# CX6: the pieces of the topics a term names (the topic or one of its casefolded aliases)
+# or a hit belongs to, each topic inside its own document only, never a hit (its gap to
+# the nearest hit is 0, so it is left out before the cap and takes no place), then
+# :per_document of each document, the nearest a hit of that document by seq first (by seq
+# when it has none); the hits' documents first. _DETAILS's columns.
+_TOPIC_PIECES = text(
+    "WITH h AS (SELECT * FROM unnest(CAST(:documents AS uuid[]), CAST(:seqs AS integer[]))"
+    " AS h (document_id, seq)),"
+    " t AS (SELECT DISTINCT tp.document_id, s.seq FROM document_topics tp"
+    " CROSS JOIN LATERAL unnest(tp.piece_seqs) AS s (seq)"
+    " WHERE tp.customer_id = :c AND (tp.topic = ANY(CAST(:terms AS text[]))"
+    " OR tp.aliases && CAST(:terms AS text[])"
+    " OR EXISTS (SELECT 1 FROM h WHERE tp.customer_id = :c AND h.document_id = tp.document_id"
+    " AND h.seq = ANY(tp.piece_seqs)))),"
+    " r AS (SELECT t.document_id, t.seq,"
+    " row_number() OVER (PARTITION BY t.document_id ORDER BY g.gap, t.seq) AS k"
+    " FROM t LEFT JOIN LATERAL (SELECT min(abs(t.seq - h.seq)) AS gap FROM h"
+    " WHERE h.document_id = t.document_id) AS g ON true"
+    " WHERE g.gap IS DISTINCT FROM 0)"
+    " SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to, p.text,"
+    " p.regions, CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :c"
+    " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
+    " d.doc_type, p.seq, p.context_header"
+    " FROM r"
+    " JOIN pieces p ON p.customer_id = :c AND p.document_id = r.document_id AND p.seq = r.seq"
+    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND r.k <= :per_document"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    " ORDER BY coalesce(array_position(CAST(:documents AS uuid[]), p.document_id), 2147483647),"
+    " d.created_at, p.document_id, p.seq LIMIT :n"
+)
+
+# CX6: the pieces of the two best sections, by their tsv (the heading path and summary,
+# 'simple', written by the save) first, then by the meaning of the summary, only vectors
+# with the search's recipe and a cosine distance of at most :far (a section matches by
+# meaning only as near as a hit must be to pass the evidence gate); then, never a hit,
+# :per_section of each section's pieces, the nearest a hit of its document by seq first (by
+# seq when it has none), in seq order. _DETAILS's columns.
+# ponytail: an exact scan of the scope's sections (about a tenth of its pieces); the HNSW
+# index document_sections_embedding is the upgrade once that scan is slow.
+_SECTION_PIECES = text(
+    "WITH s AS MATERIALIZED (SELECT ds.document_id, ds.seq, ds.piece_seq_from, ds.piece_seq_to,"
+    " coalesce(ds.tsv @@ q.q, false) AS matched, coalesce(ts_rank_cd(ds.tsv, q.q), 0) AS score,"
+    " ds.embedding <=> CAST(:vec AS halfvec(1024)) AS distance"
+    " FROM document_sections ds"
+    " JOIN documents d ON d.customer_id = ds.customer_id AND d.id = ds.document_id"
+    " CROSS JOIN websearch_to_tsquery('simple', :k) AS q (q)"
+    " WHERE ds.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND (ds.tsv @@ q.q OR (CAST(:vec AS text) IS NOT NULL AND ds.embed_recipe = :recipe"
+    " AND ds.embedding <=> CAST(:vec AS halfvec(1024)) <= CAST(:far AS float8)))"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR ds.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    " ORDER BY matched DESC, score DESC, distance, ds.document_id, ds.seq LIMIT 2),"
+    " h AS (SELECT * FROM unnest(CAST(:documents AS uuid[]), CAST(:seqs AS integer[]))"
+    " AS h (document_id, seq)),"
+    " r AS (SELECT s.document_id, s.seq AS section_seq, s.matched, s.score, s.distance, n.seq,"
+    " row_number() OVER (PARTITION BY s.document_id, s.seq ORDER BY g.gap, n.seq) AS k"
+    " FROM s CROSS JOIN LATERAL generate_series(s.piece_seq_from, s.piece_seq_to) AS n (seq)"
+    " LEFT JOIN LATERAL (SELECT min(abs(n.seq - h.seq)) AS gap FROM h"
+    " WHERE h.document_id = s.document_id) AS g ON true"
+    " WHERE g.gap IS DISTINCT FROM 0)"
+    " SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to, p.text,"
+    " p.regions, CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :c"
+    " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
+    " d.doc_type, p.seq, p.context_header"
+    " FROM r"
+    " JOIN pieces p ON p.customer_id = :c AND p.document_id = r.document_id AND p.seq = r.seq"
+    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND r.k <= :per_section"
+    " ORDER BY r.matched DESC, r.score DESC, r.distance, r.document_id, r.section_seq, p.seq LIMIT :n"
+)
+
+# M2: the cards of the documents that supply evidence, only a current, ready one out of
+# Trash and in the scope.
+_CARDS = text(
+    "SELECT d.id, d.display_name, d.card FROM documents d"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND d.id = ANY(CAST(:ids AS uuid[]))"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR d.id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
 )
 
 
@@ -639,13 +798,102 @@ def neighbours(
         "seqs": [hit.seq for hit in hits],
         "n": size,
     }
+    return _unseen(conn.execute(_NEIGHBOURS, params | scope.params()), hits)
+
+
+def _unseen(rows: Iterable[Sequence[Any]], hits: "Sequence[Hit]") -> list[SearchHit]:
+    """_DETAILS-shaped rows as unscored hits, in order, each once, never one of ``hits``."""
     seen = {hit.piece_id for hit in hits}
     found: list[SearchHit] = []
-    for row in conn.execute(_NEIGHBOURS, params | scope.params()):
+    for row in rows:
         if str(row[0]) not in seen:
             seen.add(str(row[0]))
             found.append(_hit(row, FusedPiece(str(row[0]), 0.0, None, None, None)))
     return found
+
+
+def whole(conn: Connection, *, customer_id: str, scope: Scope, max_bytes: int) -> list[SearchHit] | None:
+    """CX5: every piece of ``scope``, in reading order, or None when there is none or their
+    text and headers are more than ``max_bytes`` bytes (UTF-8, so at least as many as their
+    characters), which is checked first, reading no text and stopping past ``max_bytes``
+    (``_WHOLE_SIZE``). Two statements: O(k) for the k pieces in the first ``max_bytes``,
+    then O(n) for the scope's n pieces only when they fit."""
+    if scope.matches_nothing:
+        return None
+    params = {"c": customer_id} | scope.params()
+    if conn.execute(_WHOLE_SIZE, params | {"most": max_bytes}).scalar_one():
+        return None
+    return _unseen(conn.execute(_WHOLE, params), []) or None
+
+
+def topic_pieces(
+    conn: Connection,
+    *,
+    customer_id: str,
+    terms: Sequence[str],
+    hits: "Sequence[Hit]",
+    per_document: int,
+    scope: Scope = EVERYTHING,
+) -> list[SearchHit]:
+    """CX6: the pieces of the topics one of ``terms`` names (casefolded) or a hit belongs to,
+    never a hit, at most ``per_document`` a document (the nearest a hit first) and
+    ``MAX_LIMIT`` in all. One statement."""
+    if per_document < 1 or scope.matches_nothing or not (terms or hits):
+        return []
+    params = {
+        "c": customer_id,
+        "terms": list(terms),
+        "documents": [hit.document_id for hit in hits],
+        "seqs": [hit.seq for hit in hits],
+        "per_document": per_document,
+        "n": MAX_LIMIT,
+    }
+    return _unseen(conn.execute(_TOPIC_PIECES, params | scope.params()), hits)
+
+
+def section_pieces(
+    conn: Connection,
+    *,
+    customer_id: str,
+    keywords: Sequence[str],
+    embedding: list[float] | None,
+    recipe: str,
+    hits: "Sequence[Hit]",
+    min_score: float,
+    per_section: int,
+    scope: Scope = EVERYTHING,
+) -> list[SearchHit]:
+    """CX6: the pieces of the two sections whose heading path or summary holds any of
+    ``keywords``, then whose summary is nearest ``embedding`` in meaning (vectors tagged
+    ``recipe`` only, with a cosine similarity of at least ``min_score``,
+    ANSWER_MIN_EVIDENCE_SCORE: a summary further than a hit the gate would pass is not
+    relevant), at most ``per_section`` a section (TOPIC_EXPAND_MAX_PIECES, 0: none), the
+    nearest a hit first, and ``MAX_LIMIT`` in all, never a hit. One statement."""
+    if per_section < 1 or scope.matches_nothing or not (keywords or embedding):
+        return []
+    params = {
+        "c": customer_id,
+        "k": " or ".join(keywords),  # websearch_to_tsquery never fails on a customer's text
+        "vec": None if embedding is None else vector_literal(embedding),
+        "recipe": recipe,
+        "far": 1.0 - min_score,  # a cosine distance is 1 - the similarity
+        "documents": [hit.document_id for hit in hits],
+        "seqs": [hit.seq for hit in hits],
+        "per_section": per_section,
+        "n": MAX_LIMIT,
+    }
+    return _unseen(conn.execute(_SECTION_PIECES, params | scope.params()), hits)
+
+
+def cards(
+    conn: Connection, *, customer_id: str, document_ids: Sequence[str], scope: Scope = EVERYTHING
+) -> dict[str, tuple[str, Any]]:
+    """M2: each document's (display name, card JSON or None), for the current, ready ones out
+    of Trash in ``scope`` only. One statement."""
+    if not document_ids or scope.matches_nothing:
+        return {}
+    params = {"c": customer_id, "ids": list(document_ids)} | scope.params()
+    return {str(row[0]): (str(row[1]), row[2]) for row in conn.execute(_CARDS, params)}
 
 
 def _hit(row: Sequence[Any], fused: FusedPiece) -> SearchHit:

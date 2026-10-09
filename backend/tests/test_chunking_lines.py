@@ -1,4 +1,5 @@
 import unittest
+from typing import Any
 
 from kaagaz.chunking.lines import pieces_from_lines, running_spans
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
@@ -44,7 +45,7 @@ def table(page: int, rows: list[list[str]], *, header: bool, table: str = "t1") 
     ]
 
 
-def texts(spans: list[Span], **kwargs: int) -> list[str]:
+def texts(spans: list[Span], **kwargs: Any) -> list[str]:
     return [p.text for p in pieces_from_lines("cust-a", "doc-1", spans, **kwargs)]
 
 
@@ -118,6 +119,58 @@ class PiecesFromLinesTest(unittest.TestCase):
             [(p.text, p.page_from) for p in pieces],
             [("One\nOne body", 1), ("Two\nTwo body", 2), ("Three\nThree body", 3)],
         )
+
+    def test_cx4_a_page_with_no_line_between_starts_a_new_piece(self) -> None:
+        """So every piece has a region on each of its pages; pages 1 and 2 still join."""
+        spans = [line("one", 0.9, page=1), line("two", 0.1, page=2), line("four", 0.1, page=4)]
+        pieces = pieces_from_lines("cust-a", "doc-1", spans)
+        self.assertEqual(
+            [(p.text, p.page_from, p.page_to) for p in pieces], [("one\ntwo", 1, 2), ("four", 4, 4)]
+        )
+
+
+class ContinuesTest(unittest.TestCase):
+    """PRD 5 CX1: the reader's continues_on_next_page keeps the sentence in one piece."""
+
+    def test_cx1_the_flag_wins_over_max_chars(self) -> None:
+        spans = [line("x" * 60, 0.9, page=1), line("y" * 60, 0.05, page=2), line("z" * 60, 0.08, page=2)]
+        self.assertEqual(texts(spans, max_chars=100), ["x" * 60, "y" * 60, "z" * 60])  # no flag: split
+        pieces = pieces_from_lines("cust-a", "doc-1", spans, max_chars=100, continues={1})
+        # Only the first line of page 2 is carried over the limit; the next one splits as before.
+        self.assertEqual(
+            [(p.text, p.page_from, p.page_to) for p in pieces],
+            [
+                ("x" * 60 + "\n" + "y" * 60, 1, 2),
+                ("z" * 60, 2, 2),
+            ],
+        )
+
+    def test_cx1_the_flag_wins_over_a_heading_on_the_next_page(self) -> None:
+        spans = [
+            line("The notice period is", 0.9, page=11),
+            line("ninety days from the date of resignation.", 0.05, page=12, kind="heading"),
+        ]
+        self.assertEqual(len(texts(spans)), 2)  # no flag: the heading starts a piece
+        (piece,) = pieces_from_lines("cust-a", "doc-1", spans, continues={11})
+        self.assertEqual((piece.page_from, piece.page_to), (11, 12))
+        self.assertEqual([r["page"] for r in piece.regions()], [11, 12])
+
+    def test_cx1_the_flag_only_carries_onto_the_very_next_page(self) -> None:
+        spans = [line("a" * 60, 0.9, page=1), line("b" * 60, 0.05, page=2), line("c" * 60, 0.9, page=2)]
+        spans.append(line("d" * 60, 0.05, page=3, kind="heading"))
+        pieces = pieces_from_lines("cust-a", "doc-1", spans, max_chars=100, continues={1})
+        self.assertEqual([p.text[0] for p in pieces], ["a", "c", "d"])
+
+    def test_cx1_a_gap_on_the_next_page_still_splits(self) -> None:
+        spans = [line("end of eleven", 0.9, page=1), line("start", 0.05, page=2), line("far", 0.5, page=2)]
+        self.assertEqual(texts(spans, continues={1}), ["end of eleven\nstart", "far"])
+
+    def test_cx1_a_scan_page_continuing_onto_a_text_layer_page_stays_one_piece(self) -> None:
+        """PRD 5 edge case: the sentence runs from a scanned page onto a text-layer page."""
+        scanned = line("Leave not taken by March is", 0.9, page=3, confidence=0.9)
+        typed = line("carried forward to the next year.", 0.05, page=4, kind="heading")
+        (piece,) = pieces_from_lines("cust-a", "doc-1", [scanned, typed], continues={3})
+        self.assertEqual((piece.page_from, piece.page_to, piece.label), (3, 4, "needs_review"))
 
 
 class SectionTest(unittest.TestCase):

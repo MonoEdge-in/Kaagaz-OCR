@@ -16,7 +16,8 @@ printed), uploads the documents and waits until they are ready. It asks every
 question ``--runs`` times through POST /api/chat, a follow-up in its
 question's conversation, and prints a row per question, each run's totals and
 slices, and the worst run with Wilson intervals. The header shows this shell's
-settings, which may not be the server's, so each run also counts the search
+settings, ANSWER_WHOLE_DOC_TOKENS among them (PRD 5 M5 compares runs with it at 0, so
+search alone finds the evidence), which may not be the server's, so each run also counts the search
 answers the model wrote, and warns when none were.
 
 recall@5 uses the answer's citations, in order, as the hits, each spanning its
@@ -50,7 +51,7 @@ from urllib.parse import urlsplit
 
 from kaagaz import cli
 from kaagaz.api.auth import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
-from kaagaz.settings import Settings, SettingsError
+from kaagaz.settings import Settings, SettingsError, is_gemini_model
 from scripts import golden_scoring as scoring
 
 GOLDEN = Path(__file__).resolve().parents[1] / "tests" / "golden"
@@ -187,14 +188,20 @@ def load_golden(
 
 
 def model_digests(settings: Settings) -> str:
-    """The chat and embedding models' digests from Ollama's /api/tags, if it answers."""
-    try:
-        models = Http(settings.model_base_url).call("GET", "/api/tags", timeout=5).get("models", [])
-    except (OSError, GoldenError, HTTPException, ValueError):
-        return "digests unknown (Ollama did not answer)"
-    digests = {m.get("name"): str(m.get("digest", ""))[:12] for m in models if isinstance(m, dict)}
+    """The chat and embedding models' digests from Ollama's /api/tags, if it answers. A
+    google/gemini- model runs on OpenRouter (PRD 5 M1, M5), so it has no Ollama digest and
+    Ollama is not asked when neither model is on it."""
+    names = (settings.model_chat, settings.model_embed)
+    digests: dict[Any, str] = {}
+    if not all(map(is_gemini_model, names)):
+        try:
+            models = Http(settings.model_base_url).call("GET", "/api/tags", timeout=5).get("models", [])
+        except (OSError, GoldenError, HTTPException, ValueError):
+            return "digests unknown (Ollama did not answer)"
+        digests = {m.get("name"): str(m.get("digest", ""))[:12] for m in models if isinstance(m, dict)}
     return " ".join(
-        f"{name}@{digests.get(name, 'not-pulled')}" for name in (settings.model_chat, settings.model_embed)
+        f"{name}@{'openrouter' if is_gemini_model(name) else digests.get(name, 'not-pulled')}"
+        for name in names
     )
 
 
@@ -205,7 +212,8 @@ def header(out: TextIO, settings: Settings, api: str, sha: str, questions: str =
         f"MODEL_ENABLED={settings.model_enabled} MODEL_CHAT={settings.model_chat}"
         f" MODEL_EMBED={settings.model_embed} ({model_digests(settings)}) OCR_ENGINE={settings.ocr_engine}"
         f" ANSWER_MAX_EVIDENCE={settings.answer_max_evidence}"
-        f" ANSWER_MIN_EVIDENCE_SCORE={settings.answer_min_evidence_score} TIMEZONE={settings.timezone}\n\n"
+        f" ANSWER_MIN_EVIDENCE_SCORE={settings.answer_min_evidence_score}"
+        f" ANSWER_WHOLE_DOC_TOKENS={settings.answer_whole_doc_tokens} TIMEZONE={settings.timezone}\n\n"
     )
 
 
