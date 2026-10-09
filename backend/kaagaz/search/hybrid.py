@@ -366,18 +366,24 @@ _WHOLE = text(
 )
 
 # CX6: the pieces of the topics a term names (the topic or one of its casefolded aliases)
-# or a hit belongs to, each topic inside its own document only, the first :per_document of
-# each document by seq; the hits' documents first. _DETAILS's columns.
+# or a hit belongs to, each topic inside its own document only, never a hit (its gap to
+# the nearest hit is 0, so it is left out before the cap and takes no place), then
+# :per_document of each document, the nearest a hit of that document by seq first (by seq
+# when it has none); the hits' documents first. _DETAILS's columns.
 _TOPIC_PIECES = text(
-    "WITH t AS (SELECT DISTINCT tp.document_id, s.seq FROM document_topics tp"
+    "WITH h AS (SELECT * FROM unnest(CAST(:documents AS uuid[]), CAST(:seqs AS integer[]))"
+    " AS h (document_id, seq)),"
+    " t AS (SELECT DISTINCT tp.document_id, s.seq FROM document_topics tp"
     " CROSS JOIN LATERAL unnest(tp.piece_seqs) AS s (seq)"
     " WHERE tp.customer_id = :c AND (tp.topic = ANY(CAST(:terms AS text[]))"
     " OR tp.aliases && CAST(:terms AS text[])"
-    " OR EXISTS (SELECT 1 FROM unnest(CAST(:documents AS uuid[]), CAST(:seqs AS integer[]))"
-    " AS h (document_id, seq) WHERE tp.customer_id = :c AND h.document_id = tp.document_id"
+    " OR EXISTS (SELECT 1 FROM h WHERE tp.customer_id = :c AND h.document_id = tp.document_id"
     " AND h.seq = ANY(tp.piece_seqs)))),"
-    " r AS (SELECT t.document_id, t.seq, row_number() OVER (PARTITION BY t.document_id ORDER BY t.seq) AS k"
-    " FROM t)"
+    " r AS (SELECT t.document_id, t.seq,"
+    " row_number() OVER (PARTITION BY t.document_id ORDER BY g.gap, t.seq) AS k"
+    " FROM t LEFT JOIN LATERAL (SELECT min(abs(t.seq - h.seq)) AS gap FROM h"
+    " WHERE h.document_id = t.document_id) AS g ON true"
+    " WHERE g.gap IS DISTINCT FROM 0)"
     " SELECT p.id, p.document_id, d.display_name, d.detected_type, p.page_from, p.page_to, p.text,"
     " p.regions, CASE WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.customer_id = :c"
     " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
@@ -818,7 +824,8 @@ def topic_pieces(
     scope: Scope = EVERYTHING,
 ) -> list[SearchHit]:
     """CX6: the pieces of the topics one of ``terms`` names (casefolded) or a hit belongs to,
-    at most ``per_document`` a document and ``MAX_LIMIT`` in all, never a hit. One statement."""
+    never a hit, at most ``per_document`` a document (the nearest a hit first) and
+    ``MAX_LIMIT`` in all. One statement."""
     if per_document < 1 or scope.matches_nothing or not (terms or hits):
         return []
     params = {

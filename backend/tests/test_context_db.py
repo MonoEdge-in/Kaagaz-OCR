@@ -188,3 +188,18 @@ def test_m2_cards_of_current_documents_out_of_trash_only(db: Database) -> None:
         found = hybrid.cards(conn, customer_id=customer, document_ids=[live, binned])
 
     assert found == {live: ("offer.pdf", card)}
+
+
+def test_cx6_a_hit_takes_no_place_in_a_topics_cap_and_the_nearest_come_first(db: Database) -> None:
+    customer, _ = new_customer(db)
+    document, _ = _offer(db, customer)
+    _topic(db, customer, document, "leave", ["holidays"], [0, 1, 3, 4])
+    with db.customer(customer) as conn:
+        hit = hybrid.whole(conn, customer_id=customer, scope=EVERYTHING, max_bytes=10_000)
+        assert hit is not None
+        found = hybrid.topic_pieces(
+            conn, customer_id=customer, terms=["leave"], hits=[hit[4]], per_document=2
+        )
+
+    # Seq 4 is the hit: 3 (one away) and 1 (three away), not 0 and 1 by seq with the hit counted.
+    assert [h.seq for h in found] == [1, 3]
