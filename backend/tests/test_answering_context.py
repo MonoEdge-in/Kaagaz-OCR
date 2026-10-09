@@ -325,6 +325,17 @@ def test_cx6_at_most_query_aspects_max_aspects() -> None:
     assert [text for text, _ in retriever.fused[0]] == ["holidays", "casual leave"]
 
 
+def test_cx6_a_rewrite_the_guard_refuses_still_gives_its_aspects() -> None:
+    """The aspects are search text only: the question is searched as asked, with them."""
+    retriever, context = Fused(OFFER_LETTER), FakeContext(OFFER_LETTER)
+    model = Routed(LEAVES, rewritten="How many leaves does Gupta get?", aspects=["holidays", "casual leave"])
+
+    answer = answers(retriever, context, model, SEARCH_ONLY).answer(A, "How many leaves do I get?")
+
+    assert answer.rewritten_question is None  # "Gupta" is in neither the question nor a memory
+    assert [text for text, _ in retriever.fused[0]] == ["holidays", "casual leave"]
+
+
 def test_cx6_order_is_hits_then_topic_and_section_pieces_then_neighbours() -> None:
     near = page(10, "Casual leave may be carried over.")
     retriever = Fused([CASUAL])

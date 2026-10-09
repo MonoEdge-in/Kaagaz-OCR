@@ -32,7 +32,9 @@ phrases for the parts of what the question asks ("How many leaves do I get?" giv
 holidays, casual leave, maternity leave...), when the service asks for them (whole-
 document mode does not apply). They are search text only, never shown, never in an
 answer, so the guard does not judge them; each is cleaned, at most ``MAX_ASPECT_CHARS``,
-and one that reads like instructions is left out. A refused rewrite gives none.
+and one that reads like instructions is left out. A rewrite the guard refuses still
+gives its aspects; a reply of the wrong shape, too long, or that reads like instructions,
+gives none.
 
 **Memory** (PRD 5 M3, kaagaz/answering/memory.py): the conversation's summary and
 memory come fenced and escaped before the history. The guard also lets through a token
@@ -144,10 +146,10 @@ def rewrite(
     rewritten = clean_text(raw)
     if looks_like_instructions(rewritten):
         return _fallback("rewrite_instructions")
+    aspects = _aspects(listed, question)[:aspects_max]
     refused = guard(rewritten, question, past, allowed if kept else frozenset())
     if refused is not None:
-        return _fallback(refused)
-    aspects = _aspects(listed, question)[:aspects_max]
+        return _fallback(refused, aspects)  # search text only: the guard never judged them
     return (None if rewritten.casefold() == question.strip().casefold() else rewritten), aspects
 
 
@@ -252,7 +254,8 @@ def _has_digit(token: str) -> bool:
     return any(ch.isdigit() for ch in token)
 
 
-def _fallback(code: str) -> tuple[None, tuple[str, ...]]:
-    """No rewrite and no aspects, after logging why: a code only, never the text."""
+def _fallback(code: str, aspects: tuple[str, ...] = ()) -> tuple[None, tuple[str, ...]]:
+    """No rewrite, and ``aspects`` (none unless given), after logging why: a code only,
+    never the text."""
     _log.info("rewrite not used", extra={"code": code})
-    return None, ()
+    return None, aspects
