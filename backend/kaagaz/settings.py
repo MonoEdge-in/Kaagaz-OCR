@@ -52,8 +52,8 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 # The key goes in a request header: printable ASCII with no space, so it can never split one.
 _API_KEY = re.compile(r"[\x21-\x7e]{1,256}")
 # AR1: seconds to spare between the longest model step without a heartbeat (one
-# chat_json: a call and its repair retry; or one embedding batch or vision crop, a
-# single call) and the job's lease.
+# chat_json: a call and its repair retry; or one embedding batch, a single call) and the
+# job's lease.
 _MODEL_LEASE_MARGIN_SECONDS = 60 + LEASE_RENEW_SECONDS
 # The size of the pieces' vector(1024) column (migration 0001): EMBEDDING_DIM must match it.
 EMBEDDING_DIM = 1024

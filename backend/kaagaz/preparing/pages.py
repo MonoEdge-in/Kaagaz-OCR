@@ -32,7 +32,7 @@ DPI, flagged under ``low_res_dpi`` (LOW_RES_DPI): a PDF page's from its largest
 image, a photo's from its short side. The pipeline stores them with the page.
 
 ``PreparedPages.picture`` draws one page again, with the same DPI, pixel
-check and EXIF handling, so a vision crop has the pixels preparing drew.
+check and EXIF handling, so the checker's crop (PRD 5 V1) has the pixels preparing drew.
 
 Time is O(total pixels) to draw; memory is one page's picture at a time, O(1)
 in the page count.
