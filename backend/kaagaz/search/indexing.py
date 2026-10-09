@@ -1,9 +1,12 @@
 """Give a document's pieces their meaning vectors, so the meaning search finds them.
 
 The pipeline calls ``embed_pieces`` after it saves a document's pieces. Only
-pieces with no vector yet are embedded, so running it again does no extra
-work. Pieces are read in ``seq`` order, ``batch_size`` at a time; each batch is
-one model call and one batched UPDATE. The model call runs outside any
+pieces with no vector yet, or a vector of another recipe tag (PRD 5 M5: a stale
+tag is missing), are embedded, so running it again does no extra work. Then the
+same for the document's section summaries (``document_sections``, PRD 5 CX2): a
+section with a summary is embedded as ``section_input`` and tagged in
+``embed_recipe``. Pieces, then sections, are read in ``seq`` order,
+``batch_size`` at a time; each batch is one model call and one batched UPDATE. The model call runs outside any
 database transaction, so a slow model never holds a transaction open.
 
 After each batch's write has committed, ``on_batch(done, total)`` is told how far
@@ -16,14 +19,15 @@ reduced header, a blank line, then its text (``piece_input``); a question is
 ``Instruct: {QUERY_TASK}\nQuery:{question}`` (``query_input``), with no space
 after "Query:". Documents get no instruction. A Gemini embedding model
 (``google/gemini-``, PRD 5 M5) gets the question as plain text, recipe ``gem1``
-(``recipe_for``). The reduced header keeps only the
+(``recipe_for``), and ``recipe_tag`` names that recipe. The reduced header keeps only the
 Type, Date and Section parts of the stored context header: never "Before:" (the
 previous piece's line would mix into this vector), the document name (a rename
 would make every vector stale) or the page numbers.
 
 Each vector is tagged with ``recipe_tag(model)``, and meaning search uses only
 the current tag, so a vector from another model or recipe is left out until
-``python -m kaagaz.cli reembed`` replaces it (PRD 3 V4, edge case 7).
+``python -m kaagaz.cli reembed`` replaces it (PRD 3 V4, edge case 7), or the
+worker's ``embed_missing`` does, a few at a time (M5).
 
 ``ModelUnavailable`` propagates: the caller decides (the pipeline logs it and
 marks the document ready without vectors; word and typo search still work).
@@ -32,14 +36,15 @@ The worker then fills those pieces in later, a few at a time
 database that cannot be reached is ``BackendUnavailable("database")``, so the
 job is retried.
 
-Cost: ceil(n / batch_size) model calls and 2 * ceil(n / batch_size) + 2 short
-transactions for n pieces; O(batch_size * dim) memory.
+Cost: ceil(n / batch_size) + ceil(s / batch_size) model calls and
+2 * (ceil(n / batch_size) + ceil(s / batch_size)) + 3 short transactions for n pieces
+and s sections; O(batch_size * dim) memory.
 """
 
 from collections.abc import Callable, Sequence
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, TextClause, text
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
 from kaagaz.db.customers import is_active
@@ -47,8 +52,13 @@ from kaagaz.db.engine import Database, unavailable
 from kaagaz.search.hybrid import vector_literal
 from kaagaz.settings import is_gemini_model
 
+# A vector is missing when there is none or it has another tag (PRD 5 M5: a stale tag is
+# made again). A section is embedded only when it has a summary.
 _TO_EMBED = text(
-    "SELECT count(*) FROM pieces WHERE customer_id = :c AND document_id = :d AND embedding IS NULL"
+    "SELECT (SELECT count(*) FROM pieces WHERE customer_id = :c AND document_id = :d"
+    " AND (embedding IS NULL OR embedding_model <> :m))"
+    " + (SELECT count(*) FROM document_sections WHERE customer_id = :c AND document_id = :d"
+    " AND summary IS NOT NULL AND (embedding IS NULL OR embed_recipe <> :m))"
 )
 
 # The query task, in English (the model card: queries carry an instruction).
@@ -62,13 +72,27 @@ _KEPT_PARTS = ("Type: ", "Date: ", "Section: ")
 
 _NEXT_BATCH = text(
     "SELECT id, seq, text, context_header FROM pieces"
-    " WHERE customer_id = :c AND document_id = :d AND embedding IS NULL AND seq > :after"
+    " WHERE customer_id = :c AND document_id = :d AND (embedding IS NULL OR embedding_model <> :m)"
+    " AND seq > :after"
     " ORDER BY seq LIMIT :n"
 )
 
 _WRITE = text(
     "UPDATE pieces SET embedding = CAST(:v AS halfvec(1024)), embedding_model = :m"
-    " WHERE customer_id = :c AND id = :id AND embedding IS NULL"
+    " WHERE customer_id = :c AND id = :id AND (embedding IS NULL OR embedding_model <> :m)"
+)
+
+_NEXT_SECTIONS = text(
+    "SELECT id, seq, path, summary FROM document_sections"
+    " WHERE customer_id = :c AND document_id = :d AND summary IS NOT NULL"
+    " AND (embedding IS NULL OR embed_recipe <> :m) AND seq > :after"
+    " ORDER BY seq LIMIT :n"
+)
+
+# 0021 grants the app UPDATE of these two columns only.
+_WRITE_SECTION = text(
+    "UPDATE document_sections SET embedding = CAST(:v AS halfvec(1024)), embed_recipe = :m"
+    " WHERE customer_id = :c AND id = :id AND (embedding IS NULL OR embed_recipe <> :m)"
 )
 
 # reembed: clear one document's vectors whose tag is not the current one, or
@@ -77,6 +101,11 @@ _CLEAR_STALE = text(
     "UPDATE pieces p SET embedding = NULL, embedding_model = NULL"
     " WHERE p.customer_id = :c AND p.document_id = :d AND p.embedding IS NOT NULL"
     " AND (:all OR p.embedding_model <> :m)"
+)
+_CLEAR_STALE_SECTIONS = text(
+    "UPDATE document_sections s SET embedding = NULL, embed_recipe = NULL"
+    " WHERE s.customer_id = :c AND s.document_id = :d AND s.embedding IS NOT NULL"
+    " AND (:all OR s.embed_recipe <> :m)"
 )
 
 # Every customer's id, through the one SECURITY DEFINER helper (migration 0006):
@@ -88,14 +117,17 @@ _DOCUMENTS_WITH_PIECES = text(
 )
 
 # embed_missing: this customer's ready, current documents out of Trash that still
-# have a piece with no vector, after the cursor, in id order. A document still
-# being read is left to its own run; one in Trash or an older version never is searched.
+# have a piece or a section summary with no vector or a stale one (M5), after the cursor,
+# in id order. A document still being read is left to its own run; one in Trash or an
+# older version never is searched.
 _MISSING = text(
     "SELECT d.id FROM documents d"
     " WHERE d.customer_id = :c AND d.id > CAST(:after AS uuid)"
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND EXISTS (SELECT 1 FROM pieces p WHERE p.customer_id = :c AND p.document_id = d.id"
-    " AND p.embedding IS NULL)"
+    " AND (EXISTS (SELECT 1 FROM pieces p WHERE p.customer_id = :c AND p.document_id = d.id"
+    " AND (p.embedding IS NULL OR p.embedding_model <> :m))"
+    " OR EXISTS (SELECT 1 FROM document_sections s WHERE s.customer_id = :c AND s.document_id = d.id"
+    " AND s.summary IS NOT NULL AND (s.embedding IS NULL OR s.embed_recipe <> :m)))"
     " ORDER BY d.id LIMIT :n"
 )
 # The cursor's start: below every document id.
@@ -103,8 +135,9 @@ _FIRST = "00000000-0000-0000-0000-000000000000"
 
 
 def recipe_tag(model_embed: str) -> str:
-    """The ``embedding_model`` value of a vector made by ``model_embed`` today."""
-    return f"{model_embed}#{RECIPE}"
+    """The ``embedding_model`` value of a vector made by ``model_embed`` today: the model,
+    then # and its recipe (``recipe_for``, PRD 5 M5), such as ``google/gemini-embedding-2#gem1``."""
+    return f"{model_embed}#{recipe_for(model_embed)}"
 
 
 def recipe_for(model_embed: str) -> str:
@@ -125,11 +158,11 @@ def query_input(question: str, model_embed: str = "") -> str:
 def embed_question(model: ModelClient | None, question: str) -> list[float] | None:
     """The question's vector, or None (no model, model down, or unusable vectors), so
     search falls back to word and fuzzy matching. One model call, in ``query_input``'s
-    format; chat and GET /api/search both embed this way."""
+    format for its MODEL_EMBED; chat and GET /api/search both embed this way."""
     if model is None or not question:
         return None
     try:
-        vectors = model.embed([query_input(question)])
+        vectors = model.embed([query_input(question, model.embed_model)])
     except (ModelUnavailable, ModelOutputError):
         return None
     return vectors[0] if vectors else None
@@ -145,6 +178,26 @@ def piece_input(context_header: str, piece_text: str) -> str:
     return f"{' | '.join(kept)}\n\n{piece_text}" if kept else piece_text
 
 
+def section_input(path: Sequence[str], summary: str) -> str:
+    """What a section is embedded as (CX2): its heading path as a piece header's Section
+    part, a blank line, its summary; the summary alone with no path. O(length)."""
+    return f"Section: {' > '.join(path)}\n\n{summary}" if path else summary
+
+
+class _Kind(NamedTuple):
+    """What ``embed_pieces`` embeds: its next batch, its write, and each row's input."""
+
+    next_batch: TextClause
+    write: TextClause
+    input: Callable[[Sequence[Any]], str]
+
+
+_KINDS = (
+    _Kind(_NEXT_BATCH, _WRITE, lambda row: piece_input(str(row[3]), str(row[2]))),
+    _Kind(_NEXT_SECTIONS, _WRITE_SECTION, lambda row: section_input(list(row[2]), str(row[3]))),
+)
+
+
 def embed_pieces(
     db: Database,
     customer_id: str,
@@ -155,46 +208,48 @@ def embed_pieces(
     *,
     limit: int | None = None,
 ) -> int:
-    """Embed the document's pieces that have no vector. Returns how many were written.
-    ``on_batch(done, total)`` follows each batch, outside any transaction: ``done`` of
-    the ``total`` pieces that had no vector at the start. ``limit``: read at most that
-    many pieces (the worker's pass), else all of them."""
+    """Embed the document's pieces, then its section summaries, that have no vector of the
+    current tag. Returns how many were written. ``on_batch(done, total)`` follows each
+    batch, outside any transaction: ``done`` of the ``total`` pieces and sections that
+    had none at the start. ``limit``: read at most that many (the worker's pass), else
+    all of them."""
     if batch_size < 1 or (limit is not None and limit < 1):
         raise ValueError("batch_size and limit must be at least 1")
-    with unavailable(), db.customer(customer_id) as conn:
-        total = int(conn.execute(_TO_EMBED, {"c": customer_id, "d": document_id}).scalar_one())
-    written = done = 0
-    after = -1
-    left = limit
     tag = recipe_tag(model.embed_model)
-    while True:
-        size = batch_size if left is None else min(batch_size, left)
-        with unavailable(), db.customer(customer_id) as conn:
-            rows = conn.execute(
-                _NEXT_BATCH, {"c": customer_id, "d": document_id, "after": after, "n": size}
-            ).all()
-        if not rows:
-            return written
-        after = int(rows[-1][1])
-        vectors = model.embed([piece_input(str(row[3]), str(row[2])) for row in rows])
-        if len(vectors) != len(rows):
-            raise ModelOutputError("embedding_count")
-        with unavailable(), db.customer(customer_id) as conn:
-            result = conn.execute(
-                _WRITE,
-                [
-                    {"c": customer_id, "id": str(row[0]), "v": vector_literal(vector), "m": tag}
-                    for row, vector in zip(rows, vectors, strict=True)
-                ],
-            )
-            written += result.rowcount
-        done += len(rows)
-        if on_batch is not None:
-            on_batch(done, total)  # committed: the heartbeat never waits inside a transaction
-        if left is not None:
-            left -= len(rows)
-        if len(rows) < size or left == 0:
-            return written
+    ids = {"c": customer_id, "d": document_id, "m": tag}
+    with unavailable(), db.customer(customer_id) as conn:
+        total = int(conn.execute(_TO_EMBED, ids).scalar_one())
+    written = done = 0
+    left = limit
+    for kind in _KINDS:
+        after = -1
+        while left != 0:
+            size = batch_size if left is None else min(batch_size, left)
+            with unavailable(), db.customer(customer_id) as conn:
+                rows = conn.execute(kind.next_batch, {**ids, "after": after, "n": size}).all()
+            if not rows:
+                break
+            after = int(rows[-1][1])
+            vectors = model.embed([kind.input(row) for row in rows])
+            if len(vectors) != len(rows):
+                raise ModelOutputError("embedding_count")
+            with unavailable(), db.customer(customer_id) as conn:
+                result = conn.execute(
+                    kind.write,
+                    [
+                        {**ids, "id": str(row[0]), "v": vector_literal(vector)}
+                        for row, vector in zip(rows, vectors, strict=True)
+                    ],
+                )
+                written += result.rowcount
+            done += len(rows)
+            if on_batch is not None:
+                on_batch(done, total)  # committed: the heartbeat never waits inside a transaction
+            if left is not None:
+                left -= len(rows)
+            if len(rows) < size:
+                break
+    return written
 
 
 def customer_ids(conn: Connection) -> Sequence[str]:
@@ -212,10 +267,12 @@ def document_ids(conn: Connection, customer_id: str) -> Sequence[str]:
 def clear_stale(
     conn: Connection, customer_id: str, document_id: str, model_embed: str, *, every: bool
 ) -> int:
-    """Clear the document's vectors that ``embed_pieces`` would not make today
-    (``every``: all of them). Returns how many. O(p) for its p pieces."""
+    """Clear the document's piece and section vectors that ``embed_pieces`` would not make
+    today (``every``: all of them). Returns how many. O(p + s) for its p pieces and s
+    sections."""
     params = {"c": customer_id, "d": document_id, "m": recipe_tag(model_embed), "all": every}
-    return conn.execute(_CLEAR_STALE, params).rowcount
+    pieces = conn.execute(_CLEAR_STALE, params).rowcount
+    return pieces + conn.execute(_CLEAR_STALE_SECTIONS, params).rowcount
 
 
 class MissingPass(NamedTuple):
@@ -236,7 +293,8 @@ def embed_missing(
     """Give at most ``limit`` pieces their missing vectors, through ``embed_pieces``,
     walking (customer, document) in id order from just after the cursor ``after``.
 
-    Only the pieces of ready, current documents out of Trash (``_MISSING``), of
+    Only the pieces and sections of ready, current documents out of Trash (``_MISSING``),
+    with no vector or a stale one (M5), of
     active customers: one that is disabled or being deleted (0014) is passed
     over, so it costs no model call, and is picked up once enabled. The
     customers come from ``kaagaz_customer_ids()`` through ``Database.system()``;
@@ -260,13 +318,14 @@ def embed_missing(
     another run fills at the same moment is sent but not counted).
     Memory O(C + limit * dim).
     """
+    tag = recipe_tag(model.embed_model)
     with db.system() as conn:
         customers = [c for c in customer_ids(conn) if after is None or c >= after[0]]
     written = 0
     for customer in customers:
         start = after[1] if after is not None and after[0] == customer else _FIRST
         with db.customer(customer) as conn:
-            params = {"c": customer, "after": start, "n": limit - written}
+            params = {"c": customer, "after": start, "n": limit - written, "m": tag}
             active = is_active(conn, customer)
             documents = [str(row[0]) for row in conn.execute(_MISSING, params)] if active else []
         for document in documents:
