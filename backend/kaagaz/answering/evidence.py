@@ -74,7 +74,8 @@ Neighbours (PRD 3 Q4) are fetched only for the usable hits, after the gate passe
 they pass the same two checks, are numbered after every hit (a window cut drops
 them first) and are marked. PRD 5's topic and section pieces (CX6, ``Context``) are
 fetched the same way and numbered between the hits and the neighbours; a whole
-document's pieces (CX5) are numbered in reading order, and the gate judges them all.
+document's pieces (CX5) are numbered in reading order, and the gate asks only that they
+hold every number asked (``holds_numbers``).
 
 Time is O(h * t) for h hits of t characters: one pass of fixed regular
 expressions and substring checks per hit.
@@ -495,6 +496,14 @@ def any_hit_scores(evidence: Sequence[Evidence], min_score: float, numbers: Sequ
         and all(has_token(number, ascii_digits(item.hit.text).casefold()) for number in numbers)
         for item in evidence
     )
+
+
+def holds_numbers(evidence: Sequence[Evidence], numbers: Sequence[str]) -> bool:
+    """The gate of a whole document (CX5): some evidence, and every number asked in it as a
+    whole token (``has_token``). No keyword rule: an English question about a Hindi or Marathi
+    document shares no word with it, so the model and ``verify`` decide. O(t)."""
+    haystack = ascii_digits("\n".join(item.hit.text for item in evidence)).casefold()
+    return bool(evidence) and all(has_token(number, haystack) for number in numbers)
 
 
 def numbers_asked(question: str, keywords: Sequence[str]) -> list[str]:

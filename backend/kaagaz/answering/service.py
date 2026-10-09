@@ -55,10 +55,13 @@ The steps (docs/architecture.md):
 10. Context across pages (PRD 5 CX5, CX6, M2; the ``Context`` port, the PostgreSQL one
     with the PostgreSQL retriever, else only the one a test passes). With the model on,
     when the scope's pieces add up to ANSWER_WHOLE_DOC_TOKENS or fewer (0: never), the
-    evidence is every piece in reading order, and the gate runs over all of them; no
-    search, aspect, topic, section or neighbour. Otherwise the rewrite also lists up to
-    QUERY_ASPECTS_MAX aspects (even with no history), each searched with the question
-    and fused (``TranslatedSearch``, one batched embed); after the gate, the pieces of the
+    evidence is every piece in reading order, and the gate asks only that every number
+    asked is in them (``holds_numbers``: the keyword rule would turn away an English
+    question about a Hindi or Marathi document; the model and verify decide, and the label
+    is judged per sentence as ever); no search, aspect, topic, section or neighbour.
+    Otherwise the rewrite also lists up to QUERY_ASPECTS_MAX aspects (even with no
+    history), each searched with the question and fused (``TranslatedSearch``, one
+    batched embed); after the gate, the pieces of the
     topics the question, an aspect or a hit names (TOPIC_EXPAND_MAX_PIECES a document)
     and of the two best sections come after the hits, then the neighbours. Each document
     that supplies the model's evidence adds one card line, "AI summary, not evidence",
@@ -127,6 +130,7 @@ from kaagaz.answering.evidence import (
     closest_documents,
     enough_evidence,
     has_word,
+    holds_numbers,
     looks_like_instructions,
     number_evidence,
     numbers_asked,
@@ -566,7 +570,14 @@ class AnswerService:
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
-        if gate is None and not (translated is not None and any_hit_scores(evidence, min_score, numbers)):
+        if whole is not None:
+            # CX5: only the numbers asked must be there; the keyword rule would turn away an
+            # English question about a Hindi or Marathi document. The model and verify decide.
+            passed = holds_numbers(evidence, numbers)
+        else:
+            scored = translated is not None and any_hit_scores(evidence, min_score, numbers)
+            passed = gate is not None or scored
+        if not passed:
             return _not_found("search", shown, closest, model_used=False, reason="notfound_gate")
         if whole is None:
             terms = [question, *aspects]

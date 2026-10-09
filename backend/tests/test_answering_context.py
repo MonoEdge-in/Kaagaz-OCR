@@ -258,6 +258,25 @@ def test_cx5_a_scope_that_does_not_fit_is_searched() -> None:
         assert context.calls[0] == "whole" and retriever.calls
 
 
+WITNESS = page(2, "साक्षीदार: रमेश पाटील")
+NAMED = "The witness is रमेश पाटील."
+
+
+def test_cx5_an_english_question_about_a_marathi_document_is_answered_never_verified() -> None:
+    """No keyword of "Who is the witness?" is in the Marathi witness line, and a whole
+    document's pieces have no score: the keyword gate would say not found. Only the numbers
+    asked count there."""
+    model = Routed(cites((NAMED, WITNESS.text)))
+    context = FakeContext([WITNESS])
+
+    answer = answers(Fused([WITNESS]), context, model).answer(A, "Who is the witness?")
+
+    assert answer.status == "answered" and [s.text for s in answer.sentences] == [NAMED]
+    assert answer.label == "needs_review" and context.calls == ["whole", "cards"]
+    asked = answers(Fused([WITNESS]), FakeContext([WITNESS]), Routed(cites((NAMED, WITNESS.text))))
+    assert asked.answer(A, "Who is the witness of deed 48?").status == "not_found"  # no 48 in it
+
+
 def test_cx5_no_model_means_no_whole_document_mode() -> None:
     retriever, context = Fused(OFFER_LETTER), FakeContext(OFFER_LETTER)
     service = AnswerService(

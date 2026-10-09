@@ -125,3 +125,25 @@ def test_library_search_is_never_translated(db: Database) -> None:
     assert reply.status_code == 200, reply.text
     assert model.translated == 0
     assert reply.json()["documents"][0]["best"]["snippet"].endswith(A_NAME)
+
+
+def test_whole_document_mode_answers_the_english_question_from_marathi_text_alone(db: Database) -> None:
+    """PRD 5 CX5: the same question, the scope's pieces given whole (no search, so no
+    translation): it shares no word with the Marathi text and the pieces have no score, so
+    only the numbers asked gate it. B still gets only its own owner."""
+    a, b, pieces = _world(db)
+    whole = make_settings(model_embed="test-embed", query_aspects_max=0)  # ANSWER_WHOLE_DOC_TOKENS on
+
+    def ask(customer: str) -> tuple[dict[str, Any], Model]:
+        model = Model()
+        service = AnswerService(db=db, model=model, settings=whole, clock=lambda: NOW)
+        return service.answer(customer, QUESTION).to_json(), model
+
+    for_a, model = ask(a)
+    assert model.translated == 0 and for_a["status"] == "answered"
+    assert {c["ref_id"] for c in for_a["citations"]} == {pieces[a][0]}
+    assert for_a["label"] == "needs_review"
+    for_b, _ = ask(b)
+    dumped = json.dumps(for_b, ensure_ascii=False)
+    assert A_NAME not in dumped and pieces[a][0] not in dumped
+    assert [s["text"] for s in for_b["sentences"]] == [f"{B_NAME}."]
