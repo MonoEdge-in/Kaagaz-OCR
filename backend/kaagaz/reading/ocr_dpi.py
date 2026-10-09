@@ -1,10 +1,10 @@
 """Choose each OCR page's DPI from the size of its text (council 5 Oct 2026, PROVISIONAL).
 
-Today every page sent to OCR is drawn at OCR_DPI (400 on the GPU server). The
-council found most of those pixels thrown away: layout detection resizes the
-page to its own input size, each large block is fitted to OCR_VL_MAX_PIXELS,
-and RapidOCR fits the page to a 2000-pixel long side. Only small blocks (one
-field, one number) use all 400 DPI. ``OCR_DPI_RULE`` says how a page's DPI is
+Today every page sent to OCR is drawn at OCR_DPI. The council (5 Oct 2026, when the
+old reader drew pages at 400 DPI) found most of those pixels thrown away: the
+reader resized each page and block to its own input size, and RapidOCR fits the
+page to a 2000-pixel long side. Only small blocks (one field, one number) used
+all 400 DPI. ``OCR_DPI_RULE`` says how a page's DPI is
 chosen:
 
 * ``fixed`` (the default): today's DPI, OCR_DPI, or lower when the page is too
@@ -31,9 +31,7 @@ enlarged, and never below 72 DPI on A4 (``photo_scale``).
 TARGET_LINE_PX, 48 (PROVISIONAL, to be set by a sweep on the T4): RapidOCR's
 PP-OCRv5 recogniser resizes every line to 48 pixels high (rapidocr 3.9.2
 config, ``rec_img_shape: [3, 48, 320]``), so a taller line is only shrunk
-again. PaddleOCR-VL sees a picture in 28-pixel tokens (inferred: its pixel
-bounds, 112,896 and 1,003,520, are 144 and 1,280 times 28 x 28), and 48 pixels
-is about 1.7 tokens a line, room for the Devanagari headline and the marks
+again. 48 pixels also leaves room for the Devanagari headline and the marks
 above and below it.
 
 ``line_height_px``, Pillow only and not tuned to any script:

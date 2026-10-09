@@ -1446,7 +1446,7 @@ while the model was down, or after it declined the page or sent a bad reply."""
 
 def _handed_on(read: PageRead) -> bool:
     """The page was read by the backup reader for the reading model (``HANDED_ON``),
-    whatever engine read it: never a page read with no key, nor by PaddleOCR-VL."""
+    whatever engine read it: never a page read with no key."""
     return not HANDED_ON.isdisjoint(read.issues)
 
 

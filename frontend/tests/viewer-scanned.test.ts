@@ -27,7 +27,7 @@ const line = (confidence: number | null, region: Region = box(1, [0.1, 0.1, 0.9,
 
 const reader = (overrides: Partial<PageReader> = {}): PageReader => ({
   role: "first",
-  reader: "paddleocr-vl",
+  reader: "old-reader",
   reader_version: "1.5",
   truncated: false,
   lines: [line(0.97)],
@@ -74,7 +74,7 @@ describe("readerHeading", () => {
       notSureCount: "2 of 3 lines: reader not sure",
     });
     // PRD 5 U8: no engine's name, whatever the server calls its reader.
-    expect(JSON.stringify(heading)).not.toMatch(/paddle|rapid|qwen/i);
+    expect(JSON.stringify(heading)).not.toMatch(/old-reader|rapid/i);
     expect(readerHeading(reader(), ocrPage).notSureCount).toBeNull();
     expect(readerHeading(reader({ lines: [line(0.5)] }), ocrPage).notSureCount).toBe(
       "1 of 1 line: reader not sure",
