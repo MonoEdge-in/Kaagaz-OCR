@@ -249,3 +249,21 @@ def test_m3_a_twelve_turn_chat_remembers_the_second_seller_and_drops_a_trashed_d
     assert all(SUMMARY not in user and "Names:" not in user for user in model.drafted)
     # Without the memory, the name came from an answer outside the last turns: refused.
     assert ask(NO_MEMORY)[0].rewritten_question is None
+
+
+def test_m3_an_item_must_be_whole_words_of_the_chat_never_part_of_one() -> None:
+    """The quote check is by whole words: "20" is not in 2026, "Ram" not in Ramesh, and
+    "Patil Ramesh" is not the run "Ramesh Patil"."""
+    turns = [Turn("Who signed the deed of 12/08/2026?", "Ramesh Patil signed it, for Rs. 1,20,000.")]
+    reply = {
+        "summary": "A deed.",
+        "names": ["Ramesh Patil", "Ram", "Patil Ramesh", "Ramesh"],
+        "numbers": ["20", "1,20,000", "Rs. 1,20,000", "2026"],
+        "dates": ["12/08/2026", "12/08"],
+        "topics": ["deed", "dee"],
+    }
+    remembered = summarise(MemoryModel(reply), turns, NO_MEMORY, [])
+    assert remembered is not None
+    assert remembered.names == ("Ramesh Patil", "Ramesh")
+    assert remembered.numbers == ("1,20,000", "Rs. 1,20,000")
+    assert (remembered.dates, remembered.topics) == (("12/08/2026",), ("deed",))

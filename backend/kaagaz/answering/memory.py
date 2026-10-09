@@ -15,8 +15,9 @@ The rules (council 9 Oct 2026):
   conversation's customer and user (db/chat.py), under row level security. It is never
   returned by the API and never logged (reason codes only).
 * Every name, number, date and topic must be found, by the quote rule
-  (``extraction.quotes.normalise_quote``), in the questions and answers it was made
-  from or the memory before; anything else, and anything that reads like
+  (``extraction.quotes.normalise_quote``) and as a run of whole words, in the questions
+  and answers it was made from or the memory before ("20" is not in 2026, nor "Ram" in
+  Ramesh); anything else, and anything that reads like
   instructions (``evidence.looks_like_instructions``), is dropped. A summary that
   reads like instructions is dropped too.
 * Its documents are the ids the answers cited, never the model's; one that is no
@@ -42,6 +43,7 @@ from kaagaz.answering.draft import _escape
 from kaagaz.answering.evidence import looks_like_instructions
 from kaagaz.answering.rewrite import Turn, tokens
 from kaagaz.answering.sanitize import clean_text
+from kaagaz.chunking.script import spaced_words
 from kaagaz.extraction.quotes import normalise_quote
 
 _log = logging.getLogger(__name__)
@@ -154,7 +156,7 @@ def summarise(
     if not isinstance(summary, str) or not all(isinstance(reply.get(kind), list) for kind in KINDS):
         _skipped("memory_shape")
         return None
-    source = normalise_quote("\n".join([asked, *previous.items()]))
+    source = _words("\n".join([asked, *previous.items()]))
     summary = clean_text(summary)[:MAX_SUMMARY]
     documents = tuple(dict.fromkeys([*previous.documents, *cited]))[-MAX_ITEMS:]
     kept = {kind: _checked(reply[kind], source) for kind in KINDS}
@@ -167,14 +169,14 @@ def stored_size(memory: Memory) -> int:
 
 
 def _checked(raw: Collection[Any], source: str) -> tuple[str, ...]:
-    """The items found in ``source`` (normalised) by the quote rule, cleaned, each once,
-    the first ``MAX_ITEMS``. O(i * t)."""
+    """The items found in ``source`` (``_words``) by the quote rule, as whole words,
+    cleaned, each once, the first ``MAX_ITEMS``. O(i * t)."""
     kept: list[str] = []
     for item in _strings(raw):
         text = clean_text(item)
-        needle = normalise_quote(text)
+        needle = _words(text)
         if (
-            needle
+            needle.strip()
             and len(text) <= MAX_ITEM_CHARS
             and needle in source
             and text not in kept
@@ -182,6 +184,13 @@ def _checked(raw: Collection[Any], source: str) -> tuple[str, ...]:
         ):
             kept.append(text)
     return tuple(kept[:MAX_ITEMS])
+
+
+def _words(text: str) -> str:
+    """``text`` normalised by the quote rule (``normalise_quote``), as its words
+    (``spaced_words``) joined by one space, with a space at each end: an item's words are in
+    it only as a run of whole words, so "20" is not in 2026 nor "Ram" in Ramesh. O(n)."""
+    return f" {' '.join(spaced_words(normalise_quote(text)))} "
 
 
 def _fit(memory: Memory) -> Memory:
