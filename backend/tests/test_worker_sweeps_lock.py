@@ -20,7 +20,7 @@ from pathlib import Path
 from kaagaz.search.indexing import MissingPass
 from kaagaz.search.story_vectors import StoryKey, StoryPass
 from kaagaz.worker_main import EMBED_EVERY, PURGE_EVERY, STORY_EVERY, EmbedMissing, PurgeHourly, StoryVectors
-from tests.test_compose_ocr import service
+from tests.test_compose_prod import service
 
 ROOT = Path(__file__).resolve().parents[2]
 START = datetime(2026, 10, 9, 9, 0, tzinfo=UTC)

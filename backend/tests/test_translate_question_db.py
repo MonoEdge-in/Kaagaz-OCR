@@ -12,7 +12,6 @@ from typing import Any
 
 import pytest
 
-from kaagaz.ai.client import ModelUnavailable
 from kaagaz.answering import translate
 from kaagaz.answering.service import AnswerService
 from kaagaz.api.app import create_app
@@ -59,9 +58,6 @@ class Model:
         ]
         sentences = [{"text": f"{name}.", "evidence": [n]} for n, name in found]
         return {"status": "answered" if found else "not_found", "sentences": sentences}
-
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise ModelUnavailable("no_vision")
 
 
 def _world(db: Database) -> tuple[str, str, dict[str, list[str]]]:

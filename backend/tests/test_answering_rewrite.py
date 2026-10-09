@@ -94,9 +94,6 @@ class RewriteModel:
             raise self.error
         return self.reply
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise ModelUnavailable("no_vision")
-
 
 def test_the_history_and_the_question_are_fenced_and_escaped_data() -> None:
     model = RewriteModel({"question": "What were the expenses in September?"})

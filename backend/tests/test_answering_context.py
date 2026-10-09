@@ -19,7 +19,6 @@ from kaagaz.answering.evidence import Translated, number_evidence
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.service import AnswerService, topic_terms
 from kaagaz.answering.verify import verify
-from kaagaz.search.indexing import query_input
 from kaagaz.search.scope import Scope
 from kaagaz.settings import CHAT_OVERHEAD_TOKENS, Settings
 from tests.settings_factory import make_settings
@@ -331,10 +330,9 @@ def test_cx6_aspects_are_asked_on_a_first_question_and_searched_with_it_in_one_e
 
     (prompt,) = model.rewrites
     assert prompt.endswith("Aspects: at most 6.") and "<memory>" not in prompt
-    # One embed call: the question and its aspects, each in MODEL_EMBED's query input.
-    embed = SETTINGS.model_embed
+    # One embed call: the question and its aspects, each as plain text.
     texts = ["how many leaves do i get", "holidays", "casual leave", "maternity leave"]  # normalised
-    assert model.embedded == [[query_input(text, embed) for text in texts]]
+    assert model.embedded == [texts]
     (extra,) = retriever.fused
     assert [text for text, _ in extra] == ["holidays", "casual leave", "maternity leave"]
     assert all(vector is not None for _, vector in extra)

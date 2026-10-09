@@ -13,7 +13,7 @@ All of one window reply's searches share ``MAX_WINDOW_CHECKS`` candidate spots (
 council fix 8), and ``INVOICE_PROMPT_HASH`` names the prompt and schema for the run.
 
 **One model call per window** (``read_invoice``), with ``max_tokens`` for the
-reply (``MODEL_WINDOW_MAX_TOKENS``). The input budget is what
+reply (``settings.INVOICE_REPLY_TOKENS``). The input budget is what
 ``ai.client.input_token_budget`` leaves in ``num_ctx`` for the user message, less
 the message's own words. The window's text goes to the model fenced as untrusted
 data (``window_prompt``), and the reply follows ``INVOICE_SCHEMA``: quotes only,
@@ -156,6 +156,7 @@ from kaagaz.extraction.quotes import (
 )
 from kaagaz.extraction.values import NEEDS_REVIEW, VERIFIED, ExtractedValue, InvoiceLineRow, InvoiceRow
 from kaagaz.reading.spans import BoxLocation, Location, Span
+from kaagaz.settings import INVOICE_REPLY_TOKENS
 
 if TYPE_CHECKING:
     from kaagaz.settings import Settings
@@ -271,7 +272,7 @@ class WindowSettings:
     chars: int  # EXTRACT_WINDOW_CHARS
     overlap: int  # EXTRACT_WINDOW_OVERLAP
     max_windows: int  # EXTRACT_MAX_WINDOWS
-    max_tokens: int  # MODEL_WINDOW_MAX_TOKENS
+    max_tokens: int  # INVOICE_REPLY_TOKENS
 
     @classmethod
     def from_settings(cls, settings: "Settings") -> "WindowSettings":
@@ -279,7 +280,7 @@ class WindowSettings:
             settings.extract_window_chars,
             settings.extract_window_overlap,
             settings.extract_max_windows,
-            settings.model_window_max_tokens,
+            INVOICE_REPLY_TOKENS,
         )
 
 

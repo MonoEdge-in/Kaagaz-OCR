@@ -184,10 +184,10 @@ describe("routeText (PRD 2, R1; PRD 5 RT2)", () => {
     expect(BACKUP_ISSUES).toEqual(["read_locally", "reader_refused"]);
   });
 
-  it("keeps the old words for a page read with no key, by the layout reader, or before PRD 5", () => {
+  it("keeps the old words for a page read with no key, by an old reader, or before PRD 5", () => {
     expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: [] })).toBe("Read by OCR");
     expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["low_resolution"] })).toBe("Read by OCR");
-    expect(routeText({ route: "ocr", read_by: "paddleocr_vl", read_issues: [] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: "an_old_reader", read_issues: [] })).toBe("Read by OCR");
     expect(routeText({ route: "ocr", read_by: null, read_issues: [] })).toBe("Read by OCR");
   });
 
@@ -310,7 +310,7 @@ describe("the document card's reply shape (PRD 2 D3)", () => {
     const card: DocumentCard = {
       version: 1,
       run_id: "r1",
-      model: "qwen3:4b",
+      model: "google/gemini-3.1-pro-preview",
       prompt: "f376d271",
       doc_type: "land_record",
       languages: ["mr"],

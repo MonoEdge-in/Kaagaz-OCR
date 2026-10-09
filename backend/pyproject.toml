@@ -29,22 +29,6 @@ ocr = [
     "rapidocr>=3.9",           # Apache-2.0
     "onnxruntime>=1.30",       # MIT
 ]
-# The scan reader's own image only (backend/Dockerfile.ocr, from constraints-ocr.txt):
-# never installed in the api or worker image, or in CI. Exact pins (security A6).
-paddle = [
-    "paddleocr[doc-parser]==3.7.0",  # Apache-2.0
-    "paddlex==3.7.2",                # Apache-2.0; floats inside 3.7.x unless pinned
-    "paddlepaddle==3.3.1",           # Apache-2.0, the CPU build
-]
-# The same, with Paddle's GPU build (CUDA 12.6) in place of the CPU one: the GPU server's
-# OCR image only (docker-compose.gpu.yml). PROVISIONAL: Vrushit approves it. It is not on
-# PyPI: Dockerfile.ocr installs it alone, by direct URL from Paddle's cu126 index and
-# sha256-checked (paddle-gpu-wheel.txt), and the rest from constraints-ocr-gpu.txt.
-paddle-gpu = [
-    "paddleocr[doc-parser]==3.7.0",  # Apache-2.0
-    "paddlex==3.7.2",                # Apache-2.0
-    "paddlepaddle-gpu==3.3.1",       # Apache-2.0; its nvidia-*-cu12 wheels: docs/architecture.md
-]
 dev = [
     "pytest>=9.1",             # MIT
     "httpx2>=2.13",            # BSD-3-Clause, FastAPI's TestClient needs it
@@ -80,6 +64,8 @@ select = [
 "kaagaz/reading/xlsx_reader.py" = ["S314"]
 # read_limited hands the open spool to its caller, who closes it with "with".
 "kaagaz/ingestion/spool.py" = ["SIM115"]
+# The removed-names guard runs git, found on PATH by shutil.which, with fixed arguments.
+"tests/test_removed_names_guard.py" = ["S603"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["kaagaz"]
@@ -95,7 +81,6 @@ module = [
     "boto3", "boto3.*", "botocore", "botocore.*",
     "pdfplumber", "pdfplumber.*", "pypdfium2", "pypdfium2.*",
     "rapidocr", "rapidocr.*",
-    "paddleocr", "paddleocr.*",
     # PROVISIONAL (PRD 2 L3): it has no py.typed; this entry needs Vrushit's OK.
     "indic_transliteration", "indic_transliteration.*",
 ]

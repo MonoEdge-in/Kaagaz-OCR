@@ -28,7 +28,7 @@ from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.pipeline import DocumentProcessor
 from kaagaz.preparing.pages import prepare_pages
-from kaagaz.reading.ocr import MeteredOcrEngine, OcrEngine, OcrLine
+from kaagaz.reading.ocr import MeteredOcrEngine, OcrEngine
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import ScanGate, Verdict
 from tests.db_support import new_customer
@@ -42,7 +42,6 @@ from tests.exit_fixtures import (
 )
 from tests.fakes import (
     FakeScanner,
-    FakeVision,
     MemoryPageImages,
     MemoryQueue,
     MemoryStorage,
@@ -54,7 +53,7 @@ from tests.test_extraction_card import reply as card_reply
 from tests.test_extraction_invoice import item
 from tests.test_pipeline import PIPELINE_POLICY
 from tests.test_pipeline_db import moving_clock
-from tests.test_pipeline_runs import SCANNED, SETTINGS, TimedOcr, Timer
+from tests.test_pipeline_runs import SETTINGS, Timer
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
 pytestmark = pytest.mark.db
@@ -93,10 +92,9 @@ def processor(
     clock: Callable[[], datetime] = moving_clock,
     timezone: str = "Asia/Kolkata",
     ocr: OcrEngine | None = None,
-    vision: FakeVision | None = None,
 ) -> DocumentProcessor:
     """The pipeline with the real PDF readers, runs and stores; the model stage when ``chat``,
-    an OCR engine and a vision model when given."""
+    an OCR engine when given."""
     documents = PgDocuments(db)
     prepare = functools.partial(
         prepare_pages, dpi=72, max_pages=10, max_image_pixels=10_000_000, blank_stddev=3.0, low_res_dpi=150
@@ -114,9 +112,7 @@ def processor(
         progress=documents,
         clock=clock,
         timer=Timer(),
-        vision=vision,
         model_errors=(ModelDown,),
-        vision_model=None if vision is None else "qwen-vision",
         chat=chat,
         chat_model=None if chat is None else chat.chat_model,
         model_budget=None if chat is None else BUDGET,
@@ -309,30 +305,6 @@ def test_the_model_down_on_a_window_keeps_the_card_and_the_model_off_row(db: Dat
     card_only = QuotingChat({}, [], card=INVOICE_CARD)
     receipt_customer, receipt_doc = read(db, textile_invoice_pdf(), card_only)
     assert rows(db, customer, quotes, doc) == rows(db, receipt_customer, quotes, receipt_doc)
-
-
-def test_an_unsure_e4_value_uses_no_vision_crop(db: Database) -> None:
-    """Security A8's vision budget: an E4 value whose quote is ambiguous (the seller's name,
-    printed twice) is never verified, so its box is never cropped (final council 4)."""
-    lines = [
-        OcrLine("Sharma Traders", 60, 60, 400, 80, None, "paragraph"),
-        OcrLine("Invoice No: A-1", 60, 160, 400, 180, None, "paragraph"),
-        OcrLine("Grand Total: 100.00", 60, 260, 400, 280, None, "paragraph"),
-        OcrLine("Sharma Traders", 60, 360, 400, 380, None, "paragraph"),
-    ]
-    fields = {
-        "seller_name": (None, "Sharma Traders"),
-        "invoice_number": ("Invoice No", "A-1"),
-        "total": ("Grand Total", "100.00"),
-    }
-    chat = QuotingChat(fields, [], card=card_reply(doc_type="invoice"))
-    vision = FakeVision("same text")
-    customer, doc = read(db, make_pdf([SCANNED]), chat, ocr=TimedOcr(Timer(), lines=lines), vision=vision)
-    crops = "SELECT vision_crops FROM processing_runs WHERE document_id = :d"
-    assert rows(db, customer, crops, doc) == [(2,)]  # the invoice number's and the total's boxes
-    assert len(vision.pictures) == 2
-    seller = "SELECT label_reason FROM extracted_values WHERE document_id = :d AND field = 'party_name'"
-    assert rows(db, customer, seller, doc) == [("model_chosen",)]
 
 
 def invoice_sheet(silk: str) -> bytes:

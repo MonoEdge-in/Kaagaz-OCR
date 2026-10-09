@@ -65,6 +65,7 @@ from kaagaz.extraction.links import link_identifiers
 from kaagaz.extraction.quotes import ReaderText
 from kaagaz.extraction.values import DocumentFacts, ExtractedValue, LinkIdentifier
 from kaagaz.reading.spans import Span
+from kaagaz.settings import INVOICE_REPLY_TOKENS
 
 if TYPE_CHECKING:
     from kaagaz.settings import Settings
@@ -102,7 +103,7 @@ def model_config(settings: "Settings") -> dict[str, Any]:
         "extract_window_chars": settings.extract_window_chars,
         "extract_window_overlap": settings.extract_window_overlap,
         "extract_max_windows": settings.extract_max_windows,
-        "window_max_tokens": settings.model_window_max_tokens,
+        "window_max_tokens": INVOICE_REPLY_TOKENS,
     }
 
 

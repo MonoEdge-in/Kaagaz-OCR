@@ -44,7 +44,7 @@ class Piece:
 
 def piece_label(spans: Iterable[Span]) -> str:
     """Verified only if every span is a direct read: no engine's confidence, and an
-    origin of "cell" or "text_layer". OCR (PaddleOCR-VL gives no confidence) and a
+    origin of "cell" or "text_layer". OCR (the main reader gives no confidence) and a
     span that does not say how it was read are not (fail closed)."""
     direct = all(span.confidence is None and span.origin in DIRECT_ORIGINS for span in spans)
     return VERIFIED if direct else NEEDS_REVIEW

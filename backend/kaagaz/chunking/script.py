@@ -6,7 +6,7 @@ of it looks sound, and a Latin spelling of it for search.
   Unicode categories L and M, so vowel signs (matras) count; digits,
   punctuation and spaces do not.
 * ``ocr_script_suspect`` (security amendment A3, with ML amendment 1(a)'s
-  exact rule). On Marathi pages PaddleOCR-VL wrote letters from other scripts
+  exact rule). On Marathi pages the old reader wrote letters from other scripts
   (Arabic, Bengali) into Devanagari words, and it gives no confidence. So a
   reading is suspect when a letter or mark is neither ASCII nor in U+0900 to
   U+097F, or when its Devanagari is malformed (``malformed_devanagari``). The

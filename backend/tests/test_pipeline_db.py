@@ -581,7 +581,7 @@ def test_a_card_its_facts_and_its_links_are_saved_with_a_fake_model(db: Database
         (first, second, "invoice_number", "inv17"),
         (second, first, "invoice_number", "inv17"),
     }
-    assert tuple(run) == ("ready", "qwen3:4b", 1, 3)
+    assert tuple(run) == ("ready", "fake-chat", 1, 3)
 
 
 def test_the_model_off_twin_saves_no_card_and_no_links(db: Database) -> None:

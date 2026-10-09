@@ -2,10 +2,10 @@
 
 Every model PRD 5 names goes through OpenRouter (https://openrouter.ai/api/v1), Tushar's
 decision of 8 October 2026 (council ``2026-10-08-prd5-openrouter.md``). ``OpenRouterClient``
-implements ``chat_json``, ``embed`` and ``read_image`` like the Ollama client, and adds
-``read_page`` for the Gemini reader (G1, G2, G3). It uses exactly the models in the
-settings: ``OCR_MODEL`` reads pictures (``read_page`` and ``read_image``), ``MODEL_CHAT``
-answers ``chat_json`` and ``MODEL_EMBED`` embeds. No code here picks or switches a model.
+implements ``ModelClient`` (``chat_json`` and ``embed``), and adds ``read_page`` for the
+Gemini reader (G1, G2, G3). It uses exactly the models in the settings: ``OCR_MODEL``
+reads pages (``read_page``), ``MODEL_CHAT`` answers ``chat_json`` and ``MODEL_EMBED``
+embeds. No code here picks or switches a model.
 
 **The key is a secret.** It goes in the ``Authorization: Bearer`` header only, added with
 ``add_unredirected_header`` so it is never copied onto a redirect, and redirects are
@@ -63,7 +63,7 @@ the summed ``usage.cost`` when replies carry one.
   (``input_tokens``, ``output_tokens``: this reply's usage, plus the first reply's when a
   repair was asked for), so a blocked, cut off or invalid reply is still counted (G9).
 * Any other finish reason, or none: ``ModelOutputError("invalid_output")``.
-* JSON that does not follow the schema: one repair retry, as the Ollama client does, then
+* JSON that does not follow the schema: one repair retry, then
   ``ModelOutputError("invalid_output")``.
 
 **Rate limit and circuit breaker** (G9) live in a ``ModelGate``, one per process
@@ -145,17 +145,14 @@ SCHEMA_NAME = "page"
 # measurement may set a tighter value; it is sent as max_completion_tokens. A reply that
 # reaches it ends "length" (output_truncated), and the reader reads the page in two halves.
 PAGE_MAX_OUTPUT_TOKENS = 32768
-# chat_json and read_image think at this effort: the card, the invoice windows, answers
+# chat_json thinks at this effort: the card, the invoice windows, answers
 # and the follow-up rewrite want a short exact reply. gemini-3.1-pro-preview has no
 # "minimal" level (Google's thinking page), so "low" is the least it accepts.
 CHAT_THINKING_LEVEL = "low"
 # A chat_json call with a reply budget asks for the budget plus this much room to think;
 # the reply itself (completion_tokens less reasoning_tokens) is then held to the caller's
-# budget, as the Ollama client holds it.
+# budget.
 CHAT_THINKING_TOKENS = 8192
-# A crop contains one value, so its output is capped tightly while retaining room for
-# Gemini 3's reasoning tokens.
-IMAGE_MAX_OUTPUT_TOKENS = 512 + CHAT_THINKING_TOKENS
 
 # Backoff (G6): attempt n waits a random time up to min(BACKOFF_MAX_SECONDS,
 # BACKOFF_BASE_SECONDS * 2**n) ("full jitter"), or the server's Retry-After if longer.
@@ -635,9 +632,9 @@ class OpenRouterClient:
         gate: ModelGate | None = None,
     ) -> None:
         """``chat_timeout_seconds`` is for ``chat_json`` only (the worker passes
-        MODEL_EXTRACT_TIMEOUT_SECONDS); ``embed`` and ``read_image`` use
-        MODEL_TIMEOUT_SECONDS. ``gate``: the limiter and breaker to share; without one the
-        client has its own (``process_gate`` gives the shared one)."""
+        MODEL_EXTRACT_TIMEOUT_SECONDS); ``embed`` uses MODEL_TIMEOUT_SECONDS. ``gate``: the
+        limiter and breaker to share; without one the client has its own (``process_gate``
+        gives the shared one)."""
         if settings.openrouter_api_key is None:
             raise ValueError("OPENROUTER_API_KEY is not set")
         parts = urllib.parse.urlsplit(settings.openrouter_base_url)
@@ -655,7 +652,6 @@ class OpenRouterClient:
         self._chat_timeout = self._timeout if chat_timeout_seconds is None else chat_timeout_seconds
         self._default_chat_tokens = settings.model_answer_max_tokens
         self._dim = settings.embedding_dim
-        self._media_resolution = settings.ocr_media_resolution
         self.ocr_model = settings.ocr_model
         self.chat_model = settings.model_chat
         self.embed_model = settings.model_embed
@@ -739,21 +735,6 @@ class OpenRouterClient:
         if value is None:
             raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
         return value
-
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        """The text OCR_MODEL reads in ``png`` (a value's crop), at OCR_MEDIA_RESOLUTION."""
-        body = page_request(
-            model=self.ocr_model,
-            png=png,
-            instruction=instruction,
-            schema=None,
-            media_resolution=self._media_resolution,
-            thinking=CHAT_THINKING_LEVEL,
-            max_output_tokens=IMAGE_MAX_OUTPUT_TOKENS,
-        )
-        reply = self._call(CHAT_PATH, body, self.now() + self._timeout)
-        text, _ = _billed_text(reply, (0, 0))
-        return text.strip()
 
     # The reader's call (G1, G2, G3).
 

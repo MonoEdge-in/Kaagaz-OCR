@@ -18,14 +18,13 @@ from typing import Any
 
 import pytest
 
-from kaagaz.ai import gemini, openrouter, replies
-from kaagaz.ai.client import ModelOutputError, ModelUnavailable, OllamaClient, build_model_client
+from kaagaz.ai import openrouter, replies
+from kaagaz.ai.client import ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.ai.openrouter import (
     BACKOFF_MAX_SECONDS,
     BREAKER_FAILURES,
     BREAKER_OPEN_SECONDS,
     CHAT_THINKING_TOKENS,
-    IMAGE_MAX_OUTPUT_TOKENS,
     KEY_LATCH_SECONDS,
     PAGE_MAX_OUTPUT_TOKENS,
     PROVIDER,
@@ -38,6 +37,7 @@ from kaagaz.ai.openrouter import (
     process_gate,
 )
 from kaagaz.settings import Settings
+from kaagaz.worker_main import worker_model
 from tests import openrouter_fake
 from tests.openrouter_fake import (
     KEY,
@@ -201,12 +201,11 @@ def test_the_key_goes_in_its_bearer_header_and_never_in_the_url_or_body(fake: Op
 
 def test_no_attribution_header_is_sent(fake: OpenRouterFake) -> None:
     """Security (council 8 Oct 2026): no HTTP-Referer or X-Title tells OpenRouter who we are."""
-    fake.script("completions", json_reply(GOOD), json_reply(GOOD), chat_reply("12"))
+    fake.script("completions", json_reply(GOOD), json_reply(GOOD))
     fake.script("embeddings", embed_reply([[0.1, 0.2, 0.3, 0.4]]))
     client = _client(fake.url, Clock())
     _read(client)
     client.chat_json(system="s", user="u", schema=SCHEMA)
-    client.read_image(png=PNG, instruction="Read.")
     client.embed(["one"])
     for request in fake.requests:
         assert not {"http-referer", "referer", "x-title"} & set(request.headers)
@@ -214,16 +213,15 @@ def test_no_attribution_header_is_sent(fake: OpenRouterFake) -> None:
 
 def test_every_request_kind_carries_the_provider_block(fake: OpenRouterFake) -> None:
     """Google Vertex only, no fallback, every parameter honoured, no data collection and
-    zero data retention: on read_page, its repair, chat_json, read_image and embed."""
+    zero data retention: on read_page, its repair, chat_json and embed."""
     assert dict(PROVIDER) == THE_PROVIDER_BLOCK
-    fake.script("completions", chat_reply("not json"), json_reply(GOOD), json_reply(GOOD), chat_reply("12"))
+    fake.script("completions", chat_reply("not json"), json_reply(GOOD), json_reply(GOOD))
     fake.script("embeddings", embed_reply([[0.1, 0.2, 0.3, 0.4]]))
     client = _client(fake.url, Clock())
     _read(client)
     client.chat_json(system="s", user="u", schema=SCHEMA)
-    client.read_image(png=PNG, instruction="Read.")
     client.embed(["one"])
-    assert [request.action for request in fake.requests] == ["completions"] * 4 + ["embeddings"]
+    assert [request.action for request in fake.requests] == ["completions"] * 3 + ["embeddings"]
     for request in fake.requests:
         assert request.body["provider"] == THE_PROVIDER_BLOCK
 
@@ -778,7 +776,7 @@ def test_pages_read_in_parallel_share_the_client_safely(fake: OpenRouterFake) ->
     assert fake.max_in_flight > 1
 
 
-# The ModelClient protocol, as the Ollama client's tests pin it.
+# The ModelClient protocol: chat_json and embed.
 
 
 def test_chat_json_sends_the_system_prompt_first_the_schema_and_default_budget(fake: OpenRouterFake) -> None:
@@ -934,19 +932,6 @@ def test_an_embedding_reply_without_data_is_unavailable(fake: OpenRouterFake) ->
     assert caught.value.code == "bad_response"
 
 
-def test_read_image_sends_the_crop_to_the_ocr_model_and_strips_the_text(fake: OpenRouterFake) -> None:
-    fake.script("completions", chat_reply("  1,23,456.00\n"))
-    client = _client(fake.url, Clock(), ocr_model="google/gemini-3.8-flash", ocr_media_resolution="low")
-    assert client.read_image(png=PNG, instruction="Read the amount.") == "1,23,456.00"
-    (request,) = fake.requests
-    assert request.body["model"] == "google/gemini-3.8-flash"
-    content = request.body["messages"][0]["content"]
-    assert content[0] == {"type": "text", "text": "Read the amount."}
-    assert content[1]["image_url"] == {"url": DATA_URL, "detail": "low"}
-    assert "response_format" not in request.body
-    assert request.body["max_completion_tokens"] == IMAGE_MAX_OUTPUT_TOKENS
-
-
 # The key and page text are secrets.
 
 
@@ -1080,30 +1065,13 @@ def test_the_client_refuses_a_missing_key_a_plain_http_host_or_a_strange_model_i
         OpenRouterClient(_settings("https://openrouter.ai/api/v1", model_chat="google/gemini-3:free"))
 
 
-# build_model_client (PRD 5 question 4).
+# build_model_client (PRD 5 G9, M1, M5).
 
 
 def test_without_ai_there_is_no_client_and_no_model_call(fake: OpenRouterFake) -> None:
     assert build_model_client(make_settings(model_enabled=False)) is None
     assert build_model_client(_settings(fake.url, model_enabled=False)) is None
-    assert isinstance(build_model_client(make_settings(model_enabled=True)), OllamaClient)
     assert fake.requests == []
-
-
-def test_a_gemini_chat_model_reads_through_openrouter_and_embeds_with_ollama(fake: OpenRouterFake) -> None:
-    """Question 4: chat and reading go to OpenRouter in PR 1; embeddings stay on the
-    existing model until M5 switches MODEL_EMBED in PR 3."""
-    settings = _settings(fake.url, model_embed="qwen3-embedding:0.6b", model_base_url=closed_port_url())
-    client = build_model_client(settings)
-    assert client is not None
-    assert (client.chat_model, client.embed_model) == (PRO, "qwen3-embedding:0.6b")
-    fake.script("completions", json_reply(GOOD), chat_reply("12"))
-    assert client.chat_json(system="s", user="u", schema=SCHEMA) == GOOD
-    assert client.read_image(png=PNG, instruction="Read.") == "12"
-    with pytest.raises(ModelUnavailable) as caught:
-        client.embed(["one"])
-    assert caught.value.code == "unreachable"  # Ollama's closed port, not OpenRouter
-    assert [request.action for request in fake.requests] == ["completions"] * 2
 
 
 def test_gemini_chat_and_embed_models_give_the_openrouter_client(fake: OpenRouterFake) -> None:
@@ -1113,21 +1081,15 @@ def test_gemini_chat_and_embed_models_give_the_openrouter_client(fake: OpenRoute
     assert client.embed(["one"]) == [[0.1, 0.2, 0.3, 0.4]]
 
 
-def test_an_ollama_chat_model_with_a_gemini_embed_model_splits_the_other_way(fake: OpenRouterFake) -> None:
-    settings = _settings(fake.url, model_chat="qwen3:4b", model_base_url=closed_port_url())
-    client = build_model_client(settings)
+def test_the_worker_client_uses_model_extract_timeout_seconds_for_chat(fake: OpenRouterFake) -> None:
+    """The worker's client (worker_main.worker_model) times its chat calls out after
+    MODEL_EXTRACT_TIMEOUT_SECONDS, not MODEL_TIMEOUT_SECONDS."""
+    fake.script("completions", slow(json_reply(GOOD), 5))
+    client = worker_model(_settings(fake.url, model_timeout_seconds=30.0, model_extract_timeout_seconds=0.2))
     assert client is not None
-    fake.script("embeddings", embed_reply([[0.1, 0.2, 0.3, 0.4]]))
-    assert client.embed(["one"]) == [[0.1, 0.2, 0.3, 0.4]]
     with pytest.raises(ModelUnavailable) as caught:
         client.chat_json(system="s", user="u", schema=SCHEMA)
-    assert caught.value.code == "unreachable"
-
-
-def test_a_bare_google_model_id_is_not_a_gemini_model_and_stays_on_ollama(fake: OpenRouterFake) -> None:
-    """Google's own IDs (gemini-...) are not OpenRouter IDs: they never reach OpenRouter."""
-    settings = _settings(fake.url, model_chat="gemini-3.1-pro-preview", model_embed="qwen3-embedding:0.6b")
-    assert isinstance(build_model_client(settings), OllamaClient)
+    assert caught.value.code == "timeout"
 
 
 def test_the_fake_answers_only_what_a_test_scripted(fake: OpenRouterFake) -> None:
@@ -1156,13 +1118,3 @@ def test_every_client_of_the_process_shares_one_gate(fake: OpenRouterFake) -> No
     assert process_gate(settings, workers=1).interval == pytest.approx(chat.interval / 4)
     with pytest.raises(ValueError, match="workers"):
         ModelGate(settings, workers=0)
-
-
-def test_the_old_gemini_names_still_work_until_pr_4() -> None:
-    """The shim: the reader's other tracks code against GeminiClient and GeminiGate."""
-    assert gemini.GeminiClient is OpenRouterClient
-    assert gemini.GeminiGate is ModelGate
-    assert gemini.process_gate is process_gate
-    assert gemini.PageReply is PageReply and gemini.Usage is Usage
-    assert gemini.PAGE_MAX_OUTPUT_TOKENS == PAGE_MAX_OUTPUT_TOKENS
-    assert gemini.MEDIA_RESOLUTION_SHAPE == "detail"

@@ -1,8 +1,8 @@
 """What every model client shares: its two errors and how a JSON reply is checked.
 
-``kaagaz.ai.client`` (Ollama) and ``kaagaz.ai.openrouter`` (PRD 5 G9) both raise these
-errors and check replies the same way, and ``client.build_model_client`` builds
-either. They live here so the two modules import this one and never each other
+``kaagaz.ai.client`` (the interface) and ``kaagaz.ai.openrouter`` (PRD 5 G9, the client)
+both use these errors and this check, and ``client.build_model_client`` builds the
+client. They live here so the two modules import this one and never each other
 (``tests/test_import_graph.py``). ``kaagaz.ai.client`` re-exports every name, so
 callers keep importing from it.
 
@@ -49,8 +49,7 @@ class ModelOutputError(Exception):
 
     ``input_tokens`` and ``output_tokens`` are what the replies that ended in this error
     were billed (PRD 5 G9): a reply that was blocked, cut off or not valid JSON still
-    carries its usage, so it is counted; 0 when no reply said (a refused request, the
-    Ollama client)."""
+    carries its usage, so it is counted; 0 when no reply said (a refused request)."""
 
     def __init__(self, code: str, *, input_tokens: int = 0, output_tokens: int = 0) -> None:
         super().__init__(code)

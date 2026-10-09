@@ -133,7 +133,7 @@ def rig(spans: list[Span], chat: FakeChat | None = None) -> Rig:
         timer=lambda: 0.0,
         timezone="Asia/Kolkata",
         chat=chat,
-        chat_model=None if chat is None else "qwen-chat",
+        chat_model=None if chat is None else "chat-tag",
         model_budget=None if chat is None else BUDGET,
     )
     upload = UploadService(PIPELINE_POLICY, repo, storage, MemoryQueue(), new_id=SeqIds())

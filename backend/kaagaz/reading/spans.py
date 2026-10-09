@@ -19,8 +19,8 @@ As JSON (the ``regions`` and ``region`` columns, and the API), a location is:
 * ``{"kind": "cell", "page": sheet, "row": r, "column": c}``
 * ``{"kind": "box", "page": p, "box": [x0, y0, x1, y1]}``
 
-A span may also say what kind of block it is (``BLOCK_KINDS``, from a layout
-engine such as PaddleOCR-VL), how it was read (``ORIGINS``), and, for a table
+A span may also say what kind of block it is (``BLOCK_KINDS``, from the main
+reader), how it was read (``ORIGINS``), and, for a table
 cell, its table, row and column from 0 (PRD 2 P4). All of them are optional.
 PROVISIONAL: P4 names ``table_id``, ``row`` and ``col``; ``header`` is added
 because the OCR contract (P2) already sends it and table pieces need it.

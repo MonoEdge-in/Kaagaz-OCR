@@ -24,14 +24,13 @@ from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import JobFailed
-from kaagaz.pipeline import DocumentProcessor, _crop
+from kaagaz.pipeline import DocumentProcessor
 from kaagaz.preparing import pages as preparing
-from kaagaz.preparing.pages import open_pdf, prepare_pages, render_pdf_page
+from kaagaz.preparing.pages import prepare_pages
 from kaagaz.reading.spans import BoxLocation, Span
 from kaagaz.scanning.gate import ScanGate, Verdict
 from tests.fakes import (
     FakeScanner,
-    FakeVision,
     MemoryDocuments,
     MemoryPageImages,
     MemoryPipelineStore,
@@ -73,7 +72,7 @@ class RecordingPictures(MemoryPageImages):
 
 
 class Rig:
-    def __init__(self, data: bytes, *, spans: list[Span] | None = None, vision: FakeVision | None = None):
+    def __init__(self, data: bytes, *, spans: list[Span] | None = None):
         self.log: list[str] = []
         self.statuses, storage = MemoryStatuses(), MemoryStorage()
         self.repo = MemoryDocuments(self.statuses)
@@ -89,7 +88,6 @@ class Rig:
             sheet_pages=fake_sheet_pages,
             page_images=self.pictures,
             store=self.store,
-            vision=vision,
             model_errors=(ModelDown,),
         )
         upload = UploadService(POLICY, self.repo, storage, MemoryQueue(), new_id=SeqIds())
@@ -192,32 +190,6 @@ class StreamingTest(unittest.TestCase):
                 self.assertGreater(quality, 40.0)
                 self.assertGreater(quality, quality_at_4 - 1.0)
                 self.assertLessEqual(len(stored), byte_ratio * len(webp(page, 4)))
-
-
-class VisionCropTest(unittest.TestCase):
-    def test_a_vision_crop_has_the_pixels_preparing_drew(self) -> None:
-        """Page 2 of a PDF, and a photo turned by its EXIF orientation: the crop sent to
-        the vision model is pixel-equal to the same box of the page as preparing draws
-        it (same DPI, pixel check and EXIF handling)."""
-        pdf = make_pdf([SCAN, SCAN])
-        document = open_pdf(pdf)
-        try:
-            pdf_page = render_pdf_page(document[1], dpi=DPI, max_image_pixels=10_000_000)
-        finally:
-            document.close()
-        photo = jpeg_photo()
-        photo_page = next(preparing.image_pages(photo, max_pages=1, max_image_pixels=10_000_000))
-        self.assertEqual(photo_page.size, (300, 400))  # turned upright
-        box_2 = BoxLocation(2, 0.1, 0.4, 0.9, 0.42)
-        for data, page, box in ((pdf, pdf_page, box_2), (photo, photo_page, TOTAL.location)):
-            with self.subTest(pages=page.size):
-                vision = FakeVision("Total: 1,180.00")
-                assert isinstance(box, BoxLocation)
-                rig = Rig(data, spans=[Span(TOTAL.text, TOTAL.raw, box, 0.6, origin="ocr")], vision=vision)
-                rig.run()
-                (sent,) = vision.pictures
-                with Image.open(io.BytesIO(sent)) as crop, Image.open(io.BytesIO(_crop(page, box))) as want:
-                    self.assertEqual((crop.size, crop.tobytes()), (want.size, want.tobytes()))
 
 
 class MidStreamFailureTest(unittest.TestCase):

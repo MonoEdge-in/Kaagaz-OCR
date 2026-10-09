@@ -60,7 +60,7 @@ def test_the_limit_counts_code_points_after_tidying() -> None:
 def test_the_hash_and_the_tag() -> None:
     assert story_hash("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     assert story_hash("जमीन") != story_hash("jamin")
-    assert recipe_tag("qwen3-embedding") == "qwen3-embedding#story1"
+    assert recipe_tag("an-embed-model") == "an-embed-model#story1"
 
 
 def test_a_joiner_stays_only_right_after_a_virama() -> None:
