@@ -2,9 +2,6 @@
 is still accepted and ignored, and it never opens another customer's document. Customer
 B posting a version, with a reader chosen, to customer A's document gets 404, and A's
 documents are unchanged (read with Auto, NULL); B never reads A's document through the
-"""The scan reader an upload chose (PRD 4 #17) stays with its customer: customer B
-posting a version, with a reader chosen, to customer A's document gets 404, and
-A's documents and choices are unchanged; B never reads A's choice through the
 repository. Through the whole API (session, routes, SQL and row level security).
 """
 
@@ -56,10 +53,8 @@ def test_b_cannot_add_a_chosen_reader_version_to_as_document(
     assert (status, body["error"]) == (404, {"code": "not_found", "message": "We couldn't find that."})
     assert _rows(db, a.customer_id) == before
     assert [row[3] for row in before] == [None]  # A's own choice was ignored too
-    assert [row[3] for row in before] == ["rapidocr"]
     assert _rows(db, b.customer_id) == []
     assert [job.customer_id for job in api.queue.jobs] == [a.customer_id]
     assert PgDocuments(db).get(b.customer_id, a_document) is None
     stored = PgDocuments(db).get(a.customer_id, a_document)
     assert stored is not None and stored.ocr_choice is None
-    assert stored is not None and stored.ocr_choice == "rapidocr"

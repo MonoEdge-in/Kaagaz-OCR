@@ -51,7 +51,7 @@ from urllib.parse import urlsplit
 
 from kaagaz import cli
 from kaagaz.api.auth import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
-from kaagaz.settings import Settings, SettingsError, is_gemini_model
+from kaagaz.settings import Settings, SettingsError
 from scripts import golden_scoring as scoring
 
 GOLDEN = Path(__file__).resolve().parents[1] / "tests" / "golden"
@@ -185,24 +185,6 @@ def load_golden(
         raise GoldenError("; ".join(found))
     documents = {name: (docs / name).read_bytes() for name in manifest}
     return [scoring.question_from(item) for item in raw], documents
-
-
-def model_digests(settings: Settings) -> str:
-    """The chat and embedding models' digests from Ollama's /api/tags, if it answers. A
-    google/gemini- model runs on OpenRouter (PRD 5 M1, M5), so it has no Ollama digest and
-    Ollama is not asked when neither model is on it."""
-    names = (settings.model_chat, settings.model_embed)
-    digests: dict[Any, str] = {}
-    if not all(map(is_gemini_model, names)):
-        try:
-            models = Http(settings.model_base_url).call("GET", "/api/tags", timeout=5).get("models", [])
-        except (OSError, GoldenError, HTTPException, ValueError):
-            return "digests unknown (Ollama did not answer)"
-        digests = {m.get("name"): str(m.get("digest", ""))[:12] for m in models if isinstance(m, dict)}
-    return " ".join(
-        f"{name}@{'openrouter' if is_gemini_model(name) else digests.get(name, 'not-pulled')}"
-        for name in names
-    )
 
 
 def header(out: TextIO, settings: Settings, api: str, sha: str, questions: str = "questions.json") -> None:

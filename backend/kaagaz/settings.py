@@ -300,9 +300,6 @@ class Settings:
     # the PRD's value, so an older .env keeps working. model_context_tokens is the chat
     # model's context window (M1), the one every budget uses. The chat's documents are given
     # whole when they add up to
-    # model's context window (M1), the one every budget uses: with a MODEL_CHAT that is not
-    # google/gemini- (Ollama), the smaller of MODEL_CONTEXT_TOKENS and MODEL_NUM_CTX, and
-    # answer_whole_doc_tokens is then 0. The chat's documents are given whole when they add up to
     # answer_whole_doc_tokens or fewer, and a document's map reads its whole text under the
     # same limit (CX2, CX5; 0 turns both off). At most topic_max_per_doc topics a document
     # (CX3); a topic pulls in at most topic_expand_max_pieces pieces a document, and a
@@ -347,11 +344,6 @@ class Settings:
             times = f"{ocr_calls} x " if ocr_calls > 1 else ""
             raise SettingsError(
                 f"{times}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
-        # Any other rule may read a page twice (at a lowered DPI, then the ceiling) between heartbeats.
-        ocr_calls = 1 if ocr_dpi_rule == "fixed" else 2
-        if ocr_calls * ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
-            raise SettingsError(
-                f"{'2 x ' if ocr_calls == 2 else ''}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
                 " must not be more than QUEUE_LEASE_SECONDS"
             )
         model_context_tokens = env.at_least("MODEL_CONTEXT_TOKENS", 1, default=200_000)
@@ -413,13 +405,6 @@ class Settings:
         # context window with the answer's reply, its repair retry and the system prompt.
         model_chat = env.text("MODEL_CHAT")
         whole_doc_tokens = env.at_least("ANSWER_WHOLE_DOC_TOKENS", 0, default=120_000)
-        model_context_tokens = env.at_least("MODEL_CONTEXT_TOKENS", 1, default=200_000)
-        whole_doc_tokens = env.at_least("ANSWER_WHOLE_DOC_TOKENS", 0, default=120_000)
-        if not is_gemini_model(model_chat):
-            # A local (Ollama) chat model's window is MODEL_NUM_CTX, which every call sends:
-            # every budget uses the smaller of the two, and whole documents never fit it.
-            model_context_tokens = min(model_context_tokens, model_num_ctx)
-            whole_doc_tokens = 0
         prompt_tokens = MAX_SYSTEM_PROMPT_TOKENS + CHAT_OVERHEAD_TOKENS
         room = 2 * answer_max_tokens + prompt_tokens
         if whole_doc_tokens + room > model_context_tokens:
@@ -614,13 +599,6 @@ class _Env:
     def not_negative_or(self, name: str, default: float) -> float:
         """``not_negative``, or ``default`` when unset or empty."""
         return default if self.optional(name) is None else self.not_negative(name)
-    def at_least(self, name: str, low: int, *, default: int) -> int:
-        """An optional whole number of at least ``low``: ``default`` when unset or empty."""
-        number = self.optional_integer(name)
-        number = default if number is None else number
-        if number < low:
-            raise SettingsError(f"{name} must be at least {low}")
-        return number
 
     def at_least(self, name: str, low: int, *, default: int) -> int:
         """An optional whole number of at least ``low``: ``default`` when unset or empty."""

@@ -295,42 +295,6 @@ def test_the_queue_settings_are_read_when_set() -> None:
         settings.model_price_input_usd_per_m,
         settings.model_price_output_usd_per_m,
     ) == (2, 4, express, 5, 50, 1.25, 10.0)
-# PRD 5 sections CX and M (council 9 Oct 2026): optional, the PRD's value when unset.
-CONTEXT_DEFAULTS = {
-    "MODEL_CONTEXT_TOKENS": 200_000,
-    "ANSWER_WHOLE_DOC_TOKENS": 120_000,
-    "TOPIC_MAX_PER_DOC": 40,
-    "TOPIC_EXPAND_MAX_PIECES": 12,
-    "QUERY_ASPECTS_MAX": 6,
-    "CHAT_SUMMARY_EVERY": 6,
-}
-
-
-def _context_settings(settings: Settings) -> dict[str, int]:
-    return {name: getattr(settings, name.lower()) for name in CONTEXT_DEFAULTS}
-
-
-def test_the_context_and_memory_settings_are_the_prds_values_when_unset() -> None:
-    """An older .env without them keeps working; empty counts as unset."""
-    env = shipped()
-    for name in CONTEXT_DEFAULTS:
-        env.pop(name, None)
-    assert _context_settings(Settings.from_env(env)) == CONTEXT_DEFAULTS
-    blank = dict.fromkeys(CONTEXT_DEFAULTS, " ")
-    assert _context_settings(Settings.from_env(shipped(**blank))) == CONTEXT_DEFAULTS
-
-
-def test_the_context_and_memory_settings_take_a_set_value() -> None:
-    chosen = {
-        "MODEL_CONTEXT_TOKENS": 50_000,
-        "ANSWER_WHOLE_DOC_TOKENS": 0,  # whole-document mode off (CX5)
-        "TOPIC_MAX_PER_DOC": 1,
-        "TOPIC_EXPAND_MAX_PIECES": 0,
-        "QUERY_ASPECTS_MAX": 0,
-        "CHAT_SUMMARY_EVERY": 1,
-    }
-    settings = Settings.from_env(shipped(**{name: str(value) for name, value in chosen.items()}))
-    assert _context_settings(settings) == chosen
 
 
 # PRD 5 sections CX and M (council 9 Oct 2026): optional, the PRD's value when unset.
@@ -384,17 +348,6 @@ def test_the_context_and_memory_settings_take_a_set_value() -> None:
     ],
 )
 def test_a_bad_queue_setting_stops_start_up_by_name(name: str, value: str) -> None:
-        ("MODEL_CONTEXT_TOKENS", "0"),
-        ("MODEL_CONTEXT_TOKENS", "lots"),
-        ("ANSWER_WHOLE_DOC_TOKENS", "-1"),
-        ("ANSWER_WHOLE_DOC_TOKENS", "1.5"),
-        ("TOPIC_MAX_PER_DOC", "0"),
-        ("TOPIC_EXPAND_MAX_PIECES", "-1"),
-        ("QUERY_ASPECTS_MAX", "six"),
-        ("CHAT_SUMMARY_EVERY", "0"),
-    ],
-)
-def test_a_bad_context_or_memory_setting_stops_start_up_by_name(name: str, value: str) -> None:
     with pytest.raises(SettingsError, match=name):
         Settings.from_env(shipped(**{name: value}))
 
@@ -445,21 +398,3 @@ def test_the_whole_documents_must_fit_the_context_window() -> None:
         Settings.from_env(shipped(MODEL_CONTEXT_TOKENS=context, ANSWER_WHOLE_DOC_TOKENS="120001"))
     off = Settings.from_env(shipped(MODEL_CONTEXT_TOKENS="8192", ANSWER_WHOLE_DOC_TOKENS="0"))
     assert off.answer_whole_doc_tokens == 0
-    off = Settings.from_env(shipped(MODEL_CONTEXT_TOKENS=str(room), ANSWER_WHOLE_DOC_TOKENS="0"))
-    assert off.answer_whole_doc_tokens == 0
-
-
-def test_a_local_chat_model_uses_model_num_ctx_everywhere_and_never_whole_documents() -> None:
-    """M1: with a MODEL_CHAT that is not google/gemini- (Ollama), every budget uses the smaller
-    of MODEL_CONTEXT_TOKENS and MODEL_NUM_CTX, the window every call sends, and whole-document
-    mode (CX5) is off; the answers, the card and invoice windows and the map read it."""
-    from kaagaz.chunking.sections import MapBudget
-    from kaagaz.extraction.understanding import ModelBudget
-
-    local = Settings.from_env(shipped(MODEL_CHAT="qwen3:4b", MODEL_NUM_CTX="8192"))
-    assert (local.model_context_tokens, local.answer_whole_doc_tokens) == (8192, 0)
-    assert MapBudget.from_settings(local).context_tokens == ModelBudget.from_settings(local).num_ctx == 8192
-    smaller = shipped(MODEL_CHAT="qwen3:4b", MODEL_NUM_CTX="8192", MODEL_CONTEXT_TOKENS="6000")
-    assert Settings.from_env(smaller).model_context_tokens == 6000
-    gemini = Settings.from_env(shipped(MODEL_NUM_CTX="8192"))
-    assert (gemini.model_context_tokens, gemini.answer_whole_doc_tokens) == (200_000, 120_000)
