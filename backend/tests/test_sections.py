@@ -11,12 +11,15 @@ from kaagaz.chunking.sections import (
     MAP_PROMPT_HASH,
     MAP_SCHEMA,
     MAP_SYSTEM_PROMPT,
+    SECTION_REPLY_TOKENS,
+    TOPIC_REPLY_TOKENS,
     DocumentMap,
     MapBudget,
     Section,
     Topic,
     map_document,
     sections_from_pieces,
+    summary_room,
 )
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.db.pipeline_store import _check_map
@@ -146,6 +149,26 @@ class MapInputTest(unittest.TestCase):
         tiny = MapBudget(whole_tokens=0, context_tokens=2 * MAP_MAX_TOKENS, topic_max=40)
         self.assertEqual(mapped(none, pieces, tiny).model_calls, 0)
         self.assertEqual(none.calls, [])
+
+    def test_cx2_only_the_sections_the_reply_can_summarise_are_sent(self) -> None:
+        """100 sections' summaries and 40 topics would run past MAP_MAX_TOKENS: the first
+        ``summary_room(40)`` are sent, whole or by their start, and the rest keep no summary
+        (heading-only, as with no model), even when the reply names them."""
+        pieces = [
+            piece(f"Clause {n}: the parties agree to term {n}.", n, f"Clause {n}") for n in range(1, 101)
+        ]
+        room = summary_room(40)
+        self.assertTrue(0 < room < 100, room)
+        self.assertLessEqual(room * SECTION_REPLY_TOKENS + 40 * TOPIC_REPLY_TOKENS, MAP_MAX_TOKENS)
+        every = reply(sections=[{"seq": n, "summary": f"Term {n}."} for n in range(100)])
+        for whole_tokens in (120_000, 0):
+            chat = FakeChat(every)
+            budget = MapBudget(whole_tokens=whole_tokens, context_tokens=200_000, topic_max=40)
+            found = mapped(chat, pieces, budget)
+            self.assertEqual(chat.calls[0]["user"].count("<section "), room)
+            self.assertEqual([s.summary for s in found.sections[:room]], [f"Term {n}." for n in range(room)])
+            self.assertEqual({s.summary for s in found.sections[room:]}, {None})
+            self.assertEqual(len(found.sections), 100)
 
 
 class MapReplyTest(unittest.TestCase):

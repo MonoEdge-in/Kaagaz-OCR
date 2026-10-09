@@ -13,7 +13,9 @@ piece is in exactly one section, so a piece (a table's too) is never split.
 message is fenced data, every ``<``, ``>`` and ``&`` escaped (``card._escape``), so no
 document can close a fence or add one. It holds every piece in ``<piece seq>`` blocks when
 that fits ANSWER_WHOLE_DOC_TOKENS, otherwise each section's heading path and the first 300
-characters of its text, as many sections as fit the context window. The reply gives a
+characters of its text, as many sections as fit the context window. At most
+``summary_room`` sections are sent, so the reply (MAP_MAX_TOKENS) holds a summary for each
+and the topics; a section after them keeps no summary, as with no model. The reply gives a
 summary per section and the topics with their pieces; it is checked for shape, then:
 
 * a summary has its control and format characters removed and its spaces collapsed, and
@@ -59,9 +61,16 @@ START_CHARS = 300  # CX2: the start of each section the call gets when the whole
 SUMMARY_MAX = 400  # CX2, and document_sections.summary's CHECK
 NAME_MAX = 200  # document_topics.topic's CHECK; an alias is held to it too
 ALIASES_MAX = 20
-# ponytail: one reply cap for every document; one with very many sections can run past it
-# and then gets heading-only sections (the fallback). Split the call by sections if it shows.
 MAP_MAX_TOKENS = 8192
+# The reply must hold a summary for every section sent and the topics: a section's entry is
+# at most SECTION_REPLY_TOKENS (its seq and a 400-character summary), and each topic is given
+# TOPIC_REPLY_TOKENS (a short name, six aliases and ten seqs). ponytail: a typical topic, not
+# the longest; a document with more sections than ``summary_room`` sends only its first ones
+# and the rest keep no summary. Split the call by sections if that shows.
+SECTION_REPLY_TOKENS = estimate_tokens(json.dumps({"seq": 9999, "summary": "x" * SUMMARY_MAX}))
+TOPIC_REPLY_TOKENS = estimate_tokens(
+    json.dumps({"topic": "x" * 20, "aliases": ["x" * 16] * 6, "piece_seqs": list(range(1000, 1010))})
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,7 +223,7 @@ def map_document(
     if model is None or not sections:
         return unmapped
     system = MAP_SYSTEM_PROMPT.format(topic_max=budget.topic_max)
-    user = map_input(pieces, sections, budget, system=system)
+    user = map_input(pieces, sections[: summary_room(budget.topic_max)], budget, system=system)
     if user is None:
         return unmapped
     try:
@@ -226,10 +235,17 @@ def map_document(
     summaries: dict[int, str] = {}
     for item in reply["sections"]:
         summary = _summary(item["summary"])
-        if summary is not None:
+        # Only a section it was sent (the text is escaped: no piece can hold this tag).
+        if summary is not None and f'<section seq="{item["seq"]}" ' in user:
             summaries.setdefault(item["seq"], summary)
     summarised = tuple(replace(section, summary=summaries.get(section.seq)) for section in sections)
     return DocumentMap(summarised, _topics(reply["topics"], len(pieces), budget.topic_max), 1, None)
+
+
+def summary_room(topic_max: int) -> int:
+    """How many sections' summaries a reply of MAP_MAX_TOKENS holds after room for
+    ``topic_max`` topics (the constants above). O(1)."""
+    return max(0, (MAP_MAX_TOKENS - topic_max * TOPIC_REPLY_TOKENS) // SECTION_REPLY_TOKENS)
 
 
 def map_input(
