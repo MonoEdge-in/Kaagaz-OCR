@@ -25,6 +25,7 @@ from kaagaz.ai.openrouter import (
     BREAKER_FAILURES,
     BREAKER_OPEN_SECONDS,
     CHAT_THINKING_TOKENS,
+    EMBED_PROVIDER,
     KEY_LATCH_SECONDS,
     PAGE_MAX_OUTPUT_TOKENS,
     PROVIDER,
@@ -86,6 +87,7 @@ THE_PROVIDER_BLOCK = {
     "data_collection": "deny",
     "zdr": True,
 }
+THE_EMBED_PROVIDER_BLOCK = {**THE_PROVIDER_BLOCK, "require_parameters": False}
 
 
 class Clock:
@@ -222,8 +224,17 @@ def test_every_request_kind_carries_the_provider_block(fake: OpenRouterFake) -> 
     client.chat_json(system="s", user="u", schema=SCHEMA)
     client.embed(["one"])
     assert [request.action for request in fake.requests] == ["completions"] * 3 + ["embeddings"]
-    for request in fake.requests:
+    for request in fake.requests[:3]:
         assert request.body["provider"] == THE_PROVIDER_BLOCK
+    assert fake.requests[3].body["provider"] == THE_EMBED_PROVIDER_BLOCK
+
+
+def test_embeddings_keep_vertex_only_and_zero_retention_without_requiring_parameters() -> None:
+    """OpenRouter lists no supported parameters for embedding endpoints, so only
+    require_parameters is dropped there; every privacy rule stays."""
+    assert dict(EMBED_PROVIDER) == THE_EMBED_PROVIDER_BLOCK
+    for key in ("only", "allow_fallbacks", "data_collection", "zdr"):
+        assert EMBED_PROVIDER[key] == PROVIDER[key]
 
 
 def test_a_request_body_cannot_change_the_shared_provider_block(fake: OpenRouterFake) -> None:
@@ -880,7 +891,7 @@ def test_embed_batches_by_32_at_the_dimensions_and_sorts_by_index(fake: OpenRout
         "input": [f"piece {i}" for i in range(32)],
         "dimensions": 4,  # EMBEDDING_DIM (1024 in production)
         "encoding_format": "float",
-        "provider": THE_PROVIDER_BLOCK,
+        "provider": THE_EMBED_PROVIDER_BLOCK,
     }
     assert second["input"] == ["piece 32"]
 

@@ -66,6 +66,7 @@ PROVIDER_BLOCK = {
     "data_collection": "deny",
     "zdr": True,
 }
+EMBED_PROVIDER_BLOCK = {**PROVIDER_BLOCK, "require_parameters": False}
 _PROMPT = {None: 1290, "low": 300, "high": 1120}
 _REASONING = {"low": 50, "medium": 200, "high": 800}
 
@@ -87,7 +88,7 @@ def openrouter_like(request: Recorded) -> Reply:
         model = request.path.removeprefix(API_PATH + "/models/").removesuffix("/endpoints")
         return endpoints_reply(model, zdr=True) if model in KNOWN else error_reply(404)
     body = request.body
-    if body.get("provider") != PROVIDER_BLOCK:
+    if body.get("provider") != (EMBED_PROVIDER_BLOCK if request.action == "embeddings" else PROVIDER_BLOCK):
         return error_reply(400, error_type="bad_request")
     if body["model"] not in KNOWN:
         return error_reply(404)
@@ -199,7 +200,11 @@ def test_every_request_carries_the_provider_block(fake: OpenRouterFake) -> None:
     _run(_settings(fake))
     posts = [request for request in fake.requests if request.method == "POST"]
     assert {request.action for request in posts} == {"completions", "embeddings"}
-    assert all(request.body["provider"] == PROVIDER_BLOCK for request in posts)
+    assert all(
+        request.body["provider"]
+        == (EMBED_PROVIDER_BLOCK if request.action == "embeddings" else PROVIDER_BLOCK)
+        for request in posts
+    )
     assert {request.action for request in fake.requests if request.method == "GET"} == {"endpoints", "key"}
 
 
