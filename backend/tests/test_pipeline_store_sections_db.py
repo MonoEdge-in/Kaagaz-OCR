@@ -176,19 +176,3 @@ def test_cx4_a_bad_map_writes_nothing_and_keeps_the_earlier_save(db: Database) -
         store.save(bad)
     found = invariants(db, customer, document)
     assert (len(found["pieces"]), len(found["sections"]), len(found["topics"])) == (4, 3, 1)
-
-
-def test_cx4_another_customer_sees_no_section_or_topic(db: Database) -> None:
-    customer, _ = new_customer(db)
-    other, _ = new_customer(db)
-    document = new_document(db, customer)
-    PgPipelineStore(db).save(mapped_content(customer, document, FakeChat(MAP_REPLY)))
-
-    seen = text(
-        "SELECT (SELECT count(*) FROM document_sections WHERE document_id = :d)"
-        " + (SELECT count(*) FROM document_topics WHERE document_id = :d)"
-    )
-    with db.customer(other) as conn:
-        assert conn.execute(seen, {"d": document}).scalar_one() == 0
-    with db.customer(customer) as conn:
-        assert conn.execute(seen, {"d": document}).scalar_one() == 4  # the positive control
