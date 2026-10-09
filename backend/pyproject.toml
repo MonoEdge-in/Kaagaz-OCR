@@ -26,7 +26,7 @@ dependencies = [
 # The scan reader engine. Optional: without it, scans are marked needs_reader.
 # PROVISIONAL: which AI reads scanned pages is Vrushit's decision (CLAUDE.md).
 ocr = [
-    "rapidocr>=3.9",           # Apache-2.0
+    "rapidocr==3.9.2",         # Apache-2.0; pinned: 3.10 moved its model files (Dockerfile checks the 3.9.2 path and SHA-256)
     "onnxruntime>=1.30",       # MIT
 ]
 dev = [
