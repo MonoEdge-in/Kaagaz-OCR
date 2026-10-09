@@ -254,6 +254,12 @@ _log = logging.getLogger(__name__)
 # The scan's own verdicts: recorded as the reason a document was rejected.
 _VERDICT_CODES = REJECTION_CODES - {"rejected"}
 
+# A document whose reading has ended. A delivery for one is a duplicate (the queue is
+# at least once: a delete that failed hands the job out again) and is acked unread.
+# Read again, one page again and the upgrade sweep set it to received before queueing
+# it, so they are read. Rejected is not here: the scan gate refuses it for good.
+_SETTLED = frozenset({DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.NEEDS_READER})
+
 # Sent with each cropped box. Fixed text: no document text is ever put in it.
 VISION_INSTRUCTION = (
     "Read the text in this image exactly as it is written. Reply with that text only, on one line."
@@ -750,6 +756,12 @@ class DocumentProcessor:
         if record is None:
             # No record for this customer: nothing to mark, nothing read.
             raise JobFailed("document_missing", retryable=False)
+        if self._statuses.get_status(job.customer_id, job.document_id) in _SETTLED:
+            _log.info(
+                "duplicate delivery skipped",
+                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": "settled"},
+            )
+            return  # acked: no run, nothing read again
         run = self._start_run(job)
         settled = False  # the run was finished, or is being, on a known path
         chosen = contextlib.ExitStack()  # the upload's reader, until the run is closed
