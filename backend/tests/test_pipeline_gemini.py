@@ -499,6 +499,18 @@ class PageResultTest(unittest.TestCase):
         job = system.run(make_pdf([SHARP, SHARP]))
         self.assertEqual([page.continues_on_next_page for page in system.pages(job)], [True, False])
 
+    def test_cx1_a_flagged_page_and_the_heading_after_it_make_one_piece(self) -> None:
+        """The pipeline passes the flagged pages to the pieces: the heading-like first line of
+        page 2 goes on page 1's sentence. Without the flag it starts a piece."""
+        end = OcrLine("The notice period is", 60, 700, 400, 720, None, "paragraph", box_source="found")
+        start = OcrLine("ninety days.", 60, 100, 400, 120, None, "heading", box_source="found")
+        for flag, pages in ((True, [(1, 2)]), (False, [(1, 1), (2, 2)])):
+            reader = ScriptedReader({1: page_read(end, continues=flag), 2: page_read(start)})
+            system = rig(reader, checker=FakeChecker())
+            job = system.run(make_pdf([SHARP, SHARP]))
+            pieces = system.store.for_document(CUSTOMER, job.document_id)
+            self.assertEqual([(p.page_from, p.page_to) for p in pieces], pages, flag)
+
 
 class CheckerTest(unittest.TestCase):
     """V1 to V4 through the pipeline."""

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from scripts.golden_scoring import Hit
 from scripts.run_golden import (
@@ -17,13 +18,17 @@ from scripts.run_golden import (
     Http,
     _parser,
     check_local,
+    header,
     hits,
     load_golden,
     main,
+    model_digests,
     upload,
 )
+from tests.settings_factory import make_settings
 
 LOCAL_DB = "postgresql://kaagaz@127.0.0.1:5432/kaagaz"
+GEMINI_CHAT, GEMINI_EMBED = "google/gemini-3.1-pro-preview", "google/gemini-embedding-2"
 
 
 class RunnerTest(unittest.TestCase):
@@ -99,3 +104,28 @@ class RunnerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeaderTest(unittest.TestCase):
+    """PRD 5 M5: the before and after runs are compared with ANSWER_WHOLE_DOC_TOKENS=0."""
+
+    def test_m5_the_header_prints_answer_whole_doc_tokens(self) -> None:
+        out = io.StringIO()
+        settings = make_settings(model_chat=GEMINI_CHAT, model_embed=GEMINI_EMBED, answer_whole_doc_tokens=0)
+        header(out, settings, "http://127.0.0.1:8000", "abc123")
+        self.assertIn(" ANSWER_WHOLE_DOC_TOKENS=0 ", out.getvalue())
+
+    def test_m5_google_models_never_ask_ollama_for_digests(self) -> None:
+        settings = make_settings(model_chat=GEMINI_CHAT, model_embed=GEMINI_EMBED)
+        with mock.patch("scripts.run_golden.Http", side_effect=AssertionError("Ollama asked")):
+            self.assertEqual(model_digests(settings), f"{GEMINI_CHAT}@openrouter {GEMINI_EMBED}@openrouter")
+
+    def test_m5_an_ollama_model_still_gets_its_digest_beside_a_google_one(self) -> None:
+        settings = make_settings(model_chat=GEMINI_CHAT, model_embed="qwen3-embedding:0.6b")
+        tags = {"models": [{"name": "qwen3-embedding:0.6b", "digest": "0123456789abcdef"}]}
+        with mock.patch("scripts.run_golden.Http") as http:
+            http.return_value.call.return_value = tags
+            self.assertEqual(
+                model_digests(settings), f"{GEMINI_CHAT}@openrouter qwen3-embedding:0.6b@0123456789ab"
+            )
+        http.return_value.call.assert_called_once_with("GET", "/api/tags", timeout=5)
