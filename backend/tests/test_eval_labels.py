@@ -432,8 +432,11 @@ def both(reports: dict[str, Report]) -> Report:
 SLICES: tuple[str, ...] = ("text_layer", "ocr_en", "ocr_deva", "sheet", "card", "E4", "fixed_query")
 SLICES += ("search", "model_on", "model_off")
 # Ratchets: each may move only with a reason stated in its commit, never to let a change pass.
-# PRD 5 PR 4 (80 to 68): the second reading of a scan's value boxes is gone, so the bill in
-# English's and the hidden scan's three values each are no longer verified, in both reads.
+# PRD 5 PR 4 (80 to 68): the vision crops' second reading is gone. Only the checker reads a
+# scan's value boxes again (V1), on pages the reading model read, and here every scan is the
+# scripted OCR's (no ``checkers``), so the bill in English's and the hidden scan's three
+# values each are single reader, in both reads: 6 fewer each read. That the checker still
+# verifies a scanned value is test_exit_files_db's positive control (the bill in English).
 VERIFIED_RIGHT_VALUES = 68  # verified and right, both reads: 42 with the model off, 26 with it on
 VERIFIED_RIGHT_ANSWERS = 8  # verified and right, both reads: 4 with the model on, 4 off
 UNANSWERABLE_NOT_FOUND = 12  # UNANSWERABLE asked in both reads: all 12 not found

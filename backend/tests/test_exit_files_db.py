@@ -2,7 +2,9 @@
 tests/exit_fixtures.py, uploaded and read to the end by the real pipeline on a real
 PostgreSQL, each asserting its exit claim. The model is a fake (``QuotingChat``: the
 card, then the invoice windows) and the OCR engine is ``ScriptedOcr``. The model-off
-twin runs the same six with MODEL_ENABLED=false.
+twin runs the same six with MODEL_ENABLED=false. Where a test asks for it, a file's page
+is the reading model's (``read_by`` is ``ocr_model``) and the checker is ``EchoChecker``,
+which reads each cropped box back as the OCR line there.
 """
 
 import functools
@@ -17,6 +19,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from kaagaz import pipeline
 from kaagaz.db.documents import PgDocuments, mark_for_reprocess
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
@@ -39,10 +42,13 @@ from tests.db_support import new_customer
 from tests.exit_fixtures import (
     PROFIT_LABEL,
     PROFIT_VALUE,
+    SCRIPTED_READ_BY,
     TEXTILE_FIELDS,
+    EchoChecker,
     ExitFile,
     QuotingChat,
     ScriptedOcr,
+    english_bill,
     exit_files,
     textile_lines,
 )
@@ -150,20 +156,23 @@ def read_files(
     *,
     model: bool,
     files: Mapping[str, ExitFile] | None = None,
+    checkers: Mapping[str, EchoChecker] | None = None,
 ) -> Read:
-    """``files``, the exit files by default."""
-    customer, ids, makers = _read(db, model=model, files=exit_files() if files is None else files)
+    """``files``, the exit files by default; a file with one of ``checkers`` is read as
+    the reading model's, with that checker."""
+    files = exit_files() if files is None else files
+    customer, ids, makers = _read(db, model=model, files=files, checkers=checkers or {})
     return Read(customer, ids, makers)
 
 
 def read_all(db: Database, *, model: bool) -> tuple[str, dict[str, str]]:
     """(customer, document id by file key): every exit file uploaded and read to the end."""
-    customer, ids, _ = _read(db, model=model, files=exit_files())
+    customer, ids, _ = _read(db, model=model, files=exit_files(), checkers={})
     return customer, ids
 
 
 def _read(
-    db: Database, *, model: bool, files: Mapping[str, ExitFile]
+    db: Database, *, model: bool, files: Mapping[str, ExitFile], checkers: Mapping[str, EchoChecker]
 ) -> tuple[str, dict[str, str], dict[str, Callable[[], DocumentProcessor]]]:
     customer, _ = new_customer(db)
     storage = MemoryStorage()
@@ -176,7 +185,10 @@ def _read(
     makers: dict[str, Callable[[], DocumentProcessor]] = {}
     for key, file in files.items():
         doc = upload.accept(customer, io.BytesIO(file.data)).document_id
-        makers[key] = functools.partial(_processor, db, storage, documents, prepare, key, file, model)
+        checker = checkers.get(key)
+        makers[key] = functools.partial(
+            _processor, db, storage, documents, prepare, key, file, model, checker
+        )
         makers[key]()(Job(customer, doc), lambda: None)
         ids[key] = doc
     return customer, ids, makers
@@ -190,8 +202,10 @@ def _processor(
     key: str,
     file: ExitFile,
     model: bool,
+    checker: EchoChecker | None,
 ) -> DocumentProcessor:
-    """A processor for one exit file: its scripted OCR, and its fake model when ``model``."""
+    """A processor for one exit file: its scripted OCR, its fake model when ``model``, and
+    with a ``checker`` its pages are the reading model's (PRD 5 V1), read again by it."""
     chat = chat_for(key) if model else None
     timer = Timer()
     return DocumentProcessor(
@@ -207,6 +221,9 @@ def _processor(
         progress=documents,
         clock=moving_clock,
         timer=timer,
+        ocr_model=None if checker is None else SCRIPTED_READ_BY,
+        checker=checker,
+        checker_model=None if checker is None else "echo-checker",
         chat=chat,
         chat_model=None if chat is None else chat.chat_model,
         model_budget=None if chat is None else BUDGET,
@@ -437,7 +454,8 @@ DEVANAGARI_OCR_SCRIPT = {"hindi_retail_bill": 5, "marathi_land_record": 0, "brok
 def test_what_the_model_chose_or_ocr_read_from_devanagari_is_never_verified(db: Database) -> None:
     """Security A1 and ML 1 across the exit files (final council 2): no card value is
     verified anywhere; nothing read by OCR from Hindi or Marathi, or from the broken font,
-    is verified; and the mismatched copy's document values are all in review.
+    is verified (the next test is the positive control); and the mismatched copy's
+    document values are all in review.
     Each of the land record card's spots is its OCR line's box (IoU at least 0.5)."""
     files = read_files(db, model=True)
     customer, ids = files.customer, files.ids
@@ -471,6 +489,26 @@ def test_what_the_model_chose_or_ocr_read_from_devanagari_is_never_verified(db: 
         (line,) = [box for line_text, box in ocr_lines if value in line_text]
         assert region["page"] == 1 and region["kind"] == "box", value
         assert overlap(BoxLocation(1, *region["box"]), BoxLocation(1, *line)) >= 0.5, value
+
+
+def test_the_checker_verifies_the_same_bill_in_english(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The positive control for the test above: the same scripted OCR on the bill in
+    English (model off), its page read by the reading model, and a checker that reads
+    each box back as the OCR line there, verify its three labelled values through the
+    checker (PRD 5 V1). So the Devanagari scans' 0 verified comes from the rules, not
+    from a pipeline that can no longer verify a scanned value."""
+    bill = english_bill()
+    checker = EchoChecker(bill.ocr_pages)
+    monkeypatch.setattr(pipeline, "_check_crop", checker.crop)
+    files = read_files(db, model=False, files={"english_bill": bill}, checkers={"english_bill": checker})
+    assert len(checker.crops) == 3
+    assert sorted(rows(db, files.customer, LABELS, files.ids["english_bill"])) == [
+        ("document", "invoice_date", "05/09/2026", "verified", "readers_agree"),
+        ("document", "invoice_number", "245", "verified", "readers_agree"),
+        ("document", "total_amount", "450.00", "verified", "readers_agree"),
+    ]
+    runs = "SELECT vision_crops, model_vision FROM processing_runs WHERE document_id = :d"
+    assert rows(db, files.customer, runs, files.ids["english_bill"]) == [(3, "echo-checker")]
 
 
 # Everything a read leaves for one document, apart from ids and times.

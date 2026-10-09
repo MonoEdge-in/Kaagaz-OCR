@@ -23,6 +23,7 @@ from unittest import mock
 
 from PIL import Image
 
+from kaagaz import pipeline
 from kaagaz.ai.openrouter import OpenRouterClient
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.db.page_reads import PageKey
@@ -44,6 +45,7 @@ from kaagaz.reading.rapid_pool import RapidOcrPool, shared_pool
 from kaagaz.reading.wiring import GEMINI_OCR_MODULE, build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from kaagaz.settings import Settings
+from tests.exit_fixtures import SCRIPTED_READ_BY, EchoChecker, ScriptedOcr, english_bill
 from tests.fakes import (
     FakeEmbedder,
     FakeScanner,
@@ -215,7 +217,7 @@ class Rig:
     read_again: MemoryReadAgain
     cache: MemoryCache
     processor: DocumentProcessor
-    checker: FakeChecker | None
+    checker: FakeChecker | EchoChecker | None
     reader: ScriptedReader | None = None
     jobs: list[Job] = field(default_factory=list)
 
@@ -244,7 +246,7 @@ class Rig:
 def rig(
     engine: Any = None,
     *,
-    checker: FakeChecker | None = None,
+    checker: FakeChecker | EchoChecker | None = None,
     ocr_model: str | None = MODEL,
     max_check_crops: int = 200,
     embed: CountingEmbedder | None = None,
@@ -530,6 +532,30 @@ class CheckerTest(unittest.TestCase):
         self.assertEqual((value.label, value.second_reading), ("verified", "1,180.00"))
         totals = system.totals(job)
         self.assertEqual((totals.vision_crops, totals.model_vision), (1, "rapidocr 3.9.2"))
+
+    def test_v1_the_checker_verifies_a_scanned_bill_in_english(self) -> None:
+        """The twin of test_exit_files_db's positive control, with no database: the bill in
+        English (its photo as a one-page scanned PDF: the rig takes no JPG), its page read
+        by the reading model (``read_by`` is ``ocr_model``), and a checker that reads each
+        box back as the OCR line there. Its three labelled values are verified through the
+        checker, so a scanned value can still be verified."""
+        bill = english_bill()
+        scan = make_pdf([Page(picture=Picture(Image.open(io.BytesIO(bill.data)), 0, 0, 612, 792))])
+        checker = EchoChecker(bill.ocr_pages)
+        system = rig(ScriptedOcr(bill.ocr_pages), checker=checker, ocr_model=SCRIPTED_READ_BY)
+        with mock.patch.object(pipeline, "_check_crop", checker.crop):
+            job = system.run(scan)
+        self.assertEqual(len(checker.crops), 3)
+        values = system.store.values_for(CUSTOMER, job.document_id)
+        self.assertEqual(
+            sorted((v.field, v.value_text, v.label, v.label_reason) for v in values),
+            [
+                ("invoice_date", "05/09/2026", "verified", "readers_agree"),
+                ("invoice_number", "245", "verified", "readers_agree"),
+                ("total_amount", "450.00", "verified", "readers_agree"),
+            ],
+        )
+        self.assertEqual(system.totals(job).model_vision, "rapidocr 3.9.2")
 
     def test_v1_a_devanagari_line_is_read_with_the_devanagari_model(self) -> None:
         line = OcrLine("Seller: रामचंद्र पाटील", 60, 400, 400, 420, None, "paragraph", box_source="found")
