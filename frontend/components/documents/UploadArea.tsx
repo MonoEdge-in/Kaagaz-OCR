@@ -244,10 +244,11 @@ export function useUploads(onUploaded: () => void) {
     return true;
   }
 
-  /** Send a file that was not sent once more, while this tab still holds it. */
+  /** Send a file that was not sent once more, while this tab still holds it; only a batch's file is followed. */
   async function retry(key: string) {
     const start = kept.current.get(key);
-    if (start && !notSent(key)) await send(key, start, true);
+    const follow = queue.entries.find((entry) => entry.key === key)?.batchId !== undefined;
+    if (start && !notSent(key)) await send(key, start, follow);
   }
 
   /**

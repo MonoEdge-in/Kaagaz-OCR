@@ -114,4 +114,17 @@ describe("following an upload until it is ready", () => {
     expect(entry?.state).toMatchObject({ kind: "done", document: { status: "ready" } });
     await uploads.unmount();
   });
+
+  it("a new version sent again after a failure ends at the reply, as it has no batch", async () => {
+    const stored: UploadResult = { document: BATCH_DOCUMENT, duplicate: false, in_trash: false };
+    api.uploadVersion.mockRejectedValueOnce(new TypeError("network")).mockResolvedValueOnce(stored);
+    const uploads = await mount();
+    await act(() => uploads.current().addVersion(new File(["abc"], "Invoice.jpg"), { id: "d0", display_name: "Invoice" }));
+    expect(uploads.current().entries[0]?.state).toMatchObject({ kind: "error", retry: true });
+    const key = uploads.current().entries[0]?.key ?? "";
+    await act(() => uploads.current().retry(key));
+    expect(uploads.current().entries[0]?.state).toEqual({ kind: "done", documentId: "d1" });
+    expect(api.getBatch).not.toHaveBeenCalled();
+    await uploads.unmount();
+  });
 });
