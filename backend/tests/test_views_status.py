@@ -10,8 +10,19 @@ import pytest
 from sqlalchemy import RowMapping
 
 from kaagaz.api.auth import CurrentUser
-from kaagaz.api.views import READER_WAITING, batch_view, files_ahead_message, in_progress, status_message
+from kaagaz.api.views import (
+    READER_WAITING,
+    batch_view,
+    document_summary,
+    document_time_left,
+    files_ahead_message,
+    in_progress,
+    newer_version,
+    progress_message,
+    status_message,
+)
 from kaagaz.db.tags import TagRow
+from kaagaz.eta import time_left
 from tests.test_api_support import NOW
 
 WAITING = {"step": "waiting"}
@@ -146,3 +157,26 @@ def test_a_batch_with_nothing_being_read_has_no_time_left() -> None:
     view = _view([_row("ready"), _row("received")])
     assert view["time_left"] is None
     assert view["counts"]["waiting"] == 1
+
+
+@pytest.mark.parametrize("status", ["received", "clean"])
+def test_q6_every_reader_of_the_progress_takes_a_wait_for_the_reader(status: str) -> None:
+    """``{"step": "waiting"}`` has no done or total: each reader of a stored progress
+    (the list, detail and upload replies, the newer version, the time left, the batch)
+    shows the reader's wait with no step count and no time left, and none raises."""
+    row = _row(status, progress=WAITING)
+    summary = document_summary(row, max_pages=100, tags=[], user=USER, now=NOW)
+    assert (summary["status_message"], summary["progress"], summary["time_left"]) == (
+        READER_WAITING,
+        None,
+        None,
+    )
+    newer = newer_version({**row, "version_no": 2}, max_pages=100)
+    assert newer is not None and newer["status_message"] == READER_WAITING
+    assert (progress_message(WAITING), time_left(WAITING, now=NOW), document_time_left(row, now=NOW)) == (
+        None,
+        None,
+        None,
+    )
+    view = _view([row])
+    assert (view["counts"]["waiting"], view["documents"][0]["progress"], view["time_left"]) == (1, None, None)
