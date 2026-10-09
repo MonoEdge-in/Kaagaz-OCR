@@ -17,6 +17,7 @@ from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
 from kaagaz.eta import time_left
+from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, LOW_RESOLUTION, READERS_DISAGREE, UNPINNED, fix, says
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
 _STATUS_MESSAGES = {
@@ -37,6 +38,15 @@ _STEP_MESSAGES = {
 _PAGE_STEPS = {"preparing": "Preparing", "reading": "Reading"}
 # A try has run (attempts) and its progress was cleared: a backend stopped it (pipeline).
 _WAITING_AGAIN = "Waiting to try again."
+# PRD 5 Q6: the worker cleared the progress to {"step": "waiting"} because the reader is
+# down (pipeline _clear_progress); or the files before it in the uploader's own batch.
+READER_WAITING = "Waiting for the reader to come back. This continues on its own."
+_WAITING_STEP = "waiting"
+
+
+def files_ahead_message(count: int) -> str:
+    """ "Waiting: 12 files ahead in your batch" (Q6)."""
+    return f"Waiting: {count} {'file' if count == 1 else 'files'} ahead in your batch"
 
 
 def iso(value: datetime) -> str:
@@ -53,6 +63,7 @@ def status_message(
     attempts: int = 0,
     max_attempts: int | None = None,
     progress: Mapping[str, Any] | None = None,
+    batch_ahead: int = 0,
 ) -> str:
     """``max_pages`` is the MAX_PAGES setting, named when a file had too many pages
     (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it),
@@ -61,7 +72,10 @@ def status_message(
     named when they ran out (``retries_exhausted``). ``progress`` is the worker's
     ``{step, done, total}`` (PRD 2 X3), used only while the document is being
     checked or read, so an old one on a finished document is ignored. In progress
-    with no progress after a try: "Waiting to try again." (council of 5 Oct 2026)."""
+    with no progress after a try: "Waiting to try again." (council of 5 Oct 2026).
+    PRD 5 Q6: a progress of ``{"step": "waiting"}`` says the reader is down; with no
+    progress, ``batch_ahead`` files of the uploader's own batch still before it say
+    how many are ahead."""
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
@@ -87,8 +101,12 @@ def status_message(
     if status == "failed":
         return "This file could not be read." + (f" ({failure_code})" if failure_code else "")
     message = _STATUS_MESSAGES.get(status, "")
-    if status in _IN_PROGRESS and progress is not None:
+    if status in _IN_PROGRESS and progress is not None and progress.get("step") == _WAITING_STEP:
+        message = READER_WAITING
+    elif status in _IN_PROGRESS and progress is not None:
         message = progress_message(progress) or message
+    elif status in _IN_PROGRESS and batch_ahead > 0:
+        message = files_ahead_message(batch_ahead)
     elif status in _IN_PROGRESS and attempts >= 1:
         message = _WAITING_AGAIN
     if status in _IN_PROGRESS and attempts >= 2 and max_attempts:
@@ -111,8 +129,9 @@ def progress_message(progress: Mapping[str, Any]) -> str | None:
 
 def in_progress(status: str, progress: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """``DocumentProgress``: the stored progress while the document is being
-    checked or read, else None (an old one left on a finished document)."""
-    if status not in _IN_PROGRESS or progress is None:
+    checked or read, else None (an old one left on a finished document, or a wait for
+    the reader, Q6, which has no step count)."""
+    if status not in _IN_PROGRESS or progress is None or progress.get("step") == _WAITING_STEP:
         return None
     return {"step": progress["step"], "done": int(progress["done"]), "total": int(progress["total"])}
 
@@ -182,6 +201,7 @@ def document_summary(
             attempts=int(row["attempts"]),
             max_attempts=row["max_attempts"],
             progress=row["progress"],
+            batch_ahead=int(row["batch_ahead"]),
         ),
         "progress": in_progress(row["status"], row["progress"]),
         "time_left": document_time_left(row, now=now),
@@ -204,7 +224,89 @@ def document_summary(
         "pages_unreadable": int(row["pages_unreadable"]),
         "pages_uncertain": int(row["pages_uncertain"]),
         "values_to_review": int(row["values_to_review"]),
+        "words_unsure": int(row["words_unsure"]),  # PRD 5 U2: on the same pages
     }
+
+
+_FAILED = ("failed", "rejected", "needs_reader")  # as the operator's health counts them (0020)
+
+
+def batch_view(
+    batch_id: str,
+    rows: Sequence[RowMapping],
+    *,
+    max_pages: int,
+    tags: Mapping[str, Sequence[TagRow]],
+    user: CurrentUser,
+    now: datetime,
+    max_active: int,
+) -> dict[str, Any]:
+    """``BatchView`` (PRD 5 Q1, U1): the uploader's own files of one drop, in upload
+    order (``listing.batch_rows``), each a ``DocumentSummary``, and the drop's counts:
+
+    * failed: failed, rejected or can't be read yet (needs_reader);
+    * waiting: in progress with no step yet (queued) or waiting for the reader (Q6);
+    * reading: in progress with a step (scanning, preparing, reading, understanding);
+    * attention: ready, with a page or a value that needs attention (U2's rule);
+    * ready: ready with none.
+
+    The bar is pages read over total pages: a file whose page count is not known yet
+    counts as 1 page; a finished file (ready or failed) is read whole; one past reading
+    (understanding, indexing) too; one being read counts its pages done. ``time_left`` is
+    the slowest file being read's, plus the pages still waiting at its page rate shared
+    over ``max_active`` (MAX_ACTIVE_PER_CUSTOMER, Q5); null while no file has an estimate.
+    ponytail: one rate for the whole drop; per-file estimates if drops mix scans and text.
+    Only this user's files, so no other customer's load reaches it. O(files)."""
+    counts = {"total": len(rows), "ready": 0, "reading": 0, "waiting": 0, "attention": 0, "failed": 0}
+    pages_read = pages_total = pages_waiting = 0
+    estimates = []
+    for row in rows:
+        status, progress = row["status"], row["progress"]
+        total = int(row["page_count"] or 0) or 1
+        done = total
+        if status in _FAILED:
+            counts["failed"] += 1
+        elif status == "ready":
+            flagged = (
+                int(row["pages_unreadable"]) + int(row["pages_uncertain"]) + int(row["values_to_review"])
+            )
+            counts["attention" if flagged else "ready"] += 1
+        elif progress is None or progress.get("step") == _WAITING_STEP:
+            counts["waiting"] += 1
+            done = 0
+            pages_waiting += total
+        else:
+            counts["reading"] += 1
+            step, count = progress.get("step"), progress.get("done")
+            if step in ("scanning", "preparing"):
+                done = 0
+            elif step == "reading":
+                done = min(total, count) if isinstance(count, int) else 0
+        pages_read, pages_total = pages_read + done, pages_total + total
+        left = document_time_left(row, now=now)
+        if left is not None:
+            estimates.append(left)
+    return {
+        "id": batch_id,
+        "documents": [
+            document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user, now=now)
+            for row in rows
+        ],
+        "counts": counts,
+        "pages_read": pages_read,
+        "pages_total": pages_total,
+        "time_left": _batch_time_left(estimates, pages_waiting, pages_total - pages_read, max_active),
+    }
+
+
+def _batch_time_left(
+    estimates: Sequence[dict[str, Any]], pages_waiting: int, pages_left: int, max_active: int
+) -> dict[str, Any] | None:
+    if not estimates:
+        return None
+    slowest = max(estimates, key=lambda left: float(left["seconds"]))
+    queued = pages_waiting * float(slowest["item_seconds"]) / max(1, max_active)
+    return {**slowest, "seconds": round(float(slowest["seconds"]) + queued, 1), "items_left": pages_left}
 
 
 def document_version(row: RowMapping) -> dict[str, Any]:
@@ -238,8 +340,14 @@ def tag(row: TagRow) -> dict[str, Any]:
 
 
 def page_summary(row: RowMapping) -> dict[str, Any]:
-    """``PageSummary``. PRD 5 adds who read the page (RT2), its reading result (F1),
-    "Keep as is" and a read again asked for (F5), named as the pages columns are (0021)."""
+    """``PageSummary``, from a ``listing`` page row, with its problems (PRD 5 U4)."""
+    return {**page_fields(row), "problems": page_problems(row)}
+
+
+def page_fields(row: RowMapping) -> dict[str, Any]:
+    """``PageSummary`` without ``problems`` (the review queue's page). PRD 5 adds who read
+    the page (RT2), its reading result (F1), "Keep as is" and a read again asked for (F5),
+    named as the pages columns are (0021)."""
     accepted_by, accepted_at = row["accepted_by"], row["accepted_at"]
     asked_at = row["read_again_requested_at"]
     return {
@@ -263,6 +371,27 @@ def page_summary(row: RowMapping) -> dict[str, Any]:
         "accepted_at": None if accepted_at is None else iso(accepted_at),
         "read_again_requested_at": None if asked_at is None else iso(asked_at),  # F5, until it is read
     }
+
+
+def page_problems(row: RowMapping) -> list[dict[str, Any]]:
+    """``PageProblem`` for each issue in ``read_issues``, in the F1 table's order (as
+    stored): what happened (``page_quality.says``, with its count or the page's DPI) and
+    the fix. An issue whose count is 0 now (every disputed value since given another
+    reason) or whose DPI is not known is left out: a sentence never shows a made-up
+    number. O(issues)."""
+    counts = {
+        ILLEGIBLE_WORDS: int(row["illegible_words"]),
+        UNPINNED: int(row["unpinned_lines"]),
+        READERS_DISAGREE: int(row["values_disputed"]),
+    }
+    dpi = row["effective_dpi"]
+    problems = []
+    for code in row["read_issues"] or []:
+        if (code in counts and counts[code] == 0) or (code == LOW_RESOLUTION and dpi is None):
+            continue
+        said = says(code, count=counts.get(code), dpi=dpi)
+        problems.append({"code": code, "says": said, "fix": fix(code)})
+    return problems
 
 
 def extracted_value(row: RowMapping) -> dict[str, Any]:
@@ -336,8 +465,11 @@ def document_link(row: RowMapping) -> dict[str, Any]:
     }
 
 
-def page_readings(page_no: int, rows: Sequence[RowMapping]) -> dict[str, Any]:
-    """``PageReadings``: each reader's lines on one page, the first reader first.
+def page_readings(
+    page_no: int, rows: Sequence[RowMapping], marks: Sequence[RowMapping] = ()
+) -> dict[str, Any]:
+    """``PageReadings``: each reader's lines on one page, the first reader first, and
+    the page's reading marks (PRD 5 U3, ``listing.page_marks``).
     ``text`` is the stored ``raw``, exactly as read. A reader keeps its lines while
     they fit MAX_READING_LINES and MAX_READING_TEXT; past either, or after a line cut
     in SQL, it stops and says ``truncated``. Never logged: it is document content."""
@@ -373,7 +505,8 @@ def page_readings(page_no: int, rows: Sequence[RowMapping]) -> dict[str, Any]:
             }
         )
         reader["truncated"] = bool(row["cut"])
-    return {"page_no": page_no, "readers": readers}
+    shown = [{"quality": mark["quality"], "region": mark["region"], "text": mark["text"]} for mark in marks]
+    return {"page_no": page_no, "readers": readers, "marks": shown}
 
 
 def review_item(row: RowMapping) -> dict[str, Any]:
@@ -384,7 +517,7 @@ def review_item(row: RowMapping) -> dict[str, Any]:
         "document_id": str(row["document_id"]),
         "document_name": row["document_name"],
         "detected_type": row["detected_type"],
-        "page": page_summary(row),
+        "page": page_fields(row),
         "check_reasons": list(row["check_reasons"]),
     }
 

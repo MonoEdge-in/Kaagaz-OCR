@@ -30,6 +30,7 @@ from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
 from kaagaz.api.routers import (
     admin,
     auth,
+    batches,
     chat,
     documents,
     folders,
@@ -98,6 +99,7 @@ def create_app(
         health.router,
         auth.router,
         documents.router,
+        batches.router,
         folders.router,
         tags.router,
         chat.router,

@@ -21,6 +21,7 @@ from kaagaz.api.auth import (
 from kaagaz.api.routers.operator_activity import decode_cursor, encode_cursor
 from kaagaz.db import operator_activity as activity_sql
 from kaagaz.db import operators as operators_sql
+from kaagaz.db import reader_status as reader_sql
 from kaagaz.db.operator_activity import Before
 from tests.test_api_auth import _offline_client
 from tests.test_api_support import CSRF, NOW, route_calls
@@ -81,6 +82,8 @@ class _Offline:
         monkeypatch.setattr(activity_sql, "activity", self._activity)
         monkeypatch.setattr(activity_sql, "health", lambda conn, oid: self.orgs)
         monkeypatch.setattr(activity_sql, "purges", lambda conn, oid: self.purges)
+        self.readers: list[dict[str, Any]] = []
+        monkeypatch.setattr(reader_sql, "read", lambda conn, oid: self.readers)
         token = sign_operator(
             OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 600),
             self.settings.session_secret,
@@ -209,7 +212,7 @@ def test_health_holds_counts_only_with_the_totals_and_the_purges(offline: _Offli
     reply = offline.get(HEALTH)
     assert reply.status_code == 200, reply.text
     body = reply.json()
-    assert set(body) == {"organisations", "totals", "purges"}
+    assert set(body) == {"organisations", "totals", "purges", "reader", "queues"}
     first = body["organisations"][0]
     assert set(first) == {
         "id",

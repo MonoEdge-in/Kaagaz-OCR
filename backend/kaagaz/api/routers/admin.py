@@ -47,6 +47,7 @@ from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit
 from kaagaz.db import runs as runs_sql
 from kaagaz.db import users as users_sql
+from kaagaz.settings import Settings
 
 router = APIRouter(dependencies=[Depends(require_admin_session)])
 
@@ -323,12 +324,26 @@ def month_window(now: datetime, timezone: str) -> tuple[datetime, datetime]:
 
 @router.get("/admin/stats")
 def get_stats(user: AdminSession, context: Context) -> dict[str, Any]:
-    """The admin numbers, with the pages read this month by route (PRD 2 R6)."""
+    """The admin numbers, with the pages read this month by route (PRD 2 R6), by who read
+    them and the model's spend estimate (PRD 5 U9)."""
     start, end = month_window(context.clock(), context.settings.timezone)
     with context.db.customer(user.customer_id) as conn:
         numbers = admin_sql.stats(conn, user.customer_id)
         numbers["pages_this_month"] = runs_sql.pages_by_route(conn, user.customer_id, start=start, end=end)
+        reader = runs_sql.reader_numbers(conn, user.customer_id, start=start, end=end)
+    tokens = {"input_tokens": reader.pop("input_tokens"), "output_tokens": reader.pop("output_tokens")}
+    numbers["reader_pages"] = reader
+    numbers["spend_estimate"] = {**tokens, "usd": spend_usd(context.settings, **tokens)}
     return numbers
+
+
+def spend_usd(settings: Settings, *, input_tokens: int, output_tokens: int) -> float | None:
+    """The model's estimated spend in US dollars from its tokens (V5), to the cent; None
+    while either MODEL_PRICE_* is 0 (not known), so no made-up figure is shown."""
+    price_in, price_out = settings.model_price_input_usd_per_m, settings.model_price_output_usd_per_m
+    if price_in <= 0 or price_out <= 0:
+        return None
+    return round((input_tokens * price_in + output_tokens * price_out) / 1_000_000, 2)
 
 
 @router.get("/admin/failed")
