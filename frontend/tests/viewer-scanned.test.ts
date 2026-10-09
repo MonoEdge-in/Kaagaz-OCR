@@ -60,12 +60,17 @@ describe("confidenceText", () => {
 });
 
 describe("readerHeading", () => {
-  const ocrPage = { route: "ocr" as const, effective_dpi: 200.4 };
+  const ocrPage = {
+    route: "ocr" as const,
+    read_by: "google/gemini-3.1-pro-preview",
+    read_issues: [],
+    effective_dpi: 200.4,
+  };
 
   it("says how the page was read, by which reader, and how many lines it was not sure of", () => {
     const heading = readerHeading(reader({ lines: [line(0.5), line(0.97), line(0.2)] }), ocrPage);
     expect(heading).toEqual({
-      title: "Read by OCR at 200 DPI",
+      title: "Read by Gemini at 200 DPI",
       detail: "paddleocr-vl 1.5",
       notSureCount: "2 of 3 lines: reader not sure",
     });
@@ -75,11 +80,18 @@ describe("readerHeading", () => {
     );
   });
 
+  it("names the backup reader only for a page the main reader handed on (PRD 5 RT2, Q7)", () => {
+    const keyless = { route: "ocr" as const, read_by: "rapidocr", read_issues: [], effective_dpi: 300 };
+    const local = { ...keyless, read_issues: ["read_locally" as const] };
+    expect(readerHeading(reader(), local).title).toBe("Read by the backup reader at 300 DPI");
+    expect(readerHeading(reader(), keyless).title).toBe("Read by OCR at 300 DPI");
+  });
+
   it("names the text layer and a page with no route", () => {
-    expect(readerHeading(reader(), { route: "text_layer", effective_dpi: null }).title).toBe(
-      "Read from the PDF text",
-    );
-    expect(readerHeading(reader(), { route: null, effective_dpi: null }).title).toBe("First reader");
+    const textLayer = { route: "text_layer" as const, read_by: "text_layer", read_issues: [], effective_dpi: null };
+    expect(readerHeading(reader(), textLayer).title).toBe("Read from the PDF text");
+    const unread = { route: null, read_by: null, read_issues: [], effective_dpi: null };
+    expect(readerHeading(reader(), unread).title).toBe("First reader");
     expect(readerHeading(reader({ role: "second" }), ocrPage).title).toBe("Second reader (PDF text layer)");
   });
 

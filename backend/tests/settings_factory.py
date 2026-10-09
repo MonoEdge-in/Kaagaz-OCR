@@ -48,6 +48,18 @@ _BASE: dict[str, Any] = {
     "ocr_timeout_seconds": 5.0,
     "ocr_dpi": 100,
     "ocr_dpi_rule": "fixed",
+    "ocr_model": "google/gemini-3.1-pro-preview",
+    "openrouter_api_key": None,  # laptops and CI call no model through OpenRouter
+    "openrouter_base_url": "https://openrouter.ai/api/v1",
+    "ocr_media_resolution": "high",
+    "ocr_thinking_level": "low",
+    "ocr_retry_media_resolution": "high",  # the "detail" shape sends low or high only
+    "ocr_retry_thinking_level": "high",
+    "ocr_page_concurrency": 6,
+    "cpu_workers": 2,
+    "max_check_crops": 200,
+    "model_rpm": 60,
+    "reader_outage_fallback_minutes": 15,
     "text_layer_min_chars": 40,
     "text_layer_min_good_ratio": 0.9,
     "scan_image_coverage": 0.5,

@@ -25,6 +25,19 @@ purge (kaagaz/jobs/purge.py) and ``delete_family_forever`` (the permanent delete
 ready, failed or unreadable document out of Trash goes back to ``received`` with
 its tries reset, within the customer's hourly limit and one document's cooldown
 (security A8). The caller audits it and queues the job in the same transaction.
+
+Read one page again, harder (PRD 5 F5): a queue job carries only a document id, so
+``request_page_read_again`` marks the page (``pages.read_again_requested_at``, 0021)
+in the same transaction as ``mark_for_reprocess``, and the worker asks which pages
+are marked (``pages_to_read_again``). The save that replaces the pages clears the
+marks (kaagaz.db.pipeline_store); a document that fails for good (``set_failed``,
+``mark_exhausted``) clears them in the same transaction as its failure, under the
+family lock. A request is refused while the document is being read, and accepted
+once its failure has committed, so no request can land between the failure and the
+clearing and lose its mark. "Keep as is" (F5) is ``accept_page``.
+
+``documents.batch_id`` (PRD 5 Q1, 0021) is written by pull request 2's batches; no
+insert here sets it yet.
 """
 
 import dataclasses
@@ -212,6 +225,64 @@ def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, 
         raise ReprocessLimited("cooldown")
     conn.execute(text(_REPROCESS), params)
     return str(state.status)
+
+
+# --- read one page again, and Keep as is (PRD 5 F5) ----------------------------
+
+# Only a page of a document out of Trash is marked or accepted.
+_REQUEST_PAGE = (
+    "UPDATE pages p SET read_again_requested_at = :now FROM documents d"
+    " WHERE p.customer_id = :c AND p.document_id = :d AND p.page_no = :n"
+    " AND d.customer_id = p.customer_id AND d.id = p.document_id AND d.deleted_at IS NULL"
+    " RETURNING p.page_no"
+)
+_ACCEPT_PAGE = (
+    "UPDATE pages p SET accepted_by = :u, accepted_at = :now FROM documents d"
+    " WHERE p.customer_id = :c AND p.document_id = :d AND p.page_no = :n"
+    " AND d.customer_id = p.customer_id AND d.id = p.document_id AND d.deleted_at IS NULL"
+    " RETURNING p.page_no"
+)
+_PAGES_TO_READ_AGAIN = (
+    "SELECT page_no FROM pages WHERE customer_id = :c AND document_id = :d"
+    " AND read_again_requested_at IS NOT NULL ORDER BY page_no"
+)
+_CLEAR_READ_AGAIN = (
+    "UPDATE pages SET read_again_requested_at = NULL"
+    " WHERE customer_id = :c AND document_id = :d AND read_again_requested_at IS NOT NULL"
+)
+
+
+def request_page_read_again(
+    conn: Connection, customer_id: str, document_id: str, page_no: int, *, now: datetime
+) -> bool:
+    """Mark page ``page_no`` to be read again, harder, by the document's next run (F5),
+    and return True; False when this customer's document, out of Trash, has no such
+    page, and then nothing changes.
+
+    ``conn`` comes from ``Database.customer(customer_id)``, in the transaction in which
+    ``mark_for_reprocess`` (which takes the family lock first, and counts the request
+    against REPROCESS_PER_HOUR) sets the document to be read again, so the mark and the
+    job commit together. One statement on the pages key: O(log P)."""
+    params = {"c": customer_id, "d": document_id, "n": page_no, "now": now}
+    return conn.execute(text(_REQUEST_PAGE), params).first() is not None
+
+
+def accept_page(
+    conn: Connection, customer_id: str, document_id: str, page_no: int, *, user_id: str, now: datetime
+) -> bool:
+    """Keep as is (F5): ``user_id`` accepts page ``page_no`` as it was read, at ``now``;
+    True, or False when this customer's document, out of Trash, has no such page.
+    The page leaves the attention list but keeps its reading result, so it stays
+    flagged on the page and in answers; the save carries the acceptance forward
+    unless the page is read again (kaagaz.db.pipeline_store).
+
+    ``conn`` comes from ``Database.customer(customer_id)``; the family lock
+    (``trash.lock_family``) comes first, so it never races a save. 2 statements:
+    O(v log D) for the family's v versions."""
+    if lock_family(conn, customer_id, document_id) is None:
+        return False
+    params = {"c": customer_id, "d": document_id, "n": page_no, "u": user_id, "now": now}
+    return conn.execute(text(_ACCEPT_PAGE), params).first() is not None
 
 
 class NotInTrash(Exception):
@@ -462,7 +533,11 @@ class PgDocuments:
         but keeps its code so the file list can say why. With ``run_id``, raise
         Superseded and change nothing unless that run is still open (the run fence,
         read under the family lock), so a stale delivery (a newer run has started,
-        after a "read again", say) never fails the document."""
+        after a "read again", say) never fails the document.
+
+        A document failed for good keeps no read-again mark (F5): they are cleared in
+        this transaction, so a page asked to be read again after it commits (the
+        document is failed, so it may be read again) keeps its mark for the next run."""
         with unavailable(), self._db.customer(customer_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
@@ -477,6 +552,7 @@ class PgDocuments:
                 ),
                 {"code": code, "c": customer_id, "d": document_id},
             )
+            conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})
 
     def mark_ready(
         self, customer_id: str, document_id: str, page_count: int, *, run: "FinishedRun | None" = None
@@ -531,6 +607,14 @@ class PgDocuments:
                 {"c": customer_id, "d": document_id},
             )
 
+    def pages_to_read_again(self, customer_id: str, document_id: str) -> tuple[int, ...]:
+        """The pages a user asked to be read again, harder (F5), in page order: the run
+        that reads the document reads them so. Empty when none (or no such document).
+        Its own short transaction, one statement on the pages key: O(log P + p)."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            rows = conn.execute(text(_PAGES_TO_READ_AGAIN), {"c": customer_id, "d": document_id})
+            return tuple(int(row[0]) for row in rows)
+
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(
@@ -563,7 +647,8 @@ class PgDocuments:
         recorded try is under ``max_attempts``: after "read again" the tries start
         again, so an old job's last delivery must not fail the new one. When it changes,
         its runs still ``running`` end failed with ``retries_exhausted`` at
-        ``now`` (AR11), in the same transaction.
+        ``now`` (AR11), and its read-again marks are cleared (F5, as ``set_failed``),
+        in the same transaction.
         """
         with unavailable(), self._db.customer(customer_id) as conn:
             marked = conn.execute(
@@ -578,3 +663,4 @@ class PgDocuments:
                 close_running(
                     conn, customer_id, document_id, status="failed", error_code="retries_exhausted", now=now
                 )
+                conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})

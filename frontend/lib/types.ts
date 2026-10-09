@@ -25,7 +25,10 @@ export type LabelReason =
   | "learned_correction"
   | "model_chosen" // PRD 2: the AI model chose its field (card and invoice values)
   | "ocr_script" // PRD 2: OCR read it from Devanagari or mixed-script text
-  | "check_failed"; // PRD 2, K3: a check on its invoice failed, even if the readers agreed
+  | "check_failed" // PRD 2, K3: a check on its invoice failed, even if the readers agreed
+  | "unsure_text" // PRD 5 V4: it holds a word the reader was unsure of, or [?]
+  | "box_unanchored" // PRD 5 G5: its spot on the page couldn't be confirmed
+  | "local_reader"; // PRD 5 Q7: read by the backup reader while the main reader was down
 
 /** "admin" only for a session started at /admin/login (PRD A1). */
 export type SessionScope = "app" | "admin";
@@ -84,6 +87,11 @@ export interface DocumentSummary {
   time_left: TimeLeft | null; // null until preparing (PRD 4 #13): while scanning, waiting or done; never in Trash
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
+  // PRD 5 F4: pages unreadable or uncertain still on the attention list (a page kept as is
+  // has left it), and the values labelled needs review.
+  pages_unreadable: number;
+  pages_uncertain: number;
+  values_to_review: number;
 }
 
 /** GET /api/search (PRD 3 Q2): the documents found, best first, at most SEARCH_MAX_DOCUMENTS. */
@@ -187,6 +195,27 @@ export interface DocumentFolder {
 /** How a page was read (PRD 2, R1). */
 export type PageRoute = "cells" | "text_layer" | "ocr" | "blank";
 
+/** How well a page was read (PRD 5 F1, F2). Text-layer and cell pages are good. */
+export type ReadQuality = "good" | "uncertain" | "unreadable";
+
+/** Why a page is not good (PRD 5 F1's issue table). */
+export type ReadIssue =
+  | "blurry"
+  | "low_resolution"
+  | "faint"
+  | "glare"
+  | "shadow"
+  | "cut_off"
+  | "stamp_over_text"
+  | "overwritten"
+  | "handwriting_hard"
+  | "illegible_words"
+  | "readers_disagree"
+  | "unpinned"
+  | "reader_refused"
+  | "read_locally"
+  | "no_text";
+
 export interface PageSummary {
   page_no: number;
   width: number;
@@ -196,6 +225,18 @@ export interface PageSummary {
   route: PageRoute | null; // null: not read (yet)
   effective_dpi: number | null; // of the largest image on the page; null when it has none
   low_resolution: boolean; // effective_dpi under LOW_RES_DPI; PRD 3 shows the warning
+  // PRD 5 RT2: the reading engine's ID (the model's, "rapidocr" or "paddleocr_vl"),
+  // "text_layer" or "cells"; null for a blank page or one read before PRD 5. A page the
+  // main reader handed to the backup reader has read_locally or reader_refused in read_issues.
+  read_by: string | null;
+  read_quality: ReadQuality; // F1
+  read_issues: ReadIssue[]; // F1; [] when good
+  unsure_words: number; // words the reader listed as unsure
+  illegible_words: number; // parts marked [?], which couldn't be read
+  unpinned_lines: number; // lines whose spot no found box confirmed (G5)
+  accepted_by: string | null; // F5 "Keep as is": the user, with accepted_at; the page stays flagged
+  accepted_at: string | null; // ISO 8601
+  read_again_requested_at: string | null; // F5: asked to be read again, until it is
 }
 
 export interface ExtractedValue {
@@ -380,6 +421,15 @@ export interface Citation {
   page_to?: number;
   label_page_no?: number | null; // where a value's label is, when it was found
   label_regions?: Region[]; // [] for a piece, and once the document is in Trash or deleted
+  hard_to_read?: boolean; // PRD 5 F6: the cited text holds an unsure or illegible word; missing before it
+}
+
+/** A page a not-found answer names as not read well (PRD 5 F6), for its link. */
+export interface UnreadablePage {
+  document_id: string;
+  document_name: string;
+  page_no: number;
+  read_quality: "uncertain" | "unreadable";
 }
 
 export interface AnswerSentence {
@@ -400,6 +450,12 @@ export interface Answer {
   model_used: boolean;
   rewritten_question?: string | null; // PRD 3 H1: what a follow-up was searched as; missing before PRD 3
   understood_words?: { word: string; meaning: string }[]; // my words chat used (A3); missing before it
+  // PRD 5 F6, missing before it: "Not found in the readable text. 2 pages couldn't be read: ..."
+  // on a not-found answer, or "Part of this text was hard to read." on an answer that needs
+  // review; null otherwise. The pages it names, and how many there are in all.
+  reading_note?: string | null;
+  unreadable_pages?: UnreadablePage[];
+  unreadable_page_count?: number;
 }
 
 /** One of my words (GET /me/words). Text from the user: shown as text only. */

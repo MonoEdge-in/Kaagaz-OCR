@@ -32,6 +32,8 @@ _ITEM = (
     " v.label_page_no, v.label_region,"
     " d.display_name AS document_name, d.detected_type,"
     " p.width, p.height, p.unit, p.has_image, p.route, p.effective_dpi, p.low_resolution,"
+    " p.read_by, p.read_quality, p.read_issues, p.unsure_words, p.illegible_words, p.unpinned_lines,"
+    " p.accepted_by, p.accepted_at, p.read_again_requested_at,"
     " coalesce(i.check_reasons, '{}') AS check_reasons"
     " FROM extracted_values v"
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
@@ -41,8 +43,8 @@ _ITEM = (
     " WHERE v.customer_id = :c"
 )
 
-# Every label_reason the extracted_values CHECK allows (migration 0004): the reasons
-# bound when the queue is not filtered, so the reason filter is never a catch-all.
+# Every label_reason the extracted_values CHECK allows (migrations 0004 and 0021): the
+# reasons bound when the queue is not filtered, so the reason filter is never a catch-all.
 EVERY_REASON = (
     "direct_cell",
     "readers_agree",
@@ -54,6 +56,9 @@ EVERY_REASON = (
     "check_failed",
     "model_chosen",
     "ocr_script",
+    "unsure_text",
+    "box_unanchored",
+    "local_reader",
 )
 
 # The queue and its total repeat the same filter in full, so each can be checked on its own.

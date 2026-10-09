@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy import RowMapping
 
+from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
 from kaagaz.api.auth import CurrentUser
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import MAX_READING_LINES, MAX_READING_TEXT
@@ -74,6 +75,9 @@ def status_message(
         return (
             f"We tried {tries} and couldn't read this file. Upload it again, or ask your admin to look at it."
         )
+    if status == "failed" and failure_code == "unreadable":
+        # PRD 5 F4: every non-blank page was unreadable; a document with one readable page is ready.
+        return "None of this file could be read. Upload a sharper scan."
     if status == "failed" and failure_code == "ocr_failed":
         # The scan reader failed on a page of this file (kaagaz/reading/ocr.py): not an outage.
         return "The scan reader couldn't read a page of this file. Upload a clearer scan, or read it again."
@@ -195,6 +199,11 @@ def document_summary(
         "deleted_at": None if row["deleted_at"] is None else iso(row["deleted_at"]),
         "version_no": int(row["version_no"]),
         "family_id": str(row["family_id"]),
+        # PRD 5 F4: pages unreadable or uncertain still on the attention list (a page kept as
+        # is has left it), and the values to review (db/listing.py's _COLUMNS).
+        "pages_unreadable": int(row["pages_unreadable"]),
+        "pages_uncertain": int(row["pages_uncertain"]),
+        "values_to_review": int(row["values_to_review"]),
     }
 
 
@@ -229,7 +238,10 @@ def tag(row: TagRow) -> dict[str, Any]:
 
 
 def page_summary(row: RowMapping) -> dict[str, Any]:
-    """``PageSummary``."""
+    """``PageSummary``. PRD 5 adds who read the page (RT2), its reading result (F1),
+    "Keep as is" and a read again asked for (F5), named as the pages columns are (0021)."""
+    accepted_by, accepted_at = row["accepted_by"], row["accepted_at"]
+    asked_at = row["read_again_requested_at"]
     return {
         "page_no": int(row["page_no"]),
         "width": float(row["width"]),
@@ -239,6 +251,17 @@ def page_summary(row: RowMapping) -> dict[str, Any]:
         "route": row["route"],  # PRD 2 R1; null when the page was not read
         "effective_dpi": row["effective_dpi"],  # R4
         "low_resolution": bool(row["low_resolution"]),
+        # RT2: the model ID, rapidocr, text_layer or cells; null for a blank page or one read before PRD 5.
+        "read_by": row["read_by"],
+        "read_quality": row["read_quality"],  # F1: good, uncertain or unreadable
+        "read_issues": list(row["read_issues"] or []),  # F1: codes from the issue table
+        "unsure_words": int(row["unsure_words"]),
+        "illegible_words": int(row["illegible_words"]),
+        "unpinned_lines": int(row["unpinned_lines"]),
+        # F5 "Keep as is": who and when, both or neither; the page stays flagged.
+        "accepted_by": None if accepted_by is None else str(accepted_by),
+        "accepted_at": None if accepted_at is None else iso(accepted_at),
+        "read_again_requested_at": None if asked_at is None else iso(asked_at),  # F5, until it is read
     }
 
 
@@ -407,11 +430,15 @@ _GONE = ("in_trash", "deleted")
 
 
 def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
-    """Every document a saved answer points at: its citations and closest documents."""
+    """Every document a saved answer points at: its citations and closest documents, and
+    the documents of the pages that couldn't be read it names (PRD 5 F6)."""
     if not answer:
         return []
     ids = [str(each["document_id"]) for each in answer.get("citations", []) if each.get("document_id")]
     ids += [str(each["id"]) for each in answer.get("closest_documents", []) if each.get("id")]
+    ids += [
+        str(each["document_id"]) for each in answer.get("unreadable_pages", []) if each.get("document_id")
+    ]
     return ids
 
 
@@ -424,9 +451,12 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
       so its words and its place on the page must not show any more.
     * A sentence whose every citation is gone is replaced by ``GONE_SENTENCE``.
     * Closest documents that are gone are left out.
+    * PRD 5 F6: a page that couldn't be read, of a document that is gone, is left out
+      of ``unreadable_pages``, its count and the note, so a deleted document's name
+      never shows again (the note is written again from the pages left).
     A citation of an older version keeps its text and link, marked
     ``older_version``: it was true of that version. The stored answer is never
-    changed, so a restore brings everything back. O(citations + sentences).
+    changed, so a restore brings everything back. O(citations + sentences + pages).
     """
     citations = []
     gone: set[int] = set()
@@ -449,7 +479,24 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
         for each in answer.get("closest_documents", [])
         if states.get(str(each.get("id"))) not in (None, *_GONE)
     ]
-    return {**answer, "citations": citations, "sentences": sentences, "closest_documents": closest}
+    shown = {**answer, "citations": citations, "sentences": sentences, "closest_documents": closest}
+    pages = answer.get("unreadable_pages") or []
+    kept = [page for page in pages if states.get(str(page.get("document_id"))) not in (None, *_GONE)]
+    if len(kept) != len(pages):
+        total = int(answer.get("unreadable_page_count") or 0) - (len(pages) - len(kept)) if kept else 0
+        named = [
+            FlaggedPage(
+                str(page["document_id"]),
+                str(page["document_name"]),
+                int(page["page_no"]),
+                str(page["read_quality"]),
+            )
+            for page in kept
+        ]
+        shown.update(
+            unreadable_pages=kept, unreadable_page_count=total, reading_note=not_found_note(named, total)
+        )
+    return shown
 
 
 def conversation_summary(row: RowMapping) -> dict[str, Any]:

@@ -246,3 +246,22 @@ def test_answering_and_search_never_read_the_scanned_text() -> None:
         for source in (KAAGAZ / folder).rglob("*.py"):
             words = source.read_text(encoding="utf-8")
             assert "page_readings" not in words and "MAX_READING" not in words, source
+
+
+def test_word_marks_are_not_scanned_lines(db: Database) -> None:
+    """PRD 5 F3: an unsure or illegible word is stored as a word mark of its own after its
+    line (``ocr.is_word_mark``); the scanned text lists the line once, never the marks."""
+    api = Api(db)
+    signed = api.new_signed()
+    document_id = _scan(api, signed)
+    spans = [
+        _box(1, 0.1, "TOTAL 1180 [?]", origin="ocr", kind="paragraph", box_source="found"),
+        _box(1, 0.1, "1180", origin="ocr", quality="unsure", box_source="found"),
+        _box(1, 0.1, "[?]", origin="ocr", quality="illegible", box_source="found"),
+        _box(1, 0.5, "Paid", confidence=0.9, origin="ocr"),
+    ]
+    api.add_reader_output(signed.customer_id, document_id, spans, reader="gemini", reader_version="1")
+
+    (reader,) = _readings(signed, document_id)["readers"]
+
+    assert [line["text"] for line in reader["lines"]] == ["TOTAL 1180 [?]", "Paid"]

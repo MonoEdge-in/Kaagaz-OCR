@@ -8,6 +8,7 @@ import pytest
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import span_to_json
 from kaagaz.reading.spans import BoxLocation, Span
+from tests.test_api_page_fixes import read_page
 from tests.test_api_support import Api
 
 pytestmark = pytest.mark.db
@@ -34,3 +35,52 @@ def test_b_gets_404_and_no_text_for_a_page_of_a(db: Database) -> None:
     signed_out = api.client().get(path)
     assert signed_out.status_code == 401
     assert "sharma" not in signed_out.text
+
+
+def test_b_cannot_see_a_reading_counts_or_review_page_fields(db: Database) -> None:
+    api = Api(db)
+    a, b = api.new_signed("reviewer"), api.new_signed("reviewer")
+    a_document = api.add_document(a.customer_id, name="a-private.pdf", page_count=2)
+    read_page(api, a.customer_id, a_document, 1, read_quality="unreadable", read_issues=["blurry"])
+    read_page(
+        api,
+        a.customer_id,
+        a_document,
+        2,
+        read_quality="uncertain",
+        read_issues=["faint"],
+        unsure_words=2,
+        unpinned_lines=1,
+    )
+    a_value = api.add_value(a.customer_id, a_document, page_no=2, reason="unsure_text")
+
+    b_document = api.add_document(b.customer_id, name="b-private.pdf")
+    read_page(api, b.customer_id, b_document)
+    b_value = api.add_value(b.customer_id, b_document, reason="single_reader")
+
+    a_listing = {item["id"]: item for item in a.client.get("/api/documents").json()["items"]}
+    b_listing = {item["id"]: item for item in b.client.get("/api/documents").json()["items"]}
+    assert set(a_listing) == {a_document}
+    assert (
+        a_listing[a_document]["pages_unreadable"],
+        a_listing[a_document]["pages_uncertain"],
+        a_listing[a_document]["values_to_review"],
+    ) == (1, 1, 1)
+    assert set(b_listing) == {b_document}
+    assert (
+        b_listing[b_document]["pages_unreadable"],
+        b_listing[b_document]["pages_uncertain"],
+        b_listing[b_document]["values_to_review"],
+    ) == (0, 0, 1)
+
+    a_review = a.client.get("/api/review").json()["items"]
+    b_review = b.client.get("/api/review").json()["items"]
+    assert [item["value"]["id"] for item in a_review] == [a_value]
+    assert (a_review[0]["document_id"], a_review[0]["page"]["read_quality"]) == (
+        a_document,
+        "uncertain",
+    )
+    assert a_review[0]["page"]["read_issues"] == ["faint"]
+    assert (a_review[0]["page"]["unsure_words"], a_review[0]["page"]["unpinned_lines"]) == (2, 1)
+    assert [item["value"]["id"] for item in b_review] == [b_value]
+    assert (b_review[0]["document_id"], b_review[0]["page"]["read_quality"]) == (b_document, "good")

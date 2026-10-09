@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { fieldText, labelBadgeClass, labelIcon, labelText, reasonText } from "@/components/viewer/labels";
 import { initialSelection, sameRegion, selectValue } from "@/components/viewer/selection";
 import {
+  BACKUP_ISSUES,
   buildGrid,
   cropRowWindow,
   fitPageSize,
+  GEMINI_READ_BY,
   pageMode,
   routeText,
   sheetRowWindow,
@@ -30,6 +32,15 @@ const pdfPage: PageSummary = {
   route: "text_layer",
   effective_dpi: null,
   low_resolution: false,
+  read_by: "text_layer",
+  read_quality: "good",
+  read_issues: [],
+  unsure_words: 0,
+  illegible_words: 0,
+  unpinned_lines: 0,
+  accepted_by: null,
+  accepted_at: null,
+  read_again_requested_at: null,
 };
 const sheetPage: PageSummary = {
   page_no: 1,
@@ -40,6 +51,15 @@ const sheetPage: PageSummary = {
   route: "cells",
   effective_dpi: null,
   low_resolution: false,
+  read_by: "cells",
+  read_quality: "good",
+  read_issues: [],
+  unsure_words: 0,
+  illegible_words: 0,
+  unpinned_lines: 0,
+  accepted_by: null,
+  accepted_at: null,
+  read_again_requested_at: null,
 };
 
 describe("stepZoom", () => {
@@ -135,16 +155,44 @@ describe("sheet windows", () => {
   });
 });
 
-describe("routeText (PRD 2, R1)", () => {
+describe("routeText (PRD 2, R1; PRD 5 RT2)", () => {
   it("says in words how each page was read", () => {
-    expect(routeText("cells")).toBe("Read from spreadsheet cells");
-    expect(routeText("text_layer")).toBe("Read from the PDF text");
-    expect(routeText("ocr")).toBe("Read by OCR");
-    expect(routeText("blank")).toBe("Blank page");
+    expect(routeText({ route: "cells", read_by: "cells", read_issues: [] })).toBe("Read from spreadsheet cells");
+    expect(routeText({ route: "text_layer", read_by: "text_layer", read_issues: [] })).toBe(
+      "Read from the PDF text",
+    );
+    expect(routeText({ route: "blank", read_by: null, read_issues: [] })).toBe("Blank page");
+  });
+
+  it("says Read by Gemini when a Gemini model read the page (RT2)", () => {
+    expect(routeText({ route: "ocr", read_by: "google/gemini-3.1-pro-preview", read_issues: [] })).toBe(
+      "Read by Gemini",
+    );
+    expect(routeText({ route: "ocr", read_by: "google/gemini-3.8-flash", read_issues: ["blurry"] })).toBe(
+      "Read by Gemini",
+    );
+    expect(GEMINI_READ_BY).toBe("google/gemini-");
+  });
+
+  it("says the backup reader only when the main reader handed the page on (Q7, G6)", () => {
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["read_locally"] })).toBe(
+      "Read by the backup reader",
+    );
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["reader_refused", "no_text"] })).toBe(
+      "Read by the backup reader",
+    );
+    expect(BACKUP_ISSUES).toEqual(["read_locally", "reader_refused"]);
+  });
+
+  it("keeps the old words for a page read with no key, by PaddleOCR-VL, or before PRD 5", () => {
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: [] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["low_resolution"] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: "paddleocr_vl", read_issues: [] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: null, read_issues: [] })).toBe("Read by OCR");
   });
 
   it("gives nothing for a page with no route, as for one read before PRD 2", () => {
-    expect(routeText(null)).toBeNull();
+    expect(routeText({ route: null, read_by: null, read_issues: [] })).toBeNull();
   });
 });
 
@@ -161,6 +209,21 @@ describe("labels in words", () => {
     expect(labelBadgeClass("needs_review")).toBe("badge badge-review");
     expect(labelIcon("verified")).toBe("check-seal");
     expect(labelIcon("needs_review")).toBe("eye-alert");
+  });
+});
+
+describe("reasons for values read from a hard page (PRD 5 V4, G5, Q7)", () => {
+  it("says why a value needs review, in words people know, with no engine named", () => {
+    expect(reasonText("unsure_text")).toBe("Part of this value was hard to read. Check it against the page.");
+    expect(reasonText("box_unanchored")).toBe(
+      "The exact spot of this value on the page couldn't be confirmed. Check it against the page.",
+    );
+    expect(reasonText("local_reader")).toBe(
+      "Read by the backup reader while the main reader was down. It will be read again automatically.",
+    );
+    for (const reason of ["unsure_text", "box_unanchored", "local_reader"] as const) {
+      expect(reasonText(reason)).not.toMatch(/gemini|rapidocr|ocr/i);
+    }
   });
 });
 

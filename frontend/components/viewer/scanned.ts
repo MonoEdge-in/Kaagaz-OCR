@@ -54,14 +54,14 @@ export function valueAt(values: ExtractedValue[], region: Region): ExtractedValu
 
 export const plural = (n: number, word: string) => `${n.toLocaleString("en-IN")} ${word}${n === 1 ? "" : "s"}`;
 
-/** "Read by OCR at 200 DPI", the reader and version, and "2 of 3 lines: reader not sure" (or null). */
+/** "Read by Gemini at 300 DPI", the reader and version, and "2 of 3 lines: reader not sure" (or null). */
 export function readerHeading(
   reader: PageReader,
-  page: Pick<PageSummary, "route" | "effective_dpi">,
+  page: Pick<PageSummary, "route" | "read_by" | "read_issues" | "effective_dpi">,
 ): { title: string; detail: string; notSureCount: string | null } {
   let title = "Second reader (PDF text layer)";
   if (reader.role === "first") {
-    title = routeText(page.route) ?? "First reader";
+    title = routeText(page) ?? "First reader";
     if (page.route === "ocr" && page.effective_dpi !== null) {
       title += ` at ${Math.round(page.effective_dpi)} DPI`;
     }

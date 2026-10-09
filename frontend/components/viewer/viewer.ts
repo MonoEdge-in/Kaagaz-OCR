@@ -2,7 +2,7 @@
 // unit tested in node (tests/viewer-*.test.ts): zoom steps, which rows and
 // columns of a sheet to fetch and show, how a page is drawn, and how it was read.
 
-import type { DocumentSummary, PageRoute, PageSummary, SheetCells } from "@/lib/types";
+import type { DocumentSummary, PageRoute, PageSummary, ReadIssue, SheetCells } from "@/lib/types";
 
 export const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
 
@@ -62,16 +62,34 @@ export function pageMode(
 const ROUTE_WORDS: Record<PageRoute, string> = {
   cells: "Read from spreadsheet cells",
   text_layer: "Read from the PDF text",
-  ocr: "Read by OCR",
+  ocr: "Read by OCR", // a scanned page not read by Gemini (no key, or before PRD 5)
   blank: "Blank page",
 };
 
 /**
- * How a page was read, in words, shown beside its number (PRD 2, R1). null
- * when the page has no route, as for a page read before PRD 2: nothing is shown.
+ * The issues of a page the main reader handed to the backup reader (PRD 5 Q7, G6):
+ * read while it was down, or after it declined the page or sent a bad reply.
  */
-export function routeText(route: PageRoute | null): string | null {
-  return route === null ? null : ROUTE_WORDS[route];
+export const BACKUP_ISSUES: readonly ReadIssue[] = ["read_locally", "reader_refused"];
+
+/** The start of a Gemini model's ID (OpenRouter's), as a page's `read_by` holds it. */
+export const GEMINI_READ_BY = "google/gemini-";
+
+/**
+ * How a page was read, in words, shown beside its number (PRD 2, R1). A scanned
+ * page says who read it (PRD 5 RT2): "Read by the backup reader" when the main
+ * reader handed it on (`read_issues` has one of BACKUP_ISSUES), "Read by Gemini"
+ * when `read_by` is a Gemini model's ID, and otherwise "Read by OCR", as before
+ * PRD 5 (a page read with no key, or before PRD 5). null when the page has no
+ * route, as for a page read before PRD 2: nothing is shown.
+ */
+export function routeText(page: Pick<PageSummary, "route" | "read_by" | "read_issues">): string | null {
+  if (page.route === null) return null;
+  if (page.route === "ocr") {
+    if (page.read_issues.some((issue) => BACKUP_ISSUES.includes(issue))) return "Read by the backup reader";
+    if (page.read_by?.startsWith(GEMINI_READ_BY)) return "Read by Gemini";
+  }
+  return ROUTE_WORDS[page.route];
 }
 
 // The backend gives at most 500 rows per call; 200 keeps the table quick.

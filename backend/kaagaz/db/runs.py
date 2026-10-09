@@ -1,9 +1,13 @@
 """Processing runs: one row per delivery of a document's job (PRD 2 R6, X2).
 
 A run records what one delivery did: its routes per page, its models, its
-counts and its outcome. ``start_run`` marks the document's other runs that are
-still ``running`` (a delivery that died, or one still going that this delivery
-replaces) as ``superseded``. ``finish_run`` writes the outcome of a run still
+counts and its outcome. PRD 5 adds who read its pages (the reading model, the
+backup reader, the page cache, a read again on request, and how many were
+unreadable) and the tokens its reading-model calls were billed (READER_COUNTERS).
+
+``start_run`` marks the document's other runs that are still ``running`` (a
+delivery that died, or one still going that this delivery replaces) as
+``superseded``. ``finish_run`` writes the outcome of a run still
 ``running``. A superseded run gets only the counts of its own delivery's finish,
 once (its ``seconds_total`` is still empty until then), and keeps its status,
 code and finish time, so the pages it read still count; a run finished already
@@ -85,10 +89,25 @@ _FINISH = (
     " dropped_quotes = :dropped_quotes, quotes_returned = :quotes_returned,"
     " values_verified = :values_verified, values_needs_review = :values_needs_review,"
     " seconds_total = :seconds_total, seconds_ocr = :seconds_ocr, config = CAST(:config AS jsonb),"
+    " pages_gemini = :pages_gemini, pages_local = :pages_local, pages_cached = :pages_cached,"
+    " pages_read_again = :pages_read_again, pages_unreadable = :pages_unreadable,"
+    " input_tokens = :input_tokens, output_tokens = :output_tokens,"
     " finished_at = CASE WHEN status = 'running'"
     " THEN GREATEST(CAST(:now AS timestamptz), started_at) ELSE finished_at END"
     " WHERE customer_id = :c AND id = :id"
     " AND (status = 'running' OR (status = 'superseded' AND seconds_total IS NULL))"
+)
+
+# PRD 5 (0021): who read the pages and the tokens billed (G7, G9, F2, F5, Q7), by their
+# RunTotals field names (kaagaz.pipeline). A totals record without one writes 0.
+READER_COUNTERS = (
+    "pages_gemini",
+    "pages_local",
+    "pages_cached",
+    "pages_read_again",
+    "pages_unreadable",
+    "input_tokens",
+    "output_tokens",
 )
 
 # The column limits of the run's text values (0004). finish_run cuts each to its
@@ -144,9 +163,12 @@ def start_run(conn: Connection, customer_id: str, document_id: str, *, now: date
 def finish_run(conn: Connection, customer_id: str, run: "FinishedRun") -> None:
     """Write the run's outcome and totals, and its finish time, while it is still
     running; a superseded run gets its totals only, once (the module docstring). Text
-    values are cut to their column limits. A finished run, a run of another customer,
+    values are cut to their column limits; a READER_COUNTERS count the totals do not
+    carry is written as 0. A finished run, a run of another customer,
     or no run, changes nothing. One statement by primary key: O(log R)."""
     totals: dict[str, Any] = {item.name: getattr(run.totals, item.name) for item in fields(run.totals)}
+    for name in READER_COUNTERS:
+        totals.setdefault(name, 0)
     for name, limit in _TEXT_LIMITS.items():
         if totals[name] is not None:
             totals[name] = totals[name][:limit]

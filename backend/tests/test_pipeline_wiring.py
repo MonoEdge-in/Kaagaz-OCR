@@ -1,14 +1,32 @@
-"""build_processor wires the real parts together (no database is contacted)."""
+"""build_processor wires the real parts together (no database is contacted), and the
+reading wiring (kaagaz/reading/wiring.py): the page pool and the Gemini reader's factory."""
 
+import io
+import sys
+import threading
 import unittest
+from types import ModuleType
+from unittest import mock
+
+from PIL import Image, ImageDraw
 
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.extraction.card import CARD_PROMPT_HASH
 from kaagaz.extraction.invoice import INVOICE_PROMPT_HASH
 from kaagaz.extraction.understanding import model_config
+from kaagaz.ingestion import sniff
 from kaagaz.pipeline import DocumentProcessor, build_processor
-from kaagaz.reading.wiring import reader_config
+from kaagaz.reading.ocr import MeteredOcrEngine, OcrLine, PageRead
+from kaagaz.reading.rapid_pool import RapidOcrPool
+from kaagaz.reading.wiring import (
+    GEMINI_OCR_MODULE,
+    build_gemini_engine,
+    build_reader_socket,
+    page_pool,
+    reader_config,
+)
 from kaagaz.scanning.gate import Verdict
+from kaagaz.settings import Settings
 from tests.fakes import FakeScanner, MemoryStorage
 from tests.settings_factory import make_settings
 
@@ -78,6 +96,93 @@ class RunConfigTest(unittest.TestCase):
                 "window_max_tokens": settings.model_window_max_tokens,
             },
         )
+
+
+class ThreadNoting:
+    """A page engine that notes the thread each page is read on."""
+
+    name = "gemini"
+    version = "google/gemini-3.1-pro-preview;prompt=1"
+
+    def __init__(self) -> None:
+        self.threads: list[str] = []
+
+    def read(self, image: Image.Image) -> list[OcrLine]:
+        return list(self.read_page(image, page_no=1).lines)
+
+    def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
+        self.threads.append(threading.current_thread().name)
+        line = OcrLine("TOTAL 500", 10, 10, 120, 30, None, "paragraph", box_source="found")
+        return PageRead(
+            page_no=page_no,
+            lines=(line,),
+            quality="good",
+            handwritten=False,
+            scripts=("latin",),
+            issues=(),
+            read_by="google/gemini-3.1-pro-preview",
+        )
+
+
+def photo() -> bytes:
+    picture = Image.new("RGB", (200, 100), "white")
+    ImageDraw.Draw(picture).rectangle((10, 10, 120, 30), fill="black")
+    buffer = io.BytesIO()
+    picture.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+GEMINI = make_settings(ocr_engine="gemini", ocr_page_concurrency=6)
+
+
+class PagePoolWiringTest(unittest.TestCase):
+    """PRD 5 G8: OCR_PAGE_CONCURRENCY threads for the Gemini reader only."""
+
+    def test_the_gemini_reader_gets_ocr_page_concurrency_threads(self) -> None:
+        pool = page_pool(GEMINI, ThreadNoting())
+        assert pool is not None
+        self.assertEqual(pool.size, 6)
+
+    def test_any_other_case_reads_one_page_at_a_time_as_before(self) -> None:
+        cases = {
+            "rapidocr": (make_settings(ocr_engine="rapidocr", ocr_page_concurrency=6), ThreadNoting()),
+            "no engine": (GEMINI, None),
+            "concurrency 1": (make_settings(ocr_engine="gemini", ocr_page_concurrency=1), ThreadNoting()),
+        }
+        for name, (settings, engine) in cases.items():
+            with self.subTest(name):
+                self.assertIsNone(page_pool(settings, engine))
+
+    def test_the_socket_reads_gemini_pages_on_the_pool_and_others_on_this_thread(self) -> None:
+        for settings, on_pool in ((GEMINI, True), (make_settings(ocr_engine="rapidocr"), False)):
+            with self.subTest(settings.ocr_engine):
+                engine = ThreadNoting()
+                meter = MeteredOcrEngine(engine, timer=lambda: 0.0)
+                spans = build_reader_socket(settings, meter).read(sniff.PNG, photo())
+                self.assertEqual([span.text for span in spans], ["TOTAL 500"])
+                (thread,) = engine.threads
+                self.assertEqual(thread != threading.current_thread().name, on_pool)
+                self.assertEqual(sorted(meter.take_page_reads()), [1])
+
+
+class GeminiEngineWiringTest(unittest.TestCase):
+    def test_the_gemini_reader_is_imported_by_its_path_and_built_from_the_settings(self) -> None:
+        built: list[tuple[Settings, RapidOcrPool]] = []
+        engine = ThreadNoting()
+
+        class GeminiEngine:
+            @classmethod
+            def from_settings(cls, settings: Settings, *, pool: RapidOcrPool) -> ThreadNoting:
+                built.append((settings, pool))
+                return engine
+
+        module = ModuleType(GEMINI_OCR_MODULE)
+        module.__dict__["GeminiEngine"] = GeminiEngine
+        pool = RapidOcrPool(2)
+        self.assertEqual(GEMINI_OCR_MODULE, "kaagaz.reading.gemini_ocr")
+        with mock.patch.dict(sys.modules, {GEMINI_OCR_MODULE: module}):
+            self.assertIs(build_gemini_engine(GEMINI, pool=pool), engine)
+        self.assertEqual(built, [(GEMINI, pool)])
 
 
 if __name__ == "__main__":

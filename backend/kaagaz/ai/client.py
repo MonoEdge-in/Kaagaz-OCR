@@ -63,38 +63,19 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from http.client import HTTPException
 from typing import Any, Protocol
 
-from kaagaz.settings import CHAT_OVERHEAD_TOKENS, Settings
-
-# Texts per embedding request: one CPU-sized model call, and no round trip per piece.
-EMBED_BATCH_SIZE = 32
-
-# A reply larger than this is refused. 32 vectors of 1024 floats as JSON are
-# under 1 MB; a chat reply is a few kilobytes.
-MAX_RESPONSE_BYTES = 16 * 1024 * 1024
-
-_REPAIR = (
-    "Your reply was not valid: {problem}. Reply again with only the JSON object that follows the schema."
-)
-
-
-class ModelUnavailable(Exception):
-    """No usable reply from the model server. ``code`` is short and safe to log."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
-
-
-class ModelOutputError(Exception):
-    """The model replied with unusable content. ``code`` is short and safe to log."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
+from kaagaz.ai.openrouter import OpenRouterClient, process_gate
+from kaagaz.ai.replies import EMBED_BATCH_SIZE as EMBED_BATCH_SIZE
+from kaagaz.ai.replies import MAX_RESPONSE_BYTES as MAX_RESPONSE_BYTES
+from kaagaz.ai.replies import REPAIR as _REPAIR
+from kaagaz.ai.replies import ModelOutputError as ModelOutputError
+from kaagaz.ai.replies import ModelUnavailable as ModelUnavailable
+from kaagaz.ai.replies import parse_reply as _parse_reply
+from kaagaz.ai.replies import schema_problem as schema_problem
+from kaagaz.settings import CHAT_OVERHEAD_TOKENS, Settings, is_gemini_model
 
 
 class ModelClient(Protocol):
@@ -114,53 +95,6 @@ class ModelClient(Protocol):
     def read_image(self, *, png: bytes, instruction: str) -> str:
         """The text the vision model reads in ``png``; empty if it sees none."""
         ...
-
-
-_JSON_TYPES: dict[str, Callable[[object], bool]] = {
-    "object": lambda value: isinstance(value, dict),
-    "array": lambda value: isinstance(value, list),
-    "string": lambda value: isinstance(value, str),
-    "integer": lambda value: isinstance(value, int) and not isinstance(value, bool),
-    "number": lambda value: isinstance(value, int | float) and not isinstance(value, bool),
-    "boolean": lambda value: isinstance(value, bool),
-    "null": lambda value: value is None,
-}
-
-
-def schema_problem(value: object, schema: Mapping[str, Any], path: str = "$") -> str | None:
-    """What is wrong with ``value`` under ``schema``, or None if nothing is.
-
-    Checks the JSON Schema keywords our callers use: ``type`` (a name or a list
-    of names), ``enum``, ``required``, ``properties`` and ``items``; other
-    keywords are ignored. The problem names a path from the schema, never the
-    value, so it holds no document text. O(size of value).
-    """
-    expected = schema.get("type")
-    if expected is not None:
-        names = [expected] if isinstance(expected, str) else list(expected)
-        unknown = [name for name in names if name not in _JSON_TYPES]
-        if unknown:
-            raise ValueError("unsupported schema type")
-        if not any(_JSON_TYPES[name](value) for name in names):
-            return f"{path} must be {' or '.join(names)}"
-    if "enum" in schema and value not in schema["enum"]:
-        return f"{path} must be one of the allowed values"
-    if isinstance(value, dict):
-        for key in schema.get("required", []):
-            if key not in value:
-                return f"{path}.{key} is missing"
-        for key, sub_schema in schema.get("properties", {}).items():
-            if key in value:
-                problem = schema_problem(value[key], sub_schema, f"{path}.{key}")
-                if problem is not None:
-                    return problem
-    items = schema.get("items")
-    if isinstance(value, list) and isinstance(items, Mapping):
-        for index, item in enumerate(value):
-            problem = schema_problem(item, items, f"{path}[{index}]")
-            if problem is not None:
-                return problem
-    return None
 
 
 def estimate_tokens(text: str) -> int:
@@ -196,24 +130,6 @@ def _count(reply: Mapping[str, Any], key: str) -> int | None:
     """A token count from the reply, or None when it is missing or not a whole number."""
     value = reply.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-
-
-def _parse_reply(content: str, schema: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
-    """The reply as an object that follows the schema, else (None, the problem)."""
-    try:
-        value = json.loads(content)
-    except ValueError:
-        return None, "the reply is not JSON"
-    if not isinstance(value, dict):
-        return None, "the reply must be one JSON object"
-    try:
-        json.dumps(value, ensure_ascii=False).encode("utf-8")
-    except UnicodeEncodeError:  # JSON can escape half a character (a lone surrogate, "\ud800")
-        return None, "the reply holds characters that are not valid text"
-    problem = schema_problem(value, schema)
-    if problem is not None:
-        return None, problem
-    return value, ""
 
 
 class OllamaClient:
@@ -359,11 +275,48 @@ class OllamaClient:
         return reply
 
 
+class _ChatAndEmbed:
+    """Two clients as one ``ModelClient`` (PRD 5 question 4): chat and pictures go to
+    one, embeddings to the other, so search vectors stay on their own model until M5."""
+
+    def __init__(self, chat: ModelClient, embed: ModelClient) -> None:
+        self._chat, self._embed = chat, embed
+        self.chat_model, self.embed_model = chat.chat_model, embed.embed_model
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._embed.embed(texts)
+
+    def chat_json(
+        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+    ) -> dict[str, Any]:
+        return self._chat.chat_json(system=system, user=user, schema=schema, max_tokens=max_tokens)
+
+    def read_image(self, *, png: bytes, instruction: str) -> str:
+        return self._chat.read_image(png=png, instruction=instruction)
+
+
 def build_model_client(
     settings: Settings, *, chat_timeout_seconds: float | None = None
 ) -> ModelClient | None:
     """The configured model client, or None when the product runs without AI.
-    ``chat_timeout_seconds``: see ``OllamaClient``."""
+    ``chat_timeout_seconds``: see ``OllamaClient``.
+
+    PRD 5 G9 and question 4: with MODEL_ENABLED and a google/gemini- MODEL_CHAT, chat_json and
+    read_image go to ``OpenRouterClient`` (MODEL_CHAT and OCR_MODEL); embed stays on Ollama
+    unless MODEL_EMBED is a google/gemini- model too, which M5 switches in pull request 3 after
+    its Hindi and Marathi search test. Ollama models alone give ``OllamaClient`` as before.
+    Every OpenRouter client shares the process's gate (``openrouter.process_gate``): one limiter
+    and one circuit breaker for the process.
+    """
     if not settings.model_enabled:
         return None
-    return OllamaClient(settings, chat_timeout_seconds=chat_timeout_seconds)
+    gemini_chat, gemini_embed = is_gemini_model(settings.model_chat), is_gemini_model(settings.model_embed)
+    if not (gemini_chat or gemini_embed):
+        return OllamaClient(settings, chat_timeout_seconds=chat_timeout_seconds)
+    gemini = OpenRouterClient(
+        settings, chat_timeout_seconds=chat_timeout_seconds, gate=process_gate(settings)
+    )
+    if gemini_chat and gemini_embed:
+        return gemini
+    ollama = OllamaClient(settings, chat_timeout_seconds=chat_timeout_seconds)
+    return _ChatAndEmbed(gemini, ollama) if gemini_chat else _ChatAndEmbed(ollama, gemini)

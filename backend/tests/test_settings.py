@@ -35,7 +35,7 @@ def test_the_shipped_env_example_parses_with_the_scan_reader_defaults() -> None:
     assert (settings.ocr_engine, settings.ocr_url, settings.ocr_timeout_seconds, settings.ocr_dpi) == (
         "rapidocr",
         "http://localhost:8080",
-        300.0,  # 5 minutes a page (decided 30 Sep 2026)
+        120.0,  # one Gemini page (PRD 5 Q8; was 300)
         300,
     )
     assert (settings.queue_lease_seconds, settings.page_image_dpi) == (1200, 150)
@@ -66,9 +66,10 @@ def test_a_bad_scan_reader_setting_stops_start_up_by_name(name: str, value: str)
         Settings.from_env(shipped(**{name: value}))
 
 
-@pytest.mark.parametrize("engine", ["paddleocr_vl", "rapidocr", "none"])
+@pytest.mark.parametrize("engine", ["gemini", "paddleocr_vl", "rapidocr", "none"])
 def test_each_engine_name_is_accepted(engine: str) -> None:
-    assert Settings.from_env(shipped(OCR_ENGINE=engine)).ocr_engine == engine
+    key = "sk-or-v1-" + "k" * 64  # gemini needs a key (tests/test_gemini_settings.py)
+    assert Settings.from_env(shipped(OCR_ENGINE=engine, OPENROUTER_API_KEY=key)).ocr_engine == engine
 
 
 def test_one_ocr_request_must_end_well_inside_the_lease() -> None:
@@ -190,10 +191,11 @@ SECRET_FIELDS = [
     "storage_secret_key",
     "session_secret",
     "totp_encryption_key",
+    "openrouter_api_key",  # PRD 5: never in the repo, logs or errors
 ]
 
 
-def test_repr_shows_none_of_the_five_secrets() -> None:
+def test_repr_shows_none_of_the_secrets() -> None:
     canaries = {name: f"canary-{name}-{'z' * 32}" for name in SECRET_FIELDS}
     text = repr(make_settings(**canaries))
     assert [name for name, value in canaries.items() if value in text] == []

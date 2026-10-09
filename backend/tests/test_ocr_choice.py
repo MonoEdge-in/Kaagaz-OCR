@@ -1,3 +1,7 @@
+"""The scan reader an upload chose (PRD 4 #17, kaagaz/reading/ocr.py): ``ocr_choices``,
+one reader since PRD 5 RT3, and ``OcrEngines``, which reads a job whose stored choice
+names an engine this server has with that engine and falls back to Auto. Engines are
+fakes; the timer is a fake clock.
 """The scan reader an upload chose (PRD 4 #17, kaagaz/reading/ocr.py): ``ocr_choices``
 from the settings and what is installed, and ``OcrEngines``, which reads one job
 with the chosen engine and falls back to Auto. Engines are fakes; the timer is a
@@ -33,6 +37,7 @@ PAGE_TEXT = "Sunil Patil 27AABCS1234K1Z5"  # never in a log
 PADDLE = make_settings(ocr_engine="paddleocr_vl", ocr_url="http://ocr:8080")
 RAPID = make_settings(ocr_engine="rapidocr")
 NONE = make_settings(ocr_engine="none")
+GEMINI = make_settings(ocr_engine="gemini")
 
 
 @pytest.fixture
@@ -49,6 +54,46 @@ def offered(settings: Settings) -> list[tuple[object, ...]]:
     return [(item["id"], item["available"], item["reason"]) for item in ocr_choices(settings)]
 
 
+# --- ocr_choices: one reader (PRD 5 RT3) ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "settings", [NONE, RAPID, PADDLE, GEMINI], ids=["none", "rapidocr", "paddle", "gemini"]
+)
+def test_rt3_an_upload_is_offered_one_reader_so_the_select_hides_itself(
+    settings: Settings, rapidocr_installed: None
+) -> None:
+    """RT3: no reader choice at upload. The browser shows "Scan with" only for two or
+    more usable readers (frontend/components/documents/readers.ts offersChoice)."""
+    assert offered(settings) == [("auto", True, None)]
+    assert sum(bool(item["available"]) for item in ocr_choices(settings)) < 2
+
+
+def test_rt3_the_one_reader_says_what_this_server_reads_with(rapidocr_installed: None) -> None:
+    hints = {
+        name: ocr_choices(settings)[0]["hint"] for name, settings in (("none", NONE), ("gemini", GEMINI))
+    }
+    assert hints == {
+        "none": "Scans wait until this server has a scan reader",
+        "gemini": "The usual reader here: Gemini",
+    }
+    assert ocr_choices(RAPID)[0]["hint"] == "The usual reader here: RapidOCR"
+    assert ocr_choices(PADDLE)[0]["hint"] == (
+        "The usual reader here: PaddleOCR-VL, then RapidOCR for a page it can't read"
+    )
+    assert ocr_choices(RAPID)[0]["title"] == "Auto"
+
+
+def test_rt3_listing_the_reader_builds_and_calls_nothing(
+    rapidocr_installed: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pure: the api lists it on every upload page, with no engine and no Gemini call."""
+
+    def never(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ocr_choices must not build an engine")
+
+    monkeypatch.setattr(ocr, "_new_engine", never)
+    assert offered(GEMINI) == [("auto", True, None)]
 # --- ocr_choices ---------------------------------------------------------------------
 
 

@@ -47,6 +47,11 @@ The steps (docs/architecture.md):
    search alone would not pass the gate, or a cited hit was found, or lifted over the
    score, by the translation only. The translation is never in the model's prompt, the
    answer or the logs. A question typed in another script is searched as asked.
+9. Pages that couldn't be read (PRD 5 F6, ``hard_to_read.py``): a not-found answer, when a
+   document in scope has an unreadable or uncertain page, says so and names the pages
+   (``reading_note``, ``unreadable_pages``); a cited text that holds a word the reader
+   was unsure of, or couldn't read, makes its citation ``hard_to_read`` and the answer
+   needs review, with "Part of this text was hard to read." One more statement for each.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
@@ -112,6 +117,14 @@ from kaagaz.answering.evidence import (
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion, PgWords, WordSource, expand
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
 from kaagaz.answering.format import indian_number
+from kaagaz.answering.hard_to_read import (
+    HARD_TO_READ_NOTE,
+    FlaggedPage,
+    PgReadingQuality,
+    ReadingQuality,
+    hard_to_read,
+    not_found_note,
+)
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.rewrite import Turn, rewrite
@@ -153,6 +166,7 @@ class Citation:
     page_to: int
     label_page_no: int | None  # H4: where a value's label is, when it was located
     label_regions: list[dict[str, Any]]
+    hard_to_read: bool = False  # PRD 5 F6: the cited text holds an unsure or illegible word
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -170,6 +184,7 @@ class Citation:
             "page_to": self.page_to,
             "label_page_no": self.label_page_no,
             "label_regions": [dict(region) for region in self.label_regions],
+            "hard_to_read": self.hard_to_read,
         }
 
 
@@ -191,6 +206,10 @@ class Answer:
     model_used: bool
     rewritten_question: str | None = None  # H1: what was searched for, when a follow-up was rewritten
     understood_words: tuple[tuple[str, str], ...] = ()  # My words used: (word, meaning)
+    # PRD 5 F6: the note on pages that couldn't be read, the pages it names, and how many in all.
+    reading_note: str | None = None
+    unreadable_pages: tuple[FlaggedPage, ...] = ()
+    unreadable_page_count: int = 0
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly."""
@@ -207,12 +226,19 @@ class Answer:
             "model_used": self.model_used,
             "rewritten_question": self.rewritten_question,
             "understood_words": [{"word": w, "meaning": m} for w, m in self.understood_words],
+            "reading_note": self.reading_note,
+            "unreadable_pages": [page.to_json() for page in self.unreadable_pages],
+            "unreadable_page_count": self.unreadable_page_count,
         }
 
 
 class AnswerService:
     """``retriever``, ``translated_search``, ``fixed_queries``, ``unchecked`` and ``words``
     default to the PostgreSQL ones; tests pass fakes. ``translator``: the client the question
+    is translated with (its own timeout), used only with ANSWER_TRANSLATE_QUESTION on.
+    ``reading``: the pages that couldn't be read and the word marks (F6); the PostgreSQL
+    one with the PostgreSQL retriever, else only the one a test passes, as
+    ``translated_search``."""
     is translated with (its own timeout), used only with ANSWER_TRANSLATE_QUESTION on."""
 
     def __init__(
@@ -228,6 +254,7 @@ class AnswerService:
         words: WordSource | None = None,
         translator: ModelClient | None = None,
         translated_search: TranslatedSearch | None = None,
+        reading: ReadingQuality | None = None,
     ) -> None:
         self._model = model
         self._translator = translator if settings.answer_translate_question else None
@@ -249,6 +276,7 @@ class AnswerService:
         self._fixed = fixed_queries if fixed_queries is not None else PgFixedQueries(db)
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
         self._words = words if words is not None else PgWords(db)
+        self._reading: ReadingQuality | None = PgReadingQuality(db) if retriever is None else reading
 
     def answer(
         self,
@@ -269,7 +297,35 @@ class AnswerService:
         if self._model is not None and history and turns:
             rewritten = rewrite(self._model, question, history[-turns:])
         answer = self._answer(customer_id, rewritten or question, scope, user_id)
-        return replace(answer, rewritten_question=rewritten)
+        return replace(self._unreadable(customer_id, answer, scope), rewritten_question=rewritten)
+
+    def _unreadable(self, customer_id: str, answer: Answer, scope: Scope) -> Answer:
+        """F6: a not-found answer names the pages in ``scope`` that couldn't be read well
+        (unreadable or uncertain, kept as is or not), with the note; any other answer, or
+        no such page, is as it was. One statement for a not-found answer."""
+        if answer.status != "not_found" or self._reading is None:
+            return answer
+        pages, total = self._reading.flagged_pages(customer_id, scope=scope)
+        note = not_found_note(pages, total)
+        if note is None:
+            return answer
+        return replace(answer, reading_note=note, unreadable_pages=tuple(pages), unreadable_page_count=total)
+
+    def _marked(
+        self, customer_id: str, citations: list[Citation], regions: dict[int, list[dict[str, Any]]]
+    ) -> list[Citation]:
+        """F6: each citation ``hard_to_read`` when a word mark sits inside the cited text,
+        at ``regions`` (by citation number: a piece's every line, a value's box). One
+        statement for the cited documents' word marks."""
+        if self._reading is None or not citations:
+            return citations
+        marks = self._reading.word_marks(customer_id, [citation.document_id for citation in citations])
+        if not marks:
+            return citations
+        return [
+            replace(citation, hard_to_read=hard_to_read(citation.document_id, regions[citation.n], marks))
+            for citation in citations
+        ]
 
     def _answer(self, customer_id: str, question: str, scope: Scope, user_id: str | None) -> Answer:
         normalised = normalise(question)
@@ -348,16 +404,19 @@ class AnswerService:
             )
             for index, (value, regions) in enumerate(cited, start=1)
         ]
+        citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
+        hard = any(c.hard_to_read for c in citations)
         verified = all(row.verified for row in top) and all(c.label == "verified" for c in citations)
         return Answer(
             status="answered",
-            label="verified" if verified else "needs_review",
+            label="verified" if verified and not hard else "needs_review",
             sentences=[AnswerSentence(text=sentence, citations=[c.n for c in citations])],
             citations=citations,
             closest_documents=[],
             route="fixed_query",
             normalized_question=shown,
             model_used=False,
+            reading_note=HARD_TO_READ_NOTE if hard else None,
         )
 
     def _run_plan(self, fixed: FixedQueries, customer_id: str, plan: FixedPlan) -> list[FixedRow]:
@@ -454,6 +513,10 @@ class AnswerService:
             _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence])
             for old, new in renumber.items()
         ]
+        # F6: the cited text is the whole piece, every line of it.
+        lines = {new: by_n[old].regions for old, new in renumber.items()}
+        citations = self._marked(customer_id, citations, lines)
+        hard = any(c.hard_to_read for c in citations)
         # A sentence backed by neighbours only, or with a number only a neighbour holds, is never
         # verified: the gate never judged them (PROVISIONAL, plan decision 8).
         on_neighbours = any(_rests_on_neighbours(s, by_n, texts) for s in kept)
@@ -480,7 +543,7 @@ class AnswerService:
                 )
             )
         )
-        verified = all(c.label == "verified" for c in citations) and not (on_neighbours or unchecked)
+        verified = all(c.label == "verified" for c in citations) and not (on_neighbours or unchecked or hard)
         return Answer(
             status="answered",
             label="verified" if verified else "needs_review",
@@ -490,6 +553,33 @@ class AnswerService:
             route="search",
             normalized_question=shown,
             model_used=model_used,
+            reading_note=HARD_TO_READ_NOTE if hard else None,
+        )
+
+    def _translated_search(
+        self,
+        customer_id: str,
+        question: str,
+        query_text: str,
+        vector: list[float] | None,
+        hits: Sequence[Any],
+        scope: Scope,
+        expansion: Expansion,
+    ) -> Translated | None:
+        """The search again with the question's translations into the script of its first
+        ``hits`` (translate.py), decided before any draft; None to answer as today: the
+        setting off, no other script, or no usable translation. The texts are search
+        parameters and embeddings only. At most one model call and one search."""
+        if self._translator is None or self._translated is None:
+            return None
+        scripts = target_scripts(question, [hit.text for hit in hits])
+        queries = translate(self._translator, question, scripts) if scripts else None
+        if not queries:
+            return None
+        texts = [(query.text, self._embed(query.text)) for query in queries]
+        limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+        return self._translated.search_translated(
+            customer_id, query_text, vector, texts, limit, scope, expansion
         )
 
     def _translated_search(

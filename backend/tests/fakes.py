@@ -244,14 +244,17 @@ class MemoryDocuments(MemoryRepository):
         self.failure_codes: dict[tuple[str, str], str] = {}
         self.attempts: dict[tuple[str, str], tuple[int, int]] = {}
         self.page_counts: dict[tuple[str, str], int] = {}
+        self.read_again: dict[tuple[str, str], set[int]] = {}  # PRD 5 F5: the marked pages
 
     def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
+        """Failed, with the read-again marks cleared at once, as PgDocuments.set_failed."""
         if run_id is not None and not self._open(customer_id, document_id, run_id):
             raise Superseded(run_id)
         if self.get(customer_id, document_id) is None:
             return
         self._statuses.set_status(customer_id, document_id, DocumentStatus.FAILED)
         self.failure_codes[(customer_id, document_id)] = code
+        self.read_again.pop((customer_id, document_id), None)
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         if self.get(customer_id, document_id) is not None:

@@ -6,6 +6,8 @@ row level security, the ``customer_only`` policy with USING and WITH CHECK, and
 grants to the app role, which must not own it (an owner skips the policy).
 
 Super admin PR 2 (0015, NEEDS VRUSHIT'S APPROVAL): the operator's tables, role and functions.
+
+PRD 5 (0021): the page cache, sections and topics, with the least grants each needs.
 """
 
 import pytest
@@ -46,6 +48,16 @@ FROM_0004 = {
 FROM_0008 = {"user_words": (True, True, True, True), "user_word_spots": (True, True, False, True)}
 # Story of this PDF (0009): a story is created, replaced (its vector too) and deleted.
 FROM_0009 = {"document_stories": (True, True, True, True)}
+# Gemini reader (0021): a cached page read is inserted or has its result replaced (an upsert,
+# UPDATE on PAGE_READ_UPDATES only); sections and topics are deleted and inserted by the
+# replacing save, and only a section's vector is written after it (SECTION_UPDATES).
+FROM_0021 = {
+    "page_reads": (True, True, False, True),
+    "document_sections": (True, True, False, True),
+    "document_topics": (True, True, False, True),
+}
+PAGE_READ_UPDATES = {"result", "input_tokens", "output_tokens", "created_at"}
+SECTION_UPDATES = {"embedding", "embed_recipe"}
 # The second policy of the tables that belong to one user (0008, 0009): it must pass too.
 OWN_USER = "(user_id = (NULLIF(current_setting('kaagaz.user_id'::text, true), ''::text))::uuid)"
 RUN_OUTCOME = {
@@ -53,6 +65,9 @@ RUN_OUTCOME = {
     "pages_cells", "pages_text_layer", "pages_ocr", "pages_blank", "vision_crops", "model_calls",
     "dropped_quotes", "quotes_returned", "values_verified", "values_needs_review", "seconds_total",
     "seconds_ocr", "finished_at",
+    # 0021: who read the pages and the tokens billed (PRD 5).
+    "pages_gemini", "pages_local", "pages_cached", "pages_read_again", "pages_unreadable", "input_tokens",
+    "output_tokens",
 }  # fmt: skip
 # The owner-rights (SECURITY DEFINER) functions, the only ways past the policies,
 # each narrow: {name: (what it returns, its search path)}. Those that list across
@@ -157,7 +172,9 @@ def _customer_tables(db: Database) -> dict[str, tuple[bool, str]]:
 
 def test_every_customer_table_has_row_level_security_and_the_customer_only_policy(db: Database) -> None:
     tables = _customer_tables(db)
-    assert set(tables) >= FROM_0001 | FROM_0002 | set(FROM_0004) | set(FROM_0008) | set(FROM_0009)
+    assert set(tables) >= (
+        FROM_0001 | FROM_0002 | set(FROM_0004) | set(FROM_0008) | set(FROM_0009) | set(FROM_0021)
+    )
 
     with db.system() as conn:
         policies = {
@@ -203,7 +220,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
-    for table, expected in (FROM_0004 | FROM_0008 | FROM_0009).items():
+    for table, expected in (FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021).items():
         assert granted[table] == expected, table
 
 
@@ -223,18 +240,46 @@ def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(d
     assert policies == {table: ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER) for table in own}
 
 
-def test_the_app_may_update_only_the_outcome_columns_of_a_run(db: Database) -> None:
-    """Never its customer, document, start time or id."""
+def _updatable(db: Database, table: str) -> set[str]:
+    """The columns of ``table`` the app role may update."""
     with db.system() as conn:
         columns = conn.execute(
             text(
                 "SELECT attname::text, has_column_privilege(:r, attrelid, attname, 'UPDATE')"
-                " FROM pg_attribute WHERE attrelid = 'processing_runs'::regclass"
+                " FROM pg_attribute WHERE attrelid = CAST(:t AS regclass)"
+                " AND attnum > 0 AND NOT attisdropped"
+            ),
+            {"r": APP_ROLE, "t": table},
+        ).all()
+    return {name for name, may_update in columns if may_update}
+
+
+def test_the_app_may_update_only_the_outcome_columns_of_a_run(db: Database) -> None:
+    """Never its customer, document, start time or id."""
+    assert _updatable(db, "processing_runs") == RUN_OUTCOME
+
+
+def test_the_app_may_update_only_a_cached_reads_result_and_a_sections_vector(db: Database) -> None:
+    """0021: never a page read's key (customer, document, page, image, model, prompt
+    version), so an upsert can't move a read to another page or document; never a
+    section's or a topic's content outside the replacing save."""
+    assert _updatable(db, "page_reads") == PAGE_READ_UPDATES
+    assert _updatable(db, "document_sections") == SECTION_UPDATES
+    assert _updatable(db, "document_topics") == set()
+
+
+def test_the_app_may_update_only_the_upload_limit_of_its_customer(db: Database) -> None:
+    """Never its status, so a disabled organisation cannot switch itself back on (0014)."""
+    with db.system() as conn:
+        columns = conn.execute(
+            text(
+                "SELECT attname::text, has_column_privilege(:r, attrelid, attname, 'UPDATE')"
+                " FROM pg_attribute WHERE attrelid = 'customers'::regclass"
                 " AND attnum > 0 AND NOT attisdropped"
             ),
             {"r": APP_ROLE},
         ).all()
-    assert {name for name, may_update in columns if may_update} == RUN_OUTCOME
+    assert {name for name, may_update in columns if may_update} == {"max_upload_mb"}
 
 
 def test_the_app_may_update_only_the_upload_limit_of_its_customer(db: Database) -> None:
@@ -269,7 +314,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         keys = [tuple(row) for row in conn.execute(_FOREIGN_KEYS)]
     between = [key for key in keys if key[1] in tables and key[2] in tables]
 
-    assert {key[1] for key in between} >= set(FROM_0004)
+    assert {key[1] for key in between} >= set(FROM_0004) | set(FROM_0021) | {"pages"}
     for name, _table, _parent, columns, parent_columns in between:
         assert ("customer_id", "customer_id") in zip(columns, parent_columns, strict=True), name
 
