@@ -245,3 +245,73 @@ def test_chat_history_turns_ships_at_3_and_must_be_0_to_10() -> None:
     for bad in ("11", "-1", "three", None):
         with pytest.raises(SettingsError, match="CHAT_HISTORY_TURNS"):
             Settings.from_env(shipped(CHAT_HISTORY_TURNS=bad))
+
+
+# PRD 5 sections CX and M (council 9 Oct 2026): optional, the PRD's value when unset.
+CONTEXT_DEFAULTS = {
+    "MODEL_CONTEXT_TOKENS": 200_000,
+    "ANSWER_WHOLE_DOC_TOKENS": 120_000,
+    "TOPIC_MAX_PER_DOC": 40,
+    "TOPIC_EXPAND_MAX_PIECES": 12,
+    "QUERY_ASPECTS_MAX": 6,
+    "CHAT_SUMMARY_EVERY": 6,
+}
+
+
+def _context_settings(settings: Settings) -> dict[str, int]:
+    return {name: getattr(settings, name.lower()) for name in CONTEXT_DEFAULTS}
+
+
+def test_the_context_and_memory_settings_are_the_prds_values_when_unset() -> None:
+    """An older .env without them keeps working; empty counts as unset."""
+    env = shipped()
+    for name in CONTEXT_DEFAULTS:
+        env.pop(name, None)
+    assert _context_settings(Settings.from_env(env)) == CONTEXT_DEFAULTS
+    blank = dict.fromkeys(CONTEXT_DEFAULTS, " ")
+    assert _context_settings(Settings.from_env(shipped(**blank))) == CONTEXT_DEFAULTS
+
+
+def test_the_context_and_memory_settings_take_a_set_value() -> None:
+    chosen = {
+        "MODEL_CONTEXT_TOKENS": 50_000,
+        "ANSWER_WHOLE_DOC_TOKENS": 0,  # whole-document mode off (CX5)
+        "TOPIC_MAX_PER_DOC": 1,
+        "TOPIC_EXPAND_MAX_PIECES": 0,
+        "QUERY_ASPECTS_MAX": 0,
+        "CHAT_SUMMARY_EVERY": 1,
+    }
+    settings = Settings.from_env(shipped(**{name: str(value) for name, value in chosen.items()}))
+    assert _context_settings(settings) == chosen
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("MODEL_CONTEXT_TOKENS", "0"),
+        ("MODEL_CONTEXT_TOKENS", "lots"),
+        ("ANSWER_WHOLE_DOC_TOKENS", "-1"),
+        ("ANSWER_WHOLE_DOC_TOKENS", "1.5"),
+        ("TOPIC_MAX_PER_DOC", "0"),
+        ("TOPIC_EXPAND_MAX_PIECES", "-1"),
+        ("QUERY_ASPECTS_MAX", "six"),
+        ("CHAT_SUMMARY_EVERY", "0"),
+    ],
+)
+def test_a_bad_context_or_memory_setting_stops_start_up_by_name(name: str, value: str) -> None:
+    with pytest.raises(SettingsError, match=name):
+        Settings.from_env(shipped(**{name: value}))
+
+
+def test_the_whole_documents_must_fit_the_context_window() -> None:
+    """CX5: the whole documents, the answer's reply, its repair retry and the system prompt
+    must fit MODEL_CONTEXT_TOKENS, or the call would be cut off."""
+    prompt = settings_module.MAX_SYSTEM_PROMPT_TOKENS + settings_module.CHAT_OVERHEAD_TOKENS
+    room = 2 * Settings.from_env(shipped()).model_answer_max_tokens + prompt
+    context = str(120_000 + room)
+    fits = Settings.from_env(shipped(MODEL_CONTEXT_TOKENS=context, ANSWER_WHOLE_DOC_TOKENS="120000"))
+    assert fits.model_context_tokens == int(context)
+    with pytest.raises(SettingsError, match="MODEL_CONTEXT_TOKENS"):
+        Settings.from_env(shipped(MODEL_CONTEXT_TOKENS=context, ANSWER_WHOLE_DOC_TOKENS="120001"))
+    off = Settings.from_env(shipped(MODEL_CONTEXT_TOKENS=str(room), ANSWER_WHOLE_DOC_TOKENS="0"))
+    assert off.answer_whole_doc_tokens == 0

@@ -283,6 +283,20 @@ class Settings:
     # the translation call has its own timeout (TRANSLATE_TIMEOUT_SECONDS when unset).
     answer_translate_question: bool
     model_translate_timeout_seconds: float
+    # PRD 5 context and memory (sections CX and M; council 9 Oct 2026). Optional: unset is
+    # the PRD's value, so an older .env keeps working. model_context_tokens is the chat
+    # model's context window (M1). The chat's documents are given whole when they add up to
+    # answer_whole_doc_tokens or fewer, and a document's map reads its whole text under the
+    # same limit (CX2, CX5; 0 turns both off). At most topic_max_per_doc topics a document
+    # (CX3); a topic pulls in at most topic_expand_max_pieces pieces a document, and a
+    # question is searched as at most query_aspects_max aspects (CX6). The chat summary and
+    # memory are rewritten every chat_summary_every turns (M3).
+    model_context_tokens: int
+    answer_whole_doc_tokens: int
+    topic_max_per_doc: int
+    topic_expand_max_pieces: int
+    query_aspects_max: int
+    chat_summary_every: int
     timezone: str
 
     # API.
@@ -382,6 +396,17 @@ class Settings:
             translate_timeout = env.number("MODEL_TRANSLATE_TIMEOUT_SECONDS")
         if not (math.isfinite(translate_timeout) and translate_timeout > 0):
             raise SettingsError("MODEL_TRANSLATE_TIMEOUT_SECONDS must be a number above 0")
+        # PRD 5 CX and M: unset is the PRD's value. The whole documents (CX5) must fit the
+        # context window with the answer's reply, its repair retry and the system prompt.
+        model_context_tokens = env.at_least("MODEL_CONTEXT_TOKENS", 1, default=200_000)
+        whole_doc_tokens = env.at_least("ANSWER_WHOLE_DOC_TOKENS", 0, default=120_000)
+        prompt_tokens = MAX_SYSTEM_PROMPT_TOKENS + CHAT_OVERHEAD_TOKENS
+        room = 2 * answer_max_tokens + prompt_tokens
+        if whole_doc_tokens + room > model_context_tokens:
+            raise SettingsError(
+                f"ANSWER_WHOLE_DOC_TOKENS + 2 x MODEL_ANSWER_MAX_TOKENS + {prompt_tokens}"
+                " must not be more than MODEL_CONTEXT_TOKENS"
+            )
         model_enabled = env.boolean("MODEL_ENABLED")
         model_chat = env.text("MODEL_CHAT")
         model_embed = env.text("MODEL_EMBED")
@@ -495,6 +520,12 @@ class Settings:
             answer_translate_question=env.optional("ANSWER_TRANSLATE_QUESTION") is not None
             and env.boolean("ANSWER_TRANSLATE_QUESTION"),
             model_translate_timeout_seconds=translate_timeout,
+            model_context_tokens=model_context_tokens,
+            answer_whole_doc_tokens=whole_doc_tokens,
+            topic_max_per_doc=env.at_least("TOPIC_MAX_PER_DOC", 1, default=40),
+            topic_expand_max_pieces=env.at_least("TOPIC_EXPAND_MAX_PIECES", 0, default=12),
+            query_aspects_max=env.at_least("QUERY_ASPECTS_MAX", 0, default=6),
+            chat_summary_every=env.at_least("CHAT_SUMMARY_EVERY", 1, default=6),
             timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             log_level=env.text("LOG_LEVEL"),
@@ -551,6 +582,14 @@ class _Env:
 
     def optional_integer(self, name: str) -> int | None:
         return None if self.optional(name) is None else self.integer(name)
+
+    def at_least(self, name: str, low: int, *, default: int) -> int:
+        """An optional whole number of at least ``low``: ``default`` when unset or empty."""
+        number = self.optional_integer(name)
+        number = default if number is None else number
+        if number < low:
+            raise SettingsError(f"{name} must be at least {low}")
+        return number
 
     def number(self, name: str) -> float:
         value = self.text(name)

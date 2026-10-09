@@ -78,6 +78,16 @@ One more (council 5 Oct 2026, PROVISIONAL): `OCR_DPI_RULE` (`fixed` when unset) 
 scan page at `OCR_DPI`; `text_height` draws it at the DPI its text needs, `OCR_DPI` at most;
 `text_height_no_scan_cap` is the same without the scan cap, for the accuracy test.
 
+PRD 5 context and memory adds six optional settings (council 9 Oct 2026), each the PRD's
+value when unset and checked at start-up by name: `MODEL_CONTEXT_TOKENS` (200000, at least
+1), the chat model's context window; `ANSWER_WHOLE_DOC_TOKENS` (120000, 0 turns it off), the
+size up to which a chat's documents are given whole, which must leave room in
+`MODEL_CONTEXT_TOKENS` for two answer replies and 1100 more; `TOPIC_MAX_PER_DOC` (40, at
+least 1), the topics kept for a document; `TOPIC_EXPAND_MAX_PIECES` (12, 0 or more), the
+pieces a topic adds per document; `QUERY_ASPECTS_MAX` (6, 0 or more), the aspects a question
+is also searched as; and `CHAT_SUMMARY_EVERY` (6, at least 1), the turns between chat
+summaries.
+
 **Upgrading an install to PRD 3.** Migration 0006 is offline: it locks
 `pieces` and `messages` while it rewrites the vectors and builds the indexes.
 
