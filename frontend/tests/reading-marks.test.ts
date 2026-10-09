@@ -28,7 +28,7 @@ describe("the marks on a page", () => {
     expect(markName(mark("unsure", "Shinde"), 0, 3)).toBe("Unsure word 'Shinde', mark 1 of 3");
     expect(markName(mark("illegible", "[?]"), 1, 3)).toBe("Couldn't read '[?]', mark 2 of 3");
     expect(markName(mark("unpinned", "  "), 2, 3)).toBe("Spot not confirmed, mark 3 of 3");
-    expect(markName(mark("unsure", "a‮b"), 0, 1)).toBe("Unsure word 'a⟦U+202E⟧b', mark 1 of 1");
+    expect(markName(mark("unsure", "a\u202eb"), 0, 1)).toBe("Unsure word 'a⟦U+202E⟧b', mark 1 of 1");
   });
 
   it("explains each pattern in words, only for the kinds the page has", () => {
