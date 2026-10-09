@@ -14,7 +14,9 @@ batches, longer than one lease).
 What is embedded (PRD 3 V3, the Qwen3-Embedding model card): a piece is its
 reduced header, a blank line, then its text (``piece_input``); a question is
 ``Instruct: {QUERY_TASK}\nQuery:{question}`` (``query_input``), with no space
-after "Query:". Documents get no instruction. The reduced header keeps only the
+after "Query:". Documents get no instruction. A Gemini embedding model
+(``google/gemini-``, PRD 5 M5) gets the question as plain text, recipe ``gem1``
+(``recipe_for``). The reduced header keeps only the
 Type, Date and Section parts of the stored context header: never "Before:" (the
 previous piece's line would mix into this vector), the document name (a rename
 would make every vector stale) or the page numbers.
@@ -43,6 +45,7 @@ from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
 from kaagaz.db.customers import is_active
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.search.hybrid import vector_literal
+from kaagaz.settings import is_gemini_model
 
 _TO_EMBED = text(
     "SELECT count(*) FROM pieces WHERE customer_id = :c AND document_id = :d AND embedding IS NULL"
@@ -52,6 +55,8 @@ _TO_EMBED = text(
 QUERY_TASK = "Given a question about business documents, retrieve passages that answer it"
 # The recipe: what a vector was made from (V3). Change it when piece_input changes.
 RECIPE = "ctx1"
+# PRD 5 M5: the recipe of a Gemini embedding model, whose questions are plain text.
+GEMINI_RECIPE = "gem1"
 # The context header parts a piece's vector is made with (kaagaz.chunking.context).
 _KEPT_PARTS = ("Type: ", "Date: ", "Section: ")
 
@@ -102,8 +107,18 @@ def recipe_tag(model_embed: str) -> str:
     return f"{model_embed}#{RECIPE}"
 
 
-def query_input(question: str) -> str:
-    """What a question is embedded as, in the model card's exact format. O(length)."""
+def recipe_for(model_embed: str) -> str:
+    """The recipe ``model_embed`` embeds with (PRD 5 M5): ``gem1`` for a ``google/gemini-``
+    model, otherwise ``ctx1`` (RECIPE)."""
+    return GEMINI_RECIPE if is_gemini_model(model_embed) else RECIPE
+
+
+def query_input(question: str, model_embed: str = "") -> str:
+    """What a question is embedded as for ``model_embed`` (MODEL_EMBED): the plain question
+    for recipe ``gem1`` (PRD 5 M5), otherwise the Qwen3 model card's exact format. The
+    callers that pass no model get today's format until they pass MODEL_EMBED. O(length)."""
+    if recipe_for(model_embed) == GEMINI_RECIPE:
+        return question
     return f"Instruct: {QUERY_TASK}\nQuery:{question}"
 
 
