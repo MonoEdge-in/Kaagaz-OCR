@@ -93,12 +93,8 @@ Runs and progress (PRD 2 R6, X2, X3), when the processor is given them:
 * The pages are counted by route as each is read (``on_page``), so a run that
   fails part way records the pages it read; once every page has its route, the
   counts are those of the stored routes.
-* The scan reader the upload chose (``documents.ocr_choice``, PRD 4 #17) reads
-  this delivery's scans (``OcrChooser.choose``) until its run is closed, and
-  then Auto again, whatever happened. A run of a document with a choice keeps
-  ``ocr_choice`` and ``ocr_choice_honoured`` in its config; a choice this worker
-  does not have is read with Auto and logged with its code only
-  (``ocr_choice_unavailable``).
+* The scan reader an upload chose before PRD 5 RT3 (``documents.ocr_choice``) is
+  ignored: every scan is read with the one engine the processor is given.
 
 The Gemini reader (PRD 5), when the processor is given its parts:
 
@@ -494,17 +490,13 @@ class OcrMeter(Protocol):
     """kaagaz.reading.ocr.MeteredOcrEngine in production: the engine the readers use."""
 
     @property
-    def name(self) -> str: ...  # the engine in use: a chosen one's while its job runs
+    def name(self) -> str: ...
 
     @property
     def version(self) -> str: ...
 
     def take(self) -> tuple[int, float]:
         """(pages sent to OCR, seconds) since the last take, then zero again."""
-        ...
-
-    def take_fallback_pages(self) -> int:
-        """Pages the fallback engine read since the last take, then zero again."""
         ...
 
     def take_page_reads(self) -> dict[int, PageRead]:
@@ -528,14 +520,6 @@ class Checker(Protocol):
     (PRD 5 V1), "" when it reads nothing."""
 
     def read_crop(self, image: Image.Image, *, devanagari: bool) -> str: ...
-
-
-class OcrChooser(Protocol):
-    """kaagaz.reading.ocr.OcrEngines in production: which engine reads one job's scans."""
-
-    def choose(self, choice: str | None) -> contextlib.AbstractContextManager[bool]:
-        """Read with ``choice`` (None: Auto) inside the block; True when it was honoured."""
-        ...
 
 
 class ReadingSocket(Protocol):
@@ -654,7 +638,6 @@ class _Run:
     shown: tuple[Step, Estimate] | None = None  # the last estimate written, and its step
     prior: tuple[Step, Estimate] | None = None  # the one written before it (its ``prior``)
     reached: float = 0.0  # the highest fraction shown so far (kaagaz.eta): it never goes back
-    ocr_choice: dict[str, str | bool] = field(default_factory=dict)  # the upload's reader, when it chose one
     # PRD 5: each page's read, the pages asked to be read again, the checker's crops (also
     # counted in vision_crops) and the pages graded unreadable.
     page_reads: dict[int, PageRead] = field(default_factory=dict)
@@ -682,7 +665,6 @@ class DocumentProcessor:
         runs: RunStore | None = None,
         progress: ProgressStore | None = None,
         ocr_meter: OcrMeter | None = None,
-        ocr_engines: OcrChooser | None = None,
         clock: Callable[[], datetime] | None = None,
         timer: Callable[[], float] | None = None,
         max_check_crops: int = MAX_CHECK_CROPS,
@@ -709,8 +691,7 @@ class DocumentProcessor:
         The rest are for PRD 2 and all optional: ``runs`` keeps one run per delivery
         (it needs ``clock`` for its times and ``timer`` for its seconds);
         ``progress`` shows how far a document has got; ``ocr_meter`` is the OCR
-        engine the readers use, counted, and ``ocr_engines`` picks the engine behind it
-        for each job (the upload's choice); ``run_config`` is the run's plain JSON set-up
+        engine the readers use, counted; ``run_config`` is the run's plain JSON set-up
         (ML 10); ``vision_model`` and ``embed_model`` are the tags a run records
         when it used them. ``chat`` is the model stage's chat model (PRD 2 D1, E2),
         with its ``model_budget``; ``chat_model`` is the tag a run records when a
@@ -749,7 +730,6 @@ class DocumentProcessor:
         self._runs = runs
         self._progress_store = progress
         self._ocr_meter = ocr_meter
-        self._ocr_engines = ocr_engines
         self._clock = clock or _utc_now
         self._timer = timer or time.perf_counter
         self._max_check_crops = max_check_crops
@@ -782,11 +762,9 @@ class DocumentProcessor:
             return  # acked: no run, nothing read again
         run = self._start_run(job)
         settled = False  # the run was finished, or is being, on a known path
-        chosen = contextlib.ExitStack()  # the upload's reader, until the run is closed
         try:
             if self._customer_active is not None and not self._customer_active(job.customer_id):
                 raise JobFailed("customer_disabled", retryable=False)  # marked failed below, never read
-            self._choose_reader(job, record, run, chosen)
             self._process(job, record, heartbeat, run)
             settled = True
         except Superseded:
@@ -821,27 +799,6 @@ class DocumentProcessor:
                 # Anything else is a bug: it is not caught (no blanket except) and goes on
                 # up to the worker, but its run ends failed rather than staying open.
                 self._close_run(job, run, "failed", "internal_error")
-            chosen.close()  # Auto again for the next job, whatever happened
-
-    def _choose_reader(
-        self, job: Job, record: DocumentRecord, run: _Run, chosen: contextlib.ExitStack[bool | None]
-    ) -> None:
-        """Read this job's scans with the reader its upload chose (NULL: Auto). A choice
-        this worker doesn't have (not set up, or no OCR at all) is read with Auto."""
-        choice = record.ocr_choice
-        if choice is None:
-            return  # Auto: exactly as before, and the run's config is unchanged
-        honoured = self._ocr_engines is not None and chosen.enter_context(self._ocr_engines.choose(choice))
-        run.ocr_choice = {"ocr_choice": choice, "ocr_choice_honoured": honoured}
-        if not honoured:
-            _log.warning(
-                "ocr choice not available, read with auto",
-                extra={
-                    "customer_id": job.customer_id,
-                    "document_id": job.document_id,
-                    "code": "ocr_choice_unavailable",
-                },
-            )
 
     def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
@@ -1217,7 +1174,6 @@ class DocumentProcessor:
         """A new run of this delivery, started now. The OCR meter starts from zero (AR11)."""
         if self._ocr_meter is not None:
             self._ocr_meter.take()
-            self._ocr_meter.take_fallback_pages()
             self._ocr_meter.take_page_reads()
         run_id, now = None, self._clock()
         if self._runs is not None:
@@ -1237,7 +1193,6 @@ class DocumentProcessor:
         (PRD 5) come from the pages read: those of a reading that ended part way too."""
         meter = self._ocr_meter
         pages_sent, ocr_seconds = meter.take() if meter is not None else (0, 0.0)
-        fallback_pages = meter.take_fallback_pages() if meter is not None else 0
         page_reads = {**(meter.take_page_reads() if meter is not None else {}), **run.page_reads}
         if run.run_id is None:
             return None
@@ -1275,8 +1230,6 @@ class DocumentProcessor:
                 **self._run_config,
                 **run.quote_config,
                 **run.version_marks,
-                **({"pages_ocr_fallback": fallback_pages} if fallback_pages else {}),
-                **run.ocr_choice,
                 **_step_seconds(run, ended),
             },
             **counters,
@@ -1677,7 +1630,7 @@ def build_processor(
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
     from kaagaz.reading.ocr import GEMINI, MeteredOcrEngine
     from kaagaz.reading.rapid_pool import shared_pool
-    from kaagaz.reading.wiring import build_ocr_engines, build_reader_socket, reader_config
+    from kaagaz.reading.wiring import build_ocr_engine, build_reader_socket, reader_config
     from kaagaz.search.indexing import embed_pieces
 
     documents = PgDocuments(db)
@@ -1699,12 +1652,12 @@ def build_processor(
         embed = functools.partial(embed_pieces, db, model=model)
     # The Gemini reader (PRD 5 G1) from kaagaz.reading.wiring; the readers read pages on its
     # page pool (wiring.page_pool, G8) through the same meter.
-    engines = build_ocr_engines(settings)
-    meter = None if engines is None else MeteredOcrEngine(engines, timer=time.perf_counter)
+    engine = build_ocr_engine(settings)
+    meter = None if engine is None else MeteredOcrEngine(engine, timer=time.perf_counter)
     vision = model if model is not None and settings.model_vision else None
     # The checker (V1) reads the boxes of pages the reading model read, so only with it; it
     # shares the process's one RapidOCR pool with the box pinning (CPU_WORKERS).
-    gemini = engines is not None and settings.ocr_engine == GEMINI
+    gemini = engine is not None and settings.ocr_engine == GEMINI
 
     return DocumentProcessor(
         gate=ScanGate(storage, scanner, storage, documents),
@@ -1721,7 +1674,6 @@ def build_processor(
         runs=PgRuns(db),
         progress=documents,
         ocr_meter=meter,
-        ocr_engines=engines,
         clock=_utc_now,
         timer=time.perf_counter,
         max_check_crops=settings.max_check_crops,

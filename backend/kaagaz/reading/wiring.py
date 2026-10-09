@@ -19,9 +19,8 @@ socket"). Adding a reader means one new module and one entry here.
   at a time, as before: RapidOCR is CPU work, one page at a time per engine.
 * The Gemini reader (PRD 5 G1) is built by ``build_gemini_engine``, the one
   place that names its module, imported by its path only when OCR_ENGINE=gemini,
-  so OCR_ENGINE=rapidocr never loads it or calls Gemini. ``build_ocr_engine`` and
-  ``build_ocr_engines`` here are the product's engines: ``kaagaz.reading.ocr``'s,
-  with that factory.
+  so OCR_ENGINE=rapidocr never loads it or calls Gemini. ``build_ocr_engine`` here
+  is the product's engine: ``kaagaz.reading.ocr``'s, with that factory.
 """
 
 import importlib
@@ -32,9 +31,8 @@ from kaagaz.preparing import page_checks
 from kaagaz.reading import ocr_dpi, text_quality
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.image_reader import ImageReader
-from kaagaz.reading.ocr import GEMINI, OcrEngine, OcrEngines, PageEngine
+from kaagaz.reading.ocr import GEMINI, OcrEngine, PageEngine
 from kaagaz.reading.ocr import build_ocr_engine as _ocr_engine
-from kaagaz.reading.ocr import build_ocr_engines as _ocr_engines
 from kaagaz.reading.pdf_reader import PdfReader, text_layer_checks
 from kaagaz.reading.pdf_second_reader import PdfiumReader
 from kaagaz.reading.rapid_pool import RapidOcrPool
@@ -102,14 +100,8 @@ def build_gemini_engine(settings: Settings, *, pool: RapidOcrPool) -> PageEngine
 
 def build_ocr_engine(settings: Settings) -> OcrEngine | None:
     """The engine for OCR_ENGINE (``ocr.build_ocr_engine``), the Gemini reader from
-    ``build_gemini_engine``; None for "none". For ``cli measure``."""
+    ``build_gemini_engine``; None for "none". For the worker and ``cli measure``."""
     return _ocr_engine(settings, gemini=build_gemini_engine)
-
-
-def build_ocr_engines(settings: Settings) -> OcrEngines | None:
-    """The worker's engines (``ocr.build_ocr_engines``), the Gemini reader from
-    ``build_gemini_engine``; None for "none"."""
-    return _ocr_engines(settings, gemini=build_gemini_engine)
 
 
 def page_pool(settings: Settings, engine: OcrEngine | None) -> PagePool | None:

@@ -1,38 +1,11 @@
-"""The scan reader engine (OCR), behind one small interface.
+"""The scan reader engines (OCR), behind one small interface.
 
-The scan reader is PaddleOCR-VL (decided 29 Sep, docs/architecture.md), in its
-own container; RapidOCR (Apache-2.0) stays as the fallback, for weak laptops and
-for a page PaddleOCR-VL cannot read (``FallbackOcrEngine``). No page ever leaves
-the machine and nothing is downloaded at run time.
+The main scan reader is the Gemini reader (PRD 5, OCR_ENGINE=gemini). RapidOCR
+(Apache-2.0) is the local reader (OCR_ENGINE=rapidocr: laptops and CI), and the
+Gemini reader's box finder, checker and backup. Nothing is downloaded at run time.
 
 * ``OcrEngine`` is what the page readers depend on, so tests use a fake and a
   different engine means one new class here.
-* ``PaddleVlEngine`` posts each page, as a PNG it encoded itself, to the ocr
-  container's ``POST /read`` (``kaagaz/ocr_server/app.py``, PRD 2 P2) and
-  checks every field of the reply before anything becomes a line (security
-  A7). It gives no confidence (PaddleOCR-VL has none), so a scan is known by
-  its spans' origin "ocr", never by a made-up number. Failures (P5):
-
-  * 503 ``busy``: the server is still on another page (one it cannot stop
-    after a worker gave up on it), so the call waits and asks again, backing
-    off, until its deadline; only then is it ``OcrOverloaded("ocr_timeout")``;
-  * 503 ``out_of_memory``: ``OcrOverloaded("ocr_out_of_memory")``; past
-    ``OCR_TIMEOUT_SECONDS``: ``OcrOverloaded("ocr_timeout")``. Both are a
-    ``BackendUnavailable("ocr")``, retried later, that ``FallbackOcrEngine``
-    reads with RapidOCR instead;
-  * down, refused, another 5xx (``not_ready``, ``internal_error``), a 421, or
-    cut off: ``BackendUnavailable("ocr")``, retried later, never read by the
-    fallback, so a fault in the set-up is not hidden behind RapidOCR;
-  * 500 ``read_failed`` (the model raised on this page): ``ocr_failed``, read
-    by the fallback; 422: ``corrupt_file``; 413: ``image_too_large``; a 3xx
-    (never followed), another 4xx, a malformed reply or one over
-    ``MAX_OCR_REPLY_BYTES``: ``invalid_reader_output``. Unless the fallback
-    reads the page, the document fails; these are not retried.
-
-  It uses ``http.client``, not urllib's opener: it follows no redirect, reads
-  no proxy variable (page images never reach a proxy), and one monotonic
-  deadline covers the whole call (a timer shuts the socket down at it).
-  Over-limit items in a reply are dropped and counted.
 * ``RapidOcrEngine`` imports ``rapidocr`` only on its first page, because it
   is an optional extra (``pip install .[ocr]``): without it, the rest of the
   backend still starts, and ``OCR_ENGINE=none`` marks scans needs_reader.
@@ -43,40 +16,16 @@ the machine and nothing is downloaded at run time.
   (``_better``); the version then names that model. Its file is fetched when
   the image is built (``backend/Dockerfile``) and only ever loaded from disk:
   when it is missing (``ocr_model_missing``), the page stays as first read.
-* ``FallbackOcrEngine`` (the product's, for ``paddleocr_vl`` when RapidOCR is
-  installed) reads each page with PaddleOCR-VL and, on ``ocr_failed`` or
-  ``OcrOverloaded``, reads that page with RapidOCR (built on first need, once).
-  After an ``OcrOverloaded``, pages go straight to RapidOCR for
-  ``COOL_DOWN_SECONDS``, so each does not wait out the deadline again; then
-  PaddleOCR-VL is tried again. Any other error is raised as before, and when
-  RapidOCR fails too, the primary's own error is raised. Each fallback page is
-  one warning with its code only. Its name and version are PaddleOCR-VL's (the
-  ETA keys on the name; the run's ``ocr_engine`` is cut at 100 characters);
-  the pages RapidOCR read are counted (``take_fallback_pages``) into the
-  run's config as ``pages_ocr_fallback``. A RapidOCR page has lines with no
-  kind and a real confidence, so ``ocr_spans`` (which decides per page) puts
-  it through the line rule, and a value from it is still needs review.
-* The scan reader an upload chose (PRD 4 #17, council 4 Oct 2026, PROVISIONAL):
-  ``ocr_choices`` lists Auto and every engine here, each with its own
-  ``title`` and ``hint``, available or with its reason, from the settings and
-  what is installed only, so the api and the worker agree. ``OcrEngines`` is
-  the worker's engine: Auto (``build_ocr_engine``'s chain) unless ``choose``
-  picks another for one job. Each engine is built once and shared. A chosen
-  engine falls back to Auto, through Auto's one instance and cool-down, on its
-  failures above and also when it finds no line: the readers only send a page
-  with ink on it (R3, ``is_blank``). A choice that is Auto's first engine is
-  Auto itself.
 * ``MeteredOcrEngine`` wraps any engine and counts the pages sent to it and
   the seconds they took (PRD 2 R6: the run's ``seconds_ocr``; ``cli measure``).
-  Its name is the engine's at each moment, so a chosen engine's pages are
-  timed under its own name. It also keeps each numbered page's ``PageRead``
+  It also keeps each numbered page's ``PageRead``
   for the run (``take_page_reads``, PRD 5 G7, F1). Pages of one document are
   read on several threads at once (G8), so its counts are kept under a lock;
   the seconds are the pages' own, summed, so they can pass the wall time.
 * ``as_page_engine`` gives any engine ``read_page`` (PRD 5): a ``PageEngine``
   (the Gemini reader) as it is, and any other engine through ``read``, as a
   page with no grade of its own, ``read_by`` the id of the engine that read it
-  ("rapidocr", "paddleocr_vl"; a ``FallbackOcrEngine`` says which of its two).
+  ("rapidocr").
 * The Gemini reader (PRD 5 G1, OCR_ENGINE=gemini) lives in its own module,
   ``kaagaz/reading/gemini_ocr.py``, which this module never imports: a
   ``GeminiEngineFactory`` given to ``build_ocr_engine`` builds it, with the
@@ -86,13 +35,14 @@ the machine and nothing is downloaded at run time.
 * The page cache (PRD 5 G7, F5): the pipeline opens ``reading_document(engine,
   DocumentPages(...))`` around one document's reading. An engine with a page cache
   (``DocumentEngine``, the Gemini reader) then keys each page by that document; the
-  meter and ``OcrEngines`` pass it on; any other engine has nothing to open.
+  meter passes it on; any other engine has nothing to open.
 * No reader choice at upload (PRD 5 RT3): ``ocr_choices`` offers one reader,
-  Auto, so the "Scan with" select hides itself.
+  Auto, so the "Scan with" select hides itself. A choice sent or stored before is
+  ignored: every scan is read with OCR_ENGINE's engine.
 * ``ocr_spans`` turns an engine's pixel boxes into spans with page fractions
   and origin "ocr". RapidOCR's boxes go through the same line rule as the PDF
   readers (``kaagaz/reading/lines.py``), so "INVOICE" and "1042" found as two
-  boxes on one line become one span. PaddleOCR-VL's blocks are already in
+  boxes on one line become one span. The Gemini reader's lines are already in
   reading order, so each becomes one span, in the order given. A line's
   ``box_source`` is copied to its span, and its word marks (PRD 5 F3) become
   spans of their own (``is_word_mark``).
@@ -103,26 +53,19 @@ only, and its messages hold no page text.
 
 import contextlib
 import dataclasses
-import io
-import json
 import logging
 import math
 import re
-import socket
 import statistics
 import threading
-import time
-import urllib.parse
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from http.client import HTTPConnection, HTTPException, HTTPResponse, HTTPSConnection, IncompleteRead
 from importlib import metadata
-from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TypeGuard, runtime_checkable
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, runtime_checkable
 
 from PIL import Image
 
 from kaagaz.chunking.script import ocr_script_suspect, ocr_suspect_count
-from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
 from kaagaz.reading.page_quality import ILLEGIBLE_MARK, NO_TEXT
 from kaagaz.reading.rapid_pool import (
@@ -134,43 +77,23 @@ from kaagaz.reading.rapid_pool import (
     devanagari_params,
     shared_pool,
 )
-from kaagaz.reading.spans import BLOCK_KINDS, BOX_SOURCES, TABLE_ID, BoxLocation, ReadError, Span
+from kaagaz.reading.spans import BOX_SOURCES, BoxLocation, ReadError, Span
 from kaagaz.settings import Settings, SettingsError
 
 if TYPE_CHECKING:
     from kaagaz.db.page_reads import PageKey
 
-# Caps on a /read reply (security A7). A reply over MAX_OCR_REPLY_BYTES is
-# refused; blocks past MAX_BLOCKS_PER_PAGE, longer than MAX_BLOCK_CHARS, or in a
-# table row or column from MAX_TABLE_INDEX on are dropped and counted.
-MAX_OCR_REPLY_BYTES = 16 * 1024 * 1024
+# Caps on one page's reply from the reader (security A7, kaagaz/reading/gemini_ocr.py):
+# lines past MAX_BLOCKS_PER_PAGE, longer than MAX_BLOCK_CHARS, or in a table row or
+# column from MAX_TABLE_INDEX on are dropped and counted.
 MAX_BLOCKS_PER_PAGE = 5000
 MAX_BLOCK_CHARS = 20_000
 MAX_TABLE_INDEX = 1000
-# The most pixels a page is drawn at for OCR. A PNG that cannot compress is 3 bytes
-# a pixel, so any page stays under the ocr server's 64 MiB body cap (MAX_BODY_BYTES
-# in kaagaz/ocr_server/app.py). Readers lower the DPI to fit it, never refuse.
+# The most pixels a page is drawn at for OCR. A PNG that cannot compress is 3 bytes a
+# pixel, so one page's PNG stays under 64 MiB. Readers lower the DPI to fit it, never refuse.
 MAX_OCR_PIXELS = 21_000_000
-_READ_CHUNK = 64 * 1024
-_REFUSALS = {422: "corrupt_file", 413: "image_too_large"}
-# The first wait after a busy reply, doubled after each one up to the most.
-_BUSY_WAIT_SECONDS = 1.0
-_BUSY_WAIT_MAX_SECONDS = 15.0
-# ":" is in the device the ocr server names (";device=gpu:0").
-_VERSION = re.compile(r"[A-Za-z0-9._+;=@: -]{1,200}")
-# C0 and C1 controls and the bidirectional overrides and isolates, as
-# kaagaz/answering/sanitize.py strips them.
-_CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
-# Lone surrogates: JSON can carry them, but no database or UTF-8 file can hold them.
-_SURROGATE = re.compile("[\ud800-\udfff]")
-# After PaddleOCR-VL timed out or ran out of memory, pages go straight to RapidOCR
-# for this long, so each one does not first wait out OCR_TIMEOUT_SECONDS
-# (PROVISIONAL, council 4 Oct 2026).
-COOL_DOWN_SECONDS = 120.0
-# The choice that means "the usual way" (stored as NULL); never an engine's id.
+# The one reader an upload is offered (PRD 5 RT3): "the usual way".
 AUTO = "auto"
-# Why no engine can be chosen with OCR_ENGINE=none.
-_READING_OFF = "Scan reading is off on this server"
 # OCR_ENGINE's value for the Gemini reader (PRD 5 G1).
 GEMINI = "gemini"
 # PRD 5 RT2: pages.read_by for a page the local reader read.
@@ -195,11 +118,11 @@ class OcrTable:
 class OcrLine:
     """One piece of text an engine found, in pixels of the image it was given.
 
-    A layout engine (PaddleOCR-VL) gives one line per block, with its kind
+    The Gemini reader gives one line per block, with its kind
     (``spans.BLOCK_KINDS``) and, for a table cell, its table. It gives no
     confidence, so that is None: never a made-up number.
 
-    The Gemini reader (PRD 5) also gives ``unsure``: each word in this line it
+    It also gives ``unsure`` (PRD 5): each word in this line it
     is not sure of, copied exactly (G3; a part it can't read at all is
     ``page_quality.ILLEGIBLE_MARK`` in the text). ``box_source`` says where the
     box came from (``spans.BOX_SOURCES``, G5): "found", the union of the boxes
@@ -224,7 +147,7 @@ class OcrEngine(Protocol):
     def name(self) -> str: ...  # read-only: a metered engine's follows the engine in use
 
     @property
-    def version(self) -> str: ...  # read-only: PaddleOCR-VL's comes from its last reply
+    def version(self) -> str: ...  # read-only
 
     def read(self, image: Image.Image) -> list[OcrLine]: ...
 
@@ -246,7 +169,7 @@ class PageRead:
       reader_refused, read_locally and no_text. The pipeline adds low_resolution
       and readers_disagree, which need the page's DPI and the checker.
     * ``read_by``: who read it (RT2): the model ID in OCR_MODEL, or the id of the engine
-      that read it ("rapidocr", "paddleocr_vl"). A page the Gemini reader handed to the
+      that read it ("rapidocr"). A page the Gemini reader handed to the
       local reader (Q7) is "rapidocr" with the issue read_locally or reader_refused.
     * ``input_tokens``, ``output_tokens``: what this read was billed, from the
       reply's usage metadata (thinking tokens are output), every call for the page
@@ -298,241 +221,6 @@ class PageEngine(OcrEngine, Protocol):
     def read_page(self, image: Image.Image, *, page_no: int) -> PageRead: ...
 
 
-class OcrOverloaded(BackendUnavailable):
-    """The scan reader was up but did not read this page: it ran out of memory, or the
-    page took past OCR_TIMEOUT_SECONDS. Still ``BackendUnavailable("ocr")`` (retried
-    later); ``FallbackOcrEngine`` reads the page with its fallback instead. ``code``
-    is short and safe to log."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__("ocr")
-        self.code = code
-
-
-class PaddleVlEngine:
-    """``OcrEngine`` over the ocr container's ``POST /read`` (see the module notes)."""
-
-    name = "paddleocr-vl"
-    title = "Layout reader"  # what the upload screen offers (ocr_choices); never an engine's name (U8)
-    hint = "Best for handwriting and complex pages (slower)"
-
-    @staticmethod
-    def unavailable(settings: Settings) -> str | None:
-        """Why this server can't read with it, or None: only OCR_ENGINE=paddleocr_vl sets it up."""
-        return None if settings.ocr_engine == "paddleocr_vl" else "Not set up on this server"
-
-    @classmethod
-    def from_settings(cls, settings: Settings) -> "PaddleVlEngine":
-        return cls(settings.ocr_url, timeout_seconds=settings.ocr_timeout_seconds)
-
-    def __init__(self, url: str, *, timeout_seconds: float) -> None:
-        parts = urllib.parse.urlsplit(url)
-        if parts.scheme not in {"http", "https"} or not parts.hostname:
-            raise ValueError("the OCR URL must be an http or https URL")
-        self._connection = HTTPSConnection if parts.scheme == "https" else HTTPConnection
-        self._host, self._port = parts.hostname, parts.port
-        self._path = parts.path.rstrip("/") + "/read"
-        self._timeout = timeout_seconds
-        self._version = "unknown"
-
-    @property
-    def version(self) -> str:
-        """The last reply's version; "unknown" before the first."""
-        return self._version
-
-    def read(self, image: Image.Image) -> list[OcrLine]:
-        """One request per page, asked again while the server is busy, all within one
-        deadline; the time is the server's (minutes on a CPU)."""
-        buffer = io.BytesIO()
-        # Our own PNG, never the uploaded bytes (security A5). compress_level 1 (council 5 Oct
-        # 2026): lossless like any level, a little bigger, and much faster to encode.
-        image.save(buffer, format="PNG", compress_level=1)
-        deadline = time.monotonic() + self._timeout
-        wait = _BUSY_WAIT_SECONDS
-        status, body = self._post(buffer.getvalue(), deadline)
-        while status == 503 and _error_code(body) == "busy":
-            # Still on another page, often one a worker gave up on: nothing is wrong with
-            # this one, so it waits here rather than use up one of the job's attempts.
-            if time.monotonic() + wait >= deadline:
-                raise OcrOverloaded("ocr_timeout")
-            time.sleep(wait)
-            wait = min(2 * wait, _BUSY_WAIT_MAX_SECONDS)
-            status, body = self._post(buffer.getvalue(), deadline)
-        if status == 500 and _error_code(body) == "read_failed":
-            raise ReadError("ocr_failed")  # the model raised on this page: asking again fails again
-        if status == 503 and _error_code(body) == "out_of_memory":
-            raise OcrOverloaded("ocr_out_of_memory")  # the page is fine; the GPU memory is shared
-        if status >= 500 or status == 421:
-            # Down, still loading, or an error outside the model; or 421, a Host the server
-            # refuses, which is this set-up's fault, not the file's. Retried later either way.
-            raise BackendUnavailable("ocr")
-        if status != 200:
-            raise ReadError(_REFUSALS.get(status, "invalid_reader_output"))
-        self._version, lines = _reply_lines(body, image.width, image.height)
-        return lines
-
-    def _post(self, png: bytes, deadline: float) -> tuple[int, bytes]:
-        """One deadline for the whole call: connecting waits at most the time left, and a
-        timer shuts the socket down at the deadline, so even a server that sends its
-        headers a byte at a time cannot hold the worker past OCR_TIMEOUT_SECONDS."""
-        connection = self._connection(self._host, self._port, timeout=self._timeout)
-        expired = threading.Event()
-        timer: threading.Timer | None = None
-        response: HTTPResponse | None = None
-        reply: tuple[int, bytes] | None = None
-        timed_out = False
-        try:
-            connection.timeout = _time_left(deadline)
-            connection.connect()
-            timer = threading.Timer(_time_left(deadline), _cut, (connection.sock, expired))
-            timer.daemon = True
-            timer.start()
-            connection.request("POST", self._path, body=png, headers={"Content-Type": "image/png"})
-            response = connection.getresponse()
-            reply = response.status, _body(response)
-        except TimeoutError:
-            timed_out = True  # past the deadline before the timer cut it: raised below
-        except (OSError, HTTPException):
-            reply = None  # refused, unreachable or cut off: raised below, nothing chained
-        finally:
-            if timer is not None:
-                timer.cancel()
-            if response is not None:
-                response.close()
-            connection.close()
-        if timed_out or expired.is_set():  # what arrived before the cut is not the reply
-            raise OcrOverloaded("ocr_timeout")
-        if reply is None:
-            raise BackendUnavailable("ocr")
-        return reply
-
-
-def _time_left(deadline: float) -> float:
-    left = deadline - time.monotonic()
-    if left <= 0:
-        raise TimeoutError("ocr deadline")
-    return left
-
-
-def _cut(sock: socket.socket, expired: threading.Event) -> None:
-    """The timer, at the deadline: stop every read and write on the socket."""
-    expired.set()
-    with contextlib.suppress(OSError):  # already closed: the call ended first
-        sock.shutdown(socket.SHUT_RDWR)
-
-
-def _body(response: HTTPResponse) -> bytes:
-    """At most MAX_OCR_REPLY_BYTES + 1 bytes; a body cut short of its length raises."""
-    expected = response.length
-    chunks: list[bytes] = []
-    size = 0
-    while size <= MAX_OCR_REPLY_BYTES and not response.isclosed():  # closed: all of it was read
-        chunk = response.read1(_READ_CHUNK)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        size += len(chunk)
-    if expected is not None and size < expected and size <= MAX_OCR_REPLY_BYTES:
-        raise IncompleteRead(b"", expected - size)
-    return b"".join(chunks)
-
-
-def _error_code(body: bytes) -> object:
-    """The ``error`` of a refusal's ``{"error": code}`` body; None for any other body."""
-    reply = _json(body)
-    return reply.get("error") if isinstance(reply, dict) else None
-
-
-def _reply_lines(body: bytes, width: int, height: int) -> tuple[str, list[OcrLine]]:
-    """The reply's version and its lines in pixels, sorted by ``order``. O(b log b) for b blocks."""
-    reply = _json(body) if len(body) <= MAX_OCR_REPLY_BYTES else None
-    if not isinstance(reply, dict):
-        _invalid()
-    version, blocks = reply.get("version"), reply.get("blocks")
-    if not (
-        isinstance(reply.get("engine"), str)
-        and isinstance(version, str)
-        and _VERSION.fullmatch(version)
-        and _is_whole(reply.get("width"))
-        and reply["width"] == width
-        and _is_whole(reply.get("height"))
-        and reply["height"] == height
-        and isinstance(blocks, list)
-    ):
-        _invalid()
-    kept = [line for block in blocks[:MAX_BLOCKS_PER_PAGE] if (line := _line(block, width, height))]
-    if len(kept) < len(blocks):
-        _log.warning(
-            "ocr reply items dropped: %d", len(blocks) - len(kept), extra={"code": "ocr_reply_capped"}
-        )
-    kept.sort(key=lambda item: item[0])  # stable: a table's cells share its order and keep theirs
-    return version, [line for _, line in kept]
-
-
-def _line(block: object, width: int, height: int) -> tuple[int, OcrLine] | None:
-    """(order, the line in pixels); None when it is over a limit (dropped)."""
-    if not isinstance(block, dict):
-        _invalid()
-    kind, text, order, box = block.get("kind"), block.get("text"), block.get("order"), block.get("box")
-    if not (isinstance(kind, str) and kind in BLOCK_KINDS and isinstance(text, str) and text):
-        _invalid()  # kind is checked to be a str first: a list or dict is not even hashable
-    if _SURROGATE.search(text) or not (_is_whole(order) and _is_box(box)):
-        _invalid()
-    table = _table(block.get("table"))
-    if len(text) > MAX_BLOCK_CHARS or (table is not None and max(table.row, table.col) >= MAX_TABLE_INDEX):
-        return None
-    text = _CONTROL.sub("", text)
-    if not text.strip():
-        return None
-    x0, y0, x1, y1 = box
-    return order, OcrLine(text, x0 * width, y0 * height, x1 * width, y1 * height, None, kind, table)
-
-
-def _table(value: object) -> OcrTable | None:
-    if value is None:
-        return None
-    if not (
-        isinstance(value, dict)
-        and isinstance(value.get("id"), str)
-        and TABLE_ID.fullmatch(value["id"])
-        and _is_index(value.get("row"))
-        and _is_index(value.get("col"))
-        and isinstance(value.get("header"), bool)
-    ):
-        _invalid()
-    return OcrTable(value["id"], value["row"], value["col"], value["header"])
-
-
-def _json(body: bytes) -> object:
-    try:
-        return json.loads(body)
-    except (ValueError, RecursionError):  # not JSON (UnicodeDecodeError is a ValueError), or nested too deep
-        return None
-
-
-def _is_whole(value: object) -> TypeGuard[int]:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _is_index(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _is_box(value: object) -> TypeGuard[list[float]]:
-    """[x0, y0, x1, y1] as page fractions: 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1 (NaN fails)."""
-    if not (isinstance(value, list) and len(value) == 4):
-        return False
-    if not all(_is_finite(v) for v in value):
-        return False
-    x0, y0, x1, y1 = value
-    return bool(0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1)
-
-
-def _is_finite(value: object) -> bool:
-    """A whole number, or a finite float (bool refused). A huge int stays exact."""
-    return _is_whole(value) or (isinstance(value, float) and math.isfinite(value))
-
-
 def _invalid() -> NoReturn:
     raise ReadError("invalid_reader_output")
 
@@ -546,17 +234,7 @@ class OcrModelMissing(Exception):
 
 class RapidOcrEngine:
     name = "rapidocr"
-    title = "Backup reader"  # what the upload screen offers (ocr_choices); never an engine's name (U8)
-    hint = "Fast, for clean printed pages"
-
-    @staticmethod
-    def unavailable(settings: Settings) -> str | None:
-        """Why this server can't read with it, or None: it needs the ocr extra."""
-        return None if _installed_version("rapidocr") is not None else "Not installed on this server"
-
-    @classmethod
-    def from_settings(cls, settings: Settings) -> "RapidOcrEngine":
-        return cls()
+    title = "Backup reader"  # what Auto's hint calls it (ocr_choices); never an engine's name (U8)
 
     def __init__(self) -> None:
         version = _installed_version("rapidocr")
@@ -665,101 +343,6 @@ def _installed_version(package: str) -> str | None:
         return None
 
 
-class FallbackOcrEngine:
-    """An ``OcrEngine`` that reads a page with ``primary`` and, when it cannot, with the
-    engine ``fallback`` builds (see the module notes). ``timer`` is ``time.monotonic``
-    in the product. With ``empty_fails`` (a chosen engine, ``OcrEngines``), a page
-    the primary finds no line on is read by the fallback too; when the fallback
-    then fails, the page stays as the primary read it. One job at a time uses it;
-    its pages may come from several page threads (PRD 5 G8), so the fallback is built
-    and its pages counted under a lock. O(1) per page beyond the engines' own time.
-    """
-
-    def __init__(
-        self,
-        primary: OcrEngine,
-        fallback: Callable[[], OcrEngine],
-        *,
-        timer: Callable[[], float] = time.monotonic,
-        empty_fails: bool = False,
-    ) -> None:
-        self._primary = primary
-        self._build_fallback = fallback
-        self._fallback: OcrEngine | None = None
-        self._timer = timer
-        self._empty_fails = empty_fails
-        self.name = primary.name  # the ETA's rates key on the name
-        self._cool_until: float | None = None
-        self._fallback_pages = 0
-        self._lock = threading.Lock()
-
-    @property
-    def version(self) -> str:
-        return self._primary.version  # the fallback's pages are counted, not named here
-
-    def take_fallback_pages(self) -> int:
-        """Pages the fallback read since the last take, and start again from zero."""
-        with self._lock:
-            taken, self._fallback_pages = self._fallback_pages, 0
-        return taken
-
-    def read(self, image: Image.Image) -> list[OcrLine]:
-        return self.read_with_reader(image)[0]
-
-    def read_with_reader(self, image: Image.Image) -> tuple[list[OcrLine], str]:
-        """The page's lines, and the name of the engine that read them: the primary's, or
-        the fallback's (followed through a fallback that is itself a chain), for
-        ``PageRead.read_by`` (PRD 5 RT2)."""
-        if self._cool_until is not None and self._timer() < self._cool_until:
-            return self._read_fallback(image, OcrOverloaded("ocr_cooling_down"))
-        self._cool_until = None
-        failure: ReadError | OcrOverloaded
-        try:
-            lines = self._primary.read(image)
-        except OcrOverloaded as error:
-            failure = error
-        except ReadError as error:
-            if error.code != "ocr_failed":
-                raise  # the file's own failure: the fallback would not read it either
-            failure = error
-        else:
-            if lines or not self._empty_fails:
-                return lines, self._primary.name
-            return self._read_fallback(image, ReadError("ocr_no_lines"), kept=lines)
-        # Outside the handler, so a failing fallback's error is chained onto the primary's once.
-        read = self._read_fallback(image, failure)
-        if isinstance(failure, OcrOverloaded):
-            self._cool_until = self._timer() + COOL_DOWN_SECONDS  # only once the fallback worked
-        return read
-
-    def _read_fallback(
-        self, image: Image.Image, failure: ReadError | OcrOverloaded, *, kept: list[OcrLine] | None = None
-    ) -> tuple[list[OcrLine], str]:
-        """The page as the fallback reads it, with the name of the engine that read it.
-        When the fallback cannot be built or fails, any cool-down ends, so the next page
-        tries the primary, and ``kept`` (the primary's own lines) is returned or else
-        ``failure`` (its own error) is raised. Logs codes and type names only, never the page."""
-        try:
-            read = lines_and_reader(self._fallback_engine(), image)
-        except Exception as error:
-            self._cool_until = None
-            _log.warning("ocr fallback failed: %s", type(error).__name__, extra={"code": failure.code})
-            if kept is not None:
-                return kept, self._primary.name
-            raise failure from error
-        with self._lock:
-            self._fallback_pages += 1
-        _log.warning("ocr page read by the fallback", extra={"code": failure.code})
-        return read
-
-    def _fallback_engine(self) -> OcrEngine:
-        """The fallback, built on its first need, once."""
-        with self._lock:
-            if self._fallback is None:
-                self._fallback = self._build_fallback()
-            return self._fallback
-
-
 class _LinesAsPages:
     """A ``PageEngine`` over an engine with only ``read`` (``as_page_engine``)."""
 
@@ -780,12 +363,11 @@ class _LinesAsPages:
     def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
         """The engine's lines as a page with no grade, scripts or unsure words of its own,
         and ``no_text`` when it found no line (the readers only send a page with ink on it,
-        R3). ``read_by`` (RT2) is the id of the engine that read it (``read_by_id``):
-        "rapidocr", "paddleocr_vl", or for a ``FallbackOcrEngine`` the one of its two
-        that read this page. Being read by RapidOCR is not, by itself, being read
+        R3). ``read_by`` (RT2) is the id of the engine that read it (``read_by_id``),
+        such as "rapidocr". Being read by RapidOCR is not, by itself, being read
         locally: the Gemini reader adds ``read_locally`` or ``reader_refused`` to a page
         it hands to RapidOCR (Q7), and those issues are what say "the backup reader"."""
-        lines, reader = lines_and_reader(self._engine, image)
+        lines = self._engine.read(image)
         return PageRead(
             page_no=page_no,
             lines=tuple(lines),
@@ -793,28 +375,19 @@ class _LinesAsPages:
             handwritten=False,
             scripts=(),
             issues=() if lines else (NO_TEXT,),
-            read_by=read_by_id(reader),
+            read_by=read_by_id(self._engine.name),
         )
-
-
-def lines_and_reader(engine: OcrEngine, image: Image.Image) -> tuple[list[OcrLine], str]:
-    """``engine``'s lines for ``image`` and the name of the engine that read them: a
-    ``FallbackOcrEngine`` says which of its two did; any other engine is itself. O(1)
-    beyond the reading."""
-    if isinstance(engine, FallbackOcrEngine):
-        return engine.read_with_reader(image)
-    return engine.read(image), engine.name
 
 
 def read_by_id(name: str) -> str:
     """``PageRead.read_by`` for an engine's name (RT2): its OCR_ENGINE id, the name with
-    "_" for "-" ("rapidocr", "paddleocr_vl")."""
+    "_" for "-" ("rapidocr")."""
     return name.replace("-", "_")
 
 
 def as_page_engine(engine: OcrEngine) -> PageEngine:
     """``engine`` with ``read_page`` (PRD 5 G7, G8): itself when it is a ``PageEngine`` (the
-    Gemini reader, ``MeteredOcrEngine``, ``OcrEngines``), else its ``read`` as a page read
+    Gemini reader, ``MeteredOcrEngine``), else its ``read`` as a page read
     by that engine (``read_by`` its id, ``quality`` None). O(1)."""
     return engine if isinstance(engine, PageEngine) else _LinesAsPages(engine)
 
@@ -843,14 +416,14 @@ class DocumentPages:
 @runtime_checkable
 class DocumentEngine(Protocol):
     """An engine that reads one document's pages with its page cache (the Gemini reader),
-    or passes the document on to one that does (``MeteredOcrEngine``, ``OcrEngines``)."""
+    or passes the document on to one that does (``MeteredOcrEngine``)."""
 
     def document(self, pages: DocumentPages) -> contextlib.AbstractContextManager[None]: ...
 
 
 def reading_document(engine: OcrEngine, pages: DocumentPages) -> contextlib.AbstractContextManager[None]:
     """``engine.document(pages)`` when the engine keeps a page cache, else nothing to enter
-    (RapidOCR, PaddleOCR-VL, a test fake): the pipeline opens it around one document's
+    (RapidOCR, a test fake): the pipeline opens it around one document's
     reading, so a page read inside it is looked up and saved under that document. O(1)."""
     return engine.document(pages) if isinstance(engine, DocumentEngine) else contextlib.nullcontext()
 
@@ -882,11 +455,11 @@ class MeteredOcrEngine:
 
     @property
     def name(self) -> str:
-        return self._engine.name  # asked each time: ``OcrEngines`` changes engine per job
+        return self._engine.name
 
     @property
     def version(self) -> str:
-        return self._engine.version  # asked for late: PaddleOCR-VL's comes from its reply
+        return self._engine.version  # asked for late: RapidOCR's names the models a document used
 
     def read(self, image: Image.Image) -> list[OcrLine]:
         started = self._timer()
@@ -963,12 +536,6 @@ class MeteredOcrEngine:
                 )
             self._page_reads[page_no] = read
 
-    def take_fallback_pages(self) -> int:
-        """Pages a ``FallbackOcrEngine`` (or every one ``OcrEngines`` built) read with its
-        fallback since the last take; 0 for any other engine."""
-        engine = self._engine
-        return engine.take_fallback_pages() if isinstance(engine, FallbackOcrEngine | OcrEngines) else 0
-
 
 class GeminiEngineFactory(Protocol):
     """Builds the Gemini reader (PRD 5 G1) for OCR_ENGINE=gemini. In the product it is
@@ -981,188 +548,41 @@ class GeminiEngineFactory(Protocol):
     def __call__(self, settings: Settings, *, pool: RapidOcrPool) -> PageEngine: ...
 
 
-# Every engine here, in the order the upload screen offered them.
-_ENGINES: tuple[type[PaddleVlEngine] | type[RapidOcrEngine], ...] = (PaddleVlEngine, RapidOcrEngine)
-
-
-def _engine_id(engine: type[PaddleVlEngine] | type[RapidOcrEngine]) -> str:
-    """An engine's id: its OCR_ENGINE value, which is its name with "_" for "-"."""
-    return engine.name.replace("-", "_")
-
-
-def _new_engine(settings: Settings, engine_id: str, gemini: GeminiEngineFactory | None = None) -> OcrEngine:
-    """A new engine for OCR_ENGINE or an id ``_engine_choices`` offers; the Gemini reader
-    from ``gemini``, with the process's RapidOCR pool. Without ``gemini`` there is no
-    Gemini reader: build the engines through ``kaagaz.reading.wiring``."""
-    if engine_id == GEMINI:
-        if gemini is None:
-            raise SettingsError("OCR_ENGINE=gemini: build the engines with kaagaz.reading.wiring")
-        return gemini(settings, pool=shared_pool(settings.cpu_workers))
-    (engine,) = (engine for engine in _ENGINES if _engine_id(engine) == engine_id)
-    return engine.from_settings(settings)
-
-
-def _has_fallback(settings: Settings) -> bool:
-    """Whether Auto reads a page PaddleOCR-VL can't with RapidOCR: only with the ocr extra."""
-    return settings.ocr_engine == _engine_id(PaddleVlEngine) and _installed_version("rapidocr") is not None
-
-
-def _auto_engine(
-    settings: Settings, engine: Callable[[str], OcrEngine], timer: Callable[[], float] = time.monotonic
-) -> OcrEngine:
-    """The usual chain for OCR_ENGINE (not "none"), its engines from ``engine(id)``."""
-    primary = engine(settings.ocr_engine)
-    if not _has_fallback(settings):
-        return primary  # Gemini, RapidOCR, or PaddleOCR-VL with no ocr extra: no fallback here
-    rapidocr = _engine_id(RapidOcrEngine)
-    return FallbackOcrEngine(primary, lambda: engine(rapidocr), timer=timer)  # RapidOCR built on first need
-
-
 def build_ocr_engine(settings: Settings, *, gemini: GeminiEngineFactory | None = None) -> OcrEngine | None:
-    """The engine for OCR_ENGINE, None for "none". The Gemini reader is built by ``gemini``,
-    only for OCR_ENGINE=gemini (``wiring.build_ocr_engine`` gives the product's)."""
+    """The engine for OCR_ENGINE, None for "none": RapidOCR, or the Gemini reader from
+    ``gemini`` with the process's RapidOCR pool. Without ``gemini`` there is no Gemini
+    reader: build it through ``kaagaz.reading.wiring``."""
     if settings.ocr_engine == "none":
         return None
-    return _auto_engine(settings, lambda engine_id: _new_engine(settings, engine_id, gemini))
+    if settings.ocr_engine != GEMINI:
+        return RapidOcrEngine()
+    if gemini is None:
+        raise SettingsError("OCR_ENGINE=gemini: build the engines with kaagaz.reading.wiring")
+    return gemini(settings, pool=shared_pool(settings.cpu_workers))
 
 
 def ocr_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
     """The readers an upload may choose (PRD 5 RT3: no reader choice at upload): one,
     Auto, with ``id``, ``title``, ``hint``, ``available`` and ``reason``, so the "Scan
-    with" select hides itself. Pure: from the settings and what is installed, nothing
-    built or called, so the api and the worker agree. O(1)."""
-    return _engine_choices(settings)[:1]
-
-
-def _engine_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
-    """Auto first, then every engine here, available or with its ``reason``: what a stored
-    choice may still pick in ``OcrEngines.choose``. O(engines)."""
-    choices: list[dict[str, str | bool | None]] = [
-        {"id": AUTO, "title": "Auto", "hint": _auto_hint(settings), "available": True, "reason": None}
-    ]
-    for engine in _ENGINES:
-        reason = _READING_OFF if settings.ocr_engine == "none" else engine.unavailable(settings)
-        choices.append(
-            {
-                "id": _engine_id(engine),
-                "title": engine.title,
-                "hint": engine.hint,
-                "available": reason is None,
-                "reason": reason,
-            }
-        )
-    return choices
+    with" select hides itself. Pure: from the settings only, nothing built or called,
+    so the api and the worker agree. O(1)."""
+    return [{"id": AUTO, "title": "Auto", "hint": _auto_hint(settings), "available": True, "reason": None}]
 
 
 def _auto_hint(settings: Settings) -> str:
-    """What Auto does on this server, in the engines' titles: words people know, never
-    an engine's name (PRD 5 U8)."""
+    """What Auto does on this server, in words people know, never an engine's name
+    (PRD 5 U8)."""
     if settings.ocr_engine == "none":
         return "Scans wait until this server has a scan reader"
     if settings.ocr_engine == GEMINI:
         return "The usual reader here: the main reader"
-    (primary,) = (engine for engine in _ENGINES if _engine_id(engine) == settings.ocr_engine)
-    if not _has_fallback(settings):
-        return f"The usual reader here: the {primary.title.lower()}"
-    backup = RapidOcrEngine.title.lower()
-    return f"The usual reader here: the {primary.title.lower()}, then the {backup} for a page it can't read"
-
-
-class OcrEngines:
-    """The worker's engine (see the module notes): Auto, or for one job the chain
-    ``choose`` picks. Engines and chains are built on first need, once each. One
-    job at a time uses it; ``choose`` is entered before its pages are read, so the
-    page threads (PRD 5 G8) only read ``_active``. O(1) per page beyond the engines'.
-
-    ``engine(id)`` builds an engine (tests give fakes); ``timer`` is the cool-downs';
-    ``gemini`` builds the Gemini reader (``build_ocr_engine``).
-    """
-
-    def __init__(
-        self,
-        settings: Settings,
-        *,
-        engine: Callable[[str], OcrEngine] | None = None,
-        timer: Callable[[], float] = time.monotonic,
-        gemini: GeminiEngineFactory | None = None,
-    ) -> None:
-        if settings.ocr_engine == "none":
-            raise ValueError("OCR_ENGINE=none has no engine to choose")
-        self._settings = settings
-        self._new = engine or (lambda engine_id: _new_engine(settings, engine_id, gemini))
-        self._timer = timer
-        self._built: dict[str, OcrEngine] = {}
-        self._chains: dict[str, FallbackOcrEngine] = {}
-        self._auto = _auto_engine(settings, self._engine, timer)
-        self._active = self._auto
-
-    @property
-    def name(self) -> str:
-        return self._active.name
-
-    @property
-    def version(self) -> str:
-        return self._active.version
-
-    def read(self, image: Image.Image) -> list[OcrLine]:
-        return self._active.read(image)
-
-    def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
-        """The engine in use's ``read_page`` (``as_page_engine``)."""
-        return as_page_engine(self._active).read_page(image, page_no=page_no)
-
-    def document(self, pages: DocumentPages) -> contextlib.AbstractContextManager[None]:
-        """Auto's document context (``reading_document``): a chosen chain falls back to
-        Auto, so Auto is the engine that keeps the page cache."""
-        return reading_document(self._auto, pages)
-
-    @contextlib.contextmanager
-    def choose(self, choice: str | None) -> Iterator[bool]:
-        """Read with ``choice``'s chain until the block ends, then with Auto again, even
-        when it raises. Yields False when ``choice`` is not available here (Auto then)."""
-        self._active, honoured = self._chain(choice)
-        try:
-            yield honoured
-        finally:
-            self._active = self._auto
-
-    def take_fallback_pages(self) -> int:
-        """Pages any of the chains read with its fallback since the last take, summed."""
-        chains = [self._auto, *self._chains.values()]
-        return sum(chain.take_fallback_pages() for chain in chains if isinstance(chain, FallbackOcrEngine))
-
-    def _engine(self, engine_id: str) -> OcrEngine:
-        if engine_id not in self._built:
-            self._built[engine_id] = self._new(engine_id)
-        return self._built[engine_id]
-
-    def _chain(self, choice: str | None) -> tuple[OcrEngine, bool]:
-        """(the engine for ``choice``, honoured). Auto's first engine is Auto itself. Uploads
-        no longer choose (RT3), but a stored choice of an engine this server has is still
-        read with it."""
-        if choice in (None, AUTO, self._settings.ocr_engine):
-            return self._auto, True
-        offered = {item["id"] for item in _engine_choices(self._settings) if item["available"]}
-        if choice not in offered:
-            return self._auto, False
-        if choice not in self._chains:
-            chosen = self._engine(choice)
-            self._chains[choice] = FallbackOcrEngine(
-                chosen, lambda: self._auto, timer=self._timer, empty_fails=True
-            )
-        return self._chains[choice], True
-
-
-def build_ocr_engines(settings: Settings, *, gemini: GeminiEngineFactory | None = None) -> OcrEngines | None:
-    """The worker's ``OcrEngines``; None with OCR_ENGINE=none (no scan is read). ``gemini``
-    as in ``build_ocr_engine``."""
-    return None if settings.ocr_engine == "none" else OcrEngines(settings, gemini=gemini)
+    return f"The usual reader here: the {RapidOcrEngine.title.lower()}"
 
 
 def ocr_spans(lines: list[OcrLine], page_no: int, width_px: int, height_px: int) -> list[Span]:
     """Pixel boxes to spans with page fractions, clamped to 0..1, origin "ocr".
 
-    Block mode, when any line has a kind (PaddleOCR-VL, the Gemini reader): one
+    Block mode, when any line has a kind (the Gemini reader): one
     span per line, in the order given, never re-sorted, with its kind, table and
     box source (PRD 5 G5). Line mode (RapidOCR): through the shared line rule. A
     line with no text, a box with nothing inside the page, or a confidence that is
@@ -1207,7 +627,7 @@ def ocr_spans(lines: list[OcrLine], page_no: int, width_px: int, height_px: int)
 def is_word_mark(span: Span) -> bool:
     """Whether ``span`` is a word mark (PRD 5 F3: an unsure or illegible word of a line,
     with its own sub-box), not a line: drawn on the page, never a piece or a value.
-    ``ocr_spans`` makes them with no kind; a line from a layout reader always has one."""
+    ``ocr_spans`` makes them with no kind; a line from the Gemini reader always has one."""
     return span.origin == "ocr" and span.kind is None and span.quality in WORD_MARK_QUALITIES
 
 

@@ -24,12 +24,12 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import JobFailed
-from kaagaz.pipeline import DocumentContent, DocumentProcessor, OcrChooser, Progress, ReadingSocket, RunTotals
+from kaagaz.pipeline import DocumentContent, DocumentProcessor, Progress, ReadingSocket, RunTotals
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.preparing.pages import prepare_pages
-from kaagaz.reading.ocr import FallbackOcrEngine, MeteredOcrEngine, OcrEngine, OcrEngines, OcrLine
+from kaagaz.reading.ocr import MeteredOcrEngine, OcrEngine, OcrLine
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.spans import PageInfo, ReadError, Span
+from kaagaz.reading.spans import PageInfo, Span
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from kaagaz.settings import Settings
@@ -203,7 +203,6 @@ def rig(
     log: list[str] | None = None,
     max_check_crops: int = 200,
     settings: Settings = SETTINGS,
-    engines: OcrChooser | None = None,
     moving_clock: bool = False,
 ) -> Rig:
     """``moving_clock``: the clock moves with the timer, from T0, else it stands at T0."""
@@ -244,7 +243,6 @@ def rig(
             runs=runs,
             progress=progress,
             ocr_meter=meter,
-            ocr_engines=engines,
             clock=(lambda: T0 + timedelta(seconds=timer() - start)) if moving_clock else (lambda: T0),
             timer=timer,
             max_check_crops=max_check_crops,
@@ -615,30 +613,6 @@ class RunTotalsTest(unittest.TestCase):
         system.processor(letter_only, beat)
         self.assertEqual(system.totals(letter_only).config, {**CONFIG, **timings})  # nothing was drawn lower
 
-    def test_a_run_records_the_pages_the_fallback_ocr_read(self) -> None:
-        """Pages PaddleOCR-VL failed on are read by RapidOCR: the run's set-up counts them,
-        per run, and its engine is still named after the primary (the ETA keys on it)."""
-
-        class FailingOcr:
-            name, version = "paddleocr-vl", "9"
-
-            def read(self, image: Image.Image) -> list[OcrLine]:
-                raise ReadError("ocr_failed")
-
-        def engine(timer: Timer) -> OcrEngine:
-            return FallbackOcrEngine(FailingOcr(), lambda: TimedOcr(timer), timer=timer)
-
-        system = rig(ocr=engine)
-        timings = {"seconds_reading": 5.0, "seconds_after_reading": 0.0, "seconds_preparing": 0.0}
-        job = system.job(make_pdf([SCANNED, SCANNED]))
-        system.processor(job, beat)
-        totals = system.totals(job)
-        self.assertEqual(totals.config, {**CONFIG, "pages_ocr_fallback": 2, **timings})
-        self.assertEqual((totals.ocr_engine, totals.pages_ocr), ("paddleocr-vl 9", 2))
-        one = system.job(make_pdf([SCANNED, WHITE]))
-        system.processor(one, beat)
-        self.assertEqual(system.totals(one).config["pages_ocr_fallback"], 1)  # this run's only
-
     def test_the_ocr_meter_starts_each_run_from_zero(self) -> None:
         """AR11: a page counted before the run (or by an earlier one) is not this run's."""
         system = rig(ocr=TimedOcr)
@@ -666,72 +640,16 @@ class RunTotalsTest(unittest.TestCase):
 
 
 class OcrChoiceTest(unittest.TestCase):
-    """The upload's reader (PRD 4 #17): it reads this job only, and the run says so."""
+    """PRD 5 RT3: a reader an upload chose before is ignored; the run is as any other."""
 
-    def engines(self, timer: Timer, rapid: OcrEngine, *, rapidocr: str | None = "3.9.2") -> OcrEngines:
-        paddle = TimedOcr(timer)
-        paddle.name = "paddleocr-vl"
-        installed = mock.patch("kaagaz.reading.ocr._installed_version", return_value=rapidocr)
-        installed.start()
-        self.addCleanup(installed.stop)
-        settings = make_settings(ocr_engine="paddleocr_vl", ocr_url="http://ocr:8080")
-        return OcrEngines(settings, engine={"paddleocr_vl": paddle, "rapidocr": rapid}.__getitem__)
-
-    def chosen_job(self, system: Rig, choice: str) -> Job:
-        upload = system.upload.accept(CUSTOMER, io.BytesIO(make_pdf([SCANNED])), ocr_choice=choice)
-        return Job(CUSTOMER, upload.document_id)
-
-    def test_a_chosen_reader_reads_the_job_and_the_run_keeps_the_choice(self) -> None:
-        timer = Timer()
-        rapid = TimedOcr(timer)
-        rapid.name = "rapidocr"
-        engines = self.engines(timer, rapid)
-        system = rig(ocr=engines, engines=engines)
-        job = self.chosen_job(system, "rapidocr")
+    def test_a_stored_choice_is_read_with_the_one_engine_and_the_run_is_as_before(self) -> None:
+        system = rig(ocr=TimedOcr)
+        upload = system.upload.accept(CUSTOMER, io.BytesIO(make_pdf([SCANNED])), ocr_choice="rapidocr")
+        job = Job(CUSTOMER, upload.document_id)
         system.processor(job, beat)
         totals = system.totals(job)
-        self.assertEqual((totals.ocr_engine, rapid.calls), ("rapidocr 7", 1))
-        self.assertEqual(
-            {key: totals.config[key] for key in ("ocr_choice", "ocr_choice_honoured")},
-            {"ocr_choice": "rapidocr", "ocr_choice_honoured": True},
-        )
-        self.assertEqual(engines.name, "paddleocr-vl")  # Auto again for the next job
-        auto = system.job(make_pdf([SCANNED, WHITE]))
-        system.processor(auto, beat)
-        self.assertNotIn("ocr_choice", system.totals(auto).config)  # an Auto run is as before
-        self.assertEqual(system.totals(auto).ocr_engine, "paddleocr-vl 7")
-
-    def test_a_job_that_fails_still_ends_its_choice_after_its_run(self) -> None:
-        timer = Timer()
-
-        class BrokenRapid:
-            name, version = "rapidocr", "3"
-
-            def read(self, image: Image.Image) -> list[OcrLine]:
-                raise ReadError("corrupt_file")
-
-        engines = self.engines(timer, BrokenRapid())
-        system = rig(ocr=engines, engines=engines)
-        job = self.chosen_job(system, "rapidocr")
-        with self.assertRaises(JobFailed):
-            system.processor(job, beat)
-        totals = system.totals(job)
-        self.assertEqual((totals.status, totals.ocr_engine), ("failed", "rapidocr 3"))
-        self.assertTrue(totals.config["ocr_choice_honoured"])
-        self.assertEqual(engines.name, "paddleocr-vl")
-
-    def test_a_choice_this_worker_lacks_is_read_with_auto_and_logged_by_code(self) -> None:
-        timer = Timer()
-        engines = self.engines(timer, TimedOcr(timer), rapidocr=None)
-        for system in (rig(ocr=engines, engines=engines), rig()):  # RapidOCR not installed; no OCR at all
-            job = self.chosen_job(system, "rapidocr")
-            with self.assertLogs("kaagaz.pipeline", level="WARNING") as logs:
-                system.processor(job, beat)
-            config = system.totals(job).config
-            self.assertEqual((config["ocr_choice"], config["ocr_choice_honoured"]), ("rapidocr", False))
-            (record,) = [r for r in logs.records if r.__dict__.get("code") == "ocr_choice_unavailable"]
-            self.assertEqual(record.getMessage(), "ocr choice not available, read with auto")
-            self.assertEqual(record.__dict__["document_id"], job.document_id)
+        self.assertEqual((totals.status, totals.pages_ocr), ("ready", 1))
+        self.assertFalse({"ocr_choice", "ocr_choice_honoured"} & set(totals.config))
 
 
 class VisionTest(unittest.TestCase):

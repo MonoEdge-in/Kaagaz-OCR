@@ -29,7 +29,6 @@ from kaagaz.reading.ocr import (
     RapidOcrEngine,
     as_page_engine,
     build_ocr_engine,
-    build_ocr_engines,
     is_word_mark,
     ocr_spans,
     reading_document,
@@ -225,12 +224,6 @@ class BuildOcrEngineTest(unittest.TestCase):
     def test_rapidocr_setting_builds_rapidocr(self) -> None:
         self.assertIsInstance(build_ocr_engine(make_settings(ocr_engine="rapidocr")), RapidOcrEngine)
 
-    def test_paddleocr_vl_setting_builds_the_paddle_engine_without_calling_it(self) -> None:
-        engine = build_ocr_engine(make_settings(ocr_engine="paddleocr_vl", ocr_url="http://ocr:8080"))
-        self.assertIsInstance(engine, ocr.FallbackOcrEngine)  # RapidOCR behind it (test_ocr_fallback.py)
-        assert engine is not None
-        self.assertEqual((engine.name, engine.version), ("paddleocr-vl", "unknown"))
-
 
 class OcrSpansTest(unittest.TestCase):
     def test_pixels_become_page_fractions(self) -> None:
@@ -273,7 +266,7 @@ class OcrSpansTest(unittest.TestCase):
 
 
 class BlockModeTest(unittest.TestCase):
-    """A layout engine (PaddleOCR-VL) gives one line per block, already in reading order."""
+    """The Gemini reader gives one line per block, already in reading order."""
 
     def test_each_block_is_one_span_in_the_given_order_with_kind_table_and_origin(self) -> None:
         lines = [
@@ -338,7 +331,7 @@ class MeteredOcrEngineTest(unittest.TestCase):
     def test_it_has_the_engines_name_and_its_latest_version(self) -> None:
         engine = self.Engine([0.0])
         meter = MeteredOcrEngine(engine, timer=lambda: 0.0)
-        engine.version = "2"  # PaddleOCR-VL's comes from its last reply
+        engine.version = "2"  # an engine's version may change after a page
         self.assertEqual((meter.name, meter.version), ("fake-ocr", "2"))
 
 
@@ -406,23 +399,6 @@ DOCUMENT_A = DocumentPages(
 )
 
 
-class PaddleLike:
-    """An engine with only ``read`` and PaddleOCR-VL's name; with ``fails``, a page it
-    can't read (``ocr_failed``)."""
-
-    name = ocr.PaddleVlEngine.name
-    version = "0.1"
-
-    def __init__(self, lines: list[OcrLine]) -> None:
-        self.lines = lines
-        self.fails = False
-
-    def read(self, image: Image.Image) -> list[OcrLine]:
-        if self.fails:
-            raise ReadError("ocr_failed")
-        return self.lines
-
-
 class LinesOnly:
     """An engine with only ``read``, as RapidOCR and the older test fakes."""
 
@@ -468,13 +444,12 @@ class AsPageEngineTest(unittest.TestCase):
         read = as_page_engine(LinesOnly([])).read_page(PAGE, page_no=2)
         self.assertEqual((read.lines, read.issues), ((), ("no_text",)))
 
-    def test_fx3_rt2_paddleocr_vl_pages_say_paddleocr_vl(self) -> None:
-        """Review FX3: read_by is the id of the engine that read the page, not always
-        "rapidocr"."""
-        read = as_page_engine(PaddleLike([OcrLine("x", 0, 0, 1, 1, None, "paragraph")])).read_page(
-            PAGE, page_no=1
-        )
-        self.assertEqual(read.read_by, "paddleocr_vl")
+    def test_fx3_rt2_a_page_says_the_id_of_the_engine_that_read_it(self) -> None:
+        """Review FX3: read_by is the id of the engine that read the page (its name with
+        "_" for "-"), not always "rapidocr"."""
+        engine = LinesOnly([OcrLine("x", 0, 0, 1, 1, None, "paragraph")])
+        engine.name = "other-reader"
+        self.assertEqual(as_page_engine(engine).read_page(PAGE, page_no=1).read_by, "other_reader")
 
     def test_fx3_rt2_keyless_rapidocr_pages_say_rapidocr_without_read_locally(self) -> None:
         """OCR_ENGINE=rapidocr (the keyless mode): RapidOCR is the main reader there, so
@@ -483,17 +458,6 @@ class AsPageEngineTest(unittest.TestCase):
         self.assertEqual((read.read_by, read.issues), ("rapidocr", ()))
         self.assertNotIn("read_locally", read.issues)
         self.assertNotIn("reader_refused", read.issues)
-
-    def test_fx3_rt2_a_fallback_chain_names_the_engine_that_read_each_page(self) -> None:
-        """FallbackOcrEngine (PaddleOCR-VL, then RapidOCR): a page PaddleOCR-VL read says
-        paddleocr_vl; a page it failed on, read by RapidOCR, says rapidocr."""
-        primary = PaddleLike([OcrLine("x", 0, 0, 1, 1, None, "paragraph")])
-        chain = as_page_engine(
-            ocr.FallbackOcrEngine(primary, lambda: LinesOnly([OcrLine("y", 0, 0, 1, 1, 0.9)]))
-        )
-        self.assertEqual(chain.read_page(PAGE, page_no=1).read_by, "paddleocr_vl")
-        primary.fails = True
-        self.assertEqual(chain.read_page(PAGE, page_no=2).read_by, "rapidocr")
 
 
 class MeteredPageReadsTest(unittest.TestCase):
@@ -604,7 +568,7 @@ class GeminiFactoryTest(unittest.TestCase):
         self.assertEqual(pool.size, 3)
 
     def test_the_products_engines_take_it_from_the_gemini_ocr_module(self) -> None:
-        """wiring.build_ocr_engine(s): the factory imports the module by its path."""
+        """wiring.build_ocr_engine: the factory imports the module by its path."""
         module = ModuleType(GEMINI_OCR_MODULE)
         factory = self.factory
 
@@ -615,22 +579,20 @@ class GeminiFactoryTest(unittest.TestCase):
 
         module.__dict__["GeminiEngine"] = GeminiEngine
         with mock.patch.dict(sys.modules, {GEMINI_OCR_MODULE: module}):
-            self.assertIs(wiring.build_ocr_engine(GEMINI_SETTINGS), self.engine)
-            engines = wiring.build_ocr_engines(GEMINI_SETTINGS)
-            assert engines is not None
-            engines.read_page(PAGE, page_no=2)
-        self.assertEqual((len(self.calls), self.engine.pages), (2, [2]))
+            engine = wiring.build_ocr_engine(GEMINI_SETTINGS)
+            self.assertIs(engine, self.engine)
+            as_page_engine(self.engine).read_page(PAGE, page_no=2)
+        self.assertEqual((len(self.calls), self.engine.pages), (1, [2]))
 
     def test_without_a_factory_there_is_no_gemini_reader(self) -> None:
         """The reader socket's module never imports the Gemini reader's (no import cycle)."""
-        for build in (build_ocr_engine, build_ocr_engines):
-            with self.subTest(build.__name__), self.assertRaises(SettingsError):
-                build(GEMINI_SETTINGS)
+        with self.assertRaises(SettingsError):
+            build_ocr_engine(GEMINI_SETTINGS)
 
     def test_the_worker_engines_and_the_meter_pass_numbered_pages_to_it(self) -> None:
-        engines = build_ocr_engines(GEMINI_SETTINGS, gemini=self.factory)
-        assert engines is not None
-        meter = MeteredOcrEngine(engines, timer=lambda: 0.0)
+        engine = build_ocr_engine(GEMINI_SETTINGS, gemini=self.factory)
+        assert engine is not None
+        meter = MeteredOcrEngine(engine, timer=lambda: 0.0)
         read = meter.read_page(PAGE, page_no=7)
         self.assertEqual((read.read_by, self.engine.pages), ("google/gemini-3.1-pro-preview", [7]))
         self.assertEqual((meter.name, meter.take_page_reads()), ("gemini", {7: read}))
@@ -669,9 +631,9 @@ class KeylessModeTest(unittest.TestCase):
             mock.patch.object(ocr, "build_rapidocr", lambda params: model),
             mock.patch.object(wiring, "build_gemini_engine", never),
         ):
-            engines = wiring.build_ocr_engines(settings)
-            assert engines is not None
-            socket = build_reader_socket(settings, MeteredOcrEngine(engines, timer=lambda: 0.0))
+            engine = wiring.build_ocr_engine(settings)
+            assert engine is not None
+            socket = build_reader_socket(settings, MeteredOcrEngine(engine, timer=lambda: 0.0))
             spans = socket.read(sniff.PNG, png.getvalue())
         self.assertEqual([(span.text, span.origin) for span in spans], [("INVOICE", "ocr")])
         self.assertEqual(threads, {threading.current_thread().name})

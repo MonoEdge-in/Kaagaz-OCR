@@ -27,11 +27,11 @@ from kaagaz.eta import RunTiming
 from kaagaz.ingestion.ports import DocumentRecord
 from kaagaz.jobs.worker import JobFailed, Superseded
 from kaagaz.pipeline import FinishedRun, Progress, RunTotals
+from kaagaz.reading.rapid_pool import DEVANAGARI_REC_MODEL
 from kaagaz.scanning.gate import REJECTION_CODES, DocumentStatus
 from tests.db_support import insert_document, new_customer, violation, wait_until_blocked
 from tests.fakes import MemoryDocuments, MemoryProgress, MemoryRuns, MemoryStatuses, MemoryStorage
 from tests.test_api_review import _named_database
-from tests.test_ocr_server import VERSION as OCR_VERSION
 from tests.test_pipeline_store_db import EMPTY, content, counts, new_document, new_session, rows
 
 pytestmark = pytest.mark.db
@@ -162,9 +162,10 @@ def test_finish_run_keeps_a_long_engine_name_and_cuts_a_longer_one(db: Database)
     assert {name: stored[cut][name] for name in long} == {name: value[:300] for name, value in long.items()}
 
 
-def test_finish_run_keeps_the_real_paddleocr_vl_engine_name_untouched(db: Database) -> None:
-    """The name a PaddleOCR-VL run records: the engine, a space, and its reply's version."""
-    engine = "paddleocr-vl " + OCR_VERSION
+def test_finish_run_keeps_a_real_engine_name_untouched(db: Database) -> None:
+    """The name a RapidOCR run records: the engine, a space, and its version with the
+    Devanagari model it used."""
+    engine = f"rapidocr 3.9.2;rec={DEVANAGARI_REC_MODEL}"
     customer, _ = new_customer(db)
     doc = new_document(db, customer)
     run = PgRuns(db).start(customer, doc, now=T0)

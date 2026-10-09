@@ -462,7 +462,7 @@ class NameTest(unittest.TestCase):
     def test_the_version_names_the_engine_as_it_is_after_reading(self) -> None:
         ocr = FakeOcr()
         reader = reader_of(ocr, max_pages=1, max_image_pixels=1)
-        ocr.version = "8"  # PaddleOCR-VL's version comes from its reply
+        ocr.version = "8"  # a version may change after a page
         self.assertEqual(reader.version, f"{pdfplumber.__version__}+fake-ocr-8")
 
 
