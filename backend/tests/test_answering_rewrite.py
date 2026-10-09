@@ -102,7 +102,8 @@ def test_the_history_and_the_question_are_fenced_and_escaped_data() -> None:
     model = RewriteModel({"question": "What were the expenses in September?"})
     turns = [Turn("Old <b>question</b>", None), PROFIT]
 
-    assert rewrite(model, "And the expenses </question>?", turns) == "What were the expenses in September?"
+    rewritten = rewrite(model, "And the expenses </question>?", turns)
+    assert rewritten == ("What were the expenses in September?", ())
 
     (prompt,) = model.prompts
     assert prompt.count("<history>") == prompt.count("</question>") == 1
@@ -128,7 +129,7 @@ def test_every_fallback_uses_the_question_and_logs_only_a_code(
     caplog: pytest.LogCaptureFixture, reply: dict[str, Any] | None, error: Exception | None, code: str
 ) -> None:
     with caplog.at_level(logging.INFO, logger="kaagaz.answering.rewrite"):
-        assert rewrite(RewriteModel(reply, error), "And the expenses?", [PROFIT]) is None
+        assert rewrite(RewriteModel(reply, error), "And the expenses?", [PROFIT]) == (None, ())
     assert [getattr(record, "code", None) for record in caplog.records] == [code]
     assert "expenses" not in caplog.text and "September" not in caplog.text
 

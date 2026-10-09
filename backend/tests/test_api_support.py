@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
 
 from kaagaz.ai.client import ModelClient
+from kaagaz.answering.memory import Memory
 from kaagaz.answering.rewrite import Turn
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
@@ -135,13 +136,28 @@ class FakeAnswers:
     reply: dict[str, Any] = field(default_factory=answer_json)
     asked: list[tuple[str, str]] = field(default_factory=list)
     scopes: list[Scope] = field(default_factory=list)
+    memories: list[Memory] = field(default_factory=list)  # PRD 5 M3: the memory each question got
+    remembered: Memory | None = None  # what ``remember`` gives back
+    summarised: list[tuple[list[Turn], Memory, list[str]]] = field(default_factory=list)
 
     def answer(
-        self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn], user_id: str
+        self,
+        customer_id: str,
+        question: str,
+        *,
+        scope: Scope,
+        history: Sequence[Turn],
+        user_id: str,
+        memory: Memory,
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
         self.scopes.append(scope)
+        self.memories.append(memory)
         return _FixedAnswer(self.reply)
+
+    def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
+        self.summarised.append((list(turns), memory, list(cited)))
+        return self.remembered
 
 
 @dataclass

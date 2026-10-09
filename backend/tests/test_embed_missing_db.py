@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.db.engine import Database
+from kaagaz.search.hybrid import vector_literal
 from kaagaz.search.indexing import MissingPass, embed_missing, recipe_tag
 from tests.db_support import insert_document, new_customer
 from tests.test_indexing_db import FakeModel
@@ -65,14 +66,48 @@ def test_missing_vectors_are_filled_and_a_second_pass_does_nothing(db: Database)
     add_pieces(db, customer, second, [("three", None)])
     model = SameVector()
 
-    assert embed_missing(db, model, None) == MissingPass(3, None)
+    assert embed_missing(db, model, None) == MissingPass(4, None)
 
-    assert sorted(item for call in model.calls for item in call) == ["one", "three", "two"]
-    assert tags(db, customer, first) == [CURRENT, RECIPE, CURRENT]
+    # M5: "kept" has another tag (RECIPE), so it is stale and embedded again.
+    assert sorted(item for call in model.calls for item in call) == ["kept", "one", "three", "two"]
+    assert tags(db, customer, first) == [CURRENT, CURRENT, CURRENT]
     assert tags(db, customer, second) == [CURRENT]
     idle = SameVector()
     assert embed_missing(db, idle, None) == MissingPass(0, None)
     assert idle.calls == []
+
+
+def test_m5_a_document_whose_only_stale_vector_is_its_sections_is_filled(db: Database) -> None:
+    """PRD 5 M5 and CX2: EmbedMissing finds a section summary with a stale tag too."""
+    drain(db)
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    add_pieces(db, customer, document, [("Twelve holidays.", axis(1))], model=CURRENT)
+    with db.customer(customer) as conn:
+        conn.execute(
+            text(
+                "INSERT INTO document_sections (customer_id, document_id, seq, path, page_from, page_to,"
+                " piece_seq_from, piece_seq_to, summary, embedding, embed_recipe) VALUES (:c, :d, 0,"
+                " CAST(:path AS text[]), 1, 1, 0, 0, :summary, CAST(:v AS halfvec(1024)), :old)"
+            ),
+            {
+                "c": customer,
+                "d": document,
+                "path": [],
+                "summary": "Holidays.",
+                "v": vector_literal(axis(2)),
+                "old": RECIPE,
+            },
+        )
+    model = SameVector()
+
+    assert embed_missing(db, model, None) == MissingPass(1, None)
+    assert model.calls == [["Holidays."]]
+    with db.customer(customer) as conn:
+        recipe = text(
+            "SELECT embed_recipe FROM document_sections WHERE customer_id = :c AND document_id = :d"
+        )
+        assert conn.execute(recipe, {"c": customer, "d": document}).scalar_one() == CURRENT
 
 
 def test_trashed_not_ready_and_older_version_pieces_are_left_alone(db: Database) -> None:

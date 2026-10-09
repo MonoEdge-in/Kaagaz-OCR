@@ -9,6 +9,7 @@ API calls, nothing more.
 from collections.abc import Sequence
 from typing import Any, Protocol
 
+from kaagaz.answering.memory import Memory
 from kaagaz.answering.rewrite import Turn
 from kaagaz.ingestion.ports import BlobStorage, JobQueue
 from kaagaz.search.scope import Scope
@@ -33,9 +34,22 @@ class AnswerLike(Protocol):
 
 class Answers(Protocol):
     def answer(
-        self, customer_id: str, question: str, *, scope: Scope, history: Sequence[Turn], user_id: str
+        self,
+        customer_id: str,
+        question: str,
+        *,
+        scope: Scope,
+        history: Sequence[Turn],
+        user_id: str,
+        memory: Memory,
     ) -> AnswerLike:
         """``question`` is the stripped question text; ``scope`` is resolved for this customer;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id`` is the
-        asker, whose own words (My words) only may help."""
+        asker, whose own words (My words) only may help; ``memory`` is the conversation's
+        (PRD 5 M3), its documents still live, for the follow-up rewrite only."""
+        ...
+
+    def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
+        """M3: the conversation's new summary and memory from ``memory`` and the ``turns``
+        since, oldest first, with the documents ``cited`` in them; None to write nothing."""
         ...

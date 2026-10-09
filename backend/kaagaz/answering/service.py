@@ -52,6 +52,25 @@ The steps (docs/architecture.md):
    (``reading_note``, ``unreadable_pages``); a cited text that holds a word the reader
    was unsure of, or couldn't read, makes its citation ``hard_to_read`` and the answer
    needs review, with "Part of this text was hard to read." One more statement for each.
+10. Context across pages (PRD 5 CX5, CX6, M2; the ``Context`` port, the PostgreSQL one
+    with the PostgreSQL retriever, else only the one a test passes). With the model on,
+    when the scope's pieces add up to ANSWER_WHOLE_DOC_TOKENS or fewer (0: never), the
+    evidence is every piece in reading order, and the gate asks only that every number
+    asked is in them (``holds_numbers``: the keyword rule would turn away an English
+    question about a Hindi or Marathi document; the model and verify decide, and the label
+    is judged per sentence as ever); no search, aspect, topic, section or neighbour.
+    Otherwise the rewrite also lists up to QUERY_ASPECTS_MAX aspects (even with no
+    history), each searched with the question and fused (``TranslatedSearch``, one
+    batched embed); after the gate, the pieces of the topics the question, an aspect or a
+    hit names (TOPIC_EXPAND_MAX_PIECES a document, never a hit, the nearest a hit first)
+    and of the two best sections (a word match, or a summary at least
+    ANSWER_MIN_EVIDENCE_SCORE near in meaning; TOPIC_EXPAND_MAX_PIECES a section) come
+    after the hits, then the neighbours. Each document
+    that supplies the model's evidence adds one card line, "AI summary, not evidence",
+    with no id, so it is never cited. M4: the evidence is cut from its end (neighbours,
+    then topic and section pieces, then hits), and the cards before any of it.
+11. Memory (PRD 5 M3, kaagaz/answering/memory.py): the conversation's summary and memory
+    go to the rewrite only; ``remember`` writes a new one.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
@@ -70,7 +89,7 @@ most ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
@@ -93,14 +112,18 @@ from kaagaz.answering.draft import (
     SYSTEM_PROMPT,
     Draft,
     DraftSentence,
+    card_line,
     extractive_draft,
+    fit_cards,
     fit_evidence,
     model_draft,
 )
 from kaagaz.answering.evidence import (
     CAPPED,
+    Context,
     Evidence,
     Gate,
+    Hit,
     PgRetriever,
     Retriever,
     Translated,
@@ -109,6 +132,8 @@ from kaagaz.answering.evidence import (
     closest_documents,
     enough_evidence,
     has_word,
+    holds_numbers,
+    looks_like_instructions,
     number_evidence,
     numbers_asked,
     valid_regions,
@@ -127,12 +152,15 @@ from kaagaz.answering.hard_to_read import (
 )
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
+from kaagaz.answering.memory import NO_MEMORY, Memory, allowed_tokens, prompt_text, summarise
+from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
+from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
 from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.translate import target_scripts, translate
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
-from kaagaz.chunking.script import ascii_digits, has_other_script_letters
+from kaagaz.chunking.script import ascii_digits, has_other_script_letters, spaced_words
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.indexing import query_input, recipe_tag
@@ -238,6 +266,8 @@ class AnswerService:
     is translated with (its own timeout), used only with ANSWER_TRANSLATE_QUESTION on.
     ``reading``: the pages that couldn't be read and the word marks (F6); the PostgreSQL
     one with the PostgreSQL retriever, else only the one a test passes, as
+    ``translated_search``; so is ``context``, PRD 5's whole documents, topics, sections
+    and cards (step 10 of the module docstring)."""
     ``translated_search``."""
     is translated with (its own timeout), used only with ANSWER_TRANSLATE_QUESTION on."""
 
@@ -255,21 +285,29 @@ class AnswerService:
         translator: ModelClient | None = None,
         translated_search: TranslatedSearch | None = None,
         reading: ReadingQuality | None = None,
+        context: Context | None = None,
     ) -> None:
         self._model = model
         self._translator = translator if settings.answer_translate_question else None
         self._settings = settings
         self._clock = clock
         self._zone = ZoneInfo(settings.timezone)
-        # What the answer's evidence may take: the window less the reply, its repair and the prompt.
+        # What the answer's evidence may take: the window (M1) less the reply, its repair and the prompt.
         self._evidence_budget = input_token_budget(
-            num_ctx=settings.model_num_ctx, max_tokens=settings.model_answer_max_tokens, system=SYSTEM_PROMPT
+            num_ctx=settings.model_context_tokens,
+            max_tokens=settings.model_answer_max_tokens,
+            system=SYSTEM_PROMPT,
+        )
+        self._rewrite_budget = input_token_budget(
+            num_ctx=settings.model_context_tokens, max_tokens=REWRITE_REPLY_TOKENS, system=REWRITE_PROMPT
         )
         pg = PgRetriever(
             db,
             recipe=recipe_tag(settings.model_embed),
             ef_search=settings.search_ef,
             neighbours=settings.answer_neighbours,
+            topic_pieces=settings.topic_expand_max_pieces,
+            min_score=settings.answer_min_evidence_score,
         )
         self._retriever: Retriever = pg if retriever is None else retriever
         self._translated: TranslatedSearch | None = pg if retriever is None else translated_search
@@ -277,6 +315,7 @@ class AnswerService:
         self._unchecked = unchecked if unchecked is not None else PgUncheckedValues(db)
         self._words = words if words is not None else PgWords(db)
         self._reading: ReadingQuality | None = PgReadingQuality(db) if retriever is None else reading
+        self._context: Context | None = pg if retriever is None else context
 
     def answer(
         self,
@@ -286,18 +325,56 @@ class AnswerService:
         scope: Scope = EVERYTHING,
         history: Sequence[Turn] = (),
         user_id: str | None = None,
+        memory: Memory = NO_MEMORY,
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
-        asker, whose own words (only) may help the search (None: nobody's)."""
+        asker, whose own words (only) may help the search (None: nobody's); ``memory``, the
+        conversation's (M3), for the rewrite only."""
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
+        whole = self._whole(customer_id, scope)
         turns = self._settings.chat_history_turns
-        rewritten = None
-        if self._model is not None and history and turns:
-            rewritten = rewrite(self._model, question, history[-turns:])
-        answer = self._answer(customer_id, rewritten or question, scope, user_id)
+        recent = history[-turns:] if turns else ()
+        remembered = prompt_text(memory)
+        rewritten: str | None = None
+        aspects: tuple[str, ...] = ()
+        # CX6: the aspects are asked for, even on a first question, when they can be searched.
+        most = self._settings.query_aspects_max if whole is None and self._widens() else 0
+        if self._model is not None and (recent or remembered or most):
+            rewritten, aspects = rewrite(
+                self._model,
+                question,
+                recent,
+                memory=remembered,
+                allowed=allowed_tokens(memory),
+                aspects_max=most,
+                budget=self._rewrite_budget,
+            )
+        answer = self._answer(customer_id, rewritten or question, scope, user_id, whole, aspects)
         return replace(self._unreadable(customer_id, answer, scope), rewritten_question=rewritten)
+
+    def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
+        """M3: the conversation's new summary and memory from ``memory`` and the ``turns``
+        since (oldest first), with the documents ``cited`` in them; None with no model, or
+        when it is down or replies badly. One model call (kaagaz/answering/memory.py)."""
+        return None if self._model is None else summarise(self._model, turns, memory, cited)
+
+    def _widens(self) -> bool:
+        """CX6's steps can run: a context port and a fused search to search aspects with."""
+        return self._context is not None and self._translated is not None
+
+    def _whole(self, customer_id: str, scope: Scope) -> Sequence[Hit] | None:
+        """CX5: every piece of ``scope``, in reading order, when the model is on and they fit
+        ANSWER_WHOLE_DOC_TOKENS, counted cautiously as the evidence is; None otherwise. The
+        port's size check (characters / 4) comes first, so a big scope reads no text."""
+        budget = self._settings.answer_whole_doc_tokens
+        if self._model is None or self._context is None or budget <= 0:
+            return None
+        pieces = self._context.whole(customer_id, scope, budget)
+        if pieces is None or sum(_tokens(item) for item in number_evidence(pieces)) > budget:
+            return None
+        return pieces
 
     def _unreadable(self, customer_id: str, answer: Answer, scope: Scope) -> Answer:
         """F6: a not-found answer names the pages in ``scope`` that couldn't be read well
@@ -327,7 +404,16 @@ class AnswerService:
             for citation in citations
         ]
 
-    def _answer(self, customer_id: str, question: str, scope: Scope, user_id: str | None) -> Answer:
+    def _answer(
+        self,
+        customer_id: str,
+        question: str,
+        scope: Scope,
+        user_id: str | None,
+        whole: Sequence[Hit] | None = None,
+        aspects: Sequence[str] = (),
+    ) -> Answer:
+        """``whole``: every piece of the scope (CX5), or None to search; ``aspects``: CX6's."""
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
@@ -343,7 +429,9 @@ class AnswerService:
         # My words: read once, for this question and this user only, never cached.
         words = () if user_id is None else self._words.words(customer_id, user_id)
         expansion = expand(question, words) if words else NO_EXPANSION
-        answer = self._search_answer(customer_id, question, normalised, shown, scope, expansion)
+        answer = self._search_answer(
+            customer_id, question, normalised, shown, scope, expansion, whole, aspects
+        )
         if not expansion.used:
             return answer
         # The note, and never verified whatever passed (council 3 Oct 2026, A3).
@@ -451,6 +539,8 @@ class AnswerService:
         shown: str,
         scope: Scope,
         expansion: Expansion,
+        whole: Sequence[Hit] | None = None,
+        aspects: Sequence[str] = (),
     ) -> Answer:
         # Romanised question words and fillers (ahe, kiti) say nothing about the topic: they
         # are left out of every step below, never out of normalise (PR 2b-2).
@@ -460,41 +550,60 @@ class AnswerService:
             query_text = question.strip()  # typed in another script: searched as asked (council 4 Oct)
         if not query_text:
             return _not_found("search", shown, [], model_used=False, reason="notfound_empty_question")
-        limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
-        # A question in another script is embedded as asked (W3): its Latin spelling means little.
-        vector = self._embed(question if has_other_script_letters(question) else normalised.english)
-        hits = self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
         numbers = _numbers(question, normalised.keywords, expansion)
         min_score = self._settings.answer_min_evidence_score
-        translated = self._translated_search(
-            customer_id, question, query_text, vector, hits, scope, expansion
-        )
+        translated: Translated | None = None
         first: Gate | None = None  # how the question's own search passed the gate, when translated
-        if translated is not None:
-            first = enough_evidence(number_evidence(hits), normalised.keywords, min_score, numbers, expansion)
-            hits = translated.hits
-        evidence = number_evidence(hits)
+        vector: list[float] | None = None
+        if whole is not None:
+            evidence = number_evidence(whole)  # CX5: every piece, in reading order
+        else:
+            # A question in another script is embedded as asked (W3): its Latin spelling means
+            # little. Its aspects (CX6) are embedded with it, in one call.
+            spoken = question if has_other_script_letters(question) else normalised.english
+            vector, *meanings = self._embed_all([spoken, *aspects])
+            extra = [(_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)]
+            hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
+            translated = self._translated_search(
+                customer_id, question, query_text, vector, hits, scope, expansion, extra
+            )
+            if translated is not None:
+                own = number_evidence(hits)
+                first = enough_evidence(own, normalised.keywords, min_score, numbers, expansion)
+                hits = translated.hits
+            evidence = number_evidence(hits)
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
-        if gate is None and not (translated is not None and any_hit_scores(evidence, min_score, numbers)):
+        if whole is not None:
+            # CX5: only the numbers asked must be there; the keyword rule would turn away an
+            # English question about a Hindi or Marathi document. The model and verify decide.
+            passed = holds_numbers(evidence, numbers)
+        else:
+            scored = translated is not None and any_hit_scores(evidence, min_score, numbers)
+            passed = gate is not None or scored
+        if not passed:
             return _not_found("search", shown, closest, model_used=False, reason="notfound_gate")
-        # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
-        # while they fit the room the hits and the question leave in MODEL_NUM_CTX: every
-        # hit is kept, the neighbours go first. ponytail: fit_evidence (perf/s2-query-wins)
-        # replaces this cut at the rebase.
-        room = input_token_budget(
-            num_ctx=self._settings.model_num_ctx, max_tokens=_REPLY_TOKENS, system=SYSTEM_PROMPT
-        )
-        room -= estimate_tokens_cautiously(question) + sum(_tokens(item) for item in evidence)
-        near = self._retriever.neighbours(customer_id, [item.hit for item in evidence], scope)
-        for item in number_evidence(near, start=len(evidence) + 1, neighbour=True):
-            room -= _tokens(item)
-            if room < 0:
-                break
-            evidence.append(item)
+        if whole is None:
+            terms = [question, *aspects]
+            widened = self._widened(customer_id, terms, normalised.keywords, vector, evidence, scope)
+            evidence += number_evidence(widened, start=len(evidence) + 1)
+            # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
+            # while they fit the room the evidence and the question leave in MODEL_CONTEXT_TOKENS
+            # (M1): every hit is kept, the neighbours go first.
+            room = input_token_budget(
+                num_ctx=self._settings.model_context_tokens, max_tokens=_REPLY_TOKENS, system=SYSTEM_PROMPT
+            )
+            room -= estimate_tokens_cautiously(question) + sum(_tokens(item) for item in evidence)
+            near = self._retriever.neighbours(customer_id, [item.hit for item in evidence], scope)
+            for item in number_evidence(near, start=len(evidence) + 1, neighbour=True):
+                room -= _tokens(item)
+                if room < 0:
+                    break
+                evidence.append(item)
 
-        draft, model_used, seen, why = self._draft(question, normalised, evidence, expansion)
+        drafted = self._draft(customer_id, scope, question, normalised, evidence, expansion)
+        draft, model_used, seen, why = drafted
         # Only the evidence the draft saw. Line by line: joined, "12" and a next
         # line's "August 2026" would read as a date.
         texts = {item.n: "\n".join(map(clean_text, item.hit.text.splitlines())) for item in seen}
@@ -565,23 +674,60 @@ class AnswerService:
         hits: Sequence[Any],
         scope: Scope,
         expansion: Expansion,
+        extra: Sequence[tuple[str, list[float] | None]] = (),
     ) -> Translated | None:
         """The search again with the question's translations into the script of its first
         ``hits`` (translate.py), decided before any draft; None to answer as today: the
         setting off, no other script, or no usable translation. The texts are search
-        parameters and embeddings only. At most one model call and one search."""
+        parameters and embeddings only. At most one model call and one search. ``extra``:
+        the aspects (CX6), searched with them."""
         if self._translator is None or self._translated is None:
             return None
         scripts = target_scripts(question, [hit.text for hit in hits])
         queries = translate(self._translator, question, scripts) if scripts else None
         if not queries:
             return None
-        texts = [(query.text, self._embed(query.text)) for query in queries]
+        texts = [*extra, *((query.text, self._embed(query.text)) for query in queries)]
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         return self._translated.search_translated(
             customer_id, query_text, vector, texts, limit, scope, expansion
         )
 
+    def _hits(
+        self,
+        customer_id: str,
+        query_text: str,
+        vector: list[float] | None,
+        extra: Sequence[tuple[str, list[float] | None]],
+        scope: Scope,
+        expansion: Expansion,
+    ) -> Sequence[Hit]:
+        """The search's hits: the question's, fused with its aspects' (CX6) when it has any."""
+        limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+        if extra and self._translated is not None:
+            fused = self._translated.search_translated
+            return fused(customer_id, query_text, vector, extra, limit, scope, expansion).hits
+        return self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
+
+    def _widened(
+        self,
+        customer_id: str,
+        texts: Sequence[str],
+        keywords: Sequence[str],
+        vector: list[float] | None,
+        evidence: Sequence[Evidence],
+        scope: Scope,
+    ) -> list[Hit]:
+        """CX6: the pieces of the topics ``texts`` (the question and its aspects) or the hits
+        name, then of the two sections the keywords or the vector find, each once and never a
+        hit. Two statements; none without the context port, nor with the model off, so the
+        keyless mode answers as PRD 3 built it (no sections or topics are mapped there)."""
+        if self._context is None or self._model is None:
+            return []
+        hits = [item.hit for item in evidence]
+        topics = self._context.topic_pieces(customer_id, topic_terms(texts), hits, scope)
+        sections = self._context.section_pieces(customer_id, keywords, vector, [*hits, *topics], scope)
+        return [*topics, *sections]
     def _translated_search(
         self,
         customer_id: str,
@@ -609,20 +755,42 @@ class AnswerService:
         )
 
     def _embed(self, english: str) -> list[float] | None:
-        """The question's vector, or None (no model, model down, or unusable
-        vectors), so search falls back to word and fuzzy matching. One model call,
-        with the query instruction (kaagaz.search.indexing.query_input, PRD 3 V3)."""
-        if self._model is None or not english:
-            return None
+        """One text's vector (``_embed_all``)."""
+        return self._embed_all([english])[0]
+
+    def _embed_all(self, texts: Sequence[str]) -> list[list[float] | None]:
+        """Each text's vector, or None (no model, model down, unusable vectors, or an empty
+        text), so search falls back to word and fuzzy matching. One model call for them
+        all, each in MODEL_EMBED's query input (kaagaz.search.indexing.query_input, PRD 3
+        V3, PRD 5 M5)."""
+        wanted = [text for text in texts if text]
+        if self._model is None or not wanted:
+            return [None] * len(texts)
+        model_embed = self._settings.model_embed
         try:
-            vectors = self._model.embed([query_input(english)])
+            vectors = self._model.embed([query_input(text, model_embed) for text in wanted])
         except (ModelUnavailable, ModelOutputError) as error:
             _log.warning("question searched without its meaning vector", extra={"code": error.code})
-            return None
-        return vectors[0] if vectors else None
+            return [None] * len(texts)
+        if len(vectors) != len(wanted):
+            return [None] * len(texts)
+        found: Iterator[list[float]] = iter(vectors)
+        return [next(found) if text else None for text in texts]
+
+    def _cards(self, customer_id: str, scope: Scope, seen: Sequence[Evidence]) -> list[str]:
+        """M2: one card line for each document of ``seen``, in its order; none without the
+        context port. A line that reads like instructions is left out. One statement."""
+        if self._context is None or not seen:
+            return []
+        documents = list(dict.fromkeys(item.hit.document_id for item in seen))
+        found = self._context.cards(customer_id, documents, scope)
+        lines = [card_line(*found[document]) for document in documents if document in found]
+        return [line for line in lines if line is not None and not looks_like_instructions(line)]
 
     def _draft(
         self,
+        customer_id: str,
+        scope: Scope,
         question: str,
         normalised: NormalisedQuestion,
         evidence: Sequence[Evidence],
@@ -631,16 +799,18 @@ class AnswerService:
         """The model's draft (and True), or the extractive one (and False), with the
         evidence it was drafted from: for the model, the best pieces that fit its window,
         and the reason code a not-found draft would give.
-        The model sees the question and the evidence only, never a user's word or meaning;
-        ``expansion`` helps the extractive draft choose its lines."""
+        The model sees the question, the evidence and its documents' cards (M2, while they
+        fit) only, never a user's word or meaning; ``expansion`` helps the extractive draft
+        choose its lines."""
         if self._model is not None:
             asked = f"{question} (in English: {normalised.english})" if normalised.hinglish else question
             seen = fit_evidence(asked, evidence, self._evidence_budget)
             code = "evidence_too_large"  # not even the best piece fits
             if seen:
                 model, max_tokens = self._model, self._settings.model_answer_max_tokens
+                cards = fit_cards(asked, seen, self._cards(customer_id, scope, seen), self._evidence_budget)
                 try:
-                    draft = model_draft(model, asked, seen, max_tokens=max_tokens)
+                    draft = model_draft(model, asked, seen, max_tokens=max_tokens, cards=cards)
                 except (ModelUnavailable, ModelOutputError) as error:
                     code = error.code
                 else:
@@ -672,6 +842,27 @@ def _numbers(question: str, keywords: Sequence[str], expansion: Expansion) -> li
     """The numbers asked: the question's own (``numbers_asked``), then those of what the
     user's words were searched as ("my plot" meaning "gat 47" asks 47). O(q)."""
     return list(dict.fromkeys([*numbers_asked(question, keywords), *expansion.numbers()]))
+
+
+def _search_text(aspect: str) -> str:
+    """An aspect as the search reads it: its keywords, as the question's (``normalise``)."""
+    return " ".join(glossary.content_words(normalise(aspect).keywords)) or aspect
+
+
+MAX_TOPIC_WORDS = 3  # CX6: a topic name or alias of up to three words
+
+
+def topic_terms(texts: Sequence[str]) -> list[str]:
+    """CX6: every run of one to three words (``spaced_words``, so छुट्टी stays one word) of
+    ``texts``, casefolded (topics and their aliases are stored so), and a word ending in "s"
+    without it too ("leaves" finds the topic leave). O(n) for n words."""
+    terms: list[str] = []
+    for text in texts:
+        words = spaced_words(text.casefold())
+        for size in range(1, MAX_TOPIC_WORDS + 1):
+            terms += (" ".join(words[i : i + size]) for i in range(len(words) - size + 1))
+        terms += (word[:-1] for word in words if len(word) > 3 and word.endswith("s"))
+    return list(dict.fromkeys(terms))
 
 
 def _tokens(item: Evidence) -> int:

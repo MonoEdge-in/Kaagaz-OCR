@@ -22,7 +22,7 @@ pytestmark = pytest.mark.db
 
 
 def _missing(conn: Connection, customer_id: str) -> list[str]:
-    params = {"c": customer_id, "after": "00000000-0000-0000-0000-000000000000", "n": 64}
+    params = {"c": customer_id, "after": "00000000-0000-0000-0000-000000000000", "n": 64, "m": CURRENT}
     return [str(row[0]) for row in conn.execute(indexing._MISSING, params)]
 
 

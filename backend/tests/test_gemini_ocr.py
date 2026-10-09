@@ -379,11 +379,19 @@ class G2G3ReadTest(unittest.TestCase):
         self.assertEqual((read.input_tokens, read.output_tokens), (1712, 4096))
         self.assertFalse(read.cached)
 
-    def test_cx1_continues_on_next_page_is_the_last_lines_flag(self) -> None:
+    def test_cx1_continues_on_next_page_is_any_lines_flag(self) -> None:
         last = build(reply(value(line("a", order=0), line("the notice period is", order=1, continues=True))))
         self.assertTrue(last.engine.read_page(page(), page_no=1).continues_on_next_page)
-        not_last = build(reply(value(line("a", order=0, continues=True), line("b", order=1))))
-        self.assertFalse(not_last.engine.read_page(page(), page_no=1).continues_on_next_page)
+        none = build(reply(value(line("a", order=0), line("b", order=1))))
+        self.assertFalse(none.engine.read_page(page(), page_no=1).continues_on_next_page)
+
+    def test_cx1_a_footer_after_the_flagged_line_keeps_the_flag(self) -> None:
+        """The footer is the reply's last line, so its flag alone would lose the sentence's."""
+        footed = value(
+            line("the notice period is", (800, 100, 820, 500), order=0, continues=True),
+            line("Page 11 of 20", (960, 400, 980, 600), order=1, kind="footer"),
+        )
+        self.assertTrue(build(reply(footed)).engine.read_page(page(), page_no=11).continues_on_next_page)
 
     def test_g3_a_page_with_no_lines_is_no_text_and_finds_no_boxes(self) -> None:
         built = build(reply(value()))

@@ -27,7 +27,8 @@ from tests.test_exit_files_db import read_files
 
 pytestmark = pytest.mark.db
 
-SETTINGS = make_settings()
+# PRD 3's search: no whole documents or aspects (PRD 5 CX5, CX6).
+SETTINGS = make_settings(answer_whole_doc_tokens=0, query_aspects_max=0)
 NOW = datetime(2026, 10, 2, 6, 30, tzinfo=UTC)
 FOLLOW_UP = "What were the expenses in September?"
 BLOCK = re.compile(r'<evidence id="(\d+)"[^>]*>\n(.*?)\n</evidence>', re.DOTALL)

@@ -8,6 +8,11 @@ checks ``user_id``, so a colleague in the same customer cannot open it either.
 Question text is stored as asked, stripped of surrounding spaces, with the
 scope it was asked in (``ScopeBody.model_dump``, PRD 3 H2). The answer is stored
 as the jsonb ``Answer.to_json()`` gives.
+
+A conversation's summary and memory (PRD 5 M3) are read and written with its owner
+only, like every read here, and never returned by the API. A write names the
+``summary_turn`` it read (optimistic): when another reply wrote them first, it
+changes nothing.
 """
 
 import json
@@ -42,6 +47,58 @@ def get_conversation(
         .mappings()
         .first()
     )
+
+
+def conversation_memory(
+    conn: Connection, customer_id: str, conversation_id: str, user_id: str
+) -> RowMapping | None:
+    """M3: the conversation's ``summary``, ``memory`` and ``summary_turn``, and ``turns``,
+    how many questions it holds, if this user owns it, else None. One query."""
+    return (
+        conn.execute(
+            text(
+                "SELECT cv.summary, cv.memory, cv.summary_turn,"
+                " (SELECT count(*) FROM messages m WHERE m.customer_id = :c AND m.conversation_id = cv.id"
+                " AND m.role = 'user') AS turns"
+                " FROM conversations cv WHERE cv.customer_id = :c AND cv.id = :id AND cv.user_id = :u"
+            ),
+            {"c": customer_id, "id": conversation_id, "u": user_id},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def save_memory(
+    conn: Connection,
+    customer_id: str,
+    conversation_id: str,
+    user_id: str,
+    *,
+    summary: str,
+    memory: Mapping[str, Any],
+    turn: int,
+    expected_turn: int,
+) -> bool:
+    """M3: write the summary ("" as NULL) and memory at ``turn``, only if this user owns the
+    conversation and its ``summary_turn`` is still ``expected_turn``. False when nothing
+    changed."""
+    written = conn.execute(
+        text(
+            "UPDATE conversations SET summary = :s, memory = CAST(:m AS jsonb), summary_turn = :t"
+            " WHERE customer_id = :c AND id = :id AND user_id = :u AND summary_turn = :old"
+        ),
+        {
+            "c": customer_id,
+            "id": conversation_id,
+            "u": user_id,
+            "s": summary or None,
+            "m": json.dumps(memory, ensure_ascii=False),
+            "t": turn,
+            "old": expected_turn,
+        },
+    )
+    return written.rowcount == 1
 
 
 def list_conversations(conn: Connection, customer_id: str, user_id: str) -> Sequence[RowMapping]:
@@ -155,6 +212,21 @@ def document_states(conn: Connection, customer_id: str, document_ids: Sequence[s
         str(row.id): "in_trash" if row.in_trash else "live" if row.is_current else "older_version"
         for row in rows
     }
+
+
+def live_document_names(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> dict[str, str]:
+    """M3: the display name of each of ``document_ids`` that is live (the current version,
+    out of Trash); one replaced, in Trash or deleted forever is missing. One query."""
+    if not document_ids:
+        return {}
+    rows = conn.execute(
+        text(
+            "SELECT id, display_name FROM documents WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+            " AND deleted_at IS NULL AND is_current"
+        ),
+        {"c": customer_id, "ids": sorted(set(document_ids))},
+    ).all()
+    return {str(row.id): str(row.display_name) for row in rows}
 
 
 def upsert_feedback(
