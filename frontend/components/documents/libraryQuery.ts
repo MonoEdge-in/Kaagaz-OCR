@@ -23,6 +23,7 @@ export type DocumentListParams = {
   uploaded_from?: string; // YYYY-MM-DD, the first day included
   uploaded_to?: string; // YYYY-MM-DD, exclusive: the day after the last one
   trashed?: boolean; // WP1.6: true lists only what is in Trash; left out, only what is not
+  attention?: boolean; // PRD 5 U2: true lists only documents with reading problems
 };
 
 /** What the documents screen shows: one folder, all documents or Trash, and the filters. */
@@ -34,6 +35,7 @@ export interface LibraryState {
   readonly type: DetectedType | null;
   readonly from: string | null; // YYYY-MM-DD, the first day included
   readonly to: string | null; // YYYY-MM-DD, the last day included
+  readonly attention: boolean; // PRD 5 U2 "Needs attention": only documents with reading problems
 }
 
 export const ALL_DOCUMENTS: LibraryState = {
@@ -44,6 +46,7 @@ export const ALL_DOCUMENTS: LibraryState = {
   type: null,
   from: null,
   to: null,
+  attention: false,
 };
 
 /** The server takes at most this many tag_id values. */
@@ -80,9 +83,11 @@ export function dayAfter(date: string): string {
   return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
 }
 
-/** Tags, type or dates are set. The folder is where you are, not a filter. */
+/** Tags, type, dates or Needs attention are set. The folder is where you are, not a filter. */
 export function isFiltered(state: LibraryState): boolean {
-  return state.tagIds.length > 0 || state.type !== null || state.from !== null || state.to !== null;
+  return (
+    state.tagIds.length > 0 || state.type !== null || state.from !== null || state.to !== null || state.attention
+  );
 }
 
 interface SearchLike {
@@ -110,6 +115,7 @@ export function libraryFromSearch(search: SearchLike): LibraryState {
     type: FILTER_TYPES.find((kind) => kind === type) ?? null,
     from: from !== null && isIsoDate(from) ? from : null,
     to: to !== null && isIsoDate(to) ? to : null,
+    attention: !trash && search.get("attention") === "1",
   };
 }
 
@@ -123,6 +129,7 @@ export function libraryHref(state: LibraryState): string {
     type: state.type ?? undefined,
     from: state.from ?? undefined,
     to: state.to ?? undefined,
+    attention: state.attention ? "1" : undefined,
   })}`;
 }
 
@@ -140,5 +147,6 @@ export function listParams(state: LibraryState, q: string, offset: number): Docu
     uploaded_from: state.from ?? undefined,
     // The screen's last day is included; the API's end is exclusive.
     uploaded_to: state.to === null ? undefined : dayAfter(state.to),
+    attention: state.attention ? true : undefined,
   };
 }

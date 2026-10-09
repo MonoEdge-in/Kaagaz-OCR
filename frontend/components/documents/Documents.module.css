@@ -937,3 +937,16 @@ table.docs th {
     animation: none;
   }
 }
+
+/* PRD 5 U2: a reading problem on a row, an icon and words on a neutral chip (never a label colour). */
+.attentionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+}

@@ -223,7 +223,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   }
 
   function clearFilters() {
-    show({ ...library, tagIds: [], type: null, from: null, to: null });
+    show({ ...library, tagIds: [], type: null, from: null, to: null, attention: false });
   }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
