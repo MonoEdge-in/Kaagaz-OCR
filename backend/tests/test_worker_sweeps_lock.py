@@ -110,5 +110,19 @@ def test_compose_prod_runs_worker_replicas_copies_of_the_worker() -> None:
     assert "container_name" not in service("worker")  # a fixed name would allow one copy only
 
 
+def test_every_setup_tells_its_processes_how_many_workers_run() -> None:
+    """The MODEL_RPM share (V7) and the upgrade sweep's pace (Q7) divide by WORKER_REPLICAS,
+    whose default is the server's 3: a setup with one worker must say 1."""
+    base = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    shared = base[base.index("x-backend: &backend\n") : base.index("\nservices:\n")]
+    assert re.search(r'^    WORKER_REPLICAS: "1"$', shared, re.MULTILINE)  # the laptop: one worker
+    server = re.compile(r"^      WORKER_REPLICAS: \$\{WORKER_REPLICAS:-3\}( #.*)?$", re.MULTILINE)
+    for name in ("api", "worker"):  # the server: as many as deploy.replicas runs
+        assert server.search(service(name, "docker-compose.prod.yml")), name
+    blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
+    assert '      - key: WORKER_REPLICAS\n        value: "1"\n' in blueprint  # Render: one kaagaz-worker
+    assert "numInstances" not in blueprint
+
+
 if __name__ == "__main__":
     unittest.main()
