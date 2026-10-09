@@ -4,7 +4,7 @@ The one file for the system design and every decision. Keep it current: when the
 
 ## The product
 
-Customers upload business documents (invoices, registers, receipts, statements) and ask questions about them in chat, including Hinglish questions. Every answer points to its source: the document, the page and the exact spot. If the documents don't hold the answer, the system says so. Several customer companies share one system, and none of them ever sees another's data. At launch it reads English documents only.
+Customers upload business documents (invoices, registers, receipts, statements) and ask questions about them in chat, including Hinglish questions. Every answer points to its source: the document, the page and the exact spot. If the documents don't hold the answer, the system says so. Several customer companies share one system, and none of them ever sees another's data. It reads documents in English, Hindi and Marathi and answers in English only (Decisions).
 
 ## The rules the design is built around
 
