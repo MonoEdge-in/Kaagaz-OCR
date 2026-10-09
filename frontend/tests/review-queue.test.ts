@@ -5,6 +5,7 @@ import {
   checkChoice,
   checkReasonsText,
   focusAfterResolve,
+  groupByDocument,
   leftToReview,
   parseReason,
   queueParams,
@@ -147,7 +148,35 @@ describe("the reason filter", () => {
       "readers_disagree",
       "low_confidence",
       "single_reader",
+      "unsure_text",
+      "box_unanchored",
+      "local_reader",
+      "ocr_script",
     ]);
+  });
+
+  it("names PRD 5's reasons in the words of viewer/labels.ts (U6)", () => {
+    const text = Object.fromEntries(REASON_FILTERS.map((choice) => [choice.value, choice.text]));
+    expect(text.unsure_text).toBe("Hard to read");
+    expect(text.box_unanchored).toBe("Spot not confirmed");
+    expect(text.local_reader).toBe("Read by the backup reader");
+    expect(text.ocr_script).toBe("Read from Hindi or Marathi script");
+    expect(parseReason("unsure_text")).toBe("unsure_text");
+    expect(queueParams(0, 20, undefined, "box_unanchored")).toEqual({
+      limit: 20,
+      document_id: undefined,
+      reason: ["box_unanchored"],
+    });
+  });
+
+  it("groups the cards shown by document, in the order each first appears", () => {
+    const other = (id: string): ReviewItem => ({ ...item(id), document_id: "d2", document_name: "Register.jpg" });
+    const groups = groupByDocument([item("a"), other("b"), item("c")]);
+    expect(groups.map((group) => [group.id, group.name, group.items.map((i) => i.value.id)])).toEqual([
+      ["d1", "Bill.pdf", ["a", "c"]],
+      ["d2", "Register.jpg", ["b"]],
+    ]);
+    expect(groupByDocument([])).toEqual([]);
   });
 
   it("reads the select's value, anything else meaning every reason", () => {

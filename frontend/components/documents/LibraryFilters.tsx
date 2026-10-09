@@ -1,7 +1,8 @@
 "use client";
 
 // The filter chips above the list: Tags (every tag chosen must match), Type
-// and Date uploaded. Each chip says what it is set to and opens its panel just
+// and Date uploaded, and Needs attention (PRD 5 U2), a toggle (aria-pressed)
+// that keeps only documents with reading problems. Each chip says what it is set to and opens its panel just
 // below the row, one panel at a time. A change goes into the page address at
 // once, and the list follows it. In a folder with subfolders, a checkbox also
 // takes in what is inside them.
@@ -63,7 +64,7 @@ export function LibraryFilters({
 
   function clear() {
     setOpen(null);
-    onChange({ ...library, tagIds: [], type: null, from: null, to: null });
+    onChange({ ...library, tagIds: [], type: null, from: null, to: null, attention: false });
   }
 
   return (
@@ -72,6 +73,17 @@ export function LibraryFilters({
         {chip("tags", tagsChipText(tagNames), library.tagIds.length > 0)}
         {chip("type", typeChipText(library.type), library.type !== null)}
         {chip("date", dateChipText(library.from, library.to), library.from !== null || library.to !== null)}
+        {!library.trash && (
+          <button
+            type="button"
+            className={styles.chip}
+            data-active={library.attention ? "true" : undefined}
+            aria-pressed={library.attention}
+            onClick={() => onChange({ ...library, attention: !library.attention })}
+          >
+            Needs attention
+          </button>
+        )}
         {showSubfolders && (
           <label className={styles.check}>
             <input

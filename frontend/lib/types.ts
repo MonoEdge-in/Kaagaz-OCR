@@ -146,7 +146,8 @@ export type DocType =
 
 /** How far the worker has got (PRD 2, X3), e.g. step "reading", done 3, total 40. */
 export interface DocumentProgress {
-  step: "scanning" | "preparing" | "reading" | "understanding" | "indexing";
+  // "waiting" (PRD 5 Q6): held back in its batch or for the reader; the status message says why.
+  step: "scanning" | "preparing" | "reading" | "understanding" | "indexing" | "waiting";
   done: number;
   total: number; // 0 for a sheet, which is read as a whole
 }
@@ -583,8 +584,16 @@ export interface ReviewItem {
   check_reasons: string[]; // why its document's invoice check failed (PRD 3 Y5); [] otherwise
 }
 
-/** The review queue's reason filter (PRD 3 Y5). */
-export type ReviewReason = "check_failed" | "readers_disagree" | "low_confidence" | "single_reader";
+/** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds the last four). */
+export type ReviewReason =
+  | "check_failed"
+  | "readers_disagree"
+  | "low_confidence"
+  | "single_reader"
+  | "unsure_text"
+  | "box_unanchored"
+  | "local_reader"
+  | "ocr_script";
 
 /** A row of the admin's Failed jobs tab (PRD 3 Z1). */
 export interface FailedDocument {

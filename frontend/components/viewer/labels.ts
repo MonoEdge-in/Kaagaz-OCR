@@ -37,6 +37,14 @@ export function reasonText(reason: LabelReason): string {
   return REASONS[reason];
 }
 
+/** The review queue's short names for PRD 5's reasons (U6), as its reason filter lists them. */
+export const REASON_FILTER_TEXT = {
+  unsure_text: "Hard to read",
+  box_unanchored: "Spot not confirmed",
+  local_reader: "Read by the backup reader",
+  ocr_script: "Read from Hindi or Marathi script",
+} as const satisfies Partial<Record<LabelReason, string>>;
+
 /** "invoice_number" -> "Invoice number". */
 export function fieldText(field: string): string {
   const words = field.replace(/_/g, " ").trim();

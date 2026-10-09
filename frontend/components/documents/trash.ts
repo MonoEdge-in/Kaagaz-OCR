@@ -99,7 +99,13 @@ export function deletedForeverMessage(name: string): string {
 // --- Acting on a selection: Move to Trash in the list, Restore and Delete forever in Trash.
 
 /** What a selection can be asked to do. */
-export type BulkAction = "trash" | "restore" | "forever";
+// "read": Read again (PRD 5 U2), for a reviewer or an admin, one document at a time (POST /reprocess).
+export type BulkAction = "trash" | "restore" | "forever" | "read";
+
+/** Asked before a selection is read again: the same warning as one document's Read again. */
+export function bulkReadQuestion(count: number): string {
+  return `Read ${documentsCount(count)} again? Reviewer fixes come back only if they were saved as remembered fixes, and each one is out of search until it is read.`;
+}
 
 export function bulkForeverQuestion(count: number): string {
   return count === 1
@@ -112,6 +118,7 @@ export function bulkDoneMessage(action: BulkAction, count: number): string {
   const documents = documentsCount(count);
   if (action === "restore") return `Restored ${documents}.`;
   if (action === "forever") return `Deleted ${documents} for good.`;
+  if (action === "read") return `Reading ${documents} again.`;
   return `Moved ${documents} to Trash.`;
 }
 
@@ -119,6 +126,7 @@ const FAILED_TO: Record<BulkAction, string> = {
   trash: "moved to Trash",
   restore: "restored",
   forever: "deleted",
+  read: "read again",
 };
 
 /** "2 documents could not be restored. <why>". */

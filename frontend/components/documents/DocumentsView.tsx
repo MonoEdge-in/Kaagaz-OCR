@@ -54,7 +54,7 @@ import {
   uploadsFinishedText,
 } from "./logic";
 import { foreverNeeds } from "./trash";
-import { Dropzone, ReaderSelect, UploadList, useUploads } from "./UploadArea";
+import { BatchTray, Dropzone, ReaderSelect, useUploads } from "./UploadArea";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
 
@@ -223,7 +223,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   }
 
   function clearFilters() {
-    show({ ...library, tagIds: [], type: null, from: null, to: null });
+    show({ ...library, tagIds: [], type: null, from: null, to: null, attention: false });
   }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -483,10 +483,14 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 />
               )}
 
-              <UploadList
+              <BatchTray
                 entries={uploads.entries}
+                views={uploads.views}
+                stored={uploads.stored}
+                tooMany={uploads.tooMany}
                 onClearFinished={uploads.clearFinished}
                 onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
+                onRetry={(key) => void uploads.retry(key)}
               />
               {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
 

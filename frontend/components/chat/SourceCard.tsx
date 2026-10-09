@@ -10,6 +10,8 @@
 // a chip for the label (PRD 3 H4).
 // A source from an older version says so; one whose document is in Trash or
 // deleted shows only "From a deleted document" and its label (citationSource).
+// Cited text with an unsure or illegible word says "Part of this text was hard
+// to read." (PRD 5 F6, U7).
 
 import Link from "next/link";
 import { useRef } from "react";
@@ -20,6 +22,7 @@ import { PageViewer } from "@/components/viewer/PageViewer";
 import type { Citation } from "@/lib/types";
 import {
   DELETED_SOURCE_TEXT,
+  HARD_TO_READ_TEXT,
   OLDER_VERSION_TEXT,
   cardId,
   citationHighlights,
@@ -123,6 +126,11 @@ export function SourceCard({ citation, messageId }: { citation: Citation; messag
       <LazySourcePreview citation={citation} />
       {citation.snippet !== null && (
         <blockquote className={styles.snippet}>{citation.snippet}</blockquote>
+      )}
+      {citation.hard_to_read && (
+        <p className={styles.sourceMeta}>
+          <Icon name="eye-alert" size={16} /> {HARD_TO_READ_TEXT}
+        </p>
       )}
       <div className={styles.sourceAction}>
         {action.reason ? <p className={styles.sourceReason}>{action.reason}</p> : null}

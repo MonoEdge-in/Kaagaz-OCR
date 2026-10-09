@@ -12,6 +12,7 @@ import type {
   AdminCreated,
   AdminUser,
   AuditEntry,
+  BatchView,
   ChatResponse,
   Conversation,
   ConversationSummary,
@@ -31,6 +32,7 @@ import type {
   Organisation,
   OrganisationCreated,
   PageReadings,
+  PageSummary,
   PasswordReset,
   PlatformEvent,
   PlatformHealth,
@@ -220,6 +222,14 @@ export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 2
     "GET",
     `/documents/${id}/pages/${pageNo}/cells${query({ row_from: rowFrom, row_to: rowTo })}`,
   );
+/** One drop of files (PRD 5 Q1): the uploader's own only; 404 for any other or unknown batch. */
+export const getBatch = (id: string) => request<BatchView>("GET", `/batches/${encodeURIComponent(id)}`);
+/** F5: read one page again, harder (a reviewer or an admin); the reply is the document, now received. */
+export const readPageAgain = (id: string, pageNo: number) =>
+  request<DocumentSummary>("POST", `/documents/${id}/pages/${pageNo}/read-again`);
+/** F5 "Keep as is": the page leaves the attention list but stays flagged; the reply is the page. */
+export const acceptPage = (id: string, pageNo: number) =>
+  request<PageSummary>("POST", `/documents/${id}/pages/${pageNo}/accept`);
 /** What each reader read on one page, as read (the viewer's Scanned text panel only). */
 export const getPageReadings = (id: string, pageNo: number) =>
   request<PageReadings>("GET", `/documents/${id}/pages/${pageNo}/readings`);
@@ -240,6 +250,8 @@ export const deleteMyStory = (id: string, userId: string) =>
  * signed in when the file was chosen: the server refuses the file (409
  * session_changed) if someone else has signed in since, in another tab.
  * ocrChoice is the scan reader chosen (readers.ts); none means the server's default.
+ * batchId is the drop it came in (PRD 5 Q1, a UUID the browser made; 409 batch_full
+ * past MAX_FILES_PER_BATCH). onSent: the last byte has gone, so Saving starts (U10).
  */
 export function uploadDocument(
   file: File,
@@ -247,19 +259,22 @@ export function uploadDocument(
   onProgress: (fraction: number) => void,
   folderId?: string,
   ocrChoice?: string,
+  batchId?: string,
+  onSent?: () => void,
 ): Promise<UploadResult> {
   const form = new FormData();
   if (folderId) form.append("folder_id", folderId);
   if (ocrChoice) form.append("ocr_choice", ocrChoice);
+  if (batchId) form.append("batch_id", batchId);
   form.append("user_id", userId);
   form.append("file", file);
-  return sendForm("/api/documents", form, onProgress);
+  return sendForm("/api/documents", form, onProgress, onSent);
 }
 
 /**
  * Upload a new version of a document, with progress. The server gives it the
  * next version number and the family's folder and tags; the reply has the
- * same shape as an upload. ocrChoice as for uploadDocument.
+ * same shape as an upload. ocrChoice and onSent as for uploadDocument.
  */
 export function uploadVersion(
   documentId: string,
@@ -267,27 +282,40 @@ export function uploadVersion(
   userId: string,
   onProgress: (fraction: number) => void,
   ocrChoice?: string,
+  onSent?: () => void,
 ): Promise<UploadResult> {
   const form = new FormData();
   if (ocrChoice) form.append("ocr_choice", ocrChoice);
   form.append("user_id", userId);
   form.append("file", file);
-  return sendForm(`/api/documents/${documentId}/versions`, form, onProgress);
+  return sendForm(`/api/documents/${documentId}/versions`, form, onProgress, onSent);
 }
 
+/**
+ * The bytes sent so far never go backwards (a browser may report a lower count
+ * after a retry), and xhr.upload.onload says the last byte has gone: from then
+ * until the reply the server is saving the file (PRD 5 U10).
+ */
 function sendForm(
   url: string,
   form: FormData,
   onProgress: (fraction: number) => void,
+  onSent?: () => void,
 ): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let highest = 0;
     xhr.open("POST", url);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) onProgress(event.loaded / event.total);
+      if (!event.lengthComputable || event.total <= 0) return;
+      const fraction = Math.min(1, event.loaded / event.total);
+      if (fraction <= highest) return;
+      highest = fraction;
+      onProgress(fraction);
     };
+    xhr.upload.onload = () => onSent?.();
     xhr.onload = () => {
       let body: unknown = null;
       try {
