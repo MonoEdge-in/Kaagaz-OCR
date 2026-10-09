@@ -184,7 +184,7 @@ describe("routeText (PRD 2, R1; PRD 5 RT2)", () => {
     expect(BACKUP_ISSUES).toEqual(["read_locally", "reader_refused"]);
   });
 
-  it("keeps the old words for a page read with no key, by PaddleOCR-VL, or before PRD 5", () => {
+  it("keeps the old words for a page read with no key, by the layout reader, or before PRD 5", () => {
     expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: [] })).toBe("Read by OCR");
     expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["low_resolution"] })).toBe("Read by OCR");
     expect(routeText({ route: "ocr", read_by: "paddleocr_vl", read_issues: [] })).toBe("Read by OCR");

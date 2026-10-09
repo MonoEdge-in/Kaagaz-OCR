@@ -71,9 +71,10 @@ describe("readerHeading", () => {
     const heading = readerHeading(reader({ lines: [line(0.5), line(0.97), line(0.2)] }), ocrPage);
     expect(heading).toEqual({
       title: "Read by Gemini at 200 DPI",
-      detail: "paddleocr-vl 1.5",
       notSureCount: "2 of 3 lines: reader not sure",
     });
+    // PRD 5 U8: no engine's name, whatever the server calls its reader.
+    expect(JSON.stringify(heading)).not.toMatch(/paddle|rapid|qwen/i);
     expect(readerHeading(reader(), ocrPage).notSureCount).toBeNull();
     expect(readerHeading(reader({ lines: [line(0.5)] }), ocrPage).notSureCount).toBe(
       "1 of 1 line: reader not sure",
@@ -91,11 +92,11 @@ describe("readerHeading", () => {
     const textLayer = { route: "text_layer" as const, read_by: "text_layer", read_issues: [], effective_dpi: null };
     expect(readerHeading(reader(), textLayer).title).toBe("Read from the PDF text");
     const unread = { route: null, read_by: null, read_issues: [], effective_dpi: null };
-    expect(readerHeading(reader(), unread).title).toBe("First reader");
-    expect(readerHeading(reader({ role: "second" }), ocrPage).title).toBe("Second reader (PDF text layer)");
+    expect(readerHeading(reader(), unread).title).toBe("Main reader");
+    expect(readerHeading(reader({ role: "second" }), ocrPage).title).toBe("Checker (PDF text layer)");
   });
 
-  it("says when the second reader did not count", () => {
+  it("says when the checker did not count", () => {
     expect(secondReaderNote("ocr")).toBe("Not used for this page: it was read by OCR.");
     expect(secondReaderNote("blank")).toBe("Not used for this page: it is blank.");
     expect(secondReaderNote("text_layer")).toBeNull();
@@ -136,7 +137,7 @@ describe("emptyState", () => {
     expect(emptyState({ status: "ready", reader: reader() }, "ocr")).toBeNull();
   });
 
-  it("never asks for a sharper scan when the second reader found nothing", () => {
+  it("never asks for a sharper scan when the checker found nothing", () => {
     const second = reader({ role: "second", lines: [] });
     expect(emptyState({ status: "ready", reader: second }, "ocr")?.text).toBe(
       "No text was found on this page.",
