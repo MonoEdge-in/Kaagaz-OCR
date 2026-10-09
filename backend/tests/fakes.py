@@ -424,6 +424,7 @@ class MemoryProgress:
         self._statuses = statuses
         self.progress: dict[tuple[str, str], Progress] = {}
         self.history: list[tuple[str, str, Progress]] = []
+        self.waiting: dict[tuple[str, str], str | None] = {}  # what clear_progress was told
         self.down = False
 
     def set_progress(
@@ -441,8 +442,11 @@ class MemoryProgress:
         self.progress[(customer_id, document_id)] = progress
         self.history.append((customer_id, document_id, progress))
 
-    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
-        """As PgDocuments.clear_progress: with ``run_id``, nothing unless that run is open."""
+    def clear_progress(
+        self, customer_id: str, document_id: str, *, run_id: str | None = None, waiting: str | None = None
+    ) -> None:
+        """As PgDocuments.clear_progress: with ``run_id``, nothing unless that run is open;
+        ``waiting`` is noted in ``waiting``."""
         if self.down:
             raise BackendUnavailable("database")
         runs = self._statuses.runs
@@ -450,6 +454,7 @@ class MemoryProgress:
             return
         if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
             self.progress.pop((customer_id, document_id), None)
+            self.waiting[(customer_id, document_id)] = waiting
 
 
 class MemoryPipelineStore:

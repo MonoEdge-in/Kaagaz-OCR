@@ -63,6 +63,7 @@ class LeaseQueue:
         self._tokens = itertools.count(1)
         self._ids = itertools.count(1)
         self.failed: dict[int, FailedJob] = {}
+        self.deferred: list[tuple[Job, int]] = []  # each job handed back, with its seconds
 
     # -- producer side ----------------------------------------------------
 
@@ -99,8 +100,11 @@ class LeaseQueue:
         del self._entries[job_id]
 
     def defer(self, receipt: str, seconds: int) -> None:
-        """Like SQS's visibility change: handed out again after ``seconds``, as one more attempt."""
+        """As SqsQueue.defer (PRD 5 V1): handed out again after ``seconds``, and this
+        delivery is not counted as an attempt."""
         job_id, entry = self._check(receipt)
+        entry.attempts -= 1
+        self.deferred.append((entry.job, seconds))
         self._lease(job_id, entry, seconds)
 
     # -- helpers for tests ------------------------------------------------

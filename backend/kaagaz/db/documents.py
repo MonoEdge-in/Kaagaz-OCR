@@ -26,6 +26,13 @@ ready, failed or unreadable document out of Trash goes back to ``received`` with
 its tries reset, within the customer's hourly limit and one document's cooldown
 (security A8). The caller audits it and queues the job in the same transaction.
 
+``mark_for_upgrade`` is the upgrade sweep's read again (PRD 5 Q7, V9): a ready
+document with a page the backup reader read while the main one was down
+(``read_locally``) goes back to ``received`` as ``mark_for_reprocess`` sets it, under
+the family lock, but outside the users' limits (the sweep has its own, 20 an hour),
+audited as ``document.read_upgrade`` with no actor. ``oldest_read_locally`` finds a
+customer's oldest such document.
+
 Read one page again, harder (PRD 5 F5): a queue job carries only a document id, so
 ``request_page_read_again`` marks the page (``pages.read_again_requested_at``, 0021)
 in the same transaction as ``mark_for_reprocess``, and the worker asks which pages
@@ -36,8 +43,9 @@ family lock. A request is refused while the document is being read, and accepted
 once its failure has committed, so no request can land between the failure and the
 clearing and lose its mark. "Keep as is" (F5) is ``accept_page``.
 
-``documents.batch_id`` (PRD 5 Q1, 0021) is written by pull request 2's batches; no
-insert here sets it yet.
+``documents.batch_id`` (PRD 5 Q1, 0021) is the drop a new upload came in:
+``add_if_absent`` writes the record's ``batch_id`` (None: in none). A new version is
+in no batch.
 """
 
 import dataclasses
@@ -49,7 +57,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import customers
+from kaagaz.db import audit, customers
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
@@ -60,6 +68,9 @@ from kaagaz.scanning.gate import DocumentStatus
 
 if TYPE_CHECKING:
     from kaagaz.pipeline import FinishedRun, Progress  # the processor's records; pipeline builds this store
+
+# PRD 5 Q6: the progress of a document waiting for the reader to come back.
+WAITING_FOR_READER = {"step": "waiting"}
 
 _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
@@ -225,6 +236,55 @@ def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, 
         raise ReprocessLimited("cooldown")
     conn.execute(text(_REPROCESS), params)
     return str(state.status)
+
+
+# --- the upgrade sweep's read again (PRD 5 Q7) -----------------------------------
+
+# A ready document out of Trash with a page read by the backup reader, oldest first. The
+# pages side uses pages_read_locally (0022), the documents side their primary key.
+_OLDEST_READ_LOCALLY = (
+    "SELECT d.id, d.created_at FROM documents d"
+    " WHERE d.customer_id = :c AND d.status = 'ready' AND d.deleted_at IS NULL"
+    " AND d.id IN (SELECT p.document_id FROM pages p"
+    " WHERE p.customer_id = :c AND 'read_locally' = ANY (p.read_issues))"
+    " ORDER BY d.created_at, d.id LIMIT 1"
+)
+
+
+def oldest_read_locally(conn: Connection, customer_id: str) -> tuple[str, datetime] | None:
+    """This customer's oldest ready document out of Trash with a page read locally
+    (``read_locally``, PRD 5 Q7), as (id, uploaded at); None when there is none.
+    ``conn`` comes from ``Database.customer(customer_id)``. One statement: O(L log D)
+    for the customer's L locally read pages."""
+    row = conn.execute(text(_OLDEST_READ_LOCALLY), {"c": customer_id}).first()
+    return None if row is None else (str(row[0]), row[1])
+
+
+def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bool:
+    """Set a document read locally to be read again by the main reader (PRD 5 Q7):
+    True when it was set and audited as ``document.read_upgrade`` (no actor, the
+    sweep's own); False when this customer has no such document, or it is being read,
+    rejected or in Trash, and then nothing changes.
+
+    ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes first,
+    as in ``mark_for_reprocess``, then the same change (``_REPROCESS``), with none of
+    the users' limits: REPROCESS_PER_HOUR and the cooldown count ``document.reprocess``
+    rows only. The caller queues the job (the main lane) in the same transaction.
+    3 statements; O(v log D) for the family's v versions."""
+    if lock_family(conn, customer_id, document_id) is None:
+        return False
+    params = {"c": customer_id, "d": document_id}
+    if conn.execute(text(_REPROCESS + " RETURNING id"), params).first() is None:
+        return False
+    audit.record(
+        conn,
+        customer_id,
+        actor_user_id=None,
+        action="document.read_upgrade",
+        target_type="document",
+        target_id=document_id,
+    )
+    return True
 
 
 # --- read one page again, and Keep as is (PRD 5 F5) ----------------------------
@@ -458,13 +518,15 @@ class PgDocuments:
                 "family": record.family_id or record.document_id,
                 "version": record.version_no,
                 "ocr": record.ocr_choice,
+                "batch": record.batch_id,
             }
             try:
                 inserted = conn.execute(
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice)"
-                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version, :ocr)"
+                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice,"
+                        " batch_id) VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family,"
+                        " :version, :ocr, :batch)"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,
@@ -588,12 +650,19 @@ class PgDocuments:
                 {"p": json.dumps(progress.to_json()), "c": customer_id, "d": document_id},
             )
 
-    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
+    def clear_progress(
+        self, customer_id: str, document_id: str, *, run_id: str | None = None, waiting: str | None = None
+    ) -> None:
         """No progress shown, on a document still in progress (received or clean) only:
         a try a backend stopped leaves no stale "Reading page 1" while the job waits to
-        come back. With ``run_id``, the run fence: under the family lock, change nothing
-        unless that run is still open, so a stale delivery never clears the newer run's
-        progress. Its own short transaction, as ``set_progress``."""
+        come back. ``waiting="reader"`` (PRD 5 Q6: the reader is down or has a key
+        problem) writes ``{"step": "waiting"}`` instead, so the list can say "Waiting for
+        the reader to come back". With ``run_id``, the run fence: under the family lock,
+        change nothing unless that run is still open, so a stale delivery never clears
+        the newer run's progress. Its own short transaction, as ``set_progress``."""
+        if waiting not in (None, "reader"):
+            raise ValueError("waiting must be None or 'reader'")
+        progress = None if waiting is None else json.dumps(WAITING_FOR_READER)
         with unavailable(), self._db.customer(customer_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
@@ -601,10 +670,10 @@ class PgDocuments:
                     return
             conn.execute(
                 text(
-                    "UPDATE documents SET progress = NULL"
+                    "UPDATE documents SET progress = CAST(:p AS jsonb)"
                     " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
                 ),
-                {"c": customer_id, "d": document_id},
+                {"p": progress, "c": customer_id, "d": document_id},
             )
 
     def pages_to_read_again(self, customer_id: str, document_id: str) -> tuple[int, ...]:
