@@ -12,7 +12,10 @@ worker takes it out), with the lease model described in kaagaz/jobs/ports.py:
   the server's own page count (kaagaz/ingestion/pagecount.py).
 * ``receive`` asks the express lane first without waiting, then long-polls the
   main lane for up to ``queue_wait_seconds``, and hides the job for
-  ``queue_lease_seconds``. The attempt number is ``tries`` plus SQS's own receive
+  ``queue_lease_seconds``. Right after a ``defer`` it asks the main lane first,
+  without waiting, once: a customer at its fair share whose jobs fill the express
+  lane would otherwise have one deferred after another while the main lane is never
+  asked. The attempt number is ``tries`` plus SQS's own receive
   count, so it counts crashed deliveries too. Each receipt remembers its lane and
   body, so ``ack``, ``extend``, ``bury`` and ``defer`` go to the lane it came from.
 * ``ack`` deletes the message; ``extend`` resets its lease.
@@ -199,6 +202,7 @@ class SqsQueue:
         self._wait = settings.queue_wait_seconds
         self._lease = settings.queue_lease_seconds
         self._received: OrderedDict[str, _Received] = OrderedDict()
+        self._main_first = False  # set by defer, for the next receive only
 
     # --- JobQueue ----------------------------------------------------------
 
@@ -213,10 +217,14 @@ class SqsQueue:
 
     def receive(self) -> Delivery | None:
         """One job, leased to this worker, or None if none came within the wait: the
-        express lane first, without waiting, then the main lane's long poll. At most
-        two calls."""
+        express lane first, without waiting, then the main lane's long poll; right
+        after a ``defer``, the main lane without waiting before both. At most three
+        calls."""
         url, message = self._url, None
-        if self._express_url is not None:
+        if self._main_first and self._express_url is not None:
+            message = self._receive_from(self._url, 0)
+        self._main_first = False
+        if message is None and self._express_url is not None:
             url, message = self._express_url, self._receive_from(self._express_url, 0)
         if message is None:
             url, message = self._url, self._receive_from(self._url, self._wait)
@@ -274,6 +282,7 @@ class SqsQueue:
             raise BackendUnavailable("queue") from error
         self._delete(receipt)
         self._received.pop(receipt, None)
+        self._main_first = True
 
     def bury(self, receipt: str, code: str) -> None:
         received = self._received.get(receipt)

@@ -475,6 +475,38 @@ class ExpressLaneTest(unittest.TestCase):
         assert delivery is not None
         self.queue.defer(delivery.receipt, 300)  # first receive, no earlier tries: tries stays 0
 
+    def defer_an_express_job(self) -> None:
+        self.receive(EXPRESS_URL, 0, [message(receipt="r-e")])
+        lease = {"QueueUrl": EXPRESS_URL, "ReceiptHandle": "r-e", "VisibilityTimeout": LEASE}
+        self.stub.add_response("change_message_visibility", {}, lease)
+        again = {"QueueUrl": EXPRESS_URL, "MessageBody": BODY, "DelaySeconds": 30}
+        self.stub.add_response("send_message", {"MessageId": "m-2"}, again)
+        self.stub.add_response("delete_message", {}, {"QueueUrl": EXPRESS_URL, "ReceiptHandle": "r-e"})
+        delivery = self.queue.receive()
+        assert delivery is not None
+        self.queue.defer(delivery.receipt, 30)
+
+    def test_after_a_defer_the_next_receive_asks_the_main_lane_first_once(self) -> None:
+        """A customer at its fair share with express jobs would otherwise have each one
+        deferred and the next express one taken, so the main lane was never asked."""
+        self.defer_an_express_job()
+
+        self.receive(URL, 0, [message(receipt="r-m")])  # the main lane first, without waiting
+        delivery = self.queue.receive()
+        assert delivery is not None and delivery.receipt == "r-m"
+
+        self.receive(EXPRESS_URL, 0, [message(receipt="r-e2")])  # once only: express first again
+        delivery = self.queue.receive()
+        assert delivery is not None and delivery.receipt == "r-e2"
+
+    def test_after_a_defer_an_empty_main_lane_falls_back_to_the_usual_order(self) -> None:
+        self.defer_an_express_job()
+
+        self.receive(URL, 0, [])
+        self.receive(EXPRESS_URL, 0, [message(receipt="r-e2")])
+        delivery = self.queue.receive()
+        assert delivery is not None and delivery.receipt == "r-e2"
+
     def test_max_receives_reads_both_lanes_and_takes_the_smaller(self) -> None:
         for url, count in ((EXPRESS_URL, 8), (URL, 10)):
             self.stub.add_response(
