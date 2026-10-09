@@ -101,9 +101,9 @@ _REMEMBERED_DELIVERIES = 16
 # AR15b: a queue that does not answer fails fast: 5 s to connect, and at most two
 # retries (botocore's max_attempts counts retries: three tries in all), so a "read
 # again" or an upload never hangs on the queue. Two clients:
-# * sends (an upload, "read again", the failure bin) are one short request, so
-#   their client reads for 5 s: about 30 s per send at worst, not 105 s
-#   (at QUEUE_WAIT_SECONDS=20);
+# * sends (an upload, "read again", the failure bin) and the Health screen's depth
+#   are one short request each, so their client reads for 5 s: about 30 s per call
+#   at worst, not 105 s (at QUEUE_WAIT_SECONDS=20);
 # * the other calls share a client whose read timeout leaves room for the long
 #   poll (QUEUE_WAIT_SECONDS plus a margin), or every idle receive would time out.
 _CONNECT_TIMEOUT_SECONDS = 5
@@ -313,13 +313,15 @@ class SqsQueue:
     def depth(self) -> dict[str, int]:
         """The jobs waiting in each lane, ``{"express": n, "main": n}``: SQS's
         approximate count of visible messages, not counting leased ones. 0 for
-        express when there is no express lane. One call a lane."""
+        express when there is no express lane. One call a lane, on the short-timeout
+        client."""
         express = 0 if self._express_url is None else self._waiting(self._express_url)
         return {"express": express, "main": self._waiting(self._url)}
 
     def _waiting(self, url: str) -> int:
+        # The short-timeout client: the Health screen waits on this, never a long poll's time.
         try:
-            response = self._client.get_queue_attributes(
+            response = self._send_client.get_queue_attributes(
                 QueueUrl=url, AttributeNames=["ApproximateNumberOfMessages"]
             )
         except _ANY_ERROR as error:

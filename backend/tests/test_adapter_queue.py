@@ -591,6 +591,22 @@ class ClientConfigTest(unittest.TestCase):
         self.assertEqual(sender.config.retries["total_max_attempts"], 3)
         self.assertGreater(receiver.config.read_timeout, 20)  # longer than the long poll
 
+    def test_depth_uses_the_short_timeout_client(self) -> None:
+        """The Health screen asks for the depth: it must not wait as long as a long poll."""
+        made: list[_RecordingClient] = []
+
+        def client(service_name: str, **kwargs: Any) -> _RecordingClient:
+            made.append(_RecordingClient(_real_boto3_client(service_name, **kwargs).meta.config))
+            return made[-1]
+
+        with mock.patch.object(boto3, "client", client):
+            settings = make_settings(queue_url=URL, queue_express_url=URL + "-express", queue_wait_seconds=20)
+            queue = SqsQueue(settings)
+        self.assertEqual(queue.depth(), {"express": 0, "main": 0})
+        (asked,) = [made_client for made_client in made if "get_queue_attributes" in made_client.calls]
+        self.assertEqual(asked.calls, ["get_queue_attributes", "get_queue_attributes"])
+        self.assertEqual(asked.config.read_timeout, 5)
+
 
 _real_boto3_client = boto3.client
 
