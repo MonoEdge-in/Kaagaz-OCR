@@ -41,7 +41,7 @@ stay_on() {
 }
 
 dc() {
-  docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod.yml "$@"
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml "$@"
 }
 
 # Counts the requests in Caddy's JSON access log that show a signed-in person:

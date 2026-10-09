@@ -49,8 +49,9 @@ separate implementation.
 ``QuotingChat`` stands in for the model on invoice windows: it answers each
 window with the canned quotes that the window's text holds, the way a model
 copies what it sees. So windows that overlap return the same line twice.
-``EchoVision`` stands in for the vision model on scans: it reads each cropped box
-back as the OCR line there, as a vision model that reads it correctly would.
+``EchoChecker`` stands in for the checker (PRD 5 V1) on a scan the reading model read:
+it reads each cropped box back as the OCR line there, as a checker that reads it
+correctly would.
 """
 
 import io
@@ -63,7 +64,8 @@ from PIL import Image, ImageDraw
 from kaagaz.extraction.invoice import INVOICE_SYSTEM_PROMPT
 from kaagaz.extraction.labels import MIN_OVERLAP, overlap
 from kaagaz.ingestion import sniff
-from kaagaz.reading.ocr import OcrLine
+from kaagaz.pipeline import _check_crop
+from kaagaz.reading.ocr import OcrLine, read_by_id
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.pdf_second_reader import PdfiumReader
 from kaagaz.reading.spans import BoxLocation, Span
@@ -554,22 +556,29 @@ class ScriptedOcr:
         ]
 
 
-class EchoVision:
-    """A vision model (``pipeline.VisionModel``) that reads back what the scripted OCR
-    read where it looks: the text of the OCR line (of ``pages``, by page number) whose
-    box overlaps the cropped box most, if their intersection over union is at least
-    0.5, else "". A vision model is sent only the crop's PNG, so the box is the last one
-    in ``cropped``, which the test fills with each box the pipeline crops (its own crop
-    is still made and sent). ``calls`` counts the crops it was sent."""
+# The reading model's id when ``ScriptedOcr`` stands in for it: each page it reads is
+# ``read_by`` this (PRD 5 RT2), so the checker reads its value boxes again (V1).
+SCRIPTED_READ_BY = read_by_id(ScriptedOcr.name)
 
-    def __init__(self, pages: Sequence[Sequence[tuple[str, Box]]], cropped: Sequence[BoxLocation]) -> None:
+
+class EchoChecker:
+    """A checker (``pipeline.Checker``) that reads back what the scripted OCR read where
+    it looks: the text of the OCR line (of ``pages``, by page number) whose box overlaps
+    the cropped box most, if their intersection over union is at least MIN_OVERLAP, else
+    "". A checker is given only the crop, so the box is the last one in ``crops``, which
+    ``crop`` fills when the test puts it in place of ``pipeline._check_crop`` (the
+    pipeline's own crop, imported here before it is replaced, is still made and read)."""
+
+    def __init__(self, pages: Sequence[Sequence[tuple[str, Box]]]) -> None:
         self.pages = pages
-        self.cropped = cropped
-        self.calls = 0
+        self.crops: list[BoxLocation] = []
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        self.calls += 1
-        box = self.cropped[-1]
+    def crop(self, page: Image.Image, box: BoxLocation) -> Image.Image:
+        self.crops.append(box)
+        return _check_crop(page, box)
+
+    def read_crop(self, image: Image.Image, *, devanagari: bool) -> str:
+        box = self.crops[-1]
         lines = self.pages[box.page - 1] if box.page <= len(self.pages) else ()
         scored = [(overlap(box, BoxLocation(box.page, *line_box)), text) for text, line_box in lines]
         score, text = max(scored, default=(0.0, ""))

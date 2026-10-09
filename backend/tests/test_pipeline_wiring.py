@@ -26,7 +26,7 @@ from kaagaz.reading.wiring import (
     reader_config,
 )
 from kaagaz.scanning.gate import Verdict
-from kaagaz.settings import Settings
+from kaagaz.settings import INVOICE_REPLY_TOKENS, Settings
 from tests.fakes import FakeScanner, MemoryStorage
 from tests.settings_factory import make_settings
 
@@ -93,7 +93,7 @@ class RunConfigTest(unittest.TestCase):
                 "extract_window_chars": settings.extract_window_chars,
                 "extract_window_overlap": settings.extract_window_overlap,
                 "extract_max_windows": settings.extract_max_windows,
-                "window_max_tokens": settings.model_window_max_tokens,
+                "window_max_tokens": INVOICE_REPLY_TOKENS,
             },
         )
 

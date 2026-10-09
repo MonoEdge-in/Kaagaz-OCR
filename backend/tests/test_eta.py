@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from kaagaz.eta import RunTiming, after_reading, mean, preparing, rates, reading, time_left
+from kaagaz.eta import OCR_SECONDS_OTHER, RunTiming, after_reading, mean, preparing, rates, reading, time_left
 
 T0 = datetime(2026, 10, 4, 10, 0, tzinfo=UTC)
 NONE = (0.0, 0.0)
@@ -56,10 +56,17 @@ def test_after_reading_is_the_median_and_slow_the_90th_percentile() -> None:
 
 
 def test_only_this_engines_runs_and_the_last_20_count() -> None:
-    other = RunTiming("paddleocr-vl 1.0", 10, 0, 0, 900.0, 900.0, 30.0)
+    other = RunTiming("an-old-reader 1.0", 10, 0, 0, 900.0, 900.0, 30.0)
     assert mean(rates([other] * 3, "rapidocr").ocr) == pytest.approx(6.9)
     old = [scan_run(3.0)] * 20 + [scan_run(100.0)] * 5
     assert rates(old, "rapidocr") == rates(old[:20], "rapidocr")
+
+
+def test_an_engine_with_no_figure_of_its_own_starts_from_the_default() -> None:
+    """A Gemini run, or an old run's reader the server no longer has, starts from
+    OCR_SECONDS_OTHER (PRD 5 Q6) until its own history replaces it."""
+    for engine in ("gemini", "an-old-reader"):
+        assert mean(rates([], engine).ocr) == pytest.approx(OCR_SECONDS_OTHER)
 
 
 def test_a_sheet_is_one_file_with_no_pages() -> None:

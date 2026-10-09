@@ -71,9 +71,6 @@ class ExitModel:
                 return {"status": "answered", "sentences": [{"text": wanted[1], "evidence": [int(n)]}]}
         return {"status": "not_found", "sentences": []}
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        return ""
-
 
 @dataclass
 class World:

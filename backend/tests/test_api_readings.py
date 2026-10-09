@@ -52,7 +52,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
         _box(1, 0.4, "Sharma\u200dTraders <b>", confidence=0.97, origin="ocr"),
         _box(1, 0.1, "Invoice", origin="ocr"),
     ]
-    api.add_reader_output(signed.customer_id, document_id, spans, reader="paddleocr-vl", reader_version="1.5")
+    api.add_reader_output(signed.customer_id, document_id, spans, reader="old-reader", reader_version="1.5")
 
     body = _readings(signed, document_id)
 
@@ -61,7 +61,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
         "readers": [
             {
                 "role": "first",
-                "reader": "paddleocr-vl",
+                "reader": "old-reader",
                 "reader_version": "1.5",
                 "truncated": False,
                 "lines": [

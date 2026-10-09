@@ -210,7 +210,7 @@ def header(out: TextIO, settings: Settings, api: str, sha: str, questions: str =
     out.write(f"{questions} sha256 {scoring.file_sha256(GOLDEN / questions)}\n")
     out.write(
         f"MODEL_ENABLED={settings.model_enabled} MODEL_CHAT={settings.model_chat}"
-        f" MODEL_EMBED={settings.model_embed} ({model_digests(settings)}) OCR_ENGINE={settings.ocr_engine}"
+        f" MODEL_EMBED={settings.model_embed} OCR_ENGINE={settings.ocr_engine}"
         f" ANSWER_MAX_EVIDENCE={settings.answer_max_evidence}"
         f" ANSWER_MIN_EVIDENCE_SCORE={settings.answer_min_evidence_score}"
         f" ANSWER_WHOLE_DOC_TOKENS={settings.answer_whole_doc_tokens} TIMEZONE={settings.timezone}\n\n"

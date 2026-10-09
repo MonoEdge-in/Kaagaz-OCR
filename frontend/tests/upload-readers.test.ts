@@ -22,8 +22,8 @@ const auto: UploadReader = {
   available: true,
   reason: null,
 };
-const paddle: UploadReader = {
-  id: "paddleocr_vl",
+const layout: UploadReader = {
+  id: "layout_reader",
   title: "Layout reader",
   hint: "Best for handwriting and complex pages (slower)",
   available: false,
@@ -36,13 +36,13 @@ const rapid: UploadReader = {
   available: true,
   reason: null,
 };
-const LAPTOP = [auto, paddle, rapid];
+const LAPTOP = [auto, layout, rapid];
 
 describe("Scan with options", () => {
   it("names the first recommended and disables a reader the server can't use, saying why", () => {
     expect(readerOptions(LAPTOP)).toEqual([
       { id: "auto", label: "Auto (recommended)", disabled: false },
-      { id: "paddleocr_vl", label: "Layout reader (Not set up on this server)", disabled: true },
+      { id: "layout_reader", label: "Layout reader (Not set up on this server)", disabled: true },
       { id: "rapidocr", label: "Backup reader", disabled: false },
     ]);
   });
@@ -57,7 +57,7 @@ describe("Scan with options", () => {
 
   it("is shown only when two or more readers can be used", () => {
     expect(offersChoice(LAPTOP)).toBe(true);
-    expect(offersChoice([auto, paddle])).toBe(false);
+    expect(offersChoice([auto, layout])).toBe(false);
     const missing = { ...rapid, available: false, reason: "Not installed on this server" };
     expect(offersChoice([auto, missing])).toBe(false);
     expect(offersChoice([])).toBe(false);
@@ -66,7 +66,7 @@ describe("Scan with options", () => {
   it("falls back to the default when the pick is gone or can't be used", () => {
     expect(pickedReader(LAPTOP, null)).toBe(auto);
     expect(pickedReader(LAPTOP, "rapidocr")).toBe(rapid);
-    expect(pickedReader(LAPTOP, "paddleocr_vl")).toBe(auto);
+    expect(pickedReader(LAPTOP, "layout_reader")).toBe(auto);
     expect(pickedReader(LAPTOP, "gone")).toBe(auto);
     expect(pickedReader([], "rapidocr")).toBeNull();
   });
@@ -80,8 +80,8 @@ describe("what an upload sends", () => {
   });
 
   it("sends nothing for a reader the server can't use, or when there is no choice", () => {
-    expect(readerToSend(LAPTOP, "paddleocr_vl")).toBeUndefined();
-    expect(readerToSend([auto, paddle], "paddleocr_vl")).toBeUndefined();
+    expect(readerToSend(LAPTOP, "layout_reader")).toBeUndefined();
+    expect(readerToSend([auto, layout], "layout_reader")).toBeUndefined();
     expect(readerToSend([], "rapidocr")).toBeUndefined();
   });
 

@@ -11,14 +11,13 @@
 # Docker's build cache is pruned after each good deploy, keeping what the
 # current images use and anything used in the last 7 days, and also before a
 # build when / is low on space (a full disk once cut a pip download short).
-# Volumes are never pruned. PROVISIONAL: 7 days and 20 GB, watch on the g4dn.
+# Volumes are never pruned. PROVISIONAL: 7 days and 20 GB, watch on the server.
 set -euo pipefail
 
 KAAGAZ_DIR=/home/ubuntu/kaagaz
 DEPLOYED_FILE=/home/ubuntu/.kaagaz-deployed
 LOCK_FILE=/tmp/kaagaz-deploy.lock
-COMPOSE=(-f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod.yml)
-PROFILES=(--profile ollama --profile paddle)
+COMPOSE=(-f docker-compose.yml -f docker-compose.prod.yml)
 BUILD_CACHE_KEEP=168h
 MIN_FREE_GB=20
 
@@ -61,10 +60,10 @@ if [[ "$target" != "$deployed" ]]; then
   fi
   free_gb="$(df --output=avail -BG / | tail -n 1 | tr -dc '0-9' || true)"
   if [[ -n "$free_gb" ]] && ((free_gb < MIN_FREE_GB)); then
-    echo "low disk: $free_gb GB free; the OCR build needs about $MIN_FREE_GB GB" >&2
+    echo "low disk: $free_gb GB free; a build needs about $MIN_FREE_GB GB" >&2
     prune_build_cache
   fi
-  if ! docker compose "${COMPOSE[@]}" "${PROFILES[@]}" up -d --build --remove-orphans; then
+  if ! docker compose "${COMPOSE[@]}" up -d --build --remove-orphans; then
     report "$target" failed
     exit 1
   fi
@@ -78,7 +77,7 @@ if [[ "$target" != "$deployed" ]]; then
   exit 0
 fi
 
-if ! docker compose "${COMPOSE[@]}" "${PROFILES[@]}" up -d; then
+if ! docker compose "${COMPOSE[@]}" up -d; then
   report "$target" failed
   exit 1
 fi

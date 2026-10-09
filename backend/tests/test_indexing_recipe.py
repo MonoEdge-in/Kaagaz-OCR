@@ -1,9 +1,22 @@
+"""The embedding recipe for each MODEL_EMBED, and the plain question (PRD 3 V3, PRD 5 M5)."""
 """The embedding recipe and question format for each MODEL_EMBED (PRD 3 V3, PRD 5 M5)."""
 
 from typing import Any
 
 import pytest
 
+from kaagaz.search.indexing import embed_question, recipe_for, recipe_tag, section_input
+
+
+@pytest.mark.parametrize("model", ["google/gemini-embedding-2", "google/gemini-embedding-001"])
+def test_a_gemini_embedding_model_has_recipe_gem1(model: str) -> None:
+    assert recipe_for(model) == "gem1"
+    assert recipe_tag(model) == f"{model}#gem1"
+
+
+@pytest.mark.parametrize("model", ["local-embed:0.6b", "google/embeddinggemma", "gemini-embedding-2", ""])
+def test_any_other_model_name_has_recipe_ctx1_as_old_vectors_do(model: str) -> None:
+    assert recipe_for(model) == "ctx1"
 from kaagaz.search.indexing import embed_question, query_input, recipe_for, recipe_tag, section_input
 
 QWEN_FORMAT = (
@@ -51,6 +64,11 @@ class Recorder:
     ) -> dict[str, Any]:
         raise AssertionError("never chats")
 
+
+def test_m5_a_question_is_embedded_as_plain_text() -> None:
+    recorder = Recorder("google/gemini-embedding-2")
+    assert embed_question(recorder, "how many leaves?") == [1.0]
+    assert recorder.texts == ["how many leaves?"]
     def read_image(self, *, png: bytes, instruction: str) -> str:
         raise AssertionError("never reads images")
 

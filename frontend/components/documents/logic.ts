@@ -177,7 +177,7 @@ export const MB_PER_PDF_PAGE = 0.4;
  * PDF page 0.05 s, and a 200-row sheet 0.01 s. A PDF can't be told apart before
  * it is read, so it is estimated as a scan: the text "Up to N minutes" is then
  * true for both. With the model on, the card and invoice calls add time these
- * numbers don't include; PaddleOCR-VL on a laptop CPU takes 3 to 11 minutes a page.
+ * numbers don't include.
  */
 export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
   pdf: 7,

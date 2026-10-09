@@ -23,7 +23,7 @@ from unittest import mock
 
 from PIL import Image
 
-from kaagaz.ai.gemini import PageReply
+from kaagaz.ai.openrouter import PageReply
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -42,7 +42,6 @@ from kaagaz.reading.ocr import (
     DocumentEngine,
     DocumentPages,
     MeteredOcrEngine,
-    OcrEngines,
     OcrLine,
     OcrTable,
     PageEngine,
@@ -280,7 +279,7 @@ class G1EngineTest(unittest.TestCase):
         pool = RapidOcrPool(1)
         with (
             mock.patch.object(gemini_ocr, "process_gate") as gate,
-            mock.patch.object(gemini_ocr, "GeminiClient") as client,
+            mock.patch.object(gemini_ocr, "OpenRouterClient") as client,
         ):
             engine = GeminiEngine.from_settings(settings, pool=pool)
         gate.assert_called_once_with(settings)
@@ -293,7 +292,7 @@ class G1EngineTest(unittest.TestCase):
         fake = FakeClient(reply(value(line("INVOICE 1042"))))
         with (
             mock.patch.object(gemini_ocr, "process_gate"),
-            mock.patch.object(gemini_ocr, "GeminiClient", return_value=fake),
+            mock.patch.object(gemini_ocr, "OpenRouterClient", return_value=fake),
             mock.patch.object(pool, "find_boxes", return_value=[]),
         ):
             engine = wiring.build_gemini_engine(settings, pool=pool)
@@ -311,16 +310,14 @@ class G1EngineTest(unittest.TestCase):
                     mock.patch(
                         "kaagaz.reading.wiring.importlib.import_module", side_effect=AssertionError
                     ) as imported,
-                    mock.patch.object(gemini_ocr, "GeminiClient", side_effect=AssertionError) as client,
+                    mock.patch.object(gemini_ocr, "OpenRouterClient", side_effect=AssertionError) as client,
                 ):
-                    engines = wiring.build_ocr_engines(settings)
                     single = wiring.build_ocr_engine(settings)
                     socket = wiring.build_reader_socket(settings, single)
                 imported.assert_not_called()
                 client.assert_not_called()
                 self.assertIsNotNone(socket)
                 if engine_name == "none":
-                    self.assertIsNone(engines)
                     self.assertIsNone(single)
                 else:
                     self.assertEqual(single.name if single else None, "rapidocr")
@@ -940,16 +937,14 @@ class G7CacheTest(unittest.TestCase):
         self.assertEqual(cache.rows[key][0]["lines"][0]["text"], "harder read")  # replaced, not added
         self.assertEqual(len(cache.rows), 2)
 
-    def test_g7_the_meter_and_the_workers_engines_pass_the_document_on(self) -> None:
+    def test_g7_the_meter_passes_the_document_on(self) -> None:
         cache = FakeCache()
         built = build(reply(value(line("x"))), reply(value(line("y"))))
         meter = MeteredOcrEngine(built.engine, timer=time.perf_counter)
         with reading_document(meter, pages(cache)):
             meter.read_page(page(), page_no=1)
-        settings = make_settings(ocr_engine="gemini")
-        engines = OcrEngines(settings, gemini=lambda _settings, *, pool: built.engine)
-        with reading_document(MeteredOcrEngine(engines, timer=time.perf_counter), pages(cache)):
-            engines.read_page(page(colour=(1, 2, 3)), page_no=2)
+        with reading_document(meter, pages(cache)):
+            meter.read_page(page(colour=(1, 2, 3)), page_no=2)
         self.assertEqual([key.page_no for key in cache.puts], [1, 2])
         with reading_document(FakeRapidOcr(), pages(cache)):  # no page cache: nothing to open
             pass

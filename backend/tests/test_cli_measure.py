@@ -300,7 +300,7 @@ def test_measure_engine_gemini_without_a_key_stops_before_reading(
 
 def test_measure_engine_takes_only_the_two_readers(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as stopped:
-        main(["measure", "--file", "a.pdf", "--engine", "paddleocr_vl"], environ=shipped(), out=io.StringIO())
+        main(["measure", "--file", "a.pdf", "--engine", "none"], environ=shipped(), out=io.StringIO())
     assert stopped.value.code == 2
     assert "invalid choice" in capsys.readouterr().err
 

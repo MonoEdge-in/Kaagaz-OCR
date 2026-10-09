@@ -14,6 +14,10 @@ it has got: the pipeline beats the heartbeat and shows "indexing done of total"
 there, so a long document keeps its lease (a 20k-row sheet is about 626
 batches, longer than one lease).
 
+What is embedded (PRD 3 V3, PRD 5 M5): a piece is its reduced header, a blank line,
+then its text (``piece_input``); a question is embedded as plain text. Documents get no
+instruction. A vector is tagged with its model and recipe (``recipe_tag``: ``gem1`` for a
+google/gemini- model, ``recipe_for``). The reduced header keeps only the
 What is embedded (PRD 3 V3, the Qwen3-Embedding model card): a piece is its
 reduced header, a blank line, then its text (``piece_input``); a question is
 ``Instruct: {QUERY_TASK}\nQuery:{question}`` (``query_input``), with no space
@@ -61,8 +65,6 @@ _TO_EMBED = text(
     " AND summary IS NOT NULL AND (embedding IS NULL OR embed_recipe <> :m))"
 )
 
-# The query task, in English (the model card: queries carry an instruction).
-QUERY_TASK = "Given a question about business documents, retrieve passages that answer it"
 # The recipe: what a vector was made from (V3). Change it when piece_input changes.
 RECIPE = "ctx1"
 # PRD 5 M5: the recipe of a Gemini embedding model, whose questions are plain text.
@@ -146,6 +148,12 @@ def recipe_for(model_embed: str) -> str:
     return GEMINI_RECIPE if is_gemini_model(model_embed) else RECIPE
 
 
+def recipe_for(model_embed: str) -> str:
+    """The recipe ``model_embed`` embeds with (PRD 5 M5): ``gem1`` for a ``google/gemini-``
+    model, otherwise ``ctx1`` (RECIPE)."""
+    return GEMINI_RECIPE if is_gemini_model(model_embed) else RECIPE
+
+
 def query_input(question: str, model_embed: str = "") -> str:
     """What a question is embedded as for ``model_embed`` (MODEL_EMBED): the plain question
     for recipe ``gem1`` (PRD 5 M5), otherwise the Qwen3 model card's exact format. The
@@ -157,6 +165,12 @@ def query_input(question: str, model_embed: str = "") -> str:
 
 def embed_question(model: ModelClient | None, question: str) -> list[float] | None:
     """The question's vector, or None (no model, model down, or unusable vectors), so
+    search falls back to word and fuzzy matching. One model call, with the question as plain
+    text; chat and GET /api/search both embed this way."""
+    if model is None or not question:
+        return None
+    try:
+        vectors = model.embed([question])
     search falls back to word and fuzzy matching. One model call, in ``query_input``'s
     format for its MODEL_EMBED; chat and GET /api/search both embed this way."""
     if model is None or not question:

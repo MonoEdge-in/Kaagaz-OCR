@@ -63,12 +63,12 @@ HISTORY_RUNS = 20  # K
 PRIOR_WEIGHT = 2.0  # n0
 MIN_EVIDENCE = 3
 # RapidOCR: 6.9 s a scanned page on average (cli measure, 30 Sep 2026, docs/architecture.md).
-# PaddleOCR-VL on the T4 is not measured yet: a guess, until a run's own pages and history replace it.
+# Any other engine name (an old run's reader too) starts from OCR_SECONDS_OTHER.
 # Gemini (PRD 5 Q6, V6) has no entry: its figure is the seconds a page from the `measure` run,
 # divided by OCR_PAGE_CONCURRENCY (the pages read at once), and that run has not been made, so
 # no number is guessed. Until it is, a "gemini" page starts from OCR_SECONDS_OTHER, and the
 # customer's own Gemini runs replace it as they finish.
-OCR_SECONDS = {"rapidocr": 6.9, "paddleocr-vl": 5.0}
+OCR_SECONDS = {"rapidocr": 6.9}
 OCR_SECONDS_OTHER = 7.0  # the upload estimate's 7 s a page
 # Not measured yet: a guess for an A4 page drawn at 400 DPI, checked and stored, until history replaces it.
 PREPARE_PAGE_SECONDS = 1.0

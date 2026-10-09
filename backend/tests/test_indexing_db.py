@@ -15,7 +15,7 @@ from kaagaz.chunking.piece import Piece
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.spans import BoxLocation
-from kaagaz.search.indexing import embed_pieces, piece_input, query_input, recipe_tag
+from kaagaz.search.indexing import embed_pieces, piece_input, recipe_tag
 from tests.db_support import APP_ROLE, new_customer
 from tests.test_search_db import RECIPE, add_document, add_pieces, axis, run
 
@@ -48,9 +48,6 @@ class FakeModel:
         self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
     ) -> dict[str, Any]:
         raise AssertionError("indexing never chats")
-
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise AssertionError("indexing never reads images")
 
 
 class GoesDown(Database):
@@ -325,10 +322,6 @@ def test_a_piece_is_embedded_with_its_reduced_header_and_no_instruction(db: Data
         assert "Before:" not in embedded and "Sept report" not in embedded
 
 
-def test_the_query_and_piece_inputs_follow_the_model_card() -> None:
-    assert query_input("total of INV-1042") == (
-        "Instruct: Given a question about business documents, retrieve passages that answer it"
-        "\nQuery:total of INV-1042"
-    )
+def test_the_piece_input_drops_the_document_name_and_pages() -> None:
     assert piece_input("", "text only") == "text only"
     assert piece_input("Document: a.pdf | Sheet 2", "cells") == "cells"

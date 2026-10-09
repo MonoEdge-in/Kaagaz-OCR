@@ -6,6 +6,11 @@ times or model names: they are Vrushit's settings (PRD section 6), so a
 missing one stops the process at start-up with its name, never later with a
 guess. Tests build ``Settings`` directly (``tests/settings_factory.py``).
 
+A variable this module no longer reads is ignored, so an older ``.env`` still
+starts (the deploy runs unattended). A value that names something removed stops
+start-up by name: OCR_ENGINE's old layout reader, or with MODEL_ENABLED a
+MODEL_CHAT or MODEL_EMBED that is not a google/gemini- model (PRD 5 section 7).
+
 PROVISIONAL: every value marked so in ``.env.example`` waits for Vrushit.
 """
 
@@ -46,29 +51,28 @@ MODEL_ID = re.compile(r"[a-z0-9-]+/[A-Za-z0-9._-]+")
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 # The key goes in a request header: printable ASCII with no space, so it can never split one.
 _API_KEY = re.compile(r"[\x21-\x7e]{1,256}")
-# The Host values the ocr server accepts (ALLOWED_HOSTS in kaagaz/ocr_server/app.py,
-# which must never import this module; a test keeps the two the same).
-OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
 # AR1: seconds to spare between the longest model step without a heartbeat (one
-# chat_json: a call and its repair retry; or one embedding batch or vision crop, a
-# single call) and the job's lease.
+# chat_json: a call and its repair retry; or one embedding batch, a single call) and the
+# job's lease.
 _MODEL_LEASE_MARGIN_SECONDS = 60 + LEASE_RENEW_SECONDS
 # The size of the pieces' vector(1024) column (migration 0001): EMBEDDING_DIM must match it.
 EMBEDDING_DIM = 1024
 # Council 5 (PROVISIONAL): an invoice window's reply needs about this many tokens for each
 # line item, taking one line item per _WINDOW_LINE_CHARS characters of the window, plus
-# _WINDOW_FIELD_TOKENS for its nine fields. The window must fit MODEL_WINDOW_MAX_TOKENS.
+# _WINDOW_FIELD_TOKENS for its nine fields. The window must fit INVOICE_REPLY_TOKENS.
 _WINDOW_LINE_CHARS = 50
 _WINDOW_LINE_TOKENS = 50
 _WINDOW_FIELD_TOKENS = 300
+# PRD 5 M1: an invoice window's reply budget, capped as it was (2048), so the windows are
+# 1700 characters with a 400 character overlap unless EXTRACT_WINDOW_* say otherwise.
+INVOICE_REPLY_TOKENS = 2048
 
 
 def window_for_reply_tokens(max_tokens: int) -> tuple[int, int]:
     """The invoice window (characters, overlap) that a reply of ``max_tokens``
-    (MODEL_WINDOW_MAX_TOKENS) can answer: as many 50-character line items as fit
-    after the fields, and a quarter of that as overlap, both in whole line items.
-    2048 gives 1700 and 400; a bigger model is one setting (MODEL_WINDOW_MAX_TOKENS,
-    with MODEL_NUM_CTX), and the windows grow with it. (0, 0) if nothing fits."""
+    (INVOICE_REPLY_TOKENS) can answer: as many 50-character line items as fit after the
+    fields, and a quarter of that as overlap, both in whole line items. 2048 gives 1700
+    and 400. (0, 0) if nothing fits."""
     line_items = max(0, (max_tokens - _WINDOW_FIELD_TOKENS) // _WINDOW_LINE_TOKENS)
     chars = line_items * _WINDOW_LINE_CHARS
     overlap = (chars // 4) // _WINDOW_LINE_CHARS * _WINDOW_LINE_CHARS
@@ -174,12 +178,10 @@ class Settings:
     page_image_dpi: int
     max_image_pixels: int
 
-    # Scan reader engine: "gemini" (PRD 5, the model in ocr_model), "paddleocr_vl" (the ocr
-    # container at ocr_url), "rapidocr", or "none" (scans are marked needs_reader). OCR pages
-    # are drawn at ocr_dpi in memory, never stored; the stored page picture stays at
-    # page_image_dpi.
+    # Scan reader engine: "gemini" (PRD 5, the model in ocr_model), "rapidocr", or "none"
+    # (scans are marked needs_reader). OCR pages are drawn at ocr_dpi in memory, never
+    # stored; the stored page picture stays at page_image_dpi.
     ocr_engine: str
-    ocr_url: str
     ocr_timeout_seconds: float
     ocr_dpi: int
     # Council 5 Oct 2026 (PROVISIONAL; kaagaz/reading/ocr_dpi.py): how each OCR page's DPI is
@@ -238,22 +240,18 @@ class Settings:
     blank_page_stddev: float
     low_res_dpi: int
 
-    # Local AI through Ollama's HTTP API. model_enabled=false runs everything
-    # without AI: search without meaning vectors, answers quote the evidence.
+    # AI through OpenRouter (PRD 5 G9, M1, M5): model_chat answers and model_embed embeds,
+    # both google/gemini- models. model_enabled=false runs everything without AI: search
+    # without meaning vectors, answers quote the evidence.
     model_enabled: bool
-    model_base_url: str
     model_chat: str
     model_embed: str
-    model_vision: str | None
     embedding_dim: int
     model_timeout_seconds: float
-    # PRD 2 model budgets (ML amendment 5): the context window sent with every
-    # call, the reply budgets for the document card, for each invoice window and
-    # for an answer, and the worker's timeout for those calls. The card reads at
-    # most card_max_chars of the document (D1).
-    model_num_ctx: int
+    # PRD 2 model budgets (ML amendment 5): the reply budgets for the document card and
+    # for an answer (an invoice window's is INVOICE_REPLY_TOKENS), and the worker's
+    # timeout for those calls. The card reads at most card_max_chars of the document (D1).
     model_card_max_tokens: int
-    model_window_max_tokens: int
     model_answer_max_tokens: int
     model_extract_timeout_seconds: float
     card_max_chars: int
@@ -300,6 +298,8 @@ class Settings:
     model_translate_timeout_seconds: float
     # PRD 5 context and memory (sections CX and M; council 9 Oct 2026). Optional: unset is
     # the PRD's value, so an older .env keeps working. model_context_tokens is the chat
+    # model's context window (M1), the one every budget uses. The chat's documents are given
+    # whole when they add up to
     # model's context window (M1), the one every budget uses: with a MODEL_CHAT that is not
     # google/gemini- (Ollama), the smaller of MODEL_CONTEXT_TOKENS and MODEL_NUM_CTX, and
     # answer_whole_doc_tokens is then 0. The chat's documents are given whole when they add up to
@@ -337,7 +337,7 @@ class Settings:
             if env.optional("OCR_DPI_RULE") is None
             else env.choice("OCR_DPI_RULE", {"fixed", "text_height", "text_height_no_scan_cap"})
         )
-        ocr_engine = env.choice("OCR_ENGINE", {"gemini", "paddleocr_vl", "rapidocr", "none"})
+        ocr_engine = env.choice("OCR_ENGINE", {"gemini", "rapidocr", "none"})
         # Any other rule may read a page twice (at a lowered DPI, then the ceiling) between
         # heartbeats, and a Gemini page may take three calls (_GEMINI_PAGE_CALLS).
         ocr_calls = 1 if ocr_dpi_rule == "fixed" else 2
@@ -354,45 +354,36 @@ class Settings:
                 f"{'2 x ' if ocr_calls == 2 else ''}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
                 " must not be more than QUEUE_LEASE_SECONDS"
             )
-        ocr_url = env.url("OCR_URL")
-        if (
-            ocr_engine == "paddleocr_vl"
-            and urllib.parse.urlsplit(ocr_url).netloc.lower() not in OCR_SERVER_HOSTS
-        ):
-            raise SettingsError(
-                "OCR_URL must name ocr:8080, localhost:8080 or 127.0.0.1:8080 (the ocr server's hosts)"
-            )
-        model_num_ctx = env.positive("MODEL_NUM_CTX")
+        model_context_tokens = env.at_least("MODEL_CONTEXT_TOKENS", 1, default=200_000)
         card_max_tokens = env.positive("MODEL_CARD_MAX_TOKENS")
-        window_max_tokens = env.positive("MODEL_WINDOW_MAX_TOKENS")
         answer_max_tokens = env.positive("MODEL_ANSWER_MAX_TOKENS")
         for name, tokens in (
             ("MODEL_CARD_MAX_TOKENS", card_max_tokens),
-            ("MODEL_WINDOW_MAX_TOKENS", window_max_tokens),
             ("MODEL_ANSWER_MAX_TOKENS", answer_max_tokens),
         ):
-            left = model_num_ctx - 2 * tokens - MAX_SYSTEM_PROMPT_TOKENS - CHAT_OVERHEAD_TOKENS
+            left = model_context_tokens - 2 * tokens - MAX_SYSTEM_PROMPT_TOKENS - CHAT_OVERHEAD_TOKENS
             if left < MIN_INPUT_TOKENS:
                 raise SettingsError(
-                    f"{name} must leave at least {MIN_INPUT_TOKENS} tokens of MODEL_NUM_CTX for the document"
+                    f"{name} must leave at least {MIN_INPUT_TOKENS} tokens of MODEL_CONTEXT_TOKENS"
+                    " for the document"
                 )
-        # Empty means "what MODEL_WINDOW_MAX_TOKENS can answer" (window_for_reply_tokens);
+        # Empty means "what INVOICE_REPLY_TOKENS can answer" (window_for_reply_tokens);
         # a value set here overrides it, and is still checked below.
-        auto_chars, auto_overlap = window_for_reply_tokens(window_max_tokens)
+        auto_chars, auto_overlap = window_for_reply_tokens(INVOICE_REPLY_TOKENS)
         set_chars = env.optional_integer("EXTRACT_WINDOW_CHARS")
         set_overlap = env.optional_integer("EXTRACT_WINDOW_OVERLAP")
         window_chars = auto_chars if set_chars is None else set_chars
         window_overlap = auto_overlap if set_overlap is None else set_overlap
         if window_chars < 1:
-            raise SettingsError("EXTRACT_WINDOW_CHARS must be at least 1 (or MODEL_WINDOW_MAX_TOKENS larger)")
+            raise SettingsError("EXTRACT_WINDOW_CHARS must be at least 1")
         if window_overlap >= window_chars:
             # Without this the windows would never move forward (plan 6).
             raise SettingsError("EXTRACT_WINDOW_OVERLAP must be less than EXTRACT_WINDOW_CHARS")
         line_items = -(-window_chars // _WINDOW_LINE_CHARS)
-        if line_items * _WINDOW_LINE_TOKENS + _WINDOW_FIELD_TOKENS > window_max_tokens:
+        if line_items * _WINDOW_LINE_TOKENS + _WINDOW_FIELD_TOKENS > INVOICE_REPLY_TOKENS:
             raise SettingsError(
-                "EXTRACT_WINDOW_CHARS is too long for MODEL_WINDOW_MAX_TOKENS: a window needs about"
-                " 50 reply tokens for every 50 characters, plus 300"
+                f"EXTRACT_WINDOW_CHARS is too long for an invoice window's {INVOICE_REPLY_TOKENS}"
+                " token reply: a window needs about 50 reply tokens for every 50 characters, plus 300"
             )
         embedding_dim = env.integer("EMBEDDING_DIM")
         if embedding_dim != EMBEDDING_DIM:
@@ -421,6 +412,7 @@ class Settings:
         # PRD 5 CX and M: unset is the PRD's value. The whole documents (CX5) must fit the
         # context window with the answer's reply, its repair retry and the system prompt.
         model_chat = env.text("MODEL_CHAT")
+        whole_doc_tokens = env.at_least("ANSWER_WHOLE_DOC_TOKENS", 0, default=120_000)
         model_context_tokens = env.at_least("MODEL_CONTEXT_TOKENS", 1, default=200_000)
         whole_doc_tokens = env.at_least("ANSWER_WHOLE_DOC_TOKENS", 0, default=120_000)
         if not is_gemini_model(model_chat):
@@ -437,26 +429,23 @@ class Settings:
             )
         model_enabled = env.boolean("MODEL_ENABLED")
         model_embed = env.text("MODEL_EMBED")
-        model_vision = env.optional("MODEL_VISION")
         openrouter_api_key = env.optional("OPENROUTER_API_KEY")
         ocr_model = env.text("OCR_MODEL")
         if not valid_model_id(ocr_model):
             raise SettingsError(
                 "OCR_MODEL must be an OpenRouter model ID such as google/gemini-3.1-pro-preview (no :variant)"
             )
-        named = (("MODEL_CHAT", model_chat), ("MODEL_EMBED", model_embed), ("MODEL_VISION", model_vision))
-        for name, model in named:
-            if model is not None and is_gemini_model(model) and not valid_model_id(model):
+        for name, model in (("MODEL_CHAT", model_chat), ("MODEL_EMBED", model_embed)):
+            if model_enabled and not is_gemini_model(model):
+                raise SettingsError(f"{name} must be a google/gemini- model when MODEL_ENABLED is true")
+            if is_gemini_model(model) and not valid_model_id(model):
                 raise SettingsError(
                     f"{name} must be an OpenRouter model ID such as google/gemini-3.1-pro-preview"
                     " (no :variant)"
                 )
-        model_names = (model_chat, model_embed, model_vision or "")
-        calls_model = ocr_engine == "gemini" or (model_enabled and any(map(is_gemini_model, model_names)))
-        if openrouter_api_key is None and calls_model:
+        if openrouter_api_key is None and (ocr_engine == "gemini" or model_enabled):
             raise SettingsError(
-                "OPENROUTER_API_KEY is not set: OCR_ENGINE=gemini, or MODEL_ENABLED with a google/gemini-"
-                " model, needs it"
+                "OPENROUTER_API_KEY is not set: OCR_ENGINE=gemini, or MODEL_ENABLED, needs it"
             )
         if openrouter_api_key is not None and _API_KEY.fullmatch(openrouter_api_key) is None:
             raise SettingsError("OPENROUTER_API_KEY must be printable ASCII with no spaces")
@@ -498,7 +487,6 @@ class Settings:
             page_image_dpi=env.integer("PAGE_IMAGE_DPI"),
             max_image_pixels=env.integer("MAX_IMAGE_PIXELS"),
             ocr_engine=ocr_engine,
-            ocr_url=ocr_url,
             ocr_timeout_seconds=ocr_timeout_seconds,
             ocr_dpi=env.positive("OCR_DPI"),
             ocr_dpi_rule=ocr_dpi_rule,
@@ -527,15 +515,11 @@ class Settings:
             blank_page_stddev=env.not_negative("BLANK_PAGE_STDDEV"),
             low_res_dpi=env.positive("LOW_RES_DPI"),
             model_enabled=model_enabled,
-            model_base_url=env.text("MODEL_BASE_URL"),
             model_chat=model_chat,
             model_embed=model_embed,
-            model_vision=model_vision,
             embedding_dim=embedding_dim,
             model_timeout_seconds=model_timeout_seconds,
-            model_num_ctx=model_num_ctx,
             model_card_max_tokens=card_max_tokens,
-            model_window_max_tokens=window_max_tokens,
             model_answer_max_tokens=answer_max_tokens,
             model_extract_timeout_seconds=extract_timeout_seconds,
             card_max_chars=env.positive("CARD_MAX_CHARS"),
@@ -630,6 +614,14 @@ class _Env:
     def not_negative_or(self, name: str, default: float) -> float:
         """``not_negative``, or ``default`` when unset or empty."""
         return default if self.optional(name) is None else self.not_negative(name)
+    def at_least(self, name: str, low: int, *, default: int) -> int:
+        """An optional whole number of at least ``low``: ``default`` when unset or empty."""
+        number = self.optional_integer(name)
+        number = default if number is None else number
+        if number < low:
+            raise SettingsError(f"{name} must be at least {low}")
+        return number
+
     def at_least(self, name: str, low: int, *, default: int) -> int:
         """An optional whole number of at least ``low``: ``default`` when unset or empty."""
         number = self.optional_integer(name)

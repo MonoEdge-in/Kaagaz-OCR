@@ -605,28 +605,12 @@ class ModelDown(Exception):
     code = "model_down"
 
 
-class FakeVision:
-    """A vision model: gives preset text for every picture, or raises ModelDown.
-    Records each picture it was sent."""
-
-    def __init__(self, text: str = "", *, down: bool = False) -> None:
-        self.text = text
-        self.down = down
-        self.pictures: list[bytes] = []
-
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        self.pictures.append(png)
-        if self.down:
-            raise ModelDown
-        return self.text
-
-
 class FakeChat:
     """A chat model (kaagaz.extraction.card.ChatModel): gives its preset replies in
     order, one per call; an exception in the list is raised at that call instead.
     Records every call's system prompt, user message, schema and reply budget."""
 
-    chat_model = "qwen3:4b"
+    chat_model = "fake-chat"
 
     def __init__(self, *replies: dict[str, Any] | Exception) -> None:
         self.replies = list(replies)

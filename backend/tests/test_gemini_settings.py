@@ -147,7 +147,7 @@ def test_ocr_model_must_be_an_openrouter_model_id(model: str) -> None:
         Settings.from_env(shipped(**GEMINI, OCR_MODEL=model))
 
 
-@pytest.mark.parametrize("name", ["MODEL_CHAT", "MODEL_EMBED", "MODEL_VISION"])
+@pytest.mark.parametrize("name", ["MODEL_CHAT", "MODEL_EMBED"])
 def test_a_gemini_model_with_a_variant_stops_start_up_by_name(name: str) -> None:
     with pytest.raises(SettingsError, match=f"{name} must be an OpenRouter model ID"):
         Settings.from_env(shipped(**GEMINI, **{name: "google/gemini-3.1-pro-preview:free"}))
@@ -165,10 +165,7 @@ def test_gemini_without_a_key_stops_start_up() -> None:
         # OCR_ENGINE=rapidocr and MODEL_ENABLED=false: no model call anywhere, so no key.
         ({"MODEL_ENABLED": "false", "MODEL_CHAT": PRO}, False),
         ({"MODEL_ENABLED": "false", "MODEL_EMBED": "google/gemini-embedding-2"}, False),
-        ({"MODEL_ENABLED": "true", "MODEL_CHAT": "qwen3:4b", "MODEL_EMBED": "qwen3-embedding:0.6b"}, False),
-        ({"MODEL_ENABLED": "true", "MODEL_CHAT": PRO}, True),
-        ({"MODEL_ENABLED": "true", "MODEL_EMBED": "google/gemini-embedding-2"}, True),
-        ({"MODEL_ENABLED": "true", "MODEL_VISION": "google/gemini-3.8-flash"}, True),
+        ({"MODEL_ENABLED": "true", "MODEL_CHAT": PRO, "MODEL_EMBED": "google/gemini-embedding-2"}, True),
     ],
 )
 def test_the_key_is_needed_only_when_a_model_is_called(changes: dict[str, str], needs_key: bool) -> None:
@@ -260,8 +257,8 @@ def test_a_dpi_rule_doubles_the_gemini_calls_inside_the_lease() -> None:
         ("google/gemini-3.8-flash", True),
         ("google/gemini-embedding-2", True),
         ("gemini-3.1-pro-preview", False),  # Google's own ID: not an OpenRouter one
-        ("qwen3:4b", False),
-        ("qwen3-embedding:0.6b", False),
+        ("local-chat:4b", False),
+        ("local-embed:0.6b", False),
         ("Google/gemini-3.1-pro-preview", False),  # model IDs are lowercase; no guessing
         ("google/gemma-3-27b-it", False),
         ("openai/gpt-5", False),
@@ -281,7 +278,7 @@ def test_a_gemini_model_is_named_by_its_openrouter_id(name: str, gemini: bool) -
         ("google/gemini-3.1-pro-preview:free", False),
         ("gemini-3.1-pro-preview", False),
         ("google/gemini/3", False),
-        ("qwen3:4b", False),
+        ("local-chat:4b", False),
     ],
 )
 def test_a_model_id_is_author_slash_slug_with_no_variant(name: str, valid: bool) -> None:

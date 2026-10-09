@@ -202,10 +202,9 @@ class PdfReader:
 
     @property
     def version(self) -> str:
-        """Asked for after reading, so an engine whose version comes from its reply
-        (PaddleOCR-VL) is named as it was, with the DPI when a page had to be drawn lower
-        to fit the pixel limits and, with the text-height rule, the lowest DPI it chose
-        (``;text_dpi=``) and the pages read again (``;ocr_reread=``)."""
+        """Asked for after reading, so the engine is named as it was, with the DPI when a
+        page had to be drawn lower to fit the pixel limits and, with the text-height rule,
+        the lowest DPI it chose (``;text_dpi=``) and the pages read again (``;ocr_reread=``)."""
         version = str(pdfplumber.__version__)
         if self._ocr is None:
             return version

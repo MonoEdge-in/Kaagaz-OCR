@@ -110,7 +110,7 @@ from typing import Any, Protocol
 
 from PIL import Image
 
-from kaagaz.ai.gemini import GeminiClient, PageReply, process_gate
+from kaagaz.ai.openrouter import OpenRouterClient, PageReply, process_gate
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, billed, schema_problem
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -275,7 +275,7 @@ _log = logging.getLogger(__name__)
 
 
 class PageClient(Protocol):
-    """The model client's part the reader uses: ``kaagaz.ai.gemini.GeminiClient``."""
+    """The model client's part the reader uses: ``kaagaz.ai.openrouter.OpenRouterClient``."""
 
     def read_page(
         self,
@@ -358,7 +358,7 @@ class GeminiEngine:
     def from_settings(cls, settings: Settings, *, pool: RapidOcrPool) -> "GeminiEngine":
         """The product's reader: the model client on this process's one gate (G9), and the
         process's ``RapidOcrPool`` (``wiring.build_gemini_engine`` gives it)."""
-        return cls(settings, client=GeminiClient(settings, gate=process_gate(settings)), pool=pool)
+        return cls(settings, client=OpenRouterClient(settings, gate=process_gate(settings)), pool=pool)
 
     @property
     def version(self) -> str:

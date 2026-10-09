@@ -105,11 +105,11 @@ class ImageReader:
 
     @property
     def name(self) -> str:
-        return self._ocr.name  # "paddleocr-vl" or "rapidocr" in the product: the engine in use
+        return self._ocr.name  # the engine in use, such as "rapidocr"
 
     @property
     def version(self) -> str:
-        """Asked for after reading: PaddleOCR-VL's comes from its reply. With the
+        """Asked for after reading, so it names how this document was read. With the
         text-height rule, also the smallest scale and the pages read again."""
         marks = "" if self._scale is None else f";ocr_scale={self._scale:.2f}"
         marks += f";ocr_reread={self._rereads}" if self._rereads else ""

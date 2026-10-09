@@ -39,7 +39,7 @@ second reading, so the review card shows both.
 
 The second reading of a line box is the second reader's line on the same page
 that overlaps it most, if their intersection over union is at least 0.5 (or,
-for scans, a vision model's reading of the box, passed in by the pipeline).
+for scans, the checker's reading of the box (PRD 5 V1), passed in by the pipeline).
 When that line holds the same label, only the text after it is compared.
 
 Two labellers (ML amendment 2):
@@ -50,9 +50,9 @@ Two labellers (ML amendment 2):
   is not this value's own), unless PRD 5's checker read it and agrees with the
   value (section 12: two lines on one found box); and the reading must equal the value after the D2
   normalising too (``quotes.normalise_quote``: NFKC, Devanagari digits), never
-  just contain it. An OCR value's only second reading is the vision reading of
-  its box, never a second-reader line (council fix 1: a hidden text layer under
-  a scan could agree with anything). The pipeline asks the vision model only
+  just contain it. An OCR value's only second reading is the checker's reading
+  of its box (PRD 5 V1), never a second-reader line (council fix 1: a hidden text
+  layer under a scan could agree with anything). The pipeline asks the checker only
   about a value's own box (ML 1(c)), so an OCR value with no reading is
   ``single_reader`` (``low_confidence`` when the engine was unsure).
 * ``label_quoted``, for the values the model located by quoting (the card,
@@ -65,10 +65,10 @@ Two labellers (ML amendment 2):
      (council fixes 5 and 6, from ``ExtractedValue.quote``);
   3. a cell is ``direct_cell``;
   4. an OCR value is labelled as ``label_values`` labels one (``ocr_script``, a
-     shared box, then equality with its vision reading only);
+     shared box, then equality with the checker's reading only);
   5. a box that holds more than one located value (the table's box given to
      each cell, a line or paragraph holding several values) is ``single_reader``;
-  6. a vision reading must equal the value (after its label), never contain it;
+  6. the checker's reading must equal the value (after its label), never contain it;
   7. otherwise the value agrees when its comparable text is a whole-token run
      inside the second reader's line (``quotes.find_quote``), and
      ``second_reading`` is the matched part of that line, or the whole line when
@@ -201,8 +201,8 @@ def _label_ocr(
     readings: Mapping[Location, str] | None,
     checked: Collection[Location],
 ) -> ExtractedValue:
-    """ML amendment 1 for a value read by OCR: its only second reading is the vision
-    reading of its box (council fix 1), or PRD 5's checker's. V3: a value whose only
+    """ML amendment 1 for a value read by OCR: its only second reading is the checker's
+    reading of its box (council fix 1, PRD 5 V1). V3: a value whose only
     untrusted letters are Devanagari is compared with the checker's reading of its own
     box (exact agreement, V2); with no such reading it stays ``ocr_script``.
 
@@ -210,18 +210,18 @@ def _label_ocr(
     found box) is ``single_reader``, or ``ocr_script``, unless the checker read it and
     agrees with this value (``_checker_agrees``); its reading holds the other value too,
     so a difference is no disagreement."""
-    vision = (readings or {}).get(box)
-    checker = vision if box in checked else None
+    reading = (readings or {}).get(box)
+    checker = reading if box in checked else None
     if _script_unsound(value.value_text):
         devanagari_only = not ocr_script_suspect(value.value_text)
         if checker is not None and devanagari_only and (box not in shared or _checker_agrees(value, checker)):
             return _compare(value, checker)
-        return _needs_review(value, "ocr_script", _after_label(value, vision))
+        return _needs_review(value, "ocr_script", _after_label(value, reading))
     if box in shared:
         if checker is not None and _checker_agrees(value, checker):
             return _compare(value, checker)
         return _needs_review(value, "single_reader", None)
-    return _compare(value, vision)
+    return _compare(value, reading)
 
 
 def _checker_agrees(value: ExtractedValue, reading: str) -> bool:
@@ -326,7 +326,7 @@ def _label_box(value: ExtractedValue, reading: str | None) -> ExtractedValue:
 
 
 def _compare(value: ExtractedValue, reading: str | None) -> ExtractedValue:
-    """Equality with the D2 normalising too: for OCR values and vision readings."""
+    """Equality with the D2 normalising too: for OCR values and the checker's readings."""
     second = _after_label(value, reading)
     if second is None:
         return _no_reading(value)

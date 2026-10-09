@@ -18,7 +18,6 @@ from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.answering.translate import Query, target_scripts, translate
 from kaagaz.search.hybrid import RRF_K, fuse_lists
-from kaagaz.search.indexing import query_input
 from kaagaz.search.scope import Scope
 from kaagaz.settings import Settings
 from tests.settings_factory import make_settings
@@ -234,7 +233,7 @@ def test_a_piece_only_the_translation_found_is_cited_and_needs_review() -> None:
     assert (answer.status, answer.label) == ("answered", "needs_review")
     assert answer.citations[0].ref_id == OWNER.piece_id
     assert search.translations == [[(TRANSLATION, [0.25, 0.5, 0.25])]]
-    assert fake.embedded[-1] == [query_input(TRANSLATION)]
+    assert fake.embedded[-1] == [TRANSLATION]
     # Only a search parameter: never the answer prompt, the answer, or understood_words.
     assert all(
         TRANSLATION not in user for system, user in fake.prompts if system != translating.SYSTEM_PROMPT
@@ -303,5 +302,5 @@ def test_a_question_typed_in_another_script_is_searched_and_embedded_as_asked() 
     gujarati = dataclasses.replace(piece("bill.pdf", f"{GUJARATI}: {NAME}"), meaning_score=0.9)
     search = Search([gujarati], [], {})
     answer, fake = ask(search, question=GUJARATI)
-    assert search.texts == [GUJARATI] and fake.embedded[0] == [query_input(GUJARATI)]
+    assert search.texts == [GUJARATI] and fake.embedded[0] == [GUJARATI]
     assert answer.status == "answered" and translations(fake) == 0

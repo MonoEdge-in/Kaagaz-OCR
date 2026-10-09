@@ -23,6 +23,7 @@ from unittest import mock
 
 from PIL import Image
 
+from kaagaz import pipeline
 from kaagaz.ai.openrouter import OpenRouterClient
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.db.page_reads import PageKey
@@ -44,9 +45,10 @@ from kaagaz.reading.rapid_pool import RapidOcrPool, shared_pool
 from kaagaz.reading.wiring import GEMINI_OCR_MODULE, build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from kaagaz.settings import Settings
+from tests.exit_fixtures import SCRIPTED_READ_BY, EchoChecker, ScriptedOcr, english_bill
 from tests.fakes import (
+    FakeEmbedder,
     FakeScanner,
-    FakeVision,
     MemoryDocuments,
     MemoryPageImages,
     MemoryPipelineStore,
@@ -163,17 +165,19 @@ class Tokens:
     output_tokens: int
 
 
-class CountingVision(FakeVision):
+class CountingEmbedder(FakeEmbedder):
     """A model client that counts its tokens like OpenRouterClient.usage (G9): it has
-    already counted 500 in and 50 out, and each crop adds 100 in and 20 out."""
+    already counted 500 in and 50 out, and each document it embeds adds 100 in and 20 out."""
 
-    def __init__(self, text: str) -> None:
-        super().__init__(text)
+    def __init__(self) -> None:
+        super().__init__()
         self.counted = Tokens(500, 50)
 
-    def read_image(self, *, png: bytes, instruction: str) -> str:
+    def __call__(
+        self, customer_id: str, document_id: str, *, on_batch: Callable[[int, int], None] | None = None
+    ) -> int:
         self.counted = Tokens(self.counted.input_tokens + 100, self.counted.output_tokens + 20)
-        return super().read_image(png=png, instruction=instruction)
+        return super().__call__(customer_id, document_id, on_batch=on_batch)
 
     def usage(self) -> Tokens:
         return self.counted
@@ -213,7 +217,7 @@ class Rig:
     read_again: MemoryReadAgain
     cache: MemoryCache
     processor: DocumentProcessor
-    checker: FakeChecker | None
+    checker: FakeChecker | EchoChecker | None
     reader: ScriptedReader | None = None
     jobs: list[Job] = field(default_factory=list)
 
@@ -242,10 +246,10 @@ class Rig:
 def rig(
     engine: Any = None,
     *,
-    checker: FakeChecker | None = None,
+    checker: FakeChecker | EchoChecker | None = None,
     ocr_model: str | None = MODEL,
     max_check_crops: int = 200,
-    vision: FakeVision | None = None,
+    embed: CountingEmbedder | None = None,
     settings: Settings = SETTINGS,
 ) -> Rig:
     statuses, storage = MemoryStatuses(), MemoryStorage()
@@ -273,7 +277,7 @@ def rig(
         sheet_pages=fake_sheet_pages,
         page_images=MemoryPageImages(),
         store=store,
-        vision=vision,
+        embed=embed,
         model_errors=(ModelDown,),
         runs=runs,
         progress=progress,
@@ -281,13 +285,12 @@ def rig(
         clock=lambda: T0,
         timer=lambda: 0.0,
         max_check_crops=max_check_crops,
-        vision_model="qwen-vision" if vision is not None else None,
         ocr_model=ocr_model,
         checker=checker,
         checker_model="rapidocr 3.9.2" if checker is not None else None,
         page_cache=cache,
         read_again=read_again,
-        model_usage=vision.usage if isinstance(vision, CountingVision) else None,
+        model_usage=embed.usage if embed is not None else None,
     )
     upload = UploadService(PIPELINE_POLICY, repo, storage, MemoryQueue(), new_id=SeqIds())
     reader = engine if isinstance(engine, ScriptedReader) else None
@@ -530,6 +533,30 @@ class CheckerTest(unittest.TestCase):
         totals = system.totals(job)
         self.assertEqual((totals.vision_crops, totals.model_vision), (1, "rapidocr 3.9.2"))
 
+    def test_v1_the_checker_verifies_a_scanned_bill_in_english(self) -> None:
+        """The twin of test_exit_files_db's positive control, with no database: the bill in
+        English (its photo as a one-page scanned PDF: the rig takes no JPG), its page read
+        by the reading model (``read_by`` is ``ocr_model``), and a checker that reads each
+        box back as the OCR line there. Its three labelled values are verified through the
+        checker, so a scanned value can still be verified."""
+        bill = english_bill()
+        scan = make_pdf([Page(picture=Picture(Image.open(io.BytesIO(bill.data)), 0, 0, 612, 792))])
+        checker = EchoChecker(bill.ocr_pages)
+        system = rig(ScriptedOcr(bill.ocr_pages), checker=checker, ocr_model=SCRIPTED_READ_BY)
+        with mock.patch.object(pipeline, "_check_crop", checker.crop):
+            job = system.run(scan)
+        self.assertEqual(len(checker.crops), 3)
+        values = system.store.values_for(CUSTOMER, job.document_id)
+        self.assertEqual(
+            sorted((v.field, v.value_text, v.label, v.label_reason) for v in values),
+            [
+                ("invoice_date", "05/09/2026", "verified", "readers_agree"),
+                ("invoice_number", "245", "verified", "readers_agree"),
+                ("total_amount", "450.00", "verified", "readers_agree"),
+            ],
+        )
+        self.assertEqual(system.totals(job).model_vision, "rapidocr 3.9.2")
+
     def test_v1_a_devanagari_line_is_read_with_the_devanagari_model(self) -> None:
         line = OcrLine("Seller: रामचंद्र पाटील", 60, 400, 400, 420, None, "paragraph", box_source="found")
         checker = FakeChecker("Seller: रामचंद्र पाटील")
@@ -573,12 +600,15 @@ class CheckerTest(unittest.TestCase):
         totals = system.totals(job)
         self.assertEqual((totals.pages_local, totals.pages_gemini, totals.model_vision), (1, 0, None))
 
-    def test_v1_other_scanned_values_keep_the_vision_reading(self) -> None:
-        vision = FakeVision("Total: 1,180.00")
+    def test_v1_other_scanned_values_have_no_second_reading(self) -> None:
+        checker = FakeChecker()
         local = page_read(TOTAL, read_by="rapidocr", quality=None)
-        system = rig(ScriptedReader({1: page_read(TOTAL), 2: local}), checker=FakeChecker(), vision=vision)
+        system = rig(ScriptedReader({1: page_read(TOTAL), 2: local}), checker=checker)
         job = system.run(make_pdf([SHARP, SHARP]))
-        self.assertEqual(len(vision.pictures), 1)  # page 2 only: page 1 went to the checker
+        self.assertEqual(len(checker.crops), 1)  # page 1 only: page 2 is not the model's
+        self.assertEqual(
+            reasons(system, job), [("total_amount", "readers_agree"), ("total_amount", "single_reader")]
+        )
         self.assertEqual(system.totals(job).model_vision, "rapidocr 3.9.2")
 
     def test_v4_an_unsure_word_wins_over_the_checkers_agreement(self) -> None:
@@ -656,14 +686,14 @@ class RunCountersTest(unittest.TestCase):
                 self.assertEqual((totals.pages_gemini, totals.pages_local), (1, 1))
 
     def test_g9_the_model_clients_own_calls_in_the_job_add_to_the_runs_tokens(self) -> None:
-        """FY5: a vision crop's tokens (and the card's, the invoice windows', embeddings')
-        reach the run, as the client's count at the end less its count at the start."""
-        local = page_read(TOTAL, read_by="rapidocr", quality=None)  # read with no key: vision reads it
+        """FY5: the embeddings' tokens (and the card's and the invoice windows') reach the
+        run, as the client's count at the end less its count at the start."""
+        local = page_read(TOTAL, read_by="rapidocr", quality=None)
         reader = ScriptedReader({1: page_read(TOTAL, tokens=(1700, 4000)), 2: local})
-        vision = CountingVision("Total: 1,180.00")
-        system = rig(reader, checker=FakeChecker(), vision=vision)
+        embed = CountingEmbedder()
+        system = rig(reader, checker=FakeChecker(), embed=embed)
         first, second = system.run(make_pdf([SHARP, SHARP])), system.run(make_pdf([SHARP, SHARP, WHITE]))
-        self.assertEqual(len(vision.pictures), 2)  # page 2 of each document
+        self.assertEqual(len(embed.calls), 2)  # once for each document
         for job in (first, second):
             totals = system.totals(job)
             self.assertEqual((totals.input_tokens, totals.output_tokens), (1700 + 100, 4000 + 20))
@@ -727,7 +757,7 @@ class KeylessTest(unittest.TestCase):
         self.assertEqual((totals.pages_gemini, totals.pages_local, totals.input_tokens), (0, 0, 0))
 
     def test_keyless_a_page_another_engine_read_is_neither_local_nor_local_reader(self) -> None:
-        for engine in ("rapidocr", "paddleocr_vl"):
+        for engine in ("rapidocr", "an_old_reader"):  # an unknown read_by, such as an old row
             with self.subTest(engine=engine):
                 read = page_read(TOTAL, read_by=engine, quality=None)
                 system = rig(ScriptedReader({1: read}), ocr_model=None)
@@ -783,15 +813,11 @@ class WiringTest(unittest.TestCase):
         self.assertEqual((processor._ocr_model, processor._max_check_crops), (MODEL, 150))
         self.assertIsNotNone(processor._page_cache)
 
-    def test_g9_a_model_on_openrouter_counts_its_tokens_and_names_ocr_model_for_its_crops(self) -> None:
-        """FY5: read_image reads with OCR_MODEL on OpenRouter, so a run's model_vision names it;
-        and the client's own count reaches the run (``model_usage``)."""
-        settings = make_settings(
-            ocr_engine="rapidocr", model_enabled=True, model_chat=MODEL, model_vision="qwen2.5vl:3b"
-        )
-        model = CountingVision("")
+    def test_g9_a_model_client_that_counts_its_tokens_reaches_the_run(self) -> None:
+        """FY5: the client's own count reaches the run (``model_usage``)."""
+        settings = make_settings(ocr_engine="rapidocr", model_enabled=True, model_chat=MODEL)
+        model = CountingEmbedder()
         processor = self.build(settings, model)[0]
-        self.assertEqual(processor._vision_model, MODEL)
         self.assertEqual(processor._model_usage, model.usage)
 
     def test_g9_the_openrouter_client_is_one_whose_tokens_are_counted(self) -> None:
@@ -800,10 +826,9 @@ class WiringTest(unittest.TestCase):
         self.assertIsInstance(client, CountsTokens)
         self.assertEqual((client.usage().input_tokens, client.usage().output_tokens), (0, 0))
 
-    def test_g9_an_ollama_vision_model_keeps_its_own_name_and_counts_nothing(self) -> None:
-        settings = make_settings(ocr_engine="rapidocr", model_enabled=True, model_vision="qwen2.5vl:3b")
-        processor = self.build(settings, FakeVision(""))[0]
-        self.assertEqual(processor._vision_model, "qwen2.5vl:3b")
+    def test_g9_a_model_without_a_token_count_counts_nothing(self) -> None:
+        settings = make_settings(ocr_engine="rapidocr", model_enabled=True, model_chat=MODEL)
+        processor = self.build(settings, FakeEmbedder())[0]
         self.assertIsNone(processor._model_usage)
 
     def test_keyless_rapidocr_builds_no_gemini_reader_checker_or_page_cache(self) -> None:
