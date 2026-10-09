@@ -1,4 +1,8 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { AnswerView } from "@/components/chat/AnswerView";
+import { SourceCard } from "@/components/chat/SourceCard";
 import {
   answerLabelText,
   answerStatusText,
@@ -10,9 +14,11 @@ import {
   citationSource,
   cleanQuestion,
   cleanReason,
+  HARD_TO_READ_TEXT,
   NOT_FOUND_TEXT,
   questionReading,
   questionsByAnswer,
+  readingNote,
   restoreAfterFailure,
   sendsOnKey,
   sentenceCitations,
@@ -268,5 +274,66 @@ describe("what the chat status line says", () => {
     const none = answer({ status: "not_found", label: null, sentences: [], citations: [] });
     expect(answerStatusText(none)).toBe("No answer found in your documents.");
     expect(answerStatusText(null)).toBe("No answer found in your documents.");
+  });
+});
+
+describe("pages that couldn't be read (PRD 5 F6, U7)", () => {
+  const NOTE = "Not found in the readable text. 2 pages couldn't be read: Invoice_12.pdf page 3, Register.jpg page 1.";
+  const notFound: Answer = {
+    status: "not_found",
+    label: null,
+    sentences: [],
+    citations: [],
+    closest_documents: [],
+    route: "search",
+    normalized_question: "total",
+    model_used: false,
+    reading_note: NOTE,
+    unreadable_pages: [
+      { document_id: "d1", document_name: "Invoice_12.pdf", page_no: 3, read_quality: "unreadable" },
+      { document_id: "d2", document_name: "Register.jpg", page_no: 1, read_quality: "uncertain" },
+    ],
+    unreadable_page_count: 3,
+  };
+
+  it("gives the server's note with a link to each page it names, and how many more", () => {
+    const note = readingNote(notFound);
+    expect(note?.text).toBe(NOTE);
+    expect(note?.pages).toEqual([
+      { href: "/documents/d1?page=3", text: "Invoice_12.pdf page 3" },
+      { href: "/documents/d2?page=1", text: "Register.jpg page 1" },
+    ]);
+    expect(note?.more).toBe(1);
+  });
+
+  it("has no note for an answer without one, or from before it", () => {
+    expect(readingNote({ reading_note: null })).toBeNull();
+    expect(readingNote({})).toBeNull();
+    expect(readingNote({ reading_note: HARD_TO_READ_TEXT })).toEqual({ text: HARD_TO_READ_TEXT, pages: [], more: 0 });
+  });
+
+  it("shows the note and the page links under a not-found answer", () => {
+    const message: Message = {
+      id: "a1",
+      role: "assistant",
+      text: "",
+      created_at: "2026-10-09T10:00:00Z",
+      answer: notFound,
+      feedback: null,
+    };
+    const html = renderToStaticMarkup(createElement(AnswerView, { message, question: "total?" }));
+    expect(html).toContain("find this in your documents.");
+    expect(html).toContain("Not found in the readable text.");
+    expect(html).toContain('href="/documents/d1?page=3"');
+    expect(html).toContain("and 1 more");
+  });
+
+  it("says a source card's text was hard to read, and nothing when it was not", () => {
+    const hard = renderToStaticMarkup(
+      createElement(SourceCard, { citation: citation(1, { hard_to_read: true }), messageId: "a1" }),
+    );
+    expect(hard).toContain(HARD_TO_READ_TEXT);
+    const clear = renderToStaticMarkup(createElement(SourceCard, { citation: citation(1), messageId: "a1" }));
+    expect(clear).not.toContain(HARD_TO_READ_TEXT);
   });
 });

@@ -215,3 +215,23 @@ export function cleanReason(text: string): string | undefined {
   const reason = text.trim();
   return reason ? reason.slice(0, MAX_REASON_LENGTH) : undefined;
 }
+
+/** PRD 5 F6, U7: said on a source card whose cited text holds an unsure or illegible word. */
+export const HARD_TO_READ_TEXT = "Part of this text was hard to read.";
+
+/**
+ * F6's note (U7), as the server says it: under a not-found answer, "Not found in the
+ * readable text. 2 pages couldn't be read: ...", with a link to each page it names and
+ * how many more there are. null when there is none (and for answers from before it).
+ */
+export function readingNote(
+  answer: Pick<Answer, "reading_note" | "unreadable_pages" | "unreadable_page_count">,
+): { text: string; pages: { href: string; text: string }[]; more: number } | null {
+  if (!answer.reading_note) return null;
+  const pages = (answer.unreadable_pages ?? []).map((page) => ({
+    href: pageLink(page.document_id, page.page_no),
+    text: `${page.document_name} page ${page.page_no}`,
+  }));
+  const more = Math.max(0, (answer.unreadable_page_count ?? pages.length) - pages.length);
+  return { text: answer.reading_note, pages, more };
+}
