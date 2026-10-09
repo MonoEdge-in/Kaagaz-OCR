@@ -158,7 +158,7 @@ from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.translate import target_scripts, translate
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
-from kaagaz.chunking.script import ascii_digits, has_other_script_letters
+from kaagaz.chunking.script import ascii_digits, has_other_script_letters, spaced_words
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.indexing import query_input, recipe_tag
@@ -818,17 +818,16 @@ def _search_text(aspect: str) -> str:
     return " ".join(glossary.content_words(normalise(aspect).keywords)) or aspect
 
 
-_WORDS = re.compile(r"\w+")
 MAX_TOPIC_WORDS = 3  # CX6: a topic name or alias of up to three words
 
 
 def topic_terms(texts: Sequence[str]) -> list[str]:
-    """CX6: every run of one to three words of ``texts``, casefolded (topics and their
-    aliases are stored so), and a word ending in "s" without it too ("leaves" finds the
-    topic leave). O(n) for n words."""
+    """CX6: every run of one to three words (``spaced_words``, so छुट्टी stays one word) of
+    ``texts``, casefolded (topics and their aliases are stored so), and a word ending in "s"
+    without it too ("leaves" finds the topic leave). O(n) for n words."""
     terms: list[str] = []
     for text in texts:
-        words = _WORDS.findall(text.casefold())
+        words = spaced_words(text.casefold())
         for size in range(1, MAX_TOPIC_WORDS + 1):
             terms += (" ".join(words[i : i + size]) for i in range(len(words) - size + 1))
         terms += (word[:-1] for word in words if len(word) > 3 and word.endswith("s"))

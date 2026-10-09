@@ -384,6 +384,23 @@ def test_cx6_topic_terms_are_casefolded_runs_of_one_to_three_words() -> None:
     assert "how many leaves maternity" not in terms and len(terms) == len(set(terms))
 
 
+def test_cx6_topic_terms_keep_devanagari_words_whole() -> None:
+    """\\w+ split मुझे at its vowel sign into म and झ; the alias छुट्टी must match whole."""
+    leave, raja = "छुट्टी", "रजा"
+    asked = f"मुझे कितनी {leave} मिलती है?"
+    terms = topic_terms([asked, f"{raja}."])
+    assert {leave, raja, f"कितनी {leave}", "है"} <= set(terms)
+    assert "म" not in terms and "झ" not in terms
+    assert topic_terms(["Rs. 1,20,000 leave?"]) == [
+        "rs",
+        "1,20,000",
+        "leave",
+        "rs 1,20,000",
+        "1,20,000 leave",
+        "rs 1,20,000 leave",
+    ]
+
+
 def test_cx6_without_a_context_port_nothing_widens_and_no_aspects_are_asked() -> None:
     """A test's plain fakes (no Context): search as PRD 3 built it, no extra model call."""
     retriever = Fused(OFFER_LETTER)
