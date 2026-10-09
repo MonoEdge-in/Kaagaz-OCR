@@ -18,6 +18,12 @@ What is embedded (PRD 3 V3, PRD 5 M5): a piece is its reduced header, a blank li
 then its text (``piece_input``); a question is embedded as plain text. Documents get no
 instruction. A vector is tagged with its model and recipe (``recipe_tag``: ``gem1`` for a
 google/gemini- model, ``recipe_for``). The reduced header keeps only the
+What is embedded (PRD 3 V3, the Qwen3-Embedding model card): a piece is its
+reduced header, a blank line, then its text (``piece_input``); a question is
+``Instruct: {QUERY_TASK}\nQuery:{question}`` (``query_input``), with no space
+after "Query:". Documents get no instruction. A Gemini embedding model
+(``google/gemini-``, PRD 5 M5) gets the question as plain text, recipe ``gem1``
+(``recipe_for``), and ``recipe_tag`` names that recipe. The reduced header keeps only the
 Type, Date and Section parts of the stored context header: never "Before:" (the
 previous piece's line would mix into this vector), the document name (a rename
 would make every vector stale) or the page numbers.
@@ -142,6 +148,21 @@ def recipe_for(model_embed: str) -> str:
     return GEMINI_RECIPE if is_gemini_model(model_embed) else RECIPE
 
 
+def recipe_for(model_embed: str) -> str:
+    """The recipe ``model_embed`` embeds with (PRD 5 M5): ``gem1`` for a ``google/gemini-``
+    model, otherwise ``ctx1`` (RECIPE)."""
+    return GEMINI_RECIPE if is_gemini_model(model_embed) else RECIPE
+
+
+def query_input(question: str, model_embed: str = "") -> str:
+    """What a question is embedded as for ``model_embed`` (MODEL_EMBED): the plain question
+    for recipe ``gem1`` (PRD 5 M5), otherwise the Qwen3 model card's exact format. The
+    callers that pass no model get today's format until they pass MODEL_EMBED. O(length)."""
+    if recipe_for(model_embed) == GEMINI_RECIPE:
+        return question
+    return f"Instruct: {QUERY_TASK}\nQuery:{question}"
+
+
 def embed_question(model: ModelClient | None, question: str) -> list[float] | None:
     """The question's vector, or None (no model, model down, or unusable vectors), so
     search falls back to word and fuzzy matching. One model call, with the question as plain
@@ -150,6 +171,12 @@ def embed_question(model: ModelClient | None, question: str) -> list[float] | No
         return None
     try:
         vectors = model.embed([question])
+    search falls back to word and fuzzy matching. One model call, in ``query_input``'s
+    format for its MODEL_EMBED; chat and GET /api/search both embed this way."""
+    if model is None or not question:
+        return None
+    try:
+        vectors = model.embed([query_input(question, model.embed_model)])
     except (ModelUnavailable, ModelOutputError):
         return None
     return vectors[0] if vectors else None

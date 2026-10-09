@@ -80,6 +80,9 @@ class MemoryModel:
             raise self.error
         return self.reply
 
+    def read_image(self, *, png: bytes, instruction: str) -> str:
+        raise ModelUnavailable("no_vision")
+
 
 def test_m3_only_what_the_chat_said_is_kept_and_documents_come_from_citations() -> None:
     remembered = summarise(MemoryModel(REPLY), FIRST_SIX, Memory(documents=(D2,)), [D4, D2])
