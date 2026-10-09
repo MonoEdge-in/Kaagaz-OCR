@@ -272,3 +272,100 @@
   outline: 2px solid var(--hl-border);
   outline-offset: -2px;
 }
+
+/* PRD 5 U3: reading problems, a second layer of marks. Each has a pattern, so colour is
+   never the only cue, and a hit area of at least 24 x 24 px (the ::before), whatever its
+   drawn size. The page is paper white in both themes, so the colours are paper-fixed. */
+.problem {
+  position: absolute;
+  padding: 0;
+  border-radius: 2px;
+  background: transparent;
+  box-shadow: 0 0 0 1px var(--paper);
+  cursor: pointer;
+}
+
+.problem::before {
+  content: "";
+  position: absolute;
+  top: min(0px, calc(50% - 12px));
+  bottom: min(0px, calc(50% - 12px));
+  left: min(0px, calc(50% - 12px));
+  right: min(0px, calc(50% - 12px));
+}
+
+.problem:hover {
+  box-shadow: 0 0 0 1px var(--paper), 0 0 0 3px var(--mine-on-paper);
+}
+
+/* Focus (2.4.7, 1.4.11): the page is paper white in both themes, so the global ring
+   (var(--focus), light in the dark theme) could vanish on it. A paper-fixed ring instead,
+   on a paper halo that fills the offset, so it is 3:1 or more whatever is drawn under the
+   mark. After .problem and :hover, so their box-shadow never replaces the halo. */
+.problem:focus-visible {
+  outline: 2px solid var(--mine-on-paper);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--paper);
+}
+
+.problem[data-quality="unsure"],
+.swatch[data-quality="unsure"] {
+  border: 2px dashed var(--hl-border);
+}
+
+.problem[data-quality="illegible"],
+.swatch[data-quality="illegible"] {
+  border: 2px solid var(--illegible-on-paper);
+  background: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--illegible-on-paper) 45%, transparent) 0 2px,
+    transparent 2px 6px
+  );
+}
+
+.problem[data-quality="unpinned"],
+.swatch[data-quality="unpinned"] {
+  border: 2px dotted var(--border-strong);
+}
+
+.problemBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  font-size: var(--fs-sm);
+}
+
+.problemToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 24px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.swatch {
+  display: inline-block;
+  width: 1.5rem;
+  height: 1rem;
+  border-radius: 2px;
+}
+
+/* After the patterns: a swatch sits on paper, like the marks it explains. */
+.legend .swatch {
+  background-color: var(--paper);
+}

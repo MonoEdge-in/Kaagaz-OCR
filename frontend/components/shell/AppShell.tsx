@@ -9,6 +9,7 @@
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import type { ReactNode } from "react";
+import { clearStored } from "@/components/documents/batchTray";
 import { Drawer } from "@/components/ui/Drawer";
 import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, logout, logoutEverywhere } from "@/lib/api";
@@ -53,6 +54,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         return;
       }
     }
+    clearStored(); // the upload tray's drops (PRD 5 U1) are this person's
     announceSession(null);
     leavePage(signedOutPath(pathname));
   }

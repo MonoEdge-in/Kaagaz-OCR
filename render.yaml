@@ -24,11 +24,11 @@ services:
     # compose's migrate service, before every deploy.
     preDeployCommand: >-
       /bin/sh -c 'if [ -n "$SEAWEEDFS_HOST" ]; then export STORAGE_ENDPOINT_URL=http://$SEAWEEDFS_HOST:8333; fi;
-      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs;
+      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs QUEUE_EXPRESS_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs-express;
       alembic upgrade head && python -c "from kaagaz.adapters.storage import S3Storage; from kaagaz.settings import Settings; S3Storage(Settings.from_env()).ensure_bucket()"'
     dockerCommand: >-
       /bin/sh -c 'if [ -n "$SEAWEEDFS_HOST" ]; then export STORAGE_ENDPOINT_URL=http://$SEAWEEDFS_HOST:8333; fi;
-      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs;
+      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs QUEUE_EXPRESS_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs-express;
       exec uvicorn kaagaz.api.main:app --host 0.0.0.0 --port 8000'
     envVars:
       - key: PORT # Render sends the web traffic here
@@ -73,7 +73,7 @@ services:
     dockerContext: ./backend
     dockerCommand: >-
       /bin/sh -c 'if [ -n "$SEAWEEDFS_HOST" ]; then export STORAGE_ENDPOINT_URL=http://$SEAWEEDFS_HOST:8333; fi;
-      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs;
+      export QUEUE_ENDPOINT_URL=http://$ELASTICMQ_HOST:9324 QUEUE_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs QUEUE_EXPRESS_URL=http://$ELASTICMQ_HOST:9324/000000000000/kaagaz-jobs-express;
       exec python -m kaagaz.worker_main'
     # compose's stop_grace_period: the job in hand finishes first.
     maxShutdownDelaySeconds: 60
@@ -207,7 +207,8 @@ databases:
 
 envVarGroups:
   # Shared by the api and the worker. Their own values above always win over it.
-  # The four PRD 3 settings, with their defaults (docs/running-locally.md, section 1).
+  # The four PRD 3 settings, with their defaults (docs/running-locally.md, section 1),
+  # and the one worker Render runs (WORKER_REPLICAS).
   # The rest come from .env.example, added once in the dashboard (section 7):
   # DB_APP_ROLE STORAGE_REGION STORAGE_BUCKET QUEUE_REGION QUEUE_LEASE_SECONDS
   # QUEUE_WAIT_SECONDS JOB_MAX_ATTEMPTS SCANNER_TIMEOUT_SECONDS MAX_UPLOAD_MB
@@ -226,6 +227,8 @@ envVarGroups:
   # OCR_MODEL OPENROUTER_API_KEY OPENROUTER_BASE_URL OCR_MEDIA_RESOLUTION OCR_THINKING_LEVEL
   # OCR_RETRY_MEDIA_RESOLUTION OCR_RETRY_THINKING_LEVEL OCR_PAGE_CONCURRENCY CPU_WORKERS
   # MAX_CHECK_CROPS MODEL_RPM READER_OUTAGE_FALLBACK_MINUTES
+  # MAX_ACTIVE_PER_CUSTOMER EXPRESS_MAX_PAGES MAX_FILES_PER_BATCH
+  # MODEL_PRICE_INPUT_USD_PER_M MODEL_PRICE_OUTPUT_USD_PER_M
   # MODEL_CONTEXT_TOKENS ANSWER_WHOLE_DOC_TOKENS TOPIC_MAX_PER_DOC TOPIC_EXPAND_MAX_PIECES
   # QUERY_ASPECTS_MAX CHAT_SUMMARY_EVERY
   - name: kaagaz-settings
@@ -238,3 +241,7 @@ envVarGroups:
         value: "1"
       - key: CHAT_HISTORY_TURNS
         value: "3"
+      # Render runs one kaagaz-worker (PRD 5 Q3), so the reader's MODEL_RPM share and
+      # the upgrade sweep's pace count one copy, not the server's 3.
+      - key: WORKER_REPLICAS
+        value: "1"

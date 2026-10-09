@@ -58,17 +58,20 @@ def test_a_link_can_never_point_at_another_customers_document(db: Database) -> N
     assert b.client.get(f"/api/documents/{a_bill}").status_code == 404
 
 
-def test_the_reason_filter_shows_only_this_customers_values(db: Database) -> None:
+@pytest.mark.parametrize(
+    "reason", ["check_failed", "unsure_text", "box_unanchored", "local_reader", "ocr_script"]
+)
+def test_the_reason_filter_shows_only_this_customers_values(db: Database, reason: str) -> None:
     api = Api(db)
     a, b = api.new_signed("reviewer"), api.new_signed("reviewer")
     ids = {}
     for signed in (a, b):
         doc = api.add_document(signed.customer_id)
         api.add_page(signed.customer_id, doc)
-        ids[signed.customer_id] = api.add_value(signed.customer_id, doc, reason="check_failed")
+        ids[signed.customer_id] = api.add_value(signed.customer_id, doc, reason=reason)
 
     for signed in (a, b):
-        body = signed.client.get("/api/review", params={"reason": "check_failed"}).json()
+        body = signed.client.get("/api/review", params={"reason": reason}).json()
         assert ([item["value"]["id"] for item in body["items"]], body["total"]) == (
             [ids[signed.customer_id]],
             1,

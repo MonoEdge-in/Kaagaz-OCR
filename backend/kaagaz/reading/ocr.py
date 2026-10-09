@@ -314,7 +314,7 @@ class PaddleVlEngine:
     """``OcrEngine`` over the ocr container's ``POST /read`` (see the module notes)."""
 
     name = "paddleocr-vl"
-    title = "PaddleOCR-VL"  # what the upload screen offers (ocr_choices)
+    title = "Layout reader"  # what the upload screen offers (ocr_choices); never an engine's name (U8)
     hint = "Best for handwriting and complex pages (slower)"
 
     @staticmethod
@@ -547,7 +547,7 @@ class OcrModelMissing(Exception):
 
 class RapidOcrEngine:
     name = "rapidocr"
-    title = "RapidOCR"  # what the upload screen offers (ocr_choices)
+    title = "Backup reader"  # what the upload screen offers (ocr_choices); never an engine's name (U8)
     hint = "Fast, for clean printed pages"
 
     @staticmethod
@@ -1104,15 +1104,17 @@ def ocr_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
 
 
 def _auto_hint(settings: Settings) -> str:
-    """What Auto does on this server, in the engines' own titles."""
+    """What Auto does on this server, in the engines' titles: words people know, never
+    an engine's name (PRD 5 U8)."""
     if settings.ocr_engine == "none":
         return "Scans wait until this server has a scan reader"
     if settings.ocr_engine == GEMINI:
-        return "The usual reader here: Gemini"
+        return "The usual reader here: the main reader"
     (primary,) = (engine for engine in _ENGINES if _engine_id(engine) == settings.ocr_engine)
     if not _has_fallback(settings):
-        return f"The usual reader here: {primary.title}"
-    return f"The usual reader here: {primary.title}, then {RapidOcrEngine.title} for a page it can't read"
+        return f"The usual reader here: the {primary.title.lower()}"
+    backup = RapidOcrEngine.title.lower()
+    return f"The usual reader here: the {primary.title.lower()}, then the {backup} for a page it can't read"
 
 
 class OcrEngines:

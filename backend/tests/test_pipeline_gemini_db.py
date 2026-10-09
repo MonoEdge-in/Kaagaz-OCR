@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import text
 
-from kaagaz.db.documents import PgDocuments, request_page_read_again
+from kaagaz.db.documents import PgDocuments, mark_for_reprocess, request_page_read_again
 from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PgPageReads
 from kaagaz.db.pipeline_store import PgPipelineStore
@@ -80,7 +80,9 @@ def upload(db: Database, storage: MemoryStorage, customer: str, data: bytes) -> 
 
 
 def mark(db: Database, customer: str, doc: str, page_no: int) -> None:
+    """As the API's read one page again: the document back to received, then the mark."""
     with db.customer(customer) as conn:
+        assert mark_for_reprocess(conn, customer, doc, per_hour=100) is not None
         assert request_page_read_again(conn, customer, doc, page_no, now=T0)
 
 

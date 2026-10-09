@@ -11,6 +11,7 @@ import {
   lastRunText,
   lockedUntilText,
   pageRouteTiles,
+  readerTiles,
   parseUploadLimit,
   retryErrorText,
   statTiles,
@@ -369,5 +370,28 @@ describe("the failed jobs tab", () => {
     expect(retryErrorText(new TypeError("fetch failed"))).toBe(
       "Could not reach the server. Check your connection, then try again.",
     );
+  });
+});
+
+describe("readerTiles (PRD 5 U9)", () => {
+  const reader_pages = { gemini: 1200, local: 30, cached: 4, read_again: 2 };
+
+  it("shows the scanned pages by who read them, then the spend, labelled an estimate", () => {
+    const spend_estimate = { input_tokens: 900000, output_tokens: 120000, usd: 1.5 };
+    expect(readerTiles({ reader_pages, spend_estimate })).toEqual([
+      { label: "Read by Gemini", value: "1,200" },
+      { label: "Read by the backup reader", value: "30" },
+      { label: "From the cache", value: "4" },
+      { label: "Read again", value: "2" },
+      { label: "Gemini spend this month (estimate)", value: "$1.50" },
+    ]);
+  });
+
+  it("hides the money while the prices are not known, and everything from an older server", () => {
+    const unknown = { input_tokens: 900000, output_tokens: 120000, usd: null };
+    expect(readerTiles({ reader_pages, spend_estimate: unknown }).map((tile) => tile.label)).not.toContain(
+      "Gemini spend this month (estimate)",
+    );
+    expect(readerTiles({})).toEqual([]);
   });
 });

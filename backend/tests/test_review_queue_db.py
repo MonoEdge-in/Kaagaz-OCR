@@ -9,11 +9,12 @@ their own plan. They must list and count exactly what the old one did.
 
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from sqlalchemy import text
 
+from kaagaz.api.routers.review import QueueReason
 from kaagaz.db import review
 from kaagaz.db.engine import Database
 from tests.db_support import insert_document, new_customer
@@ -46,6 +47,14 @@ _OLD_COUNT = (
     " AND v.label = 'needs_review'"
     " AND (CAST(:doc AS uuid) IS NULL OR v.document_id = CAST(:doc AS uuid))"
 )
+
+
+def test_the_api_filters_by_the_reading_models_reasons_and_only_ones_the_table_allows() -> None:
+    """GET /api/review?reason= takes U6's four (PRD 5) and only EVERY_REASON's names, so the
+    queue SQL's ``label_reason = ANY(...)`` filters by each of them."""
+    offered = set(get_args(QueueReason))
+    assert {"unsure_text", "box_unanchored", "local_reader", "ocr_script"} <= offered
+    assert offered <= set(review.EVERY_REASON)
 
 
 def test_no_review_statement_has_a_catch_all_for_the_document() -> None:
@@ -130,13 +139,13 @@ def test_an_unfiltered_queue_binds_every_reason_the_table_allows(db: Database) -
 
 @pytest.mark.db
 def test_values_with_the_prd5_reasons_are_in_the_queue_and_its_filters(db: Database) -> None:
-    """PRD 5 V4, G5 and Q7 (0021): unsure_text, box_unanchored and local_reader values are
-    listed with no filter, and each by its own reason (U6's filters)."""
+    """PRD 5 V4, G5 and Q7 (0021): unsure_text, box_unanchored and local_reader values, and
+    PRD 2's ocr_script, are listed with no filter, and each by its own reason (U6's filters)."""
     customer, _ = new_customer(db)
     with db.customer(customer) as conn:
         document = insert_document(conn, customer)
     _with_pages(db, customer, document, 1)
-    reasons = ("unsure_text", "box_unanchored", "local_reader")
+    reasons = ("unsure_text", "box_unanchored", "local_reader", "ocr_script")
     add_values(
         db,
         customer,
@@ -152,7 +161,7 @@ def test_values_with_the_prd5_reasons_are_in_the_queue_and_its_filters(db: Datab
             )
             for reason in reasons
         }
-    assert (sorted(row["label_reason"] for row in everything), total) == (sorted(reasons), 3)
+    assert (sorted(row["label_reason"] for row in everything), total) == (sorted(reasons), len(reasons))
     assert {reason: [row["label_reason"] for row in found] for reason, (found, _) in each.items()} == {
         reason: [reason] for reason in reasons
     }

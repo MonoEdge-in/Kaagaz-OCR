@@ -79,6 +79,9 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # or only Trash (trashed=true).
     (listing, "_LIST"): LISTED,
     (listing, "_TRASH_LIST"): TRASHED_LISTED,
+    # A batch (PRD 5 Q1) and its size for the upload's cap: the uploader's files out of Trash.
+    (listing, "_BATCH"): LIVE,
+    (listing, "_BATCH_SIZE"): LIVE,
     # The detail's related documents (PRD 3 Y2): only a current, ready one out of Trash.
     (listing, "_LINKS"): LIVE_CURRENT,
     # Links (PRD 2 D5): only to a current, ready document out of Trash, never an older

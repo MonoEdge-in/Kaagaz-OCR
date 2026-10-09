@@ -10,11 +10,13 @@ import { ApiError, getPageReadings } from "@/lib/api";
 import type { PageReadings, PageSummary, Region } from "@/lib/types";
 import type { Spot } from "./panels";
 import {
+  CHECKER,
   CONFIDENCE_NOTE,
   FIRST_LINES,
   confidenceText,
   emptyState,
   lineMarked,
+  MAIN_READER,
   plural,
   readerHeading,
   secondReaderNote,
@@ -103,7 +105,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
               checked={reader?.role === "first"}
               onChange={() => setRole("first")}
             />
-            First reader
+            {MAIN_READER}
           </label>
           <label>
             <input
@@ -112,14 +114,13 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
               checked={reader?.role === "second"}
               onChange={() => setRole("second")}
             />
-            Second reader (PDF text layer)
+            {CHECKER}
           </label>
         </fieldset>
       )}
       {heading && (
         <div>
           <p className={styles.title}>{heading.title}</p>
-          <p className={styles.muted}>{heading.detail}</p>
           {heading.notSureCount && <p className={styles.muted}>{heading.notSureCount}</p>}
         </div>
       )}

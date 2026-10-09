@@ -132,6 +132,14 @@ _PAGES_BY_ROUTE = (
     " FROM processing_runs WHERE customer_id = :c AND started_at >= :start AND started_at < :end"
 )
 
+# PRD 5 U9: the same window's pages by who read them, and the tokens billed.
+_READER_PAGES = (
+    "SELECT coalesce(sum(pages_gemini), 0) AS gemini, coalesce(sum(pages_local), 0) AS local,"
+    " coalesce(sum(pages_cached), 0) AS cached, coalesce(sum(pages_read_again), 0) AS read_again,"
+    " coalesce(sum(input_tokens), 0) AS input_tokens, coalesce(sum(output_tokens), 0) AS output_tokens"
+    " FROM processing_runs WHERE customer_id = :c AND started_at >= :start AND started_at < :end"
+)
+
 _OPEN = (
     "SELECT EXISTS (SELECT 1 FROM processing_runs WHERE customer_id = :c AND document_id = :d"
     " AND id = :r AND status = 'running')"
@@ -202,6 +210,16 @@ def pages_by_route(conn: Connection, customer_id: str, *, start: datetime, end: 
     index processing_runs_started: O(log R + runs in the window)."""
     row = conn.execute(text(_PAGES_BY_ROUTE), {"c": customer_id, "start": start, "end": end}).mappings().one()
     return {route: int(row[route]) for route in ("cells", "text_layer", "ocr", "blank")}
+
+
+def reader_numbers(conn: Connection, customer_id: str, *, start: datetime, end: datetime) -> dict[str, int]:
+    """PRD 5 U9: the pages this customer's runs started in [start, end) had read by the
+    reading model (gemini), the backup reader (local) and the page cache (cached), the
+    pages read again (read_again), and the input and output tokens billed; 0 when none.
+    Every run counts, as in ``pages_by_route``. One query on the index
+    processing_runs_started: O(log R + runs in the window)."""
+    row = conn.execute(text(_READER_PAGES), {"c": customer_id, "start": start, "end": end}).mappings().one()
+    return {str(name): int(value) for name, value in row.items()}
 
 
 def recent_timings(conn: Connection, customer_id: str) -> list[RunTiming]:

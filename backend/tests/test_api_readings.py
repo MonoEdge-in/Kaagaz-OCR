@@ -89,6 +89,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
                 ],
             }
         ],
+        "marks": [],  # PRD 5 U3: no word mark and no unpinned line
     }
     assert [line["text"] for line in _readings(signed, document_id, 2)["readers"][0]["lines"]] == [
         "other page"
@@ -223,7 +224,7 @@ def test_a_page_not_read_yet_has_no_readers(db: Database) -> None:
     signed = api.new_signed()
     document_id = _scan(api, signed)
 
-    assert _readings(signed, document_id) == {"page_no": 1, "readers": []}
+    assert _readings(signed, document_id) == {"page_no": 1, "readers": [], "marks": []}
 
 
 def test_the_text_is_never_logged(db: Database, caplog: pytest.LogCaptureFixture) -> None:

@@ -7,8 +7,9 @@
 #   2. in the last 15 minutes Caddy logged no request to /api/... (other than
 #      /api/health) that carried a Cookie header, so nobody signed in used the
 #      app (Caddy logs the header's name with the value "REDACTED");
-#   3. the job queue kaagaz-jobs is empty: no document is waiting or being read
-#      (asked from ElasticMQ itself; never from the database);
+#   3. both job queues, kaagaz-jobs and the express lane kaagaz-jobs-express, are
+#      empty: no document is waiting or being read (asked from ElasticMQ itself;
+#      never from the database);
 #   4. no deploy is running (/tmp/kaagaz-deploy.lock, infra/ec2/deploy.sh);
 #   5. /etc/kaagaz/no-idle-stop does not exist (touch it to keep the server on).
 # Any check that fails to run keeps the server on. Each run prints one line.
@@ -22,7 +23,7 @@ KAAGAZ_DIR=/home/ubuntu/kaagaz
 KEEP_ON_FILE=/etc/kaagaz/no-idle-stop
 DEPLOY_LOCK=/tmp/kaagaz-deploy.lock
 MIN_UPTIME_SECONDS=1200
-QUEUE="http://127.0.0.1:9324/000000000000/kaagaz-jobs"
+QUEUES="kaagaz-jobs kaagaz-jobs-express"
 
 dry_run=false
 case "${1:-}" in
@@ -118,15 +119,18 @@ if ! cd "$KAAGAZ_DIR"; then
   stay_on "could not enter $KAAGAZ_DIR"
 fi
 
-# 3. The job queue, asked inside ElasticMQ's own container.
-if ! counts="$(dc exec -T elasticmq wget -qO- "$QUEUE?Action=GetQueueAttributes&AttributeName.1=All" 2>/dev/null |
-  python3 -c "$QUEUE_COUNTS_PY" 2>/dev/null)"; then
-  stay_on "could not read the job queue"
-fi
-read -r waiting being_read <<<"$counts"
-if ((waiting > 0 || being_read > 0)); then
-  stay_on "job queue busy: $waiting waiting, $being_read being read"
-fi
+# 3. Each job queue, asked inside ElasticMQ's own container.
+for name in $QUEUES; do
+  QUEUE="http://127.0.0.1:9324/000000000000/$name"
+  if ! counts="$(dc exec -T elasticmq wget -qO- "$QUEUE?Action=GetQueueAttributes&AttributeName.1=All" 2>/dev/null |
+    python3 -c "$QUEUE_COUNTS_PY" 2>/dev/null)"; then
+    stay_on "could not read the job queue $name"
+  fi
+  read -r waiting being_read <<<"$counts"
+  if ((waiting > 0 || being_read > 0)); then
+    stay_on "job queue $name busy: $waiting waiting, $being_read being read"
+  fi
+done
 
 # 2. Signed-in use in the last 15 minutes.
 if ! signed_in="$(dc logs --since 15m --no-log-prefix caddy 2>/dev/null |
@@ -137,7 +141,7 @@ if ((signed_in > 0)); then
   stay_on "$signed_in signed-in API requests in the last 15 minutes"
 fi
 
-reason="up $((uptime / 60)) minutes, no signed-in API request in 15 minutes, job queue empty, no deploy running"
+reason="up $((uptime / 60)) minutes, no signed-in API request in 15 minutes, job queues empty, no deploy running"
 if [[ "$dry_run" == true ]]; then
   echo "idle-stop: dry run, would stop: $reason"
   exit 0

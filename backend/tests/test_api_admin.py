@@ -279,6 +279,8 @@ def test_stats_count_this_customers_activity(db: Database) -> None:
         "older_versions": 0,
         "in_trash": 0,
         "pages_this_month": {"cells": 0, "text_layer": 0, "ocr": 0, "blank": 0},  # PRD 2 R6
+        "reader_pages": {"gemini": 0, "local": 0, "cached": 0, "read_again": 0},  # PRD 5 U9
+        "spend_estimate": {"input_tokens": 0, "output_tokens": 0, "usd": None},  # no prices set
     }
 
 

@@ -9,11 +9,14 @@ The contract is the lease model SQS uses:
   is still running.
 * ``bury`` sends the job to the failure bin at once (a failure retrying
   cannot fix).
+* ``defer`` hands the job back, to be handed out again after ``seconds``
+  (PRD 5 Q5: its customer already has MAX_ACTIVE_PER_CUSTOMER documents being
+  read, or the reader has a key problem).
 * A job whose lease runs out is handed out again. After the maximum number of
   attempts, the queue moves it to the failure bin itself.
 
-Every delivery has its own receipt. ``ack``, ``extend`` and ``bury`` with an
-old receipt raise LeaseLost, so a slow worker cannot finish a job that has
+Every delivery has its own receipt. ``ack``, ``extend``, ``bury`` and ``defer``
+with an old receipt raise LeaseLost, so a slow worker cannot finish a job that has
 already been handed to someone else.
 
 The lease length and the maximum attempts are queue settings, which are
@@ -58,3 +61,5 @@ class WorkQueue(Protocol):
     def extend(self, receipt: str) -> None: ...
 
     def bury(self, receipt: str, code: str) -> None: ...
+
+    def defer(self, receipt: str, seconds: int) -> None: ...

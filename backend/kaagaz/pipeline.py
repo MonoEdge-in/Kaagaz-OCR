@@ -266,6 +266,12 @@ _log = logging.getLogger(__name__)
 # The scan's own verdicts: recorded as the reason a document was rejected.
 _VERDICT_CODES = REJECTION_CODES - {"rejected"}
 
+# A document whose reading has ended. A delivery for one is a duplicate (the queue is
+# at least once: a delete that failed hands the job out again) and is acked unread.
+# Read again, one page again and the upgrade sweep set it to received before queueing
+# it, so they are read. Rejected is not here: the scan gate refuses it for good.
+_SETTLED = frozenset({DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.NEEDS_READER})
+
 # Sent with each cropped box. Fixed text: no document text is ever put in it.
 VISION_INSTRUCTION = (
     "Read the text in this image exactly as it is written. Reply with that text only, on one line."
@@ -288,6 +294,9 @@ MAX_CHECK_CROPS = 200
 CHECK_MARGIN = 0.04
 # G6: BackendUnavailable's name for a wrong key or a spent cap (a person's fix, logged at error).
 _KEY_PROBLEM = "gemini_key"
+# PRD 5 Q6: the run codes of a reader that is down (Gemini, or the OCR server) or has a key
+# problem: the document shows "Waiting for the reader to come back" until its job returns.
+_READER_WAITS = frozenset({"gemini_unavailable", "gemini_key_unavailable", "ocr_unavailable"})
 # V1: a line with any Devanagari character is read by the Devanagari recogniser.
 _DEVANAGARI = re.compile("[ऀ-ॿ]")
 # "ocr", "storage", "gemini_key", ...: a run's <backend>_unavailable (PRD 5 G6: a wrong key or a
@@ -477,8 +486,11 @@ class ProgressStore(Protocol):
         open (the run fence)."""
         ...
 
-    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
-        """No progress shown. With ``run_id``, change nothing unless that run is still open."""
+    def clear_progress(
+        self, customer_id: str, document_id: str, *, run_id: str | None = None, waiting: str | None = None
+    ) -> None:
+        """No progress shown (``waiting="reader"``: ``{"step": "waiting"}``, PRD 5 Q6). With
+        ``run_id``, change nothing unless that run is still open."""
         ...
 
 
@@ -776,6 +788,12 @@ class DocumentProcessor:
         if record is None:
             # No record for this customer: nothing to mark, nothing read.
             raise JobFailed("document_missing", retryable=False)
+        if self._statuses.get_status(job.customer_id, job.document_id) in _SETTLED:
+            _log.info(
+                "duplicate delivery skipped",
+                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": "settled"},
+            )
+            return  # acked: no run, nothing read again
         run = self._start_run(job)
         settled = False  # the run was finished, or is being, on a known path
         chosen = contextlib.ExitStack()  # the upload's reader, until the run is closed
@@ -1330,12 +1348,17 @@ class DocumentProcessor:
             )
 
     def _clear_progress(self, job: Job, run: _Run, code: str) -> None:
-        """Clear this run's progress before the job waits to come back. Best effort: a
-        database that is down is logged with the run's error code."""
+        """Clear this run's progress before the job waits to come back; when the reader
+        stopped it (``code`` in _READER_WAITS), mark it waiting for the reader instead
+        (PRD 5 Q6). Best effort: a database that is down is logged with the run's error
+        code."""
         if self._progress_store is None:
             return
+        waiting = "reader" if code in _READER_WAITS else None
         try:
-            self._progress_store.clear_progress(job.customer_id, job.document_id, run_id=run.run_id)
+            self._progress_store.clear_progress(
+                job.customer_id, job.document_id, run_id=run.run_id, waiting=waiting
+            )
         except BackendUnavailable:
             _log.warning(
                 "progress_not_cleared",

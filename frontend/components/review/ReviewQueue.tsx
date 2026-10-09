@@ -4,7 +4,8 @@
 // those of one reason (PRD 3 Y5). Each one leaves the list once it is
 // resolved, the page says so politely in one message, and focus moves to the
 // next card so it is never lost. Members see a short note instead; the server
-// refuses them anyway.
+// refuses them anyway. "Group by document" (PRD 5 U6) puts the cards shown under
+// their document's name.
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -19,6 +20,7 @@ import {
   appendItems,
   canReview,
   focusAfterResolve,
+  groupByDocument,
   leftToReview,
   parseReason,
   queueParams,
@@ -55,6 +57,7 @@ function Queue({ documentId }: { documentId?: string }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [saved, setSaved] = useState("");
   const [reason, setReason] = useState<ReviewReason | null>(null);
+  const [grouped, setGrouped] = useState(false);
   // The latest list, kept in step with every setList, so a resolve that lands
   // after another one works on the current queue.
   const latest = useRef<ReviewList | null>(null);
@@ -153,6 +156,10 @@ function Queue({ documentId }: { documentId?: string }) {
           ))}
         </select>
       </div>
+      <label className={styles.groupToggle}>
+        <input type="checkbox" checked={grouped} onChange={() => setGrouped(!grouped)} />
+        Group by document
+      </label>
       <p className={announcement ? styles.saved : "visually-hidden"} aria-live="polite">
         {announcement ? <Icon name="check-seal" size={16} /> : null}
         {announcement}
@@ -206,11 +213,27 @@ function Queue({ documentId }: { documentId?: string }) {
             <p className={`${styles.count} tabular`}>
               {`${loaded.total} value${loaded.total === 1 ? "" : "s"} to review.`}
             </p>
-            <div className={styles.cards}>
-              {loaded.items.map((item) => (
-                <ReviewCard key={item.value.id} item={item} onResolved={onResolved} />
-              ))}
-            </div>
+            {grouped ? (
+              groupByDocument(loaded.items).map((group) => (
+                <section key={group.id} className={styles.group} aria-labelledby={`review-group-${group.id}`}>
+                  <h2 id={`review-group-${group.id}`} className={styles.groupHeading}>
+                    {group.name}
+                    <span className="muted">{` · ${group.items.length} shown`}</span>
+                  </h2>
+                  <div className={styles.cards}>
+                    {group.items.map((item) => (
+                      <ReviewCard key={item.value.id} item={item} onResolved={onResolved} />
+                    ))}
+                  </div>
+                </section>
+              ))
+            ) : (
+              <div className={styles.cards}>
+                {loaded.items.map((item) => (
+                  <ReviewCard key={item.value.id} item={item} onResolved={onResolved} />
+                ))}
+              </div>
+            )}
             {moreError ? (
               <p className="error-text" role="alert">
                 {`Could not load more values. ${moreError}`}

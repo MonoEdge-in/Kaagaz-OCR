@@ -26,6 +26,10 @@ x-backend: &backend
     STORAGE_ENDPOINT_URL: http://seaweedfs:8333
     QUEUE_ENDPOINT_URL: http://elasticmq:9324
     QUEUE_URL: http://elasticmq:9324/000000000000/kaagaz-jobs
+    QUEUE_EXPRESS_URL: http://elasticmq:9324/000000000000/kaagaz-jobs-express
+    # One worker runs here (PRD 5 Q3), so the reader's MODEL_RPM share and the upgrade
+    # sweep's pace count one copy; docker-compose.prod.yml sets the server's number.
+    WORKER_REPLICAS: "1"
     CLAMAV_HOST: clamav
     CLAMAV_PORT: "3310"
     # Ollama on the laptop by default; http://ollama:11434 with the profile.

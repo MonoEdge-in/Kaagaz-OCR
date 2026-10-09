@@ -3,6 +3,8 @@ ids and gets "not found" with none of A's text. The control: A asks the same and
 gets the lines, so B's 404 comes from the customer, never from an empty fixture.
 """
 
+from typing import Any
+
 import pytest
 
 from kaagaz.db.engine import Database
@@ -84,3 +86,48 @@ def test_b_cannot_see_a_reading_counts_or_review_page_fields(db: Database) -> No
     assert (a_review[0]["page"]["unsure_words"], a_review[0]["page"]["unpinned_lines"]) == (2, 1)
     assert [item["value"]["id"] for item in b_review] == [b_value]
     assert (b_review[0]["document_id"], b_review[0]["page"]["read_quality"]) == (b_document, "good")
+
+
+def test_the_reading_marks_are_a_s_own_and_b_gets_none_of_them(db: Database) -> None:
+    """PRD 5 U3: an unsure and an illegible word mark, and an unpinned line, on A's page 1;
+    a pinned line, a mark of page 2 and the line text itself are not marks."""
+    api = Api(db)
+    a, b = api.new_signed(), api.new_signed()
+    document_id = api.add_document(a.customer_id, detected_type="png", name="sharma.png")
+    api.add_page(a.customer_id, document_id, unit="px")
+
+    def ocr(
+        text: str,
+        page: int = 1,
+        *,
+        kind: str | None = None,
+        quality: str | None = None,
+        box_source: str = "found",
+    ) -> dict[str, Any]:
+        location = BoxLocation(page, 0.1, 0.1, 0.9, 0.2)
+        span = Span(
+            text, text, location, 0.9, kind=kind, origin="ocr", quality=quality, box_source=box_source
+        )
+        return span_to_json(span)
+
+    spans = [
+        ocr("sharma total 1,180 [?]", kind="paragraph"),
+        ocr("1,180", quality="unsure"),
+        ocr("[?]", quality="illegible"),
+        ocr("sharma stamp", kind="stamp", box_source="model"),
+        ocr("page two", page=2, quality="unsure"),
+    ]
+    api.add_reader_output(a.customer_id, document_id, spans, reader="gemini")
+    path = f"/api/documents/{document_id}/pages/1/readings"
+
+    own = a.client.get(path)
+    assert own.status_code == 200  # the control
+    box = {"kind": "box", "page": 1, "box": [0.1, 0.1, 0.9, 0.2]}
+    assert own.json()["marks"] == [
+        {"quality": "unsure", "region": box, "text": "1,180"},
+        {"quality": "illegible", "region": box, "text": "[?]"},
+        {"quality": "unpinned", "region": box, "text": "sharma stamp"},
+    ]
+    other = b.client.get(path)
+    assert other.status_code == 404
+    assert "sharma" not in other.text and "marks" not in other.text

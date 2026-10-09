@@ -27,6 +27,11 @@ class ApiStorage(BlobStorage, Protocol):
 class ApiQueue(JobQueue, Protocol):
     def ping(self) -> None: ...
 
+    def depth(self) -> dict[str, int]:
+        """The jobs waiting in each lane, ``{"express": n, "main": n}`` (PRD 5 U9);
+        BackendUnavailable when the queue does not answer."""
+        ...
+
 
 class AnswerLike(Protocol):
     def to_json(self) -> dict[str, Any]: ...

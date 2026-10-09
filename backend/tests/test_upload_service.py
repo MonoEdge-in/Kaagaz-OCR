@@ -68,6 +68,7 @@ class AcceptTest(unittest.TestCase):
                 "family_id",
                 "version_no",
                 "ocr_choice",
+                "batch_id",
             },
         )
 
@@ -76,6 +77,13 @@ class AcceptTest(unittest.TestCase):
         service.accept(CUSTOMER, io.BytesIO(TEXT_BYTES), display_name="XXXXXX1234F.csv", uploaded_by="u1")
         (record,) = repo.records_for(CUSTOMER)
         self.assertEqual((record.display_name, record.uploaded_by), ("XXXXXX1234F.csv", "u1"))
+
+    def test_record_keeps_the_drop_it_was_uploaded_in(self) -> None:
+        service, repo, _, _ = make_service()
+        service.accept(CUSTOMER, io.BytesIO(PDF_BYTES), batch_id="batch-1")
+        service.accept(CUSTOMER, io.BytesIO(TEXT_BYTES))
+        by_type = {r.detected_type: r.batch_id for r in repo.records_for(CUSTOMER)}
+        self.assertEqual(by_type, {sniff.PDF: "batch-1", sniff.TEXT: None})
 
     def test_record_keeps_its_folder_and_is_the_first_version_of_its_own_family(self) -> None:
         service, repo, _, _ = make_service()

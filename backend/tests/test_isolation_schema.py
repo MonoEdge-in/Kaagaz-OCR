@@ -150,11 +150,16 @@ OPERATOR_RIGHTS = {
         " last_swept_at timestamp with time zone)",
         EMPTY_PATH,
     ),
+    # 0022, read-only: each worker's reader state, status only (PRD 5 U9).
+    "kaagaz_op_reader": (
+        "TABLE(worker text, state text, since timestamp with time zone, seen_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
 }
-# The only tables without customer_id: the customers themselves, alembic's own and
-# the platform operator's (0015), which belong to no customer.
+# The only tables without customer_id: the customers themselves, alembic's own, the
+# platform operator's (0015) and the workers' reader status (0022), which belong to no customer.
 OPERATOR_TABLES = {"operators", "platform_audit"}
-NO_CUSTOMER_ID = {"customers", "alembic_version"} | OPERATOR_TABLES
+NO_CUSTOMER_ID = {"customers", "alembic_version", "reader_status"} | OPERATOR_TABLES
 
 _CUSTOMER_TABLES = text(
     "SELECT c.relname, c.relrowsecurity, pg_get_userbyid(c.relowner)"

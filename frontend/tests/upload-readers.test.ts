@@ -14,24 +14,24 @@ import {
 } from "@/components/documents/readers";
 import type { UploadReader } from "@/lib/types";
 
-// As GET /upload-limits answers on a laptop with RapidOCR: Auto first.
+// As GET /upload-limits answers on a laptop with the backup reader: Auto first (PRD 5 U8 titles).
 const auto: UploadReader = {
   id: "auto",
   title: "Auto",
-  hint: "The usual reader here: RapidOCR",
+  hint: "The usual reader here: the backup reader",
   available: true,
   reason: null,
 };
 const paddle: UploadReader = {
   id: "paddleocr_vl",
-  title: "PaddleOCR-VL",
+  title: "Layout reader",
   hint: "Best for handwriting and complex pages (slower)",
   available: false,
   reason: "Not set up on this server",
 };
 const rapid: UploadReader = {
   id: "rapidocr",
-  title: "RapidOCR",
+  title: "Backup reader",
   hint: "Fast, for clean printed pages",
   available: true,
   reason: null,
@@ -42,8 +42,8 @@ describe("Scan with options", () => {
   it("names the first recommended and disables a reader the server can't use, saying why", () => {
     expect(readerOptions(LAPTOP)).toEqual([
       { id: "auto", label: "Auto (recommended)", disabled: false },
-      { id: "paddleocr_vl", label: "PaddleOCR-VL (Not set up on this server)", disabled: true },
-      { id: "rapidocr", label: "RapidOCR", disabled: false },
+      { id: "paddleocr_vl", label: "Layout reader (Not set up on this server)", disabled: true },
+      { id: "rapidocr", label: "Backup reader", disabled: false },
     ]);
   });
 

@@ -71,6 +71,14 @@ Why some choices:
   document from the page cache (G7). Only a page read from a scan or photo (route
   ``ocr``) can be: another page is 409 ``not_reprocessable``; a page the document
   does not have is 404, and nothing is counted.
+* **Batches** (PRD 5 Q1): an upload may name its drop in the optional ``batch_id`` form
+  field, a UUID the browser made (anything else is 400). A drop holds at most
+  MAX_FILES_PER_BATCH of the uploader's files: the next is 409 ``batch_full``, checked
+  before anything is stored. ponytail: the check and the insert are not one
+  transaction, so uploads sent at once at the cap can pass it by a few; a lock on the
+  batch if that matters. The drop is read back with ``GET /api/batches/{id}``.
+* **Needs attention** (PRD 5 U2): ``attention=true`` lists the documents with a page
+  unreadable or uncertain still on the attention list, or a value to review.
 * **Keep as is** (F5) is for a reviewer or an admin: the page leaves the attention
   list but stays flagged on the page itself and in answers (``accept_page``, under
   the family lock). One ``document.page_accept`` audit row names the page. A
@@ -128,6 +136,7 @@ from kaagaz.db.documents import (
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
+from kaagaz.ingestion.pagecount import goes_express
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import BlobNotFound, Job, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
@@ -217,6 +226,7 @@ def list_documents(
     uploaded_from: IsoDay = None,
     uploaded_to: IsoDay = None,
     trashed: bool = False,
+    attention: bool = False,
 ) -> dict[str, Any]:
     """One page and its total. The top level with its subfolders is everything,
     so it filters nothing. At most four data queries, whatever the page size:
@@ -247,6 +257,7 @@ def list_documents(
             uploaded_from=start,
             uploaded_to=end,
             trashed=trashed,
+            attention=attention,
         )
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
     max_pages, now = context.settings.max_pages, context.clock()
@@ -306,8 +317,9 @@ def _refusal_message(rejected: UploadRejected, policy: UploadPolicy) -> str | No
     return too_large_message(rejected.kind, rejected.size, rejected.limit)
 
 
-def _form_folder_id(value: str | UploadFile | None) -> str | None:
-    """The optional ``folder_id`` form field: None when it is not sent, else a UUID (400)."""
+def _form_uuid(value: str | UploadFile | None) -> str | None:
+    """An optional id form field (``folder_id``, ``batch_id``): None when it is not sent,
+    else a UUID (400)."""
     if value is None:
         return None
     if not isinstance(value, str):
@@ -354,13 +366,28 @@ def _accept(
     upload: UploadFile,
     policy: UploadPolicy,
     folder_id: str | None,
+    batch_id: str | None,
     ocr_choice: str | None,
 ) -> dict[str, Any]:
-    if folder_id is not None:
-        with context.db.customer(user.customer_id) as conn:
-            if not folders_sql.folder_path(conn, user.customer_id, folder_id):
+    customer_id, cap = user.customer_id, context.settings.max_files_per_batch
+    if folder_id is not None or batch_id is not None:
+        with context.db.customer(customer_id) as conn:
+            if folder_id is not None and not folders_sql.folder_path(conn, customer_id, folder_id):
                 raise ApiError(404, "not_found")  # before anything is stored or queued
-    service = UploadService(policy, PgDocuments(context.db), context.storage, context.queue)
+            if (
+                batch_id is not None
+                and listing.batch_size(conn, customer_id, batch_id, user_id=user.user_id) >= cap
+            ):
+                raise ApiError(
+                    409, "batch_full", f"Up to {cap} files at a time. Drop the rest after these start."
+                )
+    service = UploadService(
+        policy,
+        PgDocuments(context.db),
+        context.storage,
+        context.queue,
+        express_max_pages=context.settings.express_max_pages,
+    )
     try:
         result = service.accept(
             user.customer_id,
@@ -368,6 +395,7 @@ def _accept(
             display_name=display_name(upload.filename),
             uploaded_by=user.user_id,
             folder_id=folder_id,
+            batch_id=batch_id,
             ocr_choice=ocr_choice,
         )
     except UploadRejected as rejected:
@@ -425,6 +453,9 @@ async def upload_document(request: Request, user: User, context: Context) -> JSO
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
         _same_user(form.get("user_id"), user)
+        folder_id = _form_uuid(form.get("folder_id"))  # ocr_choice: accepted and ignored (RT3)
+        batch_id = _form_uuid(form.get("batch_id"))
+        body = await run_in_threadpool(_accept, context, user, upload, policy, folder_id, batch_id)
         folder_id = _form_folder_id(form.get("folder_id"))  # ocr_choice: accepted and ignored (RT3)
         body = await run_in_threadpool(_accept, context, user, upload, policy, folder_id)
         folder_id = _form_folder_id(form.get("folder_id"))
@@ -448,7 +479,13 @@ def _accept_version(
         raise ApiError(404, "not_found")  # before anything is stored or queued
     if target["deleted_at"] is not None:
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
-    service = UploadService(policy, PgDocuments(context.db), context.storage, context.queue)
+    service = UploadService(
+        policy,
+        PgDocuments(context.db),
+        context.storage,
+        context.queue,
+        express_max_pages=context.settings.express_max_pages,
+    )
     try:
         result = service.accept_version(
             customer_id,
@@ -581,8 +618,14 @@ def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context)
             row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
         )
         # Last, inside the transaction: a queue that is down rolls everything back (503).
-        context.queue.enqueue(Job(customer_id, target))
+        context.queue.enqueue(Job(customer_id, target), express=_read_again_express(context, row))
     return reply
+
+
+def _read_again_express(context: AppContext, row: RowMapping) -> bool:
+    """Read again goes to the express lane by the page count its last read stored (PRD 5
+    Q4); a document never counted goes to the main lane."""
+    return goes_express(row["page_count"], context.settings.express_max_pages)
 
 
 # --- one page: read it again, or keep it as is (PRD 5 F5) ----------------------------
@@ -629,7 +672,7 @@ def read_page_again(document_id: uuid.UUID, page_no: int, user: Reviewer, contex
             row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
         )
         # Last, inside the transaction: a queue that is down rolls everything back (503).
-        context.queue.enqueue(Job(customer_id, target))
+        context.queue.enqueue(Job(customer_id, target), express=_read_again_express(context, row))
     return reply
 
 
@@ -773,7 +816,8 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
         if listing.get_page(conn, customer_id, target, page_no) is None:
             raise ApiError(404, "not_found")
         rows = listing.page_readings(conn, customer_id, target, page_no)
-    return page_readings(page_no, rows)
+        marks = listing.page_marks(conn, customer_id, target, page_no)  # PRD 5 U3
+    return page_readings(page_no, rows, marks)
 
 
 @router.get("/documents/{document_id}/pages/{page_no}/cells")
