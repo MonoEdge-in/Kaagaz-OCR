@@ -1,5 +1,4 @@
 """The embedding recipe for each MODEL_EMBED, and the plain question (PRD 3 V3, PRD 5 M5)."""
-"""The embedding recipe and question format for each MODEL_EMBED (PRD 3 V3, PRD 5 M5)."""
 
 from typing import Any
 
@@ -17,33 +16,6 @@ def test_a_gemini_embedding_model_has_recipe_gem1(model: str) -> None:
 @pytest.mark.parametrize("model", ["local-embed:0.6b", "google/embeddinggemma", "gemini-embedding-2", ""])
 def test_any_other_model_name_has_recipe_ctx1_as_old_vectors_do(model: str) -> None:
     assert recipe_for(model) == "ctx1"
-from kaagaz.search.indexing import embed_question, query_input, recipe_for, recipe_tag, section_input
-
-QWEN_FORMAT = (
-    "Instruct: Given a question about business documents, retrieve passages that answer it"
-    "\nQuery:how many leaves do I get?"
-)
-
-
-@pytest.mark.parametrize("model", ["google/gemini-embedding-2", "google/gemini-embedding-001"])
-def test_a_gemini_embedding_model_gets_the_plain_question_with_recipe_gem1(model: str) -> None:
-    assert recipe_for(model) == "gem1"
-    assert query_input("how many leaves do I get?", model) == "how many leaves do I get?"
-
-
-@pytest.mark.parametrize("model", ["qwen3-embedding:0.6b", "google/embeddinggemma", "gemini-embedding-2", ""])
-def test_any_other_model_keeps_the_model_card_format_with_recipe_ctx1(model: str) -> None:
-    assert recipe_for(model) == "ctx1"
-    assert query_input("how many leaves do I get?", model) == QWEN_FORMAT
-
-
-def test_a_caller_that_passes_no_model_gets_todays_format() -> None:
-    assert query_input("how many leaves do I get?") == QWEN_FORMAT
-
-
-def test_m5_the_recipe_tag_names_each_models_recipe() -> None:
-    assert recipe_tag("google/gemini-embedding-2") == "google/gemini-embedding-2#gem1"
-    assert recipe_tag("qwen3-embedding:0.6b") == "qwen3-embedding:0.6b#ctx1"
 
 
 class Recorder:
@@ -69,18 +41,6 @@ def test_m5_a_question_is_embedded_as_plain_text() -> None:
     recorder = Recorder("google/gemini-embedding-2")
     assert embed_question(recorder, "how many leaves?") == [1.0]
     assert recorder.texts == ["how many leaves?"]
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        raise AssertionError("never reads images")
-
-
-@pytest.mark.parametrize(
-    ("model", "sent"), [("google/gemini-embedding-2", "how many leaves?"), ("qwen3-embedding:0.6b", None)]
-)
-def test_m5_a_question_is_embedded_in_its_models_format(model: str, sent: str | None) -> None:
-    recorder = Recorder(model)
-    assert embed_question(recorder, "how many leaves?") == [1.0]
-    assert recorder.texts == [sent or query_input("how many leaves?")]
-    assert recorder.texts[0].startswith("Instruct:") is (sent is None)
 
 
 def test_cx2_a_section_is_embedded_as_its_path_then_its_summary() -> None:

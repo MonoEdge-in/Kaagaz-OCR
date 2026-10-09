@@ -39,8 +39,6 @@ Gemini reader's box finder, checker and backup. Nothing is downloaded at run tim
 * No reader choice at upload (PRD 5 RT3): ``ocr_choices`` offers one reader,
   Auto, so the "Scan with" select hides itself. A choice sent or stored before is
   ignored: every scan is read with OCR_ENGINE's engine.
-  Auto, so the "Scan with" select hides itself.
-  timed under its own name.
 * ``ocr_spans`` turns an engine's pixel boxes into spans with page fractions
   and origin "ocr". RapidOCR's boxes go through the same line rule as the PDF
   readers (``kaagaz/reading/lines.py``), so "INVOICE" and "1042" found as two
@@ -345,114 +343,6 @@ def _installed_version(package: str) -> str | None:
         return None
 
 
-class FallbackOcrEngine:
-    """An ``OcrEngine`` that reads a page with ``primary`` and, when it cannot, with the
-    engine ``fallback`` builds (see the module notes). ``timer`` is ``time.monotonic``
-    in the product. With ``empty_fails`` (a chosen engine, ``OcrEngines``), a page
-    the primary finds no line on is read by the fallback too; when the fallback
-    then fails, the page stays as the primary read it. One job at a time uses it;
-    its pages may come from several page threads (PRD 5 G8), so the fallback is built
-    and its pages counted under a lock. O(1) per page beyond the engines' own time.
-    then fails, the page stays as the primary read it. One job at a time uses it,
-    so there is no lock. O(1) per page beyond the engines' own time.
-    """
-
-    def __init__(
-        self,
-        primary: OcrEngine,
-        fallback: Callable[[], OcrEngine],
-        *,
-        timer: Callable[[], float] = time.monotonic,
-        empty_fails: bool = False,
-    ) -> None:
-        self._primary = primary
-        self._build_fallback = fallback
-        self._fallback: OcrEngine | None = None
-        self._timer = timer
-        self._empty_fails = empty_fails
-        self.name = primary.name  # the ETA's rates key on the name
-        self._cool_until: float | None = None
-        self._fallback_pages = 0
-        self._lock = threading.Lock()
-
-    @property
-    def version(self) -> str:
-        return self._primary.version  # the fallback's pages are counted, not named here
-
-    def take_fallback_pages(self) -> int:
-        """Pages the fallback read since the last take, and start again from zero."""
-        with self._lock:
-            taken, self._fallback_pages = self._fallback_pages, 0
-        return taken
-
-    def read(self, image: Image.Image) -> list[OcrLine]:
-        return self.read_with_reader(image)[0]
-
-    def read_with_reader(self, image: Image.Image) -> tuple[list[OcrLine], str]:
-        """The page's lines, and the name of the engine that read them: the primary's, or
-        the fallback's (followed through a fallback that is itself a chain), for
-        ``PageRead.read_by`` (PRD 5 RT2)."""
-        if self._cool_until is not None and self._timer() < self._cool_until:
-            return self._read_fallback(image, OcrOverloaded("ocr_cooling_down"))
-        self._cool_until = None
-        failure: ReadError | OcrOverloaded
-        try:
-            lines = self._primary.read(image)
-        except OcrOverloaded as error:
-            failure = error
-        except ReadError as error:
-            if error.code != "ocr_failed":
-                raise  # the file's own failure: the fallback would not read it either
-            failure = error
-        else:
-            if lines or not self._empty_fails:
-                return lines, self._primary.name
-                return lines
-            return self._read_fallback(image, ReadError("ocr_no_lines"), kept=lines)
-        # Outside the handler, so a failing fallback's error is chained onto the primary's once.
-        read = self._read_fallback(image, failure)
-        if isinstance(failure, OcrOverloaded):
-            self._cool_until = self._timer() + COOL_DOWN_SECONDS  # only once the fallback worked
-        return read
-
-    def _read_fallback(
-        self, image: Image.Image, failure: ReadError | OcrOverloaded, *, kept: list[OcrLine] | None = None
-    ) -> tuple[list[OcrLine], str]:
-        """The page as the fallback reads it, with the name of the engine that read it.
-        When the fallback cannot be built or fails, any cool-down ends, so the next page
-        tries the primary, and ``kept`` (the primary's own lines) is returned or else
-        ``failure`` (its own error) is raised. Logs codes and type names only, never the page."""
-        return lines
-
-    def _read_fallback(
-        self, image: Image.Image, failure: ReadError | OcrOverloaded, *, kept: list[OcrLine] | None = None
-    ) -> list[OcrLine]:
-        """The page as the fallback reads it. When the fallback cannot be built or fails,
-        any cool-down ends, so the next page tries the primary, and ``kept`` (the
-        primary's own lines) is returned or else ``failure`` (its own error) is raised.
-        Logs codes and type names only, never the page."""
-        try:
-            read = lines_and_reader(self._fallback_engine(), image)
-        except Exception as error:
-            self._cool_until = None
-            _log.warning("ocr fallback failed: %s", type(error).__name__, extra={"code": failure.code})
-            if kept is not None:
-                return kept, self._primary.name
-                return kept
-            raise failure from error
-        with self._lock:
-            self._fallback_pages += 1
-        _log.warning("ocr page read by the fallback", extra={"code": failure.code})
-        return read
-
-    def _fallback_engine(self) -> OcrEngine:
-        """The fallback, built on its first need, once."""
-        with self._lock:
-            if self._fallback is None:
-                self._fallback = self._build_fallback()
-            return self._fallback
-
-
 class _LinesAsPages:
     """A ``PageEngine`` over an engine with only ``read`` (``as_page_engine``)."""
 
@@ -568,10 +458,6 @@ class MeteredOcrEngine:
         return self._engine.name
 
     @property
-    def name(self) -> str:
-        return self._engine.name  # asked each time: ``OcrEngines`` changes engine per job
-
-    @property
     def version(self) -> str:
         return self._engine.version  # asked for late: RapidOCR's names the models a document used
 
@@ -662,66 +548,6 @@ class GeminiEngineFactory(Protocol):
     def __call__(self, settings: Settings, *, pool: RapidOcrPool) -> PageEngine: ...
 
 
-# Every engine here, in the order the upload screen offered them.
-# Every engine here, in the order the upload screen offers them.
-_ENGINES: tuple[type[PaddleVlEngine] | type[RapidOcrEngine], ...] = (PaddleVlEngine, RapidOcrEngine)
-
-
-def _engine_id(engine: type[PaddleVlEngine] | type[RapidOcrEngine]) -> str:
-    """An engine's id: its OCR_ENGINE value, which is its name with "_" for "-"."""
-    return engine.name.replace("-", "_")
-
-
-def _new_engine(settings: Settings, engine_id: str) -> OcrEngine:
-    """A new engine for an id ``ocr_choices`` offers."""
-    (engine,) = (engine for engine in _ENGINES if _engine_id(engine) == engine_id)
-    return engine.from_settings(settings)
-
-
-def _has_fallback(settings: Settings) -> bool:
-    """Whether Auto reads a page PaddleOCR-VL can't with RapidOCR: only with the ocr extra."""
-    return settings.ocr_engine == _engine_id(PaddleVlEngine) and _installed_version("rapidocr") is not None
-
-
-def _auto_engine(
-    settings: Settings, engine: Callable[[str], OcrEngine], timer: Callable[[], float] = time.monotonic
-) -> OcrEngine:
-    """The usual chain for OCR_ENGINE (not "none"), its engines from ``engine(id)``."""
-    primary = engine(settings.ocr_engine)
-    if not _has_fallback(settings):
-        return primary  # RapidOCR, or PaddleOCR-VL with no ocr extra: no fallback, as before
-    rapidocr = _engine_id(RapidOcrEngine)
-    return FallbackOcrEngine(primary, lambda: engine(rapidocr), timer=timer)  # RapidOCR built on first need
-
-
-def _new_engine(settings: Settings, engine_id: str, gemini: GeminiEngineFactory | None = None) -> OcrEngine:
-    """A new engine for OCR_ENGINE or an id ``_engine_choices`` offers; the Gemini reader
-    from ``gemini``, with the process's RapidOCR pool. Without ``gemini`` there is no
-    Gemini reader: build the engines through ``kaagaz.reading.wiring``."""
-    if engine_id == GEMINI:
-        if gemini is None:
-            raise SettingsError("OCR_ENGINE=gemini: build the engines with kaagaz.reading.wiring")
-        return gemini(settings, pool=shared_pool(settings.cpu_workers))
-    (engine,) = (engine for engine in _ENGINES if _engine_id(engine) == engine_id)
-    return engine.from_settings(settings)
-
-
-def _has_fallback(settings: Settings) -> bool:
-    """Whether Auto reads a page PaddleOCR-VL can't with RapidOCR: only with the ocr extra."""
-    return settings.ocr_engine == _engine_id(PaddleVlEngine) and _installed_version("rapidocr") is not None
-
-
-def _auto_engine(
-    settings: Settings, engine: Callable[[str], OcrEngine], timer: Callable[[], float] = time.monotonic
-) -> OcrEngine:
-    """The usual chain for OCR_ENGINE (not "none"), its engines from ``engine(id)``."""
-    primary = engine(settings.ocr_engine)
-    if not _has_fallback(settings):
-        return primary  # Gemini, RapidOCR, or PaddleOCR-VL with no ocr extra: no fallback here
-    rapidocr = _engine_id(RapidOcrEngine)
-    return FallbackOcrEngine(primary, lambda: engine(rapidocr), timer=timer)  # RapidOCR built on first need
-
-
 def build_ocr_engine(settings: Settings, *, gemini: GeminiEngineFactory | None = None) -> OcrEngine | None:
     """The engine for OCR_ENGINE, None for "none": RapidOCR, or the Gemini reader from
     ``gemini`` with the process's RapidOCR pool. Without ``gemini`` there is no Gemini
@@ -741,37 +567,6 @@ def ocr_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
     with" select hides itself. Pure: from the settings only, nothing built or called,
     so the api and the worker agree. O(1)."""
     return [{"id": AUTO, "title": "Auto", "hint": _auto_hint(settings), "available": True, "reason": None}]
-    with" select hides itself. Pure: from the settings and what is installed, nothing
-    built or called, so the api and the worker agree. O(1)."""
-    return _engine_choices(settings)[:1]
-
-
-def _engine_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
-    """Auto first, then every engine here, available or with its ``reason``: what a stored
-    choice may still pick in ``OcrEngines.choose``. O(engines)."""
-    return _auto_engine(settings, lambda engine_id: _new_engine(settings, engine_id))
-
-
-def ocr_choices(settings: Settings) -> list[dict[str, str | bool | None]]:
-    """The readers an upload may choose, Auto first, then every engine here: ``id``,
-    ``title``, ``hint``, ``available``, and ``reason`` when it is not. Pure: from the
-    settings and what is installed, nothing built or called, so the api and the
-    worker agree. O(engines)."""
-    choices: list[dict[str, str | bool | None]] = [
-        {"id": AUTO, "title": "Auto", "hint": _auto_hint(settings), "available": True, "reason": None}
-    ]
-    for engine in _ENGINES:
-        reason = _READING_OFF if settings.ocr_engine == "none" else engine.unavailable(settings)
-        choices.append(
-            {
-                "id": _engine_id(engine),
-                "title": engine.title,
-                "hint": engine.hint,
-                "available": reason is None,
-                "reason": reason,
-            }
-        )
-    return choices
 
 
 def _auto_hint(settings: Settings) -> str:
@@ -782,113 +577,6 @@ def _auto_hint(settings: Settings) -> str:
     if settings.ocr_engine == GEMINI:
         return "The usual reader here: the main reader"
     return f"The usual reader here: the {RapidOcrEngine.title.lower()}"
-    (primary,) = (engine for engine in _ENGINES if _engine_id(engine) == settings.ocr_engine)
-    if not _has_fallback(settings):
-        return f"The usual reader here: the {primary.title.lower()}"
-    backup = RapidOcrEngine.title.lower()
-    return f"The usual reader here: the {primary.title.lower()}, then the {backup} for a page it can't read"
-
-
-class OcrEngines:
-    """The worker's engine (see the module notes): Auto, or for one job the chain
-    ``choose`` picks. Engines and chains are built on first need, once each. One
-    job at a time uses it; ``choose`` is entered before its pages are read, so the
-    page threads (PRD 5 G8) only read ``_active``. O(1) per page beyond the engines'.
-
-    ``engine(id)`` builds an engine (tests give fakes); ``timer`` is the cool-downs';
-    ``gemini`` builds the Gemini reader (``build_ocr_engine``).
-    job at a time uses it, so there is no lock. O(1) per page beyond the engines'.
-
-    ``engine(id)`` builds an engine (tests give fakes); ``timer`` is the cool-downs'.
-    """
-
-    def __init__(
-        self,
-        settings: Settings,
-        *,
-        engine: Callable[[str], OcrEngine] | None = None,
-        timer: Callable[[], float] = time.monotonic,
-        gemini: GeminiEngineFactory | None = None,
-    ) -> None:
-        if settings.ocr_engine == "none":
-            raise ValueError("OCR_ENGINE=none has no engine to choose")
-        self._settings = settings
-        self._new = engine or (lambda engine_id: _new_engine(settings, engine_id, gemini))
-        self._new = engine or (lambda engine_id: _new_engine(settings, engine_id))
-        self._timer = timer
-        self._built: dict[str, OcrEngine] = {}
-        self._chains: dict[str, FallbackOcrEngine] = {}
-        self._auto = _auto_engine(settings, self._engine, timer)
-        self._active = self._auto
-
-    @property
-    def name(self) -> str:
-        return self._active.name
-
-    @property
-    def version(self) -> str:
-        return self._active.version
-
-    def read(self, image: Image.Image) -> list[OcrLine]:
-        return self._active.read(image)
-
-    def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
-        """The engine in use's ``read_page`` (``as_page_engine``)."""
-        return as_page_engine(self._active).read_page(image, page_no=page_no)
-
-    def document(self, pages: DocumentPages) -> contextlib.AbstractContextManager[None]:
-        """Auto's document context (``reading_document``): a chosen chain falls back to
-        Auto, so Auto is the engine that keeps the page cache."""
-        return reading_document(self._auto, pages)
-
-    @contextlib.contextmanager
-    def choose(self, choice: str | None) -> Iterator[bool]:
-        """Read with ``choice``'s chain until the block ends, then with Auto again, even
-        when it raises. Yields False when ``choice`` is not available here (Auto then)."""
-        self._active, honoured = self._chain(choice)
-        try:
-            yield honoured
-        finally:
-            self._active = self._auto
-
-    def take_fallback_pages(self) -> int:
-        """Pages any of the chains read with its fallback since the last take, summed."""
-        chains = [self._auto, *self._chains.values()]
-        return sum(chain.take_fallback_pages() for chain in chains if isinstance(chain, FallbackOcrEngine))
-
-    def _engine(self, engine_id: str) -> OcrEngine:
-        if engine_id not in self._built:
-            self._built[engine_id] = self._new(engine_id)
-        return self._built[engine_id]
-
-    def _chain(self, choice: str | None) -> tuple[OcrEngine, bool]:
-        """(the engine for ``choice``, honoured). Auto's first engine is Auto itself. Uploads
-        no longer choose (RT3), but a stored choice of an engine this server has is still
-        read with it."""
-        if choice in (None, AUTO, self._settings.ocr_engine):
-            return self._auto, True
-        offered = {item["id"] for item in _engine_choices(self._settings) if item["available"]}
-        """(the engine for ``choice``, honoured). Auto's first engine is Auto itself."""
-        if choice in (None, AUTO, self._settings.ocr_engine):
-            return self._auto, True
-        offered = {item["id"] for item in ocr_choices(self._settings) if item["available"]}
-        if choice not in offered:
-            return self._auto, False
-        if choice not in self._chains:
-            chosen = self._engine(choice)
-            self._chains[choice] = FallbackOcrEngine(
-                chosen, lambda: self._auto, timer=self._timer, empty_fails=True
-            )
-        return self._chains[choice], True
-
-
-def build_ocr_engines(settings: Settings, *, gemini: GeminiEngineFactory | None = None) -> OcrEngines | None:
-    """The worker's ``OcrEngines``; None with OCR_ENGINE=none (no scan is read). ``gemini``
-    as in ``build_ocr_engine``."""
-    return None if settings.ocr_engine == "none" else OcrEngines(settings, gemini=gemini)
-def build_ocr_engines(settings: Settings) -> OcrEngines | None:
-    """The worker's ``OcrEngines``; None with OCR_ENGINE=none (no scan is read)."""
-    return None if settings.ocr_engine == "none" else OcrEngines(settings)
 
 
 def ocr_spans(lines: list[OcrLine], page_no: int, width_px: int, height_px: int) -> list[Span]:

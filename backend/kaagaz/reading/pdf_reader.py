@@ -74,7 +74,6 @@ pdfplumber and pypdfium2 documents are open together, each page's parsed
 objects are released after it is read, and an OCR'd page's picture after the
 engine has read it; with a pool, up to its size of pictures plus the one being
 drawn.
-engine has read it.
 """
 
 import io
@@ -98,7 +97,6 @@ from kaagaz.preparing.page_checks import is_blank, largest_image_dpi
 from kaagaz.preparing.pages import check_page_count, open_pdf, render_pdf_page
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
 from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, PageEngine, PageRead, as_page_engine, ocr_spans
-from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
 from kaagaz.reading.ocr_dpi import (
     DPI_RULES,
     FIXED,
@@ -333,49 +331,6 @@ def _read_again(reads: PageEngine, document: Any, number: int, dpi: int, max_pix
     try:
         width, height = image.size
         return ocr_spans(list(reads.read_page(image, page_no=number).lines), number, width, height)
-    finally:
-        image.close()
-            image.close()
-        if not scanned and dpi < ceiling:  # nothing found at a lowered DPI: once more at the ceiling
-            self._rereads += 1
-            scanned = _read_again(self._ocr, document, number, ceiling, self._max_ocr_pixels)
-        if scanned or not fallback:
-            return scanned, decision
-        return fallback, _kept(decision)
-
-    def _page_dpi(self, pdfium_page: Any, ceiling: int, scan: bool) -> int:
-        """The DPI the page is drawn at for OCR: ``ceiling`` (today's, from OCR_DPI and
-        the pixel limits) with ``fixed``, or by the text-height rule, with the scan cap
-        only on a ``scan`` page (R2's ``scan_like``: its images cover more than
-        ``scan_image_coverage`` and it has under 200 visible characters, so vector text
-        over a full-page background image is never capped at the image's DPI).
-
-        ponytail: the coverage is the union of the page's images (R2's own number), so
-        a large low-resolution image beside a sharp one caps the page at the largest
-        image's DPI."""
-        if self._dpi_rule == FIXED or ceiling <= MIN_DPI:
-            return ceiling
-        probe = probe_dpi(pdfium_page.get_size(), ceiling)
-        if probe is None:
-            return ceiling
-        picture = render_pdf_page(pdfium_page, dpi=probe, max_image_pixels=self._max_ocr_pixels)
-        try:
-            line_px = line_height_px(picture, dpi=probe)
-        finally:
-            picture.close()
-        capped = scan and self._dpi_rule == TEXT_HEIGHT
-        return chosen_dpi(ceiling, line_px, probe, largest_image_dpi(pdfium_page) if capped else None)
-
-
-def _read_again(ocr: OcrEngine, document: Any, number: int, dpi: int, max_pixels: int) -> list[Span]:
-    """Page ``number`` drawn again at ``dpi`` and read by ``ocr``. O(pixels) plus the engine."""
-    pdfium_page = document[number - 1]
-    try:
-        image = render_pdf_page(pdfium_page, dpi=dpi, max_image_pixels=max_pixels)
-    finally:
-        pdfium_page.close()
-    try:
-        return ocr_spans(ocr.read(image), number, image.width, image.height)
     finally:
         image.close()
 

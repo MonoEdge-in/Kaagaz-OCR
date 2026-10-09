@@ -43,8 +43,6 @@ models, or nothing starts.
 With the model on, the worker reads each document's card with `MODEL_CHAT`
 (PRD 2): a reply may take up to `MODEL_CARD_MAX_TOKENS` tokens, in a window of
 `MODEL_CONTEXT_TOKENS` (PRD 5 M1), and one card call times out after
-`MODEL_CONTEXT_TOKENS` (PRD 5 M1; with a local Ollama `MODEL_CHAT`, the smaller of it and
-`MODEL_NUM_CTX`, below), and one card call times out after
 `MODEL_EXTRACT_TIMEOUT_SECONDS` (twice that plus 75 must fit
 `QUEUE_LEASE_SECONDS`, or nothing starts).
 
@@ -85,10 +83,6 @@ least 1), the topics kept for a document; `TOPIC_EXPAND_MAX_PIECES` (12, 0 or mo
 pieces a topic adds per document, and a matching section at most; `QUERY_ASPECTS_MAX` (6, 0 or more), the aspects a question
 is also searched as; and `CHAT_SUMMARY_EVERY` (6, at least 1), the turns between chat
 summaries.
-summaries. With a `MODEL_CHAT` that is not a `google/gemini-` model (Ollama), every call
-sends `MODEL_NUM_CTX` as its window, so the window used everywhere is the smaller of
-`MODEL_CONTEXT_TOKENS` and `MODEL_NUM_CTX`, and whole-document mode is off whatever
-`ANSWER_WHOLE_DOC_TOKENS` says.
 
 **Upgrading an install to PRD 3.** Migration 0006 is offline: it locks
 `pieces` and `messages` while it rewrites the vectors and builds the indexes.
