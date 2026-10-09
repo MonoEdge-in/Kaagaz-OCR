@@ -294,6 +294,32 @@ def test_cx5_no_model_means_no_whole_document_mode() -> None:
     assert "whole" not in context.calls and retriever.calls
 
 
+def test_cx6_keyless_mode_adds_no_topic_or_section_piece() -> None:
+    """MODEL_ENABLED=false answers as PRD 3 built it: the same answer as with no context port."""
+
+    def keyless(context: FakeContext | None) -> Any:
+        retriever = Fused([CASUAL])
+        return AnswerService(
+            db=UNUSED_DB,
+            model=None,
+            settings=SEARCH_ONLY,
+            clock=lambda: NOW,
+            retriever=retriever,
+            translated_search=retriever,
+            fixed_queries=FakeFixedQueries({}),
+            unchecked=FakeUnchecked(),
+            context=context,
+        ).answer(A, "What is the casual leave?")
+
+    context = FakeContext(
+        OFFER_LETTER, topics=[("leave", ("casual leave",), [HOLIDAYS, CASUAL, MATERNITY])], sections=[SALARY]
+    )
+    answer = keyless(context)
+    assert "topics" not in context.calls and "sections" not in context.calls
+    assert answer.to_json() == keyless(None).to_json()
+    assert {c.page_no for c in answer.citations} == {9}
+
+
 # --- CX6: aspects, topics and sections ------------------------------------------------
 
 

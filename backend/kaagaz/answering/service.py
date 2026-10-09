@@ -718,8 +718,9 @@ class AnswerService:
     ) -> list[Hit]:
         """CX6: the pieces of the topics ``texts`` (the question and its aspects) or the hits
         name, then of the two sections the keywords or the vector find, each once and never a
-        hit. Two statements; none without the context port."""
-        if self._context is None:
+        hit. Two statements; none without the context port, nor with the model off, so the
+        keyless mode answers as PRD 3 built it (no sections or topics are mapped there)."""
+        if self._context is None or self._model is None:
             return []
         hits = [item.hit for item in evidence]
         topics = self._context.topic_pieces(customer_id, topic_terms(texts), hits, scope)
