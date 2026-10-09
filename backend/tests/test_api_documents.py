@@ -324,6 +324,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "pages_unreadable",  # PRD 5 F4
         "pages_uncertain",
         "values_to_review",
+        "words_unsure",  # PRD 5 U2
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
     assert (document["pages_unreadable"], document["pages_uncertain"], document["values_to_review"]) == (
@@ -894,6 +895,7 @@ def test_detail_has_pages_and_values_in_order(db: Database) -> None:
         "accepted_by": None,  # F5: not kept as is
         "accepted_at": None,
         "read_again_requested_at": None,
+        "problems": [],  # PRD 5 U4: a good page has none
     }
     assert [value["id"] for value in body["values"]] == [first, second]
     assert body["values"][0] == {
