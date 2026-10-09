@@ -105,6 +105,7 @@ def _row(
         "family_uploaders": [USER.user_id],
         "newer": None,
         "first_unreadable": None,
+        "values_found": counts.get("values", 0),
     }
     return cast(RowMapping, row)
 
@@ -205,3 +206,10 @@ def test_u1_a_batch_file_names_its_first_unreadable_page_with_the_reason_and_the
         {"page_no": 1, "says": None, "fix": None},  # never a made-up sentence
         None,
     ]
+
+
+def test_u1_a_batch_file_says_how_many_values_were_found() -> None:
+    """The tray says "All values verified" only for a file that has values; one with none
+    (a letter, a photo of a page) is just Ready."""
+    documents = _view([_row("ready", values=4), _row("ready")])["documents"]
+    assert [item["values_found"] for item in documents] == [4, 0]

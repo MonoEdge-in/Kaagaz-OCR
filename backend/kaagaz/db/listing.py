@@ -246,7 +246,12 @@ def get_document(conn: Connection, customer_id: str, document_id: str) -> RowMap
 # At most MAX_FILES_PER_BATCH rows, the upload's own cap (409 past it). PRD 5 U1: the tray
 # says "Couldn't read page n" with the reason and the fix, so each row also has its first
 # unreadable page still on the attention list, with what views.page_problems needs, or
-# NULL (the pages key).
+# NULL (the pages key). And how many values were found in it, so the tray says "All values
+# verified" only for a file that has some (the index extracted_values_record).
+_VALUES_FOUND = (
+    "(SELECT count(*) FROM extracted_values vf WHERE vf.customer_id = d.customer_id"
+    " AND vf.document_id = d.id) AS values_found"
+)
 _FIRST_UNREADABLE = (
     "(SELECT json_build_object('page_no', pf.page_no, 'read_issues', pf.read_issues,"
     " 'illegible_words', pf.illegible_words, 'unpinned_lines', pf.unpinned_lines,"
@@ -256,7 +261,7 @@ _FIRST_UNREADABLE = (
     " ORDER BY pf.page_no LIMIT 1) AS first_unreadable"
 )
 _BATCH = (
-    _COLUMNS + ", " + _FIRST_UNREADABLE + " FROM documents d"
+    _COLUMNS + ", " + _FIRST_UNREADABLE + ", " + _VALUES_FOUND + " FROM documents d"
     " LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
     " WHERE d.customer_id = :c AND d.batch_id = :b AND d.uploaded_by = :u AND d.deleted_at IS NULL"
     " ORDER BY d.created_at, d.id LIMIT :limit"

@@ -116,12 +116,13 @@ def test_a_batch_shows_its_files_in_upload_order_with_counts_and_pages(db: Datab
     assert set(body) == BATCH_KEYS
     assert body["id"] == batch
     assert [item["id"] for item in body["documents"]] == [ready, flagged, reading, waiting, stalled]
-    assert all(set(item) == SUMMARY_KEYS | {"first_unreadable"} for item in body["documents"])
+    assert all(set(item) == SUMMARY_KEYS | {"first_unreadable", "values_found"} for item in body["documents"])
     assert body["counts"] == {"total": 5, "ready": 1, "reading": 1, "waiting": 2, "attention": 1, "failed": 0}
     assert (body["pages_read"], body["pages_total"]) == (2 + 1 + 1, 2 + 1 + 4 + 3 + 1)
     by_id = {item["id"]: item for item in body["documents"]}
     assert by_id[flagged]["words_unsure"] == 14
     assert by_id[flagged]["first_unreadable"] is None  # uncertain, not unreadable
+    assert by_id[ready]["values_found"] == 0  # none extracted: the tray says Ready, not "All values verified"
     assert by_id[waiting]["status_message"] == "Waiting: 1 file ahead in your batch"  # the one being read
     assert (by_id[stalled]["status_message"], by_id[stalled]["progress"]) == (READER_WAITING, None)
 

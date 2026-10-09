@@ -243,7 +243,8 @@ def batch_view(
 ) -> dict[str, Any]:
     """``BatchView`` (PRD 5 Q1, U1): the uploader's own files of one drop, in upload
     order (``listing.batch_rows``), each a ``DocumentSummary`` with its first unreadable
-    page (``first_unreadable``, U1's "Couldn't read page n"), and the drop's counts:
+    page (``first_unreadable``, U1's "Couldn't read page n") and its count of values
+    (``values_found``), and the drop's counts:
 
     * failed: failed, rejected or can't be read yet (needs_reader);
     * waiting: in progress with no step yet (queued) or waiting for the reader (Q6);
@@ -293,6 +294,7 @@ def batch_view(
             {
                 **document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user, now=now),
                 "first_unreadable": first_unreadable(row["first_unreadable"]),
+                "values_found": int(row["values_found"]),  # U1: "All values verified" needs some
             }
             for row in rows
         ],
