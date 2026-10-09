@@ -873,27 +873,28 @@ def test_the_worker_chat_timeout_is_used_for_chat_only(fake: OpenRouterFake) -> 
     assert caught.value.code == "timeout"
 
 
-def test_embed_batches_by_32_at_the_dimensions_and_sorts_by_index(fake: OpenRouterFake) -> None:
+def test_embed_sends_one_text_a_request_at_the_dimensions_in_order(fake: OpenRouterFake) -> None:
+    """Google Vertex embeds one text per request (a batch is served only by AI Studio, which
+    the provider block refuses), so each text is its own request, in order."""
     fake.script(
         "embeddings",
-        embed_reply([[float(i), 0.5, 0.25, 1.0] for i in range(32)]),  # shuffled index order
-        embed_reply([[7.0, 0.5, 0.25, 1.0]]),
+        embed_reply([[0.0, 0.5, 0.25, 1.0]]),
+        embed_reply([[1.0, 0.5, 0.25, 1.0]]),
+        embed_reply([[2.0, 0.5, 0.25, 1.0]]),
     )
     client = _client(fake.url, Clock())
-    vectors = client.embed([f"piece {i}" for i in range(33)])
-    assert len(vectors) == 33
-    assert [vector[0] for vector in vectors[:32]] == [float(i) for i in range(32)]
-    assert (vectors[0], vectors[32][0]) == ([0.0, 0.5, 0.25, 1.0], 7.0)
-    first, second = fake.bodies("embeddings")
+    vectors = client.embed(["piece 0", "piece 1", "piece 2"])
+    assert [vector[0] for vector in vectors] == [0.0, 1.0, 2.0]
+    bodies = fake.bodies("embeddings")
     assert (fake.requests[0].method, fake.requests[0].path) == ("POST", "/api/v1/embeddings")
-    assert first == {
+    assert [body["input"] for body in bodies] == [["piece 0"], ["piece 1"], ["piece 2"]]
+    assert bodies[0] == {
         "model": EMBED,
-        "input": [f"piece {i}" for i in range(32)],
+        "input": ["piece 0"],
         "dimensions": 4,  # EMBEDDING_DIM (1024 in production)
         "encoding_format": "float",
         "provider": THE_EMBED_PROVIDER_BLOCK,
     }
-    assert second["input"] == ["piece 32"]
 
 
 def test_embed_of_nothing_makes_no_request(fake: OpenRouterFake) -> None:
