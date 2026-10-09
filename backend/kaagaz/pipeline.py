@@ -173,6 +173,7 @@ from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
+from kaagaz.chunking.sections import Section, Topic
 from kaagaz.eta import (
     FLOORED_STEPS,
     Estimate,
@@ -337,6 +338,8 @@ class DocumentContent:
     facts: DocumentFacts = field(default_factory=DocumentFacts)
     invoice: InvoiceRow | None = None
     links: tuple[LinkIdentifier, ...] = ()  # this document's own identifiers
+    sections: tuple[Section, ...] = ()  # CX2: the document's map, in reading order
+    topics: tuple[Topic, ...] = ()  # CX3: the topics that join distant pages
 
 
 # --- runs and progress (R6, X2, X3) -------------------------------------------
