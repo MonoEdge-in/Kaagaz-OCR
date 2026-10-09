@@ -135,6 +135,12 @@ PROVIDER: Mapping[str, Any] = {
     "zdr": True,
 }
 
+# Embeddings drop only require_parameters: OpenRouter lists no supported parameters for any
+# embedding endpoint (gemini-embedding-2 included), so requiring them matches no provider
+# and every call is 404. Vertex only, no fallback, no data collection and zero data
+# retention still hold, and embed() refuses any vector that is not EMBEDDING_DIM long.
+EMBED_PROVIDER: Mapping[str, Any] = {**PROVIDER, "require_parameters": False}
+
 # Structured output (G3): response_format json_schema with strict set to this. Whether
 # Google honours strict through OpenRouter is checked by verify-models (strict_schema).
 STRICT_SCHEMA = True
@@ -256,9 +262,9 @@ def build_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
-def provider() -> dict[str, Any]:
-    """A fresh copy of ``PROVIDER`` for one request body."""
-    return copy.deepcopy(dict(PROVIDER))
+def provider(*, embeddings: bool = False) -> dict[str, Any]:
+    """A fresh copy of ``PROVIDER`` (``EMBED_PROVIDER`` for /embeddings) for one request body."""
+    return copy.deepcopy(dict(EMBED_PROVIDER if embeddings else PROVIDER))
 
 
 def detail_level(name: str) -> str:
@@ -696,7 +702,7 @@ class OpenRouterClient:
                 "input": batch,
                 "dimensions": self._dim,
                 "encoding_format": "float",
-                "provider": provider(),
+                "provider": provider(embeddings=True),
             }
             reply = self._call(EMBEDDINGS_PATH, body, self.now() + self._timeout)
             data = reply.get("data")
