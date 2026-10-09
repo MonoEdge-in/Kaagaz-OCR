@@ -6,9 +6,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MARK_WORDS, MIN_HIT_PX, legend, markName, markRect, marksOnPage, showByDefault } from "@/components/viewer/readingMarks";
 import type { ReadingMark } from "@/lib/types";
+
+// The page's frame is measured in the browser (ResizeObserver); here it is 800 x 1000 px,
+// so the server render draws the page and its marks.
+vi.mock("@/components/viewer/useObservedBox", () => ({
+  useObservedBox: () => ({ ref: () => undefined, box: { width: 800, height: 1000 }, near: true }),
+}));
 
 const mark = (quality: ReadingMark["quality"], text = "xyz", page = 1): ReadingMark => ({
   quality,
@@ -120,11 +126,19 @@ describe("the marks layer (PageViewer)", () => {
         document: { id: "d1", display_name: "Register.jpg", detected_type: "jpeg" },
         page,
         highlights: [],
-        readingMarks: [mark("unsure", "Shinde")],
+        readingMarks: [mark("unsure", "Shinde"), mark("illegible", "[?]")],
       }),
     );
     expect(html).toContain("Show reading problems");
     expect(html).toContain('type="checkbox" checked=""');
     expect(html).toContain("Unsure word (dashed)");
+    // Each mark is drawn on the page as a button, named for what it marks, with its pattern.
+    const buttons = html.match(/<button [^>]*data-quality="[a-z]+"[^>]*><\/button>/g) ?? [];
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]).toContain('type="button"');
+    expect(buttons[0]).toContain('data-quality="unsure"');
+    expect(buttons[0]).toContain(`aria-label="Unsure word &#x27;Shinde&#x27;, mark 1 of 2"`);
+    expect(buttons[0]).toMatch(/style="left:\d+(\.\d+)?px;top:\d+(\.\d+)?px;width:\d+(\.\d+)?px;height:\d+(\.\d+)?px"/);
+    expect(buttons[1]).toContain('data-quality="illegible"');
   });
 });
