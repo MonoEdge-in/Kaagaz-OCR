@@ -142,7 +142,7 @@ describe("who can review", () => {
 });
 
 describe("the reason filter", () => {
-  it("offers the four reasons the server accepts", () => {
+  it("offers the eight reasons the server accepts", () => {
     expect(REASON_FILTERS.map((choice) => choice.value)).toEqual([
       "check_failed",
       "readers_disagree",
