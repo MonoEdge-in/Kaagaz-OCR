@@ -276,6 +276,9 @@ MAX_CHECK_CROPS = 200
 CHECK_MARGIN = 0.04
 # G6: BackendUnavailable's name for a wrong key or a spent cap (a person's fix, logged at error).
 _KEY_PROBLEM = "gemini_key"
+# PRD 5 Q6: the run codes of a reader that is down (Gemini, or the OCR server) or has a key
+# problem: the document shows "Waiting for the reader to come back" until its job returns.
+_READER_WAITS = frozenset({"gemini_unavailable", "gemini_key_unavailable", "ocr_unavailable"})
 # V1: a line with any Devanagari character is read by the Devanagari recogniser.
 _DEVANAGARI = re.compile("[ऀ-ॿ]")
 # "ocr", "storage", "gemini_key", ...: a run's <backend>_unavailable (PRD 5 G6: a wrong key or a
@@ -459,8 +462,11 @@ class ProgressStore(Protocol):
         open (the run fence)."""
         ...
 
-    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
-        """No progress shown. With ``run_id``, change nothing unless that run is still open."""
+    def clear_progress(
+        self, customer_id: str, document_id: str, *, run_id: str | None = None, waiting: str | None = None
+    ) -> None:
+        """No progress shown (``waiting="reader"``: ``{"step": "waiting"}``, PRD 5 Q6). With
+        ``run_id``, change nothing unless that run is still open."""
         ...
 
 
@@ -1272,12 +1278,17 @@ class DocumentProcessor:
             )
 
     def _clear_progress(self, job: Job, run: _Run, code: str) -> None:
-        """Clear this run's progress before the job waits to come back. Best effort: a
-        database that is down is logged with the run's error code."""
+        """Clear this run's progress before the job waits to come back; when the reader
+        stopped it (``code`` in _READER_WAITS), mark it waiting for the reader instead
+        (PRD 5 Q6). Best effort: a database that is down is logged with the run's error
+        code."""
         if self._progress_store is None:
             return
+        waiting = "reader" if code in _READER_WAITS else None
         try:
-            self._progress_store.clear_progress(job.customer_id, job.document_id, run_id=run.run_id)
+            self._progress_store.clear_progress(
+                job.customer_id, job.document_id, run_id=run.run_id, waiting=waiting
+            )
         except BackendUnavailable:
             _log.warning(
                 "progress_not_cleared",

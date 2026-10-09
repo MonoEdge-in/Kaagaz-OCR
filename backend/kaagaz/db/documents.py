@@ -62,6 +62,9 @@ from kaagaz.scanning.gate import DocumentStatus
 if TYPE_CHECKING:
     from kaagaz.pipeline import FinishedRun, Progress  # the processor's records; pipeline builds this store
 
+# PRD 5 Q6: the progress of a document waiting for the reader to come back.
+WAITING_FOR_READER = {"step": "waiting"}
+
 _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
     " folder_id, family_id, version_no, ocr_choice"
@@ -591,12 +594,19 @@ class PgDocuments:
                 {"p": json.dumps(progress.to_json()), "c": customer_id, "d": document_id},
             )
 
-    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
+    def clear_progress(
+        self, customer_id: str, document_id: str, *, run_id: str | None = None, waiting: str | None = None
+    ) -> None:
         """No progress shown, on a document still in progress (received or clean) only:
         a try a backend stopped leaves no stale "Reading page 1" while the job waits to
-        come back. With ``run_id``, the run fence: under the family lock, change nothing
-        unless that run is still open, so a stale delivery never clears the newer run's
-        progress. Its own short transaction, as ``set_progress``."""
+        come back. ``waiting="reader"`` (PRD 5 Q6: the reader is down or has a key
+        problem) writes ``{"step": "waiting"}`` instead, so the list can say "Waiting for
+        the reader to come back". With ``run_id``, the run fence: under the family lock,
+        change nothing unless that run is still open, so a stale delivery never clears
+        the newer run's progress. Its own short transaction, as ``set_progress``."""
+        if waiting not in (None, "reader"):
+            raise ValueError("waiting must be None or 'reader'")
+        progress = None if waiting is None else json.dumps(WAITING_FOR_READER)
         with unavailable(), self._db.customer(customer_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
@@ -604,10 +614,10 @@ class PgDocuments:
                     return
             conn.execute(
                 text(
-                    "UPDATE documents SET progress = NULL"
+                    "UPDATE documents SET progress = CAST(:p AS jsonb)"
                     " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
                 ),
-                {"c": customer_id, "d": document_id},
+                {"p": progress, "c": customer_id, "d": document_id},
             )
 
     def pages_to_read_again(self, customer_id: str, document_id: str) -> tuple[int, ...]:
