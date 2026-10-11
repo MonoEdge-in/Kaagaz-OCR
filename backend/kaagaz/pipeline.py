@@ -117,7 +117,8 @@ The Gemini reader (PRD 5), when the processor is given its parts:
 * F4: a document whose every page that is not blank was read unreadable fails with
   ``unreadable``, before any model call; any other document reaches ready with its
   readable pages.
-* The checker (V1): on a page the reading model read (``read_by`` is ``ocr_model``),
+* The checker (V1): on a page the reading model read (``read_by`` is the job's model,
+  ``run.model``),
   each value's box, grown by ``CHECK_MARGIN`` of its own size on each side, is read
   again by RapidOCR's recogniser (``checker``), with the Devanagari model when its
   line has Devanagari; never on a page RapidOCR read itself (it would only agree
@@ -142,6 +143,20 @@ The Gemini reader (PRD 5), when the processor is given its parts:
   here (the reader does that itself after READER_OUTAGE_FALLBACK_MINUTES, Q7).
 * With OCR_ENGINE=rapidocr and no model there is no checker, no page counted as
   the model's and no model call: everything is as before.
+
+Model choice and AI spend (council 11 Oct 2026), when the processor is given them:
+
+* ``job_reading`` at the start of each job: the user who asked for the reading
+  (``documents.read_requested_by``) and, with the Gemini reader, the model that reads its
+  scans and its provider (``kaagaz.db.models.resolve``: the upload's allowed choice, else
+  the organisation's default, else OCR_MODEL). The model goes in ``DocumentPages``, on the
+  run (``run.model``, what the checker and the counters look for) and in its config
+  (``read_model``).
+* ``usage``: the job runs in a usage scope (``kaagaz.ai.usage``, SP1) billed to that user
+  as kind scan, or upgrade when no user asked (the upgrade sweep); the card, the invoice
+  windows, the map and the embeddings each run in their own nested scope of that kind.
+  The page threads keep the scope (``reading.socket`` copies the context).
+* Keyless (OCR_ENGINE=rapidocr, MODEL_ENABLED=false): neither, no query and no ledger.
 
 Memory: the file's bytes, its spans and one decoded page picture at a time
 (the checker). Time is linear in the spans apart from the
@@ -587,6 +602,27 @@ class CountsTokens(Protocol):
     def usage(self) -> TokenUsage: ...
 
 
+@dataclass(frozen=True, slots=True)
+class JobReading:
+    """Who a job's model calls are billed to, and which model reads its scans (model choice
+    and AI spend, council 11 Oct 2026, SP1, MS5): ``user_id`` is ``documents.read_requested_by``
+    (None: no user asked, the upgrade sweep); ``model`` and ``provider`` are
+    ``kaagaz.db.models.resolve``'s, None when no model reads the scans (RapidOCR)."""
+
+    user_id: str | None
+    model: str | None = None
+    provider: str | None = None
+
+
+class UsageScopes(Protocol):
+    """``kaagaz.ai.usage.usage_scope`` on the database (SP1): the model calls made inside
+    are billed to this customer, user, kind and document, saved when it ends."""
+
+    def __call__(
+        self, *, customer_id: str, user_id: str | None, kind: str, document_id: str | None = None
+    ) -> contextlib.AbstractContextManager[object]: ...
+
+
 class ProcessorStorage(BlobStorage, Quarantine, PageImageStore, Protocol):
     """What build_processor needs from file storage (kaagaz.adapters.storage.S3Storage)."""
 
@@ -632,6 +668,11 @@ class _Run:
     checker_crops: int = 0
     pages_unreadable: int = 0
     model_tokens_at_start: tuple[int, int] = (0, 0)  # the model client's (input, output) then
+    # Model choice (council 11 Oct 2026): the model reading this job's scans and its provider
+    # (None: no model reads them), and the user its model calls are billed to (SP1).
+    model: str | None = None
+    provider: str | None = None
+    user_id: str | None = None
 
 
 class DocumentProcessor:
@@ -668,6 +709,8 @@ class DocumentProcessor:
         read_again: ReadAgainStore | None = None,
         model_usage: Callable[[], TokenUsage] | None = None,
         map_budget: MapBudget | None = None,
+        job_reading: Callable[[str, str], JobReading] | None = None,
+        usage: UsageScopes | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -693,7 +736,14 @@ class DocumentProcessor:
         ``model_usage`` is the model client's tokens counted so far (G9,
         ``CountsTokens.usage``): a run adds what its job's calls added. ``map_budget``
         (CX2, CX3): the budget of the one ``chat`` call that writes the document's section
-        summaries and topics; None makes no call, and the sections come from the headings."""
+        summaries and topics; None makes no call, and the sections come from the headings.
+
+        Model choice and AI spend (council 11 Oct 2026), both optional (None: keyless, no
+        query and no ledger): ``job_reading(customer_id, document_id)`` is asked at the start
+        of every job for its ``JobReading``; its model reads the scans and is the one the
+        checker and the counters look for (in place of ``ocr_model``). ``usage`` bills the
+        job's model calls (SP1): kind scan to the user who asked for the reading, or upgrade
+        with no user, and card, invoice, map and embed for those stages."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -730,6 +780,8 @@ class DocumentProcessor:
         self._read_again = read_again
         self._model_usage = model_usage
         self._map_budget = map_budget
+        self._job_reading = job_reading
+        self._usage = usage
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -783,6 +835,18 @@ class DocumentProcessor:
                 self._close_run(job, run, "failed", "internal_error")
 
     def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
+        """The job's model and who it is billed to (``job_reading``), then everything else
+        inside its usage scope: scan, or upgrade when no user asked (SP1)."""
+        run.model = self._ocr_model
+        if self._job_reading is not None:
+            reading = self._job_reading(job.customer_id, job.document_id)
+            run.user_id = reading.user_id
+            if reading.model is not None:
+                run.model, run.provider = reading.model, reading.provider
+        with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"):
+            self._read_and_save(job, record, heartbeat, run)
+
+    def _read_and_save(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
         self._progress(job, run, "scanning", 0, 1)
         data = self._scan(job, run)
@@ -859,7 +923,7 @@ class DocumentProcessor:
             doc_type=facts.doc_type,
             document_date=facts.document_date,
         )
-        document_map = self._map(run, heartbeat, pieces)
+        document_map = self._map(job, run, heartbeat, pieces)
         rule, quoted = understanding.rule_values, understanding.quoted_values
         # A card value, or a located value whose spot is unsure (a loose, ambiguous or
         # several-span quote), is never verified, so its box is never cropped (security A8).
@@ -942,26 +1006,37 @@ class DocumentProcessor:
         self, job: Job, run: _Run, heartbeat: Heartbeat, spans: list[Span], values: list[ExtractedValue]
     ) -> Understanding:
         """The model stage (``extraction.understanding``), and its numbers on the run.
-        With no chat model it is today's result: no card, and the rule values as they are."""
+        With no chat model it is today's result: no card, and the rule values as they are.
+        Its calls are billed as card until ``understand`` beats 2 (the card is done), then
+        as invoice (its windows, SP1)."""
+        stage = contextlib.ExitStack()
+        billed_as = "card"
 
         def beat(done: int, total: int) -> None:
+            nonlocal billed_as
+            if done >= 2 and billed_as == "card":
+                billed_as = "invoice"
+                stage.close()
+                stage.enter_context(self._billed(job, run, "invoice"))
             heartbeat()
             self._progress(job, run, "understanding", done, total)
 
         budget = self._model_budget
         chat = self._chat if budget is not None else None
-        understanding = understand(
-            chat,
-            reader_text(spans if chat is not None else []),
-            values,
-            card_max_chars=0 if budget is None else budget.card_max_chars,
-            card_max_tokens=0 if budget is None else budget.card_max_tokens,
-            num_ctx=0 if budget is None else budget.num_ctx,
-            run_id=run.run_id,
-            beat=beat,
-            spans=spans,
-            invoice_windows=None if budget is None else budget.invoice_windows,
-        )
+        with stage:
+            stage.enter_context(self._billed(job, run, "card"))
+            understanding = understand(
+                chat,
+                reader_text(spans if chat is not None else []),
+                values,
+                card_max_chars=0 if budget is None else budget.card_max_chars,
+                card_max_tokens=0 if budget is None else budget.card_max_tokens,
+                num_ctx=0 if budget is None else budget.num_ctx,
+                run_id=run.run_id,
+                beat=beat,
+                spans=spans,
+                invoice_windows=None if budget is None else budget.invoice_windows,
+            )
         run.model_calls = understanding.model_calls
         run.model_error = understanding.error_code
         run.quotes_returned = understanding.quotes_returned
@@ -974,15 +1049,17 @@ class DocumentProcessor:
             }
         return understanding
 
-    def _map(self, run: _Run, heartbeat: Heartbeat, pieces: list[Piece]) -> DocumentMap:
+    def _map(self, job: Job, run: _Run, heartbeat: Heartbeat, pieces: list[Piece]) -> DocumentMap:
         """CX2, CX3: the document's sections (``sections_from_pieces``), with their summaries
         and the topics from the one map call when the processor has a chat model and its
         ``map_budget``, counted in the run's model calls. A call that failed leaves the
-        sections from the headings and no topics, and its code on the run, like the card's."""
+        sections from the headings and no topics, and its code on the run, like the card's.
+        The call is billed as map (SP1)."""
         sections = sections_from_pieces(pieces)
         if self._map_budget is None:
             return DocumentMap(sections, (), 0, None)
-        found = map_document(self._chat, pieces, sections, self._map_budget)
+        with self._billed(job, run, "map"):
+            found = map_document(self._chat, pieces, sections, self._map_budget)
         run.model_calls += found.model_calls
         run.model_error = run.model_error or found.error_code
         if found.model_calls:
@@ -1046,7 +1123,8 @@ class DocumentProcessor:
             self._progress(job, run, "indexing", done, total)
 
         try:
-            self._embed(job.customer_id, job.document_id, on_batch=on_batch)
+            with self._billed(job, run, "embed"):
+                self._embed(job.customer_id, job.document_id, on_batch=on_batch)
         except self._model_errors as error:
             _log.warning(
                 "pieces saved without meaning vectors",
@@ -1073,7 +1151,7 @@ class DocumentProcessor:
         the values left stay single reader. One page picture at a time, drawn again
         (``Prepared.picture``): the pixels preparing drew, lossless. A reading of nothing
         is no reading."""
-        checker, model = self._checker, self._ocr_model
+        checker, model = self._checker, run.model
         if checker is None or model is None:
             return {}, set()
         checker_pages = {page_no for page_no, read in run.page_reads.items() if read.read_by == model}
@@ -1107,15 +1185,21 @@ class DocumentProcessor:
 
     def _reading_document(self, job: Job, run: _Run) -> contextlib.AbstractContextManager[None]:
         """The document's page cache, open around its reading (PRD 5 G7, F5), with the pages
-        a user asked to read again (kept on the run, for its counters); nothing to open
-        without a meter or a page cache. One short query for the pages."""
+        a user asked to read again (kept on the run, for its counters) and the job's model
+        and provider; nothing to open without a meter or a page cache. One short query for
+        the pages."""
         meter, cache = self._ocr_meter, self._page_cache
         if meter is None or cache is None:
             return contextlib.nullcontext()
         if self._read_again is not None:
             run.read_again = frozenset(self._read_again.pages_to_read_again(job.customer_id, job.document_id))
         pages = DocumentPages(
-            customer_id=job.customer_id, document_id=job.document_id, cache=cache, read_again=run.read_again
+            customer_id=job.customer_id,
+            document_id=job.document_id,
+            cache=cache,
+            read_again=run.read_again,
+            model=run.model,
+            provider=run.provider,
         )
         return meter.document(pages)
 
@@ -1126,6 +1210,15 @@ class DocumentProcessor:
         read = [page for page in pages if page.route is not None and page.route != "blank"]
         if read and all(page.read_quality == "unreadable" for page in read):
             raise JobFailed("unreadable", retryable=False)
+
+    def _billed(self, job: Job, run: _Run, kind: str) -> contextlib.AbstractContextManager[object]:
+        """SP1: the model calls made inside are billed as ``kind`` to the user who asked for
+        the reading (``run.user_id``) and this document; nothing without a ledger."""
+        if self._usage is None:
+            return contextlib.nullcontext()
+        return self._usage(
+            customer_id=job.customer_id, user_id=run.user_id, kind=kind, document_id=job.document_id
+        )
 
     # --- runs and progress (R6, X2, X3) -----------------------------------------
 
@@ -1157,7 +1250,7 @@ class DocumentProcessor:
             return None
         ended = self._timer()
         checked_by = self._checker_model if run.checker_crops else None
-        counters = _reader_counters(page_reads, self._ocr_model, run.read_again)
+        counters = _reader_counters(page_reads, run.model, run.read_again)
         model_in, model_out = self._model_tokens()
         counters["input_tokens"] += max(0, model_in - run.model_tokens_at_start[0])
         counters["output_tokens"] += max(0, model_out - run.model_tokens_at_start[1])
@@ -1185,6 +1278,7 @@ class DocumentProcessor:
                 **run.quote_config,
                 **run.version_marks,
                 **_step_seconds(run, ended),
+                **({"read_model": run.model} if run.model is not None else {}),
             },
             **counters,
             pages_unreadable=run.pages_unreadable,
@@ -1565,13 +1659,18 @@ def build_processor(
 ) -> DocumentProcessor:
     """The production processor. The concrete parts are imported here only, so the
     processor itself depends on the ports above and is tested with fakes."""
+    from sqlalchemy import text
+
     from kaagaz.ai.client import ModelOutputError, ModelUnavailable
+    from kaagaz.ai.usage import usage_scope
+    from kaagaz.db import models
     from kaagaz.db.documents import PgDocuments
+    from kaagaz.db.engine import unavailable
     from kaagaz.db.page_reads import PgPageReads
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
-    from kaagaz.reading.ocr import GEMINI, MeteredOcrEngine
+    from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION, MeteredOcrEngine
     from kaagaz.reading.rapid_pool import shared_pool
     from kaagaz.reading.wiring import build_ocr_engine, build_reader_socket, reader_config
     from kaagaz.search.indexing import embed_pieces
@@ -1600,6 +1699,26 @@ def build_processor(
     # The checker (V1) reads the boxes of pages the reading model read, so only with it; it
     # shares the process's one RapidOCR pool with the box pinning (CPU_WORKERS).
     gemini = engine is not None and settings.ocr_engine == GEMINI
+    # Model choice and AI spend (council 11 Oct 2026): with a model in use, each job asks who
+    # it is billed to and, with the Gemini reader, which model reads it (the worker's own
+    # check of the upload's choice, MS5). Keyless: no query a job and no ledger, as before.
+    job_reading: Callable[[str, str], JobReading] | None = None
+    if gemini or model is not None:
+        requested_by = text("SELECT read_requested_by FROM documents WHERE customer_id = :c AND id = :d")
+        prompt_version = READER_PROMPT_VERSION if gemini else None
+
+        def read_job(customer_id: str, document_id: str) -> JobReading:
+            with unavailable(), db.customer(customer_id) as conn:
+                user = conn.execute(requested_by, {"c": customer_id, "d": document_id}).scalar_one_or_none()
+                user_id = None if user is None else str(user)
+                if prompt_version is None:
+                    return JobReading(user_id)
+                read_model, provider = models.resolve(
+                    conn, customer_id, document_id, settings=settings, prompt_version=prompt_version
+                )
+            return JobReading(user_id, read_model, provider)
+
+        job_reading = read_job
 
     return DocumentProcessor(
         gate=ScanGate(storage, scanner, storage, documents),
@@ -1638,6 +1757,8 @@ def build_processor(
         read_again=documents,
         model_usage=model.usage if isinstance(model, CountsTokens) else None,
         map_budget=MapBudget.from_settings(settings) if model is not None else None,
+        job_reading=job_reading,
+        usage=None if job_reading is None else functools.partial(usage_scope, db),
     )
 
 
