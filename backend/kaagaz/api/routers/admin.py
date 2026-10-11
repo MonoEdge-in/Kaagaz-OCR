@@ -43,7 +43,7 @@ import io
 import re
 import secrets
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
@@ -372,21 +372,29 @@ def get_stats(user: AdminSession, context: Context) -> dict[str, Any]:
 @router.get("/admin/models")
 def get_models(user: AdminSession, context: Context) -> dict[str, Any]:
     """``OrgModels``, read-only (MS1, MS2, MC3): the organisation's usable models with their
-    live prices and estimated price a page, the default scan model (the platform's, OCR_MODEL,
-    when none is usable), the budget and this month's spend. Three queries."""
+    live prices and estimated price a page, the default scan model (``default_scan``), the
+    budget and this month's spend. Three queries."""
     customer_id, settings = user.customer_id, context.settings
     start, end = month_window(context.clock(), settings.timezone)
     with context.db.customer(customer_id) as conn:
         rows = usable(conn, customer_id, settings)
         budget = _budget(conn, customer_id, start, end)
-    default = next((str(row["id"]) for row in rows if row["is_default_scan"]), settings.ocr_model)
     return {
         "set_by": "operator",
-        "default_scan": default,
+        "default_scan": default_scan(rows, settings),
         "models": [_org_model(row, page_provider(row, settings)) for row in rows],
         "ai_budget_usd": budget["ai_budget_usd"],
         "spent_this_month_usd": budget["spent_this_month_usd"],
     }
+
+
+def default_scan(rows: Sequence[RowMapping], settings: Settings) -> str | None:
+    """The model that reads this organisation's scans by default: its default while usable,
+    else the platform's, OCR_MODEL (what ``db.models.resolve`` falls back to); None in keyless
+    mode, where no model reads scans (R14)."""
+    if settings.ocr_engine != GEMINI:
+        return None
+    return next((str(row["id"]) for row in rows if row["is_default_scan"]), settings.ocr_model)
 
 
 def _org_model(row: RowMapping, provider: str | None) -> dict[str, Any]:

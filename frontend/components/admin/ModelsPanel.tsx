@@ -22,7 +22,9 @@ const COLUMNS = ["Model", "Provider", "Input, per million tokens", "Output, per 
 export function ModelsView({ models }: { models: OrgModels }) {
   return (
     <>
-      {models.models.length === 0 ? (
+      {models.models.length === 0 && models.default_scan === null ? (
+        <p className={styles.emptyLine}>Scans on this server are not read by an AI model.</p>
+      ) : models.models.length === 0 ? (
         <p className={styles.emptyLine}>
           MonoEdge has not chosen models for your organisation, so scans are read by the platform&apos;s
           model, {models.default_scan}. Ask MonoEdge to change this.

@@ -20,6 +20,7 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.api import readers
 from kaagaz.api.errors import ApiError
+from kaagaz.api.routers import admin
 from kaagaz.api.routers.documents import _form_model
 from kaagaz.db import models as models_sql
 from kaagaz.db.engine import Database
@@ -120,6 +121,7 @@ def test_ms4_mc3_the_usable_models_default_first_with_a_price_a_page(monkeypatch
             "hint": "about $0.04 a page",  # 10,000 x $2/M + 2,000 x $12/M
             "available": True,
             "reason": None,
+            "default": True,
         },
         {
             "id": "anthropic/claude-haiku-5.5",
@@ -127,6 +129,7 @@ def test_ms4_mc3_the_usable_models_default_first_with_a_price_a_page(monkeypatch
             "hint": "under $0.01 a page (rough estimate)",  # verify-models' test page only
             "available": True,
             "reason": None,
+            "default": False,
         },
         {
             "id": "openai/gpt-6-luna",
@@ -134,8 +137,23 @@ def test_ms4_mc3_the_usable_models_default_first_with_a_price_a_page(monkeypatch
             "hint": "Cost not measured yet",  # never a made-up figure
             "available": True,
             "reason": None,
+            "default": False,
         },
     ]
+
+
+def test_r14_only_the_real_default_is_marked_none_when_it_is_not_usable() -> None:
+    """The organisation's default may be unusable now (disabled, not verified): its other
+    models are offered, and none of them is called the default."""
+    rows = [_row("anthropic/claude-haiku-5.5"), _row("openai/gpt-6-luna")]
+    assert [reader["default"] for reader in readers.readers(rows, GEMINI)] == [False, False]
+
+
+def test_r14_the_admin_sees_no_default_in_keyless_mode() -> None:
+    """Keyless mode reads no scan with a model; otherwise the default, else OCR_MODEL."""
+    assert admin.default_scan([_row("google/a", default=True)], KEYLESS) is None
+    assert admin.default_scan([_row("google/a", default=True)], GEMINI) == "google/a"
+    assert admin.default_scan([_row("google/a")], GEMINI) == GEMINI.ocr_model
 
 
 def test_mc3_the_estimate_a_page_is_the_measured_tokens_times_the_price() -> None:
@@ -275,9 +293,10 @@ def test_ms4_upload_limits_list_the_usable_models_default_first(db: Database) ->
         {
             "id": default,
             "title": "Default model",
-            "hint": "about $0.04 a page",
+            "hint": "about $0.04 a page (rough estimate)",  # no scans yet: verify-models' page
             "available": True,
             "reason": None,
+            "default": True,
         },
         {
             "id": other,
@@ -285,6 +304,7 @@ def test_ms4_upload_limits_list_the_usable_models_default_first(db: Database) ->
             "hint": "under $0.01 a page (rough estimate)",  # verify-models' test page only
             "available": True,
             "reason": None,
+            "default": False,
         },
     ]
 

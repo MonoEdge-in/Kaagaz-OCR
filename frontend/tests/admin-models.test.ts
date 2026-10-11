@@ -92,6 +92,12 @@ describe("the AI models panel", () => {
     expect(source).toContain("budgetLine(models)");
   });
 
+  it("names no platform model in keyless mode, where none reads scans (R14)", () => {
+    const keyless = render({ ...MODELS, models: [], default_scan: null });
+    expect(keyless).toContain("Scans on this server are not read by an AI model.");
+    expect(keyless).not.toContain("platform&#x27;s");
+  });
+
   it("is read-only: no control, and no call that changes a model", () => {
     expect(html).not.toMatch(/<(input|select|button|form)\b/);
     const source = readFileSync(join(__dirname, "..", "components/admin/ModelsPanel.tsx"), "utf8");

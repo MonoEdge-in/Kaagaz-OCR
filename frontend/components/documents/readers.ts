@@ -3,8 +3,10 @@
 // tested in node (tests/upload-readers.test.ts). Every model, its words and
 // whether this organisation may use it come from the server (GET
 // /upload-limits, readers: the models MonoEdge allowed it): nothing here names
-// one. The server lists the organisation's default first, so the first is
-// picked at first and is never sent; the server reads with it anyway.
+// one. The server lists the organisation's default first and marks it
+// (default); it is picked at first and never sent, since the server reads with
+// it anyway. When the default can't be used now, no model is marked, and the
+// one shown is sent (MS4, R14).
 
 import type { UploadReader } from "@/lib/types";
 
@@ -19,14 +21,22 @@ export interface ReaderChoice {
 export const DUPLICATE_READER_NOTE = "Already uploaded; it keeps the reader it was read with.";
 
 /**
- * The select's options, in the server's order: the first is recommended; one
- * this server can't use is disabled, saying why.
+ * The organisation's default: the reader the server marks default. A reader
+ * without the mark (Auto, PRD 5 RT3) is the default when it comes first.
+ */
+function isDefault(reader: UploadReader, index: number): boolean {
+  return reader.default ?? index === 0;
+}
+
+/**
+ * The select's options, in the server's order: the default is recommended,
+ * and no other; one this server can't use is disabled, saying why.
  */
 export function readerOptions(readers: readonly UploadReader[]): ReaderChoice[] {
   return readers.map((reader, index) => {
     let label = reader.title;
     if (!reader.available) label = `${reader.title} (${reader.reason ?? "not available"})`;
-    else if (index === 0) label = `${reader.title} (recommended)`;
+    else if (isDefault(reader, index)) label = `${reader.title} (recommended)`;
     return { id: reader.id, label, disabled: !reader.available };
   });
 }
@@ -41,11 +51,14 @@ export function pickedReader(readers: readonly UploadReader[], picked: string | 
   return readers.find((reader) => reader.id === picked && reader.available) ?? readers[0] ?? null;
 }
 
-/** What an upload sends as read_model: the picked model, or undefined for the default. */
+/**
+ * What an upload sends as read_model: the model shown, or undefined for the
+ * organisation's default (the server reads with it anyway).
+ */
 export function readerToSend(readers: readonly UploadReader[], picked: string | null): string | undefined {
   if (!offersChoice(readers)) return undefined;
   const reader = pickedReader(readers, picked);
-  return reader !== null && reader !== readers[0] ? reader.id : undefined;
+  return reader !== null && !isDefault(reader, readers.indexOf(reader)) ? reader.id : undefined;
 }
 
 /**

@@ -407,6 +407,7 @@ export interface UploadReader {
   hint: string;
   available: boolean;
   reason: string | null;
+  default?: boolean; // a model: the organisation's default scan model (MS4, R14); Auto has none
 }
 
 export interface UploadResult {
@@ -832,7 +833,7 @@ export interface OrgModel {
 /** GET /admin/models: read-only, set by the operator ("Set by MonoEdge"). */
 export interface OrgModels {
   set_by: "operator";
-  default_scan: string; // the model reading scans now: the default, or the platform's when none is set
+  default_scan: string | null; // the model reading scans now: the default, or the platform's; null in keyless mode
   models: OrgModel[]; // [] when the operator set none: every scan is read by the platform's model
   ai_budget_usd: number | null; // the monthly budget; null: none
   spent_this_month_usd: number; // this month's AI spend, from the ledger

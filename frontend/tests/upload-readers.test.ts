@@ -127,6 +127,7 @@ const gemini: UploadReader = {
   hint: "about $0.05 a page",
   available: true,
   reason: null,
+  default: true,
 };
 const sonnet: UploadReader = {
   id: "anthropic/claude-sonnet-5.5",
@@ -134,6 +135,7 @@ const sonnet: UploadReader = {
   hint: "about $0.08 a page",
   available: true,
   reason: null,
+  default: false,
 };
 
 describe("Read with, on screen (MS4)", () => {
@@ -150,6 +152,28 @@ describe("Read with, on screen (MS4)", () => {
     expect(html).toContain("Gemini 3.1 Pro (recommended)");
     expect(html).toContain("Claude Sonnet 5.5");
     expect(html).toContain("about $0.05 a page");
+  });
+});
+
+describe("the default, only the real one (R14)", () => {
+  // The organisation's default can't be used now: the server marks none.
+  const unmarked = [
+    { ...sonnet, default: false },
+    { ...gemini, default: false },
+  ];
+
+  it("recommends no model when the server marks none the default", () => {
+    expect(readerOptions(unmarked).map((option) => option.label)).toEqual(["Claude Sonnet 5.5", "Gemini 3.1 Pro"]);
+    expect(readerOptions([gemini, sonnet]).map((option) => option.label)).toEqual([
+      "Gemini 3.1 Pro (recommended)",
+      "Claude Sonnet 5.5",
+    ]);
+  });
+
+  it("sends the model shown when none is the default, nothing for the real default", () => {
+    expect(readerToSend(unmarked, null)).toBe(sonnet.id);
+    expect(readerToSend([gemini, sonnet], null)).toBeUndefined();
+    expect(readerToSend([gemini, sonnet], sonnet.id)).toBe(sonnet.id);
   });
 });
 

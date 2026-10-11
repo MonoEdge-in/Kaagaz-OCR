@@ -38,11 +38,19 @@ def usable(conn: Connection, customer_id: str, settings: Settings) -> list[RowMa
 
 def readers(rows: Sequence[RowMapping], settings: Settings) -> list[dict[str, Any]]:
     """``UploadLimits.readers``: the usable models (``ReaderOption``, with ``reason`` null as
-    ``UploadReader`` has it), or Auto alone when there are none."""
+    ``UploadReader`` has it, and ``default`` true for the organisation's default only: none
+    when its default is not usable now, R14), or Auto alone when there are none."""
     if not rows:
         return list(ocr_choices(settings))
     return [
-        {"id": row["id"], "title": row["name"], "hint": page_hint(row), "available": True, "reason": None}
+        {
+            "id": row["id"],
+            "title": row["name"],
+            "hint": page_hint(row),
+            "available": True,
+            "reason": None,
+            "default": bool(row["is_default_scan"]),
+        }
         for row in rows
     ]
 
