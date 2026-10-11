@@ -17,6 +17,7 @@ import pytest
 from PIL import Image
 
 from kaagaz.ai import usage
+from kaagaz.ai.openrouter import ProviderNotAllowed
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable
 from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PageKey
@@ -194,6 +195,20 @@ class WithdrawnModelTest(unittest.TestCase):
         ):
             built.engine.read_page(page(), page_no=1)
         self.assertEqual(str(raised.exception), "gemini_key")
+
+
+class ProviderOutsideTheCeilingTest(unittest.TestCase):
+    """R5: a provider refused by the client is a page read locally, never a failed job."""
+
+    def test_a_refused_provider_reads_the_page_locally_as_reader_refused(self) -> None:
+        built = build(ProviderNotAllowed("provider_not_allowed"))
+        with (
+            self.assertLogs("kaagaz.reading.gemini_ocr", "WARNING") as logs,
+            built.engine.document(_pages(FakeCache(), GPT, "azure")),
+        ):
+            read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
+        self.assertIn("provider_not_allowed", [getattr(record, "code", None) for record in logs.records])
 
 
 class OutagePerModelTest(unittest.TestCase):

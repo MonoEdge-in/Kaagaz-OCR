@@ -210,7 +210,8 @@ class Settings:
     openrouter_base_url: str
     # Model choice (council 11 Oct 2026): the OpenRouter providers a model may be called
     # through, the ceiling the operator's choices stay under. Adding one is Vrushit's approval
-    # of a new data processor. Optional: unset is DEFAULT_PROVIDER only.
+    # of a new data processor. Optional: unset is DEFAULT_PROVIDER only; set, it must include
+    # DEFAULT_PROVIDER (chat, embeddings and OCR_MODEL are called through it).
     openrouter_providers: frozenset[str]
     ocr_media_resolution: str
     ocr_thinking_level: str
@@ -444,6 +445,9 @@ class Settings:
                 "OPENROUTER_PROVIDERS must list provider slugs such as google-vertex,"
                 " each lower-case letters, digits and dashes, at most 64"
             )
+        if DEFAULT_PROVIDER not in providers:
+            # Chat, embeddings and the platform's own model (resolve's fallback) all go there.
+            raise SettingsError(f"OPENROUTER_PROVIDERS must include {DEFAULT_PROVIDER}")
         if openrouter_api_key is None and (ocr_engine == "gemini" or model_enabled):
             raise SettingsError(
                 "OPENROUTER_API_KEY is not set: OCR_ENGINE=gemini, or MODEL_ENABLED, needs it"

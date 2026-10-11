@@ -24,7 +24,8 @@ code only, raised ``from None``.
 another provider, every parameter honoured, no data collection, zero data retention. A page
 read may name another provider (model choice, council 11 Oct 2026): ``provider(slug)`` is
 the same block with ``only`` that one slug, and the client refuses a slug outside
-OPENROUTER_PROVIDERS (``ProviderNotAllowed``).
+OPENROUTER_PROVIDERS (``ProviderNotAllowed``): a page read's, and DEFAULT_PROVIDER for
+``chat_json`` and ``embed`` (the settings require it; checked again here).
 
 **The request** (``POST /chat/completions``, ``stream: false``, G2). A system prompt is
 ``messages[0]`` with role system. A picture is a user message whose content is the
@@ -781,6 +782,7 @@ class OpenRouterClient:
         """One vector per text, in order, ``EMBEDDING_DIM`` long (M5: dimensions 1024, so
         halfvec(1024) does not change). /embeddings, ``EMBED_TEXTS_PER_REQUEST`` texts a
         request."""
+        self._check_provider(DEFAULT_PROVIDER)
         vectors: list[list[float]] = []
         for start in range(0, len(texts), EMBED_TEXTS_PER_REQUEST):
             batch = texts[start : start + EMBED_TEXTS_PER_REQUEST]
@@ -805,6 +807,7 @@ class OpenRouterClient:
         follow it goes back once for a repair; a second bad one raises ``invalid_output``. A
         reply longer than ``max_tokens`` (thinking not counted) raises ``output_truncated``
         with no repair."""
+        self._check_provider(DEFAULT_PROVIDER)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -851,8 +854,7 @@ class OpenRouterClient:
         with the page again; the tokens of both calls are counted."""
         if model is not None and not valid_model_id(model):
             raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
-        if provider is not None and provider not in self._providers:
-            raise ProviderNotAllowed("provider_not_allowed")
+        self._check_provider(DEFAULT_PROVIDER if provider is None else provider)
         body = page_request(
             model=self.ocr_model if model is None else model,
             png=png,
@@ -880,6 +882,11 @@ class OpenRouterClient:
                     "invalid_output", input_tokens=input_tokens, output_tokens=output_tokens
                 )
         return PageReply(value, input_tokens, output_tokens, finish)
+
+    def _check_provider(self, slug: str) -> None:
+        """``ProviderNotAllowed`` unless ``slug`` is in OPENROUTER_PROVIDERS: nothing is sent."""
+        if slug not in self._providers:
+            raise ProviderNotAllowed("provider_not_allowed")
 
     # verify-models' raw request.
 

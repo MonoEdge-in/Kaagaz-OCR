@@ -176,6 +176,13 @@ def test_a_provider_that_is_not_a_slug_stops_start_up_by_name(value: str) -> Non
         Settings.from_env(shipped(OPENROUTER_PROVIDERS=value))
 
 
+@pytest.mark.parametrize("value", ["azure", "azure, amazon-bedrock"])
+def test_providers_without_google_vertex_stop_start_up(value: str) -> None:
+    """R5: chat, embeddings and OCR_MODEL (resolve's fallback) all go through google-vertex."""
+    with pytest.raises(SettingsError, match="OPENROUTER_PROVIDERS must include google-vertex"):
+        Settings.from_env(shipped(OPENROUTER_PROVIDERS=value))
+
+
 def test_gemini_without_a_key_stops_start_up() -> None:
     for empty in (None, "", "   "):
         with pytest.raises(SettingsError, match="OPENROUTER_API_KEY is not set"):

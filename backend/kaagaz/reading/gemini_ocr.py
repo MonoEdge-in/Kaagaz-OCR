@@ -74,6 +74,9 @@ read. Without a document (``read``, ``cli measure``) there is no cache.
   again to get there, so the failures of one outage that goes on are never further
   apart than that, even with a single document in the queue.
 * ``blocked`` (a safety or recitation finish): read locally, issue ``reader_refused``.
+* A provider outside OPENROUTER_PROVIDERS (``ProviderNotAllowed``: the settings changed
+  since the document's model was resolved): nothing is sent, the page is read locally
+  as ``reader_refused`` (code ``provider_not_allowed``), never a failed job.
 * ``bad_request`` (a 400), ``invalid_output`` and a half cut off again: the model
   will not read this page (``ocr_failed``), so it is read locally and flagged
   ``reader_refused`` too: F2 makes both unreadable, and the F1 table has no other
@@ -116,7 +119,7 @@ from typing import Any, Protocol
 
 from PIL import Image
 
-from kaagaz.ai.openrouter import OpenRouterClient, PageReply, process_gate
+from kaagaz.ai.openrouter import OpenRouterClient, PageReply, ProviderNotAllowed, process_gate
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, billed, schema_problem
 from kaagaz.ai.usage import record_call
 from kaagaz.db.page_reads import PageKey
@@ -177,6 +180,8 @@ KEY_CODES = frozenset({"key_rejected", "model_not_found", "redirect_refused"})
 # For a document's chosen model (not OCR_MODEL) it is never a key wait (one withdrawn model
 # must not pause everyone): the page is read locally as reader_refused.
 MODEL_NOT_FOUND = "model_not_found"
+# The code logged for a page whose provider is outside OPENROUTER_PROVIDERS (read locally).
+PROVIDER_NOT_ALLOWED = "provider_not_allowed"
 # G6: the client's code for a reply cut off at the output limit.
 TRUNCATED = "output_truncated"
 # G6: the client's code for a reply the model declined to give.
@@ -435,6 +440,8 @@ class GeminiEngine:
         except ModelOutputError as error:
             spent = (error.input_tokens, error.output_tokens)
             return self._read_locally(image, page_no, READER_REFUSED, error.code, tokens=spent)
+        except ProviderNotAllowed:
+            return self._read_locally(image, page_no, READER_REFUSED, PROVIDER_NOT_ALLOWED)
         with self._lock:
             self._down_since.pop(model, None)
             self._last_failure.pop(model, None)

@@ -166,6 +166,18 @@ def test_a_provider_outside_the_ceiling_is_refused_and_nothing_is_sent(fake: Ope
     assert fake.requests == []
 
 
+def test_chat_and_embed_refuse_a_ceiling_without_the_default_provider(fake: OpenRouterFake) -> None:
+    """R5: the settings refuse it; the client checks again, and sends nothing."""
+    client = _client(fake.url, Clock(), openrouter_providers=frozenset({"azure"}))
+    with pytest.raises(ProviderNotAllowed, match="provider_not_allowed"):
+        client.chat_json(system="Answer.", user="Total?", schema=SCHEMA)
+    with pytest.raises(ProviderNotAllowed, match="provider_not_allowed"):
+        client.embed(["Total 5,000"])
+    with pytest.raises(ProviderNotAllowed, match="provider_not_allowed"):
+        _read(client)  # no provider named: the default one, outside this ceiling
+    assert fake.requests == []
+
+
 def test_the_client_takes_any_openrouter_model_id_not_only_gemini(fake: OpenRouterFake) -> None:
     """The is_gemini_model gate is gone: a Claude or GPT chat model builds a client, and a
     model ID with a variant is still refused."""
