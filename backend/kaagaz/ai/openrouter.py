@@ -85,7 +85,10 @@ V7), which ``process_gate`` uses unless told otherwise. Each model has its own b
 every call to that model fails at once with ``circuit_open``, then one call is let through
 as a probe; its success closes the breaker, its failure opens it again. Other models keep
 working. The key latch is the process's: one key. ``status()`` gives the worst model's
-state for the operator's Health tab (U9) and the worker's pause (Q7). Everything here is
+state for the operator's Health tab (U9) and the worker's pause (Q7). A model whose last
+failure is more than ``FAILURE_GAP_SECONDS`` old is not counted there, and a failure that
+long after the one before starts its count again: a model no longer called (a document's
+chosen model, read and done) never keeps the reader failing or down. Everything here is
 thread-safe: pages of a document are read in parallel (G8).
 
 The gate's clock, sleep and random number are injected, so tests run with a fake clock.
@@ -187,6 +190,12 @@ KEY_LATCH_SECONDS = 300.0
 # The circuit breaker (G9).
 BREAKER_FAILURES = 5
 BREAKER_OPEN_SECONDS = 60.0
+# A model's failures older than this do not count (council 11 Oct 2026 review, R2):
+# status() leaves out a model idle since its last failure for this long, and a failure
+# this long after the one before starts the count again. 15 minutes: an outage that goes
+# on keeps failing more often than that (each open breaker lets a probe through every
+# BREAKER_OPEN_SECONDS), so only a model nobody calls any more is left out.
+FAILURE_GAP_SECONDS = 15 * 60.0
 
 # Native finish reasons that mean the model declined to answer (G6: reader_refused):
 # Google's, and Anthropic's ``refusal`` (model choice, council 11 Oct 2026). OpenAI's
@@ -554,13 +563,19 @@ class _Breaker:
     opened_at: float = 0.0
     probing: bool = False
     down_since: float | None = None
+    last_failure_at: float | None = None
 
-    def status(self) -> tuple[str, float | None]:
-        if self.state != _CLOSED:
+    def status(self, now: float) -> tuple[str, float | None]:
+        """``down`` while open (for BREAKER_OPEN_SECONDS) or probing; ``failing`` after a
+        recent failure (an open breaker past BREAKER_OPEN_SECONDS too: the next call is
+        let through); ``working`` with no failure in FAILURE_GAP_SECONDS."""
+        if self.last_failure_at is None or now - self.last_failure_at > FAILURE_GAP_SECONDS:
+            return WORKING, None
+        if (self.state == _OPEN and now < self.opened_at + BREAKER_OPEN_SECONDS) or (
+            self.state == _HALF_OPEN and self.probing
+        ):
             return DOWN, self.down_since
-        if self.failures:
-            return FAILING, self.down_since
-        return WORKING, None
+        return FAILING, self.down_since
 
 
 class ModelGate:
@@ -596,14 +611,17 @@ class ModelGate:
     def status(self) -> tuple[str, float | None]:
         """(the reader's state, since when on the gate's clock) for Health (U9) and the
         outage clock (Q7): the worst model's (council 11 Oct 2026, FINAL 2). ``working``
-        (since None); ``failing``: a model's last requests failed, since the first of them;
-        ``down``: a model's breaker is open or probing, since its first failure;
-        ``key_problem``: a 401, 402 or key 403 within KEY_LATCH_SECONDS, since it came.
-        Two models in the worst state give the earlier since."""
+        (since None); ``failing``: a model's last requests failed, since the first of them
+        (an open breaker past BREAKER_OPEN_SECONDS too); ``down``: a model's breaker is
+        open or probing, since its first failure; ``key_problem``: a 401, 402 or key 403
+        within KEY_LATCH_SECONDS, since it came. A model with no failure in
+        FAILURE_GAP_SECONDS counts as working. Two models in the worst state give the
+        earlier since."""
         with self._lock:
-            if self._key_latched_at is not None and self.clock() < self._key_latched_at + KEY_LATCH_SECONDS:
+            now = self.clock()
+            if self._key_latched_at is not None and now < self._key_latched_at + KEY_LATCH_SECONDS:
                 return KEY_PROBLEM, self._key_latched_at
-            states = [breaker.status() for breaker in self._breakers.values()]
+            states = [breaker.status(now) for breaker in self._breakers.values()]
         worst = max((state for state, _ in states), key=_STATE_RANK.__getitem__, default=WORKING)
         since = [at for state, at in states if state == worst and at is not None]
         return worst, min(since) if since else None
@@ -642,15 +660,20 @@ class ModelGate:
     def record(self, model: str, *, failed: bool) -> None:
         """One request's outcome for ``model``: any reply closes its breaker (and ends a key
         latch); a failure (408, 429, 5xx, a mid-reply error, no connection) counts towards
-        opening it. Another model's breaker is not touched."""
+        opening it, unless the one before is more than FAILURE_GAP_SECONDS old (the count
+        starts again). Another model's breaker is not touched."""
         with self._lock:
             breaker = self._breakers.setdefault(model, _Breaker())
             breaker.probing = False
             if not failed:
                 breaker.state, breaker.failures, breaker.down_since = _CLOSED, 0, None
+                breaker.last_failure_at = None
                 self._key_latched_at = None
                 return
             now = self.clock()
+            if breaker.last_failure_at is not None and now - breaker.last_failure_at > FAILURE_GAP_SECONDS:
+                breaker.failures, breaker.down_since = 0, None
+            breaker.last_failure_at = now
             breaker.failures += 1
             if breaker.down_since is None:
                 breaker.down_since = now

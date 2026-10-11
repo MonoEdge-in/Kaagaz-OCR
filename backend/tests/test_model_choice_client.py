@@ -16,6 +16,8 @@ from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.openrouter import (
     BLOCKED_FINISH_REASONS,
     BREAKER_FAILURES,
+    BREAKER_OPEN_SECONDS,
+    FAILURE_GAP_SECONDS,
     ModelGate,
     OpenRouterClient,
     PageReply,
@@ -223,6 +225,50 @@ def test_status_is_failing_while_a_model_fails_and_working_when_none_does(fake: 
     client.gate.record(CLAUDE, failed=True)
     client.gate.record(PRO, failed=False)
     assert client.status()[0] == "failing"
+
+
+def test_a_model_no_longer_called_never_keeps_the_reader_down(fake: OpenRouterFake) -> None:
+    """R2: five failures open a chosen model's breaker; 10,000 s later the reader works on
+    another model, and the first one, idle since, does not say down (or failing)."""
+    clock = Clock()
+    client = _client(fake.url, clock)
+    fake.script("completions", *[error_reply(503)] * BREAKER_FAILURES)
+    with pytest.raises(ModelUnavailable):
+        _read(client, model=CLAUDE, provider="google-vertex", deadline=clock.now + 1000)
+    assert client.status()[0] == "down"
+
+    clock.now += BREAKER_OPEN_SECONDS
+    assert client.status()[0] == "failing"  # open past its time: the next call is let through
+    clock.now += 10_000
+    fake.responder = lambda request: json_reply(GOOD)
+    for _ in range(3):
+        assert _read(client, model=PRO, provider="google-vertex").value == GOOD
+    assert client.status() == ("working", None)
+
+
+def test_one_old_failure_does_not_keep_the_reader_failing(fake: OpenRouterFake) -> None:
+    """R2: one failure, then 50 successes on another model over the next minutes: failing
+    only until the failure is FAILURE_GAP_SECONDS old, never for ever."""
+    clock = Clock()
+    client = _client(fake.url, clock)
+    client.gate.record(CLAUDE, failed=True)
+    fake.responder = lambda request: json_reply(GOOD)
+    for _ in range(50):
+        _read(client, model=PRO, provider="google-vertex")
+        clock.now += 20  # 1,000 s in all
+    assert clock.now - 1000.0 > FAILURE_GAP_SECONDS
+    assert client.status() == ("working", None)
+
+
+def test_a_failure_long_after_the_last_starts_the_count_again(fake: OpenRouterFake) -> None:
+    """R2: failures more than FAILURE_GAP_SECONDS apart never add up to an open breaker."""
+    clock = Clock()
+    client = _client(fake.url, clock)
+    for count in range(BREAKER_FAILURES):
+        clock.now += FAILURE_GAP_SECONDS + 1 if count else 0
+        client.gate.record(CLAUDE, failed=True)
+    client.gate.admit(CLAUDE)  # still closed: no circuit_open
+    assert client.status() == ("failing", clock.now)  # since the last failure alone
 
 
 def test_a_rejected_key_stops_every_model(fake: OpenRouterFake) -> None:
