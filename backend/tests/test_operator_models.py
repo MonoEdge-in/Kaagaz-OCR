@@ -28,7 +28,7 @@ from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_orgs import Outcome
-from kaagaz.reading.gemini_ocr import GEMINI_OCR_PROMPT_VERSION
+from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from tests.test_api_auth import _offline_client
 from tests.test_api_support import ANY_ID, CSRF, NOW, route_calls
 
@@ -55,7 +55,7 @@ CATALOGUE_ROW = {
     "expires_on": None,
     "eligible": True,
     "seen_at": NOW,
-    "verified_prompt_version": GEMINI_OCR_PROMPT_VERSION,
+    "verified_prompt_version": READER_PROMPT_VERSION,
     "verified_at": NOW,
     "tokens_per_page_in": 1290,
     "tokens_per_page_out": 830,
@@ -214,7 +214,7 @@ def test_enabling_a_model_needs_a_fresh_code_and_names_the_current_prompt(offlin
     assert done.json() == {"model": {"id": MODEL, "enabled": True, "changed": True}}
     [(name, args, kwargs)] = offline.calls
     assert (name, args) == ("set_model_enabled", (OID, MODEL))
-    assert kwargs == {"enabled": True, "prompt_version": GEMINI_OCR_PROMPT_VERSION, "step": STEP}
+    assert kwargs == {"enabled": True, "prompt_version": READER_PROMPT_VERSION, "step": STEP}
 
 
 @pytest.mark.parametrize("model", ["not-a-model", "google/gemini-3:free", "google/../key"])
@@ -274,7 +274,7 @@ def test_an_organisations_models_and_budget_round_trip(offline: _Offline) -> Non
         "models": [MODEL],
         "default_scan": MODEL,
         "budget": Decimal("12.5"),
-        "prompt_version": GEMINI_OCR_PROMPT_VERSION,
+        "prompt_version": READER_PROMPT_VERSION,
     }
     offline.org = None
     assert offline.client.get(path, headers=offline.headers).status_code == 404

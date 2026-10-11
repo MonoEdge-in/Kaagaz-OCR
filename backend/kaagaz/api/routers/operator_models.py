@@ -4,7 +4,7 @@ the router); only ``OperatorDatabase`` here, and each call is one ``kaagaz_op_*`
 function (``kaagaz.db.operator_models``), which writes its own audit rows.
 
 * ``GET /operator/models``: the catalogue, from OpenRouter's live lists (``jobs/catalog``),
-  with ``verified`` for the reader's current prompt (``GEMINI_OCR_PROMPT_VERSION``).
+  with ``verified`` for the reader's current prompt (``READER_PROMPT_VERSION``).
 * ``PUT /operator/models/{model}`` {enabled, code} (step-up, as 0016's): enable or disable
   one model on the platform. Only an eligible model verified for the current prompt can be
   enabled; one an organisation still has can't be disabled.
@@ -38,7 +38,7 @@ from kaagaz.api.views import iso
 from kaagaz.db import operator_models as models_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_orgs import Outcome
-from kaagaz.reading.gemini_ocr import GEMINI_OCR_PROMPT_VERSION
+from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.settings import valid_model_id
 
 router = APIRouter(prefix="/operator", dependencies=[Depends(current_operator)])
@@ -105,7 +105,7 @@ def set_model_enabled(
             operator.operator_id,
             model,
             enabled=body.enabled,
-            prompt_version=GEMINI_OCR_PROMPT_VERSION,
+            prompt_version=READER_PROMPT_VERSION,
             step=step_up.step,
         )
     _refuse(db, operator, outcome, step_up)
@@ -135,7 +135,7 @@ def set_org_models(
             models=body.models,
             default_scan=body.default_scan,
             budget=body.ai_budget_usd,
-            prompt_version=GEMINI_OCR_PROMPT_VERSION,
+            prompt_version=READER_PROMPT_VERSION,
         )
         row = models_sql.org_models(conn, operator.operator_id, str(customer_id))
     _refuse(db, operator, outcome.code)
@@ -201,7 +201,7 @@ def _model(row: RowMapping) -> dict[str, Any]:
         "expires_on": None if row["expires_on"] is None else row["expires_on"].isoformat(),
         "eligible": bool(row["eligible"]),
         "seen_at": iso(row["seen_at"]),
-        "verified": row["verified_prompt_version"] == GEMINI_OCR_PROMPT_VERSION,
+        "verified": row["verified_prompt_version"] == READER_PROMPT_VERSION,
         "verified_at": None if row["verified_at"] is None else iso(row["verified_at"]),
         "tokens_per_page_in": row["tokens_per_page_in"],
         "tokens_per_page_out": row["tokens_per_page_out"],

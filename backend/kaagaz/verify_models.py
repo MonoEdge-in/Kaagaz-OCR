@@ -15,7 +15,7 @@ It prints one line per item, ``VERIFY <id> PASS|FAIL|INFO <evidence>``, and exit
 any item FAILs. INFO means a person reads the evidence and decides. The items:
 
 1. ``endpoints``: ``GET /models/{author}/{slug}/endpoints`` for each page model
-   (OCR_MODEL, a Gemini MODEL_CHAT and each ``--model``): google-vertex is listed,
+   (OCR_MODEL, MODEL_CHAT when it is a model ID, and each ``--model``): google-vertex is listed,
    and its supported parameters include response_format, reasoning and
    max_completion_tokens (or max_tokens, which Vertex lists; OpenRouter takes either);
    its ZDR field is shown when the listing has one.
@@ -29,9 +29,9 @@ any item FAILs. INFO means a person reads the evidence and decides. The items:
    ``MEDIA_RESOLUTION_SHAPE`` "passthrough" is the question for Vrushit).
 6. ``usage_fields``: the counts the client bills (G9); whether ``completion_tokens``
    includes the reasoning tokens, and whether ``cost`` is present.
-7. ``max_tokens_finish``: a tiny ``max_completion_tokens`` ends ``length`` with native
-   ``MAX_TOKENS`` (any native for an OCR_MODEL that is not Gemini, whose provider names
-   it otherwise), which the client turns into ``output_truncated`` (G6).
+7. ``max_tokens_finish``: a tiny ``max_completion_tokens`` ends ``length`` (whatever the
+   provider's native reason: Google's is ``MAX_TOKENS``), which the client turns into
+   ``output_truncated`` (G6).
 8. ``embedding_dims``: ``/embeddings`` at ``dimensions`` 1024 (M5) gives 1024-long finite
    vectors: their length and norm.
 9. ``no_key_status``: a request with no key answers 401 (``key_rejected``).
@@ -61,7 +61,7 @@ rule found, with the reader's own ``INSTRUCTION`` and ``PAGE_SCHEMA`` where a pa
   follows it (``schema_problem``).
 * ``model_made_up_page``: that read has every line of the page exactly.
 * ``model_boxes``: every line it gave is pinned to the page's own boxes by G5's rule
-  (``gemini_ocr.pinned``); each box's best IoU is shown.
+  (the reader's ``pinned``); each box's best IoU is shown.
 * ``model_devanagari``: INFO: no Devanagari page is drawn, since no Devanagari font is
   bundled (Pillow's own is Latin only, and a font would be a new dependency).
 * ``model_efforts``: OCR_THINKING_LEVEL and OCR_RETRY_THINKING_LEVEL are accepted, each with
@@ -73,7 +73,7 @@ rule found, with the reader's own ``INSTRUCTION`` and ``PAGE_SCHEMA`` where a pa
   ``content_filter``, a native ``refusal``) is ``blocked`` for the client.
 
 ``--record`` (exactly one ``--model``): when every one of these but the INFO passes, the
-command writes the pass for ``GEMINI_OCR_PROMPT_VERSION`` and the page read's tokens in
+command writes the pass for ``READER_PROMPT_VERSION`` and the page read's tokens in
 and out (``record``, as the owner: ``cli``). Otherwise nothing is written.
 
 Cost: about 25 model calls with a small picture, a few cents on the Pro model, and about 8
@@ -112,8 +112,9 @@ from kaagaz.ai.openrouter import (
 )
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, parse_reply
 from kaagaz.jobs import catalog
-from kaagaz.reading import gemini_ocr
-from kaagaz.settings import DEFAULT_PROVIDER, EMBEDDING_DIM, Settings, is_gemini_model, valid_model_id
+from kaagaz.reading.ocr import READER_PROMPT_VERSION
+from kaagaz.reading.wiring import gemini_reader_module
+from kaagaz.settings import DEFAULT_PROVIDER, EMBEDDING_DIM, Settings, valid_model_id
 
 PASS, FAIL, INFO = "PASS", "FAIL", "INFO"
 # A model ID no provider serves (made up, with no model's name in it).
@@ -274,8 +275,8 @@ class Verifier:
         self.timer = timer
         self.sleep = sleep
         self.timeout = settings.ocr_timeout_seconds
-        gemini_chat = [settings.model_chat] if is_gemini_model(settings.model_chat) else []
-        wanted = list(dict.fromkeys([settings.ocr_model, *gemini_chat, *models]))
+        chat = [settings.model_chat] if valid_model_id(settings.model_chat) else []
+        wanted = list(dict.fromkeys([settings.ocr_model, *chat, *models]))
         self.models = [model for model in wanted if valid_model_id(model)]
         self.bad_models = [model for model in wanted if not valid_model_id(model)]
         self.checks = [ModelCheck(self, model) for model in dict.fromkeys(models)]
@@ -497,9 +498,8 @@ class Verifier:
             if probe.reply is not None:
                 reply_text(probe.reply)
         except ModelOutputError as error:
-            # Google names MAX_TOKENS; another provider has its own native reason for length.
-            native_ok = native == "MAX_TOKENS" or not is_gemini_model(self.settings.ocr_model)
-            if error.code == "output_truncated" and finish == "length" and native_ok:
+            # Any provider's native reason: Google says MAX_TOKENS, others their own.
+            if error.code == "output_truncated" and finish == "length":
                 return Finding("max_tokens_finish", PASS, f"{evidence}; client: output_truncated")
         except ModelUnavailable as error:
             evidence += f"; client: {error.code}"
@@ -764,8 +764,9 @@ class ModelCheck:
     def page_schema(self) -> Finding:
         if (cannot := self._cannot("model_page_schema")) is not None:
             return cannot
-        self.read = self._page(gemini_ocr.PAGE_SCHEMA, gemini_ocr.INSTRUCTION)
-        self.value, said = _parsed(self.read, gemini_ocr.PAGE_SCHEMA)
+        reader = gemini_reader_module()
+        self.read = self._page(reader.PAGE_SCHEMA, reader.INSTRUCTION)
+        self.value, said = _parsed(self.read, reader.PAGE_SCHEMA)
         if self.value is None or self.read.reply is None:
             return self._found("model_page_schema", FAIL, said)
         self.tokens = openrouter.reply_usage(self.read.reply)
@@ -777,7 +778,7 @@ class ModelCheck:
         if self.value is None:
             return None, self._found(item, FAIL, "no page read (model_page_schema)")
         try:
-            return list(gemini_ocr.checked(self.value).lines), None
+            return list(gemini_reader_module().checked(self.value).lines), None
         except ModelOutputError as error:
             return None, self._found(item, FAIL, error.code)
 
@@ -797,7 +798,7 @@ class ModelCheck:
             return failed or self._found("model_boxes", FAIL, "no lines")
         width, height = self.verifier.page.image.size
         truth = [(float(x0), float(y0), float(x1), float(y1)) for x0, y0, x1, y1 in self.verifier.page.boxes]
-        placed = gemini_ocr.pinned(lines, truth, width, height)
+        placed = gemini_reader_module().pinned(lines, truth, width, height)
         pinned = sum(1 for line in placed if line.box_source == "found")
         best = [
             max((_iou(box, (line.x0, line.y0, line.x1, line.y1)) for line in placed), default=0.0)
@@ -965,7 +966,7 @@ def run(
             return 1
         record(check.model, *check.tokens)
         out.write(
-            f"RECORDED {check.model} prompt {gemini_ocr.GEMINI_OCR_PROMPT_VERSION}"
+            f"RECORDED {check.model} prompt {READER_PROMPT_VERSION}"
             f" tokens per page in {check.tokens[0]} out {check.tokens[1]}\n"
         )
     return 1 if counts[FAIL] else 0

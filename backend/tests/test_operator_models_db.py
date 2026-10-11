@@ -15,7 +15,7 @@ from sqlalchemy.exc import ProgrammingError
 from kaagaz.api import totp
 from kaagaz.cli import _record_verified
 from kaagaz.db.engine import Database
-from kaagaz.reading.gemini_ocr import GEMINI_OCR_PROMPT_VERSION
+from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from tests.test_api_support import CSRF, Api, TestClient, wrong_code
 from tests.test_operator_auth_db import _Operator, _owner
 
@@ -34,7 +34,7 @@ _PLATFORM = (
 
 def _model(db: Database, *, eligible: bool = True, verified: bool = True) -> str:
     model_id = f"example/test-{uuid.uuid4().hex[:12]}"
-    version = GEMINI_OCR_PROMPT_VERSION if verified else None
+    version = READER_PROMPT_VERSION if verified else None
     _owner(db, _MODEL, {"id": model_id, "name": f"Test {model_id}", "eligible": eligible, "version": version})
     return model_id
 
@@ -125,6 +125,6 @@ def test_record_writes_a_models_pass_as_the_owner(db: Database) -> None:
         " FROM model_catalog WHERE id = :m",
         {"m": model},
     )
-    assert tuple(row) == (GEMINI_OCR_PROMPT_VERSION, True, 1290, 830)
+    assert tuple(row) == (READER_PROMPT_VERSION, True, 1290, 830)
     with db.system() as conn, pytest.raises(ProgrammingError, match="permission denied"):  # never the app
         conn.execute(text("UPDATE model_catalog SET verified_at = now() WHERE id = :m"), {"m": model})

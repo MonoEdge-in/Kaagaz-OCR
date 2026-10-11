@@ -76,7 +76,8 @@
   with another tag, are embedded, 32 at a time, each as its own user, each
   story tried once a run; ``--all`` does not embed a story again whose vector
   is current. A customer that is not active is skipped and named.
-  Prints ids and counts only.
+  Each customer's calls are billed to it as "embed", with no user (SP1). Prints ids
+  and counts only.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -105,6 +106,7 @@ from sqlalchemy import Connection
 from kaagaz import verify_models
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.ai.openrouter import OpenRouterClient
+from kaagaz.ai.usage import usage_scope
 from kaagaz.api import totp
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.api.twostep import box
@@ -122,8 +124,7 @@ from kaagaz.jobs import catalog
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
-from kaagaz.reading.gemini_ocr import GEMINI_OCR_PROMPT_VERSION
-from kaagaz.reading.ocr import MeteredOcrEngine, PageRead
+from kaagaz.reading.ocr import READER_PROMPT_VERSION, MeteredOcrEngine, PageRead
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError, Span
@@ -488,14 +489,16 @@ def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: b
             out.write(f"customer {customer}: not active, skipped\n")
             continue
         cleared = written = 0
-        for document in documents:
-            with db.customer(customer) as conn:
-                cleared += indexing.clear_stale(conn, customer, document, model.embed_model, every=every)
-            try:
-                written += indexing.embed_pieces(db, customer, document, model)
-            except (ModelUnavailable, ModelOutputError) as error:
-                raise CliError(f"the model failed ({error}); run reembed again to go on") from None
-        stories = _reembed_stories(db, model, customer)
+        # SP1: billed to the customer, no user asked for it (saved even when the model fails).
+        with usage_scope(db, customer_id=customer, user_id=None, kind="embed"):
+            for document in documents:
+                with db.customer(customer) as conn:
+                    cleared += indexing.clear_stale(conn, customer, document, model.embed_model, every=every)
+                try:
+                    written += indexing.embed_pieces(db, customer, document, model)
+                except (ModelUnavailable, ModelOutputError) as error:
+                    raise CliError(f"the model failed ({error}); run reembed again to go on") from None
+            stories = _reembed_stories(db, model, customer)
         out.write(
             f"customer {customer}: {len(documents)} documents, {cleared} cleared, {written} embedded,"
             f" {stories} stories\n"
@@ -548,7 +551,7 @@ def _record_verified(db: Database, model: str, tokens_in: int, tokens_out: int) 
     owner (no app or operator role may write it)."""
     with _owner(db) as conn:
         found = operator_models_sql.record_verified(
-            conn, model, prompt_version=GEMINI_OCR_PROMPT_VERSION, tokens_in=tokens_in, tokens_out=tokens_out
+            conn, model, prompt_version=READER_PROMPT_VERSION, tokens_in=tokens_in, tokens_out=tokens_out
         )
     if not found:
         raise CliError(f"{model} is not in the model catalogue: run refresh-models first")

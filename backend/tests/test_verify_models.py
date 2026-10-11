@@ -18,7 +18,8 @@ import pytest
 
 from kaagaz import cli, verify_models
 from kaagaz.ai import openrouter
-from kaagaz.reading.gemini_ocr import GEMINI_OCR_PROMPT_VERSION, PAGE_SCHEMA
+from kaagaz.reading.gemini_ocr import PAGE_SCHEMA
+from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.settings import Settings
 from kaagaz.verify_models import TRUTH, listed_sha256, made_up_page
 from tests.openrouter_fake import (
@@ -157,13 +158,6 @@ def openrouter_like(request: Recorded) -> Reply:
 
 
 @pytest.fixture
-def refusal_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A native ``refusal`` (a Claude refusal) is blocked, as the facts file asks of the
-    client (Track B's mapping); without it, model_refusal FAILs."""
-    monkeypatch.setattr(openrouter, "BLOCKED_FINISH_REASONS", openrouter.BLOCKED_FINISH_REASONS | {"refusal"})
-
-
-@pytest.fixture
 def fake() -> Iterator[OpenRouterFake]:
     with running_fake() as server:
         server.responder = openrouter_like
@@ -195,7 +189,6 @@ def _run(
     return code, text, lines
 
 
-@pytest.mark.usefixtures("refusal_blocked")
 def test_every_item_passes_against_an_api_that_answers_as_documented(fake: OpenRouterFake) -> None:
     code, text, lines = _run(_settings(fake), "--model", FLASH)
     assert list(lines) == ITEMS + MODEL_ITEMS
@@ -383,11 +376,11 @@ def test_a_model_id_that_is_not_openrouters_fails_without_a_request(fake: OpenRo
     assert all("gemini-3:free" not in json.dumps(request.body) for request in fake.requests)
 
 
-def test_a_cut_reply_without_googles_max_tokens_fails(fake: OpenRouterFake) -> None:
+def test_a_cut_reply_that_does_not_end_length_fails(fake: OpenRouterFake) -> None:
     def no_native(request: Recorded) -> Reply:
         body = request.body if isinstance(request.body, dict) else {}
         if body.get("max_completion_tokens") == verify_models.TINY_OUTPUT_TOKENS:
-            return chat_reply('{"lin', finish="length", native=None)
+            return chat_reply('{"lin', finish="stop", native="MAX_TOKENS")
         return openrouter_like(request)
 
     fake.responder = no_native
@@ -489,7 +482,6 @@ def _model_run(
     return code, out.getvalue(), lines
 
 
-@pytest.mark.usefixtures("refusal_blocked")
 def test_record_writes_the_pass_and_the_page_tokens_when_every_required_item_passes(
     fake: OpenRouterFake,
 ) -> None:
@@ -498,7 +490,7 @@ def test_record_writes_the_pass_and_the_page_tokens_when_every_required_item_pas
     assert code == 0, text
     [(model, tokens_in, tokens_out)] = recorded
     assert model == FLASH and tokens_in > 0 and tokens_out > 0
-    assert f"RECORDED {FLASH} prompt {GEMINI_OCR_PROMPT_VERSION} tokens per page in {tokens_in}" in text
+    assert f"RECORDED {FLASH} prompt {READER_PROMPT_VERSION} tokens per page in {tokens_in}" in text
 
 
 def _without_cost(request: Recorded) -> Reply:
@@ -520,7 +512,6 @@ def _boxes_elsewhere(request: Recorded) -> Reply:
     return reply
 
 
-@pytest.mark.usefixtures("refusal_blocked")
 @pytest.mark.parametrize(
     ("responder", "failed"),
     [(_without_cost, "model_cost"), (_boxes_elsewhere, "model_boxes")],
@@ -608,7 +599,7 @@ def test_max_tokens_stands_for_max_completion_tokens_in_an_endpoint_listing(fake
     assert lines["endpoints"][1].startswith(f"{PRO}: google-vertex listed; parameters all supported")
 
 
-def test_a_cut_reply_with_another_providers_native_reason_passes_for_a_model_that_is_not_gemini(
+def test_a_length_finish_passes_whatever_the_providers_native_reason(
     fake: OpenRouterFake,
 ) -> None:
     def own_native(request: Recorded) -> Reply:
@@ -622,10 +613,9 @@ def test_a_cut_reply_with_another_providers_native_reason_passes_for_a_model_tha
         return openrouter_like(request)
 
     fake.responder = own_native
-    _, _, lines = _run(_settings(fake, ocr_model=OTHER))
-    assert lines["max_tokens_finish"][0] == "PASS", lines["max_tokens_finish"]
-    _, _, lines = _run(_settings(fake))  # Google's model must still name MAX_TOKENS
-    assert lines["max_tokens_finish"][0] == "FAIL"
+    for ocr_model in (OTHER, PRO):
+        _, _, lines = _run(_settings(fake, ocr_model=ocr_model))
+        assert lines["max_tokens_finish"][0] == "PASS", (ocr_model, lines["max_tokens_finish"])
 
 
 def test_a_reply_with_no_provider_name_fails_model_reply_after_three_tries(fake: OpenRouterFake) -> None:
