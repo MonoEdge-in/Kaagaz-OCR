@@ -98,10 +98,15 @@ export function PageViewer({
   const frameRef = useRef<HTMLDivElement | null>(null);
   const spotRef = useRef<HTMLDivElement>(null);
   const shownSpot = useRef<string | null>(null); // the spot last brought into the window's view
+  const centred = useRef<string | null>(null); // the spot and zoom last centred in the frame
   const frameMeasured = useCallback(
     (element: HTMLDivElement | null) => {
       frameRef.current = element;
-      return measureRef(element);
+      const stop = measureRef(element);
+      return () => {
+        frameRef.current = null;
+        stop?.();
+      };
     },
     [measureRef],
   );
@@ -137,12 +142,14 @@ export function PageViewer({
   const zoom = zoomChoice && zoomChoice.key === spotKey ? zoomChoice.zoom : spotZoom;
   const setZoom = (next: number) => setZoomChoice({ key: spotKey, zoom: next });
 
-  // A new spot, zoom or frame size: the spot to the middle of the frame; a new
-  // spot also into the window's view (a zoom button never scrolls the window).
+  // A new spot or zoom: the spot to the middle of the frame (a size change alone
+  // keeps the user's own scrolling); a new spot also into the window's view (a
+  // zoom button never scrolls the window).
   useLayoutEffect(() => {
     const frame = frameRef.current;
     const marked = spotRef.current;
-    if (!frame || !marked) return;
+    if (!frame || !marked || centred.current === `${spotKey}@${zoom}`) return;
+    centred.current = `${spotKey}@${zoom}`;
     const f = frame.getBoundingClientRect();
     const m = marked.getBoundingClientRect();
     frame.scrollTo(
