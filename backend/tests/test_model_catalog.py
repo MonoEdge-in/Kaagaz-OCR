@@ -140,12 +140,12 @@ def test_hostile_or_malformed_json_is_left_out(item: object) -> None:
 
 
 def test_a_name_loses_control_and_format_characters_and_is_clamped() -> None:
-    hostile = "Gemini‮\u0000\x1b[31m" + "x" * 500
+    hostile = "Gemini" + chr(0x202E) + "\u0000\x1b[31m" + "x" * 500
     model = candidate(_with(name=hostile), efforts=EFFORTS, today=TODAY)
     assert model is not None
     assert model.name.startswith("Gemini[31m") and len(model.name) == catalog.MAX_NAME
     assert all(char.isprintable() for char in model.name)
-    for empty in (None, "", "​‮", 7):
+    for empty in (None, "", chr(0x200B) + chr(0x202E), 7):
         named = candidate(_with(name=empty), efforts=EFFORTS, today=TODAY)
         assert named is not None and named.name == GOOD["id"]
 
