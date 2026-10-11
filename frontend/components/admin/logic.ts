@@ -300,7 +300,7 @@ export function readerTiles(stats: Pick<Stats, "reader_pages" | "spend_estimate"
   const pages = stats.reader_pages;
   const tiles: Tile[] = pages
     ? [
-        { label: "Read by Gemini", value: formatNumber(pages.gemini) },
+        { label: "Read by AI model", value: formatNumber(pages.gemini) },
         { label: "Read by the backup reader", value: formatNumber(pages.local) },
         { label: "From the cache", value: formatNumber(pages.cached) },
         { label: "Read again", value: formatNumber(pages.read_again) },

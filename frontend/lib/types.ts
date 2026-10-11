@@ -684,7 +684,7 @@ export interface Stats {
   in_trash: number;
   pages_this_month: Record<PageRoute, number>; // pages read this month, by route (PRD 2, R6); 0 when none
   // PRD 5 U9: this month's OCR pages by who read them (read_again: pages read again), and the
-  // model's spend estimate from its tokens; usd is null while MODEL_PRICE_* are 0 (not known).
+  // model's spend estimate from its tokens; usd comes from the AI spend ledger (null when not known).
   reader_pages?: { gemini: number; local: number; cached: number; read_again: number };
   spend_estimate?: { input_tokens: number; output_tokens: number; usd: number | null };
 }

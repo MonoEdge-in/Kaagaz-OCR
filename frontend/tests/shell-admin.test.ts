@@ -383,7 +383,7 @@ describe("readerTiles (PRD 5 U9)", () => {
   it("shows the scanned pages by who read them, then this month's AI spend from the ledger", () => {
     const spend_estimate = { input_tokens: 900000, output_tokens: 120000, usd: 1.5 };
     expect(readerTiles({ reader_pages, spend_estimate })).toEqual([
-      { label: "Read by Gemini", value: "1,200" },
+      { label: "Read by AI model", value: "1,200" },
       { label: "Read by the backup reader", value: "30" },
       { label: "From the cache", value: "4" },
       { label: "Read again", value: "2" },

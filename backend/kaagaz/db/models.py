@@ -25,7 +25,7 @@ from kaagaz.settings import DEFAULT_PROVIDER, Settings
 # value as kaagaz.reading.gemini_ocr.GEMINI_OCR_PROMPT_VERSION, which a test checks; kept
 # here so the database layer does not import the reader.
 # ponytail: a copy, until the reading layer exposes the version outside gemini_ocr.
-PROMPT_VERSION = "g1"
+PROMPT_VERSION = "g2"
 
 # The document's chosen model and the organisation's default, each only while it is allowed
 # for the organisation, eligible, enabled by the operator and verified for this prompt.
