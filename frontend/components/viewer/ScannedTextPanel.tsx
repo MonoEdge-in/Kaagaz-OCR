@@ -37,12 +37,13 @@ export interface ScannedTextPanelProps {
   onShow: (spot: Spot) => void;
   onClose: () => void;
   onAddMeaning?: (text: string, region: Region, opener: HTMLElement) => void;
+  headingRef?: (heading: HTMLHeadingElement | null) => void; // to move focus to the heading
 }
 
 type Loaded = { key: string; readings: PageReadings } | { key: string; httpStatus: number | null };
 
 export function ScannedTextPanel(props: ScannedTextPanelProps) {
-  const { documentId, page, active, cited, onShow, onClose, onAddMeaning } = props;
+  const { documentId, page, active, cited, onShow, onClose, onAddMeaning, headingRef } = props;
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [role, setRole] = useState<"first" | "second">("first");
@@ -92,7 +93,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
         }
       }}
     >
-      <h2 id="scanned-heading" className={styles.heading}>
+      <h2 id="scanned-heading" ref={headingRef} tabIndex={-1} className={styles.heading}>
         Scanned text, page {page.page_no}
       </h2>
       {hasSecond && (

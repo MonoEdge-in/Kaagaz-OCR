@@ -22,6 +22,8 @@
 // problems (PRD 5) gets a banner with its fixes (PageProblems.tsx, U4), its marks
 // drawn on it (U3, from the page's readings) and the Attention panel (U5); a mark
 // pressed shows its spot and opens the Scanned text panel, with both readings.
+// With the column sticky, the Scanned text panel sits atop the panels, so the
+// page keeps its height; opened by its button, focus goes to its heading.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -106,6 +108,7 @@ export function DocumentView({
   // The Scanned text panel: open as the link says (?scanned=1) until it is toggled.
   const [scannedChoice, setScannedChoice] = useState<{ linkKey: string; open: boolean } | null>(null);
   const scannedButton = useRef<HTMLButtonElement>(null);
+  const focusScanned = useRef(false); // opened by its button: focus its heading once shown
   const [announcement, setAnnouncement] = useState("");
   const viewerRef = useRef<HTMLElement>(null);
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
@@ -224,11 +227,14 @@ export function DocumentView({
     // Stacked on a phone, the page is above the list: bring it into view.
     viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
-  const showSpot = (spot: Spot) => {
+  const showSpot = (spot: Spot, said = `Showing ${spot.name} on page ${spot.region.page}.`) => {
     choose(selectSpot(spot.region, spot.label));
-    setAnnouncement(`Showing ${spot.name} on page ${spot.region.page}.`);
+    setAnnouncement(said);
     viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
+  // A scanned line ("line 14"): "Line 14 highlighted on page 1."
+  const showLine = (spot: Spot) =>
+    showSpot(spot, `${spot.name.charAt(0).toUpperCase()}${spot.name.slice(1)} highlighted on page ${spot.region.page}.`);
   const changePage = (pageNo: number) => choose(pageChange(selection, pageNo));
   // A reading problem pressed (U3): its spot on the page, and the line with both readings.
   const showMark = (mark: ReadingMark, name: string) => {
@@ -263,6 +269,21 @@ export function DocumentView({
   const hasScannedText = page !== undefined && page.unit !== "cells";
   const lowResolution = page ? lowResolutionText(page) : null;
   const panel = { detail, active: selection?.region ?? null, onShow: showSpot };
+  const scannedPanel = hasScannedText && scannedOpen && (
+    <ScannedTextPanel
+      documentId={detail.id}
+      page={page}
+      active={selection?.region ?? null}
+      cited={scannedParam === "1" ? decodeRegion(regionParam) : null}
+      onShow={showLine}
+      onClose={closeScanned}
+      onAddMeaning={addMeaning}
+      headingRef={(heading) => {
+        if (heading && focusScanned.current) heading.focus();
+        focusScanned.current = false;
+      }}
+    />
+  );
 
   const pagesText =
     detail.page_count !== null
@@ -434,33 +455,24 @@ export function DocumentView({
                     className="btn"
                     aria-expanded={scannedOpen}
                     aria-controls={scannedOpen ? SCANNED_PANEL_ID : undefined}
-                    onClick={() => setScanned(!scannedOpen)}
+                    onClick={() => {
+                      focusScanned.current = !scannedOpen;
+                      setScanned(!scannedOpen);
+                    }}
                   >
                     <Icon name="scan-text" />
                     Scanned text
                   </button>
                 )
               }
-              belowToolbar={
-                hasScannedText &&
-                scannedOpen && (
-                  <ScannedTextPanel
-                    documentId={detail.id}
-                    page={page}
-                    active={selection?.region ?? null}
-                    cited={scannedParam === "1" ? decodeRegion(regionParam) : null}
-                    onShow={showSpot}
-                    onClose={closeScanned}
-                    onAddMeaning={addMeaning}
-                  />
-                )
-              }
+              belowToolbar={stickyViewer ? undefined : scannedPanel}
             />
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
           )}
         </section>
         <div className={styles.panels}>
+          {stickyViewer && scannedPanel}
           {page && <PageWordsList words={words} />}
           <AttentionPanel
             pages={detail.pages}
