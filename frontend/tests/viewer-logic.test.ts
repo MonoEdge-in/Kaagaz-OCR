@@ -170,10 +170,15 @@ describe("routeText (PRD 2, R1; PRD 5 RT2)", () => {
     expect(routeText({ ...claude, read_by_name: "Claude Sonnet 5.5" })).toBe("Read by Claude Sonnet 5.5");
   });
 
-  it("no longer guesses from the model's ID: without a name it is Read by OCR", () => {
+  it("never says OCR for a model's page: without a name it is an AI model, by its ID (R4)", () => {
     const gemini = { route: "ocr" as const, read_by: "google/gemini-3.8-flash", read_issues: [] };
-    expect(routeText(gemini)).toBe("Read by OCR");
-    expect(routeText({ ...gemini, read_by_name: null })).toBe("Read by OCR");
+    expect(routeText(gemini)).toBe("Read by an AI model (google/gemini-3.8-flash)");
+    expect(routeText({ ...gemini, read_by_name: null })).toBe("Read by an AI model (google/gemini-3.8-flash)");
+  });
+
+  it("says Read by OCR only for a scanned page no model read", () => {
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: [] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: null, read_issues: [] })).toBe("Read by OCR");
   });
 
   it("says Read by the backup reader for a handed-on page, even with a model's name", () => {
