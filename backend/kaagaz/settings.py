@@ -194,10 +194,11 @@ class Settings:
     ocr_dpi_rule: str
 
     # PRD 5, the Gemini reader, through OpenRouter (council 8 Oct 2026). OCR_ENGINE=gemini
-    # reads every ocr page with ocr_model, the OpenRouter model ID in .env (no code picks or
-    # switches a model), through openrouter_base_url with openrouter_api_key: a secret repr
-    # never shows, needed only when a model is called (OCR_ENGINE=gemini, or MODEL_ENABLED
-    # with a google/gemini- model). A page is sent at ocr_media_resolution with
+    # reads every ocr page with ocr_model, the OpenRouter model ID in .env, unless the
+    # operator chose another model for the organisation (model choice, council 11 Oct 2026,
+    # kaagaz.db.models.resolve), through openrouter_base_url with openrouter_api_key: a
+    # secret repr never shows, needed only when a model is called (OCR_ENGINE=gemini, or
+    # MODEL_ENABLED). A page is sent at ocr_media_resolution with
     # ocr_thinking_level (G2); "Read this page again" (F5) uses the retry pair. Both
     # resolutions are limited to what MEDIA_RESOLUTION_SHAPE can send. ocr_page_concurrency
     # pages of a document are read at a time and RapidOCR work runs on cpu_workers threads
@@ -226,15 +227,14 @@ class Settings:
     # max_active_per_customer documents being read at once (Q5). A document of at most
     # express_max_pages pages goes to queue_express_url, the express lane (Q4); None: no
     # express lane, every job goes to queue_url. One drop holds at most max_files_per_batch
-    # files (Q1). The model's price in US dollars per million input and output tokens gives
-    # the Numbers tab's spend estimate (U9); 0 means not known, and no estimate is shown.
+    # files (Q1). The two model price settings are gone (model
+    # choice, council 11 Oct 2026): the spend comes from the model_usage ledger and the
+    # catalogue's prices; an older .env that still sets them starts as before.
     worker_replicas: int
     max_active_per_customer: int
     queue_express_url: str | None
     express_max_pages: int
     max_files_per_batch: int
-    model_price_input_usd_per_m: float
-    model_price_output_usd_per_m: float
 
     # The page route (PRD 2 R2 to R4). A PDF page's text layer is kept when it has at
     # least text_layer_min_chars letters and digits and text_layer_min_good_ratio good
@@ -509,8 +509,6 @@ class Settings:
             queue_express_url=queue_express_url,
             express_max_pages=env.positive_or("EXPRESS_MAX_PAGES", 3),
             max_files_per_batch=env.positive_or("MAX_FILES_PER_BATCH", 100),
-            model_price_input_usd_per_m=env.not_negative_or("MODEL_PRICE_INPUT_USD_PER_M", 0.0),
-            model_price_output_usd_per_m=env.not_negative_or("MODEL_PRICE_OUTPUT_USD_PER_M", 0.0),
             text_layer_min_chars=env.positive("TEXT_LAYER_MIN_CHARS"),
             text_layer_min_good_ratio=env.share("TEXT_LAYER_MIN_GOOD_RATIO"),
             scan_image_coverage=env.share("SCAN_IMAGE_COVERAGE"),
@@ -612,10 +610,6 @@ class _Env:
     def positive_or(self, name: str, default: int) -> int:
         """``positive``, or ``default`` when unset or empty."""
         return default if self.optional(name) is None else self.positive(name)
-
-    def not_negative_or(self, name: str, default: float) -> float:
-        """``not_negative``, or ``default`` when unset or empty."""
-        return default if self.optional(name) is None else self.not_negative(name)
 
     def at_least(self, name: str, low: int, *, default: int) -> int:
         """An optional whole number of at least ``low``: ``default`` when unset or empty."""

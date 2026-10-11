@@ -65,8 +65,6 @@ _BASE: dict[str, Any] = {
     "queue_express_url": None,  # one lane unless a test gives the express queue
     "express_max_pages": 3,
     "max_files_per_batch": 100,
-    "model_price_input_usd_per_m": 0.0,  # not known: no spend estimate
-    "model_price_output_usd_per_m": 0.0,
     "text_layer_min_chars": 40,
     "text_layer_min_good_ratio": 0.9,
     "scan_image_coverage": 0.5,
