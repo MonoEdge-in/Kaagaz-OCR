@@ -1,6 +1,6 @@
-"""The Numbers tab's reader pages and spend estimate across customers (PRD 5 U9, V5): each
-admin's figures come from its own customer's runs only, whatever another customer read in
-the same month; each sees its own (the control)."""
+"""The Numbers tab's reader pages and spend across customers (PRD 5 U9; model choice, SP1):
+each admin's figures come from its own customer's runs and spend ledger only, whatever
+another customer read or spent in the same month; each sees its own (the control)."""
 
 from datetime import UTC, datetime
 
@@ -9,8 +9,8 @@ import pytest
 from kaagaz.db.engine import Database
 from kaagaz.db.runs import PgRuns
 from kaagaz.pipeline import FinishedRun
-from tests.settings_factory import make_settings
 from tests.test_api_support import Api, MovingClock
+from tests.test_api_usage import add_spend
 from tests.test_runs_db import totals
 
 pytestmark = pytest.mark.db
@@ -23,12 +23,13 @@ def _run(api: Api, customer_id: str, started: datetime, **counts: int) -> None:
 
 
 def test_u9_reader_pages_and_spend_never_cross_customers(db: Database) -> None:
-    settings = make_settings(model_price_input_usd_per_m=2.0, model_price_output_usd_per_m=12.0)
-    api = Api(db, settings=settings, clock=MovingClock(datetime(2026, 10, 20, 6, 0, tzinfo=UTC)))
+    api = Api(db, clock=MovingClock(datetime(2026, 10, 20, 6, 0, tzinfo=UTC)))
     a, b = api.new_admin(), api.new_admin()
     this_month = datetime(2026, 10, 2, tzinfo=UTC)
     _run(api, a.customer_id, this_month, pages_gemini=4, pages_local=1, input_tokens=1_000_000)
     _run(api, b.customer_id, this_month, pages_gemini=70, pages_cached=9, output_tokens=7_000_000)
+    add_spend(db, a.customer_id, at=this_month, cost=2.0)
+    add_spend(db, b.customer_id, at=this_month, cost=84.0)
 
     a_stats = a.client.get("/api/admin/stats").json()
     b_stats = b.client.get("/api/admin/stats").json()

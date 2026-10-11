@@ -22,6 +22,7 @@ def _page(issues: list[str], **columns: Any) -> RowMapping:
         "effective_dpi": 150,
         "low_resolution": "low_resolution" in issues,
         "read_by": "google/gemini-3.1-pro-preview",
+        "read_by_name": "Google: Gemini 3.1 Pro Preview",
         "read_quality": "uncertain",
         "read_issues": issues,
         "unsure_words": 0,
@@ -88,4 +89,16 @@ def test_u4_nothing_left_to_count_or_no_dpi_is_left_out_never_a_made_up_number()
 def test_the_review_queues_page_has_the_fields_without_problems() -> None:
     row = _page(["faint"])
     assert "problems" not in page_fields(row)
-    assert page_summary(row) == {**page_fields(row), "problems": page_problems(row)}
+    assert page_summary(row) == {
+        **page_fields(row),
+        "read_by_name": "Google: Gemini 3.1 Pro Preview",
+        "problems": page_problems(row),
+    }
+
+
+def test_model_choice_a_page_says_the_catalogue_name_of_the_model_that_read_it() -> None:
+    """The viewer's "Read by {name}" (model choice, council 11 Oct 2026): the catalogue's
+    name, from listing's LEFT JOIN; null for a reader the catalogue doesn't list."""
+    assert page_summary(_page([]))["read_by_name"] == "Google: Gemini 3.1 Pro Preview"
+    local = page_summary(_page([], read_by="rapidocr", read_by_name=None))
+    assert (local["read_by"], local["read_by_name"]) == ("rapidocr", None)
