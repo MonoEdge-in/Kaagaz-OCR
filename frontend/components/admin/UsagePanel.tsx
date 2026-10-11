@@ -31,6 +31,8 @@ import type { UsagePeriod, UsageState } from "./logic";
 import styles from "./Admin.module.css";
 
 const SKELETON_TILES = [0, 1, 2];
+// A by-user row with no user: work no user asked for (the sweeps), or a removed user's.
+export const REMOVED_OR_SYSTEM = "Removed user or system work";
 
 interface Row {
   key: string;
@@ -184,19 +186,22 @@ export function UsageReportView({
         </div>
       </dl>
       <p className="tabular">{budgetLine(report.budget)}</p>
-      {warning && (
-        <p className={styles.budgetWarning} role="status">
-          <Icon name="alert" className={styles.errorIcon} />
-          {warning}
-        </p>
-      )}
+      {/* Always mounted, so a screen reader hears the warning when its text comes. */}
+      <p className={warning ? styles.budgetWarning : undefined} role="status">
+        {warning && (
+          <>
+            <Icon name="alert" className={styles.errorIcon} />
+            {warning}
+          </>
+        )}
+      </p>
       <div className={styles.usageTables}>
         <UsageTable
           caption="By user"
           first="User"
           rows={report.by_user.map((row) => ({
             key: row.user_id ?? "none",
-            name: row.user_name ?? "No user (work done by the system)",
+            name: row.user_name ?? REMOVED_OR_SYSTEM,
             totals: row,
           }))}
         />

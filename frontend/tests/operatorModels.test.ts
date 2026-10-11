@@ -143,6 +143,8 @@ describe("the Models table", () => {
     expect(html).toContain("Yes");
     expect(html).toContain("No");
     expect(html).toContain('aria-label="Enable Gemini 3.1 Pro"');
+    // R13: every cell says its column when the table reflows into cards.
+    expect(html.match(/<td role="cell"(?![^>]*data-label)/g)).toBeNull();
     expect(html).not.toContain('aria-label="Enable Unverified"');
     expect(html).toContain("Does not pass the catalogue&#x27;s rules now.");
   });
@@ -209,6 +211,19 @@ describe("the AI models dialog", () => {
     expect(invalid).toContain('aria-describedby="org-models-budget-hint org-models-budget-error"');
     expect(invalid).toContain('id="org-models-default-error"');
     expect(fields(draftOf(saved), { default_scan: null, budget: null }, true).match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("points the default's radios at its error, said as an alert (R13)", () => {
+    const invalid = fields(draftOf(saved), { default_scan: "Pick one.", budget: null });
+    expect(invalid).toMatch(/type="radio"[^>]*aria-describedby="org-models-default-error"/);
+    expect(invalid).toMatch(/id="org-models-default-error" class="error-text" role="alert"/);
+    expect(fields()).not.toContain("org-models-default-error");
+  });
+
+  it("moves the focus to the first control once the models have loaded (R13)", () => {
+    const dialog = read("components/operator/OrgModelsDialog.tsx");
+    expect(dialog).toContain('form?.querySelector<HTMLElement>("input, select, button")?.focus()');
+    expect(dialog).toContain("<form ref={focusFirst}");
   });
 
   it("returns the focus to the row's AI models button", () => {

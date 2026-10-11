@@ -172,7 +172,7 @@ describe("the report", () => {
 
   it("names the user, the system, the model, the kind and the documents in words", () => {
     expect(html).toContain("Ravi Sharma");
-    expect(html).toContain("No user (work done by the system)");
+    expect(html).toContain("Removed user or system work");
     expect(html).toContain("Gemini 3.1 Pro");
     expect(html).toContain("Reading scanned pages");
     expect(html).toContain('<a href="/documents/d1">Invoice 42.pdf</a>');
@@ -238,12 +238,18 @@ describe("the budget (SP4, warn only)", () => {
     expect(html).toContain("$12.40 (part not known)");
   });
 
+  it("names a by-user row with no user as removed or system work (R13)", () => {
+    const html = view({ kind: "ready", report: REPORT });
+    expect(html).toContain(">Removed user or system work</td>");
+  });
+
   it("has no warning, and says so, when there is no budget", () => {
     expect(budgetWarning(budget(500, null))).toBeNull();
     expect(budgetLine(budget(500, null))).toBe("No monthly AI budget is set.");
     const html = view({ kind: "ready", report: { ...REPORT, budget: budget(500, null) } });
     expect(html).toContain("No budget");
-    expect(html).not.toContain('role="status"');
+    // R13: the status region stays, empty, so a warning that comes later is heard.
+    expect(html).toContain('<p role="status"></p>');
   });
 });
 

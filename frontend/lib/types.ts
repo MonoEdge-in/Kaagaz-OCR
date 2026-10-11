@@ -835,6 +835,7 @@ export interface OrgModels {
   default_scan: string; // the model reading scans now: the default, or the platform's when none is set
   models: OrgModel[]; // [] when the operator set none: every scan is read by the platform's model
   ai_budget_usd: number | null; // the monthly budget; null: none
+  spent_this_month_usd: number; // this month's AI spend, from the ledger
 }
 
 /** Tokens and US dollars of some model calls. cost_usd is null when not known. */

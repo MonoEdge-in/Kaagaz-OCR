@@ -4,10 +4,11 @@
 // MS2, SP4): which enabled models its scans may be read with (checkboxes), its default
 // scan model (radios, among the ticked ones) and its monthly budget in US dollars (warn
 // only). No models: the platform's model reads its scans, as before. A refusal is said in
-// plain words; the dialog can't close while saving, and the focus goes back to the row's
+// plain words; the dialog can't close while saving. Once the models load, the focus moves
+// to the first control (the dialog opened on "Loading"), and it goes back to the row's
 // "AI models" button when it closes.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { getOperatorModels, getOperatorOrgModels, putOperatorOrgModels } from "@/lib/api";
@@ -30,6 +31,10 @@ export function OrgModelsDialog({ org, onClose, onSaved }: { org: Organisation; 
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // The form appears once the data has loaded: its first control takes the focus then.
+  const focusFirst = useCallback((form: HTMLFormElement | null) => {
+    form?.querySelector<HTMLElement>("input, select, button")?.focus();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,7 +98,7 @@ export function OrgModelsDialog({ org, onClose, onSaved }: { org: Organisation; 
         </p>
       )}
       {loaded && draft && (
-        <form className={styles.dialogForm} onSubmit={submit} noValidate>
+        <form ref={focusFirst} className={styles.dialogForm} onSubmit={submit} noValidate>
           <OrgModelsFields
             models={offered(loaded.catalogue, loaded.saved)}
             draft={draft}
@@ -154,11 +159,7 @@ export function OrgModelsFields(props: {
         )}
       </fieldset>
       {ticked.length > 0 && (
-        <fieldset
-          className={styles.choices}
-          disabled={busy}
-          aria-describedby={errors.default_scan ? "org-models-default-error" : undefined}
-        >
+        <fieldset className={styles.choices} disabled={busy}>
           <legend className="label">Default scan model</legend>
           {ticked.map((model, index) => (
             <label key={model.id} className={styles.choice}>
@@ -167,13 +168,14 @@ export function OrgModelsFields(props: {
                 name="org-models-default"
                 id={index === 0 ? "org-models-default" : undefined}
                 checked={draft.default_scan === model.id}
+                aria-describedby={errors.default_scan ? "org-models-default-error" : undefined}
                 onChange={() => onChange({ ...draft, default_scan: model.id })}
               />
               <span>{model.name}</span>
             </label>
           ))}
           {errors.default_scan && (
-            <span id="org-models-default-error" className="error-text">
+            <span id="org-models-default-error" className="error-text" role="alert">
               {errors.default_scan}
             </span>
           )}

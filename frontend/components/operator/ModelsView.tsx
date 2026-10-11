@@ -110,7 +110,7 @@ function ModelRow({ model, onChange }: { model: OperatorModel; onChange(enable: 
   const reason = notEnabledReason(model);
   return (
     <tr role="row">
-      <td role="cell" className={styles.orgName}>
+      <td role="cell" data-label="Model" className={styles.orgName}>
         <span id={modelFocusId(model.id)} tabIndex={-1}>
           {model.name}
         </span>
@@ -134,7 +134,7 @@ function ModelRow({ model, onChange }: { model: OperatorModel; onChange(enable: 
         {model.enabled_at ? `Yes, since ${formatDate(model.enabled_at)}` : "No"}
         {reason && <span className={styles.statusNote}>{reason}</span>}
       </td>
-      <td role="cell">
+      <td role="cell" data-label="Actions">
         {action && (
           <button
             type="button"

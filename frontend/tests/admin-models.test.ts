@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ModelsView } from "@/components/admin/ModelsPanel";
-import type { OrgModels, UsageBudget } from "@/lib/types";
+import type { OrgModels } from "@/lib/types";
 
 const MODELS: OrgModels = {
   set_by: "operator",
@@ -35,12 +35,10 @@ const MODELS: OrgModels = {
     },
   ],
   ai_budget_usd: 50,
+  spent_this_month_usd: 12.4,
 };
 
-const BUDGET: UsageBudget = { ai_budget_usd: 50, spent_this_month_usd: 12.4, spent_part_unknown: false, share: 0.248 };
-
-const render = (models: OrgModels = MODELS, budget: UsageBudget = BUDGET) =>
-  renderToStaticMarkup(createElement(ModelsView, { models, budget }));
+const render = (models: OrgModels = MODELS) => renderToStaticMarkup(createElement(ModelsView, { models }));
 
 describe("the AI models panel", () => {
   const html = render();
@@ -77,10 +75,7 @@ describe("the AI models panel", () => {
 
   it("shows this month's spend against the budget, or that there is none", () => {
     expect(html).toContain("$12.40 of $50.00 this month");
-    const none = render(
-      { ...MODELS, ai_budget_usd: null },
-      { ai_budget_usd: null, spent_this_month_usd: 3, spent_part_unknown: false, share: null },
-    );
+    const none = render({ ...MODELS, ai_budget_usd: null, spent_this_month_usd: 3 });
     expect(none).toContain("No monthly AI budget is set.");
   });
 
@@ -89,6 +84,12 @@ describe("the AI models panel", () => {
     expect(empty).toContain("MonoEdge has not chosen models for your organisation");
     expect(empty).toContain("google/gemini-3.1-pro-preview");
     expect(empty).not.toContain("<table");
+  });
+
+  it("takes this month's spend from GET /admin/models alone, not the whole usage report (R13)", () => {
+    const source = readFileSync(join(__dirname, "..", "components/admin/ModelsPanel.tsx"), "utf8");
+    expect(source).not.toContain("getAdminUsage");
+    expect(source).toContain("budgetLine(models)");
   });
 
   it("is read-only: no control, and no call that changes a model", () => {

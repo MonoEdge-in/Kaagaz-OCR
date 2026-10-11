@@ -11,15 +11,15 @@
 import { useEffect, useState } from "react";
 import table from "@/components/documents/Table.module.css";
 import { Icon } from "@/components/ui/Icon";
-import { ApiError, getAdminModels, getAdminUsage } from "@/lib/api";
+import { ApiError, getAdminModels } from "@/lib/api";
 import { formatUsd } from "@/lib/format";
-import type { OrgModels, UsageBudget } from "@/lib/types";
+import type { OrgModels } from "@/lib/types";
 import { budgetLine } from "./logic";
 import styles from "./Admin.module.css";
 
 const COLUMNS = ["Model", "Provider", "Input, per million tokens", "Output, per million tokens", "Cost"];
 
-export function ModelsView({ models, budget }: { models: OrgModels; budget: UsageBudget }) {
+export function ModelsView({ models }: { models: OrgModels }) {
   return (
     <>
       {models.models.length === 0 ? (
@@ -72,7 +72,7 @@ export function ModelsView({ models, budget }: { models: OrgModels; budget: Usag
       )}
       <p className="tabular">
         <span className={styles.strong}>Monthly AI budget: </span>
-        {budgetLine({ ai_budget_usd: models.ai_budget_usd, spent_this_month_usd: budget.spent_this_month_usd })}
+        {budgetLine(models)}
       </p>
     </>
   );
@@ -80,14 +80,14 @@ export function ModelsView({ models, budget }: { models: OrgModels; budget: Usag
 
 export function ModelsPanel() {
   const [attempt, setAttempt] = useState(0);
-  const [loaded, setLoaded] = useState<{ models: OrgModels; budget: UsageBudget } | null>(null);
+  const [loaded, setLoaded] = useState<OrgModels | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getAdminModels(), getAdminUsage()]).then(
-      ([models, usage]) => {
-        if (!cancelled) setLoaded({ models, budget: usage.budget });
+    getAdminModels().then(
+      (models) => {
+        if (!cancelled) setLoaded(models);
       },
       (caught: unknown) => {
         if (!cancelled) {
@@ -129,7 +129,7 @@ export function ModelsPanel() {
           Loading the AI models…
         </p>
       )}
-      {loaded && <ModelsView models={loaded.models} budget={loaded.budget} />}
+      {loaded && <ModelsView models={loaded} />}
     </section>
   );
 }
