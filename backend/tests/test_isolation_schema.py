@@ -14,6 +14,8 @@ app may only read, the ledger it may only read and add to, the platform catalogu
 refresh columns alone it may write, and the operator's five functions.
 """
 
+import re
+
 import pytest
 from sqlalchemy import text
 
@@ -489,3 +491,35 @@ def test_the_operator_role_has_no_table_rights_and_its_tables_no_grants_and_no_p
         ).all()
     assert (tuple(role), granted) == ((False, False, False), [])
     assert sorted(tuple(row) for row in locked) == [("operators", True, 0), ("platform_audit", True, 0)]
+
+
+# 0024's readers (F1-F4): read-only, no dynamic SQL, the operator check, and no column
+# that could name or point at a person or content. Counts named in the plural
+# (``documents``, ``active_users_7d``) are numbers and allowed; an id other than the
+# organisation's, a name, an e-mail or a bare person or content column is not.
+INSIGHT_READERS = ("kaagaz_op_daily", "kaagaz_op_org_health", "kaagaz_op_quality", "kaagaz_op_model_board")
+ENABLED = "o.id = p_operator AND NOT o.disabled AND o.totp_enabled_at IS NOT NULL"
+_PERSON_OR_CONTENT = re.compile(
+    r"(^|_)id$|email|name|^(user|document|conversation|message|batch|folder|tag|text|answer|question)$"
+)
+
+
+def test_the_insight_readers_are_stable_static_check_the_operator_and_name_nobody(db: Database) -> None:
+    with db.system() as conn:
+        readers = conn.execute(
+            text(
+                "SELECT p.proname, p.provolatile, p.prosrc,"
+                " ARRAY(SELECT a.n FROM unnest(p.proargnames, p.proargmodes) AS a (n, m) WHERE a.m = 't')"
+                " FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY(:f)"
+            ),
+            {"f": list(INSIGHT_READERS)},
+        ).all()
+    assert sorted(row[0] for row in readers) == sorted(INSIGHT_READERS)
+    for name, volatility, source, columns in readers:
+        assert volatility == "s", name  # STABLE: reads only
+        assert "EXECUTE" not in source.upper(), name  # no dynamic SQL
+        assert ENABLED in source, name
+        assert columns, name
+        assert [c for c in columns if c != "customer_id" and _PERSON_OR_CONTENT.search(c)] == [], name
+    caught = ("user_id", "document_id", "display_name", "email", "customer_name", "message", "id")
+    assert all(_PERSON_OR_CONTENT.search(sample) for sample in caught)  # the pattern works
