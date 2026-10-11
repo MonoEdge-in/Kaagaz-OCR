@@ -132,6 +132,7 @@ class Call:
     deadline: float
     model: str | None = None
     provider: str | None = None
+    validate: Callable[[dict[str, Any]], str | None] | None = None
 
 
 Outcome = PageReply | Exception
@@ -162,12 +163,23 @@ class FakeClient:
         deadline: float,
         model: str | None = None,
         provider: str | None = None,
+        validate: Callable[[dict[str, Any]], str | None] | None = None,
     ) -> PageReply:
         image = Image.open(io.BytesIO(png))
         image.load()
         with self._lock:
             self.calls.append(
-                Call(image, instruction, schema, media_resolution, thinking_level, deadline, model, provider)
+                Call(
+                    image,
+                    instruction,
+                    schema,
+                    media_resolution,
+                    thinking_level,
+                    deadline,
+                    model,
+                    provider,
+                    validate,
+                )
             )
             outcome = self.script.pop(0) if self.script else None
         if outcome is None:

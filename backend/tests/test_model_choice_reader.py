@@ -24,8 +24,15 @@ from kaagaz.db.page_reads import PageKey
 from kaagaz.db.usage import UsageRow
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading import ocr
-from kaagaz.reading.gemini_ocr import GEMINI_OCR_PROMPT_VERSION, PAGE_SCHEMA, checked, pixels_sha256
-from kaagaz.reading.ocr import DocumentPages, PageRead
+from kaagaz.reading.gemini_ocr import (
+    CHECK_PROBLEM,
+    GEMINI_OCR_PROMPT_VERSION,
+    PAGE_SCHEMA,
+    checked,
+    pixels_sha256,
+    repair_problem,
+)
+from kaagaz.reading.ocr import MAX_TABLE_INDEX, DocumentPages, PageRead
 from kaagaz.reading.page_quality import READ_LOCALLY, READER_REFUSED
 from kaagaz.reading.socket import PagePool, PagesInOrder
 from tests.test_gemini_ocr import (
@@ -208,6 +215,23 @@ class WithdrawnModelTest(unittest.TestCase):
         ):
             built.engine.read_page(page(), page_no=1)
         self.assertEqual(str(raised.exception), "gemini_key")
+
+
+class RepairTest(unittest.TestCase):
+    """R12: what ``checked`` refuses (a bad box, a table index out of range) is the
+    client's one repair turn, not a page read locally."""
+
+    def test_the_reader_asks_the_client_to_repair_what_checked_refuses(self) -> None:
+        built = build(reply(value(line("Total"))))
+        with built.engine.document(_pages(FakeCache(), CLAUDE, "google-vertex")):
+            built.engine.read_page(page(), page_no=1)
+        (call,) = built.client.calls
+        self.assertIs(call.validate, repair_problem)
+        cell = {"id": "t1", "row": MAX_TABLE_INDEX, "col": 0, "header": False}
+        self.assertEqual(repair_problem(value(line("x", (100, 100, 120, 1000.5)))), CHECK_PROBLEM)
+        self.assertEqual(repair_problem(value(line("x", kind="table_cell", table=cell))), CHECK_PROBLEM)
+        self.assertIsNone(repair_problem(value(line("Total"))))
+        self.assertIn(str(MAX_TABLE_INDEX), CHECK_PROBLEM)
 
 
 class ProviderOutsideTheCeilingTest(unittest.TestCase):

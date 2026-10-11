@@ -72,8 +72,9 @@ thinking tokens and cost.
   (``input_tokens``, ``output_tokens``: this reply's usage, plus the first reply's when a
   repair was asked for), so a blocked, cut off or invalid reply is still counted (G9).
 * Any other finish reason, or none: ``ModelOutputError("invalid_output")``.
-* JSON that does not follow the schema: one repair retry, then
-  ``ModelOutputError("invalid_output")``.
+* JSON that does not follow the schema, or that the caller's ``validate`` refuses (a
+  ``read_page`` reply that breaks what the schema can't say): one repair retry, then
+  ``ModelOutputError("invalid_output")``. One repair at most, whichever check failed.
 
 **Rate limit and circuit breaker** (G9) live in a ``ModelGate``, one per process
 (``process_gate``), shared by every client the process builds: the reader's, the chat
@@ -484,6 +485,19 @@ def _billed_text(reply: Mapping[str, Any], before: tuple[int, int]) -> tuple[str
         raise replies.billed(error, before[0] + input_tokens, before[1] + output_tokens) from None
 
 
+def _valid_reply(
+    content: str, schema: Mapping[str, Any], validate: Callable[[dict[str, Any]], str | None] | None
+) -> tuple[dict[str, Any] | None, str]:
+    """``parse_reply``, then ``validate`` on a value that follows the schema: (the value,
+    ""), or (None, the problem in words for the repair turn)."""
+    value, problem = parse_reply(content, schema)
+    if value is not None and validate is not None:
+        refused = validate(value)
+        if refused is not None:
+            return None, refused
+    return value, problem
+
+
 def _retry_after(headers: "Message[str, str] | None", now: datetime) -> float | None:
     """Seconds the server asked us to wait (whole seconds or an HTTP date), or None."""
     value = headers.get("Retry-After") if headers is not None else None
@@ -845,13 +859,15 @@ class OpenRouterClient:
         deadline: float,
         model: str | None = None,
         provider: str | None = None,
+        validate: Callable[[dict[str, Any]], str | None] | None = None,
     ) -> PageReply:
         """One page read by ``model`` through ``provider`` (None: OCR_MODEL through
         DEFAULT_PROVIDER, as before model choice) as a JSON object following ``schema``,
         before ``deadline`` (an absolute time on ``now()``; every retry fits inside it). A
         provider outside OPENROUTER_PROVIDERS raises ``ProviderNotAllowed`` before anything is
-        sent. A first reply that does not follow the schema is sent back once for a repair,
-        with the page again; the tokens of both calls are counted."""
+        sent. A first reply that does not follow the schema, or that ``validate`` refuses (it
+        gives the problem in words, None when the value is good), is sent back once for a
+        repair, with the page again; the tokens of both calls are counted."""
         if model is not None and not valid_model_id(model):
             raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
         self._check_provider(DEFAULT_PROVIDER if provider is None else provider)
@@ -868,7 +884,7 @@ class OpenRouterClient:
         reply = self._call(CHAT_PATH, body, deadline)
         input_tokens, output_tokens = reply_usage(reply)
         content, finish = _billed_text(reply, (0, 0))
-        value, problem = parse_reply(content, schema)
+        value, problem = _valid_reply(content, schema, validate)
         if value is None:
             body["messages"].append({"role": "assistant", "content": content})
             body["messages"].append({"role": "user", "content": REPAIR.format(problem=problem)})
@@ -876,7 +892,7 @@ class OpenRouterClient:
             content, finish = _billed_text(reply, (input_tokens, output_tokens))
             more_in, more_out = reply_usage(reply)
             input_tokens, output_tokens = input_tokens + more_in, output_tokens + more_out
-            value, _ = parse_reply(content, schema)
+            value, _ = _valid_reply(content, schema, validate)
             if value is None:
                 raise ModelOutputError(
                     "invalid_output", input_tokens=input_tokens, output_tokens=output_tokens

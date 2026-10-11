@@ -17,9 +17,10 @@ OCR_MEDIA_RESOLUTION with OCR_THINKING_LEVEL, and comes back as JSON following
 ``PAGE_SCHEMA``: the page's grade, whether it is handwritten, its scripts and
 issues, and its lines with kind, text (``[?]`` for each part that can't be read),
 box, unsure words, table cell and ``continues_on_next_page``. The client sends a
-reply that does not follow the schema back once for a repair; this module then
-checks what the schema can't say (a box inside the page, a table cell with its
-table, sizes) and refuses anything else with ``ModelOutputError("invalid_output")``.
+reply that does not follow the schema back once for a repair, and one that breaks
+what the schema can't say (``checked``: a box inside the page, a table cell with its
+table, sizes) too (``validate``, ``repair_problem``): one repair at most. A reply
+still wrong after it is ``ModelOutputError("invalid_output")``.
 
 **Pinning boxes** (G5). The model's boxes are approximate, so each line is matched
 to the boxes RapidOCR's text finder found on the same image (``RapidOcrPool.find_boxes``,
@@ -311,6 +312,7 @@ class PageClient(Protocol):
         deadline: float,
         model: str | None = None,
         provider: str | None = None,
+        validate: Callable[[dict[str, Any]], str | None] | None = None,
     ) -> PageReply: ...
 
     def now(self) -> float: ...
@@ -518,6 +520,7 @@ class GeminiEngine:
             deadline=self._client.now() + self._timeout,
             model=model,
             provider=provider,
+            validate=repair_problem,
         )
 
     def _page(
@@ -673,6 +676,28 @@ def checked(value: object) -> _Reply:
         issues=tuple(_unique(page["issues"])),
         lines=tuple(lines),
     )
+
+
+# What a reply that ``checked`` refuses is told in its repair turn: the rules the schema
+# can't say, in general words (``checked`` says no more than invalid_output).
+CHECK_PROBLEM = (
+    "each box_2d must be 4 numbers [ymin, xmin, ymax, xmax] from 0 to 1000 with ymin below ymax"
+    ' and xmin below xmax; order, row and col must be 0 or more; a line has "table" set if and'
+    f" only if its kind is table_cell, with a short table id and row and col below {MAX_TABLE_INDEX};"
+    f" no line may be longer than {MAX_BLOCK_CHARS} characters, and a page has at most"
+    f" {MAX_BLOCKS_PER_PAGE} lines"
+)
+
+
+def repair_problem(value: dict[str, Any]) -> str | None:
+    """The client's ``validate`` (R12): None when ``checked`` takes ``value``, else
+    CHECK_PROBLEM, so a bad box or table index gets the one repair turn instead of the
+    page being read locally."""
+    try:
+        checked(value)
+    except ModelOutputError:
+        return CHECK_PROBLEM
+    return None
 
 
 def _checked_line(raw: dict[str, Any]) -> _Line | None:
