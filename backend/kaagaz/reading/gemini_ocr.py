@@ -1,4 +1,6 @@
-"""The Gemini reader (PRD 5 G1 to G7, F3, F5, Q7): each scanned page read by OCR_MODEL.
+"""The Gemini reader (PRD 5 G1 to G7, F3, F5, Q7): each scanned page read by the
+document's model (``DocumentPages.model`` through ``DocumentPages.provider``, model choice,
+council 11 Oct 2026), or OCR_MODEL with no document or no model chosen.
 
 ``GeminiEngine`` implements the ``OcrEngine`` protocol and ``read_page`` (a
 ``PageEngine``). OCR_ENGINE=gemini builds it through ``kaagaz.reading.wiring``
@@ -40,8 +42,9 @@ overlap is dropped. A half cut off again is a page the model could not read (bel
 **The page cache** (G7). Inside ``document(DocumentPages(...))`` (the pipeline opens
 it with ``ocr.reading_document``), each page is looked up in the cache before the
 model is called, keyed by the customer, the document, the page number, the sha256 of
-the page image's pixels, OCR_MODEL and ``GEMINI_OCR_PROMPT_VERSION``; a page found
-there is ``cached`` and costs no call. Every page the model read is saved at once,
+the page image's pixels, the model it is read with and ``GEMINI_OCR_PROMPT_VERSION``; a
+page found there is ``cached``, costs no call, and is counted in the usage scope's ledger
+as a cached call at cost 0 (SP1). Every page the model read is saved at once,
 as the model's JSON before any box is pinned (halves already joined). A page asked
 to be read again (F5, ``DocumentPages.read_again``) skips the lookup, is read with
 OCR_RETRY_MEDIA_RESOLUTION and OCR_RETRY_THINKING_LEVEL, and replaces its cached
@@ -53,10 +56,12 @@ read. Without a document (``read``, ``cli measure``) there is no cache.
   404: OCR_MODEL names no model) and ``redirect_refused`` (a 3xx: OPENROUTER_BASE_URL
   points somewhere else): not an outage, and no wait makes them work.
   ``BackendUnavailable("gemini_key")``: the document waits, nothing falls back, the
-  fix is a person's (review FX5).
+  fix is a person's (review FX5). But a ``model_not_found`` for a document's chosen model
+  that is not OCR_MODEL (OpenRouter withdrew it) is read locally as ``reader_refused`` and
+  logged at error: one withdrawn model never pauses every document.
 * Any other ``ModelUnavailable`` (rate_limited or server_error after the client's
   retries, timeout, unreachable, circuit_open, and ``http_error``, a status nothing
-  else names, ...): the outage clock starts at the
+  else names, ...): the model's own outage clock (one per model) starts at the
   first such page since the last page the model read. Until it has run
   READER_OUTAGE_FALLBACK_MINUTES, ``BackendUnavailable("gemini")``: the document
   waits and the worker pauses. After that, the page is read locally by RapidOCR
@@ -98,6 +103,7 @@ pin L lines to F found boxes; hashing the pixels is O(pixels).
 import bisect
 import contextlib
 import dataclasses
+import functools
 import hashlib
 import io
 import logging
@@ -112,12 +118,14 @@ from PIL import Image
 
 from kaagaz.ai.openrouter import OpenRouterClient, PageReply, process_gate
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, billed, schema_problem
+from kaagaz.ai.usage import record_call
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.ocr import (
     MAX_BLOCK_CHARS,
     MAX_BLOCKS_PER_PAGE,
     MAX_TABLE_INDEX,
+    READER_PROMPT_VERSION,
     DocumentPages,
     OcrLine,
     OcrTable,
@@ -142,9 +150,9 @@ from kaagaz.reading.rapid_pool import PixelBox, RapidOcrPool
 from kaagaz.reading.spans import TABLE_ID
 from kaagaz.settings import Settings
 
-# G1, G7: changes whenever INSTRUCTION or PAGE_SCHEMA changes, so a page read with the
-# old ones is never taken from the page cache and processing_runs shows the change.
-GEMINI_OCR_PROMPT_VERSION = "g1"
+# G1, G7: the prompt version, kept in kaagaz.reading.ocr (READER_PROMPT_VERSION) so the
+# pipeline and the API can name it without loading this module.
+GEMINI_OCR_PROMPT_VERSION = READER_PROMPT_VERSION
 # G3: box_2d is [ymin, xmin, ymax, xmax], each 0 to 1000 of the page (the model's own format).
 BOX_SCALE = 1000.0
 # G5: a found box matches a line when their overlap is at least this share of the smaller box.
@@ -165,6 +173,10 @@ KEY_BACKEND = "gemini_key"
 # model (404), and a base URL that redirects. http_error (a status nothing else names)
 # stays an outage.
 KEY_CODES = frozenset({"key_rejected", "model_not_found", "redirect_refused"})
+# Model choice (council 11 Oct 2026): the client's code for a model OpenRouter does not know.
+# For a document's chosen model (not OCR_MODEL) it is never a key wait (one withdrawn model
+# must not pause everyone): the page is read locally as reader_refused.
+MODEL_NOT_FOUND = "model_not_found"
 # G6: the client's code for a reply cut off at the output limit.
 TRUNCATED = "output_truncated"
 # G6: the client's code for a reply the model declined to give.
@@ -223,26 +235,27 @@ any of it is handwritten, "scripts" names the scripts it is written in, and "iss
 lists each problem you see on it. A page with no text has no lines.
 """
 
-_BOX_SCHEMA: dict[str, Any] = {
-    "type": "array",
-    "items": {"type": "number", "minimum": 0, "maximum": BOX_SCALE},
-    "minItems": 4,
-    "maxItems": 4,
-}
+# G3, strict-portable (model choice, council 11 Oct 2026): every object closed with
+# additionalProperties false (OpenAI's strict mode needs it) and no numeric or length bounds
+# (Anthropic refuses minimum, maximum and minItems). The bounds the PRD gives (a box of 4
+# numbers each 0 to BOX_SCALE, an order, row and col of at least 0) are checked by
+# ``checked`` instead.
+_BOX_SCHEMA: dict[str, Any] = {"type": "array", "items": {"type": "number"}}
 _TABLE_SCHEMA: dict[str, Any] = {
     "type": ["object", "null"],
     "properties": {
         "id": {"type": "string"},
-        "row": {"type": "integer", "minimum": 0},
-        "col": {"type": "integer", "minimum": 0},
+        "row": {"type": "integer"},
+        "col": {"type": "integer"},
         "header": {"type": "boolean"},
     },
     "required": ["id", "row", "col", "header"],
+    "additionalProperties": False,
 }
 _LINE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "order": {"type": "integer", "minimum": 0},
+        "order": {"type": "integer"},
         "kind": {"type": "string", "enum": list(LINE_KINDS)},
         "text": {"type": "string"},
         "box_2d": _BOX_SCHEMA,
@@ -251,8 +264,9 @@ _LINE_SCHEMA: dict[str, Any] = {
         "table": _TABLE_SCHEMA,
     },
     "required": ["order", "kind", "text", "box_2d", "unsure", "continues_on_next_page", "table"],
+    "additionalProperties": False,
 }
-# G3: the reply's JSON schema, as the PRD gives it.
+# G3: the reply's JSON schema, as the PRD gives it, made strict-portable (above).
 PAGE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -265,10 +279,12 @@ PAGE_SCHEMA: dict[str, Any] = {
                 "issues": {"type": "array", "items": {"type": "string", "enum": list(MODEL_ISSUES)}},
             },
             "required": ["quality", "handwritten", "scripts", "issues"],
+            "additionalProperties": False,
         },
         "lines": {"type": "array", "items": _LINE_SCHEMA},
     },
     "required": ["page", "lines"],
+    "additionalProperties": False,
 }
 
 _log = logging.getLogger(__name__)
@@ -286,6 +302,8 @@ class PageClient(Protocol):
         media_resolution: str,
         thinking_level: str,
         deadline: float,
+        model: str | None = None,
+        provider: str | None = None,
     ) -> PageReply: ...
 
     def now(self) -> float: ...
@@ -350,8 +368,9 @@ class GeminiEngine:
         self._build_local = local or _rapidocr_pages
         self._local: PageEngine | None = None
         self._lock = threading.Lock()
-        self._down_since: float | None = None
-        self._last_failure: float | None = None
+        # Q7, by model (council 11 Oct 2026, FINAL 2): one model's outage is its own.
+        self._down_since: dict[str, float] = {}
+        self._last_failure: dict[str, float] = {}
         self._pages: DocumentPages | None = None
 
     @classmethod
@@ -391,19 +410,24 @@ class GeminiEngine:
     # Reading one page.
 
     def _read(self, image: Image.Image, *, page_no: int, pages: DocumentPages | None) -> PageRead:
+        # Model choice: the document's model and provider, else OCR_MODEL (no document: cli measure).
+        model = self._model if pages is None or pages.model is None else pages.model
+        provider = None if pages is None else pages.provider
         again = pages is not None and page_no in pages.read_again
-        key = None if pages is None else self._key(pages, image, page_no)
+        key = None if pages is None else self._key(pages, image, page_no, model)
         if pages is not None and key is not None and not again:
             reply = _cached(pages.cache.get(key))
             if reply is not None:
-                return self._page(reply, image, page_no, cached=True)
+                record_call(model, None, 0, 0, 0, 0.0, cached=True)  # SP1: a cached page costs 0
+                return self._page(reply, image, page_no, model, cached=True)
         started = self._client.now()
         try:
-            reply, result, input_tokens, output_tokens = self._ask(image, harder=again)
+            reply, result, input_tokens, output_tokens = self._ask(image, model, provider, harder=again)
         except ModelUnavailable as error:
             return self._outage(
                 image,
                 page_no,
+                model,
                 error.code,
                 started,
                 tokens=(error.input_tokens, error.output_tokens),
@@ -412,29 +436,33 @@ class GeminiEngine:
             spent = (error.input_tokens, error.output_tokens)
             return self._read_locally(image, page_no, READER_REFUSED, error.code, tokens=spent)
         with self._lock:
-            self._down_since = self._last_failure = None
+            self._down_since.pop(model, None)
+            self._last_failure.pop(model, None)
         if pages is not None and key is not None:
             pages.cache.put(key, result, input_tokens, output_tokens)
-        return self._page(reply, image, page_no, tokens=(input_tokens, output_tokens))
+        return self._page(reply, image, page_no, model, tokens=(input_tokens, output_tokens))
 
-    def _key(self, pages: DocumentPages, image: Image.Image, page_no: int) -> PageKey:
+    def _key(self, pages: DocumentPages, image: Image.Image, page_no: int, model: str) -> PageKey:
         return PageKey(
             pages.customer_id,
             pages.document_id,
             page_no,
             pixels_sha256(image),
-            self._model,
+            model,
             GEMINI_OCR_PROMPT_VERSION,
         )
 
-    def _ask(self, image: Image.Image, *, harder: bool) -> tuple[_Reply, dict[str, Any], int, int]:
+    def _ask(
+        self, image: Image.Image, model: str, provider: str | None, *, harder: bool
+    ) -> tuple[_Reply, dict[str, Any], int, int]:
         """(the checked reply, its JSON to cache, input tokens, output tokens); halves when
         the whole page's reply is cut off (G6). The tokens are every call's for the page:
         the cut-off whole page's too. A ``ModelOutputError`` raised here carries the tokens
         of every call made for the page before it, its own included (G9)."""
         resolution, thinking = self._harder if harder else self._normal
+        ask = functools.partial(self._call, model=model, provider=provider)
         try:
-            whole = self._call(image, resolution, thinking)
+            whole = ask(image, resolution, thinking)
         except ModelOutputError as error:
             if error.code != TRUNCATED or image.height < 2:
                 raise
@@ -447,10 +475,10 @@ class GeminiEngine:
         top_end, bottom_start = half_rows(image.height)
         try:
             with image.crop((0, 0, image.width, top_end)) as top_image:
-                top = self._call(top_image, resolution, thinking)
+                top = ask(top_image, resolution, thinking)
             tokens_in, tokens_out = tokens_in + top.input_tokens, tokens_out + top.output_tokens
             with image.crop((0, bottom_start, image.width, image.height)) as bottom_image:
-                bottom = self._call(bottom_image, resolution, thinking)
+                bottom = ask(bottom_image, resolution, thinking)
             tokens_in, tokens_out = tokens_in + bottom.input_tokens, tokens_out + bottom.output_tokens
             top_reply, bottom_reply = checked(top.value), checked(bottom.value)
         except ModelUnavailable as error:
@@ -464,7 +492,9 @@ class GeminiEngine:
         joined = joined_halves(top_reply, bottom_reply, image.height, top_end, bottom_start)
         return joined, as_result(joined), tokens_in, tokens_out
 
-    def _call(self, image: Image.Image, resolution: str, thinking: str) -> PageReply:
+    def _call(
+        self, image: Image.Image, resolution: str, thinking: str, *, model: str, provider: str | None
+    ) -> PageReply:
         return self._client.read_page(
             png=png_of(image),
             instruction=INSTRUCTION,
@@ -472,6 +502,8 @@ class GeminiEngine:
             media_resolution=resolution,
             thinking_level=thinking,
             deadline=self._client.now() + self._timeout,
+            model=model,
+            provider=provider,
         )
 
     def _page(
@@ -479,6 +511,7 @@ class GeminiEngine:
         reply: _Reply,
         image: Image.Image,
         page_no: int,
+        model: str,
         *,
         cached: bool = False,
         tokens: tuple[int, int] = (0, 0),
@@ -500,7 +533,7 @@ class GeminiEngine:
             handwritten=reply.handwritten,
             scripts=reply.scripts,
             issues=_unique([*(issue for issue in reply.issues if issue in ISSUE_CODES), *extra]),
-            read_by=self._model,
+            read_by=model,
             input_tokens=tokens[0],
             output_tokens=tokens[1],
             cached=cached,
@@ -513,23 +546,29 @@ class GeminiEngine:
         self,
         image: Image.Image,
         page_no: int,
+        model: str,
         code: str,
         started: float,
         *,
         tokens: tuple[int, int] = (0, 0),
     ) -> PageRead:
-        """A key problem waits; an outage waits until it has lasted
+        """A key problem waits; an outage of ``model`` waits until it has lasted
         READER_OUTAGE_FALLBACK_MINUTES, then the page is read locally. A failure more than
-        the outage gap after the last one starts a new outage (see the module notes)."""
+        the outage gap after the last one starts a new outage (see the module notes). A
+        chosen model that is not OCR_MODEL and that OpenRouter does not know is read
+        locally as reader_refused, logged at error: never a key wait for everyone."""
+        if code == MODEL_NOT_FOUND and model != self._model:
+            _log.error("reading model not found, page read locally", extra={"code": code})
+            return self._read_locally(image, page_no, READER_REFUSED, code, tokens=tokens)
         if code in KEY_CODES:
             raise BackendUnavailable(KEY_BACKEND) from None
         with self._lock:
             now = self._client.now()
-            last = self._last_failure
-            if self._down_since is None or last is None or now - last > self._outage_gap:
-                self._down_since = started
-            self._last_failure = now
-            down_for = now - self._down_since
+            last = self._last_failure.get(model)
+            if model not in self._down_since or last is None or now - last > self._outage_gap:
+                self._down_since[model] = started
+            self._last_failure[model] = now
+            down_for = now - self._down_since[model]
         if down_for < self._fallback_after:
             raise BackendUnavailable(GEMINI_BACKEND) from None
         return self._read_locally(image, page_no, READ_LOCALLY, code, tokens=tokens)
@@ -599,9 +638,10 @@ def half_rows(height: int) -> tuple[int, int]:
 
 def checked(value: object) -> _Reply:
     """The reply as a ``_Reply``, or ``ModelOutputError("invalid_output")`` when it does not
-    follow PAGE_SCHEMA or breaks what the schema can't say: a box outside the page or with
-    no area, a number that is not finite, a table on a line that is not a table cell (or
-    none on one that is), a bad table id, more than MAX_BLOCKS_PER_PAGE lines or a line
+    follow PAGE_SCHEMA or breaks what the schema can't say: a box that is not 4 numbers,
+    outside the page or with no area, a number that is not finite, an order below 0, a
+    table on a line that is not a table cell (or none on one that is), a bad table id, a
+    row or col outside 0..MAX_TABLE_INDEX, more than MAX_BLOCKS_PER_PAGE lines or a line
     over MAX_BLOCK_CHARS. Control characters are dropped from the text, a line left with
     no text is dropped, and an unsure word not in its line is left out (it has no spot).
     Lines are put in ``order``, stable. O(size of the reply)."""
@@ -623,7 +663,7 @@ def checked(value: object) -> _Reply:
 
 def _checked_line(raw: dict[str, Any]) -> _Line | None:
     text = raw["text"]
-    if len(text) > MAX_BLOCK_CHARS or _SURROGATE.search(text):
+    if raw["order"] < 0 or len(text) > MAX_BLOCK_CHARS or _SURROGATE.search(text):
         raise ModelOutputError("invalid_output")
     box = _box(raw["box_2d"])
     kind, table = raw["kind"], _table(raw["table"])

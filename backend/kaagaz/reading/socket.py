@@ -40,12 +40,15 @@ the page, the blank check, any second reading), only ``read_page`` goes to the
 pool, and each page is finished, ``on_page`` included, strictly in page order,
 so a reader's spans and its ``on_page`` calls are exactly as without a pool. At
 most the pool's size of pages are being read at once; with no pool, each page
-is read and finished on the spot, as before.
+is read and finished on the spot, as before. A page thread runs in a copy of the
+reader's context (``contextvars``), so its model calls are billed to the usage scope the
+reader is in (model choice and AI spend, SP1).
 
 PROVISIONAL until the reader contract (#3) is written. PROVISIONAL (plan
 7.4): ``on_page`` is part of that contract, for Vrushit and PRD 2 to agree.
 """
 
+import contextvars
 import math
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
@@ -227,7 +230,10 @@ class PagesInOrder:
         try:
             while self._reading >= self._pool.size:
                 self._finish_oldest()
-            future = self._pool.executor.submit(_read_and_close, engine, image, page_no)
+            # A copy of this thread's context: the page thread bills its calls to the same
+            # usage scope (kaagaz.ai.usage, SP1).
+            context = contextvars.copy_context()
+            future = self._pool.executor.submit(context.run, _read_and_close, engine, image, page_no)
             added = True
         finally:
             if not added:  # an older page failed first: this one is never read

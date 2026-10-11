@@ -45,6 +45,7 @@ from typing import Any, NamedTuple
 from sqlalchemy import Connection, TextClause, text
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
+from kaagaz.ai.usage import usage_scope
 from kaagaz.db.customers import is_active
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.search.hybrid import vector_literal
@@ -296,7 +297,8 @@ def embed_missing(
       since an unknown share of ``limit`` went to it.
 
     Database errors propagate: the caller logs them. Running it again changes
-    nothing that is done: ``_WRITE`` only fills a NULL vector.
+    nothing that is done: ``_WRITE`` only fills a NULL vector. Each document's calls are
+    billed in its own usage scope, kind embed, with no user (model choice, SP1).
 
     Cost: one statement for the C customers, one status lookup and one
     ``_MISSING`` per customer after the cursor (O(D) over its documents, each
@@ -318,7 +320,9 @@ def embed_missing(
         for document in documents:
             budget = limit - written
             try:
-                done = embed_pieces(db, customer, document, model, limit=budget)
+                # SP1: no user asked for this pass (user NULL).
+                with usage_scope(db, customer_id=customer, user_id=None, kind="embed", document_id=document):
+                    done = embed_pieces(db, customer, document, model, limit=budget)
             except ModelUnavailable as error:
                 return MissingPass(written, after, down=error.code)
             except ModelOutputError as error:

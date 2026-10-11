@@ -251,7 +251,9 @@ def rig(
     max_check_crops: int = 200,
     embed: CountingEmbedder | None = None,
     settings: Settings = SETTINGS,
+    **options: Any,
 ) -> Rig:
+    """``options``: more of DocumentProcessor's arguments (model choice's job_reading, usage)."""
     statuses, storage = MemoryStatuses(), MemoryStorage()
     repo = MemoryDocuments(statuses)
     runs = MemoryRuns(repo)
@@ -291,6 +293,7 @@ def rig(
         page_cache=cache,
         read_again=read_again,
         model_usage=embed.usage if embed is not None else None,
+        **options,
     )
     upload = UploadService(PIPELINE_POLICY, repo, storage, MemoryQueue(), new_id=SeqIds())
     reader = engine if isinstance(engine, ScriptedReader) else None
