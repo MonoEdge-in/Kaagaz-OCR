@@ -193,7 +193,7 @@ OPERATOR_RIGHTS = {
     "kaagaz_op_usage": (
         "TABLE(customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,"
         " input_tokens numeric, output_tokens numeric, reasoning_tokens numeric, cost_usd numeric,"
-        " cost_estimated boolean)",
+        " cost_estimated boolean, cost_part_unknown boolean)",
         EMPTY_PATH,
     ),
 }

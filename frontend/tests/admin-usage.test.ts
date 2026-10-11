@@ -30,12 +30,14 @@ const totals = (changes: Partial<UsageTotals> = {}): UsageTotals => ({
   reasoning_tokens: 8000,
   cost_usd: 12.4,
   cost_estimated: false,
+  cost_part_unknown: false,
   ...changes,
 });
 
 const budget = (spent: number, limit: number | null): UsageBudget => ({
   ai_budget_usd: limit,
   spent_this_month_usd: spent,
+  spent_part_unknown: false,
   share: limit === null ? null : spent / limit,
 });
 
@@ -226,6 +228,14 @@ describe("the budget (SP4, warn only)", () => {
     const html = view({ kind: "ready", report: { ...REPORT, budget: budget(61, 50) } });
     expect(html).toMatch(/<p[^>]*role="status"[^>]*>.*has reached the budget/);
     expect(html).toContain("122%");
+  });
+
+  it("says when part of this month's spend is not known (R9)", () => {
+    expect(budgetLine({ ...budget(5, 50), spent_part_unknown: true })).toBe(
+      "$5.00 (part not known) of $50.00 this month",
+    );
+    const html = view({ kind: "ready", report: { ...REPORT, totals: totals({ cost_part_unknown: true }) } });
+    expect(html).toContain("$12.40 (part not known)");
   });
 
   it("has no warning, and says so, when there is no budget", () => {

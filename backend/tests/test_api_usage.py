@@ -28,7 +28,7 @@ from kaagaz.api.auth import CurrentUser
 from kaagaz.api.context import AppContext
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers import chat, search, stories
-from kaagaz.api.routers.admin import csv_cell, usage_csv, usage_days
+from kaagaz.api.routers.admin import ai_enabled, csv_cell, usage_csv, usage_days
 from kaagaz.db import document_stories as stories_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.usage import UsageRow
@@ -51,6 +51,7 @@ TOTALS = {
     "reasoning_tokens",
     "cost_usd",
     "cost_estimated",
+    "cost_part_unknown",
 }
 
 
@@ -83,12 +84,21 @@ def test_sp2_a_cell_that_starts_like_a_formula_gets_a_quote() -> None:
     assert [csv_cell(value) for value in ("Asha", 12, "0.5", "a=b", "")] == ["Asha", "12", "0.5", "a=b", ""]
 
 
+@pytest.mark.parametrize(
+    ("ocr_engine", "model_enabled", "enabled"),
+    [("gemini", True, True), ("rapidocr", True, True), ("gemini", False, True), ("rapidocr", False, False)],
+)
+def test_ai_is_on_unless_the_server_is_keyless(ocr_engine: str, model_enabled: bool, enabled: bool) -> None:
+    """R9: scans read by a model, or MODEL_ENABLED, call AI; only keyless mode calls none."""
+    assert ai_enabled(make_settings(ocr_engine=ocr_engine, model_enabled=model_enabled)) is enabled
+
+
 def test_sp2_the_csv_has_its_columns_then_one_line_each_escaped() -> None:
-    lines = [("2026-10-02", '=HYPERLINK("http://x","y")', MODEL, "scan", 3, 1200, "0.044", "no")]
+    lines = [("2026-10-02", '=HYPERLINK("http://x","y")', MODEL, "scan", 3, 1200, "0.044", "no", "no")]
     parsed = list(csv.reader(io.StringIO(usage_csv(lines))))
     assert parsed == [
-        ["day", "user", "model", "kind", "calls", "tokens", "cost", "estimated"],
-        ["2026-10-02", '\'=HYPERLINK("http://x","y")', MODEL, "scan", "3", "1200", "0.044", "no"],
+        ["day", "user", "model", "kind", "calls", "tokens", "cost", "estimated", "part_not_known"],
+        ["2026-10-02", '\'=HYPERLINK("http://x","y")', MODEL, "scan", "3", "1200", "0.044", "no", "no"],
     ]
 
 
@@ -347,6 +357,7 @@ def test_sp2_the_usage_report_has_the_usage_report_shape_and_this_months_budget(
     assert report["budget"] == {
         "ai_budget_usd": 10.0,
         "spent_this_month_usd": pytest.approx(0.85),
+        "spent_part_unknown": False,
         "share": pytest.approx(0.085),
     }
 
@@ -392,9 +403,9 @@ def test_sp2_the_csv_downloads_one_escaped_line_per_day_user_model_and_kind(db: 
         reply.headers["content-disposition"] == 'attachment; filename="ai-usage-2026-10-01-to-2026-10-20.csv"'
     )
     assert list(csv.reader(io.StringIO(reply.text))) == [
-        ["day", "user", "model", "kind", "calls", "tokens", "cost", "estimated"],
-        ["2026-10-02", "", EMBED, "embed", "1", "1100", "", "no"],
-        ["2026-10-02", "'=cmd|calc", MODEL, "scan", "2", "2200", "0.750000", "no"],
+        ["day", "user", "model", "kind", "calls", "tokens", "cost", "estimated", "part_not_known"],
+        ["2026-10-02", "", EMBED, "embed", "1", "1100", "", "no", "yes"],
+        ["2026-10-02", "'=cmd|calc", MODEL, "scan", "2", "2200", "0.750000", "no", "no"],
     ]
 
 
@@ -461,8 +472,9 @@ def test_sp1_a_search_is_billed_to_the_searcher(db: Database) -> None:
     ("overrides", "enabled"),
     [
         ({"ocr_engine": "gemini", "model_enabled": True}, True),
-        ({"ocr_engine": "rapidocr", "model_enabled": True}, False),  # keyless mode
-        ({"ocr_engine": "gemini", "model_enabled": False}, False),
+        ({"ocr_engine": "rapidocr", "model_enabled": True}, True),  # chat and cards call models
+        ({"ocr_engine": "gemini", "model_enabled": False}, True),  # scans are read by a model
+        ({"ocr_engine": "rapidocr", "model_enabled": False}, False),  # keyless mode
     ],
 )
 def test_sp2_the_report_says_whether_ai_is_on_on_this_server(

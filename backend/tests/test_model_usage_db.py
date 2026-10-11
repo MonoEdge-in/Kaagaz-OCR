@@ -191,6 +191,7 @@ def test_the_report_counts_whole_days_in_timezone_and_groups_six_ways(db: Databa
         "reasoning_tokens": 100,
         "cost_usd": pytest.approx(0.65),  # the chat's unknown cost is not counted
         "cost_estimated": False,
+        "cost_part_unknown": True,  # and the total says so (R9)
     }
     assert _approx(report, "by_user") == [
         ("Asha", 5, pytest.approx(0.30)),
@@ -239,6 +240,7 @@ def test_the_report_of_one_user_and_of_a_quiet_period(db: Database) -> None:
         "reasoning_tokens": 0,
         "cost_usd": 0.0,
         "cost_estimated": False,
+        "cost_part_unknown": False,
     }
     assert [quiet[key] for key in ("by_user", "by_model", "by_kind", "by_day", "top_documents")] == [[]] * 5
 

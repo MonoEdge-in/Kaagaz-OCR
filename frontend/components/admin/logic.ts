@@ -4,7 +4,7 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { ApiError } from "@/lib/api";
-import { formatDateTime, formatNumber, formatUsd } from "@/lib/format";
+import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type {
   AdminUser,
@@ -445,10 +445,12 @@ export function budgetShareText(budget: UsageBudget): string | null {
 }
 
 /** "$12.40 of $50.00 this month", or that there is no budget. */
-export function budgetLine(budget: Pick<UsageBudget, "ai_budget_usd" | "spent_this_month_usd">): string {
-  return budget.ai_budget_usd === null
-    ? "No monthly AI budget is set."
-    : `${formatUsd(budget.spent_this_month_usd)} of ${formatUsd(budget.ai_budget_usd)} this month`;
+export function budgetLine(
+  budget: Pick<UsageBudget, "ai_budget_usd" | "spent_this_month_usd"> & { spent_part_unknown?: boolean },
+): string {
+  if (budget.ai_budget_usd === null) return "No monthly AI budget is set.";
+  const spent = formatUsd(budget.spent_this_month_usd) + (budget.spent_part_unknown ? ` ${PART_NOT_KNOWN}` : "");
+  return `${spent} of ${formatUsd(budget.ai_budget_usd)} this month`;
 }
 
 /** SP4, warn only: at 80% and at 100% of the budget a line says so; nothing stops. */

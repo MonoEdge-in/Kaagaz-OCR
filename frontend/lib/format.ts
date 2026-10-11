@@ -92,9 +92,21 @@ export function formatUsd(usd: number, estimated = false): string {
   return estimated ? `≈ ${text} (estimated)` : text;
 }
 
-/** A usage row's cost (UsageTotals): "Not known" when some call came without one. */
-export function formatCost(totals: { cost_usd: number | null; cost_estimated: boolean }): string {
-  return totals.cost_usd === null ? "Not known" : formatUsd(totals.cost_usd, totals.cost_estimated);
+/** The words after a sum that counts only the costs that are known. */
+export const PART_NOT_KNOWN = "(part not known)";
+
+/**
+ * A usage row's cost (UsageTotals): "Not known" when no call's cost is known, and
+ * "(part not known)" after the sum when some call's is not.
+ */
+export function formatCost(totals: {
+  cost_usd: number | null;
+  cost_estimated: boolean;
+  cost_part_unknown?: boolean;
+}): string {
+  if (totals.cost_usd === null) return "Not known";
+  const text = formatUsd(totals.cost_usd, totals.cost_estimated);
+  return totals.cost_part_unknown ? `${text} ${PART_NOT_KNOWN}` : text;
 }
 
 const TYPE_LABELS: Record<DetectedType, string> = {

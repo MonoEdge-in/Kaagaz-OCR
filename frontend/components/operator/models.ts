@@ -157,7 +157,8 @@ export function periodRange(id: PeriodId, now: Date): { from: string; to: string
   }
 }
 
-/** Every row added up: the cost is not known when no row's is, and estimated when any row's is. */
+/** Every row added up: the cost is not known when no row's is, part not known when some
+ * row's is not, and estimated when any row's is. */
 export function spendTotals(rows: OperatorUsageRow[]): UsageTotals {
   const known = rows.filter((row) => row.cost_usd !== null);
   return {
@@ -168,5 +169,6 @@ export function spendTotals(rows: OperatorUsageRow[]): UsageTotals {
     reasoning_tokens: rows.reduce((sum, row) => sum + row.reasoning_tokens, 0),
     cost_usd: known.length === 0 ? null : known.reduce((sum, row) => sum + (row.cost_usd ?? 0), 0),
     cost_estimated: rows.some((row) => row.cost_estimated),
+    cost_part_unknown: rows.some((row) => row.cost_usd === null || row.cost_part_unknown),
   };
 }

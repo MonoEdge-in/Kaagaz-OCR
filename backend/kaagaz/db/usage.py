@@ -5,6 +5,8 @@ One row per (scope, model, kind, cached): how many calls, their tokens and their
 dollars. The cost is the sum of OpenRouter's ``usage.cost`` when every call carried one;
 otherwise the catalogue's price times the tokens, marked ``cost_estimated``; NULL when the
 model is not in the catalogue either. A row holds ids, codes and numbers only, never content.
+A sum counts the known costs; ``cost_part_unknown`` says some row's cost was not known, so
+the screens never show a partial sum as the whole one.
 
 The admin's Usage screen (SP2) reads one organisation's rows back over a period
 [``start``, ``end``) (the route turns its days into one: ``api.routers.admin``):
@@ -101,7 +103,7 @@ _REPORT = text(
     " sum(r.calls) AS calls, COALESCE(sum(r.calls) FILTER (WHERE r.cached), 0) AS cached_calls,"
     " sum(r.input_tokens) AS input_tokens, sum(r.output_tokens) AS output_tokens,"
     " sum(r.reasoning_tokens) AS reasoning_tokens, sum(r.cost_usd) AS cost_usd,"
-    " bool_or(r.cost_estimated) AS cost_estimated"
+    " bool_or(r.cost_estimated) AS cost_estimated, bool_or(r.cost_usd IS NULL) AS cost_part_unknown"
     " FROM r"
     " GROUP BY GROUPING SETS ((), (r.user_id), (r.model), (r.kind), (r.day), (r.document_id, r.of_document))"
     ")"
@@ -114,9 +116,9 @@ _REPORT = text(
     " g.user_id, g.model, g.kind, g.document_id"
 )
 
-# The dollars spent in a period (unknown costs count nothing).
+# The dollars spent in a period (unknown costs count nothing), and whether any was unknown.
 _SPENT = text(
-    "SELECT COALESCE(sum(u.cost_usd), 0) FROM model_usage u"
+    "SELECT COALESCE(sum(u.cost_usd), 0), COALESCE(bool_or(u.cost_usd IS NULL), false) FROM model_usage u"
     " WHERE u.customer_id = :c AND u.created_at >= :start_at AND u.created_at < :end_at"
 )
 
@@ -136,11 +138,13 @@ def _totals(row: RowMapping | None) -> dict[str, Any]:
             "reasoning_tokens": 0,
             "cost_usd": 0.0,
             "cost_estimated": False,
+            "cost_part_unknown": False,
         }
     return {
         **{column: int(row[column]) for column in _COUNTS},
         "cost_usd": _money(row["cost_usd"]),
         "cost_estimated": bool(row["cost_estimated"]),
+        "cost_part_unknown": bool(row["cost_part_unknown"]),
     }
 
 
@@ -202,5 +206,10 @@ def month_spend(conn: Connection, customer_id: str, *, start: datetime, end: dat
     """The US dollars ``customer_id`` spent in [``start``, ``end``) (for the budget, SP4:
     the route gives this month in TIMEZONE); 0.0 with no rows, and a cost not known counts
     nothing. On a ``Database.customer()`` connection of ``customer_id``."""
-    spent = conn.execute(_SPENT, {"c": customer_id, "start_at": start, "end_at": end}).scalar_one()
-    return float(spent)
+    return spend(conn, customer_id, start=start, end=end)[0]
+
+
+def spend(conn: Connection, customer_id: str, *, start: datetime, end: datetime) -> tuple[float, bool]:
+    """(``month_spend``, whether some cost in the period was not known). One statement."""
+    spent, part_unknown = conn.execute(_SPENT, {"c": customer_id, "start_at": start, "end_at": end}).one()
+    return float(spent), bool(part_unknown)

@@ -37,7 +37,7 @@ const MODELS: OrgModels = {
   ai_budget_usd: 50,
 };
 
-const BUDGET: UsageBudget = { ai_budget_usd: 50, spent_this_month_usd: 12.4, share: 0.248 };
+const BUDGET: UsageBudget = { ai_budget_usd: 50, spent_this_month_usd: 12.4, spent_part_unknown: false, share: 0.248 };
 
 const render = (models: OrgModels = MODELS, budget: UsageBudget = BUDGET) =>
   renderToStaticMarkup(createElement(ModelsView, { models, budget }));
@@ -79,7 +79,7 @@ describe("the AI models panel", () => {
     expect(html).toContain("$12.40 of $50.00 this month");
     const none = render(
       { ...MODELS, ai_budget_usd: null },
-      { ai_budget_usd: null, spent_this_month_usd: 3, share: null },
+      { ai_budget_usd: null, spent_this_month_usd: 3, spent_part_unknown: false, share: null },
     );
     expect(none).toContain("No monthly AI budget is set.");
   });

@@ -8,11 +8,11 @@
 import { useEffect, useState } from "react";
 import table from "@/components/documents/Table.module.css";
 import { getOperatorUsage } from "@/lib/api";
-import { formatNumber } from "@/lib/format";
+import { formatCost, formatNumber } from "@/lib/format";
 import type { OperatorUsageRow, UsageTotals } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { operatorErrorMessage } from "./logic";
-import { PERIODS, periodRange, spendTotals, usd } from "./models";
+import { PERIODS, periodRange, spendTotals } from "./models";
 import type { PeriodId } from "./models";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -89,7 +89,7 @@ function Cells({ totals }: { totals: UsageTotals }) {
         {formatNumber(totals.output_tokens)}
       </td>
       <td role="cell" data-label="Cost" className="tabular">
-        {usd(totals.cost_usd, totals.cost_estimated)}
+        {formatCost(totals)}
       </td>
     </>
   );

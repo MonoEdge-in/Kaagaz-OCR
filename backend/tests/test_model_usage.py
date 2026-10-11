@@ -103,6 +103,7 @@ def _group(dimension: str, cost: str | None, **keys: Any) -> dict[str, Any]:
         "reasoning_tokens": Decimal(1),
         "cost_usd": None if cost is None else Decimal(cost),
         "cost_estimated": False,
+        "cost_part_unknown": cost is None,
     }
     return row | keys
 
@@ -137,6 +138,7 @@ def test_the_report_splits_the_groups_and_keeps_document_work_in_the_top_documen
         "reasoning_tokens": 1,
         "cost_usd": 1.5,
         "cost_estimated": False,
+        "cost_part_unknown": False,
     }
     assert [(row["user_id"], row["user_name"], row["cost_usd"]) for row in report["by_user"]] == [
         ("u1", "Asha", 1.0),
@@ -162,5 +164,35 @@ def test_an_empty_period_counts_nothing() -> None:
         "reasoning_tokens": 0,
         "cost_usd": 0.0,
         "cost_estimated": False,
+        "cost_part_unknown": False,
     }
     assert [report[key] for key in ("by_user", "by_model", "by_kind", "by_day", "top_documents")] == [[]] * 5
+
+
+def test_a_sum_with_a_cost_not_known_says_part_of_it_is_not_known() -> None:
+    """R9: a group whose sum counts only the known costs is marked, never shown as whole."""
+    grouped = [_group("total", "1.5", cost_part_unknown=True), _group("model", None, model="a/unlisted")]
+    start, end = period(date(2026, 10, 2), date(2026, 10, 2))
+    report = usage.usage_report(cast(Connection, _Conn(grouped)), "c1", start=start, end=end, timezone=TZ)
+    assert (report["totals"]["cost_usd"], report["totals"]["cost_part_unknown"]) == (1.5, True)
+    assert [(row["cost_usd"], row["cost_part_unknown"]) for row in report["by_model"]] == [(None, True)]
+
+
+class _Spent:
+    """Answers _SPENT with (sum, any unknown)."""
+
+    def __init__(self, row: tuple[Decimal, bool]) -> None:
+        self.row = row
+
+    def execute(self, statement: object, params: dict[str, Any]) -> "_Spent":
+        return self
+
+    def one(self) -> tuple[Decimal, bool]:
+        return self.row
+
+
+def test_the_months_spend_says_whether_part_of_it_is_not_known() -> None:
+    start, end = period(date(2026, 10, 1), date(2026, 10, 31))
+    conn = cast(Connection, _Spent((Decimal("2.500000"), True)))
+    assert usage.spend(conn, "c1", start=start, end=end) == (2.5, True)
+    assert usage.month_spend(conn, "c1", start=start, end=end) == 2.5

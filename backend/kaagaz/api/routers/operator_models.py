@@ -236,4 +236,5 @@ def _usage(row: RowMapping) -> dict[str, Any]:
         "reasoning_tokens": int(row["reasoning_tokens"]),
         "cost_usd": _number(row["cost_usd"]),
         "cost_estimated": bool(row["cost_estimated"]),
+        "cost_part_unknown": bool(row["cost_part_unknown"]),  # the sum counts the known costs only
     }

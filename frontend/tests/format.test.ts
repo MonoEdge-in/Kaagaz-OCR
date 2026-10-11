@@ -164,5 +164,10 @@ describe("formatUsd and formatCost", () => {
     expect(formatCost({ cost_usd: null, cost_estimated: true })).toBe("Not known");
     expect(formatCost({ cost_usd: 3.5, cost_estimated: false })).toBe("$3.50");
     expect(formatCost({ cost_usd: 3.5, cost_estimated: true })).toBe("≈ $3.50 (estimated)");
+    // R9: a sum of the known costs only says so.
+    expect(formatCost({ cost_usd: 3.5, cost_estimated: false, cost_part_unknown: true })).toBe(
+      "$3.50 (part not known)",
+    );
+    expect(formatCost({ cost_usd: null, cost_estimated: false, cost_part_unknown: true })).toBe("Not known");
   });
 });

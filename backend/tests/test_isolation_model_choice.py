@@ -52,7 +52,9 @@ def test_naming_bs_user_gives_a_an_empty_report(db: Database) -> None:
     assert [report[part] for part in ("by_user", "by_model", "by_kind", "by_day", "top_documents")] == [
         []
     ] * 5
-    assert lines == [["day", "user", "model", "kind", "calls", "tokens", "cost", "estimated"]]
+    assert lines == [
+        ["day", "user", "model", "kind", "calls", "tokens", "cost", "estimated", "part_not_known"]
+    ]
 
 
 def test_a_model_allowed_b_is_403_on_as_upload_and_read_again(db: Database) -> None:

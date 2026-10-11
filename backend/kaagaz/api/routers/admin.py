@@ -65,6 +65,7 @@ from kaagaz.db import runs as runs_sql
 from kaagaz.db import usage as usage_sql
 from kaagaz.db import users as users_sql
 from kaagaz.reading.ocr import GEMINI
+from kaagaz.settings import Settings
 
 router = APIRouter(dependencies=[Depends(require_admin_session)])
 
@@ -79,7 +80,7 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 RoleName = Literal["member", "reviewer", "admin"]
 
 USAGE_MAX_DAYS = 366
-USAGE_CSV_COLUMNS = ("day", "user", "model", "kind", "calls", "tokens", "cost", "estimated")
+USAGE_CSV_COLUMNS = ("day", "user", "model", "kind", "calls", "tokens", "cost", "estimated", "part_not_known")
 _FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
 UsageFrom = Annotated[str | None, Query(alias="from", pattern=r"^\d{4}-\d{2}-\d{2}$")]
 UsageTo = Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")]
@@ -360,7 +361,8 @@ def get_stats(user: AdminSession, context: Context) -> dict[str, Any]:
         spent = usage_sql.month_spend(conn, user.customer_id, start=start, end=end)
     tokens = {"input_tokens": reader.pop("input_tokens"), "output_tokens": reader.pop("output_tokens")}
     numbers["reader_pages"] = reader
-    numbers["spend_estimate"] = {**tokens, "usd": round(float(spent), 2)}
+    # The ledger's own precision: under a cent stays more than nothing ("< $0.01").
+    numbers["spend_estimate"] = {**tokens, "usd": round(float(spent), 6)}
     return numbers
 
 
@@ -404,12 +406,14 @@ def _org_model(row: RowMapping, provider: str | None) -> dict[str, Any]:
 
 
 def _budget(conn: Connection, customer_id: str, start: datetime, end: datetime) -> dict[str, Any]:
-    """``UsageBudget``: this month's spend against the operator's budget (warn only, SP4)."""
+    """``UsageBudget``: this month's spend against the operator's budget (warn only, SP4),
+    and whether part of it is not known (``spent_part_unknown``)."""
     budget = listing.ai_budget(conn, customer_id)
-    spent = float(usage_sql.month_spend(conn, customer_id, start=start, end=end))
+    spent, part_unknown = usage_sql.spend(conn, customer_id, start=start, end=end)
     return {
         "ai_budget_usd": budget,
         "spent_this_month_usd": spent,
+        "spent_part_unknown": part_unknown,
         "share": None if budget is None else spent / budget,
     }
 
@@ -474,8 +478,14 @@ def get_usage(
         "from": day_from.isoformat(),
         "to": day_to.isoformat(),
         "budget": budget,
-        "ai_enabled": settings.ocr_engine == GEMINI and settings.model_enabled,
+        "ai_enabled": ai_enabled(settings),
     }
+
+
+def ai_enabled(settings: Settings) -> bool:
+    """Whether this server calls AI models at all: scans read by a model, or MODEL_ENABLED
+    (chat, cards, search). False only in keyless mode."""
+    return settings.ocr_engine == GEMINI or settings.model_enabled
 
 
 @router.get("/admin/usage.csv")
@@ -508,6 +518,7 @@ def get_usage_csv(
             row["tokens"],
             "" if row["cost_usd"] is None else row["cost_usd"],
             "yes" if row["cost_estimated"] else "no",
+            "yes" if row["cost_part_unknown"] else "no",
         )
         for row in rows
     )

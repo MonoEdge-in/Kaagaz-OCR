@@ -604,7 +604,8 @@ def ai_budget(conn: Connection, customer_id: str) -> float | None:
 _USAGE_ROWS = (
     "SELECT (u.created_at AT TIME ZONE :tz)::date AS day, max(us.display_name) AS user_name,"
     " u.model, u.kind, sum(u.calls) AS calls, sum(u.input_tokens + u.output_tokens) AS tokens,"
-    " sum(u.cost_usd) AS cost_usd, bool_or(u.cost_estimated) AS cost_estimated"
+    " sum(u.cost_usd) AS cost_usd, bool_or(u.cost_estimated) AS cost_estimated,"
+    " bool_or(u.cost_usd IS NULL) AS cost_part_unknown"
     " FROM model_usage u"
     " LEFT JOIN users us ON us.customer_id = u.customer_id AND us.id = u.user_id"
     " WHERE u.customer_id = :c AND u.created_at >= :start AND u.created_at < :end"

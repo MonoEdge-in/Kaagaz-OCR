@@ -66,6 +66,7 @@ const row = (overrides: Partial<OperatorUsageRow> = {}): OperatorUsageRow => ({
   reasoning_tokens: 900,
   cost_usd: 0.12,
   cost_estimated: false,
+  cost_part_unknown: false,
   ...overrides,
 });
 
@@ -232,6 +233,10 @@ describe("AI spend", () => {
     expect(totals).toMatchObject({ calls: 11, cached_calls: 2, input_tokens: 30000, cost_usd: 0.12, cost_estimated: false });
     expect(spendTotals([row({ cost_usd: null })]).cost_usd).toBeNull();
     expect(spendTotals([row(), row({ cost_estimated: true })]).cost_estimated).toBe(true);
+    // R9: a row with no cost, or with part of it unknown, makes the total's cost part unknown.
+    expect(spendTotals([row(), row()]).cost_part_unknown).toBe(false);
+    expect(spendTotals([row(), row({ cost_usd: null })]).cost_part_unknown).toBe(true);
+    expect(spendTotals([row(), row({ cost_part_unknown: true })]).cost_part_unknown).toBe(true);
   });
 
   it("shows organisation and model rows with a total and the estimated marker", () => {

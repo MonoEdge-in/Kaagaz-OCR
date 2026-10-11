@@ -268,12 +268,12 @@ FUNCTIONS = {
     CREATE FUNCTION public.kaagaz_op_usage(p_operator uuid, p_from timestamptz, p_to timestamptz)
     RETURNS TABLE (customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,
                    input_tokens numeric, output_tokens numeric, reasoning_tokens numeric,
-                   cost_usd numeric, cost_estimated boolean)
+                   cost_usd numeric, cost_estimated boolean, cost_part_unknown boolean)
     LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
         SELECT u.customer_id, c.name, u.model,
                sum(u.calls), COALESCE(sum(u.calls) FILTER (WHERE u.cached), 0),
                sum(u.input_tokens), sum(u.output_tokens), sum(u.reasoning_tokens),
-               sum(u.cost_usd), bool_or(u.cost_estimated)
+               sum(u.cost_usd), bool_or(u.cost_estimated), bool_or(u.cost_usd IS NULL)
         FROM public.model_usage u JOIN public.customers c ON c.id = u.customer_id
         WHERE u.created_at >= p_from AND u.created_at < p_to
           AND EXISTS (SELECT 1 FROM public.operators o WHERE {_ENABLED})

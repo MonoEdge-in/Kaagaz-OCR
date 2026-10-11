@@ -74,6 +74,7 @@ USAGE_ROW = {
     "reasoning_tokens": Decimal(900),
     "cost_usd": Decimal("0.123456"),
     "cost_estimated": False,
+    "cost_part_unknown": True,
 }
 # What a usage row may hold (frontend OperatorUsageRow): never a user or a document.
 USAGE_KEYS = {
@@ -87,6 +88,7 @@ USAGE_KEYS = {
     "reasoning_tokens",
     "cost_usd",
     "cost_estimated",
+    "cost_part_unknown",
 }
 
 
@@ -345,6 +347,7 @@ def test_usage_is_per_organisation_and_model_with_no_user_or_document(offline: _
         "reasoning_tokens": 900,
         "cost_usd": 0.123456,
         "cost_estimated": False,
+        "cost_part_unknown": True,  # R9: the sum counts the known costs only
     }
     [(_, args, _)] = offline.calls
     # Days in Asia/Kolkata, both ends included: [1 Sep 00:00 IST, 28 Sep 00:00 IST).

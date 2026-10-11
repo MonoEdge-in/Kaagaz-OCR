@@ -846,6 +846,7 @@ export interface UsageTotals {
   reasoning_tokens: number;
   cost_usd: number | null;
   cost_estimated: boolean; // some of it is the catalogue price times the tokens
+  cost_part_unknown: boolean; // some call's cost is not known: cost_usd counts the known ones only
 }
 
 export interface UsageByUser extends UsageTotals {
@@ -875,6 +876,7 @@ export interface UsageTopDocument extends UsageTotals {
 export interface UsageBudget {
   ai_budget_usd: number | null;
   spent_this_month_usd: number;
+  spent_part_unknown: boolean; // some of this month's costs are not known (not counted)
   share: number | null; // spent / budget; null without a budget
 }
 
