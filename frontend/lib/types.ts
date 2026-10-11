@@ -790,3 +790,130 @@ export interface ReaderReport {
   since: string | null; // ISO 8601: in this state since
   seen_at: string; // ISO 8601: its last report
 }
+
+// --- Model choice and AI spend (council 11 Oct 2026). The operator sets each
+// organisation's models and budget; the organisation's admin sees them read-only. -----
+
+/** The kinds of work a model call is billed as (backend kaagaz/ai/usage.py KINDS). */
+export type UsageKind =
+  | "scan"
+  | "upgrade"
+  | "card"
+  | "invoice"
+  | "map"
+  | "embed"
+  | "chat"
+  | "memory"
+  | "search"
+  | "story";
+
+/** One model an upload may read scans with (GET /upload-limits readers), the default first. */
+export interface ReaderOption {
+  id: string; // the OpenRouter model ID, sent as read_model
+  title: string;
+  hint: string; // "about $X a page"
+  available: boolean;
+}
+
+/** One model the operator allowed this organisation, with its live price. */
+export interface OrgModel {
+  id: string;
+  name: string;
+  price_in_usd_per_m: number; // US dollars per million input tokens
+  price_out_usd_per_m: number;
+  is_default_scan: boolean;
+}
+
+/** GET /admin/models: read-only, set by the operator ("Set by MonoEdge"). */
+export interface OrgModels {
+  set_by: "operator";
+  default_scan: string; // the model reading scans now: the default, or the platform's when none is set
+  models: OrgModel[]; // [] when the operator set none: every scan is read by the platform's model
+  ai_budget_usd: number | null; // the monthly budget; null: none
+}
+
+/** Tokens and US dollars of some model calls. cost_usd is null when not known. */
+export interface UsageTotals {
+  calls: number;
+  cached_calls: number; // pages taken from the page cache, at no cost
+  input_tokens: number;
+  output_tokens: number; // thinking included
+  reasoning_tokens: number;
+  cost_usd: number | null;
+  cost_estimated: boolean; // some of it is the catalogue price times the tokens
+}
+
+export interface UsageByUser extends UsageTotals {
+  user_id: string | null; // null: work no user asked for (the upgrade sweep, re-indexing)
+  user_name: string | null;
+}
+
+export interface UsageByModel extends UsageTotals {
+  model: string;
+  model_name: string;
+}
+
+export interface UsageByKind extends UsageTotals {
+  kind: UsageKind;
+}
+
+export interface UsageByDay extends UsageTotals {
+  day: string; // YYYY-MM-DD in the server's TIMEZONE
+}
+
+export interface UsageTopDocument extends UsageTotals {
+  document_id: string | null; // null: the document was deleted
+  name: string; // "Deleted document" when it was deleted
+}
+
+/** This month's spend against the operator's budget (warn only: nothing stops at 100%). */
+export interface UsageBudget {
+  ai_budget_usd: number | null;
+  spent_this_month_usd: number;
+  share: number | null; // spent / budget; null without a budget
+}
+
+/** GET /admin/usage: one organisation's AI use from `from` to `to` (days in TIMEZONE, both included). */
+export interface UsageReport {
+  from: string; // YYYY-MM-DD
+  to: string;
+  totals: UsageTotals;
+  by_user: UsageByUser[];
+  by_model: UsageByModel[];
+  by_kind: UsageByKind[];
+  by_day: UsageByDay[];
+  top_documents: UsageTopDocument[]; // at most 10, the costliest first
+  budget: UsageBudget;
+}
+
+/** One catalogue model (GET /operator/models), from OpenRouter's live list. */
+export interface OperatorModel {
+  id: string;
+  name: string;
+  price_in_usd_per_m: number;
+  price_out_usd_per_m: number;
+  providers: string[]; // its zero-data-retention providers, in OpenRouter's order
+  efforts: string[]; // the thinking efforts it accepts
+  expires_on: string | null; // YYYY-MM-DD
+  eligible: boolean; // passes the catalogue filter today
+  seen_at: string; // when the last refresh saw it
+  verified: boolean; // verify-models passed for the reader's current prompt
+  verified_at: string | null;
+  tokens_per_page_in: number | null; // measured by verify-models
+  tokens_per_page_out: number | null;
+  enabled_at: string | null; // null: not enabled on the platform
+}
+
+/** GET and PUT /operator/orgs/{id}/models. default_scan is one of models, or null when models is []. */
+export interface OperatorOrgModels {
+  models: string[];
+  default_scan: string | null;
+  ai_budget_usd: number | null;
+}
+
+/** One row of GET /operator/usage: one organisation's use of one model. No user or document. */
+export interface OperatorUsageRow extends UsageTotals {
+  organisation_id: string;
+  organisation_name: string;
+  model: string;
+}

@@ -405,12 +405,18 @@ class DocumentPages:
     """The one document whose pages an engine is reading (PRD 5 G7, F5): its customer and
     id, which key the page cache with each page's number and image, the cache itself, and
     the pages a user asked to read again (``pages.read_again_requested_at``), which are
-    read harder and never taken from the cache."""
+    read harder and never taken from the cache. ``model`` and ``provider`` are the model
+    this document is read with and the OpenRouter provider it is called through
+    (``kaagaz.db.models.resolve``; model choice, council 11 Oct 2026); None for both reads
+    with OCR_MODEL through the default provider, as before model choice. A page read again
+    keeps the document's model."""
 
     customer_id: str
     document_id: str
     cache: PageCache
     read_again: frozenset[int] = frozenset()
+    model: str | None = None
+    provider: str | None = None
 
 
 @runtime_checkable

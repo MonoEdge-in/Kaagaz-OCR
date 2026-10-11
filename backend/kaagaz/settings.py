@@ -9,7 +9,7 @@ guess. Tests build ``Settings`` directly (``tests/settings_factory.py``).
 A variable this module no longer reads is ignored, so an older ``.env`` still
 starts (the deploy runs unattended). A value that names something removed stops
 start-up by name: OCR_ENGINE's old layout reader, or with MODEL_ENABLED a
-MODEL_CHAT or MODEL_EMBED that is not a google/gemini- model (PRD 5 section 7).
+MODEL_CHAT or MODEL_EMBED that is not an OpenRouter model ID (PRD 5 section 7).
 
 PROVISIONAL: every value marked so in ``.env.example`` waits for Vrushit.
 """
@@ -46,6 +46,10 @@ SENDABLE_MEDIA_RESOLUTIONS = {"detail": frozenset({"low", "high"})}
 # An OpenRouter model ID: author/slug, such as google/gemini-3.1-pro-preview. A ":variant"
 # (":free", ":floor", ...) is refused: it changes the routing and the data policy.
 MODEL_ID = re.compile(r"[a-z0-9-]+/[A-Za-z0-9._-]+")
+# An OpenRouter provider slug, such as google-vertex or azure (model choice, council 11 Oct 2026).
+PROVIDER_SLUG = re.compile(r"[a-z0-9-]{1,64}")
+# The provider every call used before model choice, and OPENROUTER_PROVIDERS when unset.
+DEFAULT_PROVIDER = "google-vertex"
 # OPENROUTER_BASE_URL may be plain http only on these hosts (a fake server in tests, or the
 # exit test's closed port); anywhere else the key would cross the network in the clear.
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -203,6 +207,10 @@ class Settings:
     ocr_model: str
     openrouter_api_key: str | None = field(repr=False)
     openrouter_base_url: str
+    # Model choice (council 11 Oct 2026): the OpenRouter providers a model may be called
+    # through, the ceiling the operator's choices stay under. Adding one is Vrushit's approval
+    # of a new data processor. Optional: unset is DEFAULT_PROVIDER only.
+    openrouter_providers: frozenset[str]
     ocr_media_resolution: str
     ocr_thinking_level: str
     ocr_retry_media_resolution: str
@@ -241,7 +249,7 @@ class Settings:
     low_res_dpi: int
 
     # AI through OpenRouter (PRD 5 G9, M1, M5): model_chat answers and model_embed embeds,
-    # both google/gemini- models. model_enabled=false runs everything without AI: search
+    # both OpenRouter model IDs. model_enabled=false runs everything without AI: search
     # without meaning vectors, answers quote the evidence.
     model_enabled: bool
     model_chat: str
@@ -421,13 +429,21 @@ class Settings:
                 "OCR_MODEL must be an OpenRouter model ID such as google/gemini-3.1-pro-preview (no :variant)"
             )
         for name, model in (("MODEL_CHAT", model_chat), ("MODEL_EMBED", model_embed)):
-            if model_enabled and not is_gemini_model(model):
-                raise SettingsError(f"{name} must be a google/gemini- model when MODEL_ENABLED is true")
-            if is_gemini_model(model) and not valid_model_id(model):
+            if model_enabled and not valid_model_id(model):
                 raise SettingsError(
                     f"{name} must be an OpenRouter model ID such as google/gemini-3.1-pro-preview"
-                    " (no :variant)"
+                    " (no :variant) when MODEL_ENABLED is true"
                 )
+        providers = (
+            frozenset({DEFAULT_PROVIDER})
+            if env.optional("OPENROUTER_PROVIDERS") is None
+            else env.words("OPENROUTER_PROVIDERS")
+        )
+        if any(PROVIDER_SLUG.fullmatch(slug) is None for slug in providers):
+            raise SettingsError(
+                "OPENROUTER_PROVIDERS must list provider slugs such as google-vertex,"
+                " each lower-case letters, digits and dashes, at most 64"
+            )
         if openrouter_api_key is None and (ocr_engine == "gemini" or model_enabled):
             raise SettingsError(
                 "OPENROUTER_API_KEY is not set: OCR_ENGINE=gemini, or MODEL_ENABLED, needs it"
@@ -478,6 +494,7 @@ class Settings:
             ocr_model=ocr_model,
             openrouter_api_key=openrouter_api_key,
             openrouter_base_url=_openrouter_base_url(env.text("OPENROUTER_BASE_URL")),
+            openrouter_providers=providers,
             ocr_media_resolution=env.media_resolution("OCR_MEDIA_RESOLUTION"),
             ocr_thinking_level=env.choice("OCR_THINKING_LEVEL", set(THINKING_LEVELS)),
             ocr_retry_media_resolution=env.media_resolution("OCR_RETRY_MEDIA_RESOLUTION"),

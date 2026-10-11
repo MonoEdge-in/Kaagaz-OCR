@@ -20,7 +20,10 @@ present or not, its words are never kept. Every error this module raises carries
 code only, raised ``from None``.
 
 **Every request** carries ``PROVIDER`` (not a setting): Google Vertex only, no fallback to
-another provider, every parameter honoured, no data collection, zero data retention.
+another provider, every parameter honoured, no data collection, zero data retention. A page
+read may name another provider (model choice, council 11 Oct 2026): ``provider(slug)`` is
+the same block with ``only`` that one slug, and the client refuses a slug outside
+OPENROUTER_PROVIDERS (``ProviderNotAllowed``).
 
 **The request** (``POST /chat/completions``, ``stream: false``, G2). A system prompt is
 ``messages[0]`` with role system. A picture is a user message whose content is the
@@ -110,8 +113,10 @@ from typing import IO, Any
 from kaagaz.ai import replies
 from kaagaz.ai.replies import REPAIR, ModelOutputError, ModelUnavailable, parse_reply
 from kaagaz.settings import (
+    DEFAULT_PROVIDER,
     MEDIA_RESOLUTION_SHAPE,
     MEDIA_RESOLUTIONS,
+    PROVIDER_SLUG,
     SENDABLE_MEDIA_RESOLUTIONS,
     THINKING_LEVELS,
     Settings,
@@ -213,6 +218,11 @@ WORKING, FAILING, DOWN, KEY_PROBLEM = "working", "failing", "down", "key_problem
 _log = logging.getLogger(__name__)
 
 
+class ProviderNotAllowed(ValueError):
+    """A page read named a provider outside OPENROUTER_PROVIDERS, the processors Vrushit
+    approved: nothing is sent. The message is the code ``provider_not_allowed`` only."""
+
+
 @dataclass(frozen=True, slots=True)
 class PageReply:
     """One page read (G1): the JSON object, its tokens (G9) and the finish reason (Google's
@@ -269,9 +279,15 @@ def build_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
-def provider(*, embeddings: bool = False) -> dict[str, Any]:
-    """A fresh copy of ``PROVIDER`` (``EMBED_PROVIDER`` for /embeddings) for one request body."""
-    return copy.deepcopy(dict(EMBED_PROVIDER if embeddings else PROVIDER))
+def provider(slug: str = DEFAULT_PROVIDER, *, embeddings: bool = False) -> dict[str, Any]:
+    """A fresh copy of ``PROVIDER`` (``EMBED_PROVIDER`` for /embeddings) for one request body,
+    with ``only`` the one provider ``slug``: no fallback, every parameter honoured, no data
+    collection, zero data retention. A slug that is not ``PROVIDER_SLUG`` is refused."""
+    if PROVIDER_SLUG.fullmatch(slug) is None:
+        raise ValueError("a provider slug is lower-case letters, digits and dashes, at most 64")
+    block = copy.deepcopy(dict(EMBED_PROVIDER if embeddings else PROVIDER))
+    block["only"] = [slug]
+    return block
 
 
 def detail_level(name: str) -> str:
@@ -316,15 +332,16 @@ def chat_request(
     schema: Mapping[str, Any] | None,
     max_output_tokens: int | None,
     strict: bool = STRICT_SCHEMA,
+    provider_slug: str = DEFAULT_PROVIDER,
 ) -> dict[str, Any]:
     """A /chat/completions body: the model, the messages, the thinking effort, the output
-    cap, the schema and ``PROVIDER``."""
+    cap, the schema and ``provider(provider_slug)``."""
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": False,
         "reasoning": reasoning(thinking),
-        "provider": provider(),
+        "provider": provider(provider_slug),
     }
     if max_output_tokens is not None:
         body["max_completion_tokens"] = max_output_tokens
@@ -343,6 +360,7 @@ def page_request(
     thinking: str,
     max_output_tokens: int | None,
     strict: bool = STRICT_SCHEMA,
+    provider_slug: str = DEFAULT_PROVIDER,
 ) -> dict[str, Any]:
     """A /chat/completions body for one picture: one user message, the instruction first,
     then the image."""
@@ -354,6 +372,7 @@ def page_request(
         schema=schema,
         max_output_tokens=max_output_tokens,
         strict=strict,
+        provider_slug=provider_slug,
     )
 
 
@@ -665,6 +684,7 @@ class OpenRouterClient:
         self._chat_timeout = self._timeout if chat_timeout_seconds is None else chat_timeout_seconds
         self._default_chat_tokens = settings.model_answer_max_tokens
         self._dim = settings.embedding_dim
+        self._providers = settings.openrouter_providers
         self.ocr_model = settings.ocr_model
         self.chat_model = settings.model_chat
         self.embed_model = settings.model_embed
@@ -761,19 +781,28 @@ class OpenRouterClient:
         media_resolution: str,
         thinking_level: str,
         deadline: float,
+        model: str | None = None,
+        provider: str | None = None,
     ) -> PageReply:
-        """One page read by OCR_MODEL as a JSON object following ``schema``, before
-        ``deadline`` (an absolute time on ``now()``; every retry fits inside it). A first
-        reply that does not follow the schema is sent back once for a repair, with the page
-        again; the tokens of both calls are counted."""
+        """One page read by ``model`` through ``provider`` (None: OCR_MODEL through
+        DEFAULT_PROVIDER, as before model choice) as a JSON object following ``schema``,
+        before ``deadline`` (an absolute time on ``now()``; every retry fits inside it). A
+        provider outside OPENROUTER_PROVIDERS raises ``ProviderNotAllowed`` before anything is
+        sent. A first reply that does not follow the schema is sent back once for a repair,
+        with the page again; the tokens of both calls are counted."""
+        if model is not None and not valid_model_id(model):
+            raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
+        if provider is not None and provider not in self._providers:
+            raise ProviderNotAllowed("provider_not_allowed")
         body = page_request(
-            model=self.ocr_model,
+            model=self.ocr_model if model is None else model,
             png=png,
             instruction=instruction,
             schema=schema,
             media_resolution=media_resolution,
             thinking=thinking_level,
             max_output_tokens=PAGE_MAX_OUTPUT_TOKENS,
+            provider_slug=DEFAULT_PROVIDER if provider is None else provider,
         )
         reply = self._call(CHAT_PATH, body, deadline)
         input_tokens, output_tokens = reply_usage(reply)

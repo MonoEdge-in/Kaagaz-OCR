@@ -93,7 +93,7 @@ def test_the_old_layout_reader_stops_start_up_by_name() -> None:
 
 @pytest.mark.parametrize(("name", "other"), [("MODEL_CHAT", "MODEL_EMBED"), ("MODEL_EMBED", "MODEL_CHAT")])
 def test_a_local_model_with_the_model_on_stops_start_up_by_name(name: str, other: str) -> None:
-    """PRD 5 M1, M5: with MODEL_ENABLED, MODEL_CHAT and MODEL_EMBED are google/gemini- models;
+    """PRD 5 M1, M5: with MODEL_ENABLED, MODEL_CHAT and MODEL_EMBED are OpenRouter model IDs;
     a local model name (it used to fall back to a local server) stops start-up by name."""
     gemini = {"MODEL_CHAT": "google/gemini-3.1-pro-preview", "MODEL_EMBED": "google/gemini-embedding-2"}
     on = {**gemini, "MODEL_ENABLED": "true", "OPENROUTER_API_KEY": KEY}

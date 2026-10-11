@@ -50,6 +50,7 @@ _BASE: dict[str, Any] = {
     "ocr_model": "google/gemini-3.1-pro-preview",
     "openrouter_api_key": None,  # laptops and CI call no model through OpenRouter
     "openrouter_base_url": "https://openrouter.ai/api/v1",
+    "openrouter_providers": frozenset({"google-vertex"}),
     "ocr_media_resolution": "high",
     "ocr_thinking_level": "low",
     "ocr_retry_media_resolution": "high",  # the "detail" shape sends low or high only

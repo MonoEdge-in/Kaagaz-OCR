@@ -28,7 +28,11 @@ import type {
   MyStory,
   MyWord,
   OperatorMe,
+  OperatorModel,
+  OperatorOrgModels,
+  OperatorUsageRow,
   OrgAdmin,
+  OrgModels,
   Organisation,
   OrganisationCreated,
   PageReadings,
@@ -48,6 +52,7 @@ import type {
   TwoStepSetup,
   UploadLimits,
   UploadResult,
+  UsageReport,
   WordSaved,
 } from "./types";
 
@@ -440,6 +445,14 @@ export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);
+/** The organisation's models, read-only: the operator sets them. */
+export const getAdminModels = () => request<OrgModels>("GET", "/admin/models");
+/** AI use from `from` to `to` (YYYY-MM-DD, both included; the server's default when left out), for one user when given. */
+export type UsageParams = { from?: string; to?: string; user_id?: string };
+export const getAdminUsage = (params: UsageParams = {}) =>
+  request<UsageReport>("GET", `/admin/usage${query(params)}`);
+/** The same rows as a CSV file, for a plain download link. */
+export const adminUsageCsvUrl = (params: UsageParams = {}) => `/api/admin/usage.csv${query(params)}`;
 
 // --- the platform operator (super admin) -----------------------------------------
 // Its own cookie (path /api/operator), sent only to these routes.
@@ -474,3 +487,12 @@ export const changeAdmin = (orgId: string, userId: string, change: AdminChange, 
 export const listActivity = (params: { before?: string; org?: string; action?: string }) =>
   request<{ items: PlatformEvent[]; next: string | null }>("GET", `/operator/activity${query(params)}`);
 export const getHealth = () => request<PlatformHealth>("GET", "/operator/health");
+/** The model catalogue, every model OpenRouter lists that a scan could use. */
+export const getOperatorModels = () => request<{ items: OperatorModel[] }>("GET", "/operator/models");
+export const getOperatorOrgModels = (id: string) =>
+  request<OperatorOrgModels>("GET", `/operator/orgs/${id}/models`);
+export const putOperatorOrgModels = (id: string, body: OperatorOrgModels) =>
+  request<OperatorOrgModels>("PUT", `/operator/orgs/${id}/models`, body);
+/** Tokens and dollars per organisation and model; no user or document. */
+export const getOperatorUsage = (params: { from?: string; to?: string } = {}) =>
+  request<{ from: string; to: string; items: OperatorUsageRow[] }>("GET", `/operator/usage${query(params)}`);
