@@ -18,6 +18,14 @@ and gives nothing.
 ``on_page`` (if given) is called after each page, blank ones too, so a long
 TIFF can renew its lease between pages and the progress moves.
 
+Pages in parallel (PRD 5 G8): given a ``PagePool`` (``pages``), the engine's
+``read_page`` for up to its size of frames runs on the pool's threads while
+this thread decodes, shrinks and checks the next ones; the second reading of a
+frame as it was stays on this thread, and frames are finished, ``on_page``
+included, strictly in order (``socket.PagesInOrder``), so the spans are the
+same as without a pool. The engine is asked through ``read_page``
+(``ocr.as_page_engine``), so the meter keeps each page's ``PageRead``.
+
 PROVISIONAL (PRD 2 R5 for photos): a frame whose short side is more than
 ``ocr_dpi`` x 8.27 in (A4's short side) is shrunk to that for the engine only,
 never enlarged; the stored picture is not changed, and boxes are fractions, so
@@ -39,19 +47,21 @@ header before its pixels are decoded).
 
 Time is the engine's time per page (with ``text_height``, plus O(pixels) for
 the probe and the shrink, and a second reading of a page that gave nothing).
-Memory is one decoded page at a time.
+Memory is one decoded page at a time; with a pool, up to its size of pages
+plus the one being decoded.
 """
 
 import math
+from collections.abc import Callable
 
 from PIL import Image
 
 from kaagaz.preparing.page_checks import is_blank
 from kaagaz.preparing.pages import image_pages
-from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, ocr_spans
+from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, PageRead, as_page_engine, ocr_spans
 from kaagaz.reading.ocr_dpi import DPI_RULES, FIXED, PROBE_LONG_SIDE, line_height_px, photo_scale
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.socket import OnPage
+from kaagaz.reading.socket import OnPage, PagePool, PagesInOrder
 from kaagaz.reading.spans import ReadError, Span
 
 _A4_SHORT_SIDE_INCHES = 8.27
@@ -70,6 +80,7 @@ class ImageReader:
         ocr_dpi: int,
         blank_stddev: float,
         dpi_rule: str = FIXED,
+        pages: PagePool | None = None,
     ) -> None:
         # No defaults: limits are Vrushit's decision (PRD section 6).
         if min(max_pages, max_image_pixels, ocr_dpi) < 1:
@@ -81,6 +92,8 @@ class ImageReader:
         self._dpi_rule = dpi_rule
         self._blank_stddev = blank_stddev
         self._ocr = ocr
+        self._reads = as_page_engine(ocr)
+        self._pool = pages
         self._max_pages = max_pages
         self._max_image_pixels = max_image_pixels
         self._max_short_side = max(1, round(ocr_dpi * _A4_SHORT_SIDE_INCHES))
@@ -90,11 +103,11 @@ class ImageReader:
 
     @property
     def name(self) -> str:
-        return self._ocr.name  # "paddleocr-vl" or "rapidocr" in the product: the engine in use
+        return self._ocr.name  # the engine in use, such as "rapidocr"
 
     @property
     def version(self) -> str:
-        """Asked for after reading: PaddleOCR-VL's comes from its reply. With the
+        """Asked for after reading, so it names how this document was read. With the
         text-height rule, also the smallest scale and the pages read again."""
         marks = "" if self._scale is None else f";ocr_scale={self._scale:.2f}"
         marks += f";ocr_reread={self._rereads}" if self._rereads else ""
@@ -103,35 +116,58 @@ class ImageReader:
     def read(self, data: bytes, *, on_page: OnPage | None = None) -> list[Span]:
         self._scale, self._rereads = None, 0
         spans: list[Span] = []
-        pages = image_pages(data, max_pages=self._max_pages, max_image_pixels=self._max_image_pixels)
-        for number, image in enumerate(pages, start=1):
-            page = _for_ocr(image, self._max_short_side, self._max_ocr_pixels)
-            blank = is_blank(page, self._blank_stddev)
-            if not blank:
-                spans.extend(self._scanned(page, number))
-            page.close()
-            image.close()
+
+        def finish(page_spans: list[Span], read: RouteDecision) -> None:
+            spans.extend(page_spans)
             if on_page is not None:
-                on_page(_BLANK if blank else _READ_BY_OCR)
+                on_page(read)
+
+        frames = image_pages(data, max_pages=self._max_pages, max_image_pixels=self._max_image_pixels)
+        with PagesInOrder(self._reads, self._pool) as pages:
+            for number, image in enumerate(frames, start=1):
+                page = _for_ocr(image, self._max_short_side, self._max_ocr_pixels)
+                if page is not image:
+                    image.close()
+                if is_blank(page, self._blank_stddev):
+                    page.close()
+                    pages.ready(lambda: finish([], _BLANK))
+                else:
+                    self._scanned(page, number, pages, finish)
+            pages.drain()
         if not spans:
             raise ReadError("no_text")
         return spans
 
-    def _scanned(self, page: Image.Image, number: int) -> list[Span]:
-        """The page's spans; with the text-height rule, read first shrunk to its text,
-        then once more as it is when that finds nothing (the module notes)."""
-        if self._dpi_rule != FIXED:
-            smaller = _for_text(page)
-            if smaller is not page:
-                self._scale = min(smaller.width / page.width, self._scale or 1.0)
-                try:
-                    spans = ocr_spans(self._ocr.read(smaller), number, smaller.width, smaller.height)
-                finally:
-                    smaller.close()
-                if spans:
-                    return spans
+    def _scanned(
+        self,
+        page: Image.Image,
+        number: int,
+        pages: PagesInOrder,
+        finish: Callable[[list[Span], RouteDecision], None],
+    ) -> None:
+        """Hand the page to the engine through ``pages``; with the text-height rule, shrunk
+        to its text first, and read once more as it is, on this thread when its turn
+        comes, when that finds nothing (the module notes). ``page`` is closed once read."""
+        smaller = _for_text(page) if self._dpi_rule != FIXED else page
+        if smaller is page:
+            width, height = page.size
+            pages.read(page, number, lambda read: finish(_spans(read, number, width, height), _READ_BY_OCR))
+            return
+        self._scale = min(smaller.width / page.width, self._scale or 1.0)
+        small_width, small_height = smaller.size
+
+        def on_read(read: PageRead) -> None:
+            spans = _spans(read, number, small_width, small_height)
+            if not spans:
                 self._rereads += 1
-        return ocr_spans(self._ocr.read(page), number, page.width, page.height)
+                spans = _spans(self._reads.read_page(page, page_no=number), number, page.width, page.height)
+            finish(spans, _READ_BY_OCR)
+
+        pages.read(smaller, number, on_read, release=page.close)
+
+
+def _spans(read: PageRead, number: int, width: int, height: int) -> list[Span]:
+    return ocr_spans(list(read.lines), number, width, height)
 
 
 def _for_ocr(image: Image.Image, short_side: int, max_pixels: int) -> Image.Image:

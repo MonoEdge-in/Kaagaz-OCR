@@ -1,0 +1,198 @@
+"""The admin usage report's Python half, without a database (model choice, council 11 Oct
+2026, SP2, SP4): a period is whole days in TIMEZONE with both ends included and at most
+366 days (the route's ``usage_days`` and ``day_start``); a CSV cell never starts like a
+formula (the route's ``csv_cell``); the report splits the grouped rows into its parts,
+keeps only document work in the top documents, names a deleted one, cuts the list at ten
+and counts an empty period as nothing. The SQL itself: test_model_usage_db."""
+
+from collections.abc import Mapping, Sequence
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from typing import Any, cast
+
+import pytest
+from sqlalchemy import Connection
+
+from kaagaz.api.errors import ApiError
+from kaagaz.api.routers.admin import csv_cell, usage_days
+from kaagaz.api.routers.documents import day_start
+from kaagaz.db import usage
+
+TZ = "Asia/Kolkata"
+
+
+def period(first: date, last: date, timezone: str = TZ) -> tuple[datetime, datetime]:
+    """[the start of ``first``, the start of the day after ``last``) in ``timezone``: the
+    instants the admin's Usage routes read (``admin._usage_window``)."""
+    return day_start(first.isoformat(), timezone), day_start((last + timedelta(days=1)).isoformat(), timezone)
+
+
+def test_a_period_is_whole_days_in_timezone_both_ends_included() -> None:
+    start, end = period(*usage_days("2026-10-02", "2026-10-03", date(2026, 10, 20)))
+    assert start.astimezone(UTC) == datetime(2026, 10, 1, 18, 30, tzinfo=UTC)  # 2 Oct 00:00 there
+    assert end.astimezone(UTC) == datetime(2026, 10, 3, 18, 30, tzinfo=UTC)  # 4 Oct 00:00 there
+    one_day = period(date(2026, 10, 2), date(2026, 10, 2), "UTC")
+    assert one_day == (datetime(2026, 10, 2, tzinfo=UTC), datetime(2026, 10, 3, tzinfo=UTC))
+    usage_days("2024-01-01", "2024-12-31", date(2026, 10, 20))  # a leap year: 366 days
+
+
+@pytest.mark.parametrize(("first", "last"), [("2026-10-03", "2026-10-02"), ("2024-01-01", "2025-01-01")])
+def test_a_period_backwards_or_over_366_days_is_refused(first: str, last: str) -> None:
+    with pytest.raises(ApiError) as refused:
+        usage_days(first, last, date(2026, 10, 20))  # backwards; 367 days
+    assert (refused.value.status, refused.value.code) == (400, "bad_request")
+
+
+@pytest.mark.parametrize(
+    ("value", "cell"),
+    [
+        ("=SUM(A1)", "'=SUM(A1)"),
+        ("+91 phone", "'+91 phone"),
+        ("-1", "'-1"),
+        ("@cmd", "'@cmd"),
+        ("\tx", "'\tx"),
+        ("Asha", "Asha"),
+        ("", ""),
+        (Decimal("0.250000"), "0.250000"),
+        (12, "12"),
+    ],
+)
+def test_a_csv_cell_never_starts_like_a_formula(value: object, cell: str) -> None:
+    assert csv_cell(value) == cell
+
+
+class _Conn:
+    """Answers the report's one statement with the grouped rows."""
+
+    def __init__(self, grouped: Sequence[Mapping[str, Any]]) -> None:
+        self.grouped = list(grouped)
+        self.sent: list[dict[str, Any]] = []
+
+    def execute(self, statement: object, params: dict[str, Any]) -> "_Result":
+        self.sent.append(params)
+        return _Result(self.grouped)
+
+
+class _Result:
+    def __init__(self, rows: list[Mapping[str, Any]]) -> None:
+        self.rows = rows
+
+    def mappings(self) -> "_Result":
+        return self
+
+    def all(self) -> list[Mapping[str, Any]]:
+        return self.rows
+
+
+def _group(dimension: str, cost: str | None, **keys: Any) -> dict[str, Any]:
+    row = {
+        "dimension": dimension,
+        "user_id": None,
+        "model": None,
+        "kind": None,
+        "day": None,
+        "document_id": None,
+        "of_document": None,
+        "user_name": None,
+        "model_name": None,
+        "document_name": None,
+        "calls": 2,
+        "cached_calls": 1,
+        "input_tokens": Decimal(10),
+        "output_tokens": Decimal(5),
+        "reasoning_tokens": Decimal(1),
+        "cost_usd": None if cost is None else Decimal(cost),
+        "cost_estimated": False,
+        "cost_part_unknown": cost is None,
+    }
+    return row | keys
+
+
+def test_the_report_splits_the_groups_and_keeps_document_work_in_the_top_documents() -> None:
+    documents = [
+        _group("document", "0.5", document_id=f"d{n}", of_document=True, document_name=f"{n}.pdf")
+        for n in range(11)
+    ]
+    grouped = [
+        _group("total", "1.5"),
+        _group("user", "1.0", user_id="u1", user_name="Asha"),
+        _group("user", None, user_id=None),
+        _group("model", "1.5", model="a/listed", model_name="Listed"),
+        _group("model", None, model="a/unlisted"),
+        _group("kind", "1.5", kind="scan"),
+        _group("day", "1.5", day=date(2026, 10, 2)),
+        _group("document", "0.9", of_document=True),  # deleted for good
+        _group("document", "0.8", of_document=False),  # chat and sweeps: no document
+        *documents,
+    ]
+    conn = _Conn(grouped)
+    start, end = period(date(2026, 10, 2), date(2026, 10, 2))
+    report = usage.usage_report(cast(Connection, conn), "c1", start=start, end=end, timezone=TZ, user_id="u1")
+    assert conn.sent == [{"c": "c1", "start_at": start, "end_at": end, "tz": TZ, "user": "u1"}]
+    assert set(report) == {"totals", "by_user", "by_model", "by_kind", "by_day", "top_documents"}
+    assert report["totals"] == {
+        "calls": 2,
+        "cached_calls": 1,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "reasoning_tokens": 1,
+        "cost_usd": 1.5,
+        "cost_estimated": False,
+        "cost_part_unknown": False,
+    }
+    assert [(row["user_id"], row["user_name"], row["cost_usd"]) for row in report["by_user"]] == [
+        ("u1", "Asha", 1.0),
+        (None, None, None),
+    ]
+    assert [(row["model"], row["model_name"]) for row in report["by_model"]] == [
+        ("a/listed", "Listed"),
+        ("a/unlisted", "a/unlisted"),  # not in the catalogue: its id
+    ]
+    assert [row["day"] for row in report["by_day"]] == ["2026-10-02"]
+    tops = [(row["document_id"], row["name"]) for row in report["top_documents"]]
+    assert tops == [(None, usage.DELETED_DOCUMENT)] + [(f"d{n}", f"{n}.pdf") for n in range(9)]
+
+
+def test_an_empty_period_counts_nothing() -> None:
+    start, end = period(date(2026, 9, 1), date(2026, 9, 30))
+    report = usage.usage_report(cast(Connection, _Conn([])), "c1", start=start, end=end, timezone=TZ)
+    assert report["totals"] == {
+        "calls": 0,
+        "cached_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.0,
+        "cost_estimated": False,
+        "cost_part_unknown": False,
+    }
+    assert [report[key] for key in ("by_user", "by_model", "by_kind", "by_day", "top_documents")] == [[]] * 5
+
+
+def test_a_sum_with_a_cost_not_known_says_part_of_it_is_not_known() -> None:
+    """R9: a group whose sum counts only the known costs is marked, never shown as whole."""
+    grouped = [_group("total", "1.5", cost_part_unknown=True), _group("model", None, model="a/unlisted")]
+    start, end = period(date(2026, 10, 2), date(2026, 10, 2))
+    report = usage.usage_report(cast(Connection, _Conn(grouped)), "c1", start=start, end=end, timezone=TZ)
+    assert (report["totals"]["cost_usd"], report["totals"]["cost_part_unknown"]) == (1.5, True)
+    assert [(row["cost_usd"], row["cost_part_unknown"]) for row in report["by_model"]] == [(None, True)]
+
+
+class _Spent:
+    """Answers _SPENT with (sum, any unknown)."""
+
+    def __init__(self, row: tuple[Decimal, bool]) -> None:
+        self.row = row
+
+    def execute(self, statement: object, params: dict[str, Any]) -> "_Spent":
+        return self
+
+    def one(self) -> tuple[Decimal, bool]:
+        return self.row
+
+
+def test_the_months_spend_says_whether_part_of_it_is_not_known() -> None:
+    start, end = period(date(2026, 10, 1), date(2026, 10, 31))
+    conn = cast(Connection, _Spent((Decimal("2.500000"), True)))
+    assert usage.spend(conn, "c1", start=start, end=end) == (2.5, True)
+    assert usage.month_spend(conn, "c1", start=start, end=end) == 2.5

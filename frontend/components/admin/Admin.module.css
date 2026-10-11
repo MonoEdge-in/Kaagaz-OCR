@@ -390,3 +390,70 @@
   align-items: center;
   gap: var(--space-2) var(--space-3);
 }
+
+/* --- AI models and Usage (model choice) --------------------------------------- */
+
+.caption {
+  caption-side: top;
+  padding-block-end: var(--space-2);
+  text-align: start;
+  font-weight: 600;
+}
+
+/* "Default": an icon and the word, never the icon alone. */
+.defaultMark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-inline-start: var(--space-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--verified-fg);
+}
+
+.usageControls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-4);
+  align-items: end;
+}
+
+.usageTables {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* The daily table: the amount, then a bar (decoration: the amount says it). */
+.barCell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.barCell > span:first-child {
+  flex: none;
+  min-width: 6rem;
+}
+
+.bar {
+  display: block;
+  height: 0.75rem;
+  min-width: 1px;
+  max-width: calc(100% - 7rem);
+  border-radius: var(--r-sm);
+  background: var(--accent);
+}
+
+/* SP4 at 80% and 100%: words and an icon, on the review colours. */
+.budgetWarning {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--review-solid);
+  border-radius: var(--r-md);
+  background: var(--review-bg);
+  color: var(--review-fg);
+}

@@ -25,6 +25,37 @@ purge (kaagaz/jobs/purge.py) and ``delete_family_forever`` (the permanent delete
 ready, failed or unreadable document out of Trash goes back to ``received`` with
 its tries reset, within the customer's hourly limit and one document's cooldown
 (security A8). The caller audits it and queues the job in the same transaction.
+
+``mark_for_upgrade`` is the upgrade sweep's read again (PRD 5 Q7, V9): a ready
+document with a page the backup reader read while the main one was down
+(``read_locally``) goes back to ``received`` as ``mark_for_reprocess`` sets it, under
+the family lock, but outside the users' limits (the sweep has its own, 20 an hour),
+audited as ``document.read_upgrade`` with no actor. ``oldest_read_locally`` finds a
+customer's oldest such document that the sweep has not sent in the last
+UPGRADE_RETRY_AFTER_HOURS, so a document the main reader fails on again can't starve
+the rest.
+
+Read one page again, harder (PRD 5 F5): a queue job carries only a document id, so
+``request_page_read_again`` marks the page (``pages.read_again_requested_at``, 0021)
+in the same transaction as ``mark_for_reprocess``, and the worker asks which pages
+are marked (``pages_to_read_again``). The save that replaces the pages clears the
+marks (kaagaz.db.pipeline_store); a document that fails for good (``set_failed``,
+``mark_exhausted``) clears them in the same transaction as its failure, under the
+family lock. A request is refused while the document is being read, and accepted
+once its failure has committed, so no request can land between the failure and the
+clearing and lose its mark. "Keep as is" (F5) is ``accept_page``.
+
+``documents.batch_id`` (PRD 5 Q1, 0021) is the drop a new upload came in:
+``add_if_absent`` writes the record's ``batch_id`` (None: in none). A new version is
+in no batch.
+
+Model choice (council 11 Oct 2026, MS5, SP1; 0023): ``documents.read_requested_by`` is who
+the next reading's scan spend is billed to. An upload or a new version sets it to the
+uploader; ``mark_for_reprocess`` to who asked (``requested_by``); ``mark_for_upgrade`` to
+NULL (the system). ``documents.read_model`` is the model the reading asked for:
+``mark_for_reprocess`` replaces it only when given one (a page read again keeps the
+document's model, FINAL 4), and the upgrade sweep keeps it. The worker checks it again
+(``kaagaz.db.models.resolve``).
 """
 
 import dataclasses
@@ -36,7 +67,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import customers
+from kaagaz.db import audit, customers
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
@@ -47,6 +78,9 @@ from kaagaz.scanning.gate import DocumentStatus
 
 if TYPE_CHECKING:
     from kaagaz.pipeline import FinishedRun, Progress  # the processor's records; pipeline builds this store
+
+# PRD 5 Q6: the progress of a document waiting for the reader to come back.
+WAITING_FOR_READER = {"step": "waiting"}
 
 _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
@@ -177,15 +211,27 @@ _REPROCESSED_LATELY = (
 
 _REPROCESS = (
     "UPDATE documents SET status = 'received', failure_code = NULL, attempts = 0, max_attempts = NULL,"
-    " progress = NULL"
+    " progress = NULL, read_requested_by = CAST(:by AS uuid),"
+    " read_model = COALESCE(CAST(:model AS text), read_model)"
     " WHERE customer_id = :c AND id = :d AND status IN ('ready', 'failed', 'needs_reader')"
     " AND deleted_at IS NULL"
 )
 
 
-def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, per_hour: int) -> str | None:
+def mark_for_reprocess(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    *,
+    per_hour: int,
+    requested_by: str | None = None,
+    read_model: str | None = None,
+) -> str | None:
     """Set the document to be read again (X1), and return the status it had; None
-    when this customer has no such document.
+    when this customer has no such document. ``requested_by`` is who asked: the reading's
+    scan spend is billed to them (SP1; None: the system). ``read_model``, when given,
+    replaces the model the document asked for (MS5; the caller checked it is allowed);
+    None keeps it.
 
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes
     first, and is waited for, never skipped: a family being moved to Trash is
@@ -210,8 +256,130 @@ def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, 
     lately = {**params, "target": document_id, "minutes": REPROCESS_COOLDOWN_MINUTES}
     if conn.execute(text(_REPROCESSED_LATELY), lately).scalar_one():
         raise ReprocessLimited("cooldown")
-    conn.execute(text(_REPROCESS), params)
+    conn.execute(text(_REPROCESS), {**params, "by": requested_by, "model": read_model})
     return str(state.status)
+
+
+# --- the upgrade sweep's read again (PRD 5 Q7) -----------------------------------
+
+# A document the sweep sent to be read again within this many hours is passed over,
+# even if a page is still read locally (the main reader failed on it again), so one
+# document can't take every pass and starve the rest. 6 hours: about 120 passes at
+# 20 an hour, enough for the rest of a large outage's backlog to be tried first.
+UPGRADE_RETRY_AFTER_HOURS = 6
+
+# A ready document out of Trash with a page read by the backup reader, oldest first,
+# not sent by the sweep in the last UPGRADE_RETRY_AFTER_HOURS. The pages side uses
+# pages_read_locally (0022), the documents side their primary key, the audit side
+# audit_log_listing (customer_id, created_at DESC).
+_OLDEST_READ_LOCALLY = (
+    "SELECT d.id, d.created_at FROM documents d"
+    " WHERE d.customer_id = :c AND d.status = 'ready' AND d.deleted_at IS NULL"
+    " AND d.id IN (SELECT p.document_id FROM pages p"
+    " WHERE p.customer_id = :c AND 'read_locally' = ANY (p.read_issues))"
+    " AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.customer_id = :c"
+    " AND a.action = 'document.read_upgrade' AND a.target_id = d.id::text"
+    " AND a.created_at > now() - make_interval(hours => :hours))"
+    " ORDER BY d.created_at, d.id LIMIT 1"
+)
+
+
+def oldest_read_locally(conn: Connection, customer_id: str) -> tuple[str, datetime] | None:
+    """This customer's oldest ready document out of Trash with a page read locally
+    (``read_locally``, PRD 5 Q7), as (id, uploaded at); None when there is none. One the
+    sweep sent in the last UPGRADE_RETRY_AFTER_HOURS is passed over (no starving).
+    ``conn`` comes from ``Database.customer(customer_id)``. One statement: O(L log D)
+    for the customer's L locally read pages, plus its audit rows of that window."""
+    params = {"c": customer_id, "hours": UPGRADE_RETRY_AFTER_HOURS}
+    row = conn.execute(text(_OLDEST_READ_LOCALLY), params).first()
+    return None if row is None else (str(row[0]), row[1])
+
+
+def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bool:
+    """Set a document read locally to be read again by the main reader (PRD 5 Q7):
+    True when it was set and audited as ``document.read_upgrade`` (no actor, the
+    sweep's own); False when this customer has no such document, or it is being read,
+    rejected or in Trash, and then nothing changes.
+
+    ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes first,
+    as in ``mark_for_reprocess``, then the same change (``_REPROCESS``), with none of
+    the users' limits: REPROCESS_PER_HOUR and the cooldown count ``document.reprocess``
+    rows only. Its scan spend is billed to no user (``read_requested_by`` NULL, SP1), and
+    the document keeps the model it asked for. The caller queues the job (the main lane)
+    in the same transaction.
+    3 statements; O(v log D) for the family's v versions."""
+    if lock_family(conn, customer_id, document_id) is None:
+        return False
+    params = {"c": customer_id, "d": document_id, "by": None, "model": None}
+    if conn.execute(text(_REPROCESS + " RETURNING id"), params).first() is None:
+        return False
+    audit.record(
+        conn,
+        customer_id,
+        actor_user_id=None,
+        action="document.read_upgrade",
+        target_type="document",
+        target_id=document_id,
+    )
+    return True
+
+
+# --- read one page again, and Keep as is (PRD 5 F5) ----------------------------
+
+# Only a page of a document out of Trash is marked or accepted.
+_REQUEST_PAGE = (
+    "UPDATE pages p SET read_again_requested_at = :now FROM documents d"
+    " WHERE p.customer_id = :c AND p.document_id = :d AND p.page_no = :n"
+    " AND d.customer_id = p.customer_id AND d.id = p.document_id AND d.deleted_at IS NULL"
+    " RETURNING p.page_no"
+)
+_ACCEPT_PAGE = (
+    "UPDATE pages p SET accepted_by = :u, accepted_at = :now FROM documents d"
+    " WHERE p.customer_id = :c AND p.document_id = :d AND p.page_no = :n"
+    " AND d.customer_id = p.customer_id AND d.id = p.document_id AND d.deleted_at IS NULL"
+    " RETURNING p.page_no"
+)
+_PAGES_TO_READ_AGAIN = (
+    "SELECT page_no FROM pages WHERE customer_id = :c AND document_id = :d"
+    " AND read_again_requested_at IS NOT NULL ORDER BY page_no"
+)
+_CLEAR_READ_AGAIN = (
+    "UPDATE pages SET read_again_requested_at = NULL"
+    " WHERE customer_id = :c AND document_id = :d AND read_again_requested_at IS NOT NULL"
+)
+
+
+def request_page_read_again(
+    conn: Connection, customer_id: str, document_id: str, page_no: int, *, now: datetime
+) -> bool:
+    """Mark page ``page_no`` to be read again, harder, by the document's next run (F5),
+    and return True; False when this customer's document, out of Trash, has no such
+    page, and then nothing changes.
+
+    ``conn`` comes from ``Database.customer(customer_id)``, in the transaction in which
+    ``mark_for_reprocess`` (which takes the family lock first, and counts the request
+    against REPROCESS_PER_HOUR) sets the document to be read again, so the mark and the
+    job commit together. One statement on the pages key: O(log P)."""
+    params = {"c": customer_id, "d": document_id, "n": page_no, "now": now}
+    return conn.execute(text(_REQUEST_PAGE), params).first() is not None
+
+
+def accept_page(
+    conn: Connection, customer_id: str, document_id: str, page_no: int, *, user_id: str, now: datetime
+) -> bool:
+    """Keep as is (F5): ``user_id`` accepts page ``page_no`` as it was read, at ``now``;
+    True, or False when this customer's document, out of Trash, has no such page.
+    The page leaves the attention list but keeps its reading result, so it stays
+    flagged on the page and in answers; the save carries the acceptance forward
+    unless the page is read again (kaagaz.db.pipeline_store).
+
+    ``conn`` comes from ``Database.customer(customer_id)``; the family lock
+    (``trash.lock_family``) comes first, so it never races a save. 2 statements:
+    O(v log D) for the family's v versions."""
+    if lock_family(conn, customer_id, document_id) is None:
+        return False
+    params = {"c": customer_id, "d": document_id, "n": page_no, "u": user_id, "now": now}
+    return conn.execute(text(_ACCEPT_PAGE), params).first() is not None
 
 
 class NotInTrash(Exception):
@@ -285,8 +453,8 @@ _NEXT_VERSION = (
 
 _INSERT_VERSION = (
     "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
-    " uploaded_by, folder_id, family_id, version_no, is_current, ocr_choice)"
-    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false, :ocr)"
+    " uploaded_by, read_requested_by, folder_id, family_id, version_no, is_current, ocr_choice)"
+    " VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder, :f, :version, false, :ocr)"
     " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
 )
 
@@ -387,13 +555,15 @@ class PgDocuments:
                 "family": record.family_id or record.document_id,
                 "version": record.version_no,
                 "ocr": record.ocr_choice,
+                "batch": record.batch_id,
             }
             try:
                 inserted = conn.execute(
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice)"
-                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family, :version, :ocr)"
+                        " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
+                        " ocr_choice, batch_id) VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder,"
+                        " :family, :version, :ocr, :batch)"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,
@@ -462,7 +632,11 @@ class PgDocuments:
         but keeps its code so the file list can say why. With ``run_id``, raise
         Superseded and change nothing unless that run is still open (the run fence,
         read under the family lock), so a stale delivery (a newer run has started,
-        after a "read again", say) never fails the document."""
+        after a "read again", say) never fails the document.
+
+        A document failed for good keeps no read-again mark (F5): they are cleared in
+        this transaction, so a page asked to be read again after it commits (the
+        document is failed, so it may be read again) keeps its mark for the next run."""
         with unavailable(), self._db.customer(customer_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
@@ -477,6 +651,7 @@ class PgDocuments:
                 ),
                 {"code": code, "c": customer_id, "d": document_id},
             )
+            conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})
 
     def mark_ready(
         self, customer_id: str, document_id: str, page_count: int, *, run: "FinishedRun | None" = None
@@ -512,12 +687,19 @@ class PgDocuments:
                 {"p": json.dumps(progress.to_json()), "c": customer_id, "d": document_id},
             )
 
-    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
+    def clear_progress(
+        self, customer_id: str, document_id: str, *, run_id: str | None = None, waiting: str | None = None
+    ) -> None:
         """No progress shown, on a document still in progress (received or clean) only:
         a try a backend stopped leaves no stale "Reading page 1" while the job waits to
-        come back. With ``run_id``, the run fence: under the family lock, change nothing
-        unless that run is still open, so a stale delivery never clears the newer run's
-        progress. Its own short transaction, as ``set_progress``."""
+        come back. ``waiting="reader"`` (PRD 5 Q6: the reader is down or has a key
+        problem) writes ``{"step": "waiting"}`` instead, so the list can say "Waiting for
+        the reader to come back". With ``run_id``, the run fence: under the family lock,
+        change nothing unless that run is still open, so a stale delivery never clears
+        the newer run's progress. Its own short transaction, as ``set_progress``."""
+        if waiting not in (None, "reader"):
+            raise ValueError("waiting must be None or 'reader'")
+        progress = None if waiting is None else json.dumps(WAITING_FOR_READER)
         with unavailable(), self._db.customer(customer_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
@@ -525,11 +707,19 @@ class PgDocuments:
                     return
             conn.execute(
                 text(
-                    "UPDATE documents SET progress = NULL"
+                    "UPDATE documents SET progress = CAST(:p AS jsonb)"
                     " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
                 ),
-                {"c": customer_id, "d": document_id},
+                {"p": progress, "c": customer_id, "d": document_id},
             )
+
+    def pages_to_read_again(self, customer_id: str, document_id: str) -> tuple[int, ...]:
+        """The pages a user asked to be read again, harder (F5), in page order: the run
+        that reads the document reads them so. Empty when none (or no such document).
+        Its own short transaction, one statement on the pages key: O(log P + p)."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            rows = conn.execute(text(_PAGES_TO_READ_AGAIN), {"c": customer_id, "d": document_id})
+            return tuple(int(row[0]) for row in rows)
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         with unavailable(), self._db.customer(customer_id) as conn:
@@ -563,7 +753,8 @@ class PgDocuments:
         recorded try is under ``max_attempts``: after "read again" the tries start
         again, so an old job's last delivery must not fail the new one. When it changes,
         its runs still ``running`` end failed with ``retries_exhausted`` at
-        ``now`` (AR11), in the same transaction.
+        ``now`` (AR11), and its read-again marks are cleared (F5, as ``set_failed``),
+        in the same transaction.
         """
         with unavailable(), self._db.customer(customer_id) as conn:
             marked = conn.execute(
@@ -578,3 +769,4 @@ class PgDocuments:
                 close_running(
                     conn, customer_id, document_id, status="failed", error_code="retries_exhausted", now=now
                 )
+                conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})

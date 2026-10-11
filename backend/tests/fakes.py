@@ -218,16 +218,18 @@ class FakeScanner:
 
 
 class MemoryQueue:
-    """Records enqueued jobs in order."""
+    """Records enqueued jobs in order, and in ``lanes`` whether each went express."""
 
     def __init__(self) -> None:
         self.jobs: list[Job] = []
+        self.lanes: list[bool] = []
         self.fail_enqueue = False
 
-    def enqueue(self, job: Job) -> None:
+    def enqueue(self, job: Job, *, express: bool = False) -> None:
         if self.fail_enqueue:
             raise BackendUnavailable("queue down")
         self.jobs.append(job)
+        self.lanes.append(express)
 
 
 class MemoryDocuments(MemoryRepository):
@@ -244,14 +246,17 @@ class MemoryDocuments(MemoryRepository):
         self.failure_codes: dict[tuple[str, str], str] = {}
         self.attempts: dict[tuple[str, str], tuple[int, int]] = {}
         self.page_counts: dict[tuple[str, str], int] = {}
+        self.read_again: dict[tuple[str, str], set[int]] = {}  # PRD 5 F5: the marked pages
 
     def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
+        """Failed, with the read-again marks cleared at once, as PgDocuments.set_failed."""
         if run_id is not None and not self._open(customer_id, document_id, run_id):
             raise Superseded(run_id)
         if self.get(customer_id, document_id) is None:
             return
         self._statuses.set_status(customer_id, document_id, DocumentStatus.FAILED)
         self.failure_codes[(customer_id, document_id)] = code
+        self.read_again.pop((customer_id, document_id), None)
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         if self.get(customer_id, document_id) is not None:
@@ -421,6 +426,7 @@ class MemoryProgress:
         self._statuses = statuses
         self.progress: dict[tuple[str, str], Progress] = {}
         self.history: list[tuple[str, str, Progress]] = []
+        self.waiting: dict[tuple[str, str], str | None] = {}  # what clear_progress was told
         self.down = False
 
     def set_progress(
@@ -438,8 +444,11 @@ class MemoryProgress:
         self.progress[(customer_id, document_id)] = progress
         self.history.append((customer_id, document_id, progress))
 
-    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
-        """As PgDocuments.clear_progress: with ``run_id``, nothing unless that run is open."""
+    def clear_progress(
+        self, customer_id: str, document_id: str, *, run_id: str | None = None, waiting: str | None = None
+    ) -> None:
+        """As PgDocuments.clear_progress: with ``run_id``, nothing unless that run is open;
+        ``waiting`` is noted in ``waiting``."""
         if self.down:
             raise BackendUnavailable("database")
         runs = self._statuses.runs
@@ -447,6 +456,7 @@ class MemoryProgress:
             return
         if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
             self.progress.pop((customer_id, document_id), None)
+            self.waiting[(customer_id, document_id)] = waiting
 
 
 class MemoryPipelineStore:
@@ -595,28 +605,12 @@ class ModelDown(Exception):
     code = "model_down"
 
 
-class FakeVision:
-    """A vision model: gives preset text for every picture, or raises ModelDown.
-    Records each picture it was sent."""
-
-    def __init__(self, text: str = "", *, down: bool = False) -> None:
-        self.text = text
-        self.down = down
-        self.pictures: list[bytes] = []
-
-    def read_image(self, *, png: bytes, instruction: str) -> str:
-        self.pictures.append(png)
-        if self.down:
-            raise ModelDown
-        return self.text
-
-
 class FakeChat:
     """A chat model (kaagaz.extraction.card.ChatModel): gives its preset replies in
     order, one per call; an exception in the list is raised at that call instead.
     Records every call's system prompt, user message, schema and reply budget."""
 
-    chat_model = "qwen3:4b"
+    chat_model = "fake-chat"
 
     def __init__(self, *replies: dict[str, Any] | Exception) -> None:
         self.replies = list(replies)

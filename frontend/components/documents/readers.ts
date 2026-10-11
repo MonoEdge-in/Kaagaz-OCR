@@ -1,47 +1,81 @@
-// The scan reader an upload may choose ("Scan with", PRD 4 #17, PROVISIONAL),
-// kept out of UploadArea.tsx so it is unit tested in node
-// (tests/upload-readers.test.ts). Every reader, its words and whether this
-// server can use it come from the server (GET /upload-limits, readers): nothing
-// here names one. The server lists its default (Auto) first, so the first is
-// picked at first and is never sent; the server reads with it anyway.
+// The model an upload reads its scans with ("Read with", PRD 4 #17; model
+// choice MS4, council 11 Oct 2026), kept out of UploadArea.tsx so it is unit
+// tested in node (tests/upload-readers.test.ts). Every model, its words and
+// whether this organisation may use it come from the server (GET
+// /upload-limits, readers: the models MonoEdge allowed it): nothing here names
+// one. The server lists the organisation's default first and marks it
+// (default); it is picked at first and never sent, since the server reads with
+// it anyway. When the default can't be used now, no model is marked, and the
+// one shown is sent (MS4, R14).
 
 import type { UploadReader } from "@/lib/types";
 
-export interface ReaderOption {
+/** One <option> of the select (not lib/types ReaderOption, which is what the server sends). */
+export interface ReaderChoice {
   id: string;
   label: string;
   disabled: boolean;
 }
 
-/** Shown on a duplicate's row when a reader was chosen: the earlier copy is not read again. */
+/** Shown on a duplicate's row when a model was chosen: the earlier copy is not read again. */
 export const DUPLICATE_READER_NOTE = "Already uploaded; it keeps the reader it was read with.";
 
 /**
- * The select's options, in the server's order: the first is recommended; one
- * this server can't use is disabled, saying why.
+ * The organisation's default: the reader the server marks default. A reader
+ * without the mark (Auto, PRD 5 RT3) is the default when it comes first.
  */
-export function readerOptions(readers: readonly UploadReader[]): ReaderOption[] {
+function isDefault(reader: UploadReader, index: number): boolean {
+  return reader.default ?? index === 0;
+}
+
+/**
+ * The select's options, in the server's order: the default is recommended,
+ * and no other; one this server can't use is disabled, saying why.
+ */
+export function readerOptions(readers: readonly UploadReader[]): ReaderChoice[] {
   return readers.map((reader, index) => {
     let label = reader.title;
     if (!reader.available) label = `${reader.title} (${reader.reason ?? "not available"})`;
-    else if (index === 0) label = `${reader.title} (recommended)`;
+    else if (isDefault(reader, index)) label = `${reader.title} (recommended)`;
     return { id: reader.id, label, disabled: !reader.available };
   });
 }
 
-/** Only a real choice is shown: at least two readers this server can use. */
+/** Only a real choice is shown: at least two models this organisation can use. */
 export function offersChoice(readers: readonly UploadReader[]): boolean {
   return readers.filter((reader) => reader.available).length >= 2;
 }
 
-/** The reader in use: the one picked while it is offered and usable, else the first (the default). */
+/** The model in use: the one picked while it is offered and usable, else the first (the default). */
 export function pickedReader(readers: readonly UploadReader[], picked: string | null): UploadReader | null {
   return readers.find((reader) => reader.id === picked && reader.available) ?? readers[0] ?? null;
 }
 
-/** What an upload sends as ocr_choice: the picked reader, or undefined for the default. */
+/**
+ * What an upload sends as read_model: the model shown, or undefined for the
+ * organisation's default (the server reads with it anyway).
+ */
 export function readerToSend(readers: readonly UploadReader[], picked: string | null): string | undefined {
   if (!offersChoice(readers)) return undefined;
   const reader = pickedReader(readers, picked);
-  return reader !== null && reader !== readers[0] ? reader.id : undefined;
+  return reader !== null && !isDefault(reader, readers.indexOf(reader)) ? reader.id : undefined;
+}
+
+/**
+ * The whole document's "Read again" (MS4): the model the user picked in the
+ * select, or undefined when they changed nothing, so the document keeps its own
+ * model (read_model) and never moves to the default unasked; undefined too when
+ * there is no choice.
+ */
+export function readAgainModel(readers: readonly UploadReader[], picked: string | null): string | undefined {
+  if (picked === null || !offersChoice(readers)) return undefined;
+  return readers.find((reader) => reader.id === picked && reader.available)?.id;
+}
+
+/** Said under that select: every page is read, and paid for, again. pages null: not counted yet. */
+export function readAgainWarning(pages: number | null, model: string): string {
+  if (pages === 1) return `The page will be read again by ${model}.`;
+  return pages === null
+    ? `All pages will be read again by ${model}.`
+    : `All ${pages} pages will be read again by ${model}.`;
 }

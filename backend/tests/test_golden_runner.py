@@ -17,13 +17,16 @@ from scripts.run_golden import (
     Http,
     _parser,
     check_local,
+    header,
     hits,
     load_golden,
     main,
     upload,
 )
+from tests.settings_factory import make_settings
 
 LOCAL_DB = "postgresql://kaagaz@127.0.0.1:5432/kaagaz"
+GEMINI_CHAT, GEMINI_EMBED = "google/gemini-3.1-pro-preview", "google/gemini-embedding-2"
 
 
 class RunnerTest(unittest.TestCase):
@@ -99,3 +102,13 @@ class RunnerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeaderTest(unittest.TestCase):
+    """PRD 5 M5: the before and after runs are compared with ANSWER_WHOLE_DOC_TOKENS=0."""
+
+    def test_m5_the_header_prints_answer_whole_doc_tokens(self) -> None:
+        out = io.StringIO()
+        settings = make_settings(model_chat=GEMINI_CHAT, model_embed=GEMINI_EMBED, answer_whole_doc_tokens=0)
+        header(out, settings, "http://127.0.0.1:8000", "abc123")
+        self.assertIn(" ANSWER_WHOLE_DOC_TOKENS=0 ", out.getvalue())

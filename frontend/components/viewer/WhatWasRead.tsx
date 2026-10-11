@@ -12,6 +12,7 @@ import styles from "./ScannedText.module.css";
 
 export function WhatWasRead({ value, page }: { value: ExtractedValue; page: PageSummary | undefined }) {
   const pageNo = value.region.page;
+  const confidence = confidenceText(value.confidence, routeOrigin(page?.route));
   const scanned =
     page && page.unit !== "cells"
       ? pageLink(value.document_id, pageNo, value.region, { scanned: true })
@@ -43,13 +44,15 @@ export function WhatWasRead({ value, page }: { value: ExtractedValue; page: Page
             )}
           </dd>
         </div>
-        <div>
-          <dt>Confidence</dt>
-          <dd>
-            {confidenceText(value.confidence, routeOrigin(page?.route))}
-            <span className={styles.muted}>{CONFIDENCE_NOTE}</span>
-          </dd>
-        </div>
+        {confidence && (
+          <div>
+            <dt>Confidence</dt>
+            <dd>
+              {confidence}
+              <span className={styles.muted}>{CONFIDENCE_NOTE}</span>
+            </dd>
+          </div>
+        )}
         {value.label === "needs_review" && (
           <div>
             <dt>Why it needs review</dt>

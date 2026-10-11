@@ -28,7 +28,9 @@ def test_the_script_checks_all_five_conditions() -> None:
         'path.startswith("/api/")',
         'path == "/api/health"',
         '"cookie"',
-        "exec -T elasticmq wget -qO- ",  # 3. the queue is empty
+        'QUEUES="kaagaz-jobs kaagaz-jobs-express"',  # 3. both lanes are empty (PRD 5 Q4)
+        'QUEUE="http://127.0.0.1:9324/000000000000/$name"',
+        "exec -T elasticmq wget -qO- ",
         '"$QUEUE?Action=GetQueueAttributes&AttributeName.1=All"',
         'values["ApproximateNumberOfMessages"]',
         'values["ApproximateNumberOfMessagesNotVisible"]',

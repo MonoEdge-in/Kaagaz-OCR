@@ -12,6 +12,9 @@ import {
   byWords,
   countsInWords,
   failureWords,
+  NOT_REPORTING_MS,
+  queueWords,
+  readerWords,
   statusWords,
   targetWords,
   waitWords,
@@ -83,8 +86,8 @@ describe("health in words", () => {
 });
 
 describe("activity and health source guards", () => {
-  it("uses the admin screen's tablist pattern for three tabs", () => {
-    expect(OPERATOR_TABS.map((tab) => tab.label)).toEqual(["Organisations", "Activity", "Health"]);
+  it("uses the admin screen's tablist pattern for five tabs", () => {
+    expect(OPERATOR_TABS.map((tab) => tab.label)).toEqual(["Organisations", "Models", "AI spend", "Activity", "Health"]);
     const console = read("components/operator/OperatorConsole.tsx");
     for (const part of ['role="tablist"', 'role="tab"', 'role="tabpanel"', "aria-controls", "tabAfterKey(", "tabIndex="]) {
       expect(console, part).toContain(part);
@@ -103,5 +106,32 @@ describe("activity and health source guards", () => {
       expect(health, label).toContain(label);
     }
     expect(health).not.toMatch(/\.(display_name|email)/);
+  });
+});
+
+describe("the reader and the queues (PRD 5 U9)", () => {
+  const now = Date.parse("2026-10-09T10:00:00Z");
+  const seen = (msAgo: number) => new Date(now - msAgo).toISOString();
+
+  it("says each worker's reader status, failing as slow", () => {
+    expect(readerWords({ state: "working", seen_at: seen(1000) }, now)).toBe("Working");
+    expect(readerWords({ state: "failing", seen_at: seen(1000) }, now)).toBe("Slow");
+    expect(readerWords({ state: "down", seen_at: seen(1000) }, now)).toBe("Down");
+    expect(readerWords({ state: "key_problem", seen_at: seen(1000) }, now)).toBe("Key problem");
+  });
+
+  it("says not reporting once a worker has been quiet for 2 minutes", () => {
+    expect(NOT_REPORTING_MS).toBe(120000);
+    expect(readerWords({ state: "working", seen_at: seen(NOT_REPORTING_MS - 1) }, now)).toBe("Working");
+    expect(readerWords({ state: "working", seen_at: seen(NOT_REPORTING_MS) }, now)).toBe("Not reporting");
+    expect(readerWords({ state: "working", seen_at: "not a time" }, now)).toBe("Not reporting");
+  });
+
+  it("gives the jobs waiting in both lanes, or not answering", () => {
+    expect(queueWords({ express: 2, main: 1450 })).toEqual([
+      { label: "Waiting in the express lane", value: "2" },
+      { label: "Waiting in the main lane", value: "1,450" },
+    ]);
+    expect(queueWords(null).map((lane) => lane.value)).toEqual(["Not answering", "Not answering"]);
   });
 });

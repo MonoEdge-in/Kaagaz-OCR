@@ -45,12 +45,30 @@ from kaagaz.db.folders import FolderNotFound
 # A DocumentSummary row: the document, its uploader's name, who uploaded each
 # version of its family, and the newest version after it that is not in Trash
 # (one small JSON object, or NULL). Both subqueries use the index
-# documents_family_version on the family's few rows.
+# documents_family_version on the family's few rows. PRD 5 F4: the pages read
+# unreadable or uncertain that are still on the attention list (not kept as is,
+# F5), and the values labelled needs review, each counted on the document's own
+# rows (the pages key, the index extracted_values_record). PRD 5 U2: the unsure words on
+# those pages. PRD 5 Q6: ``batch_ahead``, the files of the same uploader's batch (the
+# documents_batch index) uploaded before this one and still being read or waiting; 0
+# for a document in no batch. It counts this customer's own rows only, so another
+# customer's load never shows in it.
 _COLUMNS = (
     "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"
     " d.page_count, d.created_at, d.uploaded_by, d.folder_id, d.deleted_at, d.family_id, d.version_no,"
-    " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary,"
+    " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary, d.read_model,"
     " u.display_name AS uploaded_by_name,"
+    " (SELECT count(*) FROM pages pu WHERE pu.customer_id = d.customer_id AND pu.document_id = d.id"
+    " AND pu.read_quality = 'unreadable' AND pu.accepted_at IS NULL) AS pages_unreadable,"
+    " (SELECT count(*) FROM pages pc WHERE pc.customer_id = d.customer_id AND pc.document_id = d.id"
+    " AND pc.read_quality = 'uncertain' AND pc.accepted_at IS NULL) AS pages_uncertain,"
+    " (SELECT coalesce(sum(pw.unsure_words), 0) FROM pages pw WHERE pw.customer_id = d.customer_id"
+    " AND pw.document_id = d.id AND pw.accepted_at IS NULL) AS words_unsure,"
+    " (SELECT count(*) FROM documents b WHERE b.customer_id = d.customer_id AND b.batch_id = d.batch_id"
+    " AND b.uploaded_by = d.uploaded_by AND b.deleted_at IS NULL AND b.status IN ('received', 'clean')"
+    " AND (b.created_at, b.id) < (d.created_at, d.id)) AS batch_ahead,"
+    " (SELECT count(*) FROM extracted_values ev WHERE ev.customer_id = d.customer_id"
+    " AND ev.document_id = d.id AND ev.label = 'needs_review') AS values_to_review,"
     " (SELECT array_agg(o.uploaded_by) FROM documents o"
     " WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id) AS family_uploaders,"
     " (SELECT json_build_object('id', n.id, 'version_no', n.version_no, 'status', n.status,"
@@ -104,6 +122,14 @@ _WITH_TAGS = (
     " GROUP BY dt.document_id HAVING count(DISTINCT dt.tag_id) = :tag_count)"
 )
 _OF_TYPE = " AND d.detected_type = :detected_type"
+# PRD 5 U2 "Needs attention": a page unreadable or uncertain still on the attention list
+# (not kept as is), or a value to review; the same rows _COLUMNS counts.
+_NEEDS_ATTENTION = (
+    " AND (EXISTS (SELECT 1 FROM pages pa WHERE pa.customer_id = :c AND pa.document_id = d.id"
+    " AND pa.read_quality IN ('unreadable', 'uncertain') AND pa.accepted_at IS NULL)"
+    " OR EXISTS (SELECT 1 FROM extracted_values va WHERE va.customer_id = :c"
+    " AND va.document_id = d.id AND va.label = 'needs_review'))"
+)
 _UPLOADED_FROM = " AND d.created_at >= :uploaded_from"
 _UPLOADED_TO = " AND d.created_at < :uploaded_to"
 
@@ -148,6 +174,7 @@ def list_documents(
     uploaded_from: datetime | None = None,
     uploaded_to: datetime | None = None,
     trashed: bool = False,
+    attention: bool = False,
 ) -> tuple[Sequence[RowMapping], int]:
     """One page of this customer's documents, newest first, and the total that match.
 
@@ -157,14 +184,16 @@ def list_documents(
     Filters (each left at its default filters nothing): ``top_level_only`` (in no
     folder), ``folder_ids`` (in one of these folders), ``tag_ids`` (holding every
     one of these tags), ``detected_type``, and ``uploaded_from`` (inclusive) to
-    ``uploaded_to`` (exclusive). All of them apply in both queries, before LIMIT.
+    ``uploaded_to`` (exclusive), ``attention`` (PRD 5 U2: a page or a value needs
+    attention). All of them apply in both queries, before LIMIT.
 
     Two queries (the page and the count). Cost for this customer's D documents:
     no filter, O(limit + offset) rows on the (customer_id, created_at) index; a
     folder filter, O(n log n) for the n documents in those folders (index
     ``documents_folder``); a tag filter, O(L) for the L links of those tags
     (index ``document_tags_tag``), grouped, then one semi-join; ``q``, the type
-    or the dates alone, O(D) rows looked at. The count reads every match.
+    or the dates alone, O(D) rows looked at; ``attention`` adds two key probes a row.
+    The count reads every match.
     Each row looked at costs one more O(log D) probe for a newer version.
     """
     params: dict[str, Any] = {
@@ -193,6 +222,8 @@ def list_documents(
     if uploaded_to is not None:
         chosen.append(_UPLOADED_TO)
         params["uploaded_to"] = uploaded_to
+    if attention:
+        chosen.append(_NEEDS_ATTENTION)
     where = (_TRASH_LIST if trashed else _LIST) + _FILTERS + "".join(chosen)
     rows = (
         conn.execute(
@@ -210,6 +241,55 @@ def get_document(conn: Connection, customer_id: str, document_id: str) -> RowMap
     return conn.execute(text(_SELECT), {"c": customer_id, "d": document_id}).mappings().first()
 
 
+# PRD 5 Q1: one drop of files, the uploader's own only, out of Trash, in upload order.
+# Any version: a file uploaded as a duplicate is not in it (it stays in its own batch).
+# At most MAX_FILES_PER_BATCH rows, the upload's own cap (409 past it). PRD 5 U1: the tray
+# says "Couldn't read page n" with the reason and the fix, so each row also has its first
+# unreadable page still on the attention list, with what views.page_problems needs, or
+# NULL (the pages key). And how many values were found in it, so the tray says "All values
+# verified" only for a file that has some (the index extracted_values_record).
+_VALUES_FOUND = (
+    "(SELECT count(*) FROM extracted_values vf WHERE vf.customer_id = d.customer_id"
+    " AND vf.document_id = d.id) AS values_found"
+)
+_FIRST_UNREADABLE = (
+    "(SELECT json_build_object('page_no', pf.page_no, 'read_issues', pf.read_issues,"
+    " 'illegible_words', pf.illegible_words, 'unpinned_lines', pf.unpinned_lines,"
+    " 'effective_dpi', pf.effective_dpi)"
+    " FROM pages pf WHERE pf.customer_id = d.customer_id AND pf.document_id = d.id"
+    " AND pf.read_quality = 'unreadable' AND pf.accepted_at IS NULL"
+    " ORDER BY pf.page_no LIMIT 1) AS first_unreadable"
+)
+_BATCH = (
+    _COLUMNS + ", " + _FIRST_UNREADABLE + ", " + _VALUES_FOUND + " FROM documents d"
+    " LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
+    " WHERE d.customer_id = :c AND d.batch_id = :b AND d.uploaded_by = :u AND d.deleted_at IS NULL"
+    " ORDER BY d.created_at, d.id LIMIT :limit"
+)
+_BATCH_SIZE = (
+    "SELECT count(*) FROM documents d"
+    " WHERE d.customer_id = :c AND d.batch_id = :b AND d.uploaded_by = :u AND d.deleted_at IS NULL"
+)
+
+
+def batch_rows(
+    conn: Connection, customer_id: str, batch_id: str, *, user_id: str, limit: int
+) -> Sequence[RowMapping]:
+    """The DocumentSummary rows of ``user_id``'s batch ``batch_id``, at most ``limit``
+    (MAX_FILES_PER_BATCH); empty for another user's or customer's batch, or one that is
+    not there. On the index documents_batch: O(log D + b) for the batch's b files, each
+    with _COLUMNS' probes."""
+    params = {"c": customer_id, "b": batch_id, "u": user_id, "limit": limit}
+    return conn.execute(text(_BATCH), params).mappings().all()
+
+
+def batch_size(conn: Connection, customer_id: str, batch_id: str, *, user_id: str) -> int:
+    """How many files ``user_id``'s batch holds, for the upload's cap (Q1). One count
+    on the index documents_batch: O(log D + b)."""
+    params = {"c": customer_id, "b": batch_id, "u": user_id}
+    return int(conn.execute(text(_BATCH_SIZE), params).scalar_one())
+
+
 def family_versions(conn: Connection, customer_id: str, family_id: str) -> Sequence[RowMapping]:
     """Every version of one family, the first version first, in Trash or not.
     One query on the index documents_family_version: O(log D + v) time and
@@ -217,14 +297,27 @@ def family_versions(conn: Connection, customer_id: str, family_id: str) -> Seque
     return conn.execute(text(_VERSIONS), {"c": customer_id, "f": family_id}).mappings().all()
 
 
+# A PageSummary row: the page, how it was read (PRD 2 R1, R4) and its reading result
+# (PRD 5 RT2, F1), "Keep as is" and a read again asked for (F5). PRD 5 U4: the values on
+# the page the two readers still read differently, the count readers_disagree's sentence
+# names (the index extracted_values_record). Model choice (council 11 Oct 2026): the
+# catalogue name of the model that read it, ``read_by_name``; NULL for rapidocr, text_layer,
+# cells or a model the catalogue never listed (a LEFT JOIN on its primary key).
+_PAGE = (
+    "SELECT page_no, width, height, unit, has_image, route, effective_dpi, low_resolution,"
+    " read_by, mc.name AS read_by_name, read_quality, read_issues, unsure_words, illegible_words,"
+    " unpinned_lines, accepted_by, accepted_at, read_again_requested_at,"
+    " (SELECT count(*) FROM extracted_values ev WHERE ev.customer_id = pages.customer_id"
+    " AND ev.document_id = pages.document_id AND ev.page_no = pages.page_no"
+    " AND ev.label_reason = 'readers_disagree') AS values_disputed"
+    " FROM pages LEFT JOIN model_catalog mc ON mc.id = pages.read_by"
+)
+
+
 def list_pages(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:
     return (
         conn.execute(
-            text(
-                "SELECT page_no, width, height, unit, has_image, route, effective_dpi, low_resolution"
-                " FROM pages"
-                " WHERE customer_id = :c AND document_id = :d ORDER BY page_no"
-            ),
+            text(_PAGE + " WHERE customer_id = :c AND document_id = :d ORDER BY page_no"),
             {"c": customer_id, "d": document_id},
         )
         .mappings()
@@ -235,11 +328,7 @@ def list_pages(conn: Connection, customer_id: str, document_id: str) -> Sequence
 def get_page(conn: Connection, customer_id: str, document_id: str, page_no: int) -> RowMapping | None:
     return (
         conn.execute(
-            text(
-                "SELECT page_no, width, height, unit, has_image, route, effective_dpi, low_resolution"
-                " FROM pages"
-                " WHERE customer_id = :c AND document_id = :d AND page_no = :n"
-            ),
+            text(_PAGE + " WHERE customer_id = :c AND document_id = :d AND page_no = :n"),
             {"c": customer_id, "d": document_id, "n": page_no},
         )
         .mappings()
@@ -394,6 +483,8 @@ _PAGE_READINGS = text(
     " sum(length(left(e.span ->> 'raw', :max_chars))) OVER (ORDER BY e.ord) AS upto"
     " FROM jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
     " WHERE (e.span -> 'region' ->> 'page')::int = :page_no"
+    " AND NOT (coalesce(e.span ->> 'origin', '') = 'ocr' AND e.span ->> 'kind' IS NULL"
+    " AND coalesce(e.span ->> 'quality', '') IN ('unsure', 'illegible'))"
     " ORDER BY e.ord LIMIT :max_lines + 1) AS s"
     " WHERE s.upto - length(s.text) <= :max_text) AS l ON true"
     " WHERE ro.customer_id = :c AND ro.document_id = :d"
@@ -422,6 +513,38 @@ def page_readings(conn: Connection, customer_id: str, document_id: str, page_no:
     return conn.execute(_PAGE_READINGS, params).mappings().all()
 
 
+# PRD 5 U3: the reading problems drawn on one page, from the stored output: each word
+# mark (a span read by OCR with no kind and quality unsure or illegible, F3) and each
+# line whose spot no found box confirmed (box_source "model", G5: "unpinned"), in stored
+# order, at most MAX_READING_LINES, each text cut to MAX_READING_CHARS. For the viewer
+# only, like page_readings.
+_PAGE_MARKS = text(
+    "SELECT CASE WHEN e.span ->> 'kind' IS NULL THEN e.span ->> 'quality' ELSE 'unpinned' END AS quality,"
+    " e.span -> 'region' AS region, left(e.span ->> 'text', :max_chars) AS text"
+    " FROM reader_outputs ro"
+    " CROSS JOIN LATERAL jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
+    " WHERE ro.customer_id = :c AND ro.document_id = :d"
+    " AND (e.span -> 'region' ->> 'page')::int = :page_no AND e.span ->> 'origin' = 'ocr'"
+    " AND ((e.span ->> 'kind' IS NULL AND e.span ->> 'quality' IN ('unsure', 'illegible'))"
+    " OR (e.span ->> 'kind' IS NOT NULL AND e.span ->> 'box_source' = 'model'))"
+    " ORDER BY ro.role, e.ord LIMIT :max_marks"
+)
+
+
+def page_marks(conn: Connection, customer_id: str, document_id: str, page_no: int) -> Sequence[RowMapping]:
+    """The page's reading marks (quality, region, text): unsure, illegible or unpinned.
+    Call it after ``page_readings`` in the same transaction, so its timeout holds.
+    O(spans of the document), as ``page_readings``."""
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "page_no": page_no,
+        "max_chars": MAX_READING_CHARS,
+        "max_marks": MAX_READING_LINES,
+    }
+    return conn.execute(_PAGE_MARKS, params).mappings().all()
+
+
 def rename_document(conn: Connection, customer_id: str, document_id: str, *, name: str) -> None:
     """Give this one version a new display name, already cleaned by the caller, and
     put it in its pieces' context headers too, so search never shows the old name.
@@ -448,3 +571,59 @@ def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_
         if folder_missing(error):
             raise FolderNotFound() from None
         raise
+
+
+# --- Model choice and AI spend (council 11 Oct 2026, MS5, SP2, SP4) -------------------
+
+_SET_READING = (
+    "UPDATE documents SET read_requested_by = :u, read_model = COALESCE(:m, read_model)"
+    " WHERE customer_id = :c AND id = :d"
+)
+
+
+def set_reading(
+    conn: Connection, customer_id: str, document_id: str, *, requested_by: str, model: str | None
+) -> None:
+    """Who asked for the document's next reading, the user its scan spend is billed to, and
+    the model chosen (already checked against the organisation's usable models); ``model``
+    None keeps the document's own choice. O(log D)."""
+    conn.execute(text(_SET_READING), {"c": customer_id, "d": document_id, "u": requested_by, "m": model})
+
+
+def ai_budget(conn: Connection, customer_id: str) -> float | None:
+    """The organisation's monthly AI budget in US dollars, set by the operator; None: none."""
+    value = conn.execute(
+        text("SELECT ai_budget_usd FROM customers WHERE id = :c"), {"c": customer_id}
+    ).scalar_one_or_none()
+    return None if value is None else float(value)
+
+
+# The spend CSV (SP2): one line per day in TIMEZONE, user, model and kind. The user is
+# grouped by id, so two users with one name stay apart; a NULL user (work no user asked
+# for, or a removed user) has no name. The index model_usage_period.
+_USAGE_ROWS = (
+    "SELECT (u.created_at AT TIME ZONE :tz)::date AS day, max(us.display_name) AS user_name,"
+    " u.model, u.kind, sum(u.calls) AS calls, sum(u.input_tokens + u.output_tokens) AS tokens,"
+    " sum(u.cost_usd) AS cost_usd, bool_or(u.cost_estimated) AS cost_estimated,"
+    " bool_or(u.cost_usd IS NULL) AS cost_part_unknown"
+    " FROM model_usage u"
+    " LEFT JOIN users us ON us.customer_id = u.customer_id AND us.id = u.user_id"
+    " WHERE u.customer_id = :c AND u.created_at >= :start AND u.created_at < :end"
+)
+_USAGE_ROWS_ORDER = " GROUP BY 1, u.user_id, u.model, u.kind ORDER BY 1, 2 NULLS FIRST, u.model, u.kind"
+
+
+def usage_rows(
+    conn: Connection,
+    customer_id: str,
+    *,
+    start: datetime,
+    end: datetime,
+    timezone: str,
+    user_id: str | None,
+) -> Sequence[RowMapping]:
+    """The ledger from ``start`` to ``end`` (not included), for one user when given, one row
+    per day, user, model and kind. O(rows in the period)."""
+    statement = _USAGE_ROWS + ("" if user_id is None else " AND u.user_id = :u") + _USAGE_ROWS_ORDER
+    params = {"c": customer_id, "start": start, "end": end, "tz": timezone, "u": user_id}
+    return conn.execute(text(statement), params).mappings().all()

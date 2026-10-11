@@ -2,7 +2,7 @@
 
 The file store's path and both volume names are read from the compose file, so
 a change there that the doc does not follow fails here. Plain text, as
-tests/test_compose_ocr.py reads it: no YAML library.
+tests/test_compose_prod.py reads it: no YAML library.
 """
 
 import re

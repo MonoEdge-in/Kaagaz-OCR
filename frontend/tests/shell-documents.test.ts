@@ -299,7 +299,7 @@ describe("sessionChangedMessage", () => {
 describe("uploadStateText", () => {
   it("has words for every state and leaves the percentage to the bar", () => {
     expect(uploadStateText({ kind: "waiting" })).toBe("Waiting to upload");
-    expect(uploadStateText({ kind: "uploading", fraction: 0.42 })).toBe("Uploading");
+    expect(uploadStateText({ kind: "sending", fraction: 0.42 })).toBe("Sending");
     expect(uploadStateText({ kind: "done", documentId: "d" })).toBe("Uploaded");
     expect(
       uploadStateText({ kind: "duplicate", documentId: "d", existingName: "x.pdf", inTrash: false }),
@@ -528,16 +528,20 @@ describe("uploadDocument into a folder", () => {
     expect(lastForm().get("user_id")).toBe("u1");
   });
 
-  it("sends the scan reader chosen as ocr_choice on both routes, and nothing for the default", () => {
+  // Model choice MS4, FINAL DECISIONS 6: read_model, never ocr_choice (accepted and ignored).
+  it("sends the model chosen as read_model on both routes, and nothing for the default", () => {
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
-    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, undefined, "rapidocr");
-    expect(lastForm().get("ocr_choice")).toBe("rapidocr");
-    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, "rapidocr");
-    expect(lastForm().get("ocr_choice")).toBe("rapidocr");
+    const model = "anthropic/claude-sonnet-5.5";
+    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, undefined, model);
+    expect(lastForm().get("read_model")).toBe(model);
+    expect(lastForm().has("ocr_choice")).toBe(false);
+    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, model);
+    expect(lastForm().get("read_model")).toBe(model);
+    expect(lastForm().has("ocr_choice")).toBe(false);
     void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, FOLDER, undefined);
-    expect(lastForm().has("ocr_choice")).toBe(false);
+    expect(lastForm().has("read_model")).toBe(false);
     void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {});
-    expect(lastForm().has("ocr_choice")).toBe(false);
+    expect(lastForm().has("read_model")).toBe(false);
   });
 
   it("gives the server's words when someone else has signed in since", async () => {

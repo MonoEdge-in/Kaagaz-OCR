@@ -44,15 +44,38 @@ A reader output is stored as a JSON array of spans, each
 ``{"text", "raw", "region", "confidence"}`` with ``region`` as in
 kaagaz.reading.spans.location_to_json, plus ``"kind"``, ``"origin"``,
 ``"table_id"``, ``"row"``, ``"col"`` and ``"header"`` only when they are set
-(PRD 2 P4). Outputs stored before PRD 2 have none of them and still load
-(``span_from_json``). A table ``row`` is a top-level key, so it never mixes
-with a cell's ``region.row``, which is all ``listing.sheet_cells`` reads.
+(PRD 2 P4), and ``"quality"`` and ``"box_source"`` likewise (PRD 5 F3). Outputs
+stored before PRD 2 have none of them and still load (``span_from_json``). A table
+``row`` is a top-level key, so it never mixes with a cell's ``region.row``, which
+is all ``listing.sheet_cells`` reads.
 
-Cost per save: one family lock, 1 update, 5 deletes; per SAVE_CHUNK rows, one
-batched insert of pages and one of pieces (pipelined, a row each) and one insert
-of values (an array per column); one insert per reader output, 2 for an invoice,
-and 3 to 7 small link statements; O(rows) data sent, O(SAVE_CHUNK) rows built at
-a time. The card-label check runs before the transaction opens. The link lookup
+Each page row carries its reading result (PRD 5 RT2, F1): ``read_by``,
+``read_quality``, ``read_issues`` and the counts ``unsure_words``,
+``illegible_words`` and ``unpinned_lines``, from the ``PageRecord`` fields of those
+names (kaagaz.pipeline); a page record without them is saved with F1's default,
+good with no issues, as a text-layer, cell or blank page is. "Keep as is" (F5,
+``accepted_by`` and ``accepted_at``) is the user's, not the run's, so the save
+carries it forward from the page row it replaces, by page number, unless that page
+was read again: a page whose ``read_again_requested_at`` is set loses it, and the
+save clears the request, since this run read the page again (the council
+architect's finding). A read again of one page is refused while the document is
+being read (F5), so no request can arrive between a run's start and its save. The
+page cache (``page_reads``, kaagaz.db.page_reads) is written outside this save, page
+by page, so a crash keeps it; the save never touches it. Sections and topics
+(``document_sections``, ``document_topics``, PRD 5 CX2 to CX4) are deleted with the
+rest and inserted after the pieces, in the same transaction, so a read again replaces
+them and none is ever half saved. A section's ``tsv`` is written with it, as
+``to_tsvector('simple', ...)`` of its heading path and summary; its vector comes after
+the save, like a piece's (kaagaz.search.indexing). ``_check_map`` checks them against
+the pieces before the transaction opens (CX4): a bug upstream stops the save before any
+statement, like the card-label check.
+
+Cost per save: one family lock, 1 update, 1 read of the earlier pages' "Keep as is",
+7 deletes; per SAVE_CHUNK rows, one batched insert of pages, one of pieces and one of
+sections (pipelined, a row each) and one insert of values (an array per column); one
+batched insert of the topics; one insert per reader output, 2 for an invoice, and 3 to 7
+small link statements; O(rows) data sent, O(SAVE_CHUNK) rows built at a time. The
+card-label and map checks run before the transaction opens. The link lookup
 reads this customer's values of the link fields, O(V) for V of them (plan 12,
 risk 12). One indexed query for ``load_learned``.
 """
@@ -60,6 +83,7 @@ risk 12). One indexed query for ``load_learned``.
 import json
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Connection, text
@@ -82,6 +106,7 @@ from kaagaz.jobs.worker import Superseded
 from kaagaz.reading.spans import Span, location_from_json, location_to_json
 
 if TYPE_CHECKING:
+    from kaagaz.chunking.sections import Section, Topic
     from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput  # pipeline builds this store
 
 # Rows per statement (A6b): the save holds one chunk of row data at a time, not every
@@ -93,7 +118,16 @@ _UPDATE_FACTS = text(
     " summary = :summary, document_date = :document_date, card = CAST(:card AS jsonb)"
     " WHERE customer_id = :c AND id = :d"
 )
+# PRD 5 F5: the pages' "Keep as is" to carry forward, from the rows the save replaces; a
+# page asked to be read again is left out, so it loses its acceptance.
+_ACCEPTED = text(
+    "SELECT page_no, accepted_by, accepted_at FROM pages"
+    " WHERE customer_id = :c AND document_id = :d AND accepted_by IS NOT NULL"
+    " AND read_again_requested_at IS NULL"
+)
 _DELETES = [
+    text("DELETE FROM document_topics WHERE customer_id = :c AND document_id = :d"),
+    text("DELETE FROM document_sections WHERE customer_id = :c AND document_id = :d"),
     text("DELETE FROM invoices WHERE customer_id = :c AND document_id = :d"),  # its lines go with it
     text("DELETE FROM extracted_values WHERE customer_id = :c AND document_id = :d"),
     text("DELETE FROM pieces WHERE customer_id = :c AND document_id = :d"),
@@ -103,8 +137,23 @@ _DELETES = [
 
 _INSERT_PAGE = text(
     "INSERT INTO pages (customer_id, document_id, page_no, width, height, unit, has_image, route,"
-    " effective_dpi, low_resolution) VALUES (:c, :d, :page_no, :width, :height, :unit, :has_image, :route,"
-    " :effective_dpi, :low_resolution)"
+    " effective_dpi, low_resolution, read_by, read_quality, read_issues, unsure_words, illegible_words,"
+    " unpinned_lines, accepted_by, accepted_at) VALUES (:c, :d, :page_no, :width, :height, :unit, :has_image,"
+    " :route, :effective_dpi, :low_resolution, :read_by, :read_quality, CAST(:read_issues AS text[]),"
+    " :unsure_words, :illegible_words, :unpinned_lines, :accepted_by, :accepted_at)"
+)
+# PRD 5 RT2 and F1: a page's reading result, by its PageRecord field name, with the value a
+# page record without it is saved with: good, no issues, nobody named (kaagaz.pipeline
+# builds the records; text-layer, cell and blank pages are good).
+PAGE_READING_DEFAULTS: Mapping[str, Any] = MappingProxyType(
+    {
+        "read_by": None,
+        "read_quality": "good",
+        "read_issues": (),
+        "unsure_words": 0,
+        "illegible_words": 0,
+        "unpinned_lines": 0,
+    }
 )
 _INSERT_OUTPUT = text(
     "INSERT INTO reader_outputs (customer_id, document_id, role, reader, reader_version, output)"
@@ -161,6 +210,16 @@ _INSERT_LINE = text(
     "INSERT INTO invoice_lines (customer_id, invoice_id, document_id, line_no, description, hsn, quantity,"
     " unit, rate, amount, label) VALUES (:c, :invoice_id, :d, :line_no, :description, :hsn, :quantity,"
     " :unit, :rate, :amount, :label)"
+)
+# PRD 5 CX2, CX3 (0021). ``words`` is the heading path and the summary, for the word index.
+_INSERT_SECTION = text(
+    "INSERT INTO document_sections (customer_id, document_id, seq, path, page_from, page_to,"
+    " piece_seq_from, piece_seq_to, summary, tsv) VALUES (:c, :d, :seq, CAST(:path AS text[]),"
+    " :page_from, :page_to, :piece_seq_from, :piece_seq_to, :summary, to_tsvector('simple', :words))"
+)
+_INSERT_TOPIC = text(
+    "INSERT INTO document_topics (customer_id, document_id, topic, aliases, piece_seqs)"
+    " VALUES (:c, :d, :topic, CAST(:aliases AS text[]), CAST(:piece_seqs AS integer[]))"
 )
 _LEARNED = text(
     "SELECT field, raw_value, corrected_value FROM learned_corrections"
@@ -223,6 +282,8 @@ def span_to_json(span: Span) -> dict[str, Any]:
         "row": span.row,
         "col": span.col,
         "header": span.header,
+        "quality": span.quality,
+        "box_source": span.box_source,
     }
     data.update({key: value for key, value in optional.items() if value is not None})
     return data
@@ -241,6 +302,8 @@ def span_from_json(data: Mapping[str, Any]) -> Span:
         row=data.get("row"),
         col=data.get("col"),
         header=data.get("header"),
+        quality=data.get("quality"),
+        box_source=data.get("box_source"),
     )
 
 
@@ -257,6 +320,7 @@ class PgPipelineStore:
                 # The last check (council fix 4): the model chose a card value's field, so it
                 # is never verified. A bug upstream stops the save before any statement.
                 raise ValueError("a card value must be needs_review")
+        _check_map(len(content.pieces), content.sections, content.topics)
         customer_id, document_id = content.customer_id, content.document_id
         ids = {"c": customer_id, "d": document_id}
         pages, outputs, pieces = content.pages, content.outputs, content.pieces
@@ -268,15 +332,17 @@ class PgPipelineStore:
                 family_id = lock_family(conn, customer_id, document_id)
                 if run_id is not None and not is_run_open(conn, customer_id, document_id, run_id):
                     raise Superseded(run_id)
+                accepted = _accepted(conn, ids)  # read before the delete below
                 _replace_facts_and_delete(conn, ids, content.facts)
                 for start in range(0, len(pages), SAVE_CHUNK):
                     chunk = pages[start : start + SAVE_CHUNK]
-                    conn.execute(_INSERT_PAGE, [_page_row(ids, page) for page in chunk])
+                    conn.execute(_INSERT_PAGE, [_page_row(ids, page, accepted) for page in chunk])
                 for output in outputs:  # one at a time: one output's JSON is held at once
                     conn.execute(_INSERT_OUTPUT, _output_row(ids, output))
                 for start in range(0, len(pieces), SAVE_CHUNK):
                     seqs = range(start, min(start + SAVE_CHUNK, len(pieces)))
                     conn.execute(_INSERT_PIECE, [_piece_row(ids, seq, pieces[seq]) for seq in seqs])
+                _insert_map(conn, ids, content.sections, content.topics)
                 _insert_values(conn, ids, content.values, content.reader)
                 if content.invoice is not None:
                     _insert_invoice(conn, ids, content.invoice)
@@ -306,9 +372,16 @@ class PgPipelineStore:
         return [LearnedCorrection(str(row[0]), str(row[1]), str(row[2])) for row in rows]
 
 
+def _accepted(conn: Connection, ids: dict[str, str]) -> dict[int, tuple[object, object]]:
+    """{page number: (accepted_by, accepted_at)} of the pages the save replaces that were
+    kept as is and not asked to be read again (F5). One statement on the pages key:
+    O(log P + p) for the document's p pages."""
+    return {int(page_no): (by, at) for page_no, by, at in conn.execute(_ACCEPTED, ids)}
+
+
 def _replace_facts_and_delete(conn: Connection, ids: dict[str, str], facts: DocumentFacts) -> None:
     """Write the card columns (always, so no older card stays), then delete the rows
-    an earlier run saved. 6 statements."""
+    an earlier run saved. 8 statements."""
     conn.execute(
         _UPDATE_FACTS,
         {
@@ -322,6 +395,70 @@ def _replace_facts_and_delete(conn: Connection, ids: dict[str, str], facts: Docu
     )
     for statement in _DELETES:
         conn.execute(statement, ids)
+
+
+def _check_map(pieces: int, sections: Sequence["Section"], topics: Sequence["Topic"]) -> None:
+    """Raise ValueError unless the sections and topics fit the document's ``pieces`` pieces
+    (CX2 to CX4): sections numbered 0 to k-1 in order, each on pages from 1 with
+    page_to >= page_from, its pieces existing and after the section before it's, and a
+    summary of 1 to 400 characters or none; topics unique, lower case, 1 to 200 characters,
+    with casefolded aliases and at least one piece, every one existing. Pure, before any
+    statement. O(sections + topics x (aliases + seqs))."""
+    after = -1  # the last piece of the section before
+    for seq, section in enumerate(sections):
+        if section.seq != seq:
+            raise ValueError(f"section {seq} is numbered {section.seq}")
+        if not 1 <= section.page_from <= section.page_to:
+            raise ValueError(f"section {seq} has bad pages")
+        if not after < section.piece_seq_from <= section.piece_seq_to < pieces:
+            raise ValueError(f"section {seq} has pieces that do not exist or are out of order")
+        if section.summary is not None and not 0 < len(section.summary) <= 400:
+            raise ValueError(f"section {seq} has a summary of {len(section.summary)} characters")
+        after = section.piece_seq_to
+    names: set[str] = set()
+    for topic in topics:
+        if not 0 < len(topic.topic) <= 200 or topic.topic != topic.topic.lower() or topic.topic in names:
+            raise ValueError("a topic name is empty, too long, not lower case or twice")
+        if any(alias != alias.casefold() for alias in topic.aliases):
+            raise ValueError("a topic alias is not casefolded")
+        if not topic.piece_seqs or not all(0 <= seq < pieces for seq in topic.piece_seqs):
+            raise ValueError("a topic has no pieces or a piece that does not exist")
+        names.add(topic.topic)
+
+
+def _insert_map(
+    conn: Connection, ids: dict[str, str], sections: Sequence["Section"], topics: Sequence["Topic"]
+) -> None:
+    """The sections in chunks of SAVE_CHUNK, then the topics in one statement."""
+    for start in range(0, len(sections), SAVE_CHUNK):
+        conn.execute(
+            _INSERT_SECTION, [_section_row(ids, section) for section in sections[start : start + SAVE_CHUNK]]
+        )
+    if topics:
+        rows = [
+            {
+                **ids,
+                "topic": topic.topic,
+                "aliases": list(topic.aliases),
+                "piece_seqs": list(topic.piece_seqs),
+            }
+            for topic in topics
+        ]
+        conn.execute(_INSERT_TOPIC, rows)
+
+
+def _section_row(ids: dict[str, str], section: "Section") -> dict[str, Any]:
+    return {
+        **ids,
+        "seq": section.seq,
+        "path": list(section.path),
+        "page_from": section.page_from,
+        "page_to": section.page_to,
+        "piece_seq_from": section.piece_seq_from,
+        "piece_seq_to": section.piece_seq_to,
+        "summary": section.summary,
+        "words": " ".join([*section.path, section.summary or ""]),
+    }
 
 
 def _insert_invoice(conn: Connection, ids: dict[str, str], invoice: InvoiceRow) -> None:
@@ -382,8 +519,14 @@ def _link_targets(
     ]
 
 
-def _page_row(ids: dict[str, str], page: "PageRecord") -> dict[str, Any]:
+def _page_row(
+    ids: dict[str, str], page: "PageRecord", accepted: Mapping[int, tuple[object, object]]
+) -> dict[str, Any]:
+    """One page's row: its size and route, its reading result (PAGE_READING_DEFAULTS when
+    the record has none) and its "Keep as is" carried forward from ``accepted``."""
     info = page.info
+    reading = {name: getattr(page, name, default) for name, default in PAGE_READING_DEFAULTS.items()}
+    accepted_by, accepted_at = accepted.get(info.page, (None, None))
     return {
         **ids,
         "page_no": info.page,
@@ -394,6 +537,10 @@ def _page_row(ids: dict[str, str], page: "PageRecord") -> dict[str, Any]:
         "route": page.route,
         "effective_dpi": page.effective_dpi,
         "low_resolution": page.low_resolution,
+        **reading,
+        "read_issues": list(reading["read_issues"]),
+        "accepted_by": accepted_by,
+        "accepted_at": accepted_at,
     }
 
 

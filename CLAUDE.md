@@ -13,7 +13,7 @@ Customers upload business documents (invoices, registers, receipts, statements, 
 | PRD | Build days | Scope |
 |---|---|---|
 | 1 Accounts and Files: https://claude.ai/artifact/1wgupLxkQ95aZonGgmSfQN | 30 Sep | Sign-in, upload limits, file storage, folders, tags, Trash, versions |
-| 2 Document Understanding: https://claude.ai/artifact/WNnL11dDXw2Lozt1679RMx | 30 Sep to 1 Oct | Page route, PaddleOCR-VL, Qwen, cross-page pieces, document card, invoice tables, checks |
+| 2 Document Understanding: https://claude.ai/artifact/WNnL11dDXw2Lozt1679RMx | 30 Sep to 1 Oct | Page route, the scan reader and models (replaced on 8 Oct 2026 by PRD 5's Gemini reader), cross-page pieces, document card, invoice tables, checks |
 | 3 Search and Handover: https://claude.ai/artifact/448jQMudfNE8JJssD2UTNS | 2 Oct | Embeddings, search, chat follow-ups, viewer panels, golden questions, handover |
 
 After handover: the NL-to-SQL agent and hosting in AWS. The architecture page for both: https://claude.ai/artifact/7ATLDAJRxG3Qaab16NhjN8
@@ -90,7 +90,7 @@ If code depends on one of these and it is not written down in the Decisions sect
 | What "verified" promises, in writing | Fri 9 Oct |
 | The go or no go bar for launch, as a number | Fri 16 Oct |
 
-Made on 29 Sep 2026 and recorded in `docs/architecture.md`: the scan reader (PaddleOCR-VL), the second reader for scans (Qwen vision on value crops), the models, and the design.
+Made on 29 Sep 2026 and recorded in `docs/architecture.md`: the scan reader (Gemini through OpenRouter since 8 Oct 2026, PRD 5), the second reader for scans (RapidOCR on value crops), the models, and the design.
 
 Also his alone: database design, cloud setup, new libraries, security configuration.
 
@@ -105,7 +105,7 @@ Also his alone: database design, cloud setup, new libraries, security configurat
 
 ## Stack
 
-Python with FastAPI. Next.js with PDF.js. PostgreSQL with pgvector, full text search and fuzzy matching. S3 API for files (SeaweedFS on the laptop), one prefix per customer. SQS API with worker processes (ElasticMQ on the laptop). PaddleOCR-VL in its own container and Qwen models through Ollama. Everything runs with Docker Compose. After handover: AWS in Mumbai (ap-south-1), with its infrastructure as code.
+Python with FastAPI. Next.js with PDF.js. PostgreSQL with pgvector, full text search and fuzzy matching. S3 API for files (SeaweedFS on the laptop), one prefix per customer. SQS API with worker processes (ElasticMQ on the laptop). Gemini models through OpenRouter for scans, chat and embeddings, with RapidOCR on the CPU to pin boxes, check values and read when Gemini is down. Everything runs with Docker Compose. After handover: AWS in Mumbai (ap-south-1), with its infrastructure as code.
 
 Folders: `backend/`, `frontend/`, `infra/`, `docs/`.
 

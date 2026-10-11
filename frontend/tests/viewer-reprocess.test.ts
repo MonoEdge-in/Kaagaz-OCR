@@ -147,6 +147,17 @@ describe("reprocessDocument", () => {
     await expect(reprocessDocument("d1")).resolves.toMatchObject({ id: "d1", status: "received" });
     expect(calls).toEqual([{ url: "/api/documents/d1/reprocess", method: "POST", csrf: "kaagaz" }]);
   });
+
+  it("sends no body without a model, and the chosen model as read_model (MS4)", async () => {
+    const bodies: unknown[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      bodies.push(init.body === undefined ? undefined : JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ id: "d1", status: "received" }), { status: 200 });
+    });
+    await reprocessDocument("d1");
+    await reprocessDocument("d1", "anthropic/claude-sonnet-5.5");
+    expect(bodies).toEqual([undefined, { read_model: "anthropic/claude-sonnet-5.5" }]);
+  });
 });
 
 // A8a: the viewer follows a document while it is read, on load too.

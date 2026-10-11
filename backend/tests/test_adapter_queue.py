@@ -103,6 +103,95 @@ class StubbedQueueTest(unittest.TestCase):
         )
         self.queue.extend("r-1")
 
+    def test_defer_sends_the_job_again_with_a_delay_and_its_tries_then_deletes(self) -> None:
+        """PRD 5 V1: the second receive of a job that had 1 try before (attempt 3) is
+        handed back as a new message with tries 2, the attempts before this delivery,
+        so its next delivery is attempt 3 again: the deferred one costs no attempt."""
+        self.receive_one(receipt="r-3", body=json.dumps({**json.loads(BODY), "tries": 1}), count="2")
+        self.stub.add_response(
+            "change_message_visibility",
+            {},
+            {"QueueUrl": URL, "ReceiptHandle": "r-3", "VisibilityTimeout": LEASE},
+        )
+        again = json.dumps({**json.loads(BODY), "tries": 2})
+        self.stub.add_response(
+            "send_message", {"MessageId": "m-2"}, {"QueueUrl": URL, "MessageBody": again, "DelaySeconds": 30}
+        )
+        self.stub.add_response("delete_message", {}, {"QueueUrl": URL, "ReceiptHandle": "r-3"})
+        delivery = self.queue.receive()
+        assert delivery is not None and delivery.attempt == 3
+        self.queue.defer(delivery.receipt, 30)
+
+        self.receive_one(receipt="r-4", body=again, count="1")
+        delivery = self.queue.receive()
+        assert delivery is not None
+        self.assertEqual(delivery.attempt, 3)  # 2 earlier tries + this first receive
+
+    def test_defer_with_a_lost_lease_sends_nothing(self) -> None:
+        self.receive_one()
+        self.stub.add_client_error(
+            "change_message_visibility", "ReceiptHandleIsInvalid", http_status_code=400
+        )
+        delivery = self.queue.receive()
+        assert delivery is not None
+        with self.assertRaises(LeaseLost):
+            self.queue.defer(delivery.receipt, 30)
+        # No send_message and no delete_message were stubbed, so none was made.
+
+    def test_defer_takes_0_to_15_minutes_and_a_known_receipt(self) -> None:
+        self.receive_one()
+        delivery = self.queue.receive()
+        assert delivery is not None
+        for seconds in (-1, 15 * 60 + 1):
+            with self.subTest(seconds=seconds), self.assertRaises(ValueError):
+                self.queue.defer(delivery.receipt, seconds)
+        with self.assertRaises(ValueError):
+            self.queue.defer("never-received", 30)
+
+    def test_a_tries_that_is_not_0_to_1000_is_a_bad_message(self) -> None:
+        for tries in (-1, 1001, "2", True, 1.5):
+            with self.subTest(tries=tries):
+                bad = json.dumps({**json.loads(BODY), "tries": tries})
+                self.receive_one(receipt="r-bad", body=bad)
+                self.stub.add_response(
+                    "change_message_visibility",
+                    {},
+                    {"QueueUrl": URL, "ReceiptHandle": "r-bad", "VisibilityTimeout": LEASE},
+                )
+                self.stub.add_response(
+                    "send_message",
+                    {"MessageId": "m-3"},
+                    {
+                        "QueueUrl": FAILED_URL,
+                        "MessageBody": bad,
+                        "MessageAttributes": {
+                            "failure_code": {"DataType": "String", "StringValue": "bad_message"}
+                        },
+                    },
+                )
+                self.stub.add_response("delete_message", {}, {"QueueUrl": URL, "ReceiptHandle": "r-bad"})
+                with self.assertLogs("kaagaz.adapters.queue", "WARNING"):
+                    self.assertIsNone(self.queue.receive())
+
+    def test_depth_counts_the_waiting_jobs_of_each_lane(self) -> None:
+        def waiting(stub: Stubber, url: str, count: str) -> None:
+            answer = {"Attributes": {"ApproximateNumberOfMessages": count}}
+            params = {"QueueUrl": url, "AttributeNames": ["ApproximateNumberOfMessages"]}
+            stub.add_response("get_queue_attributes", answer, params)
+
+        waiting(self.stub, URL, "7")
+        self.assertEqual(self.queue.depth(), {"express": 0, "main": 7})  # no express lane
+
+        client = make_client()
+        stub = Stubber(client)
+        stub.activate()
+        self.addCleanup(stub.deactivate)
+        settings = make_settings(queue_url=URL, queue_express_url=URL + "-express", queue_wait_seconds=WAIT)
+        waiting(stub, URL + "-express", "2")
+        waiting(stub, URL, "0")
+        self.assertEqual(SqsQueue(settings, client=client).depth(), {"express": 2, "main": 0})
+        stub.assert_no_pending_responses()
+
     def test_stale_receipt_is_lease_lost(self) -> None:
         for code in ("ReceiptHandleIsInvalid", "AWS.SimpleQueueService.MessageNotInflight"):
             with self.subTest(code=code):
@@ -293,6 +382,148 @@ class StubbedQueueTest(unittest.TestCase):
         self.assertEqual(marked, [])  # a failure for good keeps its own code
 
 
+EXPRESS_URL = URL + "-express"
+
+
+class ExpressLaneTest(unittest.TestCase):
+    """PRD 5 Q4: two lanes, the express one asked first without waiting; each receipt's
+    ack, extend, bury and defer go to the lane it came from, with its own failure bin."""
+
+    def setUp(self) -> None:
+        client = make_client()
+        self.stub = Stubber(client)
+        self.stub.activate()
+        self.addCleanup(self.stub.deactivate)
+        settings = make_settings(
+            queue_url=URL, queue_express_url=EXPRESS_URL, queue_lease_seconds=LEASE, queue_wait_seconds=WAIT
+        )
+        self.queue = SqsQueue(settings, client=client)
+
+    def tearDown(self) -> None:
+        self.stub.assert_no_pending_responses()
+
+    def receive(self, url: str, wait: int, messages: list[dict[str, Any]]) -> None:
+        params = {**RECEIVE_PARAMS, "QueueUrl": url, "WaitTimeSeconds": wait}
+        self.stub.add_response("receive_message", {"Messages": messages} if messages else {}, params)
+
+    def test_enqueue_sends_to_the_lane_asked_for(self) -> None:
+        self.stub.add_response(
+            "send_message", {"MessageId": "m-1"}, {"QueueUrl": EXPRESS_URL, "MessageBody": BODY}
+        )
+        self.stub.add_response("send_message", {"MessageId": "m-2"}, {"QueueUrl": URL, "MessageBody": BODY})
+        self.queue.enqueue(JOB, express=True)
+        self.queue.enqueue(JOB)
+
+    def test_one_lane_sends_express_jobs_to_the_main_queue(self) -> None:
+        client = make_client()
+        stub = Stubber(client)
+        stub.activate()
+        self.addCleanup(stub.deactivate)
+        stub.add_response("send_message", {"MessageId": "m-1"}, {"QueueUrl": URL, "MessageBody": BODY})
+        SqsQueue(make_settings(queue_url=URL), client=client).enqueue(JOB, express=True)
+        stub.assert_no_pending_responses()
+
+    def test_receive_asks_express_without_waiting_then_main_with_the_long_poll(self) -> None:
+        self.receive(EXPRESS_URL, 0, [message(receipt="r-e")])
+        delivery = self.queue.receive()
+        assert delivery is not None and delivery.receipt == "r-e"
+
+        self.receive(EXPRESS_URL, 0, [])
+        self.receive(URL, WAIT, [message(receipt="r-m")])
+        delivery = self.queue.receive()
+        assert delivery is not None and delivery.receipt == "r-m"
+
+        self.receive(EXPRESS_URL, 0, [])
+        self.receive(URL, WAIT, [])
+        self.assertIsNone(self.queue.receive())
+
+    def test_an_express_receipt_settles_in_the_express_lane(self) -> None:
+        self.receive(EXPRESS_URL, 0, [message(receipt="r-1")])
+        lease = {"QueueUrl": EXPRESS_URL, "ReceiptHandle": "r-1", "VisibilityTimeout": LEASE}
+        self.stub.add_response("change_message_visibility", {}, lease)
+        self.stub.add_response("delete_message", {}, {"QueueUrl": EXPRESS_URL, "ReceiptHandle": "r-1"})
+        delivery = self.queue.receive()
+        assert delivery is not None
+        self.queue.extend(delivery.receipt)
+        self.queue.ack(delivery.receipt)
+
+        self.receive(EXPRESS_URL, 0, [message(receipt="r-2")])
+        self.stub.add_response("change_message_visibility", {}, {**lease, "ReceiptHandle": "r-2"})
+        self.stub.add_response(
+            "send_message",
+            {"MessageId": "m-2"},
+            {
+                "QueueUrl": EXPRESS_URL + "-failed",
+                "MessageBody": BODY,
+                "MessageAttributes": {"failure_code": {"DataType": "String", "StringValue": "corrupt_file"}},
+            },
+        )
+        self.stub.add_response("delete_message", {}, {"QueueUrl": EXPRESS_URL, "ReceiptHandle": "r-2"})
+        delivery = self.queue.receive()
+        assert delivery is not None
+        self.queue.bury(delivery.receipt, "corrupt_file")
+
+        self.receive(EXPRESS_URL, 0, [message(receipt="r-3")])
+        self.stub.add_response("change_message_visibility", {}, {**lease, "ReceiptHandle": "r-3"})
+        self.stub.add_response(
+            "send_message",
+            {"MessageId": "m-3"},
+            {"QueueUrl": EXPRESS_URL, "MessageBody": BODY, "DelaySeconds": 300},
+        )
+        self.stub.add_response("delete_message", {}, {"QueueUrl": EXPRESS_URL, "ReceiptHandle": "r-3"})
+        delivery = self.queue.receive()
+        assert delivery is not None
+        self.queue.defer(delivery.receipt, 300)  # first receive, no earlier tries: tries stays 0
+
+    def defer_an_express_job(self) -> None:
+        self.receive(EXPRESS_URL, 0, [message(receipt="r-e")])
+        lease = {"QueueUrl": EXPRESS_URL, "ReceiptHandle": "r-e", "VisibilityTimeout": LEASE}
+        self.stub.add_response("change_message_visibility", {}, lease)
+        again = {"QueueUrl": EXPRESS_URL, "MessageBody": BODY, "DelaySeconds": 30}
+        self.stub.add_response("send_message", {"MessageId": "m-2"}, again)
+        self.stub.add_response("delete_message", {}, {"QueueUrl": EXPRESS_URL, "ReceiptHandle": "r-e"})
+        delivery = self.queue.receive()
+        assert delivery is not None
+        self.queue.defer(delivery.receipt, 30)
+
+    def test_after_a_defer_the_next_receive_asks_the_main_lane_first_once(self) -> None:
+        """A customer at its fair share with express jobs would otherwise have each one
+        deferred and the next express one taken, so the main lane was never asked."""
+        self.defer_an_express_job()
+
+        self.receive(URL, 0, [message(receipt="r-m")])  # the main lane first, without waiting
+        delivery = self.queue.receive()
+        assert delivery is not None and delivery.receipt == "r-m"
+
+        self.receive(EXPRESS_URL, 0, [message(receipt="r-e2")])  # once only: express first again
+        delivery = self.queue.receive()
+        assert delivery is not None and delivery.receipt == "r-e2"
+
+    def test_after_a_defer_an_empty_main_lane_falls_back_to_the_usual_order(self) -> None:
+        self.defer_an_express_job()
+
+        self.receive(URL, 0, [])
+        self.receive(EXPRESS_URL, 0, [message(receipt="r-e2")])
+        delivery = self.queue.receive()
+        assert delivery is not None and delivery.receipt == "r-e2"
+
+    def test_max_receives_reads_both_lanes_and_takes_the_smaller(self) -> None:
+        for url, count in ((EXPRESS_URL, 8), (URL, 10)):
+            self.stub.add_response(
+                "get_queue_attributes",
+                {"Attributes": {"RedrivePolicy": json.dumps({"maxReceiveCount": count})}},
+                {"QueueUrl": url, "AttributeNames": ["RedrivePolicy"]},
+            )
+        self.assertEqual(self.queue.max_receives(), 8)
+        self.stub.add_response(
+            "get_queue_attributes",
+            {"Attributes": {}},
+            {"QueueUrl": EXPRESS_URL, "AttributeNames": ["RedrivePolicy"]},
+        )
+        with self.assertRaises(QueueSetupError):
+            self.queue.max_receives()  # an express lane with no failure bin stops the worker
+
+
 class QueueSettingsTest(unittest.TestCase):
     def test_wait_and_lease_must_be_within_sqs_limits(self) -> None:
         for overrides in (
@@ -323,6 +554,7 @@ class UnreachableQueueTest(unittest.TestCase):
             "extend": lambda: queue.extend("r-1"),
             "ping": queue.ping,
             "max_receives": queue.max_receives,
+            "depth": queue.depth,
         }
         for name, call in calls.items():
             with self.subTest(call=name), self.assertRaises(BackendUnavailable):
@@ -358,6 +590,22 @@ class ClientConfigTest(unittest.TestCase):
         self.assertEqual((sender.config.connect_timeout, sender.config.read_timeout), (5, 5))
         self.assertEqual(sender.config.retries["total_max_attempts"], 3)
         self.assertGreater(receiver.config.read_timeout, 20)  # longer than the long poll
+
+    def test_depth_uses_the_short_timeout_client(self) -> None:
+        """The Health screen asks for the depth: it must not wait as long as a long poll."""
+        made: list[_RecordingClient] = []
+
+        def client(service_name: str, **kwargs: Any) -> _RecordingClient:
+            made.append(_RecordingClient(_real_boto3_client(service_name, **kwargs).meta.config))
+            return made[-1]
+
+        with mock.patch.object(boto3, "client", client):
+            settings = make_settings(queue_url=URL, queue_express_url=URL + "-express", queue_wait_seconds=20)
+            queue = SqsQueue(settings)
+        self.assertEqual(queue.depth(), {"express": 0, "main": 0})
+        (asked,) = [made_client for made_client in made if "get_queue_attributes" in made_client.calls]
+        self.assertEqual(asked.calls, ["get_queue_attributes", "get_queue_attributes"])
+        self.assertEqual(asked.config.read_timeout, 5)
 
 
 _real_boto3_client = boto3.client

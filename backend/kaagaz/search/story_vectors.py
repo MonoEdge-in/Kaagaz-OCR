@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from sqlalchemy import Connection, text
 
 from kaagaz.ai.client import ModelClient, ModelOutputError
+from kaagaz.ai.usage import usage_scope
 from kaagaz.db.customers import is_active
 from kaagaz.db.document_stories import get_story, recipe_tag, set_embedding, story_hash
 from kaagaz.db.engine import Database, unavailable
@@ -102,8 +103,10 @@ def embed_story(
 ) -> bool:
     """Embed ``story`` (the text just saved) and write its vector. False when the
     story changed or went meanwhile, or the vector was refused (nothing written).
-    One model call, one short transaction."""
-    vectors = model.embed([story])
+    One model call, billed to the story's author as kind story (SP1), one short
+    transaction."""
+    with usage_scope(db, customer_id=customer_id, user_id=user_id, kind="story"):
+        vectors = model.embed([story])
     if len(vectors) != 1:
         raise ModelOutputError("embedding_count")
     return _write(db, model, (customer_id, user_id, family_id, story), vectors[0])
@@ -118,9 +121,10 @@ def embed_missing_stories(
     customer_id: str | None = None,
     after: StoryKey | None = None,
 ) -> StoryPass:
-    """Embed at most ``limit`` stories from ``stories_to_embed`` (after ``after``) in
-    one model call. A story deleted meanwhile, or embedded with today's tag
-    meanwhile (its PUT), is skipped, and so is one whose customer is not active
+    """Embed at most ``limit`` stories from ``stories_to_embed`` (after ``after``), one
+    model call each, billed in its customer's usage scope, kind story, with no user (SP1).
+    A story deleted meanwhile, or embedded with today's tag meanwhile (its PUT), is
+    skipped, and so is one whose customer is not active
     (0014): it costs no model call, and the cursor moves past it all the same.
     1 + 2k short transactions for the k stories found (each read also looks up
     its customer's status); O(k x 1024) memory."""
@@ -137,8 +141,11 @@ def embed_missing_stories(
     following = ids[-1] if ids and len(ids) >= min(limit, PASS_MOST) else None
     if not stories:
         return StoryPass(found=len(ids), written=0, after=following)
-    vectors = model.embed([story[3] for story in stories])
-    if len(vectors) != len(stories):
-        raise ModelOutputError("embedding_count")
-    written = sum(_write(db, model, story, vector) for story, vector in zip(stories, vectors, strict=True))
+    written = 0
+    for story in stories:
+        with usage_scope(db, customer_id=story[0], user_id=None, kind="story"):
+            vectors = model.embed([story[3]])
+        if len(vectors) != 1:
+            raise ModelOutputError("embedding_count")
+        written += _write(db, model, story, vectors[0])
     return StoryPass(found=len(ids), written=written, after=following)

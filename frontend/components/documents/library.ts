@@ -134,3 +134,24 @@ export function noMatchTitle(q: string, filtered: boolean): string {
     ? `No document names contain “${q}” with these filters.`
     : `No document names contain “${q}”.`;
 }
+
+const counted = (n: number, one: string, many: string) => `${n.toLocaleString("en-IN")} ${n === 1 ? one : many}`;
+
+/**
+ * The chips on a document with reading problems (PRD 5 U2): "2 pages unreadable",
+ * "14 words unsure", "3 values to check"; [] when it has none. A page that is only
+ * uncertain, with no word marked unsure (a spot not confirmed, say), is "1 page to check".
+ */
+export function attentionWords(
+  document: Pick<DocumentSummary, "pages_unreadable" | "pages_uncertain" | "values_to_review" | "words_unsure">,
+): string[] {
+  const unsure = document.words_unsure ?? 0;
+  return [
+    document.pages_unreadable > 0 ? counted(document.pages_unreadable, "page unreadable", "pages unreadable") : "",
+    unsure > 0 ? counted(unsure, "word unsure", "words unsure") : "",
+    unsure === 0 && document.pages_uncertain > 0
+      ? counted(document.pages_uncertain, "page to check", "pages to check")
+      : "",
+    document.values_to_review > 0 ? counted(document.values_to_review, "value to check", "values to check") : "",
+  ].filter(Boolean);
+}

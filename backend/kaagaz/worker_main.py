@@ -40,6 +40,24 @@ until it is told to stop:
   between jobs, waiting longer while the model is down (``StoryVectors``,
   kaagaz/search/story_vectors.py). Like the purge, it never stops the jobs or
   crashes the worker.
+* WORKER_REPLICAS copies of this process run at once (PRD 5 Q3). Each sweep
+  between jobs (the purge, EmbedMissing, StoryVectors, UpgradeLocalReads) takes
+  its Postgres advisory lock ``kaagaz.sweep:<name>`` first (``sweep_lock``), on a
+  connection of its own, and a copy that cannot get it skips that pass: only one
+  copy runs a sweep at a time.
+* With OCR_ENGINE=gemini, documents with pages the backup reader read during an
+  outage are read again by Gemini once it is back, oldest first, at most 20 an hour
+  across the copies, in the main lane (``UpgradeLocalReads``, kaagaz/jobs/upgrade.py,
+  PRD 5 Q7).
+* With OCR_ENGINE=gemini, the model catalogue (model choice, council 11 Oct 2026, MC1)
+  is refreshed from OpenRouter's lists once a day, between jobs (``RefreshCatalog``,
+  kaagaz/jobs/catalog.py), under the sweep lock. Keyless mode never runs it.
+* Before a job runs, ``admission`` (PRD 5 Q5) hands it back to the queue, with no
+  attempt counted: for KEY_PROBLEM_DEFER_SECONDS (300) while the reader's gate
+  has a key problem, and for 30 s when its customer already has
+  MAX_ACTIVE_PER_CUSTOMER documents being read in any copy of the worker (the
+  fair-share slots, kaagaz/jobs/fair_share.py), so one customer's batch never
+  blocks another's. The worker then takes the next job.
 
 Logs are JSON lines holding ids, codes and counts only: never file names,
 document text or an exception's message (it could quote a document). An
@@ -49,17 +67,20 @@ PROVISIONAL: the pause after an outage reuses QUEUE_WAIT_SECONDS rather than
 adding a setting; back-off with jitter needs Vrushit's queue settings.
 """
 
+import contextlib
 import functools
 import json
 import logging
+import re
 import signal
+import socket
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from types import FrameType
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -67,13 +88,29 @@ from kaagaz.adapters.queue import SqsQueue
 from kaagaz.adapters.scanner import build_scanner
 from kaagaz.adapters.storage import S3Storage
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
+from kaagaz.ai.openrouter import KEY_PROBLEM as READER_KEY_PROBLEM
+from kaagaz.ai.openrouter import OpenRouterClient, process_gate
+from kaagaz.db import reader_status
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, last_refreshed, refresh
+from kaagaz.jobs.fair_share import FairShare, SweepLock, first_free_lock, no_lock, sweep_lock
 from kaagaz.jobs.ports import QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import CustomerStorage, purge_deleted_customers, purge_expired, sweep_purged_customers
-from kaagaz.jobs.worker import RETRIES_EXHAUSTED, Handler, Heartbeat, JobFailed, Worker
+from kaagaz.jobs.upgrade import UpgradeLocalReads, upgrade_oldest
+from kaagaz.jobs.worker import (
+    KEY_PROBLEM_DEFER_SECONDS,
+    RETRIES_EXHAUSTED,
+    Admit,
+    Deferred,
+    Handler,
+    Heartbeat,
+    JobFailed,
+    RunsJobs,
+    Worker,
+)
 from kaagaz.search.indexing import MissingPass, embed_missing
 from kaagaz.search.story_vectors import StoryKey, StoryPass, embed_missing_stories
 from kaagaz.settings import Settings
@@ -188,6 +225,29 @@ class MarkExhausted:
         )
 
 
+def admission(reader_state: Callable[[], str], slot: Admit) -> Admit:
+    """The worker's ``admit`` (PRD 5 Q5): while ``reader_state()`` (the gate's state) is
+    ``key_problem``, every job is handed back for KEY_PROBLEM_DEFER_SECONDS; otherwise
+    ``slot(job)`` (FairShare.slot) holds the customer's slot for the try, or hands the
+    job back. Each hand-back is logged at debug with the job's ids and a fixed code,
+    never another customer's count. O(1) besides the slot."""
+
+    @contextlib.contextmanager
+    def admit(job: Job) -> Iterator[None]:
+        ids = {"customer_id": job.customer_id, "document_id": job.document_id}
+        with contextlib.ExitStack() as held:
+            try:
+                if reader_state() == READER_KEY_PROBLEM:
+                    raise Deferred(KEY_PROBLEM_DEFER_SECONDS, READER_KEY_PROBLEM)
+                held.enter_context(slot(job))
+            except Deferred as deferred:
+                logger.debug("job deferred", extra={**ids, "outcome": "deferred", "code": deferred.code})
+                raise
+            yield
+
+    return admit
+
+
 def job_worker(
     queue: WorkQueue,
     handler: Handler,
@@ -195,10 +255,11 @@ def job_worker(
     max_attempts: int,
     mark_exhausted: Callable[[str, str], None],
     record_attempt: Callable[[str, str, int, int], None],
+    admit: Admit | None = None,
 ) -> Worker:
     """The Worker _serve runs: each outcome logged, each try recorded, the delivery after
-    the last attempt marked, and a lease renewed at most every LEASE_RENEW_SECONDS on
-    time.monotonic."""
+    the last attempt marked, a lease renewed at most every LEASE_RENEW_SECONDS on
+    time.monotonic, and ``admit`` (``admission``) around each try."""
     return Worker(
         queue,
         LoggedHandler(handler),
@@ -206,11 +267,8 @@ def job_worker(
         on_exhausted=MarkExhausted(mark_exhausted),
         on_attempt=RecordAttempt(record_attempt, max_attempts),
         clock=time.monotonic,
+        admit=admit,
     )
-
-
-class RunsJobs(Protocol):
-    def run_once(self) -> bool: ...
 
 
 class PurgeHourly:
@@ -225,13 +283,23 @@ class PurgeHourly:
     statement, say) is logged by its type and swallowed here: the purge is
     housekeeping, and it must not stop the jobs, or, since the first turn after
     a restart purges, crash the worker on every restart.
+    The pass runs under ``lock("purge")`` (PRD 5 Q3): a copy that cannot get it
+    skips this hour's.
     O(1) per turn, plus the purge's own cost once an hour.
     """
 
-    def __init__(self, worker: RunsJobs, purge: Callable[[], int], clock: Callable[[], datetime]) -> None:
+    def __init__(
+        self,
+        worker: RunsJobs,
+        purge: Callable[[], int],
+        clock: Callable[[], datetime],
+        *,
+        lock: SweepLock = no_lock,
+    ) -> None:
         self._worker = worker
         self._purge = purge
         self._clock = clock
+        self._lock = lock
         self._last: datetime | None = None
 
     def run_once(self) -> bool:
@@ -239,7 +307,9 @@ class PurgeHourly:
         if self._last is None or now - self._last >= PURGE_EVERY:
             self._last = now
             try:
-                logger.info("trash purged: %d families", self._purge())
+                with self._lock("purge") as mine:
+                    if mine:
+                        logger.info("trash purged: %d families", self._purge())
             except SQLAlchemyError as error:
                 logger.error("trash purge failed", extra={"code": type(error).__name__})
         return self._worker.run_once()
@@ -257,7 +327,8 @@ class EmbedMissing:
     answers sets the wait back. A database error (SQLAlchemyError, or
     BackendUnavailable when the database cannot be reached) is logged by its
     type and swallowed, as in PurgeHourly: the jobs go on, and the next pass is
-    EMBED_EVERY later. Logs hold ids, codes and counts only.
+    EMBED_EVERY later. Logs hold ids, codes and counts only. The pass runs under
+    ``lock("embed_missing")`` (PRD 5 Q3): a copy that cannot get it skips it.
     O(1) per turn, plus one pass's own cost at most every EMBED_EVERY.
     """
 
@@ -266,10 +337,13 @@ class EmbedMissing:
         worker: RunsJobs,
         embed: Callable[[tuple[str, str] | None], MissingPass] | None,
         clock: Callable[[], datetime],
+        *,
+        lock: SweepLock = no_lock,
     ) -> None:
         self._worker = worker
         self._embed = embed
         self._clock = clock
+        self._lock = lock
         self._next: datetime | None = None
         self._backoff = EMBED_EVERY
         self._after: tuple[str, str] | None = None
@@ -279,25 +353,31 @@ class EmbedMissing:
         if self._embed is not None and (self._next is None or now >= self._next):
             self._next = now + EMBED_EVERY  # noted first: a pass that fails waits too
             try:
-                done = self._embed(self._after)
+                with self._lock("embed_missing") as mine:
+                    done = self._embed(self._after) if mine else None
             except (SQLAlchemyError, BackendUnavailable) as error:
                 logger.error("missing vectors failed", extra={"code": type(error).__name__})
             else:
-                self._after = done.after
-                if done.skipped is not None:
-                    customer, document, code = done.skipped
-                    logger.warning(
-                        "vectors skipped",
-                        extra={"customer_id": customer, "document_id": document, "code": code},
-                    )
-                if done.down is None:
-                    self._backoff = EMBED_EVERY
-                else:
-                    logger.warning("model unavailable, vectors wait", extra={"code": done.down})
-                    self._next = now + self._backoff
-                    self._backoff = min(self._backoff * 2, EMBED_BACKOFF_MOST)
-                logger.info("missing vectors: %d pieces", done.written)
+                if done is not None:
+                    self._note(done, now)
         return self._worker.run_once()
+
+    def _note(self, done: MissingPass, now: datetime) -> None:
+        """Keep the pass's cursor and wait, and log it."""
+        self._after = done.after
+        if done.skipped is not None:
+            customer, document, code = done.skipped
+            logger.warning(
+                "vectors skipped",
+                extra={"customer_id": customer, "document_id": document, "code": code},
+            )
+        if done.down is None:
+            self._backoff = EMBED_EVERY
+        else:
+            logger.warning("model unavailable, vectors wait", extra={"code": done.down})
+            self._next = now + self._backoff
+            self._backoff = min(self._backoff * 2, EMBED_BACKOFF_MOST)
+        logger.info("missing vectors: %d pieces", done.written)
 
 
 class StoryVectors:
@@ -313,8 +393,9 @@ class StoryVectors:
     it answers sets the wait back. A database error (SQLAlchemyError, or
     BackendUnavailable when the database cannot be reached) or a ValueError is
     logged by its type and swallowed, as in PurgeHourly: the jobs go on. Logs hold
-    codes and counts only, never a story. O(1) per turn, plus one pass at most
-    every STORY_EVERY.
+    codes and counts only, never a story. The pass runs under ``lock("story_vectors")``
+    (PRD 5 Q3): a copy that cannot get it skips it. O(1) per turn, plus one pass at
+    most every STORY_EVERY.
     """
 
     def __init__(
@@ -322,10 +403,13 @@ class StoryVectors:
         worker: RunsJobs,
         embed: Callable[[StoryKey | None], StoryPass] | None,
         clock: Callable[[], datetime],
+        *,
+        lock: SweepLock = no_lock,
     ) -> None:
         self._worker = worker
         self._embed = embed
         self._clock = clock
+        self._lock = lock
         self._next: datetime | None = None
         self._backoff = STORY_EVERY
         self._after: StoryKey | None = None
@@ -335,7 +419,8 @@ class StoryVectors:
         if self._embed is not None and (self._next is None or now >= self._next):
             self._next = now + STORY_EVERY
             try:
-                done = self._embed(self._after)
+                with self._lock("story_vectors") as mine:
+                    done = self._embed(self._after) if mine else None
             except (SQLAlchemyError, BackendUnavailable, ValueError) as error:
                 logger.error("story vectors failed", extra={"code": type(error).__name__})
             except (ModelUnavailable, ModelOutputError) as error:
@@ -343,9 +428,10 @@ class StoryVectors:
                 self._next = now + self._backoff
                 self._backoff = min(self._backoff * 2, STORY_BACKOFF_MOST)
             else:
-                self._after = done.after
-                self._backoff = STORY_EVERY
-                logger.info("story vectors: %d of %d stories", done.written, done.found)
+                if done is not None:
+                    self._after = done.after
+                    self._backoff = STORY_EVERY
+                    logger.info("story vectors: %d of %d stories", done.written, done.found)
         return self._worker.run_once()
 
 
@@ -364,6 +450,60 @@ def _story_pass(db: Database, model: "ModelClient", after: StoryKey | None) -> S
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+# PRD 5 U9, V4: each copy reports its reader's state this often, on a thread of its own,
+# so a copy busy with a long job still reports (Health says "not reporting" after 2 minutes).
+READER_REPORT_SECONDS = 30.0
+_WORKER_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def worker_name(hostname: str) -> str:
+    """This copy's name for its reader reports: the host name (a container's id under
+    Docker), with anything but letters, digits, ``.``, ``-`` and ``_`` made ``-``, at
+    most 64 characters, as reader_status's CHECK asks; ``worker`` for an empty one."""
+    return _WORKER_NAME_UNSAFE.sub("-", hostname)[:64] or "worker"
+
+
+def report_reader_state(
+    report: Callable[[str, datetime | None], None],
+    status: Callable[[], tuple[str, float | None]],
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+    wall_clock: Callable[[], datetime] = _utc_now,
+) -> None:
+    """One reader report (U9): the gate's ``status()``, its ``since`` (on the gate's
+    monotonic clock) turned into a wall-clock time. A database that is down, or a report
+    it refuses, is logged by its type and the worker goes on. O(1)."""
+    state, since = status()
+    when = None if since is None else wall_clock() - timedelta(seconds=max(0.0, monotonic() - since))
+    try:
+        report(state, when)
+    except (SQLAlchemyError, BackendUnavailable) as error:
+        logger.warning("reader status not reported", extra={"code": type(error).__name__})
+
+
+def keep_reporting(stop: threading.Event, beat: Callable[[], None], every: float) -> threading.Thread:
+    """Run ``beat`` now and then every ``every`` seconds until ``stop`` is set, on a daemon
+    thread of its own (a worker that dies takes it with it). Returns the thread."""
+
+    def loop() -> None:
+        beat()
+        while not stop.wait(every):
+            beat()
+
+    thread = threading.Thread(target=loop, name="reader-status", daemon=True)
+    thread.start()
+    return thread
+
+
+def start_reader_reports(
+    stop: threading.Event, db: Database, status: Callable[[], tuple[str, float | None]], hostname: str
+) -> threading.Thread:
+    """This copy's reader reports (U9, V4): the gate's ``status`` into reader_status
+    under this host's worker name, now and every READER_REPORT_SECONDS until ``stop``."""
+    report = functools.partial(reader_status.report, db, worker_name(hostname))
+    return keep_reporting(stop, lambda: report_reader_state(report, status), READER_REPORT_SECONDS)
 
 
 def install_stop_handlers(stop: threading.Event) -> None:
@@ -400,6 +540,15 @@ def worker_model(settings: Settings) -> "ModelClient | None":
     from kaagaz.ai.client import build_model_client
 
     return build_model_client(settings, chat_timeout_seconds=settings.model_extract_timeout_seconds)
+
+
+def catalog_refresh(settings: Settings, db: Database) -> Callable[[], Refreshed] | None:
+    """The daily catalogue refresh (``RefreshCatalog``), or None unless scans are read by a
+    model (OCR_ENGINE=gemini, which needs OPENROUTER_API_KEY): keyless mode never runs it."""
+    if settings.ocr_engine != "gemini":
+        return None
+    client = OpenRouterClient(settings)
+    return lambda: refresh(db, client, settings, today=_utc_now().date())
 
 
 def main() -> None:
@@ -439,6 +588,9 @@ def _serve(settings: Settings) -> None:
     storage.ensure_bucket()  # the laptop's first start; in AWS it only checks
     logger.info("worker started")
     documents = PgDocuments(db)
+    gate = process_gate(settings)  # the one every model client of this process shares
+    reports = start_reader_reports(stop, db, gate.status, socket.gethostname())
+    fair_share = FairShare(functools.partial(first_free_lock, db.engine), settings.max_active_per_customer)
     jobs = job_worker(
         queue,
         processor,
@@ -448,15 +600,30 @@ def _serve(settings: Settings) -> None:
             customer, document, now=_utc_now(), max_attempts=settings.job_max_attempts
         ),
         record_attempt=documents.record_attempt,
+        admit=admission(lambda: gate.status()[0], fair_share.slot),
     )
     purge = functools.partial(_purge, db, storage, settings.trash_days)
     embed = None if model is None else functools.partial(embed_missing, db, model, limit=EMBED_PASS_PIECES)
     stories: Callable[[StoryKey | None], StoryPass] | None = None
     if model is not None:
         stories = functools.partial(_story_pass, db, model)
-    pieces = EmbedMissing(PurgeHourly(jobs, purge, _utc_now), embed, _utc_now)
-    worker = StoryVectors(pieces, stories, _utc_now)
+    lock = sweep_lock(db.engine)
+    pieces = EmbedMissing(PurgeHourly(jobs, purge, _utc_now, lock=lock), embed, _utc_now, lock=lock)
+    vectors = StoryVectors(pieces, stories, _utc_now, lock=lock)
+    # Q7: only Gemini's pages are ever read locally (its outage fallback).
+    upgrade = functools.partial(upgrade_oldest, db, queue) if settings.ocr_engine == "gemini" else None
+    upgrades = UpgradeLocalReads(
+        vectors, upgrade, lambda: gate.status()[0], _utc_now, copies=settings.worker_replicas, lock=lock
+    )
+    worker = RefreshCatalog(
+        upgrades,
+        catalog_refresh(settings, db),
+        _utc_now,
+        lock=lock,
+        last_refreshed=lambda: last_refreshed(db),
+    )
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
+    reports.join(READER_REPORT_SECONDS)  # stop is set: at most the report in flight is left
     db.engine.dispose()
     logger.info("worker stopped")
 

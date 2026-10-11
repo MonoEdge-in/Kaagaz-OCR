@@ -373,7 +373,7 @@ class ReadCardTest(unittest.TestCase):
             {
                 "version": 1,
                 "run_id": RUN,
-                "model": "qwen3:4b",
+                "model": "fake-chat",
                 "prompt": CARD_PROMPT_HASH,
                 "doc_type": "invoice",
                 "languages": ["en", "mr"],
@@ -747,7 +747,7 @@ class SearchCostTest(unittest.TestCase):
         reader = reader_text(INVOICE)
         asked = ask_card(chat, reader, max_chars=12000, max_tokens=1024, num_ctx=8192)
         self.assertEqual((asked, len(chat.calls)), (answer, 1))
-        located = locate_card(answer, reader, model="qwen3:4b", run_id=RUN)
+        located = locate_card(answer, reader, model="fake-chat", run_id=RUN)
         self.assertEqual(located, read(INVOICE, answer))
         self.assertIsNone(ask_card(FakeChat(answer), reader, max_chars=10, max_tokens=1024, num_ctx=8192))
 

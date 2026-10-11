@@ -13,6 +13,7 @@ import unittest
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from kaagaz.extraction.invoice import WindowSettings
 from kaagaz.extraction.understanding import ModelBudget
@@ -108,9 +109,9 @@ class Rig:
         return job, content
 
 
-def rig(spans: list[Span], chat: FakeChat | None = None) -> Rig:
+def rig(spans: list[Span], chat: FakeChat | None = None, **options: Any) -> Rig:
     """One text-layer PDF page of ``spans``, read by both readers; the model stage with
-    its invoice windows when ``chat``."""
+    its invoice windows when ``chat``. ``options``: more of DocumentProcessor's arguments."""
     statuses, storage = MemoryStatuses(), MemoryStorage()
     repo = MemoryDocuments(statuses)
     runs = MemoryRuns(repo)
@@ -133,8 +134,9 @@ def rig(spans: list[Span], chat: FakeChat | None = None) -> Rig:
         timer=lambda: 0.0,
         timezone="Asia/Kolkata",
         chat=chat,
-        chat_model=None if chat is None else "qwen-chat",
+        chat_model=None if chat is None else "chat-tag",
         model_budget=None if chat is None else BUDGET,
+        **options,
     )
     upload = UploadService(PIPELINE_POLICY, repo, storage, MemoryQueue(), new_id=SeqIds())
     return Rig(upload, store, runs, processor)

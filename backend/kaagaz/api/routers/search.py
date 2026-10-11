@@ -17,6 +17,9 @@ whose story the question tells again (``find_story_matches``, as the user), with
 a band, never a score or the story; suggestions only, the documents never change.
 A story failure (the database, or a story statement past its time) never fails the
 search: ``story_matches`` is then [] and only the error's type is logged.
+
+AI spend (model choice, council 11 Oct 2026, SP1): the question's embedding is billed
+to the user who searched, kind ``search`` (``usage_scope``).
 """
 
 import logging
@@ -26,6 +29,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import Field
 from sqlalchemy.exc import SQLAlchemyError
 
+from kaagaz.ai.usage import usage_scope
 from kaagaz.answering.evidence import valid_regions
 from kaagaz.answering.sanitize import clean_snippet
 from kaagaz.api.auth import User
@@ -68,7 +72,8 @@ def search_inside_documents(
         )
     if scope.matches_nothing:
         return {"documents": [], "story_matches": []}
-    embedding = embed_question(context.model, question)
+    with usage_scope(context.db, customer_id=customer_id, user_id=user.user_id, kind="search"):
+        embedding = embed_question(context.model, question)
     with context.db.customer(customer_id) as conn:
         found = search_documents(
             conn,

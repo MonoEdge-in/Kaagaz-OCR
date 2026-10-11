@@ -13,8 +13,17 @@ socket"). Adding a reader means one new module and one entry here.
   have no reader, so they are stored and marked needs_reader.
 * Second readers: pdf -> PdfiumReader. Nothing else has one yet, so every
   other value stays single_reader.
+* Pages in parallel (PRD 5 G8): with OCR_ENGINE=gemini, the PDF and image
+  readers share one ``PagePool`` of OCR_PAGE_CONCURRENCY threads, because each
+  Gemini call is mostly waiting on the network. Any other engine reads one page
+  at a time, as before: RapidOCR is CPU work, one page at a time per engine.
+* The Gemini reader (PRD 5 G1) is built by ``build_gemini_engine``, the one
+  place that names its module, imported by its path only when OCR_ENGINE=gemini,
+  so OCR_ENGINE=rapidocr never loads it or calls Gemini. ``build_ocr_engine`` here
+  is the product's engine: ``kaagaz.reading.ocr``'s, with that factory.
 """
 
+import importlib
 from typing import Any
 
 from kaagaz.ingestion import sniff
@@ -22,17 +31,21 @@ from kaagaz.preparing import page_checks
 from kaagaz.reading import ocr_dpi, text_quality
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.image_reader import ImageReader
-from kaagaz.reading.ocr import OcrEngine
+from kaagaz.reading.ocr import GEMINI, OcrEngine, PageEngine
+from kaagaz.reading.ocr import build_ocr_engine as _ocr_engine
 from kaagaz.reading.pdf_reader import PdfReader, text_layer_checks
 from kaagaz.reading.pdf_second_reader import PdfiumReader
+from kaagaz.reading.rapid_pool import RapidOcrPool
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.socket import Reader, ReaderSocket
+from kaagaz.reading.socket import PagePool, Reader, ReaderSocket
 from kaagaz.reading.text_quality import PageSignals, TextLayerRules
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
 from kaagaz.settings import Settings
 
 # What the PDF reader's route check says about one page, and the signals it saw.
 PdfPageCheck = tuple[RouteDecision, PageSignals]
+# The Gemini reader's module (PRD 5 G1): imported by this path only for OCR_ENGINE=gemini.
+GEMINI_OCR_MODULE = "kaagaz.reading.gemini_ocr"
 
 
 def text_layer_rules(settings: Settings) -> TextLayerRules:
@@ -76,7 +89,39 @@ def pdf_text_layer_checks(settings: Settings, data: bytes) -> list[PdfPageCheck]
     return text_layer_checks(data, rules=text_layer_rules(settings), max_pages=settings.max_pages)
 
 
+def build_gemini_engine(settings: Settings, *, pool: RapidOcrPool) -> PageEngine:
+    """The Gemini reader for OCR_ENGINE=gemini (PRD 5 G1): ``GeminiEngine.from_settings``
+    in ``GEMINI_OCR_MODULE``, imported here, on first need, and nowhere else.
+    ``kaagaz.reading.ocr.GeminiEngineFactory`` in the product."""
+    module = importlib.import_module(GEMINI_OCR_MODULE)
+    engine: PageEngine = module.GeminiEngine.from_settings(settings, pool=pool)
+    return engine
+
+
+def gemini_reader_module() -> Any:
+    """``GEMINI_OCR_MODULE`` itself, for ``verify-models`` only (model choice, council 11 Oct
+    2026): a model is checked with the reader's own INSTRUCTION, PAGE_SCHEMA, ``checked``
+    and ``pinned``. Imported here, on first need, as ``build_gemini_engine`` does."""
+    return importlib.import_module(GEMINI_OCR_MODULE)
+
+
+def build_ocr_engine(settings: Settings) -> OcrEngine | None:
+    """The engine for OCR_ENGINE (``ocr.build_ocr_engine``), the Gemini reader from
+    ``build_gemini_engine``; None for "none". For the worker and ``cli measure``."""
+    return _ocr_engine(settings, gemini=build_gemini_engine)
+
+
+def page_pool(settings: Settings, engine: OcrEngine | None) -> PagePool | None:
+    """The threads a document's ocr pages are read on (G8): OCR_PAGE_CONCURRENCY of them
+    for the Gemini reader; None, one page at a time as before, for any other engine,
+    for no engine, or for a concurrency of 1."""
+    if engine is None or settings.ocr_engine != GEMINI or settings.ocr_page_concurrency < 2:
+        return None
+    return PagePool.threads(settings.ocr_page_concurrency)
+
+
 def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSocket:
+    pages = page_pool(settings, ocr)
     readers: dict[str, Reader] = {
         sniff.TEXT: CsvReader(max_cells=settings.csv_max_cells),
         sniff.ZIP: XlsxReader(
@@ -96,6 +141,7 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
             rules=text_layer_rules(settings),
             blank_stddev=settings.blank_page_stddev,
             dpi_rule=settings.ocr_dpi_rule,
+            pages=pages,
         ),
     }
     if ocr is not None:
@@ -106,6 +152,7 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
             ocr_dpi=settings.ocr_dpi,
             blank_stddev=settings.blank_page_stddev,
             dpi_rule=settings.ocr_dpi_rule,
+            pages=pages,
         )
         readers.update({sniff.PNG: images, sniff.JPEG: images, sniff.TIFF: images})
     second_readers: dict[str, Reader] = {sniff.PDF: PdfiumReader(max_pages=settings.max_pages)}

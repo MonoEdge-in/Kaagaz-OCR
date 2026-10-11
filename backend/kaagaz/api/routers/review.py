@@ -8,7 +8,7 @@ the same rules the pipeline uses, so the fixed queries see the corrected value.
 """
 
 import uuid
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,8 +24,18 @@ router = APIRouter()
 
 Context = Annotated[AppContext, Depends(get_context)]
 
-# PRD 3 Y5: the reasons the queue can be filtered by; any other is 400 bad_request.
-QueueReason = Literal["check_failed", "readers_disagree", "low_confidence", "single_reader"]
+# PRD 3 Y5, and PRD 5 U6's four for the reading model's marks: the reasons the queue can
+# be filtered by, each one of db/review.py's EVERY_REASON; any other is 400 bad_request.
+QueueReason = Literal[
+    "check_failed",
+    "readers_disagree",
+    "low_confidence",
+    "single_reader",
+    "unsure_text",
+    "box_unanchored",
+    "local_reader",
+    "ocr_script",
+]
 
 
 class ResolveBody(BaseModel):
@@ -43,7 +53,7 @@ def list_review(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
     document_id: uuid.UUID | None = None,
-    reason: Annotated[list[QueueReason] | None, Query(max_length=4)] = None,
+    reason: Annotated[list[QueueReason] | None, Query(max_length=len(get_args(QueueReason)))] = None,
 ) -> dict[str, Any]:
     with context.db.customer(user.customer_id) as conn:
         rows, total = review_sql.list_queue(

@@ -14,7 +14,7 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
-STARTING = "Starting. The site opens in about 3 minutes, and documents are read after about 10."
+STARTING = "Starting. The site opens in about 3 minutes."
 MESSAGES = {
     "pending": "Already starting. The site opens in a few minutes.",
     "running": "Already running.",

@@ -16,9 +16,9 @@ The steps, in order, for one (customer, document):
    so memory is one page's picture, not one per page. A page that fails to
    draw after earlier pages were stored leaves those pictures behind with no
    rows; they are under this customer's document prefix, which delete and
-   purge remove whole, and a later run writes the same keys again. A vision
-   crop draws its page again (``Prepared.picture``), lossless. Spreadsheets
-   get one page per sheet after reading.
+   purge remove whole, and a later run writes the same keys again. The
+   checker's crop draws its page again (``Prepared.picture``), lossless.
+   Spreadsheets get one page per sheet after reading.
 5. Read the bytes through the reader socket, then read them again with the
    second reader if the type has one. A type with no reader is marked "needs
    a reader" (its pages are kept) and the job ends normally. A reader that
@@ -37,12 +37,15 @@ The steps, in order, for one (customer, document):
    model off or down there is none, the languages come from the pieces (L2),
    and the document is saved exactly as with no model (the run keeps the
    error code, ``model_<code>``). Each piece gets its context header (with the
-   card's type and date, C4), and a Latin spelling when it is Devanagari. For
-   scans, when a vision model is set, it reads each value's box again as the
-   second reading. The rule values are labelled by ``label_values`` and the
-   values the model located by ``label_quoted`` (ML 2), each counting the
-   other's boxes (council fix 2); a card value is never verified, and no box is
-   cropped for a card value or an unsure quote. This customer's remembered
+   card's type and date, C4), and a Latin spelling when it is Devanagari. Then
+   the document's map (PRD 5 CX2, CX3, ``chunking.sections``): its sections from
+   the headings, with their summaries and the topics from one more chat call when
+   the processor has its ``map_budget``. For scans the reading model read, the
+   checker reads each value's box again as the second reading. The rule values are
+   labelled by ``label_values`` and the values the model located by
+   ``label_quoted`` (ML 2), each counting the other's boxes (council fix 2); a
+   card value is never verified, and no box is cropped for a card value or an
+   unsure quote. This customer's remembered
    corrections are applied, then the invoice stage (PRD 2 E5, K1 to K3,
    ``extraction.invoice.finish_invoice``): the invoice row and its checks, from
    the E4 values or, with no type or an invoice type, from labelled.py's values
@@ -51,7 +54,7 @@ The steps, in order, for one (customer, document):
 7. Just before saving, the document must still be clean. Everything is saved
    in one transaction that replaces what an earlier run saved, so running the
    same job twice is safe (queues deliver at least once).
-8. Meaning vectors for the pieces, if a model is set, with the heartbeat and
+8. Meaning vectors for the pieces and the section summaries, if a model is set, with the heartbeat and
    progress "indexing i of n" after each batch is written (a 20k-row sheet is
    about 626 batches, longer than one lease). A model that is down only means
    no vectors: word and typo search still work.
@@ -90,16 +93,74 @@ Runs and progress (PRD 2 R6, X2, X3), when the processor is given them:
 * The pages are counted by route as each is read (``on_page``), so a run that
   fails part way records the pages it read; once every page has its route, the
   counts are those of the stored routes.
-* The scan reader the upload chose (``documents.ocr_choice``, PRD 4 #17) reads
-  this delivery's scans (``OcrChooser.choose``) until its run is closed, and
-  then Auto again, whatever happened. A run of a document with a choice keeps
-  ``ocr_choice`` and ``ocr_choice_honoured`` in its config; a choice this worker
-  does not have is read with Auto and logged with its code only
-  (``ocr_choice_unavailable``).
+* The scan reader an upload chose before PRD 5 RT3 (``documents.ocr_choice``) is
+  ignored: every scan is read with the one engine the processor is given.
+
+The Gemini reader (PRD 5), when the processor is given its parts:
+
+* The page cache (G7, F5): one document's reading runs inside
+  ``ocr_meter.document(DocumentPages(...))``, with this customer's page cache
+  (``page_cache``, ``PgPageReads``) and the pages a user asked to read again
+  (``read_again.pages_to_read_again``), and it is closed when the reading ends,
+  whatever happened, before the next job. The save that replaces the pages clears
+  those marks; a document that fails for good clears them too, in the transaction
+  that marks it failed (``set_failed``), so a page asked to be read again once the
+  failure is seen keeps its mark; a try a backend stopped keeps them, so the next
+  try still reads those pages harder.
+* Each page's ``PageRead`` (``ocr_meter.take_page_reads``) gives its reading
+  result (RT2, F1, F2): ``read_by``, ``read_quality``, ``read_issues`` and the
+  counts; the pipeline adds low_resolution and readers_disagree (an ocr page
+  only: text-layer and cell pages are good, read by ``text_layer`` or ``cells``),
+  and keeps ``continues_on_next_page`` (G3, CX1) on the page record for the pieces.
+  Word marks (F3, ``is_word_mark``) are kept in the stored reader output for the
+  viewer and left out of pieces and values here, at one point (``usable``).
+* F4: a document whose every page that is not blank was read unreadable fails with
+  ``unreadable``, before any model call; any other document reaches ready with its
+  readable pages.
+* The checker (V1): on a page the reading model read (``read_by`` is the job's model,
+  ``run.model``),
+  each value's box, grown by ``CHECK_MARGIN`` of its own size on each side, is read
+  again by RapidOCR's recogniser (``checker``), with the Devanagari model when its
+  line has Devanagari; never on a page RapidOCR read itself (it would only agree
+  with itself). Other scanned values have no second reading. At most
+  ``max_check_crops`` (MAX_CHECK_CROPS) boxes of one document; the run's
+  ``vision_crops`` and ``model_vision`` hold the checker's crop count and name.
+  Then the labels (V2, V3) and ``label_reading_marks`` (V4, G5, Q7: unsure_text,
+  box_unanchored, local_reader). local_reader and pages_local key on the page's
+  issues (``HANDED_ON``: read_locally or reader_refused), never on ``read_by``: a page
+  read with no key is read by RapidOCR too, and is not "local".
+* The run's reader counters (``kaagaz.db.runs.READER_COUNTERS``) come from the page
+  reads: pages read by the model and not cached, handed to the local reader, taken
+  from the cache, read again on request, unreadable, and the tokens billed. The
+  run's tokens (G9) add the model client's own calls in the job (the card, the
+  invoice windows, embeddings): ``model_usage`` read when the run
+  starts and when it ends, the difference. A worker runs one job at a time
+  (worker_main.run_until_stopped; its sweeps run between jobs), and the page reader
+  has its own client, so the difference is this job's calls and no page twice.
+* ``BackendUnavailable("gemini")`` (an outage) and ``BackendUnavailable("gemini_key")``
+  (a wrong key or a spent cap, logged at error) come out of the reading as any
+  backend that is down: the document waits for the next try, nothing falls back
+  here (the reader does that itself after READER_OUTAGE_FALLBACK_MINUTES, Q7).
+* With OCR_ENGINE=rapidocr and no model there is no checker, no page counted as
+  the model's and no model call: everything is as before.
+
+Model choice and AI spend (council 11 Oct 2026), when the processor is given them:
+
+* ``job_reading`` at the start of each job: the user who asked for the reading
+  (``documents.read_requested_by``) and, with the Gemini reader, the model that reads its
+  scans and its provider (``kaagaz.db.models.resolve``: the upload's allowed choice, else
+  the organisation's default, else OCR_MODEL). The model goes in ``DocumentPages``, on the
+  run (``run.model``, what the checker and the counters look for) and in its config
+  (``read_model``).
+* ``usage``: the job runs in a usage scope (``kaagaz.ai.usage``, SP1) billed to that user
+  as kind scan, or upgrade when no user asked (the upgrade sweep); the card, the invoice
+  windows, the map and the embeddings each run in their own nested scope of that kind.
+  The page threads keep the scope (``reading.socket`` copies the context).
+* Keyless (OCR_ENGINE=rapidocr, MODEL_ENABLED=false): neither, no query and no ledger.
 
 Memory: the file's bytes, its spans and one decoded page picture at a time
-(vision readings). Time is linear in the spans apart from the sorts in the
-chunkers and extractors (O(n log n)).
+(the checker). Time is linear in the spans apart from the
+sorts in the chunkers and extractors (O(n log n)).
 """
 
 import contextlib
@@ -107,6 +168,7 @@ import functools
 import hashlib
 import io
 import logging
+import math
 import re
 import time
 from collections import Counter
@@ -114,7 +176,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from importlib import metadata
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from PIL import Image
 
@@ -123,6 +185,15 @@ from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.chunking.script import languages_without_model
+from kaagaz.chunking.sections import (
+    MAP_PROMPT_HASH,
+    DocumentMap,
+    MapBudget,
+    Section,
+    Topic,
+    map_document,
+    sections_from_pieces,
+)
 from kaagaz.eta import (
     FLOORED_STEPS,
     Estimate,
@@ -138,7 +209,13 @@ from kaagaz.eta import (
 from kaagaz.extraction.card import ChatModel
 from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
-from kaagaz.extraction.labels import label_quoted, label_values, spot_unsure
+from kaagaz.extraction.labels import (
+    LineMarks,
+    label_quoted,
+    label_reading_marks,
+    label_values,
+    spot_unsure,
+)
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
 from kaagaz.extraction.parsing import parse_amount, parse_date
 from kaagaz.extraction.quotes import reader_text
@@ -156,6 +233,15 @@ from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.ports import LeaseLost
 from kaagaz.jobs.worker import Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
+from kaagaz.reading.ocr import LOCAL_READ_BY, DocumentPages, PageCache, PageRead, is_word_mark
+from kaagaz.reading.page_quality import (
+    ISSUES,
+    LOW_RESOLUTION,
+    READ_LOCALLY,
+    READER_REFUSED,
+    READERS_DISAGREE,
+    grade,
+)
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage
 from kaagaz.reading.spans import (
@@ -188,23 +274,36 @@ _log = logging.getLogger(__name__)
 # The scan's own verdicts: recorded as the reason a document was rejected.
 _VERDICT_CODES = REJECTION_CODES - {"rejected"}
 
-# Sent with each cropped box. Fixed text: no document text is ever put in it.
-VISION_INSTRUCTION = (
-    "Read the text in this image exactly as it is written. Reply with that text only, on one line."
-)
-_CROP_PADDING = 0.005  # a little of the page around a box, as a fraction of the page
+# A document whose reading has ended. A delivery for one is a duplicate (the queue is
+# at least once: a delete that failed hands the job out again) and is acked unread.
+# Read again, one page again and the upgrade sweep set it to received before queueing
+# it, so they are read. Rejected is not here: the scan gate refuses it for good.
+_SETTLED = frozenset({DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.NEEDS_READER})
 
 # Stored page pictures are for people to look at (PRD 1, S1), so they are WebP.
 # Method 2 (R2 finding 2): several times faster to encode than 4, for under 1 dB
-# of PSNR and a few % more bytes. Viewer-only: OCR and vision draw their own.
+# of PSNR and a few % more bytes. Viewer-only: OCR and the checker draw their own.
 _WEBP_QUALITY = 80
 _WEBP_METHOD = 2
 _WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
 
-# Security A8 (PROVISIONAL): at most this many value boxes of one document are
-# sent to the vision model; the values past it stay single_reader.
-MAX_VISION_CROPS = 200
-_BACKEND_NAME = re.compile(r"[a-z]{1,32}")  # "ocr", "storage", ...: a run's <backend>_unavailable
+# Security A8, PRD 5 V1 (MAX_CHECK_CROPS, renamed from MAX_VISION_CROPS): at most this many
+# value boxes of one document are read again by the checker; the values
+# past it stay single_reader. The product's comes from the setting of that name.
+MAX_CHECK_CROPS = 200
+# V1, question 9: the checker's crop is the value's box grown by this share of its own width
+# and height on each side.
+CHECK_MARGIN = 0.04
+# G6: BackendUnavailable's name for a wrong key or a spent cap (a person's fix, logged at error).
+_KEY_PROBLEM = "gemini_key"
+# PRD 5 Q6: the run codes of a reader that is down (Gemini, or the OCR server) or has a key
+# problem: the document shows "Waiting for the reader to come back" until its job returns.
+_READER_WAITS = frozenset({"gemini_unavailable", "gemini_key_unavailable", "ocr_unavailable"})
+# V1: a line with any Devanagari character is read by the Devanagari recogniser.
+_DEVANAGARI = re.compile("[ऀ-ॿ]")
+# "ocr", "storage", "gemini_key", ...: a run's <backend>_unavailable (PRD 5 G6: a wrong key or a
+# spent cap is BackendUnavailable("gemini_key")).
+_BACKEND_NAME = re.compile(r"[a-z][a-z_]{0,31}")
 # The run config's keys for the marks a reader adds to its version: ";ocr_dpi=N" when a PDF
 # page was drawn below OCR_DPI to fit the pixel limits; with OCR_DPI_RULE (council 5 Oct
 # 2026), ";text_dpi=N", the rule's lowest DPI, and ";ocr_reread=N", the pages read twice.
@@ -226,6 +325,17 @@ class PageRecord:
     route: str | None = None  # a Route (kaagaz.reading.route); None when the page was not read
     effective_dpi: int | None = None
     low_resolution: bool = False
+    # PRD 5 RT2, F1, F2 (pages, 0021): who read it (the model ID, "rapidocr", "text_layer" or
+    # "cells"; None for a blank page or one not read), its reading result and its counts.
+    read_by: str | None = None
+    read_quality: str = "good"  # one of page_quality.READ_QUALITIES
+    read_issues: tuple[str, ...] = ()  # F1 codes, in the F1 table's order
+    unsure_words: int = 0
+    illegible_words: int = 0
+    unpinned_lines: int = 0
+    # G3, CX1: its last line's sentence goes on at the top of the next page. Kept for the
+    # pieces (the page cache keeps it with the page's read); not a pages column.
+    continues_on_next_page: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +360,8 @@ class DocumentContent:
     facts: DocumentFacts = field(default_factory=DocumentFacts)
     invoice: InvoiceRow | None = None
     links: tuple[LinkIdentifier, ...] = ()  # this document's own identifiers
+    sections: tuple[Section, ...] = ()  # CX2: the document's map, in reading order
+    topics: tuple[Topic, ...] = ()  # CX3: the topics that join distant pages
 
 
 # --- runs and progress (R6, X2, X3) -------------------------------------------
@@ -288,7 +400,7 @@ class RunTotals:
     error_code: str | None
     ocr_engine: str | None  # "<name> <version>" when any page went to OCR
     model_chat: str | None  # the model tag, when a chat call was made
-    model_vision: str | None  # when a crop was read
+    model_vision: str | None  # the checker, when a crop was read
     model_embed: str | None  # when embedding ran
     pages_cells: int
     pages_text_layer: int
@@ -303,6 +415,16 @@ class RunTotals:
     values_verified: int = 0
     values_needs_review: int = 0
     config: Mapping[str, Any] = field(default_factory=dict)  # how the run was set up, plain JSON (ML10)
+    # PRD 5 (kaagaz.db.runs.READER_COUNTERS): pages read by the reading model and billed, read
+    # locally, taken from the page cache, read again on request and unreadable; tokens billed:
+    # the page reads' and the model client's own calls in the job (G9).
+    pages_gemini: int = 0
+    pages_local: int = 0
+    pages_cached: int = 0
+    pages_read_again: int = 0
+    pages_unreadable: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,7 +443,8 @@ class DocumentStore(Protocol):
     def get(self, customer_id: str, document_id: str) -> DocumentRecord | None: ...
 
     def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
-        """Failed with ``code``. With ``run_id``, raise Superseded and change nothing
+        """Failed with ``code``, and the document's read-again marks (PRD 5 F5) cleared
+        in the same transaction. With ``run_id``, raise Superseded and change nothing
         unless that run is still open (the run fence)."""
         ...
 
@@ -361,8 +484,11 @@ class ProgressStore(Protocol):
         open (the run fence)."""
         ...
 
-    def clear_progress(self, customer_id: str, document_id: str, *, run_id: str | None = None) -> None:
-        """No progress shown. With ``run_id``, change nothing unless that run is still open."""
+    def clear_progress(
+        self, customer_id: str, document_id: str, *, run_id: str | None = None, waiting: str | None = None
+    ) -> None:
+        """No progress shown (``waiting="reader"``: ``{"step": "waiting"}``, PRD 5 Q6). With
+        ``run_id``, change nothing unless that run is still open."""
         ...
 
 
@@ -370,7 +496,7 @@ class OcrMeter(Protocol):
     """kaagaz.reading.ocr.MeteredOcrEngine in production: the engine the readers use."""
 
     @property
-    def name(self) -> str: ...  # the engine in use: a chosen one's while its job runs
+    def name(self) -> str: ...
 
     @property
     def version(self) -> str: ...
@@ -379,17 +505,27 @@ class OcrMeter(Protocol):
         """(pages sent to OCR, seconds) since the last take, then zero again."""
         ...
 
-    def take_fallback_pages(self) -> int:
-        """Pages the fallback engine read since the last take, then zero again."""
+    def take_page_reads(self) -> dict[int, PageRead]:
+        """Each page read since the last take, by page number, then none again (PRD 5)."""
+        ...
+
+    def document(self, pages: DocumentPages) -> contextlib.AbstractContextManager[None]:
+        """Read one document's pages with its page cache inside the block (PRD 5 G7)."""
         ...
 
 
-class OcrChooser(Protocol):
-    """kaagaz.reading.ocr.OcrEngines in production: which engine reads one job's scans."""
+class ReadAgainStore(Protocol):
+    """kaagaz.db.documents.PgDocuments in production: the pages a user asked to read
+    again, harder (PRD 5 F5)."""
 
-    def choose(self, choice: str | None) -> contextlib.AbstractContextManager[bool]:
-        """Read with ``choice`` (None: Auto) inside the block; True when it was honoured."""
-        ...
+    def pages_to_read_again(self, customer_id: str, document_id: str) -> tuple[int, ...]: ...
+
+
+class Checker(Protocol):
+    """kaagaz.reading.rapid_pool.RapidOcrPool in production: RapidOCR's recogniser alone
+    (PRD 5 V1), "" when it reads nothing."""
+
+    def read_crop(self, image: Image.Image, *, devanagari: bool) -> str: ...
 
 
 class ReadingSocket(Protocol):
@@ -448,8 +584,43 @@ class Embedder(Protocol):
     ) -> object: ...
 
 
-class VisionModel(Protocol):
-    def read_image(self, *, png: bytes, instruction: str) -> str: ...
+class TokenUsage(Protocol):
+    """kaagaz.ai.openrouter.Usage in production: tokens counted so far (G9)."""
+
+    @property
+    def input_tokens(self) -> int: ...
+
+    @property
+    def output_tokens(self) -> int: ...
+
+
+@runtime_checkable
+class CountsTokens(Protocol):
+    """A model client that counts the tokens of its replies (G9):
+    kaagaz.ai.openrouter.OpenRouterClient in production."""
+
+    def usage(self) -> TokenUsage: ...
+
+
+@dataclass(frozen=True, slots=True)
+class JobReading:
+    """Who a job's model calls are billed to, and which model reads its scans (model choice
+    and AI spend, council 11 Oct 2026, SP1, MS5): ``user_id`` is ``documents.read_requested_by``
+    (None: no user asked, the upgrade sweep); ``model`` and ``provider`` are
+    ``kaagaz.db.models.resolve``'s, None when no model reads the scans (RapidOCR)."""
+
+    user_id: str | None
+    model: str | None = None
+    provider: str | None = None
+
+
+class UsageScopes(Protocol):
+    """``kaagaz.ai.usage.usage_scope`` on the database (SP1): the model calls made inside
+    are billed to this customer, user, kind and document, saved when it ends."""
+
+    def __call__(
+        self, *, customer_id: str, user_id: str | None, kind: str, document_id: str | None = None
+    ) -> contextlib.AbstractContextManager[object]: ...
 
 
 class ProcessorStorage(BlobStorage, Quarantine, PageImageStore, Protocol):
@@ -473,7 +644,7 @@ class _Run:
     values_needs_review: int = 0
     embedded: bool = False
     version_marks: dict[str, int] = field(default_factory=dict)  # from the first reader's version
-    model_calls: int = 0  # the card and the invoice windows called (PRD 2 D1, E2)
+    model_calls: int = 0  # the card, the invoice windows and the map called (PRD 2 D1, E2; PRD 5 CX2)
     model_error: str | None = None  # "model_<code>" when a call failed; the document still ends ready
     quotes_returned: int = 0
     dropped_quotes: int = 0
@@ -490,7 +661,18 @@ class _Run:
     shown: tuple[Step, Estimate] | None = None  # the last estimate written, and its step
     prior: tuple[Step, Estimate] | None = None  # the one written before it (its ``prior``)
     reached: float = 0.0  # the highest fraction shown so far (kaagaz.eta): it never goes back
-    ocr_choice: dict[str, str | bool] = field(default_factory=dict)  # the upload's reader, when it chose one
+    # PRD 5: each page's read, the pages asked to be read again, the checker's crops (also
+    # counted in vision_crops) and the pages graded unreadable.
+    page_reads: dict[int, PageRead] = field(default_factory=dict)
+    read_again: frozenset[int] = frozenset()
+    checker_crops: int = 0
+    pages_unreadable: int = 0
+    model_tokens_at_start: tuple[int, int] = (0, 0)  # the model client's (input, output) then
+    # Model choice (council 11 Oct 2026): the model reading this job's scans and its provider
+    # (None: no model reads them), and the user its model calls are billed to (SP1).
+    model: str | None = None
+    provider: str | None = None
+    user_id: str | None = None
 
 
 class DocumentProcessor:
@@ -506,44 +688,66 @@ class DocumentProcessor:
         page_images: PageImageStore,
         store: PipelineStore,
         embed: Embedder | None = None,
-        vision: VisionModel | None = None,
         model_errors: tuple[type[Exception], ...] = (),
         runs: RunStore | None = None,
         progress: ProgressStore | None = None,
         ocr_meter: OcrMeter | None = None,
-        ocr_engines: OcrChooser | None = None,
         clock: Callable[[], datetime] | None = None,
         timer: Callable[[], float] | None = None,
-        max_vision_crops: int = MAX_VISION_CROPS,
+        max_check_crops: int = MAX_CHECK_CROPS,
         run_config: Mapping[str, Any] | None = None,
-        vision_model: str | None = None,
         embed_model: str | None = None,
         chat: ChatModel | None = None,
         chat_model: str | None = None,
         model_budget: ModelBudget | None = None,
         timezone: str = "UTC",
         customer_active: Callable[[str], bool] | None = None,
+        ocr_model: str | None = None,
+        checker: Checker | None = None,
+        checker_model: str | None = None,
+        page_cache: PageCache | None = None,
+        read_again: ReadAgainStore | None = None,
+        model_usage: Callable[[], TokenUsage] | None = None,
+        map_budget: MapBudget | None = None,
+        job_reading: Callable[[str, str], JobReading] | None = None,
+        usage: UsageScopes | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
-        ``vision`` reads scanned boxes again. Either failing with one of
-        ``model_errors`` is logged and skipped, never a failed document.
+        failing with one of ``model_errors`` is logged and skipped, never a failed document.
 
         The rest are for PRD 2 and all optional: ``runs`` keeps one run per delivery
         (it needs ``clock`` for its times and ``timer`` for its seconds);
         ``progress`` shows how far a document has got; ``ocr_meter`` is the OCR
-        engine the readers use, counted, and ``ocr_engines`` picks the engine behind it
-        for each job (the upload's choice); ``run_config`` is the run's plain JSON set-up
-        (ML 10); ``vision_model`` and ``embed_model`` are the tags a run records
-        when it used them. ``chat`` is the model stage's chat model (PRD 2 D1, E2),
-        with its ``model_budget``; ``chat_model`` is the tag a run records when a
-        chat call was made. ``timezone`` (settings.timezone) says which day it is for
-        the invoice checks (PRD 2 ML 6(j)): today is the clock's date there.
+        engine the readers use, counted; ``run_config`` is the run's plain JSON set-up
+        (ML 10); ``embed_model`` is the tag a run records when it used it. ``chat`` is
+        the model stage's chat model (PRD 2 D1, E2), with its ``model_budget``;
+        ``chat_model`` is the tag a run records when a chat call was made. ``timezone``
+        (settings.timezone) says which day it is for the invoice checks (PRD 2 ML 6(j)):
+        today is the clock's date there.
         ``customer_active(customer_id)`` (``PgDocuments.customer_active``) is asked
-        at the start of every job; None (tests with fakes) asks nothing."""
+        at the start of every job; None (tests with fakes) asks nothing.
+
+        PRD 5, all optional too (see the module notes): ``ocr_model`` is OCR_MODEL when
+        the Gemini reader reads the scans (a page read by it is checked and counted as
+        the model's); ``checker`` reads the boxes of those pages again, at most
+        ``max_check_crops`` boxes, and ``checker_model`` is the
+        name a run records when it did; ``page_cache`` is the page cache opened around
+        each document's reading, and ``read_again`` says which pages to read harder.
+        ``model_usage`` is the model client's tokens counted so far (G9,
+        ``CountsTokens.usage``): a run adds what its job's calls added. ``map_budget``
+        (CX2, CX3): the budget of the one ``chat`` call that writes the document's section
+        summaries and topics; None makes no call, and the sections come from the headings.
+
+        Model choice and AI spend (council 11 Oct 2026), both optional (None: keyless, no
+        query and no ledger): ``job_reading(customer_id, document_id)`` is asked at the start
+        of every job for its ``JobReading``; its model reads the scans and is the one the
+        checker and the counters look for (in place of ``ocr_model``). ``usage`` bills the
+        job's model calls (SP1): kind scan to the user who asked for the reading, or upgrade
+        with no user, and card, invoice, map and embed for those stages."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
-        if max_vision_crops < 0:
-            raise ValueError("max_vision_crops must be 0 or more")
+        if max_check_crops < 0:
+            raise ValueError("max_check_crops must be 0 or more")
         if chat is not None and model_budget is None:
             raise ValueError("a chat model needs its model_budget")
         self._gate = gate
@@ -555,36 +759,46 @@ class DocumentProcessor:
         self._page_images = page_images
         self._store = store
         self._embed = embed
-        self._vision = vision
         self._model_errors = model_errors
         self._runs = runs
         self._progress_store = progress
         self._ocr_meter = ocr_meter
-        self._ocr_engines = ocr_engines
         self._clock = clock or _utc_now
         self._timer = timer or time.perf_counter
-        self._max_vision_crops = max_vision_crops
+        self._max_check_crops = max_check_crops
         self._run_config = dict(run_config or {})
-        self._vision_model = vision_model
         self._embed_model = embed_model
         self._chat = chat
         self._chat_model = chat_model
         self._model_budget = model_budget
         self._timezone = timezone
         self._customer_active = customer_active
+        self._ocr_model = ocr_model
+        self._checker = checker
+        self._checker_model = checker_model
+        self._page_cache = page_cache
+        self._read_again = read_again
+        self._model_usage = model_usage
+        self._map_budget = map_budget
+        self._job_reading = job_reading
+        self._usage = usage
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
         if record is None:
             # No record for this customer: nothing to mark, nothing read.
             raise JobFailed("document_missing", retryable=False)
+        if self._statuses.get_status(job.customer_id, job.document_id) in _SETTLED:
+            _log.info(
+                "duplicate delivery skipped",
+                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": "settled"},
+            )
+            return  # acked: no run, nothing read again
         run = self._start_run(job)
         settled = False  # the run was finished, or is being, on a known path
-        chosen = contextlib.ExitStack()  # the upload's reader, until the run is closed
         try:
             if self._customer_active is not None and not self._customer_active(job.customer_id):
                 raise JobFailed("customer_disabled", retryable=False)  # marked failed below, never read
-            self._choose_reader(job, record, run, chosen)
             self._process(job, record, heartbeat, run)
             settled = True
         except Superseded:
@@ -604,37 +818,35 @@ class DocumentProcessor:
             raise
         except BackendUnavailable as error:
             settled = True
-            self._clear_progress(job, run, _unavailable_code(error))  # while the run is still open
-            self._close_run(job, run, "failed", _unavailable_code(error))
+            code = _unavailable_code(error)
+            if str(error) == _KEY_PROBLEM:
+                # G6, Q7: not an outage. Documents wait and nothing falls back: the fix is a person's.
+                _log.error(
+                    "reader key rejected, documents wait",
+                    extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": code},
+                )
+            self._clear_progress(job, run, code)  # while the run is still open
+            self._close_run(job, run, "failed", code)
             raise
         finally:
             if not settled:
                 # Anything else is a bug: it is not caught (no blanket except) and goes on
                 # up to the worker, but its run ends failed rather than staying open.
                 self._close_run(job, run, "failed", "internal_error")
-            chosen.close()  # Auto again for the next job, whatever happened
-
-    def _choose_reader(
-        self, job: Job, record: DocumentRecord, run: _Run, chosen: contextlib.ExitStack[bool | None]
-    ) -> None:
-        """Read this job's scans with the reader its upload chose (NULL: Auto). A choice
-        this worker doesn't have (not set up, or no OCR at all) is read with Auto."""
-        choice = record.ocr_choice
-        if choice is None:
-            return  # Auto: exactly as before, and the run's config is unchanged
-        honoured = self._ocr_engines is not None and chosen.enter_context(self._ocr_engines.choose(choice))
-        run.ocr_choice = {"ocr_choice": choice, "ocr_choice_honoured": honoured}
-        if not honoured:
-            _log.warning(
-                "ocr choice not available, read with auto",
-                extra={
-                    "customer_id": job.customer_id,
-                    "document_id": job.document_id,
-                    "code": "ocr_choice_unavailable",
-                },
-            )
 
     def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
+        """The job's model and who it is billed to (``job_reading``), then everything else
+        inside its usage scope: scan, or upgrade when no user asked (SP1)."""
+        run.model = self._ocr_model
+        if self._job_reading is not None:
+            reading = self._job_reading(job.customer_id, job.document_id)
+            run.user_id = reading.user_id
+            if reading.model is not None:
+                run.model, run.provider = reading.model, reading.provider
+        with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"):
+            self._read_and_save(job, record, heartbeat, run)
+
+    def _read_and_save(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
         self._progress(job, run, "scanning", 0, 1)
         data = self._scan(job, run)
@@ -660,10 +872,12 @@ class DocumentProcessor:
         reads: list[RouteDecision | None] = []  # how each page was read, as the reader said
         on_page = self._reading_beat(job, run, heartbeat, len(pages), reads)
         try:
-            spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=on_page))
+            with self._reading_document(job, run):  # closed before anything else, whatever happened
+                spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=on_page))
         except NoReader:
             require_clean(self._statuses, job)
             pages = _with_routes(pages, reads, prepared.checks)  # a blank page is blank still
+            pages = _with_results(pages, {}, Counter())
             run.routes = Counter(page.route for page in pages if page.route is not None)
             content = DocumentContent(customer_id, document_id, pages, [], [], [], reader="")
             self._store.save(content, run_id=run.run_id)
@@ -671,24 +885,31 @@ class DocumentProcessor:
             self._statuses.set_status(customer_id, document_id, DocumentStatus.NEEDS_READER)
             self._close_run(job, run, "needs_reader", None)
             return
+        if self._ocr_meter is not None:
+            run.page_reads = self._ocr_meter.take_page_reads()
         run.reading_ended = self._timer()
-        self._progress(job, run, "understanding", 0, 2)  # read: the time left is now until ready
-        second = self._read_second(job, record.detected_type, data)
-        heartbeat()
 
         if not pages:
             cells = [span for span in spans if isinstance(span.location, CellLocation)]
             pages = [PageRecord(info, False) for info in self._sheet_pages(cells)] if cells else []
-
-        # The socket already refuses spans without a real location; this keeps the
-        # rule here too, so no piece or value can be saved without one.
-        usable = [span for span in spans if _points_at(span.location)]
         pages = _with_routes(pages, reads, prepared.checks)
         run.routes = Counter(page.route for page in pages if page.route is not None)
+        self._fail_unreadable(run, _with_results(pages, run.page_reads, Counter()))  # F4, before any call
+
+        self._progress(job, run, "understanding", 0, 2)  # read: the time left is now until ready
+        second = self._read_second(job, record.detected_type, data)
+        heartbeat()
+
+        # The socket already refuses spans without a real location; this keeps the
+        # rule here too, so no piece or value can be saved without one. A word mark (PRD 5
+        # F3) is drawn on the page from the stored output, never a piece or a value.
+        usable = [span for span in spans if _points_at(span.location) and not is_word_mark(span)]
         # The raw second reading is kept as read; only the labels leave pages out.
         compared = None if second is None else _without_unread_pages(second, pages)
         pieces = pieces_from_rows(customer_id, document_id, usable)
-        pieces += pieces_from_lines(customer_id, document_id, usable)
+        # CX1: a page whose sentence goes on onto the next one, as its reader said.
+        continued = {page_no for page_no, read in run.page_reads.items() if read.continues_on_next_page}
+        pieces += pieces_from_lines(customer_id, document_id, usable, continues=continued)
         understanding = self._understand(
             job, run, heartbeat, usable, values_from_cells(usable) + values_from_lines(usable)
         )
@@ -702,15 +923,27 @@ class DocumentProcessor:
             doc_type=facts.doc_type,
             document_date=facts.document_date,
         )
+        document_map = self._map(job, run, heartbeat, pieces)
         rule, quoted = understanding.rule_values, understanding.quoted_values
         # A card value, or a located value whose spot is unsure (a loose, ambiguous or
         # several-span quote), is never verified, so its box is never cropped (security A8).
         cropped = rule + [
             value for value in quoted if value.record_key != CARD_RECORD and not spot_unsure(value)
         ]
-        readings = self._vision_readings(job, cropped, prepared, pictured, heartbeat, run)
-        values = label_values(rule, compared, readings, also_located=quoted)
-        values += label_quoted(quoted, compared, readings, also_located=rule)
+        marks, line_texts = _line_marks(spans)
+        readings, checked = self._second_readings(cropped, prepared, pictured, heartbeat, run, line_texts)
+        values = label_values(rule, compared, readings, also_located=quoted, checked=checked)
+        values += label_quoted(quoted, compared, readings, also_located=rule, checked=checked)
+        # The checker's disagreements (F2) are counted before the reading marks may give
+        # those values another reason (V4, G5, Q7), so the page keeps readers_disagree.
+        disputed = Counter(
+            value.location.page
+            for value in values
+            if value.label_reason == "readers_disagree" and isinstance(value.location, BoxLocation)
+        )
+        local = {page_no for page_no, read in run.page_reads.items() if _handed_on(read)}
+        values = label_reading_marks(values, marks, local)  # V4, G5, Q7
+        pages = _with_results(pages, run.page_reads, disputed)
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
             values = [_with_parsed(value) for value in apply_learned(values, learned)]
@@ -738,6 +971,8 @@ class DocumentProcessor:
             facts=facts,
             invoice=invoice,
             links=links,
+            sections=document_map.sections,
+            topics=document_map.topics,
         )
         self._store.save(content, run_id=run.run_id)
         heartbeat()
@@ -771,26 +1006,37 @@ class DocumentProcessor:
         self, job: Job, run: _Run, heartbeat: Heartbeat, spans: list[Span], values: list[ExtractedValue]
     ) -> Understanding:
         """The model stage (``extraction.understanding``), and its numbers on the run.
-        With no chat model it is today's result: no card, and the rule values as they are."""
+        With no chat model it is today's result: no card, and the rule values as they are.
+        Its calls are billed as card until ``understand`` beats 2 (the card is done), then
+        as invoice (its windows, SP1)."""
+        stage = contextlib.ExitStack()
+        billed_as = "card"
 
         def beat(done: int, total: int) -> None:
+            nonlocal billed_as
+            if done >= 2 and billed_as == "card":
+                billed_as = "invoice"
+                stage.close()
+                stage.enter_context(self._billed(job, run, "invoice"))
             heartbeat()
             self._progress(job, run, "understanding", done, total)
 
         budget = self._model_budget
         chat = self._chat if budget is not None else None
-        understanding = understand(
-            chat,
-            reader_text(spans if chat is not None else []),
-            values,
-            card_max_chars=0 if budget is None else budget.card_max_chars,
-            card_max_tokens=0 if budget is None else budget.card_max_tokens,
-            num_ctx=0 if budget is None else budget.num_ctx,
-            run_id=run.run_id,
-            beat=beat,
-            spans=spans,
-            invoice_windows=None if budget is None else budget.invoice_windows,
-        )
+        with stage:
+            stage.enter_context(self._billed(job, run, "card"))
+            understanding = understand(
+                chat,
+                reader_text(spans if chat is not None else []),
+                values,
+                card_max_chars=0 if budget is None else budget.card_max_chars,
+                card_max_tokens=0 if budget is None else budget.card_max_tokens,
+                num_ctx=0 if budget is None else budget.num_ctx,
+                run_id=run.run_id,
+                beat=beat,
+                spans=spans,
+                invoice_windows=None if budget is None else budget.invoice_windows,
+            )
         run.model_calls = understanding.model_calls
         run.model_error = understanding.error_code
         run.quotes_returned = understanding.quotes_returned
@@ -802,6 +1048,23 @@ class DocumentProcessor:
                 "summary_dropped": understanding.counts.summary_dropped,
             }
         return understanding
+
+    def _map(self, job: Job, run: _Run, heartbeat: Heartbeat, pieces: list[Piece]) -> DocumentMap:
+        """CX2, CX3: the document's sections (``sections_from_pieces``), with their summaries
+        and the topics from the one map call when the processor has a chat model and its
+        ``map_budget``, counted in the run's model calls. A call that failed leaves the
+        sections from the headings and no topics, and its code on the run, like the card's.
+        The call is billed as map (SP1)."""
+        sections = sections_from_pieces(pieces)
+        if self._map_budget is None:
+            return DocumentMap(sections, (), 0, None)
+        with self._billed(job, run, "map"):
+            found = map_document(self._chat, pieces, sections, self._map_budget)
+        run.model_calls += found.model_calls
+        run.model_error = run.model_error or found.error_code
+        if found.model_calls:
+            heartbeat()
+        return found
 
     def _prepare_or_count(self, job: Job, detected_type: str, data: bytes, on_picture: OnPicture) -> Prepared:
         """``prepare``; a file with too many pages keeps its real page count before
@@ -860,7 +1123,8 @@ class DocumentProcessor:
             self._progress(job, run, "indexing", done, total)
 
         try:
-            self._embed(job.customer_id, job.document_id, on_batch=on_batch)
+            with self._billed(job, run, "embed"):
+                self._embed(job.customer_id, job.document_id, on_batch=on_batch)
         except self._model_errors as error:
             _log.warning(
                 "pieces saved without meaning vectors",
@@ -869,55 +1133,92 @@ class DocumentProcessor:
             return False
         return True
 
-    def _vision_readings(
+    def _second_readings(
         self,
-        job: Job,
         values: list[ExtractedValue],
         prepared: Prepared,
         pictured: Collection[int],
         heartbeat: Heartbeat,
         run: _Run,
-    ) -> dict[Location, str]:
-        """A vision model's reading of each scanned value's box, by box, with a
-        heartbeat after each (security A8). Stops at the first model error, and
-        after ``max_vision_crops`` boxes; the values left stay single reader. One
-        page picture at a time, drawn again (``Prepared.picture``): the pixels
-        preparing drew, lossless."""
-        if self._vision is None:
-            return {}
-        wanted: dict[int, dict[BoxLocation, None]] = {}  # page -> boxes, in order, once each
+        line_texts: Mapping[BoxLocation, str],
+    ) -> tuple[dict[Location, str], set[Location]]:
+        """(each scanned value's box read again, by box; the boxes the checker read).
+
+        A box on a page the reading model read is read by the checker (PRD 5 V1,
+        ``_check_crop``: the box grown by CHECK_MARGIN, with the Devanagari recogniser
+        when its line, ``line_texts``, has Devanagari); no other box is read again. A
+        heartbeat after each (security A8); at most ``max_check_crops`` boxes in all, and
+        the values left stay single reader. One page picture at a time, drawn again
+        (``Prepared.picture``): the pixels preparing drew, lossless. A reading of nothing
+        is no reading."""
+        checker, model = self._checker, run.model
+        if checker is None or model is None:
+            return {}, set()
+        checker_pages = {page_no for page_no, read in run.page_reads.items() if read.read_by == model}
+        wanted: dict[int, dict[BoxLocation, bool]] = {}  # page -> {box: Devanagari}, in order, once each
         for value in values:
             box = value.location
             if not isinstance(box, BoxLocation) or (
                 value.confidence is None and value.origin in DIRECT_ORIGINS
             ):
                 continue  # read directly, not scanned; no origin counts as scanned (fail closed)
-            if box.page in pictured:
-                wanted.setdefault(box.page, {})[box] = None
+            if box.page in pictured and box.page in checker_pages:
+                text = line_texts.get(box, value.value_text)
+                wanted.setdefault(box.page, {})[box] = _DEVANAGARI.search(text) is not None
         readings: dict[Location, str] = {}
+        checked: set[Location] = set()
         for page_no, boxes in wanted.items():
             with _or_fail(functools.partial(prepared.picture, page_no)) as page:
-                for box in boxes:
-                    if run.vision_crops >= self._max_vision_crops:
-                        return readings
+                for box, devanagari in boxes.items():
+                    if run.vision_crops >= self._max_check_crops:
+                        return readings, checked
                     run.vision_crops += 1
-                    try:
-                        text = self._vision.read_image(png=_crop(page, box), instruction=VISION_INSTRUCTION)
-                    except self._model_errors as error:
-                        _log.warning(
-                            "vision reading skipped",
-                            extra={
-                                "customer_id": job.customer_id,
-                                "document_id": job.document_id,
-                                "code": _code(error),
-                            },
-                        )
-                        return readings
+                    run.checker_crops += 1
+                    with _check_crop(page, box) as crop:
+                        text = checker.read_crop(crop, devanagari=devanagari)
+                    checked.add(box)
                     heartbeat()
                     text = text.strip()
                     if text:
                         readings[box] = text
-        return readings
+        return readings, checked
+
+    def _reading_document(self, job: Job, run: _Run) -> contextlib.AbstractContextManager[None]:
+        """The document's page cache, open around its reading (PRD 5 G7, F5), with the pages
+        a user asked to read again (kept on the run, for its counters) and the job's model
+        and provider; nothing to open without a meter or a page cache. One short query for
+        the pages."""
+        meter, cache = self._ocr_meter, self._page_cache
+        if meter is None or cache is None:
+            return contextlib.nullcontext()
+        if self._read_again is not None:
+            run.read_again = frozenset(self._read_again.pages_to_read_again(job.customer_id, job.document_id))
+        pages = DocumentPages(
+            customer_id=job.customer_id,
+            document_id=job.document_id,
+            cache=cache,
+            read_again=run.read_again,
+            model=run.model,
+            provider=run.provider,
+        )
+        return meter.document(pages)
+
+    def _fail_unreadable(self, run: _Run, pages: Sequence[PageRecord]) -> None:
+        """F4: ``JobFailed("unreadable")`` when every page that is not blank was read and
+        graded unreadable; the run keeps how many were. O(pages)."""
+        run.pages_unreadable = sum(page.read_quality == "unreadable" for page in pages)
+        read = [page for page in pages if page.route is not None and page.route != "blank"]
+        if read and all(page.read_quality == "unreadable" for page in read):
+            raise JobFailed("unreadable", retryable=False)
+
+    def _billed(self, job: Job, run: _Run, kind: str) -> contextlib.AbstractContextManager[object]:
+        """SP1: the model calls made inside are billed as ``kind`` to the user who asked for
+        the reading (``run.user_id``) and this document; nothing without a ledger."""
+        if self._usage is None:
+            return contextlib.nullcontext()
+        return self._usage(
+            customer_id=job.customer_id, user_id=run.user_id, kind=kind, document_id=job.document_id
+        )
 
     # --- runs and progress (R6, X2, X3) -----------------------------------------
 
@@ -925,27 +1226,40 @@ class DocumentProcessor:
         """A new run of this delivery, started now. The OCR meter starts from zero (AR11)."""
         if self._ocr_meter is not None:
             self._ocr_meter.take()
-            self._ocr_meter.take_fallback_pages()
+            self._ocr_meter.take_page_reads()
         run_id, now = None, self._clock()
         if self._runs is not None:
             run_id = self._runs.start(job.customer_id, job.document_id, now=now)
-        return _Run(run_id, self._timer(), started_at=now)
+        return _Run(run_id, self._timer(), started_at=now, model_tokens_at_start=self._model_tokens())
+
+    def _model_tokens(self) -> tuple[int, int]:
+        """The model client's (input, output) tokens so far (G9); (0, 0) without a count."""
+        if self._model_usage is None:
+            return 0, 0
+        usage = self._model_usage()
+        return usage.input_tokens, usage.output_tokens
 
     def _finished(self, run: _Run, status: str, error_code: str | None) -> FinishedRun | None:
         """The run as it ends now, with everything it counted; None without runs.
-        The OCR meter is read and set back to zero either way (AR11)."""
+        The OCR meter is read and set back to zero either way (AR11). The reader counters
+        (PRD 5) come from the pages read: those of a reading that ended part way too."""
         meter = self._ocr_meter
         pages_sent, ocr_seconds = meter.take() if meter is not None else (0, 0.0)
-        fallback_pages = meter.take_fallback_pages() if meter is not None else 0
+        page_reads = {**(meter.take_page_reads() if meter is not None else {}), **run.page_reads}
         if run.run_id is None:
             return None
         ended = self._timer()
+        checked_by = self._checker_model if run.checker_crops else None
+        counters = _reader_counters(page_reads, run.model, run.read_again)
+        model_in, model_out = self._model_tokens()
+        counters["input_tokens"] += max(0, model_in - run.model_tokens_at_start[0])
+        counters["output_tokens"] += max(0, model_out - run.model_tokens_at_start[1])
         totals = RunTotals(
             status=status,
             error_code=error_code,
             ocr_engine=f"{meter.name} {meter.version}"[:100] if meter is not None and pages_sent else None,
             model_chat=self._chat_model if run.model_calls else None,
-            model_vision=self._vision_model if run.vision_crops else None,
+            model_vision=checked_by,
             model_embed=self._embed_model if run.embedded else None,
             pages_cells=run.routes["cells"],
             pages_text_layer=run.routes["text_layer"],
@@ -963,10 +1277,11 @@ class DocumentProcessor:
                 **self._run_config,
                 **run.quote_config,
                 **run.version_marks,
-                **({"pages_ocr_fallback": fallback_pages} if fallback_pages else {}),
-                **run.ocr_choice,
                 **_step_seconds(run, ended),
+                **({"read_model": run.model} if run.model is not None else {}),
             },
+            **counters,
+            pages_unreadable=run.pages_unreadable,
         )
         return FinishedRun(run.run_id, totals, self._clock())
 
@@ -1014,12 +1329,17 @@ class DocumentProcessor:
             )
 
     def _clear_progress(self, job: Job, run: _Run, code: str) -> None:
-        """Clear this run's progress before the job waits to come back. Best effort: a
-        database that is down is logged with the run's error code."""
+        """Clear this run's progress before the job waits to come back; when the reader
+        stopped it (``code`` in _READER_WAITS), mark it waiting for the reader instead
+        (PRD 5 Q6). Best effort: a database that is down is logged with the run's error
+        code."""
         if self._progress_store is None:
             return
+        waiting = "reader" if code in _READER_WAITS else None
         try:
-            self._progress_store.clear_progress(job.customer_id, job.document_id, run_id=run.run_id)
+            self._progress_store.clear_progress(
+                job.customer_id, job.document_id, run_id=run.run_id, waiting=waiting
+            )
         except BackendUnavailable:
             _log.warning(
                 "progress_not_cleared",
@@ -1144,6 +1464,117 @@ def _with_routes(
     return routed
 
 
+def _with_results(
+    pages: list[PageRecord], page_reads: Mapping[int, PageRead], disputed: Mapping[int, int]
+) -> list[PageRecord]:
+    """Each page with its reading result (PRD 5 RT2, F1, F2): a text-layer or cell page is
+    good, read by its route; an ocr page takes its ``PageRead``'s reader, issues and
+    counts, plus low_resolution and readers_disagree (``disputed``: values per page), and
+    is graded by ``page_quality.grade``; a blank page, or one not read, keeps F1's default
+    with no reader. O(pages + lines)."""
+    return [
+        _with_result(page, page_reads.get(page.info.page), disputed.get(page.info.page, 0)) for page in pages
+    ]
+
+
+def _with_result(page: PageRecord, read: PageRead | None, disputed: int) -> PageRecord:
+    if page.route in ("text_layer", "cells"):
+        return replace(page, read_by=page.route)
+    if page.route != "ocr":
+        return page
+    found = set(() if read is None else read.issues)
+    if page.low_resolution:
+        found.add(LOW_RESOLUTION)
+    if disputed:
+        found.add(READERS_DISAGREE)
+    issues = tuple(code for code in ISSUES if code in found)  # the F1 table's order
+    if read is None:  # a socket that keeps no page reads (tests' fakes)
+        quality = grade(issues, model_quality=None, words=0, illegible_words=0, unsure_words=0)
+        return replace(page, read_quality=quality, read_issues=issues)
+    words = sum(len(line.text.split()) for line in read.lines)
+    quality = grade(
+        issues,
+        model_quality=read.quality,
+        words=words,
+        illegible_words=read.illegible_words,
+        unsure_words=read.unsure_words,
+    )
+    return replace(
+        page,
+        read_by=read.read_by,
+        read_quality=quality,
+        read_issues=issues,
+        unsure_words=read.unsure_words,
+        illegible_words=read.illegible_words,
+        unpinned_lines=read.unpinned_lines,
+        continues_on_next_page=read.continues_on_next_page,
+    )
+
+
+def _reader_counters(
+    page_reads: Mapping[int, PageRead], ocr_model: str | None, read_again: Collection[int]
+) -> dict[str, int]:
+    """A run's reader counters (``kaagaz.db.runs.READER_COUNTERS``) but pages_unreadable,
+    from its page reads: pages the reading model read and billed (not from the cache),
+    pages the reading model handed to its local reader (``_handed_on``: a page read with
+    no key, or by another engine, is not one), pages from the cache, pages read again on request by the model,
+    and the tokens billed. With no ``ocr_model`` no page is the model's. O(pages)."""
+    reads = list(page_reads.items())
+    billed = [
+        n for n, read in reads if ocr_model is not None and read.read_by == ocr_model and not read.cached
+    ]
+    return {
+        "pages_gemini": len(billed),
+        "pages_local": sum(_handed_on(read) for _, read in reads),
+        "pages_cached": sum(read.cached for _, read in reads),
+        "pages_read_again": sum(page_no in read_again for page_no in billed),
+        "input_tokens": sum(read.input_tokens for _, read in reads),
+        "output_tokens": sum(read.output_tokens for _, read in reads),
+    }
+
+
+HANDED_ON: frozenset[str] = frozenset({READ_LOCALLY, READER_REFUSED})
+"""The issues of a page the reading model handed to its local reader (Q7, G6): read
+while the model was down, or after it declined the page or sent a bad reply."""
+
+
+def _handed_on(read: PageRead) -> bool:
+    """The page was read by the backup reader for the reading model (``HANDED_ON``),
+    whatever engine read it: never a page read with no key."""
+    return not HANDED_ON.isdisjoint(read.issues)
+
+
+def _line_marks(spans: Sequence[Span]) -> tuple[dict[BoxLocation, LineMarks], dict[BoxLocation, str]]:
+    """(what the reader said about each OCR line, by its box; each OCR line's text, by its
+    box). A word mark (F3) follows its line in the reader's output (``ocr_spans``), so its
+    unsure word is that line's; a line with box_source "model" is unpinned (G5). Two lines
+    with one box (G5: both kept it) share their marks. O(spans)."""
+    unsure: dict[BoxLocation, list[str]] = {}
+    unpinned: set[BoxLocation] = set()
+    texts: dict[BoxLocation, str] = {}
+    line: BoxLocation | None = None  # the box of the last OCR line
+    for span in spans:
+        box = span.location
+        if span.origin != "ocr" or not isinstance(box, BoxLocation):
+            line = None
+            continue
+        if is_word_mark(span):
+            if line is not None and span.quality == "unsure" and box.page == line.page:
+                unsure.setdefault(line, []).append(span.text)
+            continue
+        line = box
+        texts[box] = f"{texts[box]} {span.text}" if box in texts else span.text
+        unsure.setdefault(box, [])
+        if span.box_source == "model":
+            unpinned.add(box)
+    marks = {
+        box: LineMarks(tuple(words), box in unpinned)
+        for box, words in unsure.items()
+        if words or box in unpinned
+    }
+    return marks, texts
+
+
 def _without_unread_pages(second: list[Span], pages: Sequence[PageRecord]) -> list[Span]:
     """The second reading without the pages that were read by OCR or are blank: a
     second reader reads text layers only, so there it could only agree with a
@@ -1175,15 +1606,16 @@ def _with_parsed(value: ExtractedValue) -> ExtractedValue:
     )
 
 
-def _crop(page: Image.Image, box: BoxLocation) -> bytes:
+def _check_crop(page: Image.Image, box: BoxLocation) -> Image.Image:
+    """The checker's crop (PRD 5 V1): ``box`` grown by CHECK_MARGIN of its own width and
+    height on each side (question 9), within the page, never empty. O(crop pixels)."""
     width, height = page.size
-    left = max(0, int((box.x0 - _CROP_PADDING) * width))
-    top = max(0, int((box.y0 - _CROP_PADDING) * height))
-    right = min(width, int((box.x1 + _CROP_PADDING) * width) + 1)
-    bottom = min(height, int((box.y1 + _CROP_PADDING) * height) + 1)
-    out = io.BytesIO()
-    page.crop((left, top, right, bottom)).save(out, format="PNG")
-    return out.getvalue()
+    grow_x, grow_y = CHECK_MARGIN * (box.x1 - box.x0), CHECK_MARGIN * (box.y1 - box.y0)
+    left = max(0, math.floor((box.x0 - grow_x) * width))
+    top = max(0, math.floor((box.y0 - grow_y) * height))
+    right = min(width, max(left + 1, math.ceil((box.x1 + grow_x) * width)))
+    bottom = min(height, max(top + 1, math.ceil((box.y1 + grow_y) * height)))
+    return page.crop((left, top, right, bottom))
 
 
 def _stored_picture(page: Image.Image) -> bytes:
@@ -1227,13 +1659,20 @@ def build_processor(
 ) -> DocumentProcessor:
     """The production processor. The concrete parts are imported here only, so the
     processor itself depends on the ports above and is tested with fakes."""
+    from sqlalchemy import text
+
     from kaagaz.ai.client import ModelOutputError, ModelUnavailable
+    from kaagaz.ai.usage import usage_scope
+    from kaagaz.db import models
     from kaagaz.db.documents import PgDocuments
+    from kaagaz.db.engine import unavailable
+    from kaagaz.db.page_reads import PgPageReads
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
-    from kaagaz.reading.ocr import MeteredOcrEngine, build_ocr_engines
-    from kaagaz.reading.wiring import build_reader_socket, reader_config
+    from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION, MeteredOcrEngine
+    from kaagaz.reading.rapid_pool import shared_pool
+    from kaagaz.reading.wiring import build_ocr_engine, build_reader_socket, reader_config
     from kaagaz.search.indexing import embed_pieces
 
     documents = PgDocuments(db)
@@ -1253,9 +1692,33 @@ def build_processor(
     embed: Embedder | None = None
     if model is not None:
         embed = functools.partial(embed_pieces, db, model=model)
-    engines = build_ocr_engines(settings)
-    meter = None if engines is None else MeteredOcrEngine(engines, timer=time.perf_counter)
-    vision = model if model is not None and settings.model_vision else None
+    # The Gemini reader (PRD 5 G1) from kaagaz.reading.wiring; the readers read pages on its
+    # page pool (wiring.page_pool, G8) through the same meter.
+    engine = build_ocr_engine(settings)
+    meter = None if engine is None else MeteredOcrEngine(engine, timer=time.perf_counter)
+    # The checker (V1) reads the boxes of pages the reading model read, so only with it; it
+    # shares the process's one RapidOCR pool with the box pinning (CPU_WORKERS).
+    gemini = engine is not None and settings.ocr_engine == GEMINI
+    # Model choice and AI spend (council 11 Oct 2026): with a model in use, each job asks who
+    # it is billed to and, with the Gemini reader, which model reads it (the worker's own
+    # check of the upload's choice, MS5). Keyless: no query a job and no ledger, as before.
+    job_reading: Callable[[str, str], JobReading] | None = None
+    if gemini or model is not None:
+        requested_by = text("SELECT read_requested_by FROM documents WHERE customer_id = :c AND id = :d")
+        prompt_version = READER_PROMPT_VERSION if gemini else None
+
+        def read_job(customer_id: str, document_id: str) -> JobReading:
+            with unavailable(), db.customer(customer_id) as conn:
+                user = conn.execute(requested_by, {"c": customer_id, "d": document_id}).scalar_one_or_none()
+                user_id = None if user is None else str(user)
+                if prompt_version is None:
+                    return JobReading(user_id)
+                read_model, provider = models.resolve(
+                    conn, customer_id, document_id, settings=settings, prompt_version=prompt_version
+                )
+            return JobReading(user_id, read_model, provider)
+
+        job_reading = read_job
 
     return DocumentProcessor(
         gate=ScanGate(storage, scanner, storage, documents),
@@ -1267,28 +1730,45 @@ def build_processor(
         page_images=storage,
         store=PgPipelineStore(db),
         embed=embed,
-        vision=vision,
         model_errors=(ModelUnavailable, ModelOutputError),
         runs=PgRuns(db),
         progress=documents,
         ocr_meter=meter,
-        ocr_engines=engines,
         clock=_utc_now,
         timer=time.perf_counter,
+        max_check_crops=settings.max_check_crops,
         run_config={
             "build": _build(),
             **reader_config(settings),
-            "max_vision_crops": MAX_VISION_CROPS,
+            "max_check_crops": settings.max_check_crops,
             **(model_config(settings) if model is not None else {}),
+            **({"map_prompt": MAP_PROMPT_HASH} if model is not None else {}),
         },
-        vision_model=settings.model_vision if vision is not None else None,
         embed_model=settings.model_embed if embed is not None else None,
         chat=model,
         chat_model=settings.model_chat if model is not None else None,
         model_budget=ModelBudget.from_settings(settings) if model is not None else None,
         timezone=settings.timezone,
         customer_active=documents.customer_active,
+        ocr_model=settings.ocr_model if gemini else None,
+        checker=shared_pool(settings.cpu_workers) if gemini else None,
+        checker_model=_checker_name() if gemini else None,
+        page_cache=PgPageReads(db) if gemini else None,  # keyless: no query a job, as before
+        read_again=documents,
+        model_usage=model.usage if isinstance(model, CountsTokens) else None,
+        map_budget=MapBudget.from_settings(settings) if model is not None else None,
+        job_reading=job_reading,
+        usage=None if job_reading is None else functools.partial(usage_scope, db),
     )
+
+
+def _checker_name() -> str:
+    """The checker's name a run records (``model_vision``, PRD 5 V1): RapidOCR and its
+    installed version, read from its metadata without importing it."""
+    try:
+        return f"{LOCAL_READ_BY} {metadata.version('rapidocr')}"
+    except metadata.PackageNotFoundError:
+        return LOCAL_READ_BY
 
 
 def _build() -> str:

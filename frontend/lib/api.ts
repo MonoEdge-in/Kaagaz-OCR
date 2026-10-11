@@ -12,6 +12,7 @@ import type {
   AdminCreated,
   AdminUser,
   AuditEntry,
+  BatchView,
   ChatResponse,
   Conversation,
   ConversationSummary,
@@ -27,10 +28,15 @@ import type {
   MyStory,
   MyWord,
   OperatorMe,
+  OperatorModel,
+  OperatorOrgModels,
+  OperatorUsageRow,
   OrgAdmin,
+  OrgModels,
   Organisation,
   OrganisationCreated,
   PageReadings,
+  PageSummary,
   PasswordReset,
   PlatformEvent,
   PlatformHealth,
@@ -46,6 +52,7 @@ import type {
   TwoStepSetup,
   UploadLimits,
   UploadResult,
+  UsageReport,
   WordSaved,
 } from "./types";
 
@@ -191,9 +198,15 @@ export const restoreDocument = (id: string) =>
  * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
  * for a ready, failed or unreadable document out of Trash (403 forbidden or
  * 409 not_reprocessable otherwise). The reply has its new status, received.
+ * readModel: the model to read it with (one the organisation allows, else 403
+ * model_not_allowed); none keeps the server's choice.
  */
-export const reprocessDocument = (id: string) =>
-  request<DocumentSummary>("POST", `/documents/${id}/reprocess`);
+export const reprocessDocument = (id: string, readModel?: string) =>
+  request<DocumentSummary>(
+    "POST",
+    `/documents/${id}/reprocess`,
+    readModel ? { read_model: readModel } : undefined,
+  );
 /**
  * An admin session with two-step sign-in, or a granted user who just confirmed
  * their password (403 otherwise), and only from Trash (409 not_in_trash
@@ -220,6 +233,14 @@ export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 2
     "GET",
     `/documents/${id}/pages/${pageNo}/cells${query({ row_from: rowFrom, row_to: rowTo })}`,
   );
+/** One drop of files (PRD 5 Q1): the uploader's own only; 404 for any other or unknown batch. */
+export const getBatch = (id: string) => request<BatchView>("GET", `/batches/${encodeURIComponent(id)}`);
+/** F5: read one page again, harder (a reviewer or an admin); the reply is the document, now received. */
+export const readPageAgain = (id: string, pageNo: number) =>
+  request<DocumentSummary>("POST", `/documents/${id}/pages/${pageNo}/read-again`);
+/** F5 "Keep as is": the page leaves the attention list but stays flagged; the reply is the page. */
+export const acceptPage = (id: string, pageNo: number) =>
+  request<PageSummary>("POST", `/documents/${id}/pages/${pageNo}/accept`);
 /** What each reader read on one page, as read (the viewer's Scanned text panel only). */
 export const getPageReadings = (id: string, pageNo: number) =>
   request<PageReadings>("GET", `/documents/${id}/pages/${pageNo}/readings`);
@@ -239,55 +260,74 @@ export const deleteMyStory = (id: string, userId: string) =>
  * into a folder when one is given, else at the top level. userId is who was
  * signed in when the file was chosen: the server refuses the file (409
  * session_changed) if someone else has signed in since, in another tab.
- * ocrChoice is the scan reader chosen (readers.ts); none means the server's default.
+ * readModel is the model chosen in "Read with" (readers.ts), sent as read_model; none
+ * means the organisation's default.
+ * batchId is the drop it came in (PRD 5 Q1, a UUID the browser made; 409 batch_full
+ * past MAX_FILES_PER_BATCH). onSent: the last byte has gone, so Saving starts (U10).
  */
 export function uploadDocument(
   file: File,
   userId: string,
   onProgress: (fraction: number) => void,
   folderId?: string,
-  ocrChoice?: string,
+  readModel?: string,
+  batchId?: string,
+  onSent?: () => void,
 ): Promise<UploadResult> {
   const form = new FormData();
   if (folderId) form.append("folder_id", folderId);
-  if (ocrChoice) form.append("ocr_choice", ocrChoice);
+  if (readModel) form.append("read_model", readModel);
+  if (batchId) form.append("batch_id", batchId);
   form.append("user_id", userId);
   form.append("file", file);
-  return sendForm("/api/documents", form, onProgress);
+  return sendForm("/api/documents", form, onProgress, onSent);
 }
 
 /**
  * Upload a new version of a document, with progress. The server gives it the
  * next version number and the family's folder and tags; the reply has the
- * same shape as an upload. ocrChoice as for uploadDocument.
+ * same shape as an upload. readModel and onSent as for uploadDocument.
  */
 export function uploadVersion(
   documentId: string,
   file: File,
   userId: string,
   onProgress: (fraction: number) => void,
-  ocrChoice?: string,
+  readModel?: string,
+  onSent?: () => void,
 ): Promise<UploadResult> {
   const form = new FormData();
-  if (ocrChoice) form.append("ocr_choice", ocrChoice);
+  if (readModel) form.append("read_model", readModel);
   form.append("user_id", userId);
   form.append("file", file);
-  return sendForm(`/api/documents/${documentId}/versions`, form, onProgress);
+  return sendForm(`/api/documents/${documentId}/versions`, form, onProgress, onSent);
 }
 
+/**
+ * The bytes sent so far never go backwards (a browser may report a lower count
+ * after a retry), and xhr.upload.onload says the last byte has gone: from then
+ * until the reply the server is saving the file (PRD 5 U10).
+ */
 function sendForm(
   url: string,
   form: FormData,
   onProgress: (fraction: number) => void,
+  onSent?: () => void,
 ): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let highest = 0;
     xhr.open("POST", url);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) onProgress(event.loaded / event.total);
+      if (!event.lengthComputable || event.total <= 0) return;
+      const fraction = Math.min(1, event.loaded / event.total);
+      if (fraction <= highest) return;
+      highest = fraction;
+      onProgress(fraction);
     };
+    xhr.upload.onload = () => onSent?.();
     xhr.onload = () => {
       let body: unknown = null;
       try {
@@ -412,6 +452,14 @@ export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);
+/** The organisation's models, read-only: the operator sets them. */
+export const getAdminModels = () => request<OrgModels>("GET", "/admin/models");
+/** AI use from `from` to `to` (YYYY-MM-DD, both included; the server's default when left out), for one user when given. */
+export type UsageParams = { from?: string; to?: string; user_id?: string };
+export const getAdminUsage = (params: UsageParams = {}) =>
+  request<UsageReport>("GET", `/admin/usage${query(params)}`);
+/** The same rows as a CSV file, for a plain download link. */
+export const adminUsageCsvUrl = (params: UsageParams = {}) => `/api/admin/usage.csv${query(params)}`;
 
 // --- the platform operator (super admin) -----------------------------------------
 // Its own cookie (path /api/operator), sent only to these routes.
@@ -446,3 +494,20 @@ export const changeAdmin = (orgId: string, userId: string, change: AdminChange, 
 export const listActivity = (params: { before?: string; org?: string; action?: string }) =>
   request<{ items: PlatformEvent[]; next: string | null }>("GET", `/operator/activity${query(params)}`);
 export const getHealth = () => request<PlatformHealth>("GET", "/operator/health");
+/** The model catalogue, every model OpenRouter lists that a scan could use. */
+export const getOperatorModels = () => request<{ items: OperatorModel[] }>("GET", "/operator/models");
+export const getOperatorOrgModels = (id: string) =>
+  request<OperatorOrgModels>("GET", `/operator/orgs/${id}/models`);
+export const putOperatorOrgModels = (id: string, body: OperatorOrgModels) =>
+  request<OperatorOrgModels>("PUT", `/operator/orgs/${id}/models`, body);
+/** Enable or disable one model on the platform, with a fresh code (step-up). The id's
+ * slash stays a slash: the route takes the whole author/slug. */
+export const setOperatorModelEnabled = (id: string, enabled: boolean, code: string) =>
+  request<{ model: { id: string; enabled: boolean; changed: boolean } }>(
+    "PUT",
+    `/operator/models/${id.split("/").map(encodeURIComponent).join("/")}`,
+    { enabled, code },
+  );
+/** Tokens and dollars per organisation and model; no user or document. */
+export const getOperatorUsage = (params: { from?: string; to?: string } = {}) =>
+  request<{ from: string; to: string; items: OperatorUsageRow[] }>("GET", `/operator/usage${query(params)}`);

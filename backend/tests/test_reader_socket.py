@@ -8,7 +8,7 @@ from PIL import Image
 
 from kaagaz.ingestion import sniff
 from kaagaz.reading.csv_reader import CsvReader
-from kaagaz.reading.ocr import OcrLine
+from kaagaz.reading.ocr import OcrLine, ocr_spans
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, ReaderSocket
 from kaagaz.reading.spans import BoxLocation, CellLocation, Location, ReadError, Span
@@ -261,6 +261,44 @@ class SpanValidationTest(unittest.TestCase):
                 self.read_one(span)
             self.assertEqual(ctx.exception.code, "invalid_reader_output")
 
+    def test_word_marks_are_checked_and_set_only_on_ocr_spans(self) -> None:
+        """PRD 5 F3: quality and box_source are validated in the socket."""
+        good = [
+            Span("a", "a", box(), kind="paragraph", origin="ocr", quality="unsure", box_source="found"),
+            Span("a", "a", box(), origin="ocr", quality="illegible"),
+            Span("a", "a", box(), origin="ocr", quality="ok", box_source="model"),
+            Span("a", "a", box(), None, "table_cell", "ocr", "t1", 0, 0, False, "ok", "found"),
+        ]
+        for span in good:
+            with self.subTest(span=span):
+                self.assertEqual(self.read_one(span), [span])
+        cell = CellLocation(1, 1, 1)
+        bad = {
+            "unknown quality": Span("a", "a", box(), origin="ocr", quality="blurry"),
+            "unknown box source": Span("a", "a", box(), origin="ocr", box_source="guessed"),
+            "a quality that is not a str": Span("a", "a", box(), origin="ocr", quality=cast(str, ["ok"])),
+            "a quality on a text layer line": Span("a", "a", box(), origin="text_layer", quality="unsure"),
+            "a box source on a text layer line": Span(
+                "a", "a", box(), origin="text_layer", box_source="found"
+            ),
+            "a quality on a cell": Span("a", "a", cell, origin="cell", quality="ok"),
+            "a box source on a cell": Span("a", "a", cell, box_source="model"),
+        }
+        for name, span in bad.items():
+            with self.subTest(name), self.assertRaises(ReadError) as ctx:
+                self.read_one(span)
+            self.assertEqual(ctx.exception.code, "invalid_reader_output")
+
+    def test_the_word_marks_ocr_spans_makes_pass_the_socket(self) -> None:
+        """PRD 5 F3: a Gemini line's spans, its marks among them, are all valid output."""
+        line = OcrLine("पाटील [?] यांचे", 40, 300, 380, 340, None, "paragraph", None, ("यांचे",), "model")
+        spans = ocr_spans([line], 1, 1000, 1000)
+        self.assertEqual(ReaderSocket({"t": FixedReader(*spans)}).read("t", b""), spans)
+        self.assertEqual(
+            [(s.quality, s.box_source) for s in spans],
+            [(None, "model"), ("illegible", "model"), ("unsure", "model")],
+        )
+
     def test_confidence_outside_zero_to_one_is_refused(self) -> None:
         for confidence in (-0.01, 1.01, float("nan"), float("inf"), cast(float, True), cast(float, "0.5")):
             with self.subTest(confidence=confidence), self.assertRaises(ReadError) as ctx:
@@ -315,8 +353,20 @@ class NoDirectReaderCallsTest(unittest.TestCase):
     # span types, which everyone may use, the wiring and the OCR engine
     # interface, which the pipeline uses to build the socket, and the page
     # route, which the pipeline works out from the spans after reading
-    # (PRD 2 R1). New readers are covered automatically.
-    ALLOWED: ClassVar[set[str]] = {"__init__", "socket", "spans", "wiring", "ocr", "route"}
+    # (PRD 2 R1), and the page reading result's codes, which the pipeline,
+    # the API and the answers name (PRD 5 F1), and RapidOCR's pool, which
+    # the pipeline's checker reads value crops with (PRD 5 V1). New readers
+    # are covered automatically.
+    ALLOWED: ClassVar[set[str]] = {
+        "__init__",
+        "socket",
+        "spans",
+        "wiring",
+        "ocr",
+        "route",
+        "page_quality",
+        "rapid_pool",
+    }
 
     def reader_modules(self) -> set[str]:
         return {

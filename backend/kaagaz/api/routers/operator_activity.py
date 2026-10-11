@@ -14,7 +14,11 @@ router); only ``OperatorDatabase`` here, and each read is one ``kaagaz_op_*`` fu
   disabled since the cookie was checked gets 401, as on ``/health``.
 * ``GET /operator/health``: per organisation, document counts by status, the failed ones
   by failure code, how many are being read and how long the oldest has waited; the
-  totals; organisations purged and swept again. Counts only.
+  totals; organisations purged and swept again. Counts only. PRD 5 U9 adds ``reader``:
+  each worker's reader state from its reports of the last 10 minutes (``kaagaz_op_reader``,
+  0022; the screen shows "not reporting" after 2 minutes, "slow" for failing), and
+  ``queues``: the jobs waiting in each lane, null when the queue does not answer. Status
+  only: never an error body, a key or a customer.
 """
 
 import base64
@@ -32,8 +36,10 @@ from kaagaz.api.errors import ApiError
 from kaagaz.api.views import iso
 from kaagaz.db import operator_activity as activity_sql
 from kaagaz.db import operators as operators_sql
+from kaagaz.db import reader_status as reader_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_activity import SOURCES, Before
+from kaagaz.ingestion.errors import BackendUnavailable
 
 router = APIRouter(prefix="/operator", dependencies=[Depends(current_operator)])
 
@@ -80,6 +86,7 @@ def get_health(operator: OperatorSession, db: OperatorDb, context: Context) -> d
     with db.operator() as conn:
         rows = activity_sql.health(conn, operator.operator_id)
         purges = activity_sql.purges(conn, operator.operator_id)
+        readers = reader_sql.read(conn, operator.operator_id)
     if purges is None:  # disabled meanwhile
         raise ApiError(401, "not_signed_in")
     now = context.clock()
@@ -103,6 +110,8 @@ def get_health(operator: OperatorSession, db: OperatorDb, context: Context) -> d
             "swept": int(purges["swept"]),
             "last_swept_at": _when(purges["last_swept_at"]),
         },
+        "reader": [_reader(row) for row in readers],
+        "queues": _queues(context),
     }
 
 
@@ -153,6 +162,26 @@ def _health(row: RowMapping, now: datetime) -> dict[str, Any]:
         "oldest_in_progress_at": _when(oldest),
         "oldest_in_progress_seconds": None if oldest is None else _seconds(now, oldest),
     }
+
+
+def _reader(row: RowMapping) -> dict[str, Any]:
+    """``ReaderReport``: exactly these keys."""
+    return {
+        "worker": row["worker"],
+        "state": row["state"],
+        "since": _when(row["since"]),
+        "seen_at": iso(row["seen_at"]),
+    }
+
+
+def _queues(context: AppContext) -> dict[str, int] | None:
+    """The jobs waiting in each lane, or None when the queue does not answer (the
+    reason is never shown)."""
+    try:
+        depth = context.queue.depth()
+    except BackendUnavailable:
+        return None
+    return {"express": int(depth["express"]), "main": int(depth["main"])}
 
 
 def _seconds(now: datetime, since: datetime) -> int:

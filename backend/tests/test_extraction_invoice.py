@@ -86,7 +86,7 @@ def item(description: str, amount: str, **quotes: str) -> dict[str, Any]:
 
 class Sizes(TypedDict, total=False):
     """Window sizes and model budgets; the settings' starting values when left out
-    (1700, 400 and 10; MODEL_WINDOW_MAX_TOKENS 2048 and MODEL_NUM_CTX 8192)."""
+    (1700, 400 and 10; a 2048-token reply and an 8192-token window)."""
 
     chars: int
     overlap: int
@@ -702,7 +702,7 @@ class ModelCallsTest(unittest.TestCase):
         self.assertEqual(
             call["user"], "This is part 2 of 3 of an invoice.\n<document>\nInvoice No: B\n</document>"
         )
-        self.assertEqual({call["max_tokens"] for call in chat.calls}, {2048})  # MODEL_WINDOW_MAX_TOKENS
+        self.assertEqual({call["max_tokens"] for call in chat.calls}, {2048})  # INVOICE_REPLY_TOKENS
 
     def test_each_window_fits_the_models_context(self) -> None:
         # 20 lines of 100 Devanagari letters: one window by characters (2,079 of 6,000), but

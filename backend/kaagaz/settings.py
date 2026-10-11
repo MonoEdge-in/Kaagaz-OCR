@@ -6,11 +6,17 @@ times or model names: they are Vrushit's settings (PRD section 6), so a
 missing one stops the process at start-up with its name, never later with a
 guess. Tests build ``Settings`` directly (``tests/settings_factory.py``).
 
+A variable this module no longer reads is ignored, so an older ``.env`` still
+starts (the deploy runs unattended). A value that names something removed stops
+start-up by name: OCR_ENGINE's old layout reader, or with MODEL_ENABLED a
+MODEL_CHAT or MODEL_EMBED that is not an OpenRouter model ID (PRD 5 section 7).
+
 PROVISIONAL: every value marked so in ``.env.example`` waits for Vrushit.
 """
 
 import math
 import os
+import re
 import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -23,29 +29,56 @@ LEASE_RENEW_SECONDS = 15
 # heartbeat) and the job's lease, or a slow page outlives the lease and a second
 # worker starts the same document.
 _OCR_LEASE_MARGIN_SECONDS = 120 + LEASE_RENEW_SECONDS
-# The Host values the ocr server accepts (ALLOWED_HOSTS in kaagaz/ocr_server/app.py,
-# which must never import this module; a test keeps the two the same).
-OCR_SERVER_HOSTS = frozenset({"ocr:8080", "localhost:8080", "127.0.0.1:8080"})
+# PRD 5 G6: the most Gemini calls one page can take between heartbeats: the read, and when
+# the reply is cut off at the output limit, its top and bottom halves.
+_GEMINI_PAGE_CALLS = 3
+# PRD 5 G2 and F5: the media_resolution and thinking_level a page is read with.
+MEDIA_RESOLUTIONS = frozenset({"low", "medium", "high", "ultra_high"})
+THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
+# How a page's media resolution reaches the model through OpenRouter (council 8 Oct 2026).
+# "detail": the image part's image_url.detail, which takes low or high only, so only those
+# two levels can be sent: OCR_MEDIA_RESOLUTION and OCR_RETRY_MEDIA_RESOLUTION refuse medium
+# and ultra_high at start-up, by name, and never send another level instead. "passthrough"
+# (Google's own media_resolution level sent through, all four levels) is the one other
+# value, for when verify-models shows OpenRouter passes it on; it is not built until then.
+MEDIA_RESOLUTION_SHAPE = "detail"
+SENDABLE_MEDIA_RESOLUTIONS = {"detail": frozenset({"low", "high"})}
+# An OpenRouter model ID: author/slug, such as google/gemini-3.1-pro-preview. A ":variant"
+# (":free", ":floor", ...) is refused: it changes the routing and the data policy. Each part
+# is 1 to 128 characters and starts with a letter or a digit, so "." and ".." are never a
+# part (the ID goes in a URL path). 0023's CHECKs hold the same pattern.
+MODEL_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+# An OpenRouter provider slug, such as google-vertex or azure (model choice, council 11 Oct 2026).
+PROVIDER_SLUG = re.compile(r"[a-z0-9-]{1,64}")
+# The provider every call used before model choice, and OPENROUTER_PROVIDERS when unset.
+DEFAULT_PROVIDER = "google-vertex"
+# OPENROUTER_BASE_URL may be plain http only on these hosts (a fake server in tests, or the
+# exit test's closed port); anywhere else the key would cross the network in the clear.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# The key goes in a request header: printable ASCII with no space, so it can never split one.
+_API_KEY = re.compile(r"[\x21-\x7e]{1,256}")
 # AR1: seconds to spare between the longest model step without a heartbeat (one
-# chat_json: a call and its repair retry; or one embedding batch or vision crop, a
-# single call) and the job's lease.
+# chat_json: a call and its repair retry; or one embedding batch, a single call) and the
+# job's lease.
 _MODEL_LEASE_MARGIN_SECONDS = 60 + LEASE_RENEW_SECONDS
 # The size of the pieces' vector(1024) column (migration 0001): EMBEDDING_DIM must match it.
 EMBEDDING_DIM = 1024
 # Council 5 (PROVISIONAL): an invoice window's reply needs about this many tokens for each
 # line item, taking one line item per _WINDOW_LINE_CHARS characters of the window, plus
-# _WINDOW_FIELD_TOKENS for its nine fields. The window must fit MODEL_WINDOW_MAX_TOKENS.
+# _WINDOW_FIELD_TOKENS for its nine fields. The window must fit INVOICE_REPLY_TOKENS.
 _WINDOW_LINE_CHARS = 50
 _WINDOW_LINE_TOKENS = 50
 _WINDOW_FIELD_TOKENS = 300
+# PRD 5 M1: an invoice window's reply budget, capped as it was (2048), so the windows are
+# 1700 characters with a 400 character overlap unless EXTRACT_WINDOW_* say otherwise.
+INVOICE_REPLY_TOKENS = 2048
 
 
 def window_for_reply_tokens(max_tokens: int) -> tuple[int, int]:
     """The invoice window (characters, overlap) that a reply of ``max_tokens``
-    (MODEL_WINDOW_MAX_TOKENS) can answer: as many 50-character line items as fit
-    after the fields, and a quarter of that as overlap, both in whole line items.
-    2048 gives 1700 and 400; a bigger model is one setting (MODEL_WINDOW_MAX_TOKENS,
-    with MODEL_NUM_CTX), and the windows grow with it. (0, 0) if nothing fits."""
+    (INVOICE_REPLY_TOKENS) can answer: as many 50-character line items as fit after the
+    fields, and a quarter of that as overlap, both in whole line items. 2048 gives 1700
+    and 400. (0, 0) if nothing fits."""
     line_items = max(0, (max_tokens - _WINDOW_FIELD_TOKENS) // _WINDOW_LINE_TOKENS)
     chars = line_items * _WINDOW_LINE_CHARS
     overlap = (chars // 4) // _WINDOW_LINE_CHARS * _WINDOW_LINE_CHARS
@@ -71,6 +104,33 @@ def _time_zone(name: str) -> str:
     except (ZoneInfoNotFoundError, ValueError):
         raise SettingsError("TIMEZONE must be a time zone name such as Asia/Kolkata") from None
     return name
+
+
+def is_gemini_model(name: str) -> bool:
+    """A Google Gemini model ID on OpenRouter, such as google/gemini-3.1-pro-preview or
+    google/gemini-embedding-2 (PRD 5 M1, M5; council 8 Oct 2026): calling it goes through
+    OpenRouter and needs OPENROUTER_API_KEY. The name stays: the reader's tracks use it."""
+    return name.startswith("google/gemini-")
+
+
+def valid_model_id(name: str) -> bool:
+    """``name`` is an OpenRouter model ID (``MODEL_ID``): author/slug, with no ":variant"."""
+    return MODEL_ID.fullmatch(name) is not None
+
+
+def _openrouter_base_url(value: str) -> str:
+    """OPENROUTER_BASE_URL: https, or http on a loopback host only; no user, query or
+    fragment, since the key is sent to it. Kept without a trailing slash."""
+    parts = urllib.parse.urlsplit(value)
+    if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
+        raise SettingsError("OPENROUTER_BASE_URL must have no user, password, query or fragment")
+    host = parts.hostname or ""
+    secure = parts.scheme == "https" and bool(host)
+    if not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS)):
+        raise SettingsError(
+            "OPENROUTER_BASE_URL must be an https URL (http only for localhost, 127.0.0.1 or ::1)"
+        )
+    return value.rstrip("/")
 
 
 class SettingsError(Exception):
@@ -124,17 +184,60 @@ class Settings:
     page_image_dpi: int
     max_image_pixels: int
 
-    # Scan reader engine: "paddleocr_vl" (the ocr container at ocr_url), "rapidocr",
-    # or "none" (scans are marked needs_reader). OCR pages are drawn at ocr_dpi in
-    # memory, never stored; the stored page picture stays at page_image_dpi.
+    # Scan reader engine: "gemini" (PRD 5, the model in ocr_model), "rapidocr", or "none"
+    # (scans are marked needs_reader). OCR pages are drawn at ocr_dpi in memory, never
+    # stored; the stored page picture stays at page_image_dpi.
     ocr_engine: str
-    ocr_url: str
     ocr_timeout_seconds: float
     ocr_dpi: int
     # Council 5 Oct 2026 (PROVISIONAL; kaagaz/reading/ocr_dpi.py): how each OCR page's DPI is
     # chosen. "fixed" (when unset) draws at ocr_dpi; "text_height" from the page's text height,
     # with ocr_dpi as the ceiling; "text_height_no_scan_cap" the same without the scan cap.
     ocr_dpi_rule: str
+
+    # PRD 5, the Gemini reader, through OpenRouter (council 8 Oct 2026). OCR_ENGINE=gemini
+    # reads every ocr page with ocr_model, the OpenRouter model ID in .env, unless the
+    # operator chose another model for the organisation (model choice, council 11 Oct 2026,
+    # kaagaz.db.models.resolve), through openrouter_base_url with openrouter_api_key: a
+    # secret repr never shows, needed only when a model is called (OCR_ENGINE=gemini, or
+    # MODEL_ENABLED). A page is sent at ocr_media_resolution with
+    # ocr_thinking_level (G2); "Read this page again" (F5) uses the retry pair. Both
+    # resolutions are limited to what MEDIA_RESOLUTION_SHAPE can send. ocr_page_concurrency
+    # pages of a document are read at a time and RapidOCR work runs on cpu_workers threads
+    # (G8). At most max_check_crops values of a document are read again by the CPU checker
+    # (V1). model_rpm is the key's calls a minute, shared by the workers (G9). Pages are
+    # read locally once the reader has been down for reader_outage_fallback_minutes (Q7).
+    ocr_model: str
+    openrouter_api_key: str | None = field(repr=False)
+    openrouter_base_url: str
+    # Model choice (council 11 Oct 2026): the OpenRouter providers a model may be called
+    # through, the ceiling the operator's choices stay under. Adding one is Vrushit's approval
+    # of a new data processor. Optional: unset is DEFAULT_PROVIDER only; set, it must include
+    # DEFAULT_PROVIDER (chat, embeddings and OCR_MODEL are called through it).
+    openrouter_providers: frozenset[str]
+    ocr_media_resolution: str
+    ocr_thinking_level: str
+    ocr_retry_media_resolution: str
+    ocr_retry_thinking_level: str
+    ocr_page_concurrency: int
+    cpu_workers: int
+    max_check_crops: int
+    model_rpm: int
+    reader_outage_fallback_minutes: int
+
+    # PRD 5 E, the queue and bulk upload; each takes the PRD's value (section 9) when unset.
+    # worker_replicas copies of the worker run (Q3); a customer has at most
+    # max_active_per_customer documents being read at once (Q5). A document of at most
+    # express_max_pages pages goes to queue_express_url, the express lane (Q4); None: no
+    # express lane, every job goes to queue_url. One drop holds at most max_files_per_batch
+    # files (Q1). The two model price settings are gone (model
+    # choice, council 11 Oct 2026): the spend comes from the model_usage ledger and the
+    # catalogue's prices; an older .env that still sets them starts as before.
+    worker_replicas: int
+    max_active_per_customer: int
+    queue_express_url: str | None
+    express_max_pages: int
+    max_files_per_batch: int
 
     # The page route (PRD 2 R2 to R4). A PDF page's text layer is kept when it has at
     # least text_layer_min_chars letters and digits and text_layer_min_good_ratio good
@@ -148,22 +251,18 @@ class Settings:
     blank_page_stddev: float
     low_res_dpi: int
 
-    # Local AI through Ollama's HTTP API. model_enabled=false runs everything
-    # without AI: search without meaning vectors, answers quote the evidence.
+    # AI through OpenRouter (PRD 5 G9, M1, M5): model_chat answers and model_embed embeds,
+    # both OpenRouter model IDs. model_enabled=false runs everything without AI: search
+    # without meaning vectors, answers quote the evidence.
     model_enabled: bool
-    model_base_url: str
     model_chat: str
     model_embed: str
-    model_vision: str | None
     embedding_dim: int
     model_timeout_seconds: float
-    # PRD 2 model budgets (ML amendment 5): the context window sent with every
-    # call, the reply budgets for the document card, for each invoice window and
-    # for an answer, and the worker's timeout for those calls. The card reads at
-    # most card_max_chars of the document (D1).
-    model_num_ctx: int
+    # PRD 2 model budgets (ML amendment 5): the reply budgets for the document card and
+    # for an answer (an invoice window's is INVOICE_REPLY_TOKENS), and the worker's
+    # timeout for those calls. The card reads at most card_max_chars of the document (D1).
     model_card_max_tokens: int
-    model_window_max_tokens: int
     model_answer_max_tokens: int
     model_extract_timeout_seconds: float
     card_max_chars: int
@@ -208,6 +307,21 @@ class Settings:
     # the translation call has its own timeout (TRANSLATE_TIMEOUT_SECONDS when unset).
     answer_translate_question: bool
     model_translate_timeout_seconds: float
+    # PRD 5 context and memory (sections CX and M; council 9 Oct 2026). Optional: unset is
+    # the PRD's value, so an older .env keeps working. model_context_tokens is the chat
+    # model's context window (M1), the one every budget uses. The chat's documents are given
+    # whole when they add up to
+    # answer_whole_doc_tokens or fewer, and a document's map reads its whole text under the
+    # same limit (CX2, CX5; 0 turns both off). At most topic_max_per_doc topics a document
+    # (CX3); a topic pulls in at most topic_expand_max_pieces pieces a document, and a
+    # question is searched as at most query_aspects_max aspects (CX6). The chat summary and
+    # memory are rewritten every chat_summary_every turns (M3).
+    model_context_tokens: int
+    answer_whole_doc_tokens: int
+    topic_max_per_doc: int
+    topic_expand_max_pieces: int
+    query_aspects_max: int
+    chat_summary_every: int
     timezone: str
 
     # API.
@@ -231,53 +345,48 @@ class Settings:
             if env.optional("OCR_DPI_RULE") is None
             else env.choice("OCR_DPI_RULE", {"fixed", "text_height", "text_height_no_scan_cap"})
         )
-        # Any other rule may read a page twice (at a lowered DPI, then the ceiling) between heartbeats.
+        ocr_engine = env.choice("OCR_ENGINE", {"gemini", "rapidocr", "none"})
+        # Any other rule may read a page twice (at a lowered DPI, then the ceiling) between
+        # heartbeats, and a Gemini page may take three calls (_GEMINI_PAGE_CALLS).
         ocr_calls = 1 if ocr_dpi_rule == "fixed" else 2
+        if ocr_engine == "gemini":
+            ocr_calls *= _GEMINI_PAGE_CALLS
         if ocr_calls * ocr_timeout_seconds + _OCR_LEASE_MARGIN_SECONDS > queue_lease_seconds:
+            times = f"{ocr_calls} x " if ocr_calls > 1 else ""
             raise SettingsError(
-                f"{'2 x ' if ocr_calls == 2 else ''}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
+                f"{times}OCR_TIMEOUT_SECONDS + {_OCR_LEASE_MARGIN_SECONDS}"
                 " must not be more than QUEUE_LEASE_SECONDS"
             )
-        ocr_engine = env.choice("OCR_ENGINE", {"paddleocr_vl", "rapidocr", "none"})
-        ocr_url = env.url("OCR_URL")
-        if (
-            ocr_engine == "paddleocr_vl"
-            and urllib.parse.urlsplit(ocr_url).netloc.lower() not in OCR_SERVER_HOSTS
-        ):
-            raise SettingsError(
-                "OCR_URL must name ocr:8080, localhost:8080 or 127.0.0.1:8080 (the ocr server's hosts)"
-            )
-        model_num_ctx = env.positive("MODEL_NUM_CTX")
+        model_context_tokens = env.at_least("MODEL_CONTEXT_TOKENS", 1, default=200_000)
         card_max_tokens = env.positive("MODEL_CARD_MAX_TOKENS")
-        window_max_tokens = env.positive("MODEL_WINDOW_MAX_TOKENS")
         answer_max_tokens = env.positive("MODEL_ANSWER_MAX_TOKENS")
         for name, tokens in (
             ("MODEL_CARD_MAX_TOKENS", card_max_tokens),
-            ("MODEL_WINDOW_MAX_TOKENS", window_max_tokens),
             ("MODEL_ANSWER_MAX_TOKENS", answer_max_tokens),
         ):
-            left = model_num_ctx - 2 * tokens - MAX_SYSTEM_PROMPT_TOKENS - CHAT_OVERHEAD_TOKENS
+            left = model_context_tokens - 2 * tokens - MAX_SYSTEM_PROMPT_TOKENS - CHAT_OVERHEAD_TOKENS
             if left < MIN_INPUT_TOKENS:
                 raise SettingsError(
-                    f"{name} must leave at least {MIN_INPUT_TOKENS} tokens of MODEL_NUM_CTX for the document"
+                    f"{name} must leave at least {MIN_INPUT_TOKENS} tokens of MODEL_CONTEXT_TOKENS"
+                    " for the document"
                 )
-        # Empty means "what MODEL_WINDOW_MAX_TOKENS can answer" (window_for_reply_tokens);
+        # Empty means "what INVOICE_REPLY_TOKENS can answer" (window_for_reply_tokens);
         # a value set here overrides it, and is still checked below.
-        auto_chars, auto_overlap = window_for_reply_tokens(window_max_tokens)
+        auto_chars, auto_overlap = window_for_reply_tokens(INVOICE_REPLY_TOKENS)
         set_chars = env.optional_integer("EXTRACT_WINDOW_CHARS")
         set_overlap = env.optional_integer("EXTRACT_WINDOW_OVERLAP")
         window_chars = auto_chars if set_chars is None else set_chars
         window_overlap = auto_overlap if set_overlap is None else set_overlap
         if window_chars < 1:
-            raise SettingsError("EXTRACT_WINDOW_CHARS must be at least 1 (or MODEL_WINDOW_MAX_TOKENS larger)")
+            raise SettingsError("EXTRACT_WINDOW_CHARS must be at least 1")
         if window_overlap >= window_chars:
             # Without this the windows would never move forward (plan 6).
             raise SettingsError("EXTRACT_WINDOW_OVERLAP must be less than EXTRACT_WINDOW_CHARS")
         line_items = -(-window_chars // _WINDOW_LINE_CHARS)
-        if line_items * _WINDOW_LINE_TOKENS + _WINDOW_FIELD_TOKENS > window_max_tokens:
+        if line_items * _WINDOW_LINE_TOKENS + _WINDOW_FIELD_TOKENS > INVOICE_REPLY_TOKENS:
             raise SettingsError(
-                "EXTRACT_WINDOW_CHARS is too long for MODEL_WINDOW_MAX_TOKENS: a window needs about"
-                " 50 reply tokens for every 50 characters, plus 300"
+                f"EXTRACT_WINDOW_CHARS is too long for an invoice window's {INVOICE_REPLY_TOKENS}"
+                " token reply: a window needs about 50 reply tokens for every 50 characters, plus 300"
             )
         embedding_dim = env.integer("EMBEDDING_DIM")
         if embedding_dim != EMBEDDING_DIM:
@@ -303,6 +412,56 @@ class Settings:
             translate_timeout = env.number("MODEL_TRANSLATE_TIMEOUT_SECONDS")
         if not (math.isfinite(translate_timeout) and translate_timeout > 0):
             raise SettingsError("MODEL_TRANSLATE_TIMEOUT_SECONDS must be a number above 0")
+        # PRD 5 CX and M: unset is the PRD's value. The whole documents (CX5) must fit the
+        # context window with the answer's reply, its repair retry and the system prompt.
+        model_chat = env.text("MODEL_CHAT")
+        whole_doc_tokens = env.at_least("ANSWER_WHOLE_DOC_TOKENS", 0, default=120_000)
+        prompt_tokens = MAX_SYSTEM_PROMPT_TOKENS + CHAT_OVERHEAD_TOKENS
+        room = 2 * answer_max_tokens + prompt_tokens
+        if whole_doc_tokens + room > model_context_tokens:
+            raise SettingsError(
+                f"ANSWER_WHOLE_DOC_TOKENS + 2 x MODEL_ANSWER_MAX_TOKENS + {prompt_tokens}"
+                " must not be more than MODEL_CONTEXT_TOKENS"
+            )
+        model_enabled = env.boolean("MODEL_ENABLED")
+        model_embed = env.text("MODEL_EMBED")
+        openrouter_api_key = env.optional("OPENROUTER_API_KEY")
+        ocr_model = env.text("OCR_MODEL")
+        if not valid_model_id(ocr_model):
+            raise SettingsError(
+                "OCR_MODEL must be an OpenRouter model ID such as google/gemini-3.1-pro-preview (no :variant)"
+            )
+        for name, model in (("MODEL_CHAT", model_chat), ("MODEL_EMBED", model_embed)):
+            if model_enabled and not valid_model_id(model):
+                raise SettingsError(
+                    f"{name} must be an OpenRouter model ID such as google/gemini-3.1-pro-preview"
+                    " (no :variant) when MODEL_ENABLED is true"
+                )
+        providers = (
+            frozenset({DEFAULT_PROVIDER})
+            if env.optional("OPENROUTER_PROVIDERS") is None
+            else env.words("OPENROUTER_PROVIDERS")
+        )
+        if any(PROVIDER_SLUG.fullmatch(slug) is None for slug in providers):
+            raise SettingsError(
+                "OPENROUTER_PROVIDERS must list provider slugs such as google-vertex,"
+                " each lower-case letters, digits and dashes, at most 64"
+            )
+        if DEFAULT_PROVIDER not in providers:
+            # Chat, embeddings and the platform's own model (resolve's fallback) all go there.
+            raise SettingsError(f"OPENROUTER_PROVIDERS must include {DEFAULT_PROVIDER}")
+        if openrouter_api_key is None and (ocr_engine == "gemini" or model_enabled):
+            raise SettingsError(
+                "OPENROUTER_API_KEY is not set: OCR_ENGINE=gemini, or MODEL_ENABLED, needs it"
+            )
+        if openrouter_api_key is not None and _API_KEY.fullmatch(openrouter_api_key) is None:
+            raise SettingsError("OPENROUTER_API_KEY must be printable ASCII with no spaces")
+        queue_url = env.text("QUEUE_URL")
+        queue_express_url = (
+            None if env.optional("QUEUE_EXPRESS_URL") is None else env.url("QUEUE_EXPRESS_URL")
+        )
+        if queue_express_url == queue_url:
+            raise SettingsError("QUEUE_EXPRESS_URL must name a queue other than QUEUE_URL")
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -312,7 +471,7 @@ class Settings:
             storage_access_key=env.optional("STORAGE_ACCESS_KEY"),
             storage_secret_key=env.optional("STORAGE_SECRET_KEY"),
             queue_endpoint_url=env.optional("QUEUE_ENDPOINT_URL"),
-            queue_url=env.text("QUEUE_URL"),
+            queue_url=queue_url,
             queue_region=env.text("QUEUE_REGION"),
             queue_lease_seconds=queue_lease_seconds,
             queue_wait_seconds=env.integer("QUEUE_WAIT_SECONDS"),
@@ -335,25 +494,38 @@ class Settings:
             page_image_dpi=env.integer("PAGE_IMAGE_DPI"),
             max_image_pixels=env.integer("MAX_IMAGE_PIXELS"),
             ocr_engine=ocr_engine,
-            ocr_url=ocr_url,
             ocr_timeout_seconds=ocr_timeout_seconds,
             ocr_dpi=env.positive("OCR_DPI"),
             ocr_dpi_rule=ocr_dpi_rule,
+            ocr_model=ocr_model,
+            openrouter_api_key=openrouter_api_key,
+            openrouter_base_url=_openrouter_base_url(env.text("OPENROUTER_BASE_URL")),
+            openrouter_providers=providers,
+            ocr_media_resolution=env.media_resolution("OCR_MEDIA_RESOLUTION"),
+            ocr_thinking_level=env.choice("OCR_THINKING_LEVEL", set(THINKING_LEVELS)),
+            ocr_retry_media_resolution=env.media_resolution("OCR_RETRY_MEDIA_RESOLUTION"),
+            ocr_retry_thinking_level=env.choice("OCR_RETRY_THINKING_LEVEL", set(THINKING_LEVELS)),
+            ocr_page_concurrency=env.positive("OCR_PAGE_CONCURRENCY"),
+            cpu_workers=env.positive("CPU_WORKERS"),
+            max_check_crops=env.positive("MAX_CHECK_CROPS"),
+            model_rpm=env.positive("MODEL_RPM"),
+            reader_outage_fallback_minutes=env.positive("READER_OUTAGE_FALLBACK_MINUTES"),
+            worker_replicas=env.positive_or("WORKER_REPLICAS", 3),
+            max_active_per_customer=env.positive_or("MAX_ACTIVE_PER_CUSTOMER", 2),
+            queue_express_url=queue_express_url,
+            express_max_pages=env.positive_or("EXPRESS_MAX_PAGES", 3),
+            max_files_per_batch=env.positive_or("MAX_FILES_PER_BATCH", 100),
             text_layer_min_chars=env.positive("TEXT_LAYER_MIN_CHARS"),
             text_layer_min_good_ratio=env.share("TEXT_LAYER_MIN_GOOD_RATIO"),
             scan_image_coverage=env.share("SCAN_IMAGE_COVERAGE"),
             blank_page_stddev=env.not_negative("BLANK_PAGE_STDDEV"),
             low_res_dpi=env.positive("LOW_RES_DPI"),
-            model_enabled=env.boolean("MODEL_ENABLED"),
-            model_base_url=env.text("MODEL_BASE_URL"),
-            model_chat=env.text("MODEL_CHAT"),
-            model_embed=env.text("MODEL_EMBED"),
-            model_vision=env.optional("MODEL_VISION"),
+            model_enabled=model_enabled,
+            model_chat=model_chat,
+            model_embed=model_embed,
             embedding_dim=embedding_dim,
             model_timeout_seconds=model_timeout_seconds,
-            model_num_ctx=model_num_ctx,
             model_card_max_tokens=card_max_tokens,
-            model_window_max_tokens=window_max_tokens,
             model_answer_max_tokens=answer_max_tokens,
             model_extract_timeout_seconds=extract_timeout_seconds,
             card_max_chars=env.positive("CARD_MAX_CHARS"),
@@ -378,6 +550,12 @@ class Settings:
             answer_translate_question=env.optional("ANSWER_TRANSLATE_QUESTION") is not None
             and env.boolean("ANSWER_TRANSLATE_QUESTION"),
             model_translate_timeout_seconds=translate_timeout,
+            model_context_tokens=model_context_tokens,
+            answer_whole_doc_tokens=whole_doc_tokens,
+            topic_max_per_doc=env.at_least("TOPIC_MAX_PER_DOC", 1, default=40),
+            topic_expand_max_pieces=env.at_least("TOPIC_EXPAND_MAX_PIECES", 0, default=12),
+            query_aspects_max=env.at_least("QUERY_ASPECTS_MAX", 0, default=6),
+            chat_summary_every=env.at_least("CHAT_SUMMARY_EVERY", 1, default=6),
             timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             log_level=env.text("LOG_LEVEL"),
@@ -435,6 +613,18 @@ class _Env:
     def optional_integer(self, name: str) -> int | None:
         return None if self.optional(name) is None else self.integer(name)
 
+    def positive_or(self, name: str, default: int) -> int:
+        """``positive``, or ``default`` when unset or empty."""
+        return default if self.optional(name) is None else self.positive(name)
+
+    def at_least(self, name: str, low: int, *, default: int) -> int:
+        """An optional whole number of at least ``low``: ``default`` when unset or empty."""
+        number = self.optional_integer(name)
+        number = default if number is None else number
+        if number < low:
+            raise SettingsError(f"{name} must be at least {low}")
+        return number
+
     def number(self, name: str) -> float:
         value = self.text(name)
         try:
@@ -465,6 +655,18 @@ class _Env:
         value = self.text(name)
         if value not in allowed:
             raise SettingsError(f"{name} must be one of {sorted(allowed)}")
+        return value
+
+    def media_resolution(self, name: str) -> str:
+        """One of MEDIA_RESOLUTIONS that MEDIA_RESOLUTION_SHAPE can send. A level it cannot
+        send stops start-up by name: it is never quietly sent as another level."""
+        value = self.choice(name, set(MEDIA_RESOLUTIONS))
+        sendable = SENDABLE_MEDIA_RESOLUTIONS[MEDIA_RESOLUTION_SHAPE]
+        if value not in sendable:
+            raise SettingsError(
+                f"{name}={value} cannot be sent through OpenRouter: with the media resolution shape"
+                f" {MEDIA_RESOLUTION_SHAPE!r} it must be one of {sorted(sendable)}"
+            )
         return value
 
     def words(self, name: str) -> frozenset[str]:

@@ -54,11 +54,43 @@ Why some choices:
   stored file is removed. The list shows each family's current version, with a newer one
   that is still being read or failed beside it (``newer_version``); by id, any
   version opens. A duplicate in Trash says ``in_trash: true``.
-* **The scan reader** (PRD 4 #17, PROVISIONAL): upload and versions take an optional
-  ``ocr_choice``, one of the available ``readers`` ``/upload-limits`` lists
-  (``ocr_choices``, from this server's settings, never a fixed list); anything else
-  is 400 before anything is stored. "auto" is stored as NULL; a duplicate keeps
-  the reader it was read with. The audit row names a choice that is not Auto.
+* **Read with** (model choice, council 11 Oct 2026, MS4, MS5): ``/upload-limits`` lists
+  the organisation's usable models, the default first (``kaagaz/api/readers.py``); Auto
+  alone in keyless mode or when the operator set none, so the select hides itself. An
+  upload or a version may name one in the optional ``read_model`` form field: any other
+  is 403 ``model_not_allowed`` before anything is stored. The model and who asked
+  (``read_requested_by``, the user its scan spend is billed to) are written to the new
+  document before its job is queued (``_ReadingQueue``), so the worker never reads it
+  without them. The old ``ocr_choice`` field is still accepted and ignored (RT3), so old
+  browsers don't break.
+* **Read one page again** (PRD 5 F5) is for a reviewer or an admin, and is a read
+  again of its document (above) in every rule: the same states (409
+  ``not_reprocessable`` while the document is being read, until the run ends), one
+  transaction under the family lock (the page's mark, ``pages.read_again_requested_at``,
+  the document back to the start, one ``document.reprocess`` audit row naming the
+  page, then the job), and the same REPROCESS_PER_HOUR and 10-minute cooldown. Each
+  page read again is so counted against the hour, and a page, like its document, is
+  read again at most once in 10 minutes (the council's security finding: a harder
+  read costs more). The worker reads that page again, harder, and the rest of the
+  document from the page cache (G7). Only a page read from a scan or photo (route
+  ``ocr``) can be: another page is 409 ``not_reprocessable``; a page the document
+  does not have is 404, and nothing is counted.
+* **Who asked to read again** (model choice): a Read again of the document may name a
+  ``read_model`` in an optional JSON body, checked as an upload's, and its audit row
+  names it; a page's Read again keeps the document's model (no re-billing of the cache).
+  Both make the asker ``read_requested_by``, written by ``mark_for_reprocess`` itself.
+* **Batches** (PRD 5 Q1): an upload may name its drop in the optional ``batch_id`` form
+  field, a UUID the browser made (anything else is 400). A drop holds at most
+  MAX_FILES_PER_BATCH of the uploader's files: the next is 409 ``batch_full``, checked
+  before anything is stored. ponytail: the check and the insert are not one
+  transaction, so uploads sent at once at the cap can pass it by a few; a lock on the
+  batch if that matters. The drop is read back with ``GET /api/batches/{id}``.
+* **Needs attention** (PRD 5 U2): ``attention=true`` lists the documents with a page
+  unreadable or uncertain still on the attention list, or a value to review.
+* **Keep as is** (F5) is for a reviewer or an admin: the page leaves the attention
+  list but stays flagged on the page itself and in answers (``accept_page``, under
+  the family lock). One ``document.page_accept`` audit row names the page. A
+  document in Trash is 409 ``in_trash``; a page it does not have is 404.
 """
 
 import uuid
@@ -78,6 +110,7 @@ from kaagaz.api.auth import CanDeleteForever, CurrentUser, Reviewer, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name
+from kaagaz.api.readers import check_read_model, readers, usable
 from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
     can_delete,
@@ -99,16 +132,19 @@ from kaagaz.db.documents import (
     NotReprocessable,
     PgDocuments,
     ReprocessLimited,
+    accept_page,
     delete_family_forever,
     mark_for_reprocess,
+    request_page_read_again,
 )
+from kaagaz.db.engine import Database, unavailable
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
+from kaagaz.ingestion.pagecount import goes_express
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
-from kaagaz.ingestion.ports import BlobNotFound, Job, UnknownFamily, UnknownFolder
+from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
-from kaagaz.reading.ocr import AUTO, ocr_choices
 from kaagaz.settings import Settings
 
 router = APIRouter()
@@ -139,6 +175,9 @@ _REPROCESS_LIMITED = {
         "This document was sent to be read again less than 10 minutes ago. Please wait and try again."
     ),
 }
+# PRD 5 F5: a page read from the file itself (its text layer or cells) or blank has no scan
+# to read again.
+_NOT_SCANNED = "Only a page read from a scan or photo can be read again."
 _REJECT_STATUS = {
     RejectCode.EMPTY_FILE: 400,
     RejectCode.UNSUPPORTED_TYPE: 400,
@@ -190,6 +229,7 @@ def list_documents(
     uploaded_from: IsoDay = None,
     uploaded_to: IsoDay = None,
     trashed: bool = False,
+    attention: bool = False,
 ) -> dict[str, Any]:
     """One page and its total. The top level with its subfolders is everything,
     so it filters nothing. At most four data queries, whatever the page size:
@@ -220,6 +260,7 @@ def list_documents(
             uploaded_from=start,
             uploaded_to=end,
             trashed=trashed,
+            attention=attention,
         )
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
     max_pages, now = context.settings.max_pages, context.clock()
@@ -257,15 +298,17 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
     """``UploadLimits``: the limits this user's uploads are checked against, each
     already lowered by the customer's own limit, so the browser can refuse a file
     before sending it (PRD 1 U2) and count a PDF's pages first (``max_pages``).
-    ``readers`` are the scan readers an upload may choose (``ocr_choices``).
-    The server still checks everything itself. One query."""
+    ``readers`` is the models an upload may read with, the default first, or Auto alone
+    (``kaagaz/api/readers.py``). The server still checks everything itself. Two queries."""
     policy = _upload_policy(context, user)
+    with context.db.customer(user.customer_id) as conn:
+        rows = usable(conn, user.customer_id, context.settings)
     return {
         "pdf_bytes": policy.limit_for(sniff.PDF),
         "image_bytes": policy.limit_for(sniff.PNG),
         "sheet_bytes": policy.limit_for(sniff.ZIP),
         "max_pages": context.settings.max_pages,
-        "readers": ocr_choices(context.settings),
+        "readers": readers(rows, context.settings),
     }
 
 
@@ -278,8 +321,9 @@ def _refusal_message(rejected: UploadRejected, policy: UploadPolicy) -> str | No
     return too_large_message(rejected.kind, rejected.size, rejected.limit)
 
 
-def _form_folder_id(value: str | UploadFile | None) -> str | None:
-    """The optional ``folder_id`` form field: None when it is not sent, else a UUID (400)."""
+def _form_uuid(value: str | UploadFile | None) -> str | None:
+    """An optional id form field (``folder_id``, ``batch_id``): None when it is not sent,
+    else a UUID (400)."""
     if value is None:
         return None
     if not isinstance(value, str):
@@ -288,17 +332,6 @@ def _form_folder_id(value: str | UploadFile | None) -> str | None:
         return str(uuid.UUID(value))
     except ValueError:
         raise ApiError(400, "bad_request") from None
-
-
-def _form_ocr_choice(value: str | UploadFile | None, settings: Settings) -> str | None:
-    """The optional ``ocr_choice`` form field: None (Auto) when not sent or "auto", else
-    an available reader's id; anything else is 400, never stored as something else."""
-    if value is None:
-        return None
-    offered = {reader["id"] for reader in ocr_choices(settings) if reader["available"]}
-    if not isinstance(value, str) or value not in offered:
-        raise ApiError(400, "bad_request", "Choose one of the readers offered.")
-    return None if value == AUTO else value
 
 
 def _same_user(value: str | UploadFile | None, user: CurrentUser, message: str | None = None) -> None:
@@ -310,6 +343,48 @@ def _same_user(value: str | UploadFile | None, user: CurrentUser, message: str |
     of the same user passes."""
     if value is not None and _uuid_or_none(value) != uuid.UUID(user.user_id):
         raise ApiError(409, "session_changed", message)
+
+
+def _form_model(value: str | UploadFile | None) -> str | None:
+    """The optional ``read_model`` form field: None when it is not sent or empty (the
+    default), else the model ID asked for (checked by ``check_read_model``)."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ApiError(400, "bad_request")
+    return value
+
+
+class _ReadingQueue:
+    """The queue an upload's service queues its job through (MS5, SP1): first, in its own
+    transaction, the new document gets who asked for its reading and the model chosen
+    (``listing.set_reading``), so the worker never reads it without them. A database that
+    can't be reached is BackendUnavailable, which the service undoes like a queue that is
+    down (the row and the file are removed). A duplicate queues nothing, so it is unchanged."""
+
+    def __init__(self, queue: JobQueue, db: Database, *, requested_by: str, model: str | None) -> None:
+        self._queue, self._db = queue, db
+        self._requested_by, self._model = requested_by, model
+
+    def enqueue(self, job: Job, *, express: bool = False) -> None:
+        with unavailable(), self._db.customer(job.customer_id) as conn:
+            listing.set_reading(
+                conn, job.customer_id, job.document_id, requested_by=self._requested_by, model=self._model
+            )
+        self._queue.enqueue(job, express=express)
+
+
+def _service(
+    context: AppContext, user: CurrentUser, policy: UploadPolicy, read_model: str | None
+) -> UploadService:
+    queue = _ReadingQueue(context.queue, context.db, requested_by=user.user_id, model=read_model)
+    return UploadService(
+        policy,
+        PgDocuments(context.db),
+        context.storage,
+        queue,
+        express_max_pages=context.settings.express_max_pages,
+    )
 
 
 def _uuid_or_none(value: str | UploadFile) -> uuid.UUID | None:
@@ -326,13 +401,23 @@ def _accept(
     upload: UploadFile,
     policy: UploadPolicy,
     folder_id: str | None,
-    ocr_choice: str | None,
+    batch_id: str | None,
+    read_model: str | None,
 ) -> dict[str, Any]:
-    if folder_id is not None:
-        with context.db.customer(user.customer_id) as conn:
-            if not folders_sql.folder_path(conn, user.customer_id, folder_id):
+    customer_id, cap = user.customer_id, context.settings.max_files_per_batch
+    if folder_id is not None or batch_id is not None or read_model is not None:
+        with context.db.customer(customer_id) as conn:
+            check_read_model(conn, customer_id, context.settings, read_model)  # before anything is stored
+            if folder_id is not None and not folders_sql.folder_path(conn, customer_id, folder_id):
                 raise ApiError(404, "not_found")  # before anything is stored or queued
-    service = UploadService(policy, PgDocuments(context.db), context.storage, context.queue)
+            if (
+                batch_id is not None
+                and listing.batch_size(conn, customer_id, batch_id, user_id=user.user_id) >= cap
+            ):
+                raise ApiError(
+                    409, "batch_full", f"Up to {cap} files at a time. Drop the rest after these start."
+                )
+    service = _service(context, user, policy, read_model)
     try:
         result = service.accept(
             user.customer_id,
@@ -340,15 +425,14 @@ def _accept(
             display_name=display_name(upload.filename),
             uploaded_by=user.user_id,
             folder_id=folder_id,
-            ocr_choice=ocr_choice,
+            batch_id=batch_id,
         )
     except UploadRejected as rejected:
         message = _refusal_message(rejected, policy)
         raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
     except UnknownFolder:  # deleted since the check; the service removed the stored file
         raise ApiError(404, "not_found") from None
-    details = {} if ocr_choice is None else {"ocr_choice": ocr_choice}
-    return _upload_reply(context, user, result, action="document.upload", details=details)
+    return _upload_reply(context, user, result, action="document.upload")
 
 
 def _upload_reply(
@@ -397,9 +481,12 @@ async def upload_document(request: Request, user: User, context: Context) -> JSO
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
         _same_user(form.get("user_id"), user)
-        folder_id = _form_folder_id(form.get("folder_id"))
-        ocr_choice = _form_ocr_choice(form.get("ocr_choice"), context.settings)
-        body = await run_in_threadpool(_accept, context, user, upload, policy, folder_id, ocr_choice)
+        folder_id = _form_uuid(form.get("folder_id"))  # ocr_choice: accepted and ignored (RT3)
+        batch_id = _form_uuid(form.get("batch_id"))
+        read_model = _form_model(form.get("read_model"))
+        body = await run_in_threadpool(
+            _accept, context, user, upload, policy, folder_id, batch_id, read_model
+        )
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
 
@@ -409,16 +496,18 @@ def _accept_version(
     upload: UploadFile,
     policy: UploadPolicy,
     of_document_id: str,
-    ocr_choice: str | None,
+    read_model: str | None,
 ) -> dict[str, Any]:
     customer_id = user.customer_id
     with context.db.customer(customer_id) as conn:
         target = listing.get_document(conn, customer_id, of_document_id)
+        if target is not None:
+            check_read_model(conn, customer_id, context.settings, read_model)  # before anything is stored
     if target is None:
         raise ApiError(404, "not_found")  # before anything is stored or queued
     if target["deleted_at"] is not None:
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
-    service = UploadService(policy, PgDocuments(context.db), context.storage, context.queue)
+    service = _service(context, user, policy, read_model)
     try:
         result = service.accept_version(
             customer_id,
@@ -426,7 +515,6 @@ def _accept_version(
             of_document_id=of_document_id,
             display_name=display_name(upload.filename),
             uploaded_by=user.user_id,
-            ocr_choice=ocr_choice,
         )
     except UploadRejected as rejected:
         message = _refusal_message(rejected, policy)
@@ -434,8 +522,6 @@ def _accept_version(
     except UnknownFamily:  # gone or moved to Trash since the check; the service removed the stored file
         raise ApiError(404, "not_found") from None
     details = {"family_id": str(target["family_id"])}
-    if ocr_choice is not None:
-        details["ocr_choice"] = ocr_choice
     return _upload_reply(context, user, result, action="document.version", details=details)
 
 
@@ -450,10 +536,10 @@ async def upload_version(
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
-        _same_user(form.get("user_id"), user)
-        ocr_choice = _form_ocr_choice(form.get("ocr_choice"), context.settings)
+        _same_user(form.get("user_id"), user)  # ocr_choice: accepted and ignored (RT3)
+        read_model = _form_model(form.get("read_model"))
         body = await run_in_threadpool(
-            _accept_version, context, user, upload, policy, str(document_id), ocr_choice
+            _accept_version, context, user, upload, policy, str(document_id), read_model
         )
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
@@ -501,6 +587,9 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         "invoice": None if typed is None else invoice(*typed),
         # PRD 3 Y2: the current, ready documents sharing an identifier with this one.
         "links": [document_link(each) for each in links],
+        # MS5: the model the document asked to be read with (null: the organisation's
+        # default), so Read again starts from it and sends a model only when one is changed.
+        "read_model": row["read_model"],
     }
 
 
@@ -517,16 +606,32 @@ def get_document_summary(document_id: uuid.UUID, user: User, context: Context) -
     )
 
 
+class ReadAgainBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    read_model: str | None = None  # left out or null: the document keeps its model
+
+
 @router.post("/documents/{document_id}/reprocess")
-def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context) -> dict[str, Any]:
+def reprocess_document(
+    document_id: uuid.UUID, user: Reviewer, context: Context, body: ReadAgainBody | None = None
+) -> dict[str, Any]:
     """Read the document again (PRD 2 X1), and return its summary, now ``received``.
-    One transaction: the family lock, the change, the audit row, then the job."""
+    One transaction: the model check, the family lock, the change, who asked and the
+    model, the audit row, then the job."""
     customer_id, target = user.customer_id, str(document_id)
+    read_model = None if body is None else body.read_model
     with context.db.customer(customer_id) as conn:
         _document_or_404(conn, user, document_id)
+        check_read_model(conn, customer_id, context.settings, read_model)
         try:
             previous = mark_for_reprocess(
-                conn, customer_id, target, per_hour=context.settings.reprocess_per_hour
+                conn,
+                customer_id,
+                target,
+                per_hour=context.settings.reprocess_per_hour,
+                requested_by=user.user_id,
+                read_model=read_model,
             )
         except NotReprocessable:
             raise ApiError(409, "not_reprocessable") from None
@@ -534,6 +639,9 @@ def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context)
             raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
         if previous is None:  # deleted in the moment since
             raise ApiError(404, "not_found")
+        details: dict[str, audit.DetailValue] = {"status": previous}
+        if read_model is not None:
+            details["read_model"] = read_model
         audit.record(
             conn,
             customer_id,
@@ -541,7 +649,7 @@ def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context)
             action="document.reprocess",
             target_type="document",
             target_id=target,
-            details={"status": previous},
+            details=details,
         )
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
@@ -549,8 +657,96 @@ def reprocess_document(document_id: uuid.UUID, user: Reviewer, context: Context)
             row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
         )
         # Last, inside the transaction: a queue that is down rolls everything back (503).
-        context.queue.enqueue(Job(customer_id, target))
+        context.queue.enqueue(Job(customer_id, target), express=_read_again_express(context, row))
     return reply
+
+
+def _read_again_express(context: AppContext, row: RowMapping) -> bool:
+    """Read again goes to the express lane by the page count its last read stored (PRD 5
+    Q4); a document never counted goes to the main lane."""
+    return goes_express(row["page_count"], context.settings.express_max_pages)
+
+
+# --- one page: read it again, or keep it as is (PRD 5 F5) ----------------------------
+
+
+@router.post("/documents/{document_id}/pages/{page_no}/read-again")
+def read_page_again(document_id: uuid.UUID, page_no: int, user: Reviewer, context: Context) -> dict[str, Any]:
+    """Read one page again, harder (F5), and return the document's summary, now
+    ``received``. The read again of its document in every rule (the module notes).
+    One transaction: the page checks, the family lock and the counts, the page's
+    mark, the audit row, then the job."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        _document_or_404(conn, user, document_id)
+        page = listing.get_page(conn, customer_id, target, page_no) if page_no >= 1 else None
+        if page is None:
+            raise ApiError(404, "not_found")  # before anything is counted
+        if page["route"] != "ocr":
+            raise ApiError(409, "not_reprocessable", _NOT_SCANNED)
+        try:
+            # The asker is billed; the page keeps the document's model (no choice here).
+            previous = mark_for_reprocess(
+                conn,
+                customer_id,
+                target,
+                per_hour=context.settings.reprocess_per_hour,
+                requested_by=user.user_id,
+            )
+        except NotReprocessable:
+            raise ApiError(409, "not_reprocessable") from None
+        except ReprocessLimited as limited:
+            raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
+        if previous is None or not request_page_read_again(
+            conn, customer_id, target, page_no, now=context.clock()
+        ):
+            raise ApiError(404, "not_found")  # deleted in the moment since: everything rolls back
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="document.reprocess",
+            target_type="document",
+            target_id=target,
+            details={"status": previous, "page_no": page_no},
+        )
+        row = _document_or_404(conn, user, document_id)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+        reply = document_summary(
+            row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+        )
+        # Last, inside the transaction: a queue that is down rolls everything back (503).
+        context.queue.enqueue(Job(customer_id, target), express=_read_again_express(context, row))
+    return reply
+
+
+@router.post("/documents/{document_id}/pages/{page_no}/accept")
+def keep_page_as_is(document_id: uuid.UUID, page_no: int, user: Reviewer, context: Context) -> dict[str, Any]:
+    """Keep as is (F5): accept the page as it was read, and return its ``PageSummary``,
+    still flagged, with who accepted it and when. One transaction: the family lock,
+    the change, the audit row."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        row = _document_or_404(conn, user, document_id)
+        if row["deleted_at"] is not None:
+            raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
+        if page_no < 1 or not accept_page(
+            conn, customer_id, target, page_no, user_id=user.user_id, now=context.clock()
+        ):
+            raise ApiError(404, "not_found")  # no such page, or moved to Trash in the moment since
+        page = listing.get_page(conn, customer_id, target, page_no)
+        if page is None:
+            raise ApiError(404, "not_found")
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="document.page_accept",
+            target_type="document",
+            target_id=target,
+            details={"page_no": page_no, "read_quality": page["read_quality"]},
+        )
+    return page_summary(page)
 
 
 class DocumentChangesBody(BaseModel):
@@ -664,7 +860,8 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
         if listing.get_page(conn, customer_id, target, page_no) is None:
             raise ApiError(404, "not_found")
         rows = listing.page_readings(conn, customer_id, target, page_no)
-    return page_readings(page_no, rows)
+        marks = listing.page_marks(conn, customer_id, target, page_no)  # PRD 5 U3
+    return page_readings(page_no, rows, marks)
 
 
 @router.get("/documents/{document_id}/pages/{page_no}/cells")

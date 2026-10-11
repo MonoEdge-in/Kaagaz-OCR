@@ -25,7 +25,10 @@ export type LabelReason =
   | "learned_correction"
   | "model_chosen" // PRD 2: the AI model chose its field (card and invoice values)
   | "ocr_script" // PRD 2: OCR read it from Devanagari or mixed-script text
-  | "check_failed"; // PRD 2, K3: a check on its invoice failed, even if the readers agreed
+  | "check_failed" // PRD 2, K3: a check on its invoice failed, even if the readers agreed
+  | "unsure_text" // PRD 5 V4: it holds a word the reader was unsure of, or [?]
+  | "box_unanchored" // PRD 5 G5: its spot on the page couldn't be confirmed
+  | "local_reader"; // PRD 5 Q7: read by the backup reader while the main reader was down
 
 /** "admin" only for a session started at /admin/login (PRD A1). */
 export type SessionScope = "app" | "admin";
@@ -84,6 +87,34 @@ export interface DocumentSummary {
   time_left: TimeLeft | null; // null until preparing (PRD 4 #13): while scanning, waiting or done; never in Trash
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
+  // PRD 5 F4: pages unreadable or uncertain still on the attention list (a page kept as is
+  // has left it), and the values labelled needs review.
+  pages_unreadable: number;
+  pages_uncertain: number;
+  values_to_review: number;
+  words_unsure?: number; // PRD 5 U2: the unsure words on its pages, for the "14 words unsure" chip
+  // PRD 5 U1: from GET /api/batches/{id} only: its first unreadable page still to look at, or null.
+  first_unreadable?: FirstUnreadablePage | null;
+  values_found?: number; // PRD 5 U1: from GET /api/batches/{id} only: the values extracted from it
+}
+
+/** A file's first unreadable page, for the tray's "Couldn't read page n" (U1): what
+ *  happened and the fix, from the page's first problem; null when none can be said. */
+export interface FirstUnreadablePage {
+  page_no: number;
+  says: string | null;
+  fix: string | null;
+}
+
+/** GET /api/batches/{id} (PRD 5 Q1): one drop of files, the uploader's own only, at most
+ *  MAX_FILES_PER_BATCH. A file refused as a duplicate is not in it: the tray keeps those. */
+export interface BatchView {
+  id: string;
+  documents: DocumentSummary[]; // in upload order; the tray sorts them worst first
+  counts: { total: number; ready: number; reading: number; waiting: number; attention: number; failed: number };
+  pages_read: number; // the batch bar is pages_read / pages_total (U1)
+  pages_total: number;
+  time_left: TimeLeft | null; // until the whole drop is ready; null when nothing is left to read
 }
 
 /** GET /api/search (PRD 3 Q2): the documents found, best first, at most SEARCH_MAX_DOCUMENTS. */
@@ -126,7 +157,8 @@ export type DocType =
 
 /** How far the worker has got (PRD 2, X3), e.g. step "reading", done 3, total 40. */
 export interface DocumentProgress {
-  step: "scanning" | "preparing" | "reading" | "understanding" | "indexing";
+  // "waiting" (PRD 5 Q6): held back in its batch or for the reader; the status message says why.
+  step: "scanning" | "preparing" | "reading" | "understanding" | "indexing" | "waiting";
   done: number;
   total: number; // 0 for a sheet, which is read as a whole
 }
@@ -187,6 +219,27 @@ export interface DocumentFolder {
 /** How a page was read (PRD 2, R1). */
 export type PageRoute = "cells" | "text_layer" | "ocr" | "blank";
 
+/** How well a page was read (PRD 5 F1, F2). Text-layer and cell pages are good. */
+export type ReadQuality = "good" | "uncertain" | "unreadable";
+
+/** Why a page is not good (PRD 5 F1's issue table). */
+export type ReadIssue =
+  | "blurry"
+  | "low_resolution"
+  | "faint"
+  | "glare"
+  | "shadow"
+  | "cut_off"
+  | "stamp_over_text"
+  | "overwritten"
+  | "handwriting_hard"
+  | "illegible_words"
+  | "readers_disagree"
+  | "unpinned"
+  | "reader_refused"
+  | "read_locally"
+  | "no_text";
+
 export interface PageSummary {
   page_no: number;
   width: number;
@@ -196,6 +249,35 @@ export interface PageSummary {
   route: PageRoute | null; // null: not read (yet)
   effective_dpi: number | null; // of the largest image on the page; null when it has none
   low_resolution: boolean; // effective_dpi under LOW_RES_DPI; PRD 3 shows the warning
+  // PRD 5 RT2: the reading engine's ID (the model's, "rapidocr", or an old reader's the
+  // viewer shows as "Read by OCR"), "text_layer" or "cells"; null for a blank page or one
+  // read before PRD 5. A page the
+  // main reader handed to the backup reader has read_locally or reader_refused in read_issues.
+  read_by: string | null;
+  read_by_name?: string | null; // model choice: the model's name ("Gemini 3.1 Pro") when a model read it
+  read_quality: ReadQuality; // F1
+  read_issues: ReadIssue[]; // F1; [] when good
+  unsure_words: number; // words the reader listed as unsure
+  illegible_words: number; // parts marked [?], which couldn't be read
+  unpinned_lines: number; // lines whose spot no found box confirmed (G5)
+  accepted_by: string | null; // F5 "Keep as is": the user, with accepted_at; the page stays flagged
+  accepted_at: string | null; // ISO 8601
+  read_again_requested_at: string | null; // F5: asked to be read again, until it is
+  problems?: PageProblem[]; // PRD 5 U4: one per issue in read_issues, for the page's banner
+}
+
+/** A problem on a page (PRD 5 U4), in the words of F1's issue table. */
+export interface PageProblem {
+  code: ReadIssue;
+  says: string; // what happened, in one line
+  fix: string; // what the user can do
+}
+
+/** A reading problem drawn on the page (PRD 5 U3): dashed, hatched or dotted, with a label. */
+export interface ReadingMark {
+  quality: "unsure" | "illegible" | "unpinned";
+  region: Region;
+  text: string; // the word or line as read: plain text only, through visibleText
 }
 
 export interface ExtractedValue {
@@ -293,6 +375,7 @@ export interface DocumentDetail extends DocumentSummary {
   card: DocumentCard | null; // null without a card (the model off or down)
   invoice: Invoice | null; // null for a document with no invoices row
   links: DocumentLink[]; // current, ready documents sharing an identifier (PRD 3 Y2); at most 50
+  read_model: string | null; // the model it asked to be read with (MS5); null: the organisation's default
 }
 
 /** A related document (PRD 3 Y2). The value is stored normalised: no spaces, lower case. */
@@ -324,6 +407,7 @@ export interface UploadReader {
   hint: string;
   available: boolean;
   reason: string | null;
+  default?: boolean; // a model: the organisation's default scan model (MS4, R14); Auto has none
 }
 
 export interface UploadResult {
@@ -342,6 +426,7 @@ export interface SheetCells {
 export interface PageReadings {
   page_no: number;
   readers: PageReader[]; // the first reader first; [] when the page was not read yet
+  marks?: ReadingMark[]; // PRD 5 U3: the page's reading problems; [] when it has none
 }
 
 export interface PageReader {
@@ -380,6 +465,15 @@ export interface Citation {
   page_to?: number;
   label_page_no?: number | null; // where a value's label is, when it was found
   label_regions?: Region[]; // [] for a piece, and once the document is in Trash or deleted
+  hard_to_read?: boolean; // PRD 5 F6: the cited text holds an unsure or illegible word; missing before it
+}
+
+/** A page a not-found answer names as not read well (PRD 5 F6), for its link. */
+export interface UnreadablePage {
+  document_id: string;
+  document_name: string;
+  page_no: number;
+  read_quality: "uncertain" | "unreadable";
 }
 
 export interface AnswerSentence {
@@ -400,6 +494,12 @@ export interface Answer {
   model_used: boolean;
   rewritten_question?: string | null; // PRD 3 H1: what a follow-up was searched as; missing before PRD 3
   understood_words?: { word: string; meaning: string }[]; // my words chat used (A3); missing before it
+  // PRD 5 F6, missing before it: "Not found in the readable text. 2 pages couldn't be read: ..."
+  // on a not-found answer, or "Part of this text was hard to read." on an answer that needs
+  // review; null otherwise. The pages it names, and how many there are in all.
+  reading_note?: string | null;
+  unreadable_pages?: UnreadablePage[];
+  unreadable_page_count?: number;
 }
 
 /** One of my words (GET /me/words). Text from the user: shown as text only. */
@@ -499,8 +599,16 @@ export interface ReviewItem {
   check_reasons: string[]; // why its document's invoice check failed (PRD 3 Y5); [] otherwise
 }
 
-/** The review queue's reason filter (PRD 3 Y5). */
-export type ReviewReason = "check_failed" | "readers_disagree" | "low_confidence" | "single_reader";
+/** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds the last four). */
+export type ReviewReason =
+  | "check_failed"
+  | "readers_disagree"
+  | "low_confidence"
+  | "single_reader"
+  | "unsure_text"
+  | "box_unanchored"
+  | "local_reader"
+  | "ocr_script";
 
 /** A row of the admin's Failed jobs tab (PRD 3 Z1). */
 export interface FailedDocument {
@@ -577,6 +685,10 @@ export interface Stats {
   older_versions: number; // versions kept that are not the current one
   in_trash: number;
   pages_this_month: Record<PageRoute, number>; // pages read this month, by route (PRD 2, R6); 0 when none
+  // PRD 5 U9: this month's OCR pages by who read them (read_again: pages read again), and the
+  // model's spend estimate from its tokens; usd comes from the AI spend ledger (null when not known).
+  reader_pages?: { gemini: number; local: number; cached: number; read_again: number };
+  spend_estimate?: { input_tokens: number; output_tokens: number; usd: number | null };
 }
 
 /** The signed-in user's own story about a document's family (GET / PUT /documents/{id}/my-story).
@@ -666,4 +778,154 @@ export interface PlatformHealth {
   }[];
   totals: { documents_by_status: Counts; failed_by_code: Counts; in_progress: number; oldest_in_progress_seconds: number | null };
   purges: { purged: number; last_purged_at: string | null; swept: number; last_swept_at: string | null };
+  // PRD 5 U9: each worker's reader status, from its reports of the last 10 minutes (none
+  // for 2 minutes shows "not reporting"; failing shows "slow"), and the jobs waiting in each
+  // lane (null when the queue did not answer). Status only: never an error, key or customer.
+  reader?: ReaderReport[];
+  queues?: { express: number; main: number } | null;
+}
+
+export type ReaderState = "working" | "failing" | "down" | "key_problem";
+
+export interface ReaderReport {
+  worker: string;
+  state: ReaderState;
+  since: string | null; // ISO 8601: in this state since
+  seen_at: string; // ISO 8601: its last report
+}
+
+// --- Model choice and AI spend (council 11 Oct 2026). The operator sets each
+// organisation's models and budget; the organisation's admin sees them read-only. -----
+
+/** The kinds of work a model call is billed as (backend kaagaz/ai/usage.py KINDS). */
+export type UsageKind =
+  | "scan"
+  | "upgrade"
+  | "card"
+  | "invoice"
+  | "map"
+  | "embed"
+  | "chat"
+  | "memory"
+  | "search"
+  | "story";
+
+/** One model an upload may read scans with (GET /upload-limits readers), the default first. */
+export interface ReaderOption {
+  id: string; // the OpenRouter model ID, sent as read_model
+  title: string;
+  hint: string; // "about $X a page"
+  available: boolean;
+}
+
+/** One model the operator allowed this organisation, with its live price. */
+export interface OrgModel {
+  id: string;
+  name: string;
+  price_in_usd_per_m: number; // US dollars per million input tokens
+  price_out_usd_per_m: number;
+  is_default_scan: boolean;
+  provider?: string; // the zero-data-retention provider its pages go to ("google-vertex")
+  usd_per_page?: number | null; // estimated a page (MC3); null: not measured yet
+  page_hint: string; // the same in words, as "Read with" says it: "about $0.04 a page", "... (rough estimate)"
+}
+
+/** GET /admin/models: read-only, set by the operator ("Set by MonoEdge"). */
+export interface OrgModels {
+  set_by: "operator";
+  default_scan: string | null; // the model reading scans now: the default, or the platform's; null in keyless mode
+  models: OrgModel[]; // [] when the operator set none: every scan is read by the platform's model
+  ai_budget_usd: number | null; // the monthly budget; null: none
+  spent_this_month_usd: number; // this month's AI spend, from the ledger
+}
+
+/** Tokens and US dollars of some model calls. cost_usd is null when not known. */
+export interface UsageTotals {
+  calls: number;
+  cached_calls: number; // pages taken from the page cache, at no cost
+  input_tokens: number;
+  output_tokens: number; // thinking included
+  reasoning_tokens: number;
+  cost_usd: number | null;
+  cost_estimated: boolean; // some of it is the catalogue price times the tokens
+  cost_part_unknown: boolean; // some call's cost is not known: cost_usd counts the known ones only
+}
+
+export interface UsageByUser extends UsageTotals {
+  user_id: string | null; // null: work no user asked for (the upgrade sweep, re-indexing)
+  user_name: string | null;
+}
+
+export interface UsageByModel extends UsageTotals {
+  model: string;
+  model_name: string;
+}
+
+export interface UsageByKind extends UsageTotals {
+  kind: UsageKind;
+}
+
+export interface UsageByDay extends UsageTotals {
+  day: string; // YYYY-MM-DD in the server's TIMEZONE
+}
+
+export interface UsageTopDocument extends UsageTotals {
+  document_id: string | null; // null: the document was deleted
+  name: string; // "Deleted document" when it was deleted
+}
+
+/** This month's spend against the operator's budget (warn only: nothing stops at 100%). */
+export interface UsageBudget {
+  ai_budget_usd: number | null;
+  spent_this_month_usd: number;
+  spent_part_unknown: boolean; // some of this month's costs are not known (not counted)
+  share: number | null; // spent / budget; null without a budget
+}
+
+/** GET /admin/usage: one organisation's AI use from `from` to `to` (days in TIMEZONE, both included). */
+export interface UsageReport {
+  from: string; // YYYY-MM-DD
+  to: string;
+  totals: UsageTotals;
+  by_user: UsageByUser[];
+  by_model: UsageByModel[];
+  by_kind: UsageByKind[];
+  by_day: UsageByDay[];
+  top_documents: UsageTopDocument[]; // at most 10, the costliest first
+  budget: UsageBudget;
+  ai_enabled?: boolean; // false: keyless mode (no OpenRouter key, MODEL_ENABLED=false), no model is called
+}
+
+/** One catalogue model (GET /operator/models), from OpenRouter's live list. */
+export interface OperatorModel {
+  id: string;
+  name: string;
+  price_in_usd_per_m: number;
+  price_out_usd_per_m: number;
+  providers: string[]; // its zero-data-retention providers, in OpenRouter's order
+  efforts: string[]; // the thinking efforts it accepts
+  expires_on: string | null; // YYYY-MM-DD
+  eligible: boolean; // passes the catalogue filter today
+  seen_at: string; // when the last refresh saw it
+  verified: boolean; // verify-models passed for the reader's current prompt
+  verified_at: string | null;
+  tokens_per_page_in: number | null; // measured by verify-models on its small test page
+  tokens_per_page_out: number | null;
+  ledger_tokens_in: number | null; // MC3: a scanned page's average over the last 30 days; null: none
+  ledger_tokens_out: number | null;
+  enabled_at: string | null; // null: not enabled on the platform
+}
+
+/** GET and PUT /operator/orgs/{id}/models. default_scan is one of models, or null when models is []. */
+export interface OperatorOrgModels {
+  models: string[];
+  default_scan: string | null;
+  ai_budget_usd: number | null;
+}
+
+/** One row of GET /operator/usage: one organisation's use of one model. No user or document. */
+export interface OperatorUsageRow extends UsageTotals {
+  organisation_id: string;
+  organisation_name: string;
+  model: string;
 }

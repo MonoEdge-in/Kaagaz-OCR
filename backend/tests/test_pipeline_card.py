@@ -126,7 +126,7 @@ def rig(chat: FakeChat | None = None, **model: Any) -> Rig:
         clock=lambda: T0,
         timer=lambda: 0.0,
         run_config=CONFIG,
-        **{**({"chat": chat, "chat_model": "qwen-chat", "model_budget": BUDGET} if chat else {}), **model},
+        **{**({"chat": chat, "chat_model": "chat-tag", "model_budget": BUDGET} if chat else {}), **model},
     )
     upload = UploadService(PIPELINE_POLICY, repo, storage, MemoryQueue(), new_id=SeqIds())
     return Rig(upload, store, runs, progress, statuses, processor, [])
@@ -150,7 +150,7 @@ class ModelOnTest(unittest.TestCase):
         )
         assert facts.card is not None
         (run,) = system.runs.for_document(CUSTOMER, job.document_id)
-        self.assertEqual((facts.card["prompt"], facts.card["model"]), (CARD_PROMPT_HASH, "qwen3:4b"))
+        self.assertEqual((facts.card["prompt"], facts.card["model"]), (CARD_PROMPT_HASH, "fake-chat"))
         self.assertEqual(facts.card["run_id"], next(iter(system.runs.rows)))
         self.assertEqual(run.status, "ready")
         # D5: the labelled invoice number is the document's own; with a card it links.
@@ -187,7 +187,7 @@ class ModelOnTest(unittest.TestCase):
         totals = system.totals(system.read())
         self.assertEqual(
             (totals.status, totals.error_code, totals.model_chat, totals.model_calls),
-            ("ready", None, "qwen-chat", 1),
+            ("ready", None, "chat-tag", 1),
         )
         self.assertEqual((totals.quotes_returned, totals.dropped_quotes), (5, 1))  # "10" is made up
         self.assertEqual(
@@ -237,14 +237,14 @@ class ModelOffOrDownTest(unittest.TestCase):
         totals = down.totals(job)
         self.assertEqual(
             (totals.status, totals.error_code, totals.model_chat, totals.model_calls),
-            ("ready", "model_timeout", "qwen-chat", 1),
+            ("ready", "model_timeout", "chat-tag", 1),
         )
         self.assertEqual(down.statuses.get_status(CUSTOMER, job.document_id), DocumentStatus.READY)
 
 
 class ModelBudgetTest(unittest.TestCase):
     def test_the_budget_comes_from_the_settings_with_the_invoice_windows(self) -> None:
-        settings = make_settings(card_max_chars=9000, model_card_max_tokens=900, model_num_ctx=6000)
+        settings = make_settings(card_max_chars=9000, model_card_max_tokens=900, model_context_tokens=6000)
         self.assertEqual(
             ModelBudget.from_settings(settings),
             ModelBudget(9000, 900, 6000, WindowSettings.from_settings(settings)),

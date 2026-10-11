@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import { fieldText, labelBadgeClass, labelIcon, labelText, reasonText } from "@/components/viewer/labels";
 import { initialSelection, sameRegion, selectValue } from "@/components/viewer/selection";
 import {
+  BACKUP_ISSUES,
+  ZOOM_STEPS,
   buildGrid,
+  centerScroll,
   cropRowWindow,
   fitPageSize,
+  focusZoom,
   pageMode,
   routeText,
   sheetRowWindow,
@@ -30,6 +34,15 @@ const pdfPage: PageSummary = {
   route: "text_layer",
   effective_dpi: null,
   low_resolution: false,
+  read_by: "text_layer",
+  read_quality: "good",
+  read_issues: [],
+  unsure_words: 0,
+  illegible_words: 0,
+  unpinned_lines: 0,
+  accepted_by: null,
+  accepted_at: null,
+  read_again_requested_at: null,
 };
 const sheetPage: PageSummary = {
   page_no: 1,
@@ -40,6 +53,15 @@ const sheetPage: PageSummary = {
   route: "cells",
   effective_dpi: null,
   low_resolution: false,
+  read_by: "cells",
+  read_quality: "good",
+  read_issues: [],
+  unsure_words: 0,
+  illegible_words: 0,
+  unpinned_lines: 0,
+  accepted_by: null,
+  accepted_at: null,
+  read_again_requested_at: null,
 };
 
 describe("stepZoom", () => {
@@ -89,6 +111,65 @@ describe("fitPageSize", () => {
   });
 });
 
+describe("focusZoom (a highlighted spot shown big enough to read)", () => {
+  const frame = { width: 800, height: 600 };
+
+  it("zooms a word 2x or 3x, so it is about 24px tall", () => {
+    expect(focusZoom({ width: 40, height: 10 }, frame)).toBe(2); // 2.4 snaps down to 2
+    expect(focusZoom({ width: 30, height: 8 }, frame)).toBe(3);
+  });
+
+  it("keeps a line 80% of the frame wide fitted", () => {
+    expect(focusZoom({ width: 640, height: 10 }, frame)).toBe(1);
+  });
+
+  it("never goes past 3, and snaps down to a zoom step", () => {
+    expect(focusZoom({ width: 4, height: 1 }, frame)).toBe(3);
+    const zoom = focusZoom({ width: 40, height: 15 }, frame); // 1.6
+    expect(zoom).toBe(1.5);
+    expect(ZOOM_STEPS).toContain(zoom);
+  });
+
+  it("keeps the spot inside the frame", () => {
+    // 2x would make it 24px tall, but the frame is 20px tall: 0.9 * 20 / 12 = 1.5.
+    expect(focusZoom({ width: 50, height: 12 }, { width: 800, height: 20 })).toBe(1.5);
+    // A frame that grows with the page: only its width limits.
+    expect(focusZoom({ width: 40, height: 10 }, { width: 800, height: Infinity })).toBe(2);
+  });
+
+  it("stays at 1 for a spot or frame with no size", () => {
+    expect(focusZoom({ width: 0, height: 10 }, frame)).toBe(1);
+    expect(focusZoom({ width: 40, height: 0 }, frame)).toBe(1);
+    expect(focusZoom({ width: Number.NaN, height: 10 }, frame)).toBe(1);
+    expect(focusZoom({ width: 40, height: 10 }, { width: 0, height: 600 })).toBe(1);
+    expect(focusZoom({ width: 40, height: 10 }, { width: 800, height: Number.NaN })).toBe(1);
+  });
+});
+
+describe("centerScroll", () => {
+  const stage = { width: 2000, height: 3000 };
+  const frame = { width: 600, height: 400 };
+
+  it("puts the spot in the middle of the frame", () => {
+    expect(centerScroll({ left: 500, top: 400, width: 100, height: 20 }, stage, frame)).toEqual({ left: 250, top: 210 });
+  });
+
+  it("stays in range at both edges", () => {
+    expect(centerScroll({ left: 10, top: 10, width: 20, height: 10 }, stage, frame)).toEqual({ left: 0, top: 0 });
+    expect(centerScroll({ left: 1950, top: 2980, width: 40, height: 10 }, stage, frame)).toEqual({
+      left: 1400,
+      top: 2600,
+    });
+  });
+
+  it("does not scroll a frame bigger than the stage", () => {
+    expect(centerScroll({ left: 200, top: 250, width: 40, height: 10 }, { width: 300, height: 300 }, frame)).toEqual({
+      left: 0,
+      top: 0,
+    });
+  });
+});
+
 describe("pageMode", () => {
   it("draws PDFs with PDF.js, then falls back to the stored image", () => {
     expect(pageMode({ detected_type: "pdf" }, pdfPage, false)).toBe("pdf");
@@ -135,16 +216,64 @@ describe("sheet windows", () => {
   });
 });
 
-describe("routeText (PRD 2, R1)", () => {
+describe("routeText (PRD 2, R1; PRD 5 RT2)", () => {
   it("says in words how each page was read", () => {
-    expect(routeText("cells")).toBe("Read from spreadsheet cells");
-    expect(routeText("text_layer")).toBe("Read from the PDF text");
-    expect(routeText("ocr")).toBe("Read by OCR");
-    expect(routeText("blank")).toBe("Blank page");
+    expect(routeText({ route: "cells", read_by: "cells", read_issues: [] })).toBe("Read from spreadsheet cells");
+    expect(routeText({ route: "text_layer", read_by: "text_layer", read_issues: [] })).toBe(
+      "Read from the PDF text",
+    );
+    expect(routeText({ route: "blank", read_by: null, read_issues: [] })).toBe("Blank page");
+  });
+
+  it("names the model that read the page, as the server names it (RT2, model choice MS5)", () => {
+    const gemini = { route: "ocr" as const, read_by: "google/gemini-3.1-pro-preview", read_issues: [] };
+    expect(routeText({ ...gemini, read_by_name: "Gemini 3.1 Pro" })).toBe("Read by Gemini 3.1 Pro");
+    const claude = { route: "ocr" as const, read_by: "anthropic/claude-sonnet-5.5", read_issues: ["blurry" as const] };
+    expect(routeText({ ...claude, read_by_name: "Claude Sonnet 5.5" })).toBe("Read by Claude Sonnet 5.5");
+  });
+
+  it("never says OCR for a model's page: without a name it is an AI model, by its ID (R4)", () => {
+    const gemini = { route: "ocr" as const, read_by: "google/gemini-3.8-flash", read_issues: [] };
+    expect(routeText(gemini)).toBe("Read by an AI model (google/gemini-3.8-flash)");
+    expect(routeText({ ...gemini, read_by_name: null })).toBe("Read by an AI model (google/gemini-3.8-flash)");
+  });
+
+  it("says Read by OCR only for a scanned page no model read", () => {
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: [] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: null, read_issues: [] })).toBe("Read by OCR");
+  });
+
+  it("says Read by the backup reader for a handed-on page, even with a model's name", () => {
+    const page = { route: "ocr" as const, read_by: "rapidocr", read_by_name: "Gemini 3.1 Pro" };
+    expect(routeText({ ...page, read_issues: ["read_locally"] })).toBe("Read by the backup reader");
+    expect(routeText({ ...page, read_issues: ["reader_refused"] })).toBe("Read by the backup reader");
+  });
+
+  it("names no model for a page that was not scanned", () => {
+    expect(routeText({ route: "text_layer", read_by: "text_layer", read_by_name: "Gemini", read_issues: [] })).toBe(
+      "Read from the PDF text",
+    );
+  });
+
+  it("says the backup reader only when the main reader handed the page on (Q7, G6)", () => {
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["read_locally"] })).toBe(
+      "Read by the backup reader",
+    );
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["reader_refused", "no_text"] })).toBe(
+      "Read by the backup reader",
+    );
+    expect(BACKUP_ISSUES).toEqual(["read_locally", "reader_refused"]);
+  });
+
+  it("keeps the old words for a page read with no key, by an old reader, or before PRD 5", () => {
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: [] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["low_resolution"] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: "an_old_reader", read_issues: [] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: null, read_issues: [] })).toBe("Read by OCR");
   });
 
   it("gives nothing for a page with no route, as for one read before PRD 2", () => {
-    expect(routeText(null)).toBeNull();
+    expect(routeText({ route: null, read_by: null, read_issues: [] })).toBeNull();
   });
 });
 
@@ -161,6 +290,21 @@ describe("labels in words", () => {
     expect(labelBadgeClass("needs_review")).toBe("badge badge-review");
     expect(labelIcon("verified")).toBe("check-seal");
     expect(labelIcon("needs_review")).toBe("eye-alert");
+  });
+});
+
+describe("reasons for values read from a hard page (PRD 5 V4, G5, Q7)", () => {
+  it("says why a value needs review, in words people know, with no engine named", () => {
+    expect(reasonText("unsure_text")).toBe("Part of this value was hard to read. Check it against the page.");
+    expect(reasonText("box_unanchored")).toBe(
+      "The exact spot of this value on the page couldn't be confirmed. Check it against the page.",
+    );
+    expect(reasonText("local_reader")).toBe(
+      "Read by the backup reader while the main reader was down. It will be read again automatically.",
+    );
+    for (const reason of ["unsure_text", "box_unanchored", "local_reader"] as const) {
+      expect(reasonText(reason)).not.toMatch(/gemini|rapidocr|ocr/i);
+    }
   });
 });
 
@@ -247,7 +391,7 @@ describe("the document card's reply shape (PRD 2 D3)", () => {
     const card: DocumentCard = {
       version: 1,
       run_id: "r1",
-      model: "qwen3:4b",
+      model: "google/gemini-3.1-pro-preview",
       prompt: "f376d271",
       doc_type: "land_record",
       languages: ["mr"],

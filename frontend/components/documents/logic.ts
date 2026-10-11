@@ -2,7 +2,7 @@
 // they are unit tested in node (tests/shell-documents.test.ts).
 
 import { ApiError } from "@/lib/api";
-import type { DocumentStatus, UploadLimits } from "@/lib/types";
+import type { DocumentStatus, DocumentSummary, UploadLimits } from "@/lib/types";
 
 /** File name endings the backend can take. The server checks the bytes again. */
 export const ACCEPTED_EXTENSIONS = [
@@ -177,7 +177,7 @@ export const MB_PER_PDF_PAGE = 0.4;
  * PDF page 0.05 s, and a 200-row sheet 0.01 s. A PDF can't be told apart before
  * it is read, so it is estimated as a scan: the text "Up to N minutes" is then
  * true for both. With the model on, the card and invoice calls add time these
- * numbers don't include; PaddleOCR-VL on a laptop CPU takes 3 to 11 minutes a page.
+ * numbers don't include.
  */
 export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
   pdf: 7,
@@ -239,15 +239,21 @@ export function formatProgressPercent(done: number, total: number): string {
   return `${Math.round((done / total) * 100)}%`;
 }
 
+// PRD 5 U10: sending (bytes sent), saving (from the last byte to the server's reply),
+// reading (the stored document, followed through GET /api/batches/{id} until it is
+// no longer being read), then done, with the document when it was followed.
 export type UploadState =
   | { kind: "waiting" }
-  | { kind: "uploading"; fraction: number }
-  | { kind: "done"; documentId: string }
+  | { kind: "sending"; fraction: number }
+  | { kind: "saving" }
+  | { kind: "reading"; documentId: string; document: DocumentSummary }
+  | { kind: "done"; documentId: string; document?: DocumentSummary }
   // inTrash: the earlier copy is in Trash, so the row offers Restore.
   | { kind: "duplicate"; documentId: string; existingName: string; inTrash: boolean; restoreError?: string }
   | { kind: "restoring"; documentId: string; existingName: string }
   | { kind: "restored"; documentId: string; existingName: string }
-  | { kind: "error"; message: string };
+  // retry: it was not sent (the connection or the server), and this tab still has the file.
+  | { kind: "error"; message: string; retry?: boolean };
 
 /**
  * One line of words for an upload's state, read out by screen readers. The
@@ -258,10 +264,18 @@ export function uploadStateText(state: UploadState): string {
   switch (state.kind) {
     case "waiting":
       return "Waiting to upload";
-    case "uploading":
-      return "Uploading";
-    case "done":
-      return "Uploaded";
+    case "sending":
+      return "Sending";
+    case "saving":
+      return "Saving…";
+    case "reading":
+      return "Reading";
+    case "done": {
+      const { document } = state;
+      if (!document) return "Uploaded";
+      if (document.status !== "ready") return document.failure_code === "customer_disabled" ? "Stopped" : "Not read";
+      return document.first_unreadable ? `Couldn't read page ${document.first_unreadable.page_no}` : "Ready";
+    }
     case "duplicate":
       return state.inTrash ? "Already uploaded, in Trash" : "Already uploaded";
     case "restoring":
@@ -269,7 +283,7 @@ export function uploadStateText(state: UploadState): string {
     case "restored":
       return "Restored from Trash";
     case "error":
-      return "Not uploaded";
+      return state.retry ? "Not sent" : "Not uploaded";
   }
 }
 

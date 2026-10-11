@@ -7,8 +7,9 @@
 // "Was this helpful?". The card's inline-start edge carries the margin rule:
 // solid for Verified, hatched for Needs review. "Not found" is a real answer:
 // a neutral card that says so and lists the closest documents. "Unchecked" says
-// a figure is only in values nobody has checked yet, and where. All text is
-// plain text; answers are built from document text, which is untrusted.
+// a figure is only in values nobody has checked yet, and where. F6's note
+// (PRD 5 U7) goes under the answer, with a link to each page that couldn't be
+// read. All text is plain text; answers are built from document text, which is untrusted.
 
 import Link from "next/link";
 import { useId } from "react";
@@ -22,6 +23,7 @@ import {
   citationMap,
   NOT_FOUND_TEXT,
   questionReading,
+  readingNote,
   sentenceCitations,
 } from "./answer";
 import { FeedbackControls } from "./FeedbackControls";
@@ -51,6 +53,25 @@ export function AnswerView({ message, question }: { message: Message; question: 
   }
 
   const reading = questionReading(question, answer);
+  const note = readingNote(answer);
+  const noteBlock = note ? (
+    <div className={styles.readingNote}>
+      <p className={styles.plain}>{note.text}</p>
+      {note.pages.length > 0 && (
+        <ul className={styles.docChips} aria-label="Pages that couldn't be read">
+          {note.pages.map((page) => (
+            <li key={page.href}>
+              <Link className={styles.docChip} href={page.href}>
+                <Icon name="open" size={16} />
+                {page.text}
+              </Link>
+            </li>
+          ))}
+          {note.more > 0 && <li className={styles.understood}>and {note.more} more</li>}
+        </ul>
+      )}
+    </div>
+  ) : null;
   // My words chat used (A3 sends understood_words; nothing shows before it). Text only.
   const notes = understoodNotes(answer);
   const understood = (
@@ -101,6 +122,7 @@ export function AnswerView({ message, question }: { message: Message; question: 
           </span>
           <p className={styles.plain}>{NOT_FOUND_TEXT}</p>
         </div>
+        {noteBlock}
         {understood}
         {documentChips("Closest documents")}
         {feedback}
@@ -163,6 +185,7 @@ export function AnswerView({ message, question }: { message: Message; question: 
           </span>
         ))}
       </p>
+      {noteBlock}
       {answer.citations.length > 0 ? (
         <section aria-labelledby={sourcesHeadingId}>
           <h3 id={sourcesHeadingId} className={styles.subheading}>

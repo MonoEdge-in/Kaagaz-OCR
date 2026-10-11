@@ -2,7 +2,7 @@
 // unit tested in node (tests/review-*.test.ts): whether a choice can be sent,
 // how the queue changes after a value is resolved, where focus goes then, and its reason filter.
 
-import { fieldText } from "@/components/viewer/labels";
+import { REASON_FILTER_TEXT, fieldText } from "@/components/viewer/labels";
 import { checkReasonText } from "@/components/viewer/panels";
 import type { ReviewChoice, ReviewItem, ReviewList, ReviewReason, Role } from "@/lib/types";
 
@@ -85,13 +85,28 @@ export function canReview(role: Role): boolean {
   return role === "reviewer" || role === "admin";
 }
 
-/** The reason filter's choices, in the order the screen lists them (PRD 3 Y5). */
+/** The reason filter's choices, in the order the screen lists them (PRD 3 Y5, PRD 5 U6). */
 export const REASON_FILTERS: readonly { value: ReviewReason; text: string }[] = [
   { value: "check_failed", text: "An invoice check failed" },
   { value: "readers_disagree", text: "The two readers disagree" },
   { value: "low_confidence", text: "The reader was not sure" },
   { value: "single_reader", text: "Only one reader read it" },
+  { value: "unsure_text", text: REASON_FILTER_TEXT.unsure_text },
+  { value: "box_unanchored", text: REASON_FILTER_TEXT.box_unanchored },
+  { value: "local_reader", text: REASON_FILTER_TEXT.local_reader },
+  { value: "ocr_script", text: REASON_FILTER_TEXT.ocr_script },
 ];
+
+/** "Group by document" (U6): the items shown, by document, in the order each first appears. */
+export function groupByDocument(items: readonly ReviewItem[]): { id: string; name: string; items: ReviewItem[] }[] {
+  const groups = new Map<string, { id: string; name: string; items: ReviewItem[] }>();
+  for (const item of items) {
+    const group = groups.get(item.document_id);
+    if (group) group.items.push(item);
+    else groups.set(item.document_id, { id: item.document_id, name: item.document_name, items: [item] });
+  }
+  return [...groups.values()];
+}
 
 /** The filter's choice from the select; "" (any reason) or anything else is no filter. */
 export function parseReason(value: string): ReviewReason | null {

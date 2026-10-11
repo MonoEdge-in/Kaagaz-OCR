@@ -2,7 +2,7 @@
 // unit tested in node (tests/viewer-*.test.ts): zoom steps, which rows and
 // columns of a sheet to fetch and show, how a page is drawn, and how it was read.
 
-import type { DocumentSummary, PageRoute, PageSummary, SheetCells } from "@/lib/types";
+import type { DocumentSummary, PageRoute, PageSummary, ReadIssue, SheetCells } from "@/lib/types";
 
 export const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
 
@@ -45,6 +45,45 @@ export function fitPageSize(
   return { width, height: width / safeAspect };
 }
 
+const FOCUS_TEXT_PX = 24; // a highlighted spot is zoomed until it is about this tall
+const FOCUS_ROOM = 0.9; // and never past 90% of the frame, across or down
+
+/**
+ * The zoom a highlighted spot is shown at: enough to make it about 24px tall,
+ * kept inside 90% of the frame (`frame.height` Infinity when the frame grows
+ * with the page), snapped down to a zoom step, never below 1 (a long line
+ * stays fitted) or above 3. `spot` is its size in pixels at zoom 1.
+ */
+export function focusZoom(
+  spot: { width: number; height: number },
+  frame: { width: number; height: number },
+): number {
+  if (!(spot.width > 0 && spot.height > 0 && frame.width > 0 && frame.height > 0)) return 1;
+  const wanted = Math.min(
+    FOCUS_TEXT_PX / spot.height,
+    (FOCUS_ROOM * frame.width) / spot.width,
+    (FOCUS_ROOM * frame.height) / spot.height,
+  );
+  return ZOOM_STEPS.reduce<number>((best, step) => (step <= wanted && step > best ? step : best), 1);
+}
+
+/**
+ * Where to scroll a frame (`frame` its visible size, `stage` all it scrolls
+ * over) so a spot (in the stage's pixels) sits in its middle, kept in range.
+ */
+export function centerScroll(
+  spot: { left: number; top: number; width: number; height: number },
+  stage: { width: number; height: number },
+  frame: { width: number; height: number },
+): { left: number; top: number } {
+  const center = (start: number, size: number, all: number, seen: number) =>
+    Math.min(Math.max(0, start + size / 2 - seen / 2), Math.max(0, all - seen));
+  return {
+    left: center(spot.left, spot.width, stage.width, frame.width),
+    top: center(spot.top, spot.height, stage.height, frame.height),
+  };
+}
+
 export type PageMode = "pdf" | "image" | "sheet" | "none";
 
 /** How a page can be drawn: PDF.js for PDFs, the stored image, a cell grid, or nothing. */
@@ -62,16 +101,37 @@ export function pageMode(
 const ROUTE_WORDS: Record<PageRoute, string> = {
   cells: "Read from spreadsheet cells",
   text_layer: "Read from the PDF text",
-  ocr: "Read by OCR",
+  ocr: "Read by OCR", // a scanned page no model read (no key, or before PRD 5)
   blank: "Blank page",
 };
 
 /**
- * How a page was read, in words, shown beside its number (PRD 2, R1). null
- * when the page has no route, as for a page read before PRD 2: nothing is shown.
+ * The issues of a page the main reader handed to the backup reader (PRD 5 Q7, G6):
+ * read while it was down, or after it declined the page or sent a bad reply.
  */
-export function routeText(route: PageRoute | null): string | null {
-  return route === null ? null : ROUTE_WORDS[route];
+export const BACKUP_ISSUES: readonly ReadIssue[] = ["read_locally", "reader_refused"];
+
+/**
+ * How a page was read, in words, shown beside its number (PRD 2, R1). A scanned
+ * page says who read it (PRD 5 RT2): "Read by the backup reader" when the main
+ * reader handed it on (`read_issues` has one of BACKUP_ISSUES), "Read by
+ * {read_by_name}" when a model read it (model choice: the server names it),
+ * "Read by an AI model ({read_by})" when a model the catalogue does not name
+ * read it (never "OCR" for a model's page), and otherwise "Read by OCR", as
+ * before PRD 5 (a page read with no key, or before PRD 5). null when the page
+ * has no route, as for a page read before PRD 2: nothing is shown.
+ */
+export function routeText(
+  page: Pick<PageSummary, "route" | "read_by" | "read_by_name" | "read_issues">,
+): string | null {
+  if (page.route === null) return null;
+  if (page.route === "ocr") {
+    if (page.read_issues.some((issue) => BACKUP_ISSUES.includes(issue))) return "Read by the backup reader";
+    if (page.read_by_name) return `Read by ${page.read_by_name}`;
+    // An OpenRouter model ID is author/slug; rapidocr and older readers have no slash.
+    if (page.read_by?.includes("/")) return `Read by an AI model (${page.read_by})`;
+  }
+  return ROUTE_WORDS[page.route];
 }
 
 // The backend gives at most 500 rows per call; 200 keeps the table quick.

@@ -217,9 +217,9 @@ export function spotNote(spot: Spot): string {
     : `Value on page ${page}, label on page ${label}`;
 }
 
-/** Why there is no card (PRD 2 D6): not read yet, or read with the AI model off or out of reach. */
+/** Why there is no card (PRD 2 D6): not read yet, or read with the AI model off, out of reach, or its reply unusable. */
 export function noCardText(status: DocumentStatus): string {
   return status === "ready"
-    ? "No document card. The AI model was off or could not be reached when this was read."
+    ? "No document card. The AI model was off, could not be reached, or its reply could not be used when this was read."
     : "The document card comes once the document is read.";
 }

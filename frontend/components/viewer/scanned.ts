@@ -16,6 +16,9 @@ import type {
 export const LOW_CONFIDENCE = 0.9;
 export const CONFIDENCE_NOTE = "Confidence is the reader's own guess, not a check.";
 export const FIRST_LINES = 200; // shown before "Show all N lines"
+// PRD 5 U8: "First reader" and "Second reader" in words people know.
+export const MAIN_READER = "Main reader";
+export const CHECKER = "Checker (PDF text layer)";
 
 type Origin = ReadLine["origin"];
 
@@ -27,17 +30,23 @@ export function notSure(confidence: number | null): boolean {
   return isScore(confidence) && confidence < LOW_CONFIDENCE;
 }
 
-/** "Reader sure (97%)" or "Reader not sure (62%)" (never rounded up to 90%); with no score, what that means. */
-export function confidenceText(confidence: number | null, origin: Origin): string {
+/**
+ * "Reader sure (97%)" or "Reader not sure (62%)" (never rounded up to 90%); with no score,
+ * "Read directly from the file" for a cell or the text layer, else null (nothing to show).
+ */
+export function confidenceText(confidence: number | null, origin: Origin): string | null {
   if (isScore(confidence)) {
     const percent = Math.round(confidence * 100);
     return notSure(confidence)
       ? `Reader not sure (${Math.min(percent, 89)}%)`
       : `Reader sure (${percent}%)`;
   }
-  return origin === "cell" || origin === "text_layer"
-    ? "Read directly from the file"
-    : "No confidence given";
+  return origin === "cell" || origin === "text_layer" ? "Read directly from the file" : null;
+}
+
+/** True when any line has a reader's score, so CONFIDENCE_NOTE has something to explain. */
+export function hasScore(lines: Pick<ReadLine, "confidence">[]): boolean {
+  return lines.some((line) => isScore(line.confidence));
 }
 
 /** How a value's page was read, as a line's origin; null when it is not known. */
@@ -54,14 +63,17 @@ export function valueAt(values: ExtractedValue[], region: Region): ExtractedValu
 
 export const plural = (n: number, word: string) => `${n.toLocaleString("en-IN")} ${word}${n === 1 ? "" : "s"}`;
 
-/** "Read by OCR at 200 DPI", the reader and version, and "2 of 3 lines: reader not sure" (or null). */
+/**
+ * "Read by Gemini 3.1 Pro at 300 DPI" and "2 of 3 lines: reader not sure" (or null). The words
+ * name no engine (PRD 5 U8): the main reader, and the checker (the PDF text layer).
+ */
 export function readerHeading(
   reader: PageReader,
-  page: Pick<PageSummary, "route" | "effective_dpi">,
-): { title: string; detail: string; notSureCount: string | null } {
-  let title = "Second reader (PDF text layer)";
+  page: Pick<PageSummary, "route" | "read_by" | "read_by_name" | "read_issues" | "effective_dpi">,
+): { title: string; notSureCount: string | null } {
+  let title = CHECKER;
   if (reader.role === "first") {
-    title = routeText(page.route) ?? "First reader";
+    title = routeText(page) ?? MAIN_READER;
     if (page.route === "ocr" && page.effective_dpi !== null) {
       title += ` at ${Math.round(page.effective_dpi)} DPI`;
     }
@@ -69,7 +81,6 @@ export function readerHeading(
   const unsure = reader.lines.filter((line) => notSure(line.confidence)).length;
   return {
     title,
-    detail: `${reader.reader} ${reader.reader_version}`,
     notSureCount:
       unsure === 0
         ? null
@@ -77,7 +88,7 @@ export function readerHeading(
   };
 }
 
-/** Why the second reader's text did not count on this page; null when it did. */
+/** Why the checker's text did not count on this page; null when it did. */
 export function secondReaderNote(route: PageRoute | null): string | null {
   if (route === "ocr") return "Not used for this page: it was read by OCR.";
   if (route === "blank") return "Not used for this page: it is blank.";
@@ -104,7 +115,7 @@ export function emptyState(
   if (route === "blank") return { text: "Blank page.", retry: false };
   if (!load.reader) return { text: "Not read yet.", retry: false };
   if (load.reader.lines.length > 0) return null;
-  // A sharper scan helps OCR only, never the second reader (the PDF text layer).
+  // A sharper scan helps OCR only, never the checker (the PDF text layer).
   return load.reader.role === "first" && (route === "ocr" || route === null)
     ? { text: "No text was found on this page. Upload a sharper scan.", retry: false }
     : { text: "No text was found on this page.", retry: false };

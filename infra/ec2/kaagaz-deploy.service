@@ -9,7 +9,7 @@ After=network-online.target docker.service
 Type=oneshot
 User=ubuntu
 WorkingDirectory=/home/ubuntu/kaagaz
-# The first build takes 30 to 60 minutes, so no time limit.
+# The first build takes several minutes, so no time limit.
 TimeoutStartSec=infinity
 # The read-only GitHub deploy key (EC2 PRD section 4).
 Environment="GIT_SSH_COMMAND=ssh -i /home/ubuntu/.ssh/kaagaz_deploy -o IdentitiesOnly=yes"

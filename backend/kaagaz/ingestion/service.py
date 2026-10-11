@@ -7,7 +7,9 @@ The steps, in order:
 2. Refuse empty files and types that are not allowed (sniff.py), then a file
    over its own type's limit (PRD 1, U2), with its kind, size and limit.
 3. If this customer already has this fingerprint, reply "duplicate" and stop.
-4. Store the file, record it, queue a job.
+4. Count its pages (pagecount.py, PRD 5 Q4): a document of at most
+   ``express_max_pages`` pages is queued in the express lane.
+5. Store the file, record it, queue a job.
 
 Time O(n) in the bytes read, at most the largest limit plus one byte.
 
@@ -53,6 +55,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadRejected
+from kaagaz.ingestion.pagecount import count_pages, goes_express
 from kaagaz.ingestion.policy import KIND_OF, UploadPolicy
 from kaagaz.ingestion.ports import (
     BlobStorage,
@@ -86,12 +89,18 @@ class UploadService:
         storage: BlobStorage,
         queue: JobQueue,
         new_id: Callable[[], str] = _new_document_id,
+        *,
+        express_max_pages: int = 0,
     ) -> None:
+        """``express_max_pages`` is EXPRESS_MAX_PAGES (PRD 5 Q4): an upload of 1 to
+        that many pages is queued in the express lane. 0 counts no pages and queues
+        every upload in the main lane."""
         self._policy = policy
         self._repository = repository
         self._storage = storage
         self._queue = queue
         self._new_id = new_id
+        self._express_max_pages = express_max_pages
 
     def accept(
         self,
@@ -102,11 +111,14 @@ class UploadService:
         uploaded_by: str | None = None,
         folder_id: str | None = None,
         ocr_choice: str | None = None,
+        batch_id: str | None = None,
     ) -> UploadResult:
         """``display_name`` must already be cleaned by the caller (the API).
         ``folder_id`` files a new document there (None: the top level); a
         duplicate stays where it is. ``ocr_choice`` is the scan reader the API
-        checked (None: Auto); a duplicate keeps the one it was read with."""
+        checked (None: Auto); a duplicate keeps the one it was read with.
+        ``batch_id`` is the drop the API checked (PRD 5 Q1; None: in none); a
+        duplicate stays in its own."""
         return self._accept(
             customer_id,
             stream,
@@ -114,6 +126,7 @@ class UploadService:
             uploaded_by=uploaded_by,
             folder_id=folder_id,
             ocr_choice=ocr_choice,
+            batch_id=batch_id,
             add=self._repository.add_if_absent,
         )
 
@@ -146,6 +159,7 @@ class UploadService:
             uploaded_by=uploaded_by,
             folder_id=None,
             ocr_choice=ocr_choice,
+            batch_id=None,
             add=add_version,
         )
 
@@ -158,6 +172,7 @@ class UploadService:
         uploaded_by: str | None,
         folder_id: str | None,
         ocr_choice: str | None,
+        batch_id: str | None,
         add: Callable[[DocumentRecord], tuple[DocumentRecord, bool]],
     ) -> UploadResult:
         """The steps in the module docstring; ``add`` records the new document."""
@@ -192,6 +207,11 @@ class UploadService:
                 uploaded_by=uploaded_by,
                 folder_id=folder_id,
                 ocr_choice=ocr_choice,
+                batch_id=batch_id,
+            )
+            # The server's own count picks the lane; it leaves the file at its start.
+            express = self._express_max_pages > 0 and goes_express(
+                count_pages(spooled.file, detected), self._express_max_pages
             )
             # Store the exact bytes that were hashed.
             self._storage.put(customer_id, record.document_id, spooled.file)
@@ -213,7 +233,7 @@ class UploadService:
             return UploadResult(stored.document_id, duplicate=True)
 
         try:
-            self._queue.enqueue(Job(customer_id=customer_id, document_id=record.document_id))
+            self._queue.enqueue(Job(customer_id=customer_id, document_id=record.document_id), express=express)
         except BackendUnavailable as error:
             _undo(error, remove_record, delete_file)
             raise

@@ -178,7 +178,7 @@ describe("after an upload: a link to the story section, never a dialog", () => {
       [{ kind: "duplicate", documentId: "d4", existingName: "a.pdf", inTrash: true }, null],
       [{ kind: "restoring", documentId: "d5", existingName: "a.pdf" }, null],
       [{ kind: "waiting" }, null],
-      [{ kind: "uploading", fraction: 0.5 }, null],
+      [{ kind: "sending", fraction: 0.5 }, null],
       [{ kind: "error", message: "Not uploaded." }, null],
     ];
     for (const [state, target] of states) expect(storyTarget(state), state.kind).toBe(target);

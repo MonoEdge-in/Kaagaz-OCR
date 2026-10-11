@@ -1,6 +1,6 @@
 """render.yaml runs what docker-compose.yml runs and sets every setting (docs/running-locally.md, section 7).
 
-Plain text, as tests/test_compose_ocr.py reads the compose files: no YAML library.
+Plain text, as tests/test_compose_prod.py reads the compose files: no YAML library.
 """
 
 import re
@@ -49,7 +49,6 @@ def test_the_stand_ins_use_composes_images_command_and_scanner_settings() -> Non
 
     blueprint = _read("render.yaml")
     assert f"url: docker.io/{image('clamav')}\n" in blueprint
-    assert f"#     url: docker.io/{image('ollama')}\n" in blueprint
     assert f"FROM {image('elasticmq')}\n" in _read("infra/render/elasticmq.Dockerfile")
     assert f"FROM {image('seaweedfs')}\n" in _read("infra/render/seaweedfs.Dockerfile")
 
@@ -93,6 +92,6 @@ def test_the_prd3_defaults_match_the_doc() -> None:
 def test_the_doc_names_every_render_service() -> None:
     section = _read("docs/running-locally.md").split("## 7. Deploy on Render")[1]
     names = set(re.findall(r"name: (kaagaz-[a-z]+)$", _read("render.yaml"), re.MULTILINE))
-    assert len(names) == 9  # 6 services, Ollama, the database and the settings group
+    assert len(names) == 8  # 6 services, the database and the settings group
     for name in names:
         assert f"`{name}`" in section

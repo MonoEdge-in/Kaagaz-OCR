@@ -321,8 +321,17 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "time_left",  # PRD 4 #13: null until it is being read
         "doc_type",  # PRD 2 D3 (null until the card, PR 5)
         "languages",
+        "pages_unreadable",  # PRD 5 F4
+        "pages_uncertain",
+        "values_to_review",
+        "words_unsure",  # PRD 5 U2
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
+    assert (document["pages_unreadable"], document["pages_uncertain"], document["values_to_review"]) == (
+        0,
+        0,
+        0,
+    )
     assert (document["attempts"], document["max_attempts"]) == (0, None)
     assert (document["can_delete"], document["newer_version"]) == (True, None)
     assert (document["deleted_at"], document["version_no"], document["family_id"]) == (
@@ -530,12 +539,12 @@ def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Data
     assert api.client().get("/api/upload-limits").status_code == 401
 
 
-# --- the scan reader an upload chose (PRD 4 #17) ------------------------------------------
+# --- no reader choice at upload (PRD 5 RT3) ------------------------------------------------
 
 
 @pytest.fixture
 def rapidocr_server(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    """A laptop's settings with RapidOCR installed: Auto and RapidOCR are offered."""
+    """A laptop's settings with RapidOCR installed."""
     monkeypatch.setattr(ocr, "_installed_version", lambda package: "3.9.2")
     return make_settings(ocr_engine="rapidocr")
 
@@ -560,20 +569,21 @@ def _stored_choices(db: Database, customer_id: str) -> list[str | None]:
 
 @pytest.mark.db
 def test_upload_limits_offer_the_readers_this_server_has(db: Database, rapidocr_server: Settings) -> None:
+    """RT3: ocr_choices() returns one reader, so the "Scan with" select hides itself."""
     signed = Api(db, settings=rapidocr_server).new_signed()
     readers = signed.client.get("/api/upload-limits").json()["readers"]
-    assert [(r["id"], r["title"], r["available"]) for r in readers] == [
-        ("auto", "Auto", True),
-        ("paddleocr_vl", "PaddleOCR-VL", False),
-        ("rapidocr", "RapidOCR", True),
+    assert [(r["id"], r["title"], r["available"], r["reason"]) for r in readers] == [
+        ("auto", "Auto", True, None)
     ]
-    assert readers[1]["reason"] == "Not set up on this server"
 
 
 @pytest.mark.db
 def test_a_chosen_reader_is_stored_and_audited_and_auto_is_null(
     db: Database, rapidocr_server: Settings
 ) -> None:
+    """RT3: the ocr_choice form field is still accepted and ignored, so old browsers don't
+    break. A reader an old browser chose, Auto, and a version with a choice are all stored
+    as NULL (Auto), and no audit row names a reader."""
     api = Api(db, settings=rapidocr_server)
     signed = api.new_signed()
     chosen = _choose(signed.client, "rapidocr")
@@ -585,38 +595,42 @@ def test_a_chosen_reader_is_stored_and_audited_and_auto_is_null(
     with db.customer(signed.customer_id) as conn:
         rows = conn.execute(text("SELECT id::text, ocr_choice FROM documents")).all()
     stored = {str(row[0]): row[1] for row in rows}
-    assert stored == {chosen_id: "rapidocr", auto_id: None, version.json()["document"]["id"]: "rapidocr"}
-    audited = [(row[0], row[3].get("ocr_choice")) for row in api.audit_rows(signed.customer_id)]
+    assert stored == {chosen_id: None, auto_id: None, version.json()["document"]["id"]: None}
+    audited = [(row[0], "ocr_choice" in row[3]) for row in api.audit_rows(signed.customer_id)]
     assert [row for row in audited if row[0].startswith("document.")] == [
-        ("document.upload", "rapidocr"),
-        ("document.upload", None),
-        ("document.version", "rapidocr"),
+        ("document.upload", False),
+        ("document.upload", False),
+        ("document.version", False),
     ]
+    assert len(api.queue.jobs) == 3
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("choice", ["paddleocr_vl", "tesseract", "", "RAPIDOCR"])
-def test_a_reader_not_offered_is_400_and_nothing_is_stored(
+@pytest.mark.parametrize("choice", ["an_old_reader", "tesseract", "", "RAPIDOCR", "gemini"])
+def test_any_reader_an_old_browser_sends_is_accepted_and_ignored(
     db: Database, rapidocr_server: Settings, choice: str
 ) -> None:
+    """RT3: whatever the field holds, the file is stored and read with Auto."""
     api = Api(db, settings=rapidocr_server)
     signed = api.new_signed()
     reply = _choose(signed.client, choice)
-    assert reply.status_code == 400
-    assert reply.json()["error"] == {"code": "bad_request", "message": "Choose one of the readers offered."}
-    assert _stored_choices(db, signed.customer_id) == []
-    assert api.queue.jobs == []
-    assert api.audit_actions(signed.customer_id).count("document.upload") == 0
+    assert reply.status_code == 201
+    assert _stored_choices(db, signed.customer_id) == [None]
+    assert len(api.queue.jobs) == 1
+    assert api.audit_actions(signed.customer_id).count("document.upload") == 1
 
 
 @pytest.mark.db
 def test_a_duplicate_keeps_the_reader_it_was_read_with(db: Database, rapidocr_server: Settings) -> None:
+    """RT3: a duplicate with another choice is the same document, still read with Auto
+    (NULL); the choice it came with changes nothing."""
     api = Api(db, settings=rapidocr_server)
     signed = api.new_signed()
     first = _choose(signed.client, "rapidocr")
     again = _choose(signed.client, "auto")
     assert (again.status_code, again.json()["document"]["id"]) == (200, first.json()["document"]["id"])
-    assert _stored_choices(db, signed.customer_id) == ["rapidocr"]
+    assert _stored_choices(db, signed.customer_id) == [None]
+    assert len(api.queue.jobs) == 1
 
 
 @pytest.mark.db
@@ -872,6 +886,16 @@ def test_detail_has_pages_and_values_in_order(db: Database) -> None:
         "route": None,  # PRD 2 R1: not read by a run
         "effective_dpi": None,  # R4
         "low_resolution": False,
+        "read_by": None,  # PRD 5 RT2: not read by a run
+        "read_quality": "good",  # F1: the column's default
+        "read_issues": [],
+        "unsure_words": 0,
+        "illegible_words": 0,
+        "unpinned_lines": 0,
+        "accepted_by": None,  # F5: not kept as is
+        "accepted_at": None,
+        "read_again_requested_at": None,
+        "problems": [],  # PRD 5 U4: a good page has none
     }
     assert [value["id"] for value in body["values"]] == [first, second]
     assert body["values"][0] == {
@@ -1600,6 +1624,14 @@ def test_a_page_the_scan_reader_failed_on_has_its_own_words() -> None:
         message
         == "The scan reader couldn't read a page of this file. Upload a clearer scan, or read it again."
     )
+
+
+def test_f4_a_file_none_of_which_could_be_read_says_so_with_the_fix() -> None:
+    """PRD 5 F4: only a document whose every non-blank page is unreadable fails, with the
+    code unreadable and this message."""
+    for detected_type in ("pdf", "jpeg"):
+        message = status_message("failed", "unreadable", detected_type=detected_type, max_pages=100)
+        assert message == "None of this file could be read. Upload a sharper scan."
 
 
 @pytest.mark.db

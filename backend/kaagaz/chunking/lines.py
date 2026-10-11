@@ -12,7 +12,13 @@ A new piece starts only:
 A page break alone never starts a piece, so a sentence that runs from page 15
 onto page 16 stays in one piece. The gap is measured only between two lines
 on the same page. One line longer than the limit is never cut: it becomes its
-own piece.
+own piece. A page with no line in pieces between two lines (a blank or picture
+page) does start one, so a piece has a region on each of its pages (PRD 5 CX4).
+
+PRD 5 CX1: ``continues`` names the pages whose last sentence the reader said goes
+on at the top of the next page (Gemini's ``continues_on_next_page``). From such a
+page onto the next one, neither ``MAX_CHARS`` nor a heading starts a new piece, so
+the sentence stays one piece from whatever reader read either page.
 
 PROVISIONAL: a heading is never left alone in a piece. While a piece holds
 only titles and headings, the next line joins it even across a gap (headings
@@ -53,7 +59,7 @@ them in page order, as it does), one median per page, one sort per table by
 
 import re
 import statistics
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from itertools import groupby
 
@@ -159,10 +165,16 @@ def _seen[K](found: dict[K, _Seen], key: K, page: int, index: int, kind: bool) -
 
 
 def pieces_from_lines(
-    customer_id: str, document_id: str, spans: Iterable[Span], *, max_chars: int = MAX_CHARS
+    customer_id: str,
+    document_id: str,
+    spans: Iterable[Span],
+    *,
+    max_chars: int = MAX_CHARS,
+    continues: Collection[int] = (),
 ) -> list[Piece]:
     """Pieces from the box spans (lines, blocks and table cells), by the rules
-    above. A sheet's cell spans are left to ``rows.py``."""
+    above. A sheet's cell spans are left to ``rows.py``. ``continues``: the pages
+    whose sentence goes on onto the next page (CX1)."""
     spans = list(spans)
     running = running_spans(spans)
     lines = [
@@ -171,7 +183,7 @@ def pieces_from_lines(
         if index not in running and isinstance(span.location, BoxLocation)
     ]
     lines.sort(key=lambda line: line[1].page)  # stable: reading order kept within a page
-    builder = _Builder(customer_id, document_id, max_chars, _gap_limits(lines))
+    builder = _Builder(customer_id, document_id, max_chars, _gap_limits(lines), frozenset(continues))
     for unit in _units(lines):
         if isinstance(unit, list):
             builder.table(unit)
@@ -226,12 +238,18 @@ class _Builder:
     """Builds the pieces in one pass over the lines and tables, in document order."""
 
     def __init__(
-        self, customer_id: str, document_id: str, max_chars: int, gap_limits: dict[int, float]
+        self,
+        customer_id: str,
+        document_id: str,
+        max_chars: int,
+        gap_limits: dict[int, float],
+        continues: frozenset[int],
     ) -> None:
         self.pieces: list[Piece] = []
         self._ids = (customer_id, document_id)
         self._max_chars = max_chars
         self._gap_limits = gap_limits
+        self._continues = continues
         self._lines: list[Line] = []  # the text piece being built
         self._length = 0
         self._leading = True  # the piece so far holds only titles and headings
@@ -244,8 +262,12 @@ class _Builder:
         if self._lines:
             previous = self._lines[-1][1]
             gap = previous.page == box.page and box.y0 - previous.y1 > self._gap_limits[box.page]
-            too_long = self._length + 1 + len(span.text) > self._max_chars
-            if too_long or (not self._leading and (heading or gap)):
+            skipped = box.page > previous.page + 1  # a page with no line between (CX4)
+            # CX1: the sentence goes on onto this page, so only a gap may split it.
+            # ponytail: the piece may pass max_chars by this one line; split at a sentence end if it matters.
+            carried = previous.page in self._continues and box.page == previous.page + 1
+            too_long = not carried and self._length + 1 + len(span.text) > self._max_chars
+            if too_long or skipped or (not self._leading and ((heading and not carried) or gap)):
                 self.close()
         if span.kind == "title":
             self._title, self._section = span.text, (span.text,)
