@@ -1,6 +1,7 @@
 "use client";
 
-// /operator: three tabs, Organisations, Activity and Health, as the admin
+// /operator: five tabs, Organisations, Models, AI spend (model choice, council
+// 11 Oct 2026), Activity and Health, as the admin
 // screen's tabs (AdminView): a tablist whose arrow keys, Home and End move
 // between them. Only the open tab is mounted, so each loads when opened.
 
@@ -9,11 +10,15 @@ import type { KeyboardEvent } from "react";
 import { tabAfterKey } from "@/components/admin/logic";
 import { ActivityView } from "./ActivityView";
 import { HealthView } from "./HealthView";
+import { ModelsView } from "./ModelsView";
 import { OrganisationsView } from "./OrganisationsView";
+import { SpendView } from "./SpendView";
 import admin from "@/components/admin/Admin.module.css";
 
 export const OPERATOR_TABS = [
   { id: "orgs", label: "Organisations" },
+  { id: "models", label: "Models" },
+  { id: "spend", label: "AI spend" },
   { id: "activity", label: "Activity" },
   { id: "health", label: "Health" },
 ] as const;
@@ -68,6 +73,8 @@ export function OperatorConsole() {
           className={admin.panel}
         >
           {tab.id === active && tab.id === "orgs" && <OrganisationsView />}
+          {tab.id === active && tab.id === "models" && <ModelsView />}
+          {tab.id === active && tab.id === "spend" && <SpendView />}
           {tab.id === active && tab.id === "activity" && <ActivityView />}
           {tab.id === active && tab.id === "health" && <HealthView />}
         </div>

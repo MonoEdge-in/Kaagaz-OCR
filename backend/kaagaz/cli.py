@@ -49,13 +49,20 @@
   and illegible words and the share of its lines pinned to a found box (G5); the
   totals add the tokens. The engines come from ``kaagaz.reading.wiring``, as the
   worker's. It prints no text and no file name: only numbers and short codes.
-* ``verify-models [--model ID ...] [--embed-model ID]``:
+* ``verify-models [--model ID ...] [--embed-model ID] [--record]``:
   check PRD 5's verify items (section 14) against the live models through OpenRouter
   and the installed RapidOCR, and print ``VERIFY <id> PASS|FAIL|INFO <evidence>`` for
-  each (``kaagaz.verify_models``). It touches no database, file storage or queue,
-  sends only pictures it draws itself, prints the key only as set or missing, and
-  exits 1 when an item FAILs. ``--model`` adds an OpenRouter model ID to check (such
-  as google/gemini-3.8-flash).
+  each (``kaagaz.verify_models``). It touches no file storage or queue, and no
+  database without ``--record``; it sends only pictures it draws itself, prints the
+  key only as set or missing, and exits 1 when an item FAILs. ``--model`` adds an
+  OpenRouter model ID to check, with the items a model must pass before the operator
+  can enable it (model choice, council 11 Oct 2026). ``--record``, with exactly one
+  ``--model``: when that model passes them all, its pass for the reader's prompt
+  version and its tokens per page are written to ``model_catalog`` as the owner
+  (``_owner``); the model must be in the catalogue (``refresh-models`` first).
+* ``refresh-models``: read OpenRouter's model lists now and refresh ``model_catalog``
+  (``kaagaz.jobs.catalog``, MC1), as the worker does once a day. Needs
+  OPENROUTER_API_KEY. Prints counts only.
 * ``reembed [--customer-id ID] [--all]``: give pieces their meaning vectors
   again after the model or what is embedded changed (PRD 3 V4), for every
   customer or one. Per document: one short transaction clears the vectors whose
@@ -69,7 +76,8 @@
   with another tag, are embedded, 32 at a time, each as its own user, each
   story tried once a run; ``--all`` does not embed a story again whose vector
   is current. A customer that is not active is skipped and named.
-  Prints ids and counts only.
+  Each customer's calls are billed to it as "embed", with no user (SP1). Prints ids
+  and counts only.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -80,6 +88,7 @@ terminal instead of logging): ids and e-mails only, never a password.
 """
 
 import argparse
+import functools
 import getpass
 import os
 import sys
@@ -96,11 +105,14 @@ from sqlalchemy import Connection
 
 from kaagaz import verify_models
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
+from kaagaz.ai.openrouter import OpenRouterClient
+from kaagaz.ai.usage import usage_scope
 from kaagaz.api import totp
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.api.twostep import box
 from kaagaz.db import audit, customer_purge
 from kaagaz.db import customers as customers_sql
+from kaagaz.db import operator_models as operator_models_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.document_stories import recipe_tag as story_tag
@@ -108,10 +120,11 @@ from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.spool import HEAD_SIZE
+from kaagaz.jobs import catalog
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
-from kaagaz.reading.ocr import MeteredOcrEngine, PageRead
+from kaagaz.reading.ocr import READER_PROMPT_VERSION, MeteredOcrEngine, PageRead
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError, Span
@@ -203,9 +216,12 @@ def _parser() -> argparse.ArgumentParser:
         help="check the models through OpenRouter, and RapidOCR (no database)",
     )
     verify.add_argument("--model", action="append", default=[], help="one more OpenRouter model ID to check")
+    verify.add_argument("--embed-model", help="the embedding model to check (default: MODEL_EMBED)")
     verify.add_argument(
-        "--embed-model", help="the embedding model to check (default: MODEL_EMBED's google/gemini- one)"
+        "--record", action="store_true", help="write the one --model's pass to the catalogue when it passes"
     )
+
+    commands.add_parser("refresh-models", help="refresh the model catalogue from OpenRouter now")
 
     reembed = commands.add_parser("reembed", help="embed pieces again after a model or recipe change")
     reembed.add_argument("--customer-id", help="one customer only (default: every customer)")
@@ -473,14 +489,16 @@ def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: b
             out.write(f"customer {customer}: not active, skipped\n")
             continue
         cleared = written = 0
-        for document in documents:
-            with db.customer(customer) as conn:
-                cleared += indexing.clear_stale(conn, customer, document, model.embed_model, every=every)
-            try:
-                written += indexing.embed_pieces(db, customer, document, model)
-            except (ModelUnavailable, ModelOutputError) as error:
-                raise CliError(f"the model failed ({error}); run reembed again to go on") from None
-        stories = _reembed_stories(db, model, customer)
+        # SP1: billed to the customer, no user asked for it (saved even when the model fails).
+        with usage_scope(db, customer_id=customer, user_id=None, kind="embed"):
+            for document in documents:
+                with db.customer(customer) as conn:
+                    cleared += indexing.clear_stale(conn, customer, document, model.embed_model, every=every)
+                try:
+                    written += indexing.embed_pieces(db, customer, document, model)
+                except (ModelUnavailable, ModelOutputError) as error:
+                    raise CliError(f"the model failed ({error}); run reembed again to go on") from None
+            stories = _reembed_stories(db, model, customer)
         out.write(
             f"customer {customer}: {len(documents)} documents, {cleared} cleared, {written} embedded,"
             f" {stories} stories\n"
@@ -510,6 +528,33 @@ def _reembed_stories(db: Database, model: ModelClient, customer: str) -> int:
         if done.after is None:
             return written
         after = done.after
+
+
+# --- the model catalogue (model choice, council 11 Oct 2026) ------------------------
+
+
+def _refresh_models(db: Database, settings: Settings) -> str:
+    """Refresh model_catalog from OpenRouter now (MC1). Returns the line to print."""
+    if settings.openrouter_api_key is None:
+        raise CliError("refresh-models needs OPENROUTER_API_KEY")
+    try:
+        done = catalog.refresh(db, OpenRouterClient(settings), settings, today=datetime.now(UTC).date())
+    except catalog.CatalogUnavailable as error:
+        raise CliError(f"OpenRouter's lists could not be read ({error.code}); nothing was changed") from None
+    except BackendUnavailable as error:
+        raise CliError(f"{error} unavailable; nothing was changed") from None
+    return f"model catalogue: {done.saved} models saved, {done.eligible} eligible"
+
+
+def _record_verified(db: Database, model: str, tokens_in: int, tokens_out: int) -> None:
+    """verify-models --record: the model's pass for the reader's prompt version, as the
+    owner (no app or operator role may write it)."""
+    with _owner(db) as conn:
+        found = operator_models_sql.record_verified(
+            conn, model, prompt_version=READER_PROMPT_VERSION, tokens_in=tokens_in, tokens_out=tokens_out
+        )
+    if not found:
+        raise CliError(f"{model} is not in the model catalogue: run refresh-models first")
 
 
 # --- measure (PRD 2 X4) -----------------------------------------------------------
@@ -727,13 +772,23 @@ def main(
             chosen = env if args.engine is None else {**env, "OCR_ENGINE": args.engine}
             _measure(Settings.from_env(chosen), args.file, args.truth, stdout, timer=timer)
             return 0
-        if args.command == "verify-models":  # no database either
+        if args.command == "verify-models":  # no database either, but --record's one row
             checked = settings or Settings.from_env(env)
-            return verify_models.run(checked, stdout, models=args.model, embed_model=args.embed_model)
+            record = None
+            if args.record:
+                if len(set(args.model)) != 1:
+                    raise CliError("--record checks exactly one --model")
+                owner = db or Database(make_engine(checked.database_url), checked.db_app_role)
+                record = functools.partial(_record_verified, owner)
+            return verify_models.run(
+                checked, stdout, models=args.model, embed_model=args.embed_model, record=record
+            )
         if db is None:
             settings = settings or Settings.from_env(env)
             db = Database(make_engine(settings.database_url), settings.db_app_role)
-        if args.command == "create-customer":
+        if args.command == "refresh-models":
+            stdout.write(_refresh_models(db, settings or Settings.from_env(env)) + "\n")
+        elif args.command == "create-customer":
             password = _password(env, ADMIN_ENV_VAR, ask)
             customer_id = _create_customer(db, args.name, args.admin_email, args.admin_name, password)
             stdout.write(f"customer {customer_id}\n")

@@ -1,0 +1,138 @@
+"use client";
+
+// AI spend, a tab of /operator (model choice, council 11 Oct 2026, SP3): tokens and US
+// dollars per organisation and model over a chosen period, with the totals. Never a
+// person or a document: the server sends neither. A cost that is partly the catalogue
+// price times the tokens says "(estimated)" in words.
+
+import { useEffect, useState } from "react";
+import table from "@/components/documents/Table.module.css";
+import { getOperatorUsage } from "@/lib/api";
+import { formatNumber } from "@/lib/format";
+import type { OperatorUsageRow, UsageTotals } from "@/lib/types";
+import { LoadFailed } from "./LoadFailed";
+import { operatorErrorMessage } from "./logic";
+import { PERIODS, periodRange, spendTotals, usd } from "./models";
+import type { PeriodId } from "./models";
+import admin from "@/components/admin/Admin.module.css";
+import styles from "./Operator.module.css";
+
+export function SpendView() {
+  const [period, setPeriod] = useState<PeriodId>("month");
+  const [attempt, setAttempt] = useState(0);
+  const [loaded, setLoaded] = useState<{ key: string; rows: OperatorUsageRow[] } | null>(null);
+  const [error, setError] = useState<{ key: string; message: string } | null>(null);
+  const key = `${period}|${attempt}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    getOperatorUsage(periodRange(period, new Date())).then(
+      (result) => !cancelled && setLoaded({ key, rows: result.items }),
+      (caught: unknown) => !cancelled && setError({ key, message: operatorErrorMessage(caught) }),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [period, attempt, key]);
+
+  const rows = loaded?.key === key ? loaded.rows : null;
+  const failed = error?.key === key ? error.message : null;
+  return (
+    <section className={admin.section} aria-labelledby="spend-heading">
+      <h2 id="spend-heading" className={admin.sectionHeading}>
+        AI spend
+      </h2>
+      <p className={styles.summary}>Per organisation and model. No person or document is shown here.</p>
+      <div className={styles.toolbar}>
+        <div className="field">
+          <label htmlFor="spend-period">Period</label>
+          <select
+            id="spend-period"
+            className="input"
+            value={period}
+            onChange={(event) => {
+              const chosen = PERIODS.find((option) => option.id === event.target.value);
+              if (chosen) setPeriod(chosen.id);
+            }}
+          >
+            {PERIODS.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <p className="visually-hidden" role="status">
+        {!rows && !failed ? "Loading the spend…" : ""}
+      </p>
+      {failed && <LoadFailed what="the spend" message={failed} onRetry={() => setAttempt((n) => n + 1)} />}
+      {rows && rows.length === 0 && <p className={admin.emptyLine}>No AI use in this period.</p>}
+      {rows && rows.length > 0 && <SpendTable rows={rows} />}
+    </section>
+  );
+}
+
+function Cells({ totals }: { totals: UsageTotals }) {
+  return (
+    <>
+      <td role="cell" data-label="Calls" className="tabular">
+        {formatNumber(totals.calls)}
+        {totals.cached_calls > 0 && (
+          <span className={styles.statusNote}>{formatNumber(totals.cached_calls)} from the page cache</span>
+        )}
+      </td>
+      <td role="cell" data-label="Tokens in" className="tabular">
+        {formatNumber(totals.input_tokens)}
+      </td>
+      <td role="cell" data-label="Tokens out" className="tabular">
+        {formatNumber(totals.output_tokens)}
+      </td>
+      <td role="cell" data-label="Cost" className="tabular">
+        {usd(totals.cost_usd, totals.cost_estimated)}
+      </td>
+    </>
+  );
+}
+
+export function SpendTable({ rows }: { rows: OperatorUsageRow[] }) {
+  const totals = spendTotals(rows);
+  return (
+    <div className={table.reflowWrap}>
+      <table className={`table ${table.reflow}`} role="table">
+        <caption className="visually-hidden">AI spend per organisation and model</caption>
+        <thead role="rowgroup">
+          <tr role="row">
+            <th scope="col" role="columnheader">Organisation</th>
+            <th scope="col" role="columnheader">Model</th>
+            <th scope="col" role="columnheader">Calls</th>
+            <th scope="col" role="columnheader">Tokens in</th>
+            <th scope="col" role="columnheader">Tokens out</th>
+            <th scope="col" role="columnheader">Cost</th>
+          </tr>
+        </thead>
+        <tbody role="rowgroup">
+          {rows.map((row) => (
+            <tr key={`${row.organisation_id}|${row.model}`} role="row">
+              <td role="cell" className={styles.orgName}>
+                {row.organisation_name}
+              </td>
+              <td role="cell" data-label="Model">
+                {row.model}
+              </td>
+              <Cells totals={row} />
+            </tr>
+          ))}
+        </tbody>
+        <tfoot role="rowgroup">
+          <tr role="row">
+            <th scope="row" role="rowheader" colSpan={2}>
+              Total
+            </th>
+            <Cells totals={totals} />
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}

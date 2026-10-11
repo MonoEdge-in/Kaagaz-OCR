@@ -500,6 +500,14 @@ export const getOperatorOrgModels = (id: string) =>
   request<OperatorOrgModels>("GET", `/operator/orgs/${id}/models`);
 export const putOperatorOrgModels = (id: string, body: OperatorOrgModels) =>
   request<OperatorOrgModels>("PUT", `/operator/orgs/${id}/models`, body);
+/** Enable or disable one model on the platform, with a fresh code (step-up). The id's
+ * slash stays a slash: the route takes the whole author/slug. */
+export const setOperatorModelEnabled = (id: string, enabled: boolean, code: string) =>
+  request<{ model: { id: string; enabled: boolean; changed: boolean } }>(
+    "PUT",
+    `/operator/models/${id.split("/").map(encodeURIComponent).join("/")}`,
+    { enabled, code },
+  );
 /** Tokens and dollars per organisation and model; no user or document. */
 export const getOperatorUsage = (params: { from?: string; to?: string } = {}) =>
   request<{ from: string; to: string; items: OperatorUsageRow[] }>("GET", `/operator/usage${query(params)}`);

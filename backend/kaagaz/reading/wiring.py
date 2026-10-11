@@ -98,6 +98,13 @@ def build_gemini_engine(settings: Settings, *, pool: RapidOcrPool) -> PageEngine
     return engine
 
 
+def gemini_reader_module() -> Any:
+    """``GEMINI_OCR_MODULE`` itself, for ``verify-models`` only (model choice, council 11 Oct
+    2026): a model is checked with the reader's own INSTRUCTION, PAGE_SCHEMA, ``checked``
+    and ``pinned``. Imported here, on first need, as ``build_gemini_engine`` does."""
+    return importlib.import_module(GEMINI_OCR_MODULE)
+
+
 def build_ocr_engine(settings: Settings) -> OcrEngine | None:
     """The engine for OCR_ENGINE (``ocr.build_ocr_engine``), the Gemini reader from
     ``build_gemini_engine``; None for "none". For the worker and ``cli measure``."""

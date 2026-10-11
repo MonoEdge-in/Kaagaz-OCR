@@ -3,19 +3,22 @@ OpenRouter (council 8 Oct 2026).
 
 PRD 5 says every request field, response field and model ID is checked against the live
 API or the installed package before use (section 14), and never guessed. This command
-does that on the server where the key lives (council question 6): it uses no database,
-file storage or queue; the key comes from the settings and is printed only as ``set`` or
-``missing``; the key's own label is never printed, only its credit numbers; every picture
-is made up here, in memory (lines of a made-up invoice drawn with Pillow's own font), so
-no customer page is ever sent. Every request carries ``openrouter.PROVIDER``.
+does that on the server where the key lives (council question 6): it uses no database
+(but ``--record``'s one row, written by ``cli``), file storage or queue; the key comes from
+the settings and is printed only as ``set`` or ``missing``; the key's own label is never
+printed, only its credit numbers; every picture is made up here, in memory (lines of a
+made-up invoice drawn with Pillow's own font), so no customer page is ever sent. Every
+request carries ``openrouter.PROVIDER``, or for a ``--model`` item the same block with
+the provider its endpoint rule found.
 
 It prints one line per item, ``VERIFY <id> PASS|FAIL|INFO <evidence>``, and exits 1 when
 any item FAILs. INFO means a person reads the evidence and decides. The items:
 
 1. ``endpoints``: ``GET /models/{author}/{slug}/endpoints`` for each page model
-   (OCR_MODEL, a google/gemini- MODEL_CHAT and each ``--model``): google-vertex is listed,
+   (OCR_MODEL, MODEL_CHAT when it is a model ID, and each ``--model``): google-vertex is listed,
    and its supported parameters include response_format, reasoning and
-   max_completion_tokens; its ZDR field is shown when the listing has one.
+   max_completion_tokens (or max_tokens, which Vertex lists; OpenRouter takes either);
+   its ZDR field is shown when the listing has one.
 2. ``model_calls``: one 200 from each of those models, with the provider block.
 3. ``strict_schema``: structured output with ``strict`` true and false; PASS when the value
    requests use (``openrouter.STRICT_SCHEMA``) gives schema-following JSON.
@@ -26,8 +29,9 @@ any item FAILs. INFO means a person reads the evidence and decides. The items:
    ``MEDIA_RESOLUTION_SHAPE`` "passthrough" is the question for Vrushit).
 6. ``usage_fields``: the counts the client bills (G9); whether ``completion_tokens``
    includes the reasoning tokens, and whether ``cost`` is present.
-7. ``max_tokens_finish``: a tiny ``max_completion_tokens`` ends ``length`` with native
-   ``MAX_TOKENS``, which the client turns into ``output_truncated`` (G6).
+7. ``max_tokens_finish``: a tiny ``max_completion_tokens`` ends ``length`` (whatever the
+   provider's native reason: Google's is ``MAX_TOKENS``), which the client turns into
+   ``output_truncated`` (G6).
 8. ``embedding_dims``: ``/embeddings`` at ``dimensions`` 1024 (M5) gives 1024-long finite
    vectors: their length and norm.
 9. ``no_key_status``: a request with no key answers 401 (``key_rejected``).
@@ -45,7 +49,35 @@ any item FAILs. INFO means a person reads the evidence and decides. The items:
 16. ``parallel_latency``: 6 pages read at once through one client at MODEL_RPM (G8), and
     the seconds each took, against one read alone.
 
-Cost: about 25 model calls with a small picture, a few cents on the Pro model.
+Then, for each ``--model`` (model choice, council 11 Oct 2026, MC1, MC2), the items a
+model must pass before the operator can enable it, each through the provider the endpoint
+rule found, with the reader's own ``INSTRUCTION`` and ``PAGE_SCHEMA`` where a page is read:
+
+* ``model_endpoint``: the catalogue's endpoint rule (``jobs/catalog``): a zero-data-
+  retention endpoint with status 0, of a provider in OPENROUTER_PROVIDERS, listing
+  structured_outputs and the parameters of item 1.
+* ``model_reply``: a 200, and the ``provider_name`` OpenRouter's ``/generation`` gives.
+* ``model_page_schema``: the made-up page read with the real ``PAGE_SCHEMA``, and the reply
+  follows it (``schema_problem``).
+* ``model_made_up_page``: that read has every line of the page exactly.
+* ``model_boxes``: every line it gave is pinned to the page's own boxes by G5's rule
+  (the reader's ``pinned``); each box's best IoU is shown.
+* ``model_devanagari``: INFO: no Devanagari page is drawn, since no Devanagari font is
+  bundled (Pillow's own is Latin only, and a font would be a new dependency).
+* ``model_efforts``: OCR_THINKING_LEVEL and OCR_RETRY_THINKING_LEVEL are accepted, each with
+  ``reasoning_tokens`` above 0.
+* ``model_cost``: the page read's ``usage.cost`` is above 0.
+* ``model_truncation``: a tiny output cap ends ``length``, which the client calls
+  ``output_truncated``; ``model_token_cap``: it gave at most that many tokens.
+* ``model_refusal``: local, no call: a refusal in each shape (``message.refusal``,
+  ``content_filter``, a native ``refusal``) is ``blocked`` for the client.
+
+``--record`` (exactly one ``--model``): when every one of these but the INFO passes, the
+command writes the pass for ``READER_PROMPT_VERSION`` and the page read's tokens in
+and out (``record``, as the owner: ``cli``). Otherwise nothing is written.
+
+Cost: about 25 model calls with a small picture, a few cents on the Pro model, and about 8
+more per ``--model``.
 """
 
 import dataclasses
@@ -79,19 +111,52 @@ from kaagaz.ai.openrouter import (
     reply_text,
 )
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, parse_reply
-from kaagaz.settings import EMBEDDING_DIM, Settings, is_gemini_model, valid_model_id
+from kaagaz.jobs import catalog
+from kaagaz.reading.ocr import READER_PROMPT_VERSION
+from kaagaz.reading.wiring import gemini_reader_module
+from kaagaz.settings import DEFAULT_PROVIDER, EMBEDDING_DIM, Settings, valid_model_id
 
 PASS, FAIL, INFO = "PASS", "FAIL", "INFO"
-# The embedding model M5 names; used when MODEL_EMBED is not a Gemini model yet (question 4).
-GEMINI_EMBED_MODEL = "google/gemini-embedding-2"
-BOGUS_MODEL = "google/gemini-0.0-not-a-model"
+# A model ID no provider serves (made up, with no model's name in it).
+BOGUS_MODEL = "kaagaz/not-a-model-0"
 TEMPERATURE_RUNS = 3
 PARALLEL_CALLS = 6
 TINY_OUTPUT_TOKENS = 16
 EFFORTS = ("minimal", "low", "medium", "high")
-# What the page reader sends, so google-vertex must list each as supported.
-NEEDED_PARAMETERS = frozenset({"response_format", "reasoning", "max_completion_tokens"})
+# What the page reader sends, so the endpoint must list each as supported; and one of the
+# output caps (Vertex lists max_tokens; OpenRouter takes either name).
+NEEDED_PARAMETERS = frozenset({"response_format", "reasoning"})
+MAX_TOKEN_PARAMETERS = frozenset({"max_completion_tokens", "max_tokens"})
 VERTEX = "google-vertex"
+GENERATION_PATH = "/generation"
+# /generation may lag the reply by a moment: asked this many times, a second apart.
+GENERATION_TRIES = 3
+# Only these shapes of a reply id and a provider name are used or printed.
+_REPLY_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_PROVIDER_NAME = re.compile(r"[A-Za-z0-9 ._-]{1,64}")
+# A refusal in each shape a provider sends it (model_refusal): the client must say blocked.
+REFUSALS: dict[str, dict[str, Any]] = {
+    "message.refusal": {"message": {"content": None, "refusal": "No."}, "finish_reason": "stop"},
+    "content_filter": {"message": {"content": None}, "finish_reason": "content_filter"},
+    "native refusal": {
+        "message": {"content": "{}"},
+        "finish_reason": "stop",
+        "native_finish_reason": "refusal",
+    },
+}
+# The --model items --record needs to PASS (model_devanagari is INFO).
+REQUIRED = (
+    "model_endpoint",
+    "model_reply",
+    "model_page_schema",
+    "model_made_up_page",
+    "model_boxes",
+    "model_efforts",
+    "model_cost",
+    "model_truncation",
+    "model_token_cap",
+    "model_refusal",
+)
 # A made-up invoice: nothing here belongs to anyone.
 TRUTH = ("INVOICE 4471", "Total Rs 12,345.00", "Date 08-10-2026")
 INSTRUCTION = (
@@ -154,16 +219,30 @@ def _said(probe: Probe) -> str:
 
 def _outcome(probe: Probe) -> tuple[bool, str]:
     """(the reply is schema-following JSON, a short description of what came back)."""
+    value, said = _parsed(probe, SCHEMA)
+    return value is not None, said
+
+
+def _parsed(probe: Probe, schema: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """(the reply's object when it follows ``schema``, a short description of what came back)."""
     if probe.status == 0:
-        return False, "no reply"
+        return None, "no reply"
     if probe.reply is None:
-        return False, _said(probe)
+        return None, _said(probe)
     try:
         text, _ = reply_text(probe.reply)
     except (ModelOutputError, ModelUnavailable) as error:
-        return False, f"{probe.status} {error.code}"
-    value, problem = parse_reply(text, SCHEMA)
-    return (value is not None, f"{probe.status} json" if value is not None else f"{probe.status} {problem}")
+        return None, f"{probe.status} {error.code}"
+    value, problem = parse_reply(text, schema)
+    return value, f"{probe.status} json" if value is not None else f"{probe.status} {problem}"
+
+
+def _lacking(parameters: Iterable[str]) -> list[str]:
+    """The page reader's parameters an endpoint does not list: NEEDED_PARAMETERS, and one of
+    MAX_TOKEN_PARAMETERS (named max_completion_tokens when neither is there)."""
+    listed = set(parameters)
+    lacking = sorted(NEEDED_PARAMETERS - listed)
+    return lacking if MAX_TOKEN_PARAMETERS & listed else [*lacking, "max_completion_tokens"]
 
 
 def _usage(probe: Probe | None) -> dict[str, Any]:
@@ -188,20 +267,21 @@ class Verifier:
         models: Sequence[str],
         embed_model: str | None,
         timer: Callable[[], float],
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.settings = settings
         self.key_set = settings.openrouter_api_key is not None
         self.page = made_up_page()
         self.timer = timer
+        self.sleep = sleep
         self.timeout = settings.ocr_timeout_seconds
-        gemini_chat = [settings.model_chat] if is_gemini_model(settings.model_chat) else []
-        wanted = list(dict.fromkeys([settings.ocr_model, *gemini_chat, *models]))
+        chat = [settings.model_chat] if valid_model_id(settings.model_chat) else []
+        wanted = list(dict.fromkeys([settings.ocr_model, *chat, *models]))
         self.models = [model for model in wanted if valid_model_id(model)]
         self.bad_models = [model for model in wanted if not valid_model_id(model)]
+        self.checks = [ModelCheck(self, model) for model in dict.fromkeys(models)]
         if embed_model is None:
-            embed_model = (
-                settings.model_embed if is_gemini_model(settings.model_embed) else GEMINI_EMBED_MODEL
-            )
+            embed_model = settings.model_embed
         self.embed_model = embed_model
         # The no-key probe never sends a key: this client holds a placeholder.
         self.keyless = OpenRouterClient(dataclasses.replace(settings, openrouter_api_key="no-key-sent"))
@@ -295,7 +375,7 @@ class Verifier:
             for name in endpoint["supported_parameters"]
             if isinstance(name, str)
         }
-        lacking = sorted(NEEDED_PARAMETERS - parameters)
+        lacking = _lacking(parameters)
         zdr = sorted(
             {f"{key}={value}" for endpoint in vertex for key, value in endpoint.items() if "zdr" in key}
         )
@@ -418,7 +498,8 @@ class Verifier:
             if probe.reply is not None:
                 reply_text(probe.reply)
         except ModelOutputError as error:
-            if error.code == "output_truncated" and native == "MAX_TOKENS":
+            # Any provider's native reason: Google says MAX_TOKENS, others their own.
+            if error.code == "output_truncated" and finish == "length":
                 return Finding("max_tokens_finish", PASS, f"{evidence}; client: output_truncated")
         except ModelUnavailable as error:
             evidence += f"; client: {error.code}"
@@ -584,14 +665,241 @@ class Verifier:
         return Finding("detection_model_sha", PASS if ok else FAIL, "; ".join(said))
 
 
-def _text_only(model: str) -> dict[str, Any]:
-    """A one-line chat request to ``model``, with the provider block."""
+class ModelCheck:
+    """The ``--model`` items for one model (see the module notes), in order: each live item
+    after ``model_endpoint`` goes through the provider it found, and fails with no request
+    when it found none. ``tokens`` is the page read's (input, output) for ``--record``."""
+
+    def __init__(self, verifier: Verifier, model: str) -> None:
+        self.verifier = verifier
+        self.model = model
+        self.provider: str | None = None
+        self.read: Probe | None = None  # the PAGE_SCHEMA read
+        self.value: dict[str, Any] | None = None
+        self.capped: Probe | None = None  # the tiny output cap's reply
+        self.tokens: tuple[int, int] | None = None
+
+    def items(self) -> list[tuple[str, Callable[[], Finding]]]:
+        return [
+            ("model_endpoint", self.endpoint),
+            ("model_reply", self.reply),
+            ("model_page_schema", self.page_schema),
+            ("model_made_up_page", self.made_up_page),
+            ("model_boxes", self.boxes),
+            ("model_devanagari", self.devanagari),
+            ("model_efforts", self.efforts),
+            ("model_cost", self.cost),
+            ("model_truncation", self.truncation),
+            ("model_token_cap", self.token_cap),
+            ("model_refusal", self.refusal),
+        ]
+
+    def _found(self, item: str, verdict: str, evidence: str) -> Finding:
+        return Finding(item, verdict, f"{self.model}: {evidence}")
+
+    def _cannot(self, item: str) -> Finding | None:
+        """The FAIL of a live item that can't be asked: no key, a bad ID, no provider."""
+        if not self.verifier.key_set:
+            return self._found(item, FAIL, "OPENROUTER_API_KEY missing")
+        if not valid_model_id(self.model):
+            return self._found(item, FAIL, "not an OpenRouter model ID")
+        if item != "model_endpoint" and self.provider is None:
+            return self._found(item, FAIL, "no usable endpoint (model_endpoint)")
+        return None
+
+    def _page(self, schema: Mapping[str, Any], instruction: str, **options: Any) -> Probe:
+        """The made-up page read by this model through its provider."""
+        settings = self.verifier.settings
+        values: dict[str, Any] = {
+            "model": self.model,
+            "png": self.verifier.page.png,
+            "instruction": instruction,
+            "schema": schema,
+            "media_resolution": settings.ocr_media_resolution,
+            "thinking": settings.ocr_thinking_level,
+            "max_output_tokens": openrouter.PAGE_MAX_OUTPUT_TOKENS,
+            "provider_slug": self.provider,
+        }
+        return self.verifier._probe(CHAT_PATH, page_request(**{**values, **options}))
+
+    def endpoint(self) -> Finding:
+        if (cannot := self._cannot("model_endpoint")) is not None:
+            return cannot
+        listing = self.verifier._probe(f"/models/{self.model}/endpoints", None)
+        zdr = self.verifier._probe(catalog.ZDR_PATH, None)
+        try:
+            endpoints = catalog.zdr_slugs(self.model, listing.reply, catalog.zdr_endpoints(zdr.reply))
+        except catalog.CatalogUnavailable as error:
+            evidence = f"status {_said(listing)}, zdr {_said(zdr)}: {error.code}"
+            return self._found("model_endpoint", FAIL, evidence)
+        allowed = self.verifier.settings.openrouter_providers
+        usable = [
+            slug
+            for slug, parameters in endpoints
+            if slug in allowed and catalog.STRUCTURED in parameters and not _lacking(parameters)
+        ]
+        said = f"ZDR endpoints {','.join(slug for slug, _ in endpoints) or 'none'}"
+        if not usable:
+            evidence = f"{said}; none of OPENROUTER_PROVIDERS with structured output and the parameters"
+            return self._found("model_endpoint", FAIL, evidence)
+        self.provider = usable[0]
+        return self._found("model_endpoint", PASS, f"{said}; reads through {self.provider}")
+
+    def reply(self) -> Finding:
+        if (cannot := self._cannot("model_reply")) is not None:
+            return cannot
+        probe = self.verifier._probe(CHAT_PATH, _text_only(self.model, self.provider or DEFAULT_PROVIDER))
+        reply_id = probe.reply.get("id") if probe.reply is not None else None
+        name = None
+        if probe.status == 200 and isinstance(reply_id, str) and _REPLY_ID.fullmatch(reply_id):
+            for attempt in range(GENERATION_TRIES):
+                if attempt:
+                    self.verifier.sleep(1.0)
+                name = _provider_name(self.verifier._probe(f"{GENERATION_PATH}?id={reply_id}", None))
+                if name is not None:
+                    break
+        verdict = PASS if probe.status == 200 and name is not None else FAIL
+        return self._found("model_reply", verdict, f"{_said(probe)}; provider_name {name or 'not given'}")
+
+    def page_schema(self) -> Finding:
+        if (cannot := self._cannot("model_page_schema")) is not None:
+            return cannot
+        reader = gemini_reader_module()
+        self.read = self._page(reader.PAGE_SCHEMA, reader.INSTRUCTION)
+        self.value, said = _parsed(self.read, reader.PAGE_SCHEMA)
+        if self.value is None or self.read.reply is None:
+            return self._found("model_page_schema", FAIL, said)
+        self.tokens = openrouter.reply_usage(self.read.reply)
+        evidence = f"{said} follows PAGE_SCHEMA; tokens in {self.tokens[0]} out {self.tokens[1]}"
+        return self._found("model_page_schema", PASS, evidence)
+
+    def _lines(self, item: str) -> tuple[list[Any] | None, Finding | None]:
+        """The page read's checked lines, or the item's FAIL."""
+        if self.value is None:
+            return None, self._found(item, FAIL, "no page read (model_page_schema)")
+        try:
+            return list(gemini_reader_module().checked(self.value).lines), None
+        except ModelOutputError as error:
+            return None, self._found(item, FAIL, error.code)
+
+    def made_up_page(self) -> Finding:
+        lines, failed = self._lines("model_made_up_page")
+        if lines is None:
+            return failed or self._found("model_made_up_page", FAIL, "no lines")
+        exact = sum(1 for line, truth in zip(lines, TRUTH, strict=False) if _same(line.text, truth))
+        verdict = PASS if exact == len(TRUTH) == len(lines) else FAIL
+        return self._found(
+            "model_made_up_page", verdict, f"{exact}/{len(TRUTH)} lines exact, {len(lines)} read"
+        )
+
+    def boxes(self) -> Finding:
+        lines, failed = self._lines("model_boxes")
+        if lines is None:
+            return failed or self._found("model_boxes", FAIL, "no lines")
+        width, height = self.verifier.page.image.size
+        truth = [(float(x0), float(y0), float(x1), float(y1)) for x0, y0, x1, y1 in self.verifier.page.boxes]
+        placed = gemini_reader_module().pinned(lines, truth, width, height)
+        pinned = sum(1 for line in placed if line.box_source == "found")
+        best = [
+            max((_iou(box, (line.x0, line.y0, line.x1, line.y1)) for line in placed), default=0.0)
+            for box in truth
+        ]
+        verdict = PASS if lines and pinned == len(lines) else FAIL
+        evidence = f"pinned {pinned}/{len(lines)}; best IoU per line {' '.join(f'{iou:.2f}' for iou in best)}"
+        return self._found("model_boxes", verdict, evidence)
+
+    def devanagari(self) -> Finding:
+        evidence = (
+            "not drawn: no Devanagari font is bundled (Pillow's own font is Latin only, and a font"
+            " would be a new dependency); measure it on a real Hindi or Marathi page"
+        )
+        return self._found("model_devanagari", INFO, evidence)
+
+    def efforts(self) -> Finding:
+        if (cannot := self._cannot("model_efforts")) is not None:
+            return cannot
+        settings = self.verifier.settings
+        ok, said = True, []
+        for level in sorted({settings.ocr_thinking_level, settings.ocr_retry_thinking_level}):
+            probe = self._page(SCHEMA, INSTRUCTION, thinking=level, max_output_tokens=None)
+            good, description = _outcome(probe)
+            thought = reasoning_tokens(probe.reply) if probe.reply is not None else 0
+            ok = ok and good and thought > 0
+            said.append(f"{level}={description} reasoning={thought}")
+        return self._found("model_efforts", PASS if ok else FAIL, " ".join(said))
+
+    def cost(self) -> Finding:
+        if (cannot := self._cannot("model_cost")) is not None:
+            return cannot
+        cost = reply_cost(self.read.reply) if self.read is not None and self.read.reply is not None else None
+        verdict = PASS if cost is not None and cost > 0 else FAIL
+        return self._found("model_cost", verdict, f"usage.cost {_number(cost)} on the page read")
+
+    def truncation(self) -> Finding:
+        if (cannot := self._cannot("model_truncation")) is not None:
+            return cannot
+        self.capped = probe = self._page(SCHEMA, INSTRUCTION, max_output_tokens=TINY_OUTPUT_TOKENS)
+        finish, native = finish_reasons(probe.reply) if probe.reply is not None else (None, None)
+        evidence = f"status {_said(probe)} finish {finish} native {native}"
+        try:
+            if probe.reply is not None:
+                reply_text(probe.reply)
+        except ModelOutputError as error:
+            if error.code == "output_truncated" and finish == "length":
+                return self._found("model_truncation", PASS, f"{evidence}; client: output_truncated")
+            evidence += f"; client: {error.code}"
+        except ModelUnavailable as error:
+            evidence += f"; client: {error.code}"
+        return self._found("model_truncation", FAIL, evidence)
+
+    def token_cap(self) -> Finding:
+        if (cannot := self._cannot("model_token_cap")) is not None:
+            return cannot
+        given = _usage(self.capped).get("completion_tokens")
+        if isinstance(given, bool) or not isinstance(given, int):
+            return self._found("model_token_cap", FAIL, "no completion_tokens (model_truncation)")
+        verdict = PASS if given <= TINY_OUTPUT_TOKENS else FAIL
+        return self._found("model_token_cap", verdict, f"completion {given} at a cap of {TINY_OUTPUT_TOKENS}")
+
+    def refusal(self) -> Finding:
+        said, ok = [], True
+        for shape, choice in REFUSALS.items():
+            try:
+                reply_text({"choices": [choice]})
+                code = "text"
+            except (ModelOutputError, ModelUnavailable) as error:
+                code = error.code
+            ok = ok and code == "blocked"
+            said.append(f"{shape}={code}")
+        return self._found("model_refusal", PASS if ok else FAIL, f"{' '.join(said)}; local, no call")
+
+
+def _provider_name(probe: Probe) -> str | None:
+    """``data.provider_name`` of a /generation reply, when it has a safe shape."""
+    data = probe.reply.get("data") if probe.reply is not None else None
+    name = data.get("provider_name") if isinstance(data, dict) else None
+    return name if isinstance(name, str) and _PROVIDER_NAME.fullmatch(name) else None
+
+
+def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    """Intersection over union of two (x0, y0, x1, y1) boxes; 0 when either has no area."""
+    width = min(a[2], b[2]) - max(a[0], b[0])
+    height = min(a[3], b[3]) - max(a[1], b[1])
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1])
+    if width <= 0 or height <= 0 or union <= 0:
+        return 0.0
+    return width * height / (union - width * height)
+
+
+def _text_only(model: str, provider: str = DEFAULT_PROVIDER) -> dict[str, Any]:
+    """A one-line chat request to ``model``, with the provider block for ``provider``."""
     return chat_request(
         model=model,
         messages=[{"role": "user", "content": "Reply with the word OK."}],
         thinking=CHAT_THINKING_LEVEL,
         schema=None,
         max_output_tokens=None,
+        provider_slug=provider,
     )
 
 
@@ -633,16 +941,38 @@ def run(
     models: Sequence[str] = (),
     embed_model: str | None = None,
     timer: Callable[[], float] = time.perf_counter,
+    sleep: Callable[[float], None] = time.sleep,
+    record: Callable[[str, int, int], None] | None = None,
 ) -> int:
-    """Check every item, print one line each and a summary; 1 when any FAILs, else 0."""
-    verifier = Verifier(settings, models=models, embed_model=embed_model, timer=timer)
+    """Check every item, print one line each and a summary; 1 when any FAILs, else 0.
+    ``record`` (``--record``, exactly one model): called with (model, tokens in, tokens
+    out) only when every REQUIRED item of that model PASSes; else nothing is written."""
+    verifier = Verifier(settings, models=models, embed_model=embed_model, timer=timer, sleep=sleep)
     out.write(f"KEY OPENROUTER_API_KEY {'set' if verifier.key_set else 'missing'}\n")
     out.write(f"MODELS ocr {settings.ocr_model} chat {settings.model_chat} embed {verifier.embed_model}\n")
-    findings = []
-    for _, check in verifier.items():
-        finding = check()
-        findings.append(finding)
-        out.write(f"VERIFY {finding.item} {finding.verdict} {finding.evidence}\n")
+    findings = [_said_finding(out, item) for _, item in verifier.items()]
+    passed: dict[str, set[str]] = {}
+    for check in verifier.checks:
+        mine = [_said_finding(out, item) for _, item in check.items()]
+        passed[check.model] = {finding.item for finding in mine if finding.verdict == PASS}
+        findings += mine
     counts = {verdict: sum(1 for f in findings if f.verdict == verdict) for verdict in (PASS, FAIL, INFO)}
     out.write(f"SUMMARY {counts[PASS]} PASS, {counts[FAIL]} FAIL, {counts[INFO]} INFO\n")
+    if record is not None:
+        [check] = verifier.checks
+        failed = [item for item in REQUIRED if item not in passed[check.model]]
+        if failed or check.tokens is None:
+            out.write(f"NOT RECORDED {check.model}: {','.join(failed)} did not pass\n")
+            return 1
+        record(check.model, *check.tokens)
+        out.write(
+            f"RECORDED {check.model} prompt {READER_PROMPT_VERSION}"
+            f" tokens per page in {check.tokens[0]} out {check.tokens[1]}\n"
+        )
     return 1 if counts[FAIL] else 0
+
+
+def _said_finding(out: TextIO, item: Callable[[], Finding]) -> Finding:
+    finding = item()
+    out.write(f"VERIFY {finding.item} {finding.verdict} {finding.evidence}\n")
+    return finding
