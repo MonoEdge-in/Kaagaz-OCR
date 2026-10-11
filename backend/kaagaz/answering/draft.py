@@ -38,7 +38,7 @@ Whatever is drafted still goes through ``verify.py``: a sentence citing
 nothing, or holding a number its evidence does not hold, is dropped.
 
 **The budget** (ML amendment 5). A model reply is at most
-``MODEL_ANSWER_MAX_TOKENS`` tokens, and the schema caps it at ``MAX_SENTENCES``
+``MODEL_ANSWER_MAX_TOKENS`` tokens, and it is cut to ``MAX_SENTENCES``
 sentences of ``MAX_SENTENCE_CHARS`` characters (about 450 tokens).
 ``fit_evidence`` keeps the best-ranked evidence whose prompt fits the window
 (``estimate_tokens_cautiously``: a letter of any script but ASCII is a whole token,
@@ -285,7 +285,7 @@ def _parse(reply: dict[str, Any]) -> Draft:
     if status == "not_found":
         return Draft("not_found", [])
     sentences: list[DraftSentence] = []
-    for raw in raw_sentences:
+    for raw in raw_sentences[:MAX_SENTENCES]:  # the request carries no maxItems (openrouter)
         if not isinstance(raw, dict):
             raise ModelOutputError("answer_shape")
         sentence_text, ids = raw.get("text"), raw.get("evidence")

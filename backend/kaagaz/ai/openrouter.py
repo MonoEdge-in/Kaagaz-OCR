@@ -330,11 +330,23 @@ def reasoning(name: str) -> dict[str, Any]:
 
 
 def response_format(schema: Mapping[str, Any], *, strict: bool = STRICT_SCHEMA) -> dict[str, Any]:
-    """The ``response_format`` asking for JSON that follows ``schema`` (G3)."""
+    """The ``response_format`` asking for JSON that follows ``schema`` (G3), sent with no
+    ``maxItems``: Google Vertex refuses the document card's schema with it (400
+    INVALID_ARGUMENT, live 11 Oct 2026) and takes it without. Every caller caps its own
+    lists after the reply (card ``_capped``, invoice lines, memory, answer sentences)."""
     return {
         "type": "json_schema",
-        "json_schema": {"name": SCHEMA_NAME, "strict": strict, "schema": dict(schema)},
+        "json_schema": {"name": SCHEMA_NAME, "strict": strict, "schema": _without_max_items(schema)},
     }
+
+
+def _without_max_items(schema: Any) -> Any:
+    """``schema`` with every ``maxItems`` left out, at any depth; nothing else changes."""
+    if isinstance(schema, Mapping):
+        return {key: _without_max_items(value) for key, value in schema.items() if key != "maxItems"}
+    if isinstance(schema, list):
+        return [_without_max_items(value) for value in schema]
+    return schema
 
 
 def image_content(png: bytes, instruction: str, media_resolution: str | None) -> list[dict[str, Any]]:

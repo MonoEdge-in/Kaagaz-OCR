@@ -1170,3 +1170,20 @@ def test_every_client_of_the_process_shares_one_gate(fake: OpenRouterFake) -> No
     assert process_gate(settings, workers=1).interval == pytest.approx(chat.interval / 4)
     with pytest.raises(ValueError, match="workers"):
         ModelGate(settings, workers=0)
+
+
+def test_a_schema_goes_out_with_no_max_items_and_nothing_else_changed() -> None:
+    """Live 11 Oct 2026: Google Vertex refused the card's schema with maxItems (400
+    INVALID_ARGUMENT) and took it without; maxLength is kept."""
+    from kaagaz.extraction.card import CARD_SCHEMA
+
+    sent = openrouter.response_format(CARD_SCHEMA)["json_schema"]["schema"]
+    assert '"maxItems"' in json.dumps(CARD_SCHEMA) and '"maxItems"' not in json.dumps(sent)
+    assert '"maxLength"' in json.dumps(sent)
+
+    def dropped(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: dropped(item) for key, item in value.items() if key != "maxItems"}
+        return [dropped(item) for item in value] if isinstance(value, list) else value
+
+    assert sent == dropped(CARD_SCHEMA)
