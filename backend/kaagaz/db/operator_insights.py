@@ -6,10 +6,11 @@ suppresses outcome values below K in SQL.
 
 * ``daily`` (F1): per organisation and day, uploads, sign-ins, questions, corrections,
   runs, pages and spend. Only days with something.
-* ``org_health`` (F2): per organisation, active users, answers, open review and this
-  month's spend against its budget.
+* ``org_health`` (F2): per organisation, active users, answers, open review, this
+  month's spend against its budget and the last day it was active.
 * ``quality`` (F3): reading, answers and review per organisation, plus one platform row
-  (``customer_id`` NULL).
+  (``customer_id`` NULL) whose outcome values and their totals count only the
+  organisations at K or more (no leak by subtraction).
 * ``model_board`` (F4): per model, pages, speed, page signals and spend. No customer.
 
 Days are in ``zone`` (TIMEZONE), both ends included; the function refuses a backwards or

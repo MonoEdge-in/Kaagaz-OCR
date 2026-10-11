@@ -211,7 +211,7 @@ OPERATOR_RIGHTS = {
         "TABLE(customer_id uuid, active_users_7d bigint, active_users_30d bigint,"
         " active_users_prev_30d bigint, answers_30d bigint, not_found_30d bigint, open_review bigint,"
         " oldest_open_review_at timestamp with time zone, ai_budget_usd numeric, month_cost_usd numeric,"
-        " month_cost_estimated boolean, month_cost_part_unknown boolean)",
+        " month_cost_estimated boolean, month_cost_part_unknown boolean, last_active_day date)",
         EMPTY_PATH,
     ),
     "kaagaz_op_quality": (

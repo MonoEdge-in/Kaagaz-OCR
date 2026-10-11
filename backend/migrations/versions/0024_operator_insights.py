@@ -8,15 +8,22 @@ status keys and ``feedback.rating``). Read-only: nothing here writes a row.
   corrections, runs, pages and spend. Only days with something.
 * ``kaagaz_op_org_health`` (F2): per organisation, active people (a count, never who),
   answers and not-found answers of the last 30 days, the open review (exactly the admin's
-  ``open_review_items``, db/admin.py ``_COUNTS``) and this month's spend against its budget.
+  ``open_review_items``, db/admin.py ``_COUNTS``), this month's spend against its budget
+  and the last day it was active (an upload, a question or a run, within 366 days).
 * ``kaagaz_op_quality`` (F3): reading, answers and review per organisation, plus one
-  platform row (``customer_id`` NULL, through GROUPING SETS).
+  platform row (``customer_id`` NULL, through GROUPING SETS). The platform row's outcome
+  values AND the totals they are shares of (answers, feedback, values_total,
+  corrections) count only the organisations whose own total reaches K: every number in
+  it is then a sum of numbers their own rows already show, so subtracting the shown
+  organisations from it reveals nothing of one below K. Its rates are "over the
+  organisations with enough data"; the true platform volume is the sum of the
+  organisations' rows (volumes are never NULL).
 * ``kaagaz_op_model_board`` (F4): per model, runs, speed, page signals and spend. No
   organisation. Observational, not an A/B test.
 
 Days are in ``p_zone`` (the API passes TIMEZONE), both ends included: the window is
-[p_from 00:00, p_to + 1 day 00:00) in that zone. A backwards range, one of 366 days or
-more, a NULL day and an unknown zone are refused (check_violation). Outcome values are
+[p_from 00:00, p_to + 1 day 00:00) in that zone. A backwards range, one of more than 366
+days, a NULL day and an unknown zone are refused (check_violation). Outcome values are
 NULL below K = 10 of their own total (a p95 below 20), decided here, so no route can
 show them; volumes are never NULL. Never a person, document, conversation, message,
 batch, folder or tag, nor any name, e-mail, text, question, answer, citation, feedback
@@ -107,7 +114,7 @@ _ZONE = """
 # [p_from 00:00, p_to + 1 00:00) in the zone, at most 366 days.
 _RANGE = f"""
         IF p_from IS NULL OR p_to IS NULL OR p_from > p_to OR p_to - p_from >= 366 THEN
-            RAISE EXCEPTION 'a range runs forwards over fewer than 366 days' USING ERRCODE = 'check_violation';
+            RAISE EXCEPTION 'a range runs forwards over at most 366 days' USING ERRCODE = 'check_violation';
         END IF;
         {_ZONE}
         v_lo := p_from::timestamp AT TIME ZONE p_zone;
@@ -131,12 +138,33 @@ def _unless_few(total: str, columns: str, minimum: int = K) -> str:
     )
 
 
+def _sums_of_enough(total: str, columns: str) -> str:
+    """F3's ``total`` and its outcome ``columns`` summed (as ``_sums``), the platform row
+    (GROUPING 1) over the organisations whose own ``total`` reaches K only: its outcome is
+    then a sum of values their rows show, never one of an organisation below K, and its
+    total the base of exactly those. An organisation's own total stays its true volume
+    (its outcomes, 0 below K here, are NULLed by ``_unless_few``)."""
+    enough = f"FILTER (WHERE o.{total} >= {K})"
+    return ",\n               ".join(
+        [
+            f"(CASE WHEN GROUPING(o.customer_id) = 1 THEN coalesce(sum(o.{total}) {enough}, 0)"
+            f" ELSE coalesce(sum(o.{total}), 0) END)::bigint AS {total}",
+            *(f"coalesce(sum(o.{column}) {enough}, 0)::bigint AS {column}" for column in columns.split()),
+        ]
+    )
+
+
 _F3_VOLUMES = (
     "runs runs_failed runs_failed_platform runs_degraded documents_run pages_cells pages_text_layer"
     " pages_ocr pages_blank pages_ai pages_local pages_cached pages_unreadable"
-    " answers answered not_found unchecked answers_verified answers_fixed_query citations"
-    " feedback feedback_up values_total values_needs_review corrections corrections_second corrections_typed"
 )
+# F3's outcome values by the total each is a share of (K is of that total), in column order.
+_F3_OUTCOMES = {
+    "answers": "answered not_found unchecked answers_verified answers_fixed_query citations",
+    "feedback": "feedback_up",
+    "values_total": "values_needs_review",
+    "corrections": "corrections_second corrections_typed",
+}
 
 FUNCTIONS = {
     # F1: one row per organisation and day that has something. Four reads of the
@@ -203,14 +231,17 @@ FUNCTIONS = {
     # a count of distinct actors, never who) in the 7 and 30 days to p_today and the 30
     # before; answers in the 30 days (messages_answers); the open review exactly as the
     # admin's (db/admin.py _COUNTS: needs-review values of current, ready versions out of
-    # Trash), and its oldest value; the calendar month's spend to the end of p_today.
-    # ponytail: O(audit rows of 60 days + open review) per organisation on every call.
+    # Trash), and its oldest value; the calendar month's spend to the end of p_today; the
+    # last day (in p_zone) of an upload or new version, a question or a run that was not
+    # superseded, looked for in the 366 days to p_today only (NULL if none).
+    # ponytail: O(audit rows of 60 days + open review) per organisation on every call,
+    # plus two newest-row probes (audit_log_listing, processing_runs_started).
     "kaagaz_op_org_health(uuid, date, text)": f"""
     CREATE FUNCTION public.kaagaz_op_org_health(p_operator uuid, p_today date, p_zone text)
     RETURNS TABLE (customer_id uuid, active_users_7d bigint, active_users_30d bigint,
                    active_users_prev_30d bigint, answers_30d bigint, not_found_30d bigint, open_review bigint,
                    oldest_open_review_at timestamptz, ai_budget_usd numeric, month_cost_usd numeric,
-                   month_cost_estimated boolean, month_cost_part_unknown boolean)
+                   month_cost_estimated boolean, month_cost_part_unknown boolean, last_active_day date)
     {_HEAD}
     {_BEGIN}
         IF p_today IS NULL THEN
@@ -223,7 +254,7 @@ FUNCTIONS = {
         SELECT c.id, p.users_7d, p.users_30d, p.users_prev, m.answers,
                CASE WHEN m.answers >= {K} THEN m.not_found END,
                v.items, v.oldest, c.ai_budget_usd::numeric, s.cost, coalesce(s.estimated, false),
-               coalesce(s.part_unknown, false)
+               coalesce(s.part_unknown, false), (l.newest AT TIME ZONE p_zone)::date
         FROM public.customers c
         CROSS JOIN LATERAL (
             SELECT count(DISTINCT a.actor_user_id)
@@ -253,6 +284,20 @@ FUNCTIONS = {
             WHERE u.customer_id = c.id AND u.created_at < v_hi
               AND u.created_at >= date_trunc('month', p_today::timestamp) AT TIME ZONE p_zone
         ) s
+        CROSS JOIN LATERAL (
+            SELECT max(x.newest) AS newest
+            FROM (
+                SELECT max(a.created_at) AS newest
+                FROM public.audit_log a
+                WHERE a.customer_id = c.id AND a.action IN ('document.upload', 'document.version', 'chat.ask')
+                  AND a.created_at >= (p_today - 365)::timestamp AT TIME ZONE p_zone AND a.created_at < v_hi
+                UNION ALL
+                SELECT max(r.started_at)
+                FROM public.processing_runs r
+                WHERE r.customer_id = c.id AND r.status <> 'superseded'
+                  AND r.started_at >= (p_today - 365)::timestamp AT TIME ZONE p_zone AND r.started_at < v_hi
+            ) x
+        ) l
         ORDER BY c.created_at, c.id;
     END
     $$
@@ -265,7 +310,9 @@ FUNCTIONS = {
     # route and citation count only; feedback: the rating of those answers only (never its
     # reason); corrections: review.resolve, split by its choice. Values: as each run
     # labelled them when it read (a later fix does not change them). Outcome values NULL
-    # below K of their total, p95 below 20. Documents deleted for good are not counted
+    # below K of their total, p95 below 20; the platform row's outcome values and their
+    # totals over the organisations at K or more only (no leak by subtraction, see the
+    # docstring and _sums_of_enough). Documents deleted for good are not counted
     # (their runs, messages and values go with them; 0005, 0021).
     # ponytail: O(rows of the window) per organisation, plus one probe a ready run.
     "kaagaz_op_quality(uuid, date, date, text)": f"""
@@ -352,7 +399,8 @@ FUNCTIONS = {
         ),
         t AS (
             SELECT o.customer_id, GROUPING(o.customer_id) AS platform,
-                   {_sums("o", _F3_VOLUMES)}
+                   {_sums("o", _F3_VOLUMES)},
+                   {", ".join(_sums_of_enough(total, columns) for total, columns in _F3_OUTCOMES.items())}
             FROM per_org o
             GROUP BY GROUPING SETS ((o.customer_id), ())
         )
@@ -360,11 +408,7 @@ FUNCTIONS = {
                t.pages_cells, t.pages_text_layer, t.pages_ocr, t.pages_blank, t.pages_ai, t.pages_local,
                t.pages_cached, t.pages_unreadable, coalesce(b.n, 0),
                CASE WHEN b.n >= {K} THEN b.p50 END, CASE WHEN b.n >= {P95_MIN} THEN b.p95 END,
-               t.answers,
-               {_unless_few("answers", "answered not_found unchecked answers_verified answers_fixed_query citations")},
-               t.feedback, {_unless_few("feedback", "feedback_up")},
-               t.values_total, {_unless_few("values_total", "values_needs_review")},
-               t.corrections, {_unless_few("corrections", "corrections_second corrections_typed")}
+               {", ".join(f"t.{total}, {_unless_few(total, columns)}" for total, columns in _F3_OUTCOMES.items())}
         FROM t
         LEFT JOIN ready_by b ON b.platform = t.platform AND b.customer_id IS NOT DISTINCT FROM t.customer_id
         ORDER BY t.platform DESC, t.customer_id;
@@ -491,7 +535,8 @@ FUNCTION_COMMENTS = {
     "kaagaz_op_daily": "Operator insights: per organisation and day, uploads, sign-ins, questions,"
     " corrections, runs, pages and AI spend. Counts and sums only, never a person or a document.",
     "kaagaz_op_org_health": "Operator insights: per organisation, active people (a count), answers and"
-    " not-found answers of the last 30 days, the open review and this month's spend against its budget.",
+    " not-found answers of the last 30 days, the open review, this month's spend against its budget"
+    " and the last day it was active.",
     "kaagaz_op_quality": "Operator insights: reading, answers and review per organisation and for the"
     " platform. Outcome values are NULL below 10 of their total, a p95 below 20.",
     "kaagaz_op_model_board": "Operator insights: per model, runs, speed, page signals and spend, no"

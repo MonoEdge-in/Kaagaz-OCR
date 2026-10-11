@@ -129,7 +129,9 @@ def test_decimals_are_numbers_null_stays_null_and_times_are_iso(offline: _Offlin
             not_found_30d=None,  # suppressed below K
             oldest_open_review_at=at,
             month_cost_estimated=True,
-        )
+            last_active_day=date(2026, 9, 7),
+        ),
+        _function_row(ORG_HEALTH_KEYS, last_active_day=None),  # never active
     ]
     offline.rows["daily"] = [
         _function_row(DAILY_KEYS, day=TODAY, cost_usd=None, cost_scan_usd=Decimal("0.5"))
@@ -138,6 +140,7 @@ def test_decimals_are_numbers_null_stays_null_and_times_are_iso(offline: _Offlin
     org = body["organisations"][0]
     assert (org["ai_budget_usd"], org["month_cost_usd"], org["not_found_30d"]) == (25.0, 1.234567, None)
     assert (org["oldest_open_review_at"], org["month_cost_estimated"]) == (at.isoformat(), True)
+    assert [row["last_active_day"] for row in body["organisations"]] == ["2026-09-07", None]
     assert (body["daily"][0]["cost_usd"], body["daily"][0]["cost_scan_usd"]) == (None, 0.5)
     offline.rows["model_board"] = [
         _function_row(BOARD_KEYS, input_tokens=Decimal("1200"), seconds_per_page_p95=None, cost_usd=None)

@@ -551,3 +551,72 @@ def test_runs_by_outcome_and_the_platform_row_adds_up_every_organisation(db: Dat
     assert [of(quality, None)[0][key] for key in outcome] == [7, 5, 4, 1, 7]  # this day: these two only
     [daily] = of(read(db, op, insights.daily, day, day, "UTC"), a)
     assert (daily["runs"], daily["runs_failed"], daily["pages"]) == (6, 4, 6)
+
+
+def test_the_platform_row_never_reveals_an_organisation_below_k_by_subtraction(db: Database) -> None:
+    """One organisation with 20 answers and one with 3: the platform's outcome values and
+    the totals they are shares of count the first only, so the platform minus the shown
+    organisation leaves nothing of the second's answered or not found (nor its thumbs up,
+    values needing review or kinds of fix)."""
+    op, day = operator(db), window_day()
+    when = at(day)
+    (big, big_user), (small, small_user) = new_customer(db), new_customer(db)
+    answers(db, big, big_user, when, 12)
+    answers(db, big, big_user, when, 8, status="not_found")
+    answers(db, small, small_user, when, 1)
+    for message in answers(db, small, small_user, when, 2, status="not_found"):
+        feedback(db, small, small_user, message, "up")
+    audit(db, small, "review.resolve", when, count=3, details={"choice": "typed"})
+    run(db, small, document(db, small, when), when, verified=1, needs_review=2)
+
+    quality = read(db, op, insights.quality, day, day, "UTC")
+    big_row, small_row, [platform] = (
+        one(quality, "customer_id", big),
+        one(quality, "customer_id", small),
+        of(quality, None),
+    )
+    hidden = ("answered", "not_found", "feedback_up", "values_needs_review", "corrections_typed")
+    assert [small_row[key] for key in hidden] == [None] * len(hidden)
+    totals = ("answers", "feedback", "values_total", "corrections")
+    assert [small_row[key] for key in totals] == [3, 2, 3, 3]  # volumes are never NULL
+    assert (big_row["answers"], big_row["answered"], big_row["not_found"]) == (20, 12, 8)
+    outcomes = ("answers", "answered", "not_found", "unchecked", "answers_verified", "citations")
+    assert [platform[key] for key in outcomes] == [20, 12, 8, 0, 20, 20]  # the big one's only
+    left = {key: platform[key] - big_row[key] for key in ("answers", "answered", "not_found")}
+    assert left == dict.fromkeys(left, 0)  # the platform minus the shown one: nothing of the small one
+    assert [platform[key] for key in totals[1:]] == [0, 0, 0]  # no organisation with K of these
+    assert [platform[key] for key in hidden[2:]] == [None, None, None]
+    assert platform["runs"] == 1  # volumes not shares of a total stay every organisation's
+
+
+def test_the_last_active_day_is_the_newest_upload_question_or_run_within_366_days(db: Database) -> None:
+    """In the zone; a sign-in or a superseded run is not activity; nothing in the 366 days
+    to today (today - 365 is the first of them) is NULL."""
+    op, today = operator(db), window_day()
+    asked, reading, edge, past, never = (new_customer(db)[0] for _ in range(5))
+    audit(db, asked, "chat.ask", at(today - timedelta(days=20)))
+    audit(db, asked, "auth.login", at(today - timedelta(days=1)))
+    run(
+        db,
+        asked,
+        document(db, asked, at(today - timedelta(days=40))),
+        at(today - timedelta(days=3)),
+        status="superseded",
+    )
+    run(db, reading, document(db, reading, at(today - timedelta(days=40))), at(today - timedelta(days=10)))
+    audit(db, edge, "document.version", at(today - timedelta(days=365)))
+    audit(db, past, "document.upload", at(today - timedelta(days=366)))
+    audit(db, past, "document.upload", at(today + timedelta(days=1)))  # after today: not yet
+
+    health = read(db, op, insights.org_health, today, IST)
+    days = [
+        one(health, "customer_id", customer)["last_active_day"]
+        for customer in (asked, reading, edge, past, never)
+    ]
+    assert days == [
+        today - timedelta(days=20),
+        today - timedelta(days=10),
+        today - timedelta(days=365),
+        None,
+        None,
+    ]

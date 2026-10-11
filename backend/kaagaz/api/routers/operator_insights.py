@@ -62,6 +62,7 @@ ORG_HEALTH_KEYS = frozenset(
         "month_cost_usd",
         "month_cost_estimated",
         "month_cost_part_unknown",
+        "last_active_day",
     }
 )
 DAILY_KEYS = frozenset(
