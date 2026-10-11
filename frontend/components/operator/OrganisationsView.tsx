@@ -3,7 +3,8 @@
 // Organisations, the first tab of /operator: every organisation with its
 // status and counts only (never a document's or a person's name), a search by
 // name, and Create organisation. Admins opens one organisation's admins
-// (AdminsDialog). Each change opens a dialog (ConfirmDialog): disable, enable,
+// (AdminsDialog); AI models opens its models, default and budget (OrgModelsDialog,
+// model choice). Each change opens a dialog (ConfirmDialog): disable, enable,
 // delete (only a disabled organisation) and cancel the deletion; a row being
 // deleted shows its date and the days left. The table is the shared reflow
 // (Table.module.css): cards below 48rem of room, a table from there.
@@ -22,6 +23,7 @@ import type { Confirm } from "./ConfirmDialog";
 import { orgConfirm, orgFocusId } from "./confirms";
 import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
+import { OrgModelsDialog, orgModelsFocusId } from "./OrgModelsDialog";
 import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -48,6 +50,7 @@ export function OrganisationsView() {
   const [creating, setCreating] = useState(false);
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [adminsOf, setAdminsOf] = useState<Organisation | null>(null);
+  const [modelsOf, setModelsOf] = useState<Organisation | null>(null);
   const [done, setDone] = useState("");
   const now = useMinuteNow();
 
@@ -163,6 +166,7 @@ export function OrganisationsView() {
                       org={org}
                       now={now}
                       onAdmins={() => setAdminsOf(org)}
+                      onModels={() => setModelsOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
                     />
                   ))}
@@ -183,6 +187,7 @@ export function OrganisationsView() {
         />
       )}
       {adminsOf && <AdminsDialog org={adminsOf} onClose={() => setAdminsOf(null)} />}
+      {modelsOf && <OrgModelsDialog org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
       {changing && (
         <ConfirmDialog
           confirm={changing}
@@ -208,8 +213,14 @@ const CHANGES: Record<Organisation["status"], { change: OrgChange; label: string
   deleting: [{ change: "cancel", label: "Cancel deletion" }],
 };
 
-function OrgRow(props: { org: Organisation; now: number; onAdmins(): void; onChange(change: OrgChange): void }) {
-  const { org, now, onAdmins, onChange } = props;
+function OrgRow(props: {
+  org: Organisation;
+  now: number;
+  onAdmins(): void;
+  onModels(): void;
+  onChange(change: OrgChange): void;
+}) {
+  const { org, now, onAdmins, onModels, onChange } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
@@ -254,6 +265,17 @@ function OrgRow(props: { org: Organisation; now: number; onAdmins(): void; onCha
           <button type="button" className="btn" onClick={onAdmins} aria-label={`Admins of ${org.name}`}>
             Admins
           </button>
+          {org.status !== "deleting" && (
+            <button
+              id={orgModelsFocusId(org.id)}
+              type="button"
+              className="btn"
+              onClick={onModels}
+              aria-label={`AI models of ${org.name}`}
+            >
+              AI models
+            </button>
+          )}
           {CHANGES[org.status].map(({ change, label, danger }) => (
             <button
               key={change}

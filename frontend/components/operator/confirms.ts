@@ -3,12 +3,33 @@
 // deletion, reset an admin's two-step) needs a fresh code (step-up), as the
 // server does; giving it back (enable, unlock) and disabling an admin do not.
 
-import { cancelDelete, changeAdmin, disableOrg, enableOrg, scheduleDelete } from "@/lib/api";
-import type { OrgAdmin, Organisation } from "@/lib/types";
+import { cancelDelete, changeAdmin, disableOrg, enableOrg, scheduleDelete, setOperatorModelEnabled } from "@/lib/api";
+import type { OperatorModel, OrgAdmin, Organisation } from "@/lib/types";
 import type { Confirm } from "./ConfirmDialog";
 import { DISABLE_EFFECT, deleteEffect } from "./logic";
 
 export type OrgChange = "disable" | "enable" | "delete" | "cancel";
+
+/** The model's name in the Models table, where the focus goes after a change. */
+export const modelFocusId = (id: string) => `model-name-${id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+
+/** Enable or disable a model on the platform (MC2): both need a fresh code, as the server. */
+export function modelConfirm(model: OperatorModel, enable: boolean): Confirm {
+  const name = model.name;
+  return {
+    title: `${enable ? "Enable" : "Disable"} ${name}?`,
+    effect: enable
+      ? "Organisations can then be allowed to read scans with it. Their pages go only to an approved " +
+        "provider, with zero data retention."
+      :"No organisation can be given it any more. It must first be removed from every organisation.",
+    action: enable ? "Enable model" : "Disable model",
+    done: `${enable ? "Enabled" : "Disabled"} ${name}.`,
+    danger: !enable,
+    stepUp: true,
+    run: (code) => setOperatorModelEnabled(model.id, enable, code),
+    focusId: modelFocusId(model.id),
+  };
+}
 
 /** The organisation's name in its row, where the focus goes after a change. */
 export const orgFocusId = (id: string) => `org-name-${id}`;
