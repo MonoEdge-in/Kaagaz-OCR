@@ -260,7 +260,9 @@ describe("spotNote and noCardText", () => {
   });
 
   it("explains a missing card without calling it an error", () => {
-    expect(noCardText("ready")).toMatch(/^No document card\. The AI model was off/);
+    expect(noCardText("ready")).toBe(
+      "No document card. The AI model was off, could not be reached, or its reply could not be used when this was read.",
+    );
     expect(noCardText("clean")).toBe("The document card comes once the document is read.");
   });
 });
