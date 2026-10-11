@@ -1,5 +1,6 @@
 """The admin routes: users, the customer's settings, the audit log, the numbers and
-the failed jobs (PRD 3 Z1; Retry is the documents router's reprocess route).
+the failed jobs (PRD 3 Z1; Retry is the documents router's reprocess route), and the
+organisation's AI models and spend (model choice, council 11 Oct 2026).
 
 Why the admin session: every route here needs a session started on the admin
 screen (/admin/login, with the two-step code when it is on). The check sits on the router
@@ -25,16 +26,29 @@ stop it again. Allowing needs this admin's two-step sign-in on (403
 ``two_step_required``), else a password-only admin could route round two-step by
 allowing a made-up account; an admin is never a target (400), a role change
 clears the grant, and stopping it works at the user's next request.
+
+Why AI models and spend look the way they do (model choice, council 11 Oct 2026):
+the operator sets the organisation's models and budget, so ``/admin/models`` only
+shows them (``set_by: "operator"``). ``/admin/usage`` and its CSV are the admin's
+alone (SP2): a member or an app session gets 403, like every route here. Days are
+the customer's TIMEZONE days, both ends included, at most USAGE_MAX_DAYS (400
+otherwise); this month to today when left out. A ``user_id`` names a user of this
+customer only: another customer's user matches no row, so the report is empty. The
+budget warns only (SP4). A CSV cell that starts with ``= + - @`` (or a tab or a
+carriage return) gets a leading ``'``, so a spreadsheet never runs it as a formula.
 """
 
+import csv
+import io
 import re
 import secrets
 import uuid
-from datetime import datetime
+from collections.abc import Iterable, Sequence
+from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
@@ -42,11 +56,15 @@ from sqlalchemy import Connection, RowMapping
 from kaagaz.api.auth import AdminSession, CurrentUser, hash_password, require_admin_session
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.readers import page_hint, page_provider, page_usd, usable
+from kaagaz.api.routers.documents import day_start
 from kaagaz.api.views import admin_user, audit_entry, failed_document
 from kaagaz.db import admin as admin_sql
-from kaagaz.db import audit
+from kaagaz.db import audit, listing
 from kaagaz.db import runs as runs_sql
+from kaagaz.db import usage as usage_sql
 from kaagaz.db import users as users_sql
+from kaagaz.reading.ocr import GEMINI
 from kaagaz.settings import Settings
 
 router = APIRouter(dependencies=[Depends(require_admin_session)])
@@ -60,6 +78,12 @@ TEMPORARY_PASSWORD_BYTES = 12  # secrets.token_urlsafe gives 16 characters
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 RoleName = Literal["member", "reviewer", "admin"]
+
+USAGE_MAX_DAYS = 366
+USAGE_CSV_COLUMNS = ("day", "user", "model", "kind", "calls", "tokens", "cost", "estimated", "part_not_known")
+_FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
+UsageFrom = Annotated[str | None, Query(alias="from", pattern=r"^\d{4}-\d{2}-\d{2}$")]
+UsageTo = Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 
 
 def valid_email(email: str) -> str:
@@ -325,25 +349,211 @@ def month_window(now: datetime, timezone: str) -> tuple[datetime, datetime]:
 @router.get("/admin/stats")
 def get_stats(user: AdminSession, context: Context) -> dict[str, Any]:
     """The admin numbers, with the pages read this month by route (PRD 2 R6), by who read
-    them and the model's spend estimate (PRD 5 U9)."""
+    them and the scan tokens (PRD 5 U9); the dollars are this month's AI spend from the
+    ledger, every kind of work (``month_spend``, SP1), to the cent. ``reader_pages.gemini``
+    keeps its name but, with model choice, counts the pages read by any AI model (the
+    run's model), so the screen may call it "Read by AI model"."""
     start, end = month_window(context.clock(), context.settings.timezone)
     with context.db.customer(user.customer_id) as conn:
         numbers = admin_sql.stats(conn, user.customer_id)
         numbers["pages_this_month"] = runs_sql.pages_by_route(conn, user.customer_id, start=start, end=end)
         reader = runs_sql.reader_numbers(conn, user.customer_id, start=start, end=end)
+        spent = usage_sql.month_spend(conn, user.customer_id, start=start, end=end)
     tokens = {"input_tokens": reader.pop("input_tokens"), "output_tokens": reader.pop("output_tokens")}
     numbers["reader_pages"] = reader
-    numbers["spend_estimate"] = {**tokens, "usd": spend_usd(context.settings, **tokens)}
+    # The ledger's own precision: under a cent stays more than nothing ("< $0.01").
+    numbers["spend_estimate"] = {**tokens, "usd": round(float(spent), 6)}
     return numbers
 
 
-def spend_usd(settings: Settings, *, input_tokens: int, output_tokens: int) -> float | None:
-    """The model's estimated spend in US dollars from its tokens (V5), to the cent; None
-    while either MODEL_PRICE_* is 0 (not known), so no made-up figure is shown."""
-    price_in, price_out = settings.model_price_input_usd_per_m, settings.model_price_output_usd_per_m
-    if price_in <= 0 or price_out <= 0:
+# --- AI models and spend (model choice, council 11 Oct 2026) -------------------------
+
+
+@router.get("/admin/models")
+def get_models(user: AdminSession, context: Context) -> dict[str, Any]:
+    """``OrgModels``, read-only (MS1, MS2, MC3): the organisation's usable models with their
+    live prices and estimated price a page, the default scan model (``default_scan``), the
+    budget and this month's spend. Three queries."""
+    customer_id, settings = user.customer_id, context.settings
+    start, end = month_window(context.clock(), settings.timezone)
+    with context.db.customer(customer_id) as conn:
+        rows = usable(conn, customer_id, settings)
+        budget = _budget(conn, customer_id, start, end)
+    return {
+        "set_by": "operator",
+        "default_scan": default_scan(rows, settings),
+        "models": [_org_model(row, page_provider(row, settings)) for row in rows],
+        "ai_budget_usd": budget["ai_budget_usd"],
+        "spent_this_month_usd": budget["spent_this_month_usd"],
+    }
+
+
+def default_scan(rows: Sequence[RowMapping], settings: Settings) -> str | None:
+    """The model that reads this organisation's scans by default: its default while usable,
+    else the platform's, OCR_MODEL (what ``db.models.resolve`` falls back to); None in keyless
+    mode, where no model reads scans (R14)."""
+    if settings.ocr_engine != GEMINI:
         return None
-    return round((input_tokens * price_in + output_tokens * price_out) / 1_000_000, 2)
+    return next((str(row["id"]) for row in rows if row["is_default_scan"]), settings.ocr_model)
+
+
+def _org_model(row: RowMapping, provider: str | None) -> dict[str, Any]:
+    """``OrgModel``, with the provider its pages go to, ``usd_per_page``, the estimated US
+    dollars a page (None: not measured yet), and ``page_hint``, the same in the words the
+    upload's "Read with" uses (MC3: from the ledger, else a rough estimate)."""
+    return {
+        "id": str(row["id"]),
+        "name": row["name"],
+        "provider": provider,
+        "price_in_usd_per_m": float(row["price_in_usd_per_m"]),
+        "price_out_usd_per_m": float(row["price_out_usd_per_m"]),
+        "is_default_scan": bool(row["is_default_scan"]),
+        "usd_per_page": page_usd(row),
+        "page_hint": page_hint(row),
+    }
+
+
+def _budget(conn: Connection, customer_id: str, start: datetime, end: datetime) -> dict[str, Any]:
+    """``UsageBudget``: this month's spend against the operator's budget (warn only, SP4),
+    and whether part of it is not known (``spent_part_unknown``)."""
+    budget = listing.ai_budget(conn, customer_id)
+    spent, part_unknown = usage_sql.spend(conn, customer_id, start=start, end=end)
+    return {
+        "ai_budget_usd": budget,
+        "spent_this_month_usd": spent,
+        "spent_part_unknown": part_unknown,
+        "share": None if budget is None else spent / budget,
+    }
+
+
+def usage_days(first: str | None, last: str | None, today: date) -> tuple[date, date]:
+    """The report's days, both included: this month to ``today`` when left out. 400 for a
+    date that isn't real, a start after the end, or more than USAGE_MAX_DAYS days. O(1)."""
+    try:
+        start = today.replace(day=1) if first is None else date.fromisoformat(first)
+        end = today if last is None else date.fromisoformat(last)
+    except ValueError:
+        raise ApiError(400, "bad_request", "Use real dates, written YYYY-MM-DD.") from None
+    if start > end:
+        raise ApiError(400, "bad_request", "The start date must not be after the end date.")
+    if (end - start).days + 1 > USAGE_MAX_DAYS:
+        raise ApiError(400, "bad_request", f"Choose at most {USAGE_MAX_DAYS} days.")
+    return start, end
+
+
+def _usage_window(
+    context: AppContext, first: str | None, last: str | None
+) -> tuple[date, date, datetime, datetime]:
+    """The days and the instants ``[start, end)`` they cover, in TIMEZONE."""
+    zone = context.settings.timezone
+    start, end = usage_days(first, last, context.clock().astimezone(ZoneInfo(zone)).date())
+    return (
+        start,
+        end,
+        day_start(start.isoformat(), zone),
+        day_start((end + timedelta(days=1)).isoformat(), zone),
+    )
+
+
+@router.get("/admin/usage")
+def get_usage(
+    user: AdminSession,
+    context: Context,
+    first: UsageFrom = None,
+    to: UsageTo = None,
+    user_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    """``UsageReport`` (SP2): the organisation's AI use in the period, for one user when
+    given, and this month's spend against the budget. ``ai_enabled`` is false in keyless
+    mode (no AI scan reader, or MODEL_ENABLED off): the screen says AI is off on this
+    server. Two queries besides the report's."""
+    customer_id = user.customer_id
+    day_from, day_to, start, end = _usage_window(context, first, to)
+    month_start, month_end = month_window(context.clock(), context.settings.timezone)
+    with context.db.customer(customer_id) as conn:
+        report = usage_sql.usage_report(
+            conn,
+            customer_id,
+            start=start,
+            end=end,
+            timezone=context.settings.timezone,
+            user_id=None if user_id is None else str(user_id),
+        )
+        budget = _budget(conn, customer_id, month_start, month_end)
+    settings = context.settings
+    return {
+        **report,
+        "from": day_from.isoformat(),
+        "to": day_to.isoformat(),
+        "budget": budget,
+        "ai_enabled": ai_enabled(settings),
+    }
+
+
+def ai_enabled(settings: Settings) -> bool:
+    """Whether this server calls AI models at all: scans read by a model, or MODEL_ENABLED
+    (chat, cards, search). False only in keyless mode."""
+    return settings.ocr_engine == GEMINI or settings.model_enabled
+
+
+@router.get("/admin/usage.csv")
+def get_usage_csv(
+    user: AdminSession,
+    context: Context,
+    first: UsageFrom = None,
+    to: UsageTo = None,
+    user_id: uuid.UUID | None = None,
+) -> Response:
+    """The same period as a CSV file to download (SP2): one line per day, user, model and
+    kind, with USAGE_CSV_COLUMNS. One query."""
+    day_from, day_to, start, end = _usage_window(context, first, to)
+    with context.db.customer(user.customer_id) as conn:
+        rows = listing.usage_rows(
+            conn,
+            user.customer_id,
+            start=start,
+            end=end,
+            timezone=context.settings.timezone,
+            user_id=None if user_id is None else str(user_id),
+        )
+    lines = (
+        (
+            row["day"].isoformat(),
+            row["user_name"] or "",
+            row["model"],
+            row["kind"],
+            row["calls"],
+            row["tokens"],
+            "" if row["cost_usd"] is None else row["cost_usd"],
+            "yes" if row["cost_estimated"] else "no",
+            "yes" if row["cost_part_unknown"] else "no",
+        )
+        for row in rows
+    )
+    return Response(
+        content=usage_csv(lines),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="ai-usage-{day_from}-to-{day_to}.csv"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+def usage_csv(lines: Iterable[Iterable[object]]) -> str:
+    """USAGE_CSV_COLUMNS then ``lines``, each cell made safe (``csv_cell``). O(cells)."""
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(USAGE_CSV_COLUMNS)
+    writer.writerows([csv_cell(value) for value in line] for line in lines)
+    return out.getvalue()
+
+
+def csv_cell(value: object) -> str:
+    """The cell's text, with a leading ``'`` when it starts like a formula (CSV injection)."""
+    cell = str(value)
+    return "'" + cell if cell.startswith(_FORMULA_STARTS) else cell
 
 
 @router.get("/admin/failed")

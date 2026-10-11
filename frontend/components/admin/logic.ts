@@ -4,9 +4,19 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { ApiError } from "@/lib/api";
-import { formatDateTime, formatNumber } from "@/lib/format";
+import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import type { AdminUser, DocumentStatus, Me, PageRoute, Role, Stats } from "@/lib/types";
+import type {
+  AdminUser,
+  DocumentStatus,
+  Me,
+  PageRoute,
+  Role,
+  Stats,
+  UsageBudget,
+  UsageKind,
+  UsageReport,
+} from "@/lib/types";
 
 /**
  * "allow" only for an admin with an admin session (PRD A1); anyone else is
@@ -24,6 +34,8 @@ export const TABS = [
   { id: "settings", label: "Settings" },
   { id: "activity", label: "Activity" },
   { id: "numbers", label: "Numbers" },
+  { id: "models", label: "AI models" },
+  { id: "usage", label: "Usage" },
   { id: "failed", label: "Failed jobs" },
 ] as const;
 
@@ -281,14 +293,14 @@ export function pageRouteTiles(stats: Pick<Stats, "pages_this_month">): Tile[] {
 
 /**
  * PRD 5 U9: this month's OCR pages by who read them, in a fixed order; [] from a server
- * from before it. The model's spend is an estimate from its token counts, labelled so,
- * and left out while the prices are not known (usd null).
+ * from before it. The AI spend is this month's from the usage ledger (model choice SP1),
+ * left out when it is not known (usd null).
  */
 export function readerTiles(stats: Pick<Stats, "reader_pages" | "spend_estimate">): Tile[] {
   const pages = stats.reader_pages;
   const tiles: Tile[] = pages
     ? [
-        { label: "Read by Gemini", value: formatNumber(pages.gemini) },
+        { label: "Read by AI model", value: formatNumber(pages.gemini) },
         { label: "Read by the backup reader", value: formatNumber(pages.local) },
         { label: "From the cache", value: formatNumber(pages.cached) },
         { label: "Read again", value: formatNumber(pages.read_again) },
@@ -296,12 +308,10 @@ export function readerTiles(stats: Pick<Stats, "reader_pages" | "spend_estimate"
     : [];
   const usd = stats.spend_estimate?.usd;
   if (typeof usd === "number" && Number.isFinite(usd)) {
-    tiles.push({ label: "Gemini spend this month (estimate)", value: USD.format(usd) });
+    tiles.push({ label: "AI spend this month", value: formatUsd(usd) });
   }
   return tiles;
 }
-
-const USD = new Intl.NumberFormat("en-IN", { style: "currency", currency: "USD" });
 
 /**
  * An audit row's details as one line of plain text: "count: 3, status: ready".
@@ -371,4 +381,105 @@ export function retryErrorText(caught: unknown): string {
   return caught instanceof ApiError
     ? caught.message
     : "Could not reach the server. Check your connection, then try again.";
+}
+
+// --- The Usage tab (model choice SP2, SP4) ---------------------------------------
+
+export type UsagePeriod = "today" | "week" | "month" | "custom";
+
+export const USAGE_PERIODS: readonly { id: UsagePeriod; label: string }[] = [
+  { id: "today", label: "Today" },
+  { id: "week", label: "Last 7 days" },
+  { id: "month", label: "This month" },
+  { id: "custom", label: "Custom" },
+];
+
+// The server counts days in India time (TIMEZONE), so the browser does too.
+const dayFormat = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" });
+
+/** Today in India time as YYYY-MM-DD; `now` in milliseconds. */
+export function indiaDay(now: number): string {
+  return dayFormat.format(new Date(now));
+}
+
+/**
+ * The days a period covers, both included (YYYY-MM-DD). Custom takes the two
+ * date boxes, and is null until both are filled with the start first.
+ */
+export function usageRange(
+  period: UsagePeriod,
+  custom: { from: string; to: string },
+  now: number,
+): { from: string; to: string } | null {
+  const today = indiaDay(now);
+  switch (period) {
+    case "today":
+      return { from: today, to: today };
+    case "week":
+      return { from: new Date(Date.parse(today) - 6 * 86_400_000).toISOString().slice(0, 10), to: today };
+    case "month":
+      return { from: `${today.slice(0, 8)}01`, to: today };
+    case "custom":
+      return custom.from !== "" && custom.to !== "" && custom.from <= custom.to ? custom : null;
+  }
+}
+
+/** What the Usage tab shows: keyless and empty are different (one can never fill). */
+export type UsageState =
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | { kind: "off" }
+  | { kind: "empty" }
+  | { kind: "ready"; report: UsageReport };
+
+export function usageState(report: UsageReport | null, error: string | null): UsageState {
+  if (error !== null) return { kind: "error", message: error };
+  if (report === null) return { kind: "loading" };
+  if (report.totals.calls > 0) return { kind: "ready", report };
+  return report.ai_enabled === false ? { kind: "off" } : { kind: "empty" };
+}
+
+/** "84%" of this month's budget, rounded down so 79.9% never reads as the 80% warning; null without one. */
+export function budgetShareText(budget: UsageBudget): string | null {
+  return budget.share === null ? null : `${Math.floor(budget.share * 100)}%`;
+}
+
+/** "$12.40 of $50.00 this month", or that there is no budget. */
+export function budgetLine(
+  budget: Pick<UsageBudget, "ai_budget_usd" | "spent_this_month_usd"> & { spent_part_unknown?: boolean },
+): string {
+  if (budget.ai_budget_usd === null) return "No monthly AI budget is set.";
+  const spent = formatUsd(budget.spent_this_month_usd) + (budget.spent_part_unknown ? ` ${PART_NOT_KNOWN}` : "");
+  return `${spent} of ${formatUsd(budget.ai_budget_usd)} this month`;
+}
+
+/** SP4, warn only: at 80% and at 100% of the budget a line says so; nothing stops. */
+export function budgetWarning(budget: UsageBudget): string | null {
+  if (budget.share === null || budget.ai_budget_usd === null) return null;
+  const line = budgetLine(budget);
+  if (budget.share >= 1) {
+    return `This month's AI spend has reached the budget (${line}). Work goes on; ask MonoEdge if the budget should change.`;
+  }
+  if (budget.share >= 0.8) {
+    return `This month's AI spend is at ${budgetShareText(budget) ?? ""} of the budget (${line}).`;
+  }
+  return null;
+}
+
+const KIND_WORDS: Record<UsageKind, string> = {
+  scan: "Reading scanned pages",
+  upgrade: "Reading again after an upgrade",
+  card: "Document cards",
+  invoice: "Invoice tables",
+  map: "Document maps",
+  embed: "Search indexing",
+  chat: "Chat answers",
+  memory: "Chat memory",
+  search: "Search",
+  story: "Stories",
+};
+
+/** The kind of work in words; a kind this screen does not know yet is shown as is. */
+export function usageKindText(kind: UsageKind): string {
+  return KIND_WORDS[kind] ?? kind;
 }

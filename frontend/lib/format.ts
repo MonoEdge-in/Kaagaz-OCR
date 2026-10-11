@@ -80,6 +80,35 @@ export function formatNumber(value: number): string {
   return numberFormat.format(value);
 }
 
+// AI spend is billed in US dollars (OpenRouter), so it is shown in US dollars.
+const usdFormat = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
+/**
+ * "$12.40"; more than nothing but under a cent is "< $0.01", never "$0.00".
+ * Estimated (part of it is the catalogue price times the tokens): "≈ $12.40 (estimated)".
+ */
+export function formatUsd(usd: number, estimated = false): string {
+  const text = usd > 0 && usd < 0.01 ? "< $0.01" : usdFormat.format(usd);
+  return estimated ? `≈ ${text} (estimated)` : text;
+}
+
+/** The words after a sum that counts only the costs that are known. */
+export const PART_NOT_KNOWN = "(part not known)";
+
+/**
+ * A usage row's cost (UsageTotals): "Not known" when no call's cost is known, and
+ * "(part not known)" after the sum when some call's is not.
+ */
+export function formatCost(totals: {
+  cost_usd: number | null;
+  cost_estimated: boolean;
+  cost_part_unknown?: boolean;
+}): string {
+  if (totals.cost_usd === null) return "Not known";
+  const text = formatUsd(totals.cost_usd, totals.cost_estimated);
+  return totals.cost_part_unknown ? `${text} ${PART_NOT_KNOWN}` : text;
+}
+
 const TYPE_LABELS: Record<DetectedType, string> = {
   pdf: "PDF",
   png: "Image (PNG)",

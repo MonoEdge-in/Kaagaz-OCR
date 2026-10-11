@@ -62,7 +62,7 @@ export function pageMode(
 const ROUTE_WORDS: Record<PageRoute, string> = {
   cells: "Read from spreadsheet cells",
   text_layer: "Read from the PDF text",
-  ocr: "Read by OCR", // a scanned page not read by Gemini (no key, or before PRD 5)
+  ocr: "Read by OCR", // a scanned page no model read (no key, or before PRD 5)
   blank: "Blank page",
 };
 
@@ -72,22 +72,25 @@ const ROUTE_WORDS: Record<PageRoute, string> = {
  */
 export const BACKUP_ISSUES: readonly ReadIssue[] = ["read_locally", "reader_refused"];
 
-/** The start of a Gemini model's ID (OpenRouter's), as a page's `read_by` holds it. */
-export const GEMINI_READ_BY = "google/gemini-";
-
 /**
  * How a page was read, in words, shown beside its number (PRD 2, R1). A scanned
  * page says who read it (PRD 5 RT2): "Read by the backup reader" when the main
- * reader handed it on (`read_issues` has one of BACKUP_ISSUES), "Read by Gemini"
- * when `read_by` is a Gemini model's ID, and otherwise "Read by OCR", as before
- * PRD 5 (a page read with no key, or before PRD 5). null when the page has no
- * route, as for a page read before PRD 2: nothing is shown.
+ * reader handed it on (`read_issues` has one of BACKUP_ISSUES), "Read by
+ * {read_by_name}" when a model read it (model choice: the server names it),
+ * "Read by an AI model ({read_by})" when a model the catalogue does not name
+ * read it (never "OCR" for a model's page), and otherwise "Read by OCR", as
+ * before PRD 5 (a page read with no key, or before PRD 5). null when the page
+ * has no route, as for a page read before PRD 2: nothing is shown.
  */
-export function routeText(page: Pick<PageSummary, "route" | "read_by" | "read_issues">): string | null {
+export function routeText(
+  page: Pick<PageSummary, "route" | "read_by" | "read_by_name" | "read_issues">,
+): string | null {
   if (page.route === null) return null;
   if (page.route === "ocr") {
     if (page.read_issues.some((issue) => BACKUP_ISSUES.includes(issue))) return "Read by the backup reader";
-    if (page.read_by?.startsWith(GEMINI_READ_BY)) return "Read by Gemini";
+    if (page.read_by_name) return `Read by ${page.read_by_name}`;
+    // An OpenRouter model ID is author/slug; rapidocr and older readers have no slash.
+    if (page.read_by?.includes("/")) return `Read by an AI model (${page.read_by})`;
   }
   return ROUTE_WORDS[page.route];
 }

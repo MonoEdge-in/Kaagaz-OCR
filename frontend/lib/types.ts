@@ -254,6 +254,7 @@ export interface PageSummary {
   // read before PRD 5. A page the
   // main reader handed to the backup reader has read_locally or reader_refused in read_issues.
   read_by: string | null;
+  read_by_name?: string | null; // model choice: the model's name ("Gemini 3.1 Pro") when a model read it
   read_quality: ReadQuality; // F1
   read_issues: ReadIssue[]; // F1; [] when good
   unsure_words: number; // words the reader listed as unsure
@@ -374,6 +375,7 @@ export interface DocumentDetail extends DocumentSummary {
   card: DocumentCard | null; // null without a card (the model off or down)
   invoice: Invoice | null; // null for a document with no invoices row
   links: DocumentLink[]; // current, ready documents sharing an identifier (PRD 3 Y2); at most 50
+  read_model: string | null; // the model it asked to be read with (MS5); null: the organisation's default
 }
 
 /** A related document (PRD 3 Y2). The value is stored normalised: no spaces, lower case. */
@@ -405,6 +407,7 @@ export interface UploadReader {
   hint: string;
   available: boolean;
   reason: string | null;
+  default?: boolean; // a model: the organisation's default scan model (MS4, R14); Auto has none
 }
 
 export interface UploadResult {
@@ -683,7 +686,7 @@ export interface Stats {
   in_trash: number;
   pages_this_month: Record<PageRoute, number>; // pages read this month, by route (PRD 2, R6); 0 when none
   // PRD 5 U9: this month's OCR pages by who read them (read_again: pages read again), and the
-  // model's spend estimate from its tokens; usd is null while MODEL_PRICE_* are 0 (not known).
+  // model's spend estimate from its tokens; usd comes from the AI spend ledger (null when not known).
   reader_pages?: { gemini: number; local: number; cached: number; read_again: number };
   spend_estimate?: { input_tokens: number; output_tokens: number; usd: number | null };
 }
@@ -789,4 +792,140 @@ export interface ReaderReport {
   state: ReaderState;
   since: string | null; // ISO 8601: in this state since
   seen_at: string; // ISO 8601: its last report
+}
+
+// --- Model choice and AI spend (council 11 Oct 2026). The operator sets each
+// organisation's models and budget; the organisation's admin sees them read-only. -----
+
+/** The kinds of work a model call is billed as (backend kaagaz/ai/usage.py KINDS). */
+export type UsageKind =
+  | "scan"
+  | "upgrade"
+  | "card"
+  | "invoice"
+  | "map"
+  | "embed"
+  | "chat"
+  | "memory"
+  | "search"
+  | "story";
+
+/** One model an upload may read scans with (GET /upload-limits readers), the default first. */
+export interface ReaderOption {
+  id: string; // the OpenRouter model ID, sent as read_model
+  title: string;
+  hint: string; // "about $X a page"
+  available: boolean;
+}
+
+/** One model the operator allowed this organisation, with its live price. */
+export interface OrgModel {
+  id: string;
+  name: string;
+  price_in_usd_per_m: number; // US dollars per million input tokens
+  price_out_usd_per_m: number;
+  is_default_scan: boolean;
+  provider?: string; // the zero-data-retention provider its pages go to ("google-vertex")
+  usd_per_page?: number | null; // estimated a page (MC3); null: not measured yet
+  page_hint: string; // the same in words, as "Read with" says it: "about $0.04 a page", "... (rough estimate)"
+}
+
+/** GET /admin/models: read-only, set by the operator ("Set by MonoEdge"). */
+export interface OrgModels {
+  set_by: "operator";
+  default_scan: string | null; // the model reading scans now: the default, or the platform's; null in keyless mode
+  models: OrgModel[]; // [] when the operator set none: every scan is read by the platform's model
+  ai_budget_usd: number | null; // the monthly budget; null: none
+  spent_this_month_usd: number; // this month's AI spend, from the ledger
+}
+
+/** Tokens and US dollars of some model calls. cost_usd is null when not known. */
+export interface UsageTotals {
+  calls: number;
+  cached_calls: number; // pages taken from the page cache, at no cost
+  input_tokens: number;
+  output_tokens: number; // thinking included
+  reasoning_tokens: number;
+  cost_usd: number | null;
+  cost_estimated: boolean; // some of it is the catalogue price times the tokens
+  cost_part_unknown: boolean; // some call's cost is not known: cost_usd counts the known ones only
+}
+
+export interface UsageByUser extends UsageTotals {
+  user_id: string | null; // null: work no user asked for (the upgrade sweep, re-indexing)
+  user_name: string | null;
+}
+
+export interface UsageByModel extends UsageTotals {
+  model: string;
+  model_name: string;
+}
+
+export interface UsageByKind extends UsageTotals {
+  kind: UsageKind;
+}
+
+export interface UsageByDay extends UsageTotals {
+  day: string; // YYYY-MM-DD in the server's TIMEZONE
+}
+
+export interface UsageTopDocument extends UsageTotals {
+  document_id: string | null; // null: the document was deleted
+  name: string; // "Deleted document" when it was deleted
+}
+
+/** This month's spend against the operator's budget (warn only: nothing stops at 100%). */
+export interface UsageBudget {
+  ai_budget_usd: number | null;
+  spent_this_month_usd: number;
+  spent_part_unknown: boolean; // some of this month's costs are not known (not counted)
+  share: number | null; // spent / budget; null without a budget
+}
+
+/** GET /admin/usage: one organisation's AI use from `from` to `to` (days in TIMEZONE, both included). */
+export interface UsageReport {
+  from: string; // YYYY-MM-DD
+  to: string;
+  totals: UsageTotals;
+  by_user: UsageByUser[];
+  by_model: UsageByModel[];
+  by_kind: UsageByKind[];
+  by_day: UsageByDay[];
+  top_documents: UsageTopDocument[]; // at most 10, the costliest first
+  budget: UsageBudget;
+  ai_enabled?: boolean; // false: keyless mode (no OpenRouter key, MODEL_ENABLED=false), no model is called
+}
+
+/** One catalogue model (GET /operator/models), from OpenRouter's live list. */
+export interface OperatorModel {
+  id: string;
+  name: string;
+  price_in_usd_per_m: number;
+  price_out_usd_per_m: number;
+  providers: string[]; // its zero-data-retention providers, in OpenRouter's order
+  efforts: string[]; // the thinking efforts it accepts
+  expires_on: string | null; // YYYY-MM-DD
+  eligible: boolean; // passes the catalogue filter today
+  seen_at: string; // when the last refresh saw it
+  verified: boolean; // verify-models passed for the reader's current prompt
+  verified_at: string | null;
+  tokens_per_page_in: number | null; // measured by verify-models on its small test page
+  tokens_per_page_out: number | null;
+  ledger_tokens_in: number | null; // MC3: a scanned page's average over the last 30 days; null: none
+  ledger_tokens_out: number | null;
+  enabled_at: string | null; // null: not enabled on the platform
+}
+
+/** GET and PUT /operator/orgs/{id}/models. default_scan is one of models, or null when models is []. */
+export interface OperatorOrgModels {
+  models: string[];
+  default_scan: string | null;
+  ai_budget_usd: number | null;
+}
+
+/** One row of GET /operator/usage: one organisation's use of one model. No user or document. */
+export interface OperatorUsageRow extends UsageTotals {
+  organisation_id: string;
+  organisation_name: string;
+  model: string;
 }

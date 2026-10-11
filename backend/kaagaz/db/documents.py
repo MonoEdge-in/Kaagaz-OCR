@@ -48,6 +48,14 @@ clearing and lose its mark. "Keep as is" (F5) is ``accept_page``.
 ``documents.batch_id`` (PRD 5 Q1, 0021) is the drop a new upload came in:
 ``add_if_absent`` writes the record's ``batch_id`` (None: in none). A new version is
 in no batch.
+
+Model choice (council 11 Oct 2026, MS5, SP1; 0023): ``documents.read_requested_by`` is who
+the next reading's scan spend is billed to. An upload or a new version sets it to the
+uploader; ``mark_for_reprocess`` to who asked (``requested_by``); ``mark_for_upgrade`` to
+NULL (the system). ``documents.read_model`` is the model the reading asked for:
+``mark_for_reprocess`` replaces it only when given one (a page read again keeps the
+document's model, FINAL 4), and the upgrade sweep keeps it. The worker checks it again
+(``kaagaz.db.models.resolve``).
 """
 
 import dataclasses
@@ -203,15 +211,27 @@ _REPROCESSED_LATELY = (
 
 _REPROCESS = (
     "UPDATE documents SET status = 'received', failure_code = NULL, attempts = 0, max_attempts = NULL,"
-    " progress = NULL"
+    " progress = NULL, read_requested_by = CAST(:by AS uuid),"
+    " read_model = COALESCE(CAST(:model AS text), read_model)"
     " WHERE customer_id = :c AND id = :d AND status IN ('ready', 'failed', 'needs_reader')"
     " AND deleted_at IS NULL"
 )
 
 
-def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, per_hour: int) -> str | None:
+def mark_for_reprocess(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    *,
+    per_hour: int,
+    requested_by: str | None = None,
+    read_model: str | None = None,
+) -> str | None:
     """Set the document to be read again (X1), and return the status it had; None
-    when this customer has no such document.
+    when this customer has no such document. ``requested_by`` is who asked: the reading's
+    scan spend is billed to them (SP1; None: the system). ``read_model``, when given,
+    replaces the model the document asked for (MS5; the caller checked it is allowed);
+    None keeps it.
 
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes
     first, and is waited for, never skipped: a family being moved to Trash is
@@ -236,7 +256,7 @@ def mark_for_reprocess(conn: Connection, customer_id: str, document_id: str, *, 
     lately = {**params, "target": document_id, "minutes": REPROCESS_COOLDOWN_MINUTES}
     if conn.execute(text(_REPROCESSED_LATELY), lately).scalar_one():
         raise ReprocessLimited("cooldown")
-    conn.execute(text(_REPROCESS), params)
+    conn.execute(text(_REPROCESS), {**params, "by": requested_by, "model": read_model})
     return str(state.status)
 
 
@@ -284,11 +304,13 @@ def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bo
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes first,
     as in ``mark_for_reprocess``, then the same change (``_REPROCESS``), with none of
     the users' limits: REPROCESS_PER_HOUR and the cooldown count ``document.reprocess``
-    rows only. The caller queues the job (the main lane) in the same transaction.
+    rows only. Its scan spend is billed to no user (``read_requested_by`` NULL, SP1), and
+    the document keeps the model it asked for. The caller queues the job (the main lane)
+    in the same transaction.
     3 statements; O(v log D) for the family's v versions."""
     if lock_family(conn, customer_id, document_id) is None:
         return False
-    params = {"c": customer_id, "d": document_id}
+    params = {"c": customer_id, "d": document_id, "by": None, "model": None}
     if conn.execute(text(_REPROCESS + " RETURNING id"), params).first() is None:
         return False
     audit.record(
@@ -431,8 +453,8 @@ _NEXT_VERSION = (
 
 _INSERT_VERSION = (
     "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
-    " uploaded_by, folder_id, family_id, version_no, is_current, ocr_choice)"
-    " VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :f, :version, false, :ocr)"
+    " uploaded_by, read_requested_by, folder_id, family_id, version_no, is_current, ocr_choice)"
+    " VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder, :f, :version, false, :ocr)"
     " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
 )
 
@@ -539,9 +561,9 @@ class PgDocuments:
                 inserted = conn.execute(
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
-                        " detected_type, uploaded_by, folder_id, family_id, version_no, ocr_choice,"
-                        " batch_id) VALUES (:d, :c, :name, :h, :size, :type, :by, :folder, :family,"
-                        " :version, :ocr, :batch)"
+                        " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
+                        " ocr_choice, batch_id) VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder,"
+                        " :family, :version, :ocr, :batch)"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,

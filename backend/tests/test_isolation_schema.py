@@ -8,6 +8,10 @@ grants to the app role, which must not own it (an owner skips the policy).
 Super admin PR 2 (0015, NEEDS VRUSHIT'S APPROVAL): the operator's tables, role and functions.
 
 PRD 5 (0021): the page cache, sections and topics, with the least grants each needs.
+
+Model choice and AI spend (0023, NEEDS VRUSHIT'S APPROVAL): the organisations' models the
+app may only read, the ledger it may only read and add to, the platform catalogue whose
+refresh columns alone it may write, and the operator's five functions.
 """
 
 import pytest
@@ -55,6 +59,23 @@ FROM_0021 = {
     "page_reads": (True, True, False, True),
     "document_sections": (True, True, False, True),
     "document_topics": (True, True, False, True),
+}
+# Model choice (0023): the operator alone writes an organisation's models (its functions),
+# and the ledger is append-only for the app.
+FROM_0023 = {
+    "customer_models": (True, False, False, False),
+    "model_usage": (True, True, False, False),
+}
+# The catalogue (no customer): the app's refresh writes these columns only, never
+# verified_*, tokens_per_page_* (verify-models, the owner) or enabled_* (the operator).
+CATALOG_REFRESH = {
+    "name", "price_in_usd_per_m", "price_out_usd_per_m", "providers", "efforts", "expires_on", "eligible",
+    "seen_at",
+}  # fmt: skip
+CATALOG_POLICIES = {
+    ("model_catalog", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
+    ("model_catalog", "refresh_insert"): ("INSERT", "PERMISSIVE", ["public"], None, "true"),
+    ("model_catalog", "refresh_update"): ("UPDATE", "PERMISSIVE", ["public"], "true", "true"),
 }
 PAGE_READ_UPDATES = {"result", "input_tokens", "output_tokens", "created_at"}
 SECTION_UPDATES = {"embedding", "embed_recipe"}
@@ -155,11 +176,32 @@ OPERATOR_RIGHTS = {
         "TABLE(worker text, state text, since timestamp with time zone, seen_at timestamp with time zone)",
         EMPTY_PATH,
     ),
+    # 0023, model choice and AI spend: the catalogue, the platform switch (step-up), one
+    # organisation's models and budget, and spend per organisation and model. Pinned:
+    # never a user or a document column.
+    "kaagaz_op_models": (
+        "TABLE(id text, name text, price_in_usd_per_m numeric, price_out_usd_per_m numeric, providers text[],"
+        " efforts text[], expires_on date, eligible boolean, seen_at timestamp with time zone,"
+        " verified_prompt_version text, verified_at timestamp with time zone, tokens_per_page_in integer,"
+        " tokens_per_page_out integer, enabled_at timestamp with time zone, ledger_tokens_in numeric,"
+        " ledger_tokens_out numeric)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_model_enabled": ("text", EMPTY_PATH),
+    "kaagaz_op_org_models": ("TABLE(models text[], default_scan text, ai_budget_usd numeric)", EMPTY_PATH),
+    "kaagaz_op_set_org_models": ("record", EMPTY_PATH),
+    "kaagaz_op_usage": (
+        "TABLE(customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,"
+        " input_tokens numeric, output_tokens numeric, reasoning_tokens numeric, cost_usd numeric,"
+        " cost_estimated boolean, cost_part_unknown boolean)",
+        EMPTY_PATH,
+    ),
 }
 # The only tables without customer_id: the customers themselves, alembic's own, the
-# platform operator's (0015) and the workers' reader status (0022), which belong to no customer.
+# platform operator's (0015), the workers' reader status (0022) and the model catalogue
+# (0023), which belong to no customer.
 OPERATOR_TABLES = {"operators", "platform_audit"}
-NO_CUSTOMER_ID = {"customers", "alembic_version", "reader_status"} | OPERATOR_TABLES
+NO_CUSTOMER_ID = {"customers", "alembic_version", "reader_status", "model_catalog"} | OPERATOR_TABLES
 
 _CUSTOMER_TABLES = text(
     "SELECT c.relname, c.relrowsecurity, pg_get_userbyid(c.relowner)"
@@ -178,7 +220,13 @@ def _customer_tables(db: Database) -> dict[str, tuple[bool, str]]:
 def test_every_customer_table_has_row_level_security_and_the_customer_only_policy(db: Database) -> None:
     tables = _customer_tables(db)
     assert set(tables) >= (
-        FROM_0001 | FROM_0002 | set(FROM_0004) | set(FROM_0008) | set(FROM_0009) | set(FROM_0021)
+        FROM_0001
+        | FROM_0002
+        | set(FROM_0004)
+        | set(FROM_0008)
+        | set(FROM_0009)
+        | set(FROM_0021)
+        | set(FROM_0023)
     )
 
     with db.system() as conn:
@@ -222,27 +270,30 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
 
     assert set(granted) == set(tables)
     for table, (select, insert, _update, _delete) in granted.items():
-        assert (select, insert) == (True, True), table
+        if table not in FROM_0023:  # an organisation's models are the operator's to write
+            assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
-    for table, expected in (FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021).items():
+    for table, expected in (FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021 | FROM_0023).items():
         assert granted[table] == expected, table
 
 
 def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(db: Database) -> None:
-    """It must pass as well as customer_only: with no user set, no row is seen or written."""
+    """It must pass as well as customer_only: with no user set, no row is seen or written.
+    The only other policies are the model catalogue's (0023: platform data, no customer)."""
     with db.system() as conn:
         policies = {
-            table: (command, permissive, roles, using, check)
-            for table, command, permissive, roles, using, check in conn.execute(
+            (table, name): (command, permissive, roles, using, check)
+            for table, name, command, permissive, roles, using, check in conn.execute(
                 text(
-                    "SELECT tablename, cmd, permissive, roles, qual, with_check FROM pg_policies"
+                    "SELECT tablename, policyname, cmd, permissive, roles, qual, with_check FROM pg_policies"
                     " WHERE schemaname = 'public' AND policyname <> 'customer_only'"
                 )
             )
         }
     own = FROM_0008 | FROM_0009
-    assert policies == {table: ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER) for table in own}
+    restrictive = ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER)
+    assert policies == {(table, "own_user_only"): restrictive for table in own} | CATALOG_POLICIES
 
 
 def _updatable(db: Database, table: str) -> set[str]:
@@ -273,8 +324,39 @@ def test_the_app_may_update_only_a_cached_reads_result_and_a_sections_vector(db:
     assert _updatable(db, "document_topics") == set()
 
 
+def test_the_app_writes_only_the_refresh_columns_of_the_model_catalogue(db: Database) -> None:
+    """0023: never who enabled a model or what verify-models measured, so a worker can't
+    switch a model on or mark it verified. Row level security is on (its policies above),
+    the app may not delete a row, and the app does not own the table."""
+    with db.system() as conn:
+        insertable = conn.execute(
+            text(
+                "SELECT attname::text FROM pg_attribute WHERE attrelid = 'model_catalog'::regclass"
+                " AND attnum > 0 AND NOT attisdropped"
+                " AND has_column_privilege(:r, attrelid, attname, 'INSERT')"
+            ),
+            {"r": APP_ROLE},
+        ).all()
+        locks = conn.execute(
+            text(
+                "SELECT relrowsecurity, pg_get_userbyid(relowner) <> :r,"
+                " has_table_privilege(:r, oid, 'DELETE') FROM pg_class WHERE oid = 'model_catalog'::regclass"
+            ),
+            {"r": APP_ROLE},
+        ).one()
+    assert _updatable(db, "model_catalog") == CATALOG_REFRESH
+    assert {str(row[0]) for row in insertable} == CATALOG_REFRESH | {"id"}
+    assert tuple(locks) == (True, True, False)
+
+
+def test_the_app_may_set_a_documents_model_and_who_it_is_billed_to(db: Database) -> None:
+    """0023: an upload and a read again write them (the table's UPDATE grant, kept)."""
+    assert {"read_model", "read_requested_by"} <= _updatable(db, "documents")
+
+
 def test_the_app_may_update_only_the_upload_limit_of_its_customer(db: Database) -> None:
-    """Never its status, so a disabled organisation cannot switch itself back on (0014)."""
+    """Never its status, so a disabled organisation cannot switch itself back on (0014),
+    nor its AI budget, which the operator sets (0023)."""
     with db.system() as conn:
         columns = conn.execute(
             text(
@@ -305,7 +387,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         keys = [tuple(row) for row in conn.execute(_FOREIGN_KEYS)]
     between = [key for key in keys if key[1] in tables and key[2] in tables]
 
-    assert {key[1] for key in between} >= set(FROM_0004) | set(FROM_0021) | {"pages"}
+    assert {key[1] for key in between} >= set(FROM_0004) | set(FROM_0021) | {"pages", "model_usage"}
     for name, _table, _parent, columns, parent_columns in between:
         assert ("customer_id", "customer_id") in zip(columns, parent_columns, strict=True), name
 

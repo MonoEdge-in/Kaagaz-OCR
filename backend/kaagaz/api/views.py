@@ -346,8 +346,10 @@ def tag(row: TagRow) -> dict[str, Any]:
 
 
 def page_summary(row: RowMapping) -> dict[str, Any]:
-    """``PageSummary``, from a ``listing`` page row, with its problems (PRD 5 U4)."""
-    return {**page_fields(row), "problems": page_problems(row)}
+    """``PageSummary``, from a ``listing`` page row, with its problems (PRD 5 U4) and the
+    catalogue name of the model that read it (model choice: the viewer's "Read by {name}";
+    null when no catalogue model read it: rapidocr, text_layer, cells)."""
+    return {**page_fields(row), "read_by_name": row["read_by_name"], "problems": page_problems(row)}
 
 
 def page_fields(row: RowMapping) -> dict[str, Any]:

@@ -6,7 +6,6 @@ import {
   buildGrid,
   cropRowWindow,
   fitPageSize,
-  GEMINI_READ_BY,
   pageMode,
   routeText,
   sheetRowWindow,
@@ -164,14 +163,34 @@ describe("routeText (PRD 2, R1; PRD 5 RT2)", () => {
     expect(routeText({ route: "blank", read_by: null, read_issues: [] })).toBe("Blank page");
   });
 
-  it("says Read by Gemini when a Gemini model read the page (RT2)", () => {
-    expect(routeText({ route: "ocr", read_by: "google/gemini-3.1-pro-preview", read_issues: [] })).toBe(
-      "Read by Gemini",
+  it("names the model that read the page, as the server names it (RT2, model choice MS5)", () => {
+    const gemini = { route: "ocr" as const, read_by: "google/gemini-3.1-pro-preview", read_issues: [] };
+    expect(routeText({ ...gemini, read_by_name: "Gemini 3.1 Pro" })).toBe("Read by Gemini 3.1 Pro");
+    const claude = { route: "ocr" as const, read_by: "anthropic/claude-sonnet-5.5", read_issues: ["blurry" as const] };
+    expect(routeText({ ...claude, read_by_name: "Claude Sonnet 5.5" })).toBe("Read by Claude Sonnet 5.5");
+  });
+
+  it("never says OCR for a model's page: without a name it is an AI model, by its ID (R4)", () => {
+    const gemini = { route: "ocr" as const, read_by: "google/gemini-3.8-flash", read_issues: [] };
+    expect(routeText(gemini)).toBe("Read by an AI model (google/gemini-3.8-flash)");
+    expect(routeText({ ...gemini, read_by_name: null })).toBe("Read by an AI model (google/gemini-3.8-flash)");
+  });
+
+  it("says Read by OCR only for a scanned page no model read", () => {
+    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: [] })).toBe("Read by OCR");
+    expect(routeText({ route: "ocr", read_by: null, read_issues: [] })).toBe("Read by OCR");
+  });
+
+  it("says Read by the backup reader for a handed-on page, even with a model's name", () => {
+    const page = { route: "ocr" as const, read_by: "rapidocr", read_by_name: "Gemini 3.1 Pro" };
+    expect(routeText({ ...page, read_issues: ["read_locally"] })).toBe("Read by the backup reader");
+    expect(routeText({ ...page, read_issues: ["reader_refused"] })).toBe("Read by the backup reader");
+  });
+
+  it("names no model for a page that was not scanned", () => {
+    expect(routeText({ route: "text_layer", read_by: "text_layer", read_by_name: "Gemini", read_issues: [] })).toBe(
+      "Read from the PDF text",
     );
-    expect(routeText({ route: "ocr", read_by: "google/gemini-3.8-flash", read_issues: ["blurry"] })).toBe(
-      "Read by Gemini",
-    );
-    expect(GEMINI_READ_BY).toBe("google/gemini-");
   });
 
   it("says the backup reader only when the main reader handed the page on (Q7, G6)", () => {

@@ -55,6 +55,9 @@ NOT_CASCADING = {
     *[(table, "users") for table in ("feedback", "folders", "tags")],
     ("documents", "folders"),
     ("folders", "folders"),
+    # 0023: the ledger keeps its rows (SET NULL) until the customer's delete cascades them.
+    ("model_usage", "users"),
+    ("model_usage", "conversations"),
 }
 NO_ACTION_TO_USERS = {table for table, _ in NOT_CASCADING}
 
@@ -143,6 +146,9 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
             " corrected_by) VALUES (:c, :d, 'total', '1O0', '100', 'typed', :u)",
             "INSERT INTO user_words (customer_id, user_id, word, word_fold, meaning, meaning_fold,"
             " source) VALUES (:c, :u, 'Daregaon', 'daregaon', 'village', 'village', 'manual')",
+            "INSERT INTO model_usage (customer_id, user_id, document_id, conversation_id, kind, model, calls,"
+            " input_tokens, output_tokens, reasoning_tokens, cost_usd) SELECT :c, :u, :d, id, 'chat',"
+            " 'google/gemini-3.1-pro-preview', 1, 10, 5, 0, 0.01 FROM conversations WHERE customer_id = :c",
         ):
             conn.execute(text(statement), {"c": customer, "u": member, "d": first})
     put(api.db, customer, admin, first, f"The papers of {label}")

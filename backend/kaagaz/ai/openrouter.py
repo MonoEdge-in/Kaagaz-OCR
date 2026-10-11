@@ -3,9 +3,10 @@
 Every model PRD 5 names goes through OpenRouter (https://openrouter.ai/api/v1), Tushar's
 decision of 8 October 2026 (council ``2026-10-08-prd5-openrouter.md``). ``OpenRouterClient``
 implements ``ModelClient`` (``chat_json`` and ``embed``), and adds ``read_page`` for the
-Gemini reader (G1, G2, G3). It uses exactly the models in the settings: ``OCR_MODEL``
-reads pages (``read_page``), ``MODEL_CHAT`` answers ``chat_json`` and ``MODEL_EMBED``
-embeds. No code here picks or switches a model.
+Gemini reader (G1, G2, G3). ``read_page`` reads with the model and provider its caller
+names (the document's, ``kaagaz.db.models.resolve``; model choice, council 11 Oct 2026),
+or OCR_MODEL; ``MODEL_CHAT`` answers ``chat_json`` and ``MODEL_EMBED`` embeds. No code
+here picks or switches a model.
 
 **The key is a secret.** It goes in the ``Authorization: Bearer`` header only, added with
 ``add_unredirected_header`` so it is never copied onto a redirect, and redirects are
@@ -20,7 +21,11 @@ present or not, its words are never kept. Every error this module raises carries
 code only, raised ``from None``.
 
 **Every request** carries ``PROVIDER`` (not a setting): Google Vertex only, no fallback to
-another provider, every parameter honoured, no data collection, zero data retention.
+another provider, every parameter honoured, no data collection, zero data retention. A page
+read may name another provider (model choice, council 11 Oct 2026): ``provider(slug)`` is
+the same block with ``only`` that one slug, and the client refuses a slug outside
+OPENROUTER_PROVIDERS (``ProviderNotAllowed``): a page read's, and DEFAULT_PROVIDER for
+``chat_json`` and ``embed`` (the settings require it; checked again here).
 
 **The request** (``POST /chat/completions``, ``stream: false``, G2). A system prompt is
 ``messages[0]`` with role system. A picture is a user message whose content is the
@@ -36,7 +41,10 @@ each of these against the live API.
 **Usage** (G9). Input tokens are ``usage.prompt_tokens``; output tokens are
 ``usage.completion_tokens``; ``completion_tokens_details.reasoning_tokens`` is the thinking
 part of it. ``read_page`` returns them per page; ``usage()`` keeps the process's totals and
-the summed ``usage.cost`` when replies carry one.
+the summed ``usage.cost`` when replies carry one. Every billed reply (a blocked, cut off,
+mid-reply error or repaired one too) also goes to the current usage scope's ledger
+(``kaagaz.ai.usage.record_call``, SP1) with its model, the reply's ``provider`` and its
+thinking tokens and cost.
 
 **Failures** (G6), each a code:
 
@@ -53,7 +61,8 @@ the summed ``usage.cost`` when replies carry one.
   wrong key or spent credit is a person's fix, never a tight loop.
 * A 403 refusal or moderation block (``metadata.error_type`` in ``REFUSAL_ERROR_TYPES``, or
   a ``reasons`` list): ``ModelOutputError("blocked")``, no latch.
-* 404: ``ModelUnavailable("model_not_found")`` (a wrong model ID in .env).
+* 404: ``ModelUnavailable("model_not_found")`` (a wrong model ID in .env, or a model
+  OpenRouter withdrew).
 * A redirect: ``ModelUnavailable("redirect_refused")``; any other status ``http_error``.
 * A reply that was blocked (``message.refusal``, ``finish_reason`` ``content_filter``, or a
   ``native_finish_reason`` in ``BLOCKED_FINISH_REASONS``): ``ModelOutputError("blocked")``.
@@ -63,20 +72,26 @@ the summed ``usage.cost`` when replies carry one.
   (``input_tokens``, ``output_tokens``: this reply's usage, plus the first reply's when a
   repair was asked for), so a blocked, cut off or invalid reply is still counted (G9).
 * Any other finish reason, or none: ``ModelOutputError("invalid_output")``.
-* JSON that does not follow the schema: one repair retry, then
-  ``ModelOutputError("invalid_output")``.
+* JSON that does not follow the schema, or that the caller's ``validate`` refuses (a
+  ``read_page`` reply that breaks what the schema can't say): one repair retry, then
+  ``ModelOutputError("invalid_output")``. One repair at most, whichever check failed.
 
 **Rate limit and circuit breaker** (G9) live in a ``ModelGate``, one per process
 (``process_gate``), shared by every client the process builds: the reader's, the chat
 client and the translator. Its limiter spaces calls ``60 * workers / MODEL_RPM`` seconds
 apart, so the workers together stay under ``MODEL_RPM``. ``workers`` is the number of
 processes that share the key: WORKER_REPLICAS copies of the worker plus the API (PRD 5 Q3,
-V7), which ``process_gate`` uses unless told otherwise. After ``BREAKER_FAILURES`` failed
-requests in a row (408, 429, 5xx, a mid-reply error or no connection) the breaker opens:
-for ``BREAKER_OPEN_SECONDS`` every call fails at once with ``circuit_open``, then one call
-is let through as a probe; its success closes the breaker, its failure opens it again.
-``status()`` gives the reader's state for the operator's Health tab (U9) and the outage
-clock (Q7). Everything here is thread-safe: pages of a document are read in parallel (G8).
+V7), which ``process_gate`` uses unless told otherwise. Each model has its own breaker
+(council 11 Oct 2026, FINAL 2): after ``BREAKER_FAILURES`` failed requests in a row to it
+(408, 429, 5xx, a mid-reply error or no connection) it opens: for ``BREAKER_OPEN_SECONDS``
+every call to that model fails at once with ``circuit_open``, then one call is let through
+as a probe; its success closes the breaker, its failure opens it again. Other models keep
+working. The key latch is the process's: one key. ``status()`` gives the worst model's
+state for the operator's Health tab (U9) and the worker's pause (Q7). A model whose last
+failure is more than ``FAILURE_GAP_SECONDS`` old is not counted there, and a failure that
+long after the one before starts its count again: a model no longer called (a document's
+chosen model, read and done) never keeps the reader failing or down. Everything here is
+thread-safe: pages of a document are read in parallel (G8).
 
 The gate's clock, sleep and random number are injected, so tests run with a fake clock.
 The clock is ``time.monotonic`` by default, and ``read_page``'s deadline is an absolute
@@ -107,15 +122,16 @@ from email.message import Message
 from http.client import HTTPException, HTTPMessage
 from typing import IO, Any
 
-from kaagaz.ai import replies
+from kaagaz.ai import replies, usage
 from kaagaz.ai.replies import REPAIR, ModelOutputError, ModelUnavailable, parse_reply
 from kaagaz.settings import (
+    DEFAULT_PROVIDER,
     MEDIA_RESOLUTION_SHAPE,
     MEDIA_RESOLUTIONS,
+    PROVIDER_SLUG,
     SENDABLE_MEDIA_RESOLUTIONS,
     THINKING_LEVELS,
     Settings,
-    is_gemini_model,
     valid_model_id,
 )
 
@@ -176,10 +192,19 @@ KEY_LATCH_SECONDS = 300.0
 # The circuit breaker (G9).
 BREAKER_FAILURES = 5
 BREAKER_OPEN_SECONDS = 60.0
+# A model's failures older than this do not count (council 11 Oct 2026 review, R2):
+# status() leaves out a model idle since its last failure for this long, and a failure
+# this long after the one before starts the count again. 15 minutes: an outage that goes
+# on keeps failing more often than that (each open breaker lets a probe through every
+# BREAKER_OPEN_SECONDS), so only a model nobody calls any more is left out.
+FAILURE_GAP_SECONDS = 15 * 60.0
 
-# Google's native finish reasons that mean it declined to answer (G6: reader_refused).
+# Native finish reasons that mean the model declined to answer (G6: reader_refused):
+# Google's, and Anthropic's ``refusal`` (model choice, council 11 Oct 2026). OpenAI's
+# refusal comes as ``content_filter`` or ``message.refusal`` (``reply_text``).
 BLOCKED_FINISH_REASONS = frozenset(
     {
+        "refusal",
         "SAFETY",
         "RECITATION",
         "BLOCKLIST",
@@ -205,12 +230,19 @@ _RATE_HEADER = re.compile(r"(x-)?ratelimit.*|retry-after", re.IGNORECASE)
 _ERROR_BODY_BYTES = 64 * 1024
 # What a kept error_type or provider_name may look like: a short lower-case code, never text.
 _CODE = re.compile(r"[a-z0-9_.-]{1,64}")
+# A reply's ``provider`` as the ledger keeps it (0023's model_usage.provider_name CHECK).
+_PROVIDER_NAME = re.compile(r"[A-Za-z0-9 ._-]{1,64}")
 
 # Breaker states, and the reader states status() gives.
 _CLOSED, _OPEN, _HALF_OPEN = "closed", "open", "half_open"
 WORKING, FAILING, DOWN, KEY_PROBLEM = "working", "failing", "down", "key_problem"
 
 _log = logging.getLogger(__name__)
+
+
+class ProviderNotAllowed(ValueError):
+    """A page read named a provider outside OPENROUTER_PROVIDERS, the processors Vrushit
+    approved: nothing is sent. The message is the code ``provider_not_allowed`` only."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,9 +301,15 @@ def build_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
-def provider(*, embeddings: bool = False) -> dict[str, Any]:
-    """A fresh copy of ``PROVIDER`` (``EMBED_PROVIDER`` for /embeddings) for one request body."""
-    return copy.deepcopy(dict(EMBED_PROVIDER if embeddings else PROVIDER))
+def provider(slug: str = DEFAULT_PROVIDER, *, embeddings: bool = False) -> dict[str, Any]:
+    """A fresh copy of ``PROVIDER`` (``EMBED_PROVIDER`` for /embeddings) for one request body,
+    with ``only`` the one provider ``slug``: no fallback, every parameter honoured, no data
+    collection, zero data retention. A slug that is not ``PROVIDER_SLUG`` is refused."""
+    if PROVIDER_SLUG.fullmatch(slug) is None:
+        raise ValueError("a provider slug is lower-case letters, digits and dashes, at most 64")
+    block = copy.deepcopy(dict(EMBED_PROVIDER if embeddings else PROVIDER))
+    block["only"] = [slug]
+    return block
 
 
 def detail_level(name: str) -> str:
@@ -316,15 +354,16 @@ def chat_request(
     schema: Mapping[str, Any] | None,
     max_output_tokens: int | None,
     strict: bool = STRICT_SCHEMA,
+    provider_slug: str = DEFAULT_PROVIDER,
 ) -> dict[str, Any]:
     """A /chat/completions body: the model, the messages, the thinking effort, the output
-    cap, the schema and ``PROVIDER``."""
+    cap, the schema and ``provider(provider_slug)``."""
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": False,
         "reasoning": reasoning(thinking),
-        "provider": provider(),
+        "provider": provider(provider_slug),
     }
     if max_output_tokens is not None:
         body["max_completion_tokens"] = max_output_tokens
@@ -343,6 +382,7 @@ def page_request(
     thinking: str,
     max_output_tokens: int | None,
     strict: bool = STRICT_SCHEMA,
+    provider_slug: str = DEFAULT_PROVIDER,
 ) -> dict[str, Any]:
     """A /chat/completions body for one picture: one user message, the instruction first,
     then the image."""
@@ -354,6 +394,7 @@ def page_request(
         schema=schema,
         max_output_tokens=max_output_tokens,
         strict=strict,
+        provider_slug=provider_slug,
     )
 
 
@@ -444,6 +485,19 @@ def _billed_text(reply: Mapping[str, Any], before: tuple[int, int]) -> tuple[str
         raise replies.billed(error, before[0] + input_tokens, before[1] + output_tokens) from None
 
 
+def _valid_reply(
+    content: str, schema: Mapping[str, Any], validate: Callable[[dict[str, Any]], str | None] | None
+) -> tuple[dict[str, Any] | None, str]:
+    """``parse_reply``, then ``validate`` on a value that follows the schema: (the value,
+    ""), or (None, the problem in words for the repair turn)."""
+    value, problem = parse_reply(content, schema)
+    if value is not None and validate is not None:
+        refused = validate(value)
+        if refused is not None:
+            return None, refused
+    return value, problem
+
+
 def _retry_after(headers: "Message[str, str] | None", now: datetime) -> float | None:
     """Seconds the server asked us to wait (whole seconds or an HTTP date), or None."""
     value = headers.get("Retry-After") if headers is not None else None
@@ -511,12 +565,42 @@ class _Reply:
     codes: _ErrorCodes = _ErrorCodes()
 
 
+# status(): the worst state wins.
+_STATE_RANK = {WORKING: 0, FAILING: 1, DOWN: 2, KEY_PROBLEM: 3}
+
+
+@dataclass(slots=True)
+class _Breaker:
+    """One model's circuit breaker (council 11 Oct 2026, FINAL 2), under its gate's lock."""
+
+    state: str = _CLOSED
+    failures: int = 0
+    opened_at: float = 0.0
+    probing: bool = False
+    down_since: float | None = None
+    last_failure_at: float | None = None
+
+    def status(self, now: float) -> tuple[str, float | None]:
+        """``down`` while open (for BREAKER_OPEN_SECONDS) or probing; ``failing`` after a
+        recent failure (an open breaker past BREAKER_OPEN_SECONDS too: the next call is
+        let through); ``working`` with no failure in FAILURE_GAP_SECONDS."""
+        if self.last_failure_at is None or now - self.last_failure_at > FAILURE_GAP_SECONDS:
+            return WORKING, None
+        if (self.state == _OPEN and now < self.opened_at + BREAKER_OPEN_SECONDS) or (
+            self.state == _HALF_OPEN and self.probing
+        ):
+            return DOWN, self.down_since
+        return FAILING, self.down_since
+
+
 class ModelGate:
-    """What every model call of one process shares (G9): the limiter, the circuit breaker,
-    the key latch and the reader's status, with the clock, sleep and random number they use
-    (tests inject them). ``process_gate`` gives the process's one gate, and every client
-    ``build_model_client`` makes uses it, so reading, chat and Health see the same state.
-    Thread-safe."""
+    """What every model call of one process shares (G9): the limiter, the key latch, a
+    circuit breaker per model and the reader's status, with the clock, sleep and random
+    number they use (tests inject them). The limiter and the latch are the process's (one
+    key); each model has its own breaker, so a model that fails leaves the others working
+    (council 11 Oct 2026, FINAL 2). ``process_gate`` gives the process's one gate, and every
+    client ``build_model_client`` makes uses it, so reading, chat and Health see the same
+    state. Thread-safe."""
 
     def __init__(
         self,
@@ -536,80 +620,89 @@ class ModelGate:
         # The limiter: calls start at least this many seconds apart.
         self.interval = 60.0 * workers / settings.model_rpm
         self._next_start = -math.inf
-        self._breaker = _CLOSED
-        self._failures = 0
-        self._opened_at = 0.0
-        self._probing = False
-        self._down_since: float | None = None
+        self._breakers: dict[str, _Breaker] = {}
         self._key_latched_at: float | None = None
 
     def status(self) -> tuple[str, float | None]:
         """(the reader's state, since when on the gate's clock) for Health (U9) and the
-        outage clock (Q7). ``working`` (since None); ``failing``: the last requests failed,
-        since the first of them; ``down``: the breaker is open or probing, since the first
-        failure; ``key_problem``: a 401, 402 or key 403 within KEY_LATCH_SECONDS, since it
-        came."""
+        outage clock (Q7): the worst model's (council 11 Oct 2026, FINAL 2). ``working``
+        (since None); ``failing``: a model's last requests failed, since the first of them
+        (an open breaker past BREAKER_OPEN_SECONDS too); ``down``: a model's breaker is
+        open or probing, since its first failure; ``key_problem``: a 401, 402 or key 403
+        within KEY_LATCH_SECONDS, since it came. A model with no failure in
+        FAILURE_GAP_SECONDS counts as working. Two models in the worst state give the
+        earlier since."""
         with self._lock:
-            if self._key_latched_at is not None and self.clock() < self._key_latched_at + KEY_LATCH_SECONDS:
+            now = self.clock()
+            if self._key_latched_at is not None and now < self._key_latched_at + KEY_LATCH_SECONDS:
                 return KEY_PROBLEM, self._key_latched_at
-            if self._breaker != _CLOSED:
-                return DOWN, self._down_since
-            if self._failures:
-                return FAILING, self._down_since
-            return WORKING, None
+            states = [breaker.status(now) for breaker in self._breakers.values()]
+        worst = max((state for state, _ in states), key=_STATE_RANK.__getitem__, default=WORKING)
+        since = [at for state, at in states if state == worst and at is not None]
+        return worst, min(since) if since else None
 
-    def admit(self) -> None:
-        """Raises at once while the key is latched or the breaker is open; lets one probe
-        through once the breaker has been open BREAKER_OPEN_SECONDS."""
+    def admit(self, model: str) -> None:
+        """Raises at once while the key is latched or ``model``'s breaker is open; lets one
+        probe through once it has been open BREAKER_OPEN_SECONDS."""
         with self._lock:
             now = self.clock()
             if self._key_latched_at is not None and now < self._key_latched_at + KEY_LATCH_SECONDS:
                 raise ModelUnavailable("key_rejected")
-            if self._breaker == _OPEN and now >= self._opened_at + BREAKER_OPEN_SECONDS:
-                self._breaker = _HALF_OPEN
-            if self._breaker == _OPEN or (self._breaker == _HALF_OPEN and self._probing):
+            breaker = self._breakers.setdefault(model, _Breaker())
+            if breaker.state == _OPEN and now >= breaker.opened_at + BREAKER_OPEN_SECONDS:
+                breaker.state = _HALF_OPEN
+            if breaker.state == _OPEN or (breaker.state == _HALF_OPEN and breaker.probing):
                 raise ModelUnavailable("circuit_open")
-            if self._breaker == _HALF_OPEN:
-                self._probing = True
+            if breaker.state == _HALF_OPEN:
+                breaker.probing = True
 
-    def take_slot(self, deadline: float) -> float:
+    def take_slot(self, deadline: float, model: str) -> float:
         """When this request may start under the limiter; the slot is booked only when it
-        starts before ``deadline`` (``ModelUnavailable("rate_limited")`` if not)."""
+        starts before ``deadline`` (``ModelUnavailable("rate_limited")`` if not, and
+        ``model``'s probe, if this was it, is released)."""
         with self._lock:
             start = max(self.clock(), self._next_start)
             if start >= deadline:
-                self._probing = False
+                self._breakers.setdefault(model, _Breaker()).probing = False
                 raise ModelUnavailable("rate_limited")
             self._next_start = start + self.interval
             return start
 
-    def release_probe(self) -> None:
+    def release_probe(self, model: str) -> None:
         with self._lock:
-            self._probing = False
+            self._breakers.setdefault(model, _Breaker()).probing = False
 
-    def record(self, *, failed: bool) -> None:
-        """One request's outcome: any reply closes the breaker; a failure (408, 429, 5xx, a
-        mid-reply error, no connection) counts towards opening it."""
+    def record(self, model: str, *, failed: bool) -> None:
+        """One request's outcome for ``model``: any reply closes its breaker (and ends a key
+        latch); a failure (408, 429, 5xx, a mid-reply error, no connection) counts towards
+        opening it, unless the one before is more than FAILURE_GAP_SECONDS old (the count
+        starts again). Another model's breaker is not touched."""
         with self._lock:
-            self._probing = False
+            breaker = self._breakers.setdefault(model, _Breaker())
+            breaker.probing = False
             if not failed:
-                self._breaker, self._failures, self._down_since = _CLOSED, 0, None
+                breaker.state, breaker.failures, breaker.down_since = _CLOSED, 0, None
+                breaker.last_failure_at = None
                 self._key_latched_at = None
                 return
             now = self.clock()
-            self._failures += 1
-            if self._down_since is None:
-                self._down_since = now
-            if self._breaker == _HALF_OPEN or self._failures >= BREAKER_FAILURES:
-                if self._breaker != _OPEN:
+            if breaker.last_failure_at is not None and now - breaker.last_failure_at > FAILURE_GAP_SECONDS:
+                breaker.failures, breaker.down_since = 0, None
+            breaker.last_failure_at = now
+            breaker.failures += 1
+            if breaker.down_since is None:
+                breaker.down_since = now
+            if breaker.state == _HALF_OPEN or breaker.failures >= BREAKER_FAILURES:
+                if breaker.state != _OPEN:
                     _log.warning("model circuit open", extra={"code": "circuit_open"})
-                self._breaker, self._opened_at = _OPEN, now
+                breaker.state, breaker.opened_at = _OPEN, now
 
     def latch_key(self, code: str = "key_rejected") -> None:
-        """A 401, 402 or key 403: every call fails at once for KEY_LATCH_SECONDS; logged once
-        at error, with ``code`` (``no_credits`` for a 402)."""
+        """A 401, 402 or key 403: every call fails at once for KEY_LATCH_SECONDS, whatever
+        the model (one key); logged once at error, with ``code`` (``no_credits`` for a 402)."""
         with self._lock:
-            self._probing = False
+            for breaker in self._breakers.values():
+                breaker.probing = False
             first = self._key_latched_at is None
             self._key_latched_at = self.clock()
         if first:
@@ -654,8 +747,8 @@ class OpenRouterClient:
         secure = parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS)
         if not (secure and parts.hostname) or parts.username or parts.password or parts.query:
             raise ValueError("openrouter_base_url must be https (http only on a loopback host)")
-        others = (settings.model_chat, settings.model_embed)
-        for model in (settings.ocr_model, *filter(is_gemini_model, others)):
+        others = (settings.model_chat, settings.model_embed) if settings.model_enabled else ()
+        for model in (settings.ocr_model, *others):
             if not valid_model_id(model):
                 raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
         self._key = settings.openrouter_api_key
@@ -665,6 +758,7 @@ class OpenRouterClient:
         self._chat_timeout = self._timeout if chat_timeout_seconds is None else chat_timeout_seconds
         self._default_chat_tokens = settings.model_answer_max_tokens
         self._dim = settings.embedding_dim
+        self._providers = settings.openrouter_providers
         self.ocr_model = settings.ocr_model
         self.chat_model = settings.model_chat
         self.embed_model = settings.model_embed
@@ -702,6 +796,7 @@ class OpenRouterClient:
         """One vector per text, in order, ``EMBEDDING_DIM`` long (M5: dimensions 1024, so
         halfvec(1024) does not change). /embeddings, ``EMBED_TEXTS_PER_REQUEST`` texts a
         request."""
+        self._check_provider(DEFAULT_PROVIDER)
         vectors: list[list[float]] = []
         for start in range(0, len(texts), EMBED_TEXTS_PER_REQUEST):
             batch = texts[start : start + EMBED_TEXTS_PER_REQUEST]
@@ -726,6 +821,7 @@ class OpenRouterClient:
         follow it goes back once for a repair; a second bad one raises ``invalid_output``. A
         reply longer than ``max_tokens`` (thinking not counted) raises ``output_truncated``
         with no repair."""
+        self._check_provider(DEFAULT_PROVIDER)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -761,24 +857,34 @@ class OpenRouterClient:
         media_resolution: str,
         thinking_level: str,
         deadline: float,
+        model: str | None = None,
+        provider: str | None = None,
+        validate: Callable[[dict[str, Any]], str | None] | None = None,
     ) -> PageReply:
-        """One page read by OCR_MODEL as a JSON object following ``schema``, before
-        ``deadline`` (an absolute time on ``now()``; every retry fits inside it). A first
-        reply that does not follow the schema is sent back once for a repair, with the page
-        again; the tokens of both calls are counted."""
+        """One page read by ``model`` through ``provider`` (None: OCR_MODEL through
+        DEFAULT_PROVIDER, as before model choice) as a JSON object following ``schema``,
+        before ``deadline`` (an absolute time on ``now()``; every retry fits inside it). A
+        provider outside OPENROUTER_PROVIDERS raises ``ProviderNotAllowed`` before anything is
+        sent. A first reply that does not follow the schema, or that ``validate`` refuses (it
+        gives the problem in words, None when the value is good), is sent back once for a
+        repair, with the page again; the tokens of both calls are counted."""
+        if model is not None and not valid_model_id(model):
+            raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
+        self._check_provider(DEFAULT_PROVIDER if provider is None else provider)
         body = page_request(
-            model=self.ocr_model,
+            model=self.ocr_model if model is None else model,
             png=png,
             instruction=instruction,
             schema=schema,
             media_resolution=media_resolution,
             thinking=thinking_level,
             max_output_tokens=PAGE_MAX_OUTPUT_TOKENS,
+            provider_slug=DEFAULT_PROVIDER if provider is None else provider,
         )
         reply = self._call(CHAT_PATH, body, deadline)
         input_tokens, output_tokens = reply_usage(reply)
         content, finish = _billed_text(reply, (0, 0))
-        value, problem = parse_reply(content, schema)
+        value, problem = _valid_reply(content, schema, validate)
         if value is None:
             body["messages"].append({"role": "assistant", "content": content})
             body["messages"].append({"role": "user", "content": REPAIR.format(problem=problem)})
@@ -786,12 +892,17 @@ class OpenRouterClient:
             content, finish = _billed_text(reply, (input_tokens, output_tokens))
             more_in, more_out = reply_usage(reply)
             input_tokens, output_tokens = input_tokens + more_in, output_tokens + more_out
-            value, _ = parse_reply(content, schema)
+            value, _ = _valid_reply(content, schema, validate)
             if value is None:
                 raise ModelOutputError(
                     "invalid_output", input_tokens=input_tokens, output_tokens=output_tokens
                 )
         return PageReply(value, input_tokens, output_tokens, finish)
+
+    def _check_provider(self, slug: str) -> None:
+        """``ProviderNotAllowed`` unless ``slug`` is in OPENROUTER_PROVIDERS: nothing is sent."""
+        if slug not in self._providers:
+            raise ProviderNotAllowed("provider_not_allowed")
 
     # verify-models' raw request.
 
@@ -854,36 +965,37 @@ class OpenRouterClient:
         return vector
 
     def _call(self, path: str, body: Mapping[str, Any], deadline: float) -> dict[str, Any]:
-        """One request with the latch, the breaker, the limiter and retries (G6, G9).
-        Returns the reply object of a 200; raises a coded error otherwise."""
+        """One request with the latch, the body's model's breaker, the limiter and retries
+        (G6, G9). Returns the reply object of a 200; raises a coded error otherwise."""
         gate = self.gate
+        model = str(body["model"])
         attempt = 0
         while True:
-            gate.admit()
-            start = gate.take_slot(deadline)
+            gate.admit(model)
+            start = gate.take_slot(deadline, model)
             if start > gate.clock():
                 gate.sleep(start - gate.clock())
             remaining = deadline - gate.clock()
             if remaining <= 0:
-                gate.release_probe()
+                gate.release_probe(model)
                 raise ModelUnavailable("timeout")
             reply = self._send(path, body, remaining)
             code: str | None
             if 200 <= reply.status < 300:
                 if reply.body is None:
-                    gate.record(failed=False)
+                    gate.record(model, failed=False)
                     raise ModelUnavailable(reply.failure or "bad_response")
                 if not failed_mid_reply(reply.body):
-                    gate.record(failed=False)
-                    self._count(reply.body)
+                    gate.record(model, failed=False)
+                    self._count(reply.body, model)
                     return reply.body
-                self._count(reply.body)  # a reply that failed part way may still be billed
+                self._count(reply.body, model)  # a reply that failed part way may still be billed
                 code = "server_error"
             elif reply.status in _KEY_STATUSES:
                 if reply.status == 403 and (
                     reply.codes.moderated or reply.codes.error_type in REFUSAL_ERROR_TYPES
                 ):
-                    gate.record(failed=False)
+                    gate.record(model, failed=False)
                     raise ModelOutputError("blocked")
                 gate.latch_key(_KEY_STATUSES[reply.status])
                 raise ModelUnavailable("key_rejected")
@@ -892,7 +1004,7 @@ class OpenRouterClient:
             else:
                 code = _RETRY_STATUSES.get(reply.status) or ("server_error" if reply.status >= 500 else None)
             if code is None:  # the server answered: it is up, but this request is wrong
-                gate.record(failed=False)
+                gate.record(model, failed=False)
                 if reply.status in _BAD_REQUEST_STATUSES:
                     raise ModelOutputError("bad_request")
                 if reply.status == 404:
@@ -900,7 +1012,7 @@ class OpenRouterClient:
                 if 300 <= reply.status < 400:
                     raise ModelUnavailable("redirect_refused")
                 raise ModelUnavailable("http_error")
-            gate.record(failed=True)
+            gate.record(model, failed=True)
             if reply.status == 0 and code == "timeout":
                 raise ModelUnavailable("timeout")
             wait = gate.random() * min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2**attempt)
@@ -912,9 +1024,16 @@ class OpenRouterClient:
             gate.sleep(wait)
             attempt += 1
 
-    def _count(self, reply: Mapping[str, Any]) -> None:
+    def _count(self, reply: Mapping[str, Any], model: str) -> None:
+        """Count one billed reply (G9): this client's totals, and the current usage scope's
+        ledger (SP1, ``kaagaz.ai.usage``) under the model asked for and the provider the
+        reply names, if it looks like a name. Every billed reply comes here: a blocked, cut
+        off or repaired one too."""
         input_tokens, output_tokens = reply_usage(reply)
         cost = reply_cost(reply)
+        named = reply.get("provider")
+        provider_name = named if isinstance(named, str) and _PROVIDER_NAME.fullmatch(named) else None
+        usage.record_call(model, provider_name, input_tokens, output_tokens, reasoning_tokens(reply), cost)
         with self._lock:
             self._input_tokens += input_tokens
             self._output_tokens += output_tokens

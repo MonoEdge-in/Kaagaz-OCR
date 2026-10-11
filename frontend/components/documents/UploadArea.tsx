@@ -21,9 +21,9 @@
 // Each file is sent with who was signed in when it was added, so the server
 // refuses it if another account has signed in since (critical #5); then
 // no file still waiting is sent, and each says why.
-// "Scan with" (ReaderSelect, readers.ts) picks the scan reader for the files
-// added next, new versions included; it is kept for this visit only (a module
-// variable: a reload starts at the server's default again).
+// "Read with" (ReaderSelect, readers.ts) picks the model that reads the scans
+// of the files added next, new versions included; it is kept for this visit
+// only (a module variable: a reload starts at the organisation's default again).
 
 import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
@@ -99,7 +99,7 @@ interface Followed {
 const canRetry = (caught: unknown) =>
   !(caught instanceof ApiError) || caught.status === 0 || caught.status === 429 || caught.status >= 500;
 
-// The reader picked in "Scan with" during this visit; null: the server's default.
+// The model picked in "Read with" during this visit; null: the organisation's default.
 let sessionReader: string | null = null;
 
 /** The upload queue: add files, watch them go, clear the finished ones. */
@@ -355,8 +355,9 @@ export function useUploads(onUploaded: () => void) {
 }
 
 /**
- * "Scan with": a labelled native select of the server's readers, with the
- * picked one's hint below it. Not shown unless the server can use two or more.
+ * "Read with": a labelled native select of the organisation's models, with the
+ * picked one's hint ("about $X a page") below it. Not shown unless two or more
+ * can be used. Also the whole document's Read again (ReadAgain.tsx).
  */
 export function ReaderSelect({
   readers,
@@ -373,7 +374,7 @@ export function ReaderSelect({
   return (
     <div className={styles.reader}>
       <label htmlFor={`${id}-select`} className={styles.readerLabel}>
-        Scan with
+        Read with
       </label>
       <select
         id={`${id}-select`}
@@ -411,7 +412,7 @@ export function Dropzone({
   limits: UploadLimits;
   onFiles: (files: File[]) => void;
   onChoose: () => void;
-  readerChoice?: ReactNode; // "Scan with", beside "Choose files" in the slim strip
+  readerChoice?: ReactNode; // "Read with", beside "Choose files" in the slim strip
   children?: ReactNode;
 }) {
   const [dragging, setDragging] = useState(false);

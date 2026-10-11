@@ -24,6 +24,11 @@ code of a database or model error. Neither is ever in a reply or a log.
 
 A conversation belongs to the user who started it; anyone else, in this
 customer or another, gets "not found".
+
+AI spend (model choice, council 11 Oct 2026, SP1): the model calls of an answer are
+billed to the asker, kind ``chat``, with the conversation once it is known (a new one
+is made only after the answer); the memory's to the same user, kind ``memory``
+(``usage_scope``).
 """
 
 import json
@@ -38,6 +43,7 @@ from sqlalchemy import Connection, RowMapping
 from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
+from kaagaz.ai.usage import usage_scope
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.rewrite import Turn
 from kaagaz.api.auth import User
@@ -114,49 +120,57 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         raise ApiError(400, "bad_request", "Choose fewer documents or tags.")
 
     history = _history(recent)
-    answer = context.answers.answer(
-        user.customer_id, question, scope=scope, history=history, user_id=user.user_id, memory=memory
-    ).to_json()
+    with usage_scope(
+        context.db,
+        customer_id=user.customer_id,
+        user_id=user.user_id,
+        kind="chat",
+        conversation_id=conversation_id,
+    ) as spend:
+        answer = context.answers.answer(
+            user.customer_id, question, scope=scope, history=history, user_id=user.user_id, memory=memory
+        ).to_json()
 
-    with context.db.customer(user.customer_id) as conn:
-        if conversation_id is None:
-            conversation_id = chat_sql.create_conversation(
-                conn, user.customer_id, user.user_id, question[:MAX_TITLE]
+        with context.db.customer(user.customer_id) as conn:
+            if conversation_id is None:
+                conversation_id = chat_sql.create_conversation(
+                    conn, user.customer_id, user.user_id, question[:MAX_TITLE]
+                )
+            elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
+                raise ApiError(404, "not_found")
+            asked = chat_sql.add_message(
+                conn,
+                user.customer_id,
+                conversation_id,
+                role="user",
+                message_text=question,
+                answer=None,
+                scope=saved,
+                rewritten_question=answer.get("rewritten_question"),
             )
-        elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
-            raise ApiError(404, "not_found")
-        asked = chat_sql.add_message(
-            conn,
-            user.customer_id,
-            conversation_id,
-            role="user",
-            message_text=question,
-            answer=None,
-            scope=saved,
-            rewritten_question=answer.get("rewritten_question"),
-        )
-        answered = chat_sql.add_message(
-            conn,
-            user.customer_id,
-            conversation_id,
-            role="assistant",
-            message_text=answer_text(answer),
-            answer=answer,
-        )
-        status = answer.get("status")
-        audit.record(
-            conn,
-            user.customer_id,
-            actor_user_id=user.user_id,
-            action="chat.ask",
-            target_type="message",
-            target_id=str(answered["id"]),
-            details={
-                "conversation_id": conversation_id,
-                "question_id": str(asked["id"]),
-                "status": status if isinstance(status, str) else None,
-            },
-        )
+            answered = chat_sql.add_message(
+                conn,
+                user.customer_id,
+                conversation_id,
+                role="assistant",
+                message_text=answer_text(answer),
+                answer=answer,
+            )
+            status = answer.get("status")
+            audit.record(
+                conn,
+                user.customer_id,
+                actor_user_id=user.user_id,
+                action="chat.ask",
+                target_type="message",
+                target_id=str(answered["id"]),
+                details={
+                    "conversation_id": conversation_id,
+                    "question_id": str(asked["id"]),
+                    "status": status if isinstance(status, str) else None,
+                },
+            )
+        spend.conversation_id = conversation_id  # committed: the ledger row may name it
     if summary_due(turns + 1, summary_turn, context.settings.chat_summary_every):
         background.add_task(
             _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
@@ -187,7 +201,14 @@ def _remember(
     nothing can be shown: a database, connection or model error is logged as its code only
     (never a traceback, which could hold the chat's words) and nothing is written."""
     try:
-        _write_memory(context, customer_id, user_id, conversation_id, expected_turn, turn)
+        with usage_scope(
+            context.db,
+            customer_id=customer_id,
+            user_id=user_id,
+            kind="memory",
+            conversation_id=conversation_id,
+        ):
+            _write_memory(context, customer_id, user_id, conversation_id, expected_turn, turn)
     except (SQLAlchemyError, BackendUnavailable, ModelUnavailable, ModelOutputError) as error:
         logger.warning("memory not written", extra={"code": type(error).__name__})
 

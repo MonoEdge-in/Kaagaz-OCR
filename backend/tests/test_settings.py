@@ -93,7 +93,7 @@ def test_the_old_layout_reader_stops_start_up_by_name() -> None:
 
 @pytest.mark.parametrize(("name", "other"), [("MODEL_CHAT", "MODEL_EMBED"), ("MODEL_EMBED", "MODEL_CHAT")])
 def test_a_local_model_with_the_model_on_stops_start_up_by_name(name: str, other: str) -> None:
-    """PRD 5 M1, M5: with MODEL_ENABLED, MODEL_CHAT and MODEL_EMBED are google/gemini- models;
+    """PRD 5 M1, M5: with MODEL_ENABLED, MODEL_CHAT and MODEL_EMBED are OpenRouter model IDs;
     a local model name (it used to fall back to a local server) stops start-up by name."""
     gemini = {"MODEL_CHAT": "google/gemini-3.1-pro-preview", "MODEL_EMBED": "google/gemini-embedding-2"}
     on = {**gemini, "MODEL_ENABLED": "true", "OPENROUTER_API_KEY": KEY}
@@ -258,8 +258,6 @@ QUEUE_DEFAULTS = {
     "QUEUE_EXPRESS_URL": ("queue_express_url", None),
     "EXPRESS_MAX_PAGES": ("express_max_pages", 3),
     "MAX_FILES_PER_BATCH": ("max_files_per_batch", 100),
-    "MODEL_PRICE_INPUT_USD_PER_M": ("model_price_input_usd_per_m", 0.0),
-    "MODEL_PRICE_OUTPUT_USD_PER_M": ("model_price_output_usd_per_m", 0.0),
 }
 
 
@@ -282,8 +280,6 @@ def test_the_queue_settings_are_read_when_set() -> None:
             QUEUE_EXPRESS_URL=express,
             EXPRESS_MAX_PAGES="5",
             MAX_FILES_PER_BATCH="50",
-            MODEL_PRICE_INPUT_USD_PER_M="1.25",
-            MODEL_PRICE_OUTPUT_USD_PER_M="10",
         )
     )
     assert (
@@ -292,9 +288,16 @@ def test_the_queue_settings_are_read_when_set() -> None:
         settings.queue_express_url,
         settings.express_max_pages,
         settings.max_files_per_batch,
-        settings.model_price_input_usd_per_m,
-        settings.model_price_output_usd_per_m,
-    ) == (2, 4, express, 5, 50, 1.25, 10.0)
+    ) == (2, 4, express, 5, 50)
+
+
+def test_the_removed_model_prices_are_ignored_so_an_older_env_still_starts() -> None:
+    """Model choice (council 11 Oct 2026): the ledger replaces MODEL_PRICE_*; a value that
+    would have stopped start-up before is now not read at all."""
+    settings = Settings.from_env(
+        shipped(MODEL_PRICE_INPUT_USD_PER_M="-0.5", MODEL_PRICE_OUTPUT_USD_PER_M="nan")
+    )
+    assert not hasattr(settings, "model_price_input_usd_per_m")
 
 
 # PRD 5 sections CX and M (council 9 Oct 2026): optional, the PRD's value when unset.
@@ -343,8 +346,6 @@ def test_the_context_and_memory_settings_take_a_set_value() -> None:
         ("EXPRESS_MAX_PAGES", "three"),
         ("MAX_FILES_PER_BATCH", "0"),
         ("QUEUE_EXPRESS_URL", "kaagaz-jobs-express"),
-        ("MODEL_PRICE_INPUT_USD_PER_M", "-0.5"),
-        ("MODEL_PRICE_OUTPUT_USD_PER_M", "nan"),
     ],
 )
 def test_a_bad_queue_setting_stops_start_up_by_name(name: str, value: str) -> None:

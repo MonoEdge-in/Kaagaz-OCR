@@ -148,9 +148,39 @@ def test_ocr_model_must_be_an_openrouter_model_id(model: str) -> None:
 
 
 @pytest.mark.parametrize("name", ["MODEL_CHAT", "MODEL_EMBED"])
-def test_a_gemini_model_with_a_variant_stops_start_up_by_name(name: str) -> None:
+def test_a_model_with_a_variant_stops_start_up_by_name(name: str) -> None:
     with pytest.raises(SettingsError, match=f"{name} must be an OpenRouter model ID"):
-        Settings.from_env(shipped(**GEMINI, **{name: "google/gemini-3.1-pro-preview:free"}))
+        Settings.from_env(
+            shipped(**GEMINI, MODEL_ENABLED="true", **{name: "google/gemini-3.1-pro-preview:free"})
+        )
+
+
+@pytest.mark.parametrize("name", ["MODEL_CHAT", "MODEL_EMBED"])
+def test_any_openrouter_model_may_answer_or_embed(name: str) -> None:
+    """Model choice (council 11 Oct 2026): the google/gemini- gate is gone; any OpenRouter
+    model ID starts."""
+    on = shipped(**GEMINI, MODEL_ENABLED="true", **{name: "anthropic/claude-sonnet-5.5"})
+    assert getattr(Settings.from_env(on), name.lower()) == "anthropic/claude-sonnet-5.5"
+
+
+def test_the_providers_are_google_vertex_unless_set() -> None:
+    assert Settings.from_env(shipped()).openrouter_providers == {"google-vertex"}
+    assert Settings.from_env(shipped(OPENROUTER_PROVIDERS="")).openrouter_providers == {"google-vertex"}
+    both = Settings.from_env(shipped(OPENROUTER_PROVIDERS="google-vertex, azure"))
+    assert both.openrouter_providers == {"google-vertex", "azure"}
+
+
+@pytest.mark.parametrize("value", ["Azure", "google vertex", "google-vertex,amazon_bedrock", "a" * 65, ","])
+def test_a_provider_that_is_not_a_slug_stops_start_up_by_name(value: str) -> None:
+    with pytest.raises(SettingsError, match="OPENROUTER_PROVIDERS"):
+        Settings.from_env(shipped(OPENROUTER_PROVIDERS=value))
+
+
+@pytest.mark.parametrize("value", ["azure", "azure, amazon-bedrock"])
+def test_providers_without_google_vertex_stop_start_up(value: str) -> None:
+    """R5: chat, embeddings and OCR_MODEL (resolve's fallback) all go through google-vertex."""
+    with pytest.raises(SettingsError, match="OPENROUTER_PROVIDERS must include google-vertex"):
+        Settings.from_env(shipped(OPENROUTER_PROVIDERS=value))
 
 
 def test_gemini_without_a_key_stops_start_up() -> None:
@@ -279,6 +309,16 @@ def test_a_gemini_model_is_named_by_its_openrouter_id(name: str, gemini: bool) -
         ("gemini-3.1-pro-preview", False),
         ("google/gemini/3", False),
         ("local-chat:4b", False),
+        # R8: each part 1 to 128 characters, starting with a letter or a digit.
+        ("google/.", False),
+        ("google/..", False),
+        ("./model", False),
+        ("-google/model", False),
+        ("google/-model", False),
+        ("google/_model", False),
+        ("a" * 128 + "/" + "b" * 128, True),
+        ("a" * 129 + "/model", False),
+        ("google/" + "m" * 129, False),
     ],
 )
 def test_a_model_id_is_author_slash_slug_with_no_variant(name: str, valid: bool) -> None:

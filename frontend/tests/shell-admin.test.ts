@@ -357,6 +357,10 @@ describe("the failed jobs tab", () => {
     expect(TABS.at(-1)).toEqual({ id: "failed", label: "Failed jobs" });
   });
 
+  it("comes after the AI models and Usage tabs (model choice)", () => {
+    expect(TABS.map((tab) => tab.label).slice(-3)).toEqual(["AI models", "Usage", "Failed jobs"]);
+  });
+
   it("says when a document was last tried, or that it never ran", () => {
     expect(lastRunText(null)).toBe("Never run");
     expect(lastRunText("2026-10-01T09:00:00+00:00")).toMatch(/^Last tried .*2026/);
@@ -376,22 +380,30 @@ describe("the failed jobs tab", () => {
 describe("readerTiles (PRD 5 U9)", () => {
   const reader_pages = { gemini: 1200, local: 30, cached: 4, read_again: 2 };
 
-  it("shows the scanned pages by who read them, then the spend, labelled an estimate", () => {
+  it("shows the scanned pages by who read them, then this month's AI spend from the ledger", () => {
     const spend_estimate = { input_tokens: 900000, output_tokens: 120000, usd: 1.5 };
     expect(readerTiles({ reader_pages, spend_estimate })).toEqual([
-      { label: "Read by Gemini", value: "1,200" },
+      { label: "Read by AI model", value: "1,200" },
       { label: "Read by the backup reader", value: "30" },
       { label: "From the cache", value: "4" },
       { label: "Read again", value: "2" },
-      { label: "Gemini spend this month (estimate)", value: "$1.50" },
+      { label: "AI spend this month", value: "$1.50" },
     ]);
   });
 
   it("hides the money while the prices are not known, and everything from an older server", () => {
     const unknown = { input_tokens: 900000, output_tokens: 120000, usd: null };
     expect(readerTiles({ reader_pages, spend_estimate: unknown }).map((tile) => tile.label)).not.toContain(
-      "Gemini spend this month (estimate)",
+      "AI spend this month",
     );
     expect(readerTiles({})).toEqual([]);
+  });
+
+  it("never shows a spend under a cent as $0.00", () => {
+    const tiny = { input_tokens: 10, output_tokens: 2, usd: 0.0004 };
+    expect(readerTiles({ reader_pages, spend_estimate: tiny }).at(-1)).toEqual({
+      label: "AI spend this month",
+      value: "< $0.01",
+    });
   });
 });

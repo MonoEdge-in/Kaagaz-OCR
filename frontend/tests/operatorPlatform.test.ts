@@ -86,8 +86,8 @@ describe("health in words", () => {
 });
 
 describe("activity and health source guards", () => {
-  it("uses the admin screen's tablist pattern for three tabs", () => {
-    expect(OPERATOR_TABS.map((tab) => tab.label)).toEqual(["Organisations", "Activity", "Health"]);
+  it("uses the admin screen's tablist pattern for five tabs", () => {
+    expect(OPERATOR_TABS.map((tab) => tab.label)).toEqual(["Organisations", "Models", "AI spend", "Activity", "Health"]);
     const console = read("components/operator/OperatorConsole.tsx");
     for (const part of ['role="tablist"', 'role="tab"', 'role="tabpanel"', "aria-controls", "tabAfterKey(", "tabIndex="]) {
       expect(console, part).toContain(part);

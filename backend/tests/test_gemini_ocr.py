@@ -130,6 +130,9 @@ class Call:
     media_resolution: str
     thinking_level: str
     deadline: float
+    model: str | None = None
+    provider: str | None = None
+    validate: Callable[[dict[str, Any]], str | None] | None = None
 
 
 Outcome = PageReply | Exception
@@ -158,11 +161,26 @@ class FakeClient:
         media_resolution: str,
         thinking_level: str,
         deadline: float,
+        model: str | None = None,
+        provider: str | None = None,
+        validate: Callable[[dict[str, Any]], str | None] | None = None,
     ) -> PageReply:
         image = Image.open(io.BytesIO(png))
         image.load()
         with self._lock:
-            self.calls.append(Call(image, instruction, schema, media_resolution, thinking_level, deadline))
+            self.calls.append(
+                Call(
+                    image,
+                    instruction,
+                    schema,
+                    media_resolution,
+                    thinking_level,
+                    deadline,
+                    model,
+                    provider,
+                    validate,
+                )
+            )
             outcome = self.script.pop(0) if self.script else None
         if outcome is None:
             if self.respond is None:
@@ -266,7 +284,7 @@ class G1EngineTest(unittest.TestCase):
         self.assertEqual(built.engine.name, "gemini")
         self.assertEqual(built.engine.version, f"{MODEL};prompt={GEMINI_OCR_PROMPT_VERSION}")
         self.assertEqual(
-            build(ocr_model="google/gemini-3.8-flash").engine.version, "google/gemini-3.8-flash;prompt=g1"
+            build(ocr_model="google/gemini-3.8-flash").engine.version, "google/gemini-3.8-flash;prompt=g2"
         )
 
     def test_g1_it_is_a_page_engine_and_keeps_a_page_cache(self) -> None:
@@ -463,6 +481,8 @@ BAD_REPLIES: dict[str, Any] = {
     "a box with a number too big for a float": value({**line("x"), "box_2d": [10**400, 100, 120, 500]}),
     "a box of booleans": value({**line("x"), "box_2d": [True, 1, 2, 3]}),
     "order not a whole number": value({**line("x"), "order": 1.5}),
+    "a negative order": value(line("x", order=-1)),
+    "a box of five numbers": value({**line("x"), "box_2d": [100, 100, 120, 500, 600]}),
     "continues not a boolean": value({**line("x"), "continues_on_next_page": "no"}),
     "a table on a line that is not a cell": value(line("x", table=_CELL)),
     "a table cell with no table": value(line("x", kind="table_cell")),

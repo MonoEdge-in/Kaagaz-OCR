@@ -48,6 +48,9 @@ ORG_ROUTES = {
     # PR 4: deleting an organisation.
     ("POST", f"{ORGS}/{ANY_ID}/schedule-delete"),
     ("POST", f"{ORGS}/{ANY_ID}/cancel-delete"),
+    # Model choice (council 11 Oct 2026): one organisation's models (routers/operator_models.py).
+    ("GET", f"{ORGS}/{ANY_ID}/models"),
+    ("PUT", f"{ORGS}/{ANY_ID}/models"),
 }
 ORG_ROW = {
     "customer_id": CID,

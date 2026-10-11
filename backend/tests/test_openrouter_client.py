@@ -575,6 +575,46 @@ def test_bad_json_is_repaired_once_with_the_page_again(fake: OpenRouterFake) -> 
     assert "the reply is not JSON" in second[2]["content"]
 
 
+def _only_good(value: dict[str, Any]) -> str | None:
+    return None if value == GOOD else "a line is not on the page"
+
+
+def test_a_reply_the_callers_check_refuses_gets_the_one_repair(fake: OpenRouterFake) -> None:
+    """R12: JSON that follows the schema but breaks the caller's own check is repaired
+    once, with the check's words, like JSON that breaks the schema."""
+    wrong = {**GOOD, "lines": ["Total 9,999"]}
+    fake.script(
+        "completions",
+        json_reply(wrong, counts=usage(1500, 100, 90)),
+        json_reply(GOOD, counts=usage(1600, 400, 100)),
+    )
+    page = _read(_client(fake.url, Clock()), validate=_only_good)
+    assert page == PageReply(GOOD, 3100, 500, "STOP")
+    second = fake.bodies()[1]["messages"]
+    assert [message["role"] for message in second] == ["user", "assistant", "user"]
+    assert "a line is not on the page" in second[2]["content"]
+
+
+def test_still_refused_after_the_one_repair_is_invalid_output_with_both_calls_tokens(
+    fake: OpenRouterFake,
+) -> None:
+    """R12: one repair at most, whichever check failed first."""
+    wrong = {**GOOD, "lines": ["Total 9,999"]}
+    fake.script(
+        "completions",
+        chat_reply("not json", counts=usage(1500, 100, 90)),
+        json_reply(wrong, counts=usage(1600, 400, 100)),
+    )
+    with pytest.raises(ModelOutputError) as caught:
+        _read(_client(fake.url, Clock()), validate=_only_good)
+    assert (caught.value.code, caught.value.input_tokens, caught.value.output_tokens) == (
+        "invalid_output",
+        3100,
+        500,
+    )
+    assert len(fake.requests) == 2
+
+
 def test_two_bad_replies_are_invalid_output(fake: OpenRouterFake) -> None:
     fake.script("completions", chat_reply("[1]"), json_reply({"status": "answered"}))
     with pytest.raises(ModelOutputError) as caught:
