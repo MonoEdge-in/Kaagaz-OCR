@@ -198,9 +198,15 @@ export const restoreDocument = (id: string) =>
  * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
  * for a ready, failed or unreadable document out of Trash (403 forbidden or
  * 409 not_reprocessable otherwise). The reply has its new status, received.
+ * readModel: the model to read it with (one the organisation allows, else 403
+ * model_not_allowed); none keeps the server's choice.
  */
-export const reprocessDocument = (id: string) =>
-  request<DocumentSummary>("POST", `/documents/${id}/reprocess`);
+export const reprocessDocument = (id: string, readModel?: string) =>
+  request<DocumentSummary>(
+    "POST",
+    `/documents/${id}/reprocess`,
+    readModel ? { read_model: readModel } : undefined,
+  );
 /**
  * An admin session with two-step sign-in, or a granted user who just confirmed
  * their password (403 otherwise), and only from Trash (409 not_in_trash
@@ -254,7 +260,8 @@ export const deleteMyStory = (id: string, userId: string) =>
  * into a folder when one is given, else at the top level. userId is who was
  * signed in when the file was chosen: the server refuses the file (409
  * session_changed) if someone else has signed in since, in another tab.
- * ocrChoice is the scan reader chosen (readers.ts); none means the server's default.
+ * readModel is the model chosen in "Read with" (readers.ts), sent as read_model; none
+ * means the organisation's default.
  * batchId is the drop it came in (PRD 5 Q1, a UUID the browser made; 409 batch_full
  * past MAX_FILES_PER_BATCH). onSent: the last byte has gone, so Saving starts (U10).
  */
@@ -263,13 +270,13 @@ export function uploadDocument(
   userId: string,
   onProgress: (fraction: number) => void,
   folderId?: string,
-  ocrChoice?: string,
+  readModel?: string,
   batchId?: string,
   onSent?: () => void,
 ): Promise<UploadResult> {
   const form = new FormData();
   if (folderId) form.append("folder_id", folderId);
-  if (ocrChoice) form.append("ocr_choice", ocrChoice);
+  if (readModel) form.append("read_model", readModel);
   if (batchId) form.append("batch_id", batchId);
   form.append("user_id", userId);
   form.append("file", file);
@@ -279,18 +286,18 @@ export function uploadDocument(
 /**
  * Upload a new version of a document, with progress. The server gives it the
  * next version number and the family's folder and tags; the reply has the
- * same shape as an upload. ocrChoice and onSent as for uploadDocument.
+ * same shape as an upload. readModel and onSent as for uploadDocument.
  */
 export function uploadVersion(
   documentId: string,
   file: File,
   userId: string,
   onProgress: (fraction: number) => void,
-  ocrChoice?: string,
+  readModel?: string,
   onSent?: () => void,
 ): Promise<UploadResult> {
   const form = new FormData();
-  if (ocrChoice) form.append("ocr_choice", ocrChoice);
+  if (readModel) form.append("read_model", readModel);
   form.append("user_id", userId);
   form.append("file", file);
   return sendForm(`/api/documents/${documentId}/versions`, form, onProgress, onSent);
