@@ -245,10 +245,7 @@ function Attention({ items, openOrg, openTab }: OverviewProps & { items: Attenti
           {shown.map((item, index) => (
             <li key={`${index}|${item.text}`} className={css.attentionItem}>
               <SeverityMark severity={item.severity} />
-              <span className={css.attentionText}>
-                {item.organisationName && <strong>{item.organisationName}: </strong>}
-                {item.text}
-              </span>
+              <span className={css.attentionText}>{item.text}</span>
               {item.target === "organisation" && item.organisationName && (
                 <button
                   type="button"

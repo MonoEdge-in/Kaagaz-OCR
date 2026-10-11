@@ -191,6 +191,12 @@ describe("Overview", () => {
       expect(html).toContain('aria-label="Open Bharat Steel in Organisations"');
     });
 
+    it("names the organisation once in its line", () => {
+      expect(html).toContain("Bharat Steel: AI spend has reached its budget");
+      expect(html).not.toContain("Bharat Steel: Bharat Steel:");
+      expect(html).not.toMatch(/<strong>Bharat Steel: <\/strong>Bharat Steel/);
+    });
+
     it("captions the organisations table and marks its sorted column", () => {
       expect(html).toMatch(/<caption[^>]*>Organisations at a glance/);
       expect(html.match(/aria-sort=/g)).toHaveLength(1);
@@ -403,29 +409,32 @@ describe("Compare models", () => {
 
   describe("with models", () => {
     const html = boardHtml(ready(boardData()));
-    const rows = html.split("<tr").slice(2); // after the header row
+    const rows = html.split("<tr").slice(2).map((row) => row.split("</tr>")[0] ?? ""); // after the header row
+    // Rows by their model, not their place: boardRows orders a tie on pages by model id.
+    const pro = rows.find((row) => row.includes("google/gemini-3.1-pro-preview")) ?? "";
+    const flash = rows.find((row) => row.includes("google/gemini-3-flash")) ?? "";
 
     it("captions the table and names a model from the catalogue", () => {
       expect(html).toMatch(/<caption[^>]*>Compare models, observational<\/caption>/);
-      expect(rows[0]).toContain("Gemini 3.1 Pro");
+      expect(pro).toContain("Gemini 3.1 Pro");
       for (const label of ["Pages", "$ per 1,000 pages (est.)", "Cache saved", "Seconds per page", "Page signals", "AI cost"]) {
         expect(html, label).toContain(`>${label}</th>`);
       }
     });
 
     it("compares a model with 30 documents or more, the speed typical and slowest 5%", () => {
-      expect(rows[0]).not.toMatch(/too few/i);
-      expect(rows[0]).toContain("typical 4.2 s");
-      expect(rows[0]).toContain("slowest 5% 11 s");
-      expect(rows[0]).toContain("Checker disagreement");
-      expect(rows[0]).toContain("$6.50");
+      expect(pro).not.toMatch(/too few/i);
+      expect(pro).toContain("typical 4.2 s");
+      expect(pro).toContain("slowest 5% 11 s");
+      expect(pro).toContain("Checker disagreement");
+      expect(pro).toContain("$6.50");
     });
 
     it("says too few for a model under 30 documents, keeping its pages and cost", () => {
-      expect(rows[1]).toMatch(/too few/i);
-      expect(rows[1]).toContain("google/gemini-3-flash");
-      expect(rows[1]).not.toContain("Checker disagreement");
-      expect(rows[1]).toContain("$6.50");
+      expect(flash).toMatch(/too few/i);
+      expect(flash).toContain("google/gemini-3-flash");
+      expect(flash).not.toContain("Checker disagreement");
+      expect(flash).toContain("$6.50");
     });
 
     it("keeps decoration hidden and never a canvas", () => {
