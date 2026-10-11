@@ -189,6 +189,30 @@ describe("layout guards", () => {
     expect(frame.filter((rule) => /max-height/.test(rule.body))).toEqual([]);
   });
 
+  it("rings the highlight in paper then dark ink, in both themes (1.4.11)", () => {
+    const box = rulesFor("components/viewer/PageViewer.module.css", ".box");
+    expect(box.map((rule) => /box-shadow:([^;]*)/.exec(rule.body)?.[1]?.trim())).toEqual([
+      "0 0 0 2px var(--paper), 0 0 0 4px var(--hl-halo)",
+    ]);
+    // Set once, so the dark theme keeps it; a dark ink, never transparent.
+    const halo = read("app/globals.css").match(/--hl-halo:\s*([^;]+);/g) ?? [];
+    expect(halo).toEqual(["--hl-halo: #1f1a14;"]);
+    const channel = (hex: string) => {
+      const value = parseInt(hex, 16) / 255;
+      return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    };
+    const ink = 0.2126 * channel("1f") + 0.7152 * channel("1a") + 0.0722 * channel("14");
+    expect((1 + 0.05) / (ink + 0.05)).toBeGreaterThanOrEqual(3); // against the white paper ring
+  });
+
+  it("pulses a new spot only where reduced motion can stop it", () => {
+    const css = read("components/viewer/PageViewer.module.css");
+    expect(rulesFor("components/viewer/PageViewer.module.css", ".pulse")[0]?.body).toMatch(/animation:\s*spotPulse [\d.]+s ease-out 2;/);
+    expect(css).toContain("@keyframes spotPulse");
+    const reduced = rules(read("app/globals.css")).filter((rule) => rule.at === "@media (prefers-reduced-motion: reduce)");
+    expect(reduced.some((rule) => /animation-iteration-count:\s*1 !important/.test(rule.body))).toBe(true);
+  });
+
   it("sticks the page column under the same media query the page fit uses", () => {
     const sticky = rules(read("app/(app)/documents/[id]/DocumentView.module.css")).filter(
       (rule) => selectors(rule).includes(".viewer") && /position:\s*sticky/.test(rule.body),

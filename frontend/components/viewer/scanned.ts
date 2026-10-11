@@ -30,17 +30,23 @@ export function notSure(confidence: number | null): boolean {
   return isScore(confidence) && confidence < LOW_CONFIDENCE;
 }
 
-/** "Reader sure (97%)" or "Reader not sure (62%)" (never rounded up to 90%); with no score, what that means. */
-export function confidenceText(confidence: number | null, origin: Origin): string {
+/**
+ * "Reader sure (97%)" or "Reader not sure (62%)" (never rounded up to 90%); with no score,
+ * "Read directly from the file" for a cell or the text layer, else null (nothing to show).
+ */
+export function confidenceText(confidence: number | null, origin: Origin): string | null {
   if (isScore(confidence)) {
     const percent = Math.round(confidence * 100);
     return notSure(confidence)
       ? `Reader not sure (${Math.min(percent, 89)}%)`
       : `Reader sure (${percent}%)`;
   }
-  return origin === "cell" || origin === "text_layer"
-    ? "Read directly from the file"
-    : "No confidence given";
+  return origin === "cell" || origin === "text_layer" ? "Read directly from the file" : null;
+}
+
+/** True when any line has a reader's score, so CONFIDENCE_NOTE has something to explain. */
+export function hasScore(lines: Pick<ReadLine, "confidence">[]): boolean {
+  return lines.some((line) => isScore(line.confidence));
 }
 
 /** How a value's page was read, as a line's origin; null when it is not known. */
