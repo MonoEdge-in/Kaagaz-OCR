@@ -300,15 +300,17 @@ def family_versions(conn: Connection, customer_id: str, family_id: str) -> Seque
 # A PageSummary row: the page, how it was read (PRD 2 R1, R4) and its reading result
 # (PRD 5 RT2, F1), "Keep as is" and a read again asked for (F5). PRD 5 U4: the values on
 # the page the two readers still read differently, the count readers_disagree's sentence
-# names (the index extracted_values_record).
+# names (the index extracted_values_record). Model choice (council 11 Oct 2026): the
+# catalogue name of the model that read it, ``read_by_name``; NULL for rapidocr, text_layer,
+# cells or a model the catalogue never listed (a LEFT JOIN on its primary key).
 _PAGE = (
     "SELECT page_no, width, height, unit, has_image, route, effective_dpi, low_resolution,"
-    " read_by, read_quality, read_issues, unsure_words, illegible_words, unpinned_lines,"
-    " accepted_by, accepted_at, read_again_requested_at,"
+    " read_by, mc.name AS read_by_name, read_quality, read_issues, unsure_words, illegible_words,"
+    " unpinned_lines, accepted_by, accepted_at, read_again_requested_at,"
     " (SELECT count(*) FROM extracted_values ev WHERE ev.customer_id = pages.customer_id"
     " AND ev.document_id = pages.document_id AND ev.page_no = pages.page_no"
     " AND ev.label_reason = 'readers_disagree') AS values_disputed"
-    " FROM pages"
+    " FROM pages LEFT JOIN model_catalog mc ON mc.id = pages.read_by"
 )
 
 
@@ -569,3 +571,58 @@ def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_
         if folder_missing(error):
             raise FolderNotFound() from None
         raise
+
+
+# --- Model choice and AI spend (council 11 Oct 2026, MS5, SP2, SP4) -------------------
+
+_SET_READING = (
+    "UPDATE documents SET read_requested_by = :u, read_model = COALESCE(:m, read_model)"
+    " WHERE customer_id = :c AND id = :d"
+)
+
+
+def set_reading(
+    conn: Connection, customer_id: str, document_id: str, *, requested_by: str, model: str | None
+) -> None:
+    """Who asked for the document's next reading, the user its scan spend is billed to, and
+    the model chosen (already checked against the organisation's usable models); ``model``
+    None keeps the document's own choice. O(log D)."""
+    conn.execute(text(_SET_READING), {"c": customer_id, "d": document_id, "u": requested_by, "m": model})
+
+
+def ai_budget(conn: Connection, customer_id: str) -> float | None:
+    """The organisation's monthly AI budget in US dollars, set by the operator; None: none."""
+    value = conn.execute(
+        text("SELECT ai_budget_usd FROM customers WHERE id = :c"), {"c": customer_id}
+    ).scalar_one_or_none()
+    return None if value is None else float(value)
+
+
+# The spend CSV (SP2): one line per day in TIMEZONE, user, model and kind. The user is
+# grouped by id, so two users with one name stay apart; a NULL user (work no user asked
+# for, or a removed user) has no name. The index model_usage_period.
+_USAGE_ROWS = (
+    "SELECT (u.created_at AT TIME ZONE :tz)::date AS day, max(us.display_name) AS user_name,"
+    " u.model, u.kind, sum(u.calls) AS calls, sum(u.input_tokens + u.output_tokens) AS tokens,"
+    " sum(u.cost_usd) AS cost_usd, bool_or(u.cost_estimated) AS cost_estimated"
+    " FROM model_usage u"
+    " LEFT JOIN users us ON us.customer_id = u.customer_id AND us.id = u.user_id"
+    " WHERE u.customer_id = :c AND u.created_at >= :start AND u.created_at < :end"
+)
+_USAGE_ROWS_ORDER = " GROUP BY 1, u.user_id, u.model, u.kind ORDER BY 1, 2 NULLS FIRST, u.model, u.kind"
+
+
+def usage_rows(
+    conn: Connection,
+    customer_id: str,
+    *,
+    start: datetime,
+    end: datetime,
+    timezone: str,
+    user_id: str | None,
+) -> Sequence[RowMapping]:
+    """The ledger from ``start`` to ``end`` (not included), for one user when given, one row
+    per day, user, model and kind. O(rows in the period)."""
+    statement = _USAGE_ROWS + ("" if user_id is None else " AND u.user_id = :u") + _USAGE_ROWS_ORDER
+    params = {"c": customer_id, "start": start, "end": end, "tz": timezone, "u": user_id}
+    return conn.execute(text(statement), params).mappings().all()
