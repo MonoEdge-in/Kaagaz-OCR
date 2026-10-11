@@ -3,9 +3,11 @@ MS5, MC3).
 
 The operator sets each organisation's models; the ones usable now (allowed, eligible,
 enabled, verified for the reader's prompt, on a provider inside OPENROUTER_PROVIDERS) come
-from ``db.models.usable_models``. ``GET /api/upload-limits`` lists them, the default first,
-each with its catalogue name and an estimated price a page, and an upload or a Read again
-naming a ``read_model`` outside them is 403 ``model_not_allowed`` before anything is stored.
+from ``db.models.usable_models``, which knows the reader's prompt version itself: the api
+never imports a reader module (the reader plug socket). ``GET /api/upload-limits`` lists
+them, the default first, each with its catalogue name and an estimated price a page, and
+an upload or a Read again naming a ``read_model`` outside them is 403 ``model_not_allowed``
+before anything is stored.
 The browser's choice is never trusted: the worker checks it again (``db.models.resolve``).
 
 Keyless mode (OCR_ENGINE other than gemini) and an organisation the operator set no models
@@ -19,7 +21,6 @@ from sqlalchemy import Connection, RowMapping
 
 from kaagaz.api.errors import ApiError
 from kaagaz.db import models as models_sql
-from kaagaz.reading.gemini_ocr import GEMINI_OCR_PROMPT_VERSION
 from kaagaz.reading.ocr import GEMINI, ocr_choices
 from kaagaz.settings import Settings
 
@@ -31,9 +32,7 @@ def usable(conn: Connection, customer_id: str, settings: Settings) -> list[RowMa
     query). On a ``Database.customer()`` connection of ``customer_id``."""
     if settings.ocr_engine != GEMINI:
         return []
-    rows = models_sql.usable_models(
-        conn, customer_id, settings=settings, prompt_version=GEMINI_OCR_PROMPT_VERSION
-    )
+    rows = models_sql.usable_models(conn, customer_id, settings=settings)
     return sorted(rows, key=lambda row: not row["is_default_scan"])  # stable: the rest keep their order
 
 

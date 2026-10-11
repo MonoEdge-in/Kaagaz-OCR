@@ -91,9 +91,7 @@ def test_ms4_no_usable_model_keeps_auto_alone(monkeypatch: pytest.MonkeyPatch) -
     customer = str(uuid.uuid4())
     rows = readers.usable(_no_conn(), customer, GEMINI)
     assert readers.readers(rows, GEMINI) == ocr_choices(GEMINI)
-    assert calls == [
-        {"customer_id": customer, "settings": GEMINI, "prompt_version": GEMINI_OCR_PROMPT_VERSION}
-    ]
+    assert calls == [{"customer_id": customer, "settings": GEMINI}]
 
 
 def test_ms4_mc3_the_usable_models_default_first_with_a_price_a_page(monkeypatch: pytest.MonkeyPatch) -> None:
