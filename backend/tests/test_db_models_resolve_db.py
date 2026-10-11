@@ -10,6 +10,8 @@ offers the same models, the default first. Customer separation:
 test_isolation_customer_models.
 """
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import text
 
@@ -18,7 +20,7 @@ from kaagaz.db.models import resolve, usable_models
 from kaagaz.settings import Settings
 from tests.db_support import insert_document, new_customer
 from tests.settings_factory import make_settings
-from tests.test_migration_0023_db import PROMPT, allow, as_owner, catalog_model
+from tests.test_migration_0023_db import PROMPT, add_usage, allow, as_owner, catalog_model
 
 pytestmark = pytest.mark.db
 
@@ -125,3 +127,30 @@ def test_the_usable_models_are_the_default_first_then_by_name(db: Database) -> N
             "Alpha",
             "Zeta",
         ]
+
+
+def test_a_page_is_estimated_from_the_last_30_days_of_its_own_scans(db: Database) -> None:
+    """R3, MC3: the average tokens a non-cached scan call took in the organisation's own
+    ledger of the last LEDGER_DAYS days; another kind, a cached page, an older row and
+    another organisation's rows do not count; none is NULL."""
+    customer, _ = new_customer(db)
+    other, _ = new_customer(db)
+    measured = catalog_model(db, name="Measured")
+    unmeasured = catalog_model(db, name="Unmeasured")
+    allow(db, customer, [measured, unmeasured], measured)
+    old = datetime.now(UTC) - timedelta(days=31)
+    with db.customer(customer) as conn:
+        add_usage(conn, customer, model=measured, calls=2, input_tokens=6000, output_tokens=1000)
+        add_usage(conn, customer, model=measured, calls=1, input_tokens=3000, output_tokens=2000)
+        add_usage(conn, customer, model=measured, kind="card", input_tokens=99_000, output_tokens=99_000)
+        add_usage(conn, customer, model=measured, cached=True, input_tokens=0, output_tokens=0, cost_usd=0)
+        add_usage(conn, customer, model=measured, input_tokens=99_000, output_tokens=99_000, created_at=old)
+    with db.customer(other) as conn:
+        add_usage(conn, other, model=measured, input_tokens=99_000, output_tokens=99_000)
+    with db.customer(customer) as conn:
+        rows = {row["name"]: row for row in usable_models(conn, customer, settings=VERTEX_ONLY)}
+    assert (float(rows["Measured"]["ledger_tokens_in"]), float(rows["Measured"]["ledger_tokens_out"])) == (
+        3000.0,
+        1000.0,
+    )
+    assert (rows["Unmeasured"]["ledger_tokens_in"], rows["Unmeasured"]["ledger_tokens_out"]) == (None, None)

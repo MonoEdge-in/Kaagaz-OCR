@@ -183,7 +183,8 @@ OPERATOR_RIGHTS = {
         "TABLE(id text, name text, price_in_usd_per_m numeric, price_out_usd_per_m numeric, providers text[],"
         " efforts text[], expires_on date, eligible boolean, seen_at timestamp with time zone,"
         " verified_prompt_version text, verified_at timestamp with time zone, tokens_per_page_in integer,"
-        " tokens_per_page_out integer, enabled_at timestamp with time zone)",
+        " tokens_per_page_out integer, enabled_at timestamp with time zone, ledger_tokens_in numeric,"
+        " ledger_tokens_out numeric)",
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_enabled": ("text", EMPTY_PATH),

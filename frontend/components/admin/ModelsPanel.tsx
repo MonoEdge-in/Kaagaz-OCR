@@ -2,8 +2,9 @@
 
 // The organisation's AI models, read-only (model choice MS1, MS2, brief §7):
 // MonoEdge (the operator) picks them and the default, so nothing here changes
-// them. Each model's price per million tokens and, once verify-models has
-// measured it, about what a page costs; then this month's spend against the
+// them. Each model's price per million tokens and about what a page costs, in
+// the server's words (page_hint: from the pages read, else a rough estimate);
+// then this month's spend against the
 // budget (SP4). The view is ModelsView, rendered in node by
 // tests/admin-models.test.ts.
 
@@ -61,9 +62,7 @@ export function ModelsView({ models, budget }: { models: OrgModels; budget: Usag
                     {formatUsd(model.price_out_usd_per_m)}
                   </td>
                   <td role="cell" data-label="Cost" className="tabular">
-                    {typeof model.usd_per_page === "number"
-                      ? `about ${formatUsd(model.usd_per_page)} a page`
-                      : "Cost not measured yet"}
+                    {model.page_hint}
                   </td>
                 </tr>
               ))}

@@ -12,7 +12,13 @@ A model is usable while the organisation allows it, it is eligible, the operator
 it, it is verified for the reader's prompt version, and one of its providers is in
 OPENROUTER_PROVIDERS (the first such, in the catalogue's order, reads it).
 
-Time: one statement over the organisation's allowed models (a few rows).
+``usable_models`` also gives what a page took in this organisation's own ledger
+(``ledger_tokens_in`` and ``ledger_tokens_out``, MC3): the input and output tokens of its
+pages read by the model in the last LEDGER_DAYS days, an average a call, cached pages left
+out (row level security keeps it to the organisation's own rows).
+
+Time: one statement over the organisation's allowed models (a few rows), each with one
+range read of its ledger rows of the last LEDGER_DAYS days (the model_usage_period index).
 """
 
 from collections.abc import Sequence
@@ -39,13 +45,23 @@ _USABLE = text(
     " AND c.eligible AND c.enabled_at IS NOT NULL AND c.verified_prompt_version = :prompt_version"
 )
 
+# MC3: the days of ledger a page's estimate averages over.
+LEDGER_DAYS = 30
+
 # Every model the organisation allows that is eligible, enabled, verified for this prompt
-# and served by an approved provider: the default first, then by name.
+# and served by an approved provider: the default first, then by name. With each, the
+# average tokens of its scan calls (not cached) in the organisation's ledger of the last
+# LEDGER_DAYS days; NULL with none.
 _ALLOWED = text(
     "SELECT c.id, c.name, c.price_in_usd_per_m, c.price_out_usd_per_m, c.tokens_per_page_in,"
-    " c.tokens_per_page_out, m.is_default_scan, c.providers"
+    " c.tokens_per_page_out, m.is_default_scan, c.providers,"
+    " s.ledger_tokens_in, s.ledger_tokens_out"
     " FROM customer_models m"
     " JOIN model_catalog c ON c.id = m.model"
+    " LEFT JOIN LATERAL (SELECT sum(u.input_tokens) / sum(u.calls) AS ledger_tokens_in,"
+    " sum(u.output_tokens) / sum(u.calls) AS ledger_tokens_out FROM model_usage u"
+    " WHERE u.customer_id = :customer AND u.model = c.id AND u.kind = 'scan' AND NOT u.cached"
+    " AND u.created_at >= now() - make_interval(days => :days)) s ON true"
     " WHERE m.customer_id = :customer"
     " AND c.eligible AND c.enabled_at IS NOT NULL AND c.verified_prompt_version = :prompt_version"
     " AND c.providers && CAST(:providers AS text[])"
@@ -92,12 +108,13 @@ def usable_models(conn: Connection, customer_id: str, *, settings: Settings) -> 
     accepts for PROMPT_VERSION, the default first, then by name: what the API offers as
     "Read with" and accepts as ``read_model``. Keys: id, name, price_in_usd_per_m,
     price_out_usd_per_m, tokens_per_page_in, tokens_per_page_out, is_default_scan,
-    providers. Empty: the organisation has none set (every scan is read with OCR_MODEL, as
-    before), or none is usable now. On a ``Database.customer()`` connection of
-    ``customer_id``."""
+    providers, ledger_tokens_in, ledger_tokens_out (see the module notes). Empty: the
+    organisation has none set (every scan is read with OCR_MODEL, as before), or none is
+    usable now. On a ``Database.customer()`` connection of ``customer_id``."""
     params = {
         "customer": customer_id,
         "prompt_version": PROMPT_VERSION,
         "providers": sorted(settings.openrouter_providers),
+        "days": LEDGER_DAYS,
     }
     return conn.execute(_ALLOWED, params).mappings().all()

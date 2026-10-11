@@ -21,6 +21,7 @@ const MODELS: OrgModels = {
       is_default_scan: true,
       provider: "google-vertex",
       usd_per_page: 0.05,
+      page_hint: "about $0.05 a page",
     },
     {
       id: "anthropic/claude-haiku-5.5",
@@ -30,6 +31,7 @@ const MODELS: OrgModels = {
       is_default_scan: false,
       provider: "google-vertex",
       usd_per_page: null,
+      page_hint: "Cost not measured yet",
     },
   ],
   ai_budget_usd: 50,
@@ -59,6 +61,14 @@ describe("the AI models panel", () => {
   it("shows about what a page costs, or that it is not measured yet", () => {
     expect(html).toContain("about $0.05 a page");
     expect(html).toContain("Cost not measured yet");
+  });
+
+  it("says the cost a page in the server's words, a rough estimate as such (R3)", () => {
+    const rough = render({
+      ...MODELS,
+      models: MODELS.models.map((model) => ({ ...model, page_hint: "under $0.01 a page (rough estimate)" })),
+    });
+    expect(rough).toContain(">under $0.01 a page (rough estimate)</td>");
   });
 
   it("marks the default in words beside an icon, once", () => {

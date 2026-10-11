@@ -271,6 +271,7 @@ def test_ms1_ms2_the_admin_sees_the_models_read_only_with_prices_budget_and_spen
                 "price_out_usd_per_m": 12.0,
                 "is_default_scan": True,
                 "usd_per_page": pytest.approx(0.044),
+                "page_hint": "about $0.04 a page (rough estimate)",  # no scans yet: verify-models' page
             },
             {
                 "id": other,
@@ -280,6 +281,7 @@ def test_ms1_ms2_the_admin_sees_the_models_read_only_with_prices_budget_and_spen
                 "price_out_usd_per_m": 12.0,
                 "is_default_scan": False,
                 "usd_per_page": pytest.approx(0.0022),
+                "page_hint": "under $0.01 a page (rough estimate)",
             },
         ],
         "ai_budget_usd": 10.0,

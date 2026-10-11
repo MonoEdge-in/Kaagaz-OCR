@@ -28,13 +28,28 @@ export function usd(value: number | null, estimated = false): string {
 /** A live price: "$2.00" (per million tokens). */
 export const priceText = (perM: number) => perMillion.format(perM);
 
-/** MC3: what one page costs at the tokens verify-models measured; null before it ran. */
-export function pageCost(model: OperatorModel): number | null {
-  if (model.tokens_per_page_in === null || model.tokens_per_page_out === null) return null;
-  return (
-    (model.tokens_per_page_in * model.price_in_usd_per_m + model.tokens_per_page_out * model.price_out_usd_per_m) /
-    TOKENS_PER_M
-  );
+/**
+ * MC3: what one page costs at the live price: from the pages scanned in the last 30
+ * days (ledger_tokens_*); else from verify-models' small test page, a rough estimate;
+ * null with neither.
+ */
+export function pageCost(model: OperatorModel): { usd: number; rough: boolean } | null {
+  const rough = model.ledger_tokens_in === null || model.ledger_tokens_out === null;
+  const tokensIn = rough ? model.tokens_per_page_in : model.ledger_tokens_in;
+  const tokensOut = rough ? model.tokens_per_page_out : model.ledger_tokens_out;
+  if (tokensIn === null || tokensOut === null) return null;
+  return {
+    usd: (tokensIn * model.price_in_usd_per_m + tokensOut * model.price_out_usd_per_m) / TOKENS_PER_M,
+    rough,
+  };
+}
+
+/** The cost a page in words, as the upload's "Read with" says it. */
+export function pageCostText(model: OperatorModel): string {
+  const cost = pageCost(model);
+  if (cost === null) return "Cost not measured yet";
+  const text = cost.usd < 0.01 ? "under $0.01 a page" : `about ${usd(cost.usd)} a page`;
+  return cost.rough ? `${text} (rough estimate)` : text;
 }
 
 export const yesNo = (value: boolean) => (value ? "Yes" : "No");

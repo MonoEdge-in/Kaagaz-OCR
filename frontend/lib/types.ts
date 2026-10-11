@@ -825,7 +825,8 @@ export interface OrgModel {
   price_out_usd_per_m: number;
   is_default_scan: boolean;
   provider?: string; // the zero-data-retention provider its pages go to ("google-vertex")
-  usd_per_page?: number | null; // measured by verify-models; null: not measured yet
+  usd_per_page?: number | null; // estimated a page (MC3); null: not measured yet
+  page_hint: string; // the same in words, as "Read with" says it: "about $0.04 a page", "... (rough estimate)"
 }
 
 /** GET /admin/models: read-only, set by the operator ("Set by MonoEdge"). */
@@ -904,8 +905,10 @@ export interface OperatorModel {
   seen_at: string; // when the last refresh saw it
   verified: boolean; // verify-models passed for the reader's current prompt
   verified_at: string | null;
-  tokens_per_page_in: number | null; // measured by verify-models
+  tokens_per_page_in: number | null; // measured by verify-models on its small test page
   tokens_per_page_out: number | null;
+  ledger_tokens_in: number | null; // MC3: a scanned page's average over the last 30 days; null: none
+  ledger_tokens_out: number | null;
   enabled_at: string | null; // null: not enabled on the platform
 }
 

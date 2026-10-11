@@ -18,7 +18,7 @@ import type { Confirm } from "./ConfirmDialog";
 import { modelConfirm, modelFocusId } from "./confirms";
 import { LoadFailed } from "./LoadFailed";
 import { afterDone, operatorErrorMessage } from "./logic";
-import { modelAction, notEnabledReason, pageCost, priceText, usd, yesNo } from "./models";
+import { modelAction, notEnabledReason, pageCostText, priceText, yesNo } from "./models";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
@@ -108,7 +108,6 @@ export function ModelsTable({ models, onChange }: { models: OperatorModel[]; onC
 function ModelRow({ model, onChange }: { model: OperatorModel; onChange(enable: boolean): void }) {
   const action = modelAction(model);
   const reason = notEnabledReason(model);
-  const cost = pageCost(model);
   return (
     <tr role="row">
       <td role="cell" className={styles.orgName}>
@@ -129,7 +128,7 @@ function ModelRow({ model, onChange }: { model: OperatorModel; onChange(enable: 
       </td>
       <td role="cell" data-label="Verified">
         {yesNo(model.verified)}
-        {model.verified && cost !== null && <span className={styles.statusNote}>{usd(cost, true)} a page</span>}
+        <span className={styles.statusNote}>{pageCostText(model)}</span>
       </td>
       <td role="cell" data-label="Enabled">
         {model.enabled_at ? `Yes, since ${formatDate(model.enabled_at)}` : "No"}

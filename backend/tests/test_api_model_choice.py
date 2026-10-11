@@ -35,9 +35,16 @@ V2_BYTES = b"%PDF-1.7\n" + b"2" * 200
 
 
 def _row(
-    model_id: str, *, default: bool = False, tokens: tuple[int, int] | None = (10_000, 2_000)
+    model_id: str,
+    *,
+    default: bool = False,
+    tokens: tuple[int, int] | None = (10_000, 2_000),
+    ledger: tuple[float, float] | None = None,
 ) -> RowMapping:
+    """A usable model as ``db.models.usable_models`` gives it: ``tokens`` verify-models'
+    test page, ``ledger`` the average a page in the organisation's ledger (MC3)."""
     tokens_in, tokens_out = tokens if tokens is not None else (None, None)
+    ledger_in, ledger_out = ledger if ledger is not None else (None, None)
     return cast(
         RowMapping,
         {
@@ -49,6 +56,8 @@ def _row(
             "tokens_per_page_out": tokens_out,
             "is_default_scan": default,
             "providers": ["google-vertex"],
+            "ledger_tokens_in": ledger_in,
+            "ledger_tokens_out": ledger_out,
         },
     )
 
@@ -99,7 +108,7 @@ def test_ms4_mc3_the_usable_models_default_first_with_a_price_a_page(monkeypatch
         monkeypatch,
         [
             _row("anthropic/claude-haiku-5.5", tokens=(1_000, 200)),
-            _row("google/gemini-3.1-pro-preview", default=True),
+            _row("google/gemini-3.1-pro-preview", default=True, ledger=(10_000, 2_000)),
             _row("openai/gpt-6-luna", tokens=None),
         ],
     )
@@ -115,7 +124,7 @@ def test_ms4_mc3_the_usable_models_default_first_with_a_price_a_page(monkeypatch
         {
             "id": "anthropic/claude-haiku-5.5",
             "title": "Name of anthropic/claude-haiku-5.5",
-            "hint": "under $0.01 a page",
+            "hint": "under $0.01 a page (rough estimate)",  # verify-models' test page only
             "available": True,
             "reason": None,
         },
@@ -132,6 +141,19 @@ def test_ms4_mc3_the_usable_models_default_first_with_a_price_a_page(monkeypatch
 def test_mc3_the_estimate_a_page_is_the_measured_tokens_times_the_price() -> None:
     assert readers.page_usd(_row("google/a", tokens=(10_000, 2_000))) == pytest.approx(0.044)
     assert readers.page_usd(_row("google/a", tokens=None)) is None
+
+
+def test_mc3_the_ledgers_average_a_page_wins_over_verify_models_test_page() -> None:
+    """R3: verify-models reads a toy page; what pages really took in the last 30 days of
+    the organisation's ledger is the estimate, and the toy figure is only a rough one."""
+    measured = _row("google/a", tokens=(300, 100), ledger=(10_000, 2_000))
+    assert readers.page_estimate(measured) == pytest.approx((0.044, False))
+    assert readers.page_hint(measured) == "about $0.04 a page"
+    toy = _row("google/a", tokens=(10_000, 2_000))
+    assert readers.page_estimate(toy) == pytest.approx((0.044, True))
+    assert readers.page_hint(toy) == "about $0.04 a page (rough estimate)"
+    assert readers.page_hint(_row("google/a", tokens=None)) == "Cost not measured yet"
+    assert readers.page_usd(_row("google/a", tokens=None, ledger=(10_000, 2_000))) == pytest.approx(0.044)
 
 
 def test_the_provider_is_the_first_inside_openrouter_providers() -> None:
@@ -260,7 +282,7 @@ def test_ms4_upload_limits_list_the_usable_models_default_first(db: Database) ->
         {
             "id": other,
             "title": "Other model",
-            "hint": "under $0.01 a page",
+            "hint": "under $0.01 a page (rough estimate)",  # verify-models' test page only
             "available": True,
             "reason": None,
         },

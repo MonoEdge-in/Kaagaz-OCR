@@ -89,6 +89,7 @@ def test_usable_models_ask_for_the_readers_prompt_and_the_approved_providers() -
             "customer": CUSTOMER,
             "prompt_version": models.PROMPT_VERSION,
             "providers": ["azure", "google-vertex"],
+            "days": models.LEDGER_DAYS,
         }
     ]
 

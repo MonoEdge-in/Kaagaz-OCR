@@ -47,14 +47,28 @@ def readers(rows: Sequence[RowMapping], settings: Settings) -> list[dict[str, An
     ]
 
 
-def page_usd(row: RowMapping) -> float | None:
-    """US dollars one page is estimated to cost: the tokens verify-models measured a page
-    times the live price; None until it was measured. O(1)."""
-    tokens_in, tokens_out = row["tokens_per_page_in"], row["tokens_per_page_out"]
+def page_estimate(row: RowMapping) -> tuple[float, bool] | None:
+    """(US dollars one page is estimated to cost, whether it is rough), MC3: the average
+    tokens a page took in the organisation's ledger of the last 30 days
+    (``ledger_tokens_*``, ``db.models.usable_models``) times the live price; else the
+    tokens verify-models measured on its small test page, a rough estimate; None with
+    neither. O(1)."""
+    rough = row["ledger_tokens_in"] is None or row["ledger_tokens_out"] is None
+    tokens_in, tokens_out = (
+        (row["tokens_per_page_in"], row["tokens_per_page_out"])
+        if rough
+        else (row["ledger_tokens_in"], row["ledger_tokens_out"])
+    )
     if tokens_in is None or tokens_out is None:
         return None
     price_in, price_out = float(row["price_in_usd_per_m"]), float(row["price_out_usd_per_m"])
-    return float(tokens_in * price_in + tokens_out * price_out) / 1_000_000
+    return (float(tokens_in) * price_in + float(tokens_out) * price_out) / 1_000_000, rough
+
+
+def page_usd(row: RowMapping) -> float | None:
+    """US dollars one page is estimated to cost (``page_estimate``); None until measured."""
+    estimate = page_estimate(row)
+    return None if estimate is None else estimate[0]
 
 
 def page_provider(row: RowMapping, settings: Settings) -> str | None:
@@ -64,12 +78,15 @@ def page_provider(row: RowMapping, settings: Settings) -> str | None:
 
 
 def page_hint(row: RowMapping) -> str:
-    """The reader's hint (MC3): "about $0.05 a page", "under $0.01 a page", or "Cost not
+    """The reader's hint (MC3): "about $0.05 a page" or "under $0.01 a page" from the
+    ledger, the same with "(rough estimate)" from verify-models' test page, or "Cost not
     measured yet". Never a made-up figure."""
-    usd = page_usd(row)
-    if usd is None:
+    estimate = page_estimate(row)
+    if estimate is None:
         return "Cost not measured yet"
-    return "under $0.01 a page" if usd < 0.01 else f"about ${usd:.2f} a page"
+    usd, rough = estimate
+    hint = "under $0.01 a page" if usd < 0.01 else f"about ${usd:.2f} a page"
+    return f"{hint} (rough estimate)" if rough else hint
 
 
 def check_read_model(conn: Connection, customer_id: str, settings: Settings, read_model: str | None) -> None:

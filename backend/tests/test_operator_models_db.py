@@ -128,3 +128,25 @@ def test_record_writes_a_models_pass_as_the_owner(db: Database) -> None:
     assert tuple(row) == (READER_PROMPT_VERSION, True, 1290, 830)
     with db.system() as conn, pytest.raises(ProgrammingError, match="permission denied"):  # never the app
         conn.execute(text("UPDATE model_catalog SET verified_at = now() WHERE id = :m"), {"m": model})
+
+
+def test_the_catalogue_averages_a_scanned_page_over_every_organisations_ledger(db: Database) -> None:
+    """R3, MC3: the operator's estimate a page is the average tokens of the last 30 days of
+    non-cached scan calls, every organisation's together: numbers only, no names."""
+    api = Api(db)
+    _, client = _signed_in(api)
+    measured, unmeasured = _model(db), _model(db)
+    first, _ = api.customer("Ledger one")
+    second, _ = api.customer("Ledger two")
+    for customer, tokens in ((first, (4000, 1000)), (second, (2000, 3000))):
+        with db.customer(customer) as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO model_usage (customer_id, kind, model, calls, input_tokens, output_tokens,"
+                    " reasoning_tokens) VALUES (:c, 'scan', :m, 1, :i, :o, 0)"
+                ),
+                {"c": customer, "m": measured, "i": tokens[0], "o": tokens[1]},
+            )
+    items = {item["id"]: item for item in client.get("/api/operator/models").json()["items"]}
+    assert (items[measured]["ledger_tokens_in"], items[measured]["ledger_tokens_out"]) == (3000.0, 2000.0)
+    assert (items[unmeasured]["ledger_tokens_in"], items[unmeasured]["ledger_tokens_out"]) == (None, None)

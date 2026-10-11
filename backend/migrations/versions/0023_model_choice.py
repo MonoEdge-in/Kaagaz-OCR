@@ -73,6 +73,7 @@ OPERATOR_ROLE = "kaagaz_operator"
 MODEL_ID = "^[a-z0-9-]+/[A-Za-z0-9._-]+$"  # kaagaz.settings.MODEL_ID
 SLUG = "[a-z0-9-]{1,64}"  # kaagaz.settings.PROVIDER_SLUG
 EFFORT = "[a-z]{1,16}"
+LEDGER_DAYS = 30  # kaagaz.db.models.LEDGER_DAYS
 LOCK = "LOCK TABLE customers, documents IN ACCESS EXCLUSIVE MODE"
 # The columns the catalogue refresh (the app's worker sweep and cli refresh-models) writes.
 REFRESH = (
@@ -121,17 +122,28 @@ def _literal(value: str) -> str:
 
 FUNCTIONS = {
     # The catalogue for the operator's Models tab (MC1, MC3).
+    # With each, the average tokens of its scan calls (not cached) over every organisation's
+    # ledger of the last LEDGER_DAYS days, for the estimate a page (MC3): numbers only.
     "kaagaz_op_models(uuid)": f"""
     CREATE FUNCTION public.kaagaz_op_models(p_operator uuid)
     RETURNS TABLE (id text, name text, price_in_usd_per_m numeric, price_out_usd_per_m numeric,
                    providers text[], efforts text[], expires_on date, eligible boolean, seen_at timestamptz,
                    verified_prompt_version text, verified_at timestamptz,
-                   tokens_per_page_in integer, tokens_per_page_out integer, enabled_at timestamptz)
+                   tokens_per_page_in integer, tokens_per_page_out integer, enabled_at timestamptz,
+                   ledger_tokens_in numeric, ledger_tokens_out numeric)
     LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        WITH s AS (
+            SELECT u.model, sum(u.input_tokens) / sum(u.calls) AS page_in,
+                   sum(u.output_tokens) / sum(u.calls) AS page_out
+            FROM public.model_usage u
+            WHERE u.kind = 'scan' AND NOT u.cached AND u.created_at >= now() - make_interval(days => {LEDGER_DAYS})
+            GROUP BY u.model
+        )
         SELECT m.id, m.name, m.price_in_usd_per_m, m.price_out_usd_per_m, m.providers, m.efforts, m.expires_on,
                m.eligible, m.seen_at, m.verified_prompt_version, m.verified_at,
-               m.tokens_per_page_in, m.tokens_per_page_out, m.enabled_at
+               m.tokens_per_page_in, m.tokens_per_page_out, m.enabled_at, s.page_in, s.page_out
         FROM public.model_catalog m
+        LEFT JOIN s ON s.model = m.id
         WHERE EXISTS (SELECT 1 FROM public.operators o WHERE {_ENABLED})
         ORDER BY m.name, m.id
     $$
@@ -272,8 +284,9 @@ FUNCTIONS = {
 }
 
 FUNCTION_COMMENTS = {
-    "kaagaz_op_models": "Operator: the model catalogue with prices, providers, verification and whether"
-    " each model is enabled on the platform. Platform data only.",
+    "kaagaz_op_models": "Operator: the model catalogue with prices, providers, verification, whether"
+    " each model is enabled on the platform, and the average tokens of a scanned page over the last"
+    " 30 days of the ledger. Platform data and numbers only.",
     "kaagaz_op_set_model_enabled": "Operator, with a fresh code: enable a model on the platform (eligible and"
     " verified for the reader's prompt) or disable one no organisation still uses. Audited.",
     "kaagaz_op_org_models": "Operator: one organisation's allowed models, its default scan model and its"

@@ -205,6 +205,10 @@ def _model(row: RowMapping) -> dict[str, Any]:
         "verified_at": None if row["verified_at"] is None else iso(row["verified_at"]),
         "tokens_per_page_in": row["tokens_per_page_in"],
         "tokens_per_page_out": row["tokens_per_page_out"],
+        # MC3: the average tokens a page took in the last 30 days of the ledger (every
+        # organisation's, numbers only); null with none.
+        "ledger_tokens_in": _number(row["ledger_tokens_in"]),
+        "ledger_tokens_out": _number(row["ledger_tokens_out"]),
         "enabled_at": None if row["enabled_at"] is None else iso(row["enabled_at"]),
     }
 

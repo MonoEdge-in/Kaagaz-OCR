@@ -56,7 +56,7 @@ from sqlalchemy import Connection, RowMapping
 from kaagaz.api.auth import AdminSession, CurrentUser, hash_password, require_admin_session
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.readers import page_provider, page_usd, usable
+from kaagaz.api.readers import page_hint, page_provider, page_usd, usable
 from kaagaz.api.routers.documents import day_start
 from kaagaz.api.views import admin_user, audit_entry, failed_document
 from kaagaz.db import admin as admin_sql
@@ -388,8 +388,9 @@ def get_models(user: AdminSession, context: Context) -> dict[str, Any]:
 
 
 def _org_model(row: RowMapping, provider: str | None) -> dict[str, Any]:
-    """``OrgModel``, with the provider its pages go to and ``usd_per_page``, the estimated
-    US dollars a page (None: not measured yet)."""
+    """``OrgModel``, with the provider its pages go to, ``usd_per_page``, the estimated US
+    dollars a page (None: not measured yet), and ``page_hint``, the same in the words the
+    upload's "Read with" uses (MC3: from the ledger, else a rough estimate)."""
     return {
         "id": str(row["id"]),
         "name": row["name"],
@@ -398,6 +399,7 @@ def _org_model(row: RowMapping, provider: str | None) -> dict[str, Any]:
         "price_out_usd_per_m": float(row["price_out_usd_per_m"]),
         "is_default_scan": bool(row["is_default_scan"]),
         "usd_per_page": page_usd(row),
+        "page_hint": page_hint(row),
     }
 
 

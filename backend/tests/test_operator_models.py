@@ -60,6 +60,8 @@ CATALOGUE_ROW = {
     "tokens_per_page_in": 1290,
     "tokens_per_page_out": 830,
     "enabled_at": None,
+    "ledger_tokens_in": Decimal("2400.5"),
+    "ledger_tokens_out": None,
 }
 USAGE_ROW = {
     "customer_id": CID,
@@ -193,6 +195,8 @@ def test_the_catalogue_says_verified_for_the_current_prompt_only(
         "verified_at": "2026-09-27T10:00:00+00:00",
         "tokens_per_page_in": 1290,
         "tokens_per_page_out": 830,
+        "ledger_tokens_in": 2400.5,  # MC3: the ledger's average a page, numbers only
+        "ledger_tokens_out": None,
         "enabled_at": None,
     }
     stale = {**CATALOGUE_ROW, "verified_prompt_version": "g0", "expires_on": date(2027, 1, 31)}

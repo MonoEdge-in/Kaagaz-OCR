@@ -19,6 +19,7 @@ import {
   notEnabledReason,
   offered,
   pageCost,
+  pageCostText,
   parseBudget,
   periodRange,
   priceText,
@@ -48,6 +49,8 @@ const model = (overrides: Partial<OperatorModel> = {}): OperatorModel => ({
   verified_at: "2026-10-11T00:00:00Z",
   tokens_per_page_in: 1300,
   tokens_per_page_out: 800,
+  ledger_tokens_in: null,
+  ledger_tokens_out: null,
   enabled_at: null,
   ...overrides,
 });
@@ -77,9 +80,19 @@ describe("money and model words", () => {
     expect(priceText(0.075)).toBe("$0.075");
   });
 
-  it("estimates a page from verify-models' tokens (MC3), none before it ran", () => {
-    expect(pageCost(model())).toBeCloseTo((1300 * 2 + 800 * 12) / 1_000_000);
+  it("estimates a page from verify-models' tokens (MC3), a rough one, none before it ran", () => {
+    expect(pageCost(model())?.usd).toBeCloseTo((1300 * 2 + 800 * 12) / 1_000_000);
+    expect(pageCost(model())?.rough).toBe(true);
     expect(pageCost(model({ tokens_per_page_in: null }))).toBeNull();
+    expect(pageCostText(model())).toBe("about $0.01 a page (rough estimate)");
+    expect(pageCostText(model({ tokens_per_page_in: null }))).toBe("Cost not measured yet");
+  });
+
+  it("estimates a page from the last 30 days of scans first (R3)", () => {
+    const scanned = model({ ledger_tokens_in: 10_000, ledger_tokens_out: 2_000 });
+    expect(pageCost(scanned)).toEqual({ usd: (10_000 * 2 + 2_000 * 12) / 1_000_000, rough: false });
+    expect(pageCostText(scanned)).toBe("about $0.04 a page");
+    expect(pageCostText(model({ ledger_tokens_in: 100, ledger_tokens_out: 10 }))).toBe("under $0.01 a page");
   });
 
   it("enables only an eligible model verified for the current prompt, and says why not", () => {
@@ -117,7 +130,7 @@ describe("the Models table", () => {
         onChange: () => undefined,
       }),
     );
-    for (const text of ["Gemini 3.1 Pro", "google-vertex", "$2.00 in, $12.00 out", "≈ $0.01 (estimated) a page"]) {
+    for (const text of ["Gemini 3.1 Pro", "google-vertex", "$2.00 in, $12.00 out", "about $0.01 a page (rough estimate)"]) {
       expect(html).toContain(text);
     }
     expect(html).toContain("Yes");
