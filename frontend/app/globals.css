@@ -42,7 +42,7 @@
   --paper-frame: #ece6d9;
   --hl-fill: rgba(255, 176, 0, 0.3);
   --hl-border: #b86e00;
-  --hl-halo: transparent;
+  --hl-halo: #1f1a14; /* dark ink: the outer highlight ring, the same in both themes */
   --mine-on-paper: #233f8c; /* my words markers: pages are paper white in both themes */
   --illegible-on-paper: #9e2219; /* PRD 5 U3 (V8): "couldn't read" marks; the light --danger-fg, kept in dark */
 
@@ -115,7 +115,6 @@
     --focus: #a3b6f0;
     --brand-lal: #e57a6e;
     --paper-frame: #0f1115;
-    --hl-halo: #1c1f26;
     --e-1: 0 0 0 1px #30343e;
     --e-2: 0 8px 28px rgb(0 0 0 / 0.55);
     color-scheme: dark;
@@ -145,7 +144,6 @@
   --focus: #a3b6f0;
   --brand-lal: #e57a6e;
   --paper-frame: #0f1115;
-  --hl-halo: #1c1f26;
   --e-1: 0 0 0 1px #30343e;
   --e-2: 0 8px 28px rgb(0 0 0 / 0.55);
   color-scheme: dark;

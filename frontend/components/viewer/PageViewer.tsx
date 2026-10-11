@@ -16,11 +16,12 @@
 // holds its space. Reading problems (PRD 5 U3, readingMarks.ts) are a second
 // layer of marks on the full page, each a button with its own pattern, with a
 // legend and a "Show reading problems" checkbox, on at first for an uncertain or
-// unreadable page.
+// unreadable page. A highlighted spot is zoomed to readable size (focusZoom)
+// and scrolled to the middle of the frame, then into view, with a short pulse.
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useCallback, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { IconButton } from "@/components/ui/IconButton";
 import { markerId } from "@/components/words/ViewerWords";
@@ -33,7 +34,7 @@ import type { DocumentSummary, PageSummary, ReadingMark, Region } from "@/lib/ty
 import { MARK_WORDS, legend, markName, markRect, marksOnPage, showByDefault } from "./readingMarks";
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
-import { ZOOM_STEPS, fitPageSize, pageMode, routeText, stepZoom } from "./viewer";
+import { ZOOM_STEPS, centerScroll, fitPageSize, focusZoom, pageMode, routeText, stepZoom } from "./viewer";
 import styles from "./PageViewer.module.css";
 
 // PDF.js needs the browser, so its component never renders on the server.
@@ -92,7 +93,17 @@ export function PageViewer({
   const [pdfFailedFor, setPdfFailedFor] = useState<string | null>(null);
   const [imageFailedFor, setImageFailedFor] = useState<string | null>(null);
   const [drawnFor, setDrawnFor] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(1);
+  // The zoom chosen for this spot (or no spot); until then, the spot's own (focusZoom).
+  const [zoomChoice, setZoomChoice] = useState<{ key: string | null; zoom: number } | null>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const spotRef = useRef<HTMLDivElement>(null);
+  const frameMeasured = useCallback(
+    (element: HTMLDivElement | null) => {
+      frameRef.current = element;
+      return measureRef(element);
+    },
+    [measureRef],
+  );
   const onPdfFailed = useCallback(() => setPdfFailedFor(pageKey), [pageKey]);
   // "Show reading problems", chosen on this page; until then, on for a page with problems.
   const [problemsChoice, setProblemsChoice] = useState<{ key: string; on: boolean } | null>(null);
@@ -114,6 +125,38 @@ export function PageViewer({
   const marksKey = `${document.id}:${page.page_no}`;
   const showProblems =
     problemsChoice && problemsChoice.key === marksKey ? problemsChoice.on : showByDefault(page);
+  const spot = isCrop ? undefined : boxes[0];
+  const spotKey = spot ? `${marksKey}:${spot.box.join(",")}` : null;
+  let spotZoom = 1;
+  if (spot && box && (mode === "pdf" || mode === "image")) {
+    const fitted = fitPageSize(box.width, aspect, 1, fit === "page" ? box.height : undefined);
+    const frame = { width: box.width, height: fit === "page" ? box.height : Infinity };
+    spotZoom = focusZoom(boxToPixels(spot.box, fitted.width, fitted.height), frame);
+  }
+  const zoom = zoomChoice && zoomChoice.key === spotKey ? zoomChoice.zoom : spotZoom;
+  const setZoom = (next: number) => setZoomChoice({ key: spotKey, zoom: next });
+
+  // A new spot, zoom or frame size: the spot to the middle of the frame, then into view.
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    const marked = spotRef.current;
+    if (!frame || !marked) return;
+    const f = frame.getBoundingClientRect();
+    const m = marked.getBoundingClientRect();
+    frame.scrollTo(
+      centerScroll(
+        {
+          left: m.left - f.left - frame.clientLeft + frame.scrollLeft,
+          top: m.top - f.top - frame.clientTop + frame.scrollTop,
+          width: m.width,
+          height: m.height,
+        },
+        { width: frame.scrollWidth, height: frame.scrollHeight },
+        { width: frame.clientWidth, height: frame.clientHeight },
+      ),
+    );
+    marked.scrollIntoView({ block: fit === "page" ? "nearest" : "center", inline: "nearest" });
+  }, [spotKey, zoom, box, fit]);
 
   const failed = (
     <div className={styles.failed} role="status">
@@ -169,11 +212,12 @@ export function PageViewer({
         />
       )}
       {boxes.map((region, index) => {
-        const px = boxToPixels(region.box, width, height);
+        const px = markerRect(region.box, width, height);
         return (
           <div
-            key={index}
-            className={styles.box}
+            key={`${spotKey}:${index}`}
+            ref={index === 0 && !crop ? spotRef : undefined}
+            className={crop ? styles.box : `${styles.box} ${styles.pulse}`}
             aria-hidden="true"
             style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
           />
@@ -276,7 +320,7 @@ export function PageViewer({
     body = (
       <>
         <div
-          ref={measureRef}
+          ref={frameMeasured}
           className={styles.frame}
           tabIndex={0}
           role="region"
@@ -346,7 +390,7 @@ export function PageViewer({
               <IconButton
                 icon="zoom-out"
                 label="Zoom out"
-                onClick={() => setZoom((z) => stepZoom(z, "out"))}
+                onClick={() => setZoom(stepZoom(zoom, "out"))}
                 disabled={zoom <= MIN_ZOOM}
               />
               <span className={`tabular ${styles.readout}`} aria-live="polite">
@@ -355,7 +399,7 @@ export function PageViewer({
               <IconButton
                 icon="zoom-in"
                 label="Zoom in"
-                onClick={() => setZoom((z) => stepZoom(z, "in"))}
+                onClick={() => setZoom(stepZoom(zoom, "in"))}
                 disabled={zoom >= MAX_ZOOM}
               />
               {zoom !== 1 ? (

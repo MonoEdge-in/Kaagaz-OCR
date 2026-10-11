@@ -45,6 +45,45 @@ export function fitPageSize(
   return { width, height: width / safeAspect };
 }
 
+const FOCUS_TEXT_PX = 24; // a highlighted spot is zoomed until it is about this tall
+const FOCUS_ROOM = 0.9; // and never past 90% of the frame, across or down
+
+/**
+ * The zoom a highlighted spot is shown at: enough to make it about 24px tall,
+ * kept inside 90% of the frame (`frame.height` Infinity when the frame grows
+ * with the page), snapped down to a zoom step, never below 1 (a long line
+ * stays fitted) or above 3. `spot` is its size in pixels at zoom 1.
+ */
+export function focusZoom(
+  spot: { width: number; height: number },
+  frame: { width: number; height: number },
+): number {
+  if (!(spot.width > 0 && spot.height > 0 && frame.width > 0 && frame.height > 0)) return 1;
+  const wanted = Math.min(
+    FOCUS_TEXT_PX / spot.height,
+    (FOCUS_ROOM * frame.width) / spot.width,
+    (FOCUS_ROOM * frame.height) / spot.height,
+  );
+  return ZOOM_STEPS.reduce<number>((best, step) => (step <= wanted && step > best ? step : best), 1);
+}
+
+/**
+ * Where to scroll a frame (`frame` its visible size, `stage` all it scrolls
+ * over) so a spot (in the stage's pixels) sits in its middle, kept in range.
+ */
+export function centerScroll(
+  spot: { left: number; top: number; width: number; height: number },
+  stage: { width: number; height: number },
+  frame: { width: number; height: number },
+): { left: number; top: number } {
+  const center = (start: number, size: number, all: number, seen: number) =>
+    Math.min(Math.max(0, start + size / 2 - seen / 2), Math.max(0, all - seen));
+  return {
+    left: center(spot.left, spot.width, stage.width, frame.width),
+    top: center(spot.top, spot.height, stage.height, frame.height),
+  };
+}
+
 export type PageMode = "pdf" | "image" | "sheet" | "none";
 
 /** How a page can be drawn: PDF.js for PDFs, the stored image, a cell grid, or nothing. */

@@ -73,13 +73,32 @@
   box-shadow: var(--e-1);
 }
 
+/* The highlight: amber, then a paper ring and an ink ring, so it stands out
+   (3:1 or more, 1.4.11) on white paper, dark print and the frame alike. */
 .box {
   position: absolute;
   background: var(--hl-fill);
   border: 2px solid var(--hl-border);
   border-radius: 2px;
-  box-shadow: 0 0 0 2px var(--hl-halo);
+  box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--hl-halo);
   pointer-events: none;
+}
+
+/* On the full page, a new spot pulses twice: an amber ring closing in on it.
+   The global prefers-reduced-motion rule (globals.css) cuts it to nothing. */
+.pulse {
+  animation: spotPulse 0.7s ease-out 2;
+}
+
+@keyframes spotPulse {
+  from {
+    outline: 2px solid var(--hl-border);
+    outline-offset: 10px;
+  }
+  to {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
 }
 
 /* My words (B2): a dashed outline with no fill and a number, so it is never

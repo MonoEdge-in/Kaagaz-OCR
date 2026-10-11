@@ -3,9 +3,12 @@ import { fieldText, labelBadgeClass, labelIcon, labelText, reasonText } from "@/
 import { initialSelection, sameRegion, selectValue } from "@/components/viewer/selection";
 import {
   BACKUP_ISSUES,
+  ZOOM_STEPS,
   buildGrid,
+  centerScroll,
   cropRowWindow,
   fitPageSize,
+  focusZoom,
   pageMode,
   routeText,
   sheetRowWindow,
@@ -105,6 +108,65 @@ describe("fitPageSize", () => {
   it("fits the width alone when the height is missing or not a size", () => {
     expect(fitPageSize(600, 0.5, 1, 0)).toEqual({ width: 600, height: 1200 });
     expect(fitPageSize(600, 0.5, 1, Number.NaN)).toEqual({ width: 600, height: 1200 });
+  });
+});
+
+describe("focusZoom (a highlighted spot shown big enough to read)", () => {
+  const frame = { width: 800, height: 600 };
+
+  it("zooms a word 2x or 3x, so it is about 24px tall", () => {
+    expect(focusZoom({ width: 40, height: 10 }, frame)).toBe(2); // 2.4 snaps down to 2
+    expect(focusZoom({ width: 30, height: 8 }, frame)).toBe(3);
+  });
+
+  it("keeps a line 80% of the frame wide fitted", () => {
+    expect(focusZoom({ width: 640, height: 10 }, frame)).toBe(1);
+  });
+
+  it("never goes past 3, and snaps down to a zoom step", () => {
+    expect(focusZoom({ width: 4, height: 1 }, frame)).toBe(3);
+    const zoom = focusZoom({ width: 40, height: 15 }, frame); // 1.6
+    expect(zoom).toBe(1.5);
+    expect(ZOOM_STEPS).toContain(zoom);
+  });
+
+  it("keeps the spot inside the frame", () => {
+    // 2x would make it 24px tall, but the frame is 20px tall: 0.9 * 20 / 12 = 1.5.
+    expect(focusZoom({ width: 50, height: 12 }, { width: 800, height: 20 })).toBe(1.5);
+    // A frame that grows with the page: only its width limits.
+    expect(focusZoom({ width: 40, height: 10 }, { width: 800, height: Infinity })).toBe(2);
+  });
+
+  it("stays at 1 for a spot or frame with no size", () => {
+    expect(focusZoom({ width: 0, height: 10 }, frame)).toBe(1);
+    expect(focusZoom({ width: 40, height: 0 }, frame)).toBe(1);
+    expect(focusZoom({ width: Number.NaN, height: 10 }, frame)).toBe(1);
+    expect(focusZoom({ width: 40, height: 10 }, { width: 0, height: 600 })).toBe(1);
+    expect(focusZoom({ width: 40, height: 10 }, { width: 800, height: Number.NaN })).toBe(1);
+  });
+});
+
+describe("centerScroll", () => {
+  const stage = { width: 2000, height: 3000 };
+  const frame = { width: 600, height: 400 };
+
+  it("puts the spot in the middle of the frame", () => {
+    expect(centerScroll({ left: 500, top: 400, width: 100, height: 20 }, stage, frame)).toEqual({ left: 250, top: 210 });
+  });
+
+  it("stays in range at both edges", () => {
+    expect(centerScroll({ left: 10, top: 10, width: 20, height: 10 }, stage, frame)).toEqual({ left: 0, top: 0 });
+    expect(centerScroll({ left: 1950, top: 2980, width: 40, height: 10 }, stage, frame)).toEqual({
+      left: 1400,
+      top: 2600,
+    });
+  });
+
+  it("does not scroll a frame bigger than the stage", () => {
+    expect(centerScroll({ left: 200, top: 250, width: 40, height: 10 }, { width: 300, height: 300 }, frame)).toEqual({
+      left: 0,
+      top: 0,
+    });
   });
 });
 
