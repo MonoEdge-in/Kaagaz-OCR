@@ -45,6 +45,9 @@ Why some choices:
   matches have their own limit, STORY_MATCHES_PER_MINUTE a user (429 with
   Retry-After, beside the site-wide one), and at most RANKING_AT_ONCE run at a
   time in the process: one more is 503 at once, never a queue.
+* **AI spend** (model choice, council 11 Oct 2026, SP1): a story's embedding and a story
+  match's question embedding are billed to the user, kind ``story`` (``usage_scope``,
+  opened in the embedding's own thread, so a slow one is still counted).
 """
 
 import logging
@@ -60,6 +63,7 @@ from sqlalchemy import Connection
 from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
+from kaagaz.ai.usage import usage_scope
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
@@ -169,7 +173,8 @@ def _embed_now(context: AppContext, model: ModelClient, user: CurrentUser, row: 
     """One embed of the saved story, then frees its slot. Never raises for the model
     or the database."""
     try:
-        return embed_story(context.db, model, user.customer_id, user.user_id, row.family_id, row.story)
+        with usage_scope(context.db, customer_id=user.customer_id, user_id=user.user_id, kind="story"):
+            return embed_story(context.db, model, user.customer_id, user.user_id, row.family_id, row.story)
     except (ModelUnavailable, ModelOutputError, BackendUnavailable, SQLAlchemyError) as error:
         logger.warning("story saved without a vector", extra={"code": type(error).__name__})
         return False
@@ -277,7 +282,10 @@ def my_story_matches(body: StoryMatchBody, user: User, context: Context) -> dict
     if scope.matches_nothing:
         return {"story_matches": [], "searched": 0, "all": True}
     on = meaning_threshold(settings.model_embed) is not None
-    embedding = embed_question(context.model, question) if on else None
+    embedding = None
+    if on:
+        with usage_scope(context.db, customer_id=user.customer_id, user_id=user.user_id, kind="story"):
+            embedding = embed_question(context.model, question)
     if not ranking_slots.acquire(blocking=False):
         raise ApiError(503, "backend_unavailable")
     try:
