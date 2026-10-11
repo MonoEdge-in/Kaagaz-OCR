@@ -96,6 +96,12 @@ MAX_OCR_PIXELS = 21_000_000
 AUTO = "auto"
 # OCR_ENGINE's value for the Gemini reader (PRD 5 G1).
 GEMINI = "gemini"
+# G1, G7: the Gemini reader's prompt version (kaagaz/reading/gemini_ocr.py): changes whenever
+# its INSTRUCTION or PAGE_SCHEMA changes, so a page read with the old ones is never taken
+# from the page cache and processing_runs shows the change. Here, not in that module, so the
+# pipeline can ask which models are verified for it (model choice, council 11 Oct 2026)
+# without loading the reader, and the API may import it. g2: the strict-portable PAGE_SCHEMA.
+READER_PROMPT_VERSION = "g2"
 # PRD 5 RT2: pages.read_by for a page the local reader read.
 LOCAL_READ_BY = "rapidocr"
 # PRD 5 F3: the span qualities that mark one word of a line, not the line.
