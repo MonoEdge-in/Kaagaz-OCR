@@ -17,7 +17,7 @@ from types import ModuleType
 from sqlalchemy import TextClause
 
 from kaagaz.answering import fixed_queries, hard_to_read, unchecked
-from kaagaz.db import admin, listing, pipeline_store, review
+from kaagaz.db import admin, listing, models, pipeline_store, review, usage
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid, indexing, story_search
 
@@ -32,6 +32,8 @@ MODULES: tuple[ModuleType, ...] = (
     listing,
     pipeline_store,
     indexing,
+    models,
+    usage,
 )
 
 # (module, constant name) -> the fragment it must carry.
@@ -109,6 +111,12 @@ BY_ID: dict[tuple[ModuleType, str], str] = {
         pipeline_store,
         "_LOCK_LINKED",
     ): "locks the link targets and old partners by id in one order; filters nothing",
+    # Model choice (0023).
+    (models, "_USABLE"): "resolve reads the model one document asked for, by id, while the worker reads it",
+    (
+        usage,
+        "_REPORT",
+    ): "the spend names its documents by id: one in Trash or an older version was still billed",
 }
 
 _JOINS_DOCUMENTS = re.compile(r"\bdocuments d\b")
