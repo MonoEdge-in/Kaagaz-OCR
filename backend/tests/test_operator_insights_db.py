@@ -589,6 +589,69 @@ def test_the_platform_row_never_reveals_an_organisation_below_k_by_subtraction(d
     assert platform["runs"] == 1  # volumes not shares of a total stay every organisation's
 
 
+def test_a_page_handed_to_the_local_reader_counts_under_its_documents_newest_ready_model(
+    db: Database,
+) -> None:
+    """A rapidocr page with reader_refused or read_locally is the model's of its
+    document's newest ready run (not an older ready one, not a newer failed one); keyless
+    (no read_model), rapidocr's."""
+    op, day = operator(db), window_day()
+    customer, _ = new_customer(db)
+    model, older, failed = new_model(), new_model(), new_model()
+    for n in range(K):
+        document_id = document(db, customer, at(day, 1))
+        run(db, customer, document_id, at(day, 2), config={"read_model": older})
+        run(db, customer, document_id, at(day, 3), config={"read_model": model})  # the newest ready
+        run(db, customer, document_id, at(day, 4), status="failed", config={"read_model": failed})
+        page(db, customer, document_id, model)
+        page(db, customer, document_id, "rapidocr", ["reader_refused"], page_no=2)
+        if n < 3:
+            page(db, customer, document_id, "rapidocr", ["read_locally"], page_no=3)
+
+    board = read(db, op, insights.model_board, day, day, "UTC")
+    assert "rapidocr" not in {row["model"] for row in board}
+    row = one(board, "model", model)
+    assert (row["ocr_pages"], row["pages_refused"], row["pages_fell_back"], row["pages_disagree"]) == (
+        2 * K + 3,
+        K,
+        3,
+        0,
+    )
+    assert (one(board, "model", older)["ocr_pages"], one(board, "model", failed)["ocr_pages"]) == (0, 0)
+
+    keyless_day = window_day()
+    for document_id in read_documents(db, customer, K, at(keyless_day), None):
+        page(db, customer, document_id, "rapidocr", ["read_locally"], page_no=2)
+    [keyless] = read(db, op, insights.model_board, keyless_day, keyless_day, "UTC")
+    assert (keyless["model"], keyless["ocr_pages"], keyless["pages_fell_back"], keyless["pages_refused"]) == (
+        "rapidocr",
+        2 * K,
+        K,
+        0,
+    )
+
+
+def test_active_people_windows_and_the_months_spend_end_on_today_in_the_zone(db: Database) -> None:
+    """7 days and 30 days to today (today included), the previous 30 before those; the
+    month is today's calendar month in the zone, its first second included."""
+    op, today = operator(db), window_day()
+    api = Api(db)
+    customer, _ = new_customer(db)
+    for back in (6, 7, 29, 30, 59, 60, -1):  # 60 days back and tomorrow are in no window
+        user, _ = api.add_user(customer, "member")
+        audit(db, customer, "auth.login", at(today - timedelta(days=back)), actor=user)  # 17:30 in India
+    audit(db, customer, "document.upload", at(today))  # no actor: nobody to count
+    first = today.replace(day=1)
+    model = new_model()
+    usage(db, customer, at(first - timedelta(days=1), 18), "scan", model, 1, "0.5")  # 23:30 the day before
+    usage(db, customer, at(first - timedelta(days=1), 19), "scan", model, 1, "0.25")  # 00:30 on the 1st
+
+    health = one(read(db, op, insights.org_health, today, IST), "customer_id", customer)
+    people = (health["active_users_7d"], health["active_users_30d"], health["active_users_prev_30d"])
+    assert people == (1, 3, 2)
+    assert health["month_cost_usd"] == Decimal("0.25")
+
+
 def test_the_last_active_day_is_the_newest_upload_question_or_run_within_366_days(db: Database) -> None:
     """In the zone; a sign-in or a superseded run is not activity; nothing in the 366 days
     to today (today - 365 is the first of them) is NULL."""
