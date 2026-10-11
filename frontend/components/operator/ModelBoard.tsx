@@ -7,7 +7,7 @@
 // fewer than 30 documents says "too few" rather than a share. Never the reader's own
 // unsure words. ModelBoardScreen is rendered in node by tests/operatorInsightsViews.test.ts.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import table from "@/components/documents/Table.module.css";
 import { getModelBoard, getOperatorModels } from "@/lib/api";
 import { formatCost, formatNumber } from "@/lib/format";
@@ -52,21 +52,29 @@ export function ModelBoardScreen(props: {
   onRetry(): void;
 }) {
   const { days, onDays, state, onRetry } = props;
+  const heading = useRef<HTMLHeadingElement>(null);
   const data = state.kind === "ready" ? state.data : null;
+  // No status line of its own: the Models tab keeps one, ModelsView's; the skeleton shows loading.
   return (
     <section className={admin.section} aria-labelledby="board-heading">
-      <h2 id="board-heading" className={admin.sectionHeading}>
+      <h2 id="board-heading" ref={heading} tabIndex={-1} className={admin.sectionHeading}>
         Compare models
       </h2>
       <p className={styles.summary}>{OBSERVATIONAL}</p>
       <div className={styles.toolbar}>
         <PeriodSelect id="board-period" days={days} onDays={onDays} />
       </div>
-      <p className="visually-hidden" role="status">
-        {state.kind === "loading" ? "Loading the model comparison…" : ""}
-      </p>
       {state.kind === "loading" && <Skeleton />}
-      {state.kind === "error" && <LoadFailed what="the model comparison" message={state.message} onRetry={onRetry} />}
+      {state.kind === "error" && (
+        <LoadFailed
+          what="the model comparison"
+          message={state.message}
+          onRetry={() => {
+            heading.current?.focus(); // so focus stays on this screen, not the page, when the banner goes
+            onRetry();
+          }}
+        />
+      )}
       {data && !data.reply.ai_enabled && <p className={admin.emptyLine}>{AI_OFF}, so only this server&apos;s reader is shown.</p>}
       {data && data.reply.items.length === 0 && <p className={admin.emptyLine}>No model read or answered anything in this period.</p>}
       {data && data.reply.items.length > 0 && <BoardTable data={data} />}
@@ -118,9 +126,13 @@ function BoardTable({ data }: { data: BoardData }) {
 const modelName = (id: string, names: ReadonlyMap<string, string>) =>
   id === LOCAL_READER ? "RapidOCR (this server)" : (names.get(id) ?? id);
 
-const share = (value: number | null) => (value === null ? "None" : `${Math.round(value * 100)}%`);
-const secondsText = (value: number | null, runs: number) =>
-  value === null ? rateText(null, runs) : `${formatNumber(Math.round(value * 10) / 10)} s`;
+const DASH = "\u2014";
+const cacheText = (value: number | null) => (value === null ? DASH : `${Math.round(value * 100)}% of scan calls`);
+// The server nulls a speed on too few timed runs and a page signal on too few scanned
+// documents: neither basis is a count the board has, so no n is shown.
+const secondsText = (label: string, value: number | null) =>
+  value === null ? `${label}: too few timed runs` : `${label} ${formatNumber(Math.round(value * 10) / 10)} s`;
+const signalText = (value: number | null, ocrPages: number) => (value === null ? "Too few scanned documents to rate" : rateText(value, ocrPages));
 
 function BoardLineRow({ line, name }: { line: BoardLine; name: string }) {
   const { row } = line;
@@ -155,13 +167,11 @@ function BoardLineRow({ line, name }: { line: BoardLine; name: string }) {
         {compare(usd(line.usdPer1000Pages, row.cost_estimated))}
       </td>
       <td role="cell" data-label="Cache saved" className="tabular">
-        {compare(`${share(line.cachedShare)} of scan calls`)}
+        {compare(cacheText(line.cachedShare))}
       </td>
       <td role="cell" data-label="Seconds per page" className="tabular">
-        {compare(`typical ${secondsText(row.seconds_per_page_p50, row.runs)}`)}
-        {reads && !line.tooFew && (
-          <span className={styles.statusNote}>slowest 5% {secondsText(row.seconds_per_page_p95, row.runs)}</span>
-        )}
+        {compare(secondsText("typical", row.seconds_per_page_p50))}
+        {reads && !line.tooFew && <span className={styles.statusNote}>{secondsText("slowest 5%", row.seconds_per_page_p95)}</span>}
       </td>
       <td role="cell" data-label="Page signals" className="tabular">
         {!reads || line.tooFew ? (
@@ -170,7 +180,7 @@ function BoardLineRow({ line, name }: { line: BoardLine; name: string }) {
           <ul className={css.flags}>
             {signals.map(([label, value]) => (
               <li key={label}>
-                {label}: {rateText(value, row.ocr_pages)}
+                {label}: {signalText(value, row.ocr_pages)}
               </li>
             ))}
           </ul>

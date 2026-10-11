@@ -7,7 +7,7 @@
 // timer; after 15 minutes it says the figures are old. OverviewScreen is the view,
 // rendered in node by tests/operatorInsightsViews.test.ts.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMinuteNow } from "@/components/chat/hooks";
 import table from "@/components/documents/Table.module.css";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -18,6 +18,7 @@ import type { InsightsReply, OrgInsight, Organisation, PlatformHealth, QualityRe
 import { Sparkline } from "./Charts";
 import {
   ATTENTION,
+  CHANGE_MIN_BASE,
   INSIGHT_PERIODS,
   attentionItems,
   changeText,
@@ -44,26 +45,41 @@ const ATTENTION_SHOWN = 5;
 const SKELETON_TILES = [0, 1, 2, 3];
 export const AI_OFF = "AI is off on this server";
 
-export type LoadState<T> = { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready"; data: T };
+/** ready with refreshing: the last figures, shown while Refresh reloads the same period. */
+export type LoadState<T> = { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready"; data: T; refreshing?: boolean };
+
+export interface Loaded<T> {
+  days: InsightPeriod;
+  attempt: number;
+  state: LoadState<T>;
+}
 
 /**
- * Loads once per period and per attempt (Refresh, Try again), never on a timer; a reply
- * for an older period or attempt is never shown. `load` is a module-level function.
+ * What a screen shows for (days, attempt): its own result once it came; while a new
+ * attempt reloads the same period, the last ready figures marked refreshing (so the
+ * buttons, sort and focus stay); otherwise loading (the first load, a new period, or
+ * Try again after an error). A reply for an older period or attempt is never shown.
  */
+export function shownState<T>(loaded: Loaded<T> | null, days: InsightPeriod, attempt: number): LoadState<T> {
+  if (loaded === null || loaded.days !== days) return { kind: "loading" };
+  if (loaded.attempt === attempt) return loaded.state;
+  return loaded.state.kind === "ready" ? { ...loaded.state, refreshing: true } : { kind: "loading" };
+}
+
+/** Loads once per period and per attempt (Refresh, Try again), never on a timer. `load` is a module-level function. */
 export function useLoad<T>(days: InsightPeriod, attempt: number, load: (days: InsightPeriod) => Promise<T>): LoadState<T> {
-  const key = `${days}|${attempt}`;
-  const [result, setResult] = useState<{ key: string; state: LoadState<T> } | null>(null);
+  const [loaded, setLoaded] = useState<Loaded<T> | null>(null);
   useEffect(() => {
     let cancelled = false;
     load(days).then(
-      (data) => !cancelled && setResult({ key, state: { kind: "ready", data } }),
-      (caught: unknown) => !cancelled && setResult({ key, state: { kind: "error", message: operatorErrorMessage(caught) } }),
+      (data) => !cancelled && setLoaded({ days, attempt, state: { kind: "ready", data } }),
+      (caught: unknown) => !cancelled && setLoaded({ days, attempt, state: { kind: "error", message: operatorErrorMessage(caught) } }),
     );
     return () => {
       cancelled = true;
     };
-  }, [days, attempt, key, load]);
-  return result?.key === key ? result.state : { kind: "loading" };
+  }, [days, attempt, load]);
+  return shownState(loaded, days, attempt);
 }
 
 export function PeriodSelect({ id, days, onDays }: { id: string; days: InsightPeriod; onDays(days: InsightPeriod): void }) {
@@ -112,7 +128,7 @@ export function SeverityMark({ severity }: { severity: Severity }) {
 export interface OverviewData {
   reply: InsightsReply;
   orgs: Organisation[];
-  quality: QualityReply | null; // not loaded: its attention items are left out
+  quality: QualityReply | null; // not loaded: Needs attention says it may be incomplete
   health: PlatformHealth | null;
   loadedAt: number; // Date.now() when it arrived: the flags are judged then
 }
@@ -153,12 +169,17 @@ export function OverviewScreen(
   },
 ) {
   const { days, onDays, state, onRefresh, now } = props;
-  const [said, setSaid] = useState(""); // the sort, said once it changes
+  const heading = useRef<HTMLHeadingElement>(null);
+  // The sort, said once it changes; only for the figures it was said on, so a reload clears it.
+  const [said, setSaid] = useState({ text: "", at: 0 });
   const data = state.kind === "ready" ? state.data : null;
+  const refreshing = state.kind === "ready" && state.refreshing === true;
   const empty = data !== null && data.orgs.length === 0 && data.reply.organisations.length === 0;
+  const status =
+    state.kind === "loading" ? "Loading the overview\u2026" : refreshing ? "Refreshing\u2026" : said.at === data?.loadedAt ? said.text : "";
   return (
     <section className={admin.section} aria-labelledby="overview-heading">
-      <h2 id="overview-heading" className={admin.sectionHeading}>
+      <h2 id="overview-heading" ref={heading} tabIndex={-1} className={admin.sectionHeading}>
         Overview
       </h2>
       <p className={styles.summary}>Counts, sums and rates per organisation. No person or document is shown here.</p>
@@ -166,7 +187,10 @@ export function OverviewScreen(
         <PeriodSelect id="overview-period" days={days} onDays={onDays} />
         {data && (
           <div className={css.toolEnd}>
-            <p className={css.asOf}>Figures as of {formatDateTime(new Date(data.loadedAt).toISOString())}</p>
+            <p className={css.asOf}>
+              Figures as of {formatDateTime(new Date(data.loadedAt).toISOString())}
+              {refreshing && ", refreshing\u2026"}
+            </p>
             <button type="button" className="btn" onClick={onRefresh}>
               <Icon name="refresh" />
               Refresh
@@ -186,16 +210,25 @@ export function OverviewScreen(
         </p>
       )}
       <p className="visually-hidden" role="status">
-        {state.kind === "loading" ? "Loading the overview…" : said}
+        {status}
       </p>
       {state.kind === "loading" && <Skeleton />}
-      {state.kind === "error" && <LoadFailed what="the overview" message={state.message} onRetry={onRefresh} />}
+      {state.kind === "error" && (
+        <LoadFailed
+          what="the overview"
+          message={state.message}
+          onRetry={() => {
+            heading.current?.focus(); // so focus stays on this screen, not the page, when the banner goes
+            onRefresh();
+          }}
+        />
+      )}
       {empty && (
         <EmptyState icon="admin" title="No organisations yet">
           Create the first one in Organisations; its figures show here once it is used.
         </EmptyState>
       )}
-      {data && !empty && <OverviewBody {...props} data={data} announce={setSaid} />}
+      {data && !empty && <OverviewBody {...props} data={data} announce={(text) => setSaid({ text, at: data.loadedAt })} />}
     </section>
   );
 }
@@ -299,17 +332,15 @@ function tilesOf(reply: InsightsReply): Tile[] {
     change: changeText(pick(now), pick(before), "count"),
     spark: line(pick),
   });
-  const money = (label: string, pick: (totals: PeriodTotals) => number | null, note: string): Tile => {
+  // A unit cost's change is judged on its pages or questions before (`base`), never on its dollars.
+  const money = (label: string, pick: (totals: PeriodTotals) => number | null, note: string, base?: (totals: PeriodTotals) => number): Tile => {
     if (!reply.ai_enabled) return { label, value: "Off", note: AI_OFF };
     const value = pick(now);
     const was = pick(before);
-    return {
-      label,
-      value: usd(value, now.costEstimated),
-      note,
-      change: value === null || was === null ? null : changeText(value, was, "count"),
-      spark: line(pick),
-    };
+    let change: string | null = null;
+    if (value !== null && base && base(before) < CHANGE_MIN_BASE) change = "too few to compare";
+    else if (value !== null && was !== null) change = changeText(value, was, "money");
+    return { label, value: usd(value, now.costEstimated), note, change, spark: line(pick) };
   };
   const month = monthSpend(reply.organisations);
   const forecast = monthForecast(month.cost_usd, null, reply.month);
@@ -323,11 +354,11 @@ function tilesOf(reply: InsightsReply): Tile[] {
   return [
     count("Active organisations", (totals) => totals.activeOrganisations),
     count("Files uploaded", (totals) => totals.uploads),
-    count("Pages read", (totals) => totals.pages),
+    count("Pages processed", (totals) => totals.pages, "(re-reads included)"),
     count("Questions asked", (totals) => totals.questions),
     spend,
-    money("$ per 1,000 pages", (totals) => usdPer1000Pages(totals.costDocumentsUsd, totals.pages), "Reading and document cards"),
-    money("$ per 100 questions", (totals) => usdPer100Questions(totals.costQuestionsUsd, totals.questions), "Answers, memory and search"),
+    money("$ per 1,000 pages", (totals) => usdPer1000Pages(totals.costDocumentsUsd, totals.pages), "Reading and document cards", (totals) => totals.pages),
+    money("$ per 100 questions", (totals) => usdPer100Questions(totals.costQuestionsUsd, totals.questions), "Answers, memory and search", (totals) => totals.questions),
     count("Failed runs", (totals) => totals.runsFailed, `of ${formatNumber(now.runs)} runs`),
   ];
 }
@@ -470,15 +501,17 @@ function OrgGlance({ line, aiOn, at }: { line: OrgLine; aiOn: boolean; at: numbe
           </>
         ) : (
           <span className={css.budget}>
-            <meter
-              min={0}
-              max={Math.max(budget, spent)}
-              low={budget * ATTENTION.budgetCheck}
-              high={budget}
-              optimum={0}
-              value={spent}
-              aria-label={`Budget used by ${name}`}
-            />
+            {org.month_cost_usd !== null && (
+              <meter
+                min={0}
+                max={Math.max(budget, spent)}
+                low={budget * ATTENTION.budgetCheck}
+                high={budget}
+                optimum={0}
+                value={spent}
+                aria-label={`Budget used by ${name}`}
+              />
+            )}
             <span>
               {formatCost(cost)} of {formatUsd(budget)}
             </span>
@@ -529,11 +562,11 @@ export function overviewCsv(data: OverviewData): string {
   ]);
 }
 
-function downloadCsv(data: OverviewData) {
+export function downloadCsv(data: OverviewData) {
   const url = URL.createObjectURL(new Blob([overviewCsv(data)], { type: "text/csv;charset=utf-8" }));
   const link = document.createElement("a");
   link.href = url;
   link.download = `kaagaz-overview-${data.reply.from}-to-${data.reply.to}.csv`;
   link.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 0); // after the click has started the download
 }

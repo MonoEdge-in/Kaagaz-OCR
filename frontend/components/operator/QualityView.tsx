@@ -7,7 +7,7 @@
 // "not found" is a correct answer. QualityScreen is rendered in node by
 // tests/operatorInsightsViews.test.ts.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import table from "@/components/documents/Table.module.css";
 import { listOrgs, getOperatorQuality } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
@@ -49,12 +49,13 @@ export function QualityScreen(props: {
   onRetry(): void;
 }) {
   const { days, onDays, state, onRetry } = props;
+  const heading = useRef<HTMLHeadingElement>(null);
   const data = state.kind === "ready" ? state.data : null;
-  const platform = data?.reply.platform;
-  const empty = platform !== undefined && platform.runs === 0 && platform.answers === 0 && platform.corrections === 0;
+  const platform = data?.reply.platform ?? null;
+  const empty = data !== null && (platform == null || (platform.runs === 0 && platform.answers === 0 && platform.corrections === 0));
   return (
     <section className={admin.section} aria-labelledby="quality-heading">
-      <h2 id="quality-heading" className={admin.sectionHeading}>
+      <h2 id="quality-heading" ref={heading} tabIndex={-1} className={admin.sectionHeading}>
         Quality
       </h2>
       <p className={styles.summary}>Reading, answers and review. Counts and shares only; no person or document is shown here.</p>
@@ -62,13 +63,22 @@ export function QualityScreen(props: {
         <PeriodSelect id="quality-period" days={days} onDays={onDays} />
       </div>
       <p className="visually-hidden" role="status">
-        {state.kind === "loading" ? "Loading the quality figures…" : ""}
+        {state.kind === "loading" ? "Loading the quality figures\u2026" : state.kind === "ready" && state.refreshing ? "Refreshing\u2026" : ""}
       </p>
       {state.kind === "loading" && <Skeleton />}
-      {state.kind === "error" && <LoadFailed what="the quality figures" message={state.message} onRetry={onRetry} />}
+      {state.kind === "error" && (
+        <LoadFailed
+          what="the quality figures"
+          message={state.message}
+          onRetry={() => {
+            heading.current?.focus(); // so focus stays on this screen, not the page, when the banner goes
+            onRetry();
+          }}
+        />
+      )}
       {data && !data.reply.ai_enabled && <p className={admin.emptyLine}>{AI_OFF}, so scans are read on this server.</p>}
       {empty && <p className={admin.emptyLine}>Nothing was read, asked or reviewed in this period.</p>}
-      {data && platform && !empty && (
+      {data && platform != null && !empty && (
         <>
           <Reading row={platform} />
           <Answers row={platform} />
