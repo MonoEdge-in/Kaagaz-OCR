@@ -254,6 +254,7 @@ export interface PageSummary {
   // read before PRD 5. A page the
   // main reader handed to the backup reader has read_locally or reader_refused in read_issues.
   read_by: string | null;
+  read_by_name?: string | null; // model choice: the model's name ("Gemini 3.1 Pro") when a model read it
   read_quality: ReadQuality; // F1
   read_issues: ReadIssue[]; // F1; [] when good
   unsure_words: number; // words the reader listed as unsure
@@ -822,6 +823,8 @@ export interface OrgModel {
   price_in_usd_per_m: number; // US dollars per million input tokens
   price_out_usd_per_m: number;
   is_default_scan: boolean;
+  provider?: string; // the zero-data-retention provider its pages go to ("google-vertex")
+  usd_per_page?: number | null; // measured by verify-models; null: not measured yet
 }
 
 /** GET /admin/models: read-only, set by the operator ("Set by MonoEdge"). */
@@ -884,6 +887,7 @@ export interface UsageReport {
   by_day: UsageByDay[];
   top_documents: UsageTopDocument[]; // at most 10, the costliest first
   budget: UsageBudget;
+  ai_enabled?: boolean; // false: keyless mode (no OpenRouter key, MODEL_ENABLED=false), no model is called
 }
 
 /** One catalogue model (GET /operator/models), from OpenRouter's live list. */

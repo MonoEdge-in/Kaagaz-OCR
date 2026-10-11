@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   docTypeLabel,
   formatBytes,
+  formatCost,
   formatDate,
   formatDateTime,
   formatNumber,
   formatRelative,
+  formatUsd,
   statusChip,
   typeLabel,
 } from "@/lib/format";
@@ -133,5 +135,34 @@ describe("statusChip", () => {
     expect(statusChip("rejected").tone).toBe("danger");
     expect(statusChip("failed").tone).toBe("danger");
     for (const status of all) expect(statusChip(status).className).not.toMatch(/badge/);
+  });
+});
+
+// Model choice: AI spend is in US dollars, never shown as $0.00 when something was spent.
+describe("formatUsd and formatCost", () => {
+  it("shows US dollars with cents and US grouping, whatever the page's locale", () => {
+    expect(formatUsd(12.4)).toBe("$12.40");
+    expect(formatUsd(50)).toBe("$50.00");
+    expect(formatUsd(123456.789)).toBe("$123,456.79");
+    expect(formatUsd(0)).toBe("$0.00");
+  });
+
+  it("says < $0.01 for more than nothing but under a cent, and a cent from a cent", () => {
+    expect(formatUsd(0.004)).toBe("< $0.01");
+    expect(formatUsd(0.009999)).toBe("< $0.01");
+    expect(formatUsd(0.000001)).toBe("< $0.01");
+    expect(formatUsd(0.01)).toBe("$0.01");
+  });
+
+  it("marks an estimate in words, not only with the sign", () => {
+    expect(formatUsd(12.4, true)).toBe("≈ $12.40 (estimated)");
+    expect(formatUsd(0.002, true)).toBe("≈ < $0.01 (estimated)");
+  });
+
+  it("says Not known when a cost is missing, and marks an estimated one", () => {
+    expect(formatCost({ cost_usd: null, cost_estimated: false })).toBe("Not known");
+    expect(formatCost({ cost_usd: null, cost_estimated: true })).toBe("Not known");
+    expect(formatCost({ cost_usd: 3.5, cost_estimated: false })).toBe("$3.50");
+    expect(formatCost({ cost_usd: 3.5, cost_estimated: true })).toBe("≈ $3.50 (estimated)");
   });
 });

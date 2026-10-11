@@ -291,6 +291,7 @@ export function DocumentView({
           <ReadAgain
             documentId={detail.id}
             fixes={detail.reviewer_fixes}
+            pages={detail.page_count}
             offered={canReprocess(me.user.role, detail)}
             reading={beingRead(detail.status)}
             onStarted={(reply) => {
