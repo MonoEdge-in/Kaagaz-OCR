@@ -39,6 +39,7 @@ export function ReviewCard({
   const errorId = `${idBase}-error`;
   const link = pageLink(item.document_id, value.region.page, value.region);
   const checks = checkReasonsText(item);
+  const confidence = confidenceText(value.confidence, routeOrigin(item.page.route));
 
   const resolve = async (choice: ReviewChoice) => {
     const check = checkChoice(choice, typed, value.second_reading);
@@ -81,10 +82,10 @@ export function ReviewCard({
         <p className={styles.reason}>{reasonText(value.label_reason)}</p>
         {checks && <p className={styles.reason}>{checks}</p>}
         <p className={styles.reason}>
-          {confidenceText(value.confidence, routeOrigin(item.page.route))}
+          {confidence}
           {item.page.unit !== "cells" && (
             <>
-              {" · "}
+              {confidence && " · "}
               <Link href={pageLink(item.document_id, value.region.page, value.region, { scanned: true })}>
                 See page {value.region.page}&apos;s scanned text
               </Link>
