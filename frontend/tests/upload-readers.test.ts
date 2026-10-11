@@ -154,9 +154,14 @@ describe("Read with, on screen (MS4)", () => {
 });
 
 describe("Read again for the whole document (MS4)", () => {
-  it("sends the picked model, the default too, so it is the one the warning names", () => {
-    expect(readAgainModel([gemini, sonnet], null)).toBe(gemini.id);
+  it("sends nothing until the user picks, so the document keeps its own model", () => {
+    expect(readAgainModel([gemini, sonnet], null)).toBeUndefined();
+  });
+
+  it("sends the model the user picked, the default too", () => {
     expect(readAgainModel([gemini, sonnet], sonnet.id)).toBe(sonnet.id);
+    expect(readAgainModel([gemini, sonnet], gemini.id)).toBe(gemini.id);
+    expect(readAgainModel([gemini, sonnet], "gone/model")).toBeUndefined();
   });
 
   it("sends none when there is no choice", () => {
@@ -172,7 +177,10 @@ describe("Read again for the whole document (MS4)", () => {
 
   it("is offered in the Read again question, and per-page Read again has no model choice", () => {
     const dialog = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/ReadAgain.tsx"), "utf8");
-    expect(dialog).toContain("<ReaderSelect readers={readers} picked={picked} onPick={setPicked} />");
+    // The select starts on the document's own model (read_model), not the default.
+    expect(dialog).toContain("<ReaderSelect readers={readers} picked={picked ?? readModel} onPick={setPicked} />");
+    const view = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/DocumentView.tsx"), "utf8");
+    expect(view).toContain("readModel={detail.read_model}");
     expect(dialog).toContain("reprocessDocument(documentId, model)");
     const page = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/PageProblems.tsx"), "utf8");
     expect(page).not.toContain("ReaderSelect");

@@ -587,6 +587,9 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         "invoice": None if typed is None else invoice(*typed),
         # PRD 3 Y2: the current, ready documents sharing an identifier with this one.
         "links": [document_link(each) for each in links],
+        # MS5: the model the document asked to be read with (null: the organisation's
+        # default), so Read again starts from it and sends a model only when one is changed.
+        "read_model": row["read_model"],
     }
 
 

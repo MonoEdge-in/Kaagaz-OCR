@@ -49,12 +49,14 @@ export function readerToSend(readers: readonly UploadReader[], picked: string | 
 }
 
 /**
- * The whole document's "Read again" (MS4): the model it is read with, sent
- * even when it is the default, so it is the one the warning names; undefined
- * when there is no choice (the server keeps its own).
+ * The whole document's "Read again" (MS4): the model the user picked in the
+ * select, or undefined when they changed nothing, so the document keeps its own
+ * model (read_model) and never moves to the default unasked; undefined too when
+ * there is no choice.
  */
 export function readAgainModel(readers: readonly UploadReader[], picked: string | null): string | undefined {
-  return offersChoice(readers) ? pickedReader(readers, picked)?.id : undefined;
+  if (picked === null || !offersChoice(readers)) return undefined;
+  return readers.find((reader) => reader.id === picked && reader.available)?.id;
 }
 
 /** Said under that select: every page is read, and paid for, again. pages null: not counted yet. */

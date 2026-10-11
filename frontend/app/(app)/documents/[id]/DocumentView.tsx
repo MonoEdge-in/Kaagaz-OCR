@@ -292,6 +292,7 @@ export function DocumentView({
             documentId={detail.id}
             fixes={detail.reviewer_fixes}
             pages={detail.page_count}
+            readModel={detail.read_model}
             offered={canReprocess(me.user.role, detail)}
             reading={beingRead(detail.status)}
             onStarted={(reply) => {

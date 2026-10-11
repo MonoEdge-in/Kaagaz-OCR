@@ -375,6 +375,7 @@ export interface DocumentDetail extends DocumentSummary {
   card: DocumentCard | null; // null without a card (the model off or down)
   invoice: Invoice | null; // null for a document with no invoices row
   links: DocumentLink[]; // current, ready documents sharing an identifier (PRD 3 Y2); at most 50
+  read_model: string | null; // the model it asked to be read with (MS5); null: the organisation's default
 }
 
 /** A related document (PRD 3 Y2). The value is stored normalised: no spaces, lower case. */

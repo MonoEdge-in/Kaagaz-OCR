@@ -56,7 +56,7 @@ from kaagaz.db.folders import FolderNotFound
 _COLUMNS = (
     "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"
     " d.page_count, d.created_at, d.uploaded_by, d.folder_id, d.deleted_at, d.family_id, d.version_no,"
-    " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary,"
+    " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary, d.read_model,"
     " u.display_name AS uploaded_by_name,"
     " (SELECT count(*) FROM pages pu WHERE pu.customer_id = d.customer_id AND pu.document_id = d.id"
     " AND pu.read_quality = 'unreadable' AND pu.accepted_at IS NULL) AS pages_unreadable,"

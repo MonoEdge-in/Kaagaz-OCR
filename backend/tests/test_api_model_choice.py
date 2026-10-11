@@ -460,3 +460,18 @@ def test_a_page_says_the_catalogue_name_of_the_model_that_read_it(db: Database) 
         ("rapidocr", None),
         ("text_layer", None),
     ]
+
+
+@pytest.mark.db
+def test_the_detail_says_the_model_the_document_asked_for(db: Database) -> None:
+    # Read again starts from it, so a document never moves to the default unasked (R1).
+    api = Api(db, settings=GEMINI)
+    member = api.new_signed("member")
+    c = member.customer_id
+    _, other = two_models(api, c)
+    chosen, plain = api.add_document(c), api.add_document(c)
+    with db.customer(c) as conn:
+        conn.execute(text("UPDATE documents SET read_model = :m WHERE id = :d"), {"m": other, "d": chosen})
+
+    assert member.client.get(f"/api/documents/{chosen}").json()["read_model"] == other
+    assert member.client.get(f"/api/documents/{plain}").json()["read_model"] is None
