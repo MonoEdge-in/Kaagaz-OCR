@@ -1,0 +1,176 @@
+/* Operator insights: Overview, Quality and Compare models (council 11 Oct 2026).
+   Tokens only (app/globals.css). Tiles, captions and tables reuse Admin.module.css
+   and the shared reflow in components/documents/Table.module.css. */
+
+/* The console's tabs wrap onto a second line on a narrow screen, so all seven
+   stay in view instead of scrolling sideways. Only the operator console uses it. */
+@media (max-width: 40rem) {
+  [role="tablist"].tabsWrap {
+    flex-wrap: wrap;
+    width: auto;
+    overflow-x: visible;
+  }
+}
+
+/* --- Figures as of, Refresh, Download CSV, and the old-figures note ------------ */
+
+.toolEnd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.asOf {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.stale {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--review-solid);
+  border-radius: var(--r-md);
+  background: var(--review-bg);
+  color: var(--review-fg);
+}
+
+/* --- Tiles: the value, its notes, and a line by day (decoration: the words say it) --- */
+
+.tileBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  min-width: 0;
+}
+
+.note {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.spark {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--accent);
+}
+
+.spark svg {
+  display: block;
+  width: 100%;
+  height: 1.5rem;
+  overflow: visible;
+}
+
+.footnote {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+/* --- Needs attention: "Act now" or "Check", an icon and the words ----------------- */
+
+.attention {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attentionItem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.attentionText {
+  flex: 1 1 14rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.severity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 1px var(--space-2);
+  border: 1px solid var(--review-solid);
+  border-radius: var(--r-sm);
+  background: var(--review-bg);
+  color: var(--review-fg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.severity[data-severity="act"] {
+  border-color: var(--danger-fg);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+/* --- Lists inside a table cell (flags, page signals) and the budget meter -------- */
+
+.flags {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.budget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.budget meter {
+  width: 100%;
+  max-width: 10rem;
+}
+
+/* --- Quality: one figure per card ----------------------------------------------- */
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.fact {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.fact dt {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.fact dd {
+  margin: var(--space-1) 0 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.fact dd > span {
+  font-weight: 400;
+}
