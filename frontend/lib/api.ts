@@ -13,6 +13,7 @@ import type {
   AdminUser,
   AuditEntry,
   BatchView,
+  BoardReply,
   ChatResponse,
   Conversation,
   ConversationSummary,
@@ -23,6 +24,7 @@ import type {
   DocumentSummary,
   FailedDocument,
   Folder,
+  InsightsReply,
   Me,
   MySpot,
   MyStory,
@@ -40,6 +42,7 @@ import type {
   PasswordReset,
   PlatformEvent,
   PlatformHealth,
+  QualityReply,
   ReviewChoice,
   ReviewItem,
   ReviewList,
@@ -511,3 +514,10 @@ export const setOperatorModelEnabled = (id: string, enabled: boolean, code: stri
 /** Tokens and dollars per organisation and model; no user or document. */
 export const getOperatorUsage = (params: { from?: string; to?: string } = {}) =>
   request<{ from: string; to: string; items: OperatorUsageRow[] }>("GET", `/operator/usage${query(params)}`);
+/** Operator insights (F1, F2) over the last `days` days (1 to 90) and the period before. */
+export const getOperatorInsights = (days: number) =>
+  request<InsightsReply>("GET", `/operator/insights${query({ days })}`);
+/** Reading, answers and review (F3); outcome values below K come as null. */
+export const getOperatorQuality = (days: number) => request<QualityReply>("GET", `/operator/quality${query({ days })}`);
+/** Compare models (F4): observational, not an A/B test. */
+export const getModelBoard = (days: number) => request<BoardReply>("GET", `/operator/model-board${query({ days })}`);

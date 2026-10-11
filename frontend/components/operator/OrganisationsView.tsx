@@ -8,8 +8,9 @@
 // delete (only a disabled organisation) and cancel the deletion; a row being
 // deleted shows its date and the days left. The table is the shared reflow
 // (Table.module.css): cards below 48rem of room, a table from there.
+// initialSearch (Needs attention on Overview) fills the search and focuses it.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMinuteNow } from "@/components/chat/hooks";
 import table from "@/components/documents/Table.module.css";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -42,11 +43,13 @@ const COLUMNS: { label: string; className?: string }[] = [
   { label: "Actions", className: styles.actionsColumn },
 ];
 
-export function OrganisationsView() {
+export function OrganisationsView({ initialSearch = "" }: { initialSearch?: string }) {
   const [attempt, setAttempt] = useState(0);
   const [orgs, setOrgs] = useState<Organisation[] | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSearch);
+  const [searched, setSearched] = useState(initialSearch); // the initialSearch last applied
+  const searchRef = useRef<HTMLInputElement>(null);
   const [creating, setCreating] = useState(false);
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [adminsOf, setAdminsOf] = useState<Organisation | null>(null);
@@ -68,6 +71,17 @@ export function OrganisationsView() {
       cancelled = true;
     };
   }, [attempt]);
+
+  if (initialSearch !== searched) {
+    setSearched(initialSearch);
+    setSearch(initialSearch);
+  }
+
+  // The search box exists once the organisations are in.
+  const loaded = orgs !== null;
+  useEffect(() => {
+    if (initialSearch && loaded) searchRef.current?.focus();
+  }, [initialSearch, loaded]);
 
   const failed = error !== null && error.attempt === attempt ? error.message : null;
   const reload = () => setAttempt((n) => n + 1);
@@ -130,6 +144,7 @@ export function OrganisationsView() {
             <div className={`field ${styles.search}`}>
               <label htmlFor="org-search">Search by name</label>
               <input
+                ref={searchRef}
                 id="org-search"
                 className="input"
                 type="search"

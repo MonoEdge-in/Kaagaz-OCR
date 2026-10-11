@@ -14,6 +14,8 @@ app may only read, the ledger it may only read and add to, the platform catalogu
 refresh columns alone it may write, and the operator's five functions.
 """
 
+import re
+
 import pytest
 from sqlalchemy import text
 
@@ -194,6 +196,42 @@ OPERATOR_RIGHTS = {
         "TABLE(customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,"
         " input_tokens numeric, output_tokens numeric, reasoning_tokens numeric, cost_usd numeric,"
         " cost_estimated boolean, cost_part_unknown boolean)",
+        EMPTY_PATH,
+    ),
+    # 0024, operator insights, read-only (F1-F4): counts, sums, rates and durations per
+    # organisation or model. Pinned: never a user, document or name column.
+    "kaagaz_op_daily": (
+        "TABLE(customer_id uuid, day date, uploads bigint, sign_ins bigint, questions bigint,"
+        " corrections bigint, runs bigint, runs_failed bigint, pages bigint, scan_pages bigint,"
+        " cached_pages bigint, cost_usd numeric, cost_scan_usd numeric, cost_documents_usd numeric,"
+        " cost_questions_usd numeric, cost_estimated boolean, cost_part_unknown boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_org_health": (
+        "TABLE(customer_id uuid, active_users_7d bigint, active_users_30d bigint,"
+        " active_users_prev_30d bigint, answers_30d bigint, not_found_30d bigint, open_review bigint,"
+        " oldest_open_review_at timestamp with time zone, ai_budget_usd numeric, month_cost_usd numeric,"
+        " month_cost_estimated boolean, month_cost_part_unknown boolean, last_active_day date)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_quality": (
+        "TABLE(customer_id uuid, runs bigint, runs_failed bigint, runs_failed_platform bigint,"
+        " runs_degraded bigint, documents_run bigint, pages_cells bigint, pages_text_layer bigint,"
+        " pages_ocr bigint, pages_blank bigint, pages_ai bigint, pages_local bigint, pages_cached bigint,"
+        " pages_unreadable bigint, ready_documents bigint, ready_p50_seconds double precision,"
+        " ready_p95_seconds double precision, answers bigint, answered bigint, not_found bigint,"
+        " unchecked bigint, answers_verified bigint, answers_fixed_query bigint, citations bigint,"
+        " feedback bigint, feedback_up bigint, values_total bigint, values_needs_review bigint,"
+        " corrections bigint, corrections_second bigint, corrections_typed bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_model_board": (
+        "TABLE(model text, documents bigint, runs bigint, runs_failed bigint, runs_degraded bigint,"
+        " pages_ai bigint, pages_local bigint, pages_cached bigint, seconds_per_page_p50 double precision,"
+        " seconds_per_page_p95 double precision, calls bigint, scan_calls bigint, cached_scan_calls bigint,"
+        " input_tokens numeric, output_tokens numeric, cost_usd numeric, scan_cost_usd numeric,"
+        " cost_estimated boolean, cost_part_unknown boolean, ocr_pages bigint, pages_disagree bigint,"
+        " pages_refused bigint, pages_fell_back bigint, pages_unpinned bigint)",
         EMPTY_PATH,
     ),
 }
@@ -453,3 +491,35 @@ def test_the_operator_role_has_no_table_rights_and_its_tables_no_grants_and_no_p
         ).all()
     assert (tuple(role), granted) == ((False, False, False), [])
     assert sorted(tuple(row) for row in locked) == [("operators", True, 0), ("platform_audit", True, 0)]
+
+
+# 0024's readers (F1-F4): read-only, no dynamic SQL, the operator check, and no column
+# that could name or point at a person or content. Counts named in the plural
+# (``documents``, ``active_users_7d``) are numbers and allowed; an id other than the
+# organisation's, a name, an e-mail or a bare person or content column is not.
+INSIGHT_READERS = ("kaagaz_op_daily", "kaagaz_op_org_health", "kaagaz_op_quality", "kaagaz_op_model_board")
+ENABLED = "o.id = p_operator AND NOT o.disabled AND o.totp_enabled_at IS NOT NULL"
+_PERSON_OR_CONTENT = re.compile(
+    r"(^|_)id$|email|name|^(user|document|conversation|message|batch|folder|tag|text|answer|question)$"
+)
+
+
+def test_the_insight_readers_are_stable_static_check_the_operator_and_name_nobody(db: Database) -> None:
+    with db.system() as conn:
+        readers = conn.execute(
+            text(
+                "SELECT p.proname, p.provolatile, p.prosrc,"
+                " ARRAY(SELECT a.n FROM unnest(p.proargnames, p.proargmodes) AS a (n, m) WHERE a.m = 't')"
+                " FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY(:f)"
+            ),
+            {"f": list(INSIGHT_READERS)},
+        ).all()
+    assert sorted(row[0] for row in readers) == sorted(INSIGHT_READERS)
+    for name, volatility, source, columns in readers:
+        assert volatility == "s", name  # STABLE: reads only
+        assert "EXECUTE" not in source.upper(), name  # no dynamic SQL
+        assert ENABLED in source, name
+        assert columns, name
+        assert [c for c in columns if c != "customer_id" and _PERSON_OR_CONTENT.search(c)] == [], name
+    caught = ("user_id", "document_id", "display_name", "email", "customer_name", "message", "id")
+    assert all(_PERSON_OR_CONTENT.search(sample) for sample in caught)  # the pattern works
