@@ -15,6 +15,7 @@ import {
   FIRST_LINES,
   confidenceText,
   emptyState,
+  hasScore,
   lineMarked,
   MAIN_READER,
   plural,
@@ -142,7 +143,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
         </div>
       ) : (
         <>
-          <p className={styles.muted}>{CONFIDENCE_NOTE}</p>
+          {hasScore(lines) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}
           {truncated && <p className={styles.note}>{truncated}</p>}
           <div
             className={styles.scroll}
@@ -153,6 +154,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
             <ol className={styles.lines}>
               {shown.map((line, index) => {
                 const marked = lineMarked(line, cited);
+                const meta = confidenceText(line.confidence, line.origin);
                 return (
                   <li key={index} className={marked ? `${styles.line} ${styles.cited}` : styles.line}>
                     <div className={styles.lineRow}>
@@ -165,10 +167,12 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         <bdi dir="auto" className="readText">
                           {visibleText(line.text)}
                         </bdi>
-                        <span className={styles.lineMeta}>
-                          {marked && <strong>Cited · </strong>}
-                          {confidenceText(line.confidence, line.origin)}
-                        </span>
+                        {(marked || meta) && (
+                          <span className={styles.lineMeta}>
+                            {marked && <strong>{meta ? "Cited · " : "Cited"}</strong>}
+                            {meta}
+                          </span>
+                        )}
                       </button>
                       {onAddMeaning && (
                         <button

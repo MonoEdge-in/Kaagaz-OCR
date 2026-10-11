@@ -3,6 +3,7 @@ import { scannedLink } from "@/components/chat/answer";
 import {
   confidenceText,
   emptyState,
+  hasScore,
   lineMarked,
   readerHeading,
   routeOrigin,
@@ -42,12 +43,18 @@ describe("confidenceText", () => {
     expect(confidenceText(0.62, "ocr")).toBe("Reader not sure (62%)");
   });
 
-  it("says what no score means for each origin, and treats NaN as no score", () => {
+  it("says read from the file for a cell or text layer, else nothing, and treats NaN as no score", () => {
     expect(confidenceText(null, "cell")).toBe("Read directly from the file");
     expect(confidenceText(null, "text_layer")).toBe("Read directly from the file");
-    expect(confidenceText(null, "ocr")).toBe("No confidence given");
-    expect(confidenceText(null, null)).toBe("No confidence given");
-    expect(confidenceText(Number.NaN, "ocr")).toBe("No confidence given");
+    expect(confidenceText(null, "ocr")).toBeNull();
+    expect(confidenceText(null, null)).toBeNull();
+    expect(confidenceText(Number.NaN, "ocr")).toBeNull();
+  });
+
+  it("shows the confidence note only when some line has a score", () => {
+    expect(hasScore([line(null), line(0.62)])).toBe(true);
+    expect(hasScore([line(null), line(Number.NaN)])).toBe(false);
+    expect(hasScore([])).toBe(false);
   });
 
   it("gives a value the origin of its page's route", () => {
