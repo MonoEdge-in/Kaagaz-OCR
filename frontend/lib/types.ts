@@ -969,6 +969,7 @@ export interface OrgInsight {
   month_cost_usd: number | null; // this calendar month; null: no cost known
   month_cost_estimated: boolean;
   month_cost_part_unknown: boolean;
+  last_active_day: string | null; // ISO date: the latest local day with an upload, question or run; null: never
 }
 
 /** GET /operator/insights?days= */
@@ -1022,7 +1023,7 @@ export interface QualityReply {
   from: string;
   to: string;
   ai_enabled: boolean;
-  platform: QualityRow;
+  platform: QualityRow | null; // null: no platform row
   organisations: QualityRow[];
 }
 

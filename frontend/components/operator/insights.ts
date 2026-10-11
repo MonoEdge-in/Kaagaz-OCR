@@ -21,8 +21,8 @@ export const ATTENTION = {
   notFoundShare: 0.3, failedPlatformShare: 0.1, degradedShare: 0.05, reviewOldDays: 7,
   spikeTimesMedian: 2, spikeFloorUsd: 1, queueOldMinutes: 30,
 } as const;
-/** changeText says "too few to compare" below this many before (PROVISIONAL, UI/UX F2). */
-const CHANGE_MIN_BASE = 5;
+/** A count's change, or a unit cost's on this few pages or questions before, is "too few to compare" (PROVISIONAL, UI/UX F2). */
+export const CHANGE_MIN_BASE = 5;
 
 const DAY_MS = 86_400_000;
 const DASH = "\u2014"; // the repo's empty-cell dash
@@ -90,15 +90,17 @@ export function periodTotals(daily: readonly InsightDay[], from: string, to: str
   return totals;
 }
 
-export type ChangeKind = "count" | "share";
+export type ChangeKind = "count" | "share" | "money";
 
 const points = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
 
 /**
  * UI/UX F2: the change against the period before, in neutral words (never colour only).
  * count: "up 12%", "down 4%", "no change"; "new this period" from 0; "too few to compare"
- * when before is under 5. share (0..1): "up 1.2 points", "down 0.4 points"; a share from 0
- * is points too (0% is a real share; the server already nulls one below K).
+ * when before is under 5. money (US dollars): as count, but only a 0 before is guarded ($3
+ * to $2.10 is "down 30%"; a unit cost's caller judges its own pages or questions before).
+ * share (0..1): "up 1.2 points", "down 0.4 points"; a share from 0 is points too (0% is a
+ * real share; the server already nulls one below K).
  */
 export function changeText(now: number, before: number, kind: ChangeKind): string {
   if (!Number.isFinite(now) || !Number.isFinite(before)) return "too few to compare";
@@ -110,7 +112,7 @@ export function changeText(now: number, before: number, kind: ChangeKind): strin
   }
   if (now === before) return "no change";
   if (before === 0) return now > 0 ? "new this period" : "too few to compare";
-  if (before < CHANGE_MIN_BASE) return "too few to compare";
+  if (kind === "count" && before < CHANGE_MIN_BASE) return "too few to compare";
   const percent = Math.round(((now - before) / before) * 100);
   if (percent === 0) return "no change";
   return `${percent > 0 ? "up" : "down"} ${formatNumber(Math.abs(percent))}%`;
@@ -163,8 +165,9 @@ function median(values: readonly number[]): number {
 /**
  * One organisation's "Needs attention" flags (decisions, PROVISIONAL thresholds), from F2
  * and F1. One budget flag at most: passed (act), else near 80% (check), else the forecast
- * passes it this month (check). Quiet 14 days after earlier activity in the reply's days
- * hides "activity down". Spend spike: today over 2 x the median of the 7 days before and
+ * passes it this month (check). Quiet: 14 days or more from the last active day (F2's
+ * last_active_day, any time before) to the reply's last day; never active is not quiet;
+ * quiet hides "activity down". Spend spike: today over 2 x the median of the 7 days before and
  * over $1. Review: the oldest open item more than 7 days old at `now`.
  */
 export function orgFlags(org: OrgInsight, reply: InsightsReply, now: Date): Flag[] {
@@ -189,9 +192,7 @@ export function orgFlags(org: OrgInsight, reply: InsightsReply, now: Date): Flag
     }
   }
 
-  // ponytail: quiet looks back over the reply's days only (2 x the period), so the 7-day period never sees 14 quiet days.
-  const lastActive = daily.filter(isActive).reduce<string | null>((last, row) => (last === null || row.day > last ? row.day : last), null);
-  const quietDays = lastActive === null ? 0 : dayNumber(reply.to) - dayNumber(lastActive);
+  const quietDays = org.last_active_day === null ? 0 : dayNumber(reply.to) - dayNumber(org.last_active_day);
   if (quietDays >= ATTENTION.quietDays) {
     flags.push({ code: "quiet", severity: "check", text: `No uploads, questions or reading for ${formatNumber(quietDays)} days.` });
   } else {
@@ -252,7 +253,8 @@ const share = (part: number, whole: number) => (whole >= K_MIN ? part / whole : 
  * (F3 platform row: runs failed for platform reasons >= 10% act, ready without a card
  * >= 5% check, both only over K runs; /operator/health: a fresh reader report "down" or
  * "key_problem" act, the oldest document in progress over 30 minutes check), then each
- * organisation's flags under its name from `names` (listOrgs).
+ * organisation's flags under its name from `names` (listOrgs). Quality or health not
+ * loaded (null) adds a check that the list may be incomplete, so it is never a false all-clear.
  */
 export function attentionItems(reply: InsightsReply, names: ReadonlyMap<string, string>,
   quality: QualityReply | null, health: PlatformHealth | null, now: Date): AttentionItem[] {
@@ -260,7 +262,7 @@ export function attentionItems(reply: InsightsReply, names: ReadonlyMap<string, 
   const platform = (severity: Severity, text: string, target: AttentionItem["target"]) =>
     items.push({ severity, text, organisationId: null, organisationName: null, target });
 
-  if (quality) {
+  if (quality !== null && quality.platform != null) {
     const { runs, runs_failed_platform: failed, runs_degraded: degraded } = quality.platform;
     if (share(failed, runs) >= ATTENTION.failedPlatformShare) {
       platform("act", `${percentOf(failed, runs)} of reading runs failed for platform reasons (${formatNumber(failed)} of ${formatNumber(runs)}).`, "health");
@@ -279,6 +281,9 @@ export function attentionItems(reply: InsightsReply, names: ReadonlyMap<string, 
     if (waited !== null && waited > ATTENTION.queueOldMinutes * 60) {
       platform("check", `The oldest document in progress has waited ${waitWords(waited)}.`, "health");
     }
+  }
+  if (quality === null || health === null) {
+    platform("check", "Health or quality figures could not be loaded, so this list may be incomplete.", "health");
   }
   for (const org of reply.organisations) {
     const name = names.get(org.organisation_id) ?? null;

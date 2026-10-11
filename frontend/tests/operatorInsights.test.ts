@@ -64,6 +64,7 @@ const org = (overrides: Partial<OrgInsight> = {}): OrgInsight => ({
   month_cost_usd: null,
   month_cost_estimated: false,
   month_cost_part_unknown: false,
+  last_active_day: null,
   ...overrides,
 });
 
@@ -286,6 +287,15 @@ describe("changeText", () => {
     expect(changeText(4, 4, "count")).toBe("no change");
   });
 
+  it("says money changes on any dollar base, guarding only a 0 before", () => {
+    expect(changeText(2.1, 3.0, "money")).toBe("down 30%");
+    expect(changeText(0.5, 0.25, "money")).toBe("up 100%");
+    expect(changeText(1.2, 0, "money")).toBe("new this period");
+    expect(changeText(0, 0, "money")).toBe("no change");
+    expect(changeText(3, 3, "money")).toBe("no change");
+    expect(changeText(9, 4, "count")).toBe("too few to compare"); // the count guard is unchanged
+  });
+
   it("says shares in points, one decimal", () => {
     expect(changeText(0.312, 0.3, "share")).toBe("up 1.2 points");
     expect(changeText(0.296, 0.3, "share")).toBe("down 0.4 points");
@@ -403,20 +413,25 @@ describe("orgFlags", () => {
     expect(codes(org({ ai_budget_usd: 0, month_cost_usd: 0 }))).toEqual([]);
   });
 
-  it("checks 14 quiet days after earlier use, not 13, and not sign-ins alone", () => {
-    expect(codes(org(), reply30([day({ day: "2026-09-27", uploads: 1 })]))).toEqual(["quiet"]);
-    expect(orgFlags(org(), reply30([day({ day: "2026-09-27", uploads: 1 })]), NOW)[0]?.text).toBe(
+  it("checks 14 quiet days from the last active day, not 13, and never for an organisation never used", () => {
+    expect(codes(org({ last_active_day: "2026-09-27" }), reply30([]))).toEqual(["quiet"]);
+    expect(orgFlags(org({ last_active_day: "2026-09-27" }), reply30([]), NOW)[0]?.text).toBe(
       "No uploads, questions or reading for 14 days.",
     );
-    expect(codes(org(), reply30([day({ day: "2026-09-28", uploads: 1 })]))).toEqual([]);
-    expect(codes(org(), reply30([day({ day: "2026-09-27", runs: 1 }), day({ day: "2026-10-10", sign_ins: 3 })]))).toEqual([
-      "quiet",
+    expect(codes(org({ last_active_day: "2026-09-28" }), reply30([]))).toEqual([]);
+    expect(codes(org({ last_active_day: null }), reply30([]))).toEqual([]);
+    expect(codes(org({ last_active_day: "not a date" }), reply30([]))).toEqual([]);
+  });
+
+  it("says quiet on the 7-day period too, from a last active day before the reply's days", () => {
+    // The 7-day reply covers 28 Sep to 11 Oct only; the last use was 1 Sep.
+    expect(orgFlags(org({ last_active_day: "2026-09-01" }), reply(), NOW)).toEqual([
+      { code: "quiet", severity: "check", text: "No uploads, questions or reading for 40 days." },
     ]);
-    expect(codes(org(), reply30([]))).toEqual([]); // never active in the window: not "quiet"
   });
 
   it("only looks at its own organisation's days", () => {
-    expect(codes(org(), reply30([day({ organisation_id: "b", day: "2026-09-01", uploads: 1 })]))).toEqual([]);
+    expect(codes(org(), reply30([day({ organisation_id: "b", day: "2026-09-01", uploads: 20 })]))).toEqual([]);
   });
 
   it("checks uploads and questions down by half on 10 or more before", () => {
@@ -431,7 +446,8 @@ describe("orgFlags", () => {
 
   it("does not say activity is down when it says quiet", () => {
     const daily = [day({ day: "2026-08-20", uploads: 50 }), day({ day: "2026-09-20", uploads: 1 })];
-    expect(codes(org(), reply30(daily))).toEqual(["quiet"]);
+    expect(codes(org({ last_active_day: "2026-09-20" }), reply30(daily))).toEqual(["quiet"]);
+    expect(codes(org({ last_active_day: "2026-10-01" }), reply30(daily))).toEqual(["activity_down"]);
   });
 
   it("checks not found at 30% of answers, not 29%, and never a suppressed share", () => {
@@ -486,7 +502,7 @@ describe("attentionItems", () => {
         org({ organisation_id: "gone", ai_budget_usd: 10, month_cost_usd: 12 }),
       ],
     });
-    expect(attentionItems(r, names, null, null, NOW)).toEqual([
+    expect(attentionItems(r, names, quality({}), health(), NOW)).toEqual([
       {
         severity: "act",
         text: "An organisation: AI spend has reached its budget ($12.00 of $10.00 this month).",
@@ -505,7 +521,7 @@ describe("attentionItems", () => {
   });
 
   it("acts on platform-caused failed runs at 10% of K or more runs", () => {
-    const items = attentionItems(reply(), names, quality({ runs: 10, runs_failed_platform: 1 }), null, NOW);
+    const items = attentionItems(reply(), names, quality({ runs: 10, runs_failed_platform: 1 }), health(), NOW);
     expect(items).toEqual([
       {
         severity: "act",
@@ -515,23 +531,23 @@ describe("attentionItems", () => {
         target: "health",
       },
     ]);
-    expect(attentionItems(reply(), names, quality({ runs: 100, runs_failed_platform: 9 }), null, NOW)).toEqual([]);
-    expect(attentionItems(reply(), names, quality({ runs: 9, runs_failed_platform: 9 }), null, NOW)).toEqual([]);
+    expect(attentionItems(reply(), names, quality({ runs: 100, runs_failed_platform: 9 }), health(), NOW)).toEqual([]);
+    expect(attentionItems(reply(), names, quality({ runs: 9, runs_failed_platform: 9 }), health(), NOW)).toEqual([]);
   });
 
   it("checks runs ready without a card at 5%, pointing at Models", () => {
-    const [item] = attentionItems(reply(), names, quality({ runs: 100, runs_degraded: 5 }), null, NOW);
+    const [item] = attentionItems(reply(), names, quality({ runs: 100, runs_degraded: 5 }), health(), NOW);
     expect(item).toMatchObject({ severity: "check", target: "models" });
     expect(item?.text).toBe("5% of reading runs finished without the AI card (5 of 100).");
-    expect(attentionItems(reply(), names, quality({ runs: 100, runs_degraded: 4 }), null, NOW)).toEqual([]);
+    expect(attentionItems(reply(), names, quality({ runs: 100, runs_degraded: 4 }), health(), NOW)).toEqual([]);
   });
 
   it("checks the oldest document in progress over 30 minutes", () => {
     const waited = (seconds: number) =>
       health({ totals: { documents_by_status: {}, failed_by_code: {}, in_progress: 1, oldest_in_progress_seconds: seconds } });
-    const [item] = attentionItems(reply(), names, null, waited(30 * 60 + 1), NOW);
+    const [item] = attentionItems(reply(), names, quality({}), waited(30 * 60 + 1), NOW);
     expect(item).toMatchObject({ severity: "check", target: "health", text: "The oldest document in progress has waited 30 minutes." });
-    expect(attentionItems(reply(), names, null, waited(30 * 60), NOW)).toEqual([]);
+    expect(attentionItems(reply(), names, quality({}), waited(30 * 60), NOW)).toEqual([]);
   });
 
   it("acts on a fresh reader report of down or key problem, not a stale one", () => {
@@ -546,11 +562,11 @@ describe("attentionItems", () => {
         { worker: "w6", state: "working", since: null, seen_at: seen(1000) },
       ],
     });
-    expect(attentionItems(reply(), names, null, h, NOW).map((i) => [i.severity, i.target, i.text])).toEqual([
+    expect(attentionItems(reply(), names, quality({}), h, NOW).map((i) => [i.severity, i.target, i.text])).toEqual([
       ["act", "health", "The scan reader is down on 1 worker."],
       ["act", "health", "The scan reader has a key problem on 2 workers."],
     ]);
-    expect(attentionItems(reply(), names, null, health({ reader: undefined, queues: null }), NOW)).toEqual([]);
+    expect(attentionItems(reply(), names, quality({}), health({ reader: undefined, queues: null }), NOW)).toEqual([]);
   });
 
   it("keeps platform items before organisations within each severity", () => {
@@ -558,7 +574,7 @@ describe("attentionItems", () => {
       reply({ organisations: [org({ ai_budget_usd: 10, month_cost_usd: 10 }), org({ organisation_id: "b", answers_30d: 10, not_found_30d: 5 })] }),
       names,
       quality({ runs: 100, runs_failed_platform: 50, runs_degraded: 50 }),
-      null,
+      health(),
       NOW,
     );
     expect(items.map((i) => [i.severity, i.organisationId])).toEqual([
@@ -567,6 +583,25 @@ describe("attentionItems", () => {
       ["check", null],
       ["check", "b"],
     ]);
+  });
+
+  it("never gives a false all-clear when quality or health could not be loaded", () => {
+    const incomplete = {
+      severity: "check",
+      text: "Health or quality figures could not be loaded, so this list may be incomplete.",
+      organisationId: null,
+      organisationName: null,
+      target: "health",
+    };
+    expect(attentionItems(reply(), names, null, health(), NOW)).toEqual([incomplete]);
+    expect(attentionItems(reply(), names, quality({}), null, NOW)).toEqual([incomplete]);
+    expect(attentionItems(reply(), names, null, null, NOW)).toEqual([incomplete]);
+    expect(attentionItems(reply(), names, quality({}), health(), NOW)).toEqual([]);
+  });
+
+  it("reads no platform row (null) as nothing to say, not a crash", () => {
+    const noPlatform: QualityReply = { ...quality({}), platform: null };
+    expect(attentionItems(reply(), names, noPlatform, health(), NOW)).toEqual([]);
   });
 });
 
