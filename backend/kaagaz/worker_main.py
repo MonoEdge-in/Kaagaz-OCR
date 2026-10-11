@@ -49,6 +49,9 @@ until it is told to stop:
   outage are read again by Gemini once it is back, oldest first, at most 20 an hour
   across the copies, in the main lane (``UpgradeLocalReads``, kaagaz/jobs/upgrade.py,
   PRD 5 Q7).
+* With OCR_ENGINE=gemini, the model catalogue (model choice, council 11 Oct 2026, MC1)
+  is refreshed from OpenRouter's lists once a day, between jobs (``RefreshCatalog``,
+  kaagaz/jobs/catalog.py), under the sweep lock. Keyless mode never runs it.
 * Before a job runs, ``admission`` (PRD 5 Q5) hands it back to the queue, with no
   attempt counted: for KEY_PROBLEM_DEFER_SECONDS (300) while the reader's gate
   has a key problem, and for 30 s when its customer already has
@@ -86,12 +89,13 @@ from kaagaz.adapters.scanner import build_scanner
 from kaagaz.adapters.storage import S3Storage
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.openrouter import KEY_PROBLEM as READER_KEY_PROBLEM
-from kaagaz.ai.openrouter import process_gate
+from kaagaz.ai.openrouter import OpenRouterClient, process_gate
 from kaagaz.db import reader_status
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, refresh
 from kaagaz.jobs.fair_share import FairShare, SweepLock, first_free_lock, no_lock, sweep_lock
 from kaagaz.jobs.ports import QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import CustomerStorage, purge_deleted_customers, purge_expired, sweep_purged_customers
@@ -538,6 +542,15 @@ def worker_model(settings: Settings) -> "ModelClient | None":
     return build_model_client(settings, chat_timeout_seconds=settings.model_extract_timeout_seconds)
 
 
+def catalog_refresh(settings: Settings, db: Database) -> Callable[[], Refreshed] | None:
+    """The daily catalogue refresh (``RefreshCatalog``), or None unless scans are read by a
+    model (OCR_ENGINE=gemini, which needs OPENROUTER_API_KEY): keyless mode never runs it."""
+    if settings.ocr_engine != "gemini":
+        return None
+    client = OpenRouterClient(settings)
+    return lambda: refresh(db, client, settings, today=_utc_now().date())
+
+
 def main() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
@@ -599,9 +612,10 @@ def _serve(settings: Settings) -> None:
     vectors = StoryVectors(pieces, stories, _utc_now, lock=lock)
     # Q7: only Gemini's pages are ever read locally (its outage fallback).
     upgrade = functools.partial(upgrade_oldest, db, queue) if settings.ocr_engine == "gemini" else None
-    worker = UpgradeLocalReads(
+    upgrades = UpgradeLocalReads(
         vectors, upgrade, lambda: gate.status()[0], _utc_now, copies=settings.worker_replicas, lock=lock
     )
+    worker = RefreshCatalog(upgrades, catalog_refresh(settings, db), _utc_now, lock=lock)
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
     reports.join(READER_REPORT_SECONDS)  # stop is set: at most the report in flight is left
     db.engine.dispose()

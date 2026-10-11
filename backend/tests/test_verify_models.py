@@ -17,6 +17,8 @@ from typing import Any
 import pytest
 
 from kaagaz import cli, verify_models
+from kaagaz.ai import openrouter
+from kaagaz.reading.gemini_ocr import GEMINI_OCR_PROMPT_VERSION, PAGE_SCHEMA
 from kaagaz.settings import Settings
 from kaagaz.verify_models import TRUTH, listed_sha256, made_up_page
 from tests.openrouter_fake import (
@@ -40,6 +42,7 @@ from tests.settings_factory import make_settings
 
 PRO = "google/gemini-3.1-pro-preview"
 FLASH = "google/gemini-3.8-flash"
+OTHER = "openai/gpt-6-luna"  # a model that is not Gemini
 KNOWN = {PRO, FLASH, "google/gemini-embedding-2"}
 ITEMS = [
     "endpoints",
@@ -58,6 +61,20 @@ ITEMS = [
     "rapidocr_recognition_only",
     "detection_model_sha",
     "parallel_latency",
+]
+# The --model items (model choice, council 11 Oct 2026), after the ones above.
+MODEL_ITEMS = [
+    "model_endpoint",
+    "model_reply",
+    "model_page_schema",
+    "model_made_up_page",
+    "model_boxes",
+    "model_devanagari",
+    "model_efforts",
+    "model_cost",
+    "model_truncation",
+    "model_token_cap",
+    "model_refusal",
 ]
 PROVIDER_BLOCK = {
     "only": ["google-vertex"],
@@ -79,11 +96,40 @@ def _detail(body: dict[str, Any]) -> tuple[bool, str | None]:
     return True, content[1]["image_url"].get("detail")
 
 
+def page_value() -> dict[str, Any]:
+    """The made-up page as PAGE_SCHEMA's JSON, each line's box_2d its own box in 0..1000."""
+    page = made_up_page()
+    width, height = page.image.size
+    lines = [
+        {
+            "order": index,
+            "kind": "paragraph",
+            "text": text,
+            "box_2d": [y0 / height * 1000, x0 / width * 1000, y1 / height * 1000, x1 / width * 1000],
+            "unsure": [],
+            "continues_on_next_page": False,
+            "table": None,
+        }
+        for index, (text, (x0, y0, x1, y1)) in enumerate(zip(TRUTH, page.boxes, strict=True))
+    ]
+    page_facts = {"quality": "good", "handwritten": False, "scripts": ["latin"], "issues": []}
+    return {"page": page_facts, "lines": lines}
+
+
+def zdr_reply(*pairs: tuple[str, str]) -> Reply:
+    """GET /endpoints/zdr: the zero-data-retention endpoints, as (model id, tag)."""
+    return Reply(200, {"data": [{"model_id": model, "tag": tag, "name": tag} for model, tag in pairs]})
+
+
 def openrouter_like(request: Recorded) -> Reply:
     if "authorization" not in request.headers:
         return error_reply(401, error_type="authentication")
     if request.action == "key":
         return key_reply()
+    if request.action == "zdr":
+        return zdr_reply(*((model, "google-vertex") for model in sorted(KNOWN)))
+    if request.action.startswith("generation?id="):
+        return Reply(200, {"data": {"id": "gen-made-up", "provider_name": "Google", "total_cost": 0.0012}})
     if request.action == "endpoints":
         model = request.path.removeprefix(API_PATH + "/models/").removesuffix("/endpoints")
         return endpoints_reply(model, zdr=True) if model in KNOWN else error_reply(404)
@@ -103,9 +149,18 @@ def openrouter_like(request: Recorded) -> Reply:
     counts = usage((_PROMPT[detail] if picture else 0) + 40, 30 + thought, thought, cost=0.0012)
     if body.get("max_completion_tokens") == verify_models.TINY_OUTPUT_TOKENS:
         return chat_reply('{"lin', finish="length", native="MAX_TOKENS", counts=usage(1160, 16, 12))
+    if body.get("response_format", {}).get("json_schema", {}).get("schema") == PAGE_SCHEMA:
+        return json_reply(page_value(), counts=counts)
     if "response_format" in body:
         return slow(json_reply({"lines": list(TRUTH)}, counts=counts), 0.05)
     return chat_reply("OK", counts=counts)
+
+
+@pytest.fixture
+def refusal_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A native ``refusal`` (a Claude refusal) is blocked, as the facts file asks of the
+    client (Track B's mapping); without it, model_refusal FAILs."""
+    monkeypatch.setattr(openrouter, "BLOCKED_FINISH_REASONS", openrouter.BLOCKED_FINISH_REASONS | {"refusal"})
 
 
 @pytest.fixture
@@ -140,14 +195,16 @@ def _run(
     return code, text, lines
 
 
+@pytest.mark.usefixtures("refusal_blocked")
 def test_every_item_passes_against_an_api_that_answers_as_documented(fake: OpenRouterFake) -> None:
     code, text, lines = _run(_settings(fake), "--model", FLASH)
-    assert list(lines) == ITEMS
+    assert list(lines) == ITEMS + MODEL_ITEMS
     verdicts = {item: verdict for item, (verdict, _) in lines.items()}
-    assert verdicts == {item: "INFO" if item == "key_limit" else "PASS" for item in ITEMS}, text
+    info = {"key_limit", "model_devanagari"}
+    assert verdicts == {item: "INFO" if item in info else "PASS" for item in ITEMS + MODEL_ITEMS}, text
     assert code == 0
     assert text.startswith("KEY OPENROUTER_API_KEY set\n")
-    assert "SUMMARY 15 PASS, 0 FAIL, 1 INFO" in text
+    assert "SUMMARY 25 PASS, 0 FAIL, 2 INFO" in text
     assert lines["endpoints"][1] == (
         f"{PRO}: google-vertex listed; parameters all supported; zdr=True;"
         f" {FLASH}: google-vertex listed; parameters all supported; zdr=True"
@@ -165,12 +222,24 @@ def test_every_item_passes_against_an_api_that_answers_as_documented(fake: OpenR
         "google/gemini-embedding-2: 2 x [1024] finite, norms 1.0000, 1.0000"
     )
     assert lines["no_key_status"][1] == "status 401 authentication; client: key_rejected"
-    assert lines["unknown_model"][1] == "google/gemini-0.0-not-a-model=404; client: model_not_found"
+    assert lines["unknown_model"][1] == "kaagaz/not-a-model-0=404; client: model_not_found"
     assert lines["key_limit"][1].startswith("limit 100.0000 limit_remaining 87.5000 usage 12.5000")
     assert lines["default_temperature"][1].startswith("3/3 runs exact; runs identical yes")
     assert lines["parallel_latency"][1].startswith("6/6 ok;")
     assert fake.max_in_flight > 1  # the six reads overlapped
     assert fake.unanswered == 0
+    assert lines["model_endpoint"][1] == f"{FLASH}: ZDR endpoints google-vertex; reads through google-vertex"
+    assert lines["model_reply"][1] == f"{FLASH}: 200; provider_name Google"
+    assert lines["model_page_schema"][1].startswith(f"{FLASH}: 200 json follows PAGE_SCHEMA; tokens in ")
+    assert lines["model_made_up_page"][1] == f"{FLASH}: 3/3 lines exact, 3 read"
+    assert lines["model_boxes"][1].startswith(f"{FLASH}: pinned 3/3; best IoU per line 1.00 1.00 1.00")
+    assert "no Devanagari font is bundled" in lines["model_devanagari"][1]
+    assert lines["model_efforts"][1] == f"{FLASH}: high=200 json reasoning=800 low=200 json reasoning=50"
+    assert lines["model_cost"][1] == f"{FLASH}: usage.cost 0.0012 on the page read"
+    assert lines["model_token_cap"][1] == f"{FLASH}: completion 16 at a cap of 16"
+    assert lines["model_refusal"][1] == (
+        f"{FLASH}: message.refusal=blocked content_filter=blocked native refusal=blocked; local, no call"
+    )
 
 
 @pytest.mark.parametrize("limit", [None, "unlimited"])
@@ -392,3 +461,199 @@ def test_the_made_up_page_holds_every_line_inside_the_picture() -> None:
     for left, top, right, bottom in page.boxes:
         assert 8 <= left < right <= width - 8 and 8 <= top < bottom <= height - 8
     assert page.png.startswith(b"\x89PNG")
+
+
+# --- the --model items and --record (model choice, council 11 Oct 2026) ------------------
+
+
+def _model_run(
+    fake: OpenRouterFake,
+    *models: str,
+    record: Any = None,
+    sleep: Any = None,
+    **overrides: Any,
+) -> tuple[int, str, dict[str, tuple[str, str]]]:
+    out = io.StringIO()
+    code = verify_models.run(
+        _settings(fake, **overrides),
+        out,
+        models=models,
+        sleep=sleep or (lambda seconds: None),
+        record=record,
+    )
+    lines = {}
+    for line in out.getvalue().splitlines():
+        if line.startswith("VERIFY "):
+            _, item, verdict, evidence = [*line.split(" ", 3), ""][:4]
+            lines[item] = (verdict, evidence)
+    return code, out.getvalue(), lines
+
+
+@pytest.mark.usefixtures("refusal_blocked")
+def test_record_writes_the_pass_and_the_page_tokens_when_every_required_item_passes(
+    fake: OpenRouterFake,
+) -> None:
+    recorded: list[tuple[str, int, int]] = []
+    code, text, _ = _model_run(fake, FLASH, record=lambda *row: recorded.append(row))
+    assert code == 0, text
+    [(model, tokens_in, tokens_out)] = recorded
+    assert model == FLASH and tokens_in > 0 and tokens_out > 0
+    assert f"RECORDED {FLASH} prompt {GEMINI_OCR_PROMPT_VERSION} tokens per page in {tokens_in}" in text
+
+
+def _without_cost(request: Recorded) -> Reply:
+    reply = openrouter_like(request)
+    if isinstance(reply.body, dict) and isinstance(reply.body.get("usage"), dict):
+        reply.body["usage"].pop("cost", None)
+    return reply
+
+
+def _boxes_elsewhere(request: Recorded) -> Reply:
+    """The page read with every box at the page's bottom right, where no line is."""
+    reply = openrouter_like(request)
+    body = request.body if isinstance(request.body, dict) else {}
+    if body.get("response_format", {}).get("json_schema", {}).get("schema") == PAGE_SCHEMA:
+        value = page_value()
+        for line in value["lines"]:
+            line["box_2d"] = [960, 960, 990, 990]
+        return json_reply(value, counts=usage(cost=0.0012))
+    return reply
+
+
+@pytest.mark.usefixtures("refusal_blocked")
+@pytest.mark.parametrize(
+    ("responder", "failed"),
+    [(_without_cost, "model_cost"), (_boxes_elsewhere, "model_boxes")],
+)
+def test_record_writes_nothing_when_a_required_item_fails(
+    fake: OpenRouterFake, responder: Any, failed: str
+) -> None:
+    fake.responder = responder
+    recorded: list[tuple[str, int, int]] = []
+    code, text, lines = _model_run(fake, FLASH, record=lambda *row: recorded.append(row))
+    assert (code, recorded) == (1, [])
+    assert lines[failed][0] == "FAIL"
+    assert f"NOT RECORDED {FLASH}: {failed} did not pass" in text
+
+
+def test_a_native_refusal_the_client_does_not_block_fails_model_refusal_and_is_not_recorded(
+    fake: OpenRouterFake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(openrouter, "BLOCKED_FINISH_REASONS", openrouter.BLOCKED_FINISH_REASONS - {"refusal"})
+    recorded: list[tuple[str, int, int]] = []
+    _, text, lines = _model_run(fake, FLASH, record=lambda *row: recorded.append(row))
+    assert lines["model_refusal"] == (
+        "FAIL",
+        f"{FLASH}: message.refusal=blocked content_filter=blocked native refusal=text; local, no call",
+    )
+    assert recorded == [] and f"NOT RECORDED {FLASH}: model_refusal did not pass" in text
+
+
+@pytest.mark.parametrize(
+    "zdr",
+    [
+        zdr_reply((PRO, "google-vertex")),  # not a ZDR endpoint of this model
+        zdr_reply((FLASH, "azure")),  # a ZDR endpoint, but of a provider outside OPENROUTER_PROVIDERS
+    ],
+)
+def test_a_model_with_no_allowed_zdr_endpoint_fails_and_is_never_read(
+    fake: OpenRouterFake, zdr: Reply
+) -> None:
+    def listed(request: Recorded) -> Reply:
+        if request.action == "zdr":
+            return zdr
+        if request.action == "endpoints" and FLASH in request.path:
+            return endpoints_reply(FLASH, tags=("google-vertex", "azure"))
+        return openrouter_like(request)
+
+    fake.responder = listed
+    code, _, lines = _model_run(fake, FLASH)
+    assert code == 1
+    assert lines["model_endpoint"][0] == "FAIL"
+    assert "none of OPENROUTER_PROVIDERS" in lines["model_endpoint"][1]
+    for item in ("model_reply", "model_page_schema", "model_efforts", "model_cost", "model_truncation"):
+        assert lines[item] == ("FAIL", f"{FLASH}: no usable endpoint (model_endpoint)")
+    pages = [body for body in fake.bodies() if body["model"] == FLASH and "response_format" in body]
+    assert pages == []  # only model_calls' one line of text was sent to it
+
+
+def test_an_azure_endpoint_counts_once_azure_is_an_approved_provider(fake: OpenRouterFake) -> None:
+    azure = {**PROVIDER_BLOCK, "only": ["azure"]}
+
+    def azure_only(request: Recorded) -> Reply:
+        if request.action == "endpoints" and FLASH in request.path:
+            return endpoints_reply(FLASH, tags=("azure",))
+        if request.action == "zdr":
+            return zdr_reply((FLASH, "azure"))
+        if isinstance(request.body, dict) and request.body.get("provider") == azure:
+            body = {**request.body, "provider": PROVIDER_BLOCK}  # the fake answers google-vertex's block
+            return openrouter_like(Recorded(request.method, request.path, request.headers, body))
+        return openrouter_like(request)
+
+    fake.responder = azure_only
+    allowed = frozenset({"google-vertex", "azure"})
+    _, _, lines = _model_run(fake, FLASH, openrouter_providers=allowed)
+    assert lines["model_endpoint"] == ("PASS", f"{FLASH}: ZDR endpoints azure; reads through azure")
+    assert lines["model_page_schema"][0] == "PASS"
+    pages = [body for body in fake.bodies() if body["model"] == FLASH and "response_format" in body]
+    assert pages and all(body["provider"] == azure for body in pages)
+
+
+def test_max_tokens_stands_for_max_completion_tokens_in_an_endpoint_listing(fake: OpenRouterFake) -> None:
+    fake.script(
+        "endpoints",
+        endpoints_reply(PRO, parameters=("response_format", "reasoning", "max_tokens", "structured_outputs")),
+    )
+    _, _, lines = _run(_settings(fake))
+    assert lines["endpoints"][1].startswith(f"{PRO}: google-vertex listed; parameters all supported")
+
+
+def test_a_cut_reply_with_another_providers_native_reason_passes_for_a_model_that_is_not_gemini(
+    fake: OpenRouterFake,
+) -> None:
+    def own_native(request: Recorded) -> Reply:
+        body = request.body if isinstance(request.body, dict) else {}
+        if body.get("max_completion_tokens") == verify_models.TINY_OUTPUT_TOKENS:
+            return chat_reply(
+                '{"lin', finish="length", native="max_output_tokens", counts=usage(1160, 16, 12)
+            )
+        if body.get("model") == OTHER:  # the fake answers for its known models
+            request = Recorded(request.method, request.path, request.headers, {**body, "model": PRO})
+        return openrouter_like(request)
+
+    fake.responder = own_native
+    _, _, lines = _run(_settings(fake, ocr_model=OTHER))
+    assert lines["max_tokens_finish"][0] == "PASS", lines["max_tokens_finish"]
+    _, _, lines = _run(_settings(fake))  # Google's model must still name MAX_TOKENS
+    assert lines["max_tokens_finish"][0] == "FAIL"
+
+
+def test_a_reply_with_no_provider_name_fails_model_reply_after_three_tries(fake: OpenRouterFake) -> None:
+    def no_name(request: Recorded) -> Reply:
+        if request.action.startswith("generation"):
+            return error_reply(404)
+        return openrouter_like(request)
+
+    fake.responder = no_name
+    waits: list[float] = []
+    _, _, lines = _model_run(fake, FLASH, sleep=waits.append)
+    assert lines["model_reply"] == ("FAIL", f"{FLASH}: 200; provider_name not given")
+    assert waits == [1.0, 1.0]
+    assert len([r for r in fake.requests if r.action.startswith("generation")]) == 3
+
+
+def test_the_devanagari_page_is_info_with_its_reason_and_record_does_not_need_it(
+    fake: OpenRouterFake,
+) -> None:
+    _, _, lines = _model_run(fake, FLASH)
+    verdict, evidence = lines["model_devanagari"]
+    assert verdict == "INFO"
+    assert "no Devanagari font is bundled" in evidence
+    assert "model_devanagari" not in verify_models.REQUIRED
+
+
+@pytest.mark.parametrize("models", [[], ["--model", FLASH, "--model", PRO]])
+def test_record_checks_exactly_one_model(fake: OpenRouterFake, models: list[str]) -> None:
+    code, text, _ = _run(_settings(fake), *models, "--record")
+    assert code == 2 and text == ""
+    assert fake.requests == []
