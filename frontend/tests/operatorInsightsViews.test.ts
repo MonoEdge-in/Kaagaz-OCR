@@ -417,6 +417,14 @@ describe("Quality", () => {
     expect(html).not.toContain("<table");
   });
 
+  it("is not empty when only a small organisation asked (its answers are left out of the platform row)", () => {
+    const empty = quality({ runs: 0, answers: 0, corrections: 0 });
+    const small = { ...quality({ runs: 0, answers: 3, corrections: 0 }), organisation_id: "org-small" };
+    const html = qualityHtml(ready(qualityData({ platform: empty, organisations: [small] })));
+    expect(html).not.toContain("Nothing was read, asked or reviewed in this period.");
+    expect(html).toContain("only organisations with 10 or more of each");
+  });
+
   it("says AI is off on a keyless server", () => {
     expect(qualityHtml(ready(qualityData({ ai_enabled: false })))).toContain("AI is off on this server");
   });

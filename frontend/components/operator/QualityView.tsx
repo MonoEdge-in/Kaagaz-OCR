@@ -23,7 +23,8 @@ import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 import css from "./Insights.module.css";
 
-export const DELETED_NOTE = "Documents deleted for good are not counted.";
+export const DELETED_NOTE =
+  "Documents deleted for good are not counted. Platform answers, ratings, values and fixes count only organisations with 10 or more of each.";
 
 export interface QualityData {
   reply: QualityReply;
@@ -52,7 +53,10 @@ export function QualityScreen(props: {
   const heading = useRef<HTMLHeadingElement>(null);
   const data = state.kind === "ready" ? state.data : null;
   const platform = data?.reply.platform ?? null;
-  const empty = data !== null && (platform == null || (platform.runs === 0 && platform.answers === 0 && platform.corrections === 0));
+  // The platform row's answers and fixes count only organisations with enough
+  // data (0024 F3), so "nothing happened" is read from every row, not only it.
+  const rows = data === null ? [] : [...(platform == null ? [] : [platform]), ...data.reply.organisations];
+  const empty = data !== null && rows.every((row) => row.runs === 0 && row.answers === 0 && row.corrections === 0);
   return (
     <section className={admin.section} aria-labelledby="quality-heading">
       <h2 id="quality-heading" ref={heading} tabIndex={-1} className={admin.sectionHeading}>
