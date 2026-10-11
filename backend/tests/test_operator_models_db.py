@@ -126,6 +126,15 @@ def test_record_writes_a_models_pass_as_the_owner(db: Database) -> None:
         {"m": model},
     )
     assert tuple(row) == (READER_PROMPT_VERSION, True, 1290, 830)
+    # R10: audited as the other owner commands, with no operator.
+    assert [
+        tuple(audit)
+        for audit in _owner(
+            db,
+            "SELECT operator_id, action, target_type, target_id FROM platform_audit WHERE target_id = :m",
+            {"m": model},
+        )
+    ] == [(None, "model.verified", "model", model)]
     with db.system() as conn, pytest.raises(ProgrammingError, match="permission denied"):  # never the app
         conn.execute(text("UPDATE model_catalog SET verified_at = now() WHERE id = :m"), {"m": model})
 

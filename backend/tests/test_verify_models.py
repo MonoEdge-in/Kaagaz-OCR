@@ -527,6 +527,25 @@ def test_record_writes_nothing_when_a_required_item_fails(
     assert f"NOT RECORDED {FLASH}: {failed} did not pass" in text
 
 
+def test_record_writes_nothing_when_any_item_fails_even_one_that_is_not_the_models(
+    fake: OpenRouterFake,
+) -> None:
+    """R10: a FAIL anywhere (here the key's credit limit) means no pass is recorded."""
+
+    def without_limit(request: Recorded) -> Reply:
+        if request.action == "key":
+            return Reply(200, {"data": {"limit": None, "limit_remaining": 5, "usage": 0}})
+        return openrouter_like(request)
+
+    fake.responder = without_limit
+    recorded: list[tuple[str, int, int]] = []
+    code, text, lines = _model_run(fake, FLASH, record=lambda *row: recorded.append(row))
+    assert (code, recorded) == (1, [])
+    assert lines["key_limit"][0] == "FAIL"
+    assert all(lines[item][0] == "PASS" for item in verify_models.REQUIRED)
+    assert f"NOT RECORDED {FLASH}: key_limit did not pass" in text
+
+
 def test_a_native_refusal_the_client_does_not_block_fails_model_refusal_and_is_not_recorded(
     fake: OpenRouterFake, monkeypatch: pytest.MonkeyPatch
 ) -> None:

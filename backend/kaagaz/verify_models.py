@@ -72,9 +72,10 @@ rule found, with the reader's own ``INSTRUCTION`` and ``PAGE_SCHEMA`` where a pa
 * ``model_refusal``: local, no call: a refusal in each shape (``message.refusal``,
   ``content_filter``, a native ``refusal``) is ``blocked`` for the client.
 
-``--record`` (exactly one ``--model``): when every one of these but the INFO passes, the
-command writes the pass for ``READER_PROMPT_VERSION`` and the page read's tokens in
-and out (``record``, as the owner: ``cli``). Otherwise nothing is written.
+``--record`` (exactly one ``--model``): when every one of these but the INFO passes and
+no item of the whole run FAILs, the command writes the pass for ``READER_PROMPT_VERSION``
+and the page read's tokens in and out (``record``, as the owner, with a ``platform_audit``
+row ``model.verified``: ``cli``). Otherwise nothing is written.
 
 Cost: about 25 model calls with a small picture, a few cents on the Pro model, and about 8
 more per ``--model``.
@@ -946,7 +947,8 @@ def run(
 ) -> int:
     """Check every item, print one line each and a summary; 1 when any FAILs, else 0.
     ``record`` (``--record``, exactly one model): called with (model, tokens in, tokens
-    out) only when every REQUIRED item of that model PASSes; else nothing is written."""
+    out) only when every REQUIRED item of that model PASSes and no item FAILs; else
+    nothing is written."""
     verifier = Verifier(settings, models=models, embed_model=embed_model, timer=timer, sleep=sleep)
     out.write(f"KEY OPENROUTER_API_KEY {'set' if verifier.key_set else 'missing'}\n")
     out.write(f"MODELS ocr {settings.ocr_model} chat {settings.model_chat} embed {verifier.embed_model}\n")
@@ -961,6 +963,9 @@ def run(
     if record is not None:
         [check] = verifier.checks
         failed = [item for item in REQUIRED if item not in passed[check.model]]
+        failed += [
+            finding.item for finding in findings if finding.verdict == FAIL and finding.item not in failed
+        ]
         if failed or check.tokens is None:
             out.write(f"NOT RECORDED {check.model}: {','.join(failed)} did not pass\n")
             return 1

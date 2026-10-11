@@ -551,11 +551,14 @@ def _refresh_models(db: Database, settings: Settings) -> str:
 
 def _record_verified(db: Database, model: str, tokens_in: int, tokens_out: int) -> None:
     """verify-models --record: the model's pass for the reader's prompt version, as the
-    owner (no app or operator role may write it)."""
+    owner (no app or operator role may write it), with one ``platform_audit`` row
+    (``model.verified``, no operator) in the same transaction, as the other owner commands."""
     with _owner(db) as conn:
         found = operator_models_sql.record_verified(
             conn, model, prompt_version=READER_PROMPT_VERSION, tokens_in=tokens_in, tokens_out=tokens_out
         )
+        if found:
+            operators_sql.record(conn, "model.verified", target_type="model", target_id=model[:64])
     if not found:
         raise CliError(f"{model} is not in the model catalogue: run refresh-models first")
 
