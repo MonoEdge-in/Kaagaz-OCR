@@ -58,12 +58,12 @@ export function valueAt(values: ExtractedValue[], region: Region): ExtractedValu
 export const plural = (n: number, word: string) => `${n.toLocaleString("en-IN")} ${word}${n === 1 ? "" : "s"}`;
 
 /**
- * "Read by Gemini at 300 DPI" and "2 of 3 lines: reader not sure" (or null). The words
+ * "Read by Gemini 3.1 Pro at 300 DPI" and "2 of 3 lines: reader not sure" (or null). The words
  * name no engine (PRD 5 U8): the main reader, and the checker (the PDF text layer).
  */
 export function readerHeading(
   reader: PageReader,
-  page: Pick<PageSummary, "route" | "read_by" | "read_issues" | "effective_dpi">,
+  page: Pick<PageSummary, "route" | "read_by" | "read_by_name" | "read_issues" | "effective_dpi">,
 ): { title: string; notSureCount: string | null } {
   let title = CHECKER;
   if (reader.role === "first") {

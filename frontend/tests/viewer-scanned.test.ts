@@ -63,6 +63,7 @@ describe("readerHeading", () => {
   const ocrPage = {
     route: "ocr" as const,
     read_by: "google/gemini-3.1-pro-preview",
+    read_by_name: "Gemini 3.1 Pro",
     read_issues: [],
     effective_dpi: 200.4,
   };
@@ -70,7 +71,7 @@ describe("readerHeading", () => {
   it("says how the page was read, by which reader, and how many lines it was not sure of", () => {
     const heading = readerHeading(reader({ lines: [line(0.5), line(0.97), line(0.2)] }), ocrPage);
     expect(heading).toEqual({
-      title: "Read by Gemini at 200 DPI",
+      title: "Read by Gemini 3.1 Pro at 200 DPI",
       notSureCount: "2 of 3 lines: reader not sure",
     });
     // PRD 5 U8: no engine's name, whatever the server calls its reader.

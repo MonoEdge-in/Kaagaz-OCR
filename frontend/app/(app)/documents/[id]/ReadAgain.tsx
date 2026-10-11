@@ -8,8 +8,13 @@
 // takes its reply (onStarted) and follows the reading, and a line says so
 // until it settles; then the button is back. The steps and the words are
 // components/viewer/reprocess.ts; the server checks the role again.
+// When the organisation has two or more models (model choice MS4), the
+// question also has "Read with" and says every page is read again by it; the
+// models come from GET /upload-limits, and without them there is no choice.
 
-import { useCallback, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { readAgainModel, readAgainWarning } from "@/components/documents/readers";
+import { ReaderSelect } from "@/components/documents/UploadArea";
 import { Icon } from "@/components/ui/Icon";
 import {
   canSend,
@@ -17,20 +22,39 @@ import {
   reprocessErrorText,
   reprocessReducer,
 } from "@/components/viewer/reprocess";
-import { reprocessDocument } from "@/lib/api";
-import type { DocumentSummary } from "@/lib/types";
+import { getUploadLimits, reprocessDocument } from "@/lib/api";
+import type { DocumentSummary, UploadReader } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
 export interface ReadAgainProps {
   documentId: string;
   fixes: number; // the detail's reviewer_fixes
+  pages: number | null; // the detail's page_count
   offered: boolean; // canReprocess(role, detail)
   reading: boolean; // beingRead(detail.status)
   onStarted(reply: DocumentSummary): void;
 }
 
-export function ReadAgain({ documentId, fixes, offered, reading, onStarted }: ReadAgainProps) {
+export function ReadAgain({ documentId, fixes, pages, offered, reading, onStarted }: ReadAgainProps) {
   const [state, dispatch] = useReducer(reprocessReducer, { step: "idle" });
+  const [readers, setReaders] = useState<UploadReader[]>([]);
+  const [picked, setPicked] = useState<string | null>(null);
+  const model = readAgainModel(readers, picked);
+
+  useEffect(() => {
+    if (!offered) return;
+    let cancelled = false;
+    // Not loaded: no "Read with", and the server reads with the organisation's own model.
+    getUploadLimits().then(
+      (limits) => {
+        if (!cancelled) setReaders(limits.readers);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [offered]);
   const refocusButton = useRef(false);
   const lineShown = useRef(false);
   if (state.step === "done" && !reading) dispatch({ type: "settled" });
@@ -56,7 +80,7 @@ export function ReadAgain({ documentId, fixes, offered, reading, onStarted }: Re
   function send() {
     if (!canSend(state)) return; // already sent once
     dispatch({ type: "send" });
-    reprocessDocument(documentId).then(
+    reprocessDocument(documentId, model).then(
       (reply) => {
         dispatch({ type: "sent" });
         onStarted(reply);
@@ -94,6 +118,12 @@ export function ReadAgain({ documentId, fixes, offered, reading, onStarted }: Re
           Read this document again?
         </p>
         <p id="read-again-text">{reprocessConfirmText(fixes)}</p>
+        <ReaderSelect readers={readers} picked={picked} onPick={setPicked} />
+        {model !== undefined && (
+          <p role="status">
+            {readAgainWarning(pages, readers.find((reader) => reader.id === model)?.title ?? model)}
+          </p>
+        )}
         <div className={styles.readAgainButtons}>
           <button type="button" className="btn btn-primary" onClick={send} disabled={sending}>
             {sending ? (
