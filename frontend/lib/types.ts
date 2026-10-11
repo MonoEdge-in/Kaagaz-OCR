@@ -929,3 +929,135 @@ export interface OperatorUsageRow extends UsageTotals {
   organisation_name: string;
   model: string;
 }
+
+// --- Operator insights (council 11 Oct 2026, F1-F4). Counts, sums, rates and durations
+// per organisation or model only; null where the database suppressed a value below K
+// (or a p95 below 20) or where no cost is known. Days are YYYY-MM-DD in TIMEZONE. -----
+
+/** F1: one organisation's day; only days with something are sent. */
+export interface InsightDay {
+  organisation_id: string;
+  day: string;
+  uploads: number;
+  sign_ins: number;
+  questions: number;
+  corrections: number;
+  runs: number;
+  runs_failed: number;
+  pages: number;
+  scan_pages: number; // scan pages read by a model (not from the cache)
+  cached_pages: number;
+  cost_usd: number | null; // every kind; null: no cost known
+  cost_scan_usd: number | null;
+  cost_documents_usd: number | null; // scan, upgrade, card, invoice, map, embed
+  cost_questions_usd: number | null; // chat, memory, search
+  cost_estimated: boolean;
+  cost_part_unknown: boolean;
+}
+
+/** F2: one organisation's health now. */
+export interface OrgInsight {
+  organisation_id: string;
+  active_users_7d: number;
+  active_users_30d: number;
+  active_users_prev_30d: number;
+  answers_30d: number;
+  not_found_30d: number | null; // null: fewer than K answers
+  open_review: number;
+  oldest_open_review_at: string | null; // ISO 8601
+  ai_budget_usd: number | null; // null: no budget
+  month_cost_usd: number | null; // this calendar month; null: no cost known
+  month_cost_estimated: boolean;
+  month_cost_part_unknown: boolean;
+}
+
+/** GET /operator/insights?days= */
+export interface InsightsReply {
+  from: string;
+  to: string;
+  previous_from: string; // the period before: previous_from to the day before from
+  ai_enabled: boolean; // false: keyless mode, no model is called
+  month: { from: string; today: string; days_in_month: number };
+  organisations: OrgInsight[];
+  daily: InsightDay[]; // previous_from to to
+}
+
+/** F3: reading, answers and review of one organisation, or the platform (organisation_id null). */
+export interface QualityRow {
+  organisation_id: string | null;
+  runs: number;
+  runs_failed: number;
+  runs_failed_platform: number;
+  runs_degraded: number;
+  documents_run: number;
+  pages_cells: number;
+  pages_text_layer: number;
+  pages_ocr: number;
+  pages_blank: number;
+  pages_ai: number;
+  pages_local: number;
+  pages_cached: number;
+  pages_unreadable: number;
+  ready_documents: number;
+  ready_p50_seconds: number | null;
+  ready_p95_seconds: number | null; // null: fewer than 20 documents
+  answers: number;
+  answered: number | null;
+  not_found: number | null;
+  unchecked: number | null;
+  answers_verified: number | null;
+  answers_fixed_query: number | null;
+  citations: number | null;
+  feedback: number;
+  feedback_up: number | null;
+  values_total: number;
+  values_needs_review: number | null;
+  corrections: number;
+  corrections_second: number | null;
+  corrections_typed: number | null;
+}
+
+/** GET /operator/quality?days= */
+export interface QualityReply {
+  from: string;
+  to: string;
+  ai_enabled: boolean;
+  platform: QualityRow;
+  organisations: QualityRow[];
+}
+
+/** F4: one model, observational (not an A/B test). No organisation. */
+export interface BoardRow {
+  model: string;
+  documents: number;
+  runs: number;
+  runs_failed: number;
+  runs_degraded: number;
+  pages_ai: number;
+  pages_local: number;
+  pages_cached: number;
+  seconds_per_page_p50: number | null;
+  seconds_per_page_p95: number | null;
+  calls: number;
+  scan_calls: number;
+  cached_scan_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  scan_cost_usd: number | null;
+  cost_estimated: boolean;
+  cost_part_unknown: boolean;
+  ocr_pages: number;
+  pages_disagree: number | null; // page signals: null when documents < K
+  pages_refused: number | null;
+  pages_fell_back: number | null;
+  pages_unpinned: number | null;
+}
+
+/** GET /operator/model-board?days= */
+export interface BoardReply {
+  from: string;
+  to: string;
+  ai_enabled: boolean;
+  items: BoardRow[];
+}

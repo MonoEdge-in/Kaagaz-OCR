@@ -196,6 +196,42 @@ OPERATOR_RIGHTS = {
         " cost_estimated boolean, cost_part_unknown boolean)",
         EMPTY_PATH,
     ),
+    # 0024, operator insights, read-only (F1-F4): counts, sums, rates and durations per
+    # organisation or model. Pinned: never a user, document or name column.
+    "kaagaz_op_daily": (
+        "TABLE(customer_id uuid, day date, uploads bigint, sign_ins bigint, questions bigint,"
+        " corrections bigint, runs bigint, runs_failed bigint, pages bigint, scan_pages bigint,"
+        " cached_pages bigint, cost_usd numeric, cost_scan_usd numeric, cost_documents_usd numeric,"
+        " cost_questions_usd numeric, cost_estimated boolean, cost_part_unknown boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_org_health": (
+        "TABLE(customer_id uuid, active_users_7d bigint, active_users_30d bigint,"
+        " active_users_prev_30d bigint, answers_30d bigint, not_found_30d bigint, open_review bigint,"
+        " oldest_open_review_at timestamp with time zone, ai_budget_usd numeric, month_cost_usd numeric,"
+        " month_cost_estimated boolean, month_cost_part_unknown boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_quality": (
+        "TABLE(customer_id uuid, runs bigint, runs_failed bigint, runs_failed_platform bigint,"
+        " runs_degraded bigint, documents_run bigint, pages_cells bigint, pages_text_layer bigint,"
+        " pages_ocr bigint, pages_blank bigint, pages_ai bigint, pages_local bigint, pages_cached bigint,"
+        " pages_unreadable bigint, ready_documents bigint, ready_p50_seconds double precision,"
+        " ready_p95_seconds double precision, answers bigint, answered bigint, not_found bigint,"
+        " unchecked bigint, answers_verified bigint, answers_fixed_query bigint, citations bigint,"
+        " feedback bigint, feedback_up bigint, values_total bigint, values_needs_review bigint,"
+        " corrections bigint, corrections_second bigint, corrections_typed bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_model_board": (
+        "TABLE(model text, documents bigint, runs bigint, runs_failed bigint, runs_degraded bigint,"
+        " pages_ai bigint, pages_local bigint, pages_cached bigint, seconds_per_page_p50 double precision,"
+        " seconds_per_page_p95 double precision, calls bigint, scan_calls bigint, cached_scan_calls bigint,"
+        " input_tokens numeric, output_tokens numeric, cost_usd numeric, scan_cost_usd numeric,"
+        " cost_estimated boolean, cost_part_unknown boolean, ocr_pages bigint, pages_disagree bigint,"
+        " pages_refused bigint, pages_fell_back bigint, pages_unpinned bigint)",
+        EMPTY_PATH,
+    ),
 }
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
