@@ -95,7 +95,7 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, refresh
+from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, last_refreshed, refresh
 from kaagaz.jobs.fair_share import FairShare, SweepLock, first_free_lock, no_lock, sweep_lock
 from kaagaz.jobs.ports import QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import CustomerStorage, purge_deleted_customers, purge_expired, sweep_purged_customers
@@ -615,7 +615,13 @@ def _serve(settings: Settings) -> None:
     upgrades = UpgradeLocalReads(
         vectors, upgrade, lambda: gate.status()[0], _utc_now, copies=settings.worker_replicas, lock=lock
     )
-    worker = RefreshCatalog(upgrades, catalog_refresh(settings, db), _utc_now, lock=lock)
+    worker = RefreshCatalog(
+        upgrades,
+        catalog_refresh(settings, db),
+        _utc_now,
+        lock=lock,
+        last_refreshed=lambda: last_refreshed(db),
+    )
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
     reports.join(READER_REPORT_SECONDS)  # stop is set: at most the report in flight is left
     db.engine.dispose()

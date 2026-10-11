@@ -19,7 +19,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from kaagaz import cli
-from kaagaz.ai.openrouter import OpenRouterClient
+from kaagaz.ai.openrouter import OpenRouterClient, Probe
 from kaagaz.db.engine import Database
 from kaagaz.jobs import catalog
 from kaagaz.jobs.catalog import CatalogUnavailable, RefreshCatalog, Refreshed, candidate, fetch
@@ -48,7 +48,8 @@ def listed(request: Recorded) -> Reply:
 
 
 @pytest.fixture
-def fake() -> Iterator[OpenRouterFake]:
+def fake(monkeypatch: pytest.MonkeyPatch) -> Iterator[OpenRouterFake]:
+    monkeypatch.setattr(catalog, "ENDPOINTS_PAUSE_SECONDS", 0.0)  # the pause itself: its own test
     with running_fake() as server:
         server.responder = listed
         yield server
@@ -63,7 +64,7 @@ def test_each_filter_rule_drops_a_model_and_only_an_approved_zdr_provider_counts
     fake: OpenRouterFake,
 ) -> None:
     client, settings = _client(fake)
-    models = {model.id: model for model in fetch(client, settings, today=TODAY)}
+    models = {model.id: model for model in fetch(client, settings, today=TODAY).models}
     # Rules 1-4 and 6 (and a router with no fixed price) leave a model out altogether.
     assert set(models) == {PRO, SONNET, LUNA, "example/not-zdr-1", "example/endpoint-down-1"}
     eligible = {model_id for model_id, model in models.items() if model.eligible}
@@ -87,13 +88,15 @@ def test_each_filter_rule_drops_a_model_and_only_an_approved_zdr_provider_counts
 
 def test_azure_counts_once_it_is_in_openrouter_providers(fake: OpenRouterFake) -> None:
     client, settings = _client(fake, openrouter_providers=frozenset({"google-vertex", "azure"}))
-    eligible = {model.id for model in fetch(client, settings, today=TODAY) if model.eligible}
+    eligible = {model.id for model in fetch(client, settings, today=TODAY).models if model.eligible}
     assert eligible == {PRO, SONNET, LUNA}
 
 
 def test_the_configured_efforts_decide_rule_6(fake: OpenRouterFake) -> None:
     client, settings = _client(fake, ocr_thinking_level="minimal", ocr_retry_thinking_level="low")
-    assert {model.id for model in fetch(client, settings, today=TODAY)} == {"example/low-effort-only-1"}
+    assert {model.id for model in fetch(client, settings, today=TODAY).models} == {
+        "example/low-effort-only-1"
+    }
 
 
 def _with(**changes: Any) -> dict[str, Any]:
@@ -209,7 +212,7 @@ def test_more_than_16_providers_count_as_none(fake: OpenRouterFake) -> None:
 
     fake.responder = many
     client, settings = _client(fake, openrouter_providers=frozenset(tags))
-    pro = next(model for model in fetch(client, settings, today=TODAY) if model.id == PRO)
+    pro = next(model for model in fetch(client, settings, today=TODAY).models if model.id == PRO)
     assert (pro.providers, pro.eligible) == ((), False)
 
 
@@ -218,10 +221,8 @@ def test_more_than_16_providers_count_as_none(fake: OpenRouterFake) -> None:
     [
         ("models", "status_500"),
         ("zdr", "status_500"),
-        ("endpoints", "status_500"),
         ("models-shape", "models_list"),
         ("zdr-shape", "zdr_list"),
-        ("endpoints-shape", "endpoints_list"),
     ],
 )
 def test_a_list_that_cannot_be_read_changes_nothing(fake: OpenRouterFake, broken: str, code: str) -> None:
@@ -237,6 +238,57 @@ def test_a_list_that_cannot_be_read_changes_nothing(fake: OpenRouterFake, broken
     with pytest.raises(CatalogUnavailable) as raised:
         catalog.refresh(untouched, client, settings, today=TODAY)
     assert raised.value.code == code
+
+
+@pytest.mark.parametrize("broken", [Reply(500, {}), Reply(200, {"data": "nope"})], ids=["status", "shape"])
+def test_one_models_endpoints_that_cannot_be_read_skip_that_model_only(
+    fake: OpenRouterFake, broken: Reply
+) -> None:
+    """R7: the others are saved; the skipped one is named, so its row is left as it was."""
+
+    def one_broken(request: Recorded) -> Reply:
+        if request.action == "endpoints" and request.path.endswith(f"/{LUNA}/endpoints"):
+            return broken
+        return listed(request)
+
+    fake.responder = one_broken
+    client, settings = _client(fake)
+    fetched = fetch(client, settings, today=TODAY)
+    assert fetched.skipped == (LUNA,)
+    assert {model.id for model in fetched.models} == {
+        PRO,
+        SONNET,
+        "example/not-zdr-1",
+        "example/endpoint-down-1",
+    }
+
+
+class _Lists:
+    """A Prober with ``count`` candidates: records each GET's path and time limit."""
+
+    def __init__(self, count: int) -> None:
+        self.items = [{**GOOD, "id": f"example/model-{n}"} for n in range(count)]
+        self.asked: list[tuple[str, float]] = []
+
+    def probe(self, path: str, body: object, *, timeout: float) -> Probe:
+        self.asked.append((path, timeout))
+        reply: dict[str, Any] = {"data": self.items}
+        if path == catalog.ZDR_PATH:
+            reply = {"data": []}
+        elif path != catalog.MODELS_PATH:
+            reply = {"data": {"endpoints": []}}
+        return Probe(200, None, None, {}, reply, 0.0)
+
+
+def test_the_refresh_asks_at_most_200_candidates_each_get_short_and_paced() -> None:
+    """R7: a long list never holds the worker: 200 candidates at most, each GET at most
+    GET_TIMEOUT_SECONDS, and a pause between two endpoint requests (no 429 storm)."""
+    lists, pauses = _Lists(205), list[float]()
+    fetched = fetch(lists, make_settings(), today=TODAY, pause=pauses.append)
+    endpoints = [path for path, _ in lists.asked if path.endswith("/endpoints")]
+    assert (len(fetched.models), len(endpoints)) == (catalog.MAX_CANDIDATES, 200)
+    assert {timeout for _, timeout in lists.asked} == {catalog.GET_TIMEOUT_SECONDS} == {15.0}
+    assert pauses == [catalog.ENDPOINTS_PAUSE_SECONDS] * 199
 
 
 def test_refresh_models_without_a_list_says_nothing_changed(
@@ -307,6 +359,43 @@ def test_the_sweep_runs_on_the_first_turn_then_once_a_day_under_its_lock() -> No
     clock.now += timedelta(hours=1)
     sweep.run_once()
     assert (refresh.calls, jobs.turns, lock.names) == (2, 3, ["refresh_catalog"] * 2)
+
+
+def test_a_failed_pass_is_tried_again_in_an_hour_not_a_day() -> None:
+    """R7: a refresh that failed comes back after RETRY_AFTER_FAILURE."""
+    jobs, clock, calls = _Jobs(), _Clock(), []
+
+    def fails_once() -> Refreshed:
+        calls.append(clock.now)
+        if len(calls) == 1:
+            raise CatalogUnavailable("status_503")
+        return Refreshed(3, 2)
+
+    sweep = RefreshCatalog(jobs, fails_once, clock)
+    sweep.run_once()
+    clock.now += timedelta(minutes=59)
+    sweep.run_once()
+    clock.now += timedelta(minutes=1)
+    sweep.run_once()  # the retry, an hour on
+    clock.now += timedelta(hours=23)
+    sweep.run_once()  # done: the next is a day after it
+    assert calls == [NOW, NOW + timedelta(hours=1)]
+
+
+def test_a_worker_started_within_a_day_of_the_last_refresh_waits_for_it() -> None:
+    """R7: restarts never refresh again and again; an old or empty catalogue refreshes now."""
+    jobs, clock, refresh = _Jobs(), _Clock(), _Refresh()
+    fresh = RefreshCatalog(jobs, refresh, clock, last_refreshed=lambda: NOW - timedelta(hours=20))
+    fresh.run_once()
+    clock.now += timedelta(hours=3, minutes=59)
+    fresh.run_once()
+    assert refresh.calls == 0
+    clock.now += timedelta(minutes=1)
+    fresh.run_once()  # a day after the last refresh
+    assert refresh.calls == 1
+    RefreshCatalog(jobs, refresh, _Clock(), last_refreshed=lambda: None).run_once()  # empty
+    RefreshCatalog(jobs, refresh, _Clock(), last_refreshed=lambda: NOW - timedelta(days=2)).run_once()
+    assert refresh.calls == 3
 
 
 def test_the_sweep_skips_without_the_lock_and_in_keyless_mode() -> None:

@@ -4,7 +4,9 @@ names in code.
 
 ``fetch`` reads ``GET /models``, then for each candidate ``GET /models/{id}/endpoints``,
 and ``GET /endpoints/zdr`` once, through the client's ``probe`` (no proxy, no redirect, the
-key in its header only). A model is **eligible** when it passes every rule (facts file,
+key in its header only), each GET held to ``GET_TIMEOUT_SECONDS``, the first
+``MAX_CANDIDATES`` candidates only, ``ENDPOINTS_PAUSE_SECONDS`` apart (no burst of
+requests, no 429 storm). A model is **eligible** when it passes every rule (facts file,
 "Catalogue filter rules"):
 
 1. its id is an OpenRouter model ID with no ``:variant`` (``MODEL_ID``);
@@ -28,19 +30,25 @@ of each. A model breaking any of these is left out, as if not listed.
 
 ``save`` upserts the models that pass rules 1 to 4 and 6 (their ``eligible`` from rule 5)
 into ``model_catalog``, writing the refresh columns only, and sets ``eligible`` false on
-every other row: rows are never deleted. A refresh that cannot read every list changes
-nothing (``CatalogUnavailable``), so an outage never makes the catalogue empty.
+every other row: rows are never deleted. A candidate whose endpoint list can't be read is
+skipped, its row left as it was. A refresh that cannot read ``/models`` or
+``/endpoints/zdr`` changes nothing (``CatalogUnavailable``), so an outage never makes the
+catalogue empty.
 
 ``RefreshCatalog`` runs it between jobs once every ``REFRESH_EVERY`` (a day), under the
-sweep lock (PRD 5 Q3); ``python -m kaagaz.cli refresh-models`` runs it now. Logs hold
-codes and counts only.
+sweep lock (PRD 5 Q3), and again after ``RETRY_AFTER_FAILURE`` (an hour) when a pass
+failed; a worker that starts within a day of the last refresh (the newest ``seen_at``)
+waits for the rest of that day. ``python -m kaagaz.cli refresh-models`` runs it now. Logs
+hold codes and counts only.
 
-Cost per refresh: 2 + C requests for the C candidates, and one statement per candidate.
+Cost per refresh: 2 + C requests for the C candidates (C at most MAX_CANDIDATES), at least
+(C - 1) x ENDPOINTS_PAUSE_SECONDS apart, and one statement per candidate.
 """
 
 import logging
 import math
 import re
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -61,6 +69,15 @@ logger = logging.getLogger("kaagaz.worker")
 MODELS_PATH = "/models"
 ZDR_PATH = "/endpoints/zdr"
 REFRESH_EVERY = timedelta(days=1)
+# A pass that failed is tried again this soon, not a day later.
+RETRY_AFTER_FAILURE = timedelta(hours=1)
+# Each GET's own time limit: a slow OpenRouter never holds the worker for MODEL_TIMEOUT_SECONDS
+# a request.
+GET_TIMEOUT_SECONDS = 15.0
+# The most candidates whose endpoints are asked for (OpenRouter lists a few dozen today).
+MAX_CANDIDATES = 200
+# The pause between two candidates' endpoint requests.
+ENDPOINTS_PAUSE_SECONDS = 0.25
 EXPIRY_MARGIN = timedelta(days=30)
 # 0023's CHECKs: a name of 1 to 200 characters, at most 16 providers and efforts, prices
 # in numeric(12,6).
@@ -103,9 +120,19 @@ class CatalogModel:
 
 
 @dataclass(frozen=True, slots=True)
+class Fetched:
+    """What ``fetch`` found: the candidates read, and the ids of those skipped because their
+    endpoint list could not be read (their rows are left as they are)."""
+
+    models: list[CatalogModel]
+    skipped: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Refreshed:
     saved: int  # candidates saved
     eligible: int
+    skipped: int = 0  # candidates whose endpoints could not be read, left as they were
 
 
 def _strings(value: object) -> list[str] | None:
@@ -246,18 +273,21 @@ def zdr_slugs(
     return found
 
 
-def _get(client: Prober, path: str, timeout: float) -> dict[str, Any]:
-    probe = client.probe(path, None, timeout=timeout)
+def _get(client: Prober, path: str) -> dict[str, Any]:
+    probe = client.probe(path, None, timeout=GET_TIMEOUT_SECONDS)
     if probe.status != 200 or probe.reply is None:
         raise CatalogUnavailable(f"status_{probe.status}")
     return probe.reply
 
 
-def fetch(client: Prober, settings: Settings, *, today: date) -> list[CatalogModel]:
-    """The candidates (rules 1 to 4 and 6) with their providers and ``eligible`` (rule 5).
-    ``CatalogUnavailable`` when any list can't be read."""
-    timeout = settings.model_timeout_seconds
-    listing = _get(client, MODELS_PATH, timeout).get("data")
+def fetch(
+    client: Prober, settings: Settings, *, today: date, pause: Callable[[float], None] = time.sleep
+) -> Fetched:
+    """The candidates (rules 1 to 4 and 6, the first MAX_CANDIDATES) with their providers
+    and ``eligible`` (rule 5); one whose endpoint list can't be read is skipped.
+    ``CatalogUnavailable`` when ``/models`` or ``/endpoints/zdr`` can't be read. ``pause``
+    waits ENDPOINTS_PAUSE_SECONDS between two endpoint requests."""
+    listing = _get(client, MODELS_PATH).get("data")
     if not isinstance(listing, list):
         raise CatalogUnavailable("models_list")
     efforts = frozenset({settings.ocr_thinking_level, settings.ocr_retry_thinking_level})
@@ -266,10 +296,19 @@ def fetch(client: Prober, settings: Settings, *, today: date) -> list[CatalogMod
         model = candidate(item, efforts=efforts, today=today)
         if model is not None:
             found.setdefault(model.id, model)  # the first of a repeated id
-    zdr = zdr_endpoints(_get(client, ZDR_PATH, timeout))
-    models = []
-    for model in found.values():
-        endpoints = zdr_slugs(model.id, _get(client, f"/models/{model.id}/endpoints", timeout), zdr)
+            if len(found) == MAX_CANDIDATES:
+                break
+    zdr = zdr_endpoints(_get(client, ZDR_PATH))
+    models, skipped = [], []
+    for index, model in enumerate(found.values()):
+        if index:
+            pause(ENDPOINTS_PAUSE_SECONDS)
+        try:
+            endpoints = zdr_slugs(model.id, _get(client, f"/models/{model.id}/endpoints"), zdr)
+        except CatalogUnavailable as error:
+            logger.warning("model endpoints not read, model left as it was", extra={"code": error.code})
+            skipped.append(model.id)
+            continue
         providers = _valid_list((slug for slug, parameters in endpoints if STRUCTURED in parameters), _slug)
         providers = providers or ()  # more than MAX_LIST: none counts
         eligible = any(slug in settings.openrouter_providers for slug in providers)
@@ -285,7 +324,7 @@ def fetch(client: Prober, settings: Settings, *, today: date) -> list[CatalogMod
                 eligible,
             )
         )
-    return models
+    return Fetched(models, tuple(skipped))
 
 
 _UPSERT = text(
@@ -303,9 +342,10 @@ _NOT_LISTED = text(
 )
 
 
-def save(db: Database, models: Sequence[CatalogModel]) -> None:
-    """Upsert ``models`` (the refresh columns only) and set every other row ineligible, in
-    one transaction. A database that does not answer is BackendUnavailable("database")."""
+def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[str] = ()) -> None:
+    """Upsert ``models`` (the refresh columns only) and set every other row ineligible but
+    the ``untouched`` ones (skipped candidates, left as they are), in one transaction. A
+    database that does not answer is BackendUnavailable("database")."""
     rows = [
         {
             "id": model.id,
@@ -322,24 +362,42 @@ def save(db: Database, models: Sequence[CatalogModel]) -> None:
     with unavailable(), db.system() as conn:
         if rows:
             conn.execute(_UPSERT, rows)
-        conn.execute(_NOT_LISTED, {"ids": [model.id for model in models]})
+        conn.execute(_NOT_LISTED, {"ids": [model.id for model in models] + list(untouched)})
 
 
-def refresh(db: Database, client: Prober, settings: Settings, *, today: date) -> Refreshed:
+def refresh(
+    db: Database,
+    client: Prober,
+    settings: Settings,
+    *,
+    today: date,
+    pause: Callable[[float], None] = time.sleep,
+) -> Refreshed:
     """Fetch and save the catalogue (see the module notes)."""
-    models = fetch(client, settings, today=today)
-    save(db, models)
-    return Refreshed(len(models), sum(model.eligible for model in models))
+    fetched = fetch(client, settings, today=today, pause=pause)
+    save(db, fetched.models, untouched=fetched.skipped)
+    return Refreshed(
+        len(fetched.models), sum(model.eligible for model in fetched.models), len(fetched.skipped)
+    )
+
+
+def last_refreshed(db: Database) -> datetime | None:
+    """When a refresh last saved the catalogue (its newest ``seen_at``); None when empty."""
+    with unavailable(), db.system() as conn:
+        latest: datetime | None = conn.execute(text("SELECT max(seen_at) FROM model_catalog")).scalar_one()
+    return latest
 
 
 class RefreshCatalog:
     """Wraps the worker: before a turn, runs ``refresh`` when ``REFRESH_EVERY`` has passed
-    on ``clock`` since the last pass; the first turn runs it. ``refresh`` None (OCR_ENGINE
-    is not gemini: keyless mode reads no scan with a model) does nothing. The time is noted
-    first, so a pass that fails waits a day too (ponytail: no sooner retry; the catalogue
-    is a day staler at worst). A database error or a list that can't be read is logged by
-    its type or code, and the jobs go on. The pass runs under ``lock("refresh_catalog")``:
-    a copy that cannot get it skips it. O(1) per turn, plus one refresh a day."""
+    on ``clock`` since the last pass, or RETRY_AFTER_FAILURE since a pass that failed. The
+    first turn runs it, unless ``last_refreshed`` (the catalogue's newest ``seen_at``) is
+    less than REFRESH_EVERY ago: then it waits until that is a day old, so restarts never
+    refresh again and again. ``refresh`` None (OCR_ENGINE is not gemini: keyless mode reads
+    no scan with a model) does nothing. A database error or a list that can't be read is
+    logged by its type or code, and the jobs go on. The pass runs under
+    ``lock("refresh_catalog")``: a copy that cannot get it skips it, and waits a day. O(1)
+    per turn, plus one refresh a day."""
 
     def __init__(
         self,
@@ -348,28 +406,52 @@ class RefreshCatalog:
         clock: Callable[[], datetime],
         *,
         lock: SweepLock = no_lock,
+        last_refreshed: Callable[[], datetime | None] | None = None,
     ) -> None:
         self._worker = worker
         self._refresh = refresh
         self._clock = clock
         self._lock = lock
+        self._last_refreshed = last_refreshed
         self._next: datetime | None = None
 
     def run_once(self) -> bool:
         now = self._clock()
-        if self._refresh is not None and (self._next is None or now >= self._next):
-            self._next = now + REFRESH_EVERY
-            self._pass(self._refresh)
+        if self._refresh is not None:
+            if self._next is None:
+                self._next = self._first_due(now)
+            if now >= self._next:
+                self._next = now + RETRY_AFTER_FAILURE  # noted first: a pass that fails retries in an hour
+                if self._pass(self._refresh):
+                    self._next = now + REFRESH_EVERY
         return self._worker.run_once()
 
-    def _pass(self, refresh: Callable[[], Refreshed]) -> None:
+    def _first_due(self, now: datetime) -> datetime:
+        """Now, unless the catalogue was refreshed less than REFRESH_EVERY ago."""
+        if self._last_refreshed is None:
+            return now
+        try:
+            latest = self._last_refreshed()
+        except (SQLAlchemyError, BackendUnavailable) as error:
+            logger.warning("model catalogue age not read", extra={"code": type(error).__name__})
+            return now
+        if latest is None or latest + REFRESH_EVERY <= now:
+            return now
+        return latest + REFRESH_EVERY
+
+    def _pass(self, refresh: Callable[[], Refreshed]) -> bool:
+        """True when the pass is done (or another copy holds the lock); False when it failed."""
         try:
             with self._lock("refresh_catalog") as mine:
                 done = refresh() if mine else None
         except (SQLAlchemyError, BackendUnavailable) as error:
             logger.error("model catalogue not refreshed", extra={"code": type(error).__name__})
+            return False
         except CatalogUnavailable as error:
             logger.warning("model catalogue not refreshed", extra={"code": error.code})
-        else:
-            if done is not None:
-                logger.info("model catalogue: %d models, %d eligible", done.saved, done.eligible)
+            return False
+        if done is not None:
+            logger.info(
+                "model catalogue: %d models, %d eligible, %d skipped", done.saved, done.eligible, done.skipped
+            )
+        return True

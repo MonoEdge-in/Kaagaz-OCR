@@ -543,7 +543,10 @@ def _refresh_models(db: Database, settings: Settings) -> str:
         raise CliError(f"OpenRouter's lists could not be read ({error.code}); nothing was changed") from None
     except BackendUnavailable as error:
         raise CliError(f"{error} unavailable; nothing was changed") from None
-    return f"model catalogue: {done.saved} models saved, {done.eligible} eligible"
+    return (
+        f"model catalogue: {done.saved} models saved, {done.eligible} eligible,"
+        f" {done.skipped} skipped (endpoints not read, left as they were)"
+    )
 
 
 def _record_verified(db: Database, model: str, tokens_in: int, tokens_out: int) -> None:

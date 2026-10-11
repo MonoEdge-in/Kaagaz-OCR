@@ -33,7 +33,7 @@ def fake() -> Iterator[OpenRouterFake]:
 
 def _refresh(db: Database, fake: OpenRouterFake) -> catalog.Refreshed:
     settings = make_settings(openrouter_api_key=KEY, openrouter_base_url=fake.url)
-    return catalog.refresh(db, OpenRouterClient(settings), settings, today=TODAY)
+    return catalog.refresh(db, OpenRouterClient(settings), settings, today=TODAY, pause=lambda seconds: None)
 
 
 def test_a_refresh_saves_the_candidates_and_a_model_no_longer_listed_stays_ineligible(
@@ -70,3 +70,16 @@ def test_a_refresh_that_cannot_read_a_list_changes_nothing(db: Database, fake: O
     with pytest.raises(catalog.CatalogUnavailable):
         _refresh(db, fake)
     assert _owner(db, "SELECT id, eligible, seen_at FROM model_catalog ORDER BY id", {}) == before
+
+
+def test_a_model_whose_endpoints_cannot_be_read_is_left_as_it_was(db: Database, fake: OpenRouterFake) -> None:
+    """R7: one model's endpoint list failing skips it; its row keeps its eligible and seen_at."""
+    _refresh(db, fake)
+    before = _owner(db, "SELECT eligible, seen_at FROM model_catalog WHERE id = :m", {"m": SONNET})
+    fake.responder = lambda request: (
+        Reply(503, {}) if request.path.endswith(f"/{SONNET}/endpoints") else listed(request)
+    )
+    done = _refresh(db, fake)
+    assert done.skipped == 1
+    assert _owner(db, "SELECT eligible, seen_at FROM model_catalog WHERE id = :m", {"m": SONNET}) == before
+    assert catalog.last_refreshed(db) is not None
