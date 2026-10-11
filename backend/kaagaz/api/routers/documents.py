@@ -78,7 +78,7 @@ Why some choices:
 * **Who asked to read again** (model choice): a Read again of the document may name a
   ``read_model`` in an optional JSON body, checked as an upload's, and its audit row
   names it; a page's Read again keeps the document's model (no re-billing of the cache).
-  Both make the asker ``read_requested_by``.
+  Both make the asker ``read_requested_by``, written by ``mark_for_reprocess`` itself.
 * **Batches** (PRD 5 Q1): an upload may name its drop in the optional ``batch_id`` form
   field, a UUID the browser made (anything else is 400). A drop holds at most
   MAX_FILES_PER_BATCH of the uploader's files: the next is 409 ``batch_full``, checked
@@ -626,7 +626,12 @@ def reprocess_document(
         check_read_model(conn, customer_id, context.settings, read_model)
         try:
             previous = mark_for_reprocess(
-                conn, customer_id, target, per_hour=context.settings.reprocess_per_hour
+                conn,
+                customer_id,
+                target,
+                per_hour=context.settings.reprocess_per_hour,
+                requested_by=user.user_id,
+                read_model=read_model,
             )
         except NotReprocessable:
             raise ApiError(409, "not_reprocessable") from None
@@ -634,7 +639,6 @@ def reprocess_document(
             raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
         if previous is None:  # deleted in the moment since
             raise ApiError(404, "not_found")
-        listing.set_reading(conn, customer_id, target, requested_by=user.user_id, model=read_model)
         details: dict[str, audit.DetailValue] = {"status": previous}
         if read_model is not None:
             details["read_model"] = read_model
@@ -681,8 +685,13 @@ def read_page_again(document_id: uuid.UUID, page_no: int, user: Reviewer, contex
         if page["route"] != "ocr":
             raise ApiError(409, "not_reprocessable", _NOT_SCANNED)
         try:
+            # The asker is billed; the page keeps the document's model (no choice here).
             previous = mark_for_reprocess(
-                conn, customer_id, target, per_hour=context.settings.reprocess_per_hour
+                conn,
+                customer_id,
+                target,
+                per_hour=context.settings.reprocess_per_hour,
+                requested_by=user.user_id,
             )
         except NotReprocessable:
             raise ApiError(409, "not_reprocessable") from None
@@ -692,8 +701,6 @@ def read_page_again(document_id: uuid.UUID, page_no: int, user: Reviewer, contex
             conn, customer_id, target, page_no, now=context.clock()
         ):
             raise ApiError(404, "not_found")  # deleted in the moment since: everything rolls back
-        # The asker is billed; the page keeps the document's model (no choice here).
-        listing.set_reading(conn, customer_id, target, requested_by=user.user_id, model=None)
         audit.record(
             conn,
             customer_id,

@@ -11,6 +11,7 @@ from sqlalchemy import Connection
 
 from kaagaz.db import models
 from kaagaz.reading import gemini_ocr
+from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from tests.settings_factory import make_settings
 
 CUSTOMER = "00000000-0000-0000-0000-00000000000a"
@@ -87,13 +88,15 @@ def test_usable_models_ask_for_the_readers_prompt_and_the_approved_providers() -
     assert conn.sent == [
         {
             "customer": CUSTOMER,
-            "prompt_version": models.PROMPT_VERSION,
+            "prompt_version": READER_PROMPT_VERSION,
             "providers": ["azure", "google-vertex"],
             "days": models.LEDGER_DAYS,
         }
     ]
 
 
-def test_the_prompt_version_is_the_readers() -> None:
-    """A copy, so the database layer does not import the reader: they must agree."""
-    assert models.PROMPT_VERSION == gemini_ocr.GEMINI_OCR_PROMPT_VERSION
+def test_the_prompt_version_is_the_readers_own_not_a_copy() -> None:
+    """R6: usable_models asks for kaagaz.reading.ocr's READER_PROMPT_VERSION itself, so no
+    copy can drift from the reader's."""
+    assert not hasattr(models, "PROMPT_VERSION")
+    assert READER_PROMPT_VERSION is gemini_ocr.GEMINI_OCR_PROMPT_VERSION

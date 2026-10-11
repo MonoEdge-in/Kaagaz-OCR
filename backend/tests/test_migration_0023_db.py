@@ -25,7 +25,7 @@ from sqlalchemy.exc import DBAPIError
 
 from kaagaz.db.documents import delete_forever
 from kaagaz.db.engine import Database
-from kaagaz.db.models import PROMPT_VERSION
+from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from tests import test_migration_0002_db as m0002
 from tests.db_support import insert_document, migrate, new_customer, violation
 from tests.fakes import MemoryStorage
@@ -36,7 +36,7 @@ from tests.test_operator_auth_db import _owner
 pytestmark = pytest.mark.db
 
 fresh = m0002.fresh  # the fixture, by its name
-PROMPT = PROMPT_VERSION  # the reader's prompt version the test models are verified for
+PROMPT = READER_PROMPT_VERSION  # the reader's prompt version the test models are verified for
 VERTEX = ("google-vertex",)
 NEW_TABLES = {"model_catalog", "customer_models", "model_usage"}
 FUNCTIONS = {

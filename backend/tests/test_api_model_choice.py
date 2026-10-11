@@ -497,3 +497,27 @@ def test_the_detail_says_the_model_the_document_asked_for(db: Database) -> None:
 
     assert member.client.get(f"/api/documents/{chosen}").json()["read_model"] == other
     assert member.client.get(f"/api/documents/{plain}").json()["read_model"] is None
+
+
+@pytest.mark.db
+def test_read_again_writes_who_asked_and_the_model_in_one_place(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R6: mark_for_reprocess is the one writer of read_requested_by and read_model for both
+    Read agains; the upload's set_reading is never called by them."""
+    from kaagaz.db import listing
+
+    def not_here(*args: object, **kwargs: object) -> None:
+        raise AssertionError("set_reading is the upload's writer only")
+
+    monkeypatch.setattr(listing, "set_reading", not_here)
+    api = Api(db, settings=GEMINI)
+    reviewer = api.new_signed("reviewer")
+    c = reviewer.customer_id
+    _, other = two_models(api, c)
+    document = api.add_document(c, status="failed", failure_code="corrupt_file")
+    reply = reviewer.client.post(
+        f"/api/documents/{document}/reprocess", json={"read_model": other}, headers=CSRF
+    )
+    assert reply.status_code == 200, reply.text
+    assert reading(db, c, document) == (other, reviewer.user_id)

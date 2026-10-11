@@ -1,38 +1,46 @@
 """The admin usage report's Python half, without a database (model choice, council 11 Oct
 2026, SP2, SP4): a period is whole days in TIMEZONE with both ends included and at most
-366 days; a CSV cell never starts like a formula; the report splits the grouped rows into
-its parts, keeps only document work in the top documents, names a deleted one, cuts the
-list at ten and counts an empty period as nothing. The SQL itself: test_model_usage_db."""
+366 days (the route's ``usage_days`` and ``day_start``); a CSV cell never starts like a
+formula (the route's ``csv_cell``); the report splits the grouped rows into its parts,
+keeps only document work in the top documents, names a deleted one, cuts the list at ten
+and counts an empty period as nothing. The SQL itself: test_model_usage_db."""
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
 import pytest
 from sqlalchemy import Connection
 
+from kaagaz.api.errors import ApiError
+from kaagaz.api.routers.admin import csv_cell, usage_days
+from kaagaz.api.routers.documents import day_start
 from kaagaz.db import usage
 
 TZ = "Asia/Kolkata"
 
 
+def period(first: date, last: date, timezone: str = TZ) -> tuple[datetime, datetime]:
+    """[the start of ``first``, the start of the day after ``last``) in ``timezone``: the
+    instants the admin's Usage routes read (``admin._usage_window``)."""
+    return day_start(first.isoformat(), timezone), day_start((last + timedelta(days=1)).isoformat(), timezone)
+
+
 def test_a_period_is_whole_days_in_timezone_both_ends_included() -> None:
-    start, end = usage.period_bounds(date(2026, 10, 2), date(2026, 10, 3), TZ)
+    start, end = period(*usage_days("2026-10-02", "2026-10-03", date(2026, 10, 20)))
     assert start.astimezone(UTC) == datetime(2026, 10, 1, 18, 30, tzinfo=UTC)  # 2 Oct 00:00 there
     assert end.astimezone(UTC) == datetime(2026, 10, 3, 18, 30, tzinfo=UTC)  # 4 Oct 00:00 there
-    one_day = usage.period_bounds(date(2026, 10, 2), date(2026, 10, 2), "UTC")
+    one_day = period(date(2026, 10, 2), date(2026, 10, 2), "UTC")
     assert one_day == (datetime(2026, 10, 2, tzinfo=UTC), datetime(2026, 10, 3, tzinfo=UTC))
-    usage.period_bounds(date(2024, 1, 1), date(2024, 12, 31), TZ)  # a leap year: 366 days
+    usage_days("2024-01-01", "2024-12-31", date(2026, 10, 20))  # a leap year: 366 days
 
 
-@pytest.mark.parametrize(
-    ("start", "end"),
-    [(date(2026, 10, 3), date(2026, 10, 2)), (date(2024, 1, 1), date(2025, 1, 1))],  # backwards; 367 days
-)
-def test_a_period_backwards_or_over_366_days_is_refused(start: date, end: date) -> None:
-    with pytest.raises(ValueError, match="366"):
-        usage.period_bounds(start, end, TZ)
+@pytest.mark.parametrize(("first", "last"), [("2026-10-03", "2026-10-02"), ("2024-01-01", "2025-01-01")])
+def test_a_period_backwards_or_over_366_days_is_refused(first: str, last: str) -> None:
+    with pytest.raises(ApiError) as refused:
+        usage_days(first, last, date(2026, 10, 20))  # backwards; 367 days
+    assert (refused.value.status, refused.value.code) == (400, "bad_request")
 
 
 @pytest.mark.parametrize(
@@ -44,13 +52,13 @@ def test_a_period_backwards_or_over_366_days_is_refused(start: date, end: date) 
         ("@cmd", "'@cmd"),
         ("\tx", "'\tx"),
         ("Asha", "Asha"),
-        (None, ""),
+        ("", ""),
         (Decimal("0.250000"), "0.250000"),
         (12, "12"),
     ],
 )
 def test_a_csv_cell_never_starts_like_a_formula(value: object, cell: str) -> None:
-    assert usage.csv_cell(value) == cell
+    assert csv_cell(value) == cell
 
 
 class _Conn:
@@ -117,7 +125,7 @@ def test_the_report_splits_the_groups_and_keeps_document_work_in_the_top_documen
         *documents,
     ]
     conn = _Conn(grouped)
-    start, end = usage.period_bounds(date(2026, 10, 2), date(2026, 10, 2), TZ)
+    start, end = period(date(2026, 10, 2), date(2026, 10, 2))
     report = usage.usage_report(cast(Connection, conn), "c1", start=start, end=end, timezone=TZ, user_id="u1")
     assert conn.sent == [{"c": "c1", "start_at": start, "end_at": end, "tz": TZ, "user": "u1"}]
     assert set(report) == {"totals", "by_user", "by_model", "by_kind", "by_day", "top_documents"}
@@ -144,7 +152,7 @@ def test_the_report_splits_the_groups_and_keeps_document_work_in_the_top_documen
 
 
 def test_an_empty_period_counts_nothing() -> None:
-    start, end = usage.period_bounds(date(2026, 9, 1), date(2026, 9, 30), TZ)
+    start, end = period(date(2026, 9, 1), date(2026, 9, 30))
     report = usage.usage_report(cast(Connection, _Conn([])), "c1", start=start, end=end, timezone=TZ)
     assert report["totals"] == {
         "calls": 0,

@@ -80,6 +80,12 @@ describe("money and model words", () => {
     expect(priceText(0.075)).toBe("$0.075");
   });
 
+  it("formats dollars with the one shared formatter (R6)", () => {
+    const source = readFileSync(join(__dirname, "..", "components/operator/models.ts"), "utf8");
+    expect(source).toContain('import { formatUsd } from "@/lib/format";');
+    expect(source).not.toMatch(/style: "currency", currency: "USD" \}\)/);
+  });
+
   it("estimates a page from verify-models' tokens (MC3), a rough one, none before it ran", () => {
     expect(pageCost(model())?.usd).toBeCloseTo((1300 * 2 + 800 * 12) / 1_000_000);
     expect(pageCost(model())?.rough).toBe(true);

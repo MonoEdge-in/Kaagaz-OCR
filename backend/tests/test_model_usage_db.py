@@ -21,20 +21,13 @@ from sqlalchemy.exc import DBAPIError
 
 from kaagaz.db.documents import PgDocuments, delete_forever, mark_for_reprocess, mark_for_upgrade
 from kaagaz.db.engine import Database
-from kaagaz.db.usage import (
-    CSV_HEADER,
-    DELETED_DOCUMENT,
-    UsageRow,
-    insert_usage,
-    month_spend,
-    period_bounds,
-    usage_csv_rows,
-    usage_report,
-)
+from kaagaz.db.listing import usage_rows
+from kaagaz.db.usage import DELETED_DOCUMENT, UsageRow, insert_usage, month_spend, usage_report
 from kaagaz.ingestion.ports import DocumentRecord
 from tests.db_support import insert_document, new_customer, violation
 from tests.fakes import MemoryStorage
 from tests.test_migration_0023_db import add_usage, as_owner, catalog_model, new_chat
+from tests.test_model_usage import period
 
 pytestmark = pytest.mark.db
 
@@ -59,7 +52,7 @@ def _member(db: Database, customer: str, name: str) -> str:
 
 def _days(first: date, last: date) -> dict[str, Any]:
     """The report's period: whole days in TZ, both included, as the route gives it."""
-    start, end = period_bounds(first, last, TZ)
+    start, end = period(first, last)
     return {"start": start, "end": end, "timezone": TZ}
 
 
@@ -250,7 +243,9 @@ def test_the_report_of_one_user_and_of_a_quiet_period(db: Database) -> None:
     assert [quiet[key] for key in ("by_user", "by_model", "by_kind", "by_day", "top_documents")] == [[]] * 5
 
 
-def test_the_csv_rows_are_per_day_user_model_and_kind_and_never_formulas(db: Database) -> None:
+def test_the_csv_rows_are_per_day_user_model_and_kind(db: Database) -> None:
+    """The query the CSV route runs (``listing.usage_rows``); its cells are made safe by
+    the route's ``csv_cell`` (test_model_usage, and the route's own test)."""
     customer, _ = new_customer(db)
     member = _member(db, customer, "=HYPERLINK(1)")
     model = catalog_model(db, name="+Gemini")
@@ -258,12 +253,14 @@ def test_the_csv_rows_are_per_day_user_model_and_kind_and_never_formulas(db: Dat
         add_usage(conn, customer, user_id=member, model=model, cost_usd=0.25, created_at=OCT_3)
         add_usage(conn, customer, model=UNLISTED, kind="embed", cost_usd=None, created_at=OCT_3)
         add_usage(conn, customer, model=UNLISTED, kind="embed", cost_usd=None, created_at=OCT_4_EARLY)
-        rows = usage_csv_rows(conn, customer, **_days(date(2026, 10, 3), date(2026, 10, 3)))
-    assert rows == [
-        list(CSV_HEADER),
-        ["2026-10-03", "", "", UNLISTED, "", "embed", "1", "0", "100", "50", "0", "", "false"],
-        ["2026-10-03", member, "'=HYPERLINK(1)", model, "'+Gemini", "scan", "1", "0", "100", "50", "0",
-         "0.250000", "false"],
+        rows = usage_rows(conn, customer, **_days(date(2026, 10, 3), date(2026, 10, 3)), user_id=None)
+    assert [
+        (row["day"].isoformat(), row["user_name"], row["model"], row["kind"], row["calls"], row["tokens"],
+         None if row["cost_usd"] is None else float(row["cost_usd"]), row["cost_estimated"])
+        for row in rows
+    ] == [
+        ("2026-10-03", None, UNLISTED, "embed", 1, 150, None, False),
+        ("2026-10-03", "=HYPERLINK(1)", model, "scan", 1, 150, 0.25, False),
     ]  # fmt: skip
 
 

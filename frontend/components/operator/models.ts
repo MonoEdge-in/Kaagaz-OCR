@@ -3,13 +3,13 @@
 // money, the dialog's checks, the spend periods and totals. Kept pure, so vitest can
 // prove them.
 
+import { formatUsd } from "@/lib/format";
 import type { OperatorModel, OperatorOrgModels, OperatorUsageRow, UsageTotals } from "@/lib/types";
 
 const TOKENS_PER_M = 1_000_000;
 // numeric(12,2): the largest budget the server's column holds.
 export const MAX_BUDGET = 9_999_999_999.99;
 
-const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const perMillion = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -17,12 +17,9 @@ const perMillion = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 4,
 });
 
-/** US dollars: "$1.23", "< $0.01" for less than a cent, "Not known" without a number;
- * "≈ $1.23 (estimated)" when some of it is the catalogue price times the tokens. */
+/** US dollars as lib/format's formatUsd says them, or "Not known" without a number. */
 export function usd(value: number | null, estimated = false): string {
-  if (value === null || !Number.isFinite(value)) return "Not known";
-  const text = value > 0 && value < 0.01 ? "< $0.01" : dollars.format(value);
-  return estimated ? `≈ ${text} (estimated)` : text;
+  return value === null || !Number.isFinite(value) ? "Not known" : formatUsd(value, estimated);
 }
 
 /** A live price: "$2.00" (per million tokens). */

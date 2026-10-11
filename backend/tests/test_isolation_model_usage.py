@@ -13,9 +13,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from kaagaz.db.engine import Database
-from kaagaz.db.usage import UsageRow, insert_usage, month_spend, period_bounds, usage_csv_rows, usage_report
+from kaagaz.db.listing import usage_rows
+from kaagaz.db.usage import UsageRow, insert_usage, month_spend, usage_report
 from tests.db_support import insert_document, new_customer, violation
 from tests.test_migration_0023_db import add_usage, as_owner, new_chat
+from tests.test_model_usage import period
 
 pytestmark = pytest.mark.db
 
@@ -78,13 +80,14 @@ def test_a_customer_cannot_write_a_row_for_another_or_point_at_anothers_things(d
 
 def test_the_report_csv_and_budget_count_only_the_current_customer(db: Database) -> None:
     ids = _two_customers(db)
-    start, end = period_bounds(_today() - timedelta(days=1), _today() + timedelta(days=1), TZ)
+    start, end = period(_today() - timedelta(days=1), _today() + timedelta(days=1))
     with db.customer(ids["a"]) as conn:
         mine = usage_report(conn, ids["a"], start=start, end=end, timezone=TZ)
         # B's id in A's transaction: row level security shows none of B's rows.
         theirs = usage_report(conn, ids["b"], start=start, end=end, timezone=TZ)
         their_user = usage_report(conn, ids["a"], start=start, end=end, timezone=TZ, user_id=ids["b_admin"])
-        csv_theirs = usage_csv_rows(conn, ids["b"], start=start, end=end, timezone=TZ)
+        csv_theirs = usage_rows(conn, ids["b"], start=start, end=end, timezone=TZ, user_id=None)
+        csv_their_user = usage_rows(conn, ids["a"], start=start, end=end, timezone=TZ, user_id=ids["b_admin"])
         spent_theirs = month_spend(conn, ids["b"], start=start, end=end)
         spent_mine = month_spend(conn, ids["a"], start=start, end=end)
         budget_theirs = conn.execute(
@@ -99,14 +102,14 @@ def test_the_report_csv_and_budget_count_only_the_current_customer(db: Database)
         assert [empty[key] for key in ("by_user", "by_model", "by_kind", "by_day", "top_documents")] == [
             []
         ] * 5
-    assert len(csv_theirs) == 1  # the header only
+    assert (list(csv_theirs), list(csv_their_user)) == ([], [])
     assert (spent_theirs, spent_mine) == (0.0, 1.0)
 
 
 def test_a_transaction_with_no_customer_sees_no_spend(db: Database) -> None:
     """``Database.system`` sets no customer: the policy shows it no row at all."""
     _two_customers(db)
-    start, end = period_bounds(_today(), _today(), TZ)
+    start, end = period(_today(), _today())
     with db.system() as conn:
         assert conn.execute(text("SELECT count(*) FROM model_usage")).scalar_one() == 0
         assert (

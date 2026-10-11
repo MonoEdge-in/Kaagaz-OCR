@@ -7,11 +7,10 @@ otherwise the catalogue's price times the tokens, marked ``cost_estimated``; NUL
 model is not in the catalogue either. A row holds ids, codes and numbers only, never content.
 
 The admin's Usage screen (SP2) reads one organisation's rows back over a period
-[``start``, ``end``): ``usage_report`` (totals, by user, model, kind and day in TIMEZONE,
-and the top documents), ``usage_csv_rows`` (the same period as CSV rows) and
-``month_spend`` (the dollars spent, for the operator's budget, SP4, warn only).
-``period_bounds`` turns whole days in TIMEZONE, both ends included and at most MAX_DAYS,
-into such a period. Every statement names the customer and runs on a
+[``start``, ``end``) (the route turns its days into one: ``api.routers.admin``):
+``usage_report`` (totals, by user, model, kind and day in TIMEZONE, and the top
+documents) and ``month_spend`` (the dollars spent, for the operator's budget, SP4, warn
+only); its CSV is ``db.listing.usage_rows``. Every statement names the customer and runs on a
 ``Database.customer()`` connection, so row level security filters it too. The ledger
 outlives what it was about: a removed user's work counts as no user's, a document deleted
 for good shows as DELETED_DOCUMENT, and a document in Trash or an older version keeps its
@@ -24,10 +23,9 @@ report reads the period's rows once (``model_usage_period``), grouped six ways a
 
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import Connection, RowMapping, text
 
@@ -75,27 +73,9 @@ def insert_usage(conn: Connection, rows: Sequence[UsageRow]) -> None:
 
 # --- reading it back: the admin's Usage screen (SP2) and the budget (SP4) ----------------
 
-MAX_DAYS = 366  # the longest period a report covers (a leap year)
 DELETED_DOCUMENT = "Deleted document"  # the name of spend on a document deleted for good
 TOP_DOCUMENTS = 10
-CSV_HEADER = (
-    "day",
-    "user_id",
-    "user_name",
-    "model",
-    "model_name",
-    "kind",
-    "calls",
-    "cached_calls",
-    "input_tokens",
-    "output_tokens",
-    "reasoning_tokens",
-    "cost_usd",
-    "cost_estimated",
-)
-_COUNTS = CSV_HEADER[6:11]  # the whole numbers of a row, in the header's order
-# A spreadsheet runs a cell that starts with one of these as a formula.
-_FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
+_COUNTS = ("calls", "cached_calls", "input_tokens", "output_tokens", "reasoning_tokens")  # whole numbers
 
 # The period's rows grouped six ways in one read: the total, and by user, model, kind, day
 # (in TIMEZONE) and document. A row with no document counts as a deleted document only
@@ -134,45 +114,11 @@ _REPORT = text(
     " g.user_id, g.model, g.kind, g.document_id"
 )
 
-# One CSV row per day, user, model and kind in the period, in that order.
-_CSV = text(
-    "SELECT CAST(timezone(:tz, u.created_at) AS date) AS day, u.user_id, x.display_name AS user_name,"
-    " u.model, m.name AS model_name, u.kind,"
-    " sum(u.calls) AS calls, COALESCE(sum(u.calls) FILTER (WHERE u.cached), 0) AS cached_calls,"
-    " sum(u.input_tokens) AS input_tokens, sum(u.output_tokens) AS output_tokens,"
-    " sum(u.reasoning_tokens) AS reasoning_tokens, sum(u.cost_usd) AS cost_usd,"
-    " bool_or(u.cost_estimated) AS cost_estimated"
-    " FROM model_usage u"
-    " LEFT JOIN users x ON x.customer_id = u.customer_id AND x.id = u.user_id"
-    " LEFT JOIN model_catalog m ON m.id = u.model"
-    " WHERE u.customer_id = :c AND u.created_at >= :start_at AND u.created_at < :end_at"
-    " AND (CAST(:user AS uuid) IS NULL OR u.user_id = CAST(:user AS uuid))"
-    " GROUP BY 1, u.user_id, x.display_name, u.model, m.name, u.kind"
-    " ORDER BY 1, x.display_name NULLS FIRST, u.user_id NULLS FIRST, u.model, u.kind"
-)
-
 # The dollars spent in a period (unknown costs count nothing).
 _SPENT = text(
     "SELECT COALESCE(sum(u.cost_usd), 0) FROM model_usage u"
     " WHERE u.customer_id = :c AND u.created_at >= :start_at AND u.created_at < :end_at"
 )
-
-
-def period_bounds(start: date, end: date, tz: str) -> tuple[datetime, datetime]:
-    """The period from ``start`` to ``end``, both whole days in ``tz`` (TIMEZONE), as
-    [the start of ``start``, the start of the day after ``end``). ValueError when ``end``
-    is before ``start`` or the period is longer than MAX_DAYS days."""
-    if not 1 <= (end - start).days + 1 <= MAX_DAYS:
-        raise ValueError("a period is 1 to 366 days, its end not before its start")
-    zone = ZoneInfo(tz)
-    return datetime.combine(start, time(), zone), datetime.combine(end + timedelta(days=1), time(), zone)
-
-
-def csv_cell(value: object) -> str:
-    """``value`` as a CSV cell a spreadsheet never runs: one that starts like a formula
-    gets a leading apostrophe. None is empty."""
-    cell = "" if value is None else str(value)
-    return "'" + cell if cell.startswith(_FORMULA_STARTS) else cell
 
 
 def _money(value: Decimal | None) -> float | None:
@@ -250,31 +196,6 @@ def usage_report(
 
 def _id(value: object) -> str | None:
     return None if value is None else str(value)
-
-
-def usage_csv_rows(
-    conn: Connection,
-    customer_id: str,
-    *,
-    start: datetime,
-    end: datetime,
-    timezone: str,
-    user_id: str | None = None,
-) -> list[list[str]]:
-    """The same period as ``usage_report``, as CSV rows: CSV_HEADER, then one row per day
-    (in ``timezone``), user, model and kind, every cell made safe by ``csv_cell``. On a
-    ``Database.customer()`` connection of ``customer_id``."""
-    rows = conn.execute(_CSV, _params(customer_id, start, end, timezone, user_id)).mappings().all()
-    return [list(CSV_HEADER)] + [
-        [
-            csv_cell(row["day"].isoformat()),
-            *(csv_cell(row[column]) for column in CSV_HEADER[1:6]),
-            *(csv_cell(row[column]) for column in _COUNTS),
-            csv_cell(row["cost_usd"]),
-            "true" if row["cost_estimated"] else "false",
-        ]
-        for row in rows
-    ]
 
 
 def month_spend(conn: Connection, customer_id: str, *, start: datetime, end: datetime) -> float:

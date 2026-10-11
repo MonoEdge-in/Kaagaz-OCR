@@ -25,13 +25,8 @@ from collections.abc import Sequence
 
 from sqlalchemy import Connection, RowMapping, text
 
+from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.settings import DEFAULT_PROVIDER, Settings
-
-# The reader's prompt version a model must be verified for (``usable_models``). The same
-# value as kaagaz.reading.gemini_ocr.GEMINI_OCR_PROMPT_VERSION, which a test checks; kept
-# here so the database layer does not import the reader.
-# ponytail: a copy, until the reading layer exposes the version outside gemini_ocr.
-PROMPT_VERSION = "g2"
 
 # The document's chosen model and the organisation's default, each only while it is allowed
 # for the organisation, eligible, enabled by the operator and verified for this prompt.
@@ -105,7 +100,7 @@ def resolve(
 
 def usable_models(conn: Connection, customer_id: str, *, settings: Settings) -> Sequence[RowMapping]:
     """The models ``customer_id`` may read scans with now (MS4, MS5), the ones ``resolve``
-    accepts for PROMPT_VERSION, the default first, then by name: what the API offers as
+    accepts for READER_PROMPT_VERSION, the default first, then by name: what the API offers as
     "Read with" and accepts as ``read_model``. Keys: id, name, price_in_usd_per_m,
     price_out_usd_per_m, tokens_per_page_in, tokens_per_page_out, is_default_scan,
     providers, ledger_tokens_in, ledger_tokens_out (see the module notes). Empty: the
@@ -113,7 +108,7 @@ def usable_models(conn: Connection, customer_id: str, *, settings: Settings) -> 
     usable now. On a ``Database.customer()`` connection of ``customer_id``."""
     params = {
         "customer": customer_id,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": READER_PROMPT_VERSION,
         "providers": sorted(settings.openrouter_providers),
         "days": LEDGER_DAYS,
     }
