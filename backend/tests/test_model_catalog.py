@@ -5,6 +5,7 @@ read changes nothing, and the daily sweep. The SQL itself: ``test_model_catalog_
 
 import ast
 import copy
+import importlib.util
 import io
 import json
 import logging
@@ -22,7 +23,8 @@ from kaagaz import cli
 from kaagaz.ai.openrouter import OpenRouterClient, Probe
 from kaagaz.db.engine import Database
 from kaagaz.jobs import catalog
-from kaagaz.jobs.catalog import CatalogUnavailable, RefreshCatalog, Refreshed, candidate, fetch
+from kaagaz.jobs.catalog import CatalogModel, CatalogUnavailable, RefreshCatalog, Refreshed, candidate, fetch
+from kaagaz.settings import MODEL_ID
 from kaagaz.worker_main import catalog_refresh
 from tests.openrouter_fake import API_PATH, KEY, OpenRouterFake, Recorded, Reply, error_reply, running_fake
 from tests.settings_factory import make_settings
@@ -289,6 +291,48 @@ def test_the_refresh_asks_at_most_200_candidates_each_get_short_and_paced() -> N
     assert (len(fetched.models), len(endpoints)) == (catalog.MAX_CANDIDATES, 200)
     assert {timeout for _, timeout in lists.asked} == {catalog.GET_TIMEOUT_SECONDS} == {15.0}
     assert pauses == [catalog.ENDPOINTS_PAUSE_SECONDS] * 199
+
+
+def test_0023_checks_a_model_id_with_the_settings_own_pattern() -> None:
+    """R8: the same pattern in Python and in the CHECKs, so the database never refuses an id
+    the refresh let through."""
+    path = Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0023_model_choice.py"
+    spec = importlib.util.spec_from_file_location("migration_0023", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    assert f"^{MODEL_ID.pattern}$" == migration.MODEL_ID
+    assert candidate(_with(id="google/.."), efforts=EFFORTS, today=TODAY) is None
+
+
+class _Saved:
+    """A database whose one transaction keeps the rows it was sent."""
+
+    def __init__(self) -> None:
+        self.sent: list[object] = []
+
+    @contextmanager
+    def system(self) -> Iterator["_Saved"]:
+        yield self
+
+    def execute(self, statement: object, params: object) -> None:
+        self.sent.append(params)
+
+
+def test_one_bad_entry_is_left_out_before_the_save_never_aborting_it() -> None:
+    """R8: every model is checked against 0023's CHECKs before the transaction."""
+    good = CatalogModel(PRO, "Gemini", 2.0, 12.0, ("google-vertex",), ("low",), None, True)
+    bad = [
+        CatalogModel("google/..", "Dots", 1.0, 1.0, (), (), None, False),
+        CatalogModel("google/ok", "", 1.0, 1.0, (), (), None, False),
+        CatalogModel("google/ok", "Dear", 1e7, 1.0, (), (), None, False),
+        CatalogModel("google/ok", "Bad slug", 1.0, 1.0, ("Azure",), (), None, False),
+    ]
+    saved = _Saved()
+    catalog.save(cast(Database, saved), [good, *bad])
+    upserted, not_listed = saved.sent
+    assert [row["id"] for row in cast(list[dict[str, Any]], upserted)] == [PRO]
+    assert not_listed == {"ids": [PRO]}
 
 
 def test_refresh_models_without_a_list_says_nothing_changed(

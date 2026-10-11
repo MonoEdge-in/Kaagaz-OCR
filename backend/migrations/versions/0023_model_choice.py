@@ -70,7 +70,7 @@ depends_on = None
 
 APP_ROLE = "kaagaz_app"
 OPERATOR_ROLE = "kaagaz_operator"
-MODEL_ID = "^[a-z0-9-]+/[A-Za-z0-9._-]+$"  # kaagaz.settings.MODEL_ID
+MODEL_ID = "^[a-z0-9][a-z0-9-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"  # kaagaz.settings.MODEL_ID
 SLUG = "[a-z0-9-]{1,64}"  # kaagaz.settings.PROVIDER_SLUG
 EFFORT = "[a-z]{1,16}"
 LEDGER_DAYS = 30  # kaagaz.db.models.LEDGER_DAYS

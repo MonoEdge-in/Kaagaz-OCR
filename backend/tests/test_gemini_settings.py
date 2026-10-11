@@ -309,6 +309,16 @@ def test_a_gemini_model_is_named_by_its_openrouter_id(name: str, gemini: bool) -
         ("gemini-3.1-pro-preview", False),
         ("google/gemini/3", False),
         ("local-chat:4b", False),
+        # R8: each part 1 to 128 characters, starting with a letter or a digit.
+        ("google/.", False),
+        ("google/..", False),
+        ("./model", False),
+        ("-google/model", False),
+        ("google/-model", False),
+        ("google/_model", False),
+        ("a" * 128 + "/" + "b" * 128, True),
+        ("a" * 129 + "/model", False),
+        ("google/" + "m" * 129, False),
     ],
 )
 def test_a_model_id_is_author_slash_slug_with_no_variant(name: str, valid: bool) -> None:

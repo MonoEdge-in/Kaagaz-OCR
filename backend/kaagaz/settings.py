@@ -44,8 +44,10 @@ THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
 MEDIA_RESOLUTION_SHAPE = "detail"
 SENDABLE_MEDIA_RESOLUTIONS = {"detail": frozenset({"low", "high"})}
 # An OpenRouter model ID: author/slug, such as google/gemini-3.1-pro-preview. A ":variant"
-# (":free", ":floor", ...) is refused: it changes the routing and the data policy.
-MODEL_ID = re.compile(r"[a-z0-9-]+/[A-Za-z0-9._-]+")
+# (":free", ":floor", ...) is refused: it changes the routing and the data policy. Each part
+# is 1 to 128 characters and starts with a letter or a digit, so "." and ".." are never a
+# part (the ID goes in a URL path). 0023's CHECKs hold the same pattern.
+MODEL_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 # An OpenRouter provider slug, such as google-vertex or azure (model choice, council 11 Oct 2026).
 PROVIDER_SLUG = re.compile(r"[a-z0-9-]{1,64}")
 # The provider every call used before model choice, and OPENROUTER_PROVIDERS when unset.

@@ -9,6 +9,7 @@ from datetime import date
 from typing import Any
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from kaagaz.ai.openrouter import OpenRouterClient
 from kaagaz.db.engine import Database
@@ -83,3 +84,16 @@ def test_a_model_whose_endpoints_cannot_be_read_is_left_as_it_was(db: Database, 
     assert done.skipped == 1
     assert _owner(db, "SELECT eligible, seen_at FROM model_catalog WHERE id = :m", {"m": SONNET}) == before
     assert catalog.last_refreshed(db) is not None
+
+
+@pytest.mark.parametrize("model_id", ["google/..", "./model", "a" * 129 + "/model"])
+def test_0023_refuses_a_model_id_outside_the_pattern(db: Database, model_id: str) -> None:
+    """R8: the CHECK holds the settings' MODEL_ID: each part 1 to 128 characters, starting
+    with a letter or a digit."""
+    with pytest.raises(IntegrityError):
+        _owner(
+            db,
+            "INSERT INTO model_catalog (id, name, price_in_usd_per_m, price_out_usd_per_m)"
+            " VALUES (:m, 'x', 1, 1)",
+            {"m": model_id},
+        )

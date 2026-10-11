@@ -62,7 +62,7 @@ from kaagaz.db.engine import Database, unavailable
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.jobs.fair_share import SweepLock, no_lock
 from kaagaz.jobs.worker import RunsJobs
-from kaagaz.settings import MODEL_ID, PROVIDER_SLUG, Settings
+from kaagaz.settings import MODEL_ID, PROVIDER_SLUG, Settings, valid_model_id
 
 logger = logging.getLogger("kaagaz.worker")
 
@@ -345,7 +345,10 @@ _NOT_LISTED = text(
 def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[str] = ()) -> None:
     """Upsert ``models`` (the refresh columns only) and set every other row ineligible but
     the ``untouched`` ones (skipped candidates, left as they are), in one transaction. A
-    database that does not answer is BackendUnavailable("database")."""
+    database that does not answer is BackendUnavailable("database"). Each model is checked
+    against 0023's CHECKs (``valid``) before the transaction, and one that fails is left
+    out: one bad entry never aborts the whole save."""
+    models = [model for model in models if valid(model)]
     rows = [
         {
             "id": model.id,
@@ -363,6 +366,19 @@ def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[st
         if rows:
             conn.execute(_UPSERT, rows)
         conn.execute(_NOT_LISTED, {"ids": [model.id for model in models] + list(untouched)})
+
+
+def valid(model: CatalogModel) -> bool:
+    """``model`` fits 0023's model_catalog CHECKs: its id, name, prices, providers and efforts."""
+    return (
+        valid_model_id(model.id)
+        and 1 <= len(model.name) <= MAX_NAME
+        and all(
+            0 <= price <= MAX_PRICE_PER_M for price in (model.price_in_usd_per_m, model.price_out_usd_per_m)
+        )
+        and _valid_list(model.providers, _slug) == model.providers
+        and _valid_list(model.efforts, _effort) == model.efforts
+    )
 
 
 def refresh(
