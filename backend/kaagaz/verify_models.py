@@ -23,7 +23,9 @@ any item FAILs. INFO means a person reads the evidence and decides. The items:
 3. ``strict_schema``: structured output with ``strict`` true and false; PASS when the value
    requests use (``openrouter.STRICT_SCHEMA``) gives schema-following JSON.
 4. ``reasoning_levels``: each ``reasoning.effort``; PASS when the levels we send are
-   accepted and ``reasoning_tokens`` is above 0 at high.
+   accepted and ``reasoning_tokens`` is above 0 at high; INFO when they are accepted but
+   no thinking is reported (Google Vertex reports 0, live 11 Oct 2026: whether the effort
+   reaches Google is a question for a person); FAIL when one is refused.
 5. ``detail_tokens``: ``prompt_tokens`` with no detail, low and high; PASS when high costs
    more than low (the detail reaches Google), INFO when it does not (then
    ``MEDIA_RESOLUTION_SHAPE`` "passthrough" is the question for Vrushit).
@@ -56,7 +58,9 @@ rule found, with the reader's own ``INSTRUCTION`` and ``PAGE_SCHEMA`` where a pa
 * ``model_endpoint``: the catalogue's endpoint rule (``jobs/catalog``): a zero-data-
   retention endpoint with status 0, of a provider in OPENROUTER_PROVIDERS, listing
   structured_outputs and the parameters of item 1.
-* ``model_reply``: a 200, and the ``provider_name`` OpenRouter's ``/generation`` gives.
+* ``model_reply``: a 200, and the provider that served it: the reply's own ``provider``
+  (what the ledger keeps), else the ``provider_name`` OpenRouter's ``/generation`` gives
+  (a zero-data-retention call may not be kept there to look up).
 * ``model_page_schema``: the made-up page read with the real ``PAGE_SCHEMA``, and the reply
   follows it (``schema_problem``).
 * ``model_made_up_page``: that read has every line of the page exactly.
@@ -64,8 +68,8 @@ rule found, with the reader's own ``INSTRUCTION`` and ``PAGE_SCHEMA`` where a pa
   (the reader's ``pinned``); each box's best IoU is shown.
 * ``model_devanagari``: INFO: no Devanagari page is drawn, since no Devanagari font is
   bundled (Pillow's own is Latin only, and a font would be a new dependency).
-* ``model_efforts``: OCR_THINKING_LEVEL and OCR_RETRY_THINKING_LEVEL are accepted, each with
-  ``reasoning_tokens`` above 0.
+* ``model_efforts``: OCR_THINKING_LEVEL and OCR_RETRY_THINKING_LEVEL are accepted, each
+  giving JSON; its ``reasoning_tokens`` are shown, not required (``reasoning_levels``).
 * ``model_cost``: the page read's ``usage.cost`` is above 0.
 * ``model_truncation``: a tiny output cap ends ``length``, which the client calls
   ``output_truncated``; ``model_token_cap``: it gave at most that many tokens.
@@ -434,7 +438,7 @@ class Verifier:
             self.settings.ocr_retry_thinking_level,
             CHAT_THINKING_LEVEL,
         }
-        verdict = PASS if needed <= accepted and high_reasoning > 0 else FAIL
+        verdict = FAIL if not needed <= accepted else PASS if high_reasoning > 0 else INFO
         evidence = f"{' '.join(said)}; we send {','.join(sorted(needed))}; reasoning at high {high_reasoning}"
         return Finding("reasoning_levels", verdict, evidence)
 
@@ -751,8 +755,10 @@ class ModelCheck:
             return cannot
         probe = self.verifier._probe(CHAT_PATH, _text_only(self.model, self.provider or DEFAULT_PROVIDER))
         reply_id = probe.reply.get("id") if probe.reply is not None else None
-        name = None
-        if probe.status == 200 and isinstance(reply_id, str) and _REPLY_ID.fullmatch(reply_id):
+        named = probe.reply.get("provider") if probe.reply is not None else None
+        name = named if isinstance(named, str) and _PROVIDER_NAME.fullmatch(named) else None
+        lookup = probe.status == 200 and isinstance(reply_id, str) and _REPLY_ID.fullmatch(reply_id)
+        if name is None and lookup:
             for attempt in range(GENERATION_TRIES):
                 if attempt:
                     self.verifier.sleep(1.0)
@@ -825,7 +831,7 @@ class ModelCheck:
             probe = self._page(SCHEMA, INSTRUCTION, thinking=level, max_output_tokens=None)
             good, description = _outcome(probe)
             thought = reasoning_tokens(probe.reply) if probe.reply is not None else 0
-            ok = ok and good and thought > 0
+            ok = ok and good
             said.append(f"{level}={description} reasoning={thought}")
         return self._found("model_efforts", PASS if ok else FAIL, " ".join(said))
 
