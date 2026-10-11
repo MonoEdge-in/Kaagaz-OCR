@@ -6,8 +6,10 @@ council 11 Oct 2026), or OCR_MODEL with no document or no model chosen.
 ``PageEngine``). OCR_ENGINE=gemini builds it through ``kaagaz.reading.wiring``
 (``build_gemini_engine``), the only place that imports this module, so
 OCR_ENGINE=rapidocr never loads it or calls the model. ``name`` is "gemini";
-``version`` is OCR_MODEL plus ``GEMINI_OCR_PROMPT_VERSION``, so a model or prompt
-change shows in processing_runs.
+``version`` is the model that read the last document opened (its chosen model, else
+OCR_MODEL) plus ``GEMINI_OCR_PROMPT_VERSION``, so processing_runs.ocr_engine and
+reader_outputs.reader_version name the model that actually read, and a prompt change
+shows there too.
 
 **One page, one call** (G2, G3, G4). The page goes to the model client's
 ``read_page`` as the PNG the reader drew, after ``INSTRUCTION``, at
@@ -377,6 +379,7 @@ class GeminiEngine:
         self._down_since: dict[str, float] = {}
         self._last_failure: dict[str, float] = {}
         self._pages: DocumentPages | None = None
+        self._read_with = self._model  # the last document's model, for ``version``
 
     @classmethod
     def from_settings(cls, settings: Settings, *, pool: RapidOcrPool) -> "GeminiEngine":
@@ -386,8 +389,11 @@ class GeminiEngine:
 
     @property
     def version(self) -> str:
-        """OCR_MODEL plus GEMINI_OCR_PROMPT_VERSION (G1)."""
-        return f"{self._model};prompt={GEMINI_OCR_PROMPT_VERSION}"
+        """The model of the document open, or of the last one (the pipeline asks after the
+        document closed, as RapidOCR's version), else OCR_MODEL; plus
+        GEMINI_OCR_PROMPT_VERSION (G1, model choice)."""
+        with self._lock:
+            return f"{self._read_with};prompt={GEMINI_OCR_PROMPT_VERSION}"
 
     @contextlib.contextmanager
     def document(self, pages: DocumentPages) -> Iterator[None]:
@@ -398,6 +404,7 @@ class GeminiEngine:
             if self._pages is not None:
                 raise RuntimeError("the Gemini reader is already reading a document")
             self._pages = pages
+            self._read_with = self._model if pages.model is None else pages.model
         try:
             yield
         finally:

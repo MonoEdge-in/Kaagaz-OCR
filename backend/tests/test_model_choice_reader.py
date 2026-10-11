@@ -140,6 +140,19 @@ class DocumentModelTest(unittest.TestCase):
         key = PageKey(CUSTOMER, DOCUMENT, 1, pixels_sha256(image), CLAUDE, "g2")
         self.assertEqual(cache.puts, [key])
 
+    def test_the_version_names_the_model_that_read_the_document(self) -> None:
+        """R11: processing_runs.ocr_engine and reader_outputs.reader_version come from
+        ``version``, asked after the document closes: the chosen model, else OCR_MODEL."""
+        built = build(reply(value(line("Total"))), reply(value(line("Total"))))
+        self.assertEqual(built.engine.version, f"{MODEL};prompt=g2")  # no document yet
+        with built.engine.document(_pages(FakeCache(), CLAUDE, "google-vertex")):
+            built.engine.read_page(page(), page_no=1)
+            self.assertEqual(built.engine.version, f"{CLAUDE};prompt=g2")
+        self.assertEqual(built.engine.version, f"{CLAUDE};prompt=g2")  # asked after it closed
+        with built.engine.document(_pages(FakeCache())):  # no model chosen: OCR_MODEL
+            built.engine.read_page(page(), page_no=1)
+        self.assertEqual(built.engine.version, f"{MODEL};prompt=g2")
+
     def test_without_a_document_or_a_chosen_model_ocr_model_reads(self) -> None:
         built = build(reply(value(line("Total"))), reply(value(line("Total"))))
         built.engine.read(page())  # cli measure: no document
