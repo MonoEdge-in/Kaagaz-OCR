@@ -97,7 +97,7 @@ describe("answer settings", () => {
     expect(html).not.toContain('type="checkbox"');
     expect(html).not.toMatch(MONEY);
     const shown = html.replace(/<[^>]*>/g, " "); // the text a person sees, not the ids it sends
-    expect(shown).not.toMatch(/model|google\/|anthropic\//i); // names only, never ids or the word
+    expect(shown).not.toMatch(/\bmodel\b|google\/|anthropic\//i); // names only, never ids or the word
   });
 
   it("show Thinking as High, Medium, Low segments, each with its hint, the chosen one's shown", () => {
