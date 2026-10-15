@@ -1,15 +1,17 @@
 "use client";
 
-// The composer, pinned to the foot of the thread. With a mouse or trackpad,
-// Enter sends and Shift+Enter makes a new line; on a touch screen Enter makes a
-// new line and the Send button sends. The box grows with the text up to about
-// six lines. The box empties as soon as a question is sent, so the next one can
-// be typed while the answer loads. If sending fails, the question comes back
+// The composer, pinned to the foot of the thread: one card with the question on
+// top and a slim toolbar inside it (the mode and scope chips on the left, the
+// answer settings and the round Send button on the right). With a mouse or
+// trackpad, Enter sends and Shift+Enter makes a new line; on a touch screen Enter
+// makes a new line and the Send button sends. The box grows with the text up to
+// about eight lines. The box empties as soon as a question is sent, so the next
+// one can be typed while the answer loads. If sending fails, the question comes back
 // (unless something new was typed meanwhile) and the error offers "Try again".
 // Its label, placeholder, button and help line follow the chat mode (lib/chatMode.ts).
 
 import { useLayoutEffect, useRef, useState } from "react";
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import type { ModeTexts } from "@/lib/chatMode";
@@ -22,7 +24,7 @@ const HINT_ID = "question-hint";
 const EMPTY_ID = "question-empty";
 const HELP_ID = "question-help";
 
-/** Grow (or shrink) the box to its text; CSS caps it at about six lines. */
+/** Grow (or shrink) the box to its text; CSS caps it at about eight lines. */
 function fitToText(input: HTMLTextAreaElement) {
   input.style.height = "auto";
   input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
@@ -34,9 +36,13 @@ export function QuestionBox({
   onAsk,
   inputRef,
   texts,
+  tools,
+  settings,
 }: {
   pending: boolean;
   texts: ModeTexts;
+  tools?: ReactNode; // the toolbar's left: the mode and scope chips
+  settings?: ReactNode; // beside Send: the answer settings
   /** Why the last question could not be sent, or null. */
   error: string | null;
   onAsk: (question: string) => Promise<boolean>;
@@ -114,7 +120,7 @@ export function QuestionBox({
         <textarea
           id={INPUT_ID}
           ref={inputRef}
-          className={`input ${styles.composerInput}`}
+          className={styles.composerInput}
           rows={1}
           placeholder={texts.label}
           maxLength={MAX_QUESTION_LENGTH}
@@ -134,16 +140,22 @@ export function QuestionBox({
             }
           }}
         />
-        <IconButton
-          icon="send"
-          label={texts.button}
-          className={`btn-primary ${styles.send}`}
-          // aria-disabled, not disabled: the button keeps focus while the answer
-          // is out, and submit() ignores a press then.
-          aria-disabled={pending || undefined}
-          aria-busy={pending || undefined}
-          onClick={() => void submit()}
-        />
+        <div className={styles.toolbar}>
+          <div className={styles.toolGroup}>{tools}</div>
+          <div className={`${styles.toolGroup} ${styles.toolEnd}`}>
+            {settings}
+            <IconButton
+              icon="send"
+              label={texts.button}
+              className={`btn-primary ${styles.send}`}
+              // aria-disabled, not disabled: the button keeps focus while the answer
+              // is out, and submit() ignores a press then.
+              aria-disabled={pending || undefined}
+              aria-busy={pending || undefined}
+              onClick={() => void submit()}
+            />
+          </div>
+        </div>
       </div>
       {emptyTried ? (
         <p id={EMPTY_ID} className="error-text">
