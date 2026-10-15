@@ -1,6 +1,6 @@
 """The admin routes: users, the customer's settings, the audit log, the numbers and
 the failed jobs (PRD 3 Z1; Retry is the documents router's reprocess route), and the
-organisation's AI models and spend (model choice, council 11 Oct 2026).
+organisation's AI models and use in tokens (model choice, council 11 Oct 2026).
 
 Why the admin session: every route here needs a session started on the admin
 screen (/admin/login, with the two-step code when it is on). The check sits on the router
@@ -27,15 +27,16 @@ stop it again. Allowing needs this admin's two-step sign-in on (403
 allowing a made-up account; an admin is never a target (400), a role change
 clears the grant, and stopping it works at the user's next request.
 
-Why AI models and spend look the way they do (model choice, council 11 Oct 2026):
+Why AI models and use look the way they do (model choice, council 11 Oct 2026):
 the operator sets the organisation's models and budget, so ``/admin/models`` only
-shows them (``set_by: "operator"``). ``/admin/usage`` and its CSV are the admin's
-alone (SP2): a member or an app session gets 403, like every route here. Days are
-the customer's TIMEZONE days, both ends included, at most USAGE_MAX_DAYS (400
-otherwise); this month to today when left out. A ``user_id`` names a user of this
-customer only: another customer's user matches no row, so the report is empty. The
-budget warns only (SP4). A CSV cell that starts with ``= + - @`` (or a tab or a
-carriage return) gets a leading ``'``, so a spreadsheet never runs it as a formula.
+shows their names. Org admins never see money, prices, budgets or costs in any
+response here (Tushar, 15 Oct 2026): AI use is in tokens. ``/admin/usage`` and its
+CSV are the admin's alone (SP2): a member or an app session gets 403, like every
+route here. Days are the customer's TIMEZONE days, both ends included, at most
+USAGE_MAX_DAYS (400 otherwise); this month to today when left out. A ``user_id``
+names a user of this customer only: another customer's user matches no row, so the
+report is empty. A CSV cell that starts with ``= + - @`` (or a tab or a carriage
+return) gets a leading ``'``, so a spreadsheet never runs it as a formula.
 """
 
 import csv
@@ -56,9 +57,9 @@ from sqlalchemy import Connection, RowMapping
 from kaagaz.api.auth import AdminSession, CurrentUser, hash_password, require_admin_session
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.readers import page_hint, page_provider, page_usd, usable
+from kaagaz.api.readers import usable
 from kaagaz.api.routers.documents import day_start
-from kaagaz.api.views import admin_user, audit_entry, failed_document
+from kaagaz.api.views import admin_user, audit_entry, failed_document, without_money
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, listing
 from kaagaz.db import runs as runs_sql
@@ -80,7 +81,7 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 RoleName = Literal["member", "reviewer", "admin"]
 
 USAGE_MAX_DAYS = 366
-USAGE_CSV_COLUMNS = ("day", "user", "model", "kind", "calls", "tokens", "cost", "estimated", "part_not_known")
+USAGE_CSV_COLUMNS = ("day", "user", "model", "kind", "calls", "tokens")
 _FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
 UsageFrom = Annotated[str | None, Query(alias="from", pattern=r"^\d{4}-\d{2}-\d{2}$")]
 UsageTo = Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")]
@@ -349,43 +350,40 @@ def month_window(now: datetime, timezone: str) -> tuple[datetime, datetime]:
 @router.get("/admin/stats")
 def get_stats(user: AdminSession, context: Context) -> dict[str, Any]:
     """The admin numbers, with the pages read this month by route (PRD 2 R6), by who read
-    them and the scan tokens (PRD 5 U9); the dollars are this month's AI spend from the
-    ledger, every kind of work (``month_spend``, SP1), to the cent. ``reader_pages.gemini``
-    keeps its name but, with model choice, counts the pages read by any AI model (the
-    run's model), so the screen may call it "Read by AI model"."""
+    them and the scan tokens (PRD 5 U9). No money: org admins never see it (Tushar,
+    15 Oct 2026). ``reader_pages.gemini`` keeps its name but, with model choice, counts the
+    pages read by any AI model (the run's model), so the screen may call it "Read by AI
+    model"."""
     start, end = month_window(context.clock(), context.settings.timezone)
     with context.db.customer(user.customer_id) as conn:
         numbers = admin_sql.stats(conn, user.customer_id)
         numbers["pages_this_month"] = runs_sql.pages_by_route(conn, user.customer_id, start=start, end=end)
         reader = runs_sql.reader_numbers(conn, user.customer_id, start=start, end=end)
-        spent = usage_sql.month_spend(conn, user.customer_id, start=start, end=end)
-    tokens = {"input_tokens": reader.pop("input_tokens"), "output_tokens": reader.pop("output_tokens")}
+    numbers["scan_tokens"] = {
+        "input_tokens": reader.pop("input_tokens"),
+        "output_tokens": reader.pop("output_tokens"),
+    }
     numbers["reader_pages"] = reader
-    # The ledger's own precision: under a cent stays more than nothing ("< $0.01").
-    numbers["spend_estimate"] = {**tokens, "usd": round(float(spent), 6)}
     return numbers
 
 
-# --- AI models and spend (model choice, council 11 Oct 2026) -------------------------
+# --- AI models and use (model choice, council 11 Oct 2026) ---------------------------
 
 
 @router.get("/admin/models")
 def get_models(user: AdminSession, context: Context) -> dict[str, Any]:
-    """``OrgModels``, read-only (MS1, MS2, MC3): the organisation's usable models with their
-    live prices and estimated price a page, the default scan model (``default_scan``), the
-    budget and this month's spend. Three queries."""
-    customer_id, settings = user.customer_id, context.settings
-    start, end = month_window(context.clock(), settings.timezone)
-    with context.db.customer(customer_id) as conn:
-        rows = usable(conn, customer_id, settings)
-        budget = _budget(conn, customer_id, start, end)
-    return {
-        "set_by": "operator",
-        "default_scan": default_scan(rows, settings),
-        "models": [_org_model(row, page_provider(row, settings)) for row in rows],
-        "ai_budget_usd": budget["ai_budget_usd"],
-        "spent_this_month_usd": budget["spent_this_month_usd"],
-    }
+    """``OrgModels``, read-only (MS1, MS2): the names of the models that read this
+    organisation's scans and answer its questions, the default marked. Names only, no
+    prices or budget (Tushar, 15 Oct 2026). One query."""
+    settings = context.settings
+    with context.db.customer(user.customer_id) as conn:
+        rows = usable(conn, user.customer_id, settings)
+    default = default_scan(rows, settings)
+    scan = [{"name": row["name"], "default": str(row["id"]) == default} for row in rows]
+    if not scan and default is not None:  # no models set: the platform's model reads (MS1)
+        scan = [{"name": default, "default": True}]
+    chat = [{"name": settings.model_chat, "default": True}] if settings.model_enabled else []
+    return {"scan": scan, "chat": chat}
 
 
 def default_scan(rows: Sequence[RowMapping], settings: Settings) -> str | None:
@@ -395,35 +393,6 @@ def default_scan(rows: Sequence[RowMapping], settings: Settings) -> str | None:
     if settings.ocr_engine != GEMINI:
         return None
     return next((str(row["id"]) for row in rows if row["is_default_scan"]), settings.ocr_model)
-
-
-def _org_model(row: RowMapping, provider: str | None) -> dict[str, Any]:
-    """``OrgModel``, with the provider its pages go to, ``usd_per_page``, the estimated US
-    dollars a page (None: not measured yet), and ``page_hint``, the same in the words the
-    upload's "Read with" uses (MC3: from the ledger, else a rough estimate)."""
-    return {
-        "id": str(row["id"]),
-        "name": row["name"],
-        "provider": provider,
-        "price_in_usd_per_m": float(row["price_in_usd_per_m"]),
-        "price_out_usd_per_m": float(row["price_out_usd_per_m"]),
-        "is_default_scan": bool(row["is_default_scan"]),
-        "usd_per_page": page_usd(row),
-        "page_hint": page_hint(row),
-    }
-
-
-def _budget(conn: Connection, customer_id: str, start: datetime, end: datetime) -> dict[str, Any]:
-    """``UsageBudget``: this month's spend against the operator's budget (warn only, SP4),
-    and whether part of it is not known (``spent_part_unknown``)."""
-    budget = listing.ai_budget(conn, customer_id)
-    spent, part_unknown = usage_sql.spend(conn, customer_id, start=start, end=end)
-    return {
-        "ai_budget_usd": budget,
-        "spent_this_month_usd": spent,
-        "spent_part_unknown": part_unknown,
-        "share": None if budget is None else spent / budget,
-    }
 
 
 def usage_days(first: str | None, last: str | None, today: date) -> tuple[date, date]:
@@ -464,12 +433,11 @@ def get_usage(
     user_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """``UsageReport`` (SP2): the organisation's AI use in the period, for one user when
-    given, and this month's spend against the budget. ``ai_enabled`` is false in keyless
-    mode (no AI scan reader, or MODEL_ENABLED off): the screen says AI is off on this
-    server. Two queries besides the report's."""
+    given, in tokens: the ledger's costs are left out (Tushar, 15 Oct 2026). ``ai_enabled``
+    is false in keyless mode (no AI scan reader, or MODEL_ENABLED off): the screen says AI
+    is off on this server. One query."""
     customer_id = user.customer_id
     day_from, day_to, start, end = _usage_window(context, first, to)
-    month_start, month_end = month_window(context.clock(), context.settings.timezone)
     with context.db.customer(customer_id) as conn:
         report = usage_sql.usage_report(
             conn,
@@ -479,14 +447,12 @@ def get_usage(
             timezone=context.settings.timezone,
             user_id=None if user_id is None else str(user_id),
         )
-        budget = _budget(conn, customer_id, month_start, month_end)
-    settings = context.settings
     return {
-        **report,
+        "totals": without_money(report.pop("totals")),
+        **{part: [without_money(group) for group in groups] for part, groups in report.items()},
         "from": day_from.isoformat(),
         "to": day_to.isoformat(),
-        "budget": budget,
-        "ai_enabled": ai_enabled(settings),
+        "ai_enabled": ai_enabled(context.settings),
     }
 
 
@@ -524,9 +490,6 @@ def get_usage_csv(
             row["kind"],
             row["calls"],
             row["tokens"],
-            "" if row["cost_usd"] is None else row["cost_usd"],
-            "yes" if row["cost_estimated"] else "no",
-            "yes" if row["cost_part_unknown"] else "no",
         )
         for row in rows
     )

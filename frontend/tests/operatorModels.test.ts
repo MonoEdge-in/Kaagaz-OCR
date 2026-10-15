@@ -1,6 +1,8 @@
-// The operator's Models and AI spend tabs and the "AI models" dialog (model choice,
-// council 11 Oct 2026, MC2, MC3, MS1, MS2, SP3, SP4): money and model words, the dialog's
-// states and checks, the spend periods and totals, and what the tabs never show.
+// The operator's Models and AI spend tabs, an organisation's AI settings and the platform
+// defaults (model choice, council 11 Oct 2026, MC2, MC3, MS1, MS2, SP3, SP4; features 25-27,
+// council 15 Oct 2026, C10, C12): money and model words, the AI settings form's states and
+// checks, the per-area status, refusals next to their field, the step-up code, the focus,
+// the spend periods and totals, and what the tabs never show.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,10 +13,14 @@ import { modelConfirm, modelFocusId } from "@/components/operator/confirms";
 import { operatorErrorMessage } from "@/components/operator/logic";
 import { ModelsTable } from "@/components/operator/ModelsView";
 import {
-  bodyOf,
+  aiBody,
+  aiErrors,
   canEnable,
-  draftErrors,
+  defaultsImpact,
   draftOf,
+  followDefaults,
+  follows,
+  inheritedText,
   modelAction,
   notEnabledReason,
   offered,
@@ -23,15 +29,20 @@ import {
   parseBudget,
   periodRange,
   priceText,
+  refusalField,
   spendTotals,
+  statusText,
   toggled,
+  toggledLevel,
   usd,
+  usesText,
 } from "@/components/operator/models";
-import type { DraftErrors } from "@/components/operator/models";
-import { OrgModelsFields } from "@/components/operator/OrgModelsDialog";
+import type { AiErrors } from "@/components/operator/models";
+import { AiFields, CODE_ID, fieldId, firstProblem, refusalOf } from "@/components/operator/OrgAiSettings";
+import { DefaultsSummary } from "@/components/operator/PlatformDefaults";
 import { SpendTable } from "@/components/operator/SpendView";
 import { ApiError } from "@/lib/api";
-import type { OperatorModel, OperatorUsageRow } from "@/lib/types";
+import type { AiDefaults, AiValues, OperatorModel, OperatorUsageRow } from "@/lib/types";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
@@ -52,6 +63,9 @@ const model = (overrides: Partial<OperatorModel> = {}): OperatorModel => ({
   ledger_tokens_in: null,
   ledger_tokens_out: null,
   enabled_at: null,
+  chat_eligible: true,
+  chat_verified: true,
+  vendor_allowed: true,
   ...overrides,
 });
 
@@ -102,13 +116,21 @@ describe("money and model words", () => {
     expect(pageCostText(model({ ledger_tokens_in: 100, ledger_tokens_out: 10 }))).toBe("under $0.01 a page");
   });
 
-  it("enables only an eligible model verified for the current prompt, and says why not", () => {
+  // Changed on purpose (features 25-27, 15 Oct 2026): a model verified for answering only
+  // can be enabled too, as the server.
+  it("enables a model that can scan or answer, and says why not", () => {
     expect([canEnable(model()), modelAction(model())]).toEqual([true, "enable"]);
     expect(modelAction(model({ enabled_at: "2026-10-11T00:00:00Z" }))).toBe("disable");
-    expect(modelAction(model({ verified: false }))).toBeNull();
-    expect(notEnabledReason(model({ eligible: false }))).toMatch(/catalogue's rules/);
-    expect(notEnabledReason(model({ verified: false }))).toMatch(/verify-models --record/);
+    expect(modelAction(model({ verified: false }))).toBe("enable"); // it can still answer
+    expect(modelAction(model({ verified: false, chat_verified: false }))).toBeNull();
+    expect(notEnabledReason(model({ eligible: false, chat_eligible: false }))).toMatch(/catalogue's rules/);
+    expect(notEnabledReason(model({ verified: false, chat_verified: false }))).toMatch(/verify-models --record/);
     expect(notEnabledReason(model())).toBeNull();
+    expect([usesText(model()), usesText(model({ chat_verified: false })), usesText(model({ verified: false }))]).toEqual([
+      "Scanning and answering",
+      "Scanning",
+      "Answering",
+    ]);
   });
 
   it("asks a fresh code to enable or disable, and focuses the model's name after", () => {
@@ -119,117 +141,271 @@ describe("money and model words", () => {
     expect(modelFocusId("google/gemini-3.1-pro-preview")).toBe("model-name-google-gemini-3-1-pro-preview");
   });
 
-  it("says each refusal of a model change in plain words", () => {
+  it("says each refusal of a model or AI settings change in plain words", () => {
     const said = (code: string, status = 409) => operatorErrorMessage(new ApiError(status, code, "Something went wrong."));
     expect(said("not_verified")).toMatch(/verify-models/);
+    expect(said("chat_not_verified")).toMatch(/answer prompt/);
     expect(said("not_eligible")).toMatch(/rules/);
-    expect(said("in_use")).toMatch(/every organisation/);
+    expect(said("in_use")).toMatch(/every organisation and the defaults/);
     expect(said("unavailable")).toMatch(/not enabled on the platform/);
-    expect(said("default_not_allowed", 400)).toMatch(/default scan model/);
+    // Changed on purpose (features 25-27, 15 Oct 2026): three areas have a default now.
+    expect(said("default_not_allowed")).toMatch(/its own ticked list/);
+    expect(said("level_not_supported")).toMatch(/thinking levels/);
+    expect(said("needs_two_models_scan")).toMatch(/two scanning models/);
+    expect(said("needs_two_models_chat")).toMatch(/two answering models/);
   });
 });
 
 describe("the Models table", () => {
   it("says eligible, verified and enabled in words, with the price and the cost a page", () => {
+    const unverified = { verified: false, eligible: false, chat_eligible: false, chat_verified: false };
     const html = renderToStaticMarkup(
       createElement(ModelsTable, {
-        models: [model(), model({ id: "a/b", name: "Unverified", verified: false, eligible: false })],
+        models: [model(), model({ id: "a/b", name: "Unverified", vendor_allowed: false, ...unverified })],
         onChange: () => undefined,
       }),
     );
     for (const text of ["Gemini 3.1 Pro", "google-vertex", "$2.00 in, $12.00 out", "about $0.01 a page (rough estimate)"]) {
       expect(html).toContain(text);
     }
-    expect(html).toContain("Yes");
-    expect(html).toContain("No");
+    expect(html).toContain("Scanning: Yes, answering: Yes");
+    expect(html).toContain("Scanning: No, answering: No");
     expect(html).toContain('aria-label="Enable Gemini 3.1 Pro"');
     // R13: every cell says its column when the table reflows into cards.
     expect(html.match(/<td role="cell"(?![^>]*data-label)/g)).toBeNull();
     expect(html).not.toContain('aria-label="Enable Unverified"');
     expect(html).toContain("Does not pass the catalogue&#x27;s rules now.");
+    expect(html.match(/its maker is not on the allowed list/g)).toHaveLength(1); // S1: only a/b
   });
 });
 
-describe("the AI models dialog", () => {
-  const saved = { models: ["m/one"], default_scan: "m/one", ai_budget_usd: 50 };
-  const catalogue = [
-    model({ id: "m/one", name: "One", enabled_at: "2026-10-11T00:00:00Z" }),
-    model({ id: "m/two", name: "Two", enabled_at: "2026-10-11T00:00:00Z" }),
-    model({ id: "m/off", name: "Off" }),
-  ];
+// --- AI settings (features 25-27) --------------------------------------------------------
 
-  it("offers the enabled models and any the organisation still has", () => {
-    expect(offered(catalogue, ["m/off"]).map((m) => m.id)).toEqual(["m/one", "m/two", "m/off"]);
-    expect(offered(catalogue, []).map((m) => m.id)).toEqual(["m/one", "m/two"]);
+const values = (overrides: Partial<AiValues> = {}): AiValues => ({
+  scan_models: [],
+  scan_default: null,
+  chat_models: [],
+  chat_default: null,
+  scan_thinking: null,
+  chat_levels: null,
+  chat_default_level: null,
+  dynamic: null,
+  ...overrides,
+});
+const ENV = { scan_model: "google/env-scan", chat_model: "google/env-chat", scan_thinking: "low" };
+const DEFAULTS = values({
+  scan_models: ["m/one", "m/two"],
+  scan_default: "m/two",
+  chat_levels: ["low", "medium"],
+  chat_default_level: "low",
+  dynamic: true,
+});
+const COUNTS: AiDefaults["orgs_inheriting"] = { scan_models: 4, chat_models: 7, scan_thinking: 1, chat_levels: 7, dynamic: 5 };
+const catalogue = [
+  model({ id: "m/one", name: "One", enabled_at: "2026-10-11T00:00:00Z", chat_verified: false }),
+  model({ id: "m/two", name: "Two", enabled_at: "2026-10-11T00:00:00Z" }),
+  model({ id: "m/off", name: "Off" }),
+  model({ id: "x/far", name: "Far", enabled_at: "2026-10-11T00:00:00Z", vendor_allowed: false }),
+];
+
+describe("the AI settings form's rules", () => {
+  it("offers each area the enabled models that can do its work, and any already in it", () => {
+    expect(offered(catalogue, "scan", []).map((m) => m.id)).toEqual(["m/one", "m/two", "x/far"]);
+    expect(offered(catalogue, "chat", []).map((m) => m.id)).toEqual(["m/two", "x/far"]); // One can't answer
+    expect(offered(catalogue, "chat", ["m/off"]).map((m) => m.id)).toEqual(["m/two", "m/off", "x/far"]);
   });
 
-  it("keeps the default among the ticked models", () => {
-    const draft = draftOf(saved);
-    expect(draft).toEqual({ models: ["m/one"], default_scan: "m/one", budget: "50" });
-    const both = toggled(draft, "m/two", true);
-    expect(both).toEqual({ ...draft, models: ["m/one", "m/two"] });
-    expect(toggled(both, "m/one", false).default_scan).toBe("m/two");
-    expect(toggled(toggled(both, "m/one", false), "m/two", false).default_scan).toBeNull();
-    expect(toggled({ models: [], default_scan: null, budget: "" }, "m/two", true).default_scan).toBe("m/two");
+  it("keeps each area's default among its ticked models, and the default level among the levels", () => {
+    const draft = draftOf(values());
+    const both = toggled(toggled(draft, "scan", "m/one", true), "scan", "m/two", true);
+    expect([both.scan_models, both.scan_default, both.chat_default]).toEqual([["m/one", "m/two"], "m/one", null]);
+    expect(toggled(both, "scan", "m/one", false).scan_default).toBe("m/two");
+    expect(toggled(draft, "chat", "m/two", true)).toMatchObject({ chat_models: ["m/two"], chat_default: "m/two", scan_models: [] });
+    const levels = toggledLevel(toggledLevel(draft, "high", true), "low", true);
+    expect([levels.chat_levels, levels.chat_default_level]).toEqual([["low", "high"], "high"]);
+    expect(toggledLevel(levels, "high", false).chat_default_level).toBe("low");
   });
 
-  it("checks the budget and the default before sending, and sends none of both when no model is ticked", () => {
-    expect(["", " 12.5 ", "0.01", "9999999999.99"].map(parseBudget)).toEqual([null, 12.5, 0.01, 9999999999.99]);
-    for (const bad of ["0", "-5", "1.005", "1e3", "ten", "10000000000"]) expect(parseBudget(bad), bad).toBeUndefined();
-    expect(draftErrors({ models: ["m/one"], default_scan: null, budget: "abc" })).toEqual({
-      default_scan: "Choose the default scan model from the ticked models.",
+  it("checks the defaults, levels and budget before a code is asked for", () => {
+    const draft = draftOf(values({ scan_models: ["m/one"], chat_models: ["m/two"], chat_levels: ["low"] }), { ensemble: false, ai_budget_usd: null });
+    expect(aiErrors({ ...draft, budget: "abc" }, false)).toEqual({
+      scan_default: "Choose the default scanning model from the ticked models.",
+      chat_default: "Choose the default answering model from the ticked models.",
+      chat_levels: "Choose the default level from the ticked levels.",
       budget: "Enter dollars above 0, with at most 2 decimals, or leave it empty.",
     });
-    expect(draftErrors({ models: [], default_scan: null, budget: "" })).toEqual({ default_scan: null, budget: null });
-    expect(bodyOf({ models: [], default_scan: "m/one", budget: "" })).toEqual({
-      models: [],
-      default_scan: null,
-      ai_budget_usd: null,
-    });
-    expect(bodyOf({ models: ["m/one"], default_scan: "m/one", budget: "25.50" }).ai_budget_usd).toBe(25.5);
+    expect(aiErrors(draftOf(values()), false)).toEqual({}); // follows the defaults in everything
+    expect(aiErrors(draftOf(values()), true)).toEqual({ chat_levels: "Tick at least one thinking level." });
+    expect(aiErrors({ ...draftOf(values({ chat_levels: ["low"], chat_default_level: "low" })), budget: "abc" }, true)).toEqual({});
+    expect(["", " 12.5 ", "0.01", "9999999999.99"].map(parseBudget)).toEqual([null, 12.5, 0.01, 9999999999.99]);
+    for (const bad of ["0", "-5", "1.005", "1e3", "ten", "10000000000"]) expect(parseBudget(bad), bad).toBeUndefined();
+    expect(firstProblem({ budget: "x", chat_default: "y" })).toBe("chat_default");
   });
 
-  const fields = (draft = draftOf(saved), errors: DraftErrors = { default_scan: null, budget: null }, busy = false) =>
-    renderToStaticMarkup(
-      createElement(OrgModelsFields, { models: offered(catalogue, saved.models), draft, errors, busy, onChange: () => undefined }),
+  it("sends no default with an empty list, and no levels as following the platform", () => {
+    const draft = { ...draftOf(values({ scan_default: "m/one", chat_default_level: "high" })) };
+    expect(aiBody(draft)).toEqual(values());
+    expect(aiBody(draftOf(DEFAULTS))).toEqual(DEFAULTS);
+  });
+
+  it("says per area whether it follows the platform defaults (C12)", () => {
+    expect(statusText(values())).toBe("Scanning: platform defaults · Answering: platform defaults");
+    expect(statusText(values({ scan_models: ["m/one"], scan_thinking: "high", dynamic: false }))).toBe(
+      "Scanning: own settings · Answering: platform defaults",
     );
+    expect(statusText(values({ dynamic: true, chat_models: ["m/two"], chat_levels: ["low"] }))).toBe(
+      "Scanning: partly own settings · Answering: own settings",
+    );
+    expect(follows(values({ chat_levels: ["low"] }))).toEqual({ scan: "all", chat: "some" });
+  });
 
-  it("shows checkboxes for the models, radios for the default and a labelled budget", () => {
+  it("empties both areas and Ensemble for Use platform defaults, and keeps the budget", () => {
+    const own = draftOf(values({ scan_models: ["m/one"], scan_default: "m/one", chat_levels: ["low"], dynamic: true }), {
+      ensemble: true,
+      ai_budget_usd: 50,
+    });
+    const reset = followDefaults(own);
+    expect(aiBody(reset)).toEqual(values());
+    expect([reset.ensemble, reset.budget]).toEqual([false, "50"]);
+  });
+
+  it("names what an organisation that follows the platform gets, or the server's own", () => {
+    expect(inheritedText("scan_models", DEFAULTS, ENV, catalogue)).toBe("Two (default), One");
+    expect(inheritedText("chat_models", DEFAULTS, ENV, catalogue)).toBe("the server's model (google/env-chat)");
+    expect(inheritedText("scan_thinking", DEFAULTS, ENV, catalogue)).toBe("the server's level (low)");
+    expect(inheritedText("chat_levels", DEFAULTS, ENV, catalogue)).toBe("Low, Medium; default Low");
+    expect(inheritedText("dynamic", DEFAULTS, ENV, catalogue)).toBe("On");
+  });
+
+  it("says which organisations still on the defaults a platform save changes, per area", () => {
+    expect(defaultsImpact(DEFAULTS, DEFAULTS, COUNTS)).toBe("Nothing changes.");
+    const next = { ...DEFAULTS, scan_models: ["m/two", "m/one"], dynamic: false, chat_levels: ["low" as const] };
+    expect(defaultsImpact(DEFAULTS, next, COUNTS)).toBe(
+      "This save changes the Dynamic of 5 organisations, the answering levels of 7 organisations still on the platform " +
+        "defaults. Organisations with their own settings keep them.",
+    ); // the same models in another order change nothing
+    expect(defaultsImpact(DEFAULTS, { ...DEFAULTS, scan_default: "m/one" }, { ...COUNTS, scan_models: 1 })).toMatch(
+      /the scanning models of 1 organisation still/,
+    );
+  });
+
+  it("puts a refusal next to the field it is about, and a refused code at the code", () => {
+    const refused = (code: string, status = 409) => refusalOf(new ApiError(status, code, "Something went wrong."));
+    expect(refused("needs_two_models_scan").field).toBe("scan_models");
+    expect(refused("not_verified").field).toBe("scan_models");
+    expect(refused("chat_not_verified").field).toBe("chat_models");
+    expect(refused("needs_two_models_chat").field).toBe("chat_models");
+    expect(refused("unavailable").field).toBe("form");
+    expect(refused("step_up_failed", 403)).toEqual({ field: "code", message: operatorErrorMessage(new ApiError(403, "step_up_failed", "")) });
+    expect(refusalOf(new TypeError("offline")).field).toBe("form");
+    expect(refusalField("level_not_supported")).toBe("form"); // either area's levels
+    expect(fieldId("chat_models")).toBe("ai-chat-models");
+  });
+});
+
+describe("the AI settings fields", () => {
+  const fields = (props: { platform?: boolean; own?: AiValues; errors?: AiErrors; busy?: boolean } = {}) => {
+    const own = props.own ?? values();
+    return renderToStaticMarkup(
+      createElement(AiFields, {
+        platform: props.platform ?? false,
+        catalogue,
+        saved: own,
+        defaults: DEFAULTS,
+        env: ENV,
+        maxAgents: 3,
+        draft: draftOf(own, { ensemble: false, ai_budget_usd: 25 }),
+        errors: props.errors ?? {},
+        busy: props.busy ?? false,
+        onChange: () => undefined,
+      }),
+    );
+  };
+
+  it("groups each area in a fieldset with a legend, and marks an area that follows the platform", () => {
     const html = fields();
-    expect(html.match(/type="checkbox"/g)).toHaveLength(2);
-    expect(html.match(/type="radio"/g)).toHaveLength(1); // only the ticked model can be the default
-    expect(html).toContain("<legend");
-    expect(html).toContain('for="org-models-budget"');
-    expect(html).toContain('aria-describedby="org-models-budget-hint"');
-    expect(html).toMatch(/Warn only/);
+    expect(html.match(/<fieldset/g)?.length).toBeGreaterThanOrEqual(5);
+    expect(html.match(/<legend/g)?.length).toBe(html.match(/<fieldset/g)?.length);
+    expect(html.match(/From platform defaults<\/span>/g)).toHaveLength(2);
+    expect(html).toContain("None ticked: from platform defaults, Two (default), One.");
+    expect(html).toContain("Platform default (the server&#x27;s level (low))");
+    expect(html).toContain("Platform default (On)");
+    expect(html).toContain("Picks the right reading for each page.");
+    const own = fields({ own: values({ scan_models: ["m/one"], scan_default: "m/one", scan_thinking: "high", dynamic: false }) });
+    expect(own.match(/From platform defaults<\/span>/g)).toHaveLength(1); // answering only
+    expect(own.match(/type="radio"/g)).toHaveLength(1); // the default among the ticked
   });
 
-  it("says what no model means, marks errors and locks everything while saving", () => {
-    expect(fields({ models: [], default_scan: null, budget: "" })).toMatch(/platform&#x27;s model, as before/);
-    const invalid = fields(draftOf(saved), { default_scan: "Pick one.", budget: "Bad." });
-    expect(invalid).toContain('aria-invalid="true"');
-    expect(invalid).toContain('aria-describedby="org-models-budget-hint org-models-budget-error"');
-    expect(invalid).toContain('id="org-models-default-error"');
-    expect(fields(draftOf(saved), { default_scan: null, budget: null }, true).match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(3);
+  it("offers models by name, says a maker that is not allowed, and shows High, Medium, Low", () => {
+    const html = fields();
+    for (const name of ["One", "Two", "Far"]) expect(html).toContain(`<span>${name}`);
+    expect(html).not.toContain("<span>Off");
+    expect(html).toContain("its maker is not on the allowed list");
+    for (const level of ["Low", "Medium", "High"]) expect(html).toContain(`<span>${level}</span>`);
   });
 
-  it("points the default's radios at its error, said as an alert (R13)", () => {
-    const invalid = fields(draftOf(saved), { default_scan: "Pick one.", budget: null });
-    expect(invalid).toMatch(/type="radio"[^>]*aria-describedby="org-models-default-error"/);
-    expect(invalid).toMatch(/id="org-models-default-error" class="error-text" role="alert"/);
-    expect(fields()).not.toContain("org-models-default-error");
+  it("has Ensemble with the most models, and the budget in dollars, for an organisation only", () => {
+    const org = fields();
+    expect(org).toContain("Ensemble: models work together");
+    expect(org).toContain("Up to 3 models");
+    expect(org).toContain("Monthly AI budget, in US dollars");
+    const platform = fields({ platform: true });
+    expect(platform).not.toMatch(/Ensemble|budget|dollars/);
+    expect(platform).toContain("None ticked: the server&#x27;s model (google/env-scan).");
+    expect(platform).not.toContain("From platform defaults");
   });
 
-  it("moves the focus to the first control once the models have loaded (R13)", () => {
-    const dialog = read("components/operator/OrgModelsDialog.tsx");
+  it("says a refusal next to its field and points the field at it", () => {
+    const html = fields({ errors: { chat_models: "Ensemble needs at least two answering models.", budget: "Bad." } });
+    expect(html).toMatch(/id="ai-chat-models-error" class="error-text" role="alert">Ensemble needs/);
+    expect(html).toMatch(/id="ai-chat-models"[^>]*aria-describedby="ai-chat-models-error"/);
+    expect(html).toContain('aria-invalid="true" aria-describedby="ai-budget-error ai-budget-hint"');
+    expect(fields()).not.toContain("-error");
+  });
+
+  it("locks every control while saving", () => {
+    expect(fields({ busy: true }).match(/<fieldset[^>]*disabled=""/g)).toHaveLength(2);
+  });
+});
+
+describe("the AI settings dialogs", () => {
+  it("ask a fresh code before saving, and clear it after a refusal", () => {
+    for (const file of ["components/operator/OrgAiSettings.tsx", "components/operator/PlatformDefaults.tsx"]) {
+      const source = read(file);
+      expect(source, file).toContain("<CodeField");
+      expect(source, file).toContain("id={CODE_ID}");
+      expect(source, file).toContain("normalizeCode(code)");
+      expect(source, file).toContain('setCode("")');
+    }
+    expect(CODE_ID).toBe("ai-code");
+  });
+
+  it("names both areas when the organisation goes back to the platform defaults", () => {
+    expect(read("components/operator/OrgAiSettings.tsx")).toContain(
+      "Scanning and answering will both follow the platform defaults, and Ensemble is off. Save to apply.",
+    );
+  });
+
+  it("returns the focus to the button that opened them", () => {
+    const dialog = read("components/operator/OrgAiSettings.tsx");
+    expect(dialog).toContain("onClosed={() => document.getElementById(orgAiFocusId(org.id))?.focus()}");
     expect(dialog).toContain('form?.querySelector<HTMLElement>("input, select, button")?.focus()');
-    expect(dialog).toContain("<form ref={focusFirst}");
+    expect(read("components/operator/OrganisationsView.tsx")).toContain("id={orgAiFocusId(org.id)}");
+    expect(read("components/operator/PlatformDefaults.tsx")).toContain("onClosed={() => document.getElementById(CHANGE_ID)?.focus()}");
   });
 
-  it("returns the focus to the row's AI models button", () => {
-    const dialog = read("components/operator/OrgModelsDialog.tsx");
-    expect(dialog).toContain("onClosed={() => document.getElementById(orgModelsFocusId(org.id))?.focus()}");
-    expect(read("components/operator/OrganisationsView.tsx")).toContain("id={orgModelsFocusId(org.id)}");
+  it("show the platform defaults with how many organisations follow each area", () => {
+    const html = renderToStaticMarkup(
+      createElement(DefaultsSummary, { reply: { defaults: DEFAULTS, env: ENV, orgs_inheriting: COUNTS }, catalogue }),
+    );
+    expect(html).toContain("Two (default), One");
+    expect(html).toContain("Followed by 1 organisation");
+    expect(html).toContain("Followed by 7 organisations");
+    expect(read("components/operator/PlatformDefaults.tsx")).toContain("Save and apply to organisations still on defaults");
+  });
+
+  it("the old AI models dialog is gone", () => {
+    expect(() => read("components/operator/OrgModelsDialog.tsx")).toThrow();
   });
 });
 
@@ -263,7 +439,12 @@ describe("AI spend", () => {
   });
 
   it("never shows a person or a document", () => {
-    for (const file of ["components/operator/SpendView.tsx", "components/operator/ModelsView.tsx", "components/operator/OrgModelsDialog.tsx"]) {
+    for (const file of [
+      "components/operator/SpendView.tsx",
+      "components/operator/ModelsView.tsx",
+      "components/operator/OrgAiSettings.tsx",
+      "components/operator/PlatformDefaults.tsx",
+    ]) {
       expect(read(file), file).not.toMatch(/\.(user_\w+|document_\w+|display_name|email)\b/);
     }
   });

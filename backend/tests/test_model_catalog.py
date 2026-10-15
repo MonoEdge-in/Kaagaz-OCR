@@ -34,6 +34,7 @@ TODAY = date(2026, 10, 11)
 NOW = datetime(2026, 10, 11, 9, 0, tzinfo=UTC)
 EFFORTS = frozenset({"low", "high"})
 PRO, SONNET, LUNA = "google/gemini-3.1-pro-preview", "anthropic/claude-sonnet-5.5", "openai/gpt-6-luna"
+FLASH = "google/gemini-3.8-flash"  # features 25-27 (F2): made up, the real id is not known yet
 GOOD: dict[str, Any] = FIXTURE["models"]["data"][0]
 
 
@@ -68,9 +69,14 @@ def test_each_filter_rule_drops_a_model_and_only_an_approved_zdr_provider_counts
     client, settings = _client(fake)
     models = {model.id: model for model in fetch(client, settings, today=TODAY).models}
     # Rules 1-4 and 6 (and a router with no fixed price) leave a model out altogether.
-    assert set(models) == {PRO, SONNET, LUNA, "example/not-zdr-1", "example/endpoint-down-1"}
+    # Changed on purpose (features 25-27, 15 Oct 2026): a model that may only answer (text in
+    # and out, low thinking) is a candidate too, and the fixture has Gemini 3.8 Flash (F2).
+    scan_only = {PRO, SONNET, LUNA, FLASH, "example/not-zdr-1", "example/endpoint-down-1"}
+    assert set(models) == scan_only | {"example/text-only-1", "example/low-effort-only-1"}
     eligible = {model_id for model_id, model in models.items() if model.eligible}
-    assert eligible == {PRO, SONNET}  # rule 5: a ZDR endpoint of google-vertex, status 0
+    assert eligible == {PRO, SONNET, FLASH}  # rule 5: a ZDR endpoint of google-vertex, status 0
+    chat = {model_id for model_id, model in models.items() if model.chat_eligible}
+    assert chat == {PRO, SONNET, FLASH}  # the same endpoint rule; text-only-1 has no ZDR endpoint
     assert models[PRO].providers == ("google-vertex",)  # the base slug of google-vertex/global
     assert models[SONNET].providers == ("google-vertex",)  # bedrock lacks structured_outputs
     assert models[LUNA].providers == ("azure",)  # listed, but azure is not approved yet
@@ -89,16 +95,32 @@ def test_each_filter_rule_drops_a_model_and_only_an_approved_zdr_provider_counts
 
 
 def test_azure_counts_once_it_is_in_openrouter_providers(fake: OpenRouterFake) -> None:
-    client, settings = _client(fake, openrouter_providers=frozenset({"google-vertex", "azure"}))
+    # Changed on purpose (features 25-27, 15 Oct 2026): openai must be an allowed vendor too (S1).
+    providers, vendors = frozenset({"google-vertex", "azure"}), frozenset({"google", "anthropic", "openai"})
+    client, settings = _client(fake, openrouter_providers=providers, openrouter_model_vendors=vendors)
     eligible = {model.id for model in fetch(client, settings, today=TODAY).models if model.eligible}
-    assert eligible == {PRO, SONNET, LUNA}
+    assert eligible == {PRO, SONNET, LUNA, FLASH}
+
+
+def test_a_vendor_outside_openrouter_model_vendors_is_never_eligible(fake: OpenRouterFake) -> None:
+    """Features 25-27, S1: an approved provider does not approve every vendor's model."""
+    client, settings = _client(fake, openrouter_model_vendors=frozenset({"google"}))
+    models = fetch(client, settings, today=TODAY).models
+    assert {model.id for model in models if model.eligible or model.chat_eligible} == {PRO, FLASH}
 
 
 def test_the_configured_efforts_decide_rule_6(fake: OpenRouterFake) -> None:
     client, settings = _client(fake, ocr_thinking_level="minimal", ocr_retry_thinking_level="low")
-    assert {model.id for model in fetch(client, settings, today=TODAY).models} == {
-        "example/low-effort-only-1"
-    }
+    # Changed on purpose (features 25-27, 15 Oct 2026): every model that may answer is saved
+    # too, so rule 6 is read from the scan flag.
+    scans = {model.id for model in fetch(client, settings, today=TODAY).models if model.eligible}
+    assert scans == {FLASH}  # low-effort-only-1 passes rule 6 now, but has no ZDR endpoint
+    by_id = {item["id"]: item for item in FIXTURE["models"]["data"]}
+    levels = frozenset({"minimal", "low"})
+    low_only = candidate(by_id["example/low-effort-only-1"], efforts=levels, today=TODAY)
+    pro = candidate(by_id[PRO], efforts=levels, today=TODAY)
+    assert low_only is not None and low_only.eligible
+    assert pro is not None and (pro.eligible, pro.chat_eligible) == (False, True)  # no minimal: answers only
 
 
 def _with(**changes: Any) -> dict[str, Any]:
@@ -257,11 +279,15 @@ def test_one_models_endpoints_that_cannot_be_read_skip_that_model_only(
     client, settings = _client(fake)
     fetched = fetch(client, settings, today=TODAY)
     assert fetched.skipped == (LUNA,)
+    # Changed on purpose (features 25-27, 15 Oct 2026): answer-only candidates and Flash too.
     assert {model.id for model in fetched.models} == {
         PRO,
         SONNET,
+        FLASH,
         "example/not-zdr-1",
         "example/endpoint-down-1",
+        "example/text-only-1",
+        "example/low-effort-only-1",
     }
 
 

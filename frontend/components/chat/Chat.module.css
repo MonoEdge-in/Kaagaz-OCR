@@ -766,6 +766,28 @@
   padding-inline-start: var(--space-5);
 }
 
+/* Answer settings (features 25-27): a chip in the scope row; open, it takes the row. */
+.answerSettings[open] {
+  flex-basis: 100%;
+}
+
+.answerSummary {
+  min-height: var(--control-h);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.answerChoices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
 .composerForm {
   display: flex;
   flex-direction: column;

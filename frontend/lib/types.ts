@@ -295,6 +295,17 @@ export interface ExtractedValue {
   confidence: number | null;
   label_page_no: number | null; // the value's label spot, which can be on another page (PRD 2 D3); null without one
   label_region: Region | null;
+  votes?: ValueVotes | null; // Ensemble (feature 27): the readers' vote, saved with the value; null: one reader
+}
+
+/** Ensemble's vote on one value (feature 27, Tushar 15 Oct 2026): what each reader read at the
+ * value's spot, the main reader first (text null: it read nothing there), how many read the
+ * decided value (value null: no majority, so the value needs review). Never a model's name. */
+export interface ValueVotes {
+  value: string | null;
+  agreed: number;
+  readers: number;
+  reads: { main: boolean; text: string | null }[];
 }
 
 /** The AI model's document card (PRD 2 D1, D3): what the document is, and where each
@@ -398,6 +409,21 @@ export interface UploadLimits {
   sheet_bytes: number;
   max_pages: number; // for a PDF's pages and a TIFF's frames
   readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
+  ensemble?: EnsembleOffer | null; // "More than one reader…" (feature 27); null: not allowed here
+}
+
+/** What an upload or a whole document's Read again asks for (features 26, 27); nothing: the default. */
+export interface UploadReading {
+  read_mode?: "dynamic" | "ensemble";
+  read_model?: string;
+  read_agents?: string[];
+}
+
+/** The models an upload may read with together (feature 27), by name; main is the main reader. */
+export interface EnsembleOffer {
+  readers: { id: string; name: string }[];
+  max: number;
+  main: string;
 }
 
 /** One scan reader the server offers (PRD 4 #17): reason says why it can't be used here. */
@@ -500,6 +526,31 @@ export interface Answer {
   reading_note?: string | null;
   unreadable_pages?: UnreadablePage[];
   unreadable_page_count?: number;
+  // Features 25-27 (C7), only on an answer drafted with the asker's answer settings: the
+  // names (and ids) of the models that replied, the one used first; how many were asked;
+  // whether the others confirmed it (null with one model); the thinking level.
+  agents?: string[];
+  agent_ids?: string[];
+  agents_asked?: number;
+  agreement?: "agreed" | "not_confirmed" | null;
+  thinking?: ThinkingLevel;
+}
+
+export type ThinkingLevel = "low" | "medium" | "high";
+
+/** GET /chat/options (features 25-27): the answer settings this organisation allows now. */
+export interface ChatOptions {
+  agents: { id: string; name: string; default: boolean }[]; // by name; [] when none is set
+  levels: ThinkingLevel[];
+  default_level: ThinkingLevel;
+  ensemble: boolean; // more than one model may answer at once
+  max_agents: number;
+}
+
+/** POST /chat's answer settings; a field left out is the organisation's default. */
+export interface AnswerChoice {
+  agents?: string[];
+  thinking?: ThinkingLevel;
 }
 
 /** One of my words (GET /me/words). Text from the user: shown as text only. */
@@ -686,9 +737,9 @@ export interface Stats {
   in_trash: number;
   pages_this_month: Record<PageRoute, number>; // pages read this month, by route (PRD 2, R6); 0 when none
   // PRD 5 U9: this month's OCR pages by who read them (read_again: pages read again), and the
-  // model's spend estimate from its tokens; usd comes from the AI spend ledger (null when not known).
+  // scan tokens. No money: org admins never see it (Tushar, 15 Oct 2026).
   reader_pages?: { gemini: number; local: number; cached: number; read_again: number };
-  spend_estimate?: { input_tokens: number; output_tokens: number; usd: number | null };
+  scan_tokens?: { input_tokens: number; output_tokens: number };
 }
 
 /** The signed-in user's own story about a document's family (GET / PUT /documents/{id}/my-story).
@@ -808,7 +859,10 @@ export type UsageKind =
   | "chat"
   | "memory"
   | "search"
-  | "story";
+  | "story"
+  | "careful" // Dynamic's careful re-reads (feature 26)
+  | "ensemble_scan" // Ensemble's other readers (feature 27)
+  | "ensemble_chat"; // Ensemble's other answer drafts (feature 27)
 
 /** One model an upload may read scans with (GET /upload-limits readers), the default first. */
 export interface ReaderOption {
@@ -818,42 +872,46 @@ export interface ReaderOption {
   available: boolean;
 }
 
-/** Tokens and US dollars of some model calls. cost_usd is null when not known. */
-export interface UsageTotals {
+/** Tokens of some model calls: all an org admin sees (no money, Tushar, 15 Oct 2026). */
+export interface UsageTokens {
   calls: number;
   cached_calls: number; // pages taken from the page cache, at no cost
   input_tokens: number;
   output_tokens: number; // thinking included
   reasoning_tokens: number;
+}
+
+/** Tokens and US dollars of some model calls (operator only). cost_usd is null when not known. */
+export interface UsageTotals extends UsageTokens {
   cost_usd: number | null;
   cost_estimated: boolean; // some of it is the catalogue price times the tokens
   cost_part_unknown: boolean; // some call's cost is not known: cost_usd counts the known ones only
 }
 
-export interface UsageByUser extends UsageTotals {
+export interface UsageByUser extends UsageTokens {
   user_id: string | null; // null: work no user asked for (the upgrade sweep, re-indexing)
   user_name: string | null;
 }
 
-export interface UsageByModel extends UsageTotals {
+export interface UsageByModel extends UsageTokens {
   model: string;
   model_name: string;
 }
 
-export interface UsageByKind extends UsageTotals {
+export interface UsageByKind extends UsageTokens {
   kind: UsageKind;
 }
 
-export interface UsageByDay extends UsageTotals {
+export interface UsageByDay extends UsageTokens {
   day: string; // YYYY-MM-DD in the server's TIMEZONE
 }
 
-export interface UsageTopDocument extends UsageTotals {
+export interface UsageTopDocument extends UsageTokens {
   document_id: string | null; // null: the document was deleted
   name: string; // "Deleted document" when it was deleted
 }
 
-/** This month's spend against the operator's budget (warn only: nothing stops at 100%). */
+/** This month's spend against the operator's budget (warn only: nothing stops at 100%). Operator only. */
 export interface UsageBudget {
   ai_budget_usd: number | null;
   spent_this_month_usd: number;
@@ -865,13 +923,12 @@ export interface UsageBudget {
 export interface UsageReport {
   from: string; // YYYY-MM-DD
   to: string;
-  totals: UsageTotals;
+  totals: UsageTokens;
   by_user: UsageByUser[];
   by_model: UsageByModel[];
   by_kind: UsageByKind[];
   by_day: UsageByDay[];
   top_documents: UsageTopDocument[]; // at most 10, the costliest first
-  budget: UsageBudget;
   ai_enabled?: boolean; // false: keyless mode (no OpenRouter key, MODEL_ENABLED=false), no model is called
 }
 
@@ -893,13 +950,50 @@ export interface OperatorModel {
   ledger_tokens_in: number | null; // MC3: a scanned page's average over the last 30 days; null: none
   ledger_tokens_out: number | null;
   enabled_at: string | null; // null: not enabled on the platform
+  chat_eligible: boolean; // may answer questions (features 25-27, C11)
+  chat_verified: boolean; // verify-models passed for the current answer prompt
+  vendor_allowed: boolean; // its maker is in OPENROUTER_MODEL_VENDORS; else never used
 }
 
-/** GET and PUT /operator/orgs/{id}/models. default_scan is one of models, or null when models is []. */
-export interface OperatorOrgModels {
-  models: string[];
-  default_scan: string | null;
+/** A thinking level, as the operator console says it (High / Medium / Low). */
+export type AiLevel = "low" | "medium" | "high";
+
+/** One organisation's own AI settings or the platform defaults (features 25-27, C10). For an
+ * organisation, an empty list or a null field follows the platform defaults; for the
+ * platform, an empty list uses the server's model and a null scan level the server's. */
+export interface AiValues {
+  scan_models: string[];
+  scan_default: string | null;
+  chat_models: string[];
+  chat_default: string | null;
+  scan_thinking: AiLevel | null;
+  chat_levels: AiLevel[] | null;
+  chat_default_level: AiLevel | null;
+  dynamic: boolean | null;
+}
+
+/** What the server uses when the platform defaults name no model or scan level. */
+export interface AiEnv {
+  scan_model: string;
+  chat_model: string;
+  scan_thinking: string;
+}
+
+/** GET /operator/orgs/{id}/ai (operator only: the budget is in US dollars). */
+export interface OrgAiReply {
+  own: AiValues;
+  defaults: AiValues;
+  env: AiEnv;
+  ensemble: boolean;
+  max_agents: number; // the most models that read or answer together
   ai_budget_usd: number | null;
+}
+
+/** GET /operator/ai-defaults: the defaults and how many organisations follow each area. */
+export interface AiDefaults {
+  defaults: AiValues;
+  env: AiEnv;
+  orgs_inheriting: Record<"scan_models" | "chat_models" | "scan_thinking" | "chat_levels" | "dynamic", number>;
 }
 
 /** One row of GET /operator/usage: one organisation's use of one model. No user or document. */

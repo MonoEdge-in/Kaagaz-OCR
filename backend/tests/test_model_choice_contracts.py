@@ -10,14 +10,15 @@ from contextlib import contextmanager
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import Connection
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.ai import usage
 from kaagaz.ai.openrouter import PROVIDER, OpenRouterClient, ProviderNotAllowed, provider
 from kaagaz.db import models
 from kaagaz.db.engine import Database
+from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from tests.settings_factory import make_settings
+from tests.test_ai_resolve import FakeConn, document, row
 
 CUSTOMER = "00000000-0000-0000-0000-00000000000a"
 USER = "00000000-0000-0000-0000-00000000000b"
@@ -160,43 +161,33 @@ def test_a_page_read_through_a_provider_outside_the_ceiling_sends_nothing() -> N
     assert client.usage().input_tokens == 0
 
 
+# Changed on purpose (features 25-27, 15 Oct 2026): the resolver asks for the area's list and
+# the document's choice apart (tests.test_ai_resolve.FakeConn answers each), and checks the
+# vendor too; prompt_version must be the reader's own.
 @pytest.mark.parametrize(
-    ("rows", "expected"),
+    ("rows", "chosen", "expected"),
     [
-        ([], ("google/gemini-3.1-pro-preview", "google-vertex")),  # no models set: as before
+        ([], None, ("google/gemini-3.1-pro-preview", "google-vertex")),  # no models set: as before
         (
             [
-                {
-                    "id": "google/gemini-3.8-flash",
-                    "providers": ["google-vertex"],
-                    "is_default_scan": True,
-                    "chosen": None,
-                },
-                {
-                    "id": CLAUDE,
-                    "providers": ["amazon-bedrock", "google-vertex"],
-                    "is_default_scan": False,
-                    "chosen": True,
-                },
+                row("google/gemini-3.8-flash", default=True),
+                row(CLAUDE, providers=["amazon-bedrock", "google-vertex"]),
             ],
+            CLAUDE,
             (CLAUDE, "google-vertex"),  # the chosen model, through its first provider in the ceiling
         ),
         (
-            [
-                {
-                    "id": "google/gemini-3.8-flash",
-                    "providers": ["google-vertex"],
-                    "is_default_scan": True,
-                    "chosen": False,
-                },
-                {"id": "openai/gpt-6-luna", "providers": ["azure"], "is_default_scan": False, "chosen": True},
-            ],
+            [row("google/gemini-3.8-flash", default=True), row("openai/gpt-6-luna", providers=["azure"])],
+            "openai/gpt-6-luna",
             ("google/gemini-3.8-flash", "google-vertex"),  # azure is outside the ceiling: the default
         ),
     ],
 )
 def test_the_scan_model_is_the_choice_else_the_default_else_ocr_model(
-    rows: list[Mapping[str, Any]], expected: tuple[str, str]
+    rows: list[Mapping[str, Any]], chosen: str | None, expected: tuple[str, str]
 ) -> None:
-    conn = cast(Connection, _Conn(rows))
-    assert models.resolve(conn, CUSTOMER, DOCUMENT, settings=make_settings(), prompt_version="g2") == expected
+    conn = FakeConn(scan=rows, document=document(chosen)).conn()
+    version = READER_PROMPT_VERSION
+    assert (
+        models.resolve(conn, CUSTOMER, DOCUMENT, settings=make_settings(), prompt_version=version) == expected
+    )

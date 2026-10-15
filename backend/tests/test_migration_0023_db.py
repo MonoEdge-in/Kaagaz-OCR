@@ -46,6 +46,11 @@ FUNCTIONS = {
     "kaagaz_op_set_org_models",
     "kaagaz_op_usage",
 }
+# Changed on purpose (features 25-27, 15 Oct 2026): 0026 replaces these two with
+# kaagaz_op_org_ai and kaagaz_op_set_org_ai, so at head they are gone (0026's downgrade
+# restores them exactly); the others are still 0023's names.
+REPLACED_BY_0026 = {"kaagaz_op_org_models", "kaagaz_op_set_org_models"}
+AT_HEAD = FUNCTIONS - REPLACED_BY_0026
 NEW_INDEXES = {
     "customer_models_default",
     "model_usage_period",
@@ -122,7 +127,9 @@ def catalog_model(
 ) -> str:
     """A new catalogue model with a unique id: eligible, verified for PROMPT and enabled by
     a new operator unless told otherwise. Returns its id."""
-    model = f"test-{uuid.uuid4().hex[:10]}/model-1"
+    # Changed on purpose (features 25-27, 15 Oct 2026): a google model, since a vendor
+    # outside OPENROUTER_MODEL_VENDORS (google, anthropic) is never usable.
+    model = f"google/test-{uuid.uuid4().hex[:10]}"
     params = {
         "id": model,
         "name": name,
@@ -179,7 +186,7 @@ def test_0023_up_down_up_and_the_payer_is_backfilled_from_the_uploader(fresh: tu
     assert _current(url) == _head()
     at_head, comments_head = m0002._schema(database), _dictionary(database)
     assert m0002._names(at_head, "relations") >= NEW_TABLES | NEW_INDEXES
-    assert m0002._names(at_head, "functions") >= FUNCTIONS
+    assert m0002._names(at_head, "functions") >= AT_HEAD
     assert set(comments_head) >= NEW_COLUMNS | {(table, None) for table in NEW_TABLES}
     with database.customer(customer) as conn:
         billed = conn.execute(
@@ -206,9 +213,9 @@ def test_every_new_function_index_and_policy_has_a_comment(db: Database) -> None
         " obj_description(p.oid, 'pg_policy') FROM pg_policy p"
         " WHERE p.polrelid IN ('model_catalog'::regclass, 'customer_models'::regclass,"
         " 'model_usage'::regclass)",
-        {"f": sorted(FUNCTIONS), "i": sorted(NEW_INDEXES)},
+        {"f": sorted(AT_HEAD), "i": sorted(NEW_INDEXES)},
     )
-    assert len(comments) == len(FUNCTIONS) + len(NEW_INDEXES) + 5  # 3 catalogue policies, 2 customer_only
+    assert len(comments) == len(AT_HEAD) + len(NEW_INDEXES) + 5  # 3 catalogue policies, 2 customer_only
     assert [name for name, comment in comments if not (comment or "").strip()] == []
 
 

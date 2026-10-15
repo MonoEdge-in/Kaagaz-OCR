@@ -52,6 +52,11 @@ MODEL_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127
 PROVIDER_SLUG = re.compile(r"[a-z0-9-]{1,64}")
 # The provider every call used before model choice, and OPENROUTER_PROVIDERS when unset.
 DEFAULT_PROVIDER = "google-vertex"
+# The model vendors (the part of a model id before "/") the operator may allow, a ceiling
+# apart from the providers (features 25-27, council 15 Oct 2026, S1). Tushar decided on 15
+# Oct 2026 that Sonnet 5.5 is allowed by default, so the default is google and anthropic.
+DEFAULT_MODEL_VENDORS = frozenset({"google", "anthropic"})
+MODEL_VENDOR = re.compile(r"[a-z0-9][a-z0-9-]{0,127}")  # MODEL_ID's part before "/"
 # OPENROUTER_BASE_URL may be plain http only on these hosts (a fake server in tests, or the
 # exit test's closed port); anywhere else the key would cross the network in the clear.
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -215,6 +220,10 @@ class Settings:
     # of a new data processor. Optional: unset is DEFAULT_PROVIDER only; set, it must include
     # DEFAULT_PROVIDER (chat, embeddings and OCR_MODEL are called through it).
     openrouter_providers: frozenset[str]
+    # Features 25-27 (S1): the model vendors a chosen model may come from, checked on its
+    # id; a model of another vendor is never used, even when enabled and verified.
+    # Optional: unset is DEFAULT_MODEL_VENDORS.
+    openrouter_model_vendors: frozenset[str]
     ocr_media_resolution: str
     ocr_thinking_level: str
     ocr_retry_media_resolution: str
@@ -450,6 +459,16 @@ class Settings:
         if DEFAULT_PROVIDER not in providers:
             # Chat, embeddings and the platform's own model (resolve's fallback) all go there.
             raise SettingsError(f"OPENROUTER_PROVIDERS must include {DEFAULT_PROVIDER}")
+        vendors = (
+            DEFAULT_MODEL_VENDORS
+            if env.optional("OPENROUTER_MODEL_VENDORS") is None
+            else env.words("OPENROUTER_MODEL_VENDORS")
+        )
+        if any(MODEL_VENDOR.fullmatch(name) is None for name in vendors):
+            raise SettingsError(
+                "OPENROUTER_MODEL_VENDORS must list model vendors such as google,"
+                " each lower-case letters, digits and dashes, at most 128"
+            )
         if openrouter_api_key is None and (ocr_engine == "gemini" or model_enabled):
             raise SettingsError(
                 "OPENROUTER_API_KEY is not set: OCR_ENGINE=gemini, or MODEL_ENABLED, needs it"
@@ -501,6 +520,7 @@ class Settings:
             openrouter_api_key=openrouter_api_key,
             openrouter_base_url=_openrouter_base_url(env.text("OPENROUTER_BASE_URL")),
             openrouter_providers=providers,
+            openrouter_model_vendors=vendors,
             ocr_media_resolution=env.media_resolution("OCR_MEDIA_RESOLUTION"),
             ocr_thinking_level=env.choice("OCR_THINKING_LEVEL", set(THINKING_LEVELS)),
             ocr_retry_media_resolution=env.media_resolution("OCR_RETRY_MEDIA_RESOLUTION"),

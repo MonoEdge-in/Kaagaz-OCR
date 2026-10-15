@@ -107,7 +107,16 @@ class BilledChat(FakeChat):
     """The chat model, each call billed as the model client does."""
 
     def chat_json(
-        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         usage.record_call(self.chat_model, None, 100, 20, 0, 0.001)
         return super().chat_json(system=system, user=user, schema=schema, max_tokens=max_tokens)
@@ -278,13 +287,15 @@ def test_with_the_gemini_reader_each_job_resolves_its_model_for_prompt_g2() -> N
     db = _Db(USER)
     processor = _built(db, make_settings(ocr_engine="gemini"))
     assert processor._job_reading is not None and processor._usage is not None
-    with mock.patch.object(models, "resolve", return_value=(CLAUDE, "google-vertex")) as resolve:
+    # Changed on purpose (features 25-27, 15 Oct 2026): the job reads the whole Reading
+    # (resolve_scan: mode, Careful, Ensemble's others), which knows the reader's prompt itself.
+    scan = models.Reading("single", models.Agent(CLAUDE, "google-vertex", "Claude"), thinking="low")
+    with mock.patch.object(models, "resolve_scan", return_value=scan) as resolve:
         reading = processor._job_reading(CUSTOMER, "doc-1")
-    assert reading == JobReading(USER, CLAUDE, "google-vertex")
+    assert reading == JobReading(USER, CLAUDE, "google-vertex", reading=scan)
     assert db.customers == [CUSTOMER]
     (call,) = resolve.call_args_list
     assert call.args[1:] == (CUSTOMER, "doc-1")
-    assert call.kwargs["prompt_version"] == "g2"
 
 
 def test_with_a_chat_model_but_rapidocr_each_job_asks_only_who_it_is_billed_to() -> None:

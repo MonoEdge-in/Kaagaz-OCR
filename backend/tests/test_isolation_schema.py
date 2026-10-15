@@ -12,6 +12,10 @@ PRD 5 (0021): the page cache, sections and topics, with the least grants each ne
 Model choice and AI spend (0023, NEEDS VRUSHIT'S APPROVAL): the organisations' models the
 app may only read, the ledger it may only read and add to, the platform catalogue whose
 refresh columns alone it may write, and the operator's five functions.
+
+Features 25-27 (0026): an organisation's AI settings the app may only read, the platform
+defaults (no customer) every role that may reads, the catalogue's chat_eligible the refresh
+writes, and the operator's AI functions in place of 0023's organisation models ones.
 """
 
 import re
@@ -68,16 +72,21 @@ FROM_0023 = {
     "customer_models": (True, False, False, False),
     "model_usage": (True, True, False, False),
 }
+# Features 25-27 (0026): the operator alone writes an organisation's AI settings.
+FROM_0026 = {"customer_ai_settings": (True, False, False, False)}
 # The catalogue (no customer): the app's refresh writes these columns only, never
 # verified_*, tokens_per_page_* (verify-models, the owner) or enabled_* (the operator).
 CATALOG_REFRESH = {
     "name", "price_in_usd_per_m", "price_out_usd_per_m", "providers", "efforts", "expires_on", "eligible",
-    "seen_at",
+    "seen_at", "chat_eligible",  # 0026, the answer filter
 }  # fmt: skip
 CATALOG_POLICIES = {
     ("model_catalog", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
     ("model_catalog", "refresh_insert"): ("INSERT", "PERMISSIVE", ["public"], None, "true"),
     ("model_catalog", "refresh_update"): ("UPDATE", "PERMISSIVE", ["public"], "true", "true"),
+    # 0026: the platform defaults, read by every role that may (the app's grant is SELECT only).
+    ("platform_models", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
+    ("platform_ai_settings", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
 }
 PAGE_READ_UPDATES = {"result", "input_tokens", "output_tokens", "created_at"}
 SECTION_UPDATES = {"embedding", "embed_recipe"}
@@ -186,12 +195,30 @@ OPERATOR_RIGHTS = {
         " efforts text[], expires_on date, eligible boolean, seen_at timestamp with time zone,"
         " verified_prompt_version text, verified_at timestamp with time zone, tokens_per_page_in integer,"
         " tokens_per_page_out integer, enabled_at timestamp with time zone, ledger_tokens_in numeric,"
-        " ledger_tokens_out numeric)",
+        " ledger_tokens_out numeric, chat_eligible boolean, chat_verified_prompt text,"
+        " chat_verified_at timestamp with time zone)",  # 0026: the answer columns
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_enabled": ("text", EMPTY_PATH),
-    "kaagaz_op_org_models": ("TABLE(models text[], default_scan text, ai_budget_usd numeric)", EMPTY_PATH),
-    "kaagaz_op_set_org_models": ("record", EMPTY_PATH),
+    # 0026, features 25-27, in place of 0023's kaagaz_op_org_models and kaagaz_op_set_org_models:
+    # one organisation's AI settings and budget, the platform defaults with counts of the
+    # organisations each area reaches, and the two saves (step-up). Pinned: no user, no document.
+    "kaagaz_op_org_ai": (
+        "TABLE(scan_models text[], scan_default text, chat_models text[], chat_default text,"
+        " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean, ensemble boolean,"
+        " ai_budget_usd numeric)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_org_ai": ("record", EMPTY_PATH),
+    "kaagaz_op_ai_defaults": (
+        "TABLE(scan_models text[], scan_default text, chat_models text[], chat_default text,"
+        " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean,"
+        " orgs_inheriting_scan_models bigint, orgs_inheriting_chat_models bigint,"
+        " orgs_inheriting_scan_thinking bigint, orgs_inheriting_chat_levels bigint,"
+        " orgs_inheriting_dynamic bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_ai_defaults": ("text", EMPTY_PATH),
     "kaagaz_op_usage": (
         "TABLE(customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,"
         " input_tokens numeric, output_tokens numeric, reasoning_tokens numeric, cost_usd numeric,"
@@ -237,9 +264,12 @@ OPERATOR_RIGHTS = {
 }
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
-# (0023), which belong to no customer.
+# (0023) and the platform AI defaults (0026), which belong to no customer.
 OPERATOR_TABLES = {"operators", "platform_audit"}
-NO_CUSTOMER_ID = {"customers", "alembic_version", "reader_status", "model_catalog"} | OPERATOR_TABLES
+PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings"}
+NO_CUSTOMER_ID = (
+    {"customers", "alembic_version", "reader_status", "model_catalog"} | PLATFORM_DEFAULTS | OPERATOR_TABLES
+)
 
 _CUSTOMER_TABLES = text(
     "SELECT c.relname, c.relrowsecurity, pg_get_userbyid(c.relowner)"
@@ -265,6 +295,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0009)
         | set(FROM_0021)
         | set(FROM_0023)
+        | set(FROM_0026)
     )
 
     with db.system() as conn:
@@ -308,17 +339,18 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
 
     assert set(granted) == set(tables)
     for table, (select, insert, _update, _delete) in granted.items():
-        if table not in FROM_0023:  # an organisation's models are the operator's to write
+        if table not in FROM_0023 | FROM_0026:  # an organisation's models and settings are the operator's
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
-    for table, expected in (FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021 | FROM_0023).items():
+    for table, expected in (FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021 | FROM_0023 | FROM_0026).items():
         assert granted[table] == expected, table
 
 
 def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(db: Database) -> None:
     """It must pass as well as customer_only: with no user set, no row is seen or written.
-    The only other policies are the model catalogue's (0023: platform data, no customer)."""
+    The only other policies are the model catalogue's (0023) and the platform defaults' (0026):
+    platform data, no customer."""
     with db.system() as conn:
         policies = {
             (table, name): (command, permissive, roles, using, check)
@@ -388,8 +420,10 @@ def test_the_app_writes_only_the_refresh_columns_of_the_model_catalogue(db: Data
 
 
 def test_the_app_may_set_a_documents_model_and_who_it_is_billed_to(db: Database) -> None:
-    """0023: an upload and a read again write them (the table's UPDATE grant, kept)."""
-    assert {"read_model", "read_requested_by"} <= _updatable(db, "documents")
+    """0023: an upload and a read again write them (the table's UPDATE grant, kept); 0026: the
+    reading mode and Ensemble's other readers too, and the pipeline a value's vote."""
+    assert {"read_model", "read_requested_by", "read_mode", "read_also"} <= _updatable(db, "documents")
+    assert "votes" in _updatable(db, "extracted_values")
 
 
 def test_the_app_may_update_only_the_upload_limit_of_its_customer(db: Database) -> None:

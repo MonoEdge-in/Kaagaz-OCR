@@ -407,7 +407,16 @@ class FakeModel:
         return [[0.25, 0.5, 0.25] for _ in texts]
 
     def chat_json(
-        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         self.prompts.append((system, user))
         self.max_tokens.append(max_tokens)

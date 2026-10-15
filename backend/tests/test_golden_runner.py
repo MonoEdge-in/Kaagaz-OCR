@@ -16,6 +16,7 @@ from scripts.run_golden import (
     GoldenError,
     Http,
     _parser,
+    answer_settings,
     check_local,
     header,
     hits,
@@ -112,3 +113,18 @@ class HeaderTest(unittest.TestCase):
         settings = make_settings(model_chat=GEMINI_CHAT, model_embed=GEMINI_EMBED, answer_whole_doc_tokens=0)
         header(out, settings, "http://127.0.0.1:8000", "abc123")
         self.assertIn(" ANSWER_WHOLE_DOC_TOKENS=0 ", out.getvalue())
+
+
+class AnswerSettingsTest(unittest.TestCase):
+    """Features 25-27 (C14): the golden run can ask with chosen answer models and a level."""
+
+    def test_agents_and_thinking_become_the_chat_fields(self) -> None:
+        argv = ["--git-sha", "abc", "--agents", "google/a, anthropic/b", "--thinking", "medium"]
+        args = _parser().parse_args(argv)
+        self.assertEqual(
+            answer_settings(args.agents, args.thinking),
+            {"agents": ["google/a", "anthropic/b"], "thinking": "medium"},
+        )
+        self.assertEqual(answer_settings(None, None), {})
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            _parser().parse_args(["--git-sha", "abc", "--thinking", "max"])

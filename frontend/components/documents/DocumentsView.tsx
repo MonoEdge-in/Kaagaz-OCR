@@ -300,7 +300,14 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     </button>
   );
   const readerSelect = (
-    <ReaderSelect readers={uploads.limits.readers} picked={uploads.reader} onPick={uploads.chooseReader} />
+    <ReaderSelect
+      readers={uploads.limits.readers}
+      picked={uploads.reader}
+      onPick={uploads.chooseReader}
+      ensemble={uploads.limits.ensemble ?? null}
+      agents={uploads.agents}
+      onAgents={uploads.chooseAgents}
+    />
   );
 
   return (

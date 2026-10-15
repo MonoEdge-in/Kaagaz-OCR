@@ -39,5 +39,7 @@ def test_u9_sp1_the_reader_pages_tokens_and_spend_are_this_months(db: Database) 
     stats = admin.client.get("/api/admin/stats").json()
 
     assert stats["reader_pages"] == {"gemini": 5, "local": 3, "cached": 2, "read_again": 1}
-    # The ledger's precision, not the cent's: under a cent is never sent as 0 (R9).
-    assert stats["spend_estimate"] == {"input_tokens": 1_500_000, "output_tokens": 100_000, "usd": 4.204}
+    # Changed on purpose (features 25-27, 15 Oct 2026): scan tokens only; the ledger's dollars are
+    # never sent to an org admin (Tushar), whatever was spent.
+    assert stats["scan_tokens"] == {"input_tokens": 1_500_000, "output_tokens": 100_000}
+    assert "spend_estimate" not in stats

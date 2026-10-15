@@ -71,6 +71,12 @@ The steps (docs/architecture.md):
     then topic and section pieces, then hits), and the cards before any of it.
 11. Memory (PRD 5 M3, kaagaz/answering/memory.py): the conversation's summary and memory
     go to the rewrite only; ``remember`` writes a new one.
+12. Model choice and Ensemble (features 25-27, C7): the asker's ``ChatChoice`` names the
+    draft's model(s) and thinking level. With more than one, each drafts from the same
+    evidence at once (``_ensemble``) and the lead's draft is answered; the answer is
+    verified only when today's rules say so and every other model's checked sentences
+    hold the lead's numbers from the same sources (``agreement``). Agreement only ever
+    adds Needs review.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source, and every source has a region.
@@ -83,13 +89,17 @@ code only (``_not_found``'s ``reason``).
 Time: one ``available_fields`` query only for a question with an aggregate
 word and no unknown topic word, then either one fixed query or one search
 (then one neighbours statement for the usable hits) plus at most one model
-call; the rest is O(e * t) over e pieces of evidence of t characters. e is at
-most ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
+call (one per agent with Ensemble, at most three, in parallel); the rest is
+O(e * t) over e pieces of evidence of t characters. e is at most
+ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 """
 
 import logging
 import re
+import time
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
@@ -105,6 +115,7 @@ from kaagaz.ai.client import (
     estimate_tokens_cautiously,
     input_token_budget,
 )
+from kaagaz.ai.usage import billed_as
 from kaagaz.answering import glossary
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
 from kaagaz.answering.draft import (
@@ -162,6 +173,7 @@ from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unche
 from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
 from kaagaz.chunking.script import ascii_digits, has_other_script_letters, spaced_words
 from kaagaz.db.engine import Database
+from kaagaz.db.models import Agent, ChatChoice
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.indexing import recipe_tag
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -176,6 +188,9 @@ Route = Literal["fixed_query", "search"]
 _MAX_NAME = 100  # a party name longer than this is cut in the sentence
 _REPLY_TOKENS = 1024  # PROVISIONAL: a draft's reply budget (num_predict), kept free of evidence
 _FENCE_TOKENS = 10  # an evidence tag and its line breaks
+# Features 25-27, C7 M9: an Ensemble answer's one deadline is MODEL_TIMEOUT_SECONDS and this
+# much more from when its drafts start, for every agent's call and repair.
+ENSEMBLE_SLACK_SECONDS = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +238,20 @@ class AnswerSentence:
 
 
 @dataclass(frozen=True, slots=True)
+class Team:
+    """Who drafted an answer the asker's choice named (features 25-27, C7): the names
+    and ids of the agents that replied, the one whose draft was used first; how many
+    were asked; whether the others confirmed it ("agreed", "not_confirmed", or None with
+    one agent); the thinking level."""
+
+    agents: tuple[str, ...]
+    agent_ids: tuple[str, ...]
+    asked: int
+    agreement: Literal["agreed", "not_confirmed"] | None
+    thinking: str
+
+
+@dataclass(frozen=True, slots=True)
 class Answer:
     status: Status
     label: str | None  # None when not found
@@ -238,9 +267,22 @@ class Answer:
     reading_note: str | None = None
     unreadable_pages: tuple[FlaggedPage, ...] = ()
     unreadable_page_count: int = 0
+    team: Team | None = None  # features 25-27: who drafted it, when the asker's choice did
 
     def to_json(self) -> dict[str, Any]:
-        """The ``Answer`` of frontend/lib/types.ts, exactly."""
+        """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
+        ``agents_asked``, ``agreement`` and ``thinking`` only with a ``team``."""
+        team = (
+            {}
+            if self.team is None
+            else {
+                "agents": list(self.team.agents),
+                "agent_ids": list(self.team.agent_ids),
+                "agents_asked": self.team.asked,
+                "agreement": self.team.agreement,
+                "thinking": self.team.thinking,
+            }
+        )
         return {
             "status": self.status,
             "label": self.label,
@@ -257,6 +299,7 @@ class Answer:
             "reading_note": self.reading_note,
             "unreadable_pages": [page.to_json() for page in self.unreadable_pages],
             "unreadable_page_count": self.unreadable_page_count,
+            **team,
         }
 
 
@@ -324,11 +367,15 @@ class AnswerService:
         history: Sequence[Turn] = (),
         user_id: str | None = None,
         memory: Memory = NO_MEMORY,
+        choice: ChatChoice | None = None,
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
         asker, whose own words (only) may help the search (None: nobody's); ``memory``, the
-        conversation's (M3), for the rewrite only."""
+        conversation's (M3), for the rewrite only; ``choice``, who drafts the answer
+        (``kaagaz.db.models.resolve_chat``, features 25-27; None: MODEL_CHAT at low, as
+        before). Only the draft uses it: the rewrite, translation and memory stay on
+        MODEL_CHAT."""
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         whole = self._whole(customer_id, scope)
@@ -349,7 +396,7 @@ class AnswerService:
                 aspects_max=most,
                 budget=self._rewrite_budget,
             )
-        answer = self._answer(customer_id, rewritten or question, scope, user_id, whole, aspects)
+        answer = self._answer(customer_id, rewritten or question, scope, user_id, whole, aspects, choice)
         return replace(self._unreadable(customer_id, answer, scope), rewritten_question=rewritten)
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
@@ -410,8 +457,10 @@ class AnswerService:
         user_id: str | None,
         whole: Sequence[Hit] | None = None,
         aspects: Sequence[str] = (),
+        choice: ChatChoice | None = None,
     ) -> Answer:
-        """``whole``: every piece of the scope (CX5), or None to search; ``aspects``: CX6's."""
+        """``whole``: every piece of the scope (CX5), or None to search; ``aspects``: CX6's;
+        ``choice``: who drafts (``answer``)."""
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
@@ -428,7 +477,7 @@ class AnswerService:
         words = () if user_id is None else self._words.words(customer_id, user_id)
         expansion = expand(question, words) if words else NO_EXPANSION
         answer = self._search_answer(
-            customer_id, question, normalised, shown, scope, expansion, whole, aspects
+            customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice
         )
         if not expansion.used:
             return answer
@@ -539,6 +588,7 @@ class AnswerService:
         expansion: Expansion,
         whole: Sequence[Hit] | None = None,
         aspects: Sequence[str] = (),
+        choice: ChatChoice | None = None,
     ) -> Answer:
         # Romanised question words and fillers (ahe, kiti) say nothing about the topic: they
         # are left out of every step below, never out of normalise (PR 2b-2).
@@ -600,13 +650,10 @@ class AnswerService:
                     break
                 evidence.append(item)
 
-        drafted = self._draft(customer_id, scope, question, normalised, evidence, expansion)
-        draft, model_used, seen, why = drafted
-        # Only the evidence the draft saw. Line by line: joined, "12" and a next
-        # line's "August 2026" would read as a date.
-        texts = {item.n: "\n".join(map(clean_text, item.hit.text.splitlines())) for item in seen}
-        cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
-        kept = verify([s for s in cleaned if s.text], texts) if draft.status == "answered" else []
+        drafted = self._draft(customer_id, scope, question, normalised, evidence, expansion, choice)
+        draft, model_used, seen, why, team = drafted
+        texts = _texts(seen)
+        kept = _kept(draft, texts)
         if not kept:
             why = why if draft.status != "answered" else "notfound_verify_dropped_all"
             return _not_found("search", shown, closest, model_used=model_used, reason=why)
@@ -649,6 +696,8 @@ class AnswerService:
                     or any(_translated_only(by_n[n], translated, min_score) for s in kept for n in s.evidence)
                 )
             )
+            # Ensemble (features 25-27, C7): the other models not confirming adds Needs review, only.
+            or (team is not None and team.agreement == "not_confirmed")
         )
         verified = all(c.label == "verified" for c in citations) and not (on_neighbours or unchecked or hard)
         return Answer(
@@ -661,6 +710,7 @@ class AnswerService:
             normalized_question=shown,
             model_used=model_used,
             reading_note=HARD_TO_READ_NOTE if hard else None,
+            team=team,
         )
 
     def _translated_search(
@@ -766,33 +816,42 @@ class AnswerService:
         normalised: NormalisedQuestion,
         evidence: Sequence[Evidence],
         expansion: Expansion = NO_EXPANSION,
-    ) -> tuple[Draft, bool, Sequence[Evidence], str]:
+        choice: ChatChoice | None = None,
+    ) -> tuple[Draft, bool, Sequence[Evidence], str, Team | None]:
         """The model's draft (and True), or the extractive one (and False), with the
         evidence it was drafted from: for the model, the best pieces that fit its window,
-        and the reason code a not-found draft would give.
+        and the reason code a not-found draft would give; and the ``Team`` of a ``choice``
+        (features 25-27, C7), None without one.
         The model sees the question, the evidence and its documents' cards (M2, while they
         fit) only, never a user's word or meaning; ``expansion`` helps the extractive draft
         choose its lines."""
+        team: Team | None = None
         if self._model is not None:
             asked = f"{question} (in English: {normalised.english})" if normalised.hinglish else question
             seen = fit_evidence(asked, evidence, self._evidence_budget)
             code = "evidence_too_large"  # not even the best piece fits
             if seen:
-                model, max_tokens = self._model, self._settings.model_answer_max_tokens
                 cards = fit_cards(asked, seen, self._cards(customer_id, scope, seen), self._evidence_budget)
-                try:
-                    draft = model_draft(model, asked, seen, max_tokens=max_tokens, cards=cards)
-                except (ModelUnavailable, ModelOutputError) as error:
-                    code = error.code
+                draft_with = partial(
+                    model_draft,
+                    self._model,
+                    asked,
+                    seen,
+                    max_tokens=self._settings.model_answer_max_tokens,
+                    cards=cards,
+                )
+                if choice is not None and len(choice.agents) > 1:
+                    drafted, team, code = self._ensemble(draft_with, seen, choice)
                 else:
-                    _log.info("answer drafted by %s with prompt %s", model.chat_model, ANSWER_PROMPT_HASH)
-                    return draft, True, seen, "notfound_model"
+                    drafted, team, code = _single(draft_with, self._model.chat_model, choice)
+                if drafted is not None:
+                    return drafted, True, seen, "notfound_model", team
             # Quoting the evidence needs no model.
             _log.warning("answer drafted without the model", extra={"code": code})
         why = "notfound_no_model" if self._model is None else f"notfound_model_error:{code}"
         if mentions_date(normalised):
             # A quoted line cannot be checked against a date.
-            return Draft("not_found", []), False, evidence, f"{why}:date"
+            return Draft("not_found", []), False, evidence, f"{why}:date", team
         return (
             extractive_draft(
                 normalised.keywords, evidence, _numbers(question, normalised.keywords, expansion), expansion
@@ -800,13 +859,148 @@ class AnswerService:
             False,
             evidence,
             why,
+            team,
         )
+
+    def _ensemble(
+        self, draft_with: Callable[..., Draft], seen: Sequence[Evidence], choice: ChatChoice
+    ) -> tuple[Draft | None, Team | None, str]:
+        """C7: every agent drafts from the same evidence at once, each by one deadline
+        (MODEL_TIMEOUT_SECONDS + ENSEMBLE_SLACK_SECONDS from now), the others billed as
+        ``ensemble_chat``; every thread is joined before this returns, so the ledger has
+        every call. The lead is fixed before any reply: the first agent (resolve_chat
+        puts the default first). An outage (``_outage``) drops an agent out and the next
+        in order leads; a content failure (a refusal, a bad reply, not found while another
+        answered, no sentence verify keeps) is dissent, and an agent is never replaced
+        for it: a lead that failed so gives (None, the team, its code) and the answer is
+        quoted, Needs review. A lead that found nothing while another answered: that one's
+        draft, not confirmed. No agent at all: (None, None, the lead's code)."""
+        deadline = time.monotonic() + self._settings.model_timeout_seconds + ENSEMBLE_SLACK_SECONDS
+        lead = choice.agents[0]
+
+        def one(agent: Agent) -> Draft | ModelUnavailable | ModelOutputError:
+            call = partial(
+                draft_with,
+                chat_model=agent.model,
+                thinking=choice.thinking,
+                provider=agent.provider,
+                deadline=deadline,
+            )
+            try:
+                if agent is lead:
+                    return call()
+                with billed_as("ensemble_chat"):
+                    return call()
+            except (ModelUnavailable, ModelOutputError) as error:
+                return error
+
+        with ThreadPoolExecutor(max_workers=len(choice.agents)) as pool:  # leaving it joins every thread
+            futures = [pool.submit(copy_context().run, one, agent) for agent in choice.agents]
+        results = [future.result() for future in futures]
+        present = [(a, r) for a, r in zip(choice.agents, results, strict=True) if not _outage(r)]
+        if not present:
+            first = results[0]
+            return None, None, first.code if not isinstance(first, Draft) else "ensemble"
+        texts = _texts(seen)
+        kept = [_kept(r, texts) if isinstance(r, Draft) else [] for _, r in present]
+        main = 0
+        main_result = present[0][1]
+        if isinstance(main_result, Draft) and main_result.status == "not_found":
+            main = next((i for i, sentences in enumerate(kept) if sentences), 0)
+        answered = [agent for agent, r in present if isinstance(r, Draft)]
+        named = sorted(answered, key=lambda agent: agent is not present[main][0])
+        result: Literal["agreed", "not_confirmed"] | None = None
+        if len(present) > 1:
+            others = [sentences for i, sentences in enumerate(kept) if i != main]
+            result = "not_confirmed" if main else agreement(kept[main], others)
+        team = Team(
+            tuple(agent.name for agent in named),
+            tuple(agent.model for agent in named),
+            len(choice.agents),
+            result,  # a lead that failed has no sentence, so it is never "agreed"
+            choice.thinking,
+        )
+        chosen = present[main][1]
+        if not isinstance(chosen, Draft):
+            return None, team, chosen.code
+        _log.info("answer drafted by %s with prompt %s", present[main][0].model, ANSWER_PROMPT_HASH)
+        return chosen, team, ""
 
     def _today(self) -> date:
         now = self._clock()
         if now.tzinfo is None:
             raise ValueError("the clock must give a timezone-aware time")
         return now.astimezone(self._zone).date()
+
+
+def _single(
+    draft_with: Callable[..., Draft], default_model: str, choice: ChatChoice | None
+) -> tuple[Draft | None, Team | None, str]:
+    """One model's draft: the ``choice``'s one agent at its level (C7), or, with no choice,
+    MODEL_CHAT as before; (None, None, the code) when it fails."""
+    agent = None if choice is None else choice.agents[0]
+    try:
+        if choice is None or agent is None:
+            draft = draft_with()
+        else:
+            draft = draft_with(chat_model=agent.model, thinking=choice.thinking, provider=agent.provider)
+    except (ModelUnavailable, ModelOutputError) as error:
+        return None, None, error.code
+    _log.info(
+        "answer drafted by %s with prompt %s",
+        default_model if agent is None else agent.model,
+        ANSWER_PROMPT_HASH,
+    )
+    if choice is None or agent is None:
+        return draft, None, ""
+    return draft, Team((agent.name,), (agent.model,), 1, None, choice.thinking), ""
+
+
+def _outage(result: object) -> bool:
+    """C7 M1: the model could not be reached or could never take this request (a
+    ``ModelUnavailable``, or a 400 ``bad_request``): the agent drops out. Any other
+    failure is about its reply, and counts as dissent."""
+    return isinstance(result, ModelUnavailable) or (
+        isinstance(result, ModelOutputError) and result.code == "bad_request"
+    )
+
+
+def _texts(seen: Sequence[Evidence]) -> dict[int, str]:
+    """The text of each piece of evidence a draft saw, by id, cleaned. Line by line:
+    joined, "12" and a next line's "August 2026" would read as a date."""
+    return {item.n: "\n".join(map(clean_text, item.hit.text.splitlines())) for item in seen}
+
+
+def _kept(draft: Draft, texts: dict[int, str]) -> list[DraftSentence]:
+    """The draft's sentences, cleaned, that ``verify`` keeps against ``texts``; none for
+    not found."""
+    if draft.status != "answered":
+        return []
+    cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
+    return verify([s for s in cleaned if s.text], texts)
+
+
+def agreement(
+    lead: Sequence[DraftSentence], others: Sequence[Sequence[DraftSentence]]
+) -> Literal["agreed", "not_confirmed"]:
+    """C7 M2: whether every other agent's kept sentences confirm the lead's kept ones.
+    A lead sentence's atoms are its numbers (``numbers_in``); another agent confirms it
+    when its sentences that cite one of the same evidence ids hold every one of them. A
+    sentence with no number counts neither way. "agreed" only when at least one lead
+    sentence has a number and every other agent confirms every such sentence; an agent
+    with no sentence (not found, a bad reply) confirms nothing. O(s * o * t)."""
+    counted = [(numbers_in(s.text), set(s.evidence)) for s in lead]
+    counted = [(atoms, cited) for atoms, cited in counted if atoms]
+    if not counted:
+        return "not_confirmed"
+    for sentences in others:
+        for atoms, cited in counted:
+            held: set[Decimal] = set().union(
+                *(numbers_in(t.text) for t in sentences if cited & set(t.evidence))
+            )
+            if not atoms <= held:
+                return "not_confirmed"
+    return "agreed"
 
 
 def _numbers(question: str, keywords: Sequence[str], expansion: Expansion) -> list[str]:

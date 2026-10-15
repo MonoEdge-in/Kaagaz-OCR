@@ -7,7 +7,8 @@
 // shows as pending and the conversation cannot be switched. Only the latest
 // conversation opened may fill the thread, so a slow reply for an earlier one
 // is dropped. Above the composer, the scope chip and picker (ScopePicker.tsx):
-// a reopened conversation shows its last question's scope again.
+// a reopened conversation shows its last question's scope again. In its row, the
+// Answer settings chip (AnswerSettings.tsx, features 25-27) when there is a choice.
 // Beside each question, the user's own story matches are asked in parallel,
 // in the chip's scope (lib/storyMatches.ts), and shown apart from the answer,
 // never in it. They belong to the question, not to the answer succeeding
@@ -31,7 +32,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { useHydrated } from "@/components/ui/useHydrated";
-import { ApiError, ask, getConversation, listConversations, listDocuments } from "@/lib/api";
+import { ApiError, ask, getChatOptions, getConversation, listConversations, listDocuments } from "@/lib/api";
 import { MODE_TEXTS, modeLockedText, readMode, saveMode, sendPlan, startMode, STORY_SEARCH_LIMIT } from "@/lib/chatMode";
 import type { ChatMode } from "@/lib/chatMode";
 import {
@@ -43,8 +44,9 @@ import {
   STORY_NOTE_CHAT,
   storyStatusText,
 } from "@/lib/storyMatches";
-import type { ConversationSummary, Message } from "@/lib/types";
+import type { ChatOptions, ConversationSummary, Message } from "@/lib/types";
 import { answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
+import { AnswerSettings } from "./AnswerSettings";
 import { AnswerView } from "./AnswerView";
 import { ConversationList } from "./ConversationList";
 import { scrollBehavior } from "./hooks";
@@ -52,11 +54,15 @@ import {
   answerScrollTop,
   askErrorText,
   chatHref,
+  choiceBody,
   conversationFromSearch,
+  defaultPick,
   documentFromSearch,
+  hasChoices,
   isNearBottom,
   STILL_LOOKING_AFTER_MS,
 } from "./logic";
+import type { AnswerPick } from "./logic";
 import { ModeSwitch } from "./ModeSwitch";
 import { QuestionBox } from "./QuestionBox";
 import {
@@ -163,6 +169,10 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   // The drawer is open for the path it was opened on, so any route change closes it.
   const [listOpenOn, setListOpenOn] = useState<string | null>(null);
   const listOpen = listOpenOn !== null && listOpenOn === pathname;
+  // Answer settings (features 25-27): what the organisation allows, and this tab's pick.
+  // Not loaded or failed: no chip, and the organisation's defaults answer.
+  const [chatOptions, setChatOptions] = useState<ChatOptions | null>(null);
+  const [answerPick, setAnswerPick] = useState<AnswerPick | null>(null);
 
   // Only the latest conversation opened may fill the thread.
   const openRequest = useRef(0);
@@ -218,6 +228,13 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       .catch(() => {
         if (!cancelled) setListFailed(true);
       });
+    getChatOptions()
+      .then((options) => {
+        if (cancelled) return;
+        setChatOptions(options);
+        setAnswerPick(defaultPick(options));
+      })
+      .catch(() => undefined); // no chip: the organisation's defaults answer
     return () => {
       cancelled = true;
     };
@@ -403,7 +420,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       });
     }
     try {
-      const reply = await ask(question, activeId ?? undefined, sentScope(scope));
+      const reply = await ask(question, activeId ?? undefined, sentScope(scope), choiceBody(chatOptions, answerPick));
       setMessages((current) => [...current, reply.question, reply.answer]);
       setScope((current) => answeredScope(current, reply.question));
       const answerStatus = answerStatusText(reply.answer.answer);
@@ -592,7 +609,11 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                 state={scope}
                 locked={scopeLockedText(busy, threadState === "loading")}
                 onChoose={(next) => setScope((current) => chooseScope(current, next))}
-              />
+              >
+                {mode === "documents" && hasChoices(chatOptions) && answerPick ? (
+                  <AnswerSettings options={chatOptions} pick={answerPick} locked={busy} onPick={setAnswerPick} />
+                ) : null}
+              </ScopePicker>
             </div>
             <QuestionBox
               pending={busy || search.kind === "loading"}

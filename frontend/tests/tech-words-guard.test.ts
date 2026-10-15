@@ -17,9 +17,16 @@ import {
   statTiles,
 } from "@/components/admin/logic";
 import { UsageReportView } from "@/components/admin/UsagePanel";
-import { DUPLICATE_READER_NOTE, readAgainWarning, readerOptions } from "@/components/documents/readers";
+import {
+  DUPLICATE_READER_NOTE,
+  ENSEMBLE_HINT,
+  READERS_CAP,
+  agentsHint,
+  readAgainWarning,
+  readerOptions,
+} from "@/components/documents/readers";
 import { REASON_FILTERS } from "@/components/review/review";
-import { REASON_FILTER_TEXT, reasonText } from "@/components/viewer/labels";
+import { REASON_FILTER_TEXT, reasonText, voteText } from "@/components/viewer/labels";
 import { lowResolutionText, noCardText } from "@/components/viewer/panels";
 import {
   CHECKER,
@@ -145,19 +152,65 @@ function shownTexts(): string[] {
       texts.push(heading.title, heading.notSureCount);
     }
   }
-  const options = readerOptions([
-    { id: "google/gemini-3.1-pro-preview", title: "Standard", hint: "", available: true, reason: null, default: true },
-    { id: "anthropic/claude-sonnet-5.5", title: "Careful", hint: "", available: true, reason: null },
-  ]);
-  texts.push(...options.map((option) => option.label));
+  // Features 25-27 (15 Oct 2026): Dynamic, more than one reader and a value's vote. The
+  // readers' names come from the server, only into the upload reader picker (below).
+  const ensemble = { readers: [{ id: "google/a", name: "A" }], max: 3, main: "google/a" };
+  const options = readerOptions(
+    [
+      { id: "dynamic", title: "Dynamic", hint: "", available: true, reason: null, default: true },
+      { id: "google/gemini-3.1-pro-preview", title: "Standard", hint: "", available: true, reason: null },
+      { id: "anthropic/claude-sonnet-5.5", title: "Careful", hint: "", available: true, reason: null },
+    ],
+    ensemble,
+  );
+  texts.push(...options.map((option) => option.label), ENSEMBLE_HINT, READERS_CAP);
+  texts.push(agentsHint(ensemble, []), agentsHint(ensemble, ["google/a", "google/b"]));
+  const reads = [
+    { main: true, text: "1,130.00" },
+    { main: false, text: "1,180.00" },
+    { main: false, text: null },
+  ];
+  texts.push(voteText({ value: "1,180.00", agreed: 2, readers: 3, reads }));
+  texts.push(voteText({ value: null, agreed: 1, readers: 3, reads }));
   return texts.filter((text): text is string => text !== null);
 }
+
+// No money on user and org-admin screens (Tushar, 15 Oct 2026): money is the super admin's only.
+const MONEY = /[$₹]|\bRs\b|\bUSD\b|\bprice|\bcost|\bbudget|\bspen[dt]|\bpaid\b/i;
 
 describe("technical words on user and admin screens", () => {
   it("are in none of the texts these screens build", () => {
     const texts = shownTexts();
     expect(texts.length).toBeGreaterThan(100);
     for (const text of texts) expect(text, text).not.toMatch(TECHNICAL);
+  });
+
+  // Changed on purpose (features 25-27, 15 Oct 2026): money words are banned outside the operator console too.
+  it("hold no money words", () => {
+    for (const text of shownTexts()) expect(text, text).not.toMatch(MONEY);
+  });
+
+  // Features 25-27: a model's name reaches a member only where they pick readers by name.
+  it("show model names from the server only in the upload reader picker", () => {
+    const app = join(__dirname, "..");
+    const files = ["app/(app)", "components"].flatMap((dir) =>
+      readdirSync(join(app, dir), { recursive: true, encoding: "utf8" })
+        .filter((file) => /\.tsx?$/.test(file))
+        .map((file) => join(dir, file).replace(/\\/g, "/")),
+    );
+    const picker = new Set([
+      "components/documents/readers.ts",
+      "components/documents/UploadArea.tsx",
+      "components/documents/DocumentsView.tsx",
+      "app/(app)/documents/[id]/ReadAgain.tsx",
+    ]);
+    const naming = files.filter(
+      (file) =>
+        !file.startsWith("components/operator/") &&
+        !picker.has(file) &&
+        /\bEnsembleOffer\b|limits\.ensemble\b/.test(readFileSync(join(app, file), "utf8")),
+    );
+    expect(naming).toEqual([]);
   });
 
   it("are in none of the words for the audit actions the backend writes", () => {
@@ -210,7 +263,7 @@ describe("the org admin's Usage screen", () => {
     by_kind: [{ ...totals, kind: "chat" }],
     by_day: [{ ...totals, day: "2026-10-15" }],
     top_documents: [{ ...totals, document_id: "d1", name: "Invoice.pdf" }],
-    budget: { ai_budget_usd: 1, spent_this_month_usd: 1.5, spent_part_unknown: true, share: 1.5 },
+    // Changed on purpose (features 25-27, 15 Oct 2026): GET /admin/usage sends no budget any more.
     ai_enabled: true,
   };
 

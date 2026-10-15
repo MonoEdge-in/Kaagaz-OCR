@@ -3,18 +3,27 @@
 checks that an app session is refused on every one of them)."""
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 
 from kaagaz.api.auth import verify_password
 from kaagaz.api.routers.admin import month_window
+from kaagaz.api.views import audit_entry
 from kaagaz.db.engine import Database
 from kaagaz.db.runs import PgRuns
 from kaagaz.pipeline import FinishedRun
+from tests.settings_factory import make_settings
+from tests.test_api_model_choice import add_model, allow
 from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, answer_json
+from tests.test_api_usage import NOW, THIS_MONTH, add_spend, set_budget
 from tests.test_runs_db import totals
+
+# Money in a response: a key or a text that names it, or a currency sign (Tushar, 15 Oct 2026).
+MONEY = re.compile(r"usd|price|budget|cost|[$₹]", re.IGNORECASE)
 
 ADMIN_USER_FIELDS = {
     "id",
@@ -280,8 +289,74 @@ def test_stats_count_this_customers_activity(db: Database) -> None:
         "in_trash": 0,
         "pages_this_month": {"cells": 0, "text_layer": 0, "ocr": 0, "blank": 0},  # PRD 2 R6
         "reader_pages": {"gemini": 0, "local": 0, "cached": 0, "read_again": 0},  # PRD 5 U9
-        "spend_estimate": {"input_tokens": 0, "output_tokens": 0, "usd": 0.0},  # nothing spent (SP1)
+        # Changed on purpose (features 25-27, 15 Oct 2026): scan tokens only, no dollars, since org
+        # admins never see money (Tushar).
+        "scan_tokens": {"input_tokens": 0, "output_tokens": 0},
     }
+
+
+def money_in(value: object, path: str = "") -> list[str]:
+    """Every key, and every text value, in ``value`` that names money or shows a currency."""
+    if isinstance(value, dict):
+        found = [f"{path}.{key}" for key in value if MONEY.search(str(key))]
+        return found + [hit for key, item in value.items() for hit in money_in(item, f"{path}.{key}")]
+    if isinstance(value, list):
+        return [hit for index, item in enumerate(value) for hit in money_in(item, f"{path}[{index}]")]
+    return [f"{path}={value}"] if isinstance(value, str) and MONEY.search(value) else []
+
+
+def test_an_old_org_models_set_audit_row_shows_no_budget() -> None:
+    """Rows 0023 wrote before 15 Oct 2026 hold the operator's budget_usd; the org never sees it."""
+    details = {"by": "operator", "models": ["google/a"], "default": "google/a", "budget_usd": 12.5}
+    row = {
+        "id": 7,
+        "action": "org.models_set",
+        "actor_name": None,
+        "target_type": "customer",
+        "target_id": "c",
+        "details": details,
+        "created_at": datetime(2026, 10, 12, tzinfo=UTC),
+    }
+    entry = audit_entry(cast(RowMapping, row))
+    assert entry["details"] == {"by": "operator", "models": ["google/a"], "default": "google/a"}
+    assert money_in(entry) == []
+    plain = {**row, "action": "settings.update", "details": None}
+    assert audit_entry(cast(RowMapping, plain))["details"] is None
+
+
+@pytest.mark.db
+def test_an_org_admin_sees_no_money_in_stats_models_usage_or_audit(db: Database) -> None:
+    """Tushar, 15 Oct 2026: org admins never see money, prices, budgets or costs. A budget,
+    priced models, spend and an old budget audit row are all there; no response names them."""
+    settings = make_settings(ocr_engine="gemini", model_enabled=True)
+    api = Api(db, settings=settings, clock=MovingClock(NOW))
+    admin = api.new_admin()
+    c = admin.customer_id
+    model = add_model(db, name="Default model")
+    allow(db, c, [model], default=model)
+    set_budget(db, c, 10.0)
+    add_spend(db, c, at=THIS_MONTH, cost=2.5)
+    with db.engine.begin() as conn:  # the owner, as 0023's kaagaz_op_set_org_models wrote it
+        conn.execute(
+            text(
+                "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id, details)"
+                " VALUES (:c, NULL, 'org.models_set', 'customer', CAST(:c AS text),"
+                " jsonb_build_object('by', 'operator', 'budget_usd', 10.0))"
+            ),
+            {"c": c},
+        )
+
+    for url in ("/api/admin/stats", "/api/admin/models", "/api/admin/usage", "/api/admin/audit"):
+        reply = admin.client.get(url)
+        assert reply.status_code == 200, url
+        assert money_in(reply.json()) == [], url
+    assert admin.client.get("/api/admin/models").json() == {
+        "scan": [{"name": "Default model", "default": True}],
+        "chat": [{"name": settings.model_chat, "default": True}],
+    }
+    csv_text = admin.client.get("/api/admin/usage.csv").text
+    assert csv_text.splitlines()[0] == "day,user,model,kind,calls,tokens"
+    assert not MONEY.search(csv_text)
 
 
 @pytest.mark.db

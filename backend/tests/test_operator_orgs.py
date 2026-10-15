@@ -48,9 +48,10 @@ ORG_ROUTES = {
     # PR 4: deleting an organisation.
     ("POST", f"{ORGS}/{ANY_ID}/schedule-delete"),
     ("POST", f"{ORGS}/{ANY_ID}/cancel-delete"),
-    # Model choice (council 11 Oct 2026): one organisation's models (routers/operator_models.py).
-    ("GET", f"{ORGS}/{ANY_ID}/models"),
-    ("PUT", f"{ORGS}/{ANY_ID}/models"),
+    # One organisation's AI settings (routers/operator_models.py). Changed on purpose
+    # (features 25-27, 15 Oct 2026): /models became /ai.
+    ("GET", f"{ORGS}/{ANY_ID}/ai"),
+    ("PUT", f"{ORGS}/{ANY_ID}/ai"),
 }
 ORG_ROW = {
     "customer_id": CID,

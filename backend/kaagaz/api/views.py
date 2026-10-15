@@ -4,6 +4,7 @@ Why one place: the frontend's types are the contract. Each function here is
 named after the type it builds, so a reviewer can hold the two side by side.
 """
 
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
@@ -27,6 +28,7 @@ _STATUS_MESSAGES = {
     "needs_reader": "Stored safely. This kind of file can't be read yet.",
 }
 _IN_PROGRESS = ("received", "clean")
+_MONEY_KEY = re.compile(r"usd|price|budget|cost", re.IGNORECASE)
 
 # How far the worker has got (PRD 2 X3), by step. PROVISIONAL wording (plan 3.3).
 # "done" counts the pages finished, so the page being worked on is the next one.
@@ -430,6 +432,25 @@ def extracted_value(row: RowMapping) -> dict[str, Any]:
         # PRD 2 D3: the value's label spot, which can be on another page; null when it has none.
         "label_page_no": row["label_page_no"],
         "label_region": row["label_region"],
+        "votes": value_votes(row.get("votes")),
+    }
+
+
+def value_votes(votes: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """``ValueVotes`` (Ensemble, F27): the readers' vote saved with a value, for the user in
+    plain words: what each reader read there, the main reader first, how many read the
+    decided text and of how many; never a model's id or name (members never see them on a
+    value). None when one reader read it."""
+    if votes is None:
+        return None
+    reads = [
+        {"main": index == 0, "text": read.get("text")} for index, read in enumerate(votes.get("reads", []))
+    ]
+    return {
+        "value": votes.get("value"),
+        "agreed": votes.get("agreed"),
+        "readers": votes.get("readers"),
+        "reads": reads,
     }
 
 
@@ -698,6 +719,13 @@ def audit_entry(row: RowMapping) -> dict[str, Any]:
         "actor_name": row["actor_name"],
         "target_type": row["target_type"],
         "target_id": row["target_id"],
-        "details": row["details"],
+        # Older org.models_set rows hold the operator's budget_usd: never shown to the org.
+        "details": without_money(row["details"]) if isinstance(row["details"], dict) else row["details"],
         "created_at": iso(row["created_at"]),
     }
+
+
+def without_money(values: Mapping[str, Any]) -> dict[str, Any]:
+    """``values`` without any key that names money (``usd``, ``price``, ``budget``,
+    ``cost``): org admins and members never see money (Tushar, 15 Oct 2026)."""
+    return {key: value for key, value in values.items() if not _MONEY_KEY.search(key)}

@@ -16,7 +16,7 @@ import table from "@/components/documents/Table.module.css";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, getAdminUsage, listUsers } from "@/lib/api";
 import { formatDate, formatNumber } from "@/lib/format";
-import type { AdminUser, UsageReport, UsageTotals } from "@/lib/types";
+import type { AdminUser, UsageReport, UsageTokens } from "@/lib/types";
 import {
   USAGE_PERIODS,
   usageKindText,
@@ -31,14 +31,14 @@ const SKELETON_TILES = [0];
 export const REMOVED_OR_SYSTEM = "Removed user or system work";
 
 /** All tokens of some calls: output_tokens already counts the thinking (reasoning_tokens). */
-export function usageTokens(totals: UsageTotals): number {
+export function usageTokens(totals: UsageTokens): number {
   return totals.input_tokens + totals.output_tokens;
 }
 
 interface Row {
   key: string;
   name: ReactNode;
-  totals: UsageTotals;
+  totals: UsageTokens;
 }
 
 /**

@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from kaagaz.answering.memory import Memory
 from kaagaz.answering.rewrite import Turn
+from kaagaz.db.models import ChatChoice
 from kaagaz.ingestion.ports import BlobStorage, JobQueue
 from kaagaz.search.scope import Scope
 
@@ -47,11 +48,13 @@ class Answers(Protocol):
         history: Sequence[Turn],
         user_id: str,
         memory: Memory,
+        choice: ChatChoice | None = None,
     ) -> AnswerLike:
         """``question`` is the stripped question text; ``scope`` is resolved for this customer;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id`` is the
         asker, whose own words (My words) only may help; ``memory`` is the conversation's
-        (PRD 5 M3), its documents still live, for the follow-up rewrite only."""
+        (PRD 5 M3), its documents still live, for the follow-up rewrite only; ``choice`` who
+        drafts the answer, checked for this customer (features 25-27)."""
         ...
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:

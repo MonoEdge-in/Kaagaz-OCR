@@ -37,6 +37,12 @@ agrees); a line no found box confirmed is ``box_unanchored`` (G5), in that order
 card value (``model_chosen``) keeps its reason. The checker's reading stays as the
 second reading, so the review card shows both.
 
+Ensemble (F27, Tushar 15 Oct 2026, ``settle_votes``): when more than one model read a
+scan, each value read by OCR that needs review is decided by the readers' majority (2 of
+3), and what each read is saved with it (``votes``) so the user sees why. The majority's
+text is then labelled by the rules above: Verified still needs the checker to agree. With
+no majority the value stays Needs review.
+
 The second reading of a line box is the second reader's line on the same page
 that overlaps it most, if their intersection over union is at least 0.5 (or,
 for scans, the checker's reading of the box (PRD 5 V1), passed in by the pipeline).
@@ -89,13 +95,16 @@ containment check; memory O(s + v).
 
 import re
 import string
+from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import Any
 
 from kaagaz.chunking.script import has_devanagari_letters, ocr_script_suspect
 from kaagaz.extraction.labelled import value_after_label
 from kaagaz.extraction.quotes import find_quote, normalise_quote, reader_text
 from kaagaz.extraction.values import CARD_RECORD, NEEDS_REVIEW, VERIFIED, ExtractedValue
+from kaagaz.reading.ocr import is_word_mark
 from kaagaz.reading.page_quality import ILLEGIBLE_MARK
 from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span
 
@@ -106,6 +115,13 @@ MIN_OVERLAP = 0.5
 UNSURE_TEXT = "unsure_text"
 BOX_UNANCHORED = "box_unanchored"
 LOCAL_READER = "local_reader"
+# Ensemble (F27, Tushar 15 Oct 2026): another reader's lines at a value's spot are those with
+# at least this share of their own box inside the value's box, so a line it split in two
+# still counts, and a much longer line it joined does not.
+VOTE_INSIDE = 0.5
+# Another reader's text per page for the vote: (the page's main model, [(model, spans or
+# None when that model failed on the page)]).
+PageVotes = tuple[str, Sequence[tuple[str, Sequence[Span] | None]]]
 
 # The rupee sign (U+20B9), and Rs / INR standing as words.
 _CURRENCY = re.compile(r"₹|(?<![a-z])(?:rs\.?|inr)(?![a-z])")
@@ -353,7 +369,11 @@ class LineMarks:
 
 
 def label_reading_marks(
-    values: Iterable[ExtractedValue], lines: Mapping[BoxLocation, LineMarks], local_pages: Collection[int]
+    values: Iterable[ExtractedValue],
+    lines: Mapping[BoxLocation, LineMarks],
+    local_pages: Collection[int],
+    *,
+    voted: bool = False,
 ) -> list[ExtractedValue]:
     """PRD 5's reasons for values read by OCR (the module notes), after ``label_values``
     and ``label_quoted``: ``local_reader`` on a page in ``local_pages`` (Q7: the pages
@@ -361,7 +381,9 @@ def label_reading_marks(
     ``unsure_text`` when the value has ``[?]`` or a word of its line's unsure words (V4),
     then ``box_unanchored`` when its line is unpinned (G5). ``lines`` are the marks by the
     line's box, the value's own location. A card value and every value with none of these
-    keep their label. O(v x u) for v values and u unsure words of a line."""
+    keep their label. ``voted``: the readers' majority settled the main reader's unsure
+    words (``settle_votes``), so they are no reason; ``[?]`` still is. O(v x u) for v
+    values and u unsure words of a line."""
     labelled = []
     for value in values:
         box = value.location
@@ -372,7 +394,7 @@ def label_reading_marks(
         reason: str | None = None
         if box.page in local_pages:
             reason = LOCAL_READER
-        elif _has_unsure_word(value.value_text, marks.unsure):
+        elif _has_unsure_word(value.value_text, () if voted else marks.unsure):
             reason = UNSURE_TEXT
         elif marks.unpinned:
             reason = BOX_UNANCHORED
@@ -391,3 +413,111 @@ def _has_unsure_word(text: str, unsure: Sequence[str]) -> bool:
 
 def _words(text: str) -> set[str]:
     return {word for word in (part.strip(_WORD_EDGES) for part in comparable(text).split()) if word}
+
+
+def reading_at(value: ExtractedValue, box: BoxLocation, spans: Sequence[Span]) -> str | None:
+    """What another reader read at ``value``'s spot ``box`` (Ensemble, C6): its lines with
+    at least VOTE_INSIDE of their box inside ``box``, joined in reading order. The value's
+    own text when it is a whole-token run inside them (``find_quote``, never the loose
+    pass), else the part after the value's label (as the checker's reading is compared).
+    None when no line of it is there, or it marked a word there unsure or unreadable: a
+    reader that is not sure has no vote. O(s) plus the search."""
+    lines = []
+    for span in spans:
+        other = span.location
+        if not isinstance(other, BoxLocation) or other.page != box.page or _inside(other, box) < VOTE_INSIDE:
+            continue
+        if is_word_mark(span):
+            return None
+        lines.append(span)
+    if not lines:
+        return None
+    found = find_quote(reader_text(lines), comparable(value.value_text))
+    if found is not None and not found.loose:
+        return value.value_text
+    return _after_label(value, " ".join(span.text for span in lines)) or None
+
+
+def vote(value: ExtractedValue, box: BoxLocation, page: PageVotes) -> dict[str, Any]:
+    """Ensemble's majority vote on one value (Tushar, 15 Oct 2026). The readers are the
+    page's main model, with the value's own text, and each other model that read the page,
+    with its ``reading_at`` the value's spot; one that failed on the page is not counted.
+    Texts are compared after ``comparable`` and the D2 normalising, the checker's rule.
+    The vote's value is the text more than half the readers read (2 of 3, or 2 of 2), the
+    main reader's spelling when it is one of them; None with no majority (a reader that
+    read nothing there counts against every text). Plain JSON for
+    ``extracted_values.votes``: {"value", "agreed" (how many read the most read text),
+    "readers", "reads": [{"model", "text"}], the main reader first}. O(readers)."""
+    lead, others = page
+    reads: list[tuple[str, str | None]] = [(lead, value.value_text)]
+    reads += [(model, reading_at(value, box, spans)) for model, spans in others if spans is not None]
+    counts = Counter(_vote_key(text) for _model, text in reads if text is not None)
+    key, agreed = counts.most_common(1)[0] if counts else (None, 0)
+    winner = None
+    if agreed * 2 > len(reads):
+        winner = next(text for _model, text in reads if text is not None and _vote_key(text) == key)
+    return {
+        "value": winner,
+        "agreed": agreed,
+        "readers": len(reads),
+        "reads": [{"model": model, "text": text} for model, text in reads],
+    }
+
+
+def settle_votes(
+    values: Iterable[ExtractedValue],
+    pages: Mapping[int, PageVotes],
+    readings: Mapping[Location, str] | None,
+    *,
+    checked: Collection[Location],
+    lines: Mapping[BoxLocation, LineMarks],
+    local_pages: Collection[int],
+) -> list[ExtractedValue]:
+    """Ensemble's rule (Tushar, 15 Oct 2026), after ``label_reading_marks``: each value read
+    by OCR that needs review, on a page the other readers read (``pages``), is decided by
+    the readers' majority (``vote``), and the vote is kept with it (``votes``). A card
+    value or a quote whose spot is unsure (``model_chosen``) and a value of a page the
+    local reader read are not voted on. With a majority the value is the majority's text
+    and is labelled again by today's rules (``_label_ocr``: Verified only when the checker
+    read its box and agrees with that text; ``readings`` and ``checked`` are the
+    checker's), then by the reading marks, but the main reader's unsure words: the vote
+    settled them. With none it keeps its label: Needs review, never a guess. The raw text
+    stays the main reader's. O(v x s) for v values and s spans of a page."""
+    values = list(values)
+    shared = _shared_boxes(values)
+    settled = []
+    for value in values:
+        box = value.location
+        page = pages.get(box.page) if isinstance(box, BoxLocation) else None
+        if (
+            page is None
+            or not isinstance(box, BoxLocation)
+            or value.label != NEEDS_REVIEW
+            or not _is_ocr(value)
+            or value.label_reason in ("model_chosen", LOCAL_READER)
+        ):
+            settled.append(value)
+            continue
+        votes = vote(value, box, page)
+        if votes["value"] is None:
+            settled.append(replace(value, votes=votes))
+            continue
+        relabelled = _label_ocr(
+            replace(value, value_text=votes["value"], votes=votes), box, shared, readings, checked
+        )
+        settled.extend(label_reading_marks([relabelled], lines, local_pages, voted=True))
+    return settled
+
+
+def _inside(line: BoxLocation, box: BoxLocation) -> float:
+    """The share of ``line``'s box that is inside ``box`` (0 when apart or with no area)."""
+    width = min(line.x1, box.x1) - max(line.x0, box.x0)
+    height = min(line.y1, box.y1) - max(line.y0, box.y0)
+    area = (line.x1 - line.x0) * (line.y1 - line.y0)
+    if width <= 0 or height <= 0 or area <= 0:
+        return 0.0
+    return width * height / area
+
+
+def _vote_key(text: str) -> str:
+    return normalise_quote(comparable(text))

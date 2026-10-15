@@ -214,7 +214,16 @@ class ObeyingChat(QuotingChat):
     quoted, as its total: a model that follows the document."""
 
     def chat_json(
-        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         reply = super().chat_json(system=system, user=user, schema=schema, max_tokens=max_tokens)
         order = _ORDER.search(window_text(user)) if system == INVOICE_SYSTEM_PROMPT else None
@@ -276,7 +285,16 @@ class AnswerModel:
         raise ModelUnavailable("no_embedder")  # PROVISIONAL: search by words and fuzzy only
 
     def chat_json(
-        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         self.users.append(user)
         blocks = evidence_blocks(user)

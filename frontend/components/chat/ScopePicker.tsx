@@ -43,10 +43,12 @@ export function ScopePicker({
   state,
   locked,
   onChoose,
+  children,
 }: {
   state: ScopeState;
   locked: string | null; // why the choices can't be changed right now (scopeLockedText), or null
   onChoose: (scope: ChosenScope) => void;
+  children?: ReactNode; // more chips for the next question in this row: Answer settings (features 25-27)
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -120,6 +122,7 @@ export function ScopePicker({
           {open ? "Done" : "Change"}
           <span className="visually-hidden"> which documents to ask about</span>
         </button>
+        {children}
       </div>
       <div id={`${id}-panel`} className={styles.scopePanel} hidden={!open}>
         <fieldset

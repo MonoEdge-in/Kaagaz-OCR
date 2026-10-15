@@ -21,9 +21,10 @@
 // Each file is sent with who was signed in when it was added, so the server
 // refuses it if another account has signed in since (critical #5); then
 // no file still waiting is sent, and each says why.
-// "Read with" (ReaderSelect, readers.ts) picks the model that reads the scans
-// of the files added next, new versions included; it is kept for this visit
-// only (a module variable: a reload starts at the organisation's default again).
+// "Read with" (ReaderSelect, readers.ts) picks how the scans of the files added
+// next are read (Dynamic, Standard, Careful, or "More than one reader…" with the
+// readers ticked by name), new versions included; it is kept for this visit
+// only (module variables: a reload starts at the organisation's default again).
 
 import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
@@ -45,7 +46,7 @@ import { advance, barValue } from "@/lib/progress";
 import type { ShownProgress } from "@/lib/progress";
 import { useSession } from "@/lib/session";
 import { useTick } from "@/lib/tick";
-import type { BatchView, UploadLimits, UploadReader, UploadResult } from "@/lib/types";
+import type { BatchView, EnsembleOffer, UploadLimits, UploadReader, UploadResult } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import {
   MAX_FILES_PER_BATCH,
@@ -78,7 +79,21 @@ import {
 } from "./logic";
 import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
-import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readerToSend } from "./readers";
+import {
+  DUPLICATE_READER_NOTE,
+  ENSEMBLE,
+  ENSEMBLE_HINT,
+  READERS_CAP,
+  agentDisabled,
+  agentsHint,
+  mainReader,
+  offersChoice,
+  pickedReader,
+  readerOptions,
+  readingToSend,
+  startAgents,
+  toggleAgent,
+} from "./readers";
 import { EMPTY_QUEUE, UPLOADS_AT_ONCE, followed, isBusy, queueReducer, runLimited } from "./uploadQueue";
 import type { UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction, nextShown, stageOf, stageText, valueText } from "./uploadStages";
@@ -99,8 +114,10 @@ interface Followed {
 const canRetry = (caught: unknown) =>
   !(caught instanceof ApiError) || caught.status === 0 || caught.status === 429 || caught.status >= 500;
 
-// The model picked in "Read with" during this visit; null: the organisation's default.
+// The reading picked in "Read with" during this visit, and the readers ticked for more
+// than one reader; null: the organisation's default.
 let sessionReader: string | null = null;
+let sessionAgents: string[] | null = null;
 
 /** The upload queue: add files, watch them go, clear the finished ones. */
 export function useUploads(onUploaded: () => void) {
@@ -111,6 +128,8 @@ export function useUploads(onUploaded: () => void) {
   const [queue, dispatch] = useReducer(queueReducer, EMPTY_QUEUE);
   const [limits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
   const [reader, setReader] = useState<string | null>(sessionReader);
+  const [ticked, setTicked] = useState<string[] | null>(sessionAgents);
+  const agents = ticked ?? startAgents(limits.ensemble);
   // The files this tab still holds, so a file not sent can be sent again (Retry).
   const kept = useRef(new Map<string, Start>());
   // The drops of the last 24 hours (batchTray.ts), and the batch API's latest view of each.
@@ -123,6 +142,11 @@ export function useUploads(onUploaded: () => void) {
   function chooseReader(id: string) {
     sessionReader = id;
     setReader(id);
+  }
+
+  function chooseAgents(ids: string[]) {
+    sessionAgents = ids;
+    setTicked(ids);
   }
 
   // Asked once. Until it answers, or if it fails, the platform's limits apply;
@@ -258,7 +282,7 @@ export function useUploads(onUploaded: () => void) {
    */
   async function addFiles(files: File[], folderId?: string) {
     const userId = me.user.id;
-    const ocrChoice = readerToSend(limits.readers, reader);
+    const reading = readingToSend(limits.readers, limits.ensemble, reader, agents);
     const batchId = newBatchId();
     setTooMany(files.length > MAX_FILES_PER_BATCH);
     const added = files.slice(0, MAX_FILES_PER_BATCH).map((file) => {
@@ -268,12 +292,12 @@ export function useUploads(onUploaded: () => void) {
         key: `upload-${nextKey.current}`,
         name: file.name,
         size: file.size,
-        ocrChoice,
+        reading,
         batchId,
         state: problem ? { kind: "error", message: problem } : { kind: "waiting" },
       };
       const start: Start = (onProgress, onSent) =>
-        uploadDocument(file, userId, onProgress, folderId, ocrChoice, batchId, onSent);
+        uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent);
       return { entry, file, start };
     });
     dispatch({ type: "add", entries: added.map((item) => item.entry) });
@@ -287,7 +311,7 @@ export function useUploads(onUploaded: () => void) {
   /** Queue one file as the next version of a document. It has no batch: its row ends at the reply. */
   async function addVersion(file: File, of: { id: string; display_name: string }) {
     const userId = me.user.id;
-    const ocrChoice = readerToSend(limits.readers, reader);
+    const reading = readingToSend(limits.readers, limits.ensemble, reader, agents);
     nextKey.current += 1;
     const key = `upload-${nextKey.current}`;
     const problem = validateUpload(file, limits);
@@ -299,13 +323,13 @@ export function useUploads(onUploaded: () => void) {
           name: file.name,
           size: file.size,
           versionOf: of.display_name,
-          ocrChoice,
+          reading,
           state: problem ? { kind: "error", message: problem } : { kind: "waiting" },
         },
       ],
     });
     if (!problem) {
-      const start: Start = (onProgress, onSent) => uploadVersion(of.id, file, userId, onProgress, ocrChoice, onSent);
+      const start: Start = (onProgress, onSent) => uploadVersion(of.id, file, userId, onProgress, reading, onSent);
       kept.current.set(key, start);
       await checkThenSend(key, file, start, false);
     }
@@ -345,7 +369,9 @@ export function useUploads(onUploaded: () => void) {
     views,
     stored,
     tooMany,
+    agents,
     chooseReader,
+    chooseAgents,
     addFiles,
     addVersion,
     restore,
@@ -356,22 +382,32 @@ export function useUploads(onUploaded: () => void) {
 
 /**
  * "Read with": a labelled native select of the reading choices the server
- * offers ("Standard", "Careful"), with the picked one's hint
- * below it. Not shown unless two or more can be used. Also the whole
- * document's Read again (ReadAgain.tsx).
+ * offers ("Dynamic", "Standard", "Careful", and "More than one reader…" when
+ * the organisation may use it), with the picked one's hint below it. Not shown
+ * unless two or more can be used. "More than one reader…" shows a fieldset of the
+ * readers by name, at most ensemble.max ticked (the rest disabled, saying why),
+ * the main reader tagged. Also the whole document's Read again (ReadAgain.tsx).
  */
 export function ReaderSelect({
   readers,
   picked,
   onPick,
+  ensemble = null,
+  agents = [],
+  onAgents = () => undefined,
 }: {
   readers: readonly UploadReader[];
   picked: string | null;
   onPick: (id: string) => void;
+  ensemble?: EnsembleOffer | null;
+  agents?: readonly string[];
+  onAgents?: (ids: string[]) => void;
 }) {
   const id = useId();
-  if (!offersChoice(readers)) return null;
-  const current = pickedReader(readers, picked);
+  if (!offersChoice(readers, ensemble)) return null;
+  const several = picked === ENSEMBLE && ensemble !== null;
+  const current = several ? null : pickedReader(readers, picked);
+  const main = several ? mainReader(ensemble, agents) : null;
   return (
     <div className={styles.reader}>
       <label htmlFor={`${id}-select`} className={styles.readerLabel}>
@@ -380,19 +416,46 @@ export function ReaderSelect({
       <select
         id={`${id}-select`}
         className={`input ${styles.readerSelect}`}
-        value={current?.id}
+        value={several ? ENSEMBLE : current?.id}
         aria-describedby={`${id}-hint`}
         onChange={(event) => onPick(event.target.value)}
       >
-        {readerOptions(readers).map((option) => (
+        {readerOptions(readers, ensemble).map((option) => (
           <option key={option.id} value={option.id} disabled={option.disabled}>
             {option.label}
           </option>
         ))}
       </select>
       <p id={`${id}-hint`} className={styles.readerHint}>
-        {current?.hint}
+        {several ? ENSEMBLE_HINT : current?.hint}
       </p>
+      {several && (
+        <fieldset className={styles.readerAgents} aria-describedby={`${id}-agents`}>
+          <legend className={styles.readerLabel}>Readers</legend>
+          {ensemble.readers.map((option) => {
+            const capped = agentDisabled(ensemble, agents, option.id);
+            return (
+              <label key={option.id} className={styles.readerAgent}>
+                <input
+                  type="checkbox"
+                  checked={agents.includes(option.id)}
+                  disabled={capped}
+                  aria-describedby={capped ? `${id}-cap` : undefined}
+                  onChange={() => onAgents(toggleAgent(ensemble, agents, option.id))}
+                />
+                <span>{option.name}</span>
+                {option.id === main && <span className={styles.readerMain}>Main reader</span>}
+              </label>
+            );
+          })}
+          <p id={`${id}-agents`} className={styles.readerHint} role="status">
+            {agentsHint(ensemble, agents)}
+          </p>
+          <p id={`${id}-cap`} className="visually-hidden">
+            {READERS_CAP}
+          </p>
+        </fieldset>
+      )}
     </div>
   );
 }
@@ -675,7 +738,7 @@ function UploadRow({
             <Link href={`/documents/${state.documentId}`}>Open it</Link>
           </p>
         )}
-        {state.kind === "duplicate" && entry.ocrChoice !== undefined && (
+        {state.kind === "duplicate" && entry.reading !== undefined && (
           <p className={`muted ${styles.small}`}>{DUPLICATE_READER_NOTE}</p>
         )}
         {(state.kind === "restoring" || (state.kind === "duplicate" && state.inTrash)) && (

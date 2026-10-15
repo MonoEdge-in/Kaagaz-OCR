@@ -9,7 +9,9 @@
 // a neutral card that says so and lists the closest documents. "Unchecked" says
 // a figure is only in values nobody has checked yet, and where. F6's note
 // (PRD 5 U7) goes under the answer, with a link to each page that couldn't be
-// read. All text is plain text; answers are built from document text, which is untrusted.
+// read. An answer more than one model was asked to draft (features 25-27) says who
+// answered and whether they agreed, under its label. All text is plain text; answers
+// are built from document text, which is untrusted.
 
 import Link from "next/link";
 import { memo, useId, useState } from "react";
@@ -25,6 +27,7 @@ import {
   questionReading,
   readingNote,
   sentenceCitations,
+  teamLine,
 } from "./answer";
 import { FeedbackControls } from "./FeedbackControls";
 import { scrollBehavior } from "./hooks";
@@ -159,6 +162,7 @@ export const AnswerView = memo(function AnswerView({ message, question }: { mess
 
   const cards = citationMap(answer);
   const label = answer.label;
+  const team = teamLine(answer);
 
   return (
     <div className={styles.answerCard} data-label={label ?? undefined}>
@@ -166,9 +170,10 @@ export const AnswerView = memo(function AnswerView({ message, question }: { mess
       {label ? (
         <div className={styles.labelLine}>
           <LabelBadge label={label} />
-          <span className={styles.labelExplanation}>{answerLabelText(label).explanation}</span>
+          <span className={styles.labelExplanation}>{answerLabelText(label, answer).explanation}</span>
         </div>
       ) : null}
+      {team ? <p className={styles.understood}>{team}</p> : null}
       {understood}
       <p className={styles.answerText}>
         {answer.sentences.map((sentence, index) => (

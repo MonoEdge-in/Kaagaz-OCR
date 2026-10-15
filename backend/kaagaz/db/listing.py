@@ -418,7 +418,7 @@ def list_values(conn: Connection, customer_id: str, document_id: str) -> Sequenc
         conn.execute(
             text(
                 "SELECT id, document_id, record_key, field, value_text, value_raw, second_reading,"
-                " page_no, region, label, label_reason, confidence, label_page_no, label_region"
+                " page_no, region, label, label_reason, confidence, label_page_no, label_region, votes"
                 " FROM extracted_values WHERE customer_id = :c AND document_id = :d"
                 " ORDER BY page_no, record_key, field, id"
             ),
@@ -575,19 +575,40 @@ def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_
 
 # --- Model choice and AI spend (council 11 Oct 2026, MS5, SP2, SP4) -------------------
 
+# Features 26 and 27 (0026): a mode given replaces read_also too, in the same statement, so
+# the ai_documents_read_mode_models check always sees a pair it allows.
 _SET_READING = (
-    "UPDATE documents SET read_requested_by = :u, read_model = COALESCE(:m, read_model)"
+    "UPDATE documents SET read_requested_by = :u,"
+    " read_model = COALESCE(CAST(:m AS text), read_model),"
+    " read_mode = COALESCE(CAST(:mode AS text), read_mode),"
+    " read_also = CASE WHEN CAST(:mode AS text) IS NULL THEN read_also ELSE CAST(:also AS text[]) END"
     " WHERE customer_id = :c AND id = :d"
 )
 
 
 def set_reading(
-    conn: Connection, customer_id: str, document_id: str, *, requested_by: str, model: str | None
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    *,
+    requested_by: str,
+    model: str | None,
+    mode: str | None = None,
+    also: Sequence[str] = (),
 ) -> None:
     """Who asked for the document's next reading, the user its scan spend is billed to, and
-    the model chosen (already checked against the organisation's usable models); ``model``
-    None keeps the document's own choice. O(log D)."""
-    conn.execute(text(_SET_READING), {"c": customer_id, "d": document_id, "u": requested_by, "m": model})
+    the reading chosen (already checked by ``api.readers.check_reading``): ``model`` None
+    keeps the document's own model, ``mode`` None its mode and other readers (``also``,
+    Ensemble's). O(log D)."""
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "u": requested_by,
+        "m": model,
+        "mode": mode,
+        "also": list(also),
+    }
+    conn.execute(text(_SET_READING), params)
 
 
 def ai_budget(conn: Connection, customer_id: str) -> float | None:

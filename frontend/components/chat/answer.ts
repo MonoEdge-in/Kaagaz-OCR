@@ -44,18 +44,56 @@ export interface AnswerLabelText {
   explanation: string;
 }
 
-/** The answer's label in words, with one line saying what it means. */
-export function answerLabelText(label: Label): AnswerLabelText {
+export const NOT_AGREED_TEXT = "The answers did not agree on every point. Open the page before you rely on it.";
+
+/**
+ * The answer's label in words, with one line saying what it means. An answer that
+ * needs review only because the other models did not confirm it (every source
+ * checked) says that instead (features 25-27).
+ */
+export function answerLabelText(
+  label: Label,
+  answer?: Pick<Answer, "agreement" | "citations">,
+): AnswerLabelText {
   if (label === "verified") {
     return {
       title: "Verified",
       explanation: "Every source behind this answer was checked when the document was read.",
     };
   }
+  const checked = answer !== undefined && answer.citations.every((citation) => citation.label === "verified");
+  if (checked && answer?.agreement === "not_confirmed") {
+    return { title: "Needs review", explanation: NOT_AGREED_TEXT };
+  }
   return {
     title: "Needs review",
     explanation: "At least one source was not fully checked. Open the page before you rely on it.",
   };
+}
+
+/** A catalogue name without its maker's prefix: "Google: Gemini 3.8 Flash" is "Gemini 3.8 Flash". */
+export function modelName(name: string): string {
+  return name.replace(/^[^:]{1,40}:\s+/, "") || name;
+}
+
+/** "A", "A and B", "A, B and C". */
+function joinNames(names: readonly string[]): string {
+  return names.length < 2 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * The line under an answer more than one model was asked to draft (features 25-27):
+ * who answered and whether they agreed. null for one model, and for answers from before.
+ */
+export function teamLine(answer: Pick<Answer, "agents" | "agents_asked" | "agreement">): string | null {
+  const names = (answer.agents ?? []).map(modelName);
+  if ((answer.agents_asked ?? 0) <= 1 || names.length === 0) return null;
+  const who =
+    names.length < (answer.agents_asked ?? 0)
+      ? `Only ${joinNames(names)} answered.`
+      : `Answered by ${joinNames(names)}.`;
+  if (names.length === 1) return who;
+  return `${who} ${answer.agreement === "agreed" ? "They agreed." : NOT_AGREED_TEXT}`;
 }
 
 /**

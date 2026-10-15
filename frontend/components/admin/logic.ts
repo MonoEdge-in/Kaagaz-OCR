@@ -483,6 +483,9 @@ const KIND_WORDS: Record<UsageKind, string> = {
   memory: "Chat memory",
   search: "Search",
   story: "Stories",
+  careful: "Careful re-reads", // Dynamic (feature 26)
+  ensemble_scan: "Second opinions", // Ensemble (feature 27): the other readers
+  ensemble_chat: "Second opinions", // and the other answer drafts
 };
 
 /** The kind of work in words; a kind this screen does not know yet is shown as is. */

@@ -51,6 +51,7 @@ _BASE: dict[str, Any] = {
     "openrouter_api_key": None,  # laptops and CI call no model through OpenRouter
     "openrouter_base_url": "https://openrouter.ai/api/v1",
     "openrouter_providers": frozenset({"google-vertex"}),
+    "openrouter_model_vendors": frozenset({"google", "anthropic"}),  # DEFAULT_MODEL_VENDORS
     "ocr_media_resolution": "high",
     "ocr_thinking_level": "low",
     "ocr_retry_media_resolution": "high",  # the "detail" shape sends low or high only

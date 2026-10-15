@@ -5,7 +5,8 @@ fakes and the product runs with no AI at all (``MODEL_ENABLED=false`` gives
 ``build_model_client(...) is None``, and callers fall back: search without
 meaning vectors, answers that quote the evidence). With MODEL_ENABLED the client is
 ``kaagaz.ai.openrouter.OpenRouterClient`` (PRD 5 G9, M1, M5): MODEL_CHAT answers and
-MODEL_EMBED embeds, both google/gemini- models (the settings refuse any other).
+MODEL_EMBED embeds, both google/gemini- models (the settings refuse any other); an
+answer's draft may name another chat model the organisation allows (features 25-27).
 
 Prompts are the callers' job (they fence document text as data). The client never
 logs a prompt, a reply or an image, and its errors carry short codes only.
@@ -48,9 +49,22 @@ class ModelClient(Protocol):
         ...
 
     def chat_json(
-        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
-        """One JSON object that follows ``schema``, in at most ``max_tokens`` reply tokens."""
+        """One JSON object that follows ``schema``, in at most ``max_tokens`` reply tokens.
+        ``model``, ``thinking`` and ``provider`` (features 25-27, C7): the answer's chosen
+        model, thinking level and provider; None, MODEL_CHAT at low on DEFAULT_PROVIDER.
+        ``deadline``: when every try must be done, on ``time.monotonic()`` (an Ensemble
+        answer's one deadline); None, each call's own timeout."""
         ...
 
 

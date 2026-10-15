@@ -2,7 +2,7 @@
 
     cd backend
     python -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" [--api http://127.0.0.1:8000]
-        [--set golden|xlang] [--docs DIR] [--runs 3]
+        [--set golden|xlang] [--docs DIR] [--runs 3] [--agents ID,ID] [--thinking low|medium|high]
 
 Run it with the stack's settings loaded in the shell, as for ``kaagaz.cli``
 (docs/running-locally.md), and the model on for a real baseline. Never in CI.
@@ -30,6 +30,11 @@ documents: ``golden`` (the default) is questions.json over docs/; ``xlang`` is
 questions_xlang.json over the synthetic scans in xlang/ (council 4 Oct 2026). An
 xlang document that is not ready is reported and its questions are still asked:
 an unread page is part of what that set measures.
+
+``--agents`` and ``--thinking`` (features 25-27, council 15 Oct 2026, C14) send every
+question with those answer models (comma-separated ids, the first leads) and that thinking
+level, as the composer's Answer settings do; the organisation must be allowed them (the
+operator console), or each question is refused. Left out, the organisation's defaults.
 
 A command line report, so it writes to standard output, not to the log.
 """
@@ -154,6 +159,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--docs", type=Path, help="default: the set's own folder")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--wait-minutes", type=float, default=30.0)
+    parser.add_argument("--agents", help="answer models, comma-separated ids (default: the organisation's)")
+    parser.add_argument("--thinking", choices=["low", "medium", "high"], help="the answer's thinking level")
     parser.add_argument(
         "--allow-remote", action="store_true", help="allow an API or database not on this machine"
     )
@@ -246,13 +253,20 @@ def hits(answer: dict[str, Any], names: dict[str, str]) -> list[scoring.Hit]:
     return found
 
 
-def ask_all(api: Http, questions: list[scoring.Question], names: dict[str, str], out: TextIO) -> list[Row]:
+def ask_all(
+    api: Http,
+    questions: list[scoring.Question],
+    names: dict[str, str],
+    out: TextIO,
+    choice: dict[str, Any] | None = None,
+) -> list[Row]:
+    """``choice``: the answer settings sent with every question (``agents``, ``thinking``)."""
     conversations: dict[str, str] = {}
     rows: list[Row] = []
     searched = modelled = 0
     out.write(f"{'id':<5} {'outcome':<21} {'label':<13} {'route':<12} {'recall':<6} answer\n")
     for question in questions:
-        body: dict[str, Any] = {"question": question.question}
+        body: dict[str, Any] = {"question": question.question, **(choice or {})}
         if question.follow_up_of is not None:
             body["conversation_id"] = conversations[question.follow_up_of]
         reply = api.call("POST", "/api/chat", body, timeout=CHAT_TIMEOUT)
@@ -275,6 +289,16 @@ def ask_all(api: Http, questions: list[scoring.Question], names: dict[str, str],
     if searched and not modelled:
         out.write("WARNING: the model was off or down, so this is not a model-on baseline.\n")
     return rows
+
+
+def answer_settings(agents: str | None, thinking: str | None) -> dict[str, Any]:
+    """The --agents and --thinking choice as POST /api/chat's fields; {} for neither."""
+    choice: dict[str, Any] = {}
+    if agents:
+        choice["agents"] = [agent.strip() for agent in agents.split(",") if agent.strip()]
+    if thinking:
+        choice["thinking"] = thinking
+    return choice
 
 
 def write_totals(out: TextIO, label: str, total: scoring.Totals) -> None:
@@ -304,10 +328,13 @@ def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout) -> int:
         api = Http(args.api)
         sign_in(api, os.environ.get(cli.ADMIN_ENV_VAR) or secrets.token_urlsafe(24), out)
         names = upload(api, documents, args.wait_minutes, out, chosen.all_ready)
+        choice = answer_settings(args.agents, args.thinking)
+        if choice:
+            out.write(f"Answer settings: {json.dumps(choice)}\n\n")
         runs: list[scoring.Totals] = []
         for run in range(1, args.runs + 1):
             out.write(f"Run {run} of {args.runs}\n")
-            rows = ask_all(api, questions, names, out)
+            rows = ask_all(api, questions, names, out, choice)
             runs.append(scoring.totals(rows))
             write_totals(out, f"run {run}", runs[-1])
             for name, total in scoring.by_slice(rows).items():

@@ -2,7 +2,7 @@
 // place, so the documents page, the answer cards and the review queue say the
 // same thing.
 
-import type { Label, LabelReason } from "@/lib/types";
+import type { Label, LabelReason, ValueVotes } from "@/lib/types";
 
 export function labelText(label: Label): string {
   return label === "verified" ? "Verified" : "Needs review";
@@ -20,7 +20,7 @@ export function labelIcon(label: Label): "check-seal" | "eye-alert" {
 const REASONS: Record<LabelReason, string> = {
   direct_cell: "Read straight from a spreadsheet cell.",
   readers_agree: "Two separate readers read the same value.",
-  readers_disagree: "The two readers read different values.",
+  readers_disagree: "The readers read different values.",
   single_reader: "Only one reader could read this value.",
   low_confidence: "The reader was not sure of this value.",
   corrected: "Corrected by a reviewer.",
@@ -35,6 +35,24 @@ const REASONS: Record<LabelReason, string> = {
 
 export function reasonText(reason: LabelReason): string {
   return REASONS[reason];
+}
+
+/**
+ * Ensemble's vote on a value, in plain words (feature 27, Tushar 15 Oct 2026): "2 of 3
+ * readers read 27AAKFS8812L1Z9." (and what the main reader read when it was outvoted), or,
+ * with no majority, what each read. Never a model's name.
+ */
+export function voteText(votes: ValueVotes): string {
+  const main = votes.reads.find((read) => read.main);
+  if (votes.value !== null) {
+    const said = `${votes.agreed} of ${votes.readers} readers read ${votes.value}.`;
+    return main?.text && main.text !== votes.value ? `${said} The main reader read ${main.text}.` : said;
+  }
+  const reads = votes.reads.map((read) => {
+    const who = read.main ? "the main reader" : "another reader";
+    return read.text === null ? `${who} found nothing here` : `${who} read ${read.text}`;
+  });
+  return `The readers did not agree: ${reads.join("; ")}. Check it against the page.`;
 }
 
 /** The review queue's short names for PRD 5's reasons (U6), as its reason filter lists them. */

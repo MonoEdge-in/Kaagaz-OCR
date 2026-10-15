@@ -202,7 +202,9 @@ describe("Read again for the whole document (MS4)", () => {
   it("is offered in the Read again question, and per-page Read again has no model choice", () => {
     const dialog = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/ReadAgain.tsx"), "utf8");
     // The select starts on the document's own model (read_model), not the default.
-    expect(dialog).toContain("<ReaderSelect readers={readers} picked={picked ?? readModel} onPick={setPicked} />");
+    // Changed on purpose (features 25-27, 15 Oct 2026): the select also offers more than one reader.
+    expect(dialog).toMatch(/<ReaderSelect\s+readers=\{readers\}\s+picked=\{picked \?\? readModel\}\s+onPick=\{setPicked\}/);
+    expect(dialog).toContain("ensemble={ensemble}");
     const view = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/DocumentView.tsx"), "utf8");
     expect(view).toContain("readModel={detail.read_model}");
     expect(dialog).toContain("reprocessDocument(documentId, model)");
