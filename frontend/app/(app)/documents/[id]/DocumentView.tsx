@@ -1,8 +1,9 @@
 "use client";
 
-// The document screen: header and status, where it is filed (its folder path,
-// its tags, Download original), its versions ("Version 2 of 2", each a link to
-// that version's own id), the page viewer and, beside it, the panels with the
+// The document screen: the title with Download original and Ask beside it, then
+// one meta line (board 12 P4) with the status, where it is filed (its folder
+// path, its tags) and its versions ("Version 2 of 2", each a link to that
+// version's own id), the page viewer and, beside it, the panels with the
 // values table right after Attention (side by side from 1024 px, stacked
 // below). A newer version still being read, or one that failed, gets a line
 // linking to it. A document in Trash says so. A reviewer
@@ -326,7 +327,21 @@ export function DocumentView({
     <div className="page page-wide">
       <header className={styles.header}>
         <BackLink />
-        <h1 className={styles.title}>{detail.display_name}</h1>
+        <div className={styles.titleRow}>
+          <h1 className={styles.title}>{detail.display_name}</h1>
+          {download && (
+            <a className={`btn btn-quiet ${styles.download}`} href={download} download>
+              <Icon name="download" />
+              <span className="narrow-hide">Download original</span>
+            </a>
+          )}
+          {usedInChat(detail) && (
+            <Link className={`btn btn-primary ${styles.ask}`} href={askAboutHref(detail.id)}>
+              <Icon name="chat" />
+              Ask about this document
+            </Link>
+          )}
+        </div>
         <div className={styles.status}>
           <StatusChip status={detail.status} />
           <span>{detail.status_message}</span>
@@ -348,8 +363,6 @@ export function DocumentView({
               poll.later();
             }}
           />
-        </div>
-        <div className={styles.place}>
           <nav aria-label="Folder" className={`${libraryStyles.crumbs} ${styles.placeItem}`}>
             <span className={styles.placeLabel}>Folder</span>
             {trail.length === 0 ? (
@@ -410,18 +423,6 @@ export function DocumentView({
                 })}
               </ol>
             </nav>
-          )}
-          {download && (
-            <a className={`btn btn-quiet ${styles.download}`} href={download} download>
-              <Icon name="download" />
-              <span className="narrow-hide">Download original</span>
-            </a>
-          )}
-          {usedInChat(detail) && (
-            <Link className={`btn btn-primary ${styles.ask}`} href={askAboutHref(detail.id)}>
-              <Icon name="chat" />
-              Ask about this document
-            </Link>
           )}
         </div>
         {note && <p className={styles.note}>{note}</p>}

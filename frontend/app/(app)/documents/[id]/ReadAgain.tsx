@@ -172,7 +172,7 @@ export function ReadAgain({ documentId, fixes, pages, readModel, offered, readin
       <button
         ref={holdButton}
         type="button"
-        className={`btn ${styles.readAgain}`}
+        className="btn"
         onClick={() => dispatch({ type: "open" })}
       >
         <Icon name="refresh" />
