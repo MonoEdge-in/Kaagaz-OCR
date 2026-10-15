@@ -113,11 +113,14 @@ describe("the Read with select in the source", () => {
     expect(select).toContain("className={`input ");
   });
 
-  it("is offered beside Upload files and in the slim dropzone", () => {
+  it("is offered once, beside Upload files", () => {
     const view = readFileSync(join(__dirname, "..", "components/documents/DocumentsView.tsx"), "utf8");
     // Changed on purpose (UI quality council, 15 Oct 2026): the header hides Upload on an empty list, whose empty state has its own.
     expect(view).toMatch(/\{readerSelect\}\s*\{view !== "empty" && uploadButton\}/);
-    expect(view).toContain("readerChoice={readerSelect}");
+    // Changed on purpose (UI touch-up council, 15 Oct 2026): the slim dropzone no longer repeats
+    // it; two "Read with" pickers on one screen looked like two different choices.
+    expect(view.match(/\{readerSelect\}/g)).toHaveLength(1);
+    expect(readFileSync(join(__dirname, "..", "components/documents/UploadArea.tsx"), "utf8")).not.toContain("readerChoice");
   });
 });
 

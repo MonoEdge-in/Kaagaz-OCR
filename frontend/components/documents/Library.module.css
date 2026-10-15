@@ -94,6 +94,11 @@
   overflow-wrap: anywhere;
 }
 
+/* Inside the scrolling tree pane: the ring drawn inside, so the pane never cuts it. */
+.treeLink:focus-visible {
+  outline-offset: -2px;
+}
+
 .treeLink:hover {
   background: var(--surface-2);
   color: var(--fg);

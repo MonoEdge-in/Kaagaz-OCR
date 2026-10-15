@@ -60,7 +60,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   const signOut = () => endSession("here");
-  const signOutEverywhere = () => endSession("everywhere");
+  // The stronger sign-out sits under the plain one: ask first, so a slip costs nothing.
+  const signOutEverywhere = () => {
+    if (window.confirm("Sign out on every phone and computer? You will need to sign in again on each one.")) {
+      void endSession("everywhere");
+    }
+  };
 
   const menu = (
     <ShellMenu

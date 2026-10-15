@@ -53,7 +53,7 @@ import {
 } from "@/components/viewer/versions";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { fieldText, reasonText } from "@/components/viewer/labels";
-import { lowResolutionText } from "@/components/viewer/panels";
+import { lowResolutionText, untilRead } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
 import { beingRead, canReprocess, loadFailure, settledText, valuesNote } from "@/components/viewer/reprocess";
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
@@ -500,7 +500,7 @@ export function DocumentView({
             </h2>
             {readingNote && <p className="muted">{readingNote}</p>}
             {detail.values.length === 0 ? (
-              !readingNote && <p className="muted">No values were found in this document.</p>
+              !readingNote && <p className="muted">{untilRead(detail.status, "No values were found in this document.")}</p>
             ) : (
               <table className={`table ${styles.valuesTable}`} role="table">
                 <caption className="visually-hidden">

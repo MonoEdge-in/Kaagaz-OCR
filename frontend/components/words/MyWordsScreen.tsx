@@ -14,7 +14,7 @@ import { addMyWord, changeMyWord, deleteMyWord, listMyWords } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { MyWord } from "@/lib/types";
 import { DuplicateDialog, WordFields } from "./WordParts";
-import { addBody, changeBody, draftOk, failedState, limitNote, retryBody, savedState, SOURCE_TEXT, wordGroups } from "./words";
+import { addBody, changeBody, draftOk, failedState, limitNote, retryBody, savedState, SOURCE_TEXT, textProblem, wordGroups } from "./words";
 import type { ChangeBody, Choice, Existing, NewWordBody, WordDraft } from "./words";
 import styles from "./Words.module.css";
 
@@ -22,6 +22,10 @@ const EMPTY: WordDraft = { word: "", meaning: "" };
 type RowDialog = { mode: "change" | "delete"; item: MyWord; draft: WordDraft; error: string | null };
 // One save: an add (POST), or a change (PATCH of wordId). draft is what the question names.
 type Job = { draft: WordDraft } & ({ body: NewWordBody; wordId?: undefined } | { body: ChangeBody; wordId: string });
+
+/** After a refused draft, focus the field to fix (once its message has rendered). */
+const focusProblem = (idPrefix: string, draft: WordDraft) =>
+  requestAnimationFrame(() => document.getElementById(`${idPrefix}-${textProblem(draft.word, "word") ? "word" : "meaning"}`)?.focus());
 
 export function MyWordsScreen() {
   const { me } = useSession();
@@ -87,7 +91,8 @@ export function MyWordsScreen() {
     setTried(true);
     setProblem(null);
     const body = addBody(draft, userId);
-    if (!busy && draftOk(draft)) void save({ body, draft: body }, setProblem);
+    if (!draftOk(draft)) focusProblem("add", draft);
+    else if (!busy) void save({ body, draft: body }, setProblem);
   }
 
   function choose(choice: Choice) {
@@ -113,7 +118,10 @@ export function MyWordsScreen() {
       }, fail);
       return;
     }
-    if (!draftOk(row.draft)) return;
+    if (!draftOk(row.draft)) {
+      focusProblem("edit", row.draft);
+      return;
+    }
     const body = changeBody(item, row.draft, userId);
     setRow(null); // a question, if one comes, takes its place; a refusal opens it again
     if (body) void save({ body, wordId: item.id, draft: { word: body.word ?? item.word, meaning: body.meaning ?? item.meaning } }, fail);
@@ -133,8 +141,8 @@ export function MyWordsScreen() {
       <p className="visually-hidden" role="status" aria-live="polite">{status}</p>
       {alert(problem)}
 
-      <form className={`card stack ${styles.block}`} onSubmit={submitAdd} noValidate aria-labelledby="add-word">
-        <h2 id="add-word" className={styles.subheading}>Add a word</h2>
+      <form className={`card stack ${styles.block}`} onSubmit={submitAdd} noValidate aria-labelledby="add-word-heading">
+        <h2 id="add-word-heading" className={styles.subheading}>Add a word</h2>
         <div className={styles.fields}>
           <WordFields idPrefix="add" draft={draft} onChange={setDraft} checked={tried} />
           <button type="submit" className={`btn btn-primary ${styles.target}`} aria-disabled={busy || undefined}>
@@ -169,7 +177,7 @@ export function MyWordsScreen() {
               <input id="words-filter" type="search" className="input" value={filter} autoComplete="off" onChange={(event) => setFilter(event.target.value)} />
             </div>
           </div>
-          {groups.length === 0 && <p className="muted">No words match this search.</p>}
+          <p className="muted" role="status">{groups.length === 0 ? "No words match this search." : ""}</p>
           <ul className={styles.list}>
             {groups.map((group) => (
               <li key={group.key} className={styles.group}>
@@ -216,7 +224,7 @@ export function MyWordsScreen() {
               <button type="submit" className={`btn ${row.mode === "change" ? "btn-primary" : "btn-danger"} ${styles.target}`} aria-disabled={busy || undefined}>
                 {spinner}{row.mode === "change" ? "Save" : "Delete"}
               </button>
-              <button type="button" className={`btn ${styles.target}`} data-autofocus onClick={() => setRow(null)}>Cancel</button>
+              <button type="button" className={`btn ${styles.target}`} data-autofocus={row.mode === "delete" || undefined} onClick={() => setRow(null)}>Cancel</button>
             </div>
           </form>
         </ActionDialog>

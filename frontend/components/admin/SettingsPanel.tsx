@@ -48,6 +48,7 @@ export function SettingsPanel() {
     const parsed = parseUploadLimit(text, settings.platform_max_upload_mb);
     if (!parsed.ok) {
       setError(parsed.message);
+      document.getElementById("upload-limit")?.focus();
       return;
     }
     setError(null);
@@ -99,7 +100,10 @@ export function SettingsPanel() {
               type="text"
               inputMode="numeric"
               value={text}
-              onChange={(event) => setText(event.target.value)}
+              onChange={(event) => {
+                setText(event.target.value);
+                setSaved(null); // "Saved." is about the old value
+              }}
               aria-invalid={error ? true : undefined}
               aria-describedby={error ? "upload-limit-hint upload-limit-error" : "upload-limit-hint"}
             />
@@ -108,7 +112,7 @@ export function SettingsPanel() {
               use it.
             </span>
             {error && (
-              <span id="upload-limit-error" className="error-text">
+              <span id="upload-limit-error" className="error-text" role="alert">
                 {error}
               </span>
             )}

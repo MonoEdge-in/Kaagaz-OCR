@@ -23,7 +23,7 @@
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { IconButton } from "@/components/ui/IconButton";
 import { markerId } from "@/components/words/ViewerWords";
@@ -177,6 +177,12 @@ export function PageViewer({
     shownSpot.current = spotKey;
     marked.scrollIntoView({ block: fit === "page" ? "nearest" : "center", inline: "nearest" });
   }, [spotKey, zoom, box, fit]);
+
+  // A new page with no spot to show starts at its top-left, even zoomed in.
+  const toPageStart = useEffectEvent(() => {
+    if (!spotKey) frameRef.current?.scrollTo(0, 0);
+  });
+  useLayoutEffect(() => toPageStart(), [pageKey]);
 
   const size = box ? fitPageSize(box.width, aspect, zoom, fit === "page" ? box.height : undefined) : null;
   // Zoomed in on a PDF page: measure what shows 150ms after the last scroll or

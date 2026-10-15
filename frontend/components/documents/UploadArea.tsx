@@ -406,14 +406,12 @@ export function Dropzone({
   limits,
   onFiles,
   onChoose,
-  readerChoice,
   children,
 }: {
   variant: "full" | "slim";
   limits: UploadLimits;
   onFiles: (files: File[]) => void;
   onChoose: () => void;
-  readerChoice?: ReactNode; // "Read with", beside "Choose files" in the slim strip
   children?: ReactNode;
 }) {
   const [dragging, setDragging] = useState(false);
@@ -462,7 +460,6 @@ export function Dropzone({
           <button type="button" className="btn" onClick={onChoose}>
             Choose files
           </button>
-          {readerChoice}
           <p className={styles.dropHint}>{uploadLimitsHint(limits)}</p>
         </>
       )}

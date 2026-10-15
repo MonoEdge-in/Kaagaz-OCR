@@ -35,7 +35,7 @@ import {
   restoreDocument,
 } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { docTypeLabel, formatBytes, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
+import { docTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { EditDialog, RowMenu } from "./DocumentActions";
 import type { FolderTree } from "./folderTree";
@@ -357,6 +357,16 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
 }
 
 // One call per document for each selection action; the server checks every rule again.
+/** The list's scroll as a document opens, so Back can return to the same row (DocumentsView). */
+export const listScrollKey = () => `docs-y:${location.search}`;
+function rememberListScroll() {
+  try {
+    sessionStorage.setItem(listScrollKey(), String(Math.round(scrollY)));
+  } catch {
+    // Storage blocked (private window): Back starts at the top, as before.
+  }
+}
+
 const BULK_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
   trash: deleteDocument,
   restore: restoreDocument,
@@ -547,6 +557,7 @@ function DocumentRow({
           href={`/documents/${document.id}`}
           className={styles.name}
           title={document.display_name}
+          onClick={rememberListScroll}
         >
           <WrapName name={document.display_name} />
         </Link>
@@ -589,8 +600,11 @@ function DocumentRow({
       </td>
       <td role="cell" className={styles.meta}>
         {inTrash && <span className="visually-hidden">Trashed </span>}
+        {/* The exact date too: a touch screen never shows the hover title. */}
         <time dateTime={when} title={formatDateTime(when)}>
-          {formatRelative(when, now)}
+          {formatRelative(when, now) === formatDate(when)
+            ? formatDate(when)
+            : `${formatRelative(when, now)} · ${formatDate(when)}`}
         </time>
         {by && (
           <span className={styles.bandBy}>

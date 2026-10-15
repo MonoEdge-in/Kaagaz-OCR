@@ -4,7 +4,7 @@
 // cards below 768 px. What each row was done on, and its details, are shown in
 // words, never an id (UI quality council, 15 Oct 2026).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, listAudit } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
@@ -25,6 +25,12 @@ interface AuditPage {
 
 export function ActivityPanel() {
   const [offset, setOffset] = useState(0);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // The pager's button is disabled while the next page loads: start reading at the heading.
+  const turnPage = (next: number) => {
+    setOffset(next);
+    headingRef.current?.focus();
+  };
   const [attempt, setAttempt] = useState(0);
   // The page on screen stays while the next one loads.
   const [page, setPage] = useState<AuditPage | null>(null);
@@ -59,7 +65,7 @@ export function ActivityPanel() {
 
   return (
     <section className={styles.section} aria-labelledby="activity-heading">
-      <h2 id="activity-heading" className={styles.sectionHeading}>
+      <h2 id="activity-heading" ref={headingRef} tabIndex={-1} className={styles.sectionHeading}>
         Activity
       </h2>
       {failed && (
@@ -146,7 +152,7 @@ export function ActivityPanel() {
                 type="button"
                 className="btn"
                 disabled={!pages.hasPrevious || page.offset !== offset}
-                onClick={() => setOffset(Math.max(0, page.offset - AUDIT_PAGE_SIZE))}
+                onClick={() => turnPage(Math.max(0, page.offset - AUDIT_PAGE_SIZE))}
               >
                 <Icon name="chevron-left" />
                 Previous
@@ -155,7 +161,7 @@ export function ActivityPanel() {
                 type="button"
                 className="btn"
                 disabled={!pages.hasNext || page.offset !== offset}
-                onClick={() => setOffset(page.offset + AUDIT_PAGE_SIZE)}
+                onClick={() => turnPage(page.offset + AUDIT_PAGE_SIZE)}
               >
                 Next
                 <Icon name="chevron-right" />

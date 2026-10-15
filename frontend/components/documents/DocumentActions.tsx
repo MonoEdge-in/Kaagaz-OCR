@@ -394,6 +394,12 @@ function TagsForm({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // A name typed but not added would be lost without a word: say so instead.
+    if (newName.trim()) {
+      setNewError("Press Add tag to add this tag, or clear the box.");
+      document.getElementById(`${id}-new`)?.focus();
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -441,8 +447,9 @@ function TagsForm({
             autoComplete="off"
             onChange={(event) => setNewName(event.target.value)}
             onKeyDown={(event) => {
-              // Enter here adds the tag; it does not save the form.
-              if (event.key === "Enter") {
+              // Enter here adds the tag; it does not save the form. While a Hindi or
+              // Marathi keyboard is still forming the word, Enter is the keyboard's.
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 void addTag();
               }
