@@ -8,13 +8,21 @@ from scripts.golden_scoring import (
     Outcome,
     Question,
     by_slice,
+    category,
+    compare,
     counts_for_recall,
+    mcnemar,
+    metrics,
     question_from,
     recall_hit,
+    romanised_problems,
     score,
+    spelled_out,
+    split_of,
     totals,
     wilson,
     worst,
+    worst_score,
 )
 
 
@@ -99,10 +107,13 @@ class OutcomeTest(unittest.TestCase):
         self.assertEqual((wrong.outcome, wrong.wrong_verified), (Outcome.WRONG, True))
         self.assertFalse(score(question(), answer("Rs. 11,800", label="verified")).wrong_verified)
 
-    def test_no_answer_to_a_question_with_one_is_wrong(self) -> None:
+    def test_no_answer_to_a_question_with_one_is_abstained(self) -> None:
+        # Changed on purpose (final polish, 16 Oct 2026): ask precision PR 1a scores an
+        # abstention apart from a wrong answer (it was WRONG), so precision can be measured.
         for status in ("not_found", "unchecked"):
             marked = score(question(), answer("Rs. 11,800", status=status))
-            self.assertEqual((marked.outcome, marked.wrong_verified), (Outcome.WRONG, False), status)
+            self.assertEqual((marked.outcome, marked.wrong_verified), (Outcome.ABSTAINED, False), status)
+            self.assertEqual(category(marked), "abstained")
 
 
 class RecallTest(unittest.TestCase):
@@ -153,11 +164,123 @@ class TotalsTest(unittest.TestCase):
         self.assertEqual((first.outcomes[Outcome.RIGHT], first.recall_hits, first.recall_of), (1, 1, 1))
         self.assertEqual((second.wrong_verified, second.outcomes[Outcome.MISSED_NOT_FOUND]), (1, 1))
         slices = by_slice(good)
-        self.assertEqual(sorted(slices), ["follow_up", "hinglish", "not_found"])
+        # Changed on purpose (final polish, 16 Oct 2026): every question now has a split
+        # (ask precision PR 1a); "q1" and "q2" both hash to "test".
+        self.assertEqual(sorted(slices), ["follow_up", "hinglish", "not_found", "test"])
         self.assertEqual(slices["follow_up"].outcomes[Outcome.CORRECT_NOT_FOUND], 1)
         low = worst([first, second])
         self.assertEqual(low.outcomes[Outcome.RIGHT], 0)
         self.assertEqual((low.wrong_verified, low.recall_hits, low.recall_of), (1, 0, 1))
+
+
+def asked(qid: str, kind: str = "number", text: str = "?") -> Question:
+    expect: dict[str, Any] = {"kind": kind, "document": "bill.pdf", "pages": [15]}
+    expect |= {} if kind == "not_found" else {"value": 11800}
+    return question_from({"id": qid, "question": text, "tags": [], "expect": expect})
+
+
+class PrecisionTest(unittest.TestCase):
+    """Ask precision PR 1a: multi_value, the metrics, the worst run, splits, the Romanised
+    set and the paired gate."""
+
+    def test_a_right_answer_with_another_money_amount_is_multi_value(self) -> None:
+        both = score(question(), answer("Rs. 11,800 in all (Rs. 10,000 and 1,800 tax)."))
+        self.assertEqual((both.outcome, both.multi_value), (Outcome.RIGHT, True))
+        self.assertFalse(score(question(), answer("Rs. 11,800, on 12 August 2026, for 3 items.")).multi_value)
+        named = asked("q1", text="Is Rs. 10,000 the total?")
+        self.assertFalse(score(named, answer("No, the total is Rs. 11,800, not Rs. 10,000.")).multi_value)
+        self.assertTrue(score(question("text", "Patil"), answer("Patil paid ₹5,000.")).multi_value)
+        self.assertFalse(score(question(), answer("Rs. 10,000 and Rs. 5,000.")).multi_value)  # not right
+
+    def test_each_metric_counts_what_it_says(self) -> None:
+        hits = [Hit("bill.pdf", 15, 15), Hit("other.pdf", 15, 15)]
+        scored = [
+            (asked("a"), score(asked("a"), answer("Rs. 11,800", label="verified"), hits)),
+            (asked("b"), score(asked("b"), answer("Rs. 11,800 of Rs. 20,000"))),
+            (asked("c"), score(asked("c"), answer("Rs. 1", label="verified"))),
+            (asked("d"), score(asked("d"), answer(status="not_found", label=None))),
+            (asked("e", "not_found"), score(asked("e", "not_found"), answer(status="not_found", label=None))),
+            (asked("f", "not_found"), score(asked("f", "not_found"), answer("Rs. 9"))),
+        ]
+        self.assertEqual(
+            metrics(scored),
+            {
+                "answer_precision": (2, 4),
+                "answer_precision_strict": (1, 4),
+                "verified_precision": (1, 2),
+                "verified_coverage": (1, 4),
+                "coverage": (3, 4),
+                "abstention_precision": (1, 2),
+                "trap_accuracy": (1, 2),
+                "citation_precision": (1, 2),
+            },
+        )
+
+    def test_a_romanised_trap_is_right_only_when_every_spelling_is_not_found(self) -> None:
+        item = {"id": "r41", "spellings": ["a?", "b?"], "tags": ["trap"], "expect": {"kind": "not_found"}}
+        item["expect"] |= {"document": "bill.pdf", "pages": [1]}
+        questions = [question_from(raw) for raw in spelled_out([item])]
+        self.assertEqual([q.id for q in questions], ["r41#1", "r41#2"])
+        self.assertEqual({q.slices for q in questions}, {("trap", "not_found", split_of("r41"))})
+        found, missed = answer(status="not_found", label=None), answer("Rs. 9")
+        one_missed = [(questions[0], score(questions[0], found)), (questions[1], score(questions[1], missed))]
+        self.assertEqual(metrics(one_missed)["trap_accuracy"], (0, 1))
+        both = [(q, score(q, found)) for q in questions]
+        self.assertEqual(metrics(both)["trap_accuracy"], (1, 1))
+        self.assertEqual(romanised_problems([item], {"bill.pdf"}), [])
+        self.assertEqual(
+            romanised_problems([item], {"other.pdf"}),
+            [f"r41#{n}: document 'bill.pdf' is not in the sha256 manifest" for n in (1, 2)],
+        )
+
+    def test_the_derived_split_is_stable_and_a_file_split_wins(self) -> None:
+        self.assertEqual([split_of("q1"), split_of("r01")], ["test", "dev"])  # never changes
+        self.assertIn("test", asked("q1").slices)
+        expect = {"kind": "not_found", "pages": []}
+        own = question_from({"id": "q1", "question": "?", "tags": [], "expect": expect, "split": "dev"})
+        self.assertEqual(own.slices, ("not_found", "dev"))
+
+    def test_the_worst_run_is_wrong_verified_then_wrong_then_abstained(self) -> None:
+        q = asked("q1")
+        runs = [
+            score(q, answer("Rs. 11,800", label="verified")),
+            score(q, answer("Rs. 11,800")),
+            score(q, answer(status="not_found", label=None)),
+            score(q, answer("Rs. 1")),
+            score(q, answer("Rs. 1", label="verified")),
+        ]
+        for n in range(1, len(runs)):
+            self.assertIs(worst_score(runs[: n + 1]), runs[n])
+            self.assertIs(worst_score(list(reversed(runs[: n + 1]))), runs[n])
+        self.assertEqual([category(m) for m in runs[2:]], ["abstained", "wrong", "wrong_verified"])
+
+    def test_the_paired_gate_fails_on_each_of_its_three_rules(self) -> None:
+        def run(*outcomes: str, verified: int = 0) -> dict[str, dict[str, Any]]:
+            return {f"q{i}": {"outcome": o, "verified": i < verified} for i, o in enumerate(outcomes)}
+
+        base = run("right", "right", "right", "abstained", "wrong_verified", verified=3)
+        same = compare(base, base)
+        self.assertEqual(same, ([], [], 1.0))
+        changed, failures, _ = compare(base, run("right", "right", "right", "wrong", "wrong", verified=3))
+        self.assertEqual(changed, ["q3: abstained -> wrong", "q4: wrong_verified -> wrong"])
+        self.assertEqual(failures, ["q3 moved into wrong"])  # wrong_verified -> wrong is better
+        two = run("abstained", "abstained", "right", "abstained", "wrong_verified", verified=3)
+        self.assertEqual(compare(base, two)[1], [])  # two right -> abstained, coverage down by 2
+        three = run("abstained", "abstained", "abstained", "abstained", "wrong_verified")
+        self.assertEqual(
+            compare(base, three)[1],
+            [
+                "3 right answers abstained, at most 2",
+                "verified_coverage fell from 3 to 0 questions, at most 2 fewer",
+            ],
+        )
+        self.assertEqual(compare(base, {"q9": {"outcome": "wrong", "verified": False}}), ([], [], 1.0))
+
+    def test_mcnemar_is_exact(self) -> None:
+        self.assertEqual(mcnemar(0, 0), 1.0)
+        self.assertEqual(mcnemar(5, 0), 0.0625)  # 2 * (1/2)**5
+        self.assertEqual(mcnemar(3, 3), 1.0)
+        self.assertAlmostEqual(mcnemar(1, 6), 2 * (1 + 7) / 128)
 
 
 if __name__ == "__main__":

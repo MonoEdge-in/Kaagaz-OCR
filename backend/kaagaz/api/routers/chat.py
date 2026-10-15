@@ -37,6 +37,7 @@ is made only after the answer); the memory's to the same user, kind ``memory``
 (``usage_scope``).
 """
 
+import functools
 import json
 import logging
 import uuid
@@ -55,6 +56,7 @@ from kaagaz.answering.rewrite import Turn
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
 from kaagaz.db import audit
 from kaagaz.db import chat as chat_sql
@@ -78,6 +80,14 @@ Context = Annotated[AppContext, Depends(get_context)]
 MAX_TITLE = 200
 NOT_FOUND_TEXT = "I couldn't find this in your documents."
 MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
+TOO_MANY_QUESTIONS = "You have asked many questions in a short time. Please wait a minute and ask again."
+
+
+@functools.cache
+def chat_limits(per_minute: int) -> RateLimiter:
+    """Questions a user may ask a minute (CHAT_QUESTIONS_PER_MINUTE, security checklist
+    15 Oct 2026), beside the site-wide limit: one limiter a process for each value."""
+    return RateLimiter(per_minute)
 
 
 ModelId = Annotated[str, StringConstraints(max_length=257, pattern=f"^{MODEL_ID.pattern}$")]
@@ -128,6 +138,8 @@ def answer_text(answer: dict[str, Any]) -> str:
 
 @router.post("/chat")
 def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks) -> dict[str, Any]:
+    if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
+        raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     question = body.question.strip()
     if not question:
         raise ApiError(400, "bad_request", "Type a question first.")

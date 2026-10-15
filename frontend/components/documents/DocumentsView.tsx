@@ -41,6 +41,7 @@ import {
 } from "./insideSearch";
 import type { SearchMode } from "./insideSearch";
 import { noMatchTitle } from "./library";
+import { mergeList } from "./listMerge";
 import { LibraryFilters } from "./LibraryFilters";
 import { includeSubfoldersHref, isFiltered, libraryHref, listParams } from "./libraryQuery";
 import type { LibraryState } from "./libraryQuery";
@@ -164,7 +165,12 @@ export function DocumentsView({ library }: { library: LibraryState }) {
         return { view: viewKey, list, now: Date.now() };
       }),
     onResult: (result) => {
-      setLoaded(result);
+      // Unchanged rows keep their objects (listMerge.ts) and are memoised, so only rows
+      // whose words change render again; the new `now` keeps "x minutes ago" moving.
+      setLoaded((before) => {
+        if (before === null || before.view !== result.view) return result;
+        return { ...result, list: mergeList(before.list, result.list) };
+      });
       setFailure(null);
     },
     onFailure: (caught) => setFailure({ view: viewKey, message: errorText(caught) }),

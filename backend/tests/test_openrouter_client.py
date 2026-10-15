@@ -27,6 +27,7 @@ from kaagaz.ai.openrouter import (
     CHAT_THINKING_TOKENS,
     EMBED_PROVIDER,
     KEY_LATCH_SECONDS,
+    LIMITER_WAIT,
     PAGE_MAX_OUTPUT_TOKENS,
     PROVIDER,
     STRICT_SCHEMA,
@@ -792,6 +793,23 @@ def test_the_limiter_spaces_calls_by_rpm_over_the_workers(
     for _ in range(3):
         _read(client)
     assert clock.sleeps == [interval, interval]
+
+
+def test_the_limiter_waits_add_up_only_where_a_caller_holds_the_counter(fake: OpenRouterFake) -> None:
+    """Ask precision PR 1a (D): the answer timing line reads the limiter's waits."""
+    fake.responder = lambda request: json_reply(GOOD)
+    clock = Clock()
+    client = _client(fake.url, clock, model_rpm=60)
+    _read(client)
+    _read(client)  # no counter held: the wait goes nowhere
+    held = LIMITER_WAIT.set([0.0])
+    try:
+        _read(client)
+        _read(client)
+        assert LIMITER_WAIT.get() == [2.0]
+    finally:
+        LIMITER_WAIT.reset(held)
+    assert clock.sleeps == [1.0, 1.0, 1.0]
 
 
 def test_a_limiter_slot_past_the_deadline_is_rate_limited_without_a_request(fake: OpenRouterFake) -> None:

@@ -108,6 +108,7 @@ _BASE: dict[str, Any] = {
     "chat_summary_every": 6,
     "timezone": "Asia/Kolkata",
     "rate_limit_per_minute": 1000,
+    "chat_questions_per_minute": 1000,
     "log_level": "WARNING",
 }
 

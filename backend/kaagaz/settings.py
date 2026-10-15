@@ -335,6 +335,7 @@ class Settings:
 
     # API.
     rate_limit_per_minute: int
+    chat_questions_per_minute: int  # chat questions a user may ask a minute (security, 15 Oct 2026)
     log_level: str
 
     @classmethod
@@ -578,6 +579,7 @@ class Settings:
             chat_summary_every=env.at_least("CHAT_SUMMARY_EVERY", 1, default=6),
             timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
+            chat_questions_per_minute=env.at_least("CHAT_QUESTIONS_PER_MINUTE", 1, default=20),
             log_level=env.text("LOG_LEVEL"),
         )
 

@@ -6,6 +6,10 @@
 // PDF.js is imported here on first use only, in the browser: it needs browser
 // APIs and must never load during server rendering. The upload queue also
 // counts a PDF's pages here before sending it (countPdfPages).
+// Security (checklist 15 Oct 2026, GHSA-hq66-cqwq-w95j): PDF.js 6 has no eval
+// path left (its isEvalSupported option is gone), and a PDF's own JavaScript
+// never runs: only PDF.js's viewer and sandbox run it, and neither is loaded
+// here. Only this file opens PDFs.
 
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { fileUrl } from "@/lib/api";
@@ -14,7 +18,8 @@ import { LruCache } from "./lruCache";
 const KEPT = 4; // PROVISIONAL: a document and a few source cards' documents
 
 const pdfs = new LruCache<Promise<PDFDocumentProxy>>(KEPT, (loading) => {
-  loading.then((pdf) => pdf.destroy()).catch(() => undefined);
+  // PDF.js 6 destroys a document through the task that loaded it.
+  loading.then((pdf) => pdf.loadingTask.destroy()).catch(() => undefined);
 });
 
 async function pdfjsLib() {

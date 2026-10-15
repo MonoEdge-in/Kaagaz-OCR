@@ -2,7 +2,8 @@
 
     cd backend
     python -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" [--api http://127.0.0.1:8000]
-        [--set golden|xlang] [--docs DIR] [--runs 3] [--agents ID,ID] [--thinking low|medium|high]
+        [--set golden|xlang|romanised] [--docs DIR] [--runs 3] [--agents ID,ID] [--thinking low|medium|high]
+        [--json RUN.json] [--compare BASE.json]
 
 Run it with the stack's settings loaded in the shell, as for ``kaagaz.cli``
 (docs/running-locally.md), and the model on for a real baseline. Never in CI.
@@ -29,7 +30,16 @@ not comparable with this one.
 documents: ``golden`` (the default) is questions.json over docs/; ``xlang`` is
 questions_xlang.json over the synthetic scans in xlang/ (council 4 Oct 2026). An
 xlang document that is not ready is reported and its questions are still asked:
-an unread page is part of what that set measures.
+an unread page is part of what that set measures. ``romanised`` (ask precision PR 1a)
+is questions_romanised.json over docs/, each spelling asked as its own question.
+
+After the runs it prints the precision numbers (golden_scoring's ``metrics``, with
+Wilson intervals, reported and never a gate) over each question's worst run.
+``--json`` writes them, per slice too, with the worst-run totals, each question's worst
+outcome, the git sha, MODEL_CHAT, MODEL_EMBED and ANSWER_PROMPT_HASH. ``--compare``
+reads such a file of the same set (the baseline) and applies the paired gate
+(golden_scoring's ``compare``): it lists every changed question and exits 1 when the gate
+fails.
 
 ``--agents`` and ``--thinking`` (features 25-27, council 15 Oct 2026, C14) send every
 question with those answer models (comma-separated ids, the first leads) and that thinking
@@ -55,6 +65,7 @@ from typing import Any, TextIO
 from urllib.parse import urlsplit
 
 from kaagaz import cli
+from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.api.auth import CSRF_HEADER, CSRF_VALUE, SESSION_COOKIE
 from kaagaz.settings import Settings, SettingsError
 from scripts import golden_scoring as scoring
@@ -77,6 +88,7 @@ class QuestionSet:
     manifest: Path  # the committed sha256 of every document
     check: Callable[[Any, Collection[str]], list[str]]
     all_ready: bool  # every document must be ready before a question is asked
+    spellings: bool = False  # items with spellings, each asked as its own question
 
 
 SETS = {
@@ -95,6 +107,15 @@ SETS = {
         GOLDEN / "xlang" / "documents.sha256",
         scoring.xlang_problems,
         all_ready=False,
+    ),
+    "romanised": QuestionSet(
+        "questions_romanised.json",
+        scoring.ROMANISED_SHA256,
+        GOLDEN / "docs",
+        GOLDEN / "documents.sha256",
+        scoring.romanised_problems,
+        all_ready=True,
+        spellings=True,
     ),
 }
 
@@ -161,6 +182,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--wait-minutes", type=float, default=30.0)
     parser.add_argument("--agents", help="answer models, comma-separated ids (default: the organisation's)")
     parser.add_argument("--thinking", choices=["low", "medium", "high"], help="the answer's thinking level")
+    parser.add_argument("--json", type=Path, dest="json_path", help="write the precision report here")
+    parser.add_argument("--compare", type=Path, help="a --json report of the same set: the baseline")
     parser.add_argument(
         "--allow-remote", action="store_true", help="allow an API or database not on this machine"
     )
@@ -191,7 +214,8 @@ def load_golden(
     if found:
         raise GoldenError("; ".join(found))
     documents = {name: (docs / name).read_bytes() for name in manifest}
-    return [scoring.question_from(item) for item in raw], documents
+    items = scoring.spelled_out(raw) if chosen.spellings else raw
+    return [scoring.question_from(item) for item in items], documents
 
 
 def header(out: TextIO, settings: Settings, api: str, sha: str, questions: str = "questions.json") -> None:
@@ -275,9 +299,10 @@ def ask_all(
         if answer["route"] == "search":
             searched += 1
             modelled += answer.get("model_used") is True
-        marked = scoring.score(question, answer)
+        cited = hits(answer, names)
+        marked = scoring.score(question, answer, cited)
         counted = scoring.counts_for_recall(question, answer["route"])
-        recall = scoring.recall_hit(question, hits(answer, names)) if counted else None
+        recall = scoring.recall_hit(question, cited) if counted else None
         rows.append((question, marked, recall))
         flag = " WRONG-VERIFIED" if marked.wrong_verified else ""
         out.write(
@@ -315,6 +340,62 @@ def write_totals(out: TextIO, label: str, total: scoring.Totals) -> None:
     )
 
 
+def write_metrics(out: TextIO, rates: dict[str, Any]) -> None:
+    """A report's ``metrics``, one line each, with the Wilson interval."""
+    for name, rate in rates.items():
+        low, high = rate["wilson"]
+        out.write(f"  {name:<24} {rate['count']}/{rate['of']} [{low:.2f}, {high:.2f}]\n")
+
+
+def report(set_name: str, settings: Settings, sha: str, runs: Sequence[Sequence[Row]]) -> dict[str, Any]:
+    """The --json report: each question's worst run over ``runs`` (each run's rows, in
+    the same order), its precision numbers overall and per slice, and the worst-run totals."""
+    worst = [
+        (question, scoring.worst_score([run[i][1] for run in runs]))
+        for i, (question, _, _) in enumerate(runs[0])
+    ]
+    slices = sorted({name for question, _ in worst for name in question.slices})
+    total = scoring.worst([scoring.totals(run) for run in runs])
+
+    def rates(numbers: dict[str, tuple[int, int]]) -> dict[str, Any]:
+        return {
+            name: {"count": n, "of": of, "wilson": scoring.wilson(n, of)} for name, (n, of) in numbers.items()
+        }
+
+    return {
+        "set": set_name,
+        "git_sha": sha,
+        "MODEL_CHAT": settings.model_chat,
+        "MODEL_EMBED": settings.model_embed,
+        "ANSWER_PROMPT_HASH": ANSWER_PROMPT_HASH,
+        "runs": len(runs),
+        "totals": {
+            **{outcome.value: n for outcome, n in total.outcomes.items()},
+            "wrong_verified": total.wrong_verified,
+            "recall_hits": total.recall_hits,
+            "recall_of": total.recall_of,
+        },
+        "metrics": rates(scoring.metrics(worst)),
+        "slices": {
+            name: rates(scoring.metrics([r for r in worst if name in r[0].slices])) for name in slices
+        },
+        "questions": {
+            question.id: {"outcome": scoring.category(marked), "verified": marked.verified}
+            for question, marked in worst
+        },
+    }
+
+
+def check_against(base: dict[str, Any], now: dict[str, Any], out: TextIO) -> bool:
+    """--compare: the paired gate against the baseline report; True when it holds."""
+    changed, failures, p = scoring.compare(base["questions"], now["questions"])
+    out.write(f"\nCompared with the baseline (git {base.get('git_sha')}): {len(changed)} changed\n")
+    out.writelines(f"  {line}\n" for line in changed)
+    out.write(f"McNemar exact p {p:.4f} (reported, not a gate)\n")
+    out.writelines(f"GATE FAILED: {failure}\n" for failure in failures)
+    return not failures
+
+
 def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -324,6 +405,9 @@ def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout) -> int:
         check_local(args.api, settings.database_url, args.allow_remote)
         chosen = SETS[args.question_set]
         questions, documents = load_golden(args.docs, chosen)
+        base = None if args.compare is None else json.loads(args.compare.read_text(encoding="utf-8"))
+        if base is not None and base.get("set") != args.question_set:
+            raise GoldenError(f"--compare is a report of {base.get('set')!r}, not {args.question_set!r}")
         header(out, settings, args.api, args.git_sha, chosen.questions)
         api = Http(args.api)
         sign_in(api, os.environ.get(cli.ADMIN_ENV_VAR) or secrets.token_urlsafe(24), out)
@@ -331,16 +415,22 @@ def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout) -> int:
         choice = answer_settings(args.agents, args.thinking)
         if choice:
             out.write(f"Answer settings: {json.dumps(choice)}\n\n")
-        runs: list[scoring.Totals] = []
+        runs: list[list[Row]] = []
         for run in range(1, args.runs + 1):
             out.write(f"Run {run} of {args.runs}\n")
-            rows = ask_all(api, questions, names, out, choice)
-            runs.append(scoring.totals(rows))
-            write_totals(out, f"run {run}", runs[-1])
-            for name, total in scoring.by_slice(rows).items():
+            runs.append(ask_all(api, questions, names, out, choice))
+            write_totals(out, f"run {run}", scoring.totals(runs[-1]))
+            for name, total in scoring.by_slice(runs[-1]).items():
                 write_totals(out, f"  {name}", total)
             out.write("\n")
-        write_totals(out, "WORST RUN", scoring.worst(runs))
+        write_totals(out, "WORST RUN", scoring.worst([scoring.totals(rows) for rows in runs]))
+        made = report(args.question_set, settings, args.git_sha, runs)
+        out.write("Precision, each question at its worst run:\n")
+        write_metrics(out, made["metrics"])
+        if args.json_path is not None:
+            args.json_path.write_text(json.dumps(made, indent=2) + "\n", encoding="utf-8")
+        if base is not None and not check_against(base, made, out):
+            return 1
     except (GoldenError, SettingsError, OSError, HTTPException, ValueError, KeyError) as error:
         # Short codes and names only: no message here carries the password.
         sys.stderr.write(f"error: {type(error).__name__}: {error}\n")

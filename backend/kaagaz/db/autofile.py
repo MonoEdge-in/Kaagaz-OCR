@@ -20,14 +20,31 @@ new top-level folder owned by the uploader. Nothing is inserted to be caught: th
 index folders_autofile_key is only the backstop. No model is called: the type is the
 document card's (``documents.doc_type``).
 
+Party folders (backlog 28b, final polish 16 Oct 2026): a verified invoice goes one level
+deeper, into a folder for the other party inside the type folder ("Invoices / Mehta
+Textiles"). Part of auto-filing, no switch of its own. Grouped by the other party's GSTIN
+(checksum-valid, ``checks.gstin_valid``), never by a name: the folder's key is
+``party:<GSTIN>``, used wherever the folder now is. The other party is the side that is
+not the organisation's own GSTIN, so a seller/buyer swap by the reader still lands in the
+same party's folder. There is no per-organisation GSTIN setting, so its own is the GSTIN
+on the most of its verified invoices (``own_gstin``); when that is not clear, or neither
+side of the invoice is it, the file goes in the type folder. The folder is named after the
+other party as printed (``party_name``); a sibling of that name already there gets
+" (<GSTIN>)" added, and when that is taken too, or there is no room (depth 5) or nobody to
+own a new folder, the type folder is used. Undo still moves the family to the top level.
+
 ``undo`` moves a filed family back to the top level; the folder stays.
 """
+
+import unicodedata
+from collections.abc import Sequence
 
 from sqlalchemy import Connection, text
 
 from kaagaz.db import audit
-from kaagaz.db.folders import _lock_tree
+from kaagaz.db.folders import _DEPTH, _MAX_DEPTH, _lock_tree
 from kaagaz.db.trash import InTrash, lock_live_family
+from kaagaz.extraction.checks import gstin_valid
 
 PENDING, FILED, SKIPPED = "pending", "filed", "skipped"
 
@@ -68,7 +85,7 @@ _BY_NAME = (
 _ADOPT = "UPDATE folders SET autofile_key = :k WHERE customer_id = :c AND id = :f"
 _CREATE = (
     "INSERT INTO folders (customer_id, parent_id, name, created_by, autofile_key)"
-    " VALUES (:c, NULL, :name, :u, :k) RETURNING id"
+    " VALUES (:c, :p, :name, :u, :k) RETURNING id"
 )
 # The family into a folder (filed) or back to the top level (undone), its state with it.
 _FILE_FAMILY = (
@@ -77,6 +94,26 @@ _FILE_FAMILY = (
     " WHERE customer_id = :c AND family_id = :f"
 )
 _FILED_IN = "SELECT autofile, folder_id FROM documents WHERE customer_id = :c AND id = :f"
+
+# --- party folders (28b) ---
+PARTY_NAME_MAX = 80
+OWN_MIN_INVOICES = 3
+_INVOICE = (
+    "SELECT seller_name, seller_gstin, buyer_name, buyer_gstin FROM invoices"
+    " WHERE customer_id = :c AND document_id = :d AND label = 'verified'"
+)
+# The two GSTINs on the most verified invoices (either side, an invoice counted once per
+# GSTIN), and how many verified invoices there are.
+_MOST_SEEN = (
+    "SELECT g, count(*) AS n,"
+    " (SELECT count(*) FROM invoices WHERE customer_id = :c AND label = 'verified') AS total"
+    " FROM (SELECT seller_gstin AS g, id FROM invoices WHERE customer_id = :c AND label = 'verified'"
+    " UNION SELECT buyer_gstin, id FROM invoices WHERE customer_id = :c AND label = 'verified') s"
+    " WHERE g IS NOT NULL GROUP BY g ORDER BY n DESC, g LIMIT 2"
+)
+_CHILD_NAMED = (
+    "SELECT 1 FROM folders WHERE customer_id = :c AND parent_id = :p AND lower(name) = lower(:name)"
+)
 
 
 def file_document(conn: Connection, customer_id: str, document_id: str) -> str | None:
@@ -114,6 +151,8 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
     if folder in ("clash", "no_owner"):
         _set(conn, customer_id, family, SKIPPED)
         return folder
+    if state["doc_type"] == "invoice":
+        folder = _party_folder(conn, customer_id, document_id, folder, state["uploaded_by"])
     conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family, "folder": folder, "state": FILED})
     audit.record(
         conn,
@@ -143,7 +182,15 @@ def _folder(conn: Connection, customer_id: str, key: str, name: str, owner: obje
         return str(same[0])
     if owner is None:
         return "no_owner"
-    made = str(conn.execute(text(_CREATE), {**params, "u": owner}).scalar_one())
+    return _create(conn, customer_id, None, name, owner, key)
+
+
+def _create(
+    conn: Connection, customer_id: str, parent: str | None, name: str, owner: object, key: str
+) -> str:
+    """A new folder Kaagaz made, with its key, audited (no actor)."""
+    params = {"c": customer_id, "p": parent, "name": name, "u": owner, "k": key}
+    made = str(conn.execute(text(_CREATE), params).scalar_one())
     audit.record(
         conn,
         customer_id,
@@ -151,9 +198,76 @@ def _folder(conn: Connection, customer_id: str, key: str, name: str, owner: obje
         action="folder.create",
         target_type="folder",
         target_id=made,
-        details={"parent_id": None, "auto": True},
+        details={"parent_id": parent, "auto": True},
     )
     return made
+
+
+def own_gstin(top: Sequence[tuple[str, int, int]]) -> str | None:
+    """The organisation's own GSTIN from ``_MOST_SEEN``'s rows (GSTIN, invoices it is on,
+    verified invoices): the top one when it is on at least 3 invoices, on more than half
+    of them and on more than the next one, and checksum-valid; else None (not clear).
+    O(1).
+
+    ponytail: a guess from counts, upgrade path is a per-organisation GSTIN setting. An
+    organisation with two GSTINs (two states) gets party folders for its main one only."""
+    if not top:
+        return None
+    gstin, seen, total = top[0]
+    if seen < OWN_MIN_INVOICES or seen * 2 <= total or (len(top) > 1 and top[1][1] >= seen):
+        return None
+    return gstin if gstin_valid(gstin) else None
+
+
+def party(
+    seller_name: str | None, seller: str | None, buyer_name: str | None, buyer: str | None, own: str | None
+) -> tuple[str, str] | None:
+    """The other party of an invoice, (GSTIN, folder name), or None. Exactly one side must
+    be the organisation's own GSTIN, and the other side a different, checksum-valid one;
+    the role does not matter, so a swapped seller and buyer give the same party. O(n)."""
+    if own is None or (seller == own) == (buyer == own):
+        return None  # not clear whose invoice it is, or both sides the same
+    gstin, name = (buyer, buyer_name) if seller == own else (seller, seller_name)
+    if gstin is None or not gstin_valid(gstin):
+        return None
+    return gstin, party_name(name, gstin)
+
+
+def party_name(name: str | None, gstin: str) -> str:
+    """The folder name for a party: control and format characters (bidi marks, zero-width
+    spaces) removed, spaces collapsed, at most 80 characters; "GSTIN <gstin>" when that
+    leaves nothing. O(n)."""
+    kept = "".join(ch for ch in name or "" if unicodedata.category(ch) not in ("Cc", "Cf"))
+    return " ".join(kept.split())[:PARTY_NAME_MAX].rstrip() or f"GSTIN {gstin}"
+
+
+def _party_folder(
+    conn: Connection, customer_id: str, document_id: str, type_folder: str, owner: object
+) -> str:
+    """The party folder for a verified invoice (28b), or ``type_folder`` when there is none
+    to use: no verified invoice, no clear party, no room or no owner, or both names taken.
+    The caller holds the tree lock. O(I) for the customer's I invoices (the count)."""
+    params = {"c": customer_id, "d": document_id}
+    invoice = conn.execute(text(_INVOICE), params).first()
+    if invoice is None:
+        return type_folder
+    top = [(str(r[0]), int(r[1]), int(r[2])) for r in conn.execute(text(_MOST_SEEN), params)]
+    found = party(invoice[0], invoice[1], invoice[2], invoice[3], own_gstin(top))
+    if found is None:
+        return type_folder
+    gstin, name = found
+    key = f"party:{gstin}"
+    keyed = conn.execute(text(_BY_KEY), {"c": customer_id, "k": key}).scalar()
+    if keyed is not None:
+        return str(keyed)
+    depth: int | None = conn.execute(text(_DEPTH), {"c": customer_id, "f": type_folder}).scalar_one()
+    if owner is None or depth is None or depth >= _MAX_DEPTH:
+        return type_folder
+    for candidate in (name, f"{name} ({gstin})"):
+        taken = conn.execute(text(_CHILD_NAMED), {"c": customer_id, "p": type_folder, "name": candidate})
+        if taken.first() is None:
+            return _create(conn, customer_id, type_folder, candidate, owner, key)
+    return type_folder
 
 
 def _set(conn: Connection, customer_id: str, family_id: str, state: str | None) -> None:
