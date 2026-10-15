@@ -6,9 +6,9 @@
 // one hidden status line says short things instead. While a question is out, it
 // shows as pending and the conversation cannot be switched. Only the latest
 // conversation opened may fill the thread, so a slow reply for an earlier one
-// is dropped. Above the composer, the scope chip and picker (ScopePicker.tsx):
-// a reopened conversation shows its last question's scope again. In its row, the
-// Answer settings chip (AnswerSettings.tsx, features 25-27) when there is a choice.
+// is dropped. In the composer's toolbar, the scope chip and picker (ScopePicker.tsx):
+// a reopened conversation shows its last question's scope again. Beside Send, the
+// Answer settings button (AnswerSettings.tsx, features 25-27) when there is a choice.
 // Beside each question, the user's own story matches are asked in parallel,
 // in the chip's scope (lib/storyMatches.ts), and shown apart from the answer,
 // never in it. They belong to the question, not to the answer succeeding
@@ -619,24 +619,27 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             </div>
           </div>
           <div ref={composerRef} className={styles.composer}>
-            <div className={styles.composerTools}>
-              <ModeSwitch mode={mode} locked={modeLockedText(busy)} onChange={chooseMode} />
-              <ScopePicker
-                state={scope}
-                locked={scopeLockedText(busy, threadState === "loading")}
-                onChoose={(next) => setScope((current) => chooseScope(current, next))}
-              >
-                {mode === "documents" && hasChoices(chatOptions) && answerPick ? (
-                  <AnswerSettings options={chatOptions} pick={answerPick} locked={busy} onPick={setAnswerPick} />
-                ) : null}
-              </ScopePicker>
-            </div>
             <QuestionBox
               pending={busy || search.kind === "loading"}
               error={mode === "documents" ? askError : null}
               onAsk={onAsk}
               inputRef={inputRef}
               texts={MODE_TEXTS[mode]}
+              tools={
+                <>
+                  <ModeSwitch mode={mode} locked={modeLockedText(busy)} onChange={chooseMode} />
+                  <ScopePicker
+                    state={scope}
+                    locked={scopeLockedText(busy, threadState === "loading")}
+                    onChoose={(next) => setScope((current) => chooseScope(current, next))}
+                  />
+                </>
+              }
+              settings={
+                mode === "documents" && hasChoices(chatOptions) && answerPick ? (
+                  <AnswerSettings options={chatOptions} pick={answerPick} locked={busy} onPick={setAnswerPick} />
+                ) : null
+              }
             />
           </div>
         </div>

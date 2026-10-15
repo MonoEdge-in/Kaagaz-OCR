@@ -557,6 +557,26 @@ describe("Compare models", () => {
     expect(html).toContain("Not known");
   });
 
+  it("says each column's best value in a word, a tie on both models, and nothing on a lone value", () => {
+    const fast = board("a/fast", { seconds_per_page_p50: 2, scan_cost_usd: 8, runs_failed: 0 });
+    const cheap = board("b/cheap", { seconds_per_page_p50: 4.2, scan_cost_usd: 2, seconds_per_page_p95: null });
+    const html = boardHtml(ready(boardData({ items: [fast, cheap] })));
+    const row = (model: string) => html.split("<tr").find((r) => r.includes(model)) ?? "";
+    // The word follows its value after a space, so a screen reader says "typical 2 s fastest".
+    const tagged = (model: string, value: string, word: string) =>
+      expect(row(model)).toMatch(new RegExp(`${value.replace(/[$.]/g, "\\$&")} <span class="[^"]*best[^"]*">${word}</span>`));
+    tagged("a/fast", "typical 2 s", "fastest");
+    tagged("a/fast", "0.0% failed", "fewest");
+    tagged("b/cheap", "$5.00", "lowest");
+    expect(row("a/fast")).not.toContain("$20.00 <span");
+    expect(row("b/cheap")).not.toMatch(/>(fastest|fewest)</);
+    // The same AI cost on both is a tie: both say lowest.
+    tagged("a/fast", "$6.50", "lowest");
+    tagged("b/cheap", "$6.50", "lowest");
+    // One model alone has nothing to beat.
+    expect(boardHtml(ready(boardData({ items: [fast] })))).not.toMatch(/class="[^"]*best/);
+  });
+
   describe("with models", () => {
     const html = boardHtml(ready(boardData()));
     const rows = html.split("<tr").slice(2).map((row) => row.split("</tr>")[0] ?? ""); // after the header row

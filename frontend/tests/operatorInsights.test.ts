@@ -14,6 +14,7 @@ import {
   INSIGHT_PERIODS,
   K_MIN,
   attentionItems,
+  boardBest,
   boardRows,
   changeText,
   csvOf,
@@ -673,6 +674,55 @@ describe("boardRows", () => {
       board({ model: "a", pages_local: 5 }),
     ]);
     expect(lines.map((l) => l.row.model)).toEqual(["b", "a", "c"]);
+  });
+});
+
+describe("boardBest", () => {
+  const reads = { pages_ai: 1000, runs: 40, scan_cost_usd: 2, cost_usd: 5, seconds_per_page_p50: 4 };
+  // Same pages, so boardRows keeps them in model order: m0, m1, ...
+  const best = (...rows: Partial<BoardRow>[]) => boardBest(boardRows(rows.map((row, i) => board({ model: `m${i}`, ...reads, ...row }))));
+
+  it("marks the lowest cost, the fastest speed and the fewest failed in each column", () => {
+    const lines = boardRows([
+      board({ model: "a", ...reads, scan_cost_usd: 1, seconds_per_page_p50: 6, runs_failed: 2, cost_usd: 9 }),
+      board({ model: "b", ...reads, scan_cost_usd: 3, seconds_per_page_p50: 2, runs_failed: 0, runs_degraded: 1, cost_usd: 4 }),
+    ]);
+    const byModel = new Map(lines.map((line, i) => [line.row.model, boardBest(lines)[i]]));
+    expect(byModel.get("a")).toEqual({ per1000: true, seconds: false, failed: false, cost: false });
+    expect(byModel.get("b")).toEqual({ per1000: false, seconds: true, failed: true, cost: true });
+  });
+
+  it("tags every tied model, rounded as the table shows the value", () => {
+    const [a, b] = best({ seconds_per_page_p50: 4.21, cost_usd: 5 }, { seconds_per_page_p50: 4.24, cost_usd: 5.001 });
+    expect([a?.seconds, b?.seconds]).toEqual([true, true]);
+    expect([a?.cost, b?.cost]).toEqual([true, true]);
+    expect([a?.per1000, b?.per1000, a?.failed, b?.failed]).toEqual([true, true, true, true]);
+  });
+
+  it("never tags a missing value, and tags nothing unless two models have one", () => {
+    const tags = boardBest(
+      boardRows([
+        board({ model: "a", ...reads, seconds_per_page_p50: null, cost_usd: null }),
+        board({ model: "b", ...reads, seconds_per_page_p50: null, cost_usd: 1, cost_part_unknown: true }),
+        board({ model: "c", ...reads, seconds_per_page_p50: 2, cost_usd: 8 }),
+      ]),
+    );
+    expect(tags.some((t) => t.seconds)).toBe(false); // only c has a speed: nothing to beat
+    expect(tags.some((t) => t.cost)).toBe(false); // part not known is a floor; c alone is left
+  });
+
+  it("tags nothing for one model, and skips a model too few to compare or that reads no pages", () => {
+    expect(best({})).toEqual([{ per1000: false, seconds: false, failed: false, cost: false }]);
+    const tags = boardBest(
+      boardRows([
+        board({ model: "few", ...reads, documents: 29, scan_cost_usd: 0.5, seconds_per_page_p50: 1 }),
+        board({ model: "chat", runs: 0, cost_usd: 0.1 }),
+        board({ model: "x", ...reads, scan_cost_usd: 3, seconds_per_page_p50: 5 }),
+      ]),
+    );
+    expect(tags.some((t) => t.per1000 || t.seconds || t.failed)).toBe(false);
+    // AI cost is shown on every row, so every model with a known cost is ranked.
+    expect(tags.filter((t) => t.cost)).toHaveLength(1);
   });
 });
 

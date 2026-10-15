@@ -1,10 +1,21 @@
 """The time-left estimate (kaagaz.eta), with fixed numbers (PRD 4 #13)."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
-from kaagaz.eta import OCR_SECONDS_OTHER, RunTiming, after_reading, mean, preparing, rates, reading, time_left
+from kaagaz.eta import (
+    MODEL_SLOW_MIN_S,
+    OCR_SECONDS_OTHER,
+    RunTiming,
+    after_reading,
+    mean,
+    preparing,
+    rates,
+    reading,
+    time_left,
+)
 
 T0 = datetime(2026, 10, 4, 10, 0, tzinfo=UTC)
 NONE = (0.0, 0.0)
@@ -45,6 +56,30 @@ def test_a_stall_is_three_pages_long_and_at_least_20_s() -> None:
     slow = reading(rates([scan_run(10.0)] * 3, "rapidocr"), T0, 3, 5, (30.0, 3), NONE)
     assert slow.slow_after_s == pytest.approx(3 * slow.item_s)
     assert reading(rates([scan_run(1.0)] * 3, "rapidocr"), T0, 0, 5, NONE, NONE).slow_after_s == 20.0
+
+
+def test_a_page_read_by_a_model_is_not_slow_at_25_s() -> None:
+    """Progress fix, 16 Oct 2026: a High-thinking page call often passes 20 s, so a model
+    read stalls only past 3 x its own seconds a call (90 s at least, PROVISIONAL)."""
+    cold = reading(rates([], "gemini"), T0, 0, 1, NONE, NONE)
+    assert cold.slow_after_s == MODEL_SLOW_MIN_S == 90.0
+    stored_read = {"step": "reading", "done": 0, "total": 1, "started_at": T0.isoformat(), **cold.to_json()}
+
+    def at(seconds: float) -> dict[str, Any]:
+        left = time_left(stored_read, now=T0 + timedelta(seconds=seconds))
+        assert left is not None
+        return left
+
+    # The screen's rule (lib/timeLeft.ts stalled): longer than usual once since_move passes slow_after.
+    assert at(25)["since_move_seconds"] <= at(25)["slow_after_seconds"]  # not slow at 25 s
+    assert at(60)["done_fraction"] > at(25)["done_fraction"]  # and the bar still moves
+    assert at(200)["since_move_seconds"] > at(200)["slow_after_seconds"]  # slow well past it
+    assert at(200)["done_fraction"] == at(400)["done_fraction"]  # held still, no work shown
+    run = RunTiming("gemini 2.5", 10, 0, 0, 10 * 40.0, 10 * 40.0, 30.0)  # 40 s a call, learned
+    learned = rates([run] * 5, "gemini")
+    slow = reading(learned, T0, 0, 1, NONE, NONE).slow_after_s
+    assert slow == pytest.approx(3 * mean(learned.ocr)) and slow > MODEL_SLOW_MIN_S
+    assert reading(rates([], "rapidocr"), T0, 0, 1, NONE, NONE).slow_after_s == 20.0  # RapidOCR as before
 
 
 def test_after_reading_is_the_median_and_slow_the_90th_percentile() -> None:
@@ -130,6 +165,8 @@ def test_time_left_from_preparing_to_indexing_and_never_while_scanning() -> None
     lefts = [time_left(stored(step=step), now=T0) for step in ("preparing", "understanding", "indexing")]
     assert [None if left is None else left["items_left"] for left in lefts] == [8, 0, 0]
     assert time_left(stored(step="scanning"), now=T0) is None
+    rereading = time_left(stored(step="rereading"), now=T0)  # Careful's second reading keeps its bar
+    assert rereading is not None and rereading["items_left"] == 0
 
 
 BAD = [

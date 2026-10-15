@@ -17,16 +17,29 @@
   min-width: 0;
 }
 
+/* The title, then Download original and Ask about this document at its end;
+   they wrap under a long title. */
+.titleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
 .title {
+  flex: 1 1 20rem;
+  min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
 }
 
+/* One meta line (board 12 P4): status, type and pages, Read again, the folder
+   path, the tags and the versions, wrapping as one line of items. */
 .status {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-1) var(--space-3);
+  gap: var(--space-1) var(--space-4);
 }
 
 .meta {
@@ -34,12 +47,8 @@
   font-size: var(--fs-sm);
 }
 
-/* "Read again" (ReadAgain.tsx): the button ends the status line; its
+/* "Read again" (ReadAgain.tsx): the button sits in the meta line; its
    question, its error and its note each take a line of their own. */
-.readAgain {
-  margin-inline-start: auto;
-}
-
 .readAgainLine {
   flex: 1 1 100%;
   margin: 0;
@@ -72,14 +81,7 @@
   gap: var(--space-2);
 }
 
-/* Where it is filed: the folder path, the tags, and Download original. */
-.place {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-5);
-}
-
+/* Where it is filed: the folder path, the tags, the versions. */
 .placeItem {
   display: flex;
   flex-wrap: wrap;
@@ -98,9 +100,13 @@
   margin-inline-start: auto;
 }
 
-/* A phone: Download original is its icon alone (globals.css .narrow-hide) and
-   shares a row with Ask about this document. */
+/* A phone: the title has its own row; Download original is its icon alone
+   (globals.css .narrow-hide) and shares the next row with Ask about this document. */
 @media (max-width: 639.98px) {
+  .title {
+    flex-basis: 100%;
+  }
+
   .download {
     margin-inline-start: 0;
   }

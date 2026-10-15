@@ -520,6 +520,32 @@ describe("layout guards", () => {
     expect(phone.find((rule) => rule.selector === ".ask")?.body).toMatch(/flex:\s*1 1 auto;/);
   });
 
+  it("puts the document's status, folder, tags and versions on one meta line under the title (board 12 P4)", () => {
+    const view = read("app/(app)/documents/[id]/DocumentView.tsx");
+    const between = (from: string, to: string) => view.slice(view.indexOf(from), view.indexOf(to, view.indexOf(from)));
+    // The title row: the title, then Download original and Ask about this document, the one primary.
+    const title = between("<div className={styles.titleRow}>", "<div className={styles.status}>");
+    expect(title).toContain("<h1 className={styles.title}>");
+    expect(title).toContain("Download original");
+    expect(title).toMatch(/btn btn-primary \$\{styles\.ask\}[\s\S]*Ask about this document/);
+    // The meta line holds everything else, in reading order; no second "place" row.
+    const meta = between("<div className={styles.status}>", "{note && ");
+    const order = ["<StatusChip", "pagesText", "<ReadAgain", 'aria-label="Folder"', 'id="document-tags-label"', 'aria-label="Versions"'];
+    const at = order.map((part) => meta.indexOf(part));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(view).not.toContain("styles.place}");
+    const css = "app/(app)/documents/[id]/DocumentView.module.css";
+    expect(rulesFor(css, ".status")[0]?.body).toMatch(/flex-wrap:\s*wrap;/);
+    // Read again no longer pushes the rest of the line away; its question and error still take their own row.
+    expect(rulesFor(css, ".readAgain")).toEqual([]);
+    expect(rulesFor(css, ".readAgainConfirm")[0]?.body).toMatch(/flex:\s*1 1 100%;/);
+    expect(rulesFor(css, ".readAgainLine")[0]?.body).toMatch(/flex:\s*1 1 100%;/);
+    // On a phone the title has a row of its own, so Ask never squeezes it.
+    const phone = rules(read(css)).filter((rule) => rule.at === "@media (max-width: 639.98px)");
+    expect(phone.find((rule) => rule.selector === ".title")?.body).toMatch(/flex-basis:\s*100%;/);
+  });
+
   it("paints an older chat answer only near view, never the newest four, and never on the card itself", () => {
     const CHAT_CSS = "components/chat/Chat.module.css";
     const lazy = rules(read(CHAT_CSS)).filter((rule) => /content-visibility/.test(rule.body));

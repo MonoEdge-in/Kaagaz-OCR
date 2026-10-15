@@ -12,8 +12,8 @@ import table from "@/components/documents/Table.module.css";
 import { getModelBoard, getOperatorModels } from "@/lib/api";
 import { formatCost, formatNumber } from "@/lib/format";
 import type { BoardReply } from "@/lib/types";
-import { BOARD_MIN_DOCUMENTS, boardRows, rateText } from "./insights";
-import type { BoardLine, InsightPeriod } from "./insights";
+import { BOARD_MIN_DOCUMENTS, boardBest, boardRows, rateText } from "./insights";
+import type { BoardBest, BoardLine, InsightPeriod } from "./insights";
 import { LoadFailed } from "./LoadFailed";
 import { usd } from "./models";
 import { AI_OFF, PeriodSelect, Skeleton, useLoad } from "./OverviewView";
@@ -100,6 +100,8 @@ const COLUMNS = [
 ];
 
 function BoardTable({ data }: { data: BoardData }) {
+  const lines = boardRows(data.reply.items);
+  const best = boardBest(lines);
   return (
     <div className={table.reflowWrap}>
       <table className={`table ${table.reflow} ${styles.nameWide}`} role="table">
@@ -114,8 +116,8 @@ function BoardTable({ data }: { data: BoardData }) {
           </tr>
         </thead>
         <tbody role="rowgroup">
-          {boardRows(data.reply.items).map((line) => (
-            <BoardLineRow key={line.row.model} line={line} name={modelName(line.row.model, data.names)} />
+          {lines.map((line, i) => (
+            <BoardLineRow key={line.row.model} line={line} best={best[i]} name={modelName(line.row.model, data.names)} />
           ))}
         </tbody>
       </table>
@@ -134,7 +136,16 @@ const secondsText = (label: string, value: number | null) =>
   value === null ? `${label}: too few timed runs` : `${label} ${formatNumber(Math.round(value * 10) / 10)} s`;
 const signalText = (value: number | null, ocrPages: number) => (value === null ? "Too few scanned documents to rate" : rateText(value, ocrPages));
 
-function BoardLineRow({ line, name }: { line: BoardLine; name: string }) {
+// Board 12 P8: the column's best value says so in a word, not by colour alone; the space keeps it a word for screen readers.
+const Best = ({ word, on }: { word: string; on: boolean | undefined }) =>
+  on ? (
+    <>
+      {" "}
+      <span className={css.best}>{word}</span>
+    </>
+  ) : null;
+
+function BoardLineRow({ line, best, name }: { line: BoardLine; best: BoardBest | undefined; name: string }) {
   const { row } = line;
   const reads = row.runs > 0 || line.pages > 0; // chat and embedding models only spend
   const compare = (text: string) => (!reads ? <span className="muted">Does not read pages</span> : line.tooFew ? TOO_FEW : text);
@@ -165,12 +176,14 @@ function BoardLineRow({ line, name }: { line: BoardLine; name: string }) {
       </td>
       <td role="cell" data-label="$ per 1,000 pages (est.)" className="tabular">
         {compare(usd(line.usdPer1000Pages, row.cost_estimated))}
+        <Best word="lowest" on={best?.per1000} />
       </td>
       <td role="cell" data-label="Cache saved" className="tabular">
         {compare(cacheText(line.cachedShare))}
       </td>
       <td role="cell" data-label="Seconds per page" className="tabular">
         {compare(secondsText("typical", row.seconds_per_page_p50))}
+        <Best word="fastest" on={best?.seconds} />
         {reads && !line.tooFew && <span className={styles.statusNote}>{secondsText("slowest 5%", row.seconds_per_page_p95)}</span>}
       </td>
       <td role="cell" data-label="Page signals" className="tabular">
@@ -188,6 +201,7 @@ function BoardLineRow({ line, name }: { line: BoardLine; name: string }) {
       </td>
       <td role="cell" data-label="Failed or without a card" className="tabular">
         {compare(`${rateText(row.runs_failed, row.runs)} failed`)}
+        <Best word="fewest" on={best?.failed} />
         {reads && !line.tooFew && (
           <span className={styles.statusNote}>
             {rateText(row.runs_degraded, row.runs)} without a card, {`of ${formatNumber(row.runs)} runs`}
@@ -196,6 +210,7 @@ function BoardLineRow({ line, name }: { line: BoardLine; name: string }) {
       </td>
       <td role="cell" data-label="AI cost" className="tabular">
         {formatCost(row)}
+        <Best word="lowest" on={best?.cost} />
       </td>
     </tr>
   );

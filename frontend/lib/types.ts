@@ -115,7 +115,7 @@ export interface BatchView {
   id: string;
   documents: DocumentSummary[]; // in upload order; the tray sorts them worst first
   counts: { total: number; ready: number; reading: number; waiting: number; attention: number; failed: number };
-  pages_read: number; // the batch bar is pages_read / pages_total (U1)
+  pages_read: number; // of pages_total (U1); the bar weighs each document's own fraction (batchTray.ts)
   pages_total: number;
   time_left: TimeLeft | null; // until the whole drop is ready; null when nothing is left to read
 }
@@ -161,7 +161,8 @@ export type DocType =
 /** How far the worker has got (PRD 2, X3), e.g. step "reading", done 3, total 40. */
 export interface DocumentProgress {
   // "waiting" (PRD 5 Q6): held back in its batch or for the reader; the status message says why.
-  step: "scanning" | "preparing" | "reading" | "understanding" | "indexing" | "waiting";
+  // "rereading": some pages read again carefully (Dynamic's Careful); total is how many.
+  step: "scanning" | "preparing" | "reading" | "rereading" | "understanding" | "indexing" | "waiting";
   done: number;
   total: number; // 0 for a sheet, which is read as a whole
 }
