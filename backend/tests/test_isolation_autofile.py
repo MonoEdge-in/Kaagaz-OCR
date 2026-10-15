@@ -3,6 +3,7 @@ one customer's type folder is never used for another's files, filing named with 
 customer changes nothing, another customer's Undo is "not found", and only the platform
 operator's function grants auto-filing: the app can't set the grant, can't switch it on
 without it, and can't run the function. The operator's grant and stop, through its route.
+Party folders (28b): one customer's invoices never decide another's own GSTIN or folders.
 """
 
 import uuid
@@ -16,6 +17,8 @@ from kaagaz.db.engine import Database
 from tests.db_support import new_customer, violation
 from tests.test_api_support import CSRF, Api
 from tests.test_autofile_db import folders, organisation, read, state, upload, view
+from tests.test_autofile_party import MEHTA
+from tests.test_autofile_party_db import bill, history, path
 from tests.test_operator_auth_db import _owner
 from tests.test_operator_orgs_db import _signed_in
 
@@ -44,6 +47,21 @@ def test_one_customers_type_folder_is_never_used_for_another_customers_file(db: 
     assert a_folder != b_folder and a_key == b_key == "type:invoice"  # the same key in each customer
     assert (a_owner, b_owner) == (a_admin, b_admin)
     assert (state(db, a, a_doc), state(db, b, b_doc)) == (("filed", "Invoices"),) * 2
+
+
+def test_one_customers_invoices_and_party_folders_never_count_for_another(db: Database) -> None:
+    """Party folders (28b, final polish 16 Oct 2026): A's invoices make A's own GSTIN clear
+    and A has a folder for Mehta; B, with no invoices of its own, gets neither: its bill
+    from Mehta stays in B's Invoices."""
+    a, a_admin = organisation(db)
+    b, b_admin = organisation(db)
+    history(db, a)
+    a_bill = bill(db, a, a_admin, ("Mehta Textiles", MEHTA))
+    b_bill = bill(db, b, b_admin, ("Mehta Textiles", MEHTA))
+
+    assert path(db, a, a_bill) == ("Invoices", "Mehta Textiles")
+    assert path(db, b, b_bill) == (None, "Invoices")
+    assert [f[3] for f in folders(db, b)] == ["type:invoice"]
 
 
 def test_filing_named_with_the_wrong_customer_changes_nothing(db: Database) -> None:

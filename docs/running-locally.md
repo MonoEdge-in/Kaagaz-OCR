@@ -719,7 +719,7 @@ Use the golden `monthly-report.pdf` (20 pages, "$12,000" runs from page 15 to pa
 
 **49. The golden run**
 - Needs: the whole stack with the model on (`OPENROUTER_API_KEY` set, `MODEL_ENABLED=true`), the API and database on this machine, and `.env` loaded in a shell in `backend/`. It is never run in CI.
-- Check: `.venv/Scripts/python.exe -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" --runs 3`.
+- Check: `.venv/Scripts/python.exe -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" --runs 3`. For the precision baseline add `--set golden|xlang|romanised --json golden-base.json` (one set per run); later runs add `--compare golden-base.json`.
 - Expect: it makes a new "Golden Test Co" customer, uploads the 7 golden documents and asks the 30 questions 3 times. Then a header (git SHA, date, models, settings, the questions' sha256), a row per question, each run's totals and slices, "The model wrote N of M search-route answers" (N must be above 0), and the WORST RUN line with Wilson intervals. The password comes from `KAAGAZ_ADMIN_PASSWORD` or is made up, and is never printed. Record the worst run in docs/architecture.md, Decisions.
 - Tests: `test_golden_questions.py`, `test_golden_scoring.py`, `test_golden_runner.py`.
 

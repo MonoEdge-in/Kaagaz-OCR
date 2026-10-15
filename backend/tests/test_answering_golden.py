@@ -1013,6 +1013,30 @@ def test_each_model_answer_logs_the_model_and_the_prompt_hash(caplog: pytest.Log
     assert logged == [f"answer drafted by fake-chat with prompt {ANSWER_PROMPT_HASH}"]
 
 
+def test_each_answer_logs_one_timing_line_of_codes_and_numbers(caplog: pytest.LogCaptureFixture) -> None:
+    """Ask precision PR 1a (D): its own logger, one line per answer, never the question."""
+
+    def nothing(system: str, user: str) -> dict[str, Any]:
+        return {"status": "not_found", "sentences": []}
+
+    caplog.set_level(logging.INFO, logger="kaagaz.answering.timing")
+    service(model=FakeModel())[0].answer(A, QUESTION)
+    service(model=FakeModel(nothing))[0].answer(A, QUESTION)
+    service()[0].answer(A, "Kiska profit sabse jyada tha last month?")
+    lines = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
+    stages = r" rewrite_ms=\d+ embed_ms=\d+ search_ms=\d+ widen_ms=\d+ draft_ms=\d+ verify_ms=\d+"
+    stages += r" limiter_wait_ms=\d+ total_ms=\d+"
+    expected = [
+        r"route=search status=answered outcome=(verified|needs_review)",
+        "route=search status=not_found outcome=notfound_model",
+        "route=fixed_query status=answered outcome=verified",
+    ]
+    assert len(lines) == len(expected)
+    for line, start in zip(lines, expected, strict=True):
+        assert re.fullmatch(f"answer timing {start} whole=0 aspects=0{stages}", line), line
+        assert "INV-1042" not in line
+
+
 def test_the_answer_prompt_and_schema_are_pinned() -> None:
     pinned = SYSTEM_PROMPT + "\n" + json.dumps(ANSWER_SCHEMA, sort_keys=True)
     assert hashlib.sha256(pinned.encode("utf-8")).hexdigest() == ANSWER_PROMPT_HASH

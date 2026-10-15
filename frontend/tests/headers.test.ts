@@ -37,4 +37,16 @@ describe("response headers", () => {
       });
     }
   });
+
+  it("report a content security policy without enforcing it, and switch off camera, microphone and location", async () => {
+    for (const path of ["/documents/d-1", "/_next/static/chunks/main.js", "/api/documents"]) {
+      const headers = await headersFor(path);
+      expect(headers["Content-Security-Policy"], path).toBeUndefined();
+      const policy = headers["Content-Security-Policy-Report-Only"];
+      for (const rule of ["default-src 'self'", "worker-src 'self' blob:", "object-src 'none'", "frame-ancestors 'none'", "connect-src 'self'"]) {
+        expect(policy, path).toContain(rule);
+      }
+      expect(headers["Permissions-Policy"], path).toBe("camera=(), microphone=(), geolocation=()");
+    }
+  });
 });

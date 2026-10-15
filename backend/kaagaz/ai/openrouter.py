@@ -97,7 +97,9 @@ thread-safe: pages of a document are read in parallel (G8).
 
 The gate's clock, sleep and random number are injected, so tests run with a fake clock.
 The clock is ``time.monotonic`` by default, and ``read_page``'s deadline is an absolute
-time on it (``now()`` gives the current one).
+time on it (``now()`` gives the current one). ``LIMITER_WAIT`` (ask precision PR 1a, D):
+while a caller holds a one-item list in it, every limiter sleep adds its seconds there
+(threads started with ``copy_context`` add to the same list); it changes nothing else.
 
 Cost: one ``read_page`` is one request (two with a repair), plus retries inside its
 deadline; ``embed`` makes ceil(n / 32) requests for n texts. Checking a reply is O(its
@@ -105,6 +107,7 @@ size).
 """
 
 import base64
+import contextvars
 import copy
 import email.utils
 import json
@@ -138,6 +141,10 @@ from kaagaz.settings import (
 )
 
 API_KEY_HEADER = "Authorization"
+# The limiter's waits in seconds, for the answer timing log (the module docstring).
+LIMITER_WAIT: contextvars.ContextVar[list[float] | None] = contextvars.ContextVar(
+    "limiter_wait", default=None
+)
 CHAT_PATH = "/chat/completions"
 EMBEDDINGS_PATH = "/embeddings"
 KEY_PATH = "/key"
@@ -1021,8 +1028,12 @@ class OpenRouterClient:
         while True:
             gate.admit(model)
             start = gate.take_slot(deadline, model)
-            if start > gate.clock():
-                gate.sleep(start - gate.clock())
+            ahead = start - gate.clock()
+            if ahead > 0:
+                gate.sleep(ahead)
+                waited = LIMITER_WAIT.get()
+                if waited is not None:
+                    waited[0] += ahead
             remaining = deadline - gate.clock()
             if remaining <= 0:
                 gate.release_probe(model)

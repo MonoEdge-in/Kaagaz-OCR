@@ -14,12 +14,27 @@ checks the file against the G2 minimums, and ``score`` marks one answer (the
   a text answer holds one of the expected texts as a whole word, any case, digits
   folded on both sides ("8%" is not in "18%"). Either is wrong when it also holds a value of ``not``: the
   near answers a list of everything would hold;
+* **abstained**: a question that has an answer, answered "not_found" or "unchecked"
+  (ask precision PR 1a): not right, and not wrong either;
 * **wrong**: anything else for a question that has an answer;
 * **correct not-found** when the status is "not_found", else **missed
   not-found**: "unchecked" says the figure exists, so it is a miss too.
 
 ``wrong_verified`` is set on a wrong or missed answer labelled verified: the
-handover bar wants 0 of them (G3).
+handover bar wants 0 of them (G3). ``multi_value`` marks a right answer that also
+holds a money amount (currency-marked or comma-grouped) that is neither the expected
+value nor a number of the question: a heuristic, so it only feeds
+``answer_precision_strict``.
+
+``metrics`` (PR 1a) gives the precision numbers as (count, of) pairs: answer_precision
+(right / answered), answer_precision_strict (the same, a multi_value answer not
+right), verified_precision (right and verified / verified), verified_coverage (right
+and verified / answerable), coverage (answered / answerable), abstention_precision
+(correct not-found / every reply that is not an answer), trap_accuracy (not-found items
+whose every question was correct not-found / not-found items; a Romanised item's
+spellings are one item) and citation_precision (citations on the expected document and
+page / all citations). ``worst_score`` takes a question's worst run, in the order
+wrong verified, wrong, abstained, right; ``compare`` is the paired gate between two runs.
 
 **recall@5** asks whether one of the first 5 hits is from the expected
 document and spans an expected page (``page_from <= page <= page_to``).
@@ -28,7 +43,13 @@ so ``Totals`` keeps its own denominator.
 
 ``questions_xlang.json`` (council 4 Oct 2026) has the same entries plus a
 ``split`` (dev or test, a slice too) and three tags: the document's language, the
-question's style and its type; ``xlang_problems`` checks it.
+question's style and its type; ``xlang_problems`` checks it. A file with no split
+gets one from its id's sha256 (``split_of``: even is dev), always the same.
+
+``questions_romanised.json`` (PR 2b-2) lists items with 1 to 3 ``spellings``;
+``spelled_out`` asks each spelling as its own question "<id>#<n>", split by the item's
+id so its spellings stay together; ``romanised_problems`` checks it. The file is frozen
+by tests/test_golden_romanised.py, and ROMANISED_SHA256 holds the same hash.
 
 Time is O(q) per file and O(s + h) per answer, in its characters and hits.
 """
@@ -66,6 +87,11 @@ QUESTIONS_SHA256 = "246d31c813a11279cc006e45ce9cae1048da043e12c7a7132ac224824a92
 # questions_xlang.json: English and Romanised questions over scanned non-English pages.
 XLANG_SHA256 = "8e1e0916327bd70d0f5df8b87dce044fb0b26e8bed5161ed4a3b6b0abba71f24"
 XLANG_COUNT, XLANG_NOT_FOUND = 60, 10
+# questions_romanised.json: the same value as tests/test_golden_romanised.py's QUESTIONS_SHA256.
+ROMANISED_SHA256 = "a935c1b79a54379d7d963f2e5836fcf929d715fe88efc6a3713a3840987a266d"
+ROMANISED_TAGS = frozenset(
+    {"land_record", "hindi_bill", "bank", "invoice", "agreement", "names", "inflected", "trap"}
+)
 XLANG_TAGS = (
     frozenset({"hi", "mr", "gu", "bn", "ta", "ur"}),  # the document's language
     frozenset({"english", "romanised"}),  # how the question is typed
@@ -74,11 +100,17 @@ XLANG_TAGS = (
 SPLITS = ("dev", "test")
 # A text matches only as a whole: no letter, digit or "/" (or "." before it) touching it.
 _BEFORE, _AFTER = r"(?<![0-9A-Za-z\u0900-\u097F/.])", r"(?![0-9A-Za-z\u0900-\u097F/])"
+# A money amount for multi_value: currency-marked, or digits grouped by commas.
+_MONEY = re.compile(r"(?:\u20B9|\brs\.?|\binr)\s*\d[\d,]*(?:\.\d+)?|\d{1,3}(?:,\d{2,3})+(?:\.\d+)?")
+# compare's limits per set (the plan's paired gate).
+MAX_NEWLY_ABSTAINED = 2
+MAX_VERIFIED_COVERAGE_DROP = 2
 
 
 class Outcome(StrEnum):
     RIGHT = "right"
     WRONG = "wrong"
+    ABSTAINED = "abstained"
     CORRECT_NOT_FOUND = "correct not-found"
     MISSED_NOT_FOUND = "missed not-found"
 
@@ -110,6 +142,11 @@ class Hit:
 class Score:
     outcome: Outcome
     wrong_verified: bool
+    answered: bool = False  # status "answered"
+    verified: bool = False  # answered and labelled verified
+    multi_value: bool = False
+    cited: int = 0  # the answer's citations
+    cited_right: int = 0  # of them, on the expected document and an expected page
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +191,8 @@ def problems(raw: Any, documents: Collection[str]) -> list[str]:
         seen.add(qid)
         if not mine:
             for name in question_from(item).slices:
-                counts[name] += 1
+                if name in counts:  # not the split
+                    counts[name] += 1
     if len(raw) != QUESTION_COUNT:
         found.append(f"{len(raw)} questions, not {QUESTION_COUNT}")
     found += [f"{n} {name}, at least {MINIMUMS[name]}" for name, n in counts.items() if n < MINIMUMS[name]]
@@ -191,6 +229,43 @@ def xlang_problems(raw: Any, documents: Collection[str]) -> list[str]:
     if (len(raw), missing) != (XLANG_COUNT, XLANG_NOT_FOUND):
         found.append(f"{len(raw)} questions and {missing} not-found, not {XLANG_COUNT} and {XLANG_NOT_FOUND}")
     return found
+
+
+def spelled_out(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """questions_romanised.json's items as questions: each spelling "<id>#<n>" (from 1),
+    with the item's tags and expect, and the item's split."""
+    return [
+        {
+            "id": f"{item['id']}#{n}",
+            "question": spelling,
+            "tags": item["tags"],
+            "expect": item["expect"],
+            "split": split_of(item["id"]),
+        }
+        for item in raw
+        for n, spelling in enumerate(item["spellings"], start=1)
+    ]
+
+
+def romanised_problems(raw: Any, documents: Collection[str]) -> list[str]:
+    """``problems`` for questions_romanised.json, each spelling checked as a question.
+    Its counts and spelling rules are tests/test_golden_romanised.py's."""
+    if not isinstance(raw, list) or not all(
+        isinstance(item, dict) and isinstance(item.get("spellings"), list) and "id" in item for item in raw
+    ):
+        return ["the file must be a list of items with spellings"]
+    found: list[str] = []
+    seen: set[str] = set()
+    for item in spelled_out(raw):
+        found += [f"{item['id']}: {p}" for p in _question_problems(item, seen, documents, ROMANISED_TAGS)]
+        seen.add(item["id"])
+    return found
+
+
+def split_of(key: str) -> str:
+    """The split of a question (or a Romanised item) whose file has none: "dev" when its
+    id's sha256 is even, else "test". The same for every run."""
+    return "dev" if int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16) % 2 == 0 else "test"
 
 
 def _question_problems(
@@ -242,7 +317,7 @@ def question_from(item: Mapping[str, Any]) -> Question:
     expect = item["expect"]
     slices = [*item["tags"], *(["not_found"] if expect["kind"] == "not_found" else [])]
     slices += ["follow_up"] if item.get("follow_up_of") is not None else []
-    slices += [item["split"]] if "split" in item else []
+    slices.append(item["split"] if "split" in item else split_of(item["id"]))
     tolerance = Decimal(str(expect.get("tolerance", 0)))
     return Question(
         item["id"],
@@ -265,21 +340,39 @@ def answer_text(answer: Mapping[str, Any]) -> str:
     return " ".join(str(s.get("text", "")) for s in answer.get("sentences") or [] if isinstance(s, dict))
 
 
-def score(question: Question, answer: Mapping[str, Any]) -> Score:
-    """Mark the ``Answer`` JSON. Only status "answered" counts as an answer: "unchecked"
-    gives no figure, so it is wrong for an answer, and claims one exists, so it is a miss
-    for a not-found question."""
+def score(question: Question, answer: Mapping[str, Any], cited: Sequence[Hit] = ()) -> Score:
+    """Mark the ``Answer`` JSON, with its citations as ``cited`` hits. Only status
+    "answered" counts as an answer: "unchecked" gives no figure, so it is abstained for
+    an answer, and claims one exists, so it is a miss for a not-found question."""
     answered = answer.get("status") == "answered"
+    text = answer_text(answer)
     if question.kind == "not_found":
         found = answer.get("status") == "not_found"
         outcome = Outcome.CORRECT_NOT_FOUND if found else Outcome.MISSED_NOT_FOUND
+    elif not answered:
+        outcome = Outcome.ABSTAINED
     else:
-        text = answer_text(answer)
         near = any(_holds_value(d, question.tolerance, text) for d in question.distractors)
-        right = answered and not near and _holds(question, text)
-        outcome = Outcome.RIGHT if right else Outcome.WRONG
+        outcome = Outcome.RIGHT if not near and _holds(question, text) else Outcome.WRONG
     wrong = outcome in (Outcome.WRONG, Outcome.MISSED_NOT_FOUND)
-    return Score(outcome, wrong_verified=wrong and answered and answer.get("label") == "verified")
+    verified = answered and answer.get("label") == "verified"
+    on_page = sum(_on_expected_page(question, hit) for hit in cited)
+    multi = outcome == Outcome.RIGHT and _other_money(question, text)
+    return Score(outcome, wrong and verified, answered, verified, multi, len(cited), on_page)
+
+
+def _other_money(question: Question, text: str) -> bool:
+    """Whether ``text`` holds a money amount that is neither an expected value (within
+    the tolerance) nor a number of the question."""
+    values = question.value if isinstance(question.value, list) else [question.value]
+    expected = {n for value in values for n in numbers_in(ascii_digits(str(value)))}
+    asked = numbers_in(ascii_digits(question.question))
+    plain = ascii_digits(text).casefold()
+    return any(
+        found not in asked and all(abs(found - want) > question.tolerance for want in expected)
+        for match in _MONEY.finditer(plain)
+        for found in numbers_in(match[0])
+    )
 
 
 def _is_value(value: Any) -> bool:
@@ -310,9 +403,12 @@ def counts_for_recall(question: Question, route: str | None) -> bool:
 def recall_hit(question: Question, hits: Sequence[Hit]) -> bool:
     """Whether an expected page is inside one of the first ``RECALL_K`` hits of the
     expected document."""
-    return any(
-        hit.document == question.document and any(hit.page_from <= p <= hit.page_to for p in question.pages)
-        for hit in hits[:RECALL_K]
+    return any(_on_expected_page(question, hit) for hit in hits[:RECALL_K])
+
+
+def _on_expected_page(question: Question, hit: Hit) -> bool:
+    return hit.document == question.document and any(
+        hit.page_from <= p <= hit.page_to for p in question.pages
     )
 
 
@@ -361,3 +457,92 @@ def wilson(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
     centre = (p + z * z / (2 * n)) / (1 + z * z / n)
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
     return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+# --- precision (ask precision PR 1a) ---------------------------------------------------------
+
+_RANK = {"right": 0, "abstained": 1, "wrong": 2, "wrong_verified": 3}
+
+
+def category(marked: Score) -> str:
+    """The outcome ``compare`` reads: wrong_verified, wrong, abstained or right (a correct
+    not-found is right, a missed one wrong)."""
+    if marked.wrong_verified:
+        return "wrong_verified"
+    if marked.outcome in (Outcome.WRONG, Outcome.MISSED_NOT_FOUND):
+        return "wrong"
+    return "abstained" if marked.outcome == Outcome.ABSTAINED else "right"
+
+
+def worst_score(runs: Sequence[Score]) -> Score:
+    """A question's worst run: wrong verified, wrong, abstained, right; of two right
+    answers, the one not labelled verified."""
+    return max(runs, key=lambda m: (_RANK[category(m)], m.outcome == Outcome.RIGHT and not m.verified))
+
+
+def metrics(scored: Sequence[tuple[Question, Score]]) -> dict[str, tuple[int, int]]:
+    """The precision numbers (the module docstring) of each question's score, as (count, of)."""
+    answerable = [m for q, m in scored if q.kind != "not_found"]
+    answered = [m for _, m in scored if m.answered]
+    right = [m for m in answered if m.outcome == Outcome.RIGHT]
+    replies = [m for _, m in scored if not m.answered]  # not found or unchecked
+    traps: dict[str, bool] = {}
+    for q, m in scored:
+        if q.kind == "not_found":
+            item = q.id.split("#")[0]  # a Romanised item's spellings are one item
+            traps[item] = traps.get(item, True) and m.outcome == Outcome.CORRECT_NOT_FOUND
+    right_verified = sum(m.verified for m in right)
+    return {
+        "answer_precision": (len(right), len(answered)),
+        "answer_precision_strict": (sum(not m.multi_value for m in right), len(answered)),
+        "verified_precision": (right_verified, sum(m.verified for m in answered)),
+        "verified_coverage": (right_verified, len(answerable)),
+        "coverage": (sum(m.answered for m in answerable), len(answerable)),
+        "abstention_precision": (sum(m.outcome == Outcome.CORRECT_NOT_FOUND for m in replies), len(replies)),
+        "trap_accuracy": (sum(traps.values()), len(traps)),
+        "citation_precision": (sum(m.cited_right for _, m in scored), sum(m.cited for _, m in scored)),
+    }
+
+
+def mcnemar(base_only: int, now_only: int) -> float:
+    """The exact two-sided McNemar p for the discordant pairs: right only before, right
+    only now. 1.0 with none."""
+    n = base_only + now_only
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, k) for k in range(min(base_only, now_only) + 1))
+    return min(1.0, 2 * tail / (1 << n))
+
+
+def compare(
+    base: Mapping[str, Mapping[str, Any]], now: Mapping[str, Mapping[str, Any]]
+) -> tuple[list[str], list[str], float]:
+    """The paired gate between two runs of one set, on the question ids both have; each
+    question is {"outcome": a ``category``, "verified": bool}. Gives each changed question
+    ("id: old -> new"), the failures, and McNemar's p (reported, never a failure). It fails
+    a question that moved into wrong or wrong_verified, more than MAX_NEWLY_ABSTAINED right
+    to abstained, and verified_coverage down by more than MAX_VERIFIED_COVERAGE_DROP questions."""
+    changed: list[str] = []
+    failures: list[str] = []
+    abstained = base_only = now_only = 0
+    covered = {"base": 0, "now": 0}
+    for qid in sorted(set(base) & set(now)):
+        old, new = base[qid]["outcome"], now[qid]["outcome"]
+        for name, run in (("base", base), ("now", now)):
+            covered[name] += run[qid]["outcome"] == "right" and bool(run[qid]["verified"])
+        base_only += old == "right" and new != "right"
+        now_only += old != "right" and new == "right"
+        if old == new:
+            continue
+        changed.append(f"{qid}: {old} -> {new}")
+        if _RANK[new] >= _RANK["wrong"] and _RANK[new] > _RANK[old]:
+            failures.append(f"{qid} moved into {new}")
+        abstained += old == "right" and new == "abstained"
+    if abstained > MAX_NEWLY_ABSTAINED:
+        failures.append(f"{abstained} right answers abstained, at most {MAX_NEWLY_ABSTAINED}")
+    if covered["base"] - covered["now"] > MAX_VERIFIED_COVERAGE_DROP:
+        failures.append(
+            f"verified_coverage fell from {covered['base']} to {covered['now']} questions,"
+            f" at most {MAX_VERIFIED_COVERAGE_DROP} fewer"
+        )
+    return changed, failures, mcnemar(base_only, now_only)

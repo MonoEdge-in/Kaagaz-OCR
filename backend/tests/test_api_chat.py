@@ -13,12 +13,23 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.api.app import create_app
-from kaagaz.api.routers.chat import NOT_FOUND_TEXT, answer_text
+from kaagaz.api.auth import CurrentUser, current_user
+from kaagaz.api.routers.chat import NOT_FOUND_TEXT, TOO_MANY_QUESTIONS, answer_text
 from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, cited_document_ids
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, make_engine
 from kaagaz.search.scope import ScopeBody
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, NOW, PASSWORD, Api, TestClient, answer_json
+from tests.test_api_support import (
+    CSRF,
+    NOW,
+    PASSWORD,
+    Api,
+    ApiFakeQueue,
+    ApiFakeStorage,
+    FakeAnswers,
+    TestClient,
+    answer_json,
+)
 
 PAN = "ABCDE1234F"  # made up
 MONEY = re.compile(r"usd|price|budget|cost|spend|\$|₹", re.IGNORECASE)  # features 25-27: never to members
@@ -114,6 +125,49 @@ def test_a_sentence_whose_every_source_is_gone_is_replaced_and_one_without_sourc
     assert {key: shown[key] for key in ("status", "label", "route")} == {
         key: answer[key] for key in ("status", "label", "route")
     }
+
+
+def _offline_chat_client(user_id: str, **settings: object) -> TestClient:
+    """An app whose database is never reached, signed in as ``user_id``."""
+    app = create_app(
+        make_settings(**settings),
+        db=Database(make_engine("postgresql://unused@localhost:1/unused"), "kaagaz_app"),
+        storage=ApiFakeStorage(),
+        queue=ApiFakeQueue(),
+        answers=FakeAnswers(),
+        clock=lambda: NOW,
+    )
+    app.dependency_overrides[current_user] = lambda: CurrentUser(
+        user_id=user_id,
+        customer_id=str(uuid.uuid4()),
+        email="a@b.c",
+        display_name="A",
+        role="member",
+        customer_name="C",
+        scope="app",
+        session_version=1,
+        must_change_password=False,
+        totp_enabled=False,
+        delete_forever_allowed=False,
+    )
+    return TestClient(app)
+
+
+def test_a_user_asking_too_fast_is_429_with_a_plain_message_and_others_are_not() -> None:
+    """Security checklist (15 Oct 2026): CHAT_QUESTIONS_PER_MINUTE questions a user a
+    minute, checked first. An empty question is 400 before the database, so the
+    first two use the limit up without one."""
+    fast = _offline_chat_client(str(uuid.uuid4()), chat_questions_per_minute=2)
+    for _ in range(2):
+        assert fast.post("/api/chat", json={"question": " "}, headers=CSRF).status_code == 400
+
+    refused = fast.post("/api/chat", json={"question": " "}, headers=CSRF)
+
+    assert refused.status_code == 429
+    assert refused.headers["Retry-After"] == "60"
+    assert refused.json()["error"] == {"code": "rate_limited", "message": TOO_MANY_QUESTIONS}
+    other = _offline_chat_client(str(uuid.uuid4()), chat_questions_per_minute=2)
+    assert other.post("/api/chat", json={"question": " "}, headers=CSRF).status_code == 400
 
 
 @pytest.mark.db

@@ -9,7 +9,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from scripts.golden_scoring import Hit
+from kaagaz.answering.draft import ANSWER_PROMPT_HASH
+from scripts.golden_scoring import Hit, score
 from scripts.run_golden import (
     GOLDEN,
     SETS,
@@ -17,11 +18,13 @@ from scripts.run_golden import (
     Http,
     _parser,
     answer_settings,
+    check_against,
     check_local,
     header,
     hits,
     load_golden,
     main,
+    report,
     upload,
 )
 from tests.settings_factory import make_settings
@@ -128,3 +131,50 @@ class AnswerSettingsTest(unittest.TestCase):
         self.assertEqual(answer_settings(None, None), {})
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             _parser().parse_args(["--git-sha", "abc", "--thinking", "max"])
+
+
+class PrecisionReportTest(unittest.TestCase):
+    """Ask precision PR 1a: the Romanised set, the --json report and the --compare gate."""
+
+    def test_the_romanised_set_asks_each_spelling_over_the_golden_documents(self) -> None:
+        self.assertEqual(
+            _parser().parse_args(["--git-sha", "a", "--set", "romanised"]).question_set, "romanised"
+        )
+        questions, documents = load_golden(chosen=SETS["romanised"])
+        self.assertEqual((len(questions), len(documents)), (97, 7))
+        self.assertEqual([q.id for q in questions[:3]], ["r01#1", "r01#2", "r01#3"])
+        self.assertEqual(len({q.id.split("#")[0] for q in questions if q.kind == "not_found"}), 15)
+
+    def test_the_report_keeps_each_questions_worst_run_and_the_gate_reads_it(self) -> None:
+        questions, _ = load_golden()
+        profit, salary = questions[0], questions[2]  # 12,000 in September; not found
+        right = {"status": "answered", "label": "verified", "sentences": [{"text": "It was Rs. 12,000."}]}
+        empty = {"status": "not_found", "label": None, "sentences": []}
+        runs = [
+            [(profit, score(profit, right), None), (salary, score(salary, empty), None)],
+            [(profit, score(profit, empty), None), (salary, score(salary, empty), None)],
+        ]
+        settings = make_settings(model_chat=GEMINI_CHAT, model_embed=GEMINI_EMBED)
+        made = report("golden", settings, "abc", runs)
+        self.assertEqual(
+            (made["set"], made["MODEL_CHAT"], made["ANSWER_PROMPT_HASH"], made["runs"]),
+            ("golden", GEMINI_CHAT, ANSWER_PROMPT_HASH, 2),
+        )
+        self.assertEqual(
+            made["questions"],
+            {
+                profit.id: {"outcome": "abstained", "verified": False},  # its worse run
+                salary.id: {"outcome": "right", "verified": False},
+            },
+        )
+        self.assertEqual((made["metrics"]["coverage"]["count"], made["metrics"]["coverage"]["of"]), (0, 1))
+        self.assertEqual(made["totals"]["abstained"], 1)
+        self.assertIn("cross_page", made["slices"])
+        base = {**made, "questions": {profit.id: {"outcome": "right", "verified": True}}}
+        self.assertTrue(check_against(base, made, io.StringIO()))  # one right -> abstained is allowed
+        base["questions"][profit.id]["outcome"] = "abstained"
+        worse = {**made, "questions": {profit.id: {"outcome": "wrong", "verified": False}}}
+        out = io.StringIO()
+        self.assertFalse(check_against(base, worse, out))
+        self.assertIn(f"  {profit.id}: abstained -> wrong\n", out.getvalue())
+        self.assertIn(f"GATE FAILED: {profit.id} moved into wrong\n", out.getvalue())

@@ -4,6 +4,23 @@ import type { NextConfig } from "next";
 // FastAPI backend, so the session cookie stays first-party and no CORS is needed.
 const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
 
+// Everything comes from this app: Next.js's inline scripts and styles, the
+// PDF.js worker (a file under /_next, or a blob: one), page images drawn from
+// data: and blob: URLs, and PDF.js's fonts from data: URLs.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "worker-src 'self' blob:",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join("; ");
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
@@ -26,6 +43,10 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "same-origin" },
           { key: "X-Frame-Options", value: "DENY" },
+          // Security checklist (15 Oct 2026): report only, so the browser logs what
+          // would be blocked and blocks nothing, until it is checked on the live site.
+          { key: "Content-Security-Policy-Report-Only", value: CSP },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
         ],
       },
       {

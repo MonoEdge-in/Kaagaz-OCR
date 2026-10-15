@@ -84,7 +84,12 @@ every sentence cites at least one source, and every source has a region.
 Nothing here logs the question or any document text: a model error is logged
 as its code, and each model answer as the model's tag and ANSWER_PROMPT_HASH.
 Every not-found answer logs one line, "answer not found", with a fixed reason
-code only (``_not_found``'s ``reason``).
+code only (``_not_found``'s ``reason``). Every answer also logs one INFO line on its own
+logger, ``kaagaz.answering.timing`` (ask precision PR 1a, D): the route, the status, the
+not-found reason or the label, whole 0/1, the aspect count, and the milliseconds of each
+stage (rewrite, embed, search, widen, draft, verify; time.monotonic), of the model
+limiter's waits (``LIMITER_WAIT``, summed over parallel drafts) and in all. Codes and
+numbers only.
 
 Time: one ``available_fields`` query only for a question with an aggregate
 word and no unknown topic word, then either one fixed query or one search
@@ -99,11 +104,11 @@ import re
 import time
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextvars import copy_context
-from dataclasses import dataclass, replace
+from contextvars import ContextVar, copy_context
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from decimal import Decimal
-from functools import partial
+from functools import partial, wraps
 from itertools import zip_longest
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -115,6 +120,7 @@ from kaagaz.ai.client import (
     estimate_tokens_cautiously,
     input_token_budget,
 )
+from kaagaz.ai.openrouter import LIMITER_WAIT
 from kaagaz.ai.usage import billed_as
 from kaagaz.answering import glossary
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
@@ -180,6 +186,9 @@ from kaagaz.search.scope import EVERYTHING, Scope
 from kaagaz.settings import Settings
 
 _log = logging.getLogger(__name__)
+# Its own logger: tests pin kaagaz.answering.service's INFO lines (the module docstring).
+_timing_log = logging.getLogger("kaagaz.answering.timing")
+_STAGES = ("rewrite", "embed", "search", "widen", "draft", "verify")
 
 # "unchecked": the figure asked for exists only as unchecked card values, so no
 # number is given (kaagaz/answering/unchecked.py).
@@ -303,6 +312,65 @@ class Answer:
         }
 
 
+@dataclass(slots=True)
+class _Timing:
+    """One answer's stage times for the timing line (the module docstring): ``lap`` adds
+    the time since the last lap to a stage."""
+
+    start: float
+    last: float
+    ms: dict[str, float] = field(default_factory=dict)
+    whole: bool = False
+    aspects: int = 0
+    reason: str | None = None  # the not-found reason code
+
+    def lap(self, stage: str) -> None:
+        now = time.monotonic()
+        self.ms[stage] = self.ms.get(stage, 0.0) + (now - self.last) * 1000
+        self.last = now
+
+
+_TIMING: ContextVar[_Timing | None] = ContextVar("answer_timing", default=None)
+
+
+def _timing() -> _Timing:
+    """The current answer's timing; a throwaway one outside ``AnswerService.answer``."""
+    return _TIMING.get() or _Timing(time.monotonic(), time.monotonic())
+
+
+def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
+    """``answer`` with the timing line logged after it. The last stretch is "verify"
+    after a draft, else "search" (a fixed query, or the gate's not found)."""
+
+    @wraps(answer)
+    def timed(*args: P.args, **kwargs: P.kwargs) -> Answer:
+        now = time.monotonic()
+        timing = _Timing(now, now)
+        token, waits = _TIMING.set(timing), LIMITER_WAIT.set([0.0])
+        try:
+            result = answer(*args, **kwargs)
+            timing.lap("verify" if "draft" in timing.ms else "search")
+            waited = LIMITER_WAIT.get() or [0.0]
+        finally:
+            _TIMING.reset(token)
+            LIMITER_WAIT.reset(waits)
+        _timing_log.info(
+            "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d %s"
+            " limiter_wait_ms=%.0f total_ms=%.0f",
+            result.route,
+            result.status,
+            timing.reason or result.label,
+            timing.whole,
+            timing.aspects,
+            " ".join(f"{stage}_ms={timing.ms.get(stage, 0.0):.0f}" for stage in _STAGES),
+            waited[0] * 1000,
+            (timing.last - timing.start) * 1000,
+        )
+        return result
+
+    return timed
+
+
 class AnswerService:
     """``retriever``, ``translated_search``, ``fixed_queries``, ``unchecked`` and ``words``
     default to the PostgreSQL ones; tests pass fakes. ``translator``: the client the question
@@ -358,6 +426,7 @@ class AnswerService:
         self._reading: ReadingQuality | None = PgReadingQuality(db) if retriever is None else reading
         self._context: Context | None = pg if retriever is None else context
 
+    @_timed
     def answer(
         self,
         customer_id: str,
@@ -379,6 +448,7 @@ class AnswerService:
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         whole = self._whole(customer_id, scope)
+        _timing().lap("search")
         turns = self._settings.chat_history_turns
         recent = history[-turns:] if turns else ()
         remembered = prompt_text(memory)
@@ -396,6 +466,9 @@ class AnswerService:
                 aspects_max=most,
                 budget=self._rewrite_budget,
             )
+        timing = _timing()
+        timing.lap("rewrite")
+        timing.whole, timing.aspects = whole is not None, len(aspects)
         answer = self._answer(customer_id, rewritten or question, scope, user_id, whole, aspects, choice)
         return replace(self._unreadable(customer_id, answer, scope), rewritten_question=rewritten)
 
@@ -610,6 +683,7 @@ class AnswerService:
             # little. Its aspects (CX6) are embedded with it, in one call.
             spoken = question if has_other_script_letters(question) else normalised.english
             vector, *meanings = self._embed_all([spoken, *aspects])
+            _timing().lap("embed")
             extra = [(_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)]
             hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
             translated = self._translated_search(
@@ -630,6 +704,7 @@ class AnswerService:
         else:
             scored = translated is not None and any_hit_scores(evidence, min_score, numbers)
             passed = gate is not None or scored
+        _timing().lap("search")
         if not passed:
             return _not_found("search", shown, closest, model_used=False, reason="notfound_gate")
         if whole is None:
@@ -649,8 +724,10 @@ class AnswerService:
                 if room < 0:
                     break
                 evidence.append(item)
+            _timing().lap("widen")
 
         drafted = self._draft(customer_id, scope, question, normalised, evidence, expansion, choice)
+        _timing().lap("draft")
         draft, model_used, seen, why, team = drafted
         texts = _texts(seen)
         kept = _kept(draft, texts)
@@ -1153,6 +1230,7 @@ def _not_found(
     notfound_verify_dropped_all (the checker kept no sentence); ":date" after the
     last two: a date question, never quoted."""
     _log.info("answer not found", extra={"code": reason})
+    _timing().reason = reason
     return Answer(
         status="not_found",
         label=None,
