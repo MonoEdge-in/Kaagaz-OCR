@@ -40,6 +40,10 @@
   /* The page itself stays white paper in both themes */
   --paper: #ffffff;
   --paper-frame: #ece6d9;
+  /* The sign-in figure's text bars and rule on the white page, kept in dark */
+  --paper-bar: #e6e0d3;
+  --paper-bar-strong: #cfc7b6;
+  --paper-rule: #d6cfbf;
   --hl-fill: rgba(255, 176, 0, 0.3);
   --hl-border: #b86e00;
   --hl-halo: #1f1a14; /* dark ink: the outer highlight ring, the same in both themes */

@@ -1,20 +1,7 @@
-/* Admin sign-in and the 2FA set-up step (shown in Admin, Settings). The frame,
-   banner, submit button and help line come from app/login/login.module.css;
-   this adds only what the admin screen has of its own. Tokens only
-   (app/globals.css). */
-
-.page {
-  position: relative;
-  min-height: 100dvh;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  background: var(--bg);
-  overflow-x: clip;
-}
-
-.brand {
-  display: flex;
-}
+/* Admin sign-in and the 2FA set-up step (shown in Admin, Settings). The frame
+   (app/login/AuthFrame.tsx), banner, submit button and help line come from
+   app/login/login.module.css; this adds only what the admin screen has of its
+   own. Tokens only (app/globals.css). */
 
 .intro {
   display: flex;
