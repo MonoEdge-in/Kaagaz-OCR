@@ -51,6 +51,7 @@ ORG_ROUTES = {
     # Model choice (council 11 Oct 2026): one organisation's models (routers/operator_models.py).
     ("GET", f"{ORGS}/{ANY_ID}/models"),
     ("PUT", f"{ORGS}/{ANY_ID}/models"),
+    ("PUT", f"{ORGS}/{ANY_ID}/autofile"),  # feature 28: allow or stop auto-filing
 }
 ORG_ROW = {
     "customer_id": CID,
@@ -66,6 +67,8 @@ ORG_ROW = {
     "pages": 9,
     "size_bytes": 1234,
     "last_activity_at": NOW,
+    "autofile_granted": True,
+    "autofile_on": False,
 }
 
 
@@ -98,7 +101,7 @@ class _Offline:
         monkeypatch.setattr(operators_sql, "begin_login", None)  # never the sign-in's count
         monkeypatch.setattr(orgs_sql, "begin_step_up", self._begin)
         monkeypatch.setattr(orgs_sql, "list_customers", lambda conn, oid: [ORG_ROW])
-        for name in ("create_customer", "set_customer_status", "step_up_failed"):
+        for name in ("create_customer", "set_customer_status", "step_up_failed", "set_org_autofile"):
             monkeypatch.setattr(orgs_sql, name, self._recorder(name))
         token = sign_operator(
             OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 600),
@@ -231,4 +234,25 @@ def test_the_organisation_list_holds_counts_only(offline: _Offline) -> None:
         "pages",
         "storage_bytes",
         "last_activity_at",
+        "autofile_granted",  # feature 28
+        "autofile_on",
     }
+    assert (org["autofile_granted"], org["autofile_on"]) == (True, False)
+
+
+@pytest.mark.parametrize(
+    ("code", "status"), [("done", 200), ("unchanged", 200), ("missing", 404), ("deleting", 409)]
+)
+def test_auto_filing_is_allowed_or_stopped_without_a_code_and_each_outcome_gets_its_reply(
+    offline: _Offline, code: str, status: int
+) -> None:
+    offline.outcome = Outcome(code, CID)
+    path = f"{ORGS}/{CID}/autofile"
+    reply = offline.client.put(path, json={"granted": False}, headers=offline.headers)
+    assert reply.status_code == status, reply.text
+    assert offline.calls == [("set_org_autofile", (OID, CID), {"granted": False})]
+    if status == 200:
+        changed = code == "done"
+        assert reply.json() == {"organisation": {"id": CID, "autofile_granted": False, "changed": changed}}
+    bad = offline.client.put(path, json={"granted": True, "on": True}, headers=offline.headers)
+    assert bad.status_code == 400  # the operator never sets the organisation's own switch

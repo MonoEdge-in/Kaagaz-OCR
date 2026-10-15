@@ -225,6 +225,7 @@ def document_summary(
         "pages_uncertain": int(row["pages_uncertain"]),
         "values_to_review": int(row["values_to_review"]),
         "words_unsure": int(row["words_unsure"]),  # PRD 5 U2: on the same pages
+        "autofile": row["autofile"],  # feature 28: filed, not_filed or null (db/listing.py's _COLUMNS)
     }
 
 

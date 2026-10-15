@@ -28,6 +28,7 @@ import {
   writeStored,
 } from "@/components/documents/batchTray";
 import type { StoredBatch } from "@/components/documents/batchTray";
+import { buildTree } from "@/components/documents/folderTree";
 import { estimateIngestSeconds, uploadStateText } from "@/components/documents/logic";
 import type { UploadState } from "@/components/documents/logic";
 import type { UploadEntry } from "@/components/documents/uploadQueue";
@@ -253,6 +254,8 @@ describe("what the tray says out loud", () => {
         onClearFinished: () => undefined,
         onRestore: () => undefined,
         onRetry: () => undefined,
+        tree: buildTree([]),
+        onUndone: () => undefined,
       }),
     );
     expect(html.match(/role="status"/g)).toHaveLength(1);

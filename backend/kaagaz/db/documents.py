@@ -56,10 +56,16 @@ NULL (the system). ``documents.read_model`` is the model the reading asked for:
 ``mark_for_reprocess`` replaces it only when given one (a page read again keeps the
 document's model, FINAL 4), and the upgrade sweep keeps it. The worker checks it again
 (``kaagaz.db.models.resolve``).
+
+Auto-filing (feature 28, council 15 Oct 2026; 0025): ``add_if_absent`` marks a new upload
+``autofile = 'pending'`` in its own insert when it goes in no folder and the customer's
+switch is on; a new version never is, and a duplicate makes no row. ``file_document`` is
+``kaagaz.db.autofile.file_document`` in its own transaction after ``mark_ready``.
 """
 
 import dataclasses
 import json
+import logging
 from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -67,7 +73,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import audit, customers
+from kaagaz.db import audit, autofile, customers
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
@@ -78,6 +84,8 @@ from kaagaz.scanning.gate import DocumentStatus
 
 if TYPE_CHECKING:
     from kaagaz.pipeline import FinishedRun, Progress  # the processor's records; pipeline builds this store
+
+_log = logging.getLogger(__name__)
 
 # PRD 5 Q6: the progress of a document waiting for the reader to come back.
 WAITING_FOR_READER = {"step": "waiting"}
@@ -562,8 +570,9 @@ class PgDocuments:
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
                         " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
-                        " ocr_choice, batch_id) VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder,"
-                        " :family, :version, :ocr, :batch)"
+                        " ocr_choice, batch_id, autofile) VALUES (:d, :c, :name, :h, :size, :type, :by, :by,"
+                        " :folder, :family, :version, :ocr, :batch, (SELECT 'pending' FROM customers"
+                        " WHERE id = :c AND autofile_on AND CAST(:folder AS uuid) IS NULL))"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,
@@ -664,6 +673,20 @@ class PgDocuments:
 
         with unavailable():
             retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
+
+    def file_document(self, customer_id: str, document_id: str) -> None:
+        """Auto-filing (feature 28) in its own transaction, run again on a deadlock, right
+        after ``mark_ready``. What was decided is logged as a code with the ids only."""
+
+        def transaction() -> str | None:
+            with self._db.customer(customer_id) as conn:
+                return autofile.file_document(conn, customer_id, document_id)
+
+        with unavailable():
+            code = retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
+        if code is not None:
+            ids = {"customer_id": customer_id, "document_id": document_id}
+            _log.info("autofile", extra={**ids, "code": code})
 
     def set_progress(
         self, customer_id: str, document_id: str, progress: "Progress", *, run_id: str | None = None

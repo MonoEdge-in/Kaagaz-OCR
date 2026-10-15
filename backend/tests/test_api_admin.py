@@ -219,6 +219,7 @@ def test_settings_read_and_change_within_the_platform_limit(db: Database) -> Non
         "customer_name": "Mehta Textiles",
         "max_upload_mb": None,
         "platform_max_upload_mb": 5,
+        "autofile": {"granted": False, "on": False},  # feature 28: not granted
     }
     changed = admin.client.patch("/api/admin/settings", json={"max_upload_mb": 3}, headers=CSRF)
     assert changed.json()["max_upload_mb"] == 3

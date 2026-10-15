@@ -31,6 +31,8 @@ const org = (id: string, name: string): Organisation => ({
   pages: 400,
   storage_bytes: 1000,
   last_activity_at: "2026-10-11T09:00:00Z",
+  autofile_granted: false,
+  autofile_on: false,
 });
 
 const health = (id: string, changes: Partial<OrgInsight> = {}): OrgInsight => ({

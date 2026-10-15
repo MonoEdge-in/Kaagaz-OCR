@@ -109,6 +109,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const [heardBatches, setHeardBatches] = useState(0);
   if (uploads.settled !== heardBatches) {
     setHeardBatches(uploads.settled);
+    setFoldersVersion((n) => n + 1); // a folder Kaagaz made for them (feature 28) shows in the tree
+
     if (uploads.finished) setAnnouncement(uploadsFinishedText(uploads.finished, q !== "" || filtered));
   }
 
@@ -502,6 +504,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 onClearFinished={uploads.clearFinished}
                 onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
                 onRetry={(key) => void uploads.retry(key)}
+                tree={tree}
+                onUndone={() => setReload((n) => n + 1)}
               />
               {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
 

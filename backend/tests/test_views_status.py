@@ -101,6 +101,7 @@ def _row(
         "pages_uncertain": 0,
         "values_to_review": counts.get("to_review", 0),
         "words_unsure": 0,
+        "autofile": None,
         "batch_ahead": counts.get("ahead", 0),
         "family_uploaders": [USER.user_id],
         "newer": None,

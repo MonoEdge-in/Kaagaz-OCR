@@ -96,6 +96,9 @@ export interface DocumentSummary {
   // PRD 5 U1: from GET /api/batches/{id} only: its first unreadable page still to look at, or null.
   first_unreadable?: FirstUnreadablePage | null;
   values_found?: number; // PRD 5 U1: from GET /api/batches/{id} only: the values extracted from it
+  // Feature 28: Kaagaz filed it into its folder by type ("filed", Undo offered), or could not
+  // tell where it belongs ("not_filed"); null when auto-filing had nothing to do with it.
+  autofile?: "filed" | "not_filed" | null;
 }
 
 /** A file's first unreadable page, for the tray's "Couldn't read page n" (U1): what
@@ -660,6 +663,8 @@ export interface CustomerSettings {
   customer_name: string;
   max_upload_mb: number | null; // null: the platform limit applies
   platform_max_upload_mb: number;
+  // Feature 28: the platform allowed auto-filing (granted), and the admin switched it on.
+  autofile: { granted: boolean; on: boolean };
 }
 
 export interface AuditEntry {
@@ -723,6 +728,8 @@ export interface Organisation {
   pages: number;
   storage_bytes: number;
   last_activity_at: string | null;
+  autofile_granted: boolean; // feature 28: auto-filing allowed; its admin switches it on
+  autofile_on: boolean;
 }
 
 /** POST /operator/orgs: the temporary password is in this one reply only. */

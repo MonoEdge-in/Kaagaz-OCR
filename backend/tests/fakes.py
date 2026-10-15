@@ -247,6 +247,8 @@ class MemoryDocuments(MemoryRepository):
         self.attempts: dict[tuple[str, str], tuple[int, int]] = {}
         self.page_counts: dict[tuple[str, str], int] = {}
         self.read_again: dict[tuple[str, str], set[int]] = {}  # PRD 5 F5: the marked pages
+        self.filed: list[tuple[str, str]] = []  # feature 28: each file_document asked for
+        self.file_error: Exception | None = None  # raised by file_document when set
 
     def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
         """Failed, with the read-again marks cleared at once, as PgDocuments.set_failed."""
@@ -281,6 +283,13 @@ class MemoryDocuments(MemoryRepository):
         self.set_page_count(customer_id, document_id, page_count)
         self._statuses.set_status(customer_id, document_id, DocumentStatus.READY)
         self._finish(customer_id, run)
+
+    def file_document(self, customer_id: str, document_id: str) -> None:
+        """Records the call, or raises ``file_error``. The filing rules themselves are
+        tested on PostgreSQL (tests/test_autofile_db.py)."""
+        if self.file_error is not None:
+            raise self.file_error
+        self.filed.append((customer_id, document_id))
 
     def _open(self, customer_id: str, document_id: str, run_id: str) -> bool:
         return self.runs is None or self.runs.is_open(customer_id, document_id, run_id)

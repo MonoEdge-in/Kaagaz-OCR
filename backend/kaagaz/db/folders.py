@@ -168,9 +168,11 @@ _MOVE_CHECK = (
 # folder holding only those can still be deleted, and they go to the top level.
 # The rows are locked in family order (each family's first version, id =
 # family_id, then by id), the order every family lock uses, so a folder delete
-# and a restore of one of its families queue instead of deadlocking.
+# and a restore of one of its families queue instead of deadlocking. Like every
+# write of folder_id, it clears the auto-filing state (feature 28, R3), so a family
+# Kaagaz filed there is no longer "filed" and its Undo is refused.
 _DETACH_TRASHED = (
-    "UPDATE documents d SET folder_id = NULL FROM ("
+    "UPDATE documents d SET folder_id = NULL, autofile = NULL FROM ("
     " SELECT id FROM documents WHERE customer_id = :c AND folder_id = :f AND deleted_at IS NOT NULL"
     " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
     " WHERE d.customer_id = :c AND d.id = l.id AND d.deleted_at IS NOT NULL"

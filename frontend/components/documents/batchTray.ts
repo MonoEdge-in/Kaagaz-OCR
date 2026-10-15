@@ -6,6 +6,7 @@
 // never a file name. Signing out forgets them (AppShell). Every storage access is
 // wrapped: blocked site data only means the tray does not come back.
 
+import { ApiError } from "@/lib/api";
 import type { BatchView, DocumentSummary } from "@/lib/types";
 import { attentionWords } from "./library";
 import { estimateIngestSeconds, estimatePages, uploadKind } from "./logic";
@@ -284,4 +285,21 @@ export function clearStored(store: Store | null = batchStore()): void {
   } catch {
     // nothing kept, or nothing to clear
   }
+}
+
+// --- auto-filing (feature 28) -------------------------------------------------------
+
+export const NOT_FILED_TEXT =
+  "Not filed. Kaagaz couldn't tell which folder this belongs in. You can move it to a folder.";
+export const UNDONE_TEXT = "Moved back. It is not in a folder now. The folder stays.";
+export const FILED_HERE_TEXT = "Filed here by Kaagaz";
+
+/** "Filed into Invoices" with the folder's path; "a folder" while the folders are not loaded yet. */
+export function filedText(path: string): string {
+  return `Filed into ${path || "a folder"}`;
+}
+
+/** What a refused or failed Undo says: the server's plain words, else a hint to try again. */
+export function undoErrorText(caught: unknown): string {
+  return caught instanceof ApiError ? caught.message : "Could not undo it. Check your connection, then try again.";
 }

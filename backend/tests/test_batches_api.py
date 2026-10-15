@@ -49,6 +49,7 @@ SUMMARY_KEYS = {
     "pages_uncertain",
     "values_to_review",
     "words_unsure",
+    "autofile",  # feature 28: the tray's "Filed into ..." note
 }
 BATCH_KEYS = {"id", "documents", "counts", "pages_read", "pages_total", "time_left"}
 
