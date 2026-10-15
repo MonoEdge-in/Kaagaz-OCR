@@ -42,7 +42,7 @@ import {
 import type { SearchMode } from "./insideSearch";
 import { noMatchTitle } from "./library";
 import { LibraryFilters } from "./LibraryFilters";
-import { isFiltered, libraryHref, listParams } from "./libraryQuery";
+import { includeSubfoldersHref, isFiltered, libraryHref, listParams } from "./libraryQuery";
 import type { LibraryState } from "./libraryQuery";
 import {
   ACCEPT_ATTRIBUTE,
@@ -279,6 +279,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   // Nothing is uploaded into Trash, and it has no folder to change.
   const canUpload = !folderGone && !library.trash;
   const above = current ? folderPath(tree, current.folder.id).slice(0, -1) : [];
+  const withSubfolders = includeSubfoldersHref(library, current?.children.length ?? 0);
 
   const nav = (
     <FolderNav
@@ -291,6 +292,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     />
   );
 
+  // An empty list shows this button in its empty state, and the header leaves it out.
   const uploadButton = (
     <button type="button" className="btn btn-primary" onClick={openPicker}>
       <Icon name="upload" />
@@ -311,7 +313,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
         {canUpload && (
           <div className={styles.uploadControls}>
             {readerSelect}
-            {uploadButton}
+            {view !== "empty" && uploadButton}
           </div>
         )}
       </header>
@@ -466,7 +468,16 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     icon="file"
                     title={current ? "No documents in this folder yet" : "No documents yet"}
                     headingLevel={3}
-                    action={uploadButton}
+                    action={
+                      <>
+                        {uploadButton}
+                        {withSubfolders && (
+                          <Link href={withSubfolders} className="btn" scroll={false}>
+                            Include subfolders
+                          </Link>
+                        )}
+                      </>
+                    }
                   >
                     {current
                       ? "Upload files here, or move documents in with their Actions button."

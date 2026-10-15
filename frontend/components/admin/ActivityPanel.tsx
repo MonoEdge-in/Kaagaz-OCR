@@ -1,8 +1,8 @@
 "use client";
 
 // The audit log, newest first, a page at a time: one table, reflowed into
-// cards below 768 px. Details hold only ids, statuses and counts, and are
-// shown as plain text.
+// cards below 768 px. What each row was done on, and its details, are shown in
+// words, never an id (UI quality council, 15 Oct 2026).
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
@@ -12,7 +12,7 @@ import type { AuditEntry } from "@/lib/types";
 import { pageInfo } from "@/components/documents/logic";
 import table from "@/components/documents/Table.module.css";
 import { WrapName } from "@/components/documents/WrapName";
-import { AUDIT_PAGE_SIZE, describeAction, describeDetails } from "./logic";
+import { AUDIT_PAGE_SIZE, describeAction, describeDetails, describeTarget } from "./logic";
 import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
@@ -124,10 +124,7 @@ export function ActivityPanel() {
                     <WrapName name={describeAction(entry.action)} />
                   </td>
                   <td role="cell" data-label="On" className={styles.wrap}>
-                    {entry.target_type ?? "—"}
-                    {entry.target_id && (
-                      <span className={`muted ${styles.id}`}> {entry.target_id}</span>
-                    )}
+                    {describeTarget(entry.target_type)}
                   </td>
                   <td role="cell" data-label="Details" className={`${styles.wrap} ${styles.details}`}>
                     {describeDetails(entry.details) || "—"}

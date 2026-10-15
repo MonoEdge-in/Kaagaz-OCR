@@ -17,7 +17,7 @@ from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
 from kaagaz.eta import time_left
-from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, LOW_RESOLUTION, READERS_DISAGREE, UNPINNED, fix, says
+from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, READERS_DISAGREE, UNPINNED, fix, says
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
 _STATUS_MESSAGES = {
@@ -99,7 +99,7 @@ def status_message(
         # The worker came to it while the organisation was turned off (0014): nothing was read.
         return "This file was not read because your organisation was turned off. Read it again."
     if status == "failed":
-        return "This file could not be read." + (f" ({failure_code})" if failure_code else "")
+        return "This file could not be read. Upload it again, or try another copy of it."
     message = _STATUS_MESSAGES.get(status, "")
     if status in _IN_PROGRESS and progress is not None and progress.get("step") == _WAITING_STEP:
         message = READER_WAITING
@@ -395,22 +395,19 @@ def first_unreadable(page: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 def page_problems(row: RowMapping) -> list[dict[str, Any]]:
     """``PageProblem`` for each issue in ``read_issues``, in the F1 table's order (as
-    stored): what happened (``page_quality.says``, with its count or the page's DPI) and
-    the fix. An issue whose count is 0 now (every disputed value since given another
-    reason) or whose DPI is not known is left out: a sentence never shows a made-up
-    number. O(issues)."""
+    stored): what happened (``page_quality.says``, with its count) and the fix. An issue
+    whose count is 0 now (every disputed value since given another reason) is left out: a
+    sentence never shows a made-up number. O(issues)."""
     counts = {
         ILLEGIBLE_WORDS: int(row["illegible_words"]),
         UNPINNED: int(row["unpinned_lines"]),
         READERS_DISAGREE: int(row["values_disputed"]),
     }
-    dpi = row["effective_dpi"]
     problems = []
     for code in row["read_issues"] or []:
-        if (code in counts and counts[code] == 0) or (code == LOW_RESOLUTION and dpi is None):
+        if code in counts and counts[code] == 0:
             continue
-        said = says(code, count=counts.get(code), dpi=dpi)
-        problems.append({"code": code, "says": said, "fix": fix(code)})
+        problems.append({"code": code, "says": says(code, count=counts.get(code)), "fix": fix(code)})
     return problems
 
 

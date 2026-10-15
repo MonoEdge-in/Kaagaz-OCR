@@ -3,6 +3,7 @@ import {
   ALL_DOCUMENTS,
   MAX_TAG_FILTERS,
   dayAfter,
+  includeSubfoldersHref,
   isFiltered,
   isIsoDate,
   libraryFromSearch,
@@ -164,6 +165,16 @@ describe("isFiltered", () => {
     expect(isFiltered({ ...ALL_DOCUMENTS, tagIds: [GST] })).toBe(true);
     expect(isFiltered({ ...ALL_DOCUMENTS, type: "pdf" })).toBe(true);
     expect(isFiltered({ ...ALL_DOCUMENTS, to: "2026-09-30" })).toBe(true);
+  });
+});
+
+describe("includeSubfoldersHref (QA, 15 Oct 2026)", () => {
+  it("offers the subfolders from an empty folder that has some, and only then", () => {
+    const folder = { ...ALL_DOCUMENTS, folderId: FOLDER };
+    expect(includeSubfoldersHref(folder, 2)).toBe(`/documents?folder=${FOLDER}&sub=1`);
+    expect(includeSubfoldersHref(folder, 0)).toBeNull();
+    expect(includeSubfoldersHref({ ...folder, subfolders: true }, 2)).toBeNull();
+    expect(includeSubfoldersHref(ALL_DOCUMENTS, 2)).toBeNull();
   });
 });
 

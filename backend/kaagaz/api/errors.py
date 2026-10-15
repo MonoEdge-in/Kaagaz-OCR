@@ -23,9 +23,11 @@ from kaagaz.ingestion.errors import BackendUnavailable
 MESSAGES = {
     "bad_request": "The request is not valid.",
     # PRD 1 A3: one text for a wrong password, an unknown e-mail, a locked account
-    # and a wrong code. {minutes} is LOGIN_LOCK_MINUTES: use bad_credentials().
+    # and a wrong code. {minutes} is LOGIN_LOCK_MINUTES: use bad_credentials(). One message:
+    # check what was typed, or wait out the lock (QA, 15 Oct 2026).
     "bad_credentials": (
-        "Email or password is wrong, or the account is locked. Try again in {minutes} minutes."
+        "E-mail or password is wrong, or the account is locked."
+        " Check them, or wait {minutes} minutes, then try again."
     ),
     "not_signed_in": "Please sign in.",
     "forbidden": "You don't have permission to do this.",

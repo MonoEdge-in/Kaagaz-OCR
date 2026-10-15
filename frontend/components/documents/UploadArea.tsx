@@ -355,9 +355,10 @@ export function useUploads(onUploaded: () => void) {
 }
 
 /**
- * "Read with": a labelled native select of the organisation's models, with the
- * picked one's hint ("about $X a page") below it. Not shown unless two or more
- * can be used. Also the whole document's Read again (ReadAgain.tsx).
+ * "Read with": a labelled native select of the reading choices the server
+ * offers ("Standard", "Careful (costs more)"), with the picked one's hint
+ * below it. Not shown unless two or more can be used. Also the whole
+ * document's Read again (ReadAgain.tsx).
  */
 export function ReaderSelect({
   readers,

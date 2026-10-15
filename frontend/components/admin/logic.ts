@@ -3,8 +3,9 @@
 // one of these again; these checks only give a quicker, clearer message.
 
 import { sessionScope } from "@/components/shell/gate";
+import { roleName } from "@/components/shell/nav";
 import { ApiError } from "@/lib/api";
-import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN } from "@/lib/format";
+import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN, statusChip } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type {
   AdminUser,
@@ -34,9 +35,8 @@ export const TABS = [
   { id: "settings", label: "Settings" },
   { id: "activity", label: "Activity" },
   { id: "numbers", label: "Numbers" },
-  { id: "models", label: "AI models" },
   { id: "usage", label: "Usage" },
-  { id: "failed", label: "Failed jobs" },
+  { id: "failed", label: "Failed documents" },
 ] as const;
 
 export type TabId = (typeof TABS)[number]["id"];
@@ -273,16 +273,16 @@ export function statTiles(stats: Stats): Tile[] {
 const ROUTE_ORDER: readonly PageRoute[] = ["cells", "text_layer", "ocr", "blank"];
 
 const ROUTE_TILE_WORDS: Record<PageRoute, string> = {
-  cells: "Spreadsheet cells",
-  text_layer: "PDF text",
-  ocr: "OCR",
+  cells: "From spreadsheets",
+  text_layer: "From PDF text",
+  ocr: "Scanned pages",
   blank: "Blank pages",
 };
 
 /**
- * The Numbers tab's row "Pages read this month, by route" (PRD 2, R6): the
- * usage meter for pricing later. Always the same 4 tiles in the same order,
- * with 0 for a route that read nothing.
+ * The Numbers tab's row "Pages read this month" (PRD 2, R6): the usage meter
+ * for pricing later. Always the same 4 tiles in the same order, with 0 for a
+ * route that read nothing.
  */
 export function pageRouteTiles(stats: Pick<Stats, "pages_this_month">): Tile[] {
   return ROUTE_ORDER.map((route) => ({
@@ -291,54 +291,78 @@ export function pageRouteTiles(stats: Pick<Stats, "pages_this_month">): Tile[] {
   }));
 }
 
-/**
- * PRD 5 U9: this month's OCR pages by who read them, in a fixed order; [] from a server
- * from before it. The AI spend is this month's from the usage ledger (model choice SP1),
- * left out when it is not known (usd null).
- */
-export function readerTiles(stats: Pick<Stats, "reader_pages" | "spend_estimate">): Tile[] {
-  const pages = stats.reader_pages;
-  const tiles: Tile[] = pages
-    ? [
-        { label: "Read by AI model", value: formatNumber(pages.gemini) },
-        { label: "Read by the backup reader", value: formatNumber(pages.local) },
-        { label: "From the cache", value: formatNumber(pages.cached) },
-        { label: "Read again", value: formatNumber(pages.read_again) },
-      ]
-    : [];
-  const usd = stats.spend_estimate?.usd;
-  if (typeof usd === "number" && Number.isFinite(usd)) {
-    tiles.push({ label: "AI spend this month", value: formatUsd(usd) });
+// The audit details the Activity tab shows, in words; any other key (an id, the model a
+// Read again asked for) is left out (UI quality council, 15 Oct 2026).
+const plural = (n: number, word: string) => `${formatNumber(n)} ${word}${n === 1 ? "" : "s"}`;
+
+function detailText(key: string, value: unknown): string | null {
+  if (key === "page_no" && typeof value === "number") return `Page ${value}`;
+  if (key === "versions" && typeof value === "number") return plural(value, "version");
+  if (key === "tag_count" && typeof value === "number") return plural(value, "tag");
+  if (key === "max_upload_mb") {
+    return typeof value === "number" ? `Upload limit ${value} MB` : "Upload limit: the platform's";
   }
-  return tiles;
+  if (key === "role" && ROLES.includes(value as Role)) return `Role: ${roleName(value as Role)}`;
+  if (key === "status" && STATUS_ORDER.includes(value as DocumentStatus)) {
+    return `Status: ${statusChip(value as DocumentStatus).text}`;
+  }
+  return null;
 }
 
-/**
- * An audit row's details as one line of plain text: "count: 3, status: ready".
- * The server keeps only ids, statuses and counts there; nested values are shown
- * as compact JSON text, never as markup.
- */
+/** An audit row's details as one line of plain text: "Page 3, Status: Ready". */
 export function describeDetails(details: Record<string, unknown>): string {
   return Object.keys(details)
     .sort()
-    .map((key) => {
-      const value = details[key];
-      const text =
-        typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-          ? String(value)
-          : value === null
-            ? "none"
-            : JSON.stringify(value);
-      return `${key}: ${text}`;
-    })
+    .map((key) => detailText(key, details[key]))
+    .filter((text) => text !== null)
     .join(", ");
+}
+
+const TARGET_WORDS: Record<string, string> = {
+  document: "Document",
+  document_story: "Document",
+  extracted_value: "Value",
+  folder: "Folder",
+  tag: "Tag",
+  user: "User",
+  user_word: "Word",
+  message: "Chat",
+  customer: "Settings",
+};
+
+/** What an audit row was done on, as a word; never its id. */
+export function describeTarget(targetType: string | null): string {
+  return (targetType !== null && TARGET_WORDS[targetType]) || "—";
 }
 
 const ACTION_WORDS: Record<string, string> = {
   "auth.login": "Signed in",
   "auth.logout": "Signed out",
   "document.upload": "Uploaded a document",
+  "document.version": "Uploaded a new version",
   "document.delete": "Deleted a document",
+  "document.trash": "Moved a document to Trash",
+  "document.restore": "Restored a document from Trash",
+  "document.move": "Moved a document",
+  "document.rename": "Renamed a document",
+  "document.tags": "Changed a document's tags",
+  "document.reprocess": "Asked to read a document again",
+  "document.read_upgrade": "Read a document again after an upgrade",
+  "document.page_accept": "Kept a page as it was read",
+  "document_story.saved": "Saved a document's story",
+  "document_story.deleted": "Deleted a document's story",
+  "folder.create": "Added a folder",
+  "folder.rename": "Renamed a folder",
+  "folder.move": "Moved a folder",
+  "folder.delete": "Deleted a folder",
+  "tag.create": "Added a tag",
+  "tag.delete": "Deleted a tag",
+  "user_word.added": "Added a word to My words",
+  "user_word.changed": "Changed a word in My words",
+  "user_word.deleted": "Deleted a word from My words",
+  "customer.create": "Organisation set up",
+  "customer.enable": "Organisation turned on",
+  "customer.disable": "Organisation turned off",
   "chat.ask": "Asked a question",
   "review.resolve": "Corrected a value",
   "user.create": "Added a user",
@@ -370,7 +394,7 @@ export const FAILED_PAGE_SIZE = 50;
 
 /** When a failed document was last tried (PRD 3 Z1). */
 export function lastRunText(lastRunAt: string | null): string {
-  return lastRunAt === null ? "Never run" : `Last tried ${formatDateTime(lastRunAt)}`;
+  return lastRunAt === null ? "Not tried yet" : `Last tried ${formatDateTime(lastRunAt)}`;
 }
 
 /**
@@ -453,16 +477,16 @@ export function budgetLine(
   return `${spent} of ${formatUsd(budget.ai_budget_usd)} this month`;
 }
 
-/** SP4, warn only: at 80% and at 100% of the budget a line says so; nothing stops. */
+/**
+ * SP4, warn only: at 80% and at 100% of the budget a line says so; nothing stops.
+ * No money in it: the organisation's admin sees AI use in tokens (Tushar, 15 Oct 2026).
+ */
 export function budgetWarning(budget: UsageBudget): string | null {
   if (budget.share === null || budget.ai_budget_usd === null) return null;
-  const line = budgetLine(budget);
   if (budget.share >= 1) {
-    return `This month's AI spend has reached the budget (${line}). Work goes on; ask MonoEdge if the budget should change.`;
+    return "This month's AI use has reached the budget. Work goes on; ask MonoEdge if the budget should change.";
   }
-  if (budget.share >= 0.8) {
-    return `This month's AI spend is at ${budgetShareText(budget) ?? ""} of the budget (${line}).`;
-  }
+  if (budget.share >= 0.8) return `This month's AI use is at ${budgetShareText(budget) ?? ""} of the budget.`;
   return null;
 }
 

@@ -133,6 +133,16 @@ export function libraryHref(state: LibraryState): string {
   })}`;
 }
 
+/**
+ * A folder with nothing of its own but documents in its subfolders looked empty for good,
+ * with no Include subfolders box: its empty state offers this address instead (QA, 15 Oct
+ * 2026). Null when the folder has no subfolders or they are already included.
+ */
+export function includeSubfoldersHref(state: LibraryState, subfolderCount: number): string | null {
+  if (state.folderId === null || state.trash || state.subfolders || subfolderCount === 0) return null;
+  return libraryHref({ ...state, subfolders: true });
+}
+
 /** The list request for a view, a search and a page. */
 export function listParams(state: LibraryState, q: string, offset: number): DocumentListParams {
   return {

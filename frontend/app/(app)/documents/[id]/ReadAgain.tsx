@@ -10,10 +10,11 @@
 // components/viewer/reprocess.ts; the server checks the role again.
 // When the organisation has two or more models (model choice MS4), the
 // question also has "Read with", set to the model the document asked for
-// (detail.read_model, else the default), and says every page is read again by
-// it; a model is sent only when the user changes it, so the document never
-// moves to the default unasked. The models come from GET /upload-limits, and
-// without them there is no choice.
+// (detail.read_model, else the default), and says every page is read and paid
+// for again (and that Careful costs more when it is shown); a model is sent
+// only when the user changes it, so the document never moves to the default
+// unasked. The models come from GET /upload-limits, and without them there is
+// no choice.
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { offersChoice, pickedReader, readAgainModel, readAgainWarning } from "@/components/documents/readers";
@@ -124,7 +125,9 @@ export function ReadAgain({ documentId, fixes, pages, readModel, offered, readin
         </p>
         <p id="read-again-text">{reprocessConfirmText(fixes)}</p>
         <ReaderSelect readers={readers} picked={picked ?? readModel} onPick={setPicked} />
-        {offersChoice(readers) && shown !== null && <p role="status">{readAgainWarning(pages, shown.title)}</p>}
+        {offersChoice(readers) && shown !== null && (
+          <p role="status">{readAgainWarning(pages, shown !== readers[0])}</p>
+        )}
         <div className={styles.readAgainButtons}>
           <button type="button" className="btn btn-primary" onClick={send} disabled={sending}>
             {sending ? (

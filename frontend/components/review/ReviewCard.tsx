@@ -1,8 +1,8 @@
 "use client";
 
-// One value that needs review: the spot on its page, zoomed in, the reader's
-// confidence and a link to its page's scanned text, the two readings side by
-// side, and three ways to settle it. The chosen value becomes
+// One value that needs review: the spot on its page, zoomed in, whether the
+// reader was not sure of it, a link to its page's scanned text, the two
+// readings side by side, and three ways to settle it. The chosen value becomes
 // the stored truth for this customer; the original file never changes.
 
 import Link from "next/link";
@@ -11,7 +11,7 @@ import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import { fieldText, reasonText } from "@/components/viewer/labels";
-import { confidenceText, routeOrigin } from "@/components/viewer/scanned";
+import { CONFIDENCE_NOTE, confidenceText, notSure, routeOrigin } from "@/components/viewer/scanned";
 import { ApiError, resolveReview } from "@/lib/api";
 import { pageLink } from "@/lib/regions";
 import type { ReviewChoice, ReviewItem } from "@/lib/types";
@@ -94,6 +94,7 @@ export function ReviewCard({
             )}
           </p>
         )}
+        {notSure(value.confidence) && <p className={`muted ${styles.reason}`}>{CONFIDENCE_NOTE}</p>}
       </header>
 
       <PageViewer

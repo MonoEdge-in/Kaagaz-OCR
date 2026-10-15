@@ -34,7 +34,6 @@ import type {
   OperatorOrgModels,
   OperatorUsageRow,
   OrgAdmin,
-  OrgModels,
   Organisation,
   OrganisationCreated,
   PageReadings,
@@ -455,14 +454,10 @@ export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);
-/** The organisation's models, read-only: the operator sets them. */
-export const getAdminModels = () => request<OrgModels>("GET", "/admin/models");
 /** AI use from `from` to `to` (YYYY-MM-DD, both included; the server's default when left out), for one user when given. */
 export type UsageParams = { from?: string; to?: string; user_id?: string };
 export const getAdminUsage = (params: UsageParams = {}) =>
   request<UsageReport>("GET", `/admin/usage${query(params)}`);
-/** The same rows as a CSV file, for a plain download link. */
-export const adminUsageCsvUrl = (params: UsageParams = {}) => `/api/admin/usage.csv${query(params)}`;
 
 // --- the platform operator (super admin) -----------------------------------------
 // Its own cookie (path /api/operator), sent only to these routes.

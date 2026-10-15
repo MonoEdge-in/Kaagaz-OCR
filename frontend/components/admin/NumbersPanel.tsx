@@ -2,15 +2,16 @@
 
 // The headline numbers for this customer: documents by status, questions and
 // how they were answered, feedback, and values waiting for review, then the
-// pages read this month by route (PRD 2, R6), and by who read them, with the
-// model's spend estimate (PRD 5 U9, hidden while the prices are not known).
-// Tiles in a grid that fits the width; 0 shows as 0.
+// pages read this month by how they were read (PRD 2, R6). Which reader or
+// model read them is the operator's only (UI quality council, 15 Oct 2026);
+// the AI spend is on the Usage tab. Tiles in a grid that fits the width; 0
+// shows as 0.
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, getStats } from "@/lib/api";
 import type { Stats } from "@/lib/types";
-import { pageRouteTiles, readerTiles, statTiles } from "./logic";
+import { pageRouteTiles, statTiles } from "./logic";
 import type { Tile } from "./logic";
 import styles from "./Admin.module.css";
 
@@ -93,17 +94,9 @@ export function NumbersPanel() {
         <>
           <Tiles tiles={statTiles(stats)} />
           <h3 id="pages-by-route-heading" className={styles.tilesHeading}>
-            Pages read this month, by route
+            Pages read this month
           </h3>
           <Tiles tiles={pageRouteTiles(stats)} labelledBy="pages-by-route-heading" />
-          {readerTiles(stats).length > 0 && (
-            <>
-              <h3 id="pages-by-reader-heading" className={styles.tilesHeading}>
-                Scanned pages this month, by reader
-              </h3>
-              <Tiles tiles={readerTiles(stats)} labelledBy="pages-by-reader-heading" />
-            </>
-          )}
         </>
       )}
     </section>

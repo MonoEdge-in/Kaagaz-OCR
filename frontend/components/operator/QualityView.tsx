@@ -215,7 +215,7 @@ function PerOrg({ data }: { data: QualityData }) {
   if (rows.length === 0) return null;
   return (
     <div className={table.reflowWrap}>
-      <table className={`table ${table.reflow}`} role="table">
+      <table className={`table ${table.reflow} ${styles.nameWide}`} role="table">
         <caption className={admin.caption}>Per organisation</caption>
         <thead role="rowgroup">
           <tr role="row">

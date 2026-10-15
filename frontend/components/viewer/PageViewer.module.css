@@ -30,7 +30,7 @@
   color: var(--fg-muted);
 }
 
-/* The page buttons, and how that page was read beside them (words, not colour). */
+/* The page buttons, and "Blank page" beside them for a blank page. */
 .pageInfo {
   display: flex;
   flex-wrap: wrap;
@@ -54,7 +54,7 @@
   border-radius: var(--r-md);
   background: var(--paper-frame);
   scrollbar-gutter: stable both-edges;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain; /* a sideways swipe pans the page, never goes back */
 }
 
 .stageWrap {
@@ -217,7 +217,7 @@
    page shows with no second scrollbar beside the window's. */
 .fitPage {
   flex: 1 1 0;
-  min-height: 0;
+  min-height: 20rem; /* never squeezed to nothing by what sits above it */
 }
 
 .fitPage .frame,
@@ -242,12 +242,12 @@
 
 .sheetFrame {
   max-width: 100%;
-  max-height: 70vh;
+  max-height: 70dvh;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface);
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
 }
 
 .sheetCrop {

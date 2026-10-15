@@ -85,11 +85,6 @@
   gap: var(--space-2);
 }
 
-/* "Cancel deletion" wraps onto two lines in the narrow Actions column. */
-.rowActions :global(.btn) {
-  white-space: normal;
-}
-
 /* --- One organisation's admins ----------------------------------------------- */
 
 .adminList {
@@ -146,6 +141,12 @@
 
   .actionsColumn {
     width: 7rem;
+  }
+
+  /* Tables whose short columns share the width evenly (Compare models, Quality per
+     organisation, the model catalogue): the name column keeps room for its words. */
+  .nameWide th:first-child {
+    width: 10rem;
   }
 }
 

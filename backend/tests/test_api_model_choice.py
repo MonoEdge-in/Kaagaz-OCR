@@ -2,8 +2,9 @@
 read its scans with, and the server's check of a ``read_model``.
 
 Without a database: the readers ``/upload-limits`` lists (Auto alone in keyless mode or
-with no models; else the usable models, the default first, with an estimated price a
-page), the 403 for a model the organisation can't use, and the ``read_model`` form field.
+with no models; else the tiers Standard and, when a usable model costs measurably more a
+page, Careful), the estimated price a page, the 403 for a model the organisation can't
+use, and the ``read_model`` form field.
 Against a real database (marker ``db``): uploads, versions and Read again store the model
 and who asked, a model the organisation can't use is 403 with nothing stored, and a page
 says the catalogue name of the model that read it. Across customers:
@@ -114,27 +115,41 @@ def test_ms4_mc3_the_usable_models_default_first_with_a_price_a_page(monkeypatch
         ],
     )
     rows = readers.usable(_no_conn(), str(uuid.uuid4()), GEMINI)
+    # Changed on purpose (UI quality council, 15 Oct 2026): plain tiers, no model name or
+    # price; a cheaper model and one not priced yet are never "Careful", so Standard alone.
     assert readers.readers(rows, GEMINI) == [
         {
             "id": "google/gemini-3.1-pro-preview",
-            "title": "Name of google/gemini-3.1-pro-preview",
-            "hint": "about $0.04 a page",  # 10,000 x $2/M + 2,000 x $12/M
+            "title": "Standard",
+            "hint": "Right for most documents.",
+            "available": True,
+            "reason": None,
+            "default": True,
+        },
+    ]
+
+
+def test_careful_is_the_dearest_usable_model_measurably_dearer_than_standard() -> None:
+    rows = [
+        _row("google/default", default=True),  # $0.044 a page
+        _row("google/a-bit-dearer", tokens=(11_000, 2_000)),  # $0.046: not 10% dearer
+        _row("google/dearest", tokens=(20_000, 4_000)),  # $0.088
+        _row("google/dearer", tokens=(15_000, 3_000)),  # $0.066
+        _row("google/not-priced", tokens=None),
+    ]
+    assert readers.readers(rows, GEMINI) == [
+        {
+            "id": "google/default",
+            "title": "Standard",
+            "hint": "Right for most documents.",
             "available": True,
             "reason": None,
             "default": True,
         },
         {
-            "id": "anthropic/claude-haiku-5.5",
-            "title": "Name of anthropic/claude-haiku-5.5",
-            "hint": "under $0.01 a page (rough estimate)",  # verify-models' test page only
-            "available": True,
-            "reason": None,
-            "default": False,
-        },
-        {
-            "id": "openai/gpt-6-luna",
-            "title": "Name of openai/gpt-6-luna",
-            "hint": "Cost not measured yet",  # never a made-up figure
+            "id": "google/dearest",
+            "title": "Careful (costs more)",
+            "hint": "Takes more care with faint, handwritten or crowded pages. Costs more per page.",
             "available": True,
             "reason": None,
             "default": False,
@@ -142,11 +157,40 @@ def test_ms4_mc3_the_usable_models_default_first_with_a_price_a_page(monkeypatch
     ]
 
 
+def test_no_careful_when_nothing_is_measurably_dearer_or_standard_is_not_priced() -> None:
+    near = [_row("google/default", default=True), _row("google/a-bit-dearer", tokens=(11_000, 2_000))]
+    assert [reader["title"] for reader in readers.readers(near, GEMINI)] == ["Standard"]
+    unpriced = [
+        _row("google/default", default=True, tokens=None),
+        _row("google/dearest", tokens=(20_000, 4_000)),
+    ]
+    assert [reader["id"] for reader in readers.readers(unpriced, GEMINI)] == ["google/default"]
+
+
 def test_r14_only_the_real_default_is_marked_none_when_it_is_not_usable() -> None:
     """The organisation's default may be unusable now (disabled, not verified): its other
     models are offered, and none of them is called the default."""
     rows = [_row("anthropic/claude-haiku-5.5"), _row("openai/gpt-6-luna")]
-    assert [reader["default"] for reader in readers.readers(rows, GEMINI)] == [False, False]
+    # Changed on purpose (UI quality council, 15 Oct 2026): two models at the same price
+    # are one tier, Standard; it is still not called the default.
+    assert [reader["default"] for reader in readers.readers(rows, GEMINI)] == [False]
+
+
+def test_standard_is_the_cheapest_usable_model_when_the_default_is_not_usable() -> None:
+    rows = [
+        _row("google/dearest", tokens=(20_000, 4_000)),
+        _row("google/not-priced", tokens=None),
+        _row("google/cheapest"),
+    ]
+    assert [
+        (reader["id"], reader["title"], reader["default"]) for reader in readers.readers(rows, GEMINI)
+    ] == [
+        ("google/cheapest", "Standard", False),
+        ("google/dearest", "Careful (costs more)", False),
+    ]
+    # None priced yet: the first one, Standard alone.
+    unpriced = [_row("google/a", tokens=None), _row("google/b", tokens=None)]
+    assert [reader["id"] for reader in readers.readers(unpriced, GEMINI)] == ["google/a"]
 
 
 def test_r14_the_admin_sees_no_default_in_keyless_mode() -> None:
@@ -285,27 +329,37 @@ def two_models(api: Api, customer_id: str) -> tuple[str, str]:
 def test_ms4_upload_limits_list_the_usable_models_default_first(db: Database) -> None:
     api = Api(db, settings=GEMINI)
     member = api.new_signed("member")
-    default, other = two_models(api, member.customer_id)
+    default, _ = two_models(api, member.customer_id)
 
     offered = member.client.get("/api/upload-limits").json()["readers"]
 
+    # Changed on purpose (UI quality council, 15 Oct 2026): plain tiers; the other model is
+    # cheaper, so it is never "Careful" and Standard is offered alone.
     assert offered == [
         {
             "id": default,
-            "title": "Default model",
-            "hint": "about $0.04 a page (rough estimate)",  # no scans yet: verify-models' page
+            "title": "Standard",
+            "hint": "Right for most documents.",
             "available": True,
             "reason": None,
             "default": True,
         },
-        {
-            "id": other,
-            "title": "Other model",
-            "hint": "under $0.01 a page (rough estimate)",  # verify-models' test page only
-            "available": True,
-            "reason": None,
-            "default": False,
-        },
+    ]
+
+
+@pytest.mark.db
+def test_upload_limits_offer_careful_for_a_dearer_model(db: Database) -> None:
+    api = Api(db, settings=GEMINI)
+    member = api.new_signed("member")
+    default = add_model(api.db, name="Default model")
+    dearer = add_model(api.db, name="Dearer model", tokens=(20_000, 4_000))
+    allow(api.db, member.customer_id, [default, dearer], default=default)
+
+    offered = member.client.get("/api/upload-limits").json()["readers"]
+
+    assert [(reader["id"], reader["title"], reader["default"]) for reader in offered] == [
+        (default, "Standard", True),
+        (dearer, "Careful (costs more)", False),
     ]
 
 

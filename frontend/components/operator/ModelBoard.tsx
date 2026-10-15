@@ -102,7 +102,7 @@ const COLUMNS = [
 function BoardTable({ data }: { data: BoardData }) {
   return (
     <div className={table.reflowWrap}>
-      <table className={`table ${table.reflow}`} role="table">
+      <table className={`table ${table.reflow} ${styles.nameWide}`} role="table">
         <caption className={admin.caption}>Compare models, observational</caption>
         <thead role="rowgroup">
           <tr role="row">

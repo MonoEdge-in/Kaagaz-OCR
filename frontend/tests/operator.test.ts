@@ -88,7 +88,7 @@ describe("operator sign-in", () => {
 
   it("says the same thing for every 401, whatever was wrong", () => {
     expect(OPERATOR_SIGN_IN_FAILED.startsWith("Those details are not right.")).toBe(true);
-    const said = "Email or password is wrong, or the account is locked. Try again in 15 minutes.";
+    const said = "E-mail or password is wrong, or the account is locked. Check them, or wait 15 minutes, then try again.";
     expect(operatorSignInError(new ApiError(401, "bad_credentials", said))).toBe(OPERATOR_SIGN_IN_FAILED);
     expect(operatorSignInError(new ApiError(400, "bad_request", "x"))).toBe(OPERATOR_SIGN_IN_FAILED);
     expect(operatorSignInError(new ApiError(429, "rate_limited", "x"))).toBe(TOO_MANY_ATTEMPTS);
@@ -380,7 +380,9 @@ describe("operator source guards", () => {
     expect(OPERATOR_CHANNEL).not.toBe(SESSION_CHANNEL);
     const session = read("lib/operatorSession.tsx");
     expect(session).toContain("new BroadcastChannel(OPERATOR_CHANNEL)");
-    const customer = /(SESSION_CHANNEL|announceSession|watchSession)|kaagaz-session"|new BroadcastChannel\((?!OPERATOR_CHANNEL\))/;
+    // Changed on purpose (UI quality council, 15 Oct 2026): the word boundaries were stray
+    // backspace characters, so this check could never fail; it is a real check again.
+    const customer = /\b(SESSION_CHANNEL|announceSession|watchSession)\b|kaagaz-session"|new BroadcastChannel\((?!OPERATOR_CHANNEL\))/;
     expect(OPERATOR_FILES.filter((file) => customer.test(read(file)))).toEqual([]);
     const shell = read("components/operator/OperatorShell.tsx");
     expect(shell).toContain("signOut(operatorLogout)");

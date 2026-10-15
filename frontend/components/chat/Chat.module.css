@@ -13,6 +13,9 @@
   grid-template-columns: minmax(0, 1fr);
   height: calc(100dvh - var(--topbar-space));
   min-height: 0;
+  /* <main> is a flex row: take all its width, never push it wider. */
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .pane {
@@ -364,6 +367,19 @@
   background: var(--accent-soft);
 }
 
+/* On touch, a chip in a sentence gets a 44px tap area that does not move the text. */
+@media (pointer: coarse) {
+  .cite {
+    position: relative;
+  }
+
+  .cite::after {
+    content: "";
+    position: absolute;
+    inset: -9px;
+  }
+}
+
 .subheading {
   margin: 0 0 var(--space-3);
   font-size: var(--fs-base);
@@ -425,6 +441,12 @@
   text-decoration: none;
 }
 
+@media (pointer: coarse) {
+  .docChip {
+    min-height: 44px;
+  }
+}
+
 .docChip:hover {
   background: var(--surface-2);
   color: var(--fg);
@@ -477,6 +499,12 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
+}
+
+/* Its citation chip is pointed at or focused. No animation. */
+.source[data-hot] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 /* Reached from a citation chip: a short pulse of the focus ring, static under reduced motion. */

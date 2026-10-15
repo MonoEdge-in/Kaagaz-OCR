@@ -4,9 +4,10 @@ MS5, MC3).
 The operator sets each organisation's models; the ones usable now (allowed, eligible,
 enabled, verified for the reader's prompt, on a provider inside OPENROUTER_PROVIDERS) come
 from ``db.models.usable_models``, which knows the reader's prompt version itself: the api
-never imports a reader module (the reader plug socket). ``GET /api/upload-limits`` lists
-them, the default first, each with its catalogue name and an estimated price a page, and
-an upload or a Read again naming a ``read_model`` outside them is 403 ``model_not_allowed``
+never imports a reader module (the reader plug socket). ``GET /api/upload-limits`` offers
+at most two of them as plain tiers (UI quality council, 15 Oct 2026): "Standard", the
+default, and "Careful (costs more)", the dearest a page; never a model's name or price. An
+upload or a Read again naming a ``read_model`` outside them is 403 ``model_not_allowed``
 before anything is stored.
 The browser's choice is never trusted: the worker checks it again (``db.models.resolve``).
 
@@ -14,6 +15,7 @@ Keyless mode (OCR_ENGINE other than gemini) and an organisation the operator set
 for keep the one reader, Auto (``ocr_choices``, PRD 5 RT3), so nothing can be chosen.
 """
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -24,7 +26,13 @@ from kaagaz.db import models as models_sql
 from kaagaz.reading.ocr import GEMINI, ocr_choices
 from kaagaz.settings import Settings
 
-NOT_ALLOWED = "Scans here can't be read with that model. Choose one from the list, or leave the default."
+NOT_ALLOWED = "That reading choice is no longer available. Choose again from the list."
+STANDARD = "Standard"
+STANDARD_HINT = "Right for most documents."
+CAREFUL = "Careful (costs more)"
+CAREFUL_HINT = "Takes more care with faint, handwritten or crowded pages. Costs more per page."
+# Careful is offered only when it costs at least this much more a page than Standard.
+DEARER = 1.1
 
 
 def usable(conn: Connection, customer_id: str, settings: Settings) -> list[RowMapping]:
@@ -37,22 +45,38 @@ def usable(conn: Connection, customer_id: str, settings: Settings) -> list[RowMa
 
 
 def readers(rows: Sequence[RowMapping], settings: Settings) -> list[dict[str, Any]]:
-    """``UploadLimits.readers``: the usable models (``ReaderOption``, with ``reason`` null as
-    ``UploadReader`` has it, and ``default`` true for the organisation's default only: none
-    when its default is not usable now, R14), or Auto alone when there are none."""
+    """``UploadLimits.readers`` (``ReaderOption``, with ``reason`` null as ``UploadReader``
+    has it): Auto alone when there are no usable models; else "Standard", the
+    organisation's default (the cheapest a page when its default is not usable now, then
+    ``default`` is false, R14), and "Careful (costs more)", the dearest a page of the rest,
+    only when it costs measurably more (``DEARER``) than Standard. A model whose price is not
+    measured yet is never Careful. O(n)."""
     if not rows:
         return list(ocr_choices(settings))
-    return [
-        {
-            "id": row["id"],
-            "title": row["name"],
-            "hint": page_hint(row),
-            "available": True,
-            "reason": None,
-            "default": bool(row["is_default_scan"]),
-        }
-        for row in rows
-    ]
+    standard = next((row for row in rows if row["is_default_scan"]), min(rows, key=_cost))
+    offered = [_tier(standard, STANDARD, STANDARD_HINT)]
+    floor = _cost(standard) * DEARER  # inf when Standard's price is not measured: no Careful
+    dearer = [row for row in rows if floor < _cost(row) < math.inf]
+    if dearer:
+        offered.append(_tier(max(dearer, key=_cost), CAREFUL, CAREFUL_HINT))
+    return offered
+
+
+def _cost(row: RowMapping) -> float:
+    """``page_usd``, with a price not measured yet as infinity: never the cheapest."""
+    usd = page_usd(row)
+    return math.inf if usd is None else usd
+
+
+def _tier(row: RowMapping, title: str, hint: str) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "title": title,
+        "hint": hint,
+        "available": True,
+        "reason": None,
+        "default": bool(row["is_default_scan"]),
+    }
 
 
 def page_estimate(row: RowMapping) -> tuple[float, bool] | None:

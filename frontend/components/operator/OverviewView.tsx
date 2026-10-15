@@ -458,7 +458,13 @@ function OrgTable({ data, names, announce }: { data: OverviewData; names: Readon
             <thead role="rowgroup">
               <tr role="row">
                 {COLUMNS.map((column) => (
-                  <th key={column.id} scope="col" role="columnheader" aria-sort={column.id === sort.column ? sort.dir : undefined}>
+                  <th
+                    key={column.id}
+                    scope="col"
+                    role="columnheader"
+                    aria-sort={column.id === sort.column ? sort.dir : undefined}
+                    className={column.id === "spend" ? "num" : undefined}
+                  >
                     {column.label}
                   </th>
                 ))}
@@ -491,7 +497,7 @@ function OrgGlance({ line, aiOn, at }: { line: OrgLine; aiOn: boolean; at: numbe
         {formatNumber(org.active_users_7d)} in 7 days
         <span className={styles.statusNote}>{formatNumber(org.active_users_30d)} in 30 days</span>
       </td>
-      <td role="cell" data-label="AI spend this month" className="tabular">
+      <td role="cell" data-label="AI spend this month" className="num">
         {!aiOn ? (
           AI_OFF
         ) : budget === null ? (

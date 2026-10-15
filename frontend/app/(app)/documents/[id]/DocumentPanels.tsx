@@ -15,6 +15,7 @@ import { labelBadgeClass, labelIcon } from "@/components/viewer/labels";
 import {
   INVOICE_FIELDS,
   LINE_FIELDS,
+  MONEY_LINE_FIELDS,
   cardSections,
   checkChip,
   groupLinks,
@@ -23,6 +24,7 @@ import {
   linkText,
   noCardText,
   spotNote,
+  untilRead,
 } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
 import { fieldText } from "@/components/viewer/labels";
@@ -32,7 +34,7 @@ import { valueAt } from "@/components/viewer/scanned";
 import { sameRegion } from "@/components/viewer/selection";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import { docTypeLabel } from "@/lib/format";
-import type { DocumentDetail, ExtractedValue, PageSummary, ReadingMark, Region } from "@/lib/types";
+import type { DocumentDetail, DocumentStatus, ExtractedValue, PageSummary, ReadingMark, Region } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
 interface PanelProps {
@@ -83,7 +85,7 @@ export function CardPanel({ detail, active, onShow }: PanelProps) {
       ) : (
         <>
           <p className={styles.pageNote}>
-            <LabelBadge label="needs_review" /> Picked by the AI model. Check each one on its page.
+            <LabelBadge label="needs_review" /> Picked by the AI. Check each one on its page.
           </p>
           <dl className={styles.facts}>
             <div className={styles.factRow}>
@@ -129,7 +131,7 @@ export function RelatedPanel({ detail }: Pick<PanelProps, "detail">) {
         Related documents
       </h2>
       {detail.links.length === 0 ? (
-        <p className="muted">No other document shares a number with this one.</p>
+        <p className="muted">{untilRead(detail.status, "No other document shares a number with this one.")}</p>
       ) : (
         <ul className={styles.panelList}>
           {groupLinks(detail.links).map(([link, ...more]) => (
@@ -210,7 +212,7 @@ export function InvoicePanel({ detail, active, onShow }: PanelProps) {
               <tr>
                 <th scope="col">#</th>
                 {LINE_FIELDS.map((field) => (
-                  <th key={field} scope="col">
+                  <th key={field} scope="col" className={MONEY_LINE_FIELDS.has(field) ? "num" : undefined}>
                     {fieldText(field)}
                   </th>
                 ))}
@@ -223,7 +225,9 @@ export function InvoicePanel({ detail, active, onShow }: PanelProps) {
                     {line.line_no}
                   </th>
                   {LINE_FIELDS.map((field) => (
-                    <td key={field}>{cell(`line:${line.line_no}`, field, line[field])}</td>
+                    <td key={field} className={MONEY_LINE_FIELDS.has(field) ? "num" : undefined}>
+                      {cell(`line:${line.line_no}`, field, line[field])}
+                    </td>
                   ))}
                 </tr>
               ))}
@@ -237,12 +241,14 @@ export function InvoicePanel({ detail, active, onShow }: PanelProps) {
 
 /** PRD 5 U5: the document's reading problems by page, with jump links; the shown page's marks as buttons. */
 export function AttentionPanel({
+  status,
   pages,
   current,
   marks,
   onPage,
   onMark,
 }: {
+  status: DocumentStatus;
   pages: PageSummary[];
   current: number | null; // the page shown
   marks: ReadingMark[]; // the shown page's marks
@@ -257,7 +263,7 @@ export function AttentionPanel({
         Attention
       </h2>
       {problemPages.length === 0 ? (
-        <p className="muted">{ALL_CLEAR}</p>
+        <p className="muted">{untilRead(status, ALL_CLEAR)}</p>
       ) : (
         <ul className={styles.panelList}>
           {problemPages.map((item) => (

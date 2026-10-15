@@ -320,7 +320,9 @@ input:-webkit-autofill:focus {
   min-height: 0;
   flex: 1 1 auto;
   padding: var(--space-5) var(--space-4) var(--space-7);
-  padding-inline: max(var(--space-4), env(safe-area-inset-left));
+  /* Each side keeps clear of its own notch or rounded corner, at every width. */
+  padding-left: max(var(--space-4), env(safe-area-inset-left));
+  padding-right: max(var(--space-4), env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
@@ -328,8 +330,15 @@ input:-webkit-autofill:focus {
 
 @media (min-width: 640px) {
   .page {
-    padding: var(--space-6) var(--space-6) var(--space-8);
+    padding-block: var(--space-6) var(--space-8);
+    padding-left: max(var(--space-6), env(safe-area-inset-left));
+    padding-right: max(var(--space-6), env(safe-area-inset-right));
   }
+}
+
+/* The document screen: the page and its panels use a big screen's width. */
+.page.page-wide {
+  max-width: 120rem;
 }
 
 .page-header {
@@ -372,7 +381,9 @@ input:-webkit-autofill:focus {
   justify-content: center;
   gap: var(--space-2);
   min-height: var(--control-h);
-  padding: 0 var(--space-4);
+  /* A long label wraps inside the button rather than push it out of its box. */
+  max-width: 100%;
+  padding: var(--space-1) var(--space-4);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-sm);
   background: var(--surface);
@@ -380,9 +391,11 @@ input:-webkit-autofill:focus {
   font-weight: 600;
   font-size: var(--fs-sm);
   line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: break-word;
   cursor: pointer;
   text-decoration: none;
-  white-space: nowrap;
   transition:
     background-color var(--t-fast) var(--ease),
     border-color var(--t-fast) var(--ease),
@@ -530,6 +543,14 @@ select.input {
   background: var(--surface);
 }
 
+/* A money column: header and figures line up at the end, digits all one width.
+   After .table th/td (same specificity), so it wins. */
+th.num,
+td.num {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
 /* --- Labels: Verified and Needs review --------------------------------------
    These two differ by shape, border style, icon and word, not colour alone:
    Verified is a rounded pill with a solid edge, Needs review a squarer chip
@@ -629,9 +650,9 @@ select.input {
 .skeleton {
   display: block;
   border-radius: var(--r-sm);
-  background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 50%, var(--surface-2) 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
+  background: var(--surface-2);
+  /* Opacity only: the compositor runs it, so a loading list never repaints. */
+  animation: skeletonPulse 1.4s ease-in-out infinite alternate;
   min-height: 1em;
 }
 
@@ -646,12 +667,12 @@ select.input {
   }
 }
 
-@keyframes shimmer {
+@keyframes skeletonPulse {
   from {
-    background-position: 200% 0;
+    opacity: 1;
   }
   to {
-    background-position: -200% 0;
+    opacity: 0.55;
   }
 }
 
@@ -676,6 +697,22 @@ select.input {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* On a phone, a button's extra words are hidden but still read out, so a
+   short label (or the icon alone) keeps its full name. */
+@media (max-width: 639.98px) {
+  .narrow-hide {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

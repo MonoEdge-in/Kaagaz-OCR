@@ -1,6 +1,6 @@
 """A banner per problem page (PRD 5 U4), without a database: ``page_summary`` gives one
-``PageProblem`` per issue in ``read_issues``, in the F1 table's words with its count or
-the page's DPI, and its fix; an issue with nothing left to count is left out. The review
+``PageProblem`` per issue in ``read_issues``, in the F1 table's words with its count,
+and its fix; an issue with nothing left to count is left out. The review
 queue's page has no problems (``page_fields``)."""
 
 from typing import Any, cast
@@ -48,8 +48,9 @@ def test_u4_each_issue_says_what_happened_with_its_count_and_the_fix() -> None:
     assert page_summary(row)["problems"] == [
         {
             "code": "low_resolution",
-            "says": "This page was scanned at 150 DPI, so small letters may be misread.",
-            "fix": "Scan at 300 DPI.",
+            # Changed on purpose (UI quality council, 15 Oct 2026): no DPI on user screens.
+            "says": "This page was scanned at low quality, so small letters may be misread.",
+            "fix": "Scan it again at a higher quality setting, or take the photo closer.",
         },
         {
             "code": "glare",
@@ -81,9 +82,11 @@ def test_u4_every_issue_code_has_a_problem_and_a_good_page_has_none() -> None:
     assert page_problems(_page([])) == []
 
 
-def test_u4_nothing_left_to_count_or_no_dpi_is_left_out_never_a_made_up_number() -> None:
+def test_u4_nothing_left_to_count_is_left_out_never_a_made_up_number() -> None:
     row = _page(["low_resolution", "readers_disagree", "faint"], effective_dpi=None)
-    assert [problem["code"] for problem in page_problems(row)] == ["faint"]
+    # Changed on purpose (UI quality council, 15 Oct 2026): the low quality sentence names
+    # no DPI now, so it no longer needs one to be shown.
+    assert [problem["code"] for problem in page_problems(row)] == ["low_resolution", "faint"]
 
 
 def test_the_review_queues_page_has_the_fields_without_problems() -> None:

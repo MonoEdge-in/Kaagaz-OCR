@@ -818,27 +818,6 @@ export interface ReaderOption {
   available: boolean;
 }
 
-/** One model the operator allowed this organisation, with its live price. */
-export interface OrgModel {
-  id: string;
-  name: string;
-  price_in_usd_per_m: number; // US dollars per million input tokens
-  price_out_usd_per_m: number;
-  is_default_scan: boolean;
-  provider?: string; // the zero-data-retention provider its pages go to ("google-vertex")
-  usd_per_page?: number | null; // estimated a page (MC3); null: not measured yet
-  page_hint: string; // the same in words, as "Read with" says it: "about $0.04 a page", "... (rough estimate)"
-}
-
-/** GET /admin/models: read-only, set by the operator ("Set by MonoEdge"). */
-export interface OrgModels {
-  set_by: "operator";
-  default_scan: string | null; // the model reading scans now: the default, or the platform's; null in keyless mode
-  models: OrgModel[]; // [] when the operator set none: every scan is read by the platform's model
-  ai_budget_usd: number | null; // the monthly budget; null: none
-  spent_this_month_usd: number; // this month's AI spend, from the ledger
-}
-
 /** Tokens and US dollars of some model calls. cost_usd is null when not known. */
 export interface UsageTotals {
   calls: number;
