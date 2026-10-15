@@ -21,6 +21,8 @@
 // Each file is sent with who was signed in when it was added, so the server
 // refuses it if another account has signed in since (critical #5); then
 // no file still waiting is sent, and each says why.
+// Auto-filing (feature 28): a file Kaagaz filed says "Filed into Invoices · Undo"
+// (AutofileNote, also on the document screen); one it could not place says so.
 // "Read with" (ReaderSelect, readers.ts) picks how the scans of the files added
 // next are read (Dynamic, Standard, Careful, or "More than one reader…" with the
 // readers ticked by name), new versions included; it is kept for this visit
@@ -37,6 +39,7 @@ import {
   getBatch,
   getUploadLimits,
   restoreDocument,
+  undoAutofile,
   uploadDocument,
   uploadVersion,
 } from "@/lib/api";
@@ -46,27 +49,34 @@ import { advance, barValue } from "@/lib/progress";
 import type { ShownProgress } from "@/lib/progress";
 import { useSession } from "@/lib/session";
 import { useTick } from "@/lib/tick";
-import type { BatchView, EnsembleOffer, UploadLimits, UploadReader, UploadResult } from "@/lib/types";
+import type { BatchView, DocumentSummary, EnsembleOffer, UploadLimits, UploadReader, UploadResult } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import {
   MAX_FILES_PER_BATCH,
+  NOT_FILED_TEXT,
   TOO_MANY_FILES,
+  UNDONE_TEXT,
   announcement,
   batchFraction,
   batchStore,
+  filedText,
   leftText,
   newBatchId,
   readStored,
   rowKind,
   summaryText,
   trayCounts,
+  undoErrorText,
   unreadableWords,
   verifiedWords,
   worstFirst,
   writeStored,
 } from "./batchTray";
 import type { StoredBatch } from "./batchTray";
+import { pathLabel } from "./folderTree";
+import type { FolderTree } from "./folderTree";
 import { attentionWords } from "./library";
+import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
   FALLBACK_UPLOAD_LIMITS,
   estimateIngestSeconds,
@@ -381,6 +391,76 @@ export function useUploads(onUploaded: () => void) {
 }
 
 /**
+ * Auto-filing (feature 28): "Filed into Invoices · Undo" (``filed``, linked to the folder
+ * when ``folderHref`` is given), then after Undo "Moved back..."; "Not filed..." for a file
+ * Kaagaz could not place; nothing otherwise. Undo moves the whole family back to "Not in a
+ * folder" and keeps the folder; a refusal (moved since, in Trash) is said in plain words.
+ */
+export function AutofileNote({
+  document,
+  name,
+  filed,
+  folderHref,
+  onUndone,
+}: {
+  document: Pick<DocumentSummary, "id" | "autofile">;
+  name: string;
+  filed: string;
+  folderHref: string | null;
+  onUndone: (summary: DocumentSummary) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [undone, setUndone] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  async function undo() {
+    if (busy) return;
+    setBusy(true);
+    setFailure(null);
+    try {
+      const summary = await undoAutofile(document.id);
+      setUndone(true);
+      onUndone(summary);
+    } catch (caught) {
+      setFailure(undoErrorText(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (undone) {
+    return (
+      <p className={styles.small} role="status">
+        {UNDONE_TEXT}
+      </p>
+    );
+  }
+  if (document.autofile === "not_filed") return <p className={`muted ${styles.small}`}>{NOT_FILED_TEXT}</p>;
+  if (document.autofile !== "filed") return null;
+  return (
+    <p className={styles.small}>
+      {folderHref ? <Link href={folderHref}>{filed}</Link> : filed}
+      {" · "}
+      <button
+        type="button"
+        className={`btn btn-quiet ${styles.inlineAction}`}
+        aria-disabled={busy || undefined}
+        onClick={() => void undo()}
+      >
+        {busy && <span className="spinner" aria-hidden="true" />}
+        Undo<span className="visually-hidden">{` the filing of ${name}`}</span>
+      </button>
+      {failure && (
+        <span className="error-text" role="alert">
+          {" "}
+          {failure}
+        </span>
+      )}
+    </p>
+  );
+}
+
+/**
  * "Read with": a labelled native select of the reading choices the server
  * offers ("Dynamic", "Standard", "Careful", and "More than one reader…" when
  * the organisation may use it), with the picked one's hint below it. Not shown
@@ -549,6 +629,8 @@ export function BatchTray({
   onClearFinished,
   onRestore,
   onRetry,
+  tree,
+  onUndone,
 }: {
   entries: UploadEntry[];
   views: Record<string, BatchView>;
@@ -557,6 +639,8 @@ export function BatchTray({
   onClearFinished: () => void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
+  tree: FolderTree; // for "Filed into Invoices" (feature 28)
+  onUndone: () => void;
 }) {
   if (entries.length === 0 && !tooMany) return null;
   const settled = entries.some((entry) => !isBusy(entry));
@@ -567,7 +651,7 @@ export function BatchTray({
     else loose.push(entry);
   }
   const row = (entry: UploadEntry) => (
-    <UploadRow key={entry.key} entry={entry} onRestore={onRestore} onRetry={onRetry} />
+    <UploadRow key={entry.key} entry={entry} onRestore={onRestore} onRetry={onRetry} tree={tree} onUndone={onUndone} />
   );
 
   return (
@@ -670,10 +754,14 @@ function UploadRow({
   entry,
   onRestore,
   onRetry,
+  tree,
+  onUndone,
 }: {
   entry: UploadEntry;
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
+  tree: FolderTree;
+  onUndone: () => void;
 }) {
   const { state } = entry;
   // After Restore, the Restore button gives way to "Open it": focus follows.
@@ -723,6 +811,15 @@ function UploadRow({
           </p>
         )}
         {verified && <p className={`muted ${styles.small}`}>{verified}</p>}
+        {document?.status === "ready" && (
+          <AutofileNote
+            document={document}
+            name={entry.name}
+            filed={document.folder_id ? filedText(pathLabel(tree, document.folder_id)) : ""}
+            folderHref={document.folder_id ? libraryHref({ ...ALL_DOCUMENTS, folderId: document.folder_id }) : null}
+            onUndone={onUndone}
+          />
+        )}
         {document && document.status !== "ready" && (
           <p className={`error-text ${styles.small}`}>{document.status_message}</p>
         )}

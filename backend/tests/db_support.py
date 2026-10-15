@@ -90,6 +90,8 @@ _DOCUMENT_COLUMNS = frozenset(
         "attempts",
         "max_attempts",
         "created_at",
+        "doc_type",  # the card's type (0004)
+        "autofile",  # feature 28 (0025)
     }
 )
 

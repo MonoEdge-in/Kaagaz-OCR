@@ -67,13 +67,13 @@ Lost on downgrade: the platform defaults, chat rows, organisations' settings,
 ``read_mode``/``read_also``, ``votes``, ``chat_verified_*`` and audit details.
 
 Revision ID: 0026
-Revises: 0024 (0025, auto-filing, is on another branch; this is re-pointed when they merge)
+Revises: 0025 (auto-filing)
 """
 
 from alembic import op
 
 revision = "0026"
-down_revision = "0024"
+down_revision = "0025"
 branch_labels = None
 depends_on = None
 

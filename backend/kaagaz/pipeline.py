@@ -482,6 +482,11 @@ class DocumentStore(Protocol):
         same transaction, or raise Superseded when it is no longer open."""
         ...
 
+    def file_document(self, customer_id: str, document_id: str) -> None:
+        """Auto-filing (feature 28): file a ready document's family by its type, in its own
+        transaction, when its upload went in no folder and the organisation's switch is on."""
+        ...
+
 
 class RunStore(Protocol):
     """kaagaz.db.runs.PgRuns in production."""
@@ -1025,6 +1030,24 @@ class DocumentProcessor:
         run.embedded = self._index(job, run, heartbeat)
         finished = self._finished(run, "ready", run.model_error)
         self._documents.mark_ready(customer_id, document_id, len(pages), run=finished)
+        self._file(customer_id, document_id)
+
+    def _file(self, customer_id: str, document_id: str) -> None:
+        """Auto-filing (feature 28, R4), after the document is ready. It never fails the
+        reading: an error is logged with its class, its SQLSTATE and the ids, never its
+        message, and the family keeps its state."""
+        try:
+            self._documents.file_document(customer_id, document_id)
+        except Exception as error:  # noqa: BLE001 - R4: the document is read; filing is extra
+            _log.warning(
+                "autofile failed",
+                extra={
+                    "customer_id": customer_id,
+                    "document_id": document_id,
+                    "code": type(error).__name__,
+                    "sqlstate": getattr(getattr(error, "orig", None), "sqlstate", None),
+                },
+            )
 
     def _invoice(
         self,

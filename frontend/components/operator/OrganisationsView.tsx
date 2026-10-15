@@ -6,7 +6,8 @@
 // (AdminsDialog); AI settings opens its scanning and answering settings, Ensemble and
 // budget (OrgAiSettings, features 25-27). Each change opens a dialog (ConfirmDialog): disable, enable,
 // delete (only a disabled organisation) and cancel the deletion; a row being
-// deleted shows its date and the days left. The table is the shared reflow
+// deleted shows its date and the days left. Auto-filing (feature 28) is allowed or
+// stopped per organisation, also in a ConfirmDialog. The table is the shared reflow
 // (Table.module.css): cards below 48rem of room, a table from there.
 // initialSearch (Needs attention on Overview) fills the search and focuses it.
 
@@ -21,7 +22,7 @@ import type { Organisation } from "@/lib/types";
 import { AdminsDialog } from "./AdminsDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
-import { orgConfirm, orgFocusId } from "./confirms";
+import { autofileConfirm, orgConfirm, orgFocusId } from "./confirms";
 import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
@@ -183,6 +184,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                       onAdmins={() => setAdminsOf(org)}
                       onModels={() => setModelsOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
+                      onAutofile={() => setChanging(autofileConfirm(org, !org.autofile_granted))}
                     />
                   ))}
                 </tbody>
@@ -234,8 +236,9 @@ function OrgRow(props: {
   onAdmins(): void;
   onModels(): void;
   onChange(change: OrgChange): void;
+  onAutofile(): void;
 }) {
-  const { org, now, onAdmins, onModels, onChange } = props;
+  const { org, now, onAdmins, onModels, onChange, onAutofile } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
@@ -251,6 +254,9 @@ function OrgRow(props: {
           {status.text}
         </span>
         {status.note && <span className={styles.statusNote}>{status.note}</span>}
+        {org.autofile_granted && (
+          <span className={styles.statusNote}>{org.autofile_on ? "Auto-filing on" : "Auto-filing allowed, off"}</span>
+        )}
         {countdown && <span className={styles.statusNote}>{countdown}</span>}
       </td>
       <td role="cell" data-label="Users">
@@ -289,6 +295,16 @@ function OrgRow(props: {
               aria-label={`AI settings of ${org.name}`}
             >
               AI settings
+            </button>
+          )}
+          {org.status !== "deleting" && (
+            <button
+              type="button"
+              className="btn"
+              onClick={onAutofile}
+              aria-label={`${org.autofile_granted ? "Stop" : "Allow"} auto-filing for ${org.name}`}
+            >
+              {org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing"}
             </button>
           )}
           {CHANGES[org.status].map(({ change, label, danger }) => (

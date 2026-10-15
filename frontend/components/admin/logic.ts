@@ -9,6 +9,7 @@ import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN, statusChip } f
 import type { StatusTone } from "@/lib/format";
 import type {
   AdminUser,
+  AuditEntry,
   DocumentStatus,
   Me,
   PageRoute,
@@ -215,6 +216,22 @@ export function parseUploadLimit(text: string, platformMaxMb: number): UploadLim
   return { ok: true, value };
 }
 
+// Auto-filing (feature 28): the Settings switch's words. Plain words, no cost words.
+export const AUTOFILE_LABEL = "Auto-filing";
+export const AUTOFILE_HELP =
+  "New files uploaded without a folder go into a folder for their type, like Invoices or Bank statements. " +
+  "Files already uploaded stay where they are. Files you put in a folder yourself are never moved. " +
+  "If a file lands in the wrong folder, press Undo or move it.";
+export const AUTOFILE_NOT_AVAILABLE = "Auto-filing isn't available for your organisation yet.";
+
+/** What a Save that did not work says: the plain words for a switch not allowed yet, else the server's. */
+export function settingsErrorText(caught: unknown): string {
+  if (caught instanceof ApiError && caught.code === "not_granted") return AUTOFILE_NOT_AVAILABLE;
+  return caught instanceof ApiError
+    ? caught.message
+    : "Could not save the settings. Check your connection, then try again.";
+}
+
 export interface Tile {
   label: string;
   value: string;
@@ -381,11 +398,29 @@ const ACTION_WORDS: Record<string, string> = {
   "user.reset_totp": "Reset a user's 2FA",
   "user.delete_forever_on": "Allowed a user to delete forever",
   "user.delete_forever_off": "Stopped a user deleting forever",
+  // Feature 28: auto-filing.
+  "document.autofile": "Kaagaz filed a document",
+  "document.autofile_undo": "Undid automatic filing",
+  "settings.autofile_on": "Turned auto-filing on",
+  "settings.autofile_off": "Turned auto-filing off",
+  "org.autofile_grant": "Auto-filing allowed",
+  "org.autofile_revoke": "Auto-filing stopped",
 };
 
 /** The audit action in words; an action this screen does not know is shown as is. */
-export function describeAction(action: string): string {
+export function describeAction(action: string, details: Record<string, unknown> = {}): string {
+  if (action === "folder.create" && details.auto === true) return "Kaagaz made a folder";
   return ACTION_WORDS[action] ?? action;
+}
+
+// What Kaagaz did by itself (feature 28) has no person: the Who column says "Kaagaz".
+const BY_KAAGAZ = new Set(["document.autofile", "org.autofile_grant", "org.autofile_revoke"]);
+
+/** Who did it: the person's name, "Kaagaz" for auto-filing, else a dash (a removed user). */
+export function whoText(entry: Pick<AuditEntry, "action" | "actor_name" | "details">): string {
+  if (entry.actor_name !== null) return entry.actor_name;
+  const kaagaz = BY_KAAGAZ.has(entry.action) || (entry.action === "folder.create" && entry.details.auto === true);
+  return kaagaz ? "Kaagaz" : "—";
 }
 
 export const AUDIT_PAGE_SIZE = 50;

@@ -12,7 +12,7 @@ import type { AuditEntry } from "@/lib/types";
 import { pageInfo } from "@/components/documents/logic";
 import table from "@/components/documents/Table.module.css";
 import { WrapName } from "@/components/documents/WrapName";
-import { AUDIT_PAGE_SIZE, describeAction, describeDetails, describeTarget } from "./logic";
+import { AUDIT_PAGE_SIZE, describeAction, describeDetails, describeTarget, whoText } from "./logic";
 import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
@@ -118,10 +118,10 @@ export function ActivityPanel() {
                     <time dateTime={entry.created_at}>{formatDateTime(entry.created_at)}</time>
                   </td>
                   <td role="cell" data-label="Who">
-                    {entry.actor_name ?? "—"}
+                    {whoText(entry)}
                   </td>
                   <td role="cell" data-label="What" className={styles.strong}>
-                    <WrapName name={describeAction(entry.action)} />
+                    <WrapName name={describeAction(entry.action, entry.details)} />
                   </td>
                   <td role="cell" data-label="On" className={styles.wrap}>
                     {describeTarget(entry.target_type)}

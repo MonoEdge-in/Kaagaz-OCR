@@ -37,6 +37,12 @@ USAGE_MAX_DAYS (400 otherwise); this month to today when left out. A ``user_id``
 names a user of this customer only: another customer's user matches no row, so the
 report is empty. A CSV cell that starts with ``= + - @`` (or a tab or a carriage
 return) gets a leading ``'``, so a spreadsheet never runs it as a formula.
+
+Why auto-filing is a setting here (feature 28, council 15 Oct 2026): the platform operator
+grants it, then the admin switches it on or off (``autofile_on``) in the same form as the
+upload limit. Each field left out of the PATCH is left as it is. Switching it on without
+the grant is 409 ``not_granted`` and changes nothing; a real change is audited as
+``settings.autofile_on`` or ``settings.autofile_off``.
 """
 
 import csv
@@ -119,9 +125,12 @@ class DeleteForeverBody(BaseModel):
 
 
 class SettingsBody(BaseModel):
+    """Left out: unchanged (``model_fields_set``). An explicit null limit: the platform's."""
+
     model_config = ConfigDict(extra="forbid")
 
-    max_upload_mb: int | None = Field(ge=1)
+    max_upload_mb: int | None = Field(default=None, ge=1)
+    autofile_on: bool = False
 
 
 @router.get("/admin/users")
@@ -289,6 +298,7 @@ def _settings_json(row: RowMapping, context: AppContext) -> dict[str, Any]:
         "customer_name": row["name"],
         "max_upload_mb": row["max_upload_mb"],
         "platform_max_upload_mb": context.settings.max_upload_bytes // MIB,
+        "autofile": {"granted": bool(row["autofile_granted"]), "on": bool(row["autofile_on"])},
     }
 
 
@@ -303,23 +313,41 @@ def get_settings(user: AdminSession, context: Context) -> dict[str, Any]:
 
 @router.patch("/admin/settings")
 def update_settings(body: SettingsBody, user: AdminSession, context: Context) -> dict[str, Any]:
+    given = body.model_fields_set
     platform = context.settings.max_upload_bytes // MIB
     if body.max_upload_mb is not None and body.max_upload_mb > platform:
         raise ApiError(400, "bad_request", f"The limit can be at most {platform} MB.")
     with context.db.customer(user.customer_id) as conn:
-        row = admin_sql.update_settings(conn, user.customer_id, max_upload_mb=body.max_upload_mb)
-        if row is None:
+        before = admin_sql.get_settings(conn, user.customer_id)
+        if before is None:
             raise ApiError(404, "not_found")
-        audit.record(
-            conn,
-            user.customer_id,
-            actor_user_id=user.user_id,
-            action="settings.update",
-            target_type="customer",
-            target_id=user.customer_id,
-            details={"max_upload_mb": body.max_upload_mb},
-        )
+        if "max_upload_mb" in given:
+            admin_sql.update_settings(conn, user.customer_id, max_upload_mb=body.max_upload_mb)
+            _audit_settings(conn, user, "settings.update", {"max_upload_mb": body.max_upload_mb})
+        if "autofile_on" in given and body.autofile_on != before["autofile_on"]:
+            if not admin_sql.set_autofile(conn, user.customer_id, on=body.autofile_on):
+                # Raised inside the transaction: a new upload limit in the same PATCH is not kept.
+                raise ApiError(409, "not_granted", "Auto-filing isn't available for your organisation yet.")
+            action = "settings.autofile_on" if body.autofile_on else "settings.autofile_off"
+            _audit_settings(conn, user, action)
+        row = admin_sql.get_settings(conn, user.customer_id)
+    if row is None:
+        raise ApiError(404, "not_found")
     return _settings_json(row, context)
+
+
+def _audit_settings(
+    conn: Connection, user: CurrentUser, action: str, details: dict[str, audit.DetailValue] | None = None
+) -> None:
+    audit.record(
+        conn,
+        user.customer_id,
+        actor_user_id=user.user_id,
+        action=action,
+        target_type="customer",
+        target_id=user.customer_id,
+        details=details,
+    )
 
 
 @router.get("/admin/audit")

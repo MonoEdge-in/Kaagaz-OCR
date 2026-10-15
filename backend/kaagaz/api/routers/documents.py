@@ -101,6 +101,10 @@ Why some choices:
   list but stays flagged on the page itself and in answers (``accept_page``, under
   the family lock). One ``document.page_accept`` audit row names the page. A
   document in Trash is 409 ``in_trash``; a page it does not have is 404.
+* **Undo auto-filing** (feature 28, R16): any user of the customer may move a family
+  Kaagaz filed back to the top level, under the family lock; the folder stays. In Trash
+  is 409 ``in_trash``; filed no more (moved since, or its folder deleted) is 409
+  ``already_moved``. One ``document.autofile_undo`` audit row names the folder.
 """
 
 import uuid
@@ -135,7 +139,7 @@ from kaagaz.api.views import (
     page_summary,
 )
 from kaagaz.db import admin as admin_sql
-from kaagaz.db import audit, listing, trash
+from kaagaz.db import audit, autofile, listing, trash
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
 from kaagaz.db.documents import (
@@ -867,6 +871,36 @@ def update_document(
     except folders_sql.FolderNotFound:  # not this customer's folder; nothing was changed
         raise ApiError(404, "not_found") from None
     except trash.InTrash:  # Trash means deleted: nothing was changed
+        raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None
+    return document_summary(
+        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+    )
+
+
+@router.post("/documents/{document_id}/autofile/undo")
+def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """Move a family Kaagaz filed back to "Not in a folder" (R16), and return its summary."""
+    customer_id, target = user.customer_id, str(document_id)
+    try:
+        with context.db.customer(customer_id) as conn:
+            family_id = trash.lock_live_family(conn, customer_id, target)
+            if family_id is None:
+                raise ApiError(404, "not_found")
+            folder_id = autofile.undo(conn, customer_id, family_id)
+            if folder_id is None:
+                raise ApiError(409, "already_moved", "This document was moved since. Nothing was changed.")
+            audit.record(
+                conn,
+                customer_id,
+                actor_user_id=user.user_id,
+                action="document.autofile_undo",
+                target_type="document",
+                target_id=target,
+                details={"folder_id": folder_id},
+            )
+            row = _document_or_404(conn, user, document_id)
+            tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+    except trash.InTrash:
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None
     return document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()

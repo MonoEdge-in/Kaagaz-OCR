@@ -13,6 +13,9 @@ Model choice and AI spend (0023, NEEDS VRUSHIT'S APPROVAL): the organisations' m
 app may only read, the ledger it may only read and add to, the platform catalogue whose
 refresh columns alone it may write, and the operator's five functions.
 
+Auto-filing (0025): the app may switch its own ``autofile_on``, never ``autofile_granted``,
+which only the operator's ``kaagaz_op_set_org_autofile`` writes.
+
 Features 25-27 (0026): an organisation's AI settings the app may only read, the platform
 defaults (no customer) every role that may reads, the catalogue's chat_eligible the refresh
 writes, and the operator's AI functions in place of 0023's organisation models ones.
@@ -135,11 +138,12 @@ OPERATOR_RIGHTS = {
     "kaagaz_op_session": ("TABLE(email text, display_name text, session_version integer)", EMPTY_PATH),
     "kaagaz_op_logout": ("void", EMPTY_PATH),
     # 0016: organisations with counts only, and the writes, each answering (outcome, result_id).
+    # 0025 added each one's auto-filing grant and switch.
     "kaagaz_op_customers": (
         "TABLE(customer_id uuid, name text, status text, disabled_at timestamp with time zone,"
         " delete_after timestamp with time zone, created_at timestamp with time zone, admins bigint,"
         " reviewers bigint, members bigint, documents bigint, pages bigint, size_bytes bigint,"
-        " last_activity_at timestamp with time zone)",
+        " last_activity_at timestamp with time zone, autofile_granted boolean, autofile_on boolean)",
         EMPTY_PATH,
     ),
     # 0017: one organisation's admins, and the changes to one of them.
@@ -219,6 +223,7 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_set_ai_defaults": ("text", EMPTY_PATH),
+    "kaagaz_op_set_org_autofile": ("record", EMPTY_PATH),  # 0025: allow or stop auto-filing
     "kaagaz_op_usage": (
         "TABLE(customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,"
         " input_tokens numeric, output_tokens numeric, reasoning_tokens numeric, cost_usd numeric,"
@@ -426,9 +431,11 @@ def test_the_app_may_set_a_documents_model_and_who_it_is_billed_to(db: Database)
     assert "votes" in _updatable(db, "extracted_values")
 
 
-def test_the_app_may_update_only_the_upload_limit_of_its_customer(db: Database) -> None:
+def test_the_app_may_update_only_the_upload_limit_and_the_auto_filing_switch_of_its_customer(
+    db: Database,
+) -> None:
     """Never its status, so a disabled organisation cannot switch itself back on (0014),
-    nor its AI budget, which the operator sets (0023)."""
+    nor its AI budget, which the operator sets (0023), nor the auto-filing grant (0025)."""
     with db.system() as conn:
         columns = conn.execute(
             text(
@@ -438,7 +445,8 @@ def test_the_app_may_update_only_the_upload_limit_of_its_customer(db: Database) 
             ),
             {"r": APP_ROLE},
         ).all()
-    assert {name for name, may_update in columns if may_update} == {"max_upload_mb"}
+    # Changed on purpose (auto-filing council, 15 Oct 2026): the admin's switch, 0025.
+    assert {name for name, may_update in columns if may_update} == {"max_upload_mb", "autofile_on"}
 
 
 _FOREIGN_KEYS = text(

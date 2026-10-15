@@ -1,7 +1,7 @@
 """Migration 0026 (features 25-27, council 15 Oct 2026): model permissions, Dynamic reading
 and Ensemble.
 
-Up, down (0024's schema and comments exactly) and up again; an organisation set up before
+Up, down (0025's schema and comments exactly) and up again; an organisation set up before
 0026 reads with the same scan model after it (its rows are scan rows); the downgrade
 deletes the chat-only rows first and keeps the scan ones; every new function, index and
 policy carries a comment; the operator's daily numbers split the new kinds of work
@@ -53,7 +53,7 @@ NEW_COLUMNS = {
 
 def test_0026_up_down_up_keeps_a_0023_organisations_scan_model(fresh: tuple[str, Database]) -> None:
     url, database = fresh
-    migrate(url, "0024")
+    migrate(url, "0025")
     customer, _ = new_customer(database)
     model = catalog_model(database)
     allow(database, customer, [model], model)
@@ -87,7 +87,7 @@ def test_0026_up_down_up_keeps_a_0023_organisations_scan_model(fresh: tuple[str,
         "INSERT INTO customer_models (customer_id, model, scan, chat) VALUES (:c, :m, false, true)",
         {"c": customer, "m": answer},
     )
-    m0002._downgrade(url, "0024")
+    m0002._downgrade(url, "0025")
     assert m0002._schema(database) == at_0024
     assert _dictionary(database) == comments_0024
     assert as_owner(
