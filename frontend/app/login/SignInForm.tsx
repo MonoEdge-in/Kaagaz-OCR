@@ -11,6 +11,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
+import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { login } from "@/lib/api";
@@ -92,9 +93,12 @@ export function SignInForm({ note }: { note: string | null }) {
 
   return (
     <form method="post" noValidate onSubmit={submit} className={styles.form} aria-labelledby="login-title">
-      <h1 id="login-title" className={styles.title}>
-        Sign in to Kaagaz
-      </h1>
+      <div className={styles.intro}>
+        <h1 id="login-title" className={styles.title}>
+          Sign in to Kaagaz
+        </h1>
+        <p className={styles.lead}>Use the e-mail your admin set up for you.</p>
+      </div>
       <SignedOutNotice message={note} />
 
       <div className="field">
@@ -143,6 +147,7 @@ export function SignInForm({ note }: { note: string | null }) {
 
       {serverError && (
         <div className={styles.banner} role="alert">
+          <Icon name="alert" size={18} />
           {serverError}
         </div>
       )}

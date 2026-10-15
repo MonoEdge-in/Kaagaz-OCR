@@ -339,15 +339,33 @@ describe("layout guards", () => {
   });
 
   it("animates opacity and transform, not background-position (a repaint every frame)", () => {
-    // The saving bar's moving stripe (PRD 5 U10) and the sign-in title's one sweep (background-clip: text).
-    const allowed = [
-      "components/documents/Documents.module.css: @keyframes saving",
-      "app/login/login.module.css: @keyframes title-sweep",
-    ];
+    // The saving bar's moving stripe (PRD 5 U10).
+    // Changed on purpose (sign-in redesign, 15 Oct 2026): the sign-in title's sweep is gone.
+    const allowed = ["components/documents/Documents.module.css: @keyframes saving"];
     const found = everyRule(/background-position/)
       .filter(({ rule }) => rule.at.startsWith("@keyframes"))
       .map(({ file, rule }) => `${file}: ${rule.at}`);
     expect([...new Set(found)].filter((entry) => !allowed.includes(entry))).toEqual([]);
+  });
+
+  // Board 11 of the UI mockups: one calm frame for all three sign-ins, and its
+  // only motion is the citation fading in once (no robot, pages or title sweep).
+  it("frames every sign-in with AuthFrame, whose one motion is a single fade", () => {
+    for (const page of ["app/login/page.tsx", "app/admin/login/page.tsx", "app/operator/login/page.tsx"]) {
+      expect(read(page), page).toMatch(/<AuthFrame\b/);
+    }
+    const css = "app/login/login.module.css";
+    const all = rules(read(css));
+    expect([...new Set(all.map((rule) => rule.at).filter((at) => at.startsWith("@keyframes")))]).toEqual([
+      "@keyframes auth-cite",
+    ]);
+    const animated = all.filter((rule) => /(^|;)\s*animation(-[\w-]+)?:/.test(rule.body));
+    for (const { at, body } of animated) {
+      if (at.includes("prefers-reduced-motion")) expect(body).toMatch(/animation:\s*none/);
+      else expect(body).toMatch(/animation:\s*auth-cite 600ms var\(--ease\) 400ms both;/);
+    }
+    expect(animated.map((rule) => rule.at)).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(read(css)).not.toMatch(/\binfinite\b/);
   });
 
   it("loops an animation forever only to show work in progress (WCAG 2.2.2)", () => {
