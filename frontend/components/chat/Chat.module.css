@@ -229,6 +229,16 @@
   min-width: 0;
 }
 
+/* A long conversation: an older answer is laid out and painted only near view;
+   its last size (600px until first seen) holds its place. Its text stays in
+   find-in-page and for screen readers. The newest four always paint, so a
+   conversation opens at its end on real heights. On the wrapper, not the card,
+   so the card's Verified / Needs review edge is never clipped. */
+.log > .answerWrap:not(:nth-last-child(-n + 4 of .answerWrap)) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 600px;
+}
+
 .threadStatus {
   margin: 0;
   display: flex;
