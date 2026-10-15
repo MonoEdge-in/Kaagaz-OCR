@@ -20,6 +20,7 @@
 
 .pane {
   grid-area: pane;
+  position: relative;
   display: none;
   min-height: 0;
   overflow-y: auto;
@@ -182,6 +183,7 @@
 
 .thread {
   grid-area: thread;
+  position: relative;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -373,10 +375,17 @@
     position: relative;
   }
 
+  /* Up and down only: side by side, [1] and [2] must not share a tap area. */
   .cite::after {
     content: "";
     position: absolute;
-    inset: -9px;
+    inset: -9px -2px;
+  }
+
+  .openLink,
+  .reviewLink {
+    min-height: 44px;
+    align-items: center;
   }
 }
 
@@ -760,6 +769,7 @@
   /* Never taller than a short phone screen above the sticky composer. */
   max-height: min(40dvh, 20rem);
   overflow-y: auto;
+  position: relative;
 }
 
 .scopeFolder {

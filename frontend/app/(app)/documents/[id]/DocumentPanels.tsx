@@ -9,6 +9,7 @@
 // heading that says so.
 
 import Link from "next/link";
+import table from "@/components/documents/Table.module.css";
 import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { labelBadgeClass, labelIcon } from "@/components/viewer/labels";
@@ -203,29 +204,29 @@ export function InvoicePanel({ detail, active, onShow }: PanelProps) {
         ))}
       </dl>
       {invoice.lines.length > 0 && (
-        <div className={styles.linesWrap} tabIndex={0} role="region" aria-label="Invoice lines">
-          <table className={`table ${styles.linesTable}`}>
+        <div className={table.reflowWrap}>
+          <table className={`table ${table.reflow}`} role="table">
             <caption className="visually-hidden">
               Invoice lines. Pick a cell to show it on its page.
             </caption>
-            <thead>
-              <tr>
-                <th scope="col">#</th>
+            <thead role="rowgroup">
+              <tr role="row">
+                <th scope="col" role="columnheader">#</th>
                 {LINE_FIELDS.map((field) => (
-                  <th key={field} scope="col" className={MONEY_LINE_FIELDS.has(field) ? "num" : undefined}>
+                  <th key={field} scope="col" role="columnheader" className={MONEY_LINE_FIELDS.has(field) ? "num" : undefined}>
                     {fieldText(field)}
                   </th>
                 ))}
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {invoice.lines.map((line) => (
-                <tr key={line.line_no}>
-                  <th scope="row" className="tabular">
+                <tr key={line.line_no} role="row">
+                  <th scope="row" role="rowheader" className="tabular">
                     {line.line_no}
                   </th>
                   {LINE_FIELDS.map((field) => (
-                    <td key={field} className={MONEY_LINE_FIELDS.has(field) ? "num" : undefined}>
+                    <td key={field} role="cell" data-label={fieldText(field)} className={MONEY_LINE_FIELDS.has(field) ? "num" : undefined}>
                       {cell(`line:${line.line_no}`, field, line[field])}
                     </td>
                   ))}

@@ -10,6 +10,8 @@ import { AuthFrame } from "./AuthFrame";
 import { SignInForm } from "./SignInForm";
 import styles from "./login.module.css";
 
+export const metadata = { title: "Sign in" };
+
 export default async function LoginPage({
   searchParams,
 }: {

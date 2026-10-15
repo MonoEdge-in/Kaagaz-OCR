@@ -4,8 +4,7 @@
 // It is a native <dialog> opened with showModal(), so the browser gives us the
 // top layer, a focus trap, Esc to close and an inert page behind it. On top of
 // that it closes on a backdrop click, on a route change and once the screen is
-// wide enough for the sidebar, locks the page scroll while open, and hands
-// focus back to whatever opened it. Its content renders only while it is open,
+// wide enough for the sidebar, and hands focus back to whatever opened it. Its content renders only while it is open,
 // so nothing inside a closed drawer can be reached with Tab.
 
 import { usePathname } from "next/navigation";
@@ -43,13 +42,9 @@ export function Drawer({ open, onClose, title, id, children }: DrawerProps) {
     if (!dialog || !open) return;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (!dialog.open) dialog.showModal();
-    const body = document.body;
-    const overflow = body.style.overflow;
-    body.style.overflow = "hidden";
     return () => {
-      body.style.overflow = overflow;
       if (dialog.open) dialog.close();
-      if (opener?.isConnected && shouldReturnFocus(document.activeElement, body, dialog)) {
+      if (opener?.isConnected && shouldReturnFocus(document.activeElement, document.body, dialog)) {
         opener.focus();
       }
     };

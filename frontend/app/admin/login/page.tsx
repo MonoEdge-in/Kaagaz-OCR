@@ -8,6 +8,8 @@ import { signedOutMessage } from "@/components/shell/gate";
 import { AuthFrame } from "../../login/AuthFrame";
 import { AdminSignInForm } from "./AdminSignInForm";
 
+export const metadata = { title: "Sign in" };
+
 export default async function AdminLoginPage({
   searchParams,
 }: {

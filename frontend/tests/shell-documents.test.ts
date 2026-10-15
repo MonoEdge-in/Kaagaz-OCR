@@ -656,6 +656,8 @@ describe("noMatchTitle", () => {
     expect(noMatchTitle("gst", false)).toBe("No document names contain “gst”.");
     expect(noMatchTitle("", true)).toBe("No documents match these filters.");
     expect(noMatchTitle("gst", true)).toBe("No document names contain “gst” with these filters.");
+    expect(noMatchTitle("", true, true)).toBe("Nothing needs attention.");
+    expect(noMatchTitle("gst", true, true)).toBe("No document names contain “gst” with these filters.");
   });
 });
 

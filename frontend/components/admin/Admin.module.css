@@ -179,6 +179,19 @@
   }
 }
 
+/* Room enough: the row's actions side by side, so a row stays short. */
+@container reflow (min-width: 64rem) {
+  .actionsColumn {
+    width: 20rem;
+  }
+
+  .actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+}
+
 @container reflow (max-width: 47.98rem) {
   .userName {
     font-size: var(--fs-lg);
@@ -229,7 +242,7 @@
 
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
   gap: var(--space-3);
   margin: 0;
 }

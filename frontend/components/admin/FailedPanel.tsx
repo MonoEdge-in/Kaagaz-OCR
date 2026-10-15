@@ -7,7 +7,7 @@
 // on that row. One table, reflowed into cards below 768 px.
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StatusChip } from "@/components/documents/StatusChip";
 import { pageInfo } from "@/components/documents/logic";
 import table from "@/components/documents/Table.module.css";
@@ -22,6 +22,12 @@ type Retry = { busy: true } | { busy: false; message: string; started: boolean }
 
 export function FailedPanel() {
   const [offset, setOffset] = useState(0);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // The pager's button is disabled while the next page loads: start reading at the heading.
+  const turnPage = (next: number) => {
+    setOffset(next);
+    headingRef.current?.focus();
+  };
   const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState<{
     offset: number;
@@ -64,7 +70,7 @@ export function FailedPanel() {
 
   return (
     <section className={styles.section} aria-labelledby="failed-heading">
-      <h2 id="failed-heading" className={styles.sectionHeading}>
+      <h2 id="failed-heading" ref={headingRef} tabIndex={-1} className={styles.sectionHeading}>
         Failed documents
       </h2>
       {failed && (
@@ -160,7 +166,7 @@ export function FailedPanel() {
             type="button"
             className="btn"
             disabled={!pages.hasPrevious || page.offset !== offset}
-            onClick={() => setOffset(Math.max(0, page.offset - FAILED_PAGE_SIZE))}
+            onClick={() => turnPage(Math.max(0, page.offset - FAILED_PAGE_SIZE))}
           >
             Previous
           </button>
@@ -168,7 +174,7 @@ export function FailedPanel() {
             type="button"
             className="btn"
             disabled={!pages.hasNext || page.offset !== offset}
-            onClick={() => setOffset(page.offset + FAILED_PAGE_SIZE)}
+            onClick={() => turnPage(page.offset + FAILED_PAGE_SIZE)}
           >
             Next
           </button>

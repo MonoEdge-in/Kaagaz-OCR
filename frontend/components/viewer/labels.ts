@@ -63,8 +63,15 @@ export const REASON_FILTER_TEXT = {
   ocr_script: "Read from Hindi or Marathi script",
 } as const satisfies Partial<Record<LabelReason, string>>;
 
-/** "invoice_number" -> "Invoice number". */
+/** Tax and bank short forms, kept in capitals the way people write them. */
+const UPPER = new Set(["gstin", "gst", "pan", "hsn", "sac", "ifsc", "tds", "cgst", "sgst", "igst"]);
+
+/** "invoice_number" -> "Invoice number", "seller_gstin" -> "Seller GSTIN". */
 export function fieldText(field: string): string {
-  const words = field.replace(/_/g, " ").trim();
+  const words = field
+    .split("_")
+    .map((word) => (UPPER.has(word.toLowerCase()) ? word.toUpperCase() : word))
+    .join(" ")
+    .trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : field;
 }

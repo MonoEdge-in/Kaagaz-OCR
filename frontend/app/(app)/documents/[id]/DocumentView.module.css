@@ -266,7 +266,7 @@
 
 .valuesTable th,
 .valuesTable td {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .valuesTable thead th {
@@ -283,6 +283,11 @@
 
 .valuesTable thead th:last-child {
   border-start-end-radius: var(--r-md);
+}
+
+/* A control focused from the keyboard scrolls clear of the sticky header row too (2.4.11). */
+.valuesTable tbody :is(a, button, input, select, summary) {
+  scroll-margin-top: calc(var(--topbar-space) + 4rem);
 }
 
 .valuesTable tbody tr:last-child td {
@@ -305,6 +310,7 @@
 .valueButton {
   display: inline-block;
   min-height: 24px;
+  margin-inline-end: var(--space-2);
   padding: 0;
   border: none;
   background: none;
@@ -321,6 +327,19 @@
 
 .valueButton:hover {
   color: var(--accent-hover);
+}
+
+/* Touch: a value and Back are 44px tall, clear of Add meaning beside them. */
+@media (pointer: coarse) {
+  .valueButton {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .back {
+    min-height: var(--control-h);
+  }
 }
 
 /* The panels beside the page (DocumentPanels.tsx, PRD 3 Y1 to Y3). */
@@ -373,26 +392,22 @@
 }
 
 .factRow {
-  display: grid;
-  grid-template-columns: minmax(8rem, 2fr) 3fr;
-  gap: var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
 }
 
 .factRow dt {
+  flex: 0 0 8rem;
   font-weight: 600;
 }
 
+/* A long value (a GSTIN) moves under its name rather than breaking. */
 .factRow dd {
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
-}
-
-.linesWrap {
-  overflow-x: auto;
-}
-
-.linesTable {
-  min-width: 32rem;
 }
 
 .pageNote {

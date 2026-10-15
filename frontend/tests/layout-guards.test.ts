@@ -239,7 +239,8 @@ describe("layout guards", () => {
 
   it("leaves the admin Users table's User column room where it becomes a table", () => {
     const found = budgets(ADMIN_CSS, "reflow", USER_REM);
-    expect(found.map((b) => b.start)).toEqual([48]);
+    // Changed on purpose (UI touch-up council, 15 Oct 2026): from 64rem the actions sit side by side.
+    expect(found.map((b) => b.start)).toEqual([48, 64]);
     for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
   });
 
@@ -396,6 +397,80 @@ describe("layout guards", () => {
   it("moves an upload bar and card without animating width or shadows", () => {
     expect(rulesFor(DOCS_CSS, ".readMeter::-webkit-progress-value").filter((rule) => /transition/.test(rule.body))).toEqual([]);
     expect(rulesFor(DOCS_CSS, ".upload")[0]?.body).not.toMatch(/transition:[^;]*box-shadow/);
+  });
+
+  // UI touch-up council, 15 Oct 2026: the guards below hold the final touch-up fixes.
+
+  it("positions every scroll box, so hidden screen-reader text inside it cannot stretch the page", () => {
+    const allowed = [
+      // Inside a modal <dialog> or the fixed drawer, which already hold their hidden text.
+      "components/documents/ActionDialog.module.css: .body",
+      "components/ui/Drawer.module.css: .body",
+      // A <textarea>: it scrolls its own text and holds no elements.
+      "components/chat/Chat.module.css: .composerInput",
+    ];
+    const modules = CSS_FILES.filter((file) => file.endsWith(".module.css"));
+    const unpositioned = modules.flatMap((file) => {
+      const all = rules(read(file));
+      return all
+        .filter((rule) => /overflow(-x|-y)?:\s*(auto|scroll)/.test(rule.body))
+        .flatMap(selectors)
+        .filter((s) => !all.some((rule) => selectors(rule).includes(s) && /(^|;)\s*position:/.test(rule.body)))
+        .map((s) => `${file}: ${s}`);
+    });
+    expect(unpositioned.filter((entry) => !allowed.includes(entry))).toEqual([]);
+  });
+
+  it("gives My words' fields a flex basis only in a row of fields, never in a dialog's column", () => {
+    const css = "components/words/Words.module.css";
+    expect(rulesFor(css, ".field").filter((rule) => /flex(-basis)?:/.test(rule.body))).toEqual([]);
+    expect(rulesFor(css, ".fields > .field")[0]?.body).toMatch(/flex:\s*1 1 14rem/);
+  });
+
+  it("lets a scanned line and its Add meaning button wrap, so the text is never squeezed", () => {
+    const row = rulesFor("components/viewer/ScannedText.module.css", ".lineRow");
+    expect(row.some((rule) => /flex-wrap:\s*wrap/.test(rule.body))).toBe(true);
+  });
+
+  it("stops the page scrolling behind an open dialog", () => {
+    expect(read("app/globals.css")).toMatch(/html:has\(dialog:modal\)\s*\{\s*overflow:\s*hidden;/);
+  });
+
+  it("lets the Usage tiles share the row, so a lone tile is never stuck narrow", () => {
+    expect(rulesFor(ADMIN_CSS, ".tiles")[0]?.body).toMatch(/repeat\(auto-fit,/);
+  });
+
+  it("never breaks words anywhere in the document page's tables, and never makes them scroll sideways", () => {
+    const css = rules(read("app/(app)/documents/[id]/DocumentView.module.css"));
+    const anywhere = css.filter((rule) => CELL.test(rule.selector) && /overflow-wrap:\s*anywhere/.test(rule.body));
+    expect(anywhere.map((rule) => rule.selector)).toEqual([]);
+    const wide = css.filter((rule) => /table|Table/.test(rule.selector) && /min-width:\s*[\d.]+rem/.test(rule.body));
+    expect(wide.map((rule) => rule.selector)).toEqual([]);
+  });
+
+  it("gives a 24px control 44px on touch screens, unless it is a word inside a line of text", () => {
+    const allowed = [
+      // A scanned line: the whole row is the button, as tall as its text and padding (over 30px),
+      // one under another; 44px each would make a long page's list three times as long.
+      "components/viewer/ScannedText.module.css: .lineButton",
+    ];
+    const named = (found: { file: string; rule: Rule }[]) =>
+      found.flatMap(({ file, rule }) => selectors(rule).map((s) => `${file}: ${s}`));
+    const coarse = new Set(named(everyRule(/min-height/).filter(({ rule }) => rule.at.includes("pointer: coarse"))));
+    const small = named(everyRule(/min-height:\s*24px/).filter(({ rule }) => !rule.at.includes("pointer: coarse")));
+    expect(small.filter((entry) => !coarse.has(entry) && !allowed.includes(entry))).toEqual([]);
+  });
+
+  it("keeps a focused control in a table clear of the sticky header row (2.4.11)", () => {
+    const stickyHead = (file: string) =>
+      rules(read(file)).some(
+        (rule) => /\bthead\b[^,]*\bth\b/.test(rule.selector) && /position:\s*sticky;\s*top:\s*var\(--topbar-space\)/.test(rule.body),
+      );
+    const sticky = CSS_FILES.filter(stickyHead);
+    expect(sticky.length).toBeGreaterThan(0);
+    const clear = (file: string) =>
+      rules(read(file)).some((rule) => /\btbody\b/.test(rule.selector) && /scroll-margin-top/.test(rule.body));
+    expect(sticky.filter((file) => !clear(file))).toEqual([]);
   });
 
   it("gives the operator's wide tables' name column room, and the console a wider page", () => {
