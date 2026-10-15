@@ -340,3 +340,37 @@ export function boardRows(items: readonly BoardRow[]): BoardLine[] {
     }))
     .sort((a, b) => b.pages - a.pages || (a.row.model < b.row.model ? -1 : a.row.model > b.row.model ? 1 : 0));
 }
+
+/** Which lines hold each column's best value; the table says it in a word ("lowest", "fastest", "fewest"). */
+export interface BoardBest { per1000: boolean; seconds: boolean; failed: boolean; cost: boolean }
+
+/** True at each smallest value, every tie included; all false unless 2 or more values are known. */
+function lowest(values: readonly (number | null)[]): boolean[] {
+  const known = values.filter((v): v is number => v !== null && Number.isFinite(v));
+  const min = known.length >= 2 ? Math.min(...known) : null;
+  return values.map((v) => v !== null && v === min);
+}
+
+/**
+ * Board 12 P8: each Compare models column's best value. A line is ranked only on what its
+ * row shows: no cost per page, speed or failures for a model that reads no pages or has
+ * too few documents. Values are rounded as the table shows them, so two that read the same
+ * tie. "Failed or without a card" ranks the two together, as a share of runs. An AI cost
+ * only partly known is a floor, not a value, so it is not ranked.
+ */
+export function boardBest(lines: readonly BoardLine[]): BoardBest[] {
+  const shown = (l: BoardLine) => (l.row.runs > 0 || l.pages > 0) && !l.tooFew; // BoardLineRow's `reads`, not too few
+  const round = (value: number | null, by: number) => (value === null ? null : Math.round(value * by));
+  const per1000 = lowest(lines.map((l) => (shown(l) ? round(l.usdPer1000Pages, 100) : null)));
+  const seconds = lowest(lines.map((l) => (shown(l) ? round(l.row.seconds_per_page_p50, 10) : null)));
+  const failed = lowest(
+    lines.map((l) => (shown(l) && l.row.runs > 0 ? round((l.row.runs_failed + l.row.runs_degraded) / l.row.runs, 1000) : null)),
+  );
+  const cost = lowest(lines.map((l) => (l.row.cost_part_unknown ? null : round(l.row.cost_usd, 100))));
+  return lines.map((_, i) => ({
+    per1000: per1000[i] ?? false,
+    seconds: seconds[i] ?? false,
+    failed: failed[i] ?? false,
+    cost: cost[i] ?? false,
+  }));
+}

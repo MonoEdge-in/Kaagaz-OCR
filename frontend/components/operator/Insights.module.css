@@ -171,3 +171,18 @@
 .fact dd > span {
   font-weight: 400;
 }
+
+/* --- Compare models: the column's best value, in a word (board 12 P8) -------------
+   Ink, not the Verified green: it ranks a column, it does not label a value. */
+
+.best {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.4;
+}

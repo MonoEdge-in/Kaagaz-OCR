@@ -9,13 +9,53 @@
   margin-inline: auto;
 }
 
+/* Two ruled sheets, the back one tilted. No red: the red rule is the wordmark's alone.
+   The screen's icon sits on the front sheet's corner, in a small ink circle. */
+.art {
+  position: relative;
+  display: inline-block;
+  width: 96px;
+  height: 72px;
+  margin-bottom: var(--space-2);
+}
+
+.sheets {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.sheet rect {
+  fill: var(--surface);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.sheet path {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.sheet[data-front] rect {
+  stroke: var(--accent);
+}
+
+.sheet .margin {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
 .icon {
+  position: absolute;
+  right: 0;
+  bottom: -6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 64px;
-  height: 64px;
-  margin-bottom: var(--space-2);
+  width: 36px;
+  height: 36px;
   border-radius: var(--r-full);
   background: var(--accent-soft);
   color: var(--accent);
