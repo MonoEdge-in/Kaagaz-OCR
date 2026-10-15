@@ -148,8 +148,9 @@ def test_careful_is_the_dearest_usable_model_measurably_dearer_than_standard() -
         },
         {
             "id": "google/dearest",
-            "title": "Careful (costs more)",
-            "hint": "Takes more care with faint, handwritten or crowded pages. Costs more per page.",
+            # Changed on purpose (UI touch-up, 15 Oct 2026): no cost words on org screens (Tushar).
+            "title": "Careful",
+            "hint": "Takes more care with faint, handwritten or crowded pages.",
             "available": True,
             "reason": None,
             "default": False,
@@ -186,7 +187,7 @@ def test_standard_is_the_cheapest_usable_model_when_the_default_is_not_usable() 
         (reader["id"], reader["title"], reader["default"]) for reader in readers.readers(rows, GEMINI)
     ] == [
         ("google/cheapest", "Standard", False),
-        ("google/dearest", "Careful (costs more)", False),
+        ("google/dearest", "Careful", False),
     ]
     # None priced yet: the first one, Standard alone.
     unpriced = [_row("google/a", tokens=None), _row("google/b", tokens=None)]
@@ -359,7 +360,7 @@ def test_upload_limits_offer_careful_for_a_dearer_model(db: Database) -> None:
 
     assert [(reader["id"], reader["title"], reader["default"]) for reader in offered] == [
         (default, "Standard", True),
-        (dearer, "Careful (costs more)", False),
+        (dearer, "Careful", False),
     ]
 
 

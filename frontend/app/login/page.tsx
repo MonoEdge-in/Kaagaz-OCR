@@ -68,11 +68,6 @@ export default async function LoginPage({
               <span />
             </span>
           </div>
-          <p className={styles.hello} aria-hidden="true">
-            <span lang="en">Here is your document</span>
-            <span lang="hi">यह रहा आपका दस्तावेज़</span>
-            <span lang="mr">हा घ्या तुमचा दस्तऐवज</span>
-          </p>
         </div>
       </aside>
 

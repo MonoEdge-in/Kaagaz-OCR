@@ -3,8 +3,8 @@
 // tested in node (tests/upload-readers.test.ts). Every model, its words and
 // whether this organisation may use it come from the server (GET
 // /upload-limits, readers: the models MonoEdge allowed it): nothing here names
-// one. The server offers at most two tiers, "Standard" first and "Careful
-// (costs more)", never a model's name or price (UI quality council, 15 Oct
+// one. The server offers at most two tiers, "Standard" first and "Careful",
+// never a model's name, a price or cost words (UI quality council, 15 Oct
 // 2026). Standard is the organisation's default, marked (default), picked at
 // first and never sent, since the server reads with it anyway. When the default
 // can't be used now, no reader is marked, and the one shown is sent (MS4, R14).
@@ -73,13 +73,11 @@ export function readAgainModel(readers: readonly UploadReader[], picked: string 
 }
 
 /**
- * Said under that select: every page is read, and paid for, again; careful when
- * the reader shown is not the first one offered ("Careful (costs more)").
- * pages null: not counted yet.
+ * Said under that select: every page is read again. No cost words: org admins and
+ * members never see cost (Tushar, 15 Oct 2026). pages null: not counted yet.
  */
-export function readAgainWarning(pages: number | null, careful: boolean): string {
-  let text = `All ${pages} pages will be read again and paid for again.`;
-  if (pages === 1) text = "The page will be read again and paid for again.";
-  if (pages === null) text = "Every page will be read again and paid for again.";
-  return careful ? `${text} Careful costs more per page.` : text;
+export function readAgainWarning(pages: number | null): string {
+  if (pages === 1) return "The page will be read again.";
+  if (pages === null) return "Every page will be read again.";
+  return `All ${pages} pages will be read again.`;
 }

@@ -6,7 +6,8 @@ enabled, verified for the reader's prompt, on a provider inside OPENROUTER_PROVI
 from ``db.models.usable_models``, which knows the reader's prompt version itself: the api
 never imports a reader module (the reader plug socket). ``GET /api/upload-limits`` offers
 at most two of them as plain tiers (UI quality council, 15 Oct 2026): "Standard", the
-default, and "Careful (costs more)", the dearest a page; never a model's name or price. An
+default, and "Careful", the dearest a page; never a model's name, a price or any cost
+words (Tushar, 15 Oct 2026: org admins and members never see cost). An
 upload or a Read again naming a ``read_model`` outside them is 403 ``model_not_allowed``
 before anything is stored.
 The browser's choice is never trusted: the worker checks it again (``db.models.resolve``).
@@ -29,8 +30,8 @@ from kaagaz.settings import Settings
 NOT_ALLOWED = "That reading choice is no longer available. Choose again from the list."
 STANDARD = "Standard"
 STANDARD_HINT = "Right for most documents."
-CAREFUL = "Careful (costs more)"
-CAREFUL_HINT = "Takes more care with faint, handwritten or crowded pages. Costs more per page."
+CAREFUL = "Careful"
+CAREFUL_HINT = "Takes more care with faint, handwritten or crowded pages."
 # Careful is offered only when it costs at least this much more a page than Standard.
 DEARER = 1.1
 
@@ -48,7 +49,7 @@ def readers(rows: Sequence[RowMapping], settings: Settings) -> list[dict[str, An
     """``UploadLimits.readers`` (``ReaderOption``, with ``reason`` null as ``UploadReader``
     has it): Auto alone when there are no usable models; else "Standard", the
     organisation's default (the cheapest a page when its default is not usable now, then
-    ``default`` is false, R14), and "Careful (costs more)", the dearest a page of the rest,
+    ``default`` is false, R14), and "Careful", the dearest a page of the rest,
     only when it costs measurably more (``DEARER``) than Standard. A model whose price is not
     measured yet is never Careful. O(n)."""
     if not rows:

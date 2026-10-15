@@ -46,7 +46,7 @@ const LAPTOP = [auto, layout, rapid];
 
 describe("Read with options", () => {
   // Changed on purpose (UI quality council, 15 Oct 2026): no "(recommended)"; the server
-  // names the tiers itself ("Standard", "Careful (costs more)").
+  // names the tiers itself ("Standard", "Careful"; no cost words, Tushar 15 Oct).
   it("names each reader by its title and disables one the server can't use, saying why", () => {
     expect(readerOptions(LAPTOP)).toEqual([
       { id: "auto", label: "Auto", disabled: false },
@@ -133,8 +133,8 @@ const gemini: UploadReader = {
 };
 const sonnet: UploadReader = {
   id: "anthropic/claude-sonnet-5.5",
-  title: "Careful (costs more)",
-  hint: "Takes more care with faint, handwritten or crowded pages. Costs more per page.",
+  title: "Careful",
+  hint: "Takes more care with faint, handwritten or crowded pages.",
   available: true,
   reason: null,
   default: false,
@@ -152,7 +152,9 @@ describe("Read with, on screen (MS4)", () => {
     const html = render([gemini, sonnet]);
     expect(html).toMatch(/<label[^>]*>Read with<\/label>/);
     expect(html).toMatch(/<option value="google\/gemini-3.1-pro-preview" selected="">Standard<\/option>/);
-    expect(html).toContain("Careful (costs more)");
+    expect(html).toContain(">Careful</option>");
+    // Changed on purpose (UI touch-up, 15 Oct 2026): no cost words on org screens (Tushar).
+    expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/cost|paid|price|charge|cheap|expensive/i);
     expect(html).toContain("Right for most documents.");
     // The words shown, not the option values sent.
     expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/gemini|claude|\$|recommended/i);
@@ -190,16 +192,11 @@ describe("Read again for the whole document (MS4)", () => {
     expect(readAgainModel([], null)).toBeUndefined();
   });
 
-  // Changed on purpose (UI quality council, 15 Oct 2026): no model name; says it is paid
-  // for again, and that Careful costs more only when Careful is shown.
-  it("warns that every page is read and paid for again, Careful costing more", () => {
-    expect(readAgainWarning(12, false)).toBe("All 12 pages will be read again and paid for again.");
-    expect(readAgainWarning(1, false)).toBe("The page will be read again and paid for again.");
-    expect(readAgainWarning(null, false)).toBe("Every page will be read again and paid for again.");
-    expect(readAgainWarning(12, true)).toBe(
-      "All 12 pages will be read again and paid for again. Careful costs more per page.",
-    );
-    expect(readAgainWarning(1, true)).toBe("The page will be read again and paid for again. Careful costs more per page.");
+  // Changed on purpose (UI touch-up, 15 Oct 2026): no cost words on org screens (Tushar): no model name, no "paid for again", no "Careful costs more".
+  it("says every page is read again, in plain words with no cost", () => {
+    expect(readAgainWarning(12)).toBe("All 12 pages will be read again.");
+    expect(readAgainWarning(1)).toBe("The page will be read again.");
+    expect(readAgainWarning(null)).toBe("Every page will be read again.");
   });
 
   it("is offered in the Read again question, and per-page Read again has no model choice", () => {
@@ -209,8 +206,7 @@ describe("Read again for the whole document (MS4)", () => {
     const view = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/DocumentView.tsx"), "utf8");
     expect(view).toContain("readModel={detail.read_model}");
     expect(dialog).toContain("reprocessDocument(documentId, model)");
-    // Careful is the second reader the server offers.
-    expect(dialog).toContain("readAgainWarning(pages, shown !== readers[0])");
+    expect(dialog).toContain("readAgainWarning(pages)");
     const page = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/PageProblems.tsx"), "utf8");
     expect(page).not.toContain("ReaderSelect");
     expect(page).toContain("readPageAgain(documentId, page.page_no)");

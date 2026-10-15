@@ -131,7 +131,7 @@ function shownTexts(): string[] {
     ...["document", "document_story", "extracted_value", "folder", "tag", "user", "user_word", "message", "customer"].map(
       describeTarget,
     ),
-    ...[12, 1, null].flatMap((pages) => [readAgainWarning(pages, false), readAgainWarning(pages, true)]),
+    ...[12, 1, null].map(readAgainWarning),
   ];
   for (const confidence of [null, Number.NaN, 0, 0.62, 0.8999, 0.9, 0.97, 1]) {
     for (const origin of ["ocr", "cell", "text_layer", null] as const) texts.push(confidenceText(confidence, origin));
@@ -147,7 +147,7 @@ function shownTexts(): string[] {
   }
   const options = readerOptions([
     { id: "google/gemini-3.1-pro-preview", title: "Standard", hint: "", available: true, reason: null, default: true },
-    { id: "anthropic/claude-sonnet-5.5", title: "Careful (costs more)", hint: "", available: true, reason: null },
+    { id: "anthropic/claude-sonnet-5.5", title: "Careful", hint: "", available: true, reason: null },
   ]);
   texts.push(...options.map((option) => option.label));
   return texts.filter((text): text is string => text !== null);

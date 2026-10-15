@@ -356,7 +356,7 @@ export function useUploads(onUploaded: () => void) {
 
 /**
  * "Read with": a labelled native select of the reading choices the server
- * offers ("Standard", "Careful (costs more)"), with the picked one's hint
+ * offers ("Standard", "Careful"), with the picked one's hint
  * below it. Not shown unless two or more can be used. Also the whole
  * document's Read again (ReadAgain.tsx).
  */
