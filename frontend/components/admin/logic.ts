@@ -463,11 +463,6 @@ export function usageState(report: UsageReport | null, error: string | null): Us
   return report.ai_enabled === false ? { kind: "off" } : { kind: "empty" };
 }
 
-/** "84%" of this month's budget, rounded down so 79.9% never reads as the 80% warning; null without one. */
-export function budgetShareText(budget: UsageBudget): string | null {
-  return budget.share === null ? null : `${Math.floor(budget.share * 100)}%`;
-}
-
 /** "$12.40 of $50.00 this month", or that there is no budget. */
 export function budgetLine(
   budget: Pick<UsageBudget, "ai_budget_usd" | "spent_this_month_usd"> & { spent_part_unknown?: boolean },
@@ -475,19 +470,6 @@ export function budgetLine(
   if (budget.ai_budget_usd === null) return "No monthly AI budget is set.";
   const spent = formatUsd(budget.spent_this_month_usd) + (budget.spent_part_unknown ? ` ${PART_NOT_KNOWN}` : "");
   return `${spent} of ${formatUsd(budget.ai_budget_usd)} this month`;
-}
-
-/**
- * SP4, warn only: at 80% and at 100% of the budget a line says so; nothing stops.
- * No money in it: the organisation's admin sees AI use in tokens (Tushar, 15 Oct 2026).
- */
-export function budgetWarning(budget: UsageBudget): string | null {
-  if (budget.share === null || budget.ai_budget_usd === null) return null;
-  if (budget.share >= 1) {
-    return "This month's AI use has reached the budget. Work goes on; ask MonoEdge if the budget should change.";
-  }
-  if (budget.share >= 0.8) return `This month's AI use is at ${budgetShareText(budget) ?? ""} of the budget.`;
-  return null;
 }
 
 const KIND_WORDS: Record<UsageKind, string> = {

@@ -10,7 +10,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   TABS,
-  budgetWarning,
   describeAction,
   describeDetails,
   describeTarget,
@@ -219,8 +218,6 @@ describe("the org admin's Usage screen", () => {
     const texts = [
       renderToStaticMarkup(createElement(UsageReportView, { state: { kind: "ready", report }, onRetry: () => undefined })),
       renderToStaticMarkup(createElement(UsageReportView, { state: { kind: "off" }, onRetry: () => undefined })),
-      budgetWarning({ ...report.budget, share: 0.85 }) ?? "",
-      budgetWarning(report.budget) ?? "",
     ];
     for (const text of texts) {
       expect(text, text).not.toMatch(/[$₹]|\bRs\b|\bUSD\b|spen[dt]|cost/i);

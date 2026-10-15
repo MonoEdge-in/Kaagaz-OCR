@@ -10,8 +10,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   budgetLine,
-  budgetShareText,
-  budgetWarning,
   indiaDay,
   usageKindText,
   usageRange,
@@ -147,13 +145,13 @@ describe("the Usage tab's states", () => {
 describe("the report", () => {
   const html = view({ kind: "ready", report: REPORT });
 
-  // Changed on purpose (UI quality council, 15 Oct 2026): Tushar's 17:40 decision, org admins see
-  // AI use in tokens and no money (no AI spend tile, no budget line in dollars).
-  it("has tiles for the tokens used and the budget used, and no money", () => {
+  // Changed on purpose (UI quality council, 15 Oct 2026): Tushar's decisions (17:40, 18:38), org
+  // admins see AI use in tokens only: no money, no spend, no budget.
+  it("has one tile for the tokens used, and no money or budget", () => {
     expect(html).toContain("Tokens in this period</dt>");
     expect(html).toContain(">1,50,000</dd>"); // input + output (output counts the thinking)
-    expect(html).toContain("24%");
-    expect(html).not.toMatch(/spen[dt]|cost|[$₹]|\bRs\b|\bUSD\b/i);
+    expect(html).not.toMatch(/spen[dt]|cost|budget|[$₹]|\bRs\b|\bUSD\b/i);
+    expect(html).not.toContain("Budget used");
   });
 
   it("adds input and output tokens, the thinking being part of the output", () => {
@@ -203,31 +201,9 @@ describe("the report", () => {
   });
 });
 
-describe("the budget (SP4, warn only)", () => {
-  it("says nothing under 80%", () => {
-    expect(budgetWarning(budget(39.99, 50))).toBeNull();
-    expect(budgetShareText(budget(39.99, 50))).toBe("79%");
-  });
-
-  it("warns at 80%, as a status line", () => {
-    // Changed on purpose (UI quality council, 15 Oct 2026): no money in the warning for org admins.
-    expect(budgetWarning(budget(40, 50))).toBe("This month's AI use is at 80% of the budget.");
-    const html = view({ kind: "ready", report: { ...REPORT, budget: budget(42, 50) } });
-    expect(html).toMatch(/<p[^>]*role="status"[^>]*>.*at 84% of the budget/);
-  });
-
-  it("warns at 100% and over, saying work goes on", () => {
-    // Changed on purpose (UI quality council, 15 Oct 2026): no money in the warning for org admins.
-    const full = budgetWarning(budget(50, 50));
-    expect(full).toBe(
-      "This month's AI use has reached the budget. Work goes on; ask MonoEdge if the budget should change.",
-    );
-    expect(budgetWarning(budget(61, 50))).toBe(full);
-    const html = view({ kind: "ready", report: { ...REPORT, budget: budget(61, 50) } });
-    expect(html).toMatch(/<p[^>]*role="status"[^>]*>.*has reached the budget/);
-    expect(html).toContain("122%");
-  });
-
+// Changed on purpose (UI quality council, 15 Oct 2026): org admins see no budget (Tushar, 18:38), so
+// the 80% / 100% warning tests went with the warning; the operator's money line stays.
+describe("the operator's budget line, and rows with no user", () => {
   // The operator's console still shows this money line (components/operator/insights.ts).
   it("says when part of this month's spend is not known (R9)", () => {
     expect(budgetLine({ ...budget(5, 50), spent_part_unknown: true })).toBe(
@@ -240,13 +216,8 @@ describe("the budget (SP4, warn only)", () => {
     expect(html).toContain(">Removed user or system work</td>");
   });
 
-  it("has no warning, and says so, when there is no budget", () => {
-    expect(budgetWarning(budget(500, null))).toBeNull();
+  it("says when the operator set no budget", () => {
     expect(budgetLine(budget(500, null))).toBe("No monthly AI budget is set.");
-    const html = view({ kind: "ready", report: { ...REPORT, budget: budget(500, null) } });
-    expect(html).toContain("No budget");
-    // R13: the status region stays, empty, so a warning that comes later is heard.
-    expect(html).toContain('<p role="status"></p>');
   });
 });
 

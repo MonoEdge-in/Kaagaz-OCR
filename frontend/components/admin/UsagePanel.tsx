@@ -2,11 +2,10 @@
 
 // The organisation's AI use (model choice SP2, SP4): pick a period (Today,
 // Last 7 days, This month, or two dates) and, if wanted, one user; then the
-// tokens used and how much of this month's budget is used, with a line at 80%
-// and at 100% (warn only: nothing stops). Then the tokens by day (bars drawn with
-// CSS, the number in the cell; no chart library), by user, kind of work and the
-// heaviest documents. Org admins see tokens, never money, until the operator turns
-// money on for them (Tushar, 15 Oct 2026); models stay the operator's only.
+// tokens used, the tokens by day (bars drawn with CSS, the number in the cell; no
+// chart library), by user, kind of work and the top documents. Org admins and their
+// users never see money, spend or the budget: those stay in the super admin's console
+// (Tushar, 15 Oct 2026). Models stay the operator's only.
 // Keyless mode says AI is off rather than "no use".
 // The view is UsageReportView, rendered in node by tests/admin-usage.test.ts.
 
@@ -20,8 +19,6 @@ import { formatDate, formatNumber } from "@/lib/format";
 import type { AdminUser, UsageReport, UsageTotals } from "@/lib/types";
 import {
   USAGE_PERIODS,
-  budgetShareText,
-  budgetWarning,
   usageKindText,
   usageRange,
   usageState,
@@ -29,7 +26,7 @@ import {
 import type { UsagePeriod, UsageState } from "./logic";
 import styles from "./Admin.module.css";
 
-const SKELETON_TILES = [0, 1];
+const SKELETON_TILES = [0];
 // A by-user row with no user: work no user asked for (the sweeps), or a removed user's.
 export const REMOVED_OR_SYSTEM = "Removed user or system work";
 
@@ -156,7 +153,6 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
   if (state.kind === "empty") return <p className={styles.emptyLine}>No AI use in this period.</p>;
 
   const { report } = state;
-  const warning = budgetWarning(report.budget);
   return (
     <>
       <dl className={styles.tiles}>
@@ -164,20 +160,7 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
           <dt className={styles.tileLabel}>Tokens in this period</dt>
           <dd className={`${styles.tileValue} tabular`}>{formatNumber(usageTokens(report.totals))}</dd>
         </div>
-        <div className={styles.tile}>
-          <dt className={styles.tileLabel}>Budget used this month</dt>
-          <dd className={`${styles.tileValue} tabular`}>{budgetShareText(report.budget) ?? "No budget"}</dd>
-        </div>
       </dl>
-      {/* Always mounted, so a screen reader hears the warning when its text comes. */}
-      <p className={warning ? styles.budgetWarning : undefined} role="status">
-        {warning && (
-          <>
-            <Icon name="alert" className={styles.errorIcon} />
-            {warning}
-          </>
-        )}
-      </p>
       <div className={styles.usageTables}>
         <DailyTable report={report} />
         <UsageTable
@@ -204,7 +187,7 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
           }))}
         />
       </div>
-      {/* No CSV here: it has money and model names. It comes back with the operator's money switch (follow-up PR). */}
+      {/* No CSV here: it has money and model names, which are the super admin's only. */}
     </>
   );
 }

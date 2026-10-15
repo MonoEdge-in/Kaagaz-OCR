@@ -416,15 +416,3 @@
   background: var(--accent);
 }
 
-/* SP4 at 80% and 100%: words and an icon, on the review colours. */
-.budgetWarning {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--review-solid);
-  border-radius: var(--r-md);
-  background: var(--review-bg);
-  color: var(--review-fg);
-}
