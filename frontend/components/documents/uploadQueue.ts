@@ -8,7 +8,7 @@
 // Files go 3 at a time (Q2, runLimited).
 
 import { beingRead } from "@/components/viewer/reprocess";
-import type { DocumentSummary } from "@/lib/types";
+import type { DocumentSummary, UploadReading } from "@/lib/types";
 import type { UploadState } from "./logic";
 import type { StageTimes } from "./uploadStages";
 
@@ -21,7 +21,7 @@ export interface UploadEntry {
   size: number;
   versionOf?: string; // for a new version: the name of the document it updates
   pages?: number | null; // a PDF's or TIFF's pages, counted just before sending; null when not known
-  ocrChoice?: string; // the scan reader chosen for it, when not the server's default
+  reading?: UploadReading; // the reading chosen for it, when not the server's default
   batchId?: string; // the drop it came in (PRD 5 Q1); a new version has its own
   times?: StageTimes; // when it started sending, sent its last byte, and was replied to (U10)
   state: UploadState;

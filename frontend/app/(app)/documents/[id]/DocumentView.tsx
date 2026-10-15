@@ -55,8 +55,8 @@ import {
   versionText,
 } from "@/components/viewer/versions";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
-import { fieldText, reasonText } from "@/components/viewer/labels";
-import { lowResolutionText } from "@/components/viewer/panels";
+import { fieldText, reasonText, voteText } from "@/components/viewer/labels";
+import { lowResolutionText, untilRead } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
 import { beingRead, canReprocess, loadFailure, settledText, valuesNote } from "@/components/viewer/reprocess";
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
@@ -281,6 +281,7 @@ export function DocumentView({
     <ScannedTextPanel
       documentId={detail.id}
       page={page}
+      voted={detail.values.filter((value) => value.votes && value.region.page === page.page_no)}
       active={selection?.region ?? null}
       cited={scannedParam === "1" ? decodeRegion(regionParam) : null}
       onShow={showLine}
@@ -510,7 +511,7 @@ export function DocumentView({
             </h2>
             {readingNote && <p className="muted">{readingNote}</p>}
             {detail.values.length === 0 ? (
-              !readingNote && <p className="muted">No values were found in this document.</p>
+              !readingNote && <p className="muted">{untilRead(detail.status, "No values were found in this document.")}</p>
             ) : (
               <table className={`table ${styles.valuesTable}`} role="table">
                 <caption className="visually-hidden">
@@ -579,6 +580,7 @@ export function DocumentView({
                         </td>
                         <td role="cell" className={styles.reasonCell}>
                           {reasonText(value.label_reason)}
+                          {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
                         </td>
                       </tr>
                     );

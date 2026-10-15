@@ -35,6 +35,7 @@ def test_u9_reader_pages_and_spend_never_cross_customers(db: Database) -> None:
     b_stats = b.client.get("/api/admin/stats").json()
 
     assert a_stats["reader_pages"] == {"gemini": 4, "local": 1, "cached": 0, "read_again": 0}
-    assert a_stats["spend_estimate"] == {"input_tokens": 1_000_000, "output_tokens": 0, "usd": 2.0}
+    # Changed on purpose (features 25-27, 15 Oct 2026): tokens only, no dollars for org admins (Tushar).
+    assert a_stats["scan_tokens"] == {"input_tokens": 1_000_000, "output_tokens": 0}
     assert b_stats["reader_pages"] == {"gemini": 70, "local": 0, "cached": 9, "read_again": 0}
-    assert b_stats["spend_estimate"] == {"input_tokens": 0, "output_tokens": 7_000_000, "usd": 84.0}
+    assert b_stats["scan_tokens"] == {"input_tokens": 0, "output_tokens": 7_000_000}

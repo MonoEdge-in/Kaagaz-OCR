@@ -74,6 +74,8 @@ class ExtractedValue:
     label_location: Location | None = None  # the value's label, when it sits elsewhere (D3)
     origin: str | None = None  # how its span was read: "cell", "text_layer" or "ocr" (spans.ORIGINS)
     quote: QuoteMatch | None = None  # set when a model quote located the value; never stored
+    # Ensemble (F27): the readers' vote on the value, plain JSON (labels.vote); None: one reader.
+    votes: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

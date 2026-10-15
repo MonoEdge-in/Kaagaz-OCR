@@ -29,12 +29,12 @@ def test_as_admin_never_sees_bs_spend(db: Database) -> None:
     a_report = a.client.get("/api/admin/usage").json()
     b_report = b.client.get("/api/admin/usage").json()
     a_csv = list(csv.reader(io.StringIO(a.client.get("/api/admin/usage.csv").text)))
-    a_models = a.client.get("/api/admin/models").json()
 
     assert (a_report["totals"]["calls"], a_report["by_user"][0]["user_id"]) == (1, None)
-    assert a_report["budget"]["spent_this_month_usd"] == pytest.approx(1.0)
+    # Changed on purpose (features 25-27, 15 Oct 2026): org admins see tokens, never money (Tushar),
+    # so A's own use is checked in tokens; /admin/models now holds names only, no spend to compare.
+    assert (a_report["totals"]["input_tokens"], a_report["totals"]["output_tokens"]) == (1000, 100)
     assert len(a_csv) == 2  # the columns and A's one line
-    assert a_models["spent_this_month_usd"] == pytest.approx(1.0)
     assert b_report["totals"]["calls"] == 1  # the control
     assert [item["user_id"] for item in b_report["by_user"]] == [b_member]
 
@@ -52,9 +52,8 @@ def test_naming_bs_user_gives_a_an_empty_report(db: Database) -> None:
     assert [report[part] for part in ("by_user", "by_model", "by_kind", "by_day", "top_documents")] == [
         []
     ] * 5
-    assert lines == [
-        ["day", "user", "model", "kind", "calls", "tokens", "cost", "estimated", "part_not_known"]
-    ]
+    # Changed on purpose (features 25-27, 15 Oct 2026): no cost columns, org admins never see money.
+    assert lines == [["day", "user", "model", "kind", "calls", "tokens"]]
 
 
 def test_a_model_allowed_b_is_403_on_as_upload_and_read_again(db: Database) -> None:

@@ -1,7 +1,8 @@
 """The operator's models and AI spend against PostgreSQL (model choice, council 11 Oct 2026,
-MC2, MS1, MS2, SP3, SP4; 0023), through the API: enabling a model takes a fresh code and a
-verify-models pass for the current prompt, an organisation's models and budget, the outcome
-of each refusal, and the owner's verify-models record. A usage reply with no user or
+MC2, MS1, MS2, SP3, SP4; 0023; features 25-27, C10, 0026), through the API: enabling a
+model takes a fresh code and a verify-models pass for the current prompt, an
+organisation's AI settings and budget, the platform defaults, the outcome of each refusal,
+and the owner's verify-models record. A usage reply with no user or
 document: ``test_isolation_operator_models.py``. Customer sessions never reach these
 routes: ``test_operator_auth_db.py``'s walk covers every /api/operator route."""
 
@@ -78,42 +79,102 @@ def test_enabling_takes_a_fresh_code_and_a_pass_for_the_current_prompt(db: Datab
     assert operator.sql(_PLATFORM, a="model.%") == [("model.enabled", good)]
 
 
-def test_an_organisations_models_default_and_budget(db: Database) -> None:
+# Changed on purpose (features 25-27, 15 Oct 2026): /orgs/{id}/models became /orgs/{id}/ai,
+# with the answer models, the levels, Dynamic, Ensemble and a fresh code for every save.
+FOLLOWS_DEFAULTS: dict[str, Any] = {
+    "scan_models": [],
+    "scan_default": None,
+    "chat_models": [],
+    "chat_default": None,
+    "scan_thinking": None,
+    "chat_levels": None,
+    "chat_default_level": None,
+    "dynamic": None,
+}
+
+
+def _save(api: Api, operator: _Operator, client: TestClient, path: str, body: dict[str, Any]) -> Any:
+    api.clock.advance(totp.STEP_SECONDS)  # a fresh code each time
+    return client.put(path, json={**body, "code": api.code(operator.secret)}, headers=CSRF)
+
+
+def test_an_organisations_ai_settings_and_budget(db: Database) -> None:
     api = Api(db)
     operator, client = _signed_in(api)
     first, second, off = _model(db), _model(db), _model(db)
     for model in (first, second):
         assert _enable(api, operator, client, model).status_code == 200
     customer, _ = api.customer("Org Models")
-    path = f"/api/operator/orgs/{customer}/models"
-    assert client.get(path).json() == {"models": [], "default_scan": None, "ai_budget_usd": None}
+    path = f"/api/operator/orgs/{customer}/ai"
+    got = client.get(path).json()
+    assert (got["own"], got["ensemble"], got["ai_budget_usd"], got["max_agents"]) == (
+        FOLLOWS_DEFAULTS,
+        False,
+        None,
+        3,
+    )
 
-    body = {"models": [second, first], "default_scan": second, "ai_budget_usd": 25.5}
-    saved = client.put(path, json=body, headers=CSRF)
+    body = {
+        **FOLLOWS_DEFAULTS,
+        "scan_models": [second, first],
+        "scan_default": second,
+        "ensemble": False,
+        "ai_budget_usd": 25.5,
+    }
+    saved = _save(api, operator, client, path, body)
     assert saved.status_code == 200, saved.text
-    assert saved.json() == {"models": sorted([first, second]), "default_scan": second, "ai_budget_usd": 25.5}
+    assert saved.json()["own"]["scan_models"] == sorted([first, second])
+    assert (saved.json()["own"]["scan_default"], saved.json()["ai_budget_usd"]) == (second, 25.5)
     assert client.get(path).json() == saved.json()
-    assert operator.sql(_PLATFORM, a="org.models_set") == [("org.models_set", customer)]
-    [row] = [row for row in api.audit_rows(customer) if row[0] == "org.models_set"]
-    assert row[3]["by"] == "operator" and row[3]["default"] == second
+    assert operator.sql(_PLATFORM, a="org.ai_settings_set") == [("org.ai_settings_set", customer)]
+    [row] = [row for row in api.audit_rows(customer) if row[0] == "org.ai_settings_set"]
+    assert row[3]["by"] == "operator" and row[3]["scan_default"] == second
+    assert not [key for key in row[3] if "budget" in key or "usd" in key]  # money stays with the operator
 
     refusals = [
-        ({**body, "models": [first, off], "default_scan": first}, 409, "unavailable"),  # off: not enabled
-        ({**body, "default_scan": off}, 400, "default_not_allowed"),
-        ({**body, "default_scan": None}, 400, "default_not_allowed"),
+        ({**body, "scan_models": [first, off], "scan_default": first}, "unavailable"),  # off: not enabled
+        ({**body, "scan_default": off}, "default_not_allowed"),
+        ({**body, "scan_default": None}, "default_not_allowed"),
+        ({**body, "scan_models": [first], "scan_default": first, "ensemble": True}, "needs_two_models_scan"),
     ]
-    for refused, status, code in refusals:
-        reply = client.put(path, json=refused, headers=CSRF)
-        assert (reply.status_code, reply.json()["error"]["code"]) == (status, code), reply.text
+    for refused, code in refusals:
+        reply = _save(api, operator, client, path, refused)
+        assert (reply.status_code, reply.json()["error"]["code"]) == (409, code), reply.text
     assert client.get(path).json() == saved.json()  # nothing changed
-    assert client.get(f"/api/operator/orgs/{uuid.uuid4()}/models").status_code == 404
-    assert client.put(f"/api/operator/orgs/{uuid.uuid4()}/models", json=body, headers=CSRF).status_code == 404
+    assert client.get(f"/api/operator/orgs/{uuid.uuid4()}/ai").status_code == 404
+    assert _save(api, operator, client, f"/api/operator/orgs/{uuid.uuid4()}/ai", body).status_code == 404
 
     in_use = _enable(api, operator, client, first, enabled=False)
     assert (in_use.status_code, in_use.json()["error"]["code"]) == (409, "in_use")
-    cleared = client.put(path, json={"models": [], "default_scan": None, "ai_budget_usd": None}, headers=CSRF)
-    assert cleared.json() == {"models": [], "default_scan": None, "ai_budget_usd": None}
+    cleared = _save(
+        api, operator, client, path, {**FOLLOWS_DEFAULTS, "ensemble": False, "ai_budget_usd": None}
+    )
+    assert (cleared.json()["own"], cleared.json()["ai_budget_usd"]) == (FOLLOWS_DEFAULTS, None)
     assert _enable(api, operator, client, first, enabled=False).json()["model"]["changed"] is True
+
+
+def test_the_platform_defaults_through_the_api(db: Database) -> None:
+    """C10, D8: every organisation still on the defaults follows a save; put back after."""
+    api = Api(db)
+    operator, client = _signed_in(api)
+    first, second = _model(db), _model(db)
+    for model in (first, second):
+        assert _enable(api, operator, client, model).status_code == 200
+    api.customer("Org On Defaults")
+    got = client.get("/api/operator/ai-defaults").json()
+    assert got["orgs_inheriting"]["scan_models"] >= 1
+    put_back = {**got["defaults"]}
+    body = {**put_back, "scan_models": [first, second], "scan_default": first, "dynamic": True}
+    try:
+        saved = _save(api, operator, client, "/api/operator/ai-defaults", body)
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["defaults"]["scan_models"] == sorted([first, second])
+        assert saved.json()["defaults"]["dynamic"] is True
+        one = {**body, "scan_models": [first]}
+        refused = _save(api, operator, client, "/api/operator/ai-defaults", one)
+        assert (refused.status_code, refused.json()["error"]["code"]) == (409, "needs_two_models_scan")
+    finally:
+        assert _save(api, operator, client, "/api/operator/ai-defaults", put_back).status_code == 200
 
 
 def test_record_writes_a_models_pass_as_the_owner(db: Database) -> None:

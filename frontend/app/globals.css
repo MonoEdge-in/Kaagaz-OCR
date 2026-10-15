@@ -186,6 +186,13 @@ html {
   /* A focused element scrolled into view stays clear of the sticky top bar
      (WCAG 2.4.11). The token is 0 once the sidebar shows. */
   scroll-padding-top: calc(var(--topbar-space) + var(--space-4));
+  /* The scrollbar's space is kept, so locking the page under a dialog doesn't shift it. */
+  scrollbar-gutter: stable;
+}
+
+/* An open dialog or drawer: the page behind it stays still. */
+html:has(dialog:modal) {
+  overflow: hidden;
 }
 
 body {

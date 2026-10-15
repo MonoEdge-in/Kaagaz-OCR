@@ -111,8 +111,8 @@ BY_ID: dict[tuple[ModuleType, str], str] = {
         pipeline_store,
         "_LOCK_LINKED",
     ): "locks the link targets and old partners by id in one order; filters nothing",
-    # Model choice (0023).
-    (models, "_USABLE"): "resolve reads the model one document asked for, by id, while the worker reads it",
+    # Changed on purpose (features 25-27, 15 Oct 2026): 0023's models._USABLE joined documents;
+    # resolve_scan now reads the document's choice by id alone (_DOCUMENT, no join to list).
     (
         usage,
         "_REPORT",

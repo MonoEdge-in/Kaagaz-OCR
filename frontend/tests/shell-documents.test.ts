@@ -529,18 +529,32 @@ describe("uploadDocument into a folder", () => {
   });
 
   // Model choice MS4, FINAL DECISIONS 6: read_model, never ocr_choice (accepted and ignored).
+  // Changed on purpose (features 25-27, 15 Oct 2026): the reading chosen is sent whole
+  // (read_mode, read_model, read_agents once per reader), not a model alone.
   it("sends the model chosen as read_model on both routes, and nothing for the default", () => {
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
     const model = "anthropic/claude-sonnet-5.5";
-    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, undefined, model);
+    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, undefined, { read_model: model });
     expect(lastForm().get("read_model")).toBe(model);
     expect(lastForm().has("ocr_choice")).toBe(false);
-    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, model);
+    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, { read_model: model });
     expect(lastForm().get("read_model")).toBe(model);
     expect(lastForm().has("ocr_choice")).toBe(false);
     void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, FOLDER, undefined);
     expect(lastForm().has("read_model")).toBe(false);
+    expect(lastForm().has("read_mode")).toBe(false);
     void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {});
+    expect(lastForm().has("read_model")).toBe(false);
+  });
+
+  it("sends Dynamic and more than one reader as read_mode with read_agents once each", () => {
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, undefined, { read_mode: "dynamic" });
+    expect(lastForm().get("read_mode")).toBe("dynamic");
+    const reading = { read_mode: "ensemble" as const, read_agents: ["google/a", "google/b"] };
+    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, reading);
+    expect(lastForm().get("read_mode")).toBe("ensemble");
+    expect(lastForm().getAll("read_agents")).toEqual(["google/a", "google/b"]);
     expect(lastForm().has("read_model")).toBe(false);
   });
 
@@ -642,6 +656,8 @@ describe("noMatchTitle", () => {
     expect(noMatchTitle("gst", false)).toBe("No document names contain “gst”.");
     expect(noMatchTitle("", true)).toBe("No documents match these filters.");
     expect(noMatchTitle("gst", true)).toBe("No document names contain “gst” with these filters.");
+    expect(noMatchTitle("", true, true)).toBe("Nothing needs attention.");
+    expect(noMatchTitle("gst", true, true)).toBe("No document names contain “gst” with these filters.");
   });
 });
 

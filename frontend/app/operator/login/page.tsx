@@ -7,6 +7,8 @@ import { signedOutMessage } from "@/components/shell/gate";
 import { AuthFrame } from "../../login/AuthFrame";
 import { OperatorSignInForm } from "./OperatorSignInForm";
 
+export const metadata = { title: "Sign in" };
+
 export default async function OperatorLoginPage({
   searchParams,
 }: {

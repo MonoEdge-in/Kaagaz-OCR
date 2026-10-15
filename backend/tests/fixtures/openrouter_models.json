@@ -1,5 +1,5 @@
 {
-  "_comment": "A small slice of OpenRouter's lists, shaped as GET /models, GET /models/{id}/endpoints and GET /endpoints/zdr answered on 11 Oct 2026 (facts file). Each model after the first three breaks one catalogue rule. Made up where it had to be; no key, no customer data.",
+  "_comment": "A small slice of OpenRouter's lists, shaped as GET /models, GET /models/{id}/endpoints and GET /endpoints/zdr answered on 11 Oct 2026 (facts file). Each model after the first four breaks one catalogue rule (google/gemini-3.8-flash, the fourth, added for features 25-27 on 15 Oct 2026, is made up as the real id is not known yet); example/text-only-1 breaks a scan rule only and may still answer. Made up where it had to be; no key, no customer data.",
   "models": {
     "data": [
       {
@@ -27,6 +27,15 @@
         "pricing": {"prompt": "0.0000001", "completion": "0.0000005"},
         "supported_parameters": ["max_completion_tokens", "reasoning", "response_format", "structured_outputs"],
         "reasoning": {"supported_efforts": ["none", "low", "medium", "high", "max"]},
+        "expiration_date": null
+      },
+      {
+        "id": "google/gemini-3.8-flash",
+        "name": "Google: Gemini 3.8 Flash",
+        "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
+        "pricing": {"prompt": "0.0000005", "completion": "0.000003"},
+        "supported_parameters": ["max_tokens", "reasoning", "response_format", "structured_outputs"],
+        "reasoning": {"supported_efforts": ["minimal", "low", "medium", "high"]},
         "expiration_date": null
       },
       {
@@ -126,6 +135,9 @@
       {"tag": "openai", "status": 0, "supported_parameters": ["max_completion_tokens", "reasoning", "response_format", "structured_outputs"]},
       {"tag": "azure", "status": 0, "supported_parameters": ["max_completion_tokens", "reasoning", "response_format", "structured_outputs"]}
     ],
+    "google/gemini-3.8-flash": [
+      {"tag": "google-vertex", "status": 0, "supported_parameters": ["max_tokens", "reasoning", "response_format", "structured_outputs"]}
+    ],
     "example/not-zdr-1": [
       {"tag": "google-vertex", "status": 0, "supported_parameters": ["reasoning", "response_format", "structured_outputs"]}
     ],
@@ -139,6 +151,7 @@
       {"model_id": "anthropic/claude-sonnet-5.5", "tag": "amazon-bedrock", "name": "Amazon Bedrock | anthropic/claude-sonnet-5.5"},
       {"model_id": "anthropic/claude-sonnet-5.5", "tag": "google-vertex", "name": "Google | anthropic/claude-sonnet-5.5"},
       {"model_id": "openai/gpt-6-luna", "tag": "azure", "name": "Azure | openai/gpt-6-luna"},
+      {"model_id": "google/gemini-3.8-flash", "tag": "google-vertex", "name": "Google | google/gemini-3.8-flash"},
       {"model_id": "example/endpoint-down-1", "tag": "google-vertex", "name": "Google | example/endpoint-down-1"}
     ]
   }

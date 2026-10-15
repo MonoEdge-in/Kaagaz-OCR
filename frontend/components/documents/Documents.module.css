@@ -102,6 +102,30 @@
   overflow-wrap: break-word;
 }
 
+/* "More than one reader…" (feature 27): the readers by name, one per row, 44 px to tap. */
+.readerAgents {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.readerAgent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  overflow-wrap: anywhere;
+}
+
+.readerMain {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
 /* --- Uploads ------------------------------------------------------------------ */
 
 .uploadsSection {
@@ -559,6 +583,11 @@ table.docs th {
 
   table.docs thead th:last-child {
     border-start-end-radius: var(--r-md);
+  }
+
+  /* A control focused from the keyboard scrolls clear of the sticky header row too (2.4.11). */
+  table.docs tbody :is(a, button, input, select, summary) {
+    scroll-margin-top: calc(var(--topbar-space) + 4rem);
   }
 
   table.docs td {

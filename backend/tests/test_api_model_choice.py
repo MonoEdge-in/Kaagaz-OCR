@@ -201,47 +201,50 @@ def test_r14_the_admin_sees_no_default_in_keyless_mode() -> None:
     assert admin.default_scan([_row("google/a")], GEMINI) == GEMINI.ocr_model
 
 
+# Changed on purpose (features 25-27, 15 Oct 2026): the price a page and the provider are
+# worked out in one place, kaagaz.db.models (page_cost, _provider; the tiers' pick_tiers is
+# shared with the worker's Dynamic). The API keeps no price helper and never shows a price.
 def test_mc3_the_estimate_a_page_is_the_measured_tokens_times_the_price() -> None:
-    assert readers.page_usd(_row("google/a", tokens=(10_000, 2_000))) == pytest.approx(0.044)
-    assert readers.page_usd(_row("google/a", tokens=None)) is None
+    assert models_sql.page_cost(_row("google/a", tokens=(10_000, 2_000))) == pytest.approx(44_000)
+    assert models_sql.page_cost(_row("google/a", tokens=None)) == float("inf")
 
 
 def test_mc3_the_ledgers_average_a_page_wins_over_verify_models_test_page() -> None:
     """R3: verify-models reads a toy page; what pages really took in the last 30 days of
-    the organisation's ledger is the estimate, and the toy figure is only a rough one."""
+    the organisation's ledger is the estimate."""
     measured = _row("google/a", tokens=(300, 100), ledger=(10_000, 2_000))
-    assert readers.page_estimate(measured) == pytest.approx((0.044, False))
-    assert readers.page_hint(measured) == "about $0.04 a page"
-    toy = _row("google/a", tokens=(10_000, 2_000))
-    assert readers.page_estimate(toy) == pytest.approx((0.044, True))
-    assert readers.page_hint(toy) == "about $0.04 a page (rough estimate)"
-    assert readers.page_hint(_row("google/a", tokens=None)) == "Cost not measured yet"
-    assert readers.page_usd(_row("google/a", tokens=None, ledger=(10_000, 2_000))) == pytest.approx(0.044)
+    assert models_sql.page_cost(measured) == pytest.approx(44_000)
+    assert models_sql.page_cost(_row("google/a", tokens=None, ledger=(10_000, 2_000))) == pytest.approx(
+        44_000
+    )
 
 
 def test_the_provider_is_the_first_inside_openrouter_providers() -> None:
     row = cast(
         RowMapping, {**_row("anthropic/claude-haiku-5.5"), "providers": ["amazon-bedrock", "google-vertex"]}
     )
-    assert readers.page_provider(row, GEMINI) == "google-vertex"
-    assert readers.page_provider(row, make_settings(openrouter_providers=frozenset({"azure"}))) is None
+    assert models_sql._provider(row, GEMINI) == "google-vertex"
+    assert models_sql._provider(row, make_settings(openrouter_providers=frozenset({"azure"}))) is None
 
 
+# Changed on purpose (features 25-27, 15 Oct 2026): check_read_model became check_reading,
+# which checks the whole reading (mode, model, Ensemble's readers).
 def test_ms5_a_model_outside_the_usable_ones_is_403_and_none_asks_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _usable_returns(monkeypatch, [_row("google/gemini-3.1-pro-preview", default=True)])
     customer = str(uuid.uuid4())
-    readers.check_read_model(_no_conn(), customer, GEMINI, None)
-    readers.check_read_model(_no_conn(), customer, GEMINI, "google/gemini-3.1-pro-preview")
+    assert readers.check_reading(_no_conn(), customer, GEMINI, keep=True) == readers.ReadingChoice(None)
+    chosen = readers.check_reading(_no_conn(), customer, GEMINI, model="google/gemini-3.1-pro-preview")
+    assert chosen == readers.ReadingChoice("single", "google/gemini-3.1-pro-preview")
     with pytest.raises(ApiError) as refused:
-        readers.check_read_model(_no_conn(), customer, GEMINI, "anthropic/claude-opus-5.5")
+        readers.check_reading(_no_conn(), customer, GEMINI, model="anthropic/claude-opus-5.5")
     assert (refused.value.status, refused.value.code) == (403, "model_not_allowed")
 
 
 def test_ms5_keyless_mode_refuses_every_model() -> None:
     with pytest.raises(ApiError) as refused:
-        readers.check_read_model(_no_conn(), str(uuid.uuid4()), KEYLESS, "google/gemini-3.1-pro-preview")
+        readers.check_reading(_no_conn(), str(uuid.uuid4()), KEYLESS, model="google/gemini-3.1-pro-preview")
     assert refused.value.code == "model_not_allowed"
 
 
@@ -471,7 +474,8 @@ def test_read_again_with_a_model_stores_it_and_the_asker_and_audits_it(db: Datab
         "document.reprocess",
         "document",
         document,
-        {"status": "failed", "read_model": other},
+        # Changed on purpose (features 25-27, 15 Oct 2026): the audit row names the mode too (C9).
+        {"status": "failed", "read_mode": "single", "read_model": other},
     )
 
 

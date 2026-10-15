@@ -1,14 +1,15 @@
 """Model choice and AI spend across organisations, for the operator (council 11 Oct 2026,
-SP3, MS2; 0023), against PostgreSQL: the operator's usage reply holds organisations and
-models only, never a user's or a document's id or name; one organisation's models never
-show in another's; and a customer admin's session reaches none of these routes."""
+SP3, MS2; 0023; features 25-27, 0026), against PostgreSQL: the operator's usage reply holds
+organisations and models only, never a user's or a document's id or name; one
+organisation's AI settings never show in another's; and a customer admin's session reaches
+none of these routes."""
 
 import pytest
 
 from kaagaz.db.engine import Database
 from tests.test_api_support import CSRF, Api
 from tests.test_operator_auth_db import _owner
-from tests.test_operator_models_db import _enable, _model, _signed_in
+from tests.test_operator_models_db import FOLLOWS_DEFAULTS, _enable, _model, _save, _signed_in
 
 pytestmark = pytest.mark.db
 
@@ -50,20 +51,24 @@ def test_usage_is_per_organisation_and_model_and_never_names_a_user_or_a_documen
         assert hidden not in reply.text
 
 
-def test_one_organisations_models_never_show_in_anothers(db: Database) -> None:
+# Changed on purpose (features 25-27, 15 Oct 2026): /orgs/{id}/models became /orgs/{id}/ai.
+def test_one_organisations_ai_settings_never_show_in_anothers(db: Database) -> None:
     api = Api(db)
     operator, client = _signed_in(api)
     model = _model(db)
     assert _enable(api, operator, client, model).status_code == 200
     a, _ = api.customer("Org Models A")
     b, _ = api.customer("Org Models B")
-    body = {"models": [model], "default_scan": model, "ai_budget_usd": 10}
-    assert client.put(f"/api/operator/orgs/{a}/models", json=body, headers=CSRF).status_code == 200
-    assert client.get(f"/api/operator/orgs/{b}/models").json() == {
-        "models": [],
-        "default_scan": None,
-        "ai_budget_usd": None,
+    body = {
+        **FOLLOWS_DEFAULTS,
+        "scan_models": [model],
+        "scan_default": model,
+        "ensemble": False,
+        "ai_budget_usd": 10,
     }
+    assert _save(api, operator, client, f"/api/operator/orgs/{a}/ai", body).status_code == 200
+    other = client.get(f"/api/operator/orgs/{b}/ai").json()
+    assert (other["own"], other["ai_budget_usd"]) == (FOLLOWS_DEFAULTS, None)
 
 
 def test_a_customer_admins_session_reaches_no_model_or_spend_route(db: Database) -> None:
@@ -71,10 +76,17 @@ def test_a_customer_admins_session_reaches_no_model_or_spend_route(db: Database)
     admin = api.new_admin("Org Admin Only")
     for method, path in (
         ("GET", "/api/operator/models"),
-        ("GET", f"/api/operator/orgs/{admin.customer_id}/models"),
-        ("PUT", f"/api/operator/orgs/{admin.customer_id}/models"),
+        ("GET", f"/api/operator/orgs/{admin.customer_id}/ai"),
+        ("PUT", f"/api/operator/orgs/{admin.customer_id}/ai"),
+        ("GET", "/api/operator/ai-defaults"),
+        ("PUT", "/api/operator/ai-defaults"),
         ("GET", "/api/operator/usage"),
     ):
-        body: dict[str, object] = {"models": [], "default_scan": None, "ai_budget_usd": None}
+        body: dict[str, object] = {
+            **FOLLOWS_DEFAULTS,
+            "ensemble": False,
+            "ai_budget_usd": None,
+            "code": "123456",
+        }
         reply = admin.client.request(method, path, headers=CSRF, json=body)
         assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), path

@@ -43,16 +43,8 @@ NOW = datetime(2026, 10, 20, 6, 0, tzinfo=UTC)  # 11:30 in Asia/Kolkata
 THIS_MONTH = datetime(2026, 10, 2, 9, 0, tzinfo=UTC)
 LAST_MONTH = datetime(2026, 9, 29, 9, 0, tzinfo=UTC)
 
-TOTALS = {
-    "calls",
-    "cached_calls",
-    "input_tokens",
-    "output_tokens",
-    "reasoning_tokens",
-    "cost_usd",
-    "cost_estimated",
-    "cost_part_unknown",
-}
+# Changed on purpose (features 25-27, 15 Oct 2026): no cost_* fields, org admins never see money (Tushar).
+TOTALS = {"calls", "cached_calls", "input_tokens", "output_tokens", "reasoning_tokens"}
 
 
 # --- without a database ----------------------------------------------------------------
@@ -94,11 +86,12 @@ def test_ai_is_on_unless_the_server_is_keyless(ocr_engine: str, model_enabled: b
 
 
 def test_sp2_the_csv_has_its_columns_then_one_line_each_escaped() -> None:
-    lines = [("2026-10-02", '=HYPERLINK("http://x","y")', MODEL, "scan", 3, 1200, "0.044", "no", "no")]
+    lines = [("2026-10-02", '=HYPERLINK("http://x","y")', MODEL, "scan", 3, 1200)]
     parsed = list(csv.reader(io.StringIO(usage_csv(lines))))
+    # Changed on purpose (features 25-27, 15 Oct 2026): no cost columns, org admins never see money.
     assert parsed == [
-        ["day", "user", "model", "kind", "calls", "tokens", "cost", "estimated", "part_not_known"],
-        ["2026-10-02", '\'=HYPERLINK("http://x","y")', MODEL, "scan", "3", "1200", "0.044", "no", "no"],
+        ["day", "user", "model", "kind", "calls", "tokens"],
+        ["2026-10-02", '\'=HYPERLINK("http://x","y")', MODEL, "scan", "3", "1200"],
     ]
 
 
@@ -255,7 +248,9 @@ def _gets(signed: Signed, url: str) -> tuple[int, Any]:
 
 
 @pytest.mark.db
-def test_ms1_ms2_the_admin_sees_the_models_read_only_with_prices_budget_and_spend(db: Database) -> None:
+def test_ms1_ms2_the_admin_sees_the_models_read_only_by_name(db: Database) -> None:
+    # Changed on purpose (features 25-27, 15 Oct 2026): names only, no prices, budget or spend,
+    # org admins never see money (Tushar).
     api = Api(db, settings=make_settings(ocr_engine="gemini"), clock=MovingClock(NOW))
     admin = api.new_admin()
     c = admin.customer_id
@@ -264,56 +259,35 @@ def test_ms1_ms2_the_admin_sees_the_models_read_only_with_prices_budget_and_spen
     allow(db, c, [default, other], default=default)
     set_budget(db, c, 10.0)
     add_spend(db, c, at=THIS_MONTH, cost=2.5)
-    add_spend(db, c, at=LAST_MONTH, cost=7.0)
 
     status, body = _gets(admin, "/api/admin/models")
 
     assert status == 200
     assert body == {
-        "set_by": "operator",
-        "default_scan": default,
-        "models": [
-            {
-                "id": default,
-                "name": "Default model",
-                "provider": "google-vertex",
-                "price_in_usd_per_m": 2.0,
-                "price_out_usd_per_m": 12.0,
-                "is_default_scan": True,
-                "usd_per_page": pytest.approx(0.044),
-                "page_hint": "about $0.04 a page (rough estimate)",  # no scans yet: verify-models' page
-            },
-            {
-                "id": other,
-                "name": "Other model",
-                "provider": "google-vertex",
-                "price_in_usd_per_m": 2.0,
-                "price_out_usd_per_m": 12.0,
-                "is_default_scan": False,
-                "usd_per_page": pytest.approx(0.0022),
-                "page_hint": "under $0.01 a page (rough estimate)",
-            },
-        ],
-        "ai_budget_usd": 10.0,
-        "spent_this_month_usd": pytest.approx(2.5),
+        "scan": [{"name": "Default model", "default": True}, {"name": "Other model", "default": False}],
+        "chat": [],  # MODEL_ENABLED off: no model answers
     }
 
 
 @pytest.mark.db
-def test_ms1_with_no_models_set_the_platforms_model_reads_and_none_is_listed(db: Database) -> None:
-    settings = make_settings(ocr_engine="gemini")
+def test_ms1_with_no_models_set_the_platforms_model_reads(db: Database) -> None:
+    # Changed on purpose (features 25-27, 15 Oct 2026): the platform's model is listed as the default.
+    settings = make_settings(ocr_engine="gemini", model_enabled=True)
     admin = Api(db, settings=settings, clock=MovingClock(NOW)).new_admin()
     status, body = _gets(admin, "/api/admin/models")
-    assert (status, body["default_scan"], body["models"], body["ai_budget_usd"]) == (
+    assert (status, body) == (
         200,
-        settings.ocr_model,
-        [],
-        None,
+        {
+            "scan": [{"name": settings.ocr_model, "default": True}],
+            "chat": [{"name": settings.model_chat, "default": True}],
+        },
     )
 
 
 @pytest.mark.db
-def test_sp2_the_usage_report_has_the_usage_report_shape_and_this_months_budget(db: Database) -> None:
+def test_sp2_the_usage_report_has_the_usage_report_shape_in_tokens(db: Database) -> None:
+    # Changed on purpose (features 25-27, 15 Oct 2026): no budget and no costs, org admins never see
+    # money (Tushar).
     api = Api(db, clock=MovingClock(NOW))
     admin = api.new_admin()
     c = admin.customer_id
@@ -338,11 +312,10 @@ def test_sp2_the_usage_report_has_the_usage_report_shape_and_this_months_budget(
         "by_kind",
         "by_day",
         "top_documents",
-        "budget",
     }
     assert (report["from"], report["to"]) == ("2026-10-01", "2026-10-20")
     assert set(report["totals"]) == TOTALS
-    assert (report["totals"]["calls"], report["totals"]["cost_usd"]) == (3, pytest.approx(0.85))
+    assert (report["totals"]["calls"], report["totals"]["input_tokens"]) == (3, 3000)
     for part, own in (
         ("by_user", {"user_id", "user_name"}),
         ("by_model", {"model", "model_name"}),
@@ -354,12 +327,6 @@ def test_sp2_the_usage_report_has_the_usage_report_shape_and_this_months_budget(
         assert all(set(item) == TOTALS | own for item in report[part]), part
     assert {item["user_id"] for item in report["by_user"]} == {member, None}
     assert [item["day"] for item in report["by_day"]] == ["2026-10-02"]
-    assert report["budget"] == {
-        "ai_budget_usd": 10.0,
-        "spent_this_month_usd": pytest.approx(0.85),
-        "spent_part_unknown": False,
-        "share": pytest.approx(0.085),
-    }
 
     _, one = _gets(admin, f"/api/admin/usage?from=2026-10-01&to=2026-10-20&user_id={member}")
     assert (one["totals"]["calls"], [item["user_id"] for item in one["by_user"]]) == (2, [member])
@@ -402,10 +369,11 @@ def test_sp2_the_csv_downloads_one_escaped_line_per_day_user_model_and_kind(db: 
     assert (
         reply.headers["content-disposition"] == 'attachment; filename="ai-usage-2026-10-01-to-2026-10-20.csv"'
     )
+    # Changed on purpose (features 25-27, 15 Oct 2026): no cost columns, org admins never see money.
     assert list(csv.reader(io.StringIO(reply.text))) == [
-        ["day", "user", "model", "kind", "calls", "tokens", "cost", "estimated", "part_not_known"],
-        ["2026-10-02", "", EMBED, "embed", "1", "1100", "", "no", "yes"],
-        ["2026-10-02", "'=cmd|calc", MODEL, "scan", "2", "2200", "0.750000", "no", "no"],
+        ["day", "user", "model", "kind", "calls", "tokens"],
+        ["2026-10-02", "", EMBED, "embed", "1", "1100"],
+        ["2026-10-02", "'=cmd|calc", MODEL, "scan", "2", "2200"],
     ]
 
 

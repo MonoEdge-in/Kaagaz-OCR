@@ -5,8 +5,9 @@ decision of 8 October 2026 (council ``2026-10-08-prd5-openrouter.md``). ``OpenRo
 implements ``ModelClient`` (``chat_json`` and ``embed``), and adds ``read_page`` for the
 Gemini reader (G1, G2, G3). ``read_page`` reads with the model and provider its caller
 names (the document's, ``kaagaz.db.models.resolve``; model choice, council 11 Oct 2026),
-or OCR_MODEL; ``MODEL_CHAT`` answers ``chat_json`` and ``MODEL_EMBED`` embeds. No code
-here picks or switches a model.
+or OCR_MODEL; ``MODEL_CHAT`` answers ``chat_json`` unless its caller names the answer's
+chosen model (``kaagaz.db.models.resolve_chat``, features 25-27) and ``MODEL_EMBED`` embeds.
+No code here picks or switches a model.
 
 **The key is a secret.** It goes in the ``Authorization: Bearer`` header only, added with
 ``add_unredirected_header`` so it is never copied onto a redirect, and redirects are
@@ -24,8 +25,9 @@ code only, raised ``from None``.
 another provider, every parameter honoured, no data collection, zero data retention. A page
 read may name another provider (model choice, council 11 Oct 2026): ``provider(slug)`` is
 the same block with ``only`` that one slug, and the client refuses a slug outside
-OPENROUTER_PROVIDERS (``ProviderNotAllowed``): a page read's, and DEFAULT_PROVIDER for
-``chat_json`` and ``embed`` (the settings require it; checked again here).
+OPENROUTER_PROVIDERS (``ProviderNotAllowed``): a page read's or an answer draft's, and
+DEFAULT_PROVIDER for any other ``chat_json`` and ``embed`` (the settings require it;
+checked again here).
 
 **The request** (``POST /chat/completions``, ``stream: false``, G2). A system prompt is
 ``messages[0]`` with role system. A picture is a user message whose content is the
@@ -176,12 +178,17 @@ SCHEMA_NAME = "page"
 PAGE_MAX_OUTPUT_TOKENS = 32768
 # chat_json thinks at this effort: the card, the invoice windows, answers
 # and the follow-up rewrite want a short exact reply. gemini-3.1-pro-preview has no
-# "minimal" level (Google's thinking page), so "low" is the least it accepts.
+# "minimal" level (Google's thinking page), so "low" is the least it accepts. An answer's
+# draft may think at the level its asker chose (features 25-27, C7).
 CHAT_THINKING_LEVEL = "low"
-# A chat_json call with a reply budget asks for the budget plus this much room to think;
-# the reply itself (completion_tokens less reasoning_tokens) is then held to the caller's
-# budget.
-CHAT_THINKING_TOKENS = 8192
+# A chat_json call with a reply budget asks for the budget plus this much room to think, by
+# thinking level; the reply itself (completion_tokens less reasoning_tokens) is then held to
+# the caller's budget.
+CHAT_THINKING_TOKENS = {"low": 8192, "medium": 16384, "high": 32768}
+# The vendor whose models honour a schema's maxLength (Google's); response_format leaves it
+# out for every other vendor's model, whose structured output may refuse it (features 25-27,
+# C7). The answer's sentences are capped after the reply anyway (draft._parse).
+MAX_LENGTH_VENDOR = "google"
 
 # Backoff (G6): attempt n waits a random time up to min(BACKOFF_MAX_SECONDS,
 # BACKOFF_BASE_SECONDS * 2**n) ("full jitter"), or the server's Retry-After if longer.
@@ -329,23 +336,28 @@ def reasoning(name: str) -> dict[str, Any]:
     return {"effort": name, "exclude": True}
 
 
-def response_format(schema: Mapping[str, Any], *, strict: bool = STRICT_SCHEMA) -> dict[str, Any]:
+def response_format(
+    schema: Mapping[str, Any], *, strict: bool = STRICT_SCHEMA, max_length: bool = True
+) -> dict[str, Any]:
     """The ``response_format`` asking for JSON that follows ``schema`` (G3), sent with no
     ``maxItems``: Google Vertex refuses the document card's schema with it (400
     INVALID_ARGUMENT, live 11 Oct 2026) and takes it without. Every caller caps its own
-    lists after the reply (card ``_capped``, invoice lines, memory, answer sentences)."""
+    lists after the reply (card ``_capped``, invoice lines, memory, answer sentences).
+    ``max_length`` False leaves every ``maxLength`` out too (a model not of
+    MAX_LENGTH_VENDOR)."""
+    left_out = {"maxItems"} if max_length else {"maxItems", "maxLength"}
     return {
         "type": "json_schema",
-        "json_schema": {"name": SCHEMA_NAME, "strict": strict, "schema": _without_max_items(schema)},
+        "json_schema": {"name": SCHEMA_NAME, "strict": strict, "schema": _without(schema, left_out)},
     }
 
 
-def _without_max_items(schema: Any) -> Any:
-    """``schema`` with every ``maxItems`` left out, at any depth; nothing else changes."""
+def _without(schema: Any, keys: set[str]) -> Any:
+    """``schema`` with every one of ``keys`` left out, at any depth; nothing else changes."""
     if isinstance(schema, Mapping):
-        return {key: _without_max_items(value) for key, value in schema.items() if key != "maxItems"}
+        return {key: _without(value, keys) for key, value in schema.items() if key not in keys}
     if isinstance(schema, list):
-        return [_without_max_items(value) for value in schema]
+        return [_without(value, keys) for value in schema]
     return schema
 
 
@@ -380,7 +392,8 @@ def chat_request(
     if max_output_tokens is not None:
         body["max_completion_tokens"] = max_output_tokens
     if schema is not None:
-        body["response_format"] = response_format(schema, strict=strict)
+        google = model.split("/", 1)[0] == MAX_LENGTH_VENDOR
+        body["response_format"] = response_format(schema, strict=strict, max_length=google)
     return body
 
 
@@ -827,32 +840,54 @@ class OpenRouterClient:
         return vectors
 
     def chat_json(
-        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
-        """One JSON object following ``schema``, from MODEL_CHAT. A first reply that does not
-        follow it goes back once for a repair; a second bad one raises ``invalid_output``. A
-        reply longer than ``max_tokens`` (thinking not counted) raises ``output_truncated``
-        with no repair."""
-        self._check_provider(DEFAULT_PROVIDER)
+        """One JSON object following ``schema``, from ``model`` at ``thinking`` through
+        ``provider`` (None: MODEL_CHAT, CHAT_THINKING_LEVEL, DEFAULT_PROVIDER; features
+        25-27, C7), with CHAT_THINKING_TOKENS of the level to think in. A provider outside
+        OPENROUTER_PROVIDERS raises ``ProviderNotAllowed`` before anything is sent. A first
+        reply that does not follow it goes back once for a repair; a second bad one raises
+        ``invalid_output``. A reply longer than ``max_tokens`` (thinking not counted) raises
+        ``output_truncated`` with no repair. ``deadline`` (on ``time.monotonic()``): both
+        tries end by then (``timeout`` once it has passed); None, each has the chat
+        timeout."""
+        if model is not None and not valid_model_id(model):
+            raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
+        slug = DEFAULT_PROVIDER if provider is None else provider
+        self._check_provider(slug)
+        level = CHAT_THINKING_LEVEL if thinking is None else thinking
+        if level not in CHAT_THINKING_TOKENS:
+            raise ValueError("unknown thinking level")
+        ends = None if deadline is None else self.now() + (deadline - time.monotonic())
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
         output_limit = self._default_chat_tokens if max_tokens is None else max_tokens
         body = chat_request(
-            model=self.chat_model,
+            model=self.chat_model if model is None else model,
             messages=messages,
-            thinking=CHAT_THINKING_LEVEL,
+            thinking=level,
             schema=schema,
-            max_output_tokens=output_limit + CHAT_THINKING_TOKENS,
+            max_output_tokens=output_limit + CHAT_THINKING_TOKENS[level],
+            provider_slug=slug,
         )
-        content, spent = self._chat_reply(body, output_limit, (0, 0))
+        content, spent = self._chat_reply(body, output_limit, (0, 0), ends)
         value, problem = parse_reply(content, schema)
         if value is not None:
             return value
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": REPAIR.format(problem=problem)})
-        content, spent = self._chat_reply(body, output_limit, spent)
+        content, spent = self._chat_reply(body, output_limit, spent, ends)
         value, _ = parse_reply(content, schema)
         if value is None:
             raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
@@ -939,11 +974,12 @@ class OpenRouterClient:
     # Internals.
 
     def _chat_reply(
-        self, body: dict[str, Any], max_tokens: int | None, before: tuple[int, int]
+        self, body: dict[str, Any], max_tokens: int | None, before: tuple[int, int], deadline: float | None
     ) -> tuple[str, tuple[int, int]]:
-        """(the reply's text, the tokens billed so far: ``before`` plus this reply's). Its
+        """(the reply's text, the tokens billed so far: ``before`` plus this reply's), by
+        ``deadline`` on ``now()`` (None: the chat timeout from now). Its
         ``ModelOutputError`` carries the same tokens."""
-        reply = self._call(CHAT_PATH, body, self.now() + self._chat_timeout)
+        reply = self._call(CHAT_PATH, body, self.now() + self._chat_timeout if deadline is None else deadline)
         text, _ = _billed_text(reply, before)
         input_tokens, output_tokens = reply_usage(reply)
         spent = (before[0] + input_tokens, before[1] + output_tokens)

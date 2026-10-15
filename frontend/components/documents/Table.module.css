@@ -59,6 +59,11 @@
     border-start-end-radius: var(--r-md);
   }
 
+  /* A control focused from the keyboard scrolls clear of the sticky header row too (2.4.11). */
+  .reflow tbody :is(a, button, input, select, summary) {
+    scroll-margin-top: calc(var(--topbar-space) + 4rem);
+  }
+
   .reflow td {
     height: 48px;
     padding-block: var(--space-2);

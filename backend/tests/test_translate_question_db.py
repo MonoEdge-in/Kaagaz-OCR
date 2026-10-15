@@ -48,7 +48,16 @@ class Model:
         return [axis(0) for _ in texts]
 
     def chat_json(
-        self, *, system: str, user: str, schema: Any, max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: Any,
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         if system == translate.SYSTEM_PROMPT:
             self.translated += 1

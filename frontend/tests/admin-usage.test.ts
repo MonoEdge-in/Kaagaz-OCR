@@ -59,7 +59,7 @@ const REPORT: UsageReport = {
     { ...totals({ cost_usd: 3 }), document_id: "d1", name: "Invoice 42.pdf" },
     { ...totals({ cost_usd: 0.003 }), document_id: null, name: "Deleted document" },
   ],
-  budget: budget(12.4, 50),
+  // Changed on purpose (features 25-27, 15 Oct 2026): GET /admin/usage sends no budget any more.
   ai_enabled: true,
 };
 

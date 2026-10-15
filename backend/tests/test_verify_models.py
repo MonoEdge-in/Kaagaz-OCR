@@ -18,6 +18,7 @@ import pytest
 
 from kaagaz import cli, verify_models
 from kaagaz.ai import openrouter
+from kaagaz.answering import draft
 from kaagaz.reading.gemini_ocr import PAGE_SCHEMA
 from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.settings import Settings
@@ -706,3 +707,62 @@ def test_record_checks_exactly_one_model(fake: OpenRouterFake, models: list[str]
     code, text, _ = _run(_settings(fake), *models, "--record")
     assert code == 2 and text == ""
     assert fake.requests == []
+
+
+# --- --chat (features 25-27, council 15 Oct 2026, C11) -------------------------------------
+
+
+def _answers(cited: list[int], total: str = "12,345.00") -> Any:
+    """openrouter_like, but a request with the answer's system prompt gets an answer citing
+    ``cited``."""
+
+    def responder(request: Recorded) -> Reply:
+        body = request.body if isinstance(request.body, dict) else {}
+        messages = body.get("messages") or [{}]
+        if messages[0].get("content") != draft.SYSTEM_PROMPT:
+            return openrouter_like(request)
+        sentence = {"text": f"The total of invoice 4471 is Rs {total}.", "evidence": cited}
+        return json_reply({"status": "answered", "sentences": [sentence]}, counts=usage(cost=0.0012))
+
+    return responder
+
+
+def _chat_run(fake: OpenRouterFake, record: Any) -> tuple[int, str, dict[str, tuple[str, str]]]:
+    out = io.StringIO()
+    code = verify_models.run(
+        _settings(fake), out, models=[FLASH], sleep=lambda seconds: None, chat=True, record_chat=record
+    )
+    lines = {}
+    for line in out.getvalue().splitlines():
+        if line.startswith("VERIFY "):
+            _, item, verdict, evidence = [*line.split(" ", 3), ""][:4]
+            lines[item] = (verdict, evidence)
+    return code, out.getvalue(), lines
+
+
+def test_chat_checks_a_model_for_answering_and_records_its_pass(fake: OpenRouterFake) -> None:
+    fake.responder = _answers([1])
+    recorded: list[str] = []
+    code, text, lines = _chat_run(fake, recorded.append)
+    assert code == 0, text
+    assert [item for item in lines if item not in ITEMS] == list(verify_models.CHAT_REQUIRED)
+    assert all(lines[item][0] == "PASS" for item in verify_models.CHAT_REQUIRED)
+    assert recorded == [FLASH]
+    assert f"RECORDED {FLASH} for answers, prompt {draft.ANSWER_PROMPT_HASH}" in text
+    efforts = [
+        r.body["reasoning"]["effort"]
+        for r in fake.requests
+        if r.body and r.body.get("messages", [{}])[0].get("content") == draft.SYSTEM_PROMPT
+    ]
+    assert sorted(set(efforts)) == ["high", "low", "medium"]
+
+
+@pytest.mark.parametrize(("cited", "total"), [([1, 2], "12,345.00"), ([2], "8,100.00"), ([1], "12,000.00")])
+def test_chat_records_nothing_when_the_answer_cites_the_wrong_evidence(
+    fake: OpenRouterFake, cited: list[int], total: str
+) -> None:
+    fake.responder = _answers(cited, total)
+    recorded: list[str] = []
+    code, text, lines = _chat_run(fake, recorded.append)
+    assert lines["chat_cites"][0] == "FAIL"
+    assert code == 1 and recorded == [] and f"NOT RECORDED {FLASH}" in text

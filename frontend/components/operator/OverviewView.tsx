@@ -454,7 +454,7 @@ function OrgTable({ data, names, announce }: { data: OverviewData; names: Readon
       ) : (
         <div className={table.reflowWrap}>
           <table className={`table ${table.reflow}`} role="table">
-            <caption className={admin.caption}>Organisations at a glance, {sort.label.toLocaleLowerCase()}</caption>
+            <caption className="visually-hidden">Organisations at a glance, {sort.label.toLocaleLowerCase()}</caption>
             <thead role="rowgroup">
               <tr role="row">
                 {COLUMNS.map((column) => (

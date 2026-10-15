@@ -128,12 +128,17 @@ export const REFUSALS: Record<string, string> = {
   deleting: "This organisation is being deleted.",
   taken: "That e-mail is already in use.",
   not_found: ORG_NOT_FOUND,
-  // Model choice (council 11 Oct 2026): a model and an organisation's models.
+  // Model choice (council 11 Oct 2026) and AI settings (features 25-27, C10): a model, an
+  // organisation's settings and the platform defaults.
   not_eligible: "This model does not pass the catalogue's rules now, so it can't be enabled.",
-  not_verified: "This model has not passed verify-models for the reader's current prompt. Run it with --record first.",
-  in_use: "An organisation still reads with this model. Remove it from every organisation first.",
-  unavailable: "One of these models is not enabled on the platform now. Reload and choose again.",
-  default_not_allowed: "Choose the default scan model from the ticked models.",
+  not_verified: "A model has not passed verify-models for the current prompt. Run it with --record first.",
+  chat_not_verified: "An answering model has not passed verify-models for the current answer prompt. Run it with --record first.",
+  in_use: "An organisation or the platform defaults still use this model. Remove it from every organisation and the defaults first.",
+  unavailable: "One of these models is not enabled on the platform now, or can't do this work. Reload and choose again.",
+  default_not_allowed: "Choose each default from its own ticked list.",
+  level_not_supported: "A chosen model does not accept one of these thinking levels. Choose levels every model accepts.",
+  needs_two_models_scan: "Dynamic and Ensemble need at least two scanning models. Tick another model or turn them off.",
+  needs_two_models_chat: "Ensemble needs at least two answering models. Tick another, or tick none to follow the platform defaults.",
 };
 
 /** Plain words for a refused change. A 409 keeps the server's own sentence

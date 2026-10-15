@@ -128,7 +128,8 @@ export function dateChipText(from: string | null, to: string | null): string {
 }
 
 /** The heading when the search or the filters leave nothing to list. */
-export function noMatchTitle(q: string, filtered: boolean): string {
+export function noMatchTitle(q: string, filtered: boolean, attentionOnly = false): string {
+  if (q === "" && attentionOnly) return "Nothing needs attention.";
   if (q === "") return "No documents match these filters.";
   return filtered
     ? `No document names contain “${q}” with these filters.`

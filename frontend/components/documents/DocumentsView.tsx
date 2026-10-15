@@ -26,7 +26,7 @@ import { markReceived } from "@/lib/timeLeft";
 import { useSession } from "@/lib/session";
 import { usePoll } from "@/lib/usePoll";
 import type { DocumentList, DocumentSearch, DocumentSummary, Folder, Tag } from "@/lib/types";
-import { DocumentsTable } from "./DocumentsTable";
+import { DocumentsTable, listScrollKey } from "./DocumentsTable";
 import { FolderActions } from "./FolderActions";
 import { FolderNav } from "./FolderNav";
 import { buildTree, folderPath } from "./folderTree";
@@ -65,6 +65,13 @@ interface Loaded {
 }
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
+
+// Back from a document: the browser restores the scroll against the short
+// loading skeleton, so the list puts it back itself once its rows are in.
+const back = { pending: false };
+if (typeof window !== "undefined") {
+  window.addEventListener("popstate", () => (back.pending = location.pathname === "/documents"));
+}
 const DRAWER_ID = "documents-folders";
 
 const errorText = (caught: unknown) =>
@@ -78,7 +85,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const versionOf = useRef<DocumentSummary | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const viewKey = libraryHref(library);
-  const [draft, setDraft] = useState("");
+  // The search box keeps what is typed itself: a key press never re-renders the list.
+  const searchRef = useRef<HTMLInputElement>(null);
   // The page belongs to the view it was turned in: a new folder or filter starts at page 1.
   const [search, setSearch] = useState({ view: viewKey, q: "", offset: 0 });
   const q = search.q;
@@ -189,6 +197,30 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const shown = loaded && loaded.view === viewKey ? loaded : null;
   const error = failure && failure.view === viewKey ? failure.message : null;
 
+  const scrollSettled = useRef(false);
+  useEffect(() => {
+    // Once, when the list first shows: a Back puts the saved place back; any other way
+    // here drops it, so an old place can't come back later.
+    if (!shown || scrollSettled.current) return;
+    scrollSettled.current = true;
+    if (!back.pending) {
+      try {
+        sessionStorage.removeItem(listScrollKey());
+      } catch {
+        // Storage blocked: nothing was kept.
+      }
+      return;
+    }
+    back.pending = false;
+    try {
+      const y = Number(sessionStorage.getItem(listScrollKey()));
+      sessionStorage.removeItem(listScrollKey());
+      if (y > 0) scrollTo(0, y);
+    } catch {
+      // Storage blocked: nothing was kept.
+    }
+  }, [shown]);
+
   const tree = useMemo(() => buildTree(folders ?? []), [folders]);
   const current = library.folderId === null ? null : (tree.byId.get(library.folderId) ?? null);
   const folderGone = folders !== null && library.folderId !== null && current === null;
@@ -230,16 +262,17 @@ export function DocumentsView({ library }: { library: LibraryState }) {
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSearch({ view: viewKey, q: draft.trim(), offset: 0 });
+    setSearch({ view: viewKey, q: (searchRef.current?.value ?? "").trim(), offset: 0 });
   }
 
   function clearSearch() {
-    setDraft("");
+    if (searchRef.current) searchRef.current.value = "";
     setSearch({ view: viewKey, q: "", offset: 0 });
   }
 
   function turnPage(nextOffset: number) {
     setSearch({ view: viewKey, q, offset: nextOffset });
+    headingRef.current?.focus(); // the pager's button is disabled while the page loads
   }
 
   // Moved to Trash, restored or deleted for good: the row has left this list.
@@ -302,7 +335,14 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     </button>
   );
   const readerSelect = (
-    <ReaderSelect readers={uploads.limits.readers} picked={uploads.reader} onPick={uploads.chooseReader} />
+    <ReaderSelect
+      readers={uploads.limits.readers}
+      picked={uploads.reader}
+      onPick={uploads.chooseReader}
+      ensemble={uploads.limits.ensemble ?? null}
+      agents={uploads.agents}
+      onAgents={uploads.chooseAgents}
+    />
   );
 
   return (
@@ -492,7 +532,6 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   limits={uploads.limits}
                   onFiles={addFiles}
                   onChoose={openPicker}
-                  readerChoice={readerSelect}
                 />
               )}
 
@@ -526,8 +565,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                             enterKeyHint="search"
                             autoComplete="off"
                             maxLength={MAX_SEARCH_LENGTH}
-                            value={draft}
-                            onChange={(event) => setDraft(event.target.value)}
+                            ref={searchRef}
+                            defaultValue={q}
                           />
                         </div>
                         <button type="submit" className="btn">
@@ -610,7 +649,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   {searchKey === null && view === "no-match" && (
                     <EmptyState
                       icon="search-off"
-                      title={noMatchTitle(q, filtered)}
+                      title={noMatchTitle(q, filtered, library.attention && !isFiltered({ ...library, attention: false }))}
                       headingLevel={3}
                       action={
                         <>

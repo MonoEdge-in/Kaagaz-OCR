@@ -158,6 +158,19 @@ Model choice and AI spend (council 11 Oct 2026), when the processor is given the
   The page threads keep the scope (``reading.socket`` copies the context).
 * Keyless (OCR_ENGINE=rapidocr, MODEL_ENABLED=false): neither, no query and no ledger.
 
+Dynamic and Ensemble reading (features 26 and 27, council 15 Oct 2026): ``job_reading``
+gives the document's whole ``Reading`` (``kaagaz.db.models.resolve_scan``, checked again
+at job time, S2). The checker and the counters look at every model of it (``run.models``).
+
+* Dynamic: after the first reading, the pages worth a careful read (``careful_pages``) are
+  read with Careful in a second reading through the readers (``_read_carefully``); the
+  other pages come back from the engine's memo with no call.
+* Ensemble: the other models read each page in its page thread (the engine), and each
+  value read by OCR that needs review is decided by the readers' majority, its vote saved
+  with it (``settle_votes``). Verified still needs the checker.
+* ``run_config.reading``: the reading, the escalated pages and cap hits, and the pages an
+  Ensemble model could not read (``_reading_config``).
+
 Memory: the file's bytes, its spans and one decoded page picture at a time
 (the checker). Time is linear in the spans apart from the
 sorts in the chunkers and extractors (O(n log n)).
@@ -211,9 +224,11 @@ from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import (
     LineMarks,
+    PageVotes,
     label_quoted,
     label_reading_marks,
     label_values,
+    settle_votes,
     spot_unsure,
 )
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
@@ -233,7 +248,15 @@ from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.ports import LeaseLost
 from kaagaz.jobs.worker import Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
-from kaagaz.reading.ocr import LOCAL_READ_BY, DocumentPages, PageCache, PageRead, is_word_mark
+from kaagaz.reading.ocr import (
+    ENSEMBLE_MAX_PAGES,
+    LOCAL_READ_BY,
+    DocumentPages,
+    PageCache,
+    PageRead,
+    careful_pages,
+    is_word_mark,
+)
 from kaagaz.reading.page_quality import (
     ISSUES,
     LOW_RESOLUTION,
@@ -267,6 +290,7 @@ from kaagaz.scanning.gate import (
 if TYPE_CHECKING:
     from kaagaz.ai.client import ModelClient
     from kaagaz.db.engine import Database
+    from kaagaz.db.models import Reading
     from kaagaz.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -612,11 +636,15 @@ class JobReading:
     """Who a job's model calls are billed to, and which model reads its scans (model choice
     and AI spend, council 11 Oct 2026, SP1, MS5): ``user_id`` is ``documents.read_requested_by``
     (None: no user asked, the upgrade sweep); ``model`` and ``provider`` are
-    ``kaagaz.db.models.resolve``'s, None when no model reads the scans (RapidOCR)."""
+    ``kaagaz.db.models.resolve``'s, None when no model reads the scans (RapidOCR).
+    ``reading`` is ``kaagaz.db.models.resolve_scan``'s whole answer (features 25-27: the
+    mode, Careful, Ensemble's other models, the thinking level and why anything fell back);
+    None with no model, or from a caller that knows the model only."""
 
     user_id: str | None
     model: str | None = None
     provider: str | None = None
+    reading: "Reading | None" = None
 
 
 class UsageScopes(Protocol):
@@ -678,6 +706,14 @@ class _Run:
     model: str | None = None
     provider: str | None = None
     user_id: str | None = None
+    # Features 25-27 (council 15 Oct 2026): the document's reading (JobReading.reading), every
+    # model that may read one of its pages (the main one, Careful, Ensemble's others: the
+    # checker reads the values of a page any of them read, C5), Dynamic's first reads by
+    # (page, pixels), and what the run adds to run_config.reading (escalated, cap_hit, ...).
+    reading: "Reading | None" = None
+    models: frozenset[str] = frozenset()
+    memo: dict[tuple[int, str], PageRead] | None = None
+    reading_notes: dict[str, Any] = field(default_factory=dict)
 
 
 class DocumentProcessor:
@@ -848,6 +884,11 @@ class DocumentProcessor:
             run.user_id = reading.user_id
             if reading.model is not None:
                 run.model, run.provider = reading.model, reading.provider
+            run.reading = reading.reading
+        extra = () if run.reading is None else (run.reading.careful, *run.reading.others)
+        run.models = frozenset(
+            model for model in (run.model, *(agent.model for agent in extra if agent is not None)) if model
+        )
         with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"):
             self._read_and_save(job, record, heartbeat, run)
 
@@ -892,6 +933,7 @@ class DocumentProcessor:
             return
         if self._ocr_meter is not None:
             run.page_reads = self._ocr_meter.take_page_reads()
+            spans = self._read_carefully(job, record, data, heartbeat, run, spans)
         run.reading_ended = self._timer()
 
         if not pages:
@@ -948,6 +990,9 @@ class DocumentProcessor:
         )
         local = {page_no for page_no, read in run.page_reads.items() if _handed_on(read)}
         values = label_reading_marks(values, marks, local)  # V4, G5, Q7
+        votes = _page_votes(run.page_reads)
+        if votes:  # Ensemble (F27): the readers' majority decides each value that needs review
+            values = settle_votes(values, votes, readings, checked=checked, lines=marks, local_pages=local)
         pages = _with_results(pages, run.page_reads, disputed)
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
@@ -1174,10 +1219,11 @@ class DocumentProcessor:
         the values left stay single reader. One page picture at a time, drawn again
         (``Prepared.picture``): the pixels preparing drew, lossless. A reading of nothing
         is no reading."""
-        checker, model = self._checker, run.model
-        if checker is None or model is None:
+        checker = self._checker
+        if checker is None or not run.models:
             return {}, set()
-        checker_pages = {page_no for page_no, read in run.page_reads.items() if read.read_by == model}
+        # C5: a page Careful or another Ensemble model read is checked like the main model's.
+        checker_pages = {page_no for page_no, read in run.page_reads.items() if read.read_by in run.models}
         wanted: dict[int, dict[BoxLocation, bool]] = {}  # page -> {box: Devanagari}, in order, once each
         for value in values:
             box = value.location
@@ -1206,16 +1252,24 @@ class DocumentProcessor:
                         readings[box] = text
         return readings, checked
 
-    def _reading_document(self, job: Job, run: _Run) -> contextlib.AbstractContextManager[None]:
+    def _reading_document(
+        self, job: Job, run: _Run, *, escalate: frozenset[int] = frozenset()
+    ) -> contextlib.AbstractContextManager[None]:
         """The document's page cache, open around its reading (PRD 5 G7, F5), with the pages
         a user asked to read again (kept on the run, for its counters) and the job's model
         and provider; nothing to open without a meter or a page cache. One short query for
-        the pages."""
+        the pages. With the document's ``Reading`` (features 25-27): its thinking level,
+        Ensemble's other models, or Dynamic's Careful with its memo of first reads and the
+        pages to read again with it (``escalate``, the second reading)."""
         meter, cache = self._ocr_meter, self._page_cache
         if meter is None or cache is None:
             return contextlib.nullcontext()
         if self._read_again is not None:
             run.read_again = frozenset(self._read_again.pages_to_read_again(job.customer_id, job.document_id))
+        reading = run.reading
+        careful = None if reading is None or reading.mode != "dynamic" else reading.careful
+        if careful is not None and run.memo is None:
+            run.memo = {}
         pages = DocumentPages(
             customer_id=job.customer_id,
             document_id=job.document_id,
@@ -1223,8 +1277,46 @@ class DocumentProcessor:
             read_again=run.read_again,
             model=run.model,
             provider=run.provider,
+            thinking=None if reading is None else reading.thinking,
+            others=()
+            if reading is None
+            else tuple((agent.model, agent.provider) for agent in reading.others),
+            careful=None if careful is None else (careful.model, careful.provider),
+            escalate=escalate,
+            memo=None if careful is None else run.memo,
         )
         return meter.document(pages)
+
+    def _read_carefully(
+        self,
+        job: Job,
+        record: DocumentRecord,
+        data: bytes,
+        heartbeat: Heartbeat,
+        run: _Run,
+        spans: list[Span],
+    ) -> list[Span]:
+        """Dynamic (F26, C5), after the first reading: the pages worth a careful read
+        (``careful_pages``: worst first, at most DYNAMIC_MAX_PAGES), noted for
+        run_config.reading, and when there are any, the document read a second time through
+        the readers, where each page's first read comes back from the memo with no call and
+        those pages are read with Careful (the engine's ``_dynamic``). The second reading's
+        spans and page reads are the document's. ``spans`` unchanged otherwise."""
+        reading, meter = run.reading, self._ocr_meter
+        if meter is None or run.memo is None or reading is None or run.model is None:
+            return spans
+        chosen, cap_hit = careful_pages(run.page_reads, lead=run.model, read_again=run.read_again)
+        run.reading_notes.update(escalated=chosen, cap_hit=cap_hit)
+        if not chosen:
+            return spans
+
+        def beat(_read: RouteDecision | None) -> None:
+            heartbeat()
+
+        with self._reading_document(job, run, escalate=frozenset(page["page"] for page in chosen)):
+            spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=beat))
+        run.page_reads = {**run.page_reads, **meter.take_page_reads()}
+        return spans
 
     def _fail_unreadable(self, run: _Run, pages: Sequence[PageRecord]) -> None:
         """F4: ``JobFailed("unreadable")`` when every page that is not blank was read and
@@ -1273,7 +1365,7 @@ class DocumentProcessor:
             return None
         ended = self._timer()
         checked_by = self._checker_model if run.checker_crops else None
-        counters = _reader_counters(page_reads, run.model, run.read_again)
+        counters = _reader_counters(page_reads, run.models, run.read_again)
         model_in, model_out = self._model_tokens()
         counters["input_tokens"] += max(0, model_in - run.model_tokens_at_start[0])
         counters["output_tokens"] += max(0, model_out - run.model_tokens_at_start[1])
@@ -1302,6 +1394,7 @@ class DocumentProcessor:
                 **run.version_marks,
                 **_step_seconds(run, ended),
                 **({"read_model": run.model} if run.model is not None else {}),
+                **({"reading": _reading_config(run, page_reads)} if run.reading is not None else {}),
             },
             **counters,
             pages_unreadable=run.pages_unreadable,
@@ -1535,17 +1628,16 @@ def _with_result(page: PageRecord, read: PageRead | None, disputed: int) -> Page
 
 
 def _reader_counters(
-    page_reads: Mapping[int, PageRead], ocr_model: str | None, read_again: Collection[int]
+    page_reads: Mapping[int, PageRead], models: Collection[str], read_again: Collection[int]
 ) -> dict[str, int]:
     """A run's reader counters (``kaagaz.db.runs.READER_COUNTERS``) but pages_unreadable,
-    from its page reads: pages the reading model read and billed (not from the cache),
+    from its page reads: pages a reading model read and billed (not from the cache),
     pages the reading model handed to its local reader (``_handed_on``: a page read with
     no key, or by another engine, is not one), pages from the cache, pages read again on request by the model,
-    and the tokens billed. With no ``ocr_model`` no page is the model's. O(pages)."""
+    and the tokens billed. ``models``: the run's reading models (the main one, Careful,
+    Ensemble's others); with none no page is a model's. O(pages)."""
     reads = list(page_reads.items())
-    billed = [
-        n for n, read in reads if ocr_model is not None and read.read_by == ocr_model and not read.cached
-    ]
+    billed = [n for n, read in reads if read.read_by in models and not read.cached]
     return {
         "pages_gemini": len(billed),
         "pages_local": sum(_handed_on(read) for _, read in reads),
@@ -1565,6 +1657,38 @@ def _handed_on(read: PageRead) -> bool:
     """The page was read by the backup reader for the reading model (``HANDED_ON``),
     whatever engine read it: never a page read with no key."""
     return not HANDED_ON.isdisjoint(read.issues)
+
+
+def _page_votes(page_reads: Mapping[int, PageRead]) -> dict[int, PageVotes]:
+    """Ensemble (F27): each page the other models read too, as ``settle_votes`` takes it:
+    (the model that read the page, [(each other model, its spans or None)]). O(pages)."""
+    return {
+        page_no: (read.read_by, [(other.model, other.spans) for other in read.others])
+        for page_no, read in page_reads.items()
+        if read.others
+    }
+
+
+def _reading_config(run: _Run, page_reads: Mapping[int, PageRead]) -> dict[str, Any]:
+    """``processing_runs.config.reading`` (S5a, C5, C6, M7): the document's ``Reading`` (ids,
+    providers, mode, thinking, notes), what the run found (Dynamic's escalated pages with
+    their reasons and cap_hit), and for Ensemble the pages another model could not read
+    (``pages_short``) and the pages past ENSEMBLE_MAX_PAGES read by one model only
+    (``pages_single``). O(pages)."""
+    reading = run.reading
+    config = {} if reading is None else reading.config()
+    config.update(run.reading_notes)
+    if reading is not None and reading.mode == "ensemble":
+        config["pages_short"] = sorted(
+            page_no
+            for page_no, read in page_reads.items()
+            if any(other.spans is None for other in read.others)
+        )
+        config["pages_single"] = sum(
+            page_no > ENSEMBLE_MAX_PAGES and read.read_by in run.models
+            for page_no, read in page_reads.items()
+        )
+    return config
 
 
 def _line_marks(spans: Sequence[Span]) -> tuple[dict[BoxLocation, LineMarks], dict[BoxLocation, str]]:
@@ -1693,7 +1817,7 @@ def build_processor(
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
-    from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION, MeteredOcrEngine
+    from kaagaz.reading.ocr import GEMINI, MeteredOcrEngine
     from kaagaz.reading.rapid_pool import shared_pool
     from kaagaz.reading.wiring import build_ocr_engine, build_reader_socket, reader_config
     from kaagaz.search.indexing import embed_pieces
@@ -1728,18 +1852,16 @@ def build_processor(
     job_reading: Callable[[str, str], JobReading] | None = None
     if gemini or model is not None:
         requested_by = text("SELECT read_requested_by FROM documents WHERE customer_id = :c AND id = :d")
-        prompt_version = READER_PROMPT_VERSION if gemini else None
 
         def read_job(customer_id: str, document_id: str) -> JobReading:
             with unavailable(), db.customer(customer_id) as conn:
                 user = conn.execute(requested_by, {"c": customer_id, "d": document_id}).scalar_one_or_none()
                 user_id = None if user is None else str(user)
-                if prompt_version is None:
+                if not gemini:
                     return JobReading(user_id)
-                read_model, provider = models.resolve(
-                    conn, customer_id, document_id, settings=settings, prompt_version=prompt_version
-                )
-            return JobReading(user_id, read_model, provider)
+                # Features 25-27 (S2): the worker's own check of the mode and every model, now.
+                scan = models.resolve_scan(conn, customer_id, document_id, settings=settings)
+            return JobReading(user_id, scan.lead.model, scan.lead.provider, reading=scan)
 
         job_reading = read_job
 

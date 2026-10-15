@@ -10,7 +10,7 @@ import { useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { PageViewer } from "@/components/viewer/PageViewer";
-import { fieldText, reasonText } from "@/components/viewer/labels";
+import { fieldText, reasonText, voteText } from "@/components/viewer/labels";
 import { CONFIDENCE_NOTE, confidenceText, notSure, routeOrigin } from "@/components/viewer/scanned";
 import { ApiError, resolveReview } from "@/lib/api";
 import { pageLink } from "@/lib/regions";
@@ -80,6 +80,7 @@ export function ReviewCard({
           <span className="tabular">Page {value.region.page}</span>
         </p>
         <p className={styles.reason}>{reasonText(value.label_reason)}</p>
+        {value.votes && <p className={styles.reason}>{voteText(value.votes)}</p>}
         {checks && <p className={styles.reason}>{checks}</p>}
         {(confidence || item.page.unit !== "cells") && (
           <p className={styles.reason}>

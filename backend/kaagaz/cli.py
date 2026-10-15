@@ -60,6 +60,8 @@
   ``--model``: when that model passes them all, its pass for the reader's prompt
   version and its tokens per page are written to ``model_catalog`` as the owner
   (``_owner``); the model must be in the catalogue (``refresh-models`` first).
+  ``--chat`` (features 25-27) checks each ``--model`` for drafting answers instead, and
+  ``--chat --record`` writes its pass for the answer prompt's hash the same way.
 * ``refresh-models``: read OpenRouter's model lists now and refresh ``model_catalog``
   (``kaagaz.jobs.catalog``, MC1), as the worker does once a day. Needs
   OPENROUTER_API_KEY. Prints counts only.
@@ -107,6 +109,7 @@ from kaagaz import verify_models
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.ai.openrouter import OpenRouterClient
 from kaagaz.ai.usage import usage_scope
+from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.api import totp
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.api.twostep import box
@@ -220,6 +223,7 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--record", action="store_true", help="write the one --model's pass to the catalogue when it passes"
     )
+    verify.add_argument("--chat", action="store_true", help="check each --model for answering instead")
 
     commands.add_parser("refresh-models", help="refresh the model catalogue from OpenRouter now")
 
@@ -563,6 +567,17 @@ def _record_verified(db: Database, model: str, tokens_in: int, tokens_out: int) 
         raise CliError(f"{model} is not in the model catalogue: run refresh-models first")
 
 
+def _record_chat_verified(db: Database, model: str) -> None:
+    """verify-models --chat --record (features 25-27): the model's pass for the answer
+    prompt's hash, as ``_record_verified`` (``model.chat_verified``)."""
+    with _owner(db) as conn:
+        found = operator_models_sql.record_chat_verified(conn, model, prompt_hash=ANSWER_PROMPT_HASH)
+        if found:
+            operators_sql.record(conn, "model.chat_verified", target_type="model", target_id=model[:64])
+    if not found:
+        raise CliError(f"{model} is not in the model catalogue: run refresh-models first")
+
+
 # --- measure (PRD 2 X4) -----------------------------------------------------------
 
 
@@ -780,14 +795,23 @@ def main(
             return 0
         if args.command == "verify-models":  # no database either, but --record's one row
             checked = settings or Settings.from_env(env)
-            record = None
+            record = record_chat = None
             if args.record:
                 if len(set(args.model)) != 1:
                     raise CliError("--record checks exactly one --model")
                 owner = db or Database(make_engine(checked.database_url), checked.db_app_role)
-                record = functools.partial(_record_verified, owner)
+                if args.chat:
+                    record_chat = functools.partial(_record_chat_verified, owner)
+                else:
+                    record = functools.partial(_record_verified, owner)
             return verify_models.run(
-                checked, stdout, models=args.model, embed_model=args.embed_model, record=record
+                checked,
+                stdout,
+                models=args.model,
+                embed_model=args.embed_model,
+                record=record,
+                chat=args.chat,
+                record_chat=record_chat,
             )
         if db is None:
             settings = settings or Settings.from_env(env)

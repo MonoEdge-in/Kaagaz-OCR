@@ -129,8 +129,9 @@ class ExtractedValueOriginTest(unittest.TestCase):
         value = ExtractedValue("document", "total_amount", "500", "500", BOX)
         self.assertIsNone(value.origin)
         # AR16: ..., value_date, label_location (PR 1), origin (PR 2), then quote (PR 5).
+        # Changed on purpose (features 25-27, 15 Oct 2026): then votes (Ensemble's vote).
         names = [field.name for field in dataclasses.fields(ExtractedValue)]
-        self.assertEqual(names[-3:], ["label_location", "origin", "quote"])
+        self.assertEqual(names[-4:], ["label_location", "origin", "quote", "votes"])
         self.assertLess(names.index("value_date"), names.index("origin"))
 
 

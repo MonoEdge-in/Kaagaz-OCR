@@ -58,9 +58,11 @@ import json
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Literal
 
 from kaagaz.ai.client import ModelClient, ModelOutputError
+from kaagaz.ai.replies import REPAIR
 from kaagaz.answering import glossary
 from kaagaz.answering.evidence import Evidence, has_token
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
@@ -119,6 +121,11 @@ ANSWER_SCHEMA: dict[str, Any] = {
     },
     "required": ["status", "sentences"],
 }
+
+# T7 (features 25-27): the one repair for a sentence over MAX_SENTENCE_CHARS.
+LONG_SENTENCE_REPAIR = REPAIR.format(
+    problem=f"a sentence's text is longer than {MAX_SENTENCE_CHARS} characters"
+)
 
 # ML amendment 10: which prompt and schema drafted an answer (logged with it, pinned by a test).
 ANSWER_PROMPT_HASH = hashlib.sha256(
@@ -224,12 +231,44 @@ def model_draft(
     *,
     max_tokens: int,
     cards: Sequence[str] = (),
+    chat_model: str | None = None,
+    thinking: str | None = None,
+    provider: str | None = None,
+    deadline: float | None = None,
 ) -> Draft:
     """Ask the model for a reply of at most ``max_tokens``. Raises ModelUnavailable, or
-    ModelOutputError for a reply of the wrong shape. ``cards``: M2's lines, never cited."""
+    ModelOutputError for a reply of the wrong shape. ``cards``: M2's lines, never cited.
+    ``chat_model``, ``thinking``, ``provider`` and ``deadline`` go to ``chat_json``
+    (features 25-27, C7). T7: a reply with a sentence over MAX_SENTENCE_CHARS (a model
+    sent the schema without maxLength) is asked for once more; a second one is
+    ``answer_shape``."""
     user = user_prompt(question, evidence, cards)
-    reply = model.chat_json(system=SYSTEM_PROMPT, user=user, schema=ANSWER_SCHEMA, max_tokens=max_tokens)
+    call = partial(
+        model.chat_json,
+        system=SYSTEM_PROMPT,
+        schema=ANSWER_SCHEMA,
+        max_tokens=max_tokens,
+        model=chat_model,
+        thinking=thinking,
+        provider=provider,
+        deadline=deadline,
+    )
+    reply = call(user=user)
+    if _too_long(reply):
+        reply = call(user=f"{user}\n\n{LONG_SENTENCE_REPAIR}")
     return _parse(reply)
+
+
+def _too_long(reply: dict[str, Any]) -> bool:
+    """A sentence ``_parse`` would keep is a string over MAX_SENTENCE_CHARS."""
+    raw = reply.get("sentences")
+    sentences = raw[:MAX_SENTENCES] if isinstance(raw, list) else []
+    return any(
+        isinstance(item, dict)
+        and isinstance(item.get("text"), str)
+        and len(item["text"]) > MAX_SENTENCE_CHARS
+        for item in sentences
+    )
 
 
 def extractive_draft(
@@ -277,6 +316,12 @@ def _holds(folded: str, keyword: str, expansion: Expansion) -> bool:
     return glossary.sounds_like(keyword, glossary.sound_words(folded)) or expansion.found(keyword, folded)
 
 
+def checked(reply: dict[str, Any]) -> Draft:
+    """A model's reply as the ``Draft`` an answer reads it as (verify-models' chat items):
+    ModelOutputError("answer_shape") when it can't be."""
+    return _parse(reply)
+
+
 def _parse(reply: dict[str, Any]) -> Draft:
     status = reply.get("status")
     raw_sentences = reply.get("sentences")
@@ -293,7 +338,8 @@ def _parse(reply: dict[str, Any]) -> Draft:
             raise ModelOutputError("answer_shape")
         # bool is an int in Python; a true/false id is not an id.
         numbers = [n for n in ids if isinstance(n, int) and not isinstance(n, bool)]
-        if len(numbers) != len(ids):
+        # T7: the length cap holds for every model, maxLength sent or not.
+        if len(numbers) != len(ids) or len(sentence_text) > MAX_SENTENCE_CHARS:
             raise ModelOutputError("answer_shape")
         sentences.append(DraftSentence(text=sentence_text, evidence=numbers))
     return Draft("answered", sentences)

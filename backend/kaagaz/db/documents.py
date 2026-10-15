@@ -217,10 +217,15 @@ _REPROCESSED_LATELY = (
     " AND target_id = :target AND created_at > now() - make_interval(mins => :minutes))"
 )
 
+# Features 26 and 27 (0026): the reading asked for. A mode given replaces read_also too, in
+# the same statement, so the ai_documents_read_mode_models check always sees a pair it
+# allows; a model or mode left out (NULL) keeps the document's (as listing.set_reading).
 _REPROCESS = (
     "UPDATE documents SET status = 'received', failure_code = NULL, attempts = 0, max_attempts = NULL,"
     " progress = NULL, read_requested_by = CAST(:by AS uuid),"
-    " read_model = COALESCE(CAST(:model AS text), read_model)"
+    " read_model = COALESCE(CAST(:m AS text), read_model),"
+    " read_mode = COALESCE(CAST(:mode AS text), read_mode),"
+    " read_also = CASE WHEN CAST(:mode AS text) IS NULL THEN read_also ELSE CAST(:also AS text[]) END"
     " WHERE customer_id = :c AND id = :d AND status IN ('ready', 'failed', 'needs_reader')"
     " AND deleted_at IS NULL"
 )
@@ -234,12 +239,15 @@ def mark_for_reprocess(
     per_hour: int,
     requested_by: str | None = None,
     read_model: str | None = None,
+    read_mode: str | None = None,
+    read_also: Sequence[str] = (),
 ) -> str | None:
     """Set the document to be read again (X1), and return the status it had; None
     when this customer has no such document. ``requested_by`` is who asked: the reading's
     scan spend is billed to them (SP1; None: the system). ``read_model``, when given,
     replaces the model the document asked for (MS5; the caller checked it is allowed);
-    None keeps it.
+    None keeps it. ``read_mode``, when given, replaces its mode and Ensemble's other
+    readers (``read_also``); None keeps both (features 26 and 27).
 
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes
     first, and is waited for, never skipped: a family being moved to Trash is
@@ -264,7 +272,8 @@ def mark_for_reprocess(
     lately = {**params, "target": document_id, "minutes": REPROCESS_COOLDOWN_MINUTES}
     if conn.execute(text(_REPROCESSED_LATELY), lately).scalar_one():
         raise ReprocessLimited("cooldown")
-    conn.execute(text(_REPROCESS), {**params, "by": requested_by, "model": read_model})
+    reading = {"m": read_model, "mode": read_mode, "also": list(read_also)}
+    conn.execute(text(_REPROCESS), {**params, "by": requested_by, **reading})
     return str(state.status)
 
 

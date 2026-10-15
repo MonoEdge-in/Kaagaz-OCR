@@ -14,7 +14,7 @@
 // to read." (PRD 5 F6, U7). Its chip pointed at or focused lights the card (data-hot).
 
 import Link from "next/link";
-import { useRef } from "react";
+import { memo, useRef } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { useDocumentDetail } from "@/components/viewer/documentCache";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
@@ -70,7 +70,9 @@ function LazySourcePreview({ citation }: { citation: Citation }) {
   );
 }
 
-export function SourceCard({
+// Memo: a chip pointed at or focused re-renders only the two cards whose `hot`
+// changed, not every card and preview of the answer.
+export const SourceCard = memo(function SourceCard({
   citation,
   messageId,
   hot = false,
@@ -173,4 +175,4 @@ export function SourceCard({
       </div>
     </article>
   );
-}
+});

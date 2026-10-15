@@ -840,7 +840,8 @@ def test_chat_json_sends_the_system_prompt_first_the_schema_and_default_budget(f
         "messages": [{"role": "system", "content": "rules"}, {"role": "user", "content": "question"}],
         "stream": False,
         "reasoning": {"effort": "low", "exclude": True},
-        "max_completion_tokens": 512 + CHAT_THINKING_TOKENS,
+        # Changed on purpose (features 25-27, 15 Oct 2026): the room to think is per level now.
+        "max_completion_tokens": 512 + CHAT_THINKING_TOKENS["low"],
         "provider": THE_PROVIDER_BLOCK,
         "response_format": {
             "type": "json_schema",
@@ -860,7 +861,8 @@ def test_chat_json_holds_the_reply_to_the_callers_budget(fake: OpenRouterFake) -
     )
     client = _client(fake.url, Clock())
     assert client.chat_json(system="s", user="u", schema=SCHEMA, max_tokens=512) == GOOD
-    assert fake.bodies()[0]["max_completion_tokens"] == 512 + CHAT_THINKING_TOKENS
+    # Changed on purpose (features 25-27, 15 Oct 2026): the room to think is per level now.
+    assert fake.bodies()[0]["max_completion_tokens"] == 512 + CHAT_THINKING_TOKENS["low"]
     with pytest.raises(ModelOutputError) as caught:
         client.chat_json(system="s", user="u", schema=SCHEMA, max_tokens=512)
     assert caught.value.code == "output_truncated"

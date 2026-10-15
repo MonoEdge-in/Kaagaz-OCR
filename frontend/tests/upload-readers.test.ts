@@ -113,11 +113,14 @@ describe("the Read with select in the source", () => {
     expect(select).toContain("className={`input ");
   });
 
-  it("is offered beside Upload files and in the slim dropzone", () => {
+  it("is offered once, beside Upload files", () => {
     const view = readFileSync(join(__dirname, "..", "components/documents/DocumentsView.tsx"), "utf8");
     // Changed on purpose (UI quality council, 15 Oct 2026): the header hides Upload on an empty list, whose empty state has its own.
     expect(view).toMatch(/\{readerSelect\}\s*\{view !== "empty" && uploadButton\}/);
-    expect(view).toContain("readerChoice={readerSelect}");
+    // Changed on purpose (UI touch-up council, 15 Oct 2026): the slim dropzone no longer repeats
+    // it; two "Read with" pickers on one screen looked like two different choices.
+    expect(view.match(/\{readerSelect\}/g)).toHaveLength(1);
+    expect(readFileSync(join(__dirname, "..", "components/documents/UploadArea.tsx"), "utf8")).not.toContain("readerChoice");
   });
 });
 
@@ -202,7 +205,9 @@ describe("Read again for the whole document (MS4)", () => {
   it("is offered in the Read again question, and per-page Read again has no model choice", () => {
     const dialog = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/ReadAgain.tsx"), "utf8");
     // The select starts on the document's own model (read_model), not the default.
-    expect(dialog).toContain("<ReaderSelect readers={readers} picked={picked ?? readModel} onPick={setPicked} />");
+    // Changed on purpose (features 25-27, 15 Oct 2026): the select also offers more than one reader.
+    expect(dialog).toMatch(/<ReaderSelect\s+readers=\{readers\}\s+picked=\{picked \?\? readModel\}\s+onPick=\{setPicked\}/);
+    expect(dialog).toContain("ensemble={ensemble}");
     const view = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/DocumentView.tsx"), "utf8");
     expect(view).toContain("readModel={detail.read_model}");
     expect(dialog).toContain("reprocessDocument(documentId, model)");

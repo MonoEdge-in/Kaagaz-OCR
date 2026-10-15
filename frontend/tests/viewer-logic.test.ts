@@ -287,6 +287,14 @@ describe("labels in words", () => {
     expect(fieldText("invoice_number")).toBe("Invoice number");
   });
 
+  it("keeps tax and bank short forms in capitals in a field's name", () => {
+    expect(fieldText("seller_gstin")).toBe("Seller GSTIN");
+    expect(fieldText("ifsc")).toBe("IFSC");
+    expect(fieldText("cgst_amount")).toBe("CGST amount");
+    expect(fieldText("tax_total")).toBe("Tax total");
+    expect(fieldText("pancake_count")).toBe("Pancake count");
+  });
+
   it("gives each label its own shape and icon", () => {
     expect(labelBadgeClass("verified")).toBe("badge badge-verified");
     expect(labelBadgeClass("needs_review")).toBe("badge badge-review");

@@ -3,8 +3,8 @@
 // Organisations, the first tab of /operator: every organisation with its
 // status and counts only (never a document's or a person's name), a search by
 // name, and Create organisation. Admins opens one organisation's admins
-// (AdminsDialog); AI models opens its models, default and budget (OrgModelsDialog,
-// model choice). Each change opens a dialog (ConfirmDialog): disable, enable,
+// (AdminsDialog); AI settings opens its scanning and answering settings, Ensemble and
+// budget (OrgAiSettings, features 25-27). Each change opens a dialog (ConfirmDialog): disable, enable,
 // delete (only a disabled organisation) and cancel the deletion; a row being
 // deleted shows its date and the days left. Auto-filing (feature 28) is allowed or
 // stopped per organisation, also in a ConfirmDialog. The table is the shared reflow
@@ -25,7 +25,7 @@ import type { Confirm } from "./ConfirmDialog";
 import { autofileConfirm, orgConfirm, orgFocusId } from "./confirms";
 import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
-import { OrgModelsDialog, orgModelsFocusId } from "./OrgModelsDialog";
+import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -204,7 +204,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
         />
       )}
       {adminsOf && <AdminsDialog org={adminsOf} onClose={() => setAdminsOf(null)} />}
-      {modelsOf && <OrgModelsDialog org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
+      {modelsOf && <OrgAiSettings org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
       {changing && (
         <ConfirmDialog
           confirm={changing}
@@ -288,13 +288,13 @@ function OrgRow(props: {
           </button>
           {org.status !== "deleting" && (
             <button
-              id={orgModelsFocusId(org.id)}
+              id={orgAiFocusId(org.id)}
               type="button"
               className="btn"
               onClick={onModels}
-              aria-label={`AI models of ${org.name}`}
+              aria-label={`AI settings of ${org.name}`}
             >
-              AI models
+              AI settings
             </button>
           )}
           {org.status !== "deleting" && (

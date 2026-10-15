@@ -120,6 +120,7 @@
 
 .flags {
   display: flex;
+  hyphens: auto;
   flex-direction: column;
   gap: var(--space-1);
   margin: 0;

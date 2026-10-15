@@ -17,10 +17,16 @@ requests, no 429 storm). A model is **eligible** when it passes every rule (fact
    ``status`` 0 that lists ``structured_outputs``, whose base slug (the tag before any
    ``/``) is in OPENROUTER_PROVIDERS, the processors Vrushit approved;
 6. its ``reasoning.supported_efforts`` include OCR_THINKING_LEVEL and
-   OCR_RETRY_THINKING_LEVEL.
+   OCR_RETRY_THINKING_LEVEL;
+7. its vendor, the part of its id before "/", is in OPENROUTER_MODEL_VENDORS (features
+   25-27, S1; default google and anthropic, Tushar's decision of 15 Oct 2026).
 
-Rule 7, a ``verify-models --record`` pass, is kept apart (``verified_*``, written by the
-owner): the operator can enable only an eligible, verified model (0023).
+A model is **chat eligible** (features 25-27, C11), may draft answers, by rules 1, 3, 4,
+5 and 7 and, for 2 and 6, text in and text out only and CHAT_EFFORT among its efforts.
+
+A ``verify-models --record`` pass is kept apart (``verified_*`` for scans,
+``chat_verified_*`` for answers, written by the owner): the operator can enable only an
+eligible, verified model (0023, 0026).
 
 **Everything OpenRouter sends is untrusted.** An id must match ``MODEL_ID`` before it is
 put in a path; a name loses its control and format characters and is clamped to
@@ -28,12 +34,12 @@ put in a path; a name loses its control and format characters and is clamped to
 provider slug must match ``PROVIDER_SLUG`` and an effort ``EFFORT``, at most ``MAX_LIST``
 of each. A model breaking any of these is left out, as if not listed.
 
-``save`` upserts the models that pass rules 1 to 4 and 6 (their ``eligible`` from rule 5)
-into ``model_catalog``, writing the refresh columns only, and sets ``eligible`` false on
-every other row: rows are never deleted. A candidate whose endpoint list can't be read is
-skipped, its row left as it was. A refresh that cannot read ``/models`` or
-``/endpoints/zdr`` changes nothing (``CatalogUnavailable``), so an outage never makes the
-catalogue empty.
+``save`` upserts the models that pass the scan or the answer rules but 5 and 7 (their
+``eligible`` and ``chat_eligible`` from those) into ``model_catalog``, writing the refresh
+columns only, and sets both false on every other row: rows are never deleted. A
+candidate whose endpoint list can't be read is skipped, its row left as it was. A refresh
+that cannot read ``/models`` or ``/endpoints/zdr`` changes nothing (``CatalogUnavailable``),
+so an outage never makes the catalogue empty.
 
 ``RefreshCatalog`` runs it between jobs once every ``REFRESH_EVERY`` (a day), under the
 sweep lock (PRD 5 Q3), and again after ``RETRY_AFTER_FAILURE`` (an hour) when a pass
@@ -89,6 +95,9 @@ STRUCTURED = "structured_outputs"
 NEEDED_PARAMETERS = frozenset({"response_format", STRUCTURED})
 # 0023's CHECK on model_catalog.efforts.
 EFFORT = re.compile(r"[a-z]{1,16}")
+# The level every chat_json call may think at (openrouter.CHAT_THINKING_LEVEL): an answer
+# model must take it (features 25-27, C11).
+CHAT_EFFORT = "low"
 
 
 class CatalogUnavailable(Exception):
@@ -117,6 +126,7 @@ class CatalogModel:
     efforts: tuple[str, ...]
     expires_on: date | None
     eligible: bool
+    chat_eligible: bool = False  # features 25-27, C11: may draft answers
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,8 +191,11 @@ def _expires(value: object, today: date) -> tuple[bool, date | None]:
 
 
 def candidate(item: object, *, efforts: frozenset[str], today: date) -> CatalogModel | None:
-    """One ``/models`` item as a model with no providers yet, when it passes rules 1 to 4
-    and 6 and every value has its shape; else None."""
+    """One ``/models`` item as a model with no providers yet, when every value has its
+    shape and it passes rules 1, 3 and 4 and either the scan rules 2 and 6 (``eligible``
+    True here: a scan candidate) or the answer rules (``chat_eligible`` True here: text in
+    and out only, CHAT_EFFORT among its efforts); else None. ``fetch`` then decides both
+    flags from its endpoints and the vendor."""
     if not isinstance(item, dict):
         return None
     model_id = item.get("id")
@@ -194,8 +207,8 @@ def candidate(item: object, *, efforts: frozenset[str], today: date) -> CatalogM
         _strings(architecture.get("input_modalities")),
         _strings(architecture.get("output_modalities")),
     )
-    if inputs is None or "image" not in inputs or outputs is None or set(outputs) != {"text"}:
-        return None  # rule 2
+    if inputs is None or outputs is None or set(outputs) != {"text"}:
+        return None  # rule 2: text out only
     parameters = _strings(item.get("supported_parameters"))
     if parameters is None or not set(parameters) >= NEEDED_PARAMETERS:
         return None  # rule 3
@@ -205,8 +218,12 @@ def candidate(item: object, *, efforts: frozenset[str], today: date) -> CatalogM
     reasoning = item.get("reasoning")
     offered = _strings(reasoning.get("supported_efforts")) if isinstance(reasoning, dict) else None
     shown = None if offered is None else _valid_list(offered, _effort)
-    if shown is None or not efforts <= set(shown):
-        return None  # rule 6
+    if shown is None:
+        return None
+    scan = "image" in inputs and efforts <= set(shown)  # rules 2 and 6
+    chat = "text" in inputs and CHAT_EFFORT in shown  # features 25-27, C11
+    if not (scan or chat):
+        return None
     pricing = item.get("pricing")
     pricing = pricing if isinstance(pricing, dict) else {}
     price_in, price_out = _price_per_m(pricing.get("prompt")), _price_per_m(pricing.get("completion"))
@@ -220,7 +237,8 @@ def candidate(item: object, *, efforts: frozenset[str], today: date) -> CatalogM
         providers=(),
         efforts=shown,
         expires_on=expires_on,
-        eligible=False,
+        eligible=scan,
+        chat_eligible=chat,
     )
 
 
@@ -311,7 +329,10 @@ def fetch(
             continue
         providers = _valid_list((slug for slug, parameters in endpoints if STRUCTURED in parameters), _slug)
         providers = providers or ()  # more than MAX_LIST: none counts
-        eligible = any(slug in settings.openrouter_providers for slug in providers)
+        # Rule 5, and S1: a vendor outside OPENROUTER_MODEL_VENDORS is never eligible.
+        allowed = any(slug in settings.openrouter_providers for slug in providers) and (
+            model.id.split("/", 1)[0] in settings.openrouter_model_vendors
+        )
         models.append(
             CatalogModel(
                 model.id,
@@ -321,7 +342,8 @@ def fetch(
                 providers,
                 model.efforts,
                 model.expires_on,
-                eligible,
+                model.eligible and allowed,
+                model.chat_eligible and allowed,
             )
         )
     return Fetched(models, tuple(skipped))
@@ -329,16 +351,17 @@ def fetch(
 
 _UPSERT = text(
     "INSERT INTO model_catalog (id, name, price_in_usd_per_m, price_out_usd_per_m, providers, efforts,"
-    " expires_on, eligible, seen_at)"
+    " expires_on, eligible, chat_eligible, seen_at)"
     " VALUES (:id, :name, :price_in, :price_out, CAST(:providers AS text[]), CAST(:efforts AS text[]),"
-    " :expires_on, :eligible, now())"
+    " :expires_on, :eligible, :chat_eligible, now())"
     " ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, price_in_usd_per_m = EXCLUDED.price_in_usd_per_m,"
     " price_out_usd_per_m = EXCLUDED.price_out_usd_per_m, providers = EXCLUDED.providers,"
     " efforts = EXCLUDED.efforts, expires_on = EXCLUDED.expires_on, eligible = EXCLUDED.eligible,"
-    " seen_at = EXCLUDED.seen_at"
+    " chat_eligible = EXCLUDED.chat_eligible, seen_at = EXCLUDED.seen_at"
 )
 _NOT_LISTED = text(
-    "UPDATE model_catalog SET eligible = false WHERE eligible AND id <> ALL(CAST(:ids AS text[]))"
+    "UPDATE model_catalog SET eligible = false, chat_eligible = false"
+    " WHERE (eligible OR chat_eligible) AND id <> ALL(CAST(:ids AS text[]))"
 )
 
 
@@ -359,6 +382,7 @@ def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[st
             "efforts": list(model.efforts),
             "expires_on": model.expires_on,
             "eligible": model.eligible,
+            "chat_eligible": model.chat_eligible,
         }
         for model in models
     ]
