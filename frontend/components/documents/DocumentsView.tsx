@@ -85,7 +85,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const versionOf = useRef<DocumentSummary | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const viewKey = libraryHref(library);
-  const [draft, setDraft] = useState("");
+  // The search box keeps what is typed itself: a key press never re-renders the list.
+  const searchRef = useRef<HTMLInputElement>(null);
   // The page belongs to the view it was turned in: a new folder or filter starts at page 1.
   const [search, setSearch] = useState({ view: viewKey, q: "", offset: 0 });
   const q = search.q;
@@ -261,11 +262,11 @@ export function DocumentsView({ library }: { library: LibraryState }) {
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSearch({ view: viewKey, q: draft.trim(), offset: 0 });
+    setSearch({ view: viewKey, q: (searchRef.current?.value ?? "").trim(), offset: 0 });
   }
 
   function clearSearch() {
-    setDraft("");
+    if (searchRef.current) searchRef.current.value = "";
     setSearch({ view: viewKey, q: "", offset: 0 });
   }
 
@@ -564,8 +565,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                             enterKeyHint="search"
                             autoComplete="off"
                             maxLength={MAX_SEARCH_LENGTH}
-                            value={draft}
-                            onChange={(event) => setDraft(event.target.value)}
+                            ref={searchRef}
+                            defaultValue={q}
                           />
                         </div>
                         <button type="submit" className="btn">

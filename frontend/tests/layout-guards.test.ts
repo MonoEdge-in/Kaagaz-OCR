@@ -520,6 +520,27 @@ describe("layout guards", () => {
     expect(phone.find((rule) => rule.selector === ".ask")?.body).toMatch(/flex:\s*1 1 auto;/);
   });
 
+  it("paints an older chat answer only near view, never the newest four, and never on the card itself", () => {
+    const CHAT_CSS = "components/chat/Chat.module.css";
+    const lazy = rules(read(CHAT_CSS)).filter((rule) => /content-visibility/.test(rule.body));
+    // On the wrapper (the card's ::before edge stays unclipped), the newest four answers left out.
+    expect(lazy.map((rule) => `${rule.at}|${rule.selector}`)).toEqual([
+      "|.log > .answerWrap:not(:nth-last-child(-n + 4 of .answerWrap))",
+    ]);
+    expect(lazy[0]?.body).toMatch(/content-visibility:\s*auto;/);
+    // "auto": an answer seen once keeps its real height while off screen.
+    expect(lazy[0]?.body).toMatch(/contain-intrinsic-block-size:\s*auto \d+px;/);
+    const chat = read("components/chat/ChatScreen.tsx");
+    expect(chat).toMatch(/<div className=\{styles\.answerWrap\}>\s*<AnswerView /);
+    // Opening a conversation pins its end again after the first paint, when real heights are in.
+    expect(chat).toContain("frame = requestAnimationFrame(pin);");
+    // A chip pointed at re-renders two source cards, and typing a search never re-renders the list.
+    expect(read("components/chat/SourceCard.tsx")).toContain("export const SourceCard = memo(function SourceCard(");
+    const docs = read("components/documents/DocumentsView.tsx");
+    expect(docs).toContain("defaultValue={q}");
+    expect(docs).not.toMatch(/value=\{draft\}/);
+  });
+
   it("lines money columns up at the end, after the table's own alignment so it wins, and lets them wrap", () => {
     const all = rules(read("app/globals.css"));
     const num = all.findIndex((rule) => selectors(rule).includes("td.num") && selectors(rule).includes("th.num"));

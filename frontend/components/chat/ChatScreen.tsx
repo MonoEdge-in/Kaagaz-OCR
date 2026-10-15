@@ -289,13 +289,19 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   }, []);
 
   // Keep the thread's scroll padding equal to the composer's height, so a card
-  // scrolled into view is never hidden behind it.
+  // scrolled into view is never hidden behind it. A thread at its very end stays
+  // there when the composer grows (the scope chip's folder name arrives after
+  // a conversation opened, or the question wraps to a new line).
   useEffect(() => {
     const composer = composerRef.current;
     const thread = threadRef.current;
     if (!composer || !thread || typeof ResizeObserver === "undefined") return;
+    let height = composer.offsetHeight;
     const observer = new ResizeObserver(() => {
-      thread.style.setProperty("--composer-h", `${composer.offsetHeight}px`);
+      const grew = composer.offsetHeight - height;
+      height = composer.offsetHeight;
+      thread.style.setProperty("--composer-h", `${height}px`);
+      if (grew > 0 && isNearBottom(thread, grew + 2)) thread.scrollTop = thread.scrollHeight;
     });
     observer.observe(composer);
     return () => observer.disconnect();
@@ -308,9 +314,17 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     if (!thread || !log) return;
     if (jumpToEnd.current) {
       jumpToEnd.current = false;
-      thread.scrollTop = thread.scrollHeight;
+      const pin = () => {
+        thread.scrollTop = thread.scrollHeight;
+      };
+      pin();
       nearBottom.current = true;
-      return;
+      // Older answers are painted only near view (.answerWrap, Chat.module.css), so
+      // their real heights replace the placeholder after the first paint: pin again then.
+      let frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(pin);
+      });
+      return () => cancelAnimationFrame(frame);
     }
     // The newest answer, not the story box that may follow it.
     let last = log.lastElementChild;
@@ -584,7 +598,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                   </div>
                 ) : (
                   <Fragment key={message.id}>
-                    <AnswerView message={message} question={questions.get(message.id) ?? null} />
+                    <div className={styles.answerWrap}>
+                      <AnswerView message={message} question={questions.get(message.id) ?? null} />
+                    </div>
                     {place.at === "answer" && place.answerId === message.id ? storyCards() : null}
                   </Fragment>
                 ),
