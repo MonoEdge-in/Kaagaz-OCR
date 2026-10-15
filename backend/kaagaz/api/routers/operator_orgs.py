@@ -8,6 +8,9 @@ one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
   organisation and its first admin; the temporary password is in this reply ONCE
   (stored only as its hash, never logged) and must be changed at the first sign-in.
 * ``POST /operator/orgs/{id}/disable`` {code} (step-up) and ``/enable``.
+* ``PUT /operator/orgs/{id}/autofile`` {granted} (feature 28): allow or stop auto-filing;
+  its admin then switches it on in Settings. Stopping it switches it off too. No step-up,
+  as an organisation's models. The list says ``autofile_granted`` and ``autofile_on``.
 * ``POST /operator/orgs/{id}/schedule-delete`` {name, code} (PR 4, step-up): a DISABLED
   organisation whose name is typed exactly is removed for good after a grace period
   (7 days, PROVISIONAL), by the worker; ``/cancel-delete`` {code} (step-up) during it
@@ -102,6 +105,12 @@ class NewAdminBody(BaseModel):
     code: str = Field(min_length=1, max_length=MAX_CODE)  # step-up: the password signs in as an admin
 
 
+class AutofileBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    granted: bool
+
+
 class StepUpBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -147,6 +156,19 @@ def enable_org(
     customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> dict[str, Any]:
     return _set_status(db, context, operator, str(customer_id), "active", None)
+
+
+@router.put("/{customer_id}/autofile")
+def set_org_autofile(
+    customer_id: uuid.UUID, body: AutofileBody, operator: OperatorSession, db: OperatorDb
+) -> dict[str, Any]:
+    with db.operator() as conn:
+        outcome = orgs_sql.set_org_autofile(
+            conn, operator.operator_id, str(customer_id), granted=body.granted
+        )
+    _check(db, operator, outcome)
+    changed = outcome.code == "done"
+    return {"organisation": {"id": str(customer_id), "autofile_granted": body.granted, "changed": changed}}
 
 
 @router.post("/{customer_id}/schedule-delete")
@@ -357,6 +379,8 @@ def _org(row: RowMapping) -> dict[str, Any]:
         "pages": row["pages"],
         "storage_bytes": row["size_bytes"],
         "last_activity_at": _when(row["last_activity_at"]),
+        "autofile_granted": bool(row["autofile_granted"]),  # feature 28
+        "autofile_on": bool(row["autofile_on"]),
     }
 
 

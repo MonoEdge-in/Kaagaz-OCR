@@ -225,6 +225,11 @@ export const updateDocument = (
   id: string,
   changes: { display_name?: string; folder_id?: string | null },
 ) => request<DocumentSummary>("PATCH", `/documents/${id}`, changes);
+/**
+ * Feature 28: move a family Kaagaz filed back to "Not in a folder"; the folder stays.
+ * 409 already_moved when someone moved it since, 409 in_trash in Trash.
+ */
+export const undoAutofile = (id: string) => request<DocumentSummary>("POST", `/documents/${id}/autofile/undo`);
 /** Replace the document's tags with exactly these. */
 export const setDocumentTags = (id: string, tagIds: string[]) =>
   request<{ items: Tag[] }>("PUT", `/documents/${id}/tags`, { tag_ids: tagIds });
@@ -446,8 +451,12 @@ export const resetUser2fa = (id: string) =>
 export const setDeleteForever = (id: string, allowed: boolean) =>
   request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
-export const updateSettings = (maxUploadMb: number | null) =>
-  request<CustomerSettings>("PATCH", "/admin/settings", { max_upload_mb: maxUploadMb });
+/** ``autofileOn`` left out: the switch is left as it is (feature 28). */
+export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean) =>
+  request<CustomerSettings>("PATCH", "/admin/settings", {
+    max_upload_mb: maxUploadMb,
+    ...(autofileOn === undefined ? {} : { autofile_on: autofileOn }),
+  });
 export const listAudit = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: AuditEntry[]; total: number }>("GET", `/admin/audit${query(params)}`);
 export const getStats = () => request<Stats>("GET", "/admin/stats");
@@ -473,6 +482,9 @@ export const createOrg = (org: { name: string; admin_email: string; admin_name: 
 export const disableOrg = (id: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/disable`, { code });
 export const enableOrg = (id: string) => request<unknown>("POST", `/operator/orgs/${id}/enable`);
+/** Feature 28: allow or stop auto-filing; stopping it also switches it off. */
+export const setOrgAutofile = (id: string, granted: boolean) =>
+  request<unknown>("PUT", `/operator/orgs/${id}/autofile`, { granted });
 /** A disabled organisation, its name typed exactly (step-up); deleted after the grace period. */
 export const scheduleDelete = (id: string, name: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/schedule-delete`, { name, code });

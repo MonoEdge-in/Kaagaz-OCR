@@ -25,7 +25,8 @@
 // pressed shows its spot and opens the Scanned text panel, with both readings.
 // With the column sticky, the reading problems banner and the Scanned text panel
 // sit atop the panels, so the page keeps its height; opened by its button, focus
-// goes to the Scanned text panel's heading.
+// goes to the Scanned text panel's heading. A family Kaagaz filed by its type says
+// "Filed here by Kaagaz · Undo" by its folder (feature 28, AutofileNote).
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -34,8 +35,10 @@ import { askAboutHref } from "@/components/chat/logic";
 import { downloadHref, folderTrail } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
+import { FILED_HERE_TEXT } from "@/components/documents/batchTray";
 import { StatusChip } from "@/components/documents/StatusChip";
 import { TimeLeft } from "@/components/documents/TimeLeft";
+import { AutofileNote } from "@/components/documents/UploadArea";
 import { Icon } from "@/components/ui/Icon";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import { STICKY_VIEWER_QUERY, bringPageForSpot } from "@/components/viewer/viewer";
@@ -361,6 +364,13 @@ export function DocumentView({
                 ))}
               </ol>
             )}
+            <AutofileNote
+              document={detail}
+              name={detail.display_name}
+              filed={FILED_HERE_TEXT}
+              folderHref={null}
+              onUndone={() => setReloads((n) => n + 1)}
+            />
           </nav>
           {detail.tags.length > 0 && (
             <div className={styles.placeItem}>

@@ -3,7 +3,15 @@
 // deletion, reset an admin's two-step) needs a fresh code (step-up), as the
 // server does; giving it back (enable, unlock) and disabling an admin do not.
 
-import { cancelDelete, changeAdmin, disableOrg, enableOrg, scheduleDelete, setOperatorModelEnabled } from "@/lib/api";
+import {
+  cancelDelete,
+  changeAdmin,
+  disableOrg,
+  enableOrg,
+  scheduleDelete,
+  setOperatorModelEnabled,
+  setOrgAutofile,
+} from "@/lib/api";
 import type { OperatorModel, OrgAdmin, Organisation } from "@/lib/types";
 import type { Confirm } from "./ConfirmDialog";
 import { DISABLE_EFFECT, deleteEffect } from "./logic";
@@ -84,6 +92,23 @@ export function orgConfirm(org: Organisation, change: OrgChange, now: number): C
         focusId,
       };
   }
+}
+
+/** Allow or stop auto-filing for one organisation (feature 28): no fresh code, as its models. */
+export function autofileConfirm(org: Organisation, allow: boolean): Confirm {
+  const name = org.name;
+  return {
+    title: allow ? `Let ${name} file new uploads into folders by type?` : `Stop ${name} filing uploads by type?`,
+    effect: allow
+      ? "Its admin can then turn auto-filing on in Settings. Files already uploaded stay where they are."
+      : "Its switch turns off too. Files already filed stay where they are.",
+    action: allow ? "Allow auto-filing" : "Stop auto-filing",
+    done: allow ? `${name} can use auto-filing.` : `Auto-filing stopped for ${name}.`,
+    danger: !allow,
+    stepUp: false,
+    run: () => setOrgAutofile(org.id, allow),
+    focusId: orgFocusId(org.id),
+  };
 }
 
 /** The admin's name in the admins dialog, where the focus goes after a change. */
