@@ -18,7 +18,7 @@ from PIL import Image
 from sqlalchemy import Connection, event, text
 
 from kaagaz.api.routers.documents import day_start, display_name, upload_policy
-from kaagaz.api.views import document_time_left, in_progress, status_message
+from kaagaz.api.views import document_time_left, in_progress, progress_message, status_message
 from kaagaz.db import folders as folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import FolderRow
@@ -263,6 +263,11 @@ def test_status_messages_say_how_far_the_worker_has_got() -> None:
     assert message("clean", "understanding", 1, 3) == "Understanding the document…"
     assert message("clean", "indexing", 0, 1) == "Making it searchable…"
     assert message("clean", "reading", 2, 40, attempts=2) == "Reading page 3 of 40… Try 2 of 5."
+    # Progress fix, 16 Oct 2026: Careful's second reading says what it does, never a frozen line.
+    assert message("clean", "rereading", 0, 3) == "Reading 3 pages again carefully…"
+    assert message("clean", "rereading", 0, 1) == "Reading 1 page again carefully…"
+    for step in ("preparing", "reading", "rereading", "understanding", "indexing"):  # every timed step
+        assert progress_message({"step": step, "done": 0, "total": 2})
 
 
 def test_a_try_a_backend_stopped_says_waiting_to_try_again() -> None:

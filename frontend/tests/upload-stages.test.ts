@@ -8,9 +8,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_STEP_PERCENT,
+  NO_TIMES,
   jobFraction,
   nextShown,
-  readFraction,
   stageOf,
   stageText,
   valueText,
@@ -18,6 +18,8 @@ import {
 import type { Shown, StageTimes } from "@/components/documents/uploadStages";
 import type { UploadState } from "@/components/documents/logic";
 import { uploadDocument } from "@/lib/api";
+import { documentFraction } from "@/lib/progress";
+import { markReceived } from "@/lib/timeLeft";
 import type { DocumentSummary } from "@/lib/types";
 
 const MB = 1024 * 1024;
@@ -130,8 +132,9 @@ describe("the upload bar (U10)", () => {
     expect(fast).toBeLessThan(slow);
   });
 
-  it("reads the reading fraction from the server: done_fraction first, else pages read", () => {
-    expect(readFraction(doc({ progress: { step: "reading", done: 2, total: 8 } }))).toBe(0.25);
+  // Changed on purpose (progress fix, 16 Oct 2026): readFraction is gone with the send and
+  // save weighting of a document being read; the row now shows the document's own fraction.
+  it("once the server has the document, shows its own fraction, the table row's", () => {
     const timeLeft = {
       seconds: 30,
       since_move_seconds: 0,
@@ -141,10 +144,16 @@ describe("the upload bar (U10)", () => {
       after_seconds: 0,
       confidence: "high" as const,
       elapsed_seconds: 30,
-      done_fraction: 0.5,
+      done_fraction: 0.4,
     };
-    expect(readFraction(doc({ time_left: timeLeft }))).toBe(0.5);
-    expect(readFraction(doc({ status: "received", progress: null }))).toBe(0);
+    const document = doc({ time_left: timeLeft });
+    markReceived([document], 0);
+    const state: UploadState = { kind: "reading", documentId: "d1", document };
+    expect(jobFraction(state, SIZE, READ_SECONDS, times(0, 10_000, 14_000), 0)).toBe(0.5); // 30 / (30 + 30)
+    expect(jobFraction(state, SIZE, READ_SECONDS, NO_TIMES, 0)).toBe(documentFraction("reading", timeLeft, 0));
+    expect(jobFraction(state, SIZE, READ_SECONDS, NO_TIMES, 200_000)).toBe(0.4); // held: no move for 200 s
+    const unknown: UploadState = { kind: "reading", documentId: "d1", document: doc() }; // no estimate yet
+    expect(jobFraction(unknown, SIZE, READ_SECONDS, NO_TIMES, 0)).toBe(0);
   });
 
   it("takes at most one step a tick", () => {

@@ -22,8 +22,11 @@ an ``Estimate`` with each step from preparing on (pipeline ``_progress``).
   ``after_s`` is all of reading (``total * item_s`` before any page is read) and the
   time after it; stalled after ``max(SLOW_MIN_S, SLOW_FACTOR * prepare_s)``.
 * While reading: ``finish_at = now + pages_left * item_s + after_s``, stalled after
-  ``max(SLOW_MIN_S, SLOW_FACTOR * item_s)`` with no page read. From the end of
-  reading (understanding, then indexing): ``finish_at = now + after_s``, stalled after ``slow``.
+  ``max(SLOW_MIN_S, SLOW_FACTOR * item_s)`` with no page read; for a model reader
+  (MODEL_READERS), ``max(MODEL_SLOW_MIN_S, SLOW_FACTOR * ocr rate, SLOW_FACTOR * item_s)``.
+  From the end of reading (Careful's second reading, understanding, then indexing):
+  ``finish_at = now + after_s``, stalled after ``slow``; the worker writes it again with
+  ``moved_at`` now at every beat, so each beat is a move (pipeline ``_estimate``).
 * ``confidence`` is "high" only with MIN_EVIDENCE pages read in this run or runs of
   history for reading, and MIN_EVIDENCE runs with an after-reading time (and, while
   preparing, MIN_EVIDENCE pages or runs for preparing too); else "low", and the
@@ -77,9 +80,15 @@ CELLS_FILE_SECONDS = 2.0
 AFTER_READING_SECONDS = 45.0
 SLOW_FACTOR = 3.0
 SLOW_MIN_S = 20.0
+# PROVISIONAL (progress fix, 16 Oct 2026; not measured yet): one page read by a model takes
+# about 25 to 40 s a call (High thinking), so 20 s with no page read is not slow. Reading by
+# a model is slow only past 3 x its seconds a call, learned from this customer's own runs of
+# it (the ``ocr`` rate: a call's seconds per page), and never before 3 x 30 s.
+MODEL_READERS = frozenset({"gemini"})
+MODEL_SLOW_MIN_S = 90.0
 MAX_SECONDS = 86400.0  # a stored number past a day is not believed
 
-_TIMED_STEPS = ("preparing", "reading", "understanding", "indexing")
+_TIMED_STEPS = ("preparing", "reading", "rereading", "understanding", "indexing")
 FLOORED_STEPS = ("preparing", "reading")  # the time left never counts below after_s
 
 Pair = tuple[float, float]  # (seconds, units): a rate's sums, or this run's own measure
@@ -111,6 +120,7 @@ class Rates:
     reading_runs: int
     after_runs: int
     preparing_runs: int
+    read_slow_s: float = SLOW_MIN_S  # reading is slow past this with no page read, at least
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +176,10 @@ def rates(history: Sequence[RunTiming], engine: str | None) -> Rates:
     reading_runs = sum(1 for run in history[:HISTORY_RUNS] if run.seconds_reading is not None)
     share = ocr_pages / routed_pages if routed_pages else 0.5
     sums = ((ocr[0], ocr[1]), (fast[0], fast[1]), (cells[0], cells[1]), (prepare[0], prepare[1]))
-    return Rates(*sums, share, after_s, slow, reading_runs, len(after), preparing_runs)
+    read_slow = SLOW_MIN_S
+    if engine in MODEL_READERS:
+        read_slow = max(MODEL_SLOW_MIN_S, SLOW_FACTOR * ocr[0] / ocr[1])
+    return Rates(*sums, share, after_s, slow, reading_runs, len(after), preparing_runs, read_slow)
 
 
 def preparing(rates: Rates, now: datetime, done: int, total: int, own: Pair) -> Estimate:
@@ -192,7 +205,7 @@ def reading(rates: Rates, now: datetime, done: int, total: int, ocr: Pair, fast:
         left = max(0, total - done) * item_s
     known = done >= MIN_EVIDENCE or rates.reading_runs >= MIN_EVIDENCE
     confidence = "high" if known and rates.after_runs >= MIN_EVIDENCE else "low"
-    finish, slow = now + timedelta(seconds=left + rates.after_s), max(SLOW_MIN_S, SLOW_FACTOR * item_s)
+    finish, slow = now + timedelta(seconds=left + rates.after_s), max(rates.read_slow_s, SLOW_FACTOR * item_s)
     return Estimate(now, finish, item_s, rates.after_s, slow, confidence)
 
 

@@ -122,6 +122,8 @@ def progress_message(progress: Mapping[str, Any]) -> str | None:
     step, done, total = progress.get("step"), progress.get("done"), progress.get("total")
     if step in _STEP_MESSAGES:
         return _STEP_MESSAGES[step]
+    if step == "rereading" and isinstance(total, int) and total > 0:  # Dynamic's Careful (F26)
+        return f"Reading {total} {'page' if total == 1 else 'pages'} again carefully…"
     if step not in _PAGE_STEPS or not isinstance(done, int) or not isinstance(total, int):
         return None
     if total <= 0:

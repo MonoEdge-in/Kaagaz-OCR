@@ -694,8 +694,8 @@ export function BatchTray({
 }
 
 /**
- * One drop's bar: pages read over all its pages, with the bytes of the files still
- * sending (batchFraction), on the shared tick; never moving back, at most 99% (lib/progress.ts).
+ * One drop's bar: its files' own fractions weighed by their pages, with the bytes of the
+ * files still sending (batchFraction), on the shared tick; never moving back, at most 99% (lib/progress.ts).
  */
 function BatchBar({ view, rows }: { view: BatchView | null; rows: UploadEntry[] }) {
   const now = useTick();

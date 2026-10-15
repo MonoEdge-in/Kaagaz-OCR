@@ -390,7 +390,7 @@ class DocumentContent:
 
 # --- runs and progress (R6, X2, X3) -------------------------------------------
 
-Step = Literal["scanning", "preparing", "reading", "understanding", "indexing"]
+Step = Literal["scanning", "preparing", "reading", "rereading", "understanding", "indexing"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1309,9 +1309,12 @@ class DocumentProcessor:
         run.reading_notes.update(escalated=chosen, cap_hit=cap_hit)
         if not chosen:
             return spans
+        # Its own step, so the screen says what is happening; every page read is a move.
+        self._progress(job, run, "rereading", 0, len(chosen))
 
         def beat(_read: RouteDecision | None) -> None:
             heartbeat()
+            self._progress(job, run, "rereading", 0, len(chosen))
 
         with self._reading_document(job, run, escalate=frozenset(page["page"] for page in chosen)):
             spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=beat))
@@ -1501,13 +1504,16 @@ class DocumentProcessor:
 
     def _estimate(self, run: _Run, step: Step, done: int, total: int) -> Estimate | None:
         """The time left written with this step: while preparing or reading, from the
-        pages so far; from the end of reading, one estimate kept for every later step."""
+        pages so far; from the end of reading, one finish kept for every later step, but
+        moved now at each beat (a card, a map, a batch embedded), so it is never stalled
+        while work is done (progress fix, 16 Oct 2026)."""
         if run.rates is None or step == "scanning":
             return None
-        if step in ("understanding", "indexing"):
+        if step in ("rereading", "understanding", "indexing"):
+            now = self._clock()
             if run.after is None:
-                run.after = after_reading(run.rates, self._clock())
-            return run.after
+                run.after = after_reading(run.rates, now)
+            return replace(run.after, moved_at=now, finish_at=max(run.after.finish_at, now))
         if step == "preparing":
             spent = 0.0 if run.preparing_started is None else max(0.0, self._timer() - run.preparing_started)
             return preparing(run.rates, self._clock(), done, total, (spent, done))

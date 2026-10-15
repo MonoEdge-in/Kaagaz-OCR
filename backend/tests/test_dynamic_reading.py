@@ -356,6 +356,19 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(config["escalated"], [{"page": 1, "reasons": ["quality_fair", "unsure_words"]}])
         self.assertEqual(config["cap_hit"], 0)
 
+    def test_the_careful_reading_is_its_own_step_with_a_time_left(self) -> None:
+        """Progress fix, 16 Oct 2026: the second reading wrote no progress, so the screen
+        froze on "Reading page 1 of 1…" while Careful read; now it says what it does."""
+        system, _client = _reading_rig(self.ANSWERS, checker=FakeChecker("Total: 1,180.00"))
+        system.run(make_pdf([SHARP]))
+        steps = [progress.step for _, _, progress in system.progress.history]
+        in_turn = [step for i, step in enumerate(steps) if i == 0 or steps[i - 1] != step]
+        self.assertEqual(in_turn[-4:], ["reading", "rereading", "understanding", "indexing"])
+        careful = [progress for _, _, progress in system.progress.history if progress.step == "rereading"]
+        self.assertTrue(careful)
+        self.assertEqual({(p.done, p.total) for p in careful}, {(0, 1)})  # one page read again
+        self.assertTrue(all(p.estimate is not None for p in careful))
+
     def test_c5_without_the_checker_an_escalated_page_is_never_verified(self) -> None:
         system, _client = _reading_rig(self.ANSWERS, checker=None)
         job = system.run(make_pdf([SHARP]))

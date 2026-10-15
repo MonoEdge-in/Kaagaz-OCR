@@ -464,7 +464,9 @@ class ProgressTest(unittest.TestCase):
         self.assertAlmostEqual(
             (prep.finish_at - T0).total_seconds(), prep.item_s + 2 * first.item_s + 45.0, 3
         )
-        self.assertEqual((by[("scanning", 0)], by[("indexing", 0)]), (None, after))  # indexing keeps it
+        # Indexing keeps its finish, moved to each beat's now (progress fix, 16 Oct 2026); this
+        # clock stands at T0, so it is the same estimate.
+        self.assertEqual((by[("scanning", 0)], by[("indexing", 0)]), (None, after))
 
     def test_the_percent_never_goes_back_when_a_slow_page_1_raises_item_s(self) -> None:
         """Council of 5 Oct 2026: page 1 of 6 takes 15 s against the 7 s guess, so the next
@@ -491,6 +493,21 @@ class ProgressTest(unittest.TestCase):
             self.assertGreaterEqual(shown(p, now), shown(before, now))  # done_fraction never goes back
         self.assertTrue(any(dropped))  # F alone does, after page 1
         self.assertGreater(shown(timed[-1], T0), 0)
+
+    def test_every_beat_after_reading_is_a_move_toward_the_same_finish(self) -> None:
+        """Progress fix, 16 Oct 2026: understanding and indexing kept one estimate, so its
+        moved_at stood still through every card, map and embedding beat and a long but busy
+        document said "Taking longer than usual". Now each write moves it to now."""
+        system = rig(embed=FakeEmbedder(batches=2), moving_clock=True)
+        system.processor(system.job(CSV), lambda: system.timer.advance(1.5))
+        writes = [p for _, _, p in system.progress.history if p.step in ("understanding", "indexing")]
+        after = [p.estimate for p in writes if p.estimate is not None]
+        self.assertEqual(len(after), len(writes))
+        self.assertGreaterEqual(len(after), 3)
+        moved = [estimate.moved_at for estimate in after]
+        self.assertEqual(moved, sorted(moved))
+        self.assertGreater(moved[-1], moved[0])  # the stall counts from the last beat
+        self.assertEqual({estimate.finish_at for estimate in after}, {after[0].finish_at})
 
     def test_a_refresh_never_shows_less_than_a_screen_that_has_not_polled_yet(self) -> None:
         """Review of 5 Oct 2026: after each write, a screen keeps counting on from the old

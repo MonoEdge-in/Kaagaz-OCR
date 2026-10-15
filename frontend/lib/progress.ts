@@ -17,7 +17,7 @@
 //   still from slow_after_seconds with no move, so it never climbs with no work done.
 // - The <progress> moves in 5% steps; the text beside it shows the whole percent.
 
-import { hold, secondsLeft } from "./timeLeft";
+import { describe, hold, receivedAt, secondsLeft } from "./timeLeft";
 import type { Held } from "./timeLeft";
 import type { TimeLeft } from "./types";
 
@@ -52,6 +52,22 @@ export function fractionAt(held: Held, now: number): number {
 export function fractionShown(value: TimeLeft, step: Held["step"], at: number, now: number, holding: boolean): number {
   const server = Number.isFinite(value.done_fraction) ? Math.max(0, value.done_fraction) : 0;
   return holding ? server : Math.max(server, fractionAt(hold(null, value, step, at), now));
+}
+
+/** Taking longer than usual at ``now`` by this answer alone: describe's stall rule (lib/timeLeft.ts). */
+export function longerThanUsual(value: TimeLeft, step: Held["step"], now: number): boolean {
+  return describe(hold(null, value, step, receivedAt(value)), now, false).state === "longer";
+}
+
+/**
+ * A document's fraction at ``now`` (progress fix, 16 Oct 2026): the one rule for its table
+ * row (TimeLeft), its upload row and the batch bar, so all three agree. fractionShown from
+ * its latest answer, held still while it is taking longer than usual; 0 while scanning,
+ * null with no estimate yet.
+ */
+export function documentFraction(step: Held["step"] | undefined, value: TimeLeft | null, now: number): number | null {
+  if (step === undefined || value === null) return step === "scanning" ? 0 : null;
+  return fractionShown(value, step, receivedAt(value), now, longerThanUsual(value, step, now));
 }
 
 /**

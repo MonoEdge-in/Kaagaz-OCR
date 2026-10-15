@@ -10,7 +10,7 @@
 
 import { memo, useState } from "react";
 import { useMediaQuery } from "@/components/chat/hooks";
-import { advance, barValue, fractionShown } from "@/lib/progress";
+import { advance, barValue, documentFraction } from "@/lib/progress";
 import type { ShownProgress } from "@/lib/progress";
 import { ESTIMATING, STARTING, WAITING, describe, hold, receivedAt } from "@/lib/timeLeft";
 import type { Held } from "@/lib/timeLeft";
@@ -64,10 +64,8 @@ function Progressing({ value, step, attempt, name }: ProgressingProps) {
   }
   const scanning = step === "scanning";
   const view = current !== null ? describe(current, now, reducedMotion) : scanning ? STARTING : ESTIMATING;
-  const holding = view.state === "longer";
-  const live = current !== null ? fractionShown(current.value, step, current.valueAt, now, holding) : null;
-  const fraction = live ?? (scanning ? 0 : null);
-  const next = advance(shown, attempt, fraction);
+  // The same fraction as its upload row and its batch's bar (documentFraction).
+  const next = advance(shown, attempt, documentFraction(step, value, now));
   if (next !== shown) setShown(next);
   return (
     <>
