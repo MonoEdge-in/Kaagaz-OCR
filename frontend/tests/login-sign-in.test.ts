@@ -63,11 +63,11 @@ describe("validateSignIn and firstInvalid", () => {
 });
 
 describe("signInErrorMessage", () => {
-  it("shows the backend's 401 message, then what to do", () => {
-    const wrong = new ApiError(401, "invalid_credentials", "Wrong e-mail or password.");
-    expect(signInErrorMessage(wrong)).toBe(
-      "Wrong e-mail or password. Check your e-mail and password, then try again.",
-    );
+  // Changed on purpose (UI quality council, 15 Oct 2026): the server's text already says what to
+  // do; adding more made one contradictory message ("try again in 15 minutes. ... then try again").
+  it("shows the backend's 401 message alone, as one message", () => {
+    const said = "E-mail or password is wrong, or the account is locked. Check them, or wait 15 minutes, then try again.";
+    expect(signInErrorMessage(new ApiError(401, "bad_credentials", said))).toBe(said);
     expect(signInErrorMessage(new ApiError(401, "x", "  "))).toBe(WRONG_DETAILS_ADVICE);
   });
 

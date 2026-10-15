@@ -4,7 +4,7 @@
 // council 11 Oct 2026), Organisations, Models (with Compare models under the
 // catalogue), AI spend (model choice), Activity and Health, as the admin
 // screen's tabs (AdminView): a tablist whose arrow keys, Home and End move
-// between them; below about 40rem the tabs wrap. Only the open tab is mounted,
+// between them; the tabs wrap when they run out of room. Only the open tab is mounted,
 // so each loads when opened. Needs attention opens an organisation in
 // Organisations (searched by its name, the search focused), or Health or Models.
 
@@ -64,9 +64,9 @@ export function OperatorConsole() {
   }
 
   return (
-    <div className="page">
+    <div className={`page ${css.console}`}>
       <h1>Platform</h1>
-      <div role="tablist" aria-label="Platform sections" className={`${admin.tabs} ${css.tabsWrap}`}>
+      <div role="tablist" aria-label="Platform sections" className={admin.tabs}>
         {OPERATOR_TABS.map((tab, index) => (
           <button
             key={tab.id}

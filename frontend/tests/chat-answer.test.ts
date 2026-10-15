@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -335,5 +337,33 @@ describe("pages that couldn't be read (PRD 5 F6, U7)", () => {
     expect(hard).toContain(HARD_TO_READ_TEXT);
     const clear = renderToStaticMarkup(createElement(SourceCard, { citation: citation(1), messageId: "a1" }));
     expect(clear).not.toContain(HARD_TO_READ_TEXT);
+  });
+});
+
+describe("a chip lights its source card", () => {
+  it("marks the card hot only when its chip is pointed at or focused", () => {
+    const hot = renderToStaticMarkup(createElement(SourceCard, { citation: citation(2), messageId: "a1", hot: true }));
+    expect(hot).toMatch(/<article[^>]*data-hot="true"/);
+    const cold = renderToStaticMarkup(createElement(SourceCard, { citation: citation(2), messageId: "a1" }));
+    expect(cold).not.toContain("data-hot");
+    const gone = renderToStaticMarkup(
+      createElement(SourceCard, { citation: citation(2, { source_state: "deleted" }), messageId: "a1", hot: true }),
+    );
+    expect(gone).toMatch(/<article[^>]*data-hot="true"/);
+  });
+
+  it("wires each chip to its own card, and styles the hot card", () => {
+    const view = readFileSync(join(__dirname, "../components/chat/AnswerView.tsx"), "utf8");
+    for (const handler of [
+      "onPointerEnter={() => setHot(n)}",
+      "onFocus={() => setHot(n)}",
+      "onPointerLeave={() => setHot(null)}",
+      "onBlur={() => setHot(null)}",
+    ]) {
+      expect(view).toContain(handler);
+    }
+    expect(view).toContain("hot={hot === citation.n}");
+    const css = readFileSync(join(__dirname, "../components/chat/Chat.module.css"), "utf8");
+    expect(css).toMatch(/\.source\[data-hot\] \{\s*border-color: var\(--accent\);\s*box-shadow: 0 0 0 1px var\(--accent\);\s*\}/);
   });
 });

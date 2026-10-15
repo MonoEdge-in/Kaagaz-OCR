@@ -6,6 +6,7 @@ are tested first, without a database.
 
 import io
 import json
+import re
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -106,7 +107,11 @@ def test_status_messages() -> None:
     assert message("needs_reader") == "Stored safely. This kind of file can't be read yet."
     assert message("rejected", "virus_found") == CUSTOMER_MESSAGES["virus_found"]
     assert message("rejected") == "This file was not processed."
-    assert message("failed", "corrupt_file") == "This file could not be read. (corrupt_file)"
+    # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
+    assert (
+        message("failed", "corrupt_file")
+        == "This file could not be read. Upload it again, or try another copy of it."
+    )
     # PROVISIONAL: the PRD quotes the real page count, which is not stored when a PDF fails.
     assert message("failed", "too_many_pages") == (
         "This PDF has more than 100 pages. The limit is 100. Split it into parts."
@@ -115,6 +120,36 @@ def test_status_messages() -> None:
     assert message("failed", "too_many_pages", "tiff") == (
         "This file has more than 100 pages. The limit is 100. Split it into parts."
     )
+
+
+# Every failure code the reading code raises (ReadError("...") in kaagaz/), plus the ones
+# status_message words itself.
+_FAILURE_CODES = sorted(
+    {
+        code
+        for path in Path(__file__).parents[1].joinpath("kaagaz").rglob("*.py")
+        for code in re.findall(r'ReadError\("([a-z_]+)"', path.read_text(encoding="utf-8"))
+    }
+    | {
+        "too_many_pages",
+        "retries_exhausted",
+        "unreadable",
+        "ocr_failed",
+        "customer_disabled",
+        "document_missing",
+    }
+)
+
+
+@pytest.mark.parametrize("failure_code", [*_FAILURE_CODES, None])
+def test_a_failed_files_message_names_no_code_and_no_dpi(failure_code: str | None) -> None:
+    """UI quality council, 15 Oct 2026: the failure code and DPI stay off user screens."""
+    said = status_message(
+        "failed", failure_code, detected_type="pdf", max_pages=100, attempts=3, max_attempts=3
+    )
+    assert said and not re.search(r"\([a-z_]+\)|\bDPI\b", said), said
+    if failure_code is not None:
+        assert failure_code not in said
 
 
 def test_status_messages_name_the_tries_and_the_real_page_count() -> None:
@@ -253,7 +288,11 @@ def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
         return status_message(status, failure_code, detected_type="pdf", max_pages=100, progress=progress)
 
     assert message("ready") == "Ready. You can ask about it."
-    assert message("failed", "corrupt_file") == "This file could not be read. (corrupt_file)"
+    # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
+    assert (
+        message("failed", "corrupt_file")
+        == "This file could not be read. Upload it again, or try another copy of it."
+    )
     assert in_progress("ready", progress) is None
     assert in_progress("failed", progress) is None
     assert in_progress("clean", progress) == progress

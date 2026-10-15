@@ -45,9 +45,11 @@ const rapid: UploadReader = {
 const LAPTOP = [auto, layout, rapid];
 
 describe("Read with options", () => {
-  it("names the first recommended and disables a reader the server can't use, saying why", () => {
+  // Changed on purpose (UI quality council, 15 Oct 2026): no "(recommended)"; the server
+  // names the tiers itself ("Standard", "Careful"; no cost words, Tushar 15 Oct).
+  it("names each reader by its title and disables one the server can't use, saying why", () => {
     expect(readerOptions(LAPTOP)).toEqual([
-      { id: "auto", label: "Auto (recommended)", disabled: false },
+      { id: "auto", label: "Auto", disabled: false },
       { id: "layout_reader", label: "Layout reader (Not set up on this server)", disabled: true },
       { id: "rapidocr", label: "Backup reader", disabled: false },
     ]);
@@ -55,10 +57,7 @@ describe("Read with options", () => {
 
   it("takes whatever readers the server names, in its order", () => {
     const other: UploadReader = { ...rapid, id: "some_new_reader", title: "Some new reader" };
-    expect(readerOptions([auto, other]).map((option) => option.label)).toEqual([
-      "Auto (recommended)",
-      "Some new reader",
-    ]);
+    expect(readerOptions([auto, other]).map((option) => option.label)).toEqual(["Auto", "Some new reader"]);
   });
 
   it("is shown only when two or more readers can be used", () => {
@@ -91,8 +90,9 @@ describe("what an upload sends", () => {
     expect(readerToSend([], "rapidocr")).toBeUndefined();
   });
 
-  it("tells a duplicate it keeps the reader it was read with", () => {
-    expect(DUPLICATE_READER_NOTE).toBe("Already uploaded; it keeps the reader it was read with.");
+  it("tells a duplicate it was not read again", () => {
+    // Changed on purpose (UI quality council, 15 Oct 2026): plain words.
+    expect(DUPLICATE_READER_NOTE).toBe("Already uploaded, so it was not read again.");
   });
 });
 
@@ -115,24 +115,26 @@ describe("the Read with select in the source", () => {
 
   it("is offered beside Upload files and in the slim dropzone", () => {
     const view = readFileSync(join(__dirname, "..", "components/documents/DocumentsView.tsx"), "utf8");
-    expect(view).toMatch(/\{readerSelect\}\s*\{uploadButton\}/);
+    // Changed on purpose (UI quality council, 15 Oct 2026): the header hides Upload on an empty list, whose empty state has its own.
+    expect(view).toMatch(/\{readerSelect\}\s*\{view !== "empty" && uploadButton\}/);
     expect(view).toContain("readerChoice={readerSelect}");
   });
 });
 
-// Model choice: the organisation's models, as GET /upload-limits sends them (default first).
+// Model choice: the organisation's two tiers, as GET /upload-limits sends them (Standard
+// first; backend/kaagaz/api/readers.py picks them by price).
 const gemini: UploadReader = {
   id: "google/gemini-3.1-pro-preview",
-  title: "Gemini 3.1 Pro",
-  hint: "about $0.05 a page",
+  title: "Standard",
+  hint: "Right for most documents.",
   available: true,
   reason: null,
   default: true,
 };
 const sonnet: UploadReader = {
   id: "anthropic/claude-sonnet-5.5",
-  title: "Claude Sonnet 5.5",
-  hint: "about $0.08 a page",
+  title: "Careful",
+  hint: "Takes more care with faint, handwritten or crowded pages.",
   available: true,
   reason: null,
   default: false,
@@ -146,12 +148,16 @@ describe("Read with, on screen (MS4)", () => {
     expect(render([gemini])).toBe("");
   });
 
-  it("is shown with two, labelled Read with, the default picked, its price below", () => {
+  it("is shown with two, labelled Read with, Standard picked, its hint below, never a model or price", () => {
     const html = render([gemini, sonnet]);
     expect(html).toMatch(/<label[^>]*>Read with<\/label>/);
-    expect(html).toContain("Gemini 3.1 Pro (recommended)");
-    expect(html).toContain("Claude Sonnet 5.5");
-    expect(html).toContain("about $0.05 a page");
+    expect(html).toMatch(/<option value="google\/gemini-3.1-pro-preview" selected="">Standard<\/option>/);
+    expect(html).toContain(">Careful</option>");
+    // Changed on purpose (UI touch-up, 15 Oct 2026): no cost words on org screens (Tushar).
+    expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/cost|paid|price|charge|cheap|expensive/i);
+    expect(html).toContain("Right for most documents.");
+    // The words shown, not the option values sent.
+    expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(/gemini|claude|\$|recommended/i);
   });
 });
 
@@ -162,13 +168,6 @@ describe("the default, only the real one (R14)", () => {
     { ...gemini, default: false },
   ];
 
-  it("recommends no model when the server marks none the default", () => {
-    expect(readerOptions(unmarked).map((option) => option.label)).toEqual(["Claude Sonnet 5.5", "Gemini 3.1 Pro"]);
-    expect(readerOptions([gemini, sonnet]).map((option) => option.label)).toEqual([
-      "Gemini 3.1 Pro (recommended)",
-      "Claude Sonnet 5.5",
-    ]);
-  });
 
   it("sends the model shown when none is the default, nothing for the real default", () => {
     expect(readerToSend(unmarked, null)).toBe(sonnet.id);
@@ -193,10 +192,11 @@ describe("Read again for the whole document (MS4)", () => {
     expect(readAgainModel([], null)).toBeUndefined();
   });
 
-  it("warns that every page is read again by that model", () => {
-    expect(readAgainWarning(12, "Claude Sonnet 5.5")).toBe("All 12 pages will be read again by Claude Sonnet 5.5.");
-    expect(readAgainWarning(1, "Gemini 3.1 Pro")).toBe("The page will be read again by Gemini 3.1 Pro.");
-    expect(readAgainWarning(null, "Gemini 3.1 Pro")).toBe("All pages will be read again by Gemini 3.1 Pro.");
+  // Changed on purpose (UI touch-up, 15 Oct 2026): no cost words on org screens (Tushar): no model name, no "paid for again", no "Careful costs more".
+  it("says every page is read again, in plain words with no cost", () => {
+    expect(readAgainWarning(12)).toBe("All 12 pages will be read again.");
+    expect(readAgainWarning(1)).toBe("The page will be read again.");
+    expect(readAgainWarning(null)).toBe("Every page will be read again.");
   });
 
   it("is offered in the Read again question, and per-page Read again has no model choice", () => {
@@ -206,6 +206,7 @@ describe("Read again for the whole document (MS4)", () => {
     const view = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/DocumentView.tsx"), "utf8");
     expect(view).toContain("readModel={detail.read_model}");
     expect(dialog).toContain("reprocessDocument(documentId, model)");
+    expect(dialog).toContain("readAgainWarning(pages)");
     const page = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/PageProblems.tsx"), "utf8");
     expect(page).not.toContain("ReaderSelect");
     expect(page).toContain("readPageAgain(documentId, page.page_no)");

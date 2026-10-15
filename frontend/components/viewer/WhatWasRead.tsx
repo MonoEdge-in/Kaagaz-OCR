@@ -7,7 +7,7 @@ import Link from "next/link";
 import { pageLink } from "@/lib/regions";
 import type { ExtractedValue, PageSummary } from "@/lib/types";
 import { fieldText, reasonText } from "./labels";
-import { CONFIDENCE_NOTE, confidenceText, routeOrigin, visibleText } from "./scanned";
+import { CONFIDENCE_NOTE, confidenceText, notSure, routeOrigin, visibleText } from "./scanned";
 import styles from "./ScannedText.module.css";
 
 export function WhatWasRead({ value, page }: { value: ExtractedValue; page: PageSummary | undefined }) {
@@ -49,7 +49,7 @@ export function WhatWasRead({ value, page }: { value: ExtractedValue; page: Page
             <dt>Confidence</dt>
             <dd>
               {confidence}
-              <span className={styles.muted}>{CONFIDENCE_NOTE}</span>
+              {notSure(value.confidence) && <span className={styles.muted}>{CONFIDENCE_NOTE}</span>}
             </dd>
           </div>
         )}

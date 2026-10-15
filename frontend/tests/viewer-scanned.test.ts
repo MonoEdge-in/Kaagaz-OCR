@@ -1,10 +1,13 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { scannedLink } from "@/components/chat/answer";
 import {
+  CONFIDENCE_NOTE,
   confidenceText,
   emptyState,
-  hasScore,
   lineMarked,
+  notSure,
   readerHeading,
   routeOrigin,
   secondReaderNote,
@@ -36,11 +39,14 @@ const reader = (overrides: Partial<PageReader> = {}): PageReader => ({
 });
 
 describe("confidenceText", () => {
-  it("says sure from 0.90 and not sure under it, never rounding up to the line", () => {
-    expect(confidenceText(0.9, "ocr")).toBe("Reader sure (90%)");
-    expect(confidenceText(0.97, "ocr")).toBe("Reader sure (97%)");
-    expect(confidenceText(0.8999, "ocr")).toBe("Reader not sure (89%)");
-    expect(confidenceText(0.62, "ocr")).toBe("Reader not sure (62%)");
+  // Changed on purpose (UI quality council, 15 Oct 2026): no percentage, and nothing for a
+  // line the reader was sure of; only "Reader not sure" under 0.90.
+  it("says not sure under 0.90, with no number, and nothing from 0.90", () => {
+    expect(confidenceText(0.9, "ocr")).toBeNull();
+    expect(confidenceText(0.97, "ocr")).toBeNull();
+    expect(confidenceText(0.97, "cell")).toBeNull();
+    expect(confidenceText(0.8999, "ocr")).toBe("Reader not sure");
+    expect(confidenceText(0.62, "ocr")).toBe("Reader not sure");
   });
 
   it("says read from the file for a cell or text layer, else nothing, and treats NaN as no score", () => {
@@ -51,10 +57,18 @@ describe("confidenceText", () => {
     expect(confidenceText(Number.NaN, "ocr")).toBeNull();
   });
 
-  it("shows the confidence note only when some line has a score", () => {
-    expect(hasScore([line(null), line(0.62)])).toBe(true);
-    expect(hasScore([line(null), line(Number.NaN)])).toBe(false);
-    expect(hasScore([])).toBe(false);
+  it("has one plain note, shown only beside a Reader not sure tag", () => {
+    expect(CONFIDENCE_NOTE).toBe("'Not sure' is the reader's own view, not a check.");
+    expect(notSure(0.62)).toBe(true);
+    expect(notSure(0.9)).toBe(false);
+    expect(notSure(Number.NaN)).toBe(false);
+    expect(notSure(null)).toBe(false);
+    const panel = readFileSync(join(__dirname, "..", "components/viewer/ScannedTextPanel.tsx"), "utf8");
+    expect(panel).toContain("{lines.some((line) => notSure(line.confidence)) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}");
+    const read = readFileSync(join(__dirname, "..", "components/viewer/WhatWasRead.tsx"), "utf8");
+    expect(read).toContain("{notSure(value.confidence) && <span className={styles.muted}>{CONFIDENCE_NOTE}</span>}");
+    const card = readFileSync(join(__dirname, "..", "components/review/ReviewCard.tsx"), "utf8");
+    expect(card).toContain("{notSure(value.confidence) && <p className={`muted ${styles.reason}`}>{CONFIDENCE_NOTE}</p>}");
   });
 
   it("gives a value the origin of its page's route", () => {
@@ -67,18 +81,13 @@ describe("confidenceText", () => {
 });
 
 describe("readerHeading", () => {
-  const ocrPage = {
-    route: "ocr" as const,
-    read_by: "google/gemini-3.1-pro-preview",
-    read_by_name: "Gemini 3.1 Pro",
-    read_issues: [],
-    effective_dpi: 200.4,
-  };
+  const ocrPage = { read_issues: [] };
 
-  it("says how the page was read, by which reader, and how many lines it was not sure of", () => {
+  // Changed on purpose (UI quality council, 15 Oct 2026): no model name or DPI.
+  it("says which reader, and how many lines it was not sure of", () => {
     const heading = readerHeading(reader({ lines: [line(0.5), line(0.97), line(0.2)] }), ocrPage);
     expect(heading).toEqual({
-      title: "Read by Gemini 3.1 Pro at 200 DPI",
+      title: "Main reader",
       notSureCount: "2 of 3 lines: reader not sure",
     });
     // PRD 5 U8: no engine's name, whatever the server calls its reader.
@@ -90,22 +99,20 @@ describe("readerHeading", () => {
   });
 
   it("names the backup reader only for a page the main reader handed on (PRD 5 RT2, Q7)", () => {
-    const keyless = { route: "ocr" as const, read_by: "rapidocr", read_issues: [], effective_dpi: 300 };
-    const local = { ...keyless, read_issues: ["read_locally" as const] };
-    expect(readerHeading(reader(), local).title).toBe("Read by the backup reader at 300 DPI");
-    expect(readerHeading(reader(), keyless).title).toBe("Read by OCR at 300 DPI");
+    expect(readerHeading(reader(), { read_issues: ["read_locally"] }).title).toBe("Backup reader");
+    expect(readerHeading(reader(), { read_issues: ["reader_refused", "no_text"] }).title).toBe("Backup reader");
+    expect(readerHeading(reader(), { read_issues: ["low_resolution"] }).title).toBe("Main reader");
   });
 
-  it("names the text layer and a page with no route", () => {
-    const textLayer = { route: "text_layer" as const, read_by: "text_layer", read_issues: [], effective_dpi: null };
-    expect(readerHeading(reader(), textLayer).title).toBe("Read from the PDF text");
-    const unread = { route: null, read_by: null, read_issues: [], effective_dpi: null };
-    expect(readerHeading(reader(), unread).title).toBe("Main reader");
-    expect(readerHeading(reader({ role: "second" }), ocrPage).title).toBe("Checker (PDF text layer)");
+  it("names the checker as the text inside the PDF", () => {
+    expect(readerHeading(reader({ role: "second" }), ocrPage).title).toBe("Checker (text inside the PDF)");
+    expect(readerHeading(reader({ role: "second" }), { read_issues: ["read_locally"] }).title).toBe(
+      "Checker (text inside the PDF)",
+    );
   });
 
   it("says when the checker did not count", () => {
-    expect(secondReaderNote("ocr")).toBe("Not used for this page: it was read by OCR.");
+    expect(secondReaderNote("ocr")).toBe("Not used for this page: it is a scanned page.");
     expect(secondReaderNote("blank")).toBe("Not used for this page: it is blank.");
     expect(secondReaderNote("text_layer")).toBeNull();
     expect(secondReaderNote("cells")).toBeNull();

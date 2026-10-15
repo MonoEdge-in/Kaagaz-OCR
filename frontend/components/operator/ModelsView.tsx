@@ -80,7 +80,7 @@ export function ModelsView() {
 export function ModelsTable({ models, onChange }: { models: OperatorModel[]; onChange(model: OperatorModel, enable: boolean): void }) {
   return (
     <div className={table.reflowWrap}>
-      <table className={`table ${table.reflow}`} role="table">
+      <table className={`table ${table.reflow} ${styles.nameWide}`} role="table">
         <caption className="visually-hidden">The model catalogue</caption>
         <thead role="rowgroup">
           <tr role="row">

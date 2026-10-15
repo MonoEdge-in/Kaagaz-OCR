@@ -3,10 +3,11 @@
 // tested in node (tests/upload-readers.test.ts). Every model, its words and
 // whether this organisation may use it come from the server (GET
 // /upload-limits, readers: the models MonoEdge allowed it): nothing here names
-// one. The server lists the organisation's default first and marks it
-// (default); it is picked at first and never sent, since the server reads with
-// it anyway. When the default can't be used now, no model is marked, and the
-// one shown is sent (MS4, R14).
+// one. The server offers at most two tiers, "Standard" first and "Careful",
+// never a model's name, a price or cost words (UI quality council, 15 Oct
+// 2026). Standard is the organisation's default, marked (default), picked at
+// first and never sent, since the server reads with it anyway. When the default
+// can't be used now, no reader is marked, and the one shown is sent (MS4, R14).
 
 import type { UploadReader } from "@/lib/types";
 
@@ -18,7 +19,7 @@ export interface ReaderChoice {
 }
 
 /** Shown on a duplicate's row when a model was chosen: the earlier copy is not read again. */
-export const DUPLICATE_READER_NOTE = "Already uploaded; it keeps the reader it was read with.";
+export const DUPLICATE_READER_NOTE = "Already uploaded, so it was not read again.";
 
 /**
  * The organisation's default: the reader the server marks default. A reader
@@ -29,16 +30,15 @@ function isDefault(reader: UploadReader, index: number): boolean {
 }
 
 /**
- * The select's options, in the server's order: the default is recommended,
- * and no other; one this server can't use is disabled, saying why.
+ * The select's options, in the server's order, by their titles; one this
+ * server can't use is disabled, saying why.
  */
 export function readerOptions(readers: readonly UploadReader[]): ReaderChoice[] {
-  return readers.map((reader, index) => {
-    let label = reader.title;
-    if (!reader.available) label = `${reader.title} (${reader.reason ?? "not available"})`;
-    else if (isDefault(reader, index)) label = `${reader.title} (recommended)`;
-    return { id: reader.id, label, disabled: !reader.available };
-  });
+  return readers.map((reader) => ({
+    id: reader.id,
+    label: reader.available ? reader.title : `${reader.title} (${reader.reason ?? "not available"})`,
+    disabled: !reader.available,
+  }));
 }
 
 /** Only a real choice is shown: at least two models this organisation can use. */
@@ -72,10 +72,12 @@ export function readAgainModel(readers: readonly UploadReader[], picked: string 
   return readers.find((reader) => reader.id === picked && reader.available)?.id;
 }
 
-/** Said under that select: every page is read, and paid for, again. pages null: not counted yet. */
-export function readAgainWarning(pages: number | null, model: string): string {
-  if (pages === 1) return `The page will be read again by ${model}.`;
-  return pages === null
-    ? `All pages will be read again by ${model}.`
-    : `All ${pages} pages will be read again by ${model}.`;
+/**
+ * Said under that select: every page is read again. No cost words: org admins and
+ * members never see cost (Tushar, 15 Oct 2026). pages null: not counted yet.
+ */
+export function readAgainWarning(pages: number | null): string {
+  if (pages === 1) return "The page will be read again.";
+  if (pages === null) return "Every page will be read again.";
+  return `All ${pages} pages will be read again.`;
 }

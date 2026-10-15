@@ -42,7 +42,7 @@ a.wordmark {
   opacity: 0;
   transform: translateY(16px) scale(0.75);
   transform-origin: bottom center;
-  animation: reader-cycle 5s var(--ease) infinite;
+  animation: reader-cycle 5s var(--ease); /* once, then gone: its last frame is its start */
 }
 
 .robotHead,

@@ -36,7 +36,10 @@ from tests.test_api_support import (
 )
 
 UID = "11111111-1111-4111-8111-111111111111"
-BAD_CREDENTIALS = "Email or password is wrong, or the account is locked. Try again in 15 minutes."
+# Changed on purpose (UI quality council, 15 Oct 2026): one clear message, spelt e-mail.
+BAD_CREDENTIALS = (
+    "E-mail or password is wrong, or the account is locked. Check them, or wait 15 minutes, then try again."
+)
 OTHER_PASSWORD = "another made-up password"
 
 

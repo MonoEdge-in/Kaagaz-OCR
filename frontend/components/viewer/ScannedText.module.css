@@ -65,11 +65,10 @@
 }
 
 .scroll {
-  max-height: min(40vh, 24rem);
+  max-height: min(40dvh, 24rem);
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  overscroll-behavior: contain;
 }
 
 .lines {

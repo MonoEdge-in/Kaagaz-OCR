@@ -2,14 +2,9 @@
    Tokens only (app/globals.css). Tiles, captions and tables reuse Admin.module.css
    and the shared reflow in components/documents/Table.module.css. */
 
-/* The console's tabs wrap onto a second line on a narrow screen, so all seven
-   stay in view instead of scrolling sideways. Only the operator console uses it. */
-@media (max-width: 40rem) {
-  [role="tablist"].tabsWrap {
-    flex-wrap: wrap;
-    width: auto;
-    overflow-x: visible;
-  }
+/* The console is wider than the other screens: its tables have many columns. */
+:global(.page).console {
+  max-width: 100rem;
 }
 
 /* --- Figures as of, Refresh, Download CSV, and the old-figures note ------------ */
@@ -135,6 +130,7 @@
 .budget {
   display: flex;
   flex-direction: column;
+  align-items: end; /* in the money column (.num): the meter lines up with the figures */
   gap: var(--space-1);
 }
 

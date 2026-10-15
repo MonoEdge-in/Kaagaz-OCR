@@ -139,7 +139,7 @@ describe("the setup key", () => {
 
 describe("adminSignInError", () => {
   it("shows the server's one refusal text, with its lock time, then the advice", () => {
-    const said = "Email or password is wrong, or the account is locked. Try again in 7 minutes.";
+    const said = "E-mail or password is wrong, or the account is locked. Check them, or wait 7 minutes, then try again.";
     expect(adminSignInError(new ApiError(401, "bad_credentials", said))).toEqual({
       message: `${said} ${ADMIN_SIGN_IN_ADVICE}`,
       changePasswordFirst: false,
@@ -162,7 +162,8 @@ describe("adminSignInError", () => {
   });
 
   it("uses the PRD wording, names no lock time of its own and never says which part was wrong", () => {
-    expect(ADMIN_SIGN_IN_FAILED).toMatch(/^Email or password is wrong, or the account is locked\. /);
+    // Changed on purpose (UI quality council, 15 Oct 2026): spelt "E-mail", like the field.
+    expect(ADMIN_SIGN_IN_FAILED).toMatch(/^E-mail or password is wrong, or the account is locked\. /);
     expect(ADMIN_SIGN_IN_FAILED).toContain(ADMIN_SIGN_IN_ADVICE);
     expect(ADMIN_SIGN_IN_FAILED).not.toMatch(/[0-9]/);
     expect(ADMIN_SIGN_IN_FAILED).not.toMatch(/code is wrong|unknown|no account|not an admin/i);

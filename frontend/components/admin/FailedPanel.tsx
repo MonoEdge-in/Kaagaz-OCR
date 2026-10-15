@@ -1,6 +1,6 @@
 "use client";
 
-// The failed jobs (PRD 3 Z1): documents that failed or can't be read, newest
+// The failed documents (PRD 3 Z1): documents that failed or can't be read, newest
 // first, with the plain message the document screen shows and when each was
 // last tried. Retry calls the document's Read again route; a refusal (someone
 // already retried it, 409, or too many at once, 429) shows the server's words
@@ -65,13 +65,13 @@ export function FailedPanel() {
   return (
     <section className={styles.section} aria-labelledby="failed-heading">
       <h2 id="failed-heading" className={styles.sectionHeading}>
-        Failed jobs
+        Failed documents
       </h2>
       {failed && (
         <div className={styles.errorBanner} role="alert">
           <Icon name="alert" className={styles.errorIcon} />
           <div className={styles.errorBody}>
-            <p className={styles.errorTitle}>Could not load the failed jobs.</p>
+            <p className={styles.errorTitle}>Could not load the failed documents.</p>
             <p>{failed}</p>
           </div>
           <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
@@ -82,19 +82,19 @@ export function FailedPanel() {
       )}
       {!page && !failed && (
         <p className="delayed muted" role="status">
-          Loading the failed jobs…
+          Loading the failed documents…
         </p>
       )}
       {page && page.total === 0 && (
-        <p className={styles.emptyLine}>No failed jobs. Every document was read.</p>
+        <p className={styles.emptyLine}>No failed documents. Every document was read.</p>
       )}
       {page && page.items.length > 0 && (
         <div className={table.reflowWrap}>
           <table className={`table ${table.reflow}`} role="table">
-            <caption className="visually-hidden">Failed jobs, newest first</caption>
+            <caption className="visually-hidden">Failed documents, newest first</caption>
             <thead role="rowgroup">
               <tr role="row">
-                {["Document", "Status", "What happened", "Last run", "Retry"].map((name) => (
+                {["Document", "Status", "What happened", "Last tried", "Retry"].map((name) => (
                   <th key={name} scope="col" role="columnheader">
                     {name}
                   </th>
@@ -121,7 +121,7 @@ export function FailedPanel() {
                     <td role="cell" data-label="What happened" className={styles.wrap}>
                       {item.message}
                     </td>
-                    <td role="cell" data-label="Last run">
+                    <td role="cell" data-label="Last tried">
                       {lastRunText(item.last_run_at)}
                     </td>
                     <td role="cell" data-label="Retry">
@@ -152,7 +152,7 @@ export function FailedPanel() {
         </div>
       )}
       {pages && page && page.total > FAILED_PAGE_SIZE && (
-        <nav className={styles.pager} aria-label="Failed jobs pages">
+        <nav className={styles.pager} aria-label="Failed documents pages">
           <span className="muted tabular">
             {pages.from}–{pages.to} of {page.total}
           </span>

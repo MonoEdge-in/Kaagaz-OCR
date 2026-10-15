@@ -12,7 +12,7 @@
 // read. All text is plain text; answers are built from document text, which is untrusted.
 
 import Link from "next/link";
-import { useId } from "react";
+import { memo, useId, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { understoodNotes } from "@/components/words/words";
@@ -39,8 +39,12 @@ function goToSource(id: string) {
   card.focus({ preventScroll: true });
 }
 
-export function AnswerView({ message, question }: { message: Message; question: string | null }) {
+// Memo: the chat keeps each message object as it was when a new answer arrives,
+// so old answer cards skip re-rendering (UI quality council, 15 Oct 2026).
+export const AnswerView = memo(function AnswerView({ message, question }: { message: Message; question: string | null }) {
   const sourcesHeadingId = useId();
+  // The source a chip is pointed at or focused: its card lights up (UI quality council, 15 Oct 2026).
+  const [hot, setHot] = useState<number | null>(null);
   const answer = message.answer;
 
   if (!answer) {
@@ -178,6 +182,10 @@ export function AnswerView({ message, question }: { message: Message; question: 
                 className={`${styles.numberMark} ${styles.cite}`}
                 aria-label={`Source ${n}`}
                 onClick={() => goToSource(cardId(message.id, n))}
+                onPointerEnter={() => setHot(n)}
+                onPointerLeave={() => setHot(null)}
+                onFocus={() => setHot(n)}
+                onBlur={() => setHot(null)}
               >
                 {n}
               </button>
@@ -193,7 +201,7 @@ export function AnswerView({ message, question }: { message: Message; question: 
           </h3>
           <div className={styles.sources}>
             {answer.citations.map((citation) => (
-              <SourceCard key={citation.n} citation={citation} messageId={message.id} />
+              <SourceCard key={citation.n} citation={citation} messageId={message.id} hot={hot === citation.n} />
             ))}
           </div>
         </section>
@@ -201,4 +209,4 @@ export function AnswerView({ message, question }: { message: Message; question: 
       {feedback}
     </div>
   );
-}
+});

@@ -54,9 +54,10 @@ Why some choices:
   stored file is removed. The list shows each family's current version, with a newer one
   that is still being read or failed beside it (``newer_version``); by id, any
   version opens. A duplicate in Trash says ``in_trash: true``.
-* **Read with** (model choice, council 11 Oct 2026, MS4, MS5): ``/upload-limits`` lists
-  the organisation's usable models, the default first (``kaagaz/api/readers.py``); Auto
-  alone in keyless mode or when the operator set none, so the select hides itself. An
+* **Read with** (model choice, council 11 Oct 2026, MS4, MS5): ``/upload-limits`` offers
+  Standard (the organisation's default) and, when a usable model costs measurably more,
+  Careful (``kaagaz/api/readers.py``, UI quality council 15 Oct 2026); Auto alone in
+  keyless mode or when the operator set none, so the select hides itself. An
   upload or a version may name one in the optional ``read_model`` form field: any other
   is 403 ``model_not_allowed`` before anything is stored. The model and who asked
   (``read_requested_by``, the user its scan spend is billed to) are written to the new

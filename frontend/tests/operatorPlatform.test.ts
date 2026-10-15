@@ -29,7 +29,10 @@ describe("activity in words", () => {
     expect(actionWords("admin.reset_totp")).toBe("Reset an admin's two-step");
     expect(actionWords("org.purged")).toBe("Organisation deleted for good");
     expect(actionWords("document.upload")).toBe("Uploaded a document"); // the admin screen's words
-    expect(actionWords("document.reprocess")).toBe("Document reprocess");
+    // Changed on purpose (UI quality council, 15 Oct 2026): the admin screen now has words
+    // for every audit action, so an unknown one is a made-up code here.
+    expect(actionWords("document.reprocess")).toBe("Asked to read a document again");
+    expect(actionWords("document.something_new")).toBe("Document something new");
     expect(actionWords("constructor")).toBe("Constructor"); // not a key of the maps' prototype
     expect(actionWords("__proto__")).toBe("Proto");
     expect(actionWords("<b>x</b>")).toBe("<b>x</b>"); // plain text: React escapes it
@@ -108,12 +111,15 @@ describe("activity and health source guards", () => {
     for (const label of ["Load more", "result.next", 'htmlFor="activity-org"', 'htmlFor="activity-action"', 'role="status"']) {
       expect(activity, label).toContain(label);
     }
-    expect(activity).not.toMatch(/\.(details|target_id|actor\w*|email)/);
+    // A backspace character stood where \b belongs, so this never matched; styles.email is a CSS class.
+    expect(activity).not.toMatch(/(?<!styles)\.(details|target_id|actor\w*|email)\b/);
     const health = read("components/operator/HealthView.tsx");
     for (const label of ["Documents by status", "Failed, by reason", "Oldest waiting", "Deleted for good", 'role="status"']) {
       expect(health, label).toContain(label);
     }
-    expect(health).not.toMatch(/\.(display_name|email)/);
+    // Changed on purpose (UI quality council, 15 Oct 2026): a stray backspace replaced the
+    // word boundary here, so the check could never fail; it is a real check again.
+    expect(health).not.toMatch(/\.(display_name|email)\b/);
   });
 });
 

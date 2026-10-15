@@ -4,15 +4,16 @@ import { initialSelection, sameRegion, selectValue } from "@/components/viewer/s
 import {
   BACKUP_ISSUES,
   ZOOM_STEPS,
+  bringPageForSpot,
   buildGrid,
   centerScroll,
   cropRowWindow,
   fitPageSize,
   focusZoom,
   pageMode,
-  routeText,
   sheetRowWindow,
   stepZoom,
+  visibleRect,
 } from "@/components/viewer/viewer";
 import { encodeRegion } from "@/lib/regions";
 import type {
@@ -93,7 +94,14 @@ describe("fitPageSize", () => {
 
   it("falls back safely for a missing size or aspect", () => {
     expect(fitPageSize(0, 1, 1).width).toBe(1);
-    expect(fitPageSize(400, 0, 1).height).toBeCloseTo(400 * Math.SQRT2);
+    // Changed on purpose (UI quality council, 15 Oct 2026): the height is whole pixels too (565.69 -> 565).
+    expect(fitPageSize(400, 0, 1).height).toBe(565);
+  });
+
+  it("rounds the height down to whole pixels, so the stage never ends on half a pixel", () => {
+    expect(fitPageSize(595, 595 / 842, 1)).toEqual({ width: 595, height: 842 });
+    expect(fitPageSize(601, 1 / Math.SQRT2, 1)).toEqual({ width: 601, height: 849 }); // 849.94
+    expect(fitPageSize(1, 100, 1).height).toBe(1);
   });
 
   it("fits the whole page inside the container's height too (Fit page)", () => {
@@ -108,6 +116,52 @@ describe("fitPageSize", () => {
   it("fits the width alone when the height is missing or not a size", () => {
     expect(fitPageSize(600, 0.5, 1, 0)).toEqual({ width: 600, height: 1200 });
     expect(fitPageSize(600, 0.5, 1, Number.NaN)).toEqual({ width: 600, height: 1200 });
+  });
+});
+
+describe("visibleRect (what the sharp zoom overlay draws)", () => {
+  const screen = { left: 0, top: 0, right: 1440, bottom: 900 };
+
+  it("is the part of the page inside the frame, in page pixels", () => {
+    // A 2000 x 2828 page scrolled 300 across and 500 down in a frame at (100, 50).
+    const stage = { left: -200, top: -450, right: 1800, bottom: 2378 };
+    const frame = { left: 100, top: 50, right: 900, bottom: 850 };
+    expect(visibleRect(stage, frame, screen)).toEqual({ x: 300, y: 500, width: 800, height: 800 });
+  });
+
+  it("is cut to the window when the frame runs past it", () => {
+    const stage = { left: 0, top: 0, right: 2000, bottom: 2828 };
+    const frame = { left: 0, top: 600, right: 1000, bottom: 1600 };
+    expect(visibleRect(stage, frame, screen)).toEqual({ x: 0, y: 600, width: 1000, height: 300 });
+  });
+
+  it("rounds outwards and stays on the page", () => {
+    const stage = { left: 10.6, top: 20.4, right: 410.6, bottom: 585.4 };
+    const frame = { left: 0, top: 0, right: 300.2, bottom: 2000 };
+    // Left of the page: from 0. Right edge 289.6 -> 290. Down to the page's end (565).
+    expect(visibleRect(stage, frame, screen)).toEqual({ x: 0, y: 0, width: 290, height: 565 });
+  });
+
+  it("is null when none of the page shows", () => {
+    const stage = { left: 0, top: 1000, right: 500, bottom: 1700 };
+    expect(visibleRect(stage, { left: 0, top: 0, right: 500, bottom: 2000 }, screen)).toBeNull();
+  });
+});
+
+describe("bringPageForSpot (one scroll to a picked spot, not two)", () => {
+  const box: Region = { kind: "box", page: 1, box: [0.1, 0.2, 0.3, 0.25] };
+  const other: Region = { kind: "box", page: 1, box: [0.5, 0.6, 0.7, 0.65] };
+  const cell: Region = { kind: "cell", page: 1, row: 4, column: 2 };
+
+  it("leaves a new box to PageViewer, which scrolls the spot itself", () => {
+    expect(bringPageForSpot(null, box)).toBe(false);
+    expect(bringPageForSpot(other, box)).toBe(false);
+  });
+
+  it("brings the page for a cell, or for the spot already shown", () => {
+    expect(bringPageForSpot(null, cell)).toBe(true);
+    expect(bringPageForSpot(box, cell)).toBe(true);
+    expect(bringPageForSpot(box, { ...box })).toBe(true);
   });
 });
 
@@ -216,64 +270,12 @@ describe("sheet windows", () => {
   });
 });
 
-describe("routeText (PRD 2, R1; PRD 5 RT2)", () => {
-  it("says in words how each page was read", () => {
-    expect(routeText({ route: "cells", read_by: "cells", read_issues: [] })).toBe("Read from spreadsheet cells");
-    expect(routeText({ route: "text_layer", read_by: "text_layer", read_issues: [] })).toBe(
-      "Read from the PDF text",
-    );
-    expect(routeText({ route: "blank", read_by: null, read_issues: [] })).toBe("Blank page");
-  });
-
-  it("names the model that read the page, as the server names it (RT2, model choice MS5)", () => {
-    const gemini = { route: "ocr" as const, read_by: "google/gemini-3.1-pro-preview", read_issues: [] };
-    expect(routeText({ ...gemini, read_by_name: "Gemini 3.1 Pro" })).toBe("Read by Gemini 3.1 Pro");
-    const claude = { route: "ocr" as const, read_by: "anthropic/claude-sonnet-5.5", read_issues: ["blurry" as const] };
-    expect(routeText({ ...claude, read_by_name: "Claude Sonnet 5.5" })).toBe("Read by Claude Sonnet 5.5");
-  });
-
-  it("never says OCR for a model's page: without a name it is an AI model, by its ID (R4)", () => {
-    const gemini = { route: "ocr" as const, read_by: "google/gemini-3.8-flash", read_issues: [] };
-    expect(routeText(gemini)).toBe("Read by an AI model (google/gemini-3.8-flash)");
-    expect(routeText({ ...gemini, read_by_name: null })).toBe("Read by an AI model (google/gemini-3.8-flash)");
-  });
-
-  it("says Read by OCR only for a scanned page no model read", () => {
-    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: [] })).toBe("Read by OCR");
-    expect(routeText({ route: "ocr", read_by: null, read_issues: [] })).toBe("Read by OCR");
-  });
-
-  it("says Read by the backup reader for a handed-on page, even with a model's name", () => {
-    const page = { route: "ocr" as const, read_by: "rapidocr", read_by_name: "Gemini 3.1 Pro" };
-    expect(routeText({ ...page, read_issues: ["read_locally"] })).toBe("Read by the backup reader");
-    expect(routeText({ ...page, read_issues: ["reader_refused"] })).toBe("Read by the backup reader");
-  });
-
-  it("names no model for a page that was not scanned", () => {
-    expect(routeText({ route: "text_layer", read_by: "text_layer", read_by_name: "Gemini", read_issues: [] })).toBe(
-      "Read from the PDF text",
-    );
-  });
-
-  it("says the backup reader only when the main reader handed the page on (Q7, G6)", () => {
-    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["read_locally"] })).toBe(
-      "Read by the backup reader",
-    );
-    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["reader_refused", "no_text"] })).toBe(
-      "Read by the backup reader",
-    );
+// Changed on purpose (UI quality council, 15 Oct 2026): the page toolbar no longer says how
+// or by which model a page was read, so routeText and its tests are gone; scanned.ts still
+// names the backup reader from BACKUP_ISSUES.
+describe("BACKUP_ISSUES (PRD 5 Q7, G6)", () => {
+  it("are the issues of a page the main reader handed to the backup reader", () => {
     expect(BACKUP_ISSUES).toEqual(["read_locally", "reader_refused"]);
-  });
-
-  it("keeps the old words for a page read with no key, by an old reader, or before PRD 5", () => {
-    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: [] })).toBe("Read by OCR");
-    expect(routeText({ route: "ocr", read_by: "rapidocr", read_issues: ["low_resolution"] })).toBe("Read by OCR");
-    expect(routeText({ route: "ocr", read_by: "an_old_reader", read_issues: [] })).toBe("Read by OCR");
-    expect(routeText({ route: "ocr", read_by: null, read_issues: [] })).toBe("Read by OCR");
-  });
-
-  it("gives nothing for a page with no route, as for one read before PRD 2", () => {
-    expect(routeText({ route: null, read_by: null, read_issues: [] })).toBeNull();
   });
 });
 
@@ -310,12 +312,14 @@ describe("reasons for values read from a hard page (PRD 5 V4, G5, Q7)", () => {
 
 describe("reasons for values the AI model or OCR read (PRD 2)", () => {
   it("asks to check a value whose field the AI model chose (council A1)", () => {
-    expect(reasonText("model_chosen")).toBe("Found by the AI model. Check it against the page.");
+    // Changed on purpose (UI quality council, 15 Oct 2026): "the AI", not "the AI model".
+    expect(reasonText("model_chosen")).toBe("Found by the AI. Check it against the page.");
   });
 
   it("asks to check a value OCR read from Devanagari or mixed script (council ML 1)", () => {
+    // Changed on purpose (UI quality council, 15 Oct 2026): no "OCR" on user screens.
     expect(reasonText("ocr_script")).toBe(
-      "Read by OCR from Hindi, Marathi or mixed-script text. Check it against the page.",
+      "Read from a scan in Hindi, Marathi or mixed script. Check it against the page.",
     );
   });
 });

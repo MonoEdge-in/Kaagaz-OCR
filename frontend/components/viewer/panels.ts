@@ -4,6 +4,7 @@
 // and cell spots, and the low-resolution warning.
 
 import { fieldText } from "@/components/viewer/labels";
+import { beingRead } from "@/components/viewer/reprocess";
 import { sameRegion } from "@/components/viewer/selection";
 import type {
   DocumentCard,
@@ -190,6 +191,9 @@ export const INVOICE_FIELDS = [
 
 export const LINE_FIELDS = ["description", "hsn", "quantity", "unit", "rate", "amount"] as const;
 
+/** The invoice lines' money columns: lined up at the end (globals.css .num). */
+export const MONEY_LINE_FIELDS: ReadonlySet<string> = new Set(["rate", "amount"]);
+
 /** Where an invoice value sits: record "document" for a field, "line:{n}" for a line's cell. */
 export function invoiceSpot(values: ExtractedValue[], record: string, field: string): Spot | null {
   const value = values.find((v) => v.record_key === record && v.field === field);
@@ -205,7 +209,7 @@ export function invoiceSpot(values: ExtractedValue[], record: string, field: str
 /** The warning for a page scanned at a low resolution (PRD 3 Y4); null otherwise. */
 export function lowResolutionText(page: Pick<PageSummary, "low_resolution" | "effective_dpi">) {
   if (!page.low_resolution || page.effective_dpi === null) return null;
-  return `This page was scanned at ${Math.round(page.effective_dpi)} DPI. Small text may be misread. Upload a sharper scan if values look wrong.`;
+  return "This page was scanned at low quality. Small text may be misread. Upload a sharper scan if values look wrong.";
 }
 
 /** "Page 2", or "Value on page 2, label on page 1" when its label sits on another page. */
@@ -217,9 +221,21 @@ export function spotNote(spot: Spot): string {
     : `Value on page ${page}, label on page ${label}`;
 }
 
-/** Why there is no card (PRD 2 D6): not read yet, or read with the AI model off, out of reach, or its reply unusable. */
+/**
+ * A panel's "nothing here" line, said only once the document is read: while it is still
+ * being read, nothing found yet means nothing; a document that was not read (failed,
+ * rejected, waiting for a reader) will not fill in by itself (QA, 15 Oct 2026).
+ */
+export function untilRead(status: DocumentStatus, text: string): string {
+  if (status === "ready") return text;
+  return beingRead(status)
+    ? "Not read yet. This fills in once the document is read."
+    : "This document was not read, so there is nothing to show.";
+}
+
+/** Why there is no card (PRD 2 D6): not read yet, or the AI could not make one when it was read. */
 export function noCardText(status: DocumentStatus): string {
   return status === "ready"
-    ? "No document card. The AI model was off, could not be reached, or its reply could not be used when this was read."
+    ? "No document card. The AI could not make one when this was read. Reading it again may fix this."
     : "The document card comes once the document is read.";
 }

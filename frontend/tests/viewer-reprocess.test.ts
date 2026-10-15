@@ -3,6 +3,7 @@ import {
   beingRead,
   canReprocess,
   canSend,
+  loadFailure,
   reprocessConfirmText,
   reprocessErrorText,
   reprocessReducer,
@@ -99,6 +100,20 @@ describe("reprocessReducer", () => {
     expect(reprocessReducer(confirming, { type: "failed", message: "No." })).toBe(confirming);
     const done: ReprocessState = { step: "done" };
     expect(reprocessReducer(done, { type: "open" })).toBe(done);
+  });
+});
+
+describe("loadFailure (QA, 15 Oct 2026)", () => {
+  it("offers Try again for a server or network failure, never for a document that is not there", () => {
+    expect(loadFailure(new ApiError(404, "not_found", "We couldn't find that."))).toEqual({
+      message: "We couldn't find that.",
+      retry: false,
+    });
+    expect(loadFailure(new ApiError(503, "backend_unavailable", "Busy.")).retry).toBe(true);
+    expect(loadFailure(new TypeError("Failed to fetch"))).toEqual({
+      message: "Check your internet connection, then try again.",
+      retry: true,
+    });
   });
 });
 

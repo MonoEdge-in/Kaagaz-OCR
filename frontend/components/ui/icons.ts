@@ -14,6 +14,7 @@ export const ICON_NAMES = [
   "moon",
   "monitor",
   "upload",
+  "download",
   "file",
   "search",
   "send",
@@ -112,6 +113,11 @@ export const ICONS: Record<IconName, readonly IconShape[]> = {
   upload: [
     path("M12 15V4"),
     path("M7.5 8.5L12 4l4.5 4.5"),
+    path("M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"),
+  ],
+  download: [
+    path("M12 4v11"),
+    path("M7.5 10.5L12 15l4.5-4.5"),
     path("M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"),
   ],
   file: [

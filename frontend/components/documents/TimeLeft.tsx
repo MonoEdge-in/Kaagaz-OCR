@@ -87,8 +87,10 @@ function Progressing({ value, step, attempt, name }: ProgressingProps) {
   );
 }
 
-// Renders again only when the words change, not on every tick.
+// Renders again only when the words change, not on every tick. The same words for eyes and
+// ears are written once, so a copy or a text read-out never says "Waiting to start" twice.
 const Words = memo(function Words({ text, spoken }: { text: string; spoken: string }) {
+  if (text === spoken) return <span className={styles.timeLeft}>{text}</span>;
   return (
     <span className={styles.timeLeft}>
       <span aria-hidden="true">{text}</span>

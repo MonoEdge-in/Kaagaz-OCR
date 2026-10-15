@@ -2,7 +2,7 @@
 // tested in node (tests/viewer-scanned.test.ts). Text is shown as read.
 
 import { sameRegion } from "@/components/viewer/selection";
-import { routeText } from "@/components/viewer/viewer";
+import { BACKUP_ISSUES } from "@/components/viewer/viewer";
 import type {
   ExtractedValue,
   PageReader,
@@ -14,11 +14,12 @@ import type {
 
 // The same line as LOW_CONFIDENCE in backend/kaagaz/extraction/labels.py.
 export const LOW_CONFIDENCE = 0.9;
-export const CONFIDENCE_NOTE = "Confidence is the reader's own guess, not a check.";
+// Shown once wherever a "Reader not sure" tag can appear (UI quality council, 15 Oct 2026).
+export const CONFIDENCE_NOTE = "'Not sure' is the reader's own view, not a check.";
 export const FIRST_LINES = 200; // shown before "Show all N lines"
 // PRD 5 U8: "First reader" and "Second reader" in words people know.
 export const MAIN_READER = "Main reader";
-export const CHECKER = "Checker (PDF text layer)";
+export const CHECKER = "Checker (text inside the PDF)";
 
 type Origin = ReadLine["origin"];
 
@@ -31,22 +32,12 @@ export function notSure(confidence: number | null): boolean {
 }
 
 /**
- * "Reader sure (97%)" or "Reader not sure (62%)" (never rounded up to 90%); with no score,
- * "Read directly from the file" for a cell or the text layer, else null (nothing to show).
+ * "Reader not sure" under LOW_CONFIDENCE, never a number; nothing for a line it was sure of.
+ * With no score, "Read directly from the file" for a cell or the text layer, else null.
  */
 export function confidenceText(confidence: number | null, origin: Origin): string | null {
-  if (isScore(confidence)) {
-    const percent = Math.round(confidence * 100);
-    return notSure(confidence)
-      ? `Reader not sure (${Math.min(percent, 89)}%)`
-      : `Reader sure (${percent}%)`;
-  }
+  if (isScore(confidence)) return notSure(confidence) ? "Reader not sure" : null;
   return origin === "cell" || origin === "text_layer" ? "Read directly from the file" : null;
-}
-
-/** True when any line has a reader's score, so CONFIDENCE_NOTE has something to explain. */
-export function hasScore(lines: Pick<ReadLine, "confidence">[]): boolean {
-  return lines.some((line) => isScore(line.confidence));
 }
 
 /** How a value's page was read, as a line's origin; null when it is not known. */
@@ -64,19 +55,17 @@ export function valueAt(values: ExtractedValue[], region: Region): ExtractedValu
 export const plural = (n: number, word: string) => `${n.toLocaleString("en-IN")} ${word}${n === 1 ? "" : "s"}`;
 
 /**
- * "Read by Gemini 3.1 Pro at 300 DPI" and "2 of 3 lines: reader not sure" (or null). The words
- * name no engine (PRD 5 U8): the main reader, and the checker (the PDF text layer).
+ * "Main reader" (or "Backup reader" for a page the main reader handed on) and "2 of 3 lines:
+ * reader not sure" (or null). The words name no engine, model or scan setting (PRD 5 U8; UI
+ * quality council, 15 Oct 2026): the main reader, and the checker (the text inside the PDF).
  */
 export function readerHeading(
   reader: PageReader,
-  page: Pick<PageSummary, "route" | "read_by" | "read_by_name" | "read_issues" | "effective_dpi">,
+  page: Pick<PageSummary, "read_issues">,
 ): { title: string; notSureCount: string | null } {
   let title = CHECKER;
   if (reader.role === "first") {
-    title = routeText(page) ?? MAIN_READER;
-    if (page.route === "ocr" && page.effective_dpi !== null) {
-      title += ` at ${Math.round(page.effective_dpi)} DPI`;
-    }
+    title = page.read_issues.some((issue) => BACKUP_ISSUES.includes(issue)) ? "Backup reader" : MAIN_READER;
   }
   const unsure = reader.lines.filter((line) => notSure(line.confidence)).length;
   return {
@@ -90,7 +79,7 @@ export function readerHeading(
 
 /** Why the checker's text did not count on this page; null when it did. */
 export function secondReaderNote(route: PageRoute | null): string | null {
-  if (route === "ocr") return "Not used for this page: it was read by OCR.";
+  if (route === "ocr") return "Not used for this page: it is a scanned page.";
   if (route === "blank") return "Not used for this page: it is blank.";
   return null;
 }

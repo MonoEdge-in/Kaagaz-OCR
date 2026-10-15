@@ -108,12 +108,13 @@ export function secretForCopy(secret: string): string {
 // PRD A3: the server sends one 401 text for a wrong password, an unknown
 // e-mail, a locked account and a wrong code, with the lock time filled in from
 // LOGIN_LOCK_MINUTES. The screen shows it as sent, then this advice.
-export const ADMIN_SIGN_IN_ADVICE = "Check your e-mail, password and the newest code from the app.";
+// The server's text already says to check what was typed; this adds the code.
+export const ADMIN_SIGN_IN_ADVICE = "Use the newest code from the app.";
 
 // Any other refusal, or a 401 without the server's text. It names no lock
 // time: only the server knows the setting.
 export const ADMIN_SIGN_IN_FAILED =
-  `Email or password is wrong, or the account is locked. ${ADMIN_SIGN_IN_ADVICE}`;
+  `E-mail or password is wrong, or the account is locked. Check them, then try again. ${ADMIN_SIGN_IN_ADVICE}`;
 
 export const CHANGE_PASSWORD_FIRST =
   "Set a new password first. Sign in on the normal sign-in page, choose your new password, " +

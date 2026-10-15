@@ -18,9 +18,11 @@ export default function ChatPage() {
   return (
     <Suspense
       fallback={
-        <p className="muted" role="status">
-          Loading the chat…
-        </p>
+        <div className="page">
+          <p className="muted" role="status">
+            Loading the chat…
+          </p>
+        </div>
       }
     >
       <ChatRoute />

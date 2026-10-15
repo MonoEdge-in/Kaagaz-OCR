@@ -98,6 +98,18 @@
   margin-inline-start: auto;
 }
 
+/* A phone: Download original is its icon alone (globals.css .narrow-hide) and
+   shares a row with Ask about this document. */
+@media (max-width: 639.98px) {
+  .download {
+    margin-inline-start: 0;
+  }
+
+  .ask {
+    flex: 1 1 auto;
+  }
+}
+
 /* The versions: one small link per version, the one being viewed filled in. */
 .versions {
   list-style: none;
@@ -159,7 +171,8 @@
   margin-top: 2px;
 }
 
-/* Viewer 3fr, the panels then the values 2fr from 1024 px; stacked below that. */
+/* Viewer 3fr, the panels (the values among them) 2fr from 1024 px; stacked
+   below that. Wider still: see below. */
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -170,11 +183,6 @@
 @media (min-width: 1024px) {
   .layout {
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-    grid-template-rows: auto 1fr;
-  }
-
-  .viewer {
-    grid-row: span 2;
   }
 }
 
@@ -188,13 +196,21 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    height: calc(100dvh - 2 * var(--space-4));
+    height: calc(100svh - 2 * var(--space-4));
+  }
+}
+
+/* A wide window: the page column is only as wide as a page fitted to the
+   window's height needs (an A4 page plus its frame; never past 55%), and the
+   panels take the rest. */
+@media (min-width: 90rem) and (min-height: 36rem) {
+  .layout {
+    grid-template-columns: minmax(0, min(calc((100svh - 7rem) * 0.8), 55%)) minmax(0, 1fr);
   }
 }
 
 .viewer,
-.panels,
-.values {
+.panels {
   min-width: 0;
 }
 
@@ -384,12 +400,28 @@
   color: var(--fg-muted);
 }
 
+/* background-color, so a selected Needs review row keeps its hatched edge. */
 .activeRow td {
-  background: var(--accent-soft);
+  background-color: var(--accent-soft);
 }
 
 .activeRow .valueButton {
   text-decoration-thickness: 2px;
+}
+
+/* A Needs review value: a hatched edge at the row's inline start, as on a
+   Needs review answer (the label badge still says it). */
+@container (min-width: 36rem) {
+  .valuesTable tr[data-label="needs_review"] td:first-child {
+    background-image: repeating-linear-gradient(45deg, var(--review-solid) 0 4px, transparent 4px 8px);
+    background-size: 4px 100%;
+    background-repeat: no-repeat;
+  }
+}
+
+:global([dir="rtl"]) .valuesTable tr[data-label="needs_review"],
+:global([dir="rtl"]) .valuesTable tr[data-label="needs_review"] td:first-child {
+  background-position: right;
 }
 
 @container (max-width: 35.99rem) {
@@ -435,8 +467,15 @@
   }
 
   .valuesTable tbody tr.activeRow {
-    background: var(--accent-soft);
+    background-color: var(--accent-soft);
     border-color: var(--accent);
+  }
+
+  .valuesTable tr[data-label="needs_review"] {
+    padding-inline-start: calc(var(--space-4) + 4px);
+    background-image: repeating-linear-gradient(45deg, var(--review-solid) 0 4px, transparent 4px 8px);
+    background-size: 4px 100%;
+    background-repeat: no-repeat;
   }
 
   .valuesTable td,
@@ -484,7 +523,7 @@
 
 .pageSkeleton {
   aspect-ratio: 1 / 1.3;
-  max-height: 80vh;
+  max-height: 80dvh;
   border-radius: var(--r-md);
 }
 

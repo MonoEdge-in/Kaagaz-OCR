@@ -15,9 +15,9 @@ import {
   FIRST_LINES,
   confidenceText,
   emptyState,
-  hasScore,
   lineMarked,
   MAIN_READER,
+  notSure,
   plural,
   readerHeading,
   secondReaderNote,
@@ -143,7 +143,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
         </div>
       ) : (
         <>
-          {hasScore(lines) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}
+          {lines.some((line) => notSure(line.confidence)) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}
           {truncated && <p className={styles.note}>{truncated}</p>}
           <div
             className={styles.scroll}

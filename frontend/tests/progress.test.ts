@@ -160,7 +160,8 @@ describe("a refresh", () => {
   });
 
   it("shows no stale bar while a try a backend stopped waits to come back", () => {
-    expect(render({ status: "received", progress: null, attempts: 0 })).toContain("Waiting to start");
+    // QA, 15 Oct 2026: once, not "Waiting to start Waiting to start" (seen and spoken words are the same).
+    expect(render({ status: "received", progress: null, attempts: 0 }).match(/Waiting to start/g)).toHaveLength(1);
     expect(render({ status: "received", progress: null, attempts: 1 })).toBe(""); // the status message says it
     expect(render({ status: "clean", progress: null, attempts: 2 })).toBe("");
   });
