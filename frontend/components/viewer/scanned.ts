@@ -79,7 +79,7 @@ export function readerHeading(
 
 /** Why the checker's text did not count on this page; null when it did. */
 export function secondReaderNote(route: PageRoute | null): string | null {
-  if (route === "ocr") return "Not used for this page: it is a scanned page.";
+  if (route === "ocr") return "This page is a scan, so it carries no text of its own to compare.";
   if (route === "blank") return "Not used for this page: it is blank.";
   return null;
 }

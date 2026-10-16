@@ -514,11 +514,13 @@ describe("layout guards", () => {
     expect(declarations(narrow[0]?.body)).toEqual(declarations(hidden));
     const view = read("app/(app)/documents/[id]/DocumentView.tsx");
     expect(view).toContain('<Icon name="download" />\n              <span className="narrow-hide">Download original</span>');
-    expect(view).toContain('Scanned<span className="narrow-hide"> text</span>');
+    // Changed on purpose (board 6, 16 Oct 2026): a phone shows "Text"; the name is still "Scanned text".
+    expect(view).toContain('<span className="narrow-hide">Scanned </span>\n                    <span className={styles.textWord}>text</span>');
     expect(read("components/viewer/PageViewer.tsx")).toContain('Fit<span className="narrow-hide">{fit === "page" ? " page" : " width"}</span>');
     const phone = rules(read("app/(app)/documents/[id]/DocumentView.module.css")).filter((rule) => rule.at === "@media (max-width: 639.98px)");
     expect(phone.find((rule) => rule.selector === ".download")?.body).toMatch(/margin-inline-start:\s*0;/);
     expect(phone.find((rule) => rule.selector === ".ask")?.body).toMatch(/flex:\s*1 1 auto;/);
+    expect(phone.find((rule) => rule.selector === ".textWord")?.body).toMatch(/text-transform:\s*capitalize;/);
   });
 
   it("puts the document's status, folder, tags and versions on one meta line under the title (board 12 P4)", () => {
@@ -588,5 +590,61 @@ describe("layout guards", () => {
     expect(overview).toContain('className={column.id === "spend" ? "num" : undefined}');
     expect(overview).toContain('data-label="AI spend this month" className="num"');
     expect(read("app/(app)/documents/[id]/DocumentPanels.tsx").match(/className=\{MONEY_LINE_FIELDS\.has\(field\) \? "num" : undefined\}/g)).toHaveLength(2);
+  });
+});
+
+// Board 2, 3 and 6 gaps on the document screen (16 Oct 2026).
+const VIEW = "app/(app)/documents/[id]/DocumentView.tsx";
+const VIEW_CSS = "app/(app)/documents/[id]/DocumentView.module.css";
+
+describe("the document screen (boards 2, 3 and 6)", () => {
+  it("puts the panels in two groups, side by side from 90rem, beside a page column capped at 40%", () => {
+    const wide = rules(read(VIEW_CSS)).filter((rule) => rule.at === "@media (min-width: 90rem) and (min-height: 36rem)");
+    const layout = wide.find((rule) => rule.selector === ".layout")?.body ?? "";
+    expect(layout).toMatch(/min\(calc\(\(100svh - 7rem\) \* 0\.8\), 40%\)/);
+    expect(wide.find((rule) => rule.selector === ".panels")?.body).toMatch(
+      /display:\s*grid;\s*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\);/,
+    );
+    // Narrower, both groups stack as one column with the same gap as before.
+    const column = rules(read(VIEW_CSS)).find((rule) => rule.at === "" && selectors(rule).includes(".panelsSide") && /flex/.test(rule.body));
+    expect(column && selectors(column)).toEqual([".panels", ".panelsMain", ".panelsSide"]);
+    expect(column?.body).toMatch(/flex-direction:\s*column;\s*gap:\s*var\(--space-4\);/);
+    const view = read(VIEW);
+    const main = view.slice(view.indexOf("<div className={styles.panelsMain}>"), view.indexOf("<div className={styles.panelsSide}>"));
+    const side = view.slice(view.indexOf("<div className={styles.panelsSide}>"), view.indexOf("{adding && ("));
+    for (const part of ["problemsBanner", "scannedPanel", "<PageWordsList", "<AttentionPanel", 'id="values-heading"']) {
+      expect(main).toContain(part);
+    }
+    for (const part of ["<CardPanel", "<RelatedPanel", "<InvoicePanel", "<StoryPanel"]) expect(side).toContain(part);
+  });
+
+  it("shows the values in three columns, the reason under its badge, and only the badge on one line", () => {
+    const view = read(VIEW);
+    const head = view.slice(view.indexOf("<thead"), view.indexOf("</thead>"));
+    expect(head.match(/role="columnheader"/g)).toHaveLength(3);
+    expect(head).toContain("Label and reason");
+    expect(view).toMatch(/<td role="cell" className=\{styles\.labelCell\}>\s*<LabelBadge label=\{value\.label\} \/>\s*<div className=\{styles\.reason\}>/);
+    const nowrap = rules(read(VIEW_CSS)).filter((rule) => NOWRAP.test(rule.body) && /label|reason/i.test(rule.selector));
+    expect(nowrap.map((rule) => rule.selector)).toEqual([".labelCell :global(.badge)"]);
+  });
+
+  it("shows about six values, then a quiet Show all N, never hiding a Needs review value", () => {
+    const view = read(VIEW);
+    expect(view).toContain("const FIRST_VALUES = 6;");
+    expect(view).toContain('value.label === "needs_review"');
+    expect(view).toContain("{shownValues.map((value) => {");
+    expect(view).toContain("className={`btn btn-quiet ${styles.showAll}`}");
+    expect(view).toContain('`Show all ${detail.values.length.toLocaleString("en-IN")}`');
+  });
+
+  it("hatches the Attention card's edge like a Needs review value", () => {
+    const hatch = rulesFor(VIEW_CSS, ".attentionToCheck").find((rule) => rule.at === "");
+    expect(hatch?.body).toMatch(/background-image:\s*repeating-linear-gradient\(45deg, var\(--review-solid\) 0 4px, transparent 4px 8px\);/);
+  });
+
+  it("names the highlighted value under the page", () => {
+    const view = read(VIEW);
+    expect(view).toContain("highlightNote={highlightNote}");
+    expect(view).toContain('`Highlighted: ${fieldText(highlighted.field)}${fromLink ? FROM_LINK : ""}`');
   });
 });

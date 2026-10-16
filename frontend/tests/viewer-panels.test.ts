@@ -1,4 +1,8 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { AttentionPanel } from "@/app/(app)/documents/[id]/DocumentPanels";
+import { PageViewer } from "@/components/viewer/PageViewer";
 import {
   LINE_FIELDS,
   MONEY_LINE_FIELDS,
@@ -336,10 +340,87 @@ describe("the Attention panel (PRD 5 U5)", () => {
       { pageNo: 4, lines: ["This page couldn't be read.", "3 words couldn't be read."], kept: false },
     ]);
   });
+
+  // Board 2: the card with the Needs review hatched edge, "N to check" and a lead line.
+  const attention = (pages: PageSummary[]) =>
+    renderToStaticMarkup(
+      createElement(AttentionPanel, {
+        status: "ready",
+        pages,
+        current: null,
+        marks: [],
+        onPage: () => undefined,
+        onMark: () => undefined,
+      }),
+    );
+
+  it("counts what is left to check, with a hatched edge and a lead line in the right number", () => {
+    const two = attention([page(1), page(2, { read_quality: "uncertain", unsure_words: 2, unpinned_lines: 1 })]);
+    expect(two).toMatch(/<section class="[^"]*_attentionToCheck_/);
+    expect(two).toContain("badge badge-review");
+    expect(two).toContain("2 to check");
+    expect(two).toContain("2 reading problems on page 2. Check them on the page before you rely on them.");
+    const one = attention([page(3, { read_quality: "uncertain", unsure_words: 1 })]);
+    expect(one).toContain("1 to check");
+    expect(one).toContain("1 reading problem on page 3. Check it on the page before you rely on it.");
+    const many = attention([
+      page(1, { read_quality: "uncertain", unsure_words: 1 }),
+      page(2, { read_quality: "unreadable" }),
+    ]);
+    expect(many).toContain("2 reading problems on 2 pages. Check them on the pages before you rely on them.");
+  });
+
+  it("shows no count, edge or lead line once every problem page is kept as is, or all is clear", () => {
+    const kept = attention([page(1, { read_quality: "uncertain", unsure_words: 4, accepted_at: "2026-10-09T10:00:00Z" })]);
+    const clear = attention([page(1)]);
+    for (const html of [kept, clear]) {
+      expect(html).not.toContain("_attentionToCheck_");
+      expect(html).not.toContain("to check");
+      expect(html).not.toContain("reading problem");
+    }
+    expect(clear).toContain(ALL_CLEAR);
+  });
 });
 
 describe("the invoice lines' money columns", () => {
   it("lines up rate and amount only, the lines' money", () => {
     expect(LINE_FIELDS.filter((field) => MONEY_LINE_FIELDS.has(field))).toEqual(["rate", "amount"]);
+  });
+});
+
+describe("the note under a highlighted page (board 2)", () => {
+  const note = (highlightNote?: string) =>
+    renderToStaticMarkup(
+      createElement(PageViewer, {
+        document: { id: "d1", display_name: "Invoice.jpg", detected_type: "jpeg" },
+        page: {
+          page_no: 1,
+          width: 595,
+          height: 842,
+          unit: "px",
+          has_image: true,
+          route: "ocr",
+          effective_dpi: 300,
+          low_resolution: false,
+          read_by: null,
+          read_quality: "good",
+          read_issues: [],
+          unsure_words: 0,
+          illegible_words: 0,
+          unpinned_lines: 0,
+          accepted_by: null,
+          accepted_at: null,
+          read_again_requested_at: null,
+        },
+        highlights: [box(1)],
+        highlightNote,
+      }),
+    );
+
+  it("names what is highlighted when told, and keeps the old words when not", () => {
+    expect(note("Highlighted: Grand total, from the link you opened")).toContain(
+      "Highlighted: Grand total, from the link you opened",
+    );
+    expect(note()).toContain("The highlighted box marks the spot on this page.");
   });
 });

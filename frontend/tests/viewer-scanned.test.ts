@@ -112,7 +112,8 @@ describe("readerHeading", () => {
   });
 
   it("says when the checker did not count", () => {
-    expect(secondReaderNote("ocr")).toBe("Not used for this page: it is a scanned page.");
+    // Changed on purpose (board 2, 16 Oct 2026): says why a scan has nothing to compare.
+    expect(secondReaderNote("ocr")).toBe("This page is a scan, so it carries no text of its own to compare.");
     expect(secondReaderNote("blank")).toBe("Not used for this page: it is blank.");
     expect(secondReaderNote("text_layer")).toBeNull();
     expect(secondReaderNote("cells")).toBeNull();
