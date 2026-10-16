@@ -217,16 +217,50 @@ def test_an_allowed_ensemble_reads_with_the_usable_others_only() -> None:
     }
 
 
-def test_dynamic_needs_a_careful_tier_other_than_the_lead() -> None:
-    allowed = {"dynamic": True}
+def test_dynamic_reads_low_first_with_the_careful_tier_or_else_the_lead() -> None:
+    """Tushar, 16 Oct 2026: the first read thinks low (not the organisation's level); with no
+    Careful tier other than the lead, the lead itself is Careful (gemini_ocr reads it at
+    OCR_RETRY_THINKING_LEVEL), so Dynamic works with one allowed model."""
+    allowed = {"dynamic": True, "scan_thinking": "high"}
     cheap, dear = row(FLASH, default=True), row(PRO, tokens=(4000, 2000))
     reading = scan(FakeConn(scan=[cheap, dear], settings=allowed, document=document(None, "dynamic")))
-    assert (reading.mode, reading.lead, reading.careful) == ("dynamic", agent(FLASH), agent(PRO))
+    assert (reading.mode, reading.lead, reading.careful, reading.thinking) == (
+        "dynamic",
+        agent(FLASH),
+        agent(PRO),
+        "low",
+    )
     near = row(PRO, tokens=(1050, 520))  # under 1.1 times Standard a page: no Careful tier
     reading = scan(FakeConn(scan=[cheap, near], settings=allowed, document=document(None, "dynamic")))
-    assert (reading.mode, reading.careful, reading.notes) == ("single", None, ("careful_missing",))
+    assert (reading.mode, reading.careful, reading.thinking, reading.notes) == (
+        "dynamic",
+        agent(FLASH),
+        "low",
+        (),
+    )
     reading = scan(FakeConn(scan=[cheap, dear], settings=allowed, document=document(PRO, "dynamic")))
-    assert (reading.mode, reading.notes) == ("single", ("careful_missing",))  # Careful is the lead itself
+    assert (reading.mode, reading.careful, reading.notes) == ("dynamic", agent(PRO), ())  # the lead itself
+    alone = scan(FakeConn(scan=[cheap], settings=allowed, document=document(None, "dynamic")))
+    assert (alone.mode, alone.careful, alone.thinking) == ("dynamic", agent(FLASH), "low")
+
+
+def test_dynamic_keeps_the_leads_level_when_it_does_not_think_low() -> None:
+    allowed = {"dynamic": True, "scan_thinking": "high"}
+    lead = row(PRO, default=True, efforts=["medium", "high"])
+    reading = scan(FakeConn(scan=[lead], settings=allowed, document=document(None, "dynamic")))
+    assert (reading.mode, reading.thinking, reading.notes) == ("dynamic", "high", ("thinking_fallback",))
+
+
+def test_dynamic_is_on_unless_the_organisation_or_the_platform_turns_it_off() -> None:
+    """The effective switch: the organisation's, else the platform's, else on (16 Oct 2026)."""
+    sql = str(models._SETTINGS)
+    assert "COALESCE(s.dynamic, p.dynamic, true) AS dynamic" in sql
+    off = scan(
+        FakeConn(
+            scan=[row(FLASH, default=True)], settings={"dynamic": False}, document=document(None, "dynamic")
+        )
+    )
+    assert (off.mode, off.notes) == ("single", ("mode_revoked",))
 
 
 def test_a_thinking_level_the_lead_does_not_accept_falls_back_to_the_environments() -> None:

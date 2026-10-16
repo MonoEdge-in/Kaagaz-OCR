@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { formatNumber } from "@/lib/format";
+import { useTabMotion } from "@/lib/motion";
 import { tabAfterKey } from "./logic";
 import styles from "./Admin.module.css";
 
@@ -38,6 +39,7 @@ export function Tabs<T extends string>(props: {
 }) {
   const { prefix, label, tabs, active, onChange, children } = props;
   const listRef = useRef<HTMLDivElement>(null);
+  useTabMotion(listRef, active);
   const [edges, setEdges] = useState({ start: false, end: false });
   const many = tabs.length > MAX_PHONE_TABS;
 

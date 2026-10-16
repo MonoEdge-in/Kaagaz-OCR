@@ -43,10 +43,18 @@
 
 /* --- Tiles: the value, its notes, and a line by day (decoration: the words say it) --- */
 
-.tileBody {
-  display: flex;
+/* The Overview's tiles: value first, then the label, then one short line (Tushar, 16 Oct
+   2026). Two classes, so this wins over the shared tile's column-reverse in any load order. */
+.tiles .tile {
   flex-direction: column;
-  gap: var(--space-1);
+  justify-content: flex-start;
+}
+
+.tiles .tileValue {
+  order: -1;
+}
+
+.tile dd {
   margin: 0;
   min-width: 0;
 }

@@ -12,6 +12,8 @@ import type {
   Citation,
   ConversationSummary,
   DetectedType,
+  DocType,
+  DocumentSummary,
   Region,
   ThinkingLevel,
 } from "@/lib/types";
@@ -331,4 +333,45 @@ export function choiceBody(options: ChatOptions | null, pick: AnswerPick | null)
   const usual = defaultPick(options);
   if (pick.level === usual.level && pick.agents.join(",") === usual.agents.join(",")) return undefined;
   return { ...(pick.agents.length > 0 ? { agents: pick.agents } : {}), thinking: pick.level };
+}
+
+// --- UI audit, 16 Oct 2026 (A1, A5) ---------------------------------------------
+
+/** A1: the conversations whose title has the search's words, in the list's order. */
+export function filterConversations(items: readonly ConversationSummary[], search: string): ConversationSummary[] {
+  const words = search.toLowerCase().split(/\s+/).filter(Boolean);
+  return items.filter((item) => words.every((word) => item.title.toLowerCase().includes(word)));
+}
+
+const STARTERS: Partial<Record<DocType, string>> = {
+  invoice: "What is the total amount on this invoice?",
+  receipt: "How much was paid, and to whom?",
+  bank_statement: "What is the closing balance?",
+  land_record: "Who is the owner named in this record?",
+  contract: "Who are the parties, and when does it end?",
+  register: "Which entry has the largest amount?",
+};
+const STARTER_DEFAULT = "What is this document about?";
+export const MAX_STARTERS = 3;
+
+export interface Starter {
+  documentId: string;
+  documentName: string;
+  question: string;
+}
+
+/**
+ * A5: up to three example questions about the newest ready documents, one each, by the
+ * document's type. Each is asked about its own document only. Plain, fixed questions: no
+ * AI call makes them.
+ */
+export function starterQuestions(documents: readonly DocumentSummary[]): Starter[] {
+  return documents
+    .filter((doc) => doc.status === "ready" && doc.deleted_at === null)
+    .slice(0, MAX_STARTERS)
+    .map((doc) => ({
+      documentId: doc.id,
+      documentName: doc.display_name,
+      question: (doc.doc_type && STARTERS[doc.doc_type]) || STARTER_DEFAULT,
+    }));
 }

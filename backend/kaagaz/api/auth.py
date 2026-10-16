@@ -7,20 +7,21 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   ``scrypt$16384$8$1$<salt b64>$<hash b64>``, and compared in constant time.
 * **The session** is a cookie ``<payload b64url>.<HMAC-SHA256 b64url>``. The
   payload is ``{"uid","cid","role","scope","ver","exp"}`` and the MAC is over
-  ``b"session\\x00" + body``. ``scope`` is "app" (from /login) or "admin" (from
-  /admin/login, admins only); ``ver`` is the user's ``session_version``. Nothing
-  is stored server side, so every request re-checks, with one query inside
-  ``db.customer(cid)``, that the user still exists, is not disabled, still has
-  that role and still has that session version. Raising the version (a new
-  password, "sign out everywhere", disabling, a 2FA reset) ends every other
-  session at its next request.
-* **The enrol token** carries a pending TOTP secret between an admin pressing
-  "Turn on" (/auth/admin/2fa/start) and their first code: ``{"uid","cid","ver","sec","exp"}``, MAC over
+  ``b"session\\x00" + body``. ``scope`` is "app" (a member or reviewer from /login)
+  or "admin" (an admin from /login or from enrolling; every admin session is one);
+  ``ver`` is the user's ``session_version``. Nothing is stored server side, so
+  every request re-checks, with one query inside ``db.customer(cid)``, that
+  the user still exists, is not disabled, still has that role and still has
+  that session version. Raising the version (a new password, "sign out
+  everywhere", disabling, a 2FA reset) ends every other session at its next
+  request.
+* **The enrol token** carries a pending TOTP secret between an admin's right
+  password at /auth/login (403 ``mfa_enrol_required``) and their first code:
+  ``{"uid","cid","ver","sec","exp"}``, MAC over
   ``b"enrol\\x00" + body``, 10 minutes. The purposes have different MAC
   inputs and different fields, so neither token ever reads as the other.
 * **The confirm token** (council 4 Oct 2026, PROVISIONAL): a granted member or
-  reviewer's re-typed password for Delete forever, and an admin's while the operator
-  has not allowed two-step sign-in for the customer (0029). ``{"uid","cid","ver","exp"}``,
+  reviewer's re-typed password for Delete forever. ``{"uid","cid","ver","exp"}``,
   MAC over ``b"confirm\\x00" + body``, 5 minutes, an HttpOnly SameSite=Strict
   cookie for /api/documents only.
 * **Strict claims**: a token with a missing, extra or wrongly typed field is
@@ -28,10 +29,12 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   signs in once more.
 * **The customer always comes from the session**, never from the request: the
   signed ``cid`` is the only customer id any route uses.
-* **The password-change gate is inside ``current_user``** (deny by default):
-  while ``must_change_password`` is set, every route refuses with 403
-  ``password_change_required``, except the few that use
-  ``current_user_allow_password_change`` (/auth/password, /auth/logout, /auth/me).
+* **The password-change and two-step gates are inside ``current_user``** (deny
+  by default): while ``must_change_password`` is set, every route refuses with 403
+  ``password_change_required``; then an admin without two-step sign-in set up gets
+  403 ``mfa_enrol_required`` (MFA required for admins, 16 Oct 2026). Only the few
+  routes that use ``current_user_allow_password_change`` (/auth/password,
+  /auth/logout, /auth/me) skip both; /auth/admin/enrol needs no session.
 * **CSRF**: every request that is not GET, HEAD or OPTIONS must carry
   ``X-Requested-With: kaagaz``. A cross-site form cannot add a header, and a
   cross-site script cannot either without CORS, which the API never allows.
@@ -164,6 +167,8 @@ _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
 _CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
 _OPERATOR_PURPOSE = b"operator"
 _OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
+_MOVE_PURPOSE = b"operator_move"
+_MOVE_FIELDS = frozenset({"oid", "ver", "sec", "exp"})
 
 
 def session_seconds(scope: str, settings: Settings) -> int:
@@ -302,6 +307,40 @@ def read_operator(token: str, secret: str, now: int) -> OperatorClaims | None:
     if not (isinstance(oid, str) and _is_uuid(oid) and _is_version(ver) and _is_int(exp)) or exp <= now:
         return None
     return OperatorClaims(operator_id=oid, session_version=ver, expires_at=exp)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MoveClaims:
+    """Moving the operator's two-step to a new device (0031): the new secret, sealed."""
+
+    operator_id: str
+    session_version: int
+    sealed_secret: str  # SecretBox.seal(new secret, aad=operator_id)
+    expires_at: int  # seconds since the epoch
+
+
+def sign_move(claims: MoveClaims, secret: str) -> str:
+    """A move token: exactly ``{oid, ver, sec, exp}``, MAC purpose ``operator_move``."""
+    payload = {
+        "oid": claims.operator_id,
+        "ver": claims.session_version,
+        "sec": claims.sealed_secret,
+        "exp": claims.expires_at,
+    }
+    return _sign(payload, _MOVE_PURPOSE, secret)
+
+
+def read_move(token: str, secret: str, now: int) -> MoveClaims | None:
+    """The claims of a genuine, unexpired move token, else None. Strict, as ``read_operator``."""
+    data = _verified(token, _MOVE_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _MOVE_FIELDS:
+        return None
+    oid, ver, sec, exp = data["oid"], data["ver"], data["sec"], data["exp"]
+    if not (isinstance(oid, str) and _is_uuid(oid) and isinstance(sec, str) and sec):
+        return None
+    if not (_is_version(ver) and _is_int(exp)) or exp <= now:
+        return None
+    return MoveClaims(operator_id=oid, session_version=ver, sealed_secret=sec, expires_at=exp)
 
 
 def set_operator_cookie(response: Response, claims: OperatorClaims, settings: Settings, *, now: int) -> None:
@@ -452,9 +491,8 @@ class CurrentUser:
     scope: str  # the session's: "app" or "admin"
     session_version: int
     must_change_password: bool
-    totp_enabled: bool  # two-step sign-in is on (each admin chooses)
+    totp_enabled: bool  # two-step sign-in is on (required for an admin)
     delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
-    two_step_allowed: bool  # the operator's grant (0029); while false, totp_enabled is ignored
 
 
 def set_confirm_cookie(response: Response, user: CurrentUser, settings: Settings, *, now: int) -> None:
@@ -481,10 +519,13 @@ def current_user(request: Request) -> CurrentUser:
 
     401 ``not_signed_in`` unless the session is genuine and still matches the
     user (enabled, same role, same session version). Then 403
-    ``password_change_required`` while the user must set a new password."""
+    ``password_change_required`` while the user must set a new password, and 403
+    ``mfa_enrol_required`` for an admin without two-step sign-in set up."""
     user = _signed_in(request)
     if user.must_change_password:
         raise ApiError(403, "password_change_required")
+    if user.role == "admin" and not user.totp_enabled:
+        raise ApiError(403, "mfa_enrol_required")
     return user
 
 
@@ -502,6 +543,9 @@ def _signed_in(request: Request) -> CurrentUser:
         raise ApiError(401, "not_signed_in")
     user = load_user(context.db, claims.customer_id, claims.user_id, scope=claims.scope)
     if user is None or user.role != claims.role or user.session_version != claims.session_version:
+        raise ApiError(401, "not_signed_in")
+    if user.role == "admin" and claims.scope != "admin":
+        # An admin's app session from before 16 Oct 2026 rested on the password alone.
         raise ApiError(401, "not_signed_in")
     return user
 
@@ -526,7 +570,6 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         must_change_password=bool(row["must_change_password"]),
         totp_enabled=bool(row["totp_enabled"]),
         delete_forever_allowed=bool(row["delete_forever_allowed"]),
-        two_step_allowed=bool(row["two_step_granted"]),
     )
 
 
@@ -535,7 +578,7 @@ UserAllowPasswordChange = Annotated[CurrentUser, Depends(current_user_allow_pass
 
 
 def require_admin_session(user: User) -> CurrentUser:
-    """For the /admin router: an admin signed in at /admin/login, else 403
+    """For the /admin router: an admin's session (scope "admin", from /login), else 403
     ``admin_session_required`` (an admin's own app session included)."""
     if user.scope != "admin" or user.role != "admin":
         raise ApiError(403, "admin_session_required")
@@ -548,11 +591,9 @@ AdminSession = Annotated[CurrentUser, Depends(require_admin_session)]
 def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
     """For what can't be undone (deleting a document forever, deleting a tag): an
     admin session whose admin has two-step sign-in on, else 403
-    ``two_step_required``. Two-step sign-in is each admin's choice, so an admin
-    session alone may rest on a password; these actions must not. Until the
-    operator allows two-step sign-in for the customer (0029) there is no code to
-    ask for, and the admin session is enough."""
-    if user.two_step_allowed and not user.totp_enabled:
+    ``two_step_required``. ``current_user`` already requires two-step sign-in for
+    every admin; this stays as a second check on what can't be undone."""
+    if not user.totp_enabled:
         raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Admin, Settings to do this.")
     return user
 
@@ -564,17 +605,13 @@ def require_delete_forever(request: Request, user: User) -> CurrentUser:
     """For deleting a document forever (council 4 Oct 2026). An admin needs what
     they always did: an admin session with two-step sign-in on; a grant never
     counts for an admin, so a password-only admin can't route round two-step.
-    Until the operator allows two-step sign-in for the customer (0029), an admin
-    session and a confirm token (below) instead.
     Anyone else needs an admin's grant (403 ``forbidden``) and a confirm token
     from typing their password in the last CONFIRM_SECONDS, for this user and
     session version (403 ``password_confirm_required``). The grant is read
     again on every request, so stopping it works at once."""
     if user.role == "admin":
-        require_admin_session(user)
-        if user.two_step_allowed:
-            return require_admin_with_two_step(user)
-    elif not user.delete_forever_allowed:
+        return require_admin_with_two_step(require_admin_session(user))
+    if not user.delete_forever_allowed:
         raise ApiError(403, "forbidden")
     context = get_context(request)
     token = request.cookies.get(CONFIRM_COOKIE) or ""
@@ -610,6 +647,7 @@ class CurrentOperator:
     email: str
     display_name: str
     expires_at: int  # the session's, seconds since the epoch
+    session_version: int  # the session's (a two-step move binds its token to it)
 
 
 def current_operator(request: Request) -> CurrentOperator:
@@ -625,7 +663,7 @@ def current_operator(request: Request) -> CurrentOperator:
         found = operators_sql.session_operator(conn, claims.operator_id)
     if found is None or found[2] != claims.session_version:
         raise ApiError(401, "not_signed_in")
-    return CurrentOperator(claims.operator_id, found[0], found[1], claims.expires_at)
+    return CurrentOperator(claims.operator_id, found[0], found[1], claims.expires_at, claims.session_version)
 
 
 OperatorSession = Annotated[CurrentOperator, Depends(current_operator)]

@@ -78,6 +78,7 @@
   position: relative;
   background: var(--paper);
   outline: 1px solid var(--border);
+  transform-origin: 50% 0; /* a zoom grows from the top middle (lib/motion.ts) */
 }
 
 /* The highlight: amber, then a paper ring and an ink ring, so it stands out
@@ -91,20 +92,17 @@
   pointer-events: none;
 }
 
-/* On the full page, a new spot pulses twice: an amber ring closing in on it.
+/* On the full page, a new spot settles onto its value: a fade and a slight shrink, once
+   (motion pass, 16 Oct 2026: transform and opacity only, no ring).
    The global prefers-reduced-motion rule (globals.css) cuts it to nothing. */
 .pulse {
-  animation: spotPulse 0.7s ease-out 2;
+  animation: spotIn var(--t-slow) var(--ease);
 }
 
-@keyframes spotPulse {
+@keyframes spotIn {
   from {
-    outline: 2px solid var(--hl-border);
-    outline-offset: 10px;
-  }
-  to {
-    outline: 2px solid transparent;
-    outline-offset: 2px;
+    opacity: 0;
+    transform: scale(1.15);
   }
 }
 
@@ -187,8 +185,10 @@
   margin: 0;
 }
 
-/* A crop preview: the space is reserved before anything loads, so the page
-   below never jumps; the spot is fitted inside, never clipped. */
+/* A crop preview: the box takes its frame's height (UI audit R1, 16 Oct 2026: no
+   empty band), which is known from the page's size before anything is drawn, so
+   the page below never jumps; the spot is fitted inside with a margin, never
+   clipped. Until the box is measured it holds one control's height. */
 .cropFigure {
   margin: 0;
   min-width: 0;
@@ -199,8 +199,7 @@
   display: grid;
   place-items: center;
   width: 100%;
-  aspect-ratio: 16 / 9;
-  max-height: 11rem;
+  min-height: var(--h-lg);
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 2px;
@@ -423,4 +422,74 @@
    swatch keeps its own light fill). */
 .legend .swatch:not([data-quality="illegible"]) {
   background-color: var(--paper);
+}
+
+/* Words flagged for review (scan review UX rules, section 2): Check a dotted underline and
+   "?", Review a solid underline and "!". The page is paper white in both themes, so the
+   paper-fixed amber and red are used. Drawn over the page: nothing on it moves. */
+.flag {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.flag::before {
+  content: "";
+  position: absolute;
+  top: min(0px, calc(50% - 12px));
+  bottom: min(0px, calc(50% - 12px));
+  left: min(0px, calc(50% - 12px));
+  right: min(0px, calc(50% - 12px));
+}
+
+.flag[data-band="check"] {
+  border-bottom: 2px dotted var(--hl-border);
+}
+
+.flag[data-band="review"] {
+  border-bottom: 2px solid var(--illegible-on-paper);
+}
+
+.flag::after {
+  position: absolute;
+  inset-block-start: -8px;
+  inset-inline-end: -8px;
+  display: grid;
+  place-items: center;
+  inline-size: 14px;
+  block-size: 14px;
+  border-radius: 2px;
+  background: var(--paper);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.flag[data-band="check"]::after {
+  content: "?";
+  content: "?" / "";
+  color: var(--hl-border);
+  border: 1px dotted var(--hl-border);
+}
+
+.flag[data-band="review"]::after {
+  content: "!";
+  content: "!" / "";
+  color: var(--illegible-on-paper);
+  border: 1px solid var(--illegible-on-paper);
+}
+
+/* In Ensemble now: a hairline dashed outline, subtle; the word stays pressable. */
+.flag[data-state="in_ensemble"] {
+  outline: 1px dashed var(--mine-on-paper);
+  outline-offset: 1px;
+}
+
+.flag[aria-current="true"],
+.flag:focus-visible {
+  outline: 2px solid var(--mine-on-paper);
+  outline-offset: 2px;
 }

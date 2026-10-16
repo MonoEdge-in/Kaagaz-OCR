@@ -58,6 +58,18 @@ The steps, in order, for one (customer, document):
    makes it its family's current version unless a newer version is ready
    already (PRD 1 F6). A version that fails never gets here, so the one before
    it stays current. Then auto-filing (it reads the card's type, saved in 7).
+
+   Ready first (Tushar, 16 Oct 2026): with a chat model and a readable page, 7 and 8
+   come twice. First the rule values (checked and labelled exactly as with the model
+   off) are saved and the document made ready with its run still open (``open_run``),
+   before any model call; the last progress says when (``ready_at``), so the list shows
+   "Understanding the document" while it is usable (search, open, ask). Then the card,
+   its invoice windows and the map are asked, the checker reads the boxes they located,
+   and everything is saved again (``_understand_after_ready``), fenced by the same run:
+   a newer run, or a read again asked meanwhile, makes it Superseded and nothing is
+   written; the save writes each person's word change again. The model down saves the
+   rule values again with the run's ``model_<code>``. The run ends ready after it, with
+   ``seconds_to_ready`` and ``seconds_after_ready``; auto-filing and the vectors follow.
 9. Meaning vectors for the pieces and the section summaries, if a model is set, AFTER
    the document is ready (fast scan, council 16 Oct 2026), with the heartbeat after each
    batch is written (a 20k-row sheet is about 626 batches, longer than one lease) and a
@@ -414,6 +426,9 @@ class Progress:
     started_at: datetime | None = field(default=None, compare=False)  # the run's start, for the percentage
     reached: float | None = field(default=None, compare=False)  # the run's highest fraction (kaagaz.eta)
     prior: tuple[Step, Estimate] | None = field(default=None, compare=False)  # the estimate written before
+    # Ready first (16 Oct 2026): the last progress before Ready says when, so the API shows the
+    # ready document as still being understood until the run ends (``mark_ready`` clears it).
+    ready_at: datetime | None = field(default=None, compare=False)
 
     def to_json(self) -> dict[str, object]:
         shown: dict[str, object] = {"step": self.step, "done": self.done, "total": self.total}
@@ -426,6 +441,8 @@ class Progress:
             timing = estimate.to_json()
             kept = ("moved_at", "finish_at", "after_s", "slow_after_s")
             shown["prior"] = {"step": step, **{key: timing[key] for key in kept}}
+        if self.ready_at is not None:
+            shown["ready_at"] = self.ready_at.isoformat()
         return shown if self.estimate is None else {**shown, **self.estimate.to_json()}
 
 
@@ -486,11 +503,19 @@ class DocumentStore(Protocol):
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None: ...
 
     def mark_ready(
-        self, customer_id: str, document_id: str, page_count: int, *, run: FinishedRun | None = None
+        self,
+        customer_id: str,
+        document_id: str,
+        page_count: int,
+        *,
+        run: FinishedRun | None = None,
+        open_run: str | None = None,
     ) -> None:
         """Ready with its page count, and current unless a newer version is ready.
         Never moves a document out of rejected. With ``run``, finish that run in the
-        same transaction, or raise Superseded when it is no longer open."""
+        same transaction, or raise Superseded when it is no longer open. With ``open_run``
+        (Ready first), the same fence on that run, which stays open while the document is
+        understood, and its progress is kept; otherwise the progress is cleared."""
         ...
 
     def file_document(self, customer_id: str, document_id: str) -> None:
@@ -674,6 +699,26 @@ class ProcessorStorage(BlobStorage, Quarantine, PageImageStore, Protocol):
 # --- the processor ------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class _Read:
+    """What a run read, kept for both saves of Ready first (``DocumentProcessor._content``):
+    the pages with their routes, the spans that point at a page, the second reading as the
+    labels compare it, the pieces before their context headers, the reading marks and line
+    texts (V4), the reader outputs and the first reader's name, and the prepared pages."""
+
+    name: str
+    pages: list[PageRecord]
+    usable: list[Span]
+    compared: list[Span] | None
+    pieces: list[Piece]
+    marks: dict[BoxLocation, LineMarks]
+    line_texts: dict[BoxLocation, str]
+    outputs: list[ReaderOutput]
+    reader: str
+    prepared: Prepared
+    pictured: Collection[int]
+
+
 @dataclass
 class _Run:
     """One delivery's run (R6) and what it has counted so far. ``run_id`` is None
@@ -729,6 +774,7 @@ class _Run:
     # not read inline), and the seconds of the steps after reading (``_timed``).
     escalated: dict[int, list[str]] | None = None
     steps: dict[str, float] = field(default_factory=dict)
+    ready_at: float | None = None  # Ready first: the timer when the document was ready
 
 
 class DocumentProcessor:
@@ -990,52 +1036,135 @@ class DocumentProcessor:
         # rule here too, so no piece or value can be saved without one. A word mark (PRD 5
         # F3) is drawn on the page from the stored output, never a piece or a value.
         usable = [span for span in spans if _points_at(span.location) and not is_word_mark(span)]
-        # The raw second reading is kept as read; only the labels leave pages out.
-        compared = None if second is None else _without_unread_pages(second, pages)
         pieces = pieces_from_rows(customer_id, document_id, usable)
         # CX1: a page whose sentence goes on onto the next one, as its reader said.
         continued = {page_no for page_no, read in run.page_reads.items() if read.continues_on_next_page}
         pieces += pieces_from_lines(customer_id, document_id, usable, continues=continued)
-        # Fast scan: the map reads only the pieces' text, sections and pages, never the card's
-        # context header, so its call runs while the card is asked; the same map either way.
+        reader, version = self._socket.reader_id(record.detected_type)
+        run.version_marks = version_marks(version)
+        outputs = [ReaderOutput("first", reader, version, tuple(spans))]
+        if second is not None:
+            second_reader, second_version = self._socket.reader_id(record.detected_type, second=True)
+            outputs.append(ReaderOutput("second", second_reader, second_version, tuple(second)))
+        marks, line_texts = _line_marks(spans)
+        read = _Read(
+            name=record.display_name,
+            pages=pages,
+            usable=usable,
+            # The raw second reading is kept as read; only the labels leave pages out.
+            compared=None if second is None else _without_unread_pages(second, pages),
+            pieces=pieces,
+            marks=marks,
+            line_texts=line_texts,
+            outputs=outputs,
+            reader=reader,
+            prepared=prepared,
+            pictured=pictured,
+        )
         # Council 16 Oct 2026: the card (type, date, summary, links) is asked only on readable
         # pages, never on a local reader's text of an unreadable one; with none, no card or map.
         readable = [span for span in usable if getattr(span.location, "page", None) not in unreadable]
+        rule = values_from_cells(usable) + values_from_lines(usable)
+
+        # Ready first (Tushar, 16 Oct 2026): saved and ready with the rule values, checked and
+        # labelled as with the model off, before the card and the map are asked (Ready waits
+        # on no model call); then understood and saved again, filed, and indexed.
+        with self._timed(run, "checker", when=self._checker is not None):
+            checks = self._second_readings(rule, prepared, pictured, heartbeat, run, line_texts)
+        without_model = Understanding(DocumentFacts(), rule, [], None, 0, None)
+        headings = DocumentMap(sections_from_pieces(pieces), (), 0, None)
+        content = self._content(job, run, read, without_model, headings, checks)
+        require_clean(self._statuses, job)  # still clean just before writing
+        self._store.save(content, run_id=run.run_id)
+        heartbeat()
+        run.embedded = self._embed is not None
+        if readable and (self._chat is not None or self._map_budget is not None):
+            # The last progress before Ready says the understanding goes on (``ready_at``, for
+            # the API); the run stays open, so the second save is fenced like the first.
+            self._progress(job, run, "understanding", 0, 2, ready_at=self._clock())
+            self._documents.mark_ready(customer_id, document_id, len(content.pages), open_run=run.run_id)
+            run.ready_at = self._timer()
+            self._understand_after_ready(job, run, read, readable, rule, checks, heartbeat)
+        # Fast scan (council 16 Oct 2026): the meaning vectors follow (``_index``) once the run
+        # ends here, so the embeddings' tokens are in the usage ledger only.
+        finished = self._finished(run, "ready", run.model_error)
+        self._documents.mark_ready(customer_id, document_id, len(content.pages), run=finished)
+        self._file(customer_id, document_id)  # reads the card's type, never a vector
+        self._index(job, run, heartbeat)
+
+    def _understand_after_ready(
+        self,
+        job: Job,
+        run: _Run,
+        read: "_Read",
+        readable: list[Span],
+        rule: list[ExtractedValue],
+        checks: tuple[dict[Location, str], set[Location]],
+        heartbeat: Heartbeat,
+    ) -> None:
+        """Ready first, its second part: the card with its invoice windows (``_understand``)
+        and, on a thread of its own, the map (fast scan: it reads only the pieces' text,
+        sections and pages, never the card's context header); then the checker on the boxes
+        the card and the windows located (``checks`` holds the rule values' already), and
+        everything saved again (``_content``). That save is fenced like the first: a newer
+        run (a read again) makes it raise Superseded and write nothing; and it writes each
+        person's word change again (``word_review.reapply``). The model down or its reply
+        unusable saves the rule values again, with the run's code (``model_<code>``)."""
         with ThreadPoolExecutor(1) as mapper:
-            mapping = mapper.submit(
-                contextvars.copy_context().run, self._map, job, run, pieces, ask=bool(readable)
-            )
+            mapping = mapper.submit(contextvars.copy_context().run, self._map, job, run, read.pieces)
             with self._timed(run, "card", when=self._chat is not None):
-                understanding = self._understand(
-                    job, run, heartbeat, readable, values_from_cells(usable) + values_from_lines(usable)
-                )
+                understanding = self._understand(job, run, heartbeat, readable, rule)
             document_map = mapping.result()
         # After the card, which sets the run's calls and error: the map adds to them.
         run.model_calls += document_map.model_calls
         run.model_error = run.model_error or document_map.error_code
         if document_map.model_calls:
             heartbeat()
+        # A card value, or a located value whose spot is unsure (a loose, ambiguous or
+        # several-span quote), is never verified, so its box is never cropped (security A8).
+        quoted = [
+            value
+            for value in understanding.quoted_values
+            if value.record_key != CARD_RECORD and not spot_unsure(value)
+        ]
+        readings, checked = checks
+        with self._timed(run, "checker", when=self._checker is not None and bool(quoted)):
+            more, more_checked = self._second_readings(
+                quoted, read.prepared, read.pictured, heartbeat, run, read.line_texts, already=checked
+            )
+        content = self._content(
+            job, run, read, understanding, document_map, ({**readings, **more}, checked | more_checked)
+        )
+        self._store.save(content, run_id=run.run_id)
+        heartbeat()
+
+    def _content(
+        self,
+        job: Job,
+        run: _Run,
+        read: "_Read",
+        understanding: Understanding,
+        document_map: DocumentMap,
+        checks: tuple[dict[Location, str], set[Location]],
+    ) -> DocumentContent:
+        """Everything one save keeps, from the reading and an ``understanding`` (both saves
+        of Ready first build it): the card's facts, the pieces with their context headers
+        (C4: the card's type and date), the values labelled with the checker's ``checks``,
+        the remembered corrections, the invoice row and the links; the run's label counts."""
+        customer_id, document_id = job.customer_id, job.document_id
+        readings, checked = checks
         facts = understanding.facts
         # L2: the card says the languages; with no card (the model off or down) the pieces do.
-        facts = replace(facts, languages=facts.languages or languages_without_model(pieces))
-        # C4: the card's type and date go in every piece's context header.
+        facts = replace(facts, languages=facts.languages or languages_without_model(read.pieces))
         pieces = with_context(
-            pieces,
-            document_name=record.display_name,
+            read.pieces,
+            document_name=read.name,
             doc_type=facts.doc_type,
             document_date=facts.document_date,
         )
         rule, quoted = understanding.rule_values, understanding.quoted_values
-        # A card value, or a located value whose spot is unsure (a loose, ambiguous or
-        # several-span quote), is never verified, so its box is never cropped (security A8).
-        cropped = rule + [
-            value for value in quoted if value.record_key != CARD_RECORD and not spot_unsure(value)
-        ]
-        marks, line_texts = _line_marks(spans)
-        with self._timed(run, "checker", when=self._checker is not None):
-            readings, checked = self._second_readings(cropped, prepared, pictured, heartbeat, run, line_texts)
-        values = label_values(rule, compared, readings, also_located=quoted, checked=checked)
-        values += label_quoted(quoted, compared, readings, also_located=rule, checked=checked)
+        values = label_values(rule, read.compared, readings, also_located=quoted, checked=checked)
+        values += label_quoted(quoted, read.compared, readings, also_located=rule, checked=checked)
         # The checker's disagreements (F2) are counted before the reading marks may give
         # those values another reason (V4, G5, Q7), so the page keeps readers_disagree.
         disputed = Counter(
@@ -1043,52 +1172,34 @@ class DocumentProcessor:
             for value in values
             if value.label_reason == "readers_disagree" and isinstance(value.location, BoxLocation)
         )
-        local = {page_no for page_no, read in run.page_reads.items() if _handed_on(read)}
-        values = label_reading_marks(values, marks, local)  # V4, G5, Q7
+        local = {page_no for page_no, page_read in run.page_reads.items() if _handed_on(page_read)}
+        values = label_reading_marks(values, read.marks, local)  # V4, G5, Q7
         votes = _page_votes(run.page_reads)
         if votes:  # Ensemble (F27): the readers' majority decides each value that needs review
-            values = settle_votes(values, votes, readings, checked=checked, lines=marks, local_pages=local)
-        pages = _with_results(pages, run.page_reads, disputed)
+            values = settle_votes(
+                values, votes, readings, checked=checked, lines=read.marks, local_pages=local
+            )
+        pages = _with_results(read.pages, run.page_reads, disputed)
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
             values = [_with_parsed(value) for value in apply_learned(values, learned)]
-        values, invoice = self._invoice(understanding, facts, usable, values)
-        links = document_links(facts, values)
+        values, invoice = self._invoice(understanding, facts, read.usable, values)
         run.values_verified = sum(1 for value in values if value.label == "verified")
         run.values_needs_review = len(values) - run.values_verified
-
-        reader, version = self._socket.reader_id(record.detected_type)
-        run.version_marks = version_marks(version)
-        outputs = [ReaderOutput("first", reader, version, tuple(spans))]
-        if second is not None:
-            second_reader, second_version = self._socket.reader_id(record.detected_type, second=True)
-            outputs.append(ReaderOutput("second", second_reader, second_version, tuple(second)))
-
-        require_clean(self._statuses, job)  # still clean just before writing
-        content = DocumentContent(
+        return DocumentContent(
             customer_id,
             document_id,
             pages,
-            outputs,
+            read.outputs,
             pieces,
             values,
-            reader,
+            read.reader,
             facts=facts,
             invoice=invoice,
-            links=links,
+            links=document_links(facts, values),
             sections=document_map.sections,
             topics=document_map.topics,
         )
-        self._store.save(content, run_id=run.run_id)
-        heartbeat()
-        # Fast scan (council 16 Oct 2026): ready as soon as everything is saved; the meaning
-        # vectors follow (``_index``), and the run ends here, so its finished_at is Ready and
-        # the embeddings' tokens are in the usage ledger only.
-        run.embedded = self._embed is not None
-        finished = self._finished(run, "ready", run.model_error)
-        self._documents.mark_ready(customer_id, document_id, len(pages), run=finished)
-        self._file(customer_id, document_id)  # reads the card's type, never a vector
-        self._index(job, run, heartbeat)
 
     def _file(self, customer_id: str, document_id: str) -> None:
         """Auto-filing (feature 28, R4), after the document is ready. It never fails the
@@ -1271,8 +1382,11 @@ class DocumentProcessor:
         heartbeat: Heartbeat,
         run: _Run,
         line_texts: Mapping[BoxLocation, str],
+        *,
+        already: Collection[Location] = (),
     ) -> tuple[dict[Location, str], set[Location]]:
-        """(each scanned value's box read again, by box; the boxes the checker read).
+        """(each scanned value's box read again, by box; the boxes the checker read), leaving
+        out the boxes ``already`` read (Ready first: the rule values' before Ready).
 
         A box on a page the reading model read is read by the checker (PRD 5 V1,
         ``_check_crop``: the box grown by CHECK_MARGIN, with the Devanagari recogniser
@@ -1293,7 +1407,7 @@ class DocumentProcessor:
                 value.confidence is None and value.origin in DIRECT_ORIGINS
             ):
                 continue  # read directly, not scanned; no origin counts as scanned (fail closed)
-            if box.page in pictured and box.page in checker_pages:
+            if box.page in pictured and box.page in checker_pages and box not in already:
                 text = line_texts.get(box, value.value_text)
                 wanted.setdefault(box.page, {})[box] = _DEVANAGARI.search(text) is not None
         readings: dict[Location, str] = {}
@@ -1409,13 +1523,15 @@ class DocumentProcessor:
     @contextlib.contextmanager
     def _timed(self, run: _Run, step: str, *, when: bool = True) -> Iterator[None]:
         """The block's seconds on the run as ``seconds_<step>`` (its config: ``cli scan-times``),
-        only ``when`` the step has work (a model, a checker)."""
+        only ``when`` the step has work (a model, a checker); a step timed twice (the checker,
+        before and after Ready) adds both."""
         started = self._timer()
         try:
             yield
         finally:
             if when:
-                run.steps[f"seconds_{step}"] = round(max(0.0, self._timer() - started), 3)
+                key = f"seconds_{step}"
+                run.steps[key] = round(run.steps.get(key, 0.0) + max(0.0, self._timer() - started), 3)
 
     def _billed(self, job: Job, run: _Run, kind: str) -> contextlib.AbstractContextManager[object]:
         """SP1: the model calls made inside are billed as ``kind`` to the user who asked for
@@ -1506,7 +1622,9 @@ class DocumentProcessor:
                 extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": status},
             )
 
-    def _progress(self, job: Job, run: _Run, step: Step, done: int, total: int) -> None:
+    def _progress(
+        self, job: Job, run: _Run, step: Step, done: int, total: int, *, ready_at: datetime | None = None
+    ) -> None:
         """Show how far it has got, in its own short transaction. Best effort (AR10), but
         fenced: the Superseded of a run no longer open goes on up. Before each write,
         ``reached`` takes the fraction the last estimate written shows now, so a new
@@ -1525,7 +1643,7 @@ class DocumentProcessor:
                 )
         try:
             estimate = self._estimate(run, step, done, total)
-            progress = Progress(step, done, total, estimate, run.started_at, run.reached, run.shown)
+            progress = Progress(step, done, total, estimate, run.started_at, run.reached, run.shown, ready_at)
             self._progress_store.set_progress(job.customer_id, job.document_id, progress, run_id=run.run_id)
             if estimate is not None:
                 run.prior, run.shown = run.shown, (step, estimate)  # once written: what the screen has
@@ -1622,12 +1740,17 @@ def version_marks(version: str) -> dict[str, int]:
 
 def _step_seconds(run: _Run, now: float) -> dict[str, float]:
     """The run's ``seconds_preparing`` (when a page was drawn), ``seconds_reading`` and
-    ``seconds_after_reading`` for its config, from the timer's marks; none for a run that
-    did not finish reading."""
+    ``seconds_after_reading`` (to Ready: the time left counts to it) for its config, from the
+    timer's marks; none for a run that did not finish reading. Ready first: also
+    ``seconds_to_ready`` (from the run's start) and ``seconds_after_ready`` (understanding)."""
     if run.reading_started is None or run.reading_ended is None:
         return {}
-    reading, after = max(0.0, run.reading_ended - run.reading_started), max(0.0, now - run.reading_ended)
+    ready = now if run.ready_at is None else run.ready_at
+    reading, after = max(0.0, run.reading_ended - run.reading_started), max(0.0, ready - run.reading_ended)
     timed = {"seconds_reading": round(reading, 3), "seconds_after_reading": round(after, 3), **run.steps}
+    if run.ready_at is not None:
+        timed["seconds_to_ready"] = round(max(0.0, run.ready_at - run.started), 3)
+        timed["seconds_after_ready"] = round(max(0.0, now - run.ready_at), 3)
     if run.pages_prepared and run.preparing_started is not None:
         timed["seconds_preparing"] = round(max(0.0, run.reading_started - run.preparing_started), 3)
     return timed

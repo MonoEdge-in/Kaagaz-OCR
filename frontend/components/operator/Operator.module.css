@@ -71,6 +71,84 @@
   font-weight: 600;
 }
 
+/* A long organisation name is cut with an ellipsis; its title holds all of it. */
+.orgNameText {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* "33 minutes ago" and dates stay on one line. */
+.when {
+  white-space: nowrap;
+}
+
+/* --- The Manage menu (ManageMenu.tsx): one per row, in a portal on <body> ------ */
+
+.manage {
+  min-height: 32px; /* .btn is 36px, 44px on touch */
+}
+
+.menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-dropdown);
+  visibility: hidden; /* until placed by its button (menuPlace) */
+  display: flex;
+  flex-direction: column;
+  min-width: 12rem;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  padding: var(--space-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-md);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.menuItem:hover {
+  background: var(--bg-hover);
+}
+
+.menuItem:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.menuDanger {
+  color: var(--critical);
+}
+
+@media (pointer: coarse) {
+  .menuItem {
+    min-height: var(--h-lg);
+  }
+}
+
+/* The status changes sit apart from the safe items, 16px between the groups. */
+.menuSeparator {
+  height: 1px;
+  margin: var(--space-2) 0;
+  background: var(--border);
+}
+
 .statusNote,
 .extra {
   display: block;
@@ -93,14 +171,6 @@
 }
 
 .rowActions.spaced {
-  gap: var(--space-4);
-}
-
-/* The safe actions, then the ones that take something away on their own row, 16px below. */
-.actionGroups {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
   gap: var(--space-4);
 }
 
@@ -141,7 +211,7 @@
 
 @container reflow (min-width: 48rem) {
   .statusColumn {
-    width: 8rem;
+    width: 7rem; /* 1rem went to Last activity (16 Oct 2026): "33 minutes ago" on one line */
   }
 
   .usersColumn {
@@ -161,7 +231,7 @@
   }
 
   .activityColumn {
-    width: 7.5rem;
+    width: 8.5rem;
   }
 
   .actionsColumn {
@@ -216,6 +286,19 @@
 
 .dialogForm p {
   margin: 0;
+}
+
+/* A defaults save's impact: a lead line, the areas as a list, then who keeps their own. */
+.impact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.impact ul {
+  margin: 0;
+  padding-inline-start: var(--space-6);
 }
 
 /* [Destructive] ... [Cancel] [Primary]: the primary last, a destructive one pushed to the start. */

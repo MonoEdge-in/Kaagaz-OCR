@@ -121,7 +121,6 @@ def _user() -> CurrentUser:
         must_change_password=False,
         totp_enabled=False,
         delete_forever_allowed=False,
-        two_step_allowed=True,
     )
 
 
@@ -380,14 +379,12 @@ def test_sp2_the_csv_downloads_one_escaped_line_per_day_user_model_and_kind(db: 
 
 @pytest.mark.db
 @pytest.mark.parametrize("url", ["/api/admin/usage", "/api/admin/usage.csv", "/api/admin/models"])
-def test_sp2_a_member_and_an_admins_app_session_get_403(db: Database, url: str) -> None:
+def test_sp2_a_member_gets_403(db: Database, url: str) -> None:
+    # An admin's app session no longer exists (one sign-in, 0035): test_auth_tokens.
     api = Api(db, clock=MovingClock(NOW))
     customer_id, _ = api.customer()
     member = api.sign_in(customer_id, "member")
-    app_admin = api.sign_in(customer_id, "admin")  # signed in on /login, not the admin screen
     assert _gets(member, url)[0] == 403
-    status, body = _gets(app_admin, url)
-    assert (status, body["error"]["code"]) == (403, "admin_session_required")
 
 
 class _BillingAnswers(FakeAnswers):

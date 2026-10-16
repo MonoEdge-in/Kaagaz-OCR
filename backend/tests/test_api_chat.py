@@ -14,7 +14,7 @@ from sqlalchemy import text
 
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import CurrentUser, current_user
-from kaagaz.api.routers.chat import NOT_FOUND_TEXT, TOO_MANY_QUESTIONS, answer_text
+from kaagaz.api.routers.chat import NOT_FOUND_TEXT, SHORT_TITLE, TOO_MANY_QUESTIONS, answer_text, short_title
 from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, cited_document_ids
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.search.scope import ScopeBody
@@ -149,7 +149,6 @@ def _offline_chat_client(user_id: str, **settings: object) -> TestClient:
         must_change_password=False,
         totp_enabled=False,
         delete_forever_allowed=False,
-        two_step_allowed=True,
     )
     return TestClient(app)
 
@@ -232,13 +231,52 @@ def test_follow_up_goes_into_the_same_conversation_in_order(db: Database) -> Non
     ]
 
 
+def test_a_new_conversations_title_is_its_first_question_made_short() -> None:
+    assert short_title("  What is the   total\non bill 12?  ") == "What is the total on bill 12?"
+    long = "Which supplier sent the most invoices in September and what was the total amount of them all"
+    title = short_title(long)
+    assert len(title) <= SHORT_TITLE and title.endswith("…") and long.startswith(title[:-1])
+    assert not title[:-1].endswith(" ")
+    assert short_title("q" * 1000) == "q" * (SHORT_TITLE - 1) + "…"  # one long word: cut inside it
+
+
+# Changed on purpose (UI audit, 16 Oct 2026): A1, the title is the first question made short.
 @pytest.mark.db
-def test_title_is_cut_to_200(db: Database) -> None:
+def test_title_is_the_question_made_short(db: Database) -> None:
     signed = Api(db).new_signed()
     body = signed.client.post("/api/chat", json={"question": "q" * 1000}, headers=CSRF).json()
     summary = signed.client.get("/api/conversations").json()["items"][0]
     assert summary["id"] == body["conversation_id"]
-    assert len(summary["title"]) == 200
+    assert summary["title"] == short_title("q" * 1000)
+
+
+@pytest.mark.db
+def test_the_owner_renames_and_deletes_a_conversation_and_each_is_audited(db: Database) -> None:
+    signed = Api(db).new_signed()
+    body = signed.client.post("/api/chat", json={"question": "mine"}, headers=CSRF).json()
+    path = f"/api/conversations/{body['conversation_id']}"
+
+    renamed = signed.client.patch(path, json={"title": "  GST bills\x07 "}, headers=CSRF)
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "GST bills"  # trimmed, control characters gone
+    assert signed.client.get(path).json()["title"] == "GST bills"
+    assert signed.client.patch(path, json={"title": "   "}, headers=CSRF).status_code == 400
+    assert signed.client.patch(path, json={"title": "x" * 201}, headers=CSRF).status_code == 400
+
+    assert signed.client.delete(path, headers=CSRF).status_code == 204
+    assert signed.client.get(path).status_code == 404
+    assert signed.client.get("/api/conversations").json()["items"] == []
+    assert signed.client.delete(path, headers=CSRF).status_code == 404
+    with db.customer(signed.customer_id) as conn:
+        left = conn.execute(
+            text("SELECT count(*) FROM messages WHERE conversation_id = :id"), {"id": body["conversation_id"]}
+        ).scalar_one()
+        actions = conn.execute(
+            text("SELECT action FROM audit_log WHERE target_id = :id ORDER BY created_at"),
+            {"id": body["conversation_id"]},
+        ).scalars()
+        assert left == 0
+        assert list(actions) == ["chat.rename", "chat.delete"]
 
 
 @pytest.mark.db
@@ -287,6 +325,10 @@ def test_a_colleague_cannot_open_or_rate_my_conversation(db: Database) -> None:
     body = signed.client.post("/api/chat", json={"question": "mine"}, headers=CSRF).json()
 
     assert colleague.client.get(f"/api/conversations/{body['conversation_id']}").status_code == 404
+    path = f"/api/conversations/{body['conversation_id']}"
+    assert colleague.client.patch(path, json={"title": "theirs now"}, headers=CSRF).status_code == 404
+    assert colleague.client.delete(path, headers=CSRF).status_code == 404
+    assert signed.client.get(path).json()["title"] == "mine"
     reply = colleague.client.post(
         f"/api/messages/{body['answer']['id']}/feedback", json={"rating": "up"}, headers=CSRF
     )

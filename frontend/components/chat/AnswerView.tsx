@@ -12,6 +12,9 @@
 // read. An answer more than one model was asked to draft (features 25-27) says who
 // answered and whether they agreed, under its label. All text is plain text; answers
 // are built from document text, which is untrusted.
+// UI audit A4 (16 Oct 2026): "not found" ends with calm next steps, never a dead end:
+// search all documents (the newest answer only, when it searched fewer: onAskAll),
+// ask with the words the document uses, teach chat a word, or upload the document.
 
 import Link from "next/link";
 import { memo, useId, useState } from "react";
@@ -44,7 +47,15 @@ function goToSource(id: string) {
 
 // Memo: the chat keeps each message object as it was when a new answer arrives,
 // so old answer cards skip re-rendering (UI quality council, 15 Oct 2026).
-export const AnswerView = memo(function AnswerView({ message, question }: { message: Message; question: string | null }) {
+export const AnswerView = memo(function AnswerView({
+  message,
+  question,
+  onAskAll,
+}: {
+  message: Message;
+  question: string | null;
+  onAskAll?: () => void;
+}) {
   const sourcesHeadingId = useId();
   // The source a chip is pointed at or focused: its card lights up (UI quality council, 15 Oct 2026).
   const [hot, setHot] = useState<number | null>(null);
@@ -52,7 +63,7 @@ export const AnswerView = memo(function AnswerView({ message, question }: { mess
 
   if (!answer) {
     return (
-      <div className={styles.answerCard}>
+      <div className={`motion-rise ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
         <p className={styles.plain}>{message.text}</p>
       </div>
@@ -121,7 +132,7 @@ export const AnswerView = memo(function AnswerView({ message, question }: { mess
 
   if (answer.status === "not_found") {
     return (
-      <div className={styles.answerCard}>
+      <div className={`motion-rise ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
         <div className={styles.notFound}>
           <span className={styles.notFoundIcon}>
@@ -132,6 +143,26 @@ export const AnswerView = memo(function AnswerView({ message, question }: { mess
         {noteBlock}
         {understood}
         {documentChips("Closest documents")}
+        <div>
+          <h3 className={styles.subheading}>Next steps</h3>
+          <ul className={styles.nextSteps}>
+            {onAskAll ? (
+              <li>
+                <button type="button" className="btn" onClick={onAskAll}>
+                  <Icon name="search" size={16} />
+                  Search all documents
+                </button>
+              </li>
+            ) : null}
+            <li>Ask again with a name, number or date as the document writes it.</li>
+            <li>
+              Write a word your own way? <Link href="/words">Add it to My words</Link>.
+            </li>
+            <li>
+              Not uploaded yet? <Link href="/documents">Upload the document</Link>.
+            </li>
+          </ul>
+        </div>
         {feedback}
       </div>
     );
@@ -141,7 +172,7 @@ export const AnswerView = memo(function AnswerView({ message, question }: { mess
   // in Review first, and the documents to open and read (decided 30 Sep 2026).
   if (answer.status === "unchecked") {
     return (
-      <div className={styles.answerCard} data-label="needs_review">
+      <div className={`motion-rise ${styles.answerCard}`} data-label="needs_review">
         <span className="visually-hidden">Answer: </span>
         <div className={styles.notFound}>
           <span className={styles.notFoundIcon}>
@@ -165,7 +196,7 @@ export const AnswerView = memo(function AnswerView({ message, question }: { mess
   const team = teamLine(answer);
 
   return (
-    <div className={styles.answerCard} data-label={label ?? undefined}>
+    <div className={`motion-rise ${styles.answerCard}`} data-label={label ?? undefined}>
       <span className="visually-hidden">Answer: </span>
       {label ? (
         <div className={styles.labelLine}>

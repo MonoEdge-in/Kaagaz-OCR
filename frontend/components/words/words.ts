@@ -179,3 +179,22 @@ export function pairsSummary(states: SaveState[]): string {
   const said = parts.filter(([n]) => n > 0).map(([n, text]) => `${n} ${text}`);
   return said.length > 0 ? `Words in these files: ${said.join(", ")}.` : "";
 }
+
+// --- UI audit, 16 Oct 2026 (W1, W2) ------------------------------------------------
+
+/** W1: Add is ready once both boxes have something in them; the full check runs on Add. */
+export const draftFilled = (draft: WordDraft) => tidy(draft.word) !== "" && tidy(draft.meaning) !== "";
+
+/** W2: the search box shows from this many words; fewer fit on one screen. */
+export const SEARCH_FROM = 10;
+
+/** One CSV cell: quoted when it holds a comma or a quote; a leading = + - @ made plain text for spreadsheets. */
+function csvCell(text: string): string {
+  const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
+  return /[",\n]/.test(safe) ? `"${safe.replaceAll('"', '""')}"` : safe;
+}
+
+/** W2: my words as a CSV file's text (word, meaning), in the list's order. */
+export function wordsCsv(items: readonly Pick<MyWord, "word" | "meaning">[]): string {
+  return ["word,meaning", ...items.map((item) => `${csvCell(item.word)},${csvCell(item.meaning)}`)].join("\n") + "\n";
+}

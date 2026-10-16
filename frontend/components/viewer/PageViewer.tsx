@@ -21,7 +21,9 @@
 // layer of marks on the full page, each a button with its own pattern, with a
 // "Show reading problems" toggle in the toolbar (its legend in a tooltip, DD9), on at
 // first for an uncertain or unreadable page. A highlighted spot is zoomed to readable size (focusZoom)
-// and scrolled to the middle of the frame, then into view, with a short pulse.
+// and scrolled to the middle of the frame, then into view, with a short pulse. Words
+// flagged for review (scan review UX rules, section 2) are a third layer: each a button
+// with its band's underline and glyph ("?" Check, "!" Review) and its words as its name.
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
@@ -32,10 +34,12 @@ import { IconButton } from "@/components/ui/IconButton";
 import { markerId } from "@/components/words/ViewerWords";
 import { markerRect } from "@/components/words/spots";
 import type { Marker } from "@/components/words/spots";
+import { flagDomId, flagLabel, IN_ENSEMBLE } from "@/components/review/wordReview";
 import { pageImageUrl } from "@/lib/api";
-import { boxToPixels, cropRect, fitCropView, pageAspect, regionsOnPage } from "@/lib/regions";
+import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
+import { boxToPixels, cropRect, framedCropView, pageAspect, regionsOnPage } from "@/lib/regions";
 import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
-import type { DocumentSummary, PageSummary, ReadingMark, Region } from "@/lib/types";
+import type { DocumentSummary, PageSummary, ReadingMark, Region, WordFlag } from "@/lib/types";
 import { MARK_WORDS, legend, markName, markRect, marksOnPage, showByDefault } from "./readingMarks";
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
@@ -50,6 +54,9 @@ const PdfPage = dynamic(() => import("./PdfPage"), {
 });
 
 const MAX_CROP_PAGE_WIDTH = 2400; // a tiny spot is not enlarged beyond this
+const CROP_MAX_HEIGHT = 176; // 11rem: the tallest a crop preview gets
+// 8px of page around the highlight's 4px ring (UI audit R1), so it never touches or clips the text.
+const CROP_MARGIN = 12;
 const WHOLE_PAGE: FractionRect = { x0: 0, y0: 0, x1: 1, y1: 1 };
 const MIN_ZOOM = ZOOM_STEPS[0];
 const MAX_ZOOM = ZOOM_STEPS[ZOOM_STEPS.length - 1] ?? 3;
@@ -83,6 +90,12 @@ export interface PageViewerProps {
   /** DD7: the reading problem pointed at (its index on the page), here or in its list. */
   hotMark?: number | null;
   onHotMark?: (index: number | null) => void;
+  /** Words still flagged for review on this page, the one being reviewed, and what a press does. */
+  flags?: WordFlag[];
+  activeFlag?: string | null;
+  onFlag?: (flag: WordFlag) => void;
+  /** A crop's tallest size (the review panel zooms its crop with it). */
+  cropMaxHeight?: number;
 }
 
 export function PageViewer({
@@ -102,6 +115,10 @@ export function PageViewer({
   highlightNote,
   hotMark = null,
   onHotMark,
+  flags = [],
+  activeFlag = null,
+  onFlag,
+  cropMaxHeight = CROP_MAX_HEIGHT,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -144,6 +161,10 @@ export function PageViewer({
   const drawnKey = `${pageKey}:${mode}`;
   const onDrawn = useCallback(() => setDrawnFor(drawnKey), [drawnKey]);
   const drawn = drawnFor === drawnKey;
+  // Motion pass (16 Oct 2026): a page fades in once drawn, as its placeholder goes.
+  useLayoutEffect(() => {
+    if (drawn) play(stageRef.current, FADE_IN, MOTION_MS.med);
+  }, [drawn]);
 
   const onThisPage = regionsOnPage(highlights, page.page_no);
   const cropHere = crop && crop.page === page.page_no ? crop : undefined;
@@ -164,6 +185,16 @@ export function PageViewer({
   }
   const zoom = zoomChoice && zoomChoice.key === spotKey ? zoomChoice.zoom : spotZoom;
   const setZoom = (next: number) => setZoomChoice({ key: spotKey, zoom: next });
+
+  // A zoom the user chose grows or shrinks the page from its old size (transform only;
+  // the new size is already laid out). A spot's own zoom just shows.
+  const shownZoom = useRef(zoom);
+  useLayoutEffect(() => {
+    const was = shownZoom.current;
+    shownZoom.current = zoom;
+    if (zoomChoice?.key !== spotKey || was === zoom) return;
+    play(stageRef.current, [{ transform: `scale(${was / zoom})` }, { transform: "none" }], MOTION_MS.med);
+  }, [zoom, zoomChoice, spotKey]);
 
   // A new spot or zoom: the spot to the middle of the frame (a size change alone
   // keeps the user's own scrolling); a new spot also into the window's view (a
@@ -353,6 +384,28 @@ export function PageViewer({
               </div>
             );
           })}
+      {crop
+        ? null
+        : flags.map((flag) => {
+            if (flag.region.kind !== "box" || flag.page_no !== page.page_no) return null;
+            const px = markerRect(flag.region.box, width, height);
+            const name = `${flagLabel(flag)}${flag.state === "in_ensemble" ? `, ${IN_ENSEMBLE}` : ""}`;
+            return (
+              <button
+                key={flag.word_key}
+                id={flagDomId(flag.word_key)}
+                type="button"
+                className={styles.flag}
+                data-band={flag.band}
+                data-state={flag.state}
+                aria-current={flag.word_key === activeFlag ? "true" : undefined}
+                aria-label={name}
+                title={name}
+                style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
+                onClick={() => onFlag?.(flag)}
+              />
+            );
+          })}
       {crop || !showProblems
         ? null
         : problems.map((mark, index) => {
@@ -382,33 +435,35 @@ export function PageViewer({
 
   if (isCrop) {
     let preview: ReactNode;
-    if (!near) {
-      preview = <span className={`skeleton ${styles.fill}`} aria-hidden="true" />;
-    } else if (mode === "sheet") {
-      preview = (
+    if (mode === "sheet") {
+      preview = near ? (
         <SheetGrid
           documentId={document.id}
           page={page}
           highlights={onThisPage}
           crop={cropHere?.kind === "cell" ? cropHere : undefined}
         />
+      ) : (
+        <span className={`skeleton ${styles.fill}`} aria-hidden="true" />
       );
     } else if (mode === "none") {
       preview = failed;
-    } else if (!box || box.width < 1 || box.height < 1) {
+    } else if (!box || box.width < 1) {
       preview = <span className={`skeleton ${styles.fill}`} aria-hidden="true" />;
     } else {
+      // The frame's size comes from the page's size and the spot alone, so it holds
+      // its place before the page is drawn (or near the screen): nothing jumps.
       const rect = (cropHere ? cropRect(cropHere, page) : null) ?? WHOLE_PAGE;
-      const view = fitCropView(rect, aspect, box.width, box.height, MAX_CROP_PAGE_WIDTH);
+      const view = framedCropView(rect, aspect, box.width, cropMaxHeight, MAX_CROP_PAGE_WIDTH, CROP_MARGIN);
       preview = (
         <>
           <div
             className={styles.cropFrame}
             style={{ width: `${view.frameWidth}px`, height: `${view.frameHeight}px` }}
           >
-            {stage(view.pageWidth, view.pageHeight, view)}
+            {near ? stage(view.pageWidth, view.pageHeight, view) : null}
           </div>
-          {drawn ? null : <span className={`skeleton ${styles.fill}`} aria-hidden="true" />}
+          {near && drawn ? null : <span className={`skeleton ${styles.fill}`} aria-hidden="true" />}
         </>
       );
     }

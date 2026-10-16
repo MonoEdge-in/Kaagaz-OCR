@@ -9,6 +9,7 @@
 import Link from "next/link";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { UploadEntry } from "@/components/documents/uploadQueue";
+import { Icon } from "@/components/ui/Icon";
 import { addMyWord } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { DuplicateDialog, WordFields } from "./WordParts";
@@ -69,7 +70,14 @@ export function UploadWords({ entries, settled }: { entries: UploadEntry[]; sett
     <>
       <p className="visually-hidden" role="status" aria-live="polite">{status}</p>
       <details className={`card ${styles.block} ${styles.uploadWords}`}>
-        <summary>Words in these files (optional)</summary>
+        {/* D8 (UI audit, 16 Oct 2026): a chevron and a one-line hint show it opens. */}
+        <summary>
+          <Icon name="chevron-right" size={16} className={styles.chevron} />
+          <span className={styles.summaryText}>
+            <span>Words in these files (optional)</span>
+            <span className={styles.summaryHint}>Add names or terms from these files, so chat reads them correctly.</span>
+          </span>
+        </summary>
         <div className="stack">
           <p className="hint">
             Words the way they are written in these files, and what they mean in English (malak → owner). They are

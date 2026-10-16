@@ -23,12 +23,20 @@ export const ATTENTION = {
 } as const;
 /** A count's change, or a unit cost's on this few pages or questions before, is "too few to compare" (PROVISIONAL, UI/UX F2). */
 export const CHANGE_MIN_BASE = 5;
+/** Tushar, 16 Oct 2026: a unit cost needs this many pages or questions behind it; fewer say
+ * what was spent on them so far, never a per-1,000 figure stretched from one page. */
+export const UNIT_MIN_PAGES = 20;
+export const UNIT_MIN_QUESTIONS = 10;
+/** A month's forecast needs this many days of this month with figures. */
+export const FORECAST_MIN_DAYS = 7;
+/** A tile's line needs this many days with a value, else it is not drawn. */
+export const SPARK_MIN_DAYS = 3;
 
 const DAY_MS = 86_400_000;
 const DASH = "\u2014"; // the repo's empty-cell dash
 
 export type DayMetric = "uploads" | "sign_ins" | "questions" | "corrections" | "runs" | "runs_failed"
-  | "pages" | "scan_pages" | "cached_pages" | "cost_usd";
+  | "pages" | "scan_pages" | "cached_pages" | "cost_usd" | "cost_real_usd";
 
 /** A YYYY-MM-DD as days since 1970 (UTC on the string, so no timezone drift); NaN if not a date. */
 const dayNumber = (day: string) => Date.parse(`${day}T00:00:00Z`) / DAY_MS;
@@ -57,10 +65,14 @@ export interface PeriodTotals {
   activeOrganisations: number; uploads: number; pages: number; questions: number; runs: number; runsFailed: number;
   scanPages: number; cachedPages: number; costUsd: number | null; costDocumentsUsd: number | null;
   costQuestionsUsd: number | null; costEstimated: boolean; costPartUnknown: boolean;
+  // 0034: from the ledger, the real figures (the cost OpenRouter reported only).
+  pagesRead: number; pagesReread: number; pagesReadCosted: number; costRealUsd: number | null;
+  costScanRealUsd: number | null; costAnswerRealUsd: number | null; unknownCalls: number;
+  scanUnknownCalls: number; answerUnknownCalls: number;
 }
 
 /** Active: an upload, a question or a run that day (sign-ins alone are not use). */
-const isActive = (row: InsightDay) => row.uploads > 0 || row.questions > 0 || row.runs > 0;
+const isActive = (row: InsightDay) => row.uploads > 0 || row.questions > 0 || row.runs > 0 || row.pages_read > 0;
 const addCost = (sum: number | null, cost: number | null) => (cost === null ? sum : (sum ?? 0) + cost);
 
 /** F1 summed over [from, to]; a cost is null when no day in it has a known cost. */
@@ -69,6 +81,8 @@ export function periodTotals(daily: readonly InsightDay[], from: string, to: str
   const totals: PeriodTotals = {
     activeOrganisations: 0, uploads: 0, pages: 0, questions: 0, runs: 0, runsFailed: 0, scanPages: 0, cachedPages: 0,
     costUsd: null, costDocumentsUsd: null, costQuestionsUsd: null, costEstimated: false, costPartUnknown: false,
+    pagesRead: 0, pagesReread: 0, pagesReadCosted: 0, costRealUsd: null, costScanRealUsd: null, costAnswerRealUsd: null,
+    unknownCalls: 0, scanUnknownCalls: 0, answerUnknownCalls: 0,
   };
   for (const row of daily) {
     if (row.day < from || row.day > to) continue;
@@ -85,6 +99,15 @@ export function periodTotals(daily: readonly InsightDay[], from: string, to: str
     totals.costQuestionsUsd = addCost(totals.costQuestionsUsd, row.cost_questions_usd);
     totals.costEstimated ||= row.cost_estimated;
     totals.costPartUnknown ||= row.cost_part_unknown;
+    totals.pagesRead += row.pages_read;
+    totals.pagesReread += row.pages_reread;
+    totals.pagesReadCosted += row.pages_read_costed;
+    totals.costRealUsd = addCost(totals.costRealUsd, row.cost_real_usd);
+    totals.costScanRealUsd = addCost(totals.costScanRealUsd, row.cost_scan_real_usd);
+    totals.costAnswerRealUsd = addCost(totals.costAnswerRealUsd, row.cost_answer_real_usd);
+    totals.unknownCalls += row.cost_unknown_calls;
+    totals.scanUnknownCalls += row.scan_unknown_calls;
+    totals.answerUnknownCalls += row.answer_unknown_calls;
   }
   totals.activeOrganisations = active.size;
   return totals;
@@ -116,6 +139,41 @@ export function changeText(now: number, before: number, kind: ChangeKind): strin
   const percent = Math.round(((now - before) / before) * 100);
   if (percent === 0) return "no change";
   return `${percent > 0 ? "up" : "down"} ${formatNumber(Math.abs(percent))}%`;
+}
+
+/**
+ * A tile's change line, in plain words (Tushar, 16 Oct 2026): "Up 12% on the previous 30
+ * days", "Same as the previous 30 days", "None in the previous 30 days" (from 0), "Not
+ * enough earlier data to compare"; null when both are 0 (nothing to say).
+ */
+export function changeLine(now: number, before: number, kind: ChangeKind, days: number): string | null {
+  const text = changeText(now, before, kind);
+  const previous = `the previous ${formatNumber(days)} days`;
+  if (text === "no change") return now === 0 ? null : `Same as ${previous}`;
+  if (text === "new this period") return `None in ${previous}`;
+  if (text === "too few to compare") return "Not enough earlier data to compare";
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)} on ${previous}`;
+}
+
+/** A day series to draw, or undefined when fewer than SPARK_MIN_DAYS days have a value (no made-up line). */
+export const sparkOf = (values: readonly number[]) =>
+  values.filter((value) => Number.isFinite(value) && value > 0).length >= SPARK_MIN_DAYS ? [...values] : undefined;
+
+/** "cost not known for 12 calls"; null for none. */
+export const unknownText = (calls: number) =>
+  calls > 0 ? `cost not known for ${formatNumber(calls)} ${calls === 1 ? "call" : "calls"}` : null;
+
+/**
+ * This month's real spend (the cost OpenRouter reported) to a straight-line month end, from
+ * the daily rows; null unless they cover the whole month so far and at least
+ * FORECAST_MIN_DAYS days of it have figures.
+ */
+export function realMonthForecast(reply: InsightsReply): number | null {
+  const { month } = reply;
+  if (reply.previous_from > month.from) return null;
+  const rows = reply.daily.filter((row) => row.day >= month.from && row.day <= month.today && row.cost_real_usd !== null);
+  if (new Set(rows.map((row) => row.day)).size < FORECAST_MIN_DAYS) return null;
+  return monthForecast(sum(rows.map((row) => row.cost_real_usd ?? 0)), null, month).usd;
 }
 
 /** "12.5%" of the whole; "Too few to rate (n)" when the server suppressed it; a dash for nothing. */

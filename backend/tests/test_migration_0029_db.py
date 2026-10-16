@@ -1,9 +1,9 @@
 """Migration 0029 (two-step sign-in by grant, 16 Oct 2026): the customers' grant, the
 operator's new function and its organisation list with the new column.
 
-Up, down (0028's schema exactly, the list's old columns back) and up again, with the grant
-set. Comments: test_migration_0007; grants and signatures: test_isolation_schema; the
-rules: test_api_two_step_grant and test_isolation_two_step_grant.
+Up to 0029 (not head: 0035 drops the grant again), down (0028's schema exactly, the list's
+old columns back) and up again, with the grant set. Comments: test_migration_0007; 0035:
+test_migration_0035_db.
 """
 
 import pytest
@@ -12,7 +12,7 @@ from sqlalchemy import text
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as m0002
 from tests.db_support import migrate, new_customer
-from tests.test_migration_0004_db import _current, _head
+from tests.test_migration_0004_db import _current
 
 pytestmark = pytest.mark.db
 
@@ -33,8 +33,8 @@ def test_0029_up_down_up_with_the_grant_set(fresh: tuple[str, Database]) -> None
         list_0028: object = conn.execute(text(_LIST_COLUMNS)).scalar_one()
     assert COLUMN not in {(table, column) for table, column, *_ in at_0028["columns"]}
 
-    migrate(url, "head")
-    assert _current(url) == _head()
+    migrate(url, "0029")
+    assert _current(url) == "0029"
     at_head = m0002._schema(database)
     assert COLUMN in {(table, column) for table, column, *_ in at_head["columns"]}
     assert m0002._names(at_head, "functions") >= FUNCTIONS
@@ -51,5 +51,5 @@ def test_0029_up_down_up_with_the_grant_set(fresh: tuple[str, Database]) -> None
     with database.system() as conn:
         assert conn.execute(text(_LIST_COLUMNS)).scalar_one() == list_0028
 
-    migrate(url, "head")
+    migrate(url, "0029")
     assert m0002._schema(database) == at_head

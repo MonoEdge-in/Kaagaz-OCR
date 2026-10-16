@@ -1,27 +1,24 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { NETWORK_FAILURE, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS } from "@/app/login/signIn";
+// The sign-in's two-step parts. Changed on purpose (one sign-in page, 16 Oct 2026): the
+// admin sign-in screen went, and its code and set-up steps moved into app/login.
 import {
-  ADMIN_SIGN_IN_ADVICE,
-  ADMIN_SIGN_IN_FAILED,
-  CHANGE_PASSWORD_FIRST,
+  CODE_ADVICE,
   CODE_INVALID,
   CODE_MISSING,
   ENROL_FAILED,
   ENROL_ISSUER,
   ENROL_STEPS,
-  adminSignInError,
   codeError,
   codeNeeded,
   enrolDetails,
   enrolErrorMessage,
-  firstInvalidAdmin,
   groupSecret,
   normalizeCode,
   secretForCopy,
-  validateAdminSignIn,
-} from "@/app/admin/login/adminSignIn";
-import { NETWORK_FAILURE, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS } from "@/app/login/signIn";
+} from "@/app/login/twoStep";
 import {
   AGAIN_MISMATCH,
   CURRENT_MISSING,
@@ -80,33 +77,16 @@ describe("the 6-digit code", () => {
   });
 });
 
-describe("validateAdminSignIn and firstInvalidAdmin", () => {
-  it("asks for no code until the server asks for it", () => {
-    expect(validateAdminSignIn("asha@sharma.in", "a long password", null)).toEqual({
-      email: null,
-      password: null,
-      code: null,
-    });
-  });
-
-  it("needs the code in the second step, and checks it", () => {
-    expect(validateAdminSignIn("asha@sharma.in", "pw", "").code).toBe(CODE_MISSING);
-    expect(validateAdminSignIn("asha@sharma.in", "pw", "१२३४५६").code).toBe(CODE_INVALID);
-    expect(validateAdminSignIn("asha@sharma.in", "pw", "123 456").code).toBeNull();
-  });
-
-  it("goes to the code step only when the server says code_required", () => {
+describe("the code step", () => {
+  it("comes only when the server says code_required", () => {
     expect(codeNeeded(new ApiError(401, "code_required", "Enter the code."))).toBe(true);
     expect(codeNeeded(new ApiError(401, "bad_credentials", "E-mail or password is wrong."))).toBe(false);
     expect(codeNeeded(new ApiError(403, "code_required", "x"))).toBe(false);
     expect(codeNeeded(new TypeError("Failed to fetch"))).toBe(false);
   });
 
-  it("sends focus to the first field that needs fixing, in form order", () => {
-    expect(firstInvalidAdmin(validateAdminSignIn("", "", "12"))).toBe("email");
-    expect(firstInvalidAdmin(validateAdminSignIn("asha@sharma.in", "", "12"))).toBe("password");
-    expect(firstInvalidAdmin(validateAdminSignIn("asha@sharma.in", "pw", "12"))).toBe("code");
-    expect(firstInvalidAdmin(validateAdminSignIn("asha@sharma.in", "pw", "123456"))).toBeNull();
+  it("adds advice to a refused code", () => {
+    expect(CODE_ADVICE).toBe("Use the newest code from the app.");
   });
 });
 
@@ -144,58 +124,6 @@ describe("the setup key", () => {
     expect(ENROL_STEPS).toHaveLength(3);
     for (const step of ENROL_STEPS) expect(step.length).toBeLessThan(110);
     expect(ENROL_STEPS[1]).toMatch(/^Scan the QR code/);
-  });
-});
-
-describe("adminSignInError", () => {
-  it("shows the server's one refusal text, with its lock time, then the advice", () => {
-    const said = "E-mail or password is wrong, or the account is locked. Check them, or wait 7 minutes, then try again.";
-    expect(adminSignInError(new ApiError(401, "bad_credentials", said))).toEqual({
-      message: `${said} ${ADMIN_SIGN_IN_ADVICE}`,
-      changePasswordFirst: false,
-    });
-  });
-
-  it("says the same thing for every other refusal, whatever the server said", () => {
-    const refusals = [
-      new ApiError(401, "bad_credentials", "  "),
-      new ApiError(401, "not_signed_in", "Please sign in."),
-      new ApiError(403, "forbidden", "You don't have permission to do this."),
-      new ApiError(403, "admin_session_required", "Sign in on the admin screen to use this."),
-      new ApiError(400, "bad_request", "The request is not valid."),
-    ];
-    const results = refusals.map((caught) => adminSignInError(caught));
-    expect(new Set(results.map((result) => result.message))).toEqual(
-      new Set([ADMIN_SIGN_IN_FAILED]),
-    );
-    expect(results.every((result) => !result.changePasswordFirst)).toBe(true);
-  });
-
-  it("uses the PRD wording, names no lock time of its own and never says which part was wrong", () => {
-    // Changed on purpose (UI quality council, 15 Oct 2026): spelt "E-mail", like the field.
-    expect(ADMIN_SIGN_IN_FAILED).toMatch(/^E-mail or password is wrong, or the account is locked\. /);
-    expect(ADMIN_SIGN_IN_FAILED).toContain(ADMIN_SIGN_IN_ADVICE);
-    expect(ADMIN_SIGN_IN_FAILED).not.toMatch(/[0-9]/);
-    expect(ADMIN_SIGN_IN_FAILED).not.toMatch(/code is wrong|unknown|no account|not an admin/i);
-  });
-
-  it("sends an admin with a temporary password to set a new one first", () => {
-    const caught = new ApiError(403, "password_change_required", "Set a new password to continue.");
-    expect(adminSignInError(caught)).toEqual({
-      message: CHANGE_PASSWORD_FIRST,
-      changePasswordFirst: true,
-    });
-  });
-
-  it("says to wait after too many requests, and names network trouble", () => {
-    expect(adminSignInError(new ApiError(429, "rate_limited", "x")).message).toBe(TOO_MANY_ATTEMPTS);
-    expect(adminSignInError(new ApiError(0, "network", "x")).message).toBe(NETWORK_FAILURE);
-    expect(adminSignInError(new TypeError("Failed to fetch")).message).toBe(NETWORK_FAILURE);
-  });
-
-  it("never shows a raw server error", () => {
-    expect(adminSignInError(new ApiError(500, "error", "Traceback ...")).message).toBe(SIGN_IN_DOWN);
-    expect(adminSignInError(new Error("boom")).message).toBe(SIGN_IN_DOWN);
   });
 });
 
@@ -271,27 +199,25 @@ describe("set a new password", () => {
 });
 
 // The forms' security details live in markup, so they are checked in the source.
-describe("admin sign-in markup", () => {
+describe("sign-in markup", () => {
   const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
   const withoutIcons = (text: string) => text.replace(/<Icon\b[^>]*>/g, "");
-  const form = read("app/admin/login/AdminSignInForm.tsx");
-  const enrol = read("app/admin/login/EnrolStep.tsx");
-  const code = read("app/admin/login/CodeField.tsx");
-  const panel = read("app/(app)/admin/TwoStepPanel.tsx");
+  const form = read("app/login/SignInForm.tsx");
+  const enrol = read("app/login/EnrolStep.tsx");
+  const code = read("app/login/CodeField.tsx");
   const setPassword = read("components/shell/SetPasswordScreen.tsx");
 
   it("posts (never GET), does its own validation and names no field", () => {
-    for (const source of [form, enrol, panel, setPassword]) {
+    for (const source of [form, enrol, setPassword]) {
       expect(source).toMatch(/<form\s[^>]*method="post"/);
       expect(source).toMatch(/<form\s[^>]*noValidate/);
     }
-    for (const source of [form, enrol, code, panel, setPassword]) {
+    for (const source of [form, enrol, code, setPassword]) {
       expect(withoutIcons(source)).not.toMatch(/\sname=/);
     }
   });
 
-  it("has no forced set-up step, and asks for the code only in a second step", () => {
-    expect(form).not.toContain("EnrolStep");
+  it("asks for the code only in a second step, after the server asks", () => {
     expect(form.match(/<CodeField\b/g)).toHaveLength(1);
     expect(form).toMatch(/\{askCode && \(\s*<CodeField/); // never shown with the password
     expect(form).toMatch(/\{!askCode && \(\s*<>\s*<div className="field">/);
@@ -307,22 +233,10 @@ describe("admin sign-in markup", () => {
     expect(enrol.split("enrol.otpauth_uri")).toHaveLength(2);
   });
 
-  it("asks for the current password, masked again on submit, to turn 2FA on or off", () => {
-    expect(panel).toContain("<EnrolStep");
-    expect(panel).toContain("startTwoStep(password)");
-    expect(panel).toContain("turnOffTwoStep(password)");
-    expect(panel.match(/<PasswordField\b/g)).toHaveLength(1);
-    const submit = panel.slice(panel.indexOf("async function submit"));
-    expect(submit.indexOf("setMasked(true)")).toBeGreaterThan(-1);
-    expect(submit.indexOf("setMasked(true)")).toBeLessThan(submit.indexOf("currentPasswordError("));
-    expect(panel).toContain("disabled={!hydrated || busy}");
-  });
-
   it("asks for the code with the number keyboard and one-time-code autofill", () => {
     expect(code).toContain('inputMode="numeric"');
     expect(code).toContain('autoComplete="one-time-code"');
     expect(code).toContain("spellCheck={false}");
-    expect(form).toContain("<CodeField");
     expect(enrol).toContain("<CodeField");
   });
 
@@ -330,7 +244,7 @@ describe("admin sign-in markup", () => {
     expect(form).toContain("<PasswordField");
     const submit = form.slice(form.indexOf("async function submit"));
     expect(submit.indexOf("setMasked(true)")).toBeGreaterThan(-1);
-    expect(submit.indexOf("setMasked(true)")).toBeLessThan(submit.indexOf("validateAdminSignIn("));
+    expect(submit.indexOf("setMasked(true)")).toBeLessThan(submit.indexOf("validateSignIn("));
     expect(setPassword.match(/<PasswordField\b/g)).toHaveLength(3);
   });
 
@@ -339,9 +253,8 @@ describe("admin sign-in markup", () => {
     expect(enrol).toContain("disabled={!hydrated || busy}");
   });
 
-  it("links from the normal sign-in page to admin sign-in", () => {
-    const login = read("app/login/page.tsx");
-    expect(login).toMatch(/href="\/admin\/login"/);
-    expect(login).toContain("Admin sign-in");
+  it("is one page: /admin/login only sends to /login, which links nowhere else to sign in", () => {
+    expect(read("app/admin/login/page.tsx")).toContain('redirect("/login?next=/admin")');
+    expect(read("app/login/page.tsx")).not.toContain("/admin/login");
   });
 });

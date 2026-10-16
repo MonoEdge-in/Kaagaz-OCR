@@ -5,6 +5,11 @@ import {
   TABS,
   adminGate,
   allowForeverQuestion,
+  breakdowns,
+  generatePassword,
+  kpiTiles,
+  settingsChanged,
+  twoStepNote,
   describeAction,
   describeDetails,
   describeTarget,
@@ -13,10 +18,8 @@ import {
   isLocked,
   lastRunText,
   lockedUntilText,
-  pageRouteTiles,
   parseUploadLimit,
   retryErrorText,
-  statTiles,
   tabAfterKey,
   userActions,
   userStatus,
@@ -100,8 +103,7 @@ describe("userStatus", () => {
 });
 
 describe("userActions", () => {
-  const actions = (u: AdminUser, isSelf = false, twoStepAllowed = true) =>
-    userActions(u, { isSelf, now: NOW, twoStepAllowed });
+  const actions = (u: AdminUser, isSelf = false) => userActions(u, { isSelf, now: NOW });
 
   it("offers disable and reset password for another user", () => {
     expect(actions(user())).toEqual({
@@ -122,10 +124,6 @@ describe("userActions", () => {
     expect(actions(user({ role: "admin" })).reset2fa).toBe(false);
   });
 
-  it("hides Reset 2FA until the super admin allows two-step sign-in for the organisation", () => {
-    expect(actions(user({ role: "admin", totp_enabled: true }), false, false).reset2fa).toBe(false);
-  });
-
   it("offers an admin nothing on their own row (the server refuses it too)", () => {
     expect(actions(user({ role: "admin", totp_enabled: true }), true)).toEqual({
       toggleDisabled: false,
@@ -137,8 +135,8 @@ describe("userActions", () => {
 });
 
 describe("Delete forever, granted (council 4 Oct 2026)", () => {
-  const control = (u: AdminUser, isSelf = false, adminTwoStep = true, twoStepAllowed = true) =>
-    foreverControl(u, { isSelf, adminTwoStep, twoStepAllowed });
+  const control = (u: AdminUser, isSelf = false, adminTwoStep = true) =>
+    foreverControl(u, { isSelf, adminTwoStep });
 
   it("offers Allow, or Stop once allowed, for a member or reviewer; nothing for an admin or yourself", () => {
     expect(control(user())).toEqual({ kind: "allow", disabledReason: null });
@@ -148,10 +146,6 @@ describe("Delete forever, granted (council 4 Oct 2026)", () => {
       kind: "allow",
       disabledReason: "Turn on your two-step sign-in in Settings to allow this.",
     });
-  });
-
-  it("lets an admin allow it without two-step while the organisation has no two-step sign-in", () => {
-    expect(control(user(), false, false, false)).toEqual({ kind: "allow", disabledReason: null });
   });
 
   it("asks first, says it covers all of Trash, and shows the chip and the audit words", () => {
@@ -178,7 +172,6 @@ describe("adminGate", () => {
       must_change_password: false,
       totp_enabled: false,
       can_delete_forever: false,
-      two_step_allowed: true,
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
@@ -274,7 +267,9 @@ describe("parseUploadLimit", () => {
   });
 });
 
-describe("statTiles", () => {
+// Changed on purpose (UI audit, 16 Oct 2026): AD4, four large numbers, then small lists with
+// plain labels; a row that is 0 is left out, a list with nothing says so.
+describe("kpiTiles and breakdowns", () => {
   const stats: Stats = {
     documents_by_status: { ready: 120000, failed: 2 },
     questions_total: 40,
@@ -283,43 +278,76 @@ describe("statTiles", () => {
     verified_answers: 25,
     needs_review_answers: 5,
     feedback_up: 7,
-    feedback_down: 1,
+    feedback_down: 0,
     open_review_items: 3,
     older_versions: 12,
     in_trash: 4,
     pages_this_month: { cells: 0, text_layer: 1200, ocr: 3, blank: 0 },
   };
 
-  it("adds up documents and fills missing statuses with zero", () => {
-    const tiles = statTiles(stats);
-    expect(tiles[0]).toEqual({ label: "Documents", value: "1,20,002" });
-    expect(tiles.find((tile) => tile.label === "Documents being read")?.value).toBe("0");
+  it("shows Total documents, Ready, Needs review and Failed, with Indian digit grouping", () => {
+    expect(kpiTiles(stats)).toEqual([
+      { label: "Total documents", value: "1,20,002" },
+      { label: "Ready", value: "1,20,000" },
+      { label: "Needs review", value: "3", note: "Values to check in Review" },
+      { label: "Failed", value: "2" },
+    ]);
   });
 
-  it("shows the older versions kept and what is in Trash apart from the documents", () => {
-    const tiles = statTiles(stats);
-    expect(tiles.find((tile) => tile.label === "Other versions kept")?.value).toBe("12");
-    expect(tiles.find((tile) => tile.label === "In Trash")?.value).toBe("4");
-    expect(tiles[0]?.value).toBe("1,20,002");
-  });
-
-  it("says Verified and Needs review in words", () => {
-    const labels = statTiles(stats).map((tile) => tile.label);
-    expect(labels).toContain("Answers labelled Verified");
-    expect(labels).toContain("Answers labelled Needs review");
+  it("leaves the zeros out of the small lists, in a fixed order", () => {
+    const [pipeline, questions, pages, kept] = breakdowns(stats);
+    expect(pipeline).toEqual({ title: "Pipeline", none: "Nothing is waiting or being read.", rows: [] });
+    expect(questions?.rows.map((row) => row.label)).toEqual([
+      "Questions asked",
+      "Answered",
+      "Not found in the documents",
+      "Answers labelled Verified",
+      "Answers labelled Needs review",
+      "Thumbs up",
+    ]);
+    // Plain words, no "OCR" (UI quality council, 15 Oct 2026).
+    expect(pages?.rows).toEqual([
+      { label: "From PDF text", value: "1,200" },
+      { label: "Scanned pages", value: "3" },
+    ]);
+    expect(kept?.rows).toEqual([
+      { label: "Other versions kept", value: "12" },
+      { label: "In Trash", value: "4" },
+    ]);
   });
 });
 
-describe("pageRouteTiles (PRD 2, R6)", () => {
-  it("shows the pages read this month by how they were read, in a fixed order, zeros included", () => {
-    const pages_this_month = { ocr: 3, blank: 0, text_layer: 120000, cells: 0 };
-    // Changed on purpose (UI quality council, 15 Oct 2026): plain words, no "OCR".
-    expect(pageRouteTiles({ pages_this_month })).toEqual([
-      { label: "From spreadsheets", value: "0" },
-      { label: "From PDF text", value: "1,20,000" },
-      { label: "Scanned pages", value: "3" },
-      { label: "Blank pages", value: "0" },
-    ]);
+describe("generatePassword (AD3)", () => {
+  it("makes 16 characters with no look-alike letters or digits", () => {
+    const password = generatePassword();
+    expect(password).toHaveLength(16);
+    expect(password).toMatch(/^[A-HJ-NP-Za-km-z2-9]+$/);
+    expect(generatePassword()).not.toBe(password);
+  });
+
+  it("drops the bytes that would favour some characters", () => {
+    // 55 characters: 255 is over 256 - 256 % 55 = 220, so it is skipped; 0 is "A", 56 is "B".
+    let call = 0;
+    const random = (bytes: Uint8Array) => bytes.fill(call++ === 0 ? 255 : 56);
+    expect(generatePassword(4, random)).toBe("BBBB");
+    expect(generatePassword(2, (bytes) => bytes.fill(0))).toBe("AA");
+  });
+});
+
+describe("settingsChanged (AD6) and twoStepNote (AD7)", () => {
+  const saved = { max_upload_mb: 25, autofile: { granted: true, on: false } };
+
+  it("is true only when the form differs from what is saved", () => {
+    expect(settingsChanged(saved, "25", false)).toBe(false);
+    expect(settingsChanged(saved, " 25 ", false)).toBe(false);
+    expect(settingsChanged(saved, "30", false)).toBe(true);
+    expect(settingsChanged(saved, "25", true)).toBe(true);
+    expect(settingsChanged({ max_upload_mb: null, autofile: { granted: false, on: false } }, "", true)).toBe(false);
+  });
+
+  it("says plainly where two-step sign-in stands", () => {
+    // Changed on purpose (MFA required, 16 Oct 2026): two-step is required for admins.
+    expect(twoStepNote()).toBe("Admins without two-step sign-in set it up at their next sign-in.");
   });
 });
 
@@ -416,9 +444,10 @@ describe("describeAction", () => {
 
 // UI mockups board 7 (16 Oct 2026): the organisation's name under the Admin heading.
 describe("the admin header", () => {
-  it("names the organisation under the heading", () => {
+  // Changed on purpose (UI audit, 16 Oct 2026): G12, the name with its label, never alone as a title.
+  it("names the organisation under the heading, with a label", () => {
     const view = readFileSync(join(__dirname, "..", "components", "admin", "AdminView.tsx"), "utf8");
-    expect(view).toMatch(/<header className="page-header">\s*<div>\s*<h1>Admin<\/h1>\s*<p>\{me\.customer\.name\}<\/p>/);
+    expect(view).toMatch(/<h1>Admin<\/h1>[\s\S]{0,200}<p>\s*Workspace: <strong>\{me\.customer\.name\}<\/strong>\s*<\/p>/);
   });
 });
 

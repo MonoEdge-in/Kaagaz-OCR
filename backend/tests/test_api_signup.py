@@ -1,16 +1,22 @@
-"""POST /api/auth/signup (16 Oct 2026): a new organisation and its first admin, signed in.
+"""POST /api/auth/signup (16 Oct 2026): a new organisation and its first admin, who sets up
+two-step sign-in before the first session (0035).
 
 The first half needs no database: the switch, the body rules and the per-address limit
 are checked before it is reached. The second half (marked ``db``) signs up for real.
 """
 
+import base64
 from collections.abc import Iterator
+from typing import Any
 
+import httpx2 as httpx
 import pytest
 from sqlalchemy import text
 
+from kaagaz.api import totp
 from kaagaz.api.app import create_app
 from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.names import ORG_NAME_PROBLEM
 from kaagaz.api.routers import auth as auth_router
 from kaagaz.db.engine import Database, make_engine
 from tests.settings_factory import make_settings
@@ -91,6 +97,12 @@ def test_a_weak_password_a_blank_name_or_a_bad_email_is_400(changes: dict[str, s
     assert PASSWORD not in reply.text
 
 
+def test_a_placeholder_organisation_name_is_400_in_plain_words() -> None:
+    reply = _offline_client().post(URL, json=_body(organisation_name="asd"), headers=CSRF)
+    assert reply.status_code == 400
+    assert reply.json()["error"] == {"code": "bad_request", "message": ORG_NAME_PROBLEM}
+
+
 def test_it_needs_the_csrf_header() -> None:
     assert _offline_client().post(URL, json=_body()).status_code == 403
 
@@ -124,22 +136,39 @@ def test_the_limiter_window_refills_over_an_hour() -> None:
 # --- against the database ------------------------------------------------------------
 
 
+def _enrolled(api: Api, client: TestClient, reply: httpx.Response) -> tuple[dict[str, Any], bytes]:
+    """A sign-up's reply is the two-step set-up offer (0035): enrolled with its first code,
+    the Me of the new admin session, and the secret."""
+    offer = reply.json()
+    secret = base64.b32decode(offer["secret"].replace(" ", ""))
+    enrolled = client.post(
+        "/api/auth/admin/enrol",
+        json={"enrol_token": offer["enrol_token"], "code": api.code(secret)},
+        headers=CSRF,
+    )
+    assert enrolled.status_code == 200, enrolled.text
+    return enrolled.json(), secret
+
+
 @pytest.mark.db
-def test_sign_up_makes_the_organisation_and_its_admin_and_signs_in(db: Database) -> None:
+def test_sign_up_makes_the_organisation_and_its_admin_who_sets_up_two_step(db: Database) -> None:
     api = Api(db)
     client = api.client()
 
     reply = client.post(URL, json=_body("  Owner.Signup@Example.TEST "), headers=CSRF)
 
     assert reply.status_code == 201, reply.text
-    me = reply.json()
+    assert set(reply.json()) == {"enrol_token", "secret", "otpauth_uri"}
+    assert "set-cookie" not in reply.headers  # no session before the first code
+    assert client.get("/api/auth/me").status_code == 401
+    me, secret = _enrolled(api, client, reply)
     customer_id, user_id = me["customer"]["id"], me["user"]["id"]
     assert me["customer"]["name"] == "Sharma Traders"
     assert me["user"]["email"] == "owner.signup@example.test"
     assert me["user"]["display_name"] == "Asha Sharma"
     assert me["user"]["role"] == "admin"
     assert me["user"]["must_change_password"] is False  # their own password
-    assert me["user"]["totp_enabled"] is False
+    assert me["user"]["totp_enabled"] is True
     assert me["session"] == {"scope": "admin"}
     assert client.get("/api/admin/users").status_code == 200  # an admin session
     with db.customer(customer_id) as conn:
@@ -147,13 +176,10 @@ def test_sign_up_makes_the_organisation_and_its_admin_and_signs_in(db: Database)
             text("SELECT action, actor_user_id, target_id FROM audit_log WHERE customer_id = :c ORDER BY id"),
             {"c": customer_id},
         ).all()
-    assert [(row[0], str(row[1]), row[2]) for row in rows] == [("org.self_signup", user_id, user_id)]
-    # The password they chose signs them in again.
-    again = api.client().post(
-        "/api/auth/admin/login",
-        json={"email": "owner.signup@example.test", "password": PASSWORD},
-        headers=CSRF,
-    )
+    assert (rows[0][0], str(rows[0][1]), rows[0][2]) == ("org.self_signup", user_id, user_id)
+    # The password they chose and the next code sign them in again.
+    api.clock.advance(totp.STEP_SECONDS)
+    again = api.admin_login(api.client(), "owner.signup@example.test", code=api.code(secret))
     assert again.status_code == 200, again.text
 
 
@@ -184,7 +210,7 @@ def test_the_new_admin_sees_only_their_own_organisation(db: Database) -> None:
 
     reply = client.post(URL, json=_body("isolated@example.test"), headers=CSRF)
     assert reply.status_code == 201, reply.text
-    own_id = reply.json()["customer"]["id"]
+    own_id = _enrolled(api, client, reply)[0]["customer"]["id"]
     assert own_id != other_id
 
     assert client.get(f"/api/documents/{other_doc}").status_code == 404

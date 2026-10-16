@@ -3,24 +3,26 @@
 // Who is signed in, for every screen inside the app. The provider asks the
 // backend once (GET /api/auth/me), shows a loading state until it knows, and
 // sends the browser to sign in when there is no session, or when any later
-// reply says it has ended: the admin screens to /admin/login, the rest to
-// /login (signInPath, components/shell/gate.ts). Screens read the result
+// reply says it has ended: to /login, coming back to /admin from the admin
+// screens (signInPath, components/shell/gate.ts). Screens read the result
 // with useSession(); it is a hint for what to show, the server still decides
 // what each person may do.
 //
 // While the account has a temporary password (PRD A5), the provider shows the
 // set-new-password screen instead of the app, whatever the page; the server
 // refuses everything else until then. refresh() asks the server again, so the
-// app opens once the new password is saved.
+// app opens once the new password is saved. An admin without two-step sign-in
+// (MFA required, 16 Oct 2026; a session from before, or just after a temporary
+// password) is signed out and sent to the sign-in, which sets it up.
 
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { appGate, endedPath, pageAfterSessionChange, signInPath } from "@/components/shell/gate";
+import { appGate, endedPath, pageAfterSessionChange, signInPath, twoStepPath } from "@/components/shell/gate";
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
-import { ApiError, me as fetchMe, onSessionEnded } from "./api";
-import { leavePage, watchSession } from "./sessionChannel";
+import { ApiError, me as fetchMe, logout, onSessionEnded } from "./api";
+import { announceSession, leavePage, watchSession } from "./sessionChannel";
 import type { Me } from "./types";
 
 export interface Session {
@@ -121,7 +123,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [state, refresh],
   );
 
-  if (session) {
+  const gate = session ? appGate(session.me) : null;
+  useEffect(() => {
+    if (gate !== "set_two_step") return;
+    const go = () => {
+      announceSession(null);
+      leavePage(twoStepPath(pathname));
+    };
+    void logout().then(go, go); // signed out or not, the sign-in sets two-step up
+  }, [gate, pathname]);
+
+  if (session && gate !== "set_two_step") {
     return (
       <SessionContext.Provider value={session}>
         {appGate(session.me) === "set_password" ? (
@@ -161,7 +173,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     <main className={styles.centered}>
       <p className={`delayed ${styles.loading}`} role="status" aria-live="polite">
         <span className="spinner" aria-hidden="true" />
-        {state.kind === "signed_out" ? "Taking you to sign in…" : "Loading…"}
+        {gate === "set_two_step"
+          ? "Taking you to set up two-step sign-in…"
+          : state.kind === "signed_out"
+            ? "Taking you to sign in…"
+            : "Loading…"}
       </p>
     </main>
   );

@@ -167,7 +167,8 @@ describe("the report", () => {
     expect(html).toContain("1–11 Oct 2026</span></dt>");
     // input + output (output counts the thinking): 1,50,000 over the 11 days of the period.
     expect(html).toMatch(/title="1,50,000">150K <span[^>]*>tokens<\/span><\/dd>/);
-    expect(html).toContain(">About 13.6K a day</dd>");
+    // Changed on purpose (UI audit, 16 Oct 2026): AD5, the average over the days with use, with how many they were.
+    expect(html).toMatch(/>\s*Average per active day: [^<]+ \(\d+ of 11 days\)\s*<\/dd>/);
     expect(html).not.toMatch(/spen[dt]|cost|budget|[$₹]|\bRs\b|\bUSD\b/i);
     expect(html).not.toContain("Budget used");
   });

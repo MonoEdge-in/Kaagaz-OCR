@@ -7,7 +7,8 @@ writes its own audit rows.
 * ``GET /operator/models``: the catalogue, from OpenRouter's live lists (``jobs/catalog``),
   with ``verified`` for the reader's current prompt (``READER_PROMPT_VERSION``),
   ``chat_verified`` for the answer prompt (``ANSWER_PROMPT_HASH``) and ``vendor_allowed``
-  (its maker is in OPENROUTER_MODEL_VENDORS; outside it, it is never used).
+  (its maker is in OPENROUTER_MODEL_VENDORS; outside it, it is never used), and the real
+  cost of each model's scanned pages and answered questions over the last 30 days.
 * ``PUT /operator/models/{model}`` {enabled, code} (step-up, as 0016's): enable or disable
   one model on the platform. Only an eligible model verified for scanning or answering
   can be enabled; one an organisation or the platform defaults still name can't be
@@ -375,6 +376,17 @@ def _model(row: RowMapping, settings: Settings) -> dict[str, Any]:
         # organisation's, numbers only); null with none.
         "ledger_tokens_in": _number(row["ledger_tokens_in"]),
         "ledger_tokens_out": _number(row["ledger_tokens_out"]),
+        # The real cost OpenRouter reported over the same 30 days (0033): scanned pages and
+        # answered questions, those with a reported cost, that cost (null: none reported)
+        # and the calls whose cost is not known (never guessed from the list price).
+        "scan_pages": int(row["scan_pages"]),
+        "scan_pages_costed": int(row["scan_pages_costed"]),
+        "scan_cost_usd": _number(row["scan_cost_usd"]),
+        "scan_cost_unknown_calls": int(row["scan_cost_unknown_calls"]),
+        "answer_questions": int(row["answer_questions"]),
+        "answer_questions_costed": int(row["answer_questions_costed"]),
+        "answer_cost_usd": _number(row["answer_cost_usd"]),
+        "answer_cost_unknown_calls": int(row["answer_cost_unknown_calls"]),
         "enabled_at": None if row["enabled_at"] is None else iso(row["enabled_at"]),
         # C11: may it answer questions, and did verify-models pass the answer prompt.
         "chat_eligible": bool(row["chat_eligible"]),

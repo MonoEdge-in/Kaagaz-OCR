@@ -21,18 +21,33 @@
 // saved, and its results show in their own section (StorySearchView.tsx)
 // instead of the conversation. The mode is kept for the tab; a conversation or
 // "Ask about this document" always asks the documents.
+// UI audit (16 Oct 2026): each conversation can be renamed or deleted from the list
+// (A1, ConversationList.tsx), what happened shows in a toast; the newest "not found"
+// answer offers to search all documents (A4); the empty screen offers up to three
+// example questions about the newest ready documents, each asked about its own (A5).
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { Toast } from "@/components/admin/Toast";
+import type { Notice } from "@/components/admin/Toast";
 import { StoryMatches } from "@/components/stories/StoryMatches";
 import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { useHydrated } from "@/components/ui/useHydrated";
-import { ApiError, ask, getChatOptions, getConversation, listConversations, listDocuments } from "@/lib/api";
+import {
+  ApiError,
+  ask,
+  deleteConversation,
+  getChatOptions,
+  getConversation,
+  listConversations,
+  listDocuments,
+  renameConversation,
+} from "@/lib/api";
 import { MODE_TEXTS, modeLockedText, readMode, saveMode, sendPlan, startMode, STORY_SEARCH_LIMIT } from "@/lib/chatMode";
 import type { ChatMode } from "@/lib/chatMode";
 import {
@@ -61,14 +76,16 @@ import {
   hasChoices,
   isNearBottom,
   STILL_LOOKING_AFTER_MS,
+  starterQuestions,
 } from "./logic";
-import type { AnswerPick } from "./logic";
+import type { AnswerPick, Starter } from "./logic";
 import { ModeSwitch } from "./ModeSwitch";
 import { QuestionBox } from "./QuestionBox";
 import {
   answeredScope,
   chipScope,
   chooseScope,
+  EVERY_DOCUMENT,
   keptScope,
   restoredScope,
   scopeLockedText,
@@ -76,6 +93,7 @@ import {
   startScope,
 } from "./scope";
 import { ScopePicker } from "./ScopePicker";
+import type { ChosenScope } from "./scope";
 import { storyPlace, storySlot } from "./storySlot";
 import type { StorySlot, StorySlotEvent } from "./storySlot";
 import { StorySearchView } from "./StorySearchView";
@@ -148,6 +166,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [pending, setPending] = useState<string | null>(null);
   const [askError, setAskError] = useState<string | null>(null);
   const [noDocuments, setNoDocuments] = useState<boolean | null>(null);
+  const [starters, setStarters] = useState<Starter[]>([]);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const closeNotice = useCallback(() => setNotice(null), []);
   // The one status line for screen readers.
   const [status, setStatus] = useState("");
   // The newest question's story matches (storySlot.ts), mirrored in a ref so a
@@ -270,11 +291,12 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   // One small call tells the empty screen whether there is anything to ask about.
   useEffect(() => {
     let cancelled = false;
-    listDocuments({ limit: 1 })
+    listDocuments({ limit: 6 })
       .then((list) => {
         if (cancelled) return;
         const none = list.total === 0 && list.items.length === 0;
         setNoDocuments(none);
+        setStarters(starterQuestions(list.items));
         if (!none && window.document.activeElement === window.document.body) {
           focusComposerOnDesktop(inputRef.current);
         }
@@ -413,9 +435,12 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     }
   };
 
-  const onAsk = async (question: string): Promise<boolean> => {
+  /** `only`: ask about these documents this once (A4 "Search all documents", A5's examples). */
+  const onAsk = async (question: string, only?: ChosenScope): Promise<boolean> => {
     const plan = sendPlan(mode);
     if (!plan.chat) return searchStories(question);
+    const asked = only ? chooseScope(scope, only) : scope;
+    if (only) setScope(asked);
     setPending(question);
     setAskError(null);
     setStatus(ASKING_STATUS);
@@ -426,7 +451,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     storyAbort.current = controller;
     updateSlot({ type: "ask", token, question });
     if (plan.sideCards) {
-      void findStoryMatches(question, chipScope(scope), controller.signal).then((matches) => {
+      void findStoryMatches(question, chipScope(asked), controller.signal).then((matches) => {
         const now = updateSlot({ type: "matches", token, matches });
         if (now?.token === token && now.answer !== "pending" && matches.length > 0) {
           setStatus(storyStatusText(matches.length));
@@ -434,7 +459,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       });
     }
     try {
-      const reply = await ask(question, activeId ?? undefined, sentScope(scope), choiceBody(chatOptions, answerPick));
+      const reply = await ask(question, activeId ?? undefined, sentScope(asked), choiceBody(chatOptions, answerPick));
       setMessages((current) => [...current, reply.question, reply.answer]);
       setScope((current) => answeredScope(current, reply.question));
       const answerStatus = answerStatusText(reply.answer.answer);
@@ -458,6 +483,31 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     }
   };
 
+  const rename = async (id: string, title: string): Promise<boolean> => {
+    try {
+      const renamed = await renameConversation(id, title);
+      setConversations((list) => list?.map((item) => (item.id === id ? renamed : item)) ?? list);
+      setNotice({ text: "Conversation renamed." });
+      return true;
+    } catch (error) {
+      setNotice({ problem: true, text: error instanceof ApiError ? error.message : "Not renamed. Check your connection, then try again." });
+      return false;
+    }
+  };
+
+  const remove = async (id: string): Promise<boolean> => {
+    try {
+      await deleteConversation(id);
+      setConversations((list) => list?.filter((item) => item.id !== id) ?? list);
+      if (id === activeId) startNew();
+      setNotice({ text: "Conversation deleted." });
+      return true;
+    } catch (error) {
+      setNotice({ problem: true, text: error instanceof ApiError ? error.message : "Not deleted. Check your connection, then try again." });
+      return false;
+    }
+  };
+
   const questions = questionsByAnswer(messages);
   const busy = pending !== null;
   const place = storyPlace(slot);
@@ -466,6 +516,14 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       <StoryMatches matches={slot.matches} note={STORY_NOTE_CHAT} headingLevel={2} question={question} />
     ) : null;
   const empty = messages.length === 0 && threadState === "idle" && !busy;
+  // A4: the newest answer, when it found nothing in fewer than every document, offers them all.
+  const last = messages.at(-1);
+  const askAllFor =
+    last?.answer?.status === "not_found" && scope.scope.kind !== "all" && scope.scope.kind !== "kept" ? last : null;
+  const askAllQuestion = askAllFor ? (questions.get(askAllFor.id) ?? null) : null;
+  const askAll = () => {
+    if (askAllQuestion && !busy) void onAsk(askAllQuestion, EVERY_DOCUMENT);
+  };
   const activeTitle = conversations?.find((item) => item.id === activeId)?.title ?? null;
 
   const list = (
@@ -480,6 +538,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
         setListFailed(false);
         void refreshList();
       }}
+      onRename={rename}
+      onDelete={remove}
     />
   );
 
@@ -511,6 +571,28 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
         <EmptyState icon="chat" title={HEADING} headingLevel={1}>
           Get clear answers from your documents, with every response linked to its source page.
         </EmptyState>
+        {starters.length > 0 ? (
+          <section className={styles.starters} aria-labelledby="chat-starters">
+            <h2 id="chat-starters" className={styles.subheading}>
+              Try one of these
+            </h2>
+            <ul className={styles.starterList}>
+              {starters.map((starter) => (
+                <li key={starter.documentId}>
+                  <button
+                    type="button"
+                    className={styles.starter}
+                    disabled={busy}
+                    onClick={() => void onAsk(starter.question, { kind: "documents", ids: [starter.documentId] })}
+                  >
+                    <span>{starter.question}</span>
+                    <span className={styles.starterDoc}>{starter.documentName}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </div>
     );
   }
@@ -599,7 +681,11 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                 ) : (
                   <Fragment key={message.id}>
                     <div className={styles.answerWrap}>
-                      <AnswerView message={message} question={questions.get(message.id) ?? null} />
+                      <AnswerView
+                        message={message}
+                        question={questions.get(message.id) ?? null}
+                        onAskAll={message === askAllFor ? askAll : undefined}
+                      />
                     </div>
                     {place.at === "answer" && place.answerId === message.id ? storyCards() : null}
                   </Fragment>
@@ -648,6 +734,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       <Drawer open={listOpen} onClose={() => setListOpenOn(null)} title="Conversations" id={DRAWER_ID}>
         {list}
       </Drawer>
+      <Toast notice={notice} onClose={closeNotice} />
     </div>
   );
 }

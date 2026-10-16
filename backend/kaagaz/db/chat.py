@@ -101,6 +101,33 @@ def save_memory(
     return written.rowcount == 1
 
 
+def rename_conversation(
+    conn: Connection, customer_id: str, conversation_id: str, user_id: str, title: str
+) -> RowMapping | None:
+    """The renamed conversation if this user owns it, else None (nothing changed)."""
+    return (
+        conn.execute(
+            text(
+                "UPDATE conversations SET title = :t"
+                " WHERE customer_id = :c AND id = :id AND user_id = :u RETURNING id, title, created_at"
+            ),
+            {"c": customer_id, "id": conversation_id, "u": user_id, "t": title},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def delete_conversation(conn: Connection, customer_id: str, conversation_id: str, user_id: str) -> bool:
+    """Deletes this user's conversation, its messages and their feedback (ON DELETE
+    CASCADE). False when it is not theirs: nothing changed."""
+    deleted = conn.execute(
+        text("DELETE FROM conversations WHERE customer_id = :c AND id = :id AND user_id = :u"),
+        {"c": customer_id, "id": conversation_id, "u": user_id},
+    )
+    return deleted.rowcount == 1
+
+
 def list_conversations(conn: Connection, customer_id: str, user_id: str) -> Sequence[RowMapping]:
     """This user's newest conversations. Index (customer_id, user_id, created_at)."""
     return (

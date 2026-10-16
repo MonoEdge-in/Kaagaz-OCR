@@ -20,8 +20,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { CodeField } from "@/app/admin/login/CodeField";
-import { codeError, normalizeCode } from "@/app/admin/login/adminSignIn";
+import { CodeField } from "@/app/login/CodeField";
+import { codeError, normalizeCode } from "@/app/login/twoStep";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { ApiError, getOperatorInsights, getOperatorModels, getOrgAi, putOrgAi } from "@/lib/api";
 import type { AiEnv, AiLevel, AiValues, OperatorModel, Organisation, OrgAiReply } from "@/lib/types";
@@ -41,8 +41,8 @@ import {
   monthSpentText,
   offered,
   parseBudget,
-  per1000Text,
   pickerText,
+  realCostText,
   refusalField,
   resetSection,
   sameAsDefault,
@@ -545,7 +545,7 @@ function ModelChoices(props: {
               />
               <span>
                 {model.name}
-                {area === "scan" && <span className={styles.statusNote}>{per1000Text(model)}</span>}
+                <span className={`${styles.statusNote} tabular`}>{realCostText(model, area)}</span>
                 {!model.vendor_allowed && <span className={styles.statusNote}>{VENDOR_NOT_ALLOWED}</span>}
               </span>
             </label>

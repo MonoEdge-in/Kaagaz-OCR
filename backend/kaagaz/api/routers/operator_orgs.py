@@ -7,13 +7,11 @@ one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
   user's name). ``POST /operator/orgs`` {name, admin_email, admin_name}: the
   organisation and its first admin; the temporary password is in this reply ONCE
   (stored only as its hash, never logged) and must be changed at the first sign-in.
+  A name too short or an obvious test word ("asd") is a 400 (``names.org_name_ok``).
 * ``POST /operator/orgs/{id}/disable`` {code} (step-up) and ``/enable``.
 * ``PUT /operator/orgs/{id}/autofile`` {granted} (feature 28): allow or stop auto-filing;
   its admin then switches it on in Settings. Stopping it switches it off too. No step-up,
   as an organisation's models. The list says ``autofile_granted`` and ``autofile_on``.
-* ``PUT /operator/orgs/{id}/two-step`` {granted} (0029): allow or stop two-step sign-in for
-  its admins, the same way. Until allowed they sign in with the password alone; stopping
-  it keeps each admin's stored code. The list says ``two_step_granted``.
 * ``POST /operator/orgs/{id}/schedule-delete`` {name, code} (PR 4, step-up): a DISABLED
   organisation whose name is typed exactly is removed for good after a grace period
   (7 days, PROVISIONAL), by the worker; ``/cancel-delete`` {code} (step-up) during it
@@ -51,6 +49,7 @@ from kaagaz.api import totp
 from kaagaz.api.auth import CurrentOperator, OperatorSession, current_operator, hash_password
 from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
+from kaagaz.api.names import ORG_NAME_PROBLEM, org_name_ok
 from kaagaz.api.routers.admin import TEMPORARY_PASSWORD_BYTES, valid_email
 from kaagaz.api.routers.auth import MAX_CODE
 from kaagaz.api.secret_box import SecretBoxError
@@ -114,12 +113,6 @@ class AutofileBody(BaseModel):
     granted: bool
 
 
-class TwoStepBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    granted: bool
-
-
 class StepUpBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -136,6 +129,8 @@ def list_orgs(operator: OperatorSession, db: OperatorDb) -> dict[str, Any]:
 @router.post("", status_code=201)
 def create_org(body: NewOrgBody, operator: OperatorSession, db: OperatorDb, context: Context) -> JSONResponse:
     name, email, admin_name = _name(body.name), valid_email(body.admin_email), _name(body.admin_name)
+    if not org_name_ok(name):
+        raise ApiError(400, "bad_request", ORG_NAME_PROBLEM)
     temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
     with db.operator() as conn:
         outcome = orgs_sql.create_customer(
@@ -178,19 +173,6 @@ def set_org_autofile(
     _check(db, operator, outcome)
     changed = outcome.code == "done"
     return {"organisation": {"id": str(customer_id), "autofile_granted": body.granted, "changed": changed}}
-
-
-@router.put("/{customer_id}/two-step")
-def set_org_two_step(
-    customer_id: uuid.UUID, body: TwoStepBody, operator: OperatorSession, db: OperatorDb
-) -> dict[str, Any]:
-    with db.operator() as conn:
-        outcome = orgs_sql.set_org_two_step(
-            conn, operator.operator_id, str(customer_id), granted=body.granted
-        )
-    _check(db, operator, outcome)
-    changed = outcome.code == "done"
-    return {"organisation": {"id": str(customer_id), "two_step_granted": body.granted, "changed": changed}}
 
 
 @router.post("/{customer_id}/schedule-delete")
@@ -403,7 +385,6 @@ def _org(row: RowMapping) -> dict[str, Any]:
         "last_activity_at": _when(row["last_activity_at"]),
         "autofile_granted": bool(row["autofile_granted"]),  # feature 28
         "autofile_on": bool(row["autofile_on"]),
-        "two_step_granted": bool(row["two_step_granted"]),  # 0029
     }
 
 

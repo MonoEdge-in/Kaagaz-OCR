@@ -18,22 +18,24 @@ import type { InsightsReply, OrgInsight, Organisation, PlatformHealth, QualityRe
 import { Sparkline } from "./Charts";
 import {
   ATTENTION,
-  CHANGE_MIN_BASE,
   INSIGHT_PERIODS,
+  UNIT_MIN_PAGES,
+  UNIT_MIN_QUESTIONS,
   attentionItems,
-  changeText,
+  changeLine,
   csvOf,
   dayList,
   monthForecast,
   orgFlags,
   periodTotals,
+  realMonthForecast,
   riskOrder,
-  usdPer1000Pages,
-  usdPer100Questions,
+  sparkOf,
+  unknownText,
 } from "./insights";
-import type { AttentionItem, Flag, InsightPeriod, MonthForecast, PeriodTotals, Severity } from "./insights";
+import type { AttentionItem, ChangeKind, Flag, InsightPeriod, MonthForecast, PeriodTotals, Severity } from "./insights";
 import { LoadFailed } from "./LoadFailed";
-import { operatorErrorMessage } from "./logic";
+import { countText, operatorErrorMessage } from "./logic";
 import { usd } from "./models";
 import { waitWords } from "./platform";
 import admin from "@/components/admin/Admin.module.css";
@@ -251,24 +253,26 @@ function OverviewBody({ data, openOrg, openTab, announce }: OverviewProps & { da
       <Attention items={items} openOrg={openOrg} openTab={openTab} />
       <h3 className={admin.tilesHeading}>The last {dayList(reply.from, reply.to).length} days</h3>
       {!reply.ai_enabled && <p className={admin.emptyLine}>{AI_OFF}, so nothing is spent and no unit cost is shown.</p>}
-      <dl className={admin.tiles}>
-        {tilesOf(reply).map((tile) => (
-          <div key={tile.label} className={admin.tile}>
+      {/* Value first, then the label, then one short line (Tushar, 16 Oct 2026); the order is CSS only. */}
+      <dl className={`${admin.tiles} ${css.tiles}`}>
+        {tilesOf(reply, data.orgs).map((tile) => (
+          <div key={tile.label} className={`${admin.tile} ${css.tile}`}>
             <dt className={admin.tileLabel}>{tile.label}</dt>
-            <dd className={css.tileBody}>
-              <span className={`${admin.tileValue} tabular`}>{tile.value}</span>
-              {tile.note && <span className={css.note}>{tile.note}</span>}
-              {tile.change && <span className={css.note}>{tile.change}</span>}
-              {tile.spark && (
-                <span className={css.spark}>
-                  <Sparkline values={tile.spark} />
-                </span>
-              )}
-            </dd>
+            <dd className={`${admin.tileValue} ${css.tileValue} tabular`}>{tile.value}</dd>
+            {tile.context && <dd className={`${css.note} tabular`}>{tile.context}</dd>}
+            {tile.change && <dd className={css.note}>{tile.change}</dd>}
+            {tile.spark && (
+              <dd className={css.spark}>
+                <Sparkline values={tile.spark} />
+              </dd>
+            )}
           </div>
         ))}
       </dl>
-      <p className={css.footnote}>Each change compares with the same number of days before. Money is in US dollars.</p>
+      <p className={css.footnote}>
+        Pages read: the pages an AI model read, from the AI spend record (cached pages not counted). Money is what OpenRouter
+        charged, in US dollars. Each change compares with the same number of days before.
+      </p>
       <OrgTable data={data} names={names} announce={announce} />
     </>
   );
@@ -321,65 +325,87 @@ function Attention({ items, openOrg, openTab }: OverviewProps & { items: Attenti
 interface Tile {
   label: string;
   value: string;
-  note?: string;
+  context?: string; // one short line under the label
   change?: string | null;
-  spark?: number[];
+  spark?: number[]; // only real days: none under SPARK_MIN_DAYS days with a value
 }
 
-/** The 8 tiles: the period's totals, each with its change on the period before and a line by day. */
-function tilesOf(reply: InsightsReply): Tile[] {
+const joined = (...parts: (string | null | undefined | false)[]) => parts.filter(Boolean).join(" · ") || undefined;
+
+/**
+ * The 8 tiles (Tushar, 16 Oct 2026: every number real): the period's totals, each with its
+ * change on the period before and a line by day. Pages are the ledger's first reads of a
+ * page by a model, re-reads apart; money is only the cost OpenRouter reported, with the
+ * calls whose cost is not known said beside it; a unit cost needs UNIT_MIN_PAGES pages or
+ * UNIT_MIN_QUESTIONS questions, else it says what was spent so far.
+ */
+export function tilesOf(reply: InsightsReply, orgs: readonly Organisation[]): Tile[] {
   const days = dayList(reply.from, reply.to);
   const all = dayList(reply.previous_from, reply.to);
   const now = periodTotals(reply.daily, reply.from, reply.to);
   const before = periodTotals(reply.daily, reply.previous_from, all[all.length - days.length - 1] ?? reply.previous_from);
   const perDay = days.map((day) => periodTotals(reply.daily, day, day));
-  const line = (pick: (totals: PeriodTotals) => number | null) => perDay.map((totals) => pick(totals) ?? 0);
-  const count = (label: string, pick: (totals: PeriodTotals) => number, note?: string): Tile => ({
+  const line = (pick: (totals: PeriodTotals) => number | null) => sparkOf(perDay.map((totals) => pick(totals) ?? 0));
+  const change = (pick: (totals: PeriodTotals) => number, kind: ChangeKind = "count") =>
+    changeLine(pick(now), pick(before), kind, days.length);
+  const count = (label: string, pick: (totals: PeriodTotals) => number, context?: string): Tile => ({
     label,
     value: formatNumber(pick(now)),
-    note,
-    change: changeText(pick(now), pick(before), "count"),
+    context,
+    change: change(pick),
     spark: line(pick),
   });
-  // A unit cost's change is judged on its pages or questions before (`base`), never on its dollars.
-  const money = (label: string, pick: (totals: PeriodTotals) => number | null, note: string, base?: (totals: PeriodTotals) => number): Tile => {
-    if (!reply.ai_enabled) return { label, value: "Off", note: AI_OFF };
-    const value = pick(now);
-    const was = pick(before);
-    let change: string | null = null;
-    if (value !== null && base && base(before) < CHANGE_MIN_BASE) change = "too few to compare";
-    else if (value !== null && was !== null) change = changeText(value, was, "money");
-    return { label, value: usd(value, now.costEstimated), note, change, spark: line(pick) };
-  };
-  const month = monthSpend(reply.organisations);
-  const forecast = monthForecast(month.cost_usd, null, reply.month);
-  const spend: Tile = reply.ai_enabled
-    ? {
-        ...money("AI spend", (totals) => totals.costUsd, ""),
-        value: formatCost({ cost_usd: now.costUsd, cost_estimated: now.costEstimated, cost_part_unknown: now.costPartUnknown }),
-        note: `Month-end forecast ${formatCost({ ...month, cost_usd: forecast.usd })}`,
-      }
-    : money("AI spend", (totals) => totals.costUsd, "");
-  return [
-    count("Active organisations", (totals) => totals.activeOrganisations),
+  const created = orgs.filter((org) => org.created_at.slice(0, 10) >= reply.from).length;
+  const tiles: Tile[] = [
+    count(
+      "Active organisations",
+      (totals) => totals.activeOrganisations,
+      joined(`of ${countText(orgs.length, "organisation", "organisations")}`, created > 0 && `${formatNumber(created)} new this period`),
+    ),
     count("Files uploaded", (totals) => totals.uploads),
-    count("Pages processed", (totals) => totals.pages, "(re-reads included)"),
+    count(
+      "Pages read",
+      (totals) => totals.pagesRead,
+      now.pagesReread > 0 ? `${formatNumber(now.pagesReread)} more read again (Careful, Ensemble)` : undefined,
+    ),
     count("Questions asked", (totals) => totals.questions),
-    spend,
-    money("$ per 1,000 pages", (totals) => usdPer1000Pages(totals.costDocumentsUsd, totals.pages), "Reading and document cards", (totals) => totals.pages),
-    money("$ per 100 questions", (totals) => usdPer100Questions(totals.costQuestionsUsd, totals.questions), "Answers, memory and search", (totals) => totals.questions),
-    count("Failed runs", (totals) => totals.runsFailed, `of ${formatNumber(now.runs)} runs`),
   ];
+  if (!reply.ai_enabled) {
+    for (const label of ["AI spend", "$ per 1,000 pages", "$ per 100 questions"]) tiles.push({ label, value: "Off", context: AI_OFF });
+  } else {
+    const forecast = realMonthForecast(reply);
+    tiles.push(
+      {
+        label: "AI spend",
+        value: usd(now.costRealUsd),
+        context: joined(unknownText(now.unknownCalls), forecast !== null && `Forecast for this month: ${usd(forecast)}`),
+        change: now.costRealUsd !== null && before.costRealUsd !== null ? change((totals) => totals.costRealUsd ?? 0, "money") : null,
+        spark: line((totals) => totals.costRealUsd),
+      },
+      unitTile("$ per 1,000 pages", now.costScanRealUsd, now.pagesReadCosted, now.pagesRead, 1000, UNIT_MIN_PAGES, ["page", "pages"], now.scanUnknownCalls),
+      unitTile("$ per 100 questions", now.costAnswerRealUsd, now.questions, now.questions, 100, UNIT_MIN_QUESTIONS, ["question", "questions"], now.answerUnknownCalls),
+    );
+  }
+  tiles.push(count("Failed runs", (totals) => totals.runsFailed, `of ${countText(now.runs, "reading run", "reading runs")}`));
+  return tiles;
 }
 
-/** This calendar month's spend over every organisation, as formatCost reads it. */
-function monthSpend(orgs: readonly OrgInsight[]) {
-  const known = orgs.filter((org) => org.month_cost_usd !== null);
-  return {
-    cost_usd: known.length === 0 ? null : known.reduce((sum, org) => sum + (org.month_cost_usd ?? 0), 0),
-    cost_estimated: orgs.some((org) => org.month_cost_estimated),
-    cost_part_unknown: orgs.some((org) => org.month_cost_part_unknown) || (known.length > 0 && known.length < orgs.length),
-  };
+/** A unit cost from `costed` units with a reported cost; under `least` of them it says what was spent so far instead. */
+function unitTile(
+  label: string,
+  cost: number | null,
+  costed: number,
+  units: number,
+  per: number,
+  least: number,
+  [one, many]: [string, string],
+  unknown: number,
+): Tile {
+  const unknownLine = unknownText(unknown);
+  if (cost !== null && costed >= least)
+    return { label, value: usd((cost / costed) * per), context: joined(`from ${countText(costed, one, many)}`, unknownLine) };
+  const spent = units === 0 ? `No ${many} yet` : cost === null ? `${countText(units, one, many)} so far` : `${usd(cost)} for ${countText(units, one, many)} so far`;
+  return { label, value: "Not enough data yet", context: joined(spent, unknownLine) };
 }
 
 // --- Organisations at a glance ------------------------------------------------------

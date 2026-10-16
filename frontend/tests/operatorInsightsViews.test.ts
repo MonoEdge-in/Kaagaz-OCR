@@ -3,6 +3,8 @@
 // and /model-board (lib/types). Each state: loading, error, empty, keyless and full;
 // captions, decoration hidden from screen readers, no canvas, words beside colour.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +17,7 @@ import { QualityScreen } from "@/components/operator/QualityView";
 import type { QualityData } from "@/components/operator/QualityView";
 import type { BoardRow, InsightDay, InsightsReply, OrgInsight, Organisation, PlatformHealth, QualityRow } from "@/lib/types";
 
+const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 const LOADED_AT = Date.parse("2026-10-11T10:00:00Z");
 const MINUTE = 60_000;
 const noop = () => undefined;
@@ -33,7 +36,6 @@ const org = (id: string, name: string): Organisation => ({
   last_activity_at: "2026-10-11T09:00:00Z",
   autofile_granted: false,
   autofile_on: false,
-  two_step_granted: false,
 });
 
 const health = (id: string, changes: Partial<OrgInsight> = {}): OrgInsight => ({
@@ -71,6 +73,15 @@ const day =(id: string, date: string, changes: Partial<InsightDay> = {}): Insigh
   cost_questions_usd: 0.5,
   cost_estimated: false,
   cost_part_unknown: false,
+  pages_read: 30,
+  pages_reread: 0,
+  pages_read_costed: 30,
+  cost_real_usd: 3,
+  cost_scan_real_usd: 2,
+  cost_answer_real_usd: 0.5,
+  cost_unknown_calls: 0,
+  scan_unknown_calls: 0,
+  answer_unknown_calls: 0,
   ...changes,
 });
 
@@ -112,8 +123,8 @@ const HEALTH: PlatformHealth = {
   purges: { purged: 0, last_purged_at: null, swept: 0, last_swept_at: null },
 };
 
-/** One tile's value, notes and change: from its label to the end of its <dd>. */
-const tile = (html: string, label: string) => html.split(`>${label}</dt>`)[1]?.split("</dd>")[0] ?? "";
+/** One tile's value, context, change and line: from its label to the end of its tile. */
+const tile = (html: string, label: string) => html.split(`>${label}</dt>`)[1]?.split("</div>")[0] ?? "";
 
 /** Decoration only: every svg hidden from screen readers, no canvas, no role="img". */
 function expectDecorationHidden(html: string) {
@@ -184,20 +195,32 @@ describe("Overview", () => {
       expect(labels).toEqual([
         "Active organisations",
         "Files uploaded",
-        "Pages processed",
+        "Pages read",
         "Questions asked",
         "AI spend",
         "$ per 1,000 pages",
         "$ per 100 questions",
         "Failed runs",
       ]);
-      expect(html).toContain("Month-end forecast");
-      expect(tile(html, "Pages processed")).toContain("(re-reads included)");
+      // Changed on purpose (Tushar, 16 Oct 2026): real figures, plain words, no clutter.
+      const tiles = html.split("<dl")[1]?.split("</dl>")[0] ?? "";
+      expect(tiles).toContain("Pages read");
+      expect(tiles).not.toMatch(/re-reads included|Month-end forecast|\(part not known\)|too few to compare|no change/);
+      expect(tile(html, "Active organisations")).toContain("of 2 organisations");
+      expect(tile(html, "Failed runs")).toContain("of 12 reading runs");
     });
 
-    it("draws a line per tile as hidden decoration, never a canvas or role=img", () => {
-      expect(html.match(/<polyline/g)?.length).toBe(8);
-      expectDecorationHidden(html);
+    it("puts the value first, then the label, then one short line", () => {
+      expect(html).toMatch(/<dt class="[^"]*">Pages read<\/dt><dd class="[^"]*tileValue[^"]* tabular">60<\/dd>/);
+      expect(read("components/operator/Insights.module.css")).toMatch(/\.tiles \.tileValue \{\s*order: -1;/);
+    });
+
+    it("draws no line from fewer than 3 days of figures, so no made-up diagonal", () => {
+      expect(html).not.toContain("<polyline"); // 10 and 11 Oct only
+      const days = ["2026-10-01", "2026-10-03", "2026-10-05", "2026-10-08"].map((date) => day("o1", date));
+      const lined = overview(ready(data({ reply: reply({ daily: days }) })));
+      expect(lined.match(/<polyline/g)?.length).toBe(6); // the 6 count and spend tiles; unit costs draw none
+      expectDecorationHidden(lined);
     });
 
     it("says Act now with an icon and the words, and opens the organisation by its name", () => {
@@ -235,19 +258,46 @@ describe("Overview", () => {
     expect(html).toContain("Not known of $50.00");
   });
 
-  it("says money changes on any dollar base, and a unit cost's on its pages or questions before", () => {
-    // Before (1 Sep): 4 pages, 40 questions, $3 spent. Now (10 Oct): 60 pages, 40 questions, $2.10.
+  // Changed on purpose (Tushar, 16 Oct 2026): only the cost OpenRouter reported, no estimate words.
+  it("says the real spend and its change, and unit costs from enough pages and questions", () => {
+    // Before (1 Sep): $3 charged. Now (10 Oct): $2.10 charged, 60 pages ($1.20), 40 questions ($0.84).
     const money = reply({
       organisations: [health("o1")],
       daily: [
-        day("o1", "2026-09-01", { pages: 4, questions: 40, cost_usd: 3, cost_documents_usd: 1, cost_questions_usd: 1.2 }),
-        day("o1", "2026-10-10", { pages: 60, questions: 40, cost_usd: 2.1, cost_documents_usd: 3, cost_questions_usd: 0.84 }),
+        day("o1", "2026-09-01", { cost_real_usd: 3 }),
+        day("o1", "2026-10-10", { pages_read: 60, pages_read_costed: 60, questions: 40, cost_real_usd: 2.1,
+          cost_scan_real_usd: 1.2, cost_answer_real_usd: 0.84, cost_estimated: true, cost_part_unknown: true }),
       ],
     });
     const html = overview(ready(data({ reply: money })));
-    expect(tile(html, "AI spend")).toContain("down 30%");
-    expect(tile(html, "$ per 100 questions")).toContain("down 30%"); // $3.00 to $2.10 per 100 questions
-    expect(tile(html, "$ per 1,000 pages")).toContain("too few to compare"); // only 4 pages before
+    expect(tile(html, "AI spend")).toContain(">$2.10<");
+    expect(tile(html, "AI spend")).toContain("Down 30% on the previous 30 days");
+    expect(tile(html, "$ per 1,000 pages")).toContain("$20.00</dd>");
+    expect(tile(html, "$ per 1,000 pages")).toContain("from 60 pages");
+    expect(tile(html, "$ per 100 questions")).toContain("$2.10</dd>");
+    expect(tile(html, "$ per 100 questions")).toContain("from 40 questions");
+    expect(html).not.toMatch(/≈|\(estimated\)|part not known/); // the real cost is never called an estimate
+  });
+
+  it("never stretches one page into a per-1,000 figure, and says calls of unknown cost", () => {
+    const small = reply({
+      organisations: [health("o1")],
+      daily: [day("o1", "2026-10-10", { pages_read: 1, pages_read_costed: 1, questions: 2, cost_real_usd: 0.79,
+        cost_scan_real_usd: 0.77, cost_answer_real_usd: 0.02, cost_unknown_calls: 3, scan_unknown_calls: 3 })],
+    });
+    const html = overview(ready(data({ reply: small })));
+    expect(tile(html, "$ per 1,000 pages")).toContain("Not enough data yet");
+    expect(tile(html, "$ per 1,000 pages")).toContain("$0.77 for 1 page so far · cost not known for 3 calls");
+    expect(tile(html, "$ per 100 questions")).toContain("$0.02 for 2 questions so far");
+    expect(tile(html, "AI spend")).toContain("cost not known for 3 calls");
+    expect(html).not.toContain("$770");
+    expect(html).not.toContain("Forecast"); // under 7 days of this month
+  });
+
+  it("forecasts this month only from 7 days of real figures, and says Forecast plainly", () => {
+    const week = ["01", "02", "03", "04", "05", "06", "07"].map((date) => day("o1", `2026-10-${date}`, { cost_real_usd: 1 }));
+    const html = overview(ready(data({ reply: reply({ daily: week }) })));
+    expect(tile(html, "AI spend")).toContain("Forecast for this month: $19.73"); // $7 over 11 days, times 31
   });
 
   it("keeps the figures, Refresh and Download CSV while refreshing, and says so", () => {

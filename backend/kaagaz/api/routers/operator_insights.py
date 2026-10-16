@@ -84,6 +84,17 @@ DAILY_KEYS = frozenset(
         "cost_questions_usd",
         "cost_estimated",
         "cost_part_unknown",
+        # 0034: pages models read and read again (the ledger), and the cost OpenRouter
+        # reported, with the calls whose cost is not known counted apart.
+        "pages_read",
+        "pages_reread",
+        "pages_read_costed",
+        "cost_real_usd",
+        "cost_scan_real_usd",
+        "cost_answer_real_usd",
+        "cost_unknown_calls",
+        "scan_unknown_calls",
+        "answer_unknown_calls",
     }
 )
 QUALITY_REPLY_KEYS = frozenset({"from", "to", "ai_enabled", "platform", "organisations"})

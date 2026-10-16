@@ -247,8 +247,9 @@ describe("layout guards", () => {
 
   it("pulses a new spot only where reduced motion can stop it", () => {
     const css = read("components/viewer/PageViewer.module.css");
-    expect(rulesFor("components/viewer/PageViewer.module.css", ".pulse")[0]?.body).toMatch(/animation:\s*spotPulse [\d.]+s ease-out 2;/);
-    expect(css).toContain("@keyframes spotPulse");
+    // Changed on purpose (motion pass, 16 Oct 2026): the spot fades and settles once (transform, opacity), no outline ring.
+    expect(rulesFor("components/viewer/PageViewer.module.css", ".pulse")[0]?.body).toMatch(/animation:\s*spotIn var\(--t-slow\) var\(--ease\);/);
+    expect(css).toContain("@keyframes spotIn");
     const reduced = rules(read("app/globals.css")).filter((rule) => rule.at === "@media (prefers-reduced-motion: reduce)");
     expect(reduced.some((rule) => /animation-iteration-count:\s*1 !important/.test(rule.body))).toBe(true);
   });
@@ -262,8 +263,8 @@ describe("layout guards", () => {
 
   it("leaves the admin Users table's User column room where it becomes a table", () => {
     const found = budgets(ADMIN_CSS, "reflow", USER_REM);
-    // Changed on purpose (UI touch-up council, 15 Oct 2026): from 64rem the actions sit side by side.
-    expect(found.map((b) => b.start)).toEqual([48, 64]);
+    // Changed on purpose (UI audit, 16 Oct 2026): AD2, the actions are in one menu, so no wider column from 64rem.
+    expect(found.map((b) => b.start)).toEqual([48]);
     for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
   });
 
@@ -335,6 +336,8 @@ describe("layout guards", () => {
       // Changed on purpose (MonoEdge design system, 16 Oct 2026): the composer's panel, the shell's two
       // scrollers, the page (no rubber band) and a tab row's sideways scroll.
       "components/chat/Chat.module.css: .menu: overscroll-behavior",
+      // Changed on purpose (UI audit, 16 Oct 2026): AD3, Add user's side panel, a modal dialog.
+      "components/admin/Admin.module.css: .sidePanelBody: overscroll-behavior",
       "components/shell/Shell.module.css: .sidebar: overscroll-behavior",
       "components/shell/Shell.module.css: .main: overscroll-behavior",
       // Changed on purpose (UI audit G6, 16 Oct 2026): the account menu scrolls in itself on a short screen.
@@ -353,6 +356,9 @@ describe("layout guards", () => {
       "app/(app)/documents/[id]/DocumentView.module.css: .valuesWrap: overscroll-behavior-x",
       // Changed on purpose (scan states, 16 Oct 2026): the uploads panel above the status bar.
       "components/documents/Documents.module.css: .trayPanel: overscroll-behavior",
+      // Changed on purpose (scan review UX rules, 16 Oct 2026): the review panel is a bottom
+      // sheet on a phone, above the bottom bar; its own scroll never runs on into the page.
+      "app/(app)/documents/[id]/WordReview.module.css: .review: overscroll-behavior",
       // Changed on purpose (MonoEdge design system, 16 Oct 2026): sideways only, the tabs, the
       // tables and the usage chart scroll in their own box and never hand the swipe to the page.
       "components/admin/Admin.module.css: .tabs: overscroll-behavior-x",
@@ -411,7 +417,8 @@ describe("layout guards", () => {
   // Board 11 of the UI mockups: one calm frame for all three sign-ins, and its
   // only motion is the citation fading in once (no robot, pages or title sweep).
   it("frames every sign-in with AuthFrame, whose one motion is a single fade", () => {
-    const pages = ["app/login/page.tsx", "app/admin/login/page.tsx", "app/operator/login/page.tsx", "app/signup/page.tsx"];
+    // One sign-in page (16 Oct 2026): /admin/login only redirects to /login now.
+    const pages = ["app/login/page.tsx", "app/operator/login/page.tsx", "app/signup/page.tsx"];
     for (const page of pages) {
       expect(read(page), page).toMatch(/<AuthFrame\b/);
     }
@@ -637,7 +644,8 @@ describe("layout guards", () => {
     // "auto": an answer seen once keeps its real height while off screen.
     expect(lazy[0]?.body).toMatch(/contain-intrinsic-block-size:\s*auto \d+px;/);
     const chat = read("components/chat/ChatScreen.tsx");
-    expect(chat).toMatch(/<div className=\{styles\.answerWrap\}>\s*<AnswerView /);
+    // Changed on purpose (UI audit, 16 Oct 2026): A4, AnswerView takes onAskAll, so its props wrap.
+    expect(chat).toMatch(/<div className=\{styles\.answerWrap\}>\s*<AnswerView\s/);
     // Opening a conversation pins its end again after the first paint, when real heights are in.
     expect(chat).toContain("frame = requestAnimationFrame(pin);");
     // A chip pointed at re-renders two source cards, and typing a search never re-renders the list.

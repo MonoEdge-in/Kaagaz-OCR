@@ -4,7 +4,7 @@
 // so a Devanagari or fullwidth digit gets a clear message instead of silently
 // vanishing. There is no name attribute, like every sign-in field.
 
-import styles from "./adminLogin.module.css";
+import styles from "./twoStep.module.css";
 
 export function CodeField({
   id,

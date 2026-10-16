@@ -10,7 +10,7 @@ builder owns (FULL-BUILD-SPEC section 10); pytest collects it and finds nothing.
 * ``TestClient``: re-exported, so every API test imports it from one place.
 * ``MovingClock``: the app's clock. Tests move it forward instead of sleeping.
 * ``Api``: a TestClient on a real test database, with helpers to add users,
-  sign in (on the normal screen, or on the admin screen with a 6-digit code)
+  sign in (one sign-in screen; an admin with a 6-digit code)
   and add document rows directly with SQL (as the pipeline would).
 * ``route_calls``: every API route with its path filled in, for tests that walk
   all routes (the admin-session and the password-change gates).
@@ -172,8 +172,8 @@ class FakeAnswers:
 
 @dataclass
 class Signed:
-    """A signed-in user and their client. ``scope`` is the session's: "app" from
-    /login, "admin" from /admin/login. ``totp_secret`` is set for an enrolled admin."""
+    """A signed-in user and their client. ``scope`` is the session's: "app" for a member
+    or reviewer, "admin" for an admin (both from /login). ``totp_secret`` is set for an admin."""
 
     client: TestClient
     customer_id: str
@@ -241,19 +241,9 @@ class Api:
 
     # --- people ------------------------------------------------------------------
 
-    def customer(self, name: str = "Test customer", *, two_step: bool = True) -> tuple[str, str]:
-        """A new customer and its admin (password not usable); ``two_step``: the grant (0029)."""
-        customer_id, admin_id = new_customer(self.db, name=name)
-        self.grant_two_step(customer_id, two_step)
-        return customer_id, admin_id
-
-    def grant_two_step(self, customer_id: str, granted: bool = True) -> None:
-        """Set the operator's two-step grant (0029) as the table owner: the app can't."""
-        with self.db.engine.begin() as conn:
-            conn.execute(
-                text("UPDATE customers SET two_step_granted = :g WHERE id = :c"),
-                {"g": granted, "c": customer_id},
-            )
+    def customer(self, name: str = "Test customer") -> tuple[str, str]:
+        """A new customer and its admin (whose password is not usable)."""
+        return new_customer(self.db, name=name)
 
     def add_user(self, customer_id: str, role: str, *, password: str = PASSWORD) -> tuple[str, str]:
         email = f"{role}-{uuid.uuid4().hex[:12]}@example.test"
@@ -270,7 +260,10 @@ class Api:
         return str(row["id"]), email
 
     def sign_in(self, customer_id: str, role: str = "member") -> Signed:
-        """A new user of this role, signed in on the normal screen (an app session)."""
+        """A new user of this role, signed in: an app session, or for an admin (who must have
+        two-step sign-in, 0035) an enrolled admin's admin session."""
+        if role == "admin":
+            return self.admin_sign_in(customer_id)
         user_id, email = self.add_user(customer_id, role)
         client = self.client()
         reply = client.post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)
@@ -285,7 +278,6 @@ class Api:
         """A new admin with a two-step code already set up, written by SQL the way
         ``POST /auth/admin/enrol`` leaves it (the secret sealed with SecretBox)."""
         user_id, email = self.add_user(customer_id, "admin")
-        self.grant_two_step(customer_id)  # an enrolled admin means the operator allowed it
         secret = totp.new_secret()
         sealed = SecretBox(self.settings.totp_encryption_key).seal(secret, aad=user_id)
         with self.db.customer(customer_id) as conn:
@@ -312,10 +304,10 @@ class Api:
         body: dict[str, str] = {"email": email, "password": password}
         if code is not None:
             body["code"] = code
-        return client.post("/api/auth/admin/login", json=body, headers=CSRF)
+        return client.post("/api/auth/login", json=body, headers=CSRF)  # one sign-in (16 Oct 2026)
 
     def admin_sign_in(self, customer_id: str) -> Signed:
-        """A new enrolled admin, signed in on the admin screen with this step's code."""
+        """A new enrolled admin, signed in with this step's code (an admin session)."""
         admin = self.enrol_admin(customer_id)
         client = self.client()
         reply = self.admin_login(client, admin.email, code=self.code(admin.secret))
@@ -323,11 +315,11 @@ class Api:
         return Signed(client, customer_id, admin.user_id, admin.email, "admin", admin.secret)
 
     def new_admin_of(self, customer_id: str) -> Signed:
-        """Another admin of this customer, with 2FA on, signed in on the admin screen."""
+        """Another admin of this customer, with 2FA on, signed in (an admin session)."""
         return self.admin_sign_in(customer_id)
 
     def new_admin(self, name: str = "Test customer") -> Signed:
-        """A new customer and an admin signed in on the admin screen."""
+        """A new customer and an admin signed in (an admin session)."""
         customer_id, _ = self.customer(name)
         return self.admin_sign_in(customer_id)
 

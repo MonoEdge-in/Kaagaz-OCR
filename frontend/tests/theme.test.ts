@@ -224,6 +224,7 @@ describe("MonoEdge design system", () => {
     expect(read("components/shell/Wordmark.tsx")).toContain("by MonoEdge</span>");
     const frame = read("app/login/AuthFrame.tsx");
     expect(frame).toContain("by MonoEdge</span>");
-    expect(frame).toContain("&copy; 2026 MonoEdge · Pune &amp; Jalna");
+    // Changed on purpose (Tushar, 16 Oct 2026): the sign-in footer line is removed.
+    expect(frame).not.toContain("Pune &amp; Jalna");
   });
 });

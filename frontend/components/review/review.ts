@@ -4,7 +4,7 @@
 
 import { REASON_FILTER_TEXT, fieldText } from "@/components/viewer/labels";
 import { checkReasonText } from "@/components/viewer/panels";
-import type { ReviewChoice, ReviewItem, ReviewList, ReviewReason, Role } from "@/lib/types";
+import type { LabelReason, ReviewChoice, ReviewItem, ReviewList, ReviewReason, Role } from "@/lib/types";
 
 export const MAX_TYPED_LENGTH = 500;
 
@@ -132,4 +132,79 @@ export function queueParams(
 export function checkReasonsText(item: Pick<ReviewItem, "check_reasons">): string | null {
   if (item.check_reasons.length === 0) return null;
   return `The invoice checks failed: ${item.check_reasons.map(checkReasonText).join("; ")}.`;
+}
+
+// --- UI audit, 16 Oct 2026 (R2, R3, R6) ---------------------------------------------
+
+/** R2: every card here needs review, so its badge says why, in a few words. */
+const REASON_TAGS: Partial<Record<LabelReason, string>> = {
+  readers_disagree: "Readers disagree",
+  low_confidence: "Low confidence",
+  single_reader: "One reader only",
+  check_failed: "Invoice check failed",
+  unsure_text: REASON_FILTER_TEXT.unsure_text,
+  box_unanchored: REASON_FILTER_TEXT.box_unanchored,
+  local_reader: "Backup reader",
+  ocr_script: "Hindi or Marathi script",
+  model_chosen: "Found by the AI",
+};
+
+export function reasonTag(reason: LabelReason): string {
+  return REASON_TAGS[reason] ?? "Needs review";
+}
+
+/** R6: how the queue is shown. "focus" (R3) is one value at a time. */
+export type QueueView = "focus" | "all" | "document";
+
+export const QUEUE_VIEWS: readonly { value: QueueView; text: string }[] = [
+  { value: "focus", text: "One at a time" },
+  { value: "all", text: "All items" },
+  { value: "document", text: "By document" },
+];
+
+/** R3: "3 of 15", counting the values already settled in this visit. */
+export function focusProgress(done: number, index: number, total: number): string {
+  return `${done + index + 1} of ${done + total}`;
+}
+
+export type FocusAction = "first" | "second" | "edit" | "skip" | "save";
+
+/**
+ * R3's keys on a card in focus mode: 1 and 2 pick a reading, E goes to the box, S skips,
+ * Enter saves what is typed. Never while typing in a field (Enter there submits its own
+ * form) or with Ctrl, Alt or Cmd; Enter on a button or link presses that instead.
+ */
+export function focusKeyAction(
+  key: string,
+  target: "typing" | "control" | "other",
+  modifier: boolean,
+): FocusAction | null {
+  if (modifier || target === "typing") return null;
+  switch (key) {
+    case "1":
+      return "first";
+    case "2":
+      return "second";
+    case "e":
+    case "E":
+      return "edit";
+    case "s":
+    case "S":
+      return "skip";
+    case "Enter":
+      return target === "other" ? "save" : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * R3: which card focus mode shows after the one at `index` is skipped (or settled, with
+ * `list` already without it): the same place, or "more" when the server has more to
+ * load there, else back to the first one left (null when none is left).
+ */
+export function focusIndexAfter(list: ReviewList, index: number): number | "more" | null {
+  if (index < list.items.length) return index;
+  if (list.items.length < list.total) return "more";
+  return list.items.length > 0 ? 0 : null;
 }

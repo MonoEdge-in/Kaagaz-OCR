@@ -143,6 +143,7 @@ from kaagaz.db import audit, autofile, listing, trash
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
 from kaagaz.db.documents import (
+    EnsembleRunning,
     NotInTrash,
     NotReprocessable,
     PgDocuments,
@@ -194,6 +195,9 @@ _REPROCESS_LIMITED = {
 # PRD 5 F5: a page read from the file itself (its text layer or cells) or blank has no scan
 # to read again.
 _NOT_SCANNED = "Only a page read from a scan or photo can be read again."
+_ENSEMBLE_RUNNING = (
+    "Ensemble is reading this document. Read it again when Ensemble finishes, or stop it first."
+)
 _REJECT_STATUS = {
     RejectCode.EMPTY_FILE: 400,
     RejectCode.UNSUPPORTED_TYPE: 400,
@@ -705,6 +709,8 @@ def reprocess_document(
                 read_mode=reading.mode,
                 read_also=reading.also,
             )
+        except EnsembleRunning:
+            raise ApiError(409, "ensemble_running", _ENSEMBLE_RUNNING) from None
         except NotReprocessable:
             raise ApiError(409, "not_reprocessable") from None
         except ReprocessLimited as limited:
@@ -763,6 +769,8 @@ def read_page_again(document_id: uuid.UUID, page_no: int, user: Reviewer, contex
                 per_hour=context.settings.reprocess_per_hour,
                 requested_by=user.user_id,
             )
+        except EnsembleRunning:
+            raise ApiError(409, "ensemble_running", _ENSEMBLE_RUNNING) from None
         except NotReprocessable:
             raise ApiError(409, "not_reprocessable") from None
         except ReprocessLimited as limited:

@@ -1,8 +1,9 @@
 "use client";
 
 // The composer, pinned to the foot of the thread: one card with the question on
-// top and a slim toolbar inside it (the mode and scope chips on the left, the
-// answer settings and the round Send button on the right). With a mouse or
+// top and a slim toolbar inside it, one row (UI audit A2, 16 Oct 2026): the mode and
+// scope chips on the left, the answer settings and Send on the right. Send is a solid
+// primary button with its words (A3), clearly dimmed while the box is empty. With a mouse or
 // trackpad, Enter sends and Shift+Enter makes a new line; on a touch screen Enter
 // makes a new line and the Send button sends. The box grows with the text up to
 // about eight lines. The box empties as soon as a question is sent, so the next
@@ -13,7 +14,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import { Icon } from "@/components/ui/Icon";
-import { IconButton } from "@/components/ui/IconButton";
 import type { ModeTexts } from "@/lib/chatMode";
 import { cleanQuestion, MAX_QUESTION_LENGTH, restoreAfterFailure, sendsOnKey } from "./answer";
 import { useMediaQuery } from "./hooks";
@@ -88,6 +88,7 @@ export function QuestionBox({
     }
   };
 
+  const empty = !cleanQuestion(text);
   const describedBy = [emptyTried ? EMPTY_ID : null, texts.help ? HELP_ID : null, coarse ? null : HINT_ID]
     .filter(Boolean)
     .join(" ");
@@ -144,16 +145,18 @@ export function QuestionBox({
           <div className={styles.toolGroup}>{tools}</div>
           <div className={`${styles.toolGroup} ${styles.toolEnd}`}>
             {settings}
-            <IconButton
-              icon="send"
-              label={texts.button}
-              className={`btn-primary ${styles.send}`}
+            <button
+              type="button"
+              className={`btn btn-primary ${styles.send}`}
               // aria-disabled, not disabled: the button keeps focus while the answer
-              // is out, and submit() ignores a press then.
-              aria-disabled={pending || undefined}
+              // is out, and submit() ignores a press then (or says to type first).
+              aria-disabled={pending || empty || undefined}
               aria-busy={pending || undefined}
               onClick={() => void submit()}
-            />
+            >
+              <Icon name="send" size={16} />
+              <span>{texts.button}</span>
+            </button>
           </div>
         </div>
       </div>

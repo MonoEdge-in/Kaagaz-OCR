@@ -26,7 +26,11 @@ import type {
   DocumentList,
   DocumentSearch,
   DocumentSummary,
+  EnsembleEstimate,
+  EnsembleRun,
+  EnsembleScope,
   FailedDocument,
+  FlagState,
   Folder,
   InsightsReply,
   Me,
@@ -35,6 +39,7 @@ import type {
   MyWord,
   OperatorMe,
   OperatorModel,
+  OperatorMoveOffer,
   OperatorUsageRow,
   OrgAdmin,
   OrgAiReply,
@@ -50,6 +55,7 @@ import type {
   ReviewItem,
   ReviewList,
   ReviewReason,
+  ReviewStatus,
   Role,
   ScopeBody,
   SheetCells,
@@ -60,6 +66,8 @@ import type {
   UploadReading,
   UploadResult,
   UsageReport,
+  WordChange,
+  WordFlag,
   WordSaved,
 } from "./types";
 
@@ -157,32 +165,22 @@ export const pageImageUrl = (documentId: string, pageNo: number) =>
 
 // --- auth ----------------------------------------------------------------------
 
-export const login = (email: string, password: string) =>
-  request<Me>("POST", "/auth/login", { email, password });
+/** The one sign-in (16 Oct 2026). An admin also sends the code once the server asks
+ * for it (401 code_required), or sets two-step up first (403 mfa_enrol_required). */
+export const login = (email: string, password: string, code?: string) =>
+  request<Me>("POST", "/auth/login", { email, password, ...(code === undefined ? {} : { code }) });
 export const logout = () => request<void>("POST", "/auth/logout");
 /** Whether anyone may create an organisation at /signup (SELF_SIGNUP_ENABLED). */
 export const signUpOpen = () => request<{ enabled: boolean }>("GET", "/auth/signup");
-/** A new organisation and its first admin; signs in as that admin (an admin session). */
+/** A new organisation and its first admin. The reply is the two-step set-up (admins must
+ * have it); the first code (adminEnrol) signs in as that admin. */
 export const signUp = (body: { organisation_name: string; name: string; email: string; password: string }) =>
-  request<Me>("POST", "/auth/signup", body);
+  request<TwoStepSetup>("POST", "/auth/signup", body);
 export const me = () => request<Me>("GET", "/auth/me");
 
-/** The admin screen's sign-in. The code is needed only once the admin has turned 2FA on. */
-export const adminLogin = (email: string, password: string, code?: string) =>
-  request<Me>("POST", "/auth/admin/login", {
-    email,
-    password,
-    ...(code === undefined ? {} : { code }),
-  });
-/** The signed-in admin's own two-step sign-in: with the current password, a new
- * key; then the first code turns it on. */
-export const startTwoStep = (password: string) =>
-  request<TwoStepSetup>("POST", "/auth/admin/2fa/start", { password });
+/** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
   request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
-/** Turns it off; the server re-signs this browser and signs out the others. */
-export const turnOffTwoStep = (password: string) =>
-  request<Me>("POST", "/auth/admin/2fa/off", { password });
 export const changePassword = (current: string, next: string) =>
   request<Me>("POST", "/auth/password", { current_password: current, new_password: next });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
@@ -411,6 +409,9 @@ export const listConversations = () =>
   request<{ items: ConversationSummary[] }>("GET", "/conversations");
 export const getConversation = (id: string) =>
   request<Conversation>("GET", `/conversations/${id}`);
+export const renameConversation = (id: string, title: string) =>
+  request<ConversationSummary>("PATCH", `/conversations/${id}`, { title });
+export const deleteConversation = (id: string) => request<void>("DELETE", `/conversations/${id}`);
 export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: string) =>
   request<void>("POST", `/messages/${messageId}/feedback`, {
     rating,
@@ -494,6 +495,12 @@ export const operatorLogin = (email: string, password: string, code: string) =>
   request<OperatorMe>("POST", "/operator/login", { email, password, code });
 export const operatorLogout = () => request<void>("POST", "/operator/logout");
 export const operatorMe = () => request<OperatorMe>("GET", "/operator/me");
+/** Moving two-step to a new device: the password and a code from the CURRENT device give the new key. */
+export const operatorMoveStart = (password: string, code: string) =>
+  request<OperatorMoveOffer>("POST", "/operator/2fa/move/start", { password, code });
+/** A code from the NEW device moves it; every other browser is signed out, this one stays in. */
+export const operatorMoveConfirm = (move_token: string, code: string) =>
+  request<OperatorMe>("POST", "/operator/2fa/move/confirm", { move_token, code });
 export const listOrgs = () => request<{ items: Organisation[] }>("GET", "/operator/orgs");
 export const createOrg = (org: { name: string; admin_email: string; admin_name: string }) =>
   request<OrganisationCreated>("POST", "/operator/orgs", org);
@@ -504,9 +511,6 @@ export const enableOrg = (id: string) => request<unknown>("POST", `/operator/org
 /** Feature 28: allow or stop auto-filing; stopping it also switches it off. */
 export const setOrgAutofile = (id: string, granted: boolean) =>
   request<unknown>("PUT", `/operator/orgs/${id}/autofile`, { granted });
-/** Allow or stop two-step sign-in for its admins; stopping it keeps each admin's code. */
-export const setOrgTwoStep = (id: string, granted: boolean) =>
-  request<unknown>("PUT", `/operator/orgs/${id}/two-step`, { granted });
 /** A disabled organisation, its name typed exactly (step-up); deleted after the grace period. */
 export const scheduleDelete = (id: string, name: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/schedule-delete`, { name, code });
@@ -559,3 +563,40 @@ export const getOperatorInsights = (days: number) =>
 export const getOperatorQuality = (days: number) => request<QualityReply>("GET", `/operator/quality${query({ days })}`);
 /** Compare models (F4): observational, not an A/B test. */
 export const getModelBoard = (days: number) => request<BoardReply>("GET", `/operator/model-board${query({ days })}`);
+
+// --- word-level review and Ensemble after the scan (routers/word_review.py, ensemble.py) ---
+
+const doc = (id: string) => `/documents/${encodeURIComponent(id)}`;
+const word = (id: string, key: string) => `${doc(id)}/flags/${encodeURIComponent(key)}`;
+
+export const getReviewStatus = (id: string) => request<ReviewStatus>("GET", `${doc(id)}/review-status`);
+export const listFlags = (id: string, params: { page?: number; state?: FlagState } = {}) =>
+  request<{ items: WordFlag[]; total: number }>("GET", `${doc(id)}/flags${query(params)}`);
+/** A reviewer or an admin; `expectedText` is the text they saw (409 changed_since if it moved on). */
+export const confirmWord = (id: string, key: string, expectedText: string) =>
+  request<WordFlag>("POST", `${word(id, key)}/confirm`, { expected_text: expectedText });
+export const editWord = (id: string, key: string, text: string, expectedText: string) =>
+  request<WordFlag>("POST", `${word(id, key)}/edit`, { text, expected_text: expectedText });
+export const listChanges = (
+  id: string,
+  params: { source?: "person" | "ensemble"; limit?: number; before?: string } = {},
+) => request<{ items: WordChange[]; next_before: string | null }>("GET", `${doc(id)}/changes${query(params)}`);
+export const undoChange = (id: string, changeId: string) =>
+  request<WordChange>("POST", `${doc(id)}/changes/${encodeURIComponent(changeId)}/undo`);
+
+export const getEnsembleEstimate = (id: string, scope: EnsembleScope, wordKeys: string[] = []) =>
+  request<EnsembleEstimate>("GET", `${doc(id)}/ensemble/estimate${query({ scope, word_keys: wordKeys })}`);
+export const startEnsemble = (id: string, scope: EnsembleScope, wordKeys: string[] = []) =>
+  request<EnsembleRun>("POST", `${doc(id)}/ensemble`, { scope, word_keys: wordKeys });
+/** The document's latest run; 404 when it has none. */
+export const getEnsemble = (id: string) => request<EnsembleRun>("GET", `${doc(id)}/ensemble`);
+const run = (id: string, runId: string) => `${doc(id)}/ensemble/${encodeURIComponent(runId)}`;
+export const stopEnsemble = (id: string, runId: string) => request<EnsembleRun>("POST", `${run(id, runId)}/stop`);
+export const retryEnsemble = (id: string, runId: string) => request<EnsembleRun>("POST", `${run(id, runId)}/retry`);
+export const keepAllEnsemble = (id: string, runId: string) =>
+  request<{ kept: number; skipped: number }>("POST", `${run(id, runId)}/keep-all`);
+const reading = (id: string, readingId: string) => `${doc(id)}/ensemble/readings/${encodeURIComponent(readingId)}`;
+export const keepReading = (id: string, readingId: string) =>
+  request<{ id: string; decision: "kept"; change_id: string }>("POST", `${reading(id, readingId)}/keep`);
+export const revertReading = (id: string, readingId: string) =>
+  request<{ id: string; decision: "reverted" }>("POST", `${reading(id, readingId)}/revert`);

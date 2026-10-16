@@ -6,8 +6,10 @@ enabled, verified for the reader's prompt, inside both ceilings) come from
 ``db.models.usable_models``, which knows the reader's prompt version itself: the api never
 imports a reader module (the reader plug socket). ``GET /api/upload-limits`` offers:
 
-* ``readers``: "Dynamic" first, the default, when the organisation may use it and has a
-  Careful tier: it picks the right reading for each page. Then "Standard" (the default
+* ``readers``: "Dynamic" first, the default, when the organisation may use it (its switch
+  is on unless the organisation or the platform turned it off; Tushar, 16 Oct 2026): it
+  picks the right reading for each page, with the Careful tier or, with none, the default
+  model thinking harder (``db.models.resolve_scan``). Then "Standard" (the default
   without Dynamic) and, when a usable model costs measurably more a page, "Careful", the
   tiers of ``db.models.pick_tiers``. Never a model's name, a price or cost words (Tushar,
   15 Oct 2026: org admins and members never see cost). Auto alone in keyless mode and for
@@ -86,7 +88,7 @@ def usable(conn: Connection, customer_id: str, settings: Settings) -> list[RowMa
 def readers(rows: Sequence[RowMapping], settings: Settings, *, dynamic: bool = False) -> list[dict[str, Any]]:
     """``UploadLimits.readers`` (``ReaderOption``, with ``reason`` null as ``UploadReader``
     has it): Auto alone when there are no usable models; else "Dynamic" (``dynamic``: the
-    organisation may use it) when there is a Careful tier, marked the default; "Standard",
+    organisation may use it), marked the default; "Standard",
     the organisation's default (the cheapest a page when its default is not usable now,
     then ``default`` is false, R14; never marked under Dynamic); and "Careful", only when
     it costs measurably more than Standard (``db.models.pick_tiers``). O(n)."""
@@ -94,7 +96,7 @@ def readers(rows: Sequence[RowMapping], settings: Settings, *, dynamic: bool = F
         return list(ocr_choices(settings))
     standard, careful = models_sql.pick_tiers(rows)
     offered = []
-    if dynamic and careful is not None:
+    if dynamic:
         offered.append(
             {
                 "id": DYNAMIC,
@@ -179,7 +181,7 @@ def check_reading(
     """The reading to store for what was asked (``check_shape`` first), or ``ApiError``
     before anything is stored. A ``read_model`` alone is single (as before Dynamic). No
     mode and no model: the document's own reading when ``keep`` (a Read again; no query),
-    else Dynamic when the organisation may use it and has a Careful tier, else single.
+    else Dynamic when the organisation may use it, else single.
     Dynamic asked for without that is 403 dynamic_not_allowed; Ensemble without the
     organisation's switch 403 ensemble_not_allowed; a model it can't use 403
     model_not_allowed. Ensemble's main reader is the default when it is ticked, else the
@@ -203,7 +205,7 @@ def check_reading(
         _refuse("model_not_allowed")
     if mode == SINGLE:
         return ReadingChoice(SINGLE, model)
-    dynamic = _allowed(conn, customer_id, rows, "dynamic") and models_sql.pick_tiers(rows)[1] is not None
+    dynamic = _allowed(conn, customer_id, rows, "dynamic")
     if mode == DYNAMIC and not dynamic:
         _refuse("dynamic_not_allowed")
     return ReadingChoice(DYNAMIC if dynamic else SINGLE, model)

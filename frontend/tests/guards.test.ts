@@ -58,11 +58,11 @@ describe("guards", () => {
       /login|signInPath|endedPath|signedOutPath|pageAfterSessionChange/.test(m.to),
     );
     expect(toSignIn).toEqual([{ file: "lib/session.tsx", to: "signInPath(pathname" }]);
-    const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/") || m.file.startsWith("app/admin/login/"));
+    const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/"));
     expect(fromSignIn).toEqual([]);
     const leaving = [
       "app/login/SignInForm.tsx",
-      "app/admin/login/AdminSignInForm.tsx",
+      "app/login/EnrolStep.tsx", // one sign-in page (16 Oct 2026): the admin form went
       "app/signup/SignUpForm.tsx",
       // Changed on purpose (UI audit G6, 16 Oct 2026): signing out moved from AppShell to AccountMenu.
       "components/shell/AppShell.tsx",
@@ -100,12 +100,13 @@ describe("guards", () => {
     expect(offenders).toEqual(["lib/sessionChannel.ts"]);
   });
 
+  // Changed on purpose (UI audit, 16 Oct 2026): A3, Send is a labelled button, dimmed while the box is empty too.
   it("keeps Send focusable while waiting: aria-disabled, never disabled", () => {
     const box = readFileSync(join(ROOT, "components/chat/QuestionBox.tsx"), "utf8");
-    const start = box.indexOf('icon="send"');
+    const start = box.indexOf("styles.send}`}");
     expect(start).toBeGreaterThan(-1);
-    const send = box.slice(start, box.indexOf("/>", start));
-    expect(send).toContain("aria-disabled={pending");
+    const send = box.slice(start, box.indexOf("</button>", start));
+    expect(send).toContain("aria-disabled={pending || empty || undefined}");
     expect(send).not.toMatch(/\sdisabled=/);
   });
 

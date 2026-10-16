@@ -7,7 +7,8 @@ own: the organisation's value, else the platform defaults (``platform_models``,
 OCR_THINKING_LEVEL). An organisation inherits an area's models when it has no
 ``customer_models`` row for that area, and a setting when its ``customer_ai_settings``
 field is NULL (no row: every field). Ensemble is the organisation's own switch, never
-inherited (default off).
+inherited (default off). Dynamic is on when neither the organisation nor the platform sets
+it (Tushar, 16 Oct 2026: Dynamic is the default reading); either may turn it off.
 
 A model is usable while the area's list names it, it is eligible for that use, the
 operator enabled it, it is verified (scan: for the reader's prompt version; chat: for the
@@ -19,10 +20,16 @@ longer allowed falls back, with a note for ``processing_runs.config.reading``.
 
 * ``usable_models``: the scan models an upload may name, the default first.
 * ``resolve_scan``: the ``Reading`` of one document (mode, lead, others, careful, thinking).
+* ``resolve_ensemble``: who reads a document again for Ensemble after the scan.
 * ``usable_chat_models`` and ``resolve_chat``: the ``ChatChoice`` of one question; a
   choice the organisation may not make raises ``AiNotAllowed`` (the API's 403 codes).
 * ``pick_tiers``: Standard and Careful among the usable scan models (the API's "Read
   with" and Dynamic's Careful tier use the same rule).
+
+Dynamic (Tushar, 16 Oct 2026): the first read of every page thinks at DYNAMIC_FIRST_THINKING
+(low; the lead's own level when it does not take low), and Careful reads the pages that need
+it at OCR_RETRY_THINKING_LEVEL (``gemini_ocr._careful``), with the Careful tier, or with the
+lead itself when there is no other (so Dynamic works with one allowed model).
 
 The ledger columns (``ledger_tokens_in``/``_out``) are the average tokens a scanned page
 took in the organisation's own ledger of the last LEDGER_DAYS days (MC3); prices never
@@ -40,7 +47,7 @@ from typing import Any
 from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
-from kaagaz.reading.ocr import READER_PROMPT_VERSION
+from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION
 from kaagaz.settings import DEFAULT_PROVIDER, Settings
 
 # MC3: the days of ledger a page's estimate averages over.
@@ -50,6 +57,7 @@ LEVELS = ("low", "medium", "high")  # the thinking levels an operator may set
 MAX_AGENTS = 3  # the lead and at most two others (documents.read_also holds two)
 # Careful is offered only when it costs at least this much more a page than Standard.
 DEARER = 1.1
+DYNAMIC_FIRST_THINKING = "low"  # Dynamic's quick first read (Tushar, 16 Oct 2026)
 
 # The organisation's own models of an area, else the platform's (only when it has none of
 # its own), each with the catalogue row and the average tokens of its scan calls (not
@@ -90,7 +98,7 @@ _SETTINGS = text(
     "SELECT COALESCE(s.scan_thinking, p.scan_thinking) AS scan_thinking,"
     " COALESCE(s.chat_levels, p.chat_levels) AS chat_levels,"
     " COALESCE(s.chat_default_level, p.chat_default_level) AS chat_default_level,"
-    " COALESCE(s.dynamic, p.dynamic, false) AS dynamic, COALESCE(s.ensemble, false) AS ensemble"
+    " COALESCE(s.dynamic, p.dynamic, true) AS dynamic, COALESCE(s.ensemble, false) AS ensemble"
     " FROM (SELECT 1) one"
     " LEFT JOIN platform_ai_settings p ON true"
     " LEFT JOIN customer_ai_settings s ON s.customer_id = :customer"
@@ -116,7 +124,7 @@ class Reading:
     dynamic or ensemble (after the permission check); ``lead`` reads every page;
     ``others`` (ensemble only, at most two) read them again for the vote; ``careful``
     (dynamic only) re-reads the unclear pages; ``thinking`` the level sent; ``notes``
-    why something fell back (``mode_revoked``, ``careful_missing``, ``agent_unusable``,
+    why something fell back (``mode_revoked``, ``agent_unusable``,
     ``thinking_fallback``)."""
 
     mode: str
@@ -253,8 +261,9 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
     OCR_MODEL on DEFAULT_PROVIDER (as before model choice). Mode: ensemble needs the
     organisation's Ensemble switch and one usable ``read_also`` model other than the lead
     (unusable ones are dropped, ``agent_unusable``); dynamic needs the effective Dynamic
-    switch and a Careful tier other than the lead (``careful_missing``); a mode no longer
-    allowed is single (``mode_revoked``). A document the connection cannot see (another
+    switch, and reads first at DYNAMIC_FIRST_THINKING when the lead takes it (else at its
+    level, ``thinking_fallback``), with the Careful tier, else the lead, as Careful; a mode
+    no longer allowed is single (``mode_revoked``). A document the connection cannot see (another
     customer's, or none) reads single with OCR_MODEL, as before."""
     document = conn.execute(_DOCUMENT, {"customer": customer_id, "document": document_id}).mappings().first()
     rows = [] if document is None else usable_models(conn, customer_id, settings=settings)
@@ -286,11 +295,34 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
     if mode == "dynamic":
         if not allowed["dynamic"]:
             return Reading("single", lead, thinking=thinking, notes=(*notes, "mode_revoked"))
-        careful = pick_tiers(rows)[1] if rows else None
-        if careful is None or careful["id"] == lead.model:
-            return Reading("single", lead, thinking=thinking, notes=(*notes, "careful_missing"))
-        return Reading("dynamic", lead, careful=_agent(careful, settings), thinking=thinking, notes=notes)
+        tier = pick_tiers(rows)[1] if rows else None
+        careful = lead if tier is None or tier["id"] == lead.model else _agent(tier, settings)
+        if lead_row is None or DYNAMIC_FIRST_THINKING in lead_row["efforts"]:
+            thinking, notes = (
+                DYNAMIC_FIRST_THINKING,
+                tuple(note for note in notes if note != "thinking_fallback"),
+            )
+        elif "thinking_fallback" not in notes:
+            notes += ("thinking_fallback",)
+        return Reading("dynamic", lead, careful=careful, thinking=thinking, notes=notes)
     return Reading("single", lead, thinking=thinking, notes=notes)
+
+
+def resolve_ensemble(conn: Connection, customer_id: str, document_id: str, *, settings: Settings) -> Reading:
+    """Who reads ``document_id`` again for Ensemble after the scan (scan review UX rules, 16
+    Oct 2026): ``lead`` is ``resolve_scan``'s (the stored reading's own model), ``others`` the
+    first two usable scan models that are not the lead (the default first, then by name).
+    Raises ``AiNotAllowed("ensemble_not_allowed")`` when the organisation's Ensemble grant is
+    off, scans are not read by a model (OCR_ENGINE is not gemini), or no other model is
+    usable. The API checks it before a run and the job again when it starts (S2)."""
+    if settings.ocr_engine != GEMINI or not effective_settings(conn, customer_id)["ensemble"]:
+        raise AiNotAllowed("ensemble_not_allowed")
+    scan = resolve_scan(conn, customer_id, document_id, settings=settings)
+    rows = usable_models(conn, customer_id, settings=settings)
+    others = tuple(_agent(row, settings) for row in rows if row["id"] != scan.lead.model)[: MAX_AGENTS - 1]
+    if not others:
+        raise AiNotAllowed("ensemble_not_allowed")
+    return Reading("ensemble", scan.lead, others, thinking=scan.thinking, notes=scan.notes)
 
 
 def resolve(

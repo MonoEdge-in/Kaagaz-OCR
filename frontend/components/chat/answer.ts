@@ -7,7 +7,8 @@
 import { pageLink } from "@/lib/regions";
 import type { Answer, AnswerSentence, Citation, Label, Message, Region } from "@/lib/types";
 
-export const NOT_FOUND_TEXT = "I couldn't find this in your documents.";
+// Calm, no "couldn't" (UI audit A4, 16 Oct 2026); the card's next steps follow it.
+export const NOT_FOUND_TEXT = "Not found in the documents searched.";
 export const MAX_QUESTION_LENGTH = 1000;
 
 // The chat's one status line for screen readers; the log itself stays quiet.

@@ -16,7 +16,7 @@ refresh columns alone it may write, and the operator's five functions.
 Auto-filing (0025): the app may switch its own ``autofile_on``, never ``autofile_granted``,
 which only the operator's ``kaagaz_op_set_org_autofile`` writes.
 
-Two-step by grant (0029): only ``kaagaz_op_set_org_two_step`` writes ``two_step_granted``.
+Two-step by grant (0029) is gone (0035): no ``two_step_granted``, no ``kaagaz_op_set_org_two_step``.
 
 Features 25-27 (0026): an organisation's AI settings the app may only read, the platform
 defaults (no customer) every role that may reads, the catalogue's chat_eligible the refresh
@@ -158,13 +158,12 @@ OPERATOR_RIGHTS = {
     "kaagaz_op_session": ("TABLE(email text, display_name text, session_version integer)", EMPTY_PATH),
     "kaagaz_op_logout": ("void", EMPTY_PATH),
     # 0016: organisations with counts only, and the writes, each answering (outcome, result_id).
-    # 0025 added each one's auto-filing grant and switch, 0029 its two-step grant.
+    # 0025 added each one's auto-filing grant and switch (0029's two-step grant went in 0035).
     "kaagaz_op_customers": (
         "TABLE(customer_id uuid, name text, status text, disabled_at timestamp with time zone,"
         " delete_after timestamp with time zone, created_at timestamp with time zone, admins bigint,"
         " reviewers bigint, members bigint, documents bigint, pages bigint, size_bytes bigint,"
-        " last_activity_at timestamp with time zone, autofile_granted boolean, autofile_on boolean,"
-        " two_step_granted boolean)",
+        " last_activity_at timestamp with time zone, autofile_granted boolean, autofile_on boolean)",
         EMPTY_PATH,
     ),
     # 0017: one organisation's admins, and the changes to one of them.
@@ -190,6 +189,9 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_step_up_failed": ("void", EMPTY_PATH),
+    # 0031, moving the operator's own two-step to a new device (never off).
+    "kaagaz_op_move_check": ("boolean", EMPTY_PATH),
+    "kaagaz_op_move_totp": ("integer", EMPTY_PATH),
     # 0020, read-only: the feed (no details, target id, person or document) and counts.
     "kaagaz_op_activity": (
         "TABLE(source text, entry_id bigint, created_at timestamp with time zone, action text,"
@@ -221,7 +223,10 @@ OPERATOR_RIGHTS = {
         " verified_prompt_version text, verified_at timestamp with time zone, tokens_per_page_in integer,"
         " tokens_per_page_out integer, enabled_at timestamp with time zone, ledger_tokens_in numeric,"
         " ledger_tokens_out numeric, chat_eligible boolean, chat_verified_prompt text,"
-        " chat_verified_at timestamp with time zone)",  # 0026: the answer columns
+        " chat_verified_at timestamp with time zone, scan_pages bigint, scan_pages_costed bigint,"
+        " scan_cost_usd numeric, scan_cost_unknown_calls bigint, answer_questions bigint,"
+        " answer_questions_costed bigint, answer_cost_usd numeric, answer_cost_unknown_calls bigint)",
+        # 0026: the answer columns; 0033: the real cost, counts and sums only
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_enabled": ("text", EMPTY_PATH),
@@ -245,7 +250,6 @@ OPERATOR_RIGHTS = {
     ),
     "kaagaz_op_set_ai_defaults": ("text", EMPTY_PATH),
     "kaagaz_op_set_org_autofile": ("record", EMPTY_PATH),  # 0025: allow or stop auto-filing
-    "kaagaz_op_set_org_two_step": ("record", EMPTY_PATH),  # 0029: allow or stop two-step sign-in
     "kaagaz_op_usage": (
         "TABLE(customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,"
         " input_tokens numeric, output_tokens numeric, reasoning_tokens numeric, cost_usd numeric,"
@@ -258,7 +262,10 @@ OPERATOR_RIGHTS = {
         "TABLE(customer_id uuid, day date, uploads bigint, sign_ins bigint, questions bigint,"
         " corrections bigint, runs bigint, runs_failed bigint, pages bigint, scan_pages bigint,"
         " cached_pages bigint, cost_usd numeric, cost_scan_usd numeric, cost_documents_usd numeric,"
-        " cost_questions_usd numeric, cost_estimated boolean, cost_part_unknown boolean)",
+        " cost_questions_usd numeric, cost_estimated boolean, cost_part_unknown boolean, pages_read bigint,"
+        " pages_reread bigint, pages_read_costed bigint, cost_real_usd numeric, cost_scan_real_usd numeric,"
+        " cost_answer_real_usd numeric, cost_unknown_calls bigint, scan_unknown_calls bigint,"
+        " answer_unknown_calls bigint)",  # 0034: the real figures, counts and sums only
         EMPTY_PATH,
     ),
     "kaagaz_op_org_health": (

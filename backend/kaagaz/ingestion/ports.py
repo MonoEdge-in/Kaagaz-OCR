@@ -44,10 +44,13 @@ class Job:
 
     It carries the customer so the worker can set the current customer before
     its first query, and carries ids only, never the file or its name.
+    ``run_id`` (scan review UX rules, 16 Oct 2026): an Ensemble run of the document
+    (``ensemble_runs.id``) to read, not the document itself; None for every other job.
     """
 
     customer_id: str
     document_id: str
+    run_id: str | None = None
 
 
 class BlobNotFound(Exception):

@@ -16,15 +16,19 @@ import {
   attentionItems,
   boardBest,
   boardRows,
+  changeLine,
   changeText,
   csvOf,
   dayList,
   monthForecast,
   orgFlags,
   periodTotals,
+  realMonthForecast,
   rateText,
   riskOrder,
   series,
+  sparkOf,
+  unknownText,
   usdPer1000Pages,
   usdPer100Questions,
 } from "@/components/operator/insights";
@@ -49,6 +53,15 @@ const day = (overrides: Partial<InsightDay> = {}): InsightDay => ({
   cost_questions_usd: null,
   cost_estimated: false,
   cost_part_unknown: false,
+  pages_read: 0,
+  pages_reread: 0,
+  pages_read_costed: 0,
+  cost_real_usd: null,
+  cost_scan_real_usd: null,
+  cost_answer_real_usd: null,
+  cost_unknown_calls: 0,
+  scan_unknown_calls: 0,
+  answer_unknown_calls: 0,
   ...overrides,
 });
 
@@ -243,7 +256,57 @@ describe("periodTotals", () => {
     expect(totals).toEqual({
       activeOrganisations: 3, uploads: 1, pages: 10, questions: 3, runs: 3, runsFailed: 1, scanPages: 4, cachedPages: 2,
       costUsd: null, costDocumentsUsd: null, costQuestionsUsd: null, costEstimated: false, costPartUnknown: false,
+      pagesRead: 0, pagesReread: 0, pagesReadCosted: 0, costRealUsd: null, costScanRealUsd: null, costAnswerRealUsd: null,
+      unknownCalls: 0, scanUnknownCalls: 0, answerUnknownCalls: 0,
     });
+  });
+
+  // Tushar, 16 Oct 2026: the real figures (0032), pages read from the ledger, re-reads apart.
+  it("sums the pages models read, the re-reads apart, and only the cost OpenRouter reported", () => {
+    const totals = periodTotals(
+      [
+        day({ day: "2026-10-05", pages_read: 20, pages_reread: 3, pages_read_costed: 18, cost_real_usd: 0.5,
+          cost_scan_real_usd: 0.4, cost_answer_real_usd: null, cost_unknown_calls: 2, scan_unknown_calls: 2 }),
+        day({ organisation_id: "b", day: "2026-10-06", pages_read: 7, cost_real_usd: 0.25, cost_answer_real_usd: 0.1,
+          cost_unknown_calls: 1, answer_unknown_calls: 1 }),
+      ],
+      "2026-10-05",
+      "2026-10-11",
+    );
+    expect([totals.pagesRead, totals.pagesReread, totals.pagesReadCosted]).toEqual([27, 3, 18]);
+    expect([totals.costRealUsd, totals.costScanRealUsd, totals.costAnswerRealUsd]).toEqual([0.75, 0.4, 0.1]);
+    expect([totals.unknownCalls, totals.scanUnknownCalls, totals.answerUnknownCalls]).toEqual([3, 2, 1]);
+    expect(totals.activeOrganisations).toBe(2); // pages read is use, even with no counted run
+  });
+
+  it("says a tile's change in plain words, and nothing when both periods are 0", () => {
+    expect(changeLine(12, 10, "count", 30)).toBe("Up 20% on the previous 30 days");
+    expect(changeLine(5, 5, "count", 30)).toBe("Same as the previous 30 days");
+    expect(changeLine(3, 0, "count", 7)).toBe("None in the previous 7 days");
+    expect(changeLine(9, 4, "count", 30)).toBe("Not enough earlier data to compare");
+    expect(changeLine(0, 0, "count", 30)).toBeNull();
+  });
+
+  it("draws a day line only with 3 or more days of real values, never a made-up one", () => {
+    expect(sparkOf([0, 0, 1, 0, 2])).toBeUndefined();
+    expect(sparkOf([1, 0, 2, 0, 3])).toEqual([1, 0, 2, 0, 3]);
+    expect(sparkOf([])).toBeUndefined();
+  });
+
+  it("says calls of unknown cost in words, and nothing for none", () => {
+    expect(unknownText(12)).toBe("cost not known for 12 calls");
+    expect(unknownText(1)).toBe("cost not known for 1 call");
+    expect(unknownText(0)).toBeNull();
+  });
+
+  it("forecasts the month from real cost only with 7 days of it and the whole month so far", () => {
+    const month = { from: "2026-10-01", today: "2026-10-10", days_in_month: 31 };
+    const days = (count: number) =>
+      Array.from({ length: count }, (_, i) => day({ day: `2026-10-${String(i + 1).padStart(2, "0")}`, cost_real_usd: 1, cost_usd: 9 }));
+    const covered = { from: "2026-09-11", to: "2026-10-10", previous_from: "2026-08-12", month };
+    expect(realMonthForecast(reply({ ...covered, daily: days(7) }))).toBeCloseTo((7 / 10) * 31); // real $7, never the $63
+    expect(realMonthForecast(reply({ ...covered, daily: days(6) }))).toBeNull();
+    expect(realMonthForecast(reply({ ...covered, previous_from: "2026-10-03", daily: days(7) }))).toBeNull(); // misses the 1st
   });
 
   it("sums the known costs and or-s the estimated and part-unknown flags", () => {

@@ -85,10 +85,13 @@ def test_dynamic_comes_first_and_is_the_default_when_allowed_with_a_careful_tier
     assert offered[0]["hint"] == "Picks the right reading for each page."
 
 
-def test_no_dynamic_without_the_switch_or_without_a_careful_tier() -> None:
+def test_no_dynamic_without_the_switch_but_dynamic_first_without_a_careful_tier() -> None:
+    """Tushar, 16 Oct 2026: Dynamic works with one allowed model (Careful is the default model
+    thinking harder), so it is offered first, the default, whenever the switch is on."""
     assert [reader["title"] for reader in readers.readers(ROWS, GEMINI)] == ["Standard", "Careful"]
     no_careful = [_row(DEFAULT, default=True), _row(OTHER)]
-    assert readers.readers(no_careful, GEMINI, dynamic=True) == readers.readers(no_careful, GEMINI)
+    offered = readers.readers(no_careful, GEMINI, dynamic=True)
+    assert [(reader["id"], reader["default"]) for reader in offered] == [("dynamic", True), (DEFAULT, False)]
     assert readers.readers([], GEMINI, dynamic=True) == ocr_choices(GEMINI)
 
 

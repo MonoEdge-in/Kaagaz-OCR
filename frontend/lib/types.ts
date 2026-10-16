@@ -30,7 +30,7 @@ export type LabelReason =
   | "box_unanchored" // PRD 5 G5: its spot on the page couldn't be confirmed
   | "local_reader"; // PRD 5 Q7: read by the backup reader while the main reader was down
 
-/** "admin" only for a session started at /admin/login (PRD A1). */
+/** "admin" only for an admin's session (from /login, always with two-step since 16 Oct 2026). */
 export type SessionScope = "app" | "admin";
 
 // must_change_password and session are always sent (backend api/views.py
@@ -43,9 +43,8 @@ export interface Me {
     display_name: string;
     role: Role;
     must_change_password: boolean;
-    totp_enabled: boolean; // two-step sign-in is on (each admin chooses)
+    totp_enabled: boolean; // two-step sign-in is on (required for an admin)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
-    two_step_allowed: boolean; // the super admin allowed two-step sign-in for the organisation
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
@@ -86,6 +85,7 @@ export interface DocumentSummary {
   newer_version: NewerVersion | null; // a later version still being read, or one that failed
   progress: DocumentProgress | null; // null unless it is being checked or read; status_message already says it
   time_left: TimeLeft | null; // null until preparing (PRD 4 #13): while scanning, waiting or done; never in Trash
+  understanding?: boolean; // Ready first (16 Oct 2026): ready and usable, its card and map still coming
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
   // PRD 5 F4: pages unreadable or uncertain still on the attention list (a page kept as is
@@ -766,6 +766,13 @@ export interface OperatorMe {
   session: { expires_at: number }; // Unix seconds; the session lasts 30 minutes
 }
 
+// POST /operator/2fa/move/start: the new device's key; nothing is stored until it is confirmed.
+export interface OperatorMoveOffer {
+  move_token: string; // lasts 10 minutes, and only for this session
+  secret: string; // base32, in groups of 4
+  otpauth_uri: string; // the same key as an otpauth:// link, for a QR code
+}
+
 export type OrgStatus = "active" | "disabled" | "deleting";
 
 /** One organisation in GET /operator/orgs: its metadata and counts only. */
@@ -783,7 +790,6 @@ export interface Organisation {
   last_activity_at: string | null;
   autofile_granted: boolean; // feature 28: auto-filing allowed; its admin switches it on
   autofile_on: boolean;
-  two_step_granted: boolean; // two-step sign-in allowed for its admins; until then the password alone
 }
 
 /** POST /operator/orgs: the temporary password is in this one reply only. */
@@ -959,6 +965,16 @@ export interface OperatorModel {
   tokens_per_page_out: number | null;
   ledger_tokens_in: number | null; // MC3: a scanned page's average over the last 30 days; null: none
   ledger_tokens_out: number | null;
+  // 0031: the real cost OpenRouter reported over the last 30 days, every organisation's
+  // ledger together. *_costed: those with a reported cost; cost null: none reported.
+  scan_pages: number;
+  scan_pages_costed: number;
+  scan_cost_usd: number | null;
+  scan_cost_unknown_calls: number;
+  answer_questions: number;
+  answer_questions_costed: number;
+  answer_cost_usd: number | null;
+  answer_cost_unknown_calls: number;
   enabled_at: string | null; // null: not enabled on the platform
   chat_eligible: boolean; // may answer questions (features 25-27, C11)
   chat_verified: boolean; // verify-models passed for the current answer prompt
@@ -1036,6 +1052,18 @@ export interface InsightDay {
   cost_questions_usd: number | null; // chat, memory, search
   cost_estimated: boolean;
   cost_part_unknown: boolean;
+  // 0032, from the ledger: pages a model read first (scan, upgrade, not cached) and read
+  // again (careful, ensemble_scan), the first reads with a reported cost, and only the cost
+  // OpenRouter reported (null: none); calls with no reported cost are counted apart.
+  pages_read: number;
+  pages_reread: number;
+  pages_read_costed: number;
+  cost_real_usd: number | null;
+  cost_scan_real_usd: number | null;
+  cost_answer_real_usd: number | null;
+  cost_unknown_calls: number;
+  scan_unknown_calls: number;
+  answer_unknown_calls: number;
 }
 
 /** F2: one organisation's health now. */
@@ -1144,4 +1172,98 @@ export interface BoardReply {
   to: string;
   ai_enabled: boolean;
   items: BoardRow[];
+}
+
+// --- Word-level review and Ensemble after the scan (scan review UX rules, 16 Oct 2026;
+// backend/kaagaz/api/routers/word_review.py and ensemble.py, views.run_json) ---
+
+export type Band = "check" | "review";
+export type FlagState = "open" | "reviewed" | "resolved" | "in_ensemble" | "proposed";
+export type EnsembleScope = "word" | "words" | "flagged" | "document";
+
+/** ``Run``: one Ensemble run's progress, counts and error. */
+export interface EnsembleRun {
+  id: string;
+  scope: EnsembleScope;
+  status: "queued" | "running" | "done" | "stopped" | "failed";
+  pages_total: number;
+  pages_done: number;
+  page_now: number | null; // while running
+  words_total: number;
+  agreed: number;
+  changed: number;
+  unresolved: number;
+  kept: number;
+  failed_pages: number[];
+  started_at: string | null;
+  finished_at: string | null;
+  error: { code: string; message: string } | null; // message: what happened, what it means
+}
+
+/** GET /documents/{id}/review-status */
+export interface ReviewStatus {
+  pages: number;
+  words: number;
+  flagged: number;
+  by_band: Record<Band, number>;
+  reviewed: number;
+  resolved: number;
+  remaining: number;
+  last_change_at: string | null;
+  status: DocumentStatus;
+  summary: string | null; // "Scan complete · 14 pages · 2,431 words · 12 flagged for review"; null until ready
+  export: { ready: boolean; message: string };
+  can_review: boolean; // the Reviewer check: confirm, edit, undo, Ensemble
+  ensemble: { allowed: boolean; reason: string | null; run: EnsembleRun | null };
+}
+
+/** ``WordFlag``: one flagged word (GET /documents/{id}/flags, and the confirm or edit reply). */
+export interface WordFlag {
+  word_key: string;
+  kind: "mark" | "line" | "value";
+  page_no: number;
+  region: Region;
+  as_read: string;
+  text: string; // the text now
+  band: Band;
+  reason: string;
+  reason_text: string; // "smudged print"
+  score: number | null; // only when something measured it
+  alternatives: string[] | null; // null for a member
+  value_id: string | null;
+  state: FlagState;
+  ensemble: {
+    reading_id: string;
+    run_id: string;
+    outcome: "agreed" | "changed" | "unresolved" | "skipped_user_edit";
+    proposal: string | null;
+    decision: "kept" | "reverted" | null;
+  } | null; // reviewers only
+  change: { id: string; action: string; at: string | null; by_you: boolean } | null;
+}
+
+/** ``WordChange``: one row of the history. */
+export interface WordChange {
+  id: string;
+  word_key: string;
+  kind: string;
+  page_no: number;
+  region: Region;
+  action: string; // confirm, edit, resolve, keep, ...
+  before_text: string;
+  after_text: string;
+  by: "person" | "ensemble";
+  by_you: boolean;
+  user_name: string | null;
+  created_at: string | null;
+  undone_at: string | null;
+  on_page: boolean;
+  note: string | null; // "No longer on the page"
+  can_undo: boolean;
+}
+
+export interface EnsembleEstimate {
+  pages: number;
+  words: number;
+  seconds: number;
 }

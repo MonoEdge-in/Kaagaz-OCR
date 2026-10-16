@@ -13,8 +13,8 @@ import {
   describeAction,
   describeDetails,
   describeTarget,
-  pageRouteTiles,
-  statTiles,
+  breakdowns,
+  kpiTiles,
 } from "@/components/admin/logic";
 import { UsageReportView } from "@/components/admin/UsagePanel";
 import {
@@ -129,8 +129,9 @@ function shownTexts(): string[] {
     ...STATUSES.map(noCardText),
     lowResolutionText({ low_resolution: true, effective_dpi: 96.4 }),
     ...TABS.map((tab) => tab.label),
-    ...statTiles(STATS).map((tile) => tile.label),
-    ...pageRouteTiles(STATS).map((tile) => tile.label),
+    // Changed on purpose (UI audit, 16 Oct 2026): AD4, four headline numbers and small lists.
+    ...kpiTiles(STATS).flatMap((tile) => [tile.label, tile.note ?? null]),
+    ...breakdowns(STATS).flatMap((group) => [group.title, group.none, ...group.rows.map((row) => row.label)]),
     ...[...STATUSES, "answered"].map((status) =>
       describeDetails({ status, page_no: 3, versions: 2, tag_count: 1, max_upload_mb: 25, role: "admin" }),
     ),

@@ -6,6 +6,8 @@ worker takes it out), with the lease model described in kaagaz/jobs/ports.py:
 * The message body is ``{"customer_id": ..., "document_id": ...}``: ids only,
   never a file or its name. A job handed back by ``defer`` also carries
   ``"tries"``: the attempts it used before, a whole number 0 to MAX_TRIES (1000).
+  An Ensemble run's job also carries ``"run_id"``, written only when set, so every
+  other message is as before.
 * Two lanes (PRD 5 Q4): ``enqueue(job, express=True)`` sends the job to
   ``queue_express_url``, the express lane; any other job, or every job when there
   is no express lane, goes to ``queue_url``. The caller decides ``express`` from
@@ -144,6 +146,8 @@ class _Received:
 
 def _body(job: Job, tries: int = 0) -> str:
     fields: dict[str, object] = {"customer_id": job.customer_id, "document_id": job.document_id}
+    if job.run_id is not None:
+        fields["run_id"] = job.run_id
     if tries:
         fields["tries"] = tries
     return json.dumps(fields)
@@ -166,7 +170,10 @@ def _job_from_body(body: str) -> tuple[Job, int] | None:
     tries = data.get("tries", 0)
     if not isinstance(tries, int) or isinstance(tries, bool) or not 0 <= tries <= MAX_TRIES:
         return None
-    return Job(customer_id=customer_id, document_id=document_id), tries
+    run_id = data.get("run_id")
+    if run_id is not None and (not isinstance(run_id, str) or not run_id):
+        return None
+    return Job(customer_id=customer_id, document_id=document_id, run_id=run_id), tries
 
 
 def _max_receive_count(policy: object) -> int | None:
