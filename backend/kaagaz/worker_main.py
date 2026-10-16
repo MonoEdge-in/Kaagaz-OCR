@@ -10,11 +10,13 @@ until it is told to stop:
   end the process: it is logged, the loop pauses for ``queue_wait_seconds``
   and tries again. A job that was running is not acked, so the queue hands
   it out again once its lease runs out.
-* Anything else is a bug and ends the process on purpose (no blanket
-  ``except Exception``, as in kaagaz/jobs/worker.py). docker-compose.yml
-  restarts it; the job goes back to the queue, and the delivery after its
-  last attempt (JOB_MAX_ATTEMPTS) marks the document failed
-  (``retries_exhausted``) and buries the job.
+* A job's handler that crashes (any other exception) is that job's: it is logged
+  CRITICAL "job crashed" with its type and the code location (``where``), and the job is
+  handed back counted after 60 s (kaagaz/jobs/worker.py, council 17 Oct 2026); the
+  delivery after its last attempt (JOB_MAX_ATTEMPTS) marks the document failed
+  (``retries_exhausted``) and buries the job. A crash outside the handler, a
+  MemoryError, or 3 handler crashes in a row (of different jobs) end the process on purpose;
+  docker-compose.yml restarts it.
 * Each attempt is written on the document (``attempts``, ``max_attempts``),
   so the file list can say "Try 2 of 5".
 * A job with a ``run_id`` is an Ensemble run after the scan (``dispatch``, kaagaz/jobs/
@@ -79,12 +81,14 @@ import contextlib
 import functools
 import json
 import logging
+import os
 import re
 import signal
 import socket
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from types import FrameType
@@ -105,7 +109,7 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, last_refreshed, refresh
 from kaagaz.jobs.fair_share import FairShare, SweepLock, first_free_lock, no_lock, sweep_lock
-from kaagaz.jobs.ports import QueueSetupError, WorkQueue
+from kaagaz.jobs.ports import LeaseLost, QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import CustomerStorage, purge_deleted_customers, purge_expired, sweep_purged_customers
 from kaagaz.jobs.revive import ReviveStuck, revive_stuck
 from kaagaz.jobs.upgrade import UpgradeLocalReads, upgrade_oldest
@@ -119,6 +123,7 @@ from kaagaz.jobs.worker import (
     JobFailed,
     RunsJobs,
     Worker,
+    database_unreachable,
 )
 from kaagaz.search.indexing import MissingPass, embed_missing
 from kaagaz.search.story_vectors import StoryKey, StoryPass, embed_missing_stories
@@ -144,7 +149,8 @@ STORY_PASS_STORIES = 32
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
-_SAFE_FIELDS = ("customer_id", "document_id", "code", "retryable", "outcome")
+_PACKAGE = os.path.dirname(os.path.abspath(__file__)) + os.sep  # kaagaz/, for crash_site
+_SAFE_FIELDS = ("customer_id", "document_id", "code", "retryable", "outcome", "where")
 
 
 class JsonFormatter(logging.Formatter):
@@ -169,6 +175,18 @@ def configure_logging(level: str) -> None:
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonFormatter())
     logging.basicConfig(level=level.upper(), handlers=[handler], force=True)
+    quiet_parser_logs()
+
+
+# The PDF libraries log parsed objects, stacks and names from inside the file (document
+# content) at ERROR, WARNING and DEBUG.
+_PARSER_LOGGERS = ("pdfminer", "pdfplumber")
+
+
+def quiet_parser_logs() -> None:
+    """Only CRITICAL from the PDF libraries reaches the log (council 17 Oct 2026)."""
+    for name in _PARSER_LOGGERS:
+        logging.getLogger(name).setLevel(logging.CRITICAL)
 
 
 class LoggedHandler:
@@ -189,7 +207,25 @@ class LoggedHandler:
                 extra={**ids, "outcome": outcome, "code": failure.code, "retryable": failure.retryable},
             )
             raise
+        except (Deferred, BackendUnavailable, LeaseLost):
+            raise
+        except Exception as error:  # logged here, re-raised: the Worker settles it
+            if database_unreachable(error):
+                raise  # an outage, not a crash: the Worker makes it BackendUnavailable
+            extra = {**ids, "outcome": "crashed", "code": type(error).__name__, "where": crash_site(error)}
+            logger.critical("job crashed", extra=extra)
+            raise
         logger.info("job done", extra={**ids, "outcome": "done"})
+
+
+def crash_site(error: BaseException) -> str:
+    """Where ``error`` was raised in our own code: the innermost kaagaz frame of its
+    traceback, as ``file.py:function:line``. A code location only, never a message or
+    any document data. ``unknown`` with no kaagaz frame."""
+    for frame in reversed(traceback.extract_tb(error.__traceback__)):
+        if os.path.abspath(frame.filename).startswith(_PACKAGE):
+            return f"{os.path.basename(frame.filename)}:{frame.name}:{frame.lineno}"
+    return "unknown"
 
 
 class RecordAttempt:

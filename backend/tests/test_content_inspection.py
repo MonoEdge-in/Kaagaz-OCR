@@ -5,6 +5,7 @@ Every attack sample here is made up and harmless: the scripts only call
 """
 
 import io
+import struct
 import unittest
 import zipfile
 
@@ -13,7 +14,8 @@ from PIL import Image
 from kaagaz.adapters.scanner import LayeredScanner
 from kaagaz.scanning.content import Finding, inspect
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES, REJECTION_CODES, Verdict
-from tests.pdf_builder import Page, Text, make_pdf
+from tests.pdf_builder import Page, Picture, Text, make_objstm_pdf, make_pdf
+from tests.picture_support import text_like_picture
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
 WINDOWS_PROGRAM = b"MZ" + b"\x90" * 62 + b"This program cannot be run in DOS mode.\r\r\n$" + b"\x00" * 64
@@ -164,6 +166,93 @@ class PdfActiveContentIsBlocked(unittest.TestCase):
         catalog = b"<< /Type /Catalog /Pages 2 0 R /OpenAction 5 0 R >>"
         objects = [catalog, PAGES, PAGE, b"<< /Foo 1 >>", b"<< /S /JavaScript /JS (app.alert(1)) >>"]
         self.assertIs(inspect(with_broken_object(pdf_with(objects), 4)), Finding.BLOCKED)
+
+
+CATALOG_JS = b"<< /Type /Catalog /Pages 2 0 R /OpenAction 4 0 R >>"
+JS = b"<< /S /JavaScript /JS (app.alert(1)) >>"
+
+
+class DamagedPdfsCannotHideActiveContent(unittest.TestCase):
+    """Council 17 Oct 2026 (security): an object pdfminer cannot load is skipped, so damage
+    must not hide active content that a viewer, which rebuilds a broken index, still
+    runs. When anything was skipped, every object header in the file is parsed too."""
+
+    def test_the_javascript_object_itself_broken(self) -> None:
+        broken = with_broken_object(pdf_with([CATALOG_JS, PAGES, PAGE, JS]), 4)
+        self.assertIs(inspect(broken), Finding.BLOCKED)
+
+    def test_every_entry_broken(self) -> None:
+        broken = pdf_with([CATALOG_JS, PAGES, PAGE, JS])
+        for number in range(1, 5):
+            broken = with_broken_object(broken, number)
+        self.assertIn(inspect(broken), (Finding.BLOCKED, Finding.UNSCANNABLE))  # never None
+        # With the catalog still found (the trailer names it), the rest broken: blocked.
+        broken = pdf_with([CATALOG_JS, PAGES, PAGE, JS])
+        for number in range(2, 5):
+            broken = with_broken_object(broken, number)
+        self.assertIs(inspect(broken), Finding.BLOCKED)
+
+    def test_javascript_after_the_trailer_that_the_index_does_not_list(self) -> None:
+        catalog = b"<< /Type /Catalog /Pages 2 0 R /OpenAction 5 0 R >>"
+        broken = with_broken_object(pdf_with([catalog, PAGES, PAGE, b"<< /Foo 1 >>"]), 4)
+        self.assertIs(inspect(broken + b"5 0 obj\n" + JS + b"\nendobj\n"), Finding.BLOCKED)
+
+    def test_javascript_inside_an_object_stream_with_a_broken_index(self) -> None:
+        broken = make_objstm_pdf([CATALOG_JS], [PAGES, PAGE, JS], objstm_offset=9)
+        self.assertIs(inspect(broken), Finding.BLOCKED)
+        self.assertIsNone(inspect(make_objstm_pdf([CATALOG], [PAGES, PAGE], objstm_offset=9)))
+
+    def test_javascript_in_a_dictionary_that_will_not_parse(self) -> None:
+        """An odd dictionary (a key with no value) fails pdfminer's parse, but pdf.js
+        still reads the keys before it; one with no "endobj" runs into the next object."""
+        for bad in (b"<< /S /JavaScript /JS (app.alert(1)) /Odd >>", JS[:-3]):
+            with self.subTest(bad=bad):
+                broken = with_broken_object(pdf_with([CATALOG_JS, PAGES, PAGE, bad, b"<< /Foo 1 >>"]), 4)
+                self.assertIs(inspect(broken), Finding.BLOCKED)
+
+    def test_an_ordinary_scan_with_a_broken_entry_is_left_to_the_readers(self) -> None:
+        scan = make_pdf([Page(picture=Picture(text_like_picture(60, 80), 0, 0, 612, 792))])
+        self.assertIsNone(inspect(with_broken_object(scan, 3)))
+
+    def test_a_damaged_encrypted_pdf_is_unscannable(self) -> None:
+        locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
+        self.assertIs(inspect(with_broken_object(locked, 3)), Finding.UNSCANNABLE)
+
+    def test_javascript_nested_deeper_than_the_walk_is_blocked(self) -> None:
+        """A 70-deep /Next chain ending in JavaScript used to be called safe."""
+        action = JS
+        for _ in range(70):
+            action = b"<< /S /GoTo /Next " + action + b" >>"
+        self.assertIs(
+            inspect(
+                pdf_with([b"<< /Type /Catalog /Pages 2 0 R /OpenAction " + action + b" >>", PAGES, PAGE])
+            ),
+            Finding.BLOCKED,
+        )
+
+    def test_a_trailer_pdfminer_asserts_on_is_unscannable_not_a_crash(self) -> None:
+        broken = pdf_with([CATALOG, PAGES, PAGE]).replace(b"trailer\n", b"trailerX\n")
+        self.assertIs(inspect(broken), Finding.UNSCANNABLE)
+
+    def test_a_spreadsheet_with_a_damaged_compressed_part_is_a_finding_not_a_crash(self) -> None:
+        self.assertIs(
+            inspect(with_damaged_member(spreadsheet(), "xl/_rels/workbook.xml.rels")), Finding.UNSCANNABLE
+        )
+
+
+CATALOG = b"<< /Type /Catalog /Pages 2 0 R >>"
+
+
+def with_damaged_member(archive: bytes, name: str) -> bytes:
+    """``archive`` with member ``name``'s compressed bytes overwritten (its headers kept), so
+    inflating it raises zlib.error."""
+    with zipfile.ZipFile(io.BytesIO(archive)) as opened:
+        info = opened.getinfo(name)
+    raw = bytearray(archive)
+    name_len, extra_len = struct.unpack("<HH", raw[info.header_offset + 26 : info.header_offset + 30])
+    start = info.header_offset + 30 + name_len + extra_len
+    raw[start : start + info.compress_size] = b"\xff" * info.compress_size
+    return bytes(raw)
 
 
 class HiddenProgramsAndPolyglots(unittest.TestCase):
