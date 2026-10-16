@@ -10,8 +10,6 @@ export interface NavLink {
   href: string;
   label: string;
   icon: IconName;
-  /** Shows how many values wait to be checked (the Review link; AppShell asks the server). */
-  toCheck?: true;
 }
 
 const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope }[] = [
@@ -22,7 +20,7 @@ const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope }[] =
   { link: { href: "/chat", label: "Ask", icon: "chat" }, roles: ["member", "reviewer", "admin"] },
   // My words: each user's own, so every role has it.
   { link: { href: "/words", label: "My words", icon: "words" }, roles: ["member", "reviewer", "admin"] },
-  { link: { href: "/review", label: "Review", icon: "review", toCheck: true }, roles: ["reviewer", "admin"] },
+  { link: { href: "/review", label: "Review", icon: "review" }, roles: ["reviewer", "admin"] },
   // PRD A1: an admin signed in at /login gets no Admin menu.
   { link: { href: "/admin", label: "Admin", icon: "admin" }, roles: ["admin"], scope: "admin" },
 ];

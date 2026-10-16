@@ -183,13 +183,7 @@ describe("G8 and G9: the current link and the Review count", () => {
     expect(bar).toMatch(/background: var\(--accent\);/);
   });
 
-  it("fills the Review count, square and solid, never dashed", () => {
-    const badge = rule(shellCss, ".badge");
-    expect(badge).toMatch(/background: var\(--review-solid\);/);
-    expect(badge).toMatch(/color: var\(--review-on-solid\);/);
-    expect(badge).toMatch(/border-radius: 2px;/);
-    expect(badge).not.toMatch(/dashed/);
-  });
+  // Changed on purpose (Tushar, 16 Oct 2026): the Review count is gone (shell-nav.test.ts).
 });
 
 describe("G10: control minimums every screen inherits", () => {

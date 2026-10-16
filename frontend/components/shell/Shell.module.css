@@ -272,27 +272,6 @@
   background: var(--accent);
 }
 
-/* The Review link's count of values to check, at the end of the row: a solid,
-   filled square, never a pill and never dashed (UI audit G9). */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  margin-inline-start: auto;
-  min-width: var(--badge-h);
-  height: var(--badge-h);
-  padding: 0 var(--space-1);
-  border-radius: 2px;
-  background: var(--review-solid);
-  color: var(--review-on-solid);
-  font-size: var(--fs-sm);
-  font-weight: 700;
-  line-height: 1;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
 /* --- In the account menu: who is signed in, then the sign-outs --------------- */
 
 .user {

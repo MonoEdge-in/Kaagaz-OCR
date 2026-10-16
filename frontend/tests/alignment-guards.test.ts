@@ -101,7 +101,7 @@ describe("one control height", () => {
     expect(found.filter((name) => !ALLOWED.has(name))).toEqual([]);
   });
 
-  it("gives badges, status chips and the Review count one height and centred words", () => {
+  it("gives badges and status chips one height and centred words", () => {
     expect(read(GLOBALS)).toMatch(/--badge-h: 24px;/);
     for (const selector of [".badge", ".status-chip"]) {
       const body = top(selector)[0]?.body ?? "";
@@ -109,9 +109,7 @@ describe("one control height", () => {
       expect(body, selector).toMatch(/line-height:\s*1\.25;/);
       expect(body, selector).toMatch(/border-radius:\s*2px;/);
     }
-    const count = rules(read("components/shell/Shell.module.css")).find((rule) => rule.selector === ".badge")?.body ?? "";
-    expect(count).toMatch(/height:\s*var\(--badge-h\);/);
-    expect(count).toMatch(/align-items:\s*center;/);
+    // Changed on purpose (Tushar, 16 Oct 2026): the sidebar Review count is gone.
   });
 });
 
