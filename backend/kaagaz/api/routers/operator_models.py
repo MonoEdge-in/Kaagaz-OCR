@@ -376,7 +376,7 @@ def _model(row: RowMapping, settings: Settings) -> dict[str, Any]:
         # organisation's, numbers only); null with none.
         "ledger_tokens_in": _number(row["ledger_tokens_in"]),
         "ledger_tokens_out": _number(row["ledger_tokens_out"]),
-        # The real cost OpenRouter reported over the same 30 days (0031): scanned pages and
+        # The real cost OpenRouter reported over the same 30 days (0033): scanned pages and
         # answered questions, those with a reported cost, that cost (null: none reported)
         # and the calls whose cost is not known (never guessed from the list price).
         "scan_pages": int(row["scan_pages"]),

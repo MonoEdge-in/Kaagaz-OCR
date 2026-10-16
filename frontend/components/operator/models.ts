@@ -33,7 +33,7 @@ export const listPriceText = (model: OperatorModel) =>
 
 /**
  * Tushar, 16 Oct 2026: only the REAL cost, what OpenRouter charged in the last 30 days
- * (0031), never tokens times the list price. Scanning: "$42.49 per 1,000 pages · from 312
+ * (0033), never tokens times the list price. Scanning: "$42.49 per 1,000 pages · from 312
  * pages, last 30 days"; answering: "$0.12 per 1,000 questions · from 40 questions, last
  * 30 days". Calls with no reported cost are said beside the number, never guessed; no
  * real use says the list price and "not used yet".

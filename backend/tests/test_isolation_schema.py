@@ -16,7 +16,7 @@ refresh columns alone it may write, and the operator's five functions.
 Auto-filing (0025): the app may switch its own ``autofile_on``, never ``autofile_granted``,
 which only the operator's ``kaagaz_op_set_org_autofile`` writes.
 
-Two-step by grant (0029) is gone (0031): no ``two_step_granted``, no ``kaagaz_op_set_org_two_step``.
+Two-step by grant (0029) is gone (0035): no ``two_step_granted``, no ``kaagaz_op_set_org_two_step``.
 
 Features 25-27 (0026): an organisation's AI settings the app may only read, the platform
 defaults (no customer) every role that may reads, the catalogue's chat_eligible the refresh
@@ -158,7 +158,7 @@ OPERATOR_RIGHTS = {
     "kaagaz_op_session": ("TABLE(email text, display_name text, session_version integer)", EMPTY_PATH),
     "kaagaz_op_logout": ("void", EMPTY_PATH),
     # 0016: organisations with counts only, and the writes, each answering (outcome, result_id).
-    # 0025 added each one's auto-filing grant and switch (0029's two-step grant went in 0031).
+    # 0025 added each one's auto-filing grant and switch (0029's two-step grant went in 0035).
     "kaagaz_op_customers": (
         "TABLE(customer_id uuid, name text, status text, disabled_at timestamp with time zone,"
         " delete_after timestamp with time zone, created_at timestamp with time zone, admins bigint,"

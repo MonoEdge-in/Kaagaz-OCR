@@ -261,7 +261,7 @@ class Api:
 
     def sign_in(self, customer_id: str, role: str = "member") -> Signed:
         """A new user of this role, signed in: an app session, or for an admin (who must have
-        two-step sign-in, 0031) an enrolled admin's admin session."""
+        two-step sign-in, 0035) an enrolled admin's admin session."""
         if role == "admin":
             return self.admin_sign_in(customer_id)
         user_id, email = self.add_user(customer_id, role)

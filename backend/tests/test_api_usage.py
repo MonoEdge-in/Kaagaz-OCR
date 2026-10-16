@@ -380,7 +380,7 @@ def test_sp2_the_csv_downloads_one_escaped_line_per_day_user_model_and_kind(db: 
 @pytest.mark.db
 @pytest.mark.parametrize("url", ["/api/admin/usage", "/api/admin/usage.csv", "/api/admin/models"])
 def test_sp2_a_member_gets_403(db: Database, url: str) -> None:
-    # An admin's app session no longer exists (one sign-in, 0031): test_auth_tokens.
+    # An admin's app session no longer exists (one sign-in, 0035): test_auth_tokens.
     api = Api(db, clock=MovingClock(NOW))
     customer_id, _ = api.customer()
     member = api.sign_in(customer_id, "member")

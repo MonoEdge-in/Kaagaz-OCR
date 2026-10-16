@@ -32,7 +32,7 @@ MESSAGES = {
     "not_signed_in": "Please sign in.",
     "forbidden": "You don't have permission to do this.",
     "admin_session_required": "Only admins can use this. Ask your admin if you need it.",
-    # MFA required for admins (0031): an admin signs in again and sets up two-step sign-in.
+    # MFA required for admins (0035): an admin signs in again and sets up two-step sign-in.
     "mfa_enrol_required": "Set up two-step sign-in to continue. Sign in again to set it up.",
     "gone": "This is not available any more.",
     "password_change_required": "Set a new password to continue.",

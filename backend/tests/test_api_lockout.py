@@ -115,7 +115,7 @@ def test_an_admins_failed_replies_are_identical_too(db: Database) -> None:
     assert {reply.status_code for reply in replies.values()} == {401}
     assert len({reply.text for reply in replies.values()}) == 1
     assert replies["locked"].json()["error"]["code"] == "bad_credentials"
-    # Only a right password learns that a code is needed, or must be set up (0031).
+    # Only a right password learns that a code is needed, or must be set up (0035).
     no_code = api.admin_login(client, admin.email)
     assert (no_code.status_code, no_code.json()["error"]["code"]) == (401, "code_required")
     set_up = api.admin_login(client, no_2fa_email)

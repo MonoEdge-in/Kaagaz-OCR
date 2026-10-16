@@ -1,4 +1,4 @@
-// Two-step sign-in is required for every admin (Tushar, 16 Oct 2026; migration 0031),
+// Two-step sign-in is required for every admin (Tushar, 16 Oct 2026; migration 0035),
 // on the one sign-in page. This replaces the morning's per-organisation grant by the
 // super admin (its tests went with it, on the owner's decision): no toggle in the
 // console, no "Turn off" for an admin, and the set-up step on /login and after sign-up.

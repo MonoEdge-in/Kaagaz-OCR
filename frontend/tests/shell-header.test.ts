@@ -41,7 +41,6 @@ const me: Me = {
     must_change_password: false,
     totp_enabled: false,
     can_delete_forever: false,
-    two_step_allowed: false,
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope: "admin" },

@@ -510,7 +510,7 @@ def _user(**changes: Any) -> CurrentUser:
         "scope": "app",
         "session_version": 3,
         "must_change_password": False,
-        "totp_enabled": True,  # every admin has two-step sign-in (0031)
+        "totp_enabled": True,  # every admin has two-step sign-in (0035)
         "delete_forever_allowed": False,
     }
     return CurrentUser(**{**fields, **changes})
@@ -641,7 +641,7 @@ def test_an_admins_app_session_is_signed_out(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_an_admin_without_two_step_gets_only_the_set_up_answer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """MFA required for admins (0031): 403 mfa_enrol_required everywhere but /auth/me,
+    """MFA required for admins (0035): 403 mfa_enrol_required everywhere but /auth/me,
     /auth/password and /auth/logout (current_user_allow_password_change)."""
     client = _client(monkeypatch, _user(totp_enabled=False))
     _cookie(client, _session(scope="admin", expires_at=NOW + 60))

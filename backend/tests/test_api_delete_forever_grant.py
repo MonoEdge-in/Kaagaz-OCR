@@ -90,7 +90,7 @@ def test_admins_are_never_targets_and_allowing_needs_two_step(db: Database) -> N
     assert _grant(admin, ANY_ID) == (404, "not_found")
 
     plain_id, email = api.add_user(admin.customer_id, "admin")
-    # A password-only admin has no session at all since 0031 (MFA required), so has nothing
+    # A password-only admin has no session at all since 0035 (MFA required), so has nothing
     # to allow with; the gate itself: test_auth_tokens and test_api_admin_sign_in.
     refused = api.admin_login(api.client(), email)
     assert (refused.status_code, refused.json()["error"]["code"]) == (403, "mfa_enrol_required")

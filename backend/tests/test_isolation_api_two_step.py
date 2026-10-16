@@ -1,5 +1,5 @@
 """Customer B's admin setting up two-step sign-in at sign-in (and being refused turning it
-off, 0031) never touches customer A: A's admins (2FA on and not yet set up) stay exactly as
+off, 0035) never touches customer A: A's admins (2FA on and not yet set up) stay exactly as
 they were, A's session still works and A's audit log gets no row, though B uses the same
 password as A's admins.
 """

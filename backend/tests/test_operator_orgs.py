@@ -268,7 +268,7 @@ def test_auto_filing_is_allowed_or_stopped_without_a_code_and_each_outcome_gets_
 
 
 def test_the_two_step_grant_route_is_gone(offline: _Offline) -> None:
-    """0031: two-step sign-in is required for every admin, so there is nothing to allow."""
+    """0035: two-step sign-in is required for every admin, so there is nothing to allow."""
     reply = offline.client.put(f"{ORGS}/{CID}/two-step", json={"granted": True}, headers=offline.headers)
     assert reply.status_code in (404, 405)
     assert offline.calls == []

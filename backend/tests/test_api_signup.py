@@ -1,5 +1,5 @@
 """POST /api/auth/signup (16 Oct 2026): a new organisation and its first admin, who sets up
-two-step sign-in before the first session (0031).
+two-step sign-in before the first session (0035).
 
 The first half needs no database: the switch, the body rules and the per-address limit
 are checked before it is reached. The second half (marked ``db``) signs up for real.
@@ -137,7 +137,7 @@ def test_the_limiter_window_refills_over_an_hour() -> None:
 
 
 def _enrolled(api: Api, client: TestClient, reply: httpx.Response) -> tuple[dict[str, Any], bytes]:
-    """A sign-up's reply is the two-step set-up offer (0031): enrolled with its first code,
+    """A sign-up's reply is the two-step set-up offer (0035): enrolled with its first code,
     the Me of the new admin session, and the secret."""
     offer = reply.json()
     secret = base64.b32decode(offer["secret"].replace(" ", ""))

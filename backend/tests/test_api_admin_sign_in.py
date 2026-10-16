@@ -3,7 +3,7 @@
 PRD 1 A1, A2, A6 and A7, with the council's security findings: an enrol token
 is not a session and works once, a code works once, a wrong code counts toward
 the lockout, and every /api/admin route needs the admin session. Two-step sign-in
-is required for every admin (0031, 16 Oct 2026), on the one sign-in (/auth/login):
+is required for every admin (0035, 16 Oct 2026), on the one sign-in (/auth/login):
 an admin without it gets the set-up offer and no session; with it, the code is
 always needed. /auth/admin/login is gone (410).
 """
@@ -59,7 +59,7 @@ def _turn_off(client: TestClient, password: str = PASSWORD) -> httpx.Response:
 
 def _session_client(api: Api, customer_id: str, user_id: str, *, scope: str) -> TestClient:
     """A client holding a genuine admin session of this scope, made with the server's key:
-    the kind a browser may still hold from before 0031."""
+    the kind a browser may still hold from before 0035."""
     claims = SessionClaims(
         user_id=user_id,
         customer_id=customer_id,
@@ -483,7 +483,7 @@ def test_every_admin_route_refuses_a_members_session(db: Database) -> None:
 
 
 def test_an_admin_session_without_2fa_or_an_admins_app_session_opens_nothing(db: Database) -> None:
-    """Sessions a browser may still hold from before 0031: an admin session of an admin
+    """Sessions a browser may still hold from before 0035: an admin session of an admin
     with no code set up gets only the set-up answer; an admin's app session (password
     alone) is signed out."""
     api = Api(db)

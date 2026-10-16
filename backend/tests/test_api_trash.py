@@ -255,7 +255,7 @@ def test_only_an_admin_session_deletes_forever(db: Database) -> None:
     assert _trash(uploader, first) == 204
 
     # A member needs an admin's grant (test_api_delete_forever_grant.py); an admin, their admin
-    # session (every admin session is one since 0031: test_auth_tokens).
+    # session (every admin session is one since 0035: test_auth_tokens).
     refused = uploader.client.delete(f"/api/documents/{first}/permanent", headers=CSRF)
     assert (refused.status_code, refused.json()["error"]["code"]) == (403, "forbidden")
     assert _counts(db, uploader.customer_id) == (2, 2, 2)
@@ -318,7 +318,7 @@ def test_a_family_in_trash_cannot_be_renamed_moved_tagged_or_given_a_version(db:
 
 
 def test_delete_forever_needs_an_admin_with_two_step_sign_in_on(db: Database) -> None:
-    """Deleting forever is never password-only: since 0031 an admin without two-step
+    """Deleting forever is never password-only: since 0035 an admin without two-step
     sign-in gets no session at all (the gate: test_auth_tokens, test_api_admin_sign_in)."""
     api = Api(db)
     customer_id, _ = api.customer()

@@ -94,7 +94,7 @@ def test_an_admin_deletes_a_tag_and_it_comes_off_every_document(db: Database) ->
 @pytest.mark.parametrize("role", ["member", "reviewer"])
 def test_only_an_admin_session_may_delete_a_tag(db: Database, role: str) -> None:
     api = Api(db)
-    signed = api.new_signed(role)  # an app session (an admin has none since 0031)
+    signed = api.new_signed(role)  # an app session (an admin has none since 0035)
     tag = api.add_tag(signed.customer_id, signed.user_id, "Paid")
     reply = signed.client.delete(f"/api/tags/{tag}", headers=CSRF)
     assert reply.status_code == 403
@@ -211,7 +211,7 @@ def test_deleting_a_tag_needs_an_admin_with_two_step_sign_in_on(db: Database) ->
     api = Api(db)
     customer_id, _ = api.customer()
     _, email = api.add_user(customer_id, "admin")
-    # 2FA off: no session at all since 0031, so nothing to delete with.
+    # 2FA off: no session at all since 0035, so nothing to delete with.
     refused = api.admin_login(api.client(), email)
     assert (refused.status_code, refused.json()["error"]["code"]) == (403, "mfa_enrol_required")
     admin = api.admin_sign_in(customer_id)

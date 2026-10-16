@@ -3,7 +3,7 @@ the failed jobs (PRD 3 Z1; Retry is the documents router's reprocess route), and
 organisation's AI models and use in tokens (model choice, council 11 Oct 2026).
 
 Why the admin session: every route here needs an admin's session (scope "admin": an
-admin's sign-in at /login, always with the two-step code since 0031). The check sits on
+admin's sign-in at /login, always with the two-step code since 0035). The check sits on
 the router itself (``require_admin_session``), so a route added later cannot forget it;
 anyone else gets 403 ``admin_session_required``.
 

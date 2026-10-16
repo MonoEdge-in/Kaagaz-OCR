@@ -1,9 +1,9 @@
 """Migration 0029 (two-step sign-in by grant, 16 Oct 2026): the customers' grant, the
 operator's new function and its organisation list with the new column.
 
-Up to 0029 (not head: 0031 drops the grant again), down (0028's schema exactly, the list's
-old columns back) and up again, with the grant set. Comments: test_migration_0007; 0031:
-test_migration_0031_db.
+Up to 0029 (not head: 0035 drops the grant again), down (0028's schema exactly, the list's
+old columns back) and up again, with the grant set. Comments: test_migration_0007; 0035:
+test_migration_0035_db.
 """
 
 import pytest

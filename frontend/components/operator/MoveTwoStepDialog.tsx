@@ -9,9 +9,9 @@
 
 import { useCallback, useState } from "react";
 import type { FormEvent } from "react";
-import { CodeField } from "@/app/admin/login/CodeField";
-import { codeError, groupSecret, normalizeCode, secretForCopy } from "@/app/admin/login/adminSignIn";
-import enrol from "@/app/admin/login/adminLogin.module.css";
+import { CodeField } from "@/app/login/CodeField";
+import { codeError, groupSecret, normalizeCode, secretForCopy } from "@/app/login/twoStep";
+import enrol from "@/app/login/twoStep.module.css";
 import { CopyButton } from "@/components/admin/CopyButton";
 import { QrCode } from "@/components/admin/QrCode";
 import { ActionDialog } from "@/components/documents/ActionDialog";

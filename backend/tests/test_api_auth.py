@@ -370,7 +370,7 @@ def test_genuine_token_for_a_user_that_does_not_exist_is_refused(db: Database) -
         ("member", "/api/admin/users", 403, "admin_session_required"),
         ("reviewer", "/api/review", 200, None),
         ("reviewer", "/api/admin/stats", 403, "admin_session_required"),
-        # An admin's app session no longer exists (one sign-in, 0031): test_auth_tokens.
+        # An admin's app session no longer exists (one sign-in, 0035): test_auth_tokens.
         ("admin session", "/api/review", 200, None),
         ("admin session", "/api/admin/stats", 200, None),
     ],

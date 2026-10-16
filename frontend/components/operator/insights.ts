@@ -65,7 +65,7 @@ export interface PeriodTotals {
   activeOrganisations: number; uploads: number; pages: number; questions: number; runs: number; runsFailed: number;
   scanPages: number; cachedPages: number; costUsd: number | null; costDocumentsUsd: number | null;
   costQuestionsUsd: number | null; costEstimated: boolean; costPartUnknown: boolean;
-  // 0032: from the ledger, the real figures (the cost OpenRouter reported only).
+  // 0034: from the ledger, the real figures (the cost OpenRouter reported only).
   pagesRead: number; pagesReread: number; pagesReadCosted: number; costRealUsd: number | null;
   costScanRealUsd: number | null; costAnswerRealUsd: number | null; unknownCalls: number;
   scanUnknownCalls: number; answerUnknownCalls: number;

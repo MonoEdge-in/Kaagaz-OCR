@@ -84,7 +84,7 @@ DAILY_KEYS = frozenset(
         "cost_questions_usd",
         "cost_estimated",
         "cost_part_unknown",
-        # 0032: pages models read and read again (the ledger), and the cost OpenRouter
+        # 0034: pages models read and read again (the ledger), and the cost OpenRouter
         # reported, with the calls whose cost is not known counted apart.
         "pages_read",
         "pages_reread",

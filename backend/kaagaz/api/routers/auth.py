@@ -306,7 +306,7 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
         raise ApiError(500, "internal_error")
     with context.db.customer(customer_id) as conn:
         _record(conn, customer_id, "org.self_signup", actor=user.user_id, target=user.user_id)
-    # Every admin must have two-step sign-in (0031): the set-up offer, and no session until
+    # Every admin must have two-step sign-in (0035): the set-up offer, and no session until
     # the first code (POST /auth/admin/enrol), so the new admin never types the password twice.
     return JSONResponse(_enrol_offer(context, user), status_code=201)
 

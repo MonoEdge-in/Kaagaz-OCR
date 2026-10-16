@@ -73,7 +73,7 @@ CATALOGUE_ROW = {
     "chat_eligible": True,
     "chat_verified_prompt": ANSWER_PROMPT_HASH,
     "chat_verified_at": NOW,
-    # 0031: 312 pages read, 300 with OpenRouter's cost; 40 questions, 38 with it.
+    # 0033: 312 pages read, 300 with OpenRouter's cost; 40 questions, 38 with it.
     "scan_pages": 312,
     "scan_pages_costed": 300,
     "scan_cost_usd": Decimal("12.747000"),
@@ -286,7 +286,7 @@ def test_the_catalogue_says_verified_for_the_current_prompts_only(
         "tokens_per_page_out": 830,
         "ledger_tokens_in": 2400.5,  # MC3: the ledger's average a page, numbers only
         "ledger_tokens_out": None,
-        # 0031: the real cost OpenRouter reported, the unknown calls apart, numbers only.
+        # 0033: the real cost OpenRouter reported, the unknown calls apart, numbers only.
         "scan_pages": 312,
         "scan_pages_costed": 300,
         "scan_cost_usd": 12.747,
