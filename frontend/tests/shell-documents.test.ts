@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPT_ATTRIBUTE,
@@ -678,5 +680,18 @@ describe("filter chip words", () => {
     expect(dateChipText("2026-09-01", "2026-09-30")).toBe("Uploaded 1 Sept 2026 to 30 Sept 2026");
     expect(dateChipText("2026-09-01", null)).toBe("Uploaded from 1 Sept 2026");
     expect(dateChipText(null, "2026-09-30")).toBe("Uploaded until 30 Sept 2026");
+  });
+});
+
+// UI mockups board 6 (16 Oct 2026): a phone's header button says Upload, and the search box says what it is for.
+describe("the documents header and search on a phone", () => {
+  const view = readFileSync(join(__dirname, "..", "components", "documents", "DocumentsView.tsx"), "utf8");
+
+  it("says Upload on a phone, still read out as Upload files", () => {
+    expect(view).toContain('Upload<span className="narrow-hide"> files</span>');
+  });
+
+  it("shows Search documents in the empty search box", () => {
+    expect(view).toMatch(/id="documents-q"[\s\S]{0,400}placeholder="Search documents"/);
   });
 });

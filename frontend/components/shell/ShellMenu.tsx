@@ -21,6 +21,8 @@ export interface ShellMenuProps {
   links: readonly NavLink[];
   pathname: string;
   me: Me;
+  /** Values waiting to be checked, on the Review link; 0 shows nothing. */
+  toCheck: number;
   signingOut: SignOutKind | null;
   signOutError: string | null;
   onSignOut(): void;
@@ -33,6 +35,7 @@ export function ShellMenu({
   links,
   pathname,
   me,
+  toCheck,
   signingOut,
   signOutError,
   onSignOut,
@@ -55,6 +58,13 @@ export function ShellMenu({
                 >
                   <Icon name={link.icon} size={20} />
                   <span>{link.label}</span>
+                  {link.toCheck && toCheck > 0 && (
+                    <span className={styles.badge}>
+                      <span className="visually-hidden">, </span>
+                      {toCheck}
+                      <span className="visually-hidden"> to check</span>
+                    </span>
+                  )}
                 </Link>
               </li>
             );

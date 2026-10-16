@@ -404,6 +404,14 @@ describe("describeAction", () => {
   });
 });
 
+// UI mockups board 7 (16 Oct 2026): the organisation's name under the Admin heading.
+describe("the admin header", () => {
+  it("names the organisation under the heading", () => {
+    const view = readFileSync(join(__dirname, "..", "components", "admin", "AdminView.tsx"), "utf8");
+    expect(view).toMatch(/<header className="page-header">\s*<div>\s*<h1>Admin<\/h1>\s*<p>\{me\.customer\.name\}<\/p>/);
+  });
+});
+
 // Changed on purpose (UI quality council, 15 Oct 2026): "Failed documents", and no AI
 // models tab (the models are the operator's only).
 describe("the failed documents tab", () => {
