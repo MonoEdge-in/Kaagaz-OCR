@@ -35,6 +35,7 @@ import type {
   MyWord,
   OperatorMe,
   OperatorModel,
+  OperatorMoveOffer,
   OperatorUsageRow,
   OrgAdmin,
   OrgAiReply,
@@ -497,6 +498,12 @@ export const operatorLogin = (email: string, password: string, code: string) =>
   request<OperatorMe>("POST", "/operator/login", { email, password, code });
 export const operatorLogout = () => request<void>("POST", "/operator/logout");
 export const operatorMe = () => request<OperatorMe>("GET", "/operator/me");
+/** Moving two-step to a new device: the password and a code from the CURRENT device give the new key. */
+export const operatorMoveStart = (password: string, code: string) =>
+  request<OperatorMoveOffer>("POST", "/operator/2fa/move/start", { password, code });
+/** A code from the NEW device moves it; every other browser is signed out, this one stays in. */
+export const operatorMoveConfirm = (move_token: string, code: string) =>
+  request<OperatorMe>("POST", "/operator/2fa/move/confirm", { move_token, code });
 export const listOrgs = () => request<{ items: Organisation[] }>("GET", "/operator/orgs");
 export const createOrg = (org: { name: string; admin_email: string; admin_name: string }) =>
   request<OrganisationCreated>("POST", "/operator/orgs", org);

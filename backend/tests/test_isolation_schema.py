@@ -190,6 +190,9 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_step_up_failed": ("void", EMPTY_PATH),
+    # 0031, moving the operator's own two-step to a new device (never off).
+    "kaagaz_op_move_check": ("boolean", EMPTY_PATH),
+    "kaagaz_op_move_totp": ("integer", EMPTY_PATH),
     # 0020, read-only: the feed (no details, target id, person or document) and counts.
     "kaagaz_op_activity": (
         "TABLE(source text, entry_id bigint, created_at timestamp with time zone, action text,"

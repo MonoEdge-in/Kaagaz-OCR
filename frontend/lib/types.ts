@@ -766,6 +766,13 @@ export interface OperatorMe {
   session: { expires_at: number }; // Unix seconds; the session lasts 30 minutes
 }
 
+// POST /operator/2fa/move/start: the new device's key; nothing is stored until it is confirmed.
+export interface OperatorMoveOffer {
+  move_token: string; // lasts 10 minutes, and only for this session
+  secret: string; // base32, in groups of 4
+  otpauth_uri: string; // the same key as an otpauth:// link, for a QR code
+}
+
 export type OrgStatus = "active" | "disabled" | "deleting";
 
 /** One organisation in GET /operator/orgs: its metadata and counts only. */

@@ -1,6 +1,7 @@
 """The platform operator's sign-in against PostgreSQL (super admin PR 2, 0015). Every
 outcome writes exactly one ``platform_audit`` row (``actions``); sessions never cross."""
 
+import base64
 import uuid
 from typing import Any
 
@@ -210,3 +211,33 @@ def test_a_customer_admin_session_with_two_step_opens_no_operator_route(db: Data
     api.clock.advance(totp.STEP_SECONDS)
     body = {"email": admin.email, "password": PASSWORD, "code": api.code(admin.totp_secret)}
     _refused(admin.client.post("/api/operator/login", json=body, headers=CSRF))  # not an operator
+
+
+def test_moving_two_step_replaces_the_secret_once_and_signs_out_other_browsers(db: Database) -> None:
+    """0031 against PostgreSQL: start uses up the current code, confirm swaps the secret."""
+    api = Api(db)
+    operator = _Operator(api)
+    here, elsewhere = api.client(), api.client()
+    assert operator.login(here).status_code == 200
+    api.clock.advance(totp.STEP_SECONDS)
+    assert operator.login(elsewhere).status_code == 200
+    api.clock.advance(totp.STEP_SECONDS)
+    start = {"password": PASSWORD, "code": api.code(operator.secret)}
+    offer = here.post("/api/operator/2fa/move/start", json=start, headers=CSRF)
+    assert offer.status_code == 200, offer.text
+    assert here.post("/api/operator/2fa/move/start", json=start, headers=CSRF).status_code == 403  # used
+    key = offer.json()["secret"].replace(" ", "")
+    new = base64.b32decode(key + "=" * (-len(key) % 8))
+    api.clock.advance(totp.STEP_SECONDS)
+    confirm = {"move_token": offer.json()["move_token"], "code": api.code(new)}
+    assert here.post("/api/operator/2fa/move/confirm", json=confirm, headers=CSRF).status_code == 200
+    assert here.post("/api/operator/2fa/move/confirm", json=confirm, headers=CSRF).status_code == 403  # once
+    assert (here.get("/api/operator/me").status_code, elsewhere.get("/api/operator/me").status_code) == (
+        200,
+        401,
+    )
+    api.clock.advance(totp.STEP_SECONDS)
+    _refused(operator.login(api.client()))  # the old device
+    operator.secret = new
+    assert operator.login(api.client()).status_code == 200
+    assert operator.actions() == [LOGIN, LOGIN, FAILED, (True, "operator.totp_moved"), FAILED, LOGIN]
