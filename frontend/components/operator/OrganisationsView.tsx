@@ -27,6 +27,7 @@ import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
+import { MoreRows, useRowCap } from "@/components/admin/RowCap";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
@@ -50,6 +51,8 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
   const [search, setSearch] = useState(initialSearch);
   const [searched, setSearched] = useState(initialSearch); // the initialSearch last applied
+  const [query, setQuery] = useState(initialSearch); // the search, 200ms after the last key
+  const cap = useRowCap();
   const searchRef = useRef<HTMLInputElement>(null);
   const [creating, setCreating] = useState(false);
   const [changing, setChanging] = useState<Confirm | null>(null);
@@ -84,9 +87,15 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
     if (initialSearch && loaded) searchRef.current?.focus();
   }, [initialSearch, loaded]);
 
+  // Debounced: the list filters once typing pauses, so each key stays quick.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(search), 200);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
   const failed = error !== null && error.attempt === attempt ? error.message : null;
   const reload = () => setAttempt((n) => n + 1);
-  const shown = orgs ? filterOrgs(orgs, search) : [];
+  const shown = orgs ? filterOrgs(orgs, query) : [];
   const create = (
     <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
       <Icon name="plus" />
@@ -157,13 +166,13 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
               />
             </div>
             <p id="org-search-summary" className={styles.summary} role="status">
-              {searchSummary(shown.length, orgs.length, search)}
+              {searchSummary(shown.length, orgs.length, query)}
             </p>
           </div>
           {shown.length === 0 ? (
             <p className={admin.emptyLine}>No organisation name has these letters.</p>
           ) : (
-            <div className={table.reflowWrap}>
+            <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
               <table className={`table ${table.reflow}`} role="table">
                 <caption className="visually-hidden">Organisations, counts only</caption>
                 <thead role="rowgroup">
@@ -176,7 +185,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                   </tr>
                 </thead>
                 <tbody role="rowgroup">
-                  {shown.map((org) => (
+                  {shown.slice(0, cap.limit).map((org) => (
                     <OrgRow
                       key={org.id}
                       org={org}
@@ -192,6 +201,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
               </table>
             </div>
           )}
+          <MoreRows shown={Math.min(cap.limit, shown.length)} total={shown.length} what="organisations" onMore={cap.showMore} />
         </>
       )}
 
@@ -285,6 +295,8 @@ function OrgRow(props: {
         {lastActivityText(org.last_activity_at, now)}
       </td>
       <td role="cell">
+        {/* The safe actions, then Disable, Delete or Cancel deletion on their own row. */}
+        <span className={styles.actionGroups}>
         <span className={styles.rowActions}>
           <button type="button" className="btn" onClick={onAdmins} aria-label={`Admins of ${org.name}`}>
             Admins
@@ -320,6 +332,8 @@ function OrgRow(props: {
               {org.two_step_granted ? "Stop two-step" : "Allow two-step"}
             </button>
           )}
+        </span>
+        <span className={styles.rowActions}>
           {CHANGES[org.status].map(({ change, label, danger }) => (
             <button
               key={change}
@@ -331,6 +345,7 @@ function OrgRow(props: {
               {label}
             </button>
           ))}
+        </span>
         </span>
       </td>
     </tr>

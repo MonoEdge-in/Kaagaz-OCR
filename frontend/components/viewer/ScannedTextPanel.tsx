@@ -150,8 +150,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
           {lines.some((line) => notSure(line.confidence)) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}
           {truncated && <p className={styles.note}>{truncated}</p>}
           <div
-            className={styles.scroll}
-            tabIndex={0}
+            className={styles.linesBox}
             role="region"
             aria-label={`Lines read on page ${page.page_no}`}
           >

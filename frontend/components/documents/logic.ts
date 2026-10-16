@@ -276,7 +276,7 @@ export function uploadStateText(state: UploadState): string {
       const { document } = state;
       if (!document) return "Uploaded";
       if (document.status !== "ready") return document.failure_code === "customer_disabled" ? "Stopped" : "Not read";
-      return document.first_unreadable ? `Couldn't read page ${document.first_unreadable.page_no}` : "Ready";
+      return document.first_unreadable ? `Page ${document.first_unreadable.page_no} to check` : "Ready";
     }
     case "duplicate":
       return state.inTrash ? "Already uploaded, in Trash" : "Already uploaded";

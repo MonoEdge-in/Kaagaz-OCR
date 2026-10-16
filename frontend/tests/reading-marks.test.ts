@@ -32,7 +32,7 @@ describe("the marks on a page", () => {
 
   it("names each mark for what it marks, as read, so a screen reader can tell them apart", () => {
     expect(markName(mark("unsure", "Shinde"), 0, 3)).toBe("Unsure word 'Shinde', mark 1 of 3");
-    expect(markName(mark("illegible", "[?]"), 1, 3)).toBe("Couldn't read '[?]', mark 2 of 3");
+    expect(markName(mark("illegible", "[?]"), 1, 3)).toBe("Hard to read '[?]', mark 2 of 3");
     expect(markName(mark("unpinned", "  "), 2, 3)).toBe("Spot not confirmed, mark 3 of 3");
     expect(markName(mark("unsure", "a\u202eb"), 0, 1)).toBe("Unsure word 'a⟦U+202E⟧b', mark 1 of 1");
   });
@@ -41,7 +41,8 @@ describe("the marks on a page", () => {
     expect(legend([mark("unpinned"), mark("unsure"), mark("unsure")])).toEqual(["unsure", "unpinned"]);
     expect(legend([])).toEqual([]);
     expect(MARK_WORDS.unsure.legend).toBe("Unsure word (dashed)");
-    expect(MARK_WORDS.illegible.legend).toBe("Couldn't read (hatched)");
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so no hatch.
+    expect(MARK_WORDS.illegible.legend).toBe("Hard to read (double edge)");
     expect(MARK_WORDS.unpinned.legend).toBe("Spot not confirmed (dotted)");
   });
 
@@ -64,9 +65,12 @@ describe("how the marks look", () => {
   const css = readFileSync(join(process.cwd(), "components/viewer/PageViewer.module.css"), "utf8");
   const globals = readFileSync(join(process.cwd(), "app/globals.css"), "utf8");
 
-  it("gives each kind its own pattern: dashed, hatched, dotted", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so "couldn't read"
+  // is a double edge with a light fill instead of a hatch.
+  it("gives each kind its own pattern: dashed, double, dotted", () => {
     expect(css).toMatch(/\.problem\[data-quality="unsure"\][^}]*border: 2px dashed/);
-    expect(css).toMatch(/\.problem\[data-quality="illegible"\][^}]*repeating-linear-gradient/);
+    expect(css).toMatch(/\.problem\[data-quality="illegible"\][^}]*border: 4px double var\(--illegible-on-paper\)/);
+    expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/gradient/);
     expect(css).toMatch(/\.problem\[data-quality="unpinned"\][^}]*border: 2px dotted/);
   });
 
@@ -96,7 +100,9 @@ describe("how the marks look", () => {
   it("uses one paper-fixed red, the light theme's #9e2219, the same in dark (V8)", () => {
     const tokens = globals.match(/--illegible-on-paper: (#[0-9a-f]+)/g) ?? [];
     expect(tokens).toEqual(["--illegible-on-paper: #9e2219"]);
-    expect(globals).toMatch(/--danger-fg: #9e2219/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): --danger-fg is now --critical;
+    // the paper-fixed red keeps its own value.
+    expect(globals).toMatch(/--danger-fg: var\(--critical\)/);
   });
 });
 

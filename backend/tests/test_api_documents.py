@@ -114,7 +114,7 @@ def test_status_messages() -> None:
     # and is never read again.
     assert (
         message("failed", "corrupt_file")
-        == "This file could not be read. Read it again, or try another copy of it."
+        == "This file needs another read. Read it again, or try another copy of it."
     )
     # PROVISIONAL: the PRD quotes the real page count, which is not stored when a PDF fails.
     assert message("failed", "too_many_pages") == (
@@ -136,8 +136,8 @@ def test_a_ready_document_with_unreadable_pages_says_how_many() -> None:
         )
 
     assert message("ready", 0) == "Ready. You can ask about it."
-    assert message("ready", 1) == "Ready. 1 page couldn't be read. Open it to check."
-    assert message("ready", 3) == "Ready. 3 pages couldn't be read. Open it to check."
+    assert message("ready", 1) == "Ready. 1 page to check."
+    assert message("ready", 3) == "Ready. 3 pages to check."
     assert message("clean", 3) == "Reading the document…"  # only once it is ready
 
 
@@ -318,7 +318,7 @@ def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
     # and is never read again.
     assert (
         message("failed", "corrupt_file")
-        == "This file could not be read. Read it again, or try another copy of it."
+        == "This file needs another read. Read it again, or try another copy of it."
     )
     assert in_progress("ready", progress) is None
     assert in_progress("failed", progress) is None
@@ -1687,10 +1687,7 @@ def test_the_detail_shows_the_invoice_row_and_its_lines_in_order(db: Database) -
 
 def test_a_page_the_scan_reader_failed_on_has_its_own_words() -> None:
     message = status_message("failed", "ocr_failed", detected_type="pdf", max_pages=100)
-    assert (
-        message
-        == "The scan reader couldn't read a page of this file. Upload a clearer scan, or read it again."
-    )
+    assert message == "A page of this file needs another read. Read it again, or upload a clearer scan."
 
 
 def test_f4_a_file_none_of_which_could_be_read_says_so_with_the_fix() -> None:

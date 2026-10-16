@@ -1,6 +1,8 @@
-/* The chat screen. It fills the height below the top bar (0 once the sidebar
-   shows) and has one scroll area, the thread; the composer is pinned to its
-   foot. Colours are tokens from app/globals.css only. */
+/* The chat screen. It fills <main> (the shell's one scroller), so <main>
+   itself never scrolls here: the thread is the scroll area, the composer is
+   pinned to its foot. Colours are tokens from app/globals.css only. Flat and
+   square (MonoEdge): hairlines, 2px corners, no shadows; only transform and
+   opacity ever animate. */
 
 /* --- Frame ------------------------------------------------------------------ */
 
@@ -11,9 +13,8 @@
     "thread";
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr);
-  height: calc(100dvh - var(--topbar-space));
   min-height: 0;
-  /* <main> is a flex row: take all its width, never push it wider. */
+  /* <main> is a flex column: take all of it, never grow it (min-height 0). */
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -66,7 +67,18 @@
 .conversations {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
+}
+
+/* New conversation and Refresh: one row, one height. */
+.listActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.listActions > :first-child {
+  flex: 1 1 auto;
 }
 
 .group {
@@ -107,7 +119,7 @@
   color: var(--fg);
   text-align: start;
   cursor: pointer;
-  transition: background-color var(--t-fast) var(--ease);
+  contain: layout paint style;
 }
 
 .item:hover:not(:disabled) {
@@ -123,8 +135,7 @@
   position: absolute;
   inset-block: var(--space-2);
   inset-inline-start: 0;
-  width: 3px;
-  border-radius: var(--r-full);
+  width: 2px;
   background: var(--accent);
 }
 
@@ -197,15 +208,15 @@
   min-height: 100%;
   max-width: 46rem;
   margin-inline: auto;
-  padding-top: var(--space-5);
+  padding-top: var(--space-6);
   padding-inline: max(var(--space-4), env(safe-area-inset-left))
     max(var(--space-4), env(safe-area-inset-right));
 }
 
 @media (min-width: 640px) {
   .threadInner {
-    padding-top: var(--space-6);
-    padding-inline: var(--space-6);
+    padding-top: var(--space-8);
+    padding-inline: var(--space-8);
   }
 }
 
@@ -213,8 +224,8 @@
   flex: 1 0 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
-  padding-bottom: var(--space-5);
+  gap: var(--space-6);
+  padding-bottom: var(--space-6);
 }
 
 .empty {
@@ -227,7 +238,7 @@
 .log {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
   min-width: 0;
 }
 
@@ -289,38 +300,24 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
+  contain: layout paint style;
 }
 
 @media (min-width: 640px) {
   .answerCard {
-    padding: var(--space-5);
+    padding: var(--space-6);
   }
 }
 
-/* The margin rule: solid for Verified, hatched for Needs review. */
+/* The edge: solid for Verified, dashed for Needs review, beside the label's
+   icon and word (never colour or shape alone). */
 .answerCard[data-label] {
-  padding-inline-start: calc(var(--space-4) + 4px);
+  border-color: var(--verified-solid);
 }
 
-@media (min-width: 640px) {
-  .answerCard[data-label] {
-    padding-inline-start: calc(var(--space-5) + 4px);
-  }
-}
-
-.answerCard[data-label]::before {
-  content: "";
-  position: absolute;
-  inset-block: -1px;
-  inset-inline-start: -1px;
-  width: 4px;
-  border-start-start-radius: var(--r-md);
-  border-end-start-radius: var(--r-md);
-  background: var(--verified-solid);
-}
-
-.answerCard[data-label="needs_review"]::before {
-  background: repeating-linear-gradient(45deg, var(--review-solid) 0 4px, transparent 4px 8px);
+.answerCard[data-label="needs_review"] {
+  border-style: dashed;
+  border-color: var(--review-solid);
 }
 
 .labelLine {
@@ -359,7 +356,7 @@
   min-width: 26px;
   height: 26px;
   padding: 0 var(--space-1);
-  border: 1.5px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: var(--r-sm);
   background: var(--surface);
   color: var(--accent);
@@ -372,7 +369,6 @@
 .cite {
   margin-inline-start: var(--space-1);
   cursor: pointer;
-  transition: background-color var(--t-fast) var(--ease);
 }
 
 .cite:hover {
@@ -518,32 +514,20 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
+  contain: layout paint style;
 }
 
-/* Its citation chip is pointed at or focused. No animation. */
+/* Its citation chip is pointed at or focused: the accent edge on the selected
+   tint. No animation. */
 .source[data-hot] {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+  background: var(--bg-selected);
 }
 
-/* Reached from a citation chip: a short pulse of the focus ring, static under reduced motion. */
+/* Reached from a citation chip: the focus ring, at once. */
 .source:focus {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-  animation: pulse 1s var(--ease);
-}
-
-@keyframes pulse {
-  from {
-    outline-offset: 10px;
-    outline-color: transparent;
-  }
-  40% {
-    outline-color: var(--focus);
-  }
-  to {
-    outline-offset: 2px;
-  }
 }
 
 .sourceHeader {
@@ -582,7 +566,7 @@
 }
 
 .reviewLink:hover {
-  filter: brightness(0.97);
+  text-decoration: underline;
 }
 
 .preview {
@@ -719,23 +703,19 @@
 }
 
 /* One card: the question on top, the toolbar inside it below. Its edge turns the
-   accent with a soft halo while the question box has focus. */
+   accent while the question box has focus. */
 .composerBox {
   display: flex;
   flex-direction: column;
   min-width: 0;
   background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 16px;
-  box-shadow: var(--e-1);
-  transition:
-    border-color var(--t-fast) var(--ease),
-    box-shadow var(--t-fast) var(--ease);
+  border: 1px solid var(--control-edge);
+  border-radius: var(--r-md);
 }
 
 .composerBox:has(.composerInput:focus) {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: 1px solid var(--accent);
 }
 
 .composerBox:has(.composerInput[aria-invalid="true"]) {
@@ -752,7 +732,7 @@
   padding: var(--space-3) var(--space-4) var(--space-1);
   overflow-y: auto;
   border: 0;
-  border-radius: 16px 16px 0 0;
+  border-radius: 0;
   background: transparent;
   color: var(--fg);
   font-size: var(--fs-base);
@@ -766,7 +746,6 @@
 
 .composerInput:focus-visible {
   outline: none;
-  box-shadow: none;
 }
 
 /* The toolbar: chips on the left, answer settings and Send on the right. On a
@@ -809,9 +788,6 @@
   font-size: var(--fs-sm);
   font-weight: 500;
   cursor: pointer;
-  transition:
-    background-color var(--t-fast) var(--ease),
-    color var(--t-fast) var(--ease);
 }
 
 .toolGroup:not(.toolEnd) .tool {
@@ -870,15 +846,15 @@
 .menu {
   position: fixed;
   min-width: 15rem;
-  max-width: min(22rem, calc(100vw - 2 * var(--space-4)));
+  max-width: min(22rem, calc(100% - 2 * var(--space-4)));
   max-height: min(60dvh, 28rem);
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
   background: var(--surface);
   color: var(--fg);
-  box-shadow: var(--e-2);
 }
 
 @supports (position-area: top) {
@@ -987,8 +963,8 @@
   color: var(--fg-muted);
 }
 
-/* Thinking: High / Medium / Low as one segmented track, the chosen one raised in
-   it and outlined, never shown by colour alone (as the theme toggle). */
+/* Thinking: High / Medium / Low as one segmented track, the chosen one outlined
+   in it, never shown by colour alone (as the theme toggle). */
 .segments {
   display: flex;
   gap: 2px;
@@ -1007,7 +983,7 @@
   justify-content: center;
   min-height: 32px;
   padding: 0 var(--space-3);
-  border-radius: calc(var(--r-sm) - 2px);
+  border-radius: 1px;
   color: var(--fg-muted);
   font-size: var(--fs-sm);
   font-weight: 600;
@@ -1017,7 +993,8 @@
 .segment:has(input:checked) {
   background: var(--surface);
   color: var(--fg);
-  box-shadow: 0 0 0 1px var(--border-strong);
+  outline: 1px solid var(--control-edge);
+  outline-offset: -1px;
 }
 
 .segment:has(input:focus-visible) {
@@ -1038,7 +1015,6 @@
 
 .segment input:focus-visible {
   outline: none;
-  box-shadow: none;
 }
 
 @media (pointer: coarse) {
@@ -1052,7 +1028,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding-inline: var(--space-6) var(--space-2);
+  padding-inline: var(--space-8) var(--space-2);
 }
 
 .composerNote {

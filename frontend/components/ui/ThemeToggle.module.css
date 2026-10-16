@@ -9,11 +9,12 @@
   padding: 0;
   margin-bottom: var(--space-2);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: 700;
   color: var(--fg-muted);
 }
 
-/* The segmented track: one hairline box, the chosen segment raised in it. */
+/* The segmented track: one hairline box, the chosen segment outlined in it
+   (an edge and a colour, never colour alone). */
 .options {
   display: flex;
   gap: 2px;
@@ -44,15 +45,12 @@
   align-items: center;
   justify-content: center;
   gap: 2px;
-  border-radius: calc(var(--r-sm) - 2px);
+  border-radius: 1px;
   color: var(--fg-muted);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.2;
   cursor: pointer;
-  transition:
-    background-color var(--t-fast) var(--ease),
-    color var(--t-fast) var(--ease);
 }
 
 /* Full: icon above the word, so three segments fit a 240 px sidebar. */
@@ -83,7 +81,8 @@
 .option:has(.radio:checked) {
   background: var(--surface);
   color: var(--fg);
-  box-shadow: 0 0 0 1px var(--border-strong);
+  outline: 1px solid var(--control-edge);
+  outline-offset: -1px;
 }
 
 .option:has(.radio:focus-visible) {
@@ -105,5 +104,4 @@
 
 .radio:focus-visible {
   outline: none;
-  box-shadow: none;
 }

@@ -139,20 +139,19 @@ export function noMatchTitle(q: string, filtered: boolean, attentionOnly = false
 const counted = (n: number, one: string, many: string) => `${n.toLocaleString("en-IN")} ${n === 1 ? one : many}`;
 
 /**
- * The chips on a document with reading problems (PRD 5 U2): "2 pages unreadable",
- * "14 words unsure", "3 values to check"; [] when it has none. A page that is only
- * uncertain, with no word marked unsure (a spot not confirmed, say), is "1 page to check".
+ * The chips on a document with reading problems (PRD 5 U2): "2 pages to check",
+ * "14 words unsure", "3 values to check"; [] when it has none. Calm words, never "unreadable"
+ * (Tushar, 16 Oct 2026): unreadable pages, and uncertain ones with no word marked unsure,
+ * are counted together as pages to check.
  */
 export function attentionWords(
   document: Pick<DocumentSummary, "pages_unreadable" | "pages_uncertain" | "values_to_review" | "words_unsure">,
 ): string[] {
   const unsure = document.words_unsure ?? 0;
+  const pages = document.pages_unreadable + (unsure === 0 ? document.pages_uncertain : 0);
   return [
-    document.pages_unreadable > 0 ? counted(document.pages_unreadable, "page unreadable", "pages unreadable") : "",
+    pages > 0 ? counted(pages, "page to check", "pages to check") : "",
     unsure > 0 ? counted(unsure, "word unsure", "words unsure") : "",
-    unsure === 0 && document.pages_uncertain > 0
-      ? counted(document.pages_uncertain, "page to check", "pages to check")
-      : "",
     document.values_to_review > 0 ? counted(document.values_to_review, "value to check", "values to check") : "",
   ].filter(Boolean);
 }

@@ -512,7 +512,8 @@ describe("the AI settings dialogs", () => {
     expect(dialog).toContain("setDraft(saved);");
     expect(dialog).toContain("if (busy || !draft || unchanged) return;");
     const css = read("components/operator/Operator.module.css");
-    expect(css).toMatch(/\.saveBar \{[^}]*position: sticky;\s*bottom: 0;[^}]*background: var\(--surface\);/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): the MonoEdge surface token.
+    expect(css).toMatch(/\.saveBar \{[^}]*position: sticky;\s*bottom: 0;[^}]*background: var\(--bg-surface\);/);
   });
 
   it("names both areas when the organisation goes back to the platform defaults", () => {

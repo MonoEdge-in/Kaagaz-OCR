@@ -160,7 +160,7 @@ def test_f6_the_exit_tests_blurred_page_is_named_when_the_value_is_not_found(db:
 
     assert answer.status == "not_found"
     assert answer.reading_note == (
-        "Not found in the readable text. 1 page couldn't be read: blurred photo.jpg page 1."
+        "Not found in the readable text. 1 page to check: blurred photo.jpg page 1."
     )
     assert answer.to_json()["unreadable_pages"] == [
         {

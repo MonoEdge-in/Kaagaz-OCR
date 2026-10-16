@@ -33,6 +33,7 @@ import { formatDate } from "@/lib/format";
 import type { AdminUser, Role } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
 import { CopyButton } from "./CopyButton";
+import { MoreRows, useRowCap } from "./RowCap";
 import {
   MIN_PASSWORD_LENGTH,
   NEW_USER_FIELD_IDS,
@@ -70,6 +71,7 @@ export function UsersPanel({
   const [revealed, setRevealed] = useState<Revealed | null>(null);
   // Rounded to the minute, so "Locked until" and Unlock clear on their own.
   const now = useMinuteNow();
+  const cap = useRowCap();
 
   useEffect(() => {
     let cancelled = false;
@@ -135,7 +137,7 @@ export function UsersPanel({
           </>
         )}
         {users && (
-          <div className={table.reflowWrap}>
+          <div className={`${table.reflowWrap} ${styles.tableScroll}`}>
             <table className={`table ${table.reflow}`} role="table">
               <caption className="visually-hidden">Users of this customer</caption>
               <thead role="rowgroup">
@@ -158,7 +160,7 @@ export function UsersPanel({
                 </tr>
               </thead>
               <tbody role="rowgroup">
-                {users.map((user) => (
+                {users.slice(0, cap.limit).map((user) => (
                   <UserRow
                     key={user.id}
                     user={user}
@@ -174,6 +176,7 @@ export function UsersPanel({
             </table>
           </div>
         )}
+        {users && <MoreRows shown={Math.min(cap.limit, users.length)} total={users.length} what="users" onMore={cap.showMore} />}
       </section>
       <AddUserForm
         onAdded={(user) => setUsers((current) => (current ? [...current, user] : [user]))}
@@ -262,6 +265,22 @@ function UserRow({
   const foreverWord = forever.kind === "stop" ? "Stop" : "Allow";
   const selectId = `role-${user.id}`;
   const confirmId = `confirm-${user.id}`;
+  const toggle = (
+    <button
+      type="button"
+      className={user.disabled ? "btn" : "btn btn-danger"}
+      disabled={busy}
+      onClick={() =>
+        void change(
+          { disabled: !user.disabled },
+          user.disabled ? "Account enabled." : "Account disabled.",
+        )
+      }
+      aria-label={`${user.disabled ? "Enable" : "Disable"} ${user.display_name}`}
+    >
+      {user.disabled ? "Enable" : "Disable"}
+    </button>
+  );
   return (
     <tr role="row">
       <td role="cell" className={styles.wrap}>
@@ -313,23 +332,6 @@ function UserRow({
             <span id={confirmId}>{CONFIRM_TEXT[confirming](user.display_name)}</span>
             <div className={styles.confirmButtons}>
               <button
-                type="button"
-                className="btn btn-danger"
-                disabled={busy}
-                onClick={() => void confirmed(confirming)}
-              >
-                {busy ? (
-                  <>
-                    <span className="spinner" aria-hidden="true" />
-                    {confirming === "forever" ? "Saving…" : "Resetting…"}
-                  </>
-                ) : confirming === "forever" ? (
-                  "Yes, allow"
-                ) : (
-                  "Yes, reset"
-                )}
-              </button>
-              <button
                 ref={focusOnMount}
                 type="button"
                 className="btn"
@@ -338,9 +340,21 @@ function UserRow({
               >
                 Cancel
               </button>
+              <button
+                type="button"
+                className={`btn btn-danger ${busy ? styles.busy : ""}`}
+                disabled={busy}
+                aria-busy={busy || undefined}
+                onClick={() => void confirmed(confirming)}
+              >
+                {busy && <span className="spinner" aria-hidden="true" />}
+                {confirming === "forever" ? "Yes, allow" : "Yes, reset"}
+              </button>
             </div>
           </div>
         ) : (
+          // Safe actions first; Disable and the resets on their own row, 16px below.
+          <div className={styles.actionGroups}>
           <div className={styles.actions}>
             {can.unlock && (
               <button
@@ -353,44 +367,7 @@ function UserRow({
                 Unlock
               </button>
             )}
-            {can.toggleDisabled && (
-              <button
-                type="button"
-                className={user.disabled ? "btn" : "btn btn-danger"}
-                disabled={busy}
-                onClick={() =>
-                  void change(
-                    { disabled: !user.disabled },
-                    user.disabled ? "Account enabled." : "Account disabled.",
-                  )
-                }
-                aria-label={`${user.disabled ? "Enable" : "Disable"} ${user.display_name}`}
-              >
-                {user.disabled ? "Enable" : "Disable"}
-              </button>
-            )}
-            {can.resetPassword && (
-              <button
-                type="button"
-                className="btn"
-                disabled={busy}
-                onClick={() => setConfirming("password")}
-                aria-label={`Reset password for ${user.display_name}`}
-              >
-                Reset password
-              </button>
-            )}
-            {can.reset2fa && (
-              <button
-                type="button"
-                className="btn"
-                disabled={busy}
-                onClick={() => setConfirming("2fa")}
-                aria-label={`Reset 2FA for ${user.display_name}`}
-              >
-                Reset 2FA
-              </button>
-            )}
+            {can.toggleDisabled && user.disabled && toggle}
             {forever.kind !== "none" && (
               <button
                 type="button"
@@ -412,6 +389,34 @@ function UserRow({
                 {reason}
               </span>
             )}
+          </div>
+          {((can.toggleDisabled && !user.disabled) || can.resetPassword || can.reset2fa) && (
+            <div className={styles.actions}>
+              {can.toggleDisabled && !user.disabled && toggle}
+              {can.resetPassword && (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy}
+                  onClick={() => setConfirming("password")}
+                  aria-label={`Reset password for ${user.display_name}`}
+                >
+                  Reset password
+                </button>
+              )}
+              {can.reset2fa && (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy}
+                  onClick={() => setConfirming("2fa")}
+                  aria-label={`Reset 2FA for ${user.display_name}`}
+                >
+                  Reset 2FA
+                </button>
+              )}
+            </div>
+          )}
           </div>
         )}
         <span aria-live="polite" className={styles.saved}>
@@ -476,6 +481,7 @@ function AddUserForm({ onAdded }: { onAdded: (user: AdminUser) => void }) {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy) return; // Enter in a field while adding: never a second user
     setMasked(true); // never leave a password showing once it is sent
     setAdded(null);
     setServerError(null);
@@ -565,15 +571,14 @@ function AddUserForm({ onAdded }: { onAdded: (user: AdminUser) => void }) {
           onMaskedChange={setMasked}
         />
         <div className={styles.formEnd}>
-          <button type="submit" className="btn btn-primary" disabled={busy}>
-            {busy ? (
-              <>
-                <span className="spinner" aria-hidden="true" />
-                Adding…
-              </>
-            ) : (
-              "Add user"
-            )}
+          <button
+            type="submit"
+            className={`btn btn-primary ${busy ? styles.busy : ""}`}
+            disabled={busy}
+            aria-busy={busy || undefined}
+          >
+            {busy && <span className="spinner" aria-hidden="true" />}
+            Add user
           </button>
           <span aria-live="polite" className={styles.saved}>
             {added ?? ""}

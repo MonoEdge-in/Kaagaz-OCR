@@ -3,14 +3,24 @@
 // A side panel for small screens (the app menu, the chat's conversations).
 // It is a native <dialog> opened with showModal(), so the browser gives us the
 // top layer, a focus trap, Esc to close and an inert page behind it. On top of
-// that it closes on a backdrop click, on a route change and once the screen is
-// wide enough for the sidebar, and hands focus back to whatever opened it. Its content renders only while it is open,
-// so nothing inside a closed drawer can be reached with Tab.
+// that it closes on a backdrop click (only when the press and the release were
+// both on the backdrop, so a drag out of the panel never closes it), on a route
+// change and once the screen is wide enough for the sidebar, and hands focus
+// back to whatever opened it. With unsaved changes, Esc, the backdrop and the
+// close button ask first. Its content renders only while it is open, so
+// nothing inside a closed drawer can be reached with Tab.
 
 import { usePathname } from "next/navigation";
 import { useEffect, useEffectEvent, useRef } from "react";
 import type { ReactNode } from "react";
-import { closesOnRoute, closesOnViewport, DESKTOP_QUERY, isBackdropClick, shouldReturnFocus } from "./drawerLogic";
+import {
+  closeAllowed,
+  closesOnRoute,
+  closesOnViewport,
+  DESKTOP_QUERY,
+  isBackdropClick,
+  shouldReturnFocus,
+} from "./drawerLogic";
 import { IconButton } from "./IconButton";
 import styles from "./Drawer.module.css";
 
@@ -19,15 +29,22 @@ export interface DrawerProps {
   onClose(): void;
   title: string;
   id: string;
+  /** Changes inside that a close would lose: Esc, the backdrop and Close ask first. */
+  unsaved?: boolean;
   children: ReactNode;
 }
 
-export function Drawer({ open, onClose, title, id, children }: DrawerProps) {
+const UNSAVED_QUESTION = "Close without saving? Your changes here will be lost.";
+
+export function Drawer({ open, onClose, title, id, unsaved = false, children }: DrawerProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
   const lastPath = useRef<string | null>(null);
   const pathname = usePathname();
   const titleId = `${id}-title`;
+  const askClose = () => {
+    if (closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) onClose();
+  };
 
   const closeForRoute = useEffectEvent((previous: string, next: string) => {
     if (closesOnRoute(previous, next, open)) onClose();
@@ -76,7 +93,7 @@ export function Drawer({ open, onClose, title, id, children }: DrawerProps) {
       onCancel={(event) => {
         // Esc: let the parent's state close it, so the two never disagree.
         event.preventDefault();
-        if (open) onClose();
+        if (open) askClose();
       }}
       onClose={() => {
         // The browser closed it itself (some Esc presses cannot be cancelled).
@@ -86,7 +103,7 @@ export function Drawer({ open, onClose, title, id, children }: DrawerProps) {
         pressTarget.current = event.target;
       }}
       onClick={(event) => {
-        if (isBackdropClick(pressTarget.current, event.target, event.currentTarget)) onClose();
+        if (isBackdropClick(pressTarget.current, event.target, event.currentTarget)) askClose();
         pressTarget.current = null;
       }}
     >
@@ -96,7 +113,7 @@ export function Drawer({ open, onClose, title, id, children }: DrawerProps) {
             <h2 id={titleId} className={styles.title}>
               {title}
             </h2>
-            <IconButton icon="close" label={`Close ${title.toLowerCase()}`} className="btn-quiet" onClick={onClose} />
+            <IconButton icon="close" label={`Close ${title.toLowerCase()}`} className="btn-quiet" onClick={askClose} />
           </div>
           <div className={styles.body}>{children}</div>
         </div>

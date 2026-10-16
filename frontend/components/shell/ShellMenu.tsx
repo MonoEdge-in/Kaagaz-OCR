@@ -56,7 +56,7 @@ export function ShellMenu({
                   aria-current={current ? "page" : undefined}
                   onClick={onLinkClick}
                 >
-                  <Icon name={link.icon} size={20} />
+                  <Icon name={link.icon} />
                   <span>{link.label}</span>
                   {link.toCheck && toCheck > 0 && (
                     <span className={styles.badge}>

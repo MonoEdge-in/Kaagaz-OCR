@@ -98,15 +98,15 @@ def status_message(
         return "None of this file could be read. Upload a sharper scan."
     if status == "failed" and failure_code == "ocr_failed":
         # The scan reader failed on a page of this file (kaagaz/reading/ocr.py): not an outage.
-        return "The scan reader couldn't read a page of this file. Upload a clearer scan, or read it again."
+        return "A page of this file needs another read. Read it again, or upload a clearer scan."
     if status == "failed" and failure_code == "customer_disabled":
         # The worker came to it while the organisation was turned off (0014): nothing was read.
         return "This file was not read because your organisation was turned off. Read it again."
     if status == "failed":
-        return "This file could not be read. Read it again, or try another copy of it."
+        return "This file needs another read. Read it again, or try another copy of it."
     if status == "ready" and pages_unreadable > 0:
         pages = "1 page" if pages_unreadable == 1 else f"{pages_unreadable} pages"
-        return f"Ready. {pages} couldn't be read. Open it to check."
+        return f"Ready. {pages} to check."
     message = _STATUS_MESSAGES.get(status, "")
     if status in _IN_PROGRESS and progress is not None and progress.get("step") == _WAITING_STEP:
         message = READER_WAITING

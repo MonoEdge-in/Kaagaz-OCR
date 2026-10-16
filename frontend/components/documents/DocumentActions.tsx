@@ -17,6 +17,7 @@ import { Icon } from "@/components/ui/Icon";
 import { createTag, setDocumentTags, updateDocument } from "@/lib/api";
 import type { DocumentSummary, Tag } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
+import { BusyLabel } from "./BusyLabel";
 import { inTreeOrder, pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import {
@@ -55,12 +56,20 @@ export function RowMenu({ item, canForever, onPick, toggleRef }: RowMenuProps) {
     element?.focus();
   }, []);
 
-  // A press anywhere outside closes the menu.
+  // A press anywhere outside closes the menu, and only that: its click is swallowed, so it
+  // never lands on a link or button that lay under the open menu (MonoEdge misclick rule).
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
       if (event.target instanceof Node && wrap.current?.contains(event.target)) return;
       setOpen(false);
+      const swallow = (click: MouseEvent) => {
+        click.preventDefault();
+        click.stopPropagation();
+      };
+      window.addEventListener("click", swallow, { capture: true, once: true });
+      // A press that turns into a scroll has no click: then the next click is a real one.
+      window.addEventListener("pointercancel", () => window.removeEventListener("click", swallow, true), { once: true });
     };
     window.document.addEventListener("pointerdown", onPointerDown);
     return () => window.document.removeEventListener("pointerdown", onPointerDown);
@@ -192,14 +201,14 @@ function FormButtons({
   disabled?: boolean;
   onCancel(): void;
 }) {
+  // [Cancel] [Primary]: the primary last (Library.module.css .formButtons).
   return (
     <div className={styles.formButtons}>
-      <button type="submit" className="btn btn-primary" disabled={busy || disabled}>
-        {busy && <span className="spinner" aria-hidden="true" />}
-        {words}
-      </button>
       <button type="button" className="btn" onClick={onCancel} disabled={busy}>
         Cancel
+      </button>
+      <button type="submit" className="btn btn-primary" disabled={busy || disabled}>
+        <BusyLabel busy={busy} idle={words} working={words} />
       </button>
     </div>
   );

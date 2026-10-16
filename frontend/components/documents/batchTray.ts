@@ -135,7 +135,7 @@ export function summaryText(counts: TrayCounts): string {
 }
 
 /**
- * U1's words for a file with an unreadable page: "Couldn't read page n", then what
+ * U1's words for a file with an unreadable page: "Page n to check", then what
  * happened and the fix (null when the server could say neither); null for a file with
  * no unreadable page to look at, or from a listing without the field. ``canReread``:
  * a reviewer or an admin (canReprocess); a member can't read it again, so a "Read ...
@@ -149,7 +149,7 @@ export function unreadableWords(
   if (!page) return null;
   const fix = !canReread && page.fix?.startsWith("Read ") ? "Upload a better scan." : page.fix;
   const detail = [page.says, fix].filter(Boolean).join(" ");
-  return { title: `Couldn't read page ${page.page_no}`, detail: detail || null };
+  return { title: `Page ${page.page_no} to check`, detail: detail || null };
 }
 
 /**

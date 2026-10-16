@@ -542,77 +542,79 @@ export function DocumentView({
               {detail.values.length === 0 ? (
                 !readingNote && <p className="muted">{untilRead(detail.status, "No values were found in this document.")}</p>
               ) : (
-                <table className={`table ${styles.valuesTable}`} role="table">
-                  <caption className="visually-hidden">
-                    Values found. Pick a value to show it on its page.
-                  </caption>
-                  <thead role="rowgroup">
-                    <tr role="row">
-                      <th scope="col" role="columnheader">
-                        Field
-                      </th>
-                      <th scope="col" role="columnheader">
-                        Value
-                      </th>
-                      <th scope="col" role="columnheader">
-                        Label and reason
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody role="rowgroup">
-                    {shownValues.map((value) => {
-                      const active = selection?.valueId === value.id;
-                      return (
-                        <tr
-                          key={value.id}
-                          role="row"
-                          className={active ? styles.activeRow : undefined}
-                          data-label={value.label}
-                        >
-                          <td role="cell" className={styles.fieldCell}>
-                            {fieldText(value.field)}
-                          </td>
-                          <td role="cell" className={styles.valueCell}>
-                            <button
-                              type="button"
-                              className={styles.valueButton}
-                              aria-pressed={active}
-                              onClick={() => showValue(value)}
-                            >
-                              {value.value}
-                              <span className="visually-hidden">
-                                {`, show on page ${value.region.page}`}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              className={`btn btn-quiet ${wordStyles.target}`}
-                              onClick={(event) => addMeaning(value.value, value.region, event.currentTarget)}
-                            >
-                              Add meaning
-                              <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
-                            </button>
-                            <div className={styles.pageNote}>
-                              Page {value.region.page}
-                              {active ? ", highlighted on the page" : ""}
-                            </div>
-                            <WhatWasRead
-                              value={value}
-                              page={detail.pages.find((p) => p.page_no === value.region.page)}
-                            />
-                          </td>
-                          <td role="cell" className={styles.labelCell}>
-                            <LabelBadge label={value.label} />
-                            <div className={styles.reason}>
-                              {reasonText(value.label_reason)}
-                              {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                <div className={styles.valuesWrap}>
+                  <table className={`table ${styles.valuesTable}`} role="table">
+                    <caption className="visually-hidden">
+                      Values found. Pick a value to show it on its page.
+                    </caption>
+                    <thead role="rowgroup">
+                      <tr role="row">
+                        <th scope="col" role="columnheader">
+                          Field
+                        </th>
+                        <th scope="col" role="columnheader">
+                          Value
+                        </th>
+                        <th scope="col" role="columnheader">
+                          Label and reason
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody role="rowgroup">
+                      {shownValues.map((value) => {
+                        const active = selection?.valueId === value.id;
+                        return (
+                          <tr
+                            key={value.id}
+                            role="row"
+                            className={active ? styles.activeRow : undefined}
+                            data-label={value.label}
+                          >
+                            <td role="cell" className={styles.fieldCell}>
+                              {fieldText(value.field)}
+                            </td>
+                            <td role="cell" className={styles.valueCell}>
+                              <button
+                                type="button"
+                                className={styles.valueButton}
+                                aria-pressed={active}
+                                onClick={() => showValue(value)}
+                              >
+                                {value.value}
+                                <span className="visually-hidden">
+                                  {`, show on page ${value.region.page}`}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                className={`btn btn-quiet ${wordStyles.target}`}
+                                onClick={(event) => addMeaning(value.value, value.region, event.currentTarget)}
+                              >
+                                Add meaning
+                                <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
+                              </button>
+                              <div className={styles.pageNote}>
+                                Page {value.region.page}
+                                {active ? ", highlighted on the page" : ""}
+                              </div>
+                              <WhatWasRead
+                                value={value}
+                                page={detail.pages.find((p) => p.page_no === value.region.page)}
+                              />
+                            </td>
+                            <td role="cell" className={styles.labelCell}>
+                              <LabelBadge label={value.label} />
+                              <div className={styles.reason}>
+                                {reasonText(value.label_reason)}
+                                {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               )}
               {detail.values.length > FIRST_VALUES && (
                 <button

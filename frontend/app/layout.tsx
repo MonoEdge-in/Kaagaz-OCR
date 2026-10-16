@@ -1,16 +1,17 @@
 import type { Metadata, Viewport } from "next";
-import { Archivo, Inter, JetBrains_Mono } from "next/font/google";
+import { JetBrains_Mono } from "next/font/google";
 import { cookies } from "next/headers";
 import type { ReactNode } from "react";
 import { ThemeProvider } from "@/components/ui/ThemeProvider";
+import { WheelGuard } from "@/components/ui/WheelGuard";
 import { parseTheme, THEME_COOKIE, themeAttribute } from "@/lib/theme";
 import "./globals.css";
 
-// MonoEdge's faces (monoedge.in), served from this app at build time, so no
-// page asks Google for anything. app/globals.css maps them to --font-sans,
-// --font-display and --font-mono, with Devanagari faces after them.
-const inter = Inter({ subsets: ["latin", "latin-ext"], display: "swap", variable: "--font-inter" });
-const archivo = Archivo({ subsets: ["latin", "latin-ext"], display: "swap", variable: "--font-archivo" });
+// JetBrains Mono, the MonoEdge text and UI face, served from this app at build
+// time, so no page asks Google for anything; next/font adds a size-adjusted
+// fallback, so the swap moves nothing. app/globals.css puts it first in
+// --font-mono, with Devanagari faces after it. Headings use --font-display, a
+// fallback stack (Monument Extended has no web licence here).
 const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin", "latin-ext"],
   display: "swap",
@@ -31,8 +32,9 @@ export const viewport: Viewport = {
   viewportFit: "cover",
   colorScheme: "light dark",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f6f5f2" },
-    { media: "(prefers-color-scheme: dark)", color: "#0a0a0f" },
+    // The header's colour (--bg-surface), on the app and the sign-in pages.
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#101114" },
   ],
 };
 
@@ -45,9 +47,12 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html
       lang="en"
       data-theme={themeAttribute(choice)}
-      className={`${inter.variable} ${archivo.variable} ${jetbrainsMono.variable}`}
+      className={jetbrainsMono.variable}
+      // Next turns smooth scrolling off while it moves between pages.
+      data-scroll-behavior="smooth"
     >
       <body>
+        <WheelGuard />
         <ThemeProvider initial={choice}>{children}</ThemeProvider>
       </body>
     </html>

@@ -15,6 +15,7 @@ import { CodeField } from "@/app/admin/login/CodeField";
 import { codeError, normalizeCode } from "@/app/admin/login/adminSignIn";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { canCloseDialog, nameError, operatorErrorMessage } from "./logic";
+import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
 export interface Confirm {
@@ -117,12 +118,13 @@ export function ConfirmDialog({ confirm, onClose, onDone }: { confirm: Confirm; 
           </p>
         )}
         <div className={styles.buttons}>
+          {/* [Cancel] [Action]: the action last; the focus starts on Cancel (or the code), never on it. */}
           <button type="button" className="btn" onClick={onClose} disabled={busy} data-autofocus={!confirm.stepUp || undefined}>
             Cancel
           </button>
           <button
             type="submit"
-            className={confirm.danger ? "btn btn-danger" : "btn btn-primary"}
+            className={`${confirm.danger ? "btn btn-danger" : "btn btn-primary"} ${busy ? admin.busy : ""}`}
             disabled={busy}
             aria-busy={busy || undefined}
           >

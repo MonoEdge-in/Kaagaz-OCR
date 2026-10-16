@@ -329,19 +329,19 @@ describe("the Attention panel (PRD 5 U5)", () => {
       { pageNo: 2, lines: ["This page is blurry."], kept: false },
       {
         pageNo: 3,
-        lines: ["14 words unsure", "The exact spot of 1 line couldn't be confirmed."],
+        lines: ["14 words unsure", "The exact spot of 1 line needs a check."],
         kept: true,
       },
     ]);
   });
 
-  it("says an unreadable page with no problems listed couldn't be read", () => {
+  it("says an unreadable page with no problems listed needs a closer look", () => {
     expect(attentionPages([page(4, { read_quality: "unreadable", illegible_words: 3 })])).toEqual([
-      { pageNo: 4, lines: ["This page couldn't be read.", "3 words couldn't be read."], kept: false },
+      { pageNo: 4, lines: ["This page needs a closer look.", "Hard to read: 3 words."], kept: false },
     ]);
   });
 
-  // Board 2: the card with the Needs review hatched edge, "N to check" and a lead line.
+  // Board 2: the card with the Needs review dashed edge (hatched until the MonoEdge design system, 16 Oct 2026), "N to check" and a lead line.
   const attention = (pages: PageSummary[]) =>
     renderToStaticMarkup(
       createElement(AttentionPanel, {
@@ -354,7 +354,7 @@ describe("the Attention panel (PRD 5 U5)", () => {
       }),
     );
 
-  it("counts what is left to check, with a hatched edge and a lead line in the right number", () => {
+  it("counts what is left to check, with a dashed edge and a lead line in the right number", () => {
     const two = attention([page(1), page(2, { read_quality: "uncertain", unsure_words: 2, unpinned_lines: 1 })]);
     expect(two).toMatch(/<section class="[^"]*_attentionToCheck_/);
     expect(two).toContain("badge badge-review");

@@ -147,7 +147,7 @@ export function SignInForm({ note }: { note: string | null }) {
 
       {serverError && (
         <div className={styles.banner} role="alert">
-          <Icon name="alert" size={18} />
+          <Icon name="alert" />
           {serverError}
         </div>
       )}

@@ -36,3 +36,12 @@ export function shouldReturnFocus<T>(
 ): boolean {
   return active === null || active === body || dialog.contains(active);
 }
+
+/**
+ * Whether a close the person asked for (Esc, the backdrop, the close button)
+ * may go ahead: always, unless there are unsaved changes, and then only once
+ * they say yes to `ask` (a confirm naming what would be lost).
+ */
+export function closeAllowed(unsaved: boolean, ask: () => boolean): boolean {
+  return !unsaved || ask();
+}

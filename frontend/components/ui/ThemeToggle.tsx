@@ -46,7 +46,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
               checked={choice === option}
               onChange={() => setChoice(option)}
             />
-            <Icon name={THEME_ICONS[option]} size={compact ? 18 : 16} />
+            <Icon name={THEME_ICONS[option]} size={16} />
             <span className={compact ? "visually-hidden" : undefined}>{THEME_LABELS[option]}</span>
           </label>
         ))}

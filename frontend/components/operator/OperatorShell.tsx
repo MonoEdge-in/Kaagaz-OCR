@@ -12,6 +12,7 @@ import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { operatorLogout } from "@/lib/api";
 import { announceSignOut, useOperator } from "@/lib/operatorSession";
 import { leavePage } from "@/lib/sessionChannel";
+import admin from "@/components/admin/Admin.module.css";
 import shell from "@/components/shell/Shell.module.css";
 import { signOut } from "./logic";
 import styles from "./Operator.module.css";
@@ -41,12 +42,18 @@ export function OperatorShell({ children }: { children: ReactNode }) {
       </a>
       <header className={styles.topbar}>
         <span className={styles.brand}>Kaagaz · Platform</span>
-        <span className={styles.who}>
+        <span className={styles.who} title={operator.email}>
           <span className="visually-hidden">Signed in as </span>
           {operator.email}
         </span>
         <ThemeToggle compact />
-        <button type="button" className="btn" onClick={onSignOut} disabled={busy} aria-busy={busy || undefined}>
+        <button
+          type="button"
+          className={`btn ${busy ? admin.busy : ""}`}
+          onClick={onSignOut}
+          disabled={busy}
+          aria-busy={busy || undefined}
+        >
           {busy && <span className="spinner" aria-hidden="true" />}
           Sign out
         </button>

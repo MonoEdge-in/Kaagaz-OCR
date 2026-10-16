@@ -200,12 +200,12 @@ describe("Needs attention (PRD 5 U2)", () => {
     const none = { pages_unreadable: 0, pages_uncertain: 0, values_to_review: 0, words_unsure: 0 };
     expect(attentionWords(none)).toEqual([]);
     expect(attentionWords({ ...none, pages_unreadable: 2, pages_uncertain: 1, words_unsure: 14, values_to_review: 3 })).toEqual([
-      "2 pages unreadable",
+      "2 pages to check",
       "14 words unsure",
       "3 values to check",
     ]);
     expect(attentionWords({ ...none, pages_unreadable: 1, words_unsure: 1, values_to_review: 1 })).toEqual([
-      "1 page unreadable",
+      "1 page to check",
       "1 word unsure",
       "1 value to check",
     ]);

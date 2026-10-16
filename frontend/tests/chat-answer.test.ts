@@ -280,7 +280,7 @@ describe("what the chat status line says", () => {
 });
 
 describe("pages that couldn't be read (PRD 5 F6, U7)", () => {
-  const NOTE = "Not found in the readable text. 2 pages couldn't be read: Invoice_12.pdf page 3, Register.jpg page 1.";
+  const NOTE = "Not found in the readable text. 2 pages to check: Invoice_12.pdf page 3, Register.jpg page 1.";
   const notFound: Answer = {
     status: "not_found",
     label: null,
@@ -364,6 +364,7 @@ describe("a chip lights its source card", () => {
     }
     expect(view).toContain("hot={hot === citation.n}");
     const css = readFileSync(join(__dirname, "../components/chat/Chat.module.css"), "utf8");
-    expect(css).toMatch(/\.source\[data-hot\] \{\s*border-color: var\(--accent\);\s*box-shadow: 0 0 0 1px var\(--accent\);\s*\}/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): no shadows; the accent edge on the selected tint.
+    expect(css).toMatch(/\.source\[data-hot\] \{\s*border-color: var\(--accent\);\s*background: var\(--bg-selected\);\s*\}/);
   });
 });

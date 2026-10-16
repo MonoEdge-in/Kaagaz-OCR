@@ -62,7 +62,7 @@
   flex-direction: column;
   gap: var(--space-2);
   margin: 0;
-  padding-inline-start: var(--space-5);
+  padding-inline-start: var(--space-6);
 }
 
 .steps li::marker {
@@ -112,7 +112,7 @@
 .key {
   display: inline-block;
   padding: var(--space-1) var(--space-2);
-  border: 1px dashed var(--border-strong);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-sm);
   background: var(--surface-2);
   color: var(--fg);

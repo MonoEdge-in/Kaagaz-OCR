@@ -307,7 +307,7 @@ describe("reasons for values read from a hard page (PRD 5 V4, G5, Q7)", () => {
   it("says why a value needs review, in words people know, with no engine named", () => {
     expect(reasonText("unsure_text")).toBe("Part of this value was hard to read. Check it against the page.");
     expect(reasonText("box_unanchored")).toBe(
-      "The exact spot of this value on the page couldn't be confirmed. Check it against the page.",
+      "Check the exact spot of this value against the page.",
     );
     expect(reasonText("local_reader")).toBe(
       "Read by the backup reader while the main reader was down. It will be read again automatically.",

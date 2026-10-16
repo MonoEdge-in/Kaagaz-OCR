@@ -194,10 +194,26 @@ describe("layout guards", () => {
     expect(badge.filter((rule) => NOWRAP.test(rule.body))).toEqual([]);
   });
 
-  it("stretches the sidebar down the page; only its inner part sticks", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): brief C's app shell. The page never scrolls;
+  // only <main> and the side nav do, each held in, and the zones are grid rows.
+  it("keeps the page still in the app shell; only main and the side nav scroll", () => {
     const shell = "components/shell/Shell.module.css";
     expect(rulesFor(shell, ".sidebar").filter((rule) => /position:\s*sticky/.test(rule.body))).toEqual([]);
-    expect(rulesFor(shell, ".sidebarInner").some((rule) => /position:\s*sticky/.test(rule.body))).toBe(true);
+    const side = rulesFor(shell, ".sidebar").find((rule) => rule.at === "@media (min-width: 1024px)")?.body ?? "";
+    expect(side).toMatch(/overflow-y:\s*auto;[\s\S]*overscroll-behavior:\s*contain;/);
+    const main = rulesFor(shell, ".main")[0]?.body ?? "";
+    expect(main).toMatch(/overflow:\s*auto;\s*overscroll-behavior:\s*contain;/);
+    expect(main).toMatch(/min-height:\s*0;/);
+    const app = rulesFor(shell, ".app").find((rule) => rule.at === "")?.body ?? "";
+    expect(app).toMatch(/grid-template-rows:\s*auto minmax\(0, 1fr\) auto auto;/);
+    expect(app).toMatch(/height:\s*100vh;\s*height:\s*100dvh;/);
+    // Header, status and bottom bars are rows, never fixed.
+    for (const zone of [".header", ".statusbar", ".bottombar"]) {
+      expect(rulesFor(shell, zone).filter((rule) => /position:\s*fixed/.test(rule.body)), zone).toEqual([]);
+    }
+    const page = rulesFor("app/globals.css", "html:has(.app-shell) body")[0]?.body ?? "";
+    expect(page).toMatch(/height:\s*100%;\s*overflow:\s*hidden;\s*overscroll-behavior:\s*none;/);
+    expect(read("components/shell/AppShell.tsx")).toContain('className={`app-shell ${styles.app}`}');
   });
 
   it("gives the page frame no height limit of its own (no second scrollbar)", () => {
@@ -282,15 +298,24 @@ describe("layout guards", () => {
     );
     expect(sticky.length).toBe(1);
     expect(sticky[0]?.body ?? "").not.toMatch(/dvh/);
-    expect(sticky[0]?.body).toMatch(/100svh/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): <main> is the one scroller, so the
+    // sticky column is sized by the main area's height, not the window's.
+    expect(sticky[0]?.body).toMatch(/var\(--main-h\)/);
     const fit = rulesFor("components/viewer/PageViewer.module.css", ".fitPage").find((rule) => rule.at === "");
     expect(Number(/min-height:\s*([\d.]+)rem/.exec(fit?.body ?? "")?.[1] ?? 0)).toBeGreaterThan(0);
   });
 
-  it("lets a button's label wrap inside it, everywhere", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): one line and one height per row (the
+  // .btn spec); below 480px, where buttons stack, a long label wraps inside its button.
+  it("keeps a button's label on one line, and lets it wrap below 480px, everywhere", () => {
     const btn = rulesFor("app/globals.css", ".btn");
-    expect(btn.some((rule) => /white-space:\s*normal/.test(rule.body) && /max-width:\s*100%/.test(rule.body))).toBe(true);
-    const nowrap = everyRule(NOWRAP).filter(({ rule }) => /\.btn\b/.test(rule.selector));
+    const base = btn.find((rule) => rule.at === "")?.body ?? "";
+    expect(base).toMatch(/white-space:\s*nowrap/);
+    expect(base).toMatch(/max-width:\s*100%/);
+    expect(base).toMatch(/height:\s*var\(--h-md\)/);
+    const narrow = btn.find((rule) => rule.at === "@media (max-width: 479.98px)")?.body ?? "";
+    expect(narrow).toMatch(/height:\s*auto;[\s\S]*white-space:\s*normal/);
+    const nowrap = everyRule(NOWRAP).filter(({ file, rule }) => file !== "app/globals.css" && /\.btn\b/.test(rule.selector));
     expect(nowrap.map((found) => found.name)).toEqual([]);
   });
 
@@ -300,10 +325,28 @@ describe("layout guards", () => {
       "components/documents/ActionDialog.module.css: .body: overscroll-behavior",
       "components/chat/Chat.module.css: .pane: overscroll-behavior",
       "components/chat/Chat.module.css: .thread: overscroll-behavior",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): the composer's panel, the shell's two
+      // scrollers, the page (no rubber band) and a tab row's sideways scroll.
+      "components/chat/Chat.module.css: .menu: overscroll-behavior",
+      "components/shell/Shell.module.css: .sidebar: overscroll-behavior",
+      "components/shell/Shell.module.css: .main: overscroll-behavior",
+      "app/globals.css: html: overscroll-behavior-y",
+      "app/globals.css: html:has(.app-shell), html:has(.app-shell) body: overscroll-behavior",
+      "app/globals.css: .tabs: overscroll-behavior-x",
       "components/documents/Library.module.css: .treePane: overscroll-behavior",
       // Sideways only: a wide page scrolls without a swipe going back a screen.
       "components/viewer/PageViewer.module.css: .frame: overscroll-behavior-x",
-      "components/viewer/PageViewer.module.css: .sheetFrame: overscroll-behavior-x",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): the page's and the sheet's pan
+      // areas keep their scroll both ways, and the tables' sideways wrappers keep theirs.
+      "components/viewer/PageViewer.module.css: .fitPage .frame: overscroll-behavior",
+      "components/viewer/PageViewer.module.css: .sheetFrame: overscroll-behavior",
+      "components/documents/Table.module.css: .reflowWrap: overscroll-behavior-x",
+      "app/(app)/documents/[id]/DocumentView.module.css: .valuesWrap: overscroll-behavior-x",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): sideways only, the tabs, the
+      // tables and the usage chart scroll in their own box and never hand the swipe to the page.
+      "components/admin/Admin.module.css: .tabs: overscroll-behavior-x",
+      "components/admin/Admin.module.css: .tableScroll: overscroll-behavior-x",
+      "components/admin/Admin.module.css: .chart: overscroll-behavior-x",
     ];
     const found = everyRule(/overscroll-behavior/).flatMap(({ rule, name }) =>
       [...rule.body.matchAll(/(overscroll-behavior[-\w]*):/g)].map((match) => `${name}: ${match[1]}`),
@@ -311,20 +354,25 @@ describe("layout guards", () => {
     expect(found.filter((entry) => !allowed.includes(entry))).toEqual([]);
   });
 
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): a 100vh line is allowed only as the fallback
+  // right before the same property in dvh (brief C: "100dvh with a 100vh fallback").
   it("sizes by the window with dvh or svh, never bare vh (it ignores the phone's toolbars)", () => {
-    const found = CSS_FILES.filter((file) => /(?<![\w.-])[\d.]+vh\b/.test(read(file).replace(/\/\*[\s\S]*?\*\//g, "")));
+    const fallback = /([\w-]+):\s*100vh;\s*\1:\s*100dvh;/g;
+    const found = CSS_FILES.filter((file) =>
+      /(?<![\w.-])[\d.]+vh\b/.test(read(file).replace(/\/\*[\s\S]*?\*\//g, "").replace(fallback, "")),
+    );
     expect(found).toEqual([]);
   });
 
-  it("wraps the admin and operator tabs at every width, with no hidden sideways scroll", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): the tabs spec. One line that
+  // scrolls sideways and never wraps (edge arrows with a mouse, a select for over six on a phone).
+  it("keeps the admin and operator tabs on one line that scrolls sideways, never wrapping", () => {
     const tabs = rulesFor(ADMIN_CSS, ".tabs").find((rule) => rule.at === "");
-    expect(tabs?.body).toMatch(/flex-wrap:\s*wrap/);
-    const scrolling = [ADMIN_CSS, "components/operator/Insights.module.css"].flatMap((file) =>
-      rules(read(file))
-        .filter((rule) => /tab/i.test(rule.selector) && /overflow-x|scroll-snap|scrollbar-width/.test(rule.body))
-        .map((rule) => `${file}: ${rule.selector}`),
-    );
-    expect(scrolling).toEqual([]);
+    expect(tabs?.body).not.toMatch(/flex-wrap:\s*wrap/);
+    expect(tabs?.body).toMatch(/overflow-x:\s*auto;[\s\S]*scrollbar-width:\s*none;[\s\S]*scroll-snap-type:\s*x proximity;/);
+    const tab = rulesFor(ADMIN_CSS, ".tab").find((rule) => rule.at === "");
+    expect(tab?.body).toMatch(/white-space:\s*nowrap/);
+    expect(tab?.body).toMatch(/height:\s*var\(--h-lg\)/);
   });
 
   it("keeps each side of a page clear of its own notch, at every width", () => {
@@ -340,9 +388,9 @@ describe("layout guards", () => {
   });
 
   it("animates opacity and transform, not background-position (a repaint every frame)", () => {
-    // The saving bar's moving stripe (PRD 5 U10).
     // Changed on purpose (sign-in redesign, 15 Oct 2026): the sign-in title's sweep is gone.
-    const allowed = ["components/documents/Documents.module.css: @keyframes saving"];
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): the saving bar fades (opacity), no stripe.
+    const allowed: string[] = [];
     const found = everyRule(/background-position/)
       .filter(({ rule }) => rule.at.startsWith("@keyframes"))
       .map(({ file, rule }) => `${file}: ${rule.at}`);
@@ -364,7 +412,8 @@ describe("layout guards", () => {
     const animated = all.filter((rule) => /(^|;)\s*animation(-[\w-]+)?:/.test(rule.body));
     for (const { at, body } of animated) {
       if (at.includes("prefers-reduced-motion")) expect(body).toMatch(/animation:\s*none/);
-      else expect(body).toMatch(/animation:\s*auth-cite 600ms var\(--ease\) 400ms both;/);
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): motion is 120 to 200ms.
+      else expect(body).toMatch(/animation:\s*auth-cite 200ms var\(--ease\) 400ms both;/);
     }
     expect(animated.map((rule) => rule.at)).toContain("@media (prefers-reduced-motion: reduce)");
     expect(read(css)).not.toMatch(/\binfinite\b/);
@@ -375,6 +424,8 @@ describe("layout guards", () => {
       'app/globals.css: .status-chip[data-tone="working"]::before',
       "app/globals.css: .spinner",
       "app/globals.css: .skeleton",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): a busy button's spinner.
+      'app/globals.css: .btn[aria-busy="true"]::after',
       "components/documents/Documents.module.css: .readMeter:indeterminate",
     ];
     const found = everyRule(/animation(-iteration-count)?:[^;]*\binfinite\b/).map(({ name }) => name);
@@ -481,8 +532,10 @@ describe("layout guards", () => {
     }
     // Changed on purpose (UI quality final review, 15 Oct 2026): `.page.console` so it beats the
     // global .page by specificity, not by stylesheet order.
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): content at most 1200px (75rem);
+    // the wide tables scroll sideways in their own box instead.
     expect(rulesFor("components/operator/Insights.module.css", ":global(.page).console")[0]?.body).toMatch(
-      /max-width:\s*100rem/,
+      /max-width:\s*75rem/,
     );
     expect(read("components/operator/OperatorConsole.tsx")).toContain("`page ${css.console}`");
   });
@@ -493,16 +546,23 @@ describe("layout guards", () => {
     expect(read("components/chat/AnswerView.tsx")).toContain("export const AnswerView = memo(function AnswerView(");
   });
 
-  it("hatches the edge of a Needs review value row, as a table and as a card, and keeps it when selected", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so the hatch is a 1px
+  // dashed edge for Needs review beside a solid one for Verified (the badge keeps its icon and word).
+  it("edges a value row solid for Verified and dashed for Needs review, as a table and as a card, and keeps it when selected", () => {
     const css = "app/(app)/documents/[id]/DocumentView.module.css";
-    const HATCH = /background-image:\s*repeating-linear-gradient\(45deg, var\(--review-solid\) 0 4px, transparent 4px 8px\);/;
-    const table = rulesFor(css, '.valuesTable tr[data-label="needs_review"] td:first-child').filter((rule) => HATCH.test(rule.body));
-    expect(table.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
-    const card = rulesFor(css, '.valuesTable tr[data-label="needs_review"]').filter((rule) => HATCH.test(rule.body));
+    const solid = rulesFor(css, ".valuesTable tr[data-label] td:first-child::before");
+    expect(solid.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
+    expect(solid[0]?.body).toMatch(/border-inline-start:\s*1px solid var\(--success\);/);
+    const dashed = rulesFor(css, '.valuesTable tr[data-label="needs_review"] td:first-child::before');
+    expect(dashed.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
+    expect(dashed[0]?.body).toMatch(/border-inline-start-style:\s*dashed;/);
+    const card = rulesFor(css, '.valuesTable tr[data-label="needs_review"]');
     expect(card.map((rule) => rule.at)).toEqual(["@container (max-width: 35.99rem)"]);
-    // Selection sets only the colour, so the hatch stays.
+    expect(card[0]?.body).toMatch(/border-style:\s*dashed;/);
+    expect(read(css).replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/gradient/);
+    // Selection sets only the colour, so the edge stays.
     const selected = [...rulesFor(css, ".activeRow td"), ...rulesFor(css, ".valuesTable tbody tr.activeRow")];
-    expect(selected.filter((rule) => /background-color:\s*var\(--accent-soft\)/.test(rule.body))).toHaveLength(2);
+    expect(selected.filter((rule) => /background-color:\s*var\(--accent-subtle\)/.test(rule.body))).toHaveLength(2);
     expect(read("app/(app)/documents/[id]/DocumentView.tsx")).toContain("data-label={value.label}");
   });
 
@@ -601,7 +661,7 @@ describe("the document screen (boards 2, 3 and 6)", () => {
   it("puts the panels in two groups, side by side from 90rem, beside a page column capped at 40%", () => {
     const wide = rules(read(VIEW_CSS)).filter((rule) => rule.at === "@media (min-width: 90rem) and (min-height: 36rem)");
     const layout = wide.find((rule) => rule.selector === ".layout")?.body ?? "";
-    expect(layout).toMatch(/min\(calc\(\(100svh - 7rem\) \* 0\.8\), 40%\)/);
+    expect(layout).toMatch(/min\(calc\(\(var\(--main-h\) - 3\.5rem\) \* 0\.8\), 40%\)/); // changed on purpose: <main>'s height
     expect(wide.find((rule) => rule.selector === ".panels")?.body).toMatch(
       /display:\s*grid;\s*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\);/,
     );
@@ -637,9 +697,10 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     expect(view).toContain('`Show all ${detail.values.length.toLocaleString("en-IN")}`');
   });
 
-  it("hatches the Attention card's edge like a Needs review value", () => {
-    const hatch = rulesFor(VIEW_CSS, ".attentionToCheck").find((rule) => rule.at === "");
-    expect(hatch?.body).toMatch(/background-image:\s*repeating-linear-gradient\(45deg, var\(--review-solid\) 0 4px, transparent 4px 8px\);/);
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): a dashed edge, not a hatch.
+  it("edges the Attention card dashed, like a Needs review value", () => {
+    const edge = rulesFor(VIEW_CSS, ".attentionToCheck").find((rule) => rule.at === "");
+    expect(edge?.body).toMatch(/border-inline-start:\s*1px dashed var\(--warning\);/);
   });
 
   it("names the highlighted value under the page", () => {

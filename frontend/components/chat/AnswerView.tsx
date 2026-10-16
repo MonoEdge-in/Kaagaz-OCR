@@ -65,7 +65,7 @@ export const AnswerView = memo(function AnswerView({ message, question }: { mess
     <div className={styles.readingNote}>
       <p className={styles.plain}>{note.text}</p>
       {note.pages.length > 0 && (
-        <ul className={styles.docChips} aria-label="Pages that couldn't be read">
+        <ul className={styles.docChips} aria-label="Pages to check">
           {note.pages.map((page) => (
             <li key={page.href}>
               <Link className={styles.docChip} href={page.href}>

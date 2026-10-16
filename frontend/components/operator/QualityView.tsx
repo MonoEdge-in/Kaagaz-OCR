@@ -16,9 +16,10 @@ import { ShareBar } from "./Charts";
 import { rateText } from "./insights";
 import type { InsightPeriod } from "./insights";
 import { LoadFailed } from "./LoadFailed";
-import { AI_OFF, PeriodSelect, Skeleton, useLoad } from "./OverviewView";
+import { AI_OFF, Freshness, PeriodSelect, Skeleton, useLoad } from "./OverviewView";
 import type { LoadState } from "./OverviewView";
 import { waitWords } from "./platform";
+import { MoreRows, useRowCap } from "@/components/admin/RowCap";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 import css from "./Insights.module.css";
@@ -29,11 +30,12 @@ export const DELETED_NOTE =
 export interface QualityData {
   reply: QualityReply;
   names: ReadonlyMap<string, string>; // organisation id to name (GET /operator/orgs)
+  loadedAt?: number; // Date.now() when it arrived, for "Figures as of"
 }
 
 async function loadQuality(days: InsightPeriod): Promise<QualityData> {
   const [reply, orgs] = await Promise.all([getOperatorQuality(days), listOrgs()]);
-  return { reply, names: new Map(orgs.items.map((org) => [org.id, org.name])) };
+  return { reply, names: new Map(orgs.items.map((org) => [org.id, org.name])), loadedAt: Date.now() };
 }
 
 export function QualityView() {
@@ -65,6 +67,11 @@ export function QualityScreen(props: {
       <p className={styles.summary}>Reading, answers and review. Counts and shares only; no person or document is shown here.</p>
       <div className={styles.toolbar}>
         <PeriodSelect id="quality-period" days={days} onDays={onDays} />
+        {data?.loadedAt !== undefined && (
+          <div className={css.toolEnd}>
+            <Freshness loadedAt={data.loadedAt} refreshing={state.kind === "ready" && state.refreshing === true} onRefresh={onRetry} />
+          </div>
+        )}
       </div>
       <p className="visually-hidden" role="status">
         {state.kind === "loading" ? "Loading the quality figures\u2026" : state.kind === "ready" && state.refreshing ? "Refreshing\u2026" : ""}
@@ -209,25 +216,27 @@ function Review({ row }: { row: QualityRow }) {
 const ORG_COLUMNS = ["Organisation", "Runs", "Failed, platform", "Ready without a card", "On the backup", "Answers", "Not found", "Needs review"];
 
 function PerOrg({ data }: { data: QualityData }) {
+  const cap = useRowCap();
   const rows = data.reply.organisations
     .map((row) => ({ row, name: (row.organisation_id && data.names.get(row.organisation_id)) || "Unknown organisation" }))
     .sort((a, b) => a.name.localeCompare(b.name));
   if (rows.length === 0) return null;
   return (
-    <div className={table.reflowWrap}>
-      <table className={`table ${table.reflow} ${styles.nameWide}`} role="table">
+    <>
+      <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
+      <table className={`table ${table.reflow} ${styles.nameWide} ${styles.compare}`} role="table">
         <caption className={admin.caption}>Per organisation</caption>
         <thead role="rowgroup">
           <tr role="row">
-            {ORG_COLUMNS.map((label) => (
-              <th key={label} scope="col" role="columnheader">
+            {ORG_COLUMNS.map((label, index) => (
+              <th key={label} scope="col" role="columnheader" className={index > 0 ? "num" : undefined}>
                 {label}
               </th>
             ))}
           </tr>
         </thead>
         <tbody role="rowgroup">
-          {rows.map(({ row, name }) => {
+          {rows.slice(0, cap.limit).map(({ row, name }) => {
             const cells = [
               formatNumber(row.runs),
               rateText(row.runs_failed_platform, row.runs),
@@ -243,7 +252,7 @@ function PerOrg({ data }: { data: QualityData }) {
                   {name}
                 </td>
                 {cells.map((cell, index) => (
-                  <td key={ORG_COLUMNS[index + 1]} role="cell" data-label={ORG_COLUMNS[index + 1]} className="tabular">
+                  <td key={ORG_COLUMNS[index + 1]} role="cell" data-label={ORG_COLUMNS[index + 1]} className="num">
                     {cell}
                   </td>
                 ))}
@@ -252,6 +261,8 @@ function PerOrg({ data }: { data: QualityData }) {
           })}
         </tbody>
       </table>
-    </div>
+      </div>
+      <MoreRows shown={Math.min(cap.limit, rows.length)} total={rows.length} what="organisations" onMore={cap.showMore} />
+    </>
   );
 }

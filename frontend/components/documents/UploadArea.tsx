@@ -73,6 +73,7 @@ import {
   writeStored,
 } from "./batchTray";
 import type { StoredBatch } from "./batchTray";
+import { BusyLabel } from "./BusyLabel";
 import { pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { attentionWords } from "./library";
@@ -447,8 +448,8 @@ export function AutofileNote({
         aria-disabled={busy || undefined}
         onClick={() => void undo()}
       >
-        {busy && <span className="spinner" aria-hidden="true" />}
-        Undo<span className="visually-hidden">{` the filing of ${name}`}</span>
+        <BusyLabel busy={busy} idle="Undo" working="Undo" />
+        <span className="visually-hidden">{` the filing of ${name}`}</span>
       </button>
       {failure && (
         <span className="error-text" role="alert">
@@ -691,7 +692,7 @@ export function BatchTray({
               <p className={styles.batchSummary}>
                 {summaryText(trayCounts(rows, stored.find((batch) => batch.id === id)))}
               </p>
-              {left && <span className={`muted ${styles.small}`}>{left}</span>}
+              {left && <span className={`muted ${styles.small} ${styles.timeLeft}`}>{left}</span>}
             </div>
             {busy && <BatchBar view={view} rows={rows} />}
             <ul className={styles.uploads}>{worstFirst(rows).map(row)}</ul>
@@ -721,7 +722,7 @@ function BatchBar({ view, rows }: { view: BatchView | null; rows: UploadEntry[] 
         aria-label="Pages read in this batch"
         aria-valuetext={`${next.percent}% of pages read`}
       />
-      <span className={`muted tabular ${styles.small}`} aria-hidden="true">
+      <span className={`muted tabular ${styles.small} ${styles.barText}`} aria-hidden="true">
         {next.percent}%
       </span>
     </div>
@@ -750,7 +751,7 @@ function RowBar({ entry, stage }: { entry: UploadEntry; stage: Stage }) {
         aria-label={`Upload of ${entry.name}`}
         aria-valuetext={valueText(stage, next.percent)}
       />
-      <span className={`muted tabular ${styles.small}`} aria-hidden="true">
+      <span className={`muted tabular ${styles.small} ${styles.barText}`} aria-hidden="true">
         {saving ? stageText(stage) : `${next.percent}%`}
       </span>
     </div>
@@ -861,8 +862,7 @@ function UploadRow({
                 if (state.kind === "duplicate") onRestore(entry.key, state.documentId, state.existingName);
               }}
             >
-              {state.kind === "restoring" && <span className="spinner" aria-hidden="true" />}
-              {state.kind === "restoring" ? "Restoring…" : "Restore it from Trash"}
+              <BusyLabel busy={state.kind === "restoring"} idle="Restore it from Trash" working="Restoring…" />
             </button>
             {state.kind === "duplicate" && state.restoreError && (
               <p className={`error-text ${styles.small}`} role="alert">

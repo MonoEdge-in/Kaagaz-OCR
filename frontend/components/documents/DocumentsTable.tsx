@@ -39,6 +39,7 @@ import { docTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative, 
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { EditDialog, RowMenu } from "./DocumentActions";
 import type { FolderTree } from "./folderTree";
+import { BusyLabel } from "./BusyLabel";
 import { attentionWords } from "./library";
 import type { EditAction, RowAction } from "./library";
 import { deletedMessage, formatProgressPercent } from "./logic";
@@ -151,6 +152,11 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
     [],
   );
 
+  // Stable, so it focuses Cancel once, when the question opens (never the destructive button).
+  const focusOnMount = useCallback((element: HTMLButtonElement | null) => {
+    element?.focus();
+  }, []);
+
   function toggleAll() {
     setSelectedIds(allSelected ? new Set() : new Set(deletableItems.map((item) => item.id)));
     setError(null);
@@ -203,6 +209,18 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
     selectAll.current?.focus();
   }
 
+  const nowButton = confirming && (
+    <button
+      type="button"
+      className={confirming === "read" ? "btn btn-primary" : `btn btn-danger ${styles.apart}`}
+      onClick={() => void runSelected(confirming)}
+      disabled={busy || (confirming === "forever" && askPassword && password === "")}
+    >
+      <Icon name={confirming === "read" ? "refresh" : "trash"} />
+      <BusyLabel busy={busy} idle={NOW_WORDS[confirming]} working={BUSY_WORDS[confirming]} />
+    </button>
+  );
+
   return (
     <>
       {deletableItems.length > 0 && (
@@ -238,7 +256,7 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
                       disabled={busy}
                     >
                       <Icon name="history" />
-                      {busy ? "Restoring…" : `Restore (${restorableIds.length})`}
+                      <BusyLabel busy={busy} idle={`Restore (${restorableIds.length})`} working="Restoring…" />
                     </button>
                   )}
                   {canForever && (
@@ -297,19 +315,13 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
                   onChange={setPassword}
                 />
               )}
-              <button
-                type="button"
-                className={confirming === "read" ? "btn btn-primary" : "btn btn-danger"}
-                onClick={() => void runSelected(confirming)}
-                disabled={busy || (confirming === "forever" && askPassword && password === "")}
-              >
-                <Icon name={confirming === "read" ? "refresh" : "trash"} />
-                {busy ? BUSY_WORDS[confirming] : NOW_WORDS[confirming]}
-              </button>
-              <button type="button" className="btn" onClick={clearSelection} disabled={busy}>
+              {/* [Destructive] ... [Cancel], or [Cancel] [Read again now]; focus starts on Cancel. */}
+              {confirming !== "read" && nowButton}
+              <button ref={focusOnMount} type="button" className="btn" onClick={clearSelection} disabled={busy}>
                 <Icon name="close" />
                 Cancel
               </button>
+              {confirming === "read" && nowButton}
             </div>
           )}
           {busy && deleteProgress && (
@@ -320,7 +332,7 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
                 max={deleteProgress.total}
                 aria-label={PROGRESS_LABEL[busyAction ?? "trash"]}
               />
-              <span className={`muted tabular ${styles.small}`} aria-hidden="true">
+              <span className={`muted tabular ${styles.small} ${styles.barText}`} aria-hidden="true">
                 {formatProgressPercent(deleteProgress.done, deleteProgress.total)}
               </span>
             </div>
@@ -376,7 +388,9 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
 export const listScrollKey = () => `docs-y:${location.search}`;
 function rememberListScroll() {
   try {
-    sessionStorage.setItem(listScrollKey(), String(Math.round(scrollY)));
+    // The app shell's <main> is the one scroller (MonoEdge design system); the window on other pages.
+    const main = document.getElementById("main");
+    sessionStorage.setItem(listScrollKey(), String(Math.round(main ? main.scrollTop : scrollY)));
   } catch {
     // Storage blocked (private window): Back starts at the top, as before.
   }
@@ -681,16 +695,11 @@ const DocumentRow = memo(function DocumentRow({
                 onClick={confirm}
                 disabled={busy || (confirming === "forever" && askPassword && password === "")}
               >
-                {busy ? (
-                  <>
-                    <span className="spinner" aria-hidden="true" />
-                    {confirming === "forever" ? "Deleting…" : "Moving…"}
-                  </>
-                ) : confirming === "forever" ? (
-                  "Delete forever"
-                ) : (
-                  "Move to Trash"
-                )}
+                <BusyLabel
+                  busy={busy}
+                  idle={confirming === "forever" ? "Delete forever" : "Move to Trash"}
+                  working={confirming === "forever" ? "Deleting…" : "Moving…"}
+                />
               </button>
               <button
                 ref={focusOnMount}

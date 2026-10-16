@@ -205,24 +205,24 @@ describe("each file's place in the tray", () => {
   it("names an unreadable file's first page, with the reason and the fix (U1)", () => {
     const page = { page_no: 1, says: "Glare or a shadow covers part of the page.", fix: "Take the photo again." };
     const unreadable = done(doc("u", { pages_unreadable: 1, first_unreadable: page }));
-    expect(uploadStateText(unreadable)).toBe("Couldn't read page 1");
+    expect(uploadStateText(unreadable)).toBe("Page 1 to check");
     expect(unreadableWords(doc("u", { pages_unreadable: 1, first_unreadable: page }), true)).toEqual({
-      title: "Couldn't read page 1",
+      title: "Page 1 to check",
       detail: "Glare or a shadow covers part of the page. Take the photo again.",
     });
     const unsaid = doc("v", { pages_unreadable: 1, first_unreadable: { page_no: 3, says: null, fix: null } });
-    expect(unreadableWords(unsaid, true)).toEqual({ title: "Couldn't read page 3", detail: null });
+    expect(unreadableWords(unsaid, true)).toEqual({ title: "Page 3 to check", detail: null });
     expect(unreadableWords(doc("w"), true)).toBeNull(); // none, or a listing without the field
     expect(uploadStateText(done(doc("w")))).toBe("Ready");
   });
 
   // Council 16 Oct 2026: a member can't Read again (canReprocess), so is never told to.
   it("tells a member to upload a better scan, not to read the page again", () => {
-    const page = { page_no: 2, says: "This page couldn't be read.", fix: "Read it again, or upload a better scan." };
+    const page = { page_no: 2, says: "This page needs a closer look.", fix: "Read it again, or upload a better scan." };
     const unreadable = doc("u", { pages_unreadable: 1, first_unreadable: page });
-    expect(unreadableWords(unreadable, false)?.detail).toBe("This page couldn't be read. Upload a better scan.");
+    expect(unreadableWords(unreadable, false)?.detail).toBe("This page needs a closer look. Upload a better scan.");
     expect(unreadableWords(unreadable, true)?.detail).toBe(
-      "This page couldn't be read. Read it again, or upload a better scan.",
+      "This page needs a closer look. Read it again, or upload a better scan.",
     );
     const photo = { page_no: 1, says: "Glare or a shadow covers part of the page.", fix: "Take the photo again." };
     expect(unreadableWords(doc("p", { pages_unreadable: 1, first_unreadable: photo }), false)?.detail).toBe(

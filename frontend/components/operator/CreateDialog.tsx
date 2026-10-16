@@ -161,9 +161,14 @@ export function CreateDialog({
             <button type="button" className="btn" onClick={onClose} disabled={busy}>
               Cancel
             </button>
-            <button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy || undefined}>
+            <button
+              type="submit"
+              className={`btn btn-primary ${busy ? admin.busy : ""}`}
+              disabled={busy}
+              aria-busy={busy || undefined}
+            >
               {busy && <span className="spinner" aria-hidden="true" />}
-              {busy ? "Creating…" : action}
+              {action}
             </button>
           </div>
         </form>
