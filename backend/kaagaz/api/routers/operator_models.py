@@ -19,7 +19,9 @@ writes its own audit rows.
 * ``GET`` and ``PUT /operator/orgs/{id}/ai`` (PUT with a fresh code): one organisation's
   own AI settings (an empty list or a null field follows the platform defaults), its
   Ensemble switch and its monthly budget in dollars (warn only; the operator's alone,
-  never in the organisation's own log or screens).
+  never in the organisation's own log or screens). Any number of scanning models (0037):
+  Ensemble asked with fewer than two in effect is saved off and the PUT says
+  ``ensemble_off``.
 * ``GET /operator/usage?from&to``: tokens and dollars per organisation and model, days in
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
@@ -95,16 +97,6 @@ _REFUSALS = {
         409,
         "level_not_supported",
         "A chosen model does not accept one of these thinking levels. Choose levels every model accepts.",
-    ),
-    "needs_two_models_scan": (
-        409,
-        "needs_two_models_scan",
-        "Cost saving and Ensemble need at least two scanning models. Allow another model or turn them off.",
-    ),
-    "needs_two_models_chat": (
-        409,
-        "needs_two_models_chat",
-        "Ensemble needs at least two answering models. Allow another, or leave the list empty.",
     ),
 }
 
@@ -265,7 +257,9 @@ def set_org_ai(
             step=step_up.step,
         )
     _refuse(db, operator, outcome.code, step_up)
-    return get_org_ai(customer_id, operator, db, context)
+    saved = get_org_ai(customer_id, operator, db, context)
+    # Ensemble with fewer than two scanning models in effect is saved off, not refused (0037).
+    return {**saved, "ensemble_off": body.ensemble and not saved["ensemble"]}
 
 
 @router.get("/usage")

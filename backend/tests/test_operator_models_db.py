@@ -125,7 +125,7 @@ def test_an_organisations_ai_settings_and_budget(db: Database) -> None:
     assert saved.status_code == 200, saved.text
     assert saved.json()["own"]["scan_models"] == sorted([first, second])
     assert (saved.json()["own"]["scan_default"], saved.json()["ai_budget_usd"]) == (second, 25.5)
-    assert client.get(path).json() == saved.json()
+    assert {**client.get(path).json(), "ensemble_off": False} == saved.json()
     assert operator.sql(_PLATFORM, a="org.ai_settings_set") == [("org.ai_settings_set", customer)]
     [row] = [row for row in api.audit_rows(customer) if row[0] == "org.ai_settings_set"]
     assert row[3]["by"] == "operator" and row[3]["scan_default"] == second
@@ -135,12 +135,21 @@ def test_an_organisations_ai_settings_and_budget(db: Database) -> None:
         ({**body, "scan_models": [first, off], "scan_default": first}, "unavailable"),  # off: not enabled
         ({**body, "scan_default": off}, "default_not_allowed"),
         ({**body, "scan_default": None}, "default_not_allowed"),
-        ({**body, "scan_models": [first], "scan_default": first, "ensemble": True}, "needs_two_models_scan"),
     ]
     for refused, code in refusals:
         reply = _save(api, operator, client, path, refused)
         assert (reply.status_code, reply.json()["error"]["code"]) == (409, code), reply.text
-    assert client.get(path).json() == saved.json()  # nothing changed
+    assert {**client.get(path).json(), "ensemble_off": False} == saved.json()  # nothing changed
+    # Changed on purpose (Tushar, 16 Oct 2026: any number of models): one scanning model with
+    # Cost saving and Ensemble saves, Ensemble off and said so.
+    one = {**body, "scan_models": [first], "scan_default": first, "dynamic": True, "ensemble": True}
+    alone = _save(api, operator, client, path, one)
+    assert alone.status_code == 200, alone.text
+    assert (alone.json()["own"]["dynamic"], alone.json()["ensemble"], alone.json()["ensemble_off"]) == (
+        True,
+        False,
+        True,
+    )
     assert client.get(f"/api/operator/orgs/{uuid.uuid4()}/ai").status_code == 404
     assert _save(api, operator, client, f"/api/operator/orgs/{uuid.uuid4()}/ai", body).status_code == 404
 
@@ -170,9 +179,14 @@ def test_the_platform_defaults_through_the_api(db: Database) -> None:
         assert saved.status_code == 200, saved.text
         assert saved.json()["defaults"]["scan_models"] == sorted([first, second])
         assert saved.json()["defaults"]["dynamic"] is True
+        # Changed on purpose (Tushar, 16 Oct 2026: any number of models): Cost saving with one.
         one = {**body, "scan_models": [first]}
-        refused = _save(api, operator, client, "/api/operator/ai-defaults", one)
-        assert (refused.status_code, refused.json()["error"]["code"]) == (409, "needs_two_models_scan")
+        alone = _save(api, operator, client, "/api/operator/ai-defaults", one)
+        assert alone.status_code == 200, alone.text
+        assert (alone.json()["defaults"]["scan_models"], alone.json()["defaults"]["dynamic"]) == (
+            [first],
+            True,
+        )
     finally:
         assert _save(api, operator, client, "/api/operator/ai-defaults", put_back).status_code == 200
 
