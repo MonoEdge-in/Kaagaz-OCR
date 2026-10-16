@@ -177,11 +177,13 @@ export const MB_PER_PDF_PAGE = 0.4;
  * PDF page 0.05 s, and a 200-row sheet 0.01 s. A PDF can't be told apart before
  * it is read, so it is estimated as a scan: the text "Up to N minutes" is then
  * true for both. With the model on, the card and invoice calls add time these
- * numbers don't include.
+ * numbers don't include. Changed (council 16 Oct 2026): a PDF or photo page is now
+ * 35 s, as Gemini reads scans at High thinking (30 to 130 s a page), so the upload
+ * row's last byte is not most of its bar.
  */
 export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
-  pdf: 7,
-  image: 7,
+  pdf: 35,
+  image: 35,
   sheet: 1,
 };
 

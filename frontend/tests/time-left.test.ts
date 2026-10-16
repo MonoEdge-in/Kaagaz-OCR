@@ -2,7 +2,7 @@
 // plain numbers: times are performance.now() milliseconds.
 
 import { describe as group, expect, it } from "vitest";
-import { ESTIMATING, STARTING, WAITING, describe, hold, markReceived, receivedAt } from "@/lib/timeLeft";
+import { ESTIMATING, STARTING, describe, hold, markReceived, receivedAt } from "@/lib/timeLeft";
 import type { Held } from "@/lib/timeLeft";
 import type { TimeLeft } from "@/lib/types";
 
@@ -62,10 +62,20 @@ group("time left", () => {
     expect([ESTIMATING.text, STARTING.text]).toEqual(["Estimating\u2026", "Starting\u2026"]);
   });
 
+  // Changed on purpose (council 16 Oct 2026): checked at 35 s, within 10 s of the floor; at
+  // 50 s the countdown is 20 s past it, which now says Taking longer (below).
   it("never counts below the time after the step's pages while preparing or reading", () => {
-    expect(textAt(first(60, "reading", { after_seconds: 30 }), 50_000)).toBe("Ready in about 30 s");
-    expect(textAt(first(60, "preparing", { after_seconds: 30 }), 50_000)).toBe("Ready in about 30 s");
+    expect(textAt(first(60, "reading", { after_seconds: 30 }), 35_000)).toBe("Ready in about 30 s");
+    expect(textAt(first(60, "preparing", { after_seconds: 30 }), 35_000)).toBe("Ready in about 30 s");
     expect(textAt(first(60, "understanding", { after_seconds: 30 }), 50_000)).toBe("Ready in about 10 s");
+  });
+
+  // Council 16 Oct 2026: past the step's end by more than 10 s, the floor is not a time left.
+  it("says Taking longer once preparing or reading is more than 10 s past its expected end", () => {
+    const reading = first(60, "reading", { after_seconds: 30 }); // the step ends at 30 s
+    expect([describe(reading, 40_000, false).state, describe(reading, 40_100, false).state]).toEqual(["counting", "longer"]);
+    expect(describe(first(60, "preparing", { after_seconds: 30 }), 41_000, false).state).toBe("longer");
+    expect(describe(first(60, "understanding", { after_seconds: 30 }), 41_000, false).state).toBe("counting");
   });
 
   it("anchors each answer when it arrived", () => {
@@ -74,6 +84,5 @@ group("time left", () => {
     expect(receivedAt(marked)).toBe(1234);
     const merged = value(40); // a reply never marked: noted the first time it is shown
     expect(receivedAt(merged)).toBe(receivedAt(merged));
-    expect(WAITING.text).toBe("Waiting to start");
   });
 });

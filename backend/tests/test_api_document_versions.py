@@ -261,7 +261,7 @@ def test_a_newer_version_still_reading_or_failed_is_shown_beside_the_current_one
         "status": "failed",
         "failure_code": "retries_exhausted",
         "status_message": (
-            "We tried 5 times and couldn't read this file. Upload it again, or ask your admin to look at it."
+            "We tried 5 times and couldn't read this file. Read it again, or ask your admin to look at it."
         ),
     }
     assert listed[single]["newer_version"] is None

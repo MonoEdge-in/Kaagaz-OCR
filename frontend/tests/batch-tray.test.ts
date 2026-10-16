@@ -206,14 +206,28 @@ describe("each file's place in the tray", () => {
     const page = { page_no: 1, says: "Glare or a shadow covers part of the page.", fix: "Take the photo again." };
     const unreadable = done(doc("u", { pages_unreadable: 1, first_unreadable: page }));
     expect(uploadStateText(unreadable)).toBe("Couldn't read page 1");
-    expect(unreadableWords(doc("u", { pages_unreadable: 1, first_unreadable: page }))).toEqual({
+    expect(unreadableWords(doc("u", { pages_unreadable: 1, first_unreadable: page }), true)).toEqual({
       title: "Couldn't read page 1",
       detail: "Glare or a shadow covers part of the page. Take the photo again.",
     });
     const unsaid = doc("v", { pages_unreadable: 1, first_unreadable: { page_no: 3, says: null, fix: null } });
-    expect(unreadableWords(unsaid)).toEqual({ title: "Couldn't read page 3", detail: null });
-    expect(unreadableWords(doc("w"))).toBeNull(); // none, or a listing without the field
+    expect(unreadableWords(unsaid, true)).toEqual({ title: "Couldn't read page 3", detail: null });
+    expect(unreadableWords(doc("w"), true)).toBeNull(); // none, or a listing without the field
     expect(uploadStateText(done(doc("w")))).toBe("Ready");
+  });
+
+  // Council 16 Oct 2026: a member can't Read again (canReprocess), so is never told to.
+  it("tells a member to upload a better scan, not to read the page again", () => {
+    const page = { page_no: 2, says: "This page couldn't be read.", fix: "Read it again, or upload a better scan." };
+    const unreadable = doc("u", { pages_unreadable: 1, first_unreadable: page });
+    expect(unreadableWords(unreadable, false)?.detail).toBe("This page couldn't be read. Upload a better scan.");
+    expect(unreadableWords(unreadable, true)?.detail).toBe(
+      "This page couldn't be read. Read it again, or upload a better scan.",
+    );
+    const photo = { page_no: 1, says: "Glare or a shadow covers part of the page.", fix: "Take the photo again." };
+    expect(unreadableWords(doc("p", { pages_unreadable: 1, first_unreadable: photo }), false)?.detail).toBe(
+      "Glare or a shadow covers part of the page. Take the photo again.",
+    );
   });
 
   it("says All values verified only for a ready file with values and nothing to check", () => {
@@ -258,6 +272,7 @@ describe("what the tray says out loud", () => {
         onRetry: () => undefined,
         tree: buildTree([]),
         onUndone: () => undefined,
+        canReread: true,
       }),
     );
     expect(html.match(/role="status"/g)).toHaveLength(1);

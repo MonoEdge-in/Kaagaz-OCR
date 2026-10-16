@@ -44,7 +44,9 @@ are clamped to ``finish_at - moved_at``.
 refreshed page starts from it, not from 0 (council of 5 Oct 2026, PROVISIONAL):
 ``F = e / (e + max(finish_at - tau, floor))``, ``e = tau - started_at``, at
 ``tau = clamp(now, moved_at, moved_at + slow_after_s)``: it stops when no page moves
-for longer than usual, so it never climbs while no work is done. ``floor`` is
+for longer than usual, so it never climbs while no work is done. While preparing or
+reading ``tau`` also stops at the step's expected end, ``max(moved_at, finish_at - after_s)``
+(council 16 Oct 2026: the "82% frozen" bar). ``floor`` is
 ``after_s`` while preparing or reading and 0 after, as the screen's countdown
 (lib/timeLeft.ts secondsLeft). The worker keeps the highest F it has shown in this
 run as ``reached`` (pipeline ``_progress``), so a new estimate never takes it back,
@@ -69,11 +71,11 @@ PRIOR_WEIGHT = 2.0  # n0
 MIN_EVIDENCE = 3
 # RapidOCR: 6.9 s a scanned page on average (cli measure, 30 Sep 2026, docs/architecture.md).
 # Any other engine name (an old run's reader too) starts from OCR_SECONDS_OTHER.
-# Gemini (fast scan, council 16 Oct 2026, PROVISIONAL: a dense page's call at High thinking
-# takes 20 to 45 s): 35 s a call, and a model reader's pages are read OCR_PAGE_CONCURRENCY
+# Gemini (council 16 Oct 2026, PROVISIONAL: a page call at High thinking measured 48.8 s):
+# 50 s a call, and a model reader's pages are read OCR_PAGE_CONCURRENCY
 # at a time (``reading``); the customer's own Gemini runs replace it as they finish.
-OCR_SECONDS = {"rapidocr": 6.9, "gemini": 35.0}
-OCR_SECONDS_OTHER = 7.0  # the upload estimate's 7 s a page
+OCR_SECONDS = {"rapidocr": 6.9, "gemini": 50.0}
+OCR_SECONDS_OTHER = 7.0  # 7 s a page, the upload estimate before 16 Oct 2026
 # Not measured yet: a guess for an A4 page drawn at 400 DPI, checked and stored, until history replaces it.
 PREPARE_PAGE_SECONDS = 1.0
 FAST_PAGE_SECONDS = 0.15  # measured 0.05 a text-layer page, plus the page's own work
@@ -228,9 +230,12 @@ def after_reading(rates: Rates, now: datetime) -> Estimate:
 
 def fraction_at(estimate: Estimate, *, started_at: datetime, floored: bool, now: datetime) -> float:
     """F: how far the run has got at ``now`` by this estimate, 0 to 1, held still from
-    ``slow_after_s`` with no move (``tau``); ``floored`` while preparing or reading. O(1)."""
+    ``slow_after_s`` with no move (``tau``); ``floored`` while preparing or reading, when it
+    is also held still from the step's expected end, ``finish_at - after_s``. O(1)."""
     stall = estimate.moved_at + timedelta(seconds=estimate.slow_after_s)
     tau = min(max(now, estimate.moved_at), stall)
+    if floored:  # past the step's expected end no work is shown as done (council 16 Oct 2026)
+        tau = min(tau, max(estimate.moved_at, estimate.finish_at - timedelta(seconds=estimate.after_s)))
     elapsed = min(MAX_SECONDS, max(0.0, (tau - started_at).total_seconds()))
     left = max(0.0, (estimate.finish_at - tau).total_seconds())
     whole = elapsed + (max(left, estimate.after_s) if floored else left)

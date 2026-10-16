@@ -76,6 +76,7 @@ const tray = (document: DocumentSummary, folders = [{ id: INVOICES, name: "Invoi
       onRetry: () => undefined,
       tree: buildTree(folders),
       onUndone: () => undefined,
+      canReread: true,
     }),
   );
 

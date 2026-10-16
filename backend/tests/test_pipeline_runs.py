@@ -956,6 +956,12 @@ def live(answer: dict[str, object], step: str, since: timedelta) -> float:
     numbers = {key: float(value) for key, value in answer.items() if isinstance(value, int | float)}
     if numbers["since_move_seconds"] + dt > numbers["slow_after_seconds"]:
         return numbers["done_fraction"]  # taking longer than usual: done_fraction alone
+    if step in FLOORED_STEPS:
+        # Changed on purpose (council 16 Oct 2026), as lib/timeLeft.ts and lib/progress.ts now:
+        # more than 10 s past the floor is taking longer; else it stops at the step's end.
+        if numbers["seconds"] - dt < numbers["after_seconds"] - 10:
+            return numbers["done_fraction"]
+        dt = min(dt, max(0.0, numbers["seconds"] - numbers["after_seconds"]))
     left = max(0.0, numbers["seconds"] - dt)
     left = max(left, numbers["after_seconds"]) if step in FLOORED_STEPS else left
     elapsed = numbers["elapsed_seconds"] + dt

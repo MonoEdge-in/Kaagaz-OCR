@@ -628,6 +628,7 @@ export function BatchTray({
   onRetry,
   tree,
   onUndone,
+  canReread,
 }: {
   entries: UploadEntry[];
   views: Record<string, BatchView>;
@@ -638,6 +639,7 @@ export function BatchTray({
   onRetry: (key: string) => void;
   tree: FolderTree; // for "Filed into Invoices" (feature 28)
   onUndone: () => void;
+  canReread: boolean; // a reviewer or an admin: may read a document again
 }) {
   if (entries.length === 0 && !tooMany) return null;
   const settled = entries.some((entry) => !isBusy(entry));
@@ -648,7 +650,15 @@ export function BatchTray({
     else loose.push(entry);
   }
   const row = (entry: UploadEntry) => (
-    <UploadRow key={entry.key} entry={entry} onRestore={onRestore} onRetry={onRetry} tree={tree} onUndone={onUndone} />
+    <UploadRow
+      key={entry.key}
+      entry={entry}
+      onRestore={onRestore}
+      onRetry={onRetry}
+      tree={tree}
+      onUndone={onUndone}
+      canReread={canReread}
+    />
   );
 
   return (
@@ -753,12 +763,14 @@ function UploadRow({
   onRetry,
   tree,
   onUndone,
+  canReread,
 }: {
   entry: UploadEntry;
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
   tree: FolderTree;
   onUndone: () => void;
+  canReread: boolean;
 }) {
   const { state } = entry;
   // After Restore, the Restore button gives way to "Open it": focus follows.
@@ -771,7 +783,7 @@ function UploadRow({
   const story = storyTarget(state); // a finished file offers its story section, never a dialog
   const document = state.kind === "done" ? state.document : undefined;
   const problems = document?.status === "ready" ? attentionWords(document) : [];
-  const unreadable = document?.status === "ready" ? unreadableWords(document) : null; // U1
+  const unreadable = document?.status === "ready" ? unreadableWords(document, canReread) : null; // U1
   const verified = document ? verifiedWords(document) : null; // U1: only with values
   let icon: "alert" | "eye-alert" | "check-seal" | "file" = "file";
   if (failed) icon = "alert";

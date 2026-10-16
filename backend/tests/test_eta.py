@@ -62,8 +62,8 @@ def test_a_page_read_by_a_model_is_not_slow_at_25_s() -> None:
     """Progress fix, 16 Oct 2026: a High-thinking page call often passes 20 s, so a model
     read stalls only past 3 x its own seconds a call (90 s at least, PROVISIONAL)."""
     cold = reading(rates([], "gemini"), T0, 0, 1, NONE, NONE)
-    # Changed on purpose (fast scan, council 16 Oct 2026): Gemini starts from 35 s a call.
-    assert cold.slow_after_s == 3 * 35.0 > MODEL_SLOW_MIN_S == 90.0
+    # Changed on purpose (council 16 Oct 2026): Gemini starts from 50 s a call (High thinking).
+    assert cold.slow_after_s == 3 * 50.0 > MODEL_SLOW_MIN_S == 90.0
     stored_read = {"step": "reading", "done": 0, "total": 1, "started_at": T0.isoformat(), **cold.to_json()}
 
     def at(seconds: float) -> dict[str, Any]:
@@ -73,7 +73,10 @@ def test_a_page_read_by_a_model_is_not_slow_at_25_s() -> None:
 
     # The screen's rule (lib/timeLeft.ts stalled): longer than usual once since_move passes slow_after.
     assert at(25)["since_move_seconds"] <= at(25)["slow_after_seconds"]  # not slow at 25 s
-    assert at(60)["done_fraction"] > at(25)["done_fraction"]  # and the bar still moves
+    # Changed on purpose (council 16 Oct 2026): the bar moves until the step's expected end
+    # (25.075 s here), then holds there instead of climbing with no page read.
+    assert at(25)["done_fraction"] > at(10)["done_fraction"]
+    assert at(60)["done_fraction"] == at(100)["done_fraction"]
     assert at(200)["since_move_seconds"] > at(200)["slow_after_seconds"]  # slow well past it
     assert at(200)["done_fraction"] == at(400)["done_fraction"]  # held still, no work shown
     run = RunTiming("gemini 2.5", 10, 0, 0, 10 * 40.0, 10 * 40.0, 30.0)  # 40 s a call, learned
@@ -81,6 +84,18 @@ def test_a_page_read_by_a_model_is_not_slow_at_25_s() -> None:
     slow = reading(learned, T0, 0, 1, NONE, NONE).slow_after_s
     assert slow == pytest.approx(3 * mean(learned.ocr)) and slow > MODEL_SLOW_MIN_S
     assert reading(rates([], "rapidocr"), T0, 0, 1, NONE, NONE).slow_after_s == 20.0  # RapidOCR as before
+
+
+def test_progress_does_not_climb_past_the_steps_expected_end() -> None:
+    """Council 16 Oct 2026 (the "82% frozen" bar): a cold Gemini read of 1 page expects its
+    page by T0 + 25 s; from then until the stall no work is shown as done, so the bar is the
+    same at T0 + 35 s and T0 + 100 s, as the screen's fractionAt (lib/progress.ts)."""
+    cold = reading(rates([], "gemini"), T0, 0, 1, NONE, NONE)
+    stored_read = {"step": "reading", "done": 0, "total": 1, "started_at": T0.isoformat(), **cold.to_json()}
+    left = [time_left(stored_read, now=T0 + timedelta(seconds=s)) for s in (35, 100)]
+    assert left[0] is not None and left[1] is not None
+    assert left[0]["done_fraction"] == left[1]["done_fraction"]
+    assert left[1]["since_move_seconds"] <= left[1]["slow_after_seconds"]  # held before any stall
 
 
 def test_after_reading_is_the_median_and_slow_the_90th_percentile() -> None:
@@ -100,19 +115,20 @@ def test_only_this_engines_runs_and_the_last_20_count() -> None:
 
 def test_an_engine_with_no_figure_of_its_own_starts_from_the_default() -> None:
     """An old run's reader the server no longer has starts from OCR_SECONDS_OTHER (PRD 5 Q6)
-    until its own history replaces it. Changed on purpose (fast scan, council 16 Oct 2026):
-    Gemini has its own figure, 35 s a call."""
+    until its own history replaces it. Changed on purpose (council 16 Oct 2026): Gemini has
+    its own figure, 50 s a call (a High-thinking call measured 48.8 s)."""
     assert mean(rates([], "an-old-reader").ocr) == pytest.approx(OCR_SECONDS_OTHER)
-    assert mean(rates([], "gemini").ocr) == pytest.approx(35.0)
+    assert mean(rates([], "gemini").ocr) == pytest.approx(50.0)
 
 
 def test_a_model_readers_pages_are_read_ocr_page_concurrency_at_a_time() -> None:
-    """Fast scan (council 16 Oct 2026): a 1-page scan by Gemini starts at 35 s or more, and
-    20 pages read 6 at a time take ceil(20 / 6) = 4 calls of 35 s, not 20 x 35 s."""
+    """Fast scan (council 16 Oct 2026): a 1-page scan by Gemini starts at 50 s or more, and
+    20 pages read 6 at a time take ceil(20 / 6) = 4 calls of 50 s, not 20 x 50 s. Changed on
+    purpose (council 16 Oct 2026): 50 s a call, was 35 s."""
     one = reading(rates([], "gemini", pages_at_once=6, scanned=True), T0, 0, 1, NONE, NONE)
-    assert (one.finish_at - T0).total_seconds() - one.after_s >= 35.0
+    assert (one.finish_at - T0).total_seconds() - one.after_s >= 50.0
     twenty = reading(rates([], "gemini", pages_at_once=6, scanned=True), T0, 0, 20, NONE, NONE)
-    assert (twenty.finish_at - T0).total_seconds() - twenty.after_s == pytest.approx(140.0)
+    assert (twenty.finish_at - T0).total_seconds() - twenty.after_s == pytest.approx(200.0)
     # Another engine reads one page at a time, as before.
     assert rates([], "rapidocr", pages_at_once=6).pages_at_once == 1
 
@@ -227,7 +243,9 @@ def test_done_fraction_holds_still_once_it_is_taking_longer() -> None:
 def test_the_floor_is_after_s_only_while_preparing_or_reading() -> None:
     soon = (T0 + timedelta(seconds=5)).isoformat()  # 5 s left, after_s 20
     floored = [done(step=step, finish_at=soon) for step in ("preparing", "reading")]
-    assert floored == [round(90 / 110, 4)] * 2
+    # Changed on purpose (council 16 Oct 2026): the step's end (finish_at - after_s) is before
+    # the move, so it holds at the move, 4 s before T0: 86 s in, 20 s left (was 90 / 110).
+    assert floored == [round(86 / 106, 4)] * 2
     after = [done(step=step, finish_at=soon) for step in ("understanding", "indexing")]
     assert after == [round(90 / 95, 4)] * 2
 
