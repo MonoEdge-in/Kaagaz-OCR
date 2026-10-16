@@ -1,6 +1,7 @@
-/* The sign-in frame (AuthFrame.tsx) and the sign-in form. Below 900 px a short
-   ledger band (wordmark and value line) sits above the form; from 900 px the
-   ledger brand panel (5fr) sits beside the form (7fr). */
+/* The sign-in frame (AuthFrame.tsx) and the sign-in form, in the MonoEdge
+   look: plain warm panels, the brand rule, mono capitals for small labels.
+   Below 900 px a short band (lockup and value line) sits above the form; from
+   900 px the brand panel (5fr) sits beside the form (7fr). */
 
 .page {
   position: relative;
@@ -26,7 +27,7 @@
   inset-inline-end: max(var(--space-4), env(safe-area-inset-right));
 }
 
-/* --- The brand panel: ruled like a ledger page, with the lal margin rule. --- */
+/* --- The brand panel: a plain panel with the brand rule down its margin. --- */
 
 .brand {
   display: none;
@@ -34,11 +35,6 @@
   container: brand-panel / inline-size;
   overflow: clip;
   background-color: var(--surface-2);
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0 27px,
-    color-mix(in srgb, var(--border) 40%, transparent) 27px 28px
-  );
   border-inline-end: 1px solid var(--border);
 }
 
@@ -77,12 +73,25 @@
   font-weight: 700;
   font-size: var(--fs-xl);
   line-height: 1;
-  letter-spacing: 0.01em;
+  letter-spacing: -0.02em;
   color: var(--fg);
 }
 
 .markSub {
   font-weight: 400;
+  color: var(--fg-muted);
+}
+
+/* "by MonoEdge": the MonoEdge site's small label, mono capitals spaced out. */
+.by {
+  display: block;
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--fg-muted);
 }
 
@@ -99,9 +108,9 @@
   font-weight: 600;
   font-size: clamp(1.75rem, 1.1rem + 1.4vw, 2.75rem);
   line-height: 1.18;
-  letter-spacing: -0.005em;
+  letter-spacing: -0.025em;
   text-wrap: balance;
-  max-width: 16em;
+  max-width: 18em;
   color: var(--fg);
 }
 
@@ -342,18 +351,13 @@
   color: var(--accent);
 }
 
-/* --- Below 900 px: a short ledger band with the wordmark and value line. --- */
+/* --- Below 900 px: a short band with the lockup and value line. --- */
 
 .band {
   position: relative;
   padding: max(var(--space-5), env(safe-area-inset-top)) var(--space-5) var(--space-5)
     calc(var(--space-5) * 2 - 4px);
   background-color: var(--surface-2);
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0 27px,
-    color-mix(in srgb, var(--border) 40%, transparent) 27px 28px
-  );
   border-bottom: 1px solid var(--border);
 }
 
@@ -506,7 +510,10 @@
 
 .footer {
   margin: var(--space-7) 0 0;
-  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--fg-muted);
   text-align: center;
 }

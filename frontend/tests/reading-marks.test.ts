@@ -82,13 +82,14 @@ describe("how the marks look", () => {
     // After .problem and .problem:hover at no lower specificity, so their box-shadow never replaces it.
     expect(css.indexOf(".problem:focus-visible {")).toBeGreaterThan(css.indexOf(".problem:hover {"));
     // Both tokens are set once, so the dark theme keeps them: pages are paper white in both.
-    expect(globals.match(/--mine-on-paper: #[0-9a-f]+/g)).toEqual(["--mine-on-paper: #233f8c"]);
+    // Changed on purpose (MonoEdge theme, 16 Oct 2026): the MonoEdge blue #204494.
+    expect(globals.match(/--mine-on-paper: #[0-9a-f]+/g)).toEqual(["--mine-on-paper: #204494"]);
     expect(globals.match(/--paper: #[0-9a-f]+/g)).toEqual(["--paper: #ffffff"]);
     const channel = (hex: string) => {
       const value = parseInt(hex, 16) / 255;
       return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
     };
-    const ink = 0.2126 * channel("23") + 0.7152 * channel("3f") + 0.0722 * channel("8c");
+    const ink = 0.2126 * channel("20") + 0.7152 * channel("44") + 0.0722 * channel("94");
     expect((1 + 0.05) / (ink + 0.05)).toBeGreaterThanOrEqual(3); // WCAG 1.4.11 against white
   });
 
