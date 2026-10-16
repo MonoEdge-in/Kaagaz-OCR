@@ -29,6 +29,7 @@ import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
 import {
   COST_SAVING,
   DYNAMIC_HINT,
+  ENSEMBLE_OFF,
   LEVELS,
   LEVEL_WORDS,
   VENDOR_NOT_ALLOWED,
@@ -47,6 +48,7 @@ import {
   refusalField,
   resetSection,
   sameAsDefault,
+  savedText,
   statusText,
   toggled,
   toggledLevel,
@@ -87,6 +89,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [leaving, setLeaving] = useState(false); // asked to close with unsaved changes
+  const [ensembleOff, setEnsembleOff] = useState(false); // the last save turned Ensemble off
   // The form appears once the data has loaded: its first control takes the focus then.
   const focusFirst = useCallback((form: HTMLFormElement | null) => {
     form?.querySelector<HTMLElement>("input, select, button")?.focus();
@@ -131,9 +134,19 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
     }
     setBusy(true);
     try {
-      await putOrgAi(org.id, { ...aiBody(draft), ensemble: draft.ensemble, ai_budget_usd: parseBudget(draft.budget) ?? null }, normalizeCode(code));
-      onSaved(`Saved the AI settings of ${org.name}.`);
-      onClose();
+      const { ensemble_off: ensembleTurnedOff, ...reply } = await putOrgAi(org.id, { ...aiBody(draft), ensemble: draft.ensemble, ai_budget_usd: parseBudget(draft.budget) ?? null }, normalizeCode(code));
+      onSaved(savedText(org.name, ensembleTurnedOff));
+      if (!ensembleTurnedOff || !loaded) {
+        onClose();
+        return;
+      }
+      // Saved, with Ensemble off (fewer than two scanning models): the dialog stays open, as
+      // saved, so the note is seen.
+      setLoaded({ ...loaded, reply });
+      setDraft(draftOf(reply.own, reply));
+      setEnsembleOff(true);
+      setCode("");
+      setBusy(false);
     } catch (caught) {
       const refusal = refusalOf(caught);
       if (refusal.field === "code") setCodeProblem(refusal.message);
@@ -207,8 +220,14 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
             onChange={(next) => {
               setDraft(next);
               setReset(false);
+              setEnsembleOff(false);
             }}
           />
+          {ensembleOff && (
+            <p className="hint" role="status">
+              {ENSEMBLE_OFF}
+            </p>
+          )}
           <CodeField
             id={CODE_ID}
             label="A new 6-digit code from your app"
@@ -403,7 +422,7 @@ export function AiFields(props: {
           </div>
         )}
         <span id="ai-dynamic-hint" className="hint">
-          {DYNAMIC_HINT} Needs at least two scanning models.
+          {DYNAMIC_HINT}
         </span>
       </SectionBox>
 

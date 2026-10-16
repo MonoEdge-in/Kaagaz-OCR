@@ -415,7 +415,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
     }
     put = offline.client.put(path, json={**ORG_BODY, "code": offline.code()}, headers=offline.headers)
     assert put.status_code == 200, put.text
-    assert put.json() == reply  # the settings as saved, read again
+    assert put.json() == {**reply, "ensemble_off": False}  # the settings as saved, read again
     [(_, args, kwargs)] = [call for call in offline.calls if call[0] == "set_org_ai"]
     assert args == (
         OID,
@@ -452,6 +452,15 @@ def test_saving_an_organisations_ai_settings_needs_a_fresh_code(offline: _Offlin
     assert offline.names() == ["step_up_failed"]
 
 
+def test_ensemble_saved_off_with_one_scanning_model_is_said_not_refused(offline: _Offline) -> None:
+    # 0037: with fewer than two scanning models in effect the save is done and Ensemble off.
+    offline.org = {**ORG_ROW, "scan_models": [MODEL], "dynamic": True, "ensemble": False}
+    body = {**ORG_BODY, "scan_models": [MODEL], "dynamic": True, "code": offline.code()}
+    put = offline.client.put(f"/api/operator/orgs/{CID}/ai", json=body, headers=offline.headers)
+    assert put.status_code == 200, put.text
+    assert (put.json()["ensemble"], put.json()["ensemble_off"]) == (False, True)
+
+
 # Every outcome of kaagaz_op_set_org_ai (C10): a status, a code and plain words.
 ORG_OUTCOMES = [
     ("done", 200, None),
@@ -462,8 +471,8 @@ ORG_OUTCOMES = [
     ("chat_not_verified", 409, "chat_not_verified"),
     ("level_not_supported", 409, "level_not_supported"),
     ("default_not_allowed", 409, "default_not_allowed"),
-    ("needs_two_models_scan", 409, "needs_two_models_scan"),
-    ("needs_two_models_chat", 409, "needs_two_models_chat"),
+    # Changed on purpose (Tushar, 16 Oct 2026: any number of models): 0037 no longer returns
+    # needs_two_models_scan or needs_two_models_chat.
     ("signed_out", 401, "not_signed_in"),
     ("step_up", 403, "step_up_failed"),
 ]
@@ -582,7 +591,7 @@ def test_saving_the_platform_defaults_needs_a_fresh_code_and_sends_the_choice(of
 
 @pytest.mark.parametrize(
     ("outcome", "status", "code"),
-    [row for row in ORG_OUTCOMES if row[0] not in ("missing", "deleting", "needs_two_models_chat")],
+    [row for row in ORG_OUTCOMES if row[0] not in ("missing", "deleting")],
 )
 def test_each_defaults_outcome_gets_its_reply(
     offline: _Offline, outcome: str, status: int, code: str | None

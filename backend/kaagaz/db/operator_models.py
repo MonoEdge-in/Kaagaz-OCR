@@ -19,11 +19,10 @@ audit rows.
   empty list or a None field inherits the platform's), its Ensemble switch and its monthly
   budget. Outcomes: ``done``, ``missing``, ``deleting``, ``unavailable``,
   ``not_verified``, ``chat_not_verified``, ``level_not_supported``,
-  ``default_not_allowed``, ``needs_two_models_scan``, ``needs_two_models_chat``,
-  ``step_up`` or ``signed_out``.
+  ``default_not_allowed``, ``step_up`` or ``signed_out``. Any number of scanning models
+  (0037): Ensemble with fewer than two in effect is saved off, still ``done``.
 * ``ai_defaults`` and ``set_ai_defaults``: the platform defaults and how many
-  organisations inherit each area; the same outcomes but missing, deleting and
-  needs_two_models_chat.
+  organisations inherit each area; the same outcomes but missing and deleting.
 * ``usage``: tokens and dollars per organisation and model. No user, no document.
 
 ``record_verified`` and ``record_chat_verified`` are the exception: ``verify-models
