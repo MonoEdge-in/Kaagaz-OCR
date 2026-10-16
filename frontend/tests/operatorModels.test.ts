@@ -16,20 +16,28 @@ import {
   aiBody,
   aiErrors,
   canEnable,
+  changesText,
   defaultsImpact,
   draftOf,
   followDefaults,
   follows,
   inheritedText,
+  inrText,
+  jobText,
   modelAction,
+  monthSpentText,
   notEnabledReason,
   offered,
   pageCost,
   pageCostText,
   parseBudget,
+  per1000Text,
   periodRange,
+  pickerText,
   priceText,
   refusalField,
+  resetSection,
+  sameAsDefault,
   spendTotals,
   statusText,
   toggled,
@@ -42,7 +50,7 @@ import { AiFields, CODE_ID, fieldId, firstProblem, refusalOf } from "@/component
 import { DefaultsSummary } from "@/components/operator/PlatformDefaults";
 import { SpendTable } from "@/components/operator/SpendView";
 import { ApiError } from "@/lib/api";
-import type { AiDefaults, AiValues, OperatorModel, OperatorUsageRow } from "@/lib/types";
+import type { AiDefaults, AiValues, OperatorModel, OperatorUsageRow, OrgInsight } from "@/lib/types";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
@@ -97,7 +105,8 @@ describe("money and model words", () => {
 
   it("formats dollars with the one shared formatter (R6)", () => {
     const source = readFileSync(join(__dirname, "..", "components/operator/models.ts"), "utf8");
-    expect(source).toContain('import { formatUsd } from "@/lib/format";');
+    // Changed on purpose (board 9, 16 Oct 2026): the same import also brings PART_NOT_KNOWN.
+    expect(source).toMatch(/import \{[^}]*\bformatUsd\b[^}]*\} from "@\/lib\/format";/);
     expect(source).not.toMatch(/style: "currency", currency: "USD" \}\)/);
   });
 
@@ -107,6 +116,29 @@ describe("money and model words", () => {
     expect(pageCost(model({ tokens_per_page_in: null }))).toBeNull();
     expect(pageCostText(model())).toBe("about $0.01 a page (rough estimate)");
     expect(pageCostText(model({ tokens_per_page_in: null }))).toBe("Cost not measured yet");
+  });
+
+  it("says a scan model's cost per 1,000 pages for the AI settings (board 9)", () => {
+    expect(per1000Text(model())).toBe("$12.20 per 1,000 pages (rough estimate)");
+    expect(per1000Text(model({ ledger_tokens_in: 10_000, ledger_tokens_out: 2_000 }))).toBe("$44.00 per 1,000 pages");
+    expect(per1000Text(model({ tokens_per_page_in: null }))).toBe("Cost not measured yet");
+  });
+
+  it("says a budget in rough rupees at the one fixed rate, and nothing without a budget", () => {
+    expect(inrText(120)).toBe("≈ ₹10,560 a month (at ₹88 per $)");
+    expect(inrText(null)).toBeNull();
+    expect(inrText(undefined)).toBeNull();
+    expect(readFileSync(join(__dirname, "..", "components/operator/models.ts"), "utf8")).toMatch(/\/\/ ponytail: .*\n.*\nexport const INR_PER_USD = /);
+  });
+
+  it("says this month's spend from the insights, and nothing when it is not known", () => {
+    const org = { month_cost_usd: 58.1, month_cost_estimated: false, month_cost_part_unknown: false } as OrgInsight;
+    expect(monthSpentText(org)).toBe("This month: $58.10 used");
+    expect(monthSpentText({ ...org, month_cost_estimated: true, month_cost_part_unknown: true })).toBe(
+      "This month: ≈ $58.10 (estimated) used (part not known)",
+    );
+    expect(monthSpentText({ ...org, month_cost_usd: null })).toBeNull();
+    expect(monthSpentText(undefined)).toBeNull();
   });
 
   it("estimates a page from the last 30 days of scans first (R3)", () => {
@@ -269,6 +301,60 @@ describe("the AI settings form's rules", () => {
     expect([reset.ensemble, reset.budget]).toEqual([false, "50"]);
   });
 
+  it("says per section whether it is the platform default, and resets only that section (board 9)", () => {
+    const own = draftOf(values({ scan_models: ["m/one"], scan_default: "m/one", chat_levels: ["low"], chat_default_level: "low" }), {
+      ensemble: true,
+      ai_budget_usd: 50,
+    });
+    const sections = ["scan", "chat", "ensemble", "budget"] as const;
+    expect(sections.map((each) => sameAsDefault(own, each))).toEqual([false, false, false, false]);
+    expect(sections.map((each) => sameAsDefault(draftOf(values()), each))).toEqual([true, true, true, true]);
+    const scan = resetSection(own, "scan");
+    expect(sections.map((each) => sameAsDefault(scan, each))).toEqual([true, false, false, false]);
+    expect([scan.chat_levels, scan.ensemble, scan.budget]).toEqual([["low"], true, "50"]);
+    expect(sameAsDefault(resetSection(own, "chat"), "chat")).toBe(true);
+    expect(resetSection(own, "ensemble")).toEqual({ ...own, ensemble: false });
+    expect(resetSection(own, "budget")).toEqual({ ...own, budget: "" });
+  });
+
+  it("lists the unsaved changes in words for the save bar, and none for the same values", () => {
+    const saved = draftOf(values(), { ensemble: false, ai_budget_usd: 100 });
+    expect(changesText(saved, saved, catalogue)).toEqual([]);
+    expect(changesText(saved, { ...saved, budget: "100.00" }, catalogue)).toEqual([]); // the same dollars
+    const draft = { ...toggled(saved, "scan", "m/one", true), ensemble: true, budget: "120" };
+    expect(changesText(saved, draft, catalogue)).toEqual(["Scanning models: One (default)", "Ensemble: on", "Budget: $100.00 to $120.00"]);
+    const levels = toggledLevel({ ...saved, dynamic: false, budget: "" }, "high", true);
+    expect(changesText(saved, levels, catalogue)).toEqual(["Dynamic: Off", "Answering levels: High; default High", "Budget: $100.00 to none"]);
+    const own = draftOf(values({ chat_models: ["m/two"], chat_default: "m/two" }));
+    expect(changesText(own, draftOf(values()), catalogue)).toEqual(["Answering models: platform defaults"]);
+  });
+
+  it("says what an organisation's people will see in the chat picker, from the draft or the defaults", () => {
+    expect(pickerText("Sharma Traders", draftOf(values()), DEFAULTS, ENV, catalogue)).toBe(
+      "People at Sharma Traders will see: the server's model (google/env-chat); levels Low, Medium; default Low",
+    );
+    const own = draftOf(values({ chat_models: ["m/two"], chat_default: "m/two", chat_levels: ["medium", "high"], chat_default_level: "medium" }));
+    expect(pickerText("Sharma Traders", own, DEFAULTS, ENV, catalogue)).toBe(
+      "People at Sharma Traders will see: Two (default); levels Medium, High; default Medium",
+    );
+  });
+
+  it("names each model's job for Compare models: the platform defaults first, else what it can do", () => {
+    const platform = { defaults: DEFAULTS, env: ENV, orgs_inheriting: COUNTS };
+    const pick = (id: string) => catalogue.find((each) => each.id === id) ?? model({ id });
+    const [one, two, off, far] = [pick("m/one"), pick("m/two"), pick("m/off"), pick("x/far")];
+    expect(jobText(two, platform)).toBe("Scan default (low)"); // no platform level: the server's
+    expect(jobText(one, platform)).toBe("Scan only · not used for chat");
+    expect(jobText(off, platform)).toBe("Not enabled");
+    expect(jobText(far, platform)).toBe("Never used: its maker is not allowed");
+    const chatOnly = model({ id: "c/only", enabled_at: "2026-10-11T00:00:00Z", verified: false });
+    expect(jobText(chatOnly, platform)).toBe("Chat only · not used for scan");
+    expect(jobText(model({ id: "google/env-chat" }), platform)).toBe("Chat default (Low)"); // no platform list: the server's
+    const both = { ...DEFAULTS, scan_thinking: "high" as const, chat_models: ["m/two"], chat_default: "m/two", chat_default_level: "medium" as const };
+    expect(jobText(two, { ...platform, defaults: both })).toBe("Scan default (High) · chat default (Medium)");
+    expect(jobText(two, null)).toBe("Scan and chat");
+  });
+
   it("names what an organisation that follows the platform gets, or the server's own", () => {
     expect(inheritedText("scan_models", DEFAULTS, ENV, catalogue)).toBe("Two (default), One");
     expect(inheritedText("chat_models", DEFAULTS, ENV, catalogue)).toBe("the server's model (google/env-chat)");
@@ -304,11 +390,15 @@ describe("the AI settings form's rules", () => {
 });
 
 describe("the AI settings fields", () => {
-  const fields = (props: { platform?: boolean; own?: AiValues; errors?: AiErrors; busy?: boolean } = {}) => {
+  const fields = (
+    props: { platform?: boolean; own?: AiValues; errors?: AiErrors; busy?: boolean; orgName?: string; spent?: string | null } = {},
+  ) => {
     const own = props.own ?? values();
     return renderToStaticMarkup(
       createElement(AiFields, {
         platform: props.platform ?? false,
+        orgName: props.orgName,
+        spent: props.spent,
         catalogue,
         saved: own,
         defaults: DEFAULTS,
@@ -322,17 +412,25 @@ describe("the AI settings fields", () => {
     );
   };
 
+  // Changed on purpose (board 9, 16 Oct 2026): every section of an organisation says
+  // "Same as platform default" or "Changed from platform default", Ensemble and Budget too.
+  const tag = (html: string, section: string) => html.match(new RegExp(`<legend>${section}<span[^>]*>([^<]*)</span>`))?.[1];
   it("groups each area in a fieldset with a legend, and marks an area that follows the platform", () => {
     const html = fields();
     expect(html.match(/<fieldset/g)?.length).toBeGreaterThanOrEqual(5);
     expect(html.match(/<legend/g)?.length).toBe(html.match(/<fieldset/g)?.length);
-    expect(html.match(/From platform defaults<\/span>/g)).toHaveLength(2);
+    expect(["Scanning", "Answering", "Ensemble", "Budget"].map((section) => tag(html, section))).toEqual([
+      "Same as platform default",
+      "Same as platform default",
+      "Same as platform default",
+      "Changed from platform default", // a $25 budget
+    ]);
     expect(html).toContain("None ticked: from platform defaults, Two (default), One.");
     expect(html).toContain("Platform default (the server&#x27;s level (low))");
     expect(html).toContain("Platform default (On)");
     expect(html).toContain("Picks the right reading for each page.");
     const own = fields({ own: values({ scan_models: ["m/one"], scan_default: "m/one", scan_thinking: "high", dynamic: false }) });
-    expect(own.match(/From platform defaults<\/span>/g)).toHaveLength(1); // answering only
+    expect([tag(own, "Scanning"), tag(own, "Answering")]).toEqual(["Changed from platform default", "Same as platform default"]);
     expect(own.match(/type="radio"/g)).toHaveLength(1); // the default among the ticked
   });
 
@@ -352,19 +450,45 @@ describe("the AI settings fields", () => {
     const platform = fields({ platform: true });
     expect(platform).not.toMatch(/Ensemble|budget|dollars/);
     expect(platform).toContain("None ticked: the server&#x27;s model (google/env-scan).");
-    expect(platform).not.toContain("From platform defaults");
+    expect(platform).not.toMatch(/platform default<\/span>|Reset section|People at/);
   });
 
   it("says a refusal next to its field and points the field at it", () => {
     const html = fields({ errors: { chat_models: "Ensemble needs at least two answering models.", budget: "Bad." } });
     expect(html).toMatch(/id="ai-chat-models-error" class="error-text" role="alert">Ensemble needs/);
     expect(html).toMatch(/id="ai-chat-models"[^>]*aria-describedby="ai-chat-models-error"/);
-    expect(html).toContain('aria-invalid="true" aria-describedby="ai-budget-error ai-budget-hint"');
+    // Changed on purpose (16 Oct 2026): a budget's rupees are said with its hint.
+    expect(html).toContain('aria-invalid="true" aria-describedby="ai-budget-error ai-budget-hint ai-budget-inr"');
     expect(fields()).not.toContain("-error");
   });
 
+  // Changed on purpose (board 9, 16 Oct 2026): Ensemble and Budget are sections of their own.
   it("locks every control while saving", () => {
-    expect(fields({ busy: true }).match(/<fieldset[^>]*disabled=""/g)).toHaveLength(2);
+    expect(fields({ busy: true }).match(/<fieldset[^>]*disabled=""/g)).toHaveLength(4);
+  });
+
+  it("offers Reset section only on a changed section, named by its section", () => {
+    const html = fields({ own: values({ chat_models: ["m/two"], chat_default: "m/two" }) });
+    expect(html.match(/>Reset section<\/button>/g)).toHaveLength(2); // Answering and the $25 budget
+    expect(html).toContain('aria-label="Reset section: Answering"');
+    expect(html).toContain('aria-label="Reset section: Budget"');
+    expect(html).not.toContain('aria-label="Reset section: Scanning"');
+  });
+
+  it("shows each scan model's cost per 1,000 pages, never an answering model's", () => {
+    const html = fields();
+    expect(html).toContain("<span>One<span");
+    expect(html).toContain("$12.20 per 1,000 pages (rough estimate)");
+    expect(html.match(/per 1,000 pages/g)).toHaveLength(3); // One, Two and Far for scanning
+    expect(html).toContain("<span>Two</span>"); // answering
+  });
+
+  it("says what the organisation's people will see, its budget in rupees and this month's spend", () => {
+    const html = fields({ orgName: "Sharma Traders", spent: "This month: $58.10 used" });
+    expect(html).toContain("People at Sharma Traders will see: the server&#x27;s model (google/env-chat); levels Low, Medium; default Low");
+    expect(html).toContain('<span id="ai-budget-inr" class="hint">≈ ₹2,200 a month (at ₹88 per $)</span>');
+    expect(html).toContain("This month: $58.10 used");
+    expect(fields()).not.toMatch(/People at|This month/);
   });
 });
 
@@ -378,6 +502,17 @@ describe("the AI settings dialogs", () => {
       expect(source, file).toContain('setCode("")');
     }
     expect(CODE_ID).toBe("ai-code");
+  });
+
+  it("keeps a save bar at the dialog's foot that lists the changes, with Discard and Save off while nothing changed", () => {
+    const dialog = read("components/operator/OrgAiSettings.tsx");
+    expect(dialog).toContain("changesText(saved, draft, loaded?.catalogue ?? [])");
+    expect(dialog.match(/disabled=\{busy \|\| unchanged\}/g)).toHaveLength(2); // Discard and Save
+    expect(dialog).toContain('"No unsaved changes"');
+    expect(dialog).toContain("setDraft(saved);");
+    expect(dialog).toContain("if (busy || !draft || unchanged) return;");
+    const css = read("components/operator/Operator.module.css");
+    expect(css).toMatch(/\.saveBar \{[^}]*position: sticky;\s*bottom: 0;[^}]*background: var\(--surface\);/);
   });
 
   it("names both areas when the organisation goes back to the platform defaults", () => {

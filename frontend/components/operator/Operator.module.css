@@ -246,11 +246,46 @@
   font-weight: 600;
 }
 
-.fromDefaults {
+/* Board 9: "Same as platform default" or "Changed from platform default", in words. */
+.sectionTag {
+  display: inline-block;
   margin-inline-start: var(--space-2);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
   color: var(--fg-muted);
   font-size: var(--fs-sm);
   font-weight: 400;
+  line-height: 1.4;
+}
+
+.sectionTools {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* The save bar sticks to the foot of the dialog's scrolling body, edge to edge, while the
+   form scrolls under it (its negative margins undo the body's padding). */
+.saveBar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  margin: 0 calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.changes {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-sm);
 }
 
 @media (pointer: coarse) {
