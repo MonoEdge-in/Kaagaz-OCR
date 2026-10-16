@@ -6,6 +6,7 @@ is ready before its vectors (made in parallel through the one gate), and the tim
 counts a model's pages read at once. tests/test_replay_scan.py proves the saved output is
 unchanged."""
 
+import io
 import threading
 import time
 import unittest
@@ -18,14 +19,16 @@ from sqlalchemy.exc import OperationalError
 
 from kaagaz import cli
 from kaagaz.ai.replies import ModelOutputError
+from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.ocr import DocumentPages, PageRead, careful_pages, worst_first
 from kaagaz.reading.socket import PagePool, PagesInOrder, waiting
 from kaagaz.scanning.gate import DocumentStatus
 from kaagaz.settings import Settings, SettingsError
 from tests import test_dynamic_reading
-from tests.fakes import FakeEmbedder, ModelDown
+from tests.fakes import FakeEmbedder, ModelDown, PresetSocket
 from tests.pdf_builder import make_pdf
+from tests.support import PDF_BYTES
 from tests.test_dynamic_reading import CAREFUL, STANDARD, ModelClient, _reading_rig, engine, ledger
 from tests.test_ensemble_scan import MAIN, SECOND, THIRD, ensemble_pages
 from tests.test_gemini_ocr import (
@@ -40,9 +43,11 @@ from tests.test_gemini_ocr import (
     value,
 )
 from tests.test_openrouter_client import _client
-from tests.test_pipeline import CSV
+from tests.test_pipeline import CSV, build
+from tests.test_pipeline import CUSTOMER as PIPELINE_CUSTOMER
 from tests.test_pipeline_gemini import SHARP, FakeChecker
 from tests.test_pipeline_runs import rig as runs_rig
+from tests.test_pipeline_scans import INVOICE, two_pages
 from tests.test_settings import shipped
 
 WAIT = 3.0  # seconds a test waits for something that must happen at once
@@ -324,6 +329,25 @@ class ReadyBeforeIndexTest(unittest.TestCase):
             vectors = client.embed([f"piece {n}" for n in range(8)])
         self.assertLess(time.perf_counter() - started, 1.2)  # one after another: 2.4 s
         self.assertEqual([vector[0] for vector in vectors], [float(n) for n in range(8)])
+
+
+class PicturesAtOnceTest(unittest.TestCase):
+    def test_page_pictures_are_stored_at_the_same_time_and_all_before_reading(self) -> None:
+        system = build(socket=PresetSocket({sniff.PDF: INVOICE}, {sniff.PDF: INVOICE}), preparer=two_pages())
+        both = threading.Barrier(2, timeout=WAIT)  # one by one, the first never gets past it
+        put = system.page_images.put_page_image
+
+        def put_together(customer_id: str, document_id: str, page_no: int, data: bytes) -> None:
+            both.wait()
+            put(customer_id, document_id, page_no, data)
+
+        system.page_images.put_page_image = put_together  # type: ignore[method-assign]
+        doc = system.upload.accept(PIPELINE_CUSTOMER, io.BytesIO(PDF_BYTES)).document_id
+        system.worker.run_once()
+        self.assertIs(system.statuses.get_status(PIPELINE_CUSTOMER, doc), DocumentStatus.READY)
+        self.assertEqual(sorted(page for _, _, page in system.page_images.images), [1, 2])
+        pages = system.store.pages_for(PIPELINE_CUSTOMER, doc)
+        self.assertEqual([p.has_image for p in pages], [True, True])
 
 
 class SettingsAndCliTest(unittest.TestCase):

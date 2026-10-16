@@ -179,15 +179,18 @@ sorts in the chunkers and extractors (O(n log n)).
 """
 
 import contextlib
+import contextvars
 import functools
 import hashlib
 import io
 import logging
 import math
 import re
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from importlib import metadata
@@ -317,6 +320,7 @@ _PHOTO_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF})
 _WEBP_QUALITY = 80
 _WEBP_METHOD = 2
 _WEBP_MAX_SIDE = 16383  # the longest side a WebP picture can have
+PICTURE_WORKERS = 4  # page pictures encoded and stored at once (fast scan)
 
 # Security A8, PRD 5 V1 (MAX_CHECK_CROPS, renamed from MAX_VISION_CROPS): at most this many
 # value boxes of one document are read again by the checker; the values
@@ -917,14 +921,30 @@ class DocumentProcessor:
 
         run.rates, run.preparing_started = self._rates(job, record.detected_type), self._timer()
         pictured: set[int] = set()  # the pages whose picture is stored
+        # Fast scan: encoding a page's WebP takes ~90% of preparing, so pages are encoded and
+        # stored PICTURE_WORKERS at a time (Pillow lets go of the GIL), and at most that many
+        # drawn pictures wait in memory. All are stored before reading starts.
+        slots = threading.BoundedSemaphore(PICTURE_WORKERS)
+        storing: list[Future[None]] = []
 
-        def on_picture(page_no: int, count: int, picture: Image.Image) -> None:
-            self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(picture))
-            pictured.add(page_no)
-            heartbeat()
-            self._progress(job, run, "preparing", len(pictured), count)
+        def store(page_no: int, picture: Image.Image) -> None:
+            try:
+                self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(picture))
+                pictured.add(page_no)
+            finally:
+                slots.release()
 
-        prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data, on_picture))
+        with ThreadPoolExecutor(PICTURE_WORKERS) as pool:
+
+            def on_picture(page_no: int, count: int, picture: Image.Image) -> None:
+                slots.acquire()
+                storing.append(pool.submit(store, page_no, picture))
+                heartbeat()
+                self._progress(job, run, "preparing", page_no, count)
+
+            prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data, on_picture))
+            for stored in storing:
+                stored.result()  # the first error, as when they were stored one by one
         pages = [_page_record(info, prepared, pictured) for info in prepared.pages]
 
         run.pages_prepared = len(pictured)
@@ -974,10 +994,20 @@ class DocumentProcessor:
         # CX1: a page whose sentence goes on onto the next one, as its reader said.
         continued = {page_no for page_no, read in run.page_reads.items() if read.continues_on_next_page}
         pieces += pieces_from_lines(customer_id, document_id, usable, continues=continued)
-        with self._timed(run, "card", when=self._chat is not None):
-            understanding = self._understand(
-                job, run, heartbeat, usable, values_from_cells(usable) + values_from_lines(usable)
-            )
+        # Fast scan: the map reads only the pieces' text, sections and pages, never the card's
+        # context header, so its call runs while the card is asked; the same map either way.
+        with ThreadPoolExecutor(1) as mapper:
+            mapping = mapper.submit(contextvars.copy_context().run, self._map, job, run, pieces)
+            with self._timed(run, "card", when=self._chat is not None):
+                understanding = self._understand(
+                    job, run, heartbeat, usable, values_from_cells(usable) + values_from_lines(usable)
+                )
+            document_map = mapping.result()
+        # After the card, which sets the run's calls and error: the map adds to them.
+        run.model_calls += document_map.model_calls
+        run.model_error = run.model_error or document_map.error_code
+        if document_map.model_calls:
+            heartbeat()
         facts = understanding.facts
         # L2: the card says the languages; with no card (the model off or down) the pieces do.
         facts = replace(facts, languages=facts.languages or languages_without_model(pieces))
@@ -988,8 +1018,6 @@ class DocumentProcessor:
             doc_type=facts.doc_type,
             document_date=facts.document_date,
         )
-        with self._timed(run, "map", when=self._map_budget is not None):
-            document_map = self._map(job, run, heartbeat, pieces)
         rule, quoted = understanding.rule_values, understanding.quoted_values
         # A card value, or a located value whose spot is unsure (a loose, ambiguous or
         # several-span quote), is never verified, so its box is never cropped (security A8).
@@ -1140,22 +1168,17 @@ class DocumentProcessor:
             }
         return understanding
 
-    def _map(self, job: Job, run: _Run, heartbeat: Heartbeat, pieces: list[Piece]) -> DocumentMap:
+    def _map(self, job: Job, run: _Run, pieces: list[Piece]) -> DocumentMap:
         """CX2, CX3: the document's sections (``sections_from_pieces``), with their summaries
         and the topics from the one map call when the processor has a chat model and its
-        ``map_budget``, counted in the run's model calls. A call that failed leaves the
-        sections from the headings and no topics, and its code on the run, like the card's.
-        The call is billed as map (SP1)."""
+        ``map_budget``. A call that failed leaves the sections from the headings and no
+        topics, and its code, like the card's; the caller counts both on the run. The call
+        is billed as map (SP1). It runs on its own thread, alongside the card."""
         sections = sections_from_pieces(pieces)
         if self._map_budget is None:
             return DocumentMap(sections, (), 0, None)
-        with self._billed(job, run, "map"):
-            found = map_document(self._chat, pieces, sections, self._map_budget)
-        run.model_calls += found.model_calls
-        run.model_error = run.model_error or found.error_code
-        if found.model_calls:
-            heartbeat()
-        return found
+        with self._timed(run, "map"), self._billed(job, run, "map"):
+            return map_document(self._chat, pieces, sections, self._map_budget)
 
     def _prepare_or_count(self, job: Job, detected_type: str, data: bytes, on_picture: OnPicture) -> Prepared:
         """``prepare``; a file with too many pages keeps its real page count before
