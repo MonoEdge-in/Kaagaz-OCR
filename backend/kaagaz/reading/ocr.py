@@ -515,8 +515,9 @@ class DocumentPages:
     with Careful on its own thread right after its first read when ``careful_reasons`` says
     so, and its reasons are kept in ``escalated`` for run_config.reading.
 
-    Never failed (16 Oct 2026): a page whose read runs out of time above low thinking is read
-    once more at low (``careful_read`` reads are not: their first read stays)."""
+    Never failed (16 Oct 2026): a page read above low thinking gets a low read alongside once
+    it is slow, on the same 60 s page deadline (``careful_read`` reads do not: their first read
+    stays)."""
 
     customer_id: str
     document_id: str

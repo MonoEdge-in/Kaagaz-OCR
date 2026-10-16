@@ -140,6 +140,7 @@ import math
 import re
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from concurrent import futures
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -226,6 +227,10 @@ LOW_THINKING = "low"  # a timed-out page's second read (never failed, 16 Oct 202
 # healthy high read is never cut short. A model call never starts with less than MIN_CALL left.
 LOCAL_READ_SECONDS = 15.0
 MIN_CALL_SECONDS = 20.0
+# Tushar (16 Oct 2026): a page's read is at most OCR_TIMEOUT_SECONDS (60) in all. A read above
+# low thinking that is not back by this share of it gets a low read alongside, on the same
+# deadline; the high reply is used when it comes in time, else the low one.
+LOW_ALONGSIDE_SHARE = 0.5
 DOCUMENT_BUDGET = "document_budget"  # the code of a page read locally when the budget ran out
 QUICKEST_THINKING = frozenset({"minimal", LOW_THINKING})  # a timeout here is not read again
 # G3: the kinds the model may give a line (all in spans.BLOCK_KINDS).
@@ -449,9 +454,9 @@ class GeminiEngine:
                 raise RuntimeError("the Gemini reader is already reading a document")
             self._pages = pages
             self._read_with = self._model if pages.model is None else pages.model
-            # O(1): max(seconds per page x pages, the floor); no budget without a page count
-            # (Dynamic's second reading of a long document: each page keeps its own budget).
-            floor = 2 * self._timeout + LOCAL_READ_SECONDS
+            # O(1): max(seconds per page x pages, one page's read); no budget without a page
+            # count (Dynamic's second reading of a long document: each page keeps its own).
+            floor = self._timeout
             count = pages.page_count
             self._doc_deadline = (
                 self._client.now() + max(self._per_page * count, floor) if count > 0 else math.inf
@@ -656,26 +661,17 @@ class GeminiEngine:
             if careful_read:
                 raise BackendUnavailable(GEMINI_BACKEND)  # Careful is dropped: the first read stays
             return self._read_locally(image, page_no, READER_REFUSED, DOCUMENT_BUDGET)
-        spent = (0, 0)  # a timed-out read's tokens, before it was read again at low
+        # Tushar (16 Oct 2026): at most OCR_TIMEOUT_SECONDS a page; above low thinking a low read
+        # runs alongside once the high one is slow, and the high reply wins when it comes in time.
+        alongside = not careful_read and (again or thinking not in QUICKEST_THINKING)
         try:
-            try:
-                reply, result, input_tokens, output_tokens = self._ask(
-                    image, model, provider, harder=again, thinking=thinking
-                )
-            except ModelUnavailable as error:
-                # Never failed (16 Oct 2026): a dense page can outlast its budget at a high level;
-                # it is read once more at low, with a budget of its own, before the local reader.
-                quickest = not again and thinking in QUICKEST_THINKING
-                no_time = self._left() < MIN_CALL_SECONDS
-                if error.code != PAGE_TIMEOUT or quickest or careful_read or no_time:
-                    raise
-                spent, thinking, again = (error.input_tokens, error.output_tokens), LOW_THINKING, False
-                _log.warning("page read again at low thinking", extra={"code": PAGE_TIMEOUT})
+            reply, result, input_tokens, output_tokens, read_low = self._ask_in_time(
+                image, model, provider, again=again, thinking=thinking, alongside=alongside
+            )
+            if read_low:
+                thinking = LOW_THINKING
                 if pages is not None:
                     key = self._key(pages, sha or pixels_sha256(image), page_no, model, thinking)
-                reply, result, input_tokens, output_tokens = self._ask(
-                    image, model, provider, harder=False, thinking=thinking
-                )
         except ModelUnavailable as error:
             if error.code == PAGE_TIMEOUT and careful_read:
                 # Careful ran out of time: dropped (``_careful``), the first read stays; no local read.
@@ -686,10 +682,10 @@ class GeminiEngine:
                 model,
                 error.code,
                 started,
-                tokens=(spent[0] + error.input_tokens, spent[1] + error.output_tokens),
+                tokens=(error.input_tokens, error.output_tokens),
             )
         except ModelOutputError as error:
-            tokens = (spent[0] + error.input_tokens, spent[1] + error.output_tokens)
+            tokens = (error.input_tokens, error.output_tokens)
             return self._read_locally(image, page_no, READER_REFUSED, error.code, tokens=tokens)
         except ProviderNotAllowed:
             return self._read_locally(image, page_no, READER_REFUSED, PROVIDER_NOT_ALLOWED)
@@ -698,8 +694,47 @@ class GeminiEngine:
             self._last_failure.pop(model, None)
         if pages is not None and key is not None:
             pages.cache.put(key, result, input_tokens, output_tokens)
-        tokens = (spent[0] + input_tokens, spent[1] + output_tokens)
-        return self._page(reply, image, page_no, model, tokens=tokens, boxes=boxes)
+        return self._page(reply, image, page_no, model, tokens=(input_tokens, output_tokens), boxes=boxes)
+
+    def _ask_in_time(
+        self,
+        image: Image.Image,
+        model: str,
+        provider: str | None,
+        *,
+        again: bool,
+        thinking: str,
+        alongside: bool,
+    ) -> tuple[_Reply, dict[str, Any], int, int, bool]:
+        """``_ask`` within one page deadline, and whether the low read was used. With
+        ``alongside``, a low read starts once the high one has used LOW_ALONGSIDE_SHARE of the
+        page's time (or at once when the high one timed out sooner); the high reply is used when
+        it comes before the deadline, else the low one; a non-timeout error of the high read is
+        raised as before. The read not used ends by the same deadline on its own thread (billed,
+        never cached). O(1) besides the calls; at most 2 reads of the page at once."""
+        deadline = self._page_deadline()
+        ask = functools.partial(self._ask, image, model, provider, deadline=deadline)
+        if not alongside:
+            return (*ask(harder=again, thinking=thinking), False)
+        started = self._client.now()
+        pool = ThreadPoolExecutor(2)
+        try:
+            high = pool.submit(contextvars.copy_context().run, ask, harder=again, thinking=thinking)
+            futures.wait([high], timeout=max(0.0, LOW_ALONGSIDE_SHARE * (deadline - started)))
+            if high.done() and not _timed_out(high):
+                return (*high.result(), False)
+            if deadline - self._client.now() < MIN_CALL_SECONDS and high.done():
+                return (*high.result(), False)  # timed out, with no time left for a low read
+            _log.info("page read at low alongside", extra={"code": "low_alongside"})
+            low = pool.submit(contextvars.copy_context().run, ask, harder=False, thinking=LOW_THINKING)
+            try:
+                return (*high.result(), False)
+            except ModelUnavailable as error:
+                if error.code != PAGE_TIMEOUT:
+                    raise
+                return (*low.result(), True)
+        finally:
+            pool.shutdown(wait=False)  # the read not used ends by the deadline on its own
 
     def _key(self, pages: DocumentPages, sha: str, page_no: int, model: str, thinking: str) -> PageKey:
         return PageKey(
@@ -712,7 +747,14 @@ class GeminiEngine:
         )
 
     def _ask(
-        self, image: Image.Image, model: str, provider: str | None, *, harder: bool, thinking: str
+        self,
+        image: Image.Image,
+        model: str,
+        provider: str | None,
+        *,
+        harder: bool,
+        thinking: str,
+        deadline: float | None = None,
     ) -> tuple[_Reply, dict[str, Any], int, int]:
         """(the checked reply, its JSON to cache, input tokens, output tokens); halves when
         the whole page's reply is cut off (G6). The tokens are every call's for the page:
@@ -723,7 +765,8 @@ class GeminiEngine:
         # One budget for the page (stuck reading, 16 Oct 2026): the whole page, its halves and
         # any repair all end by OCR_TIMEOUT_SECONDS from now, never three times that, and never
         # after the document's reading budget (``document``).
-        deadline = min(self._client.now() + self._timeout, self._doc_deadline)
+        if deadline is None:
+            deadline = self._page_deadline()
         ask = functools.partial(self._call, model=model, provider=provider, deadline=deadline)
         try:
             whole = ask(image, resolution, thinking)
@@ -888,6 +931,11 @@ class GeminiEngine:
             output_tokens=tokens[1],
         )
 
+    def _page_deadline(self) -> float:
+        """When a page read starting now must end: OCR_TIMEOUT_SECONDS, never after the
+        document's budget. O(1)."""
+        return min(self._client.now() + self._timeout, self._doc_deadline)
+
     def _left(self) -> float:
         """Seconds left in the open document's reading budget (inf without one). O(1)."""
         return self._doc_deadline - self._client.now()
@@ -902,6 +950,12 @@ class GeminiEngine:
 def _rapidocr_pages() -> PageEngine:
     """The local reader (Q7): RapidOCR's full read, as pages read by "rapidocr"."""
     return as_page_engine(RapidOcrEngine())
+
+
+def _timed_out(future: "Future[Any]") -> bool:
+    """A finished read that ran out of its time (``ModelUnavailable("timeout")``)."""
+    error = future.exception()
+    return isinstance(error, ModelUnavailable) and error.code == PAGE_TIMEOUT
 
 
 def _kept(first: PageRead, careful: PageRead | None, model: str) -> PageRead:

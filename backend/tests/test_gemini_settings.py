@@ -53,7 +53,7 @@ def test_the_shipped_env_example_has_the_prds_starting_values_and_no_key() -> No
         settings.cpu_workers,
         settings.max_check_crops,
         settings.reader_outage_fallback_minutes,
-    ) == (120.0, 8, 2, 200, 15)  # 8 pages at once: a 7-page document in one round (16 Oct)
+    ) == (60.0, 8, 2, 200, 15)  # 60 s a page at most; 8 pages at once (Tushar, 16 Oct)
     assert settings.model_rpm >= 1
 
 
