@@ -89,6 +89,10 @@ The steps (docs/architecture.md):
     translation are asked for at REWRITE_TEMPERATURE (rewrite.py), so what is searched does
     not change from one run to the next; the draft stays at the model's default (Google's
     guidance for Gemini 3).
+15. Most relevant picks (16 Oct 2026, kaagaz/answering/pins.py): on the search route, after
+    the gate, a hit on a page the asker picked earlier (this conversation, or another on the
+    same words) moves up a few places, only when it passes the gate by itself. It never adds
+    a piece or changes whether there is an answer; the timing line counts the hits moved.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source (but step 13's count, which sums up its cited
@@ -194,6 +198,7 @@ from kaagaz.answering.hard_to_read import (
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.memory import NO_MEMORY, Memory, allowed_tokens, prompt_text, summarise
+from kaagaz.answering.pins import Pin, lifts, pinned_first
 from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
 from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
 from kaagaz.answering.rewrite import Turn, rewrite
@@ -355,6 +360,7 @@ class _Timing:
     whole: bool = False
     aspects: int = 0
     reason: str | None = None  # the not-found reason code
+    pinned: int = 0  # hits a Most relevant pick moved up (answering/pins.py)
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -387,13 +393,14 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             _TIMING.reset(token)
             LIMITER_WAIT.reset(waits)
         _timing_log.info(
-            "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d %s"
+            "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d %s"
             " limiter_wait_ms=%.0f total_ms=%.0f",
             result.route,
             result.status,
             timing.reason or result.label,
             timing.whole,
             timing.aspects,
+            timing.pinned,
             " ".join(f"{stage}_ms={timing.ms.get(stage, 0.0):.0f}" for stage in _STAGES),
             waited[0] * 1000,
             (timing.last - timing.start) * 1000,
@@ -471,6 +478,7 @@ class AnswerService:
         user_id: str | None = None,
         memory: Memory = NO_MEMORY,
         choice: ChatChoice | None = None,
+        pins: Sequence[Pin] = (),
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
@@ -478,7 +486,8 @@ class AnswerService:
         conversation's (M3), for the rewrite only; ``choice``, who drafts the answer
         (``kaagaz.db.models.resolve_chat``, features 25-27; None: MODEL_CHAT at low, as
         before). Only the draft uses it: the rewrite, translation and memory stay on
-        MODEL_CHAT."""
+        MODEL_CHAT. ``pins``: the asker's Most relevant picks that may move a hit up
+        (answering/pins.py; ``kaagaz.db.chat.pins_for``)."""
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         whole = self._whole(customer_id, scope)
@@ -503,7 +512,8 @@ class AnswerService:
         timing = _timing()
         timing.lap("rewrite")
         timing.whole, timing.aspects = whole is not None, len(aspects)
-        answer = self._answer(customer_id, rewritten or question, scope, user_id, whole, aspects, choice)
+        asked = rewritten or question
+        answer = self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins)
         return replace(self._unreadable(customer_id, answer, scope), rewritten_question=rewritten)
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
@@ -565,9 +575,10 @@ class AnswerService:
         whole: Sequence[Hit] | None = None,
         aspects: Sequence[str] = (),
         choice: ChatChoice | None = None,
+        pins: Sequence[Pin] = (),
     ) -> Answer:
         """``whole``: every piece of the scope (CX5), or None to search; ``aspects``: CX6's;
-        ``choice``: who drafts (``answer``)."""
+        ``choice``: who drafts and ``pins``, the asker's picks (``answer``)."""
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
@@ -589,7 +600,7 @@ class AnswerService:
         words = () if user_id is None else self._words.words(customer_id, user_id)
         expansion = expand(question, words) if words else NO_EXPANSION
         answer = self._search_answer(
-            customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice
+            customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice, pins
         )
         if not expansion.used:
             return answer
@@ -745,6 +756,7 @@ class AnswerService:
         whole: Sequence[Hit] | None = None,
         aspects: Sequence[str] = (),
         choice: ChatChoice | None = None,
+        pins: Sequence[Pin] = (),
     ) -> Answer:
         # Romanised question words and fillers (ahe, kiti) say nothing about the topic: they
         # are left out of every step below, never out of normalise (PR 2b-2).
@@ -792,6 +804,16 @@ class AnswerService:
         if not passed:
             return _not_found("search", shown, closest, model_used=False, reason="notfound_gate")
         if whole is None:
+            # Most relevant picks (answering/pins.py): after the gate, so a pick never decides
+            # whether there is an answer; only a hit that passes on its own moves up.
+            def alone(item: Evidence) -> bool:
+                return enough_evidence([item], normalised.keywords, min_score, numbers) in (
+                    "score",
+                    "keywords",
+                )
+
+            evidence, moved = pinned_first(evidence, lifts(pins, normalised.keywords), alone)
+            _timing().pinned = moved
             terms = [question, *aspects]
             widened = self._widened(customer_id, terms, normalised.keywords, vector, evidence, scope)
             evidence += number_evidence(widened, start=len(evidence) + 1)
@@ -824,7 +846,8 @@ class AnswerService:
             for n in sentence.evidence:
                 renumber.setdefault(n, len(renumber) + 1)
         by_n = {item.n: item for item in evidence}
-        # Ranked sources: a hit's evidence number is its place in the fused search order.
+        # Ranked sources: a hit's evidence number is its place in the fused search order, after
+        # the Most relevant picks' lift.
         citations = [
             replace(
                 _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence]),

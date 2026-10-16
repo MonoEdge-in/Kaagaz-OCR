@@ -300,6 +300,43 @@ def add_pin(
     return stored is not None
 
 
+PIN_LIMIT = 50  # the asker's newest picks a question reads (answering/pins.py)
+
+
+def pins_for(
+    conn: Connection, customer_id: str, user_id: str, conversation_id: str | None
+) -> Sequence[RowMapping]:
+    """This user's newest pick of each of their answers (the table keeps every pick), on a
+    live document (out of Trash, the current version): ``document_id``, ``page_no``,
+    ``same`` (in ``conversation_id``) and ``question``, the answer's ``normalized_question``.
+    Those of this conversation first, then the newest, at most ``PIN_LIMIT``. One query.
+
+    ponytail: it reads every pick of this user in the customer (source_pins_message leads on
+    the message, not the user); an index on (customer_id, user_id, created_at) if picks grow."""
+    return (
+        conn.execute(
+            text(
+                "SELECT p.document_id::text AS document_id, p.page_no,"
+                " coalesce(p.conversation_id = CAST(:conv AS uuid), false) AS same, p.question"
+                " FROM (SELECT DISTINCT ON (s.message_id) s.id, s.document_id, s.page_no, s.created_at,"
+                " m.conversation_id, coalesce(m.answer ->> 'normalized_question', '') AS question"
+                " FROM source_pins s"
+                " JOIN messages m ON m.customer_id = s.customer_id AND m.id = s.message_id"
+                " JOIN conversations cv ON cv.customer_id = m.customer_id AND cv.id = m.conversation_id"
+                " AND cv.user_id = :u"
+                " WHERE s.customer_id = :c AND s.user_id = :u"
+                " ORDER BY s.message_id, s.created_at DESC, s.id) p"
+                " JOIN documents d ON d.customer_id = :c AND d.id = p.document_id"
+                " AND d.deleted_at IS NULL AND d.is_current"
+                " ORDER BY same DESC, p.created_at DESC, p.id LIMIT :n"
+            ),
+            {"c": customer_id, "u": user_id, "conv": conversation_id, "n": PIN_LIMIT},
+        )
+        .mappings()
+        .all()
+    )
+
+
 def upsert_feedback(
     conn: Connection,
     customer_id: str,
