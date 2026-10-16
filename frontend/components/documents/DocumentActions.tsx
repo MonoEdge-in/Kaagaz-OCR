@@ -16,25 +16,30 @@
 // move and tag (PRD 1, F2 and F3); the server checks again.
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent, RefCallback } from "react";
+import type { FormEvent, KeyboardEvent, ReactNode, RefCallback } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@/components/ui/Icon";
-import { createTag, setDocumentTags, updateDocument } from "@/lib/api";
+import { createFolder, createTag, setDocumentTags, updateDocument } from "@/lib/api";
 import type { DocumentSummary, Tag } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { BusyLabel } from "./BusyLabel";
+import { NameChips } from "./FolderActions";
 import { inTreeOrder, pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import {
   documentNameProblem,
   findTagByName,
+  folderNameProblem,
   libraryErrorText,
   menuEntries,
   menuItemAfterKey,
   menuPlace,
+  moveSuggestion,
+  movedMessage,
   tagNameProblem,
 } from "./library";
 import type { EditAction, RowAction } from "./library";
+import { documentsCount, runEach } from "./trash";
 import styles from "./Library.module.css";
 
 export interface RowMenuProps {
@@ -221,9 +226,12 @@ export interface EditDialogProps {
   onClose(): void;
   /** Called once the dialog is shut and the page can take focus again. */
   onClosed(): void;
-  /** Saved. moved: the document may have left the list being viewed. */
-  onSaved(message: string, moved?: boolean): void;
+  /** Saved. moved: the document may have left the list being viewed; undo puts it back. */
+  onSaved(message: string, moved?: boolean, undo?: () => Promise<void>): void;
   onTagCreated(): void;
+  /** Names for a new folder in Move (folderNameSuggestions). */
+  suggestions?: readonly string[];
+  onFolderCreated?(): void;
 }
 
 export function EditDialog({
@@ -235,6 +243,8 @@ export function EditDialog({
   onClosed,
   onSaved,
   onTagCreated,
+  suggestions,
+  onFolderCreated,
 }: EditDialogProps) {
   const titles: Record<EditAction, string> = {
     rename: `Rename “${item.display_name}”`,
@@ -244,7 +254,16 @@ export function EditDialog({
   return (
     <ActionDialog title={titles[action]} onClose={onClose} onClosed={onClosed}>
       {action === "rename" && <RenameForm item={item} onSaved={onSaved} onCancel={onClose} />}
-      {action === "move" && <MoveForm item={item} tree={tree} onSaved={onSaved} onCancel={onClose} />}
+      {action === "move" && (
+        <MoveForm
+          items={[item]}
+          tree={tree}
+          suggestions={suggestions}
+          onSaved={onSaved}
+          onFolderCreated={onFolderCreated}
+          onCancel={onClose}
+        />
+      )}
       {action === "tags" && (
         <TagsForm
           item={item}
@@ -343,63 +362,190 @@ function RenameForm({ item, onSaved, onCancel }: FormProps) {
   );
 }
 
-function MoveForm({ item, tree, onSaved, onCancel }: FormProps & { tree: FolderTree }) {
-  const [target, setTarget] = useState(item.folder_id ?? ""); // "" is the top level
+// Move to folder (Tushar, 16 Oct 2026: files already here had no clear way into a folder):
+// radio buttons, so arrows move between choices and a disabled one is skipped. All documents
+// (no folder), then every folder in tree order, indented by depth; where the documents are now is
+// marked Current and can't be chosen. First, marked Suggested, the folder named for their kind of
+// document, or a new folder of that name (moveSuggestion); last, New folder… with a name box and
+// suggested names, which makes the folder at the top level and moves into it in one go. One
+// document or many (the selection bar); one call each, the server checks each again.
+const TOP = ""; // All documents: no folder
+const NEW = "+new";
+const SUGGESTED_NEW = "+suggested";
+
+export interface MoveFormProps {
+  items: readonly DocumentSummary[];
+  tree: FolderTree;
+  /** Names for a new folder (folderNameSuggestions). */
+  suggestions?: readonly string[];
+  /** Moved; undo puts each document back where it was. */
+  onSaved(message: string, moved: boolean, undo: () => Promise<void>): void;
+  /** A folder was made here: the screen asks for the folders again. */
+  onFolderCreated?(): void;
+  onCancel(): void;
+}
+
+export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreated, onCancel }: MoveFormProps) {
+  const places = new Set(items.map((item) => item.folder_id ?? TOP));
+  const current = places.size === 1 ? [...places][0] : null; // where they all are now
+  const [suggested] = useState(() => moveSuggestion(items, tree)); // kept while the folders reload
+  const suggestedId = suggested && "folderId" in suggested ? suggested.folderId : null;
+  const suggestedName = suggested && "newName" in suggested ? suggested.newName : null;
+  const [choice, setChoice] = useState<string | null>(
+    suggestedId ?? (suggestedName !== null ? SUGGESTED_NEW : null),
+  );
+  const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
-  const folders = inTreeOrder(tree);
+  // The suggested folder is first; in the tree it stays only as a name above its subfolders.
+  const folders = inTreeOrder(tree).filter((node) => node.folder.id !== suggestedId || node.children.length > 0);
+  // Focus starts on the choice made, else on the first one that can be chosen.
+  const focusValue = choice ?? (current === TOP ? (folders[0]?.folder.id ?? NEW) : TOP);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (choice === null) {
+      setError("Choose where to move to.");
+      return;
+    }
+    const name = choice === SUGGESTED_NEW ? suggestedName : choice === NEW ? newName : null;
+    const problem = name === null ? null : folderNameProblem(name);
+    if (problem) {
+      setError(problem);
+      return;
+    }
     setBusy(true);
     setError(null);
-    try {
-      await updateDocument(item.id, { folder_id: target || null });
-      const where = target ? pathLabel(tree, target) : "the top level";
-      onSaved(`Moved ${item.display_name} to ${where}.`, true);
-    } catch (caught) {
-      setError(libraryErrorText(caught, "document"));
-      setBusy(false);
+    let target = choice;
+    let where = target === TOP ? "All documents" : pathLabel(tree, target);
+    if (name !== null) {
+      try {
+        const created = await createFolder(name.trim(), null);
+        onFolderCreated?.();
+        target = created.id;
+        where = created.name;
+        setChoice(created.id); // trying again moves into it, and makes no second folder
+      } catch (caught) {
+        setError(libraryErrorText(caught, "folder"));
+        setBusy(false);
+        return;
+      }
     }
+    const before = new Map(items.map((item) => [item.id, item.folder_id]));
+    const ids = items.filter((item) => (item.folder_id ?? TOP) !== target).map((item) => item.id);
+    const result = await runEach(ids, (docId) => updateDocument(docId, { folder_id: target || null }));
+    if (result.done.length === 0) {
+      setError(libraryErrorText(result.firstError, "document"));
+      setBusy(false);
+      return;
+    }
+    const undo = async () => {
+      const back = await runEach(result.done, (docId) => updateDocument(docId, { folder_id: before.get(docId) ?? null }));
+      if (back.failed.length > 0) throw back.firstError;
+    };
+    const reason = result.failed.length > 0 ? libraryErrorText(result.firstError, "document") : "";
+    onSaved(movedMessage(result.done.length, ids.length, where, reason), true, undo);
   }
+
+  const option = (value: string, key: string, words: ReactNode, depth = 0) => {
+    const here = value === current;
+    return (
+      <li key={key} style={depth > 0 ? { paddingInlineStart: `calc(${depth} * var(--space-4))` } : undefined}>
+        <label className={styles.check}>
+          <input
+            type="radio"
+            name={`${id}-to`}
+            value={value}
+            checked={choice === value}
+            disabled={here || busy}
+            data-autofocus={value === focusValue ? true : undefined}
+            onChange={() => {
+              setChoice(value);
+              setError(null);
+            }}
+          />
+          {words}
+          {here && <span className={styles.tag}>Current</span>}
+        </label>
+      </li>
+    );
+  };
 
   return (
     <form className={styles.dialogForm} onSubmit={submit} noValidate>
-      <div className="field">
-        <label htmlFor={`${id}-folder`}>Folder</label>
-        <select
-          id={`${id}-folder`}
-          data-autofocus
-          className="input"
-          value={target}
-          onChange={(event) => setTarget(event.target.value)}
-          aria-invalid={error ? true : undefined}
-          aria-describedby={error ? `${id}-error` : undefined}
-        >
-          <option value="">Top level (no folder)</option>
-          {folders.map((node) => (
-            <option key={node.folder.id} value={node.folder.id}>
-              {pathLabel(tree, node.folder.id)}
-            </option>
-          ))}
-        </select>
-        {folders.length === 0 && (
-          <p className="hint">No folders yet. Make one with New folder, above the list.</p>
-        )}
-        {error && (
-          <p id={`${id}-error`} className="error-text" role="alert">
-            {error}
-          </p>
-        )}
-      </div>
-      <FormButtons
-        busy={busy}
-        words="Move"
-        disabled={target === (item.folder_id ?? "")}
-        onCancel={onCancel}
-      />
+      <fieldset className={styles.fieldset} aria-describedby={error ? `${id}-error` : undefined}>
+        <legend>Move to</legend>
+        <ul className={styles.folderChoices}>
+          {suggestedId !== null &&
+            option(
+              suggestedId,
+              "suggested",
+              <>
+                {pathLabel(tree, suggestedId)} <span className={styles.tag}>Suggested</span>
+              </>,
+            )}
+          {suggestedName !== null &&
+            option(
+              SUGGESTED_NEW,
+              "suggested",
+              <>
+                New folder: {suggestedName} <span className={styles.tag}>Suggested</span>
+              </>,
+            )}
+          {option(TOP, "top", "All documents (no folder)")}
+          {folders.map((node) =>
+            node.folder.id === suggestedId ? (
+              <li key={node.folder.id} style={{ paddingInlineStart: `calc(${node.depth} * var(--space-4))` }}>
+                <span className={styles.choiceParent}>
+                  {node.folder.name}
+                  <span className="visually-hidden"> (suggested, first in the list)</span>
+                </span>
+              </li>
+            ) : (
+              option(node.folder.id, node.folder.id, node.folder.name, node.depth)
+            ),
+          )}
+          {option(NEW, "new", "New folder…")}
+        </ul>
+      </fieldset>
+      {choice === NEW && (
+        <div className="field">
+          <label htmlFor={`${id}-name`}>Name of the new folder</label>
+          <input
+            id={`${id}-name`}
+            className="input"
+            value={newName}
+            maxLength={100}
+            autoComplete="off"
+            placeholder="e.g. Invoices 2026"
+            onChange={(event) => setNewName(event.target.value)}
+          />
+          <NameChips names={suggestions} picked={newName} onPick={setNewName} />
+        </div>
+      )}
+      {error && (
+        <p id={`${id}-error`} className="error-text" role="alert">
+          {error}
+        </p>
+      )}
+      <FormButtons busy={busy} words="Move" disabled={choice === null} onCancel={onCancel} />
     </form>
+  );
+}
+
+export interface MoveDialogProps extends Omit<MoveFormProps, "onCancel"> {
+  onClose(): void;
+  onClosed?(): void;
+}
+
+/** The Move dialog for the documents ticked in the list. */
+export function MoveDialog({ onClose, onClosed, ...form }: MoveDialogProps) {
+  const title = form.items.length === 1 ? `Move “${form.items[0]?.display_name}”` : `Move ${documentsCount(form.items.length)}`;
+  return (
+    <ActionDialog title={title} onClose={onClose} onClosed={onClosed}>
+      <MoveForm {...form} onCancel={onClose} />
+    </ActionDialog>
   );
 }
 

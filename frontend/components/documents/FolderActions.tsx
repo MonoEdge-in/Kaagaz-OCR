@@ -8,6 +8,8 @@
 // a new key for each folder, so an open form never outlives its folder.
 // UI audit D12 (16 Oct 2026): the folder column header's "+" is the one New folder (Tushar, 16 Oct
 // 2026: no second button here); it opens the New folder form here (`askNew` counts its presses).
+// Suggested names (Tushar, 16 Oct 2026): under the New folder name, up to 4 one-press names from
+// the kinds of documents listed that have no folder yet (folderNameSuggestions, library.ts).
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
@@ -27,9 +29,36 @@ export interface FolderActionsProps {
   /** A change was saved. `goTo` is the folder to show next (null: all documents), when it changes. */
   onChanged(message: string, goTo?: { folderId: string | null }): void;
   askNew?: number;
+  /** Names to offer for a new folder (folderNameSuggestions). */
+  suggestions?: readonly string[];
 }
 
-export function FolderActions({ tree, current, onChanged, askNew = 0 }: FolderActionsProps) {
+/** The suggested names as square chips; pressing one puts it in the name box. */
+export function NameChips({ names, picked, onPick }: { names: readonly string[]; picked: string; onPick(name: string): void }) {
+  const labelId = useId();
+  if (names.length === 0) return null;
+  return (
+    <div className={styles.nameChips} role="group" aria-labelledby={labelId}>
+      <span id={labelId} className="hint">
+        Suggested names
+      </span>
+      {names.map((name) => (
+        <button
+          key={name}
+          type="button"
+          className={styles.chip}
+          data-active={picked.trim() === name || undefined}
+          aria-pressed={picked.trim() === name}
+          onClick={() => onPick(name)}
+        >
+          {name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function FolderActions({ tree, current, onChanged, askNew = 0, suggestions = [] }: FolderActionsProps) {
   const [mode, setMode] = useState<Mode | null>(null);
   const [heardNew, setHeardNew] = useState(askNew);
   const [name, setName] = useState("");
@@ -144,6 +173,7 @@ export function FolderActions({ tree, current, onChanged, askNew = 0 }: FolderAc
           onChange={(event) => setName(event.target.value)}
           {...invalid}
         />
+        {mode === "new" && <NameChips names={suggestions} picked={name} onPick={setName} />}
       </div>
     );
   } else if (mode === "move") {

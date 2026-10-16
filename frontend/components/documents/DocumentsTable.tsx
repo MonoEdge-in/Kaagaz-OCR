@@ -23,6 +23,8 @@
 // reading problems says so in its status ("Scan complete" then "12 flagged · Review",
 // the link read out as "Review 12 flagged words in ..."), and a reviewer or an admin can have ticked documents
 // read again, one at a time, after an inline question.
+// Move to folder (16 Oct 2026): every row out of Trash can be ticked, and the bar's Move to folder
+// opens the same Move dialog as a row's menu (MoveDialog) for the ticked rows.
 // Scan states (16 Oct 2026): the status cell is two fixed lines while a document
 // is queued, being read, or read, so a scan finishing never changes its row's height;
 // a row keeps its place (the list is newest first, which a state never changes), and
@@ -48,10 +50,12 @@ import {
 import { useSession } from "@/lib/session";
 import { docTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
-import { EditDialog, RowMenu } from "./DocumentActions";
+import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { DOCUMENT_DRAG } from "./FolderNav";
+import { pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { BusyLabel } from "./BusyLabel";
+import { movableItems } from "./library";
 import type { EditAction, RowAction } from "./library";
 import { rowsInPlace } from "./listMerge";
 import {
@@ -90,11 +94,13 @@ import library from "./Library.module.css";
 export interface RowEvents {
   /** Moved to Trash, restored or deleted for good: announce it and ask for the list again. */
   onRemoved(message: string): void;
-  /** Renamed, moved or tagged: announce it and ask for the list again. */
-  onSaved(message: string): void;
+  /** Renamed, moved or tagged: announce it and ask for the list again; a move can be undone. */
+  onSaved(message: string, undo?: () => Promise<void>): void;
   /** After a move the row may be gone: focus the list's heading. */
   onFocusList(): void;
   onTagCreated(): void;
+  /** A folder was made in the Move dialog: ask for the folders again. */
+  onFolderCreated(): void;
   /** "Upload new version": the screen opens the file picker for this document. */
   onUploadVersion(document: DocumentSummary): void;
 }
@@ -106,9 +112,13 @@ interface Props extends RowEvents {
   now: number;
   tree: FolderTree;
   tags: Tag[] | null;
+  /** Names for a new folder (folderNameSuggestions). */
+  suggestions: readonly string[];
+  /** A moved document leaves this list (a folder is shown), so focus goes to the list. */
+  movedLeaves: boolean;
 }
 
-export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ...events }: Props) {
+export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, suggestions, movedLeaves, ...events }: Props) {
   const { onRemoved } = events;
   // The rows shown when the pointer came onto the list; null while it is elsewhere.
   const [pinned, setPinned] = useState<ReadonlySet<string> | null>(null);
@@ -132,10 +142,14 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ..
     (item: DocumentSummary) => !inTrash && canReprocess(me.user.role, item),
     [inTrash, me.user.role],
   );
-  const deletableItems = useMemo(
-    () => items.filter((item) => selectable(item, inTrash, canForever) || readable(item)),
-    [items, inTrash, canForever, readable],
+  // A row out of Trash can always be ticked: anyone may move it to a folder.
+  const tickable = useCallback(
+    (item: DocumentSummary) => !inTrash || selectable(item, inTrash, canForever),
+    [inTrash, canForever],
   );
+  const deletableItems = useMemo(() => items.filter(tickable), [items, tickable]);
+  const [moving, setMoving] = useState(false);
+  const bulkMoved = useRef(false);
   const [password, setPassword] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   // The selection's action waiting for its "now" button: Move to Trash or Delete forever.
@@ -156,6 +170,7 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ..
   const restorableIds = items
     .filter((item) => item.can_delete && visibleSelectedIds.has(item.id))
     .map((item) => item.id);
+  const movable = movableItems(items, visibleSelectedIds);
   const readableIds = items
     .filter((item) => readable(item) && visibleSelectedIds.has(item.id))
     .map((item) => item.id);
@@ -179,9 +194,10 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ..
   const rowEvents = useMemo<RowEvents>(
     () => ({
       onRemoved: (message) => latestEvents.current.onRemoved(message),
-      onSaved: (message) => latestEvents.current.onSaved(message),
+      onSaved: (message, undo) => latestEvents.current.onSaved(message, undo),
       onFocusList: () => latestEvents.current.onFocusList(),
       onTagCreated: () => latestEvents.current.onTagCreated(),
+      onFolderCreated: () => latestEvents.current.onFolderCreated(),
       onUploadVersion: (document) => latestEvents.current.onUploadVersion(document),
     }),
     [],
@@ -313,13 +329,15 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ..
               whenShort={shortWhen(whenOf(document, inTrash), now)}
               whenSpoken={whenSpoken(document, inTrash, now)}
               inTrash={inTrash}
-              deletable={selectable(document, inTrash, canForever) || readable(document)}
+              deletable={tickable(document)}
               canForever={canForever}
               askPassword={askPassword}
               selected={selectedIds.has(document.id)}
               onToggle={toggle}
               tree={tree}
               tags={tags}
+              suggestions={suggestions}
+              movedLeaves={movedLeaves}
               events={rowEvents}
             />
           ))}
@@ -371,6 +389,11 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ..
                 </>
               ) : (
                 <>
+                  {movable.length > 0 && (
+                    <button type="button" className="btn" onClick={() => setMoving(true)}>
+                      Move to folder ({movable.length})
+                    </button>
+                  )}
                   {readableIds.length > 0 && (
                     <button type="button" className="btn" onClick={() => setConfirming("read")}>
                       <Icon name="refresh" />
@@ -437,6 +460,29 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ..
           )}
           {error && <p className={`error-text ${styles.selectionError}`} role="alert">{error}</p>}
         </div>
+      )}
+      {moving && (
+        <MoveDialog
+          items={movable}
+          tree={tree}
+          suggestions={suggestions}
+          onClose={() => setMoving(false)}
+          onClosed={() => {
+            // Cancelled: focus goes back to Move to folder. Moved: the bar's buttons are gone.
+            if (!bulkMoved.current) return;
+            bulkMoved.current = false;
+            const box = selectAll.current.find((input) => input.isConnected && input.offsetParent !== null);
+            if (box) box.focus();
+            else events.onFocusList();
+          }}
+          onSaved={(message, _moved, undo) => {
+            bulkMoved.current = true;
+            setMoving(false);
+            clearSelection();
+            events.onSaved(message, undo);
+          }}
+          onFolderCreated={events.onFolderCreated}
+        />
       )}
     </>
   );
@@ -519,6 +565,8 @@ const DocumentRow = memo(function DocumentRow({
   onToggle,
   tree,
   tags,
+  suggestions,
+  movedLeaves,
   events,
 }: {
   document: DocumentSummary;
@@ -532,6 +580,8 @@ const DocumentRow = memo(function DocumentRow({
   onToggle: (id: string) => void;
   tree: FolderTree;
   tags: Tag[] | null;
+  suggestions: readonly string[];
+  movedLeaves: boolean;
   events: RowEvents;
 }) {
   const [confirming, setConfirming] = useState<Confirming>(null);
@@ -575,10 +625,10 @@ const DocumentRow = memo(function DocumentRow({
     setEditing(action);
   }
 
-  function saved(message: string, moved = false) {
-    afterEdit.current = moved ? "list" : "actions";
+  function saved(message: string, moved = false, undo?: () => Promise<void>) {
+    afterEdit.current = moved && movedLeaves ? "list" : "actions";
     setEditing(null);
-    events.onSaved(message);
+    events.onSaved(message, undo);
   }
 
   // The dialog is shut: hand focus back to Actions, or to the list after a move.
@@ -674,6 +724,10 @@ const DocumentRow = memo(function DocumentRow({
         <span className={styles.bandType}>
           {typeLabel(document.detected_type)} · {docTypeLabel(document.doc_type)} · {formatBytes(document.size_bytes)}
         </span>
+        {/* Where it is filed, so a move shows in All documents too (16 Oct 2026). */}
+        {!inTrash && document.folder_id && tree.byId.has(document.folder_id) && (
+          <span className={styles.inFolder}>In {pathLabel(tree, document.folder_id)}</span>
+        )}
         {document.tags.length > 0 && (
           <ul className={`${library.tags} ${library.rowTags}`} aria-label="Tags">
             {document.tags.map((tag) => (
@@ -794,6 +848,8 @@ const DocumentRow = memo(function DocumentRow({
             onClosed={dialogClosed}
             onSaved={saved}
             onTagCreated={events.onTagCreated}
+            suggestions={suggestions}
+            onFolderCreated={events.onFolderCreated}
           />
         )}
       </td>
