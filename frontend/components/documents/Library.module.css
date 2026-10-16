@@ -86,7 +86,7 @@
 .treeLink {
   display: flex;
   align-items: center;
-  min-height: var(--h-md);
+  min-height: var(--control-h);
   padding: var(--space-1) var(--space-3);
   border-radius: 2px;
   color: var(--text-primary);
@@ -120,7 +120,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  min-height: var(--h-md);
+  min-height: var(--control-h);
 }
 
 .paneHead .paneHeading {
@@ -198,7 +198,7 @@
 .placeHeading {
   margin: 0;
   font-size: var(--fs-xl);
-  line-height: var(--h-md);
+  line-height: var(--control-h);
   overflow-wrap: anywhere;
 }
 
@@ -325,7 +325,7 @@
 .chip {
   display: inline-flex;
   align-items: center;
-  min-height: var(--h-md);
+  min-height: var(--control-h);
   max-width: 100%;
   padding: 0 var(--space-3);
   border: 1px solid var(--border-strong);
@@ -376,8 +376,8 @@
 }
 
 .chipRemove {
-  min-width: var(--h-md);
-  height: var(--h-md);
+  min-width: var(--control-h);
+  height: var(--control-h);
   border-color: var(--accent);
   border-inline-start: 0;
   border-start-start-radius: 0;
@@ -426,7 +426,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: var(--h-md);
+  min-height: var(--control-h);
   font-size: var(--fs-sm);
   overflow-wrap: anywhere;
   cursor: pointer;
@@ -475,7 +475,7 @@
 /* --- A document's menu (D5): an icon button, the menu in a portal ---------------- */
 
 .menuButton {
-  width: var(--h-md);
+  width: var(--control-h);
   padding-inline: 0;
 }
 
@@ -501,7 +501,7 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  min-height: var(--h-md);
+  min-height: var(--control-h);
   padding: 0 var(--space-3);
   border: 0;
   border-radius: 2px;

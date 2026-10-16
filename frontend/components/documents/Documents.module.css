@@ -90,7 +90,7 @@
   justify-content: flex-end;
   gap: var(--space-2) var(--space-3);
   min-width: 0;
-  min-height: calc(var(--h-md) + var(--space-1) + 1.5em);
+  min-height: calc(var(--control-h) + var(--space-1) + 1.5em);
   margin-inline-start: auto; /* at the right edge, also when it wraps under the heading */
 }
 
@@ -106,7 +106,7 @@
   display: block;
   width: 18rem;
   max-width: 100%;
-  height: var(--h-md);
+  height: var(--control-h);
 }
 
 /* On touch the select is 44px: the room kept for it is too. */
@@ -353,10 +353,10 @@
 
 /* D6: the box is the Search button's height; the clear x sits inside its end. */
 .searchInput {
-  height: var(--h-md);
-  min-height: var(--h-md);
+  height: var(--control-h);
+  min-height: var(--control-h);
   padding-inline-start: calc(var(--space-3) + 16px + var(--space-2));
-  padding-inline-end: calc(var(--h-md) + var(--space-1));
+  padding-inline-end: calc(var(--control-h) + var(--space-1));
 }
 
 .searchInput::-webkit-search-cancel-button {
@@ -418,7 +418,7 @@
 }
 
 .selectAll {
-  min-height: var(--h-md);
+  min-height: var(--control-h);
   gap: var(--space-2);
   color: var(--text-primary);
   font-size: var(--fs-sm);
@@ -598,7 +598,7 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
    the control height (--row-line), the ⋯ button's own, and everything on it is centred in it:
    the tick box, the file icon and name, the status chip, the date and the menu. */
 table.docs {
-  --row-line: var(--h-md);
+  --row-line: var(--control-h);
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;

@@ -165,7 +165,8 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
 
   it("D1: keeps Read with's room from the first paint, a skeleton until the limits come", () => {
     expect(view).toMatch(/const readerSelect = uploads\.limitsLoaded \? \([\s\S]*?\) : \(\s*<span className=\{`skeleton \$\{styles\.readerSkeleton\}`\}/);
-    expect(docs).toMatch(/\.uploadControls \{[^}]*min-height:\s*calc\(var\(--h-md\)/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height): --control-h, 44px on touch.
+    expect(docs).toMatch(/\.uploadControls \{[^}]*min-height:\s*calc\(var\(--control-h\)/);
     expect(docs).toMatch(/@media \(pointer: coarse\) \{\s*\.uploadControls \{\s*min-height:\s*calc\(var\(--h-lg\)/);
   });
 
@@ -173,7 +174,8 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     expect(docs).toMatch(/\.selectHit \{[^}]*height:\s*var\(--row-line\);/);
     // Changed on purpose (Tushar, 16 Oct 2026, Documents table sans): every first line is the
     // control height, the ⋯ button's own; a long name's first line is centred in it by padding.
-    expect(docs).toMatch(/table\.docs \{\s*--row-line:\s*var\(--h-md\);/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height): --control-h, 44px on touch.
+    expect(docs).toMatch(/table\.docs \{\s*--row-line:\s*var\(--control-h\);/);
     expect(docs).toMatch(/@media \(pointer: coarse\) \{\s*table\.docs \{\s*--row-line:\s*var\(--h-lg\);/);
     expect(docs).toMatch(/\.name \{[^}]*padding-block:\s*calc\(\(var\(--row-line\) - var\(--name-line\)\) \/ 2\);/);
     expect(docs).toMatch(/table\.docs \.selectCell \{\s*flex: 0 0 auto;\s*padding-inline-end:\s*var\(--space-3\);/);
@@ -185,7 +187,8 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
   });
 
   it("D6: the search box and Search share a height; clearing is an x inside the box", () => {
-    expect(docs).toMatch(/\.searchInput \{[^}]*height:\s*var\(--h-md\);/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height): --control-h, 44px on touch.
+    expect(docs).toMatch(/\.searchInput \{[^}]*height:\s*var\(--control-h\);/);
     expect(view).toContain('<IconButton icon="close" label="Clear search" className={styles.searchClear}');
   });
 
