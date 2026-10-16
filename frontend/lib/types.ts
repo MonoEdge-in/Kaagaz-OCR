@@ -1152,3 +1152,97 @@ export interface BoardReply {
   ai_enabled: boolean;
   items: BoardRow[];
 }
+
+// --- Word-level review and Ensemble after the scan (scan review UX rules, 16 Oct 2026;
+// backend/kaagaz/api/routers/word_review.py and ensemble.py, views.run_json) ---
+
+export type Band = "check" | "review";
+export type FlagState = "open" | "reviewed" | "resolved" | "in_ensemble" | "proposed";
+export type EnsembleScope = "word" | "words" | "flagged" | "document";
+
+/** ``Run``: one Ensemble run's progress, counts and error. */
+export interface EnsembleRun {
+  id: string;
+  scope: EnsembleScope;
+  status: "queued" | "running" | "done" | "stopped" | "failed";
+  pages_total: number;
+  pages_done: number;
+  page_now: number | null; // while running
+  words_total: number;
+  agreed: number;
+  changed: number;
+  unresolved: number;
+  kept: number;
+  failed_pages: number[];
+  started_at: string | null;
+  finished_at: string | null;
+  error: { code: string; message: string } | null; // message: what happened, what it means
+}
+
+/** GET /documents/{id}/review-status */
+export interface ReviewStatus {
+  pages: number;
+  words: number;
+  flagged: number;
+  by_band: Record<Band, number>;
+  reviewed: number;
+  resolved: number;
+  remaining: number;
+  last_change_at: string | null;
+  status: DocumentStatus;
+  summary: string | null; // "Scan complete · 14 pages · 2,431 words · 12 flagged for review"; null until ready
+  export: { ready: boolean; message: string };
+  can_review: boolean; // the Reviewer check: confirm, edit, undo, Ensemble
+  ensemble: { allowed: boolean; reason: string | null; run: EnsembleRun | null };
+}
+
+/** ``WordFlag``: one flagged word (GET /documents/{id}/flags, and the confirm or edit reply). */
+export interface WordFlag {
+  word_key: string;
+  kind: "mark" | "line" | "value";
+  page_no: number;
+  region: Region;
+  as_read: string;
+  text: string; // the text now
+  band: Band;
+  reason: string;
+  reason_text: string; // "smudged print"
+  score: number | null; // only when something measured it
+  alternatives: string[] | null; // null for a member
+  value_id: string | null;
+  state: FlagState;
+  ensemble: {
+    reading_id: string;
+    run_id: string;
+    outcome: "agreed" | "changed" | "unresolved" | "skipped_user_edit";
+    proposal: string | null;
+    decision: "kept" | "reverted" | null;
+  } | null; // reviewers only
+  change: { id: string; action: string; at: string | null; by_you: boolean } | null;
+}
+
+/** ``WordChange``: one row of the history. */
+export interface WordChange {
+  id: string;
+  word_key: string;
+  kind: string;
+  page_no: number;
+  region: Region;
+  action: string; // confirm, edit, resolve, keep, ...
+  before_text: string;
+  after_text: string;
+  by: "person" | "ensemble";
+  by_you: boolean;
+  user_name: string | null;
+  created_at: string | null;
+  undone_at: string | null;
+  on_page: boolean;
+  note: string | null; // "No longer on the page"
+  can_undo: boolean;
+}
+
+export interface EnsembleEstimate {
+  pages: number;
+  words: number;
+  seconds: number;
+}

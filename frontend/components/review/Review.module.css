@@ -320,3 +320,45 @@
   font-size: var(--fs-base);
   overflow-wrap: anywhere;
 }
+
+/* --- A flagged word in text (FlagText.tsx; scan review UX rules, section 2) ---------
+   Check: dotted underline, "?". Review: solid underline, "!". Decoration and a fixed-width
+   glyph only, so a marked word never changes size, line height or spacing. */
+
+.flagText {
+  text-decoration-line: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.flagText[data-band="check"] {
+  text-decoration-style: dotted;
+  text-decoration-color: var(--warning);
+}
+
+.flagText[data-band="review"] {
+  text-decoration-style: solid;
+  text-decoration-color: var(--critical);
+}
+
+.flagText::after {
+  display: inline-block;
+  inline-size: 1.25em;
+  font-size: 0.75em;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  text-decoration: none;
+}
+
+.flagText[data-band="check"]::after {
+  content: "?";
+  content: "?" / ""; /* the words are in the visually hidden label */
+  color: var(--warning);
+}
+
+.flagText[data-band="review"]::after {
+  content: "!";
+  content: "!" / "";
+  color: var(--critical);
+}
