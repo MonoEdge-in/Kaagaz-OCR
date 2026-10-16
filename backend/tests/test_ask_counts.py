@@ -232,3 +232,87 @@ def test_document_sentence_names_a_few_pages_and_counts_many() -> None:
     assert document_sentence("a.pdf", [3]) == "a.pdf: page 3."
     assert document_sentence("a.pdf", [3, 7, 9]) == "a.pdf: pages 3, 7 and 9."
     assert document_sentence("a.pdf", pages) == "a.pdf: 14 pages."
+
+
+# --- Devanagari (16 Oct 2026) -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("question", "term"),
+    [
+        ("कितने दस्तावेज़ों में जालना है?", "जालना"),
+        ("कौन से दस्तावेज़ों में जालना लिखा है?", "जालना"),
+        ("कौन-से दस्तावेज़ में जालना है", "जालना"),
+        ("किन फ़ाइलों में जालना का नाम है", "जालना"),
+        ("सभी दस्तावेज़ दिखाओ जिनमें जालना लिखा है", "जालना"),
+        ("कितनी फाइलों में जालना रोड है?", "जालना रोड"),
+        ('कितने दस्तावेज़ों में "जालना रोड" है?', "जालना रोड"),
+        ("कितने दस्तावेज़ों में प्लॉट १२ है?", "प्लॉट 12"),  # Devanagari digits read as ASCII
+        ("कितने documents में Jalna है?", "Jalna"),  # mixed scripts
+        ("जालना किती कागदपत्रांमध्ये आहे?", "जालना"),  # Marathi: "in" joined to the noun
+        ("कोणत्या फायलींमध्ये जालना आहे?", "जालना"),
+        ("सर्व कागदपत्रे ज्यात जालना आहे", "जालना"),
+        ("कोणत्या दस्तऐवजांमध्ये जालना असलेले नाव आहे?", "जालना"),
+    ],
+)
+def test_devanagari_counting_questions_are_routed_with_their_word(question: str, term: str) -> None:
+    assert exhaustive_term(question) == term
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "जालना के दस्तावेज़ में क्या लिखा है?",  # no asking word
+        "जालना कुठे आहे?",
+        "कितने दस्तावेज़ हैं?",  # no word asked for
+        "सबसे ज़्यादा रकम वाला दस्तावेज़ कौन सा है?",  # an aggregate
+        "किती कागदपत्रांमध्ये एकूण रक्कम आहे?",
+        "किन दस्तावेज़ों में जालना नहीं है?",  # not: the other documents
+        "कोणत्या कागदपत्रांमध्ये जालना नाही?",
+        "सभी दस्तावेज़ों में रकम क्या है",  # asks what the amount is
+        "जालना या पुणे किन दस्तावेज़ों में है?",  # two words, not one phrase
+    ],
+)
+def test_other_devanagari_questions_are_not_routed(question: str) -> None:
+    assert exhaustive_term(question) is None
+
+
+def test_the_nukta_and_the_joiners_never_change_the_route() -> None:
+    za_one, za_two = "ज़", "ज़"  # ज़ as one code point and as two
+    fa_one, fa_two = "फ़", "फ़"  # फ़
+    for things in (
+        f"दस्तावे{za_one}ों",
+        f"दस्तावे{za_two}ों",
+        "दस्तावेजों",
+        f"{fa_one}ाइलों",
+        f"{fa_two}ाइलों",
+        "फाइलों",
+    ):
+        assert exhaustive_term(f"कितने {things} में जालना है?") == "जालना", things
+    assert exhaustive_term("कितने दस्ता‍वेजों में जालना है?") == "जालना"  # a ZWJ inside
+    # The word asked for is kept as typed, its nukta too.
+    assert exhaustive_term(f"कितने दस्तावेजों में {za_two}मीन है?") == f"{za_two}मीन"
+
+
+def test_a_devanagari_word_is_also_searched_by_its_latin_spelling() -> None:
+    from kaagaz.answering.exhaustive import latin_term
+
+    assert latin_term("जालना") == "jalana"  # the stored text_latin recipe: middle vowels kept
+    assert latin_term("जालना Road") == "jalana road"
+    assert latin_term("Jalna") == "Jalna"  # a Latin word is searched as typed only
+
+
+def test_a_devanagari_question_answers_in_the_same_calm_english() -> None:
+    pieces = [
+        doc("सातबारा.pdf", "गाव जालना, तालुका अंबड", page=2),
+        doc("lease.pdf", "जालना रोड"),
+        doc("bill.pdf", "पुणे"),
+    ]
+    answer, store = ask("कितने दस्तावेज़ों में जालना है?", pieces)
+    assert store.calls == [(A, "जालना", MAX_LISTED)]
+    assert [s.text for s in answer.sentences] == [
+        '2 documents mention "जालना".',
+        "lease.pdf: page 1.",
+        "सातबारा.pdf: page 2.",
+    ]
+    assert_count_shape(answer)

@@ -133,6 +133,13 @@ export const LEVEL_WORDS: Record<AiLevel, string> = { low: "Low", medium: "Mediu
 // `dynamic` field stay). Organisations never see it: their "Read with" calls it "Automatic".
 export const COST_SAVING = "Cost saving";
 export const DYNAMIC_HINT = "Reads clear pages quickly and spends extra effort only on hard-to-read words.";
+// Any number of scanning models (Tushar, 16 Oct 2026): Ensemble asked with fewer than two
+// in effect is saved off, and the save says so calmly (0037).
+export const ENSEMBLE_OFF = "Ensemble is off: it needs a second scanning model.";
+
+/** What a saved organisation's AI settings say, with the Ensemble note when the server turned it off. */
+export const savedText = (orgName: string, ensembleOff: boolean) =>
+  `Saved the AI settings of ${orgName}.${ensembleOff ? ` ${ENSEMBLE_OFF}` : ""}`;
 
 export type Area = "scan" | "chat";
 
@@ -417,10 +424,8 @@ export function defaultsImpact(
 export function refusalField(code: string): AiField {
   switch (code) {
     case "not_verified":
-    case "needs_two_models_scan":
       return "scan_models";
     case "chat_not_verified":
-    case "needs_two_models_chat":
       return "chat_models";
     default: // unavailable, default_not_allowed, level_not_supported: either area
       return "form";

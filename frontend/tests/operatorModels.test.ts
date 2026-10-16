@@ -36,6 +36,7 @@ import {
   refusalField,
   resetSection,
   sameAsDefault,
+  savedText,
   spendTotals,
   statusText,
   toggled,
@@ -212,8 +213,9 @@ describe("money and model words", () => {
     // Changed on purpose (features 25-27, 15 Oct 2026): three areas have a default now.
     expect(said("default_not_allowed")).toMatch(/its own ticked list/);
     expect(said("level_not_supported")).toMatch(/thinking levels/);
-    expect(said("needs_two_models_scan")).toMatch(/two scanning models/);
-    expect(said("needs_two_models_chat")).toMatch(/two answering models/);
+    // Changed on purpose (Tushar, 16 Oct 2026: any number of models): the two-model refusals are gone.
+    expect(said("needs_two_models_scan")).not.toMatch(/two scanning models/);
+    expect(said("needs_two_models_chat")).not.toMatch(/two answering models/);
   });
 });
 
@@ -441,10 +443,9 @@ describe("the AI settings form's rules", () => {
 
   it("puts a refusal next to the field it is about, and a refused code at the code", () => {
     const refused = (code: string, status = 409) => refusalOf(new ApiError(status, code, "Something went wrong."));
-    expect(refused("needs_two_models_scan").field).toBe("scan_models");
+    // Changed on purpose (Tushar, 16 Oct 2026: any number of models): no two-model refusal any more.
     expect(refused("not_verified").field).toBe("scan_models");
     expect(refused("chat_not_verified").field).toBe("chat_models");
-    expect(refused("needs_two_models_chat").field).toBe("chat_models");
     expect(refused("unavailable").field).toBe("form");
     expect(refused("step_up_failed", 403)).toEqual({ field: "code", message: operatorErrorMessage(new ApiError(403, "step_up_failed", "")) });
     expect(refusalOf(new TypeError("offline")).field).toBe("form");
@@ -558,6 +559,26 @@ describe("the AI settings fields", () => {
     expect(html).toContain('<span id="ai-budget-inr" class="hint">≈ ₹2,200 a month (at ₹88 per $)</span>');
     expect(html).toContain("This month: $58.10 used");
     expect(fields()).not.toMatch(/People at|This month/);
+  });
+});
+
+describe("any number of scanning models (Tushar, 16 Oct 2026)", () => {
+  it("lets one scanning model save with Cost saving and Ensemble, with no blocking error", () => {
+    const one = values({ scan_models: ["m/one"], scan_default: "m/one", dynamic: true });
+    expect(aiErrors(draftOf(one, { ensemble: true, ai_budget_usd: null }), false)).toEqual({});
+    expect(aiErrors(draftOf({ ...one, chat_levels: ["low"], chat_default_level: "low" }), true)).toEqual({}); // the platform defaults
+    expect(read("components/operator/OrgAiSettings.tsx")).not.toContain("Needs at least two scanning models");
+    expect(read("components/operator/OrgAiSettings.tsx")).toContain("{COST_SAVING}"); // the super admin's label stays
+  });
+
+  it("says calmly when the server saved Ensemble off, and stays open to show it", () => {
+    expect(savedText("Sharma Traders", false)).toBe("Saved the AI settings of Sharma Traders.");
+    expect(savedText("Sharma Traders", true)).toBe(
+      "Saved the AI settings of Sharma Traders. Ensemble is off: it needs a second scanning model.",
+    );
+    const dialog = read("components/operator/OrgAiSettings.tsx");
+    expect(dialog).toContain("onSaved(savedText(org.name, ensembleTurnedOff));");
+    expect(dialog).toMatch(/\{ensembleOff && \(\s*<p className="hint" role="status">\s*\{ENSEMBLE_OFF\}/);
   });
 });
 

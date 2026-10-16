@@ -56,6 +56,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
+from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
@@ -199,6 +200,11 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             if chosen is None
             else resolve(conn, user.customer_id, chosen, timezone=context.settings.timezone)
         )
+        # Most relevant picks (answering/pins.py): the asker's own only, live documents only.
+        pins = [
+            Pin(row["document_id"], int(row["page_no"]), bool(row["same"]), str(row["question"]))
+            for row in chat_sql.pins_for(conn, user.customer_id, user.user_id, conversation_id)
+        ]
         try:
             agents = _first_allowed(conn, user.customer_id, body.agents, context)
             choice = resolve_chat(conn, user.customer_id, agents, body.thinking, settings=context.settings)
@@ -225,6 +231,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             user_id=user.user_id,
             memory=memory,
             choice=choice,
+            pins=pins,
         ).to_json()
 
         with context.db.customer(user.customer_id) as conn:

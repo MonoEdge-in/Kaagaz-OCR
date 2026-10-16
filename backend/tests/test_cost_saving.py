@@ -423,4 +423,6 @@ class PipelineTest(unittest.TestCase):
         values = system.store.values_for(JOB_CUSTOMER, job.document_id)
         self.assertIn(("1,180.00", "verified"), [(item.value_text, item.label) for item in values])
         config = system.totals(job).config["reading"]
-        self.assertEqual(config["escalated"], [{"page": 1, "reasons": ["unsure_words", PATH_WORDS]}])
+        # Changed on purpose (16 Oct 2026): the entries carry tokens too (test_cost_saving_tuning).
+        escalated = [{key: item[key] for key in ("page", "reasons")} for item in config["escalated"]]
+        self.assertEqual(escalated, [{"page": 1, "reasons": ["unsure_words", PATH_WORDS]}])

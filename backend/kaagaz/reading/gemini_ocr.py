@@ -352,8 +352,9 @@ PAGE_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-# Cost saving (16 Oct 2026, ``_careful_words``): a hard line's crop reaches CROP_PAD of the
-# line's height past each of its sides, inside the page; the crops are stacked top to bottom
+# Cost saving (16 Oct 2026, ``_careful_words``): a hard line's crop reaches CROP_PAD (the
+# default of COST_SAVING_CROP_PAD) of the line's height past each of its sides, inside the
+# page; the crops are stacked top to bottom
 # on white, CROP_GAP pixels apart, with a CROP_RULE-pixel dark rule in the middle of each gap.
 CROP_PAD = 0.5
 CROP_GAP = 24
@@ -482,6 +483,9 @@ class GeminiEngine:
         self._normal = (settings.ocr_media_resolution, settings.ocr_thinking_level)
         self._harder = (settings.ocr_retry_media_resolution, settings.ocr_retry_thinking_level)
         self._early_max = settings.careful_early_max_pages
+        # Cost saving's limits (``careful_plan``, ``crop_boxes``), from COST_SAVING_*.
+        self._limits = (settings.cost_saving_hard_lines_max, settings.cost_saving_hard_share)
+        self._crop_pad = settings.cost_saving_crop_pad
         self._fallback_after = 60.0 * settings.reader_outage_fallback_minutes
         # Q7: a failure longer than this after the last one starts a new outage (module notes).
         self._outage_gap = max(
@@ -587,7 +591,8 @@ class GeminiEngine:
             return read
         if page_no not in pages.escalate or pages.careful is None:
             return first
-        plan = careful_plan(first, lead=pages.model or self._model, again=page_no in pages.read_again)
+        lead, again = pages.model or self._model, page_no in pages.read_again
+        plan = careful_plan(first, lead=lead, again=again, lines_max=self._limits[0], share=self._limits[1])
         return self._more_care(image, page, first, pages, pages.careful, plan[-1] if plan else PATH_PAGE)
 
     def _inline_careful(
@@ -617,7 +622,7 @@ class GeminiEngine:
                 started = early.submit(contextvars.copy_context().run, self._careful, page, pages, agent)
             memo[key] = first = page(pages=pages)
             careful = None if started is None else started.result()
-        plan = careful_plan(first, lead=lead, again=again)
+        plan = careful_plan(first, lead=lead, again=again, lines_max=self._limits[0], share=self._limits[1])
         if not plan or agent is None:
             return first if careful is None else _plus(first, careful.input_tokens, careful.output_tokens)
         if started is not None:
@@ -653,8 +658,8 @@ class GeminiEngine:
         (``with_hard_words``); a call that fails, runs out of time or gives an unusable reply
         keeps the first read as it was, with the tokens billed for it. Never cached: a
         retried document asks again. O(the crops' pixels + lines + h³) besides the call, for
-        h <= HARD_LINES_MAX hard lines."""
-        crops = crop_boxes(first.lines, hard_lines(first), image.width, image.height)
+        h <= COST_SAVING_HARD_LINES_MAX hard lines."""
+        crops = crop_boxes(first.lines, hard_lines(first), image.width, image.height, pad=self._crop_pad)
         tiny = any(x1 - x0 < 1 or y1 - y0 < 1 for (x0, y0, x1, y1), _members in crops)
         if not crops or tiny or self._left() < MIN_CALL_SECONDS:
             return first
@@ -1111,22 +1116,22 @@ def _plus(read: PageRead, input_tokens: int, output_tokens: int) -> PageRead:
 
 
 def crop_boxes(
-    lines: Sequence[OcrLine], hard: Sequence[int], width: int, height: int
+    lines: Sequence[OcrLine], hard: Sequence[int], width: int, height: int, *, pad: float = CROP_PAD
 ) -> list[tuple[PixelBox, tuple[int, ...]]]:
     """Where to cut the hard lines (indexes into ``lines``) out of a page of ``width`` x
     ``height`` pixels, top to bottom: [(crop, the lines it holds)]. Each hard line's box is
-    grown by CROP_PAD of the line's height on every side and clamped to the page; crops that
-    overlap (with some area) are merged, again until none do. A crop holds every line whose
-    middle lies in it, in page order: its hard lines, and any other line it takes in whole
-    (read, never used). O(h³ + c x lines) for h hard lines and c crops."""
+    grown by ``pad`` (COST_SAVING_CROP_PAD) of the line's height on every side and clamped to
+    the page; crops that overlap (with some area) are merged, again until none do. A crop
+    holds every line whose middle lies in it, in page order: its hard lines, and any other
+    line it takes in whole (read, never used). O(h³ + c x lines) for h hard lines and c crops."""
     crops: list[PixelBox] = []
     for index in hard:
         line = lines[index]
-        pad = CROP_PAD * (line.y1 - line.y0)
-        x0, y0 = max(0.0, line.x0 - pad), max(0.0, line.y0 - pad)
-        crops.append((x0, y0, min(float(width), line.x1 + pad), min(float(height), line.y1 + pad)))
+        grow = pad * (line.y1 - line.y0)
+        x0, y0 = max(0.0, line.x0 - grow), max(0.0, line.y0 - grow)
+        crops.append((x0, y0, min(float(width), line.x1 + grow), min(float(height), line.y1 + grow)))
     merged = True
-    while merged:  # ponytail: pairwise until none overlap, O(h³); h <= HARD_LINES_MAX keeps it small
+    while merged:  # ponytail: pairwise until none overlap, O(h³); h <= 60 (the lines max) keeps it small
         merged = False
         for a, b in itertools.combinations(range(len(crops)), 2):
             if _overlap(crops[a], crops[b]):

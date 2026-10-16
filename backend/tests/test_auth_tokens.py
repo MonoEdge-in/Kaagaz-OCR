@@ -492,6 +492,7 @@ class _NoAnswers:
         user_id: str,
         memory: Any,
         choice: Any = None,
+        pins: Any = (),
     ) -> AnswerLike:
         raise AssertionError("not used here")
 

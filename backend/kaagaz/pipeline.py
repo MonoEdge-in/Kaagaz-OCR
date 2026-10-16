@@ -264,11 +264,15 @@ from kaagaz.jobs.worker import Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.reading.ocr import (
     DYNAMIC_MAX_PAGES,
+    HARD_LINES_MAX,
+    HARD_SHARE,
     LOCAL_READ_BY,
     DocumentPages,
     PageCache,
     PageRead,
     careful_pages,
+    careful_plan,
+    careful_reasons,
     is_word_mark,
     worst_first,
 )
@@ -809,6 +813,7 @@ class DocumentProcessor:
         job_reading: Callable[[str, str], JobReading] | None = None,
         usage: UsageScopes | None = None,
         ocr_page_concurrency: int = 1,
+        cost_saving: tuple[int, float] = (HARD_LINES_MAX, HARD_SHARE),
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -843,7 +848,8 @@ class DocumentProcessor:
         job's model calls (SP1): kind scan to the user who asked for the reading, or upgrade
         with no user, and card, invoice, map and embed for those stages.
         ``ocr_page_concurrency`` (OCR_PAGE_CONCURRENCY): the pages read at once, for the time
-        left (fast scan, council 16 Oct 2026)."""
+        left (fast scan, council 16 Oct 2026). ``cost_saving``: Cost saving's hard-lines limits
+        (COST_SAVING_HARD_LINES_MAX, COST_SAVING_HARD_SHARE) for ``careful_pages``."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -883,6 +889,7 @@ class DocumentProcessor:
         self._job_reading = job_reading
         self._usage = usage
         self._ocr_page_concurrency = ocr_page_concurrency
+        self._cost_saving = cost_saving
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -1477,15 +1484,20 @@ class DocumentProcessor:
         those pages are read with Careful (the engine's ``_dynamic``). The second reading's
         spans and page reads are the document's. ``spans`` unchanged otherwise."""
         reading, meter = run.reading, self._ocr_meter
+        lines_max, share = self._cost_saving
         if run.escalated is not None:  # read with Careful page by page already (fast scan)
             chosen, cap_hit = worst_first(run.escalated)
             run.reading_notes.update(escalated=chosen, cap_hit=cap_hit)
+            _note_tokens(run)
             return spans
         if meter is None or run.memo is None or reading is None or run.model is None:
             return spans
-        chosen, cap_hit = careful_pages(run.page_reads, lead=run.model, read_again=run.read_again)
+        chosen, cap_hit = careful_pages(
+            run.page_reads, lead=run.model, read_again=run.read_again, lines_max=lines_max, share=share
+        )
         run.reading_notes.update(escalated=chosen, cap_hit=cap_hit)
         if not chosen:
+            _note_tokens(run)
             return spans
         # Its own step, so the screen says what is happening; every page read is a move.
         self._progress(job, run, "rereading", 0, len(chosen))
@@ -1499,6 +1511,7 @@ class DocumentProcessor:
         with self._timed(run, "careful"), reading_again, waiting(heartbeat):
             spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=beat))
         run.page_reads = {**run.page_reads, **meter.take_page_reads()}
+        _note_tokens(run)
         return spans
 
     def _count_unreadable(self, run: _Run, pages: Sequence[PageRecord]) -> frozenset[int]:
@@ -1872,6 +1885,48 @@ def _handed_on(read: PageRead) -> bool:
     return not HANDED_ON.isdisjoint(read.issues)
 
 
+def _note_tokens(run: _Run) -> None:
+    """Cost saving's measurement (``cli cost-saving``, 16 Oct 2026), on run_config.reading:
+    each escalated page's tokens, ``first_in``/``first_out`` its first read's and
+    ``tokens_in``/``tokens_out`` Careful's (its last read's less the first's), and
+    ``kept_quick``, each page that kept its first read though ``careful_reasons`` gives it
+    reasons (before Cost saving it was read whole), with the same tokens (Careful's: 0, or a
+    dropped early read). First reads come from the memo, a page read twice (the DPI ceiling)
+    with both reads' tokens, as the meter sums them. Runs before this have neither. O(pages)."""
+    if run.memo is None or run.model is None:
+        return
+    first: dict[int, tuple[int, int]] = {}
+    reads: dict[int, PageRead] = {}
+    for (page_no, _sha), read in run.memo.items():
+        tokens_in, tokens_out = first.get(page_no, (0, 0))
+        first[page_no] = (tokens_in + read.input_tokens, tokens_out + read.output_tokens)
+        reads[page_no] = read
+
+    def tokens(page_no: int) -> dict[str, int]:
+        first_in, first_out = first.get(page_no, (0, 0))
+        last = run.page_reads.get(page_no)
+        last_in, last_out = (first_in, first_out) if last is None else (last.input_tokens, last.output_tokens)
+        return {
+            "first_in": first_in,
+            "first_out": first_out,
+            "tokens_in": max(0, last_in - first_in),
+            "tokens_out": max(0, last_out - first_out),
+        }
+
+    escalated = run.reading_notes.get("escalated") or []
+    for entry in escalated:
+        entry.update(tokens(entry["page"]))
+    chosen = {entry["page"] for entry in escalated}
+    kept = []
+    for page_no, read in sorted(reads.items()):
+        again = page_no in run.read_again
+        # careful_plan is empty whatever the limits: no page-wide reason and no hard line.
+        reasons = careful_reasons(read, lead=run.model, again=again)
+        if page_no not in chosen and reasons and not careful_plan(read, lead=run.model, again=again):
+            kept.append({"page": page_no, "reasons": reasons, **tokens(page_no)})
+    run.reading_notes["kept_quick"] = kept
+
+
 def _reading_config(run: _Run) -> dict[str, Any]:
     """``processing_runs.config.reading`` (S5a, C5, M7): the document's ``Reading`` (ids,
     providers, mode, thinking, notes) and what the run found (Dynamic's escalated pages
@@ -2096,6 +2151,7 @@ def build_processor(
         job_reading=job_reading,
         usage=None if job_reading is None else functools.partial(usage_scope, db),
         ocr_page_concurrency=settings.ocr_page_concurrency,
+        cost_saving=(settings.cost_saving_hard_lines_max, settings.cost_saving_hard_share),
     )
 
 

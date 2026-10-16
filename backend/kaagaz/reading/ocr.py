@@ -133,8 +133,10 @@ CAREFUL_ISSUES = frozenset(
 # unsure or [?] word), cut out and read in one call, when they are at most HARD_LINES_MAX and
 # at most HARD_SHARE of its lines and every one of them is pinned to a found box; else
 # PATH_PAGE, the whole page, as before. PAGE_WIDE are the reasons that always read the whole
-# page: the picture itself is hard to see, or no text was found to cut out.
-HARD_LINES_MAX = 12  # ponytail: fixed thresholds, tune on the golden set
+# page: the picture itself is hard to see, or no text was found to cut out. HARD_LINES_MAX
+# and HARD_SHARE are the defaults of COST_SAVING_HARD_LINES_MAX and COST_SAVING_HARD_SHARE
+# (settings), which the reader and the pipeline pass in; scripts/tune_cost_saving.py tunes them.
+HARD_LINES_MAX = 12
 HARD_SHARE = 0.4
 PATH_WORDS, PATH_PAGE = "path_words", "path_page"
 # Handwriting stays page wide (Tushar's accuracy first, 16 Oct 2026): a quick read of a
@@ -266,24 +268,41 @@ class OtherRead:
 
 
 def careful_pages(
-    reads: Mapping[int, PageRead], *, lead: str, read_again: Collection[int] = ()
+    reads: Mapping[int, PageRead],
+    *,
+    lead: str,
+    read_again: Collection[int] = (),
+    lines_max: int = HARD_LINES_MAX,
+    share: float = HARD_SHARE,
 ) -> tuple[list[dict[str, Any]], int]:
     """Dynamic (F26, C5): ([{"page", "reasons"}] to read again with Careful, how many more
     were left out by the cap). A page counts when ``careful_plan`` gives it reasons, the
     last of them how it is read again. Worst first (most reasons, then page order), at most
     DYNAMIC_MAX_PAGES: the same reads give the same pages, whatever order the threads
-    read them in. O(p log p + text)."""
+    read them in. ``lines_max`` and ``share``: ``careful_plan``'s. O(p log p + text)."""
     found = {
         page_no: reasons
         for page_no, read in reads.items()
-        if (reasons := careful_plan(read, lead=lead, again=page_no in read_again))
+        if (
+            reasons := careful_plan(
+                read, lead=lead, again=page_no in read_again, lines_max=lines_max, share=share
+            )
+        )
     }
     return worst_first(found)
 
 
-def careful_plan(read: PageRead, *, lead: str, again: bool = False) -> list[str]:
+def careful_plan(
+    read: PageRead,
+    *,
+    lead: str,
+    again: bool = False,
+    lines_max: int = HARD_LINES_MAX,
+    share: float = HARD_SHARE,
+) -> list[str]:
     """Cost saving (16 Oct 2026): ``careful_reasons`` with how the page is read again last,
-    PATH_WORDS or PATH_PAGE (see HARD_LINES_MAX); none when it keeps its first read: no
+    PATH_WORDS (at most ``lines_max`` hard lines and at most ``share`` of its lines, see
+    HARD_LINES_MAX) or PATH_PAGE; none when it keeps its first read: no
     reason, or only reasons that are not PAGE_WIDE (a fair grade, crowded) on a
     page whose every word the reader was sure of. O(issues + the page's text)."""
     reasons = careful_reasons(read, lead=lead, again=again)
@@ -294,7 +313,7 @@ def careful_plan(read: PageRead, *, lead: str, again: bool = False) -> list[str]
     hard = hard_lines(read)
     if not hard:
         return []
-    few = len(hard) <= HARD_LINES_MAX and len(hard) <= HARD_SHARE * len(read.lines)
+    few = len(hard) <= lines_max and len(hard) <= share * len(read.lines)
     pinned = all(read.lines[index].box_source == "found" for index in hard)
     return [*reasons, PATH_WORDS if few and pinned else PATH_PAGE]
 

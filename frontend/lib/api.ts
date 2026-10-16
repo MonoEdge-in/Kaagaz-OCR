@@ -542,7 +542,7 @@ export const putOrgAi = (
   id: string,
   body: AiValues & { ensemble: boolean; ai_budget_usd: number | null },
   code: string,
-) => request<OrgAiReply>("PUT", `/operator/orgs/${id}/ai`, { ...body, code });
+) => request<OrgAiReply & { ensemble_off: boolean }>("PUT", `/operator/orgs/${id}/ai`, { ...body, code });
 /** The platform defaults and how many organisations follow each area. */
 export const getAiDefaults = () => request<AiDefaults>("GET", "/operator/ai-defaults");
 /** Save them, with a fresh code: every organisation still on them follows. */
