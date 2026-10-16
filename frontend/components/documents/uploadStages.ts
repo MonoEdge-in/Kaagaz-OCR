@@ -95,9 +95,8 @@ export function nextShown(previous: Shown | null, fraction: number, now: number)
   return { percent: Math.min(target, shown.percent + MAX_STEP_PERCENT), at: now };
 }
 
-const STAGE_WORDS: Record<Stage, string> = { sending: "Sending", saving: "Saving…", reading: "Reading" };
-
-export const stageText = (stage: Stage) => STAGE_WORDS[stage];
+// Changed on purpose (scan states, 16 Oct 2026): the brief's words, Uploading then Scanning.
+const STAGE_WORDS: Record<Stage, string> = { sending: "Uploading", saving: "Saving", reading: "Scanning" };
 
 /** The <progress>'s aria-valuetext: the stage and its percent; Saving has no percent (indeterminate). */
 export function valueText(stage: Stage, percent: number): string {

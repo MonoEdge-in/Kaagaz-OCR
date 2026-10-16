@@ -1,12 +1,12 @@
 "use client";
 
-// A progress bar with "42%" and "Ready in about 40 s" beside a document being read
-// (PRD 4 #13; the rules are in lib/progress.ts and lib/timeLeft.ts). The bar is a
-// native <progress> named for its document; the visible percent and the counting
-// text are hidden from screen readers, which get words that change only by the
-// minute. No live region: nothing is announced. A refresh starts the bar from the
-// server's done_fraction, so "36%" stays beside "Taking longer than usual"; at 0 no
-// percent text is shown (never a bare 0%).
+// A thin progress bar and "About 40 s left" beside a document being read (PRD 4 #13;
+// the rules are in lib/progress.ts and lib/timeLeft.ts), the second line of its status
+// cell. The bar is a native <progress> named for its document, the same width in every
+// state; no percent is shown (changed on purpose, scan states, 16 Oct 2026). The
+// counting text is hidden from screen readers, which get words that change only by the
+// minute. No live region here: the status bar (UploadStatus) speaks for the uploads. A
+// refresh starts the bar from the server's done_fraction.
 
 import { memo, useState } from "react";
 import { useMediaQuery } from "@/components/chat/hooks";
@@ -17,7 +17,6 @@ import type { Held } from "@/lib/timeLeft";
 import { useTick } from "@/lib/tick";
 import type { DocumentSummary, TimeLeft as TimeLeftValue } from "@/lib/types";
 import styles from "./Documents.module.css";
-import { formatProgressPercent } from "./logic";
 
 type Shown = Pick<DocumentSummary, "status" | "progress" | "time_left" | "attempts" | "deleted_at" | "display_name">;
 
@@ -68,17 +67,7 @@ function Progressing({ value, step, attempt, name }: ProgressingProps) {
   if (next !== shown) setShown(next);
   return (
     <>
-      <span className={styles.readBar}>
-        <progress
-          className={styles.readMeter}
-          max={100}
-          value={barValue(next.percent)}
-          aria-label={`Progress: ${name}`}
-        />
-        <span className={styles.readPercent} aria-hidden="true">
-          {next.percent > 0 ? formatProgressPercent(next.percent, 100) : ""}
-        </span>
-      </span>
+      <progress className={`${styles.readMeter} ${styles.scanMeter}`} max={100} value={barValue(next.percent)} aria-label={`Progress: ${name}`} />
       <Words text={view.text} spoken={view.spoken} />
     </>
   );
@@ -87,9 +76,9 @@ function Progressing({ value, step, attempt, name }: ProgressingProps) {
 // Renders again only when the words change, not on every tick. The same words for eyes and
 // ears are written once, so a copy or a text read-out never says the same words twice.
 const Words = memo(function Words({ text, spoken }: { text: string; spoken: string }) {
-  if (text === spoken) return <span className={styles.timeLeft}>{text}</span>;
+  if (text === spoken) return <span className={styles.statusText} title={text}>{text}</span>;
   return (
-    <span className={styles.timeLeft}>
+    <span className={styles.statusText} title={text}>
       <span aria-hidden="true">{text}</span>
       <span className="visually-hidden">{spoken}</span>
     </span>

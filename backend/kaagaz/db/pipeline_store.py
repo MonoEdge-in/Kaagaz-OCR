@@ -68,7 +68,9 @@ them and none is ever half saved. A section's ``tsv`` is written with it, as
 ``to_tsvector('simple', ...)`` of its heading path and summary; its vector comes after
 the save, like a piece's (kaagaz.search.indexing). ``_check_map`` checks them against
 the pieces before the transaction opens (CX4): a bug upstream stops the save before any
-statement, like the card-label check.
+statement, like the card-label check. Word review (0030): after the values, each word
+change still in force is written again into the new values and pieces
+(``word_review.reapply``), so a read again never silently undoes a person's text.
 
 Cost per save: one family lock, 1 update, 1 read of the earlier pages' "Keep as is",
 7 deletes; per SAVE_CHUNK rows, one batched insert of pages, one of pieces and one of
@@ -89,6 +91,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 
 from kaagaz.chunking.piece import Piece
+from kaagaz.db import word_review
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import is_run_open
 from kaagaz.db.sqlstate import retry_on_deadlock
@@ -346,6 +349,9 @@ class PgPipelineStore:
                     conn.execute(_INSERT_PIECE, [_piece_row(ids, seq, pieces[seq]) for seq in seqs])
                 _insert_map(conn, ids, content.sections, content.topics)
                 _insert_values(conn, ids, content.values, content.reader)
+                # A person's word changes, written again into the new rows (0030), so a
+                # read again of another page never undoes their text.
+                word_review.reapply(conn, customer_id, document_id)
                 if content.invoice is not None:
                     _insert_invoice(conn, ids, content.invoice)
                 _replace_links(conn, ids, family_id, content.links)

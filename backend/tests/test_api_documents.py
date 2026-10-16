@@ -202,10 +202,10 @@ def test_status_messages_name_the_tries_and_the_real_page_count() -> None:
     # The tries ran out. Changed on purpose (council 16 Oct 2026): a re-upload is a
     # duplicate, never read again.
     assert message("failed", "retries_exhausted", attempts=5, max_attempts=5) == (
-        "We tried 5 times and couldn't read this file. Read it again, or ask your admin to look at it."
+        "The scan stopped after 5 tries. Read it again, or ask your admin to look at it."
     )
     assert message("failed", "retries_exhausted") == (
-        "We tried several times and couldn't read this file. Read it again, or ask your admin to look at it."
+        "The scan stopped after several tries. Read it again, or ask your admin to look at it."
     )
     # The worker stored the real page count before the file failed.
     assert message("failed", "too_many_pages", page_count=180) == (

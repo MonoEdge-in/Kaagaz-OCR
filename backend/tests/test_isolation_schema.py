@@ -21,6 +21,10 @@ Two-step by grant (0029): only ``kaagaz_op_set_org_two_step`` writes ``two_step_
 Features 25-27 (0026): an organisation's AI settings the app may only read, the platform
 defaults (no customer) every role that may reads, the catalogue's chat_eligible the refresh
 writes, and the operator's AI functions in place of 0023's organisation models ones.
+
+Word review (0030, NEEDS VRUSHIT'S APPROVAL): word changes the app adds and only marks undone
+or writes again (applied), Ensemble runs whose progress columns alone change, readings whose
+decision alone is set; none is ever deleted by the app (they go with their document).
 """
 
 import re
@@ -79,6 +83,20 @@ FROM_0023 = {
 }
 # Features 25-27 (0026): the operator alone writes an organisation's AI settings.
 FROM_0026 = {"customer_ai_settings": (True, False, False, False)}
+# Word review (0030): added, never deleted; only the columns below may be updated.
+FROM_0030 = {
+    "word_changes": (True, True, False, False),
+    "ensemble_runs": (True, True, False, False),
+    "ensemble_readings": (True, True, False, False),
+}
+UPDATES_0030 = {
+    "word_changes": {"applied", "undone_at", "undone_by"},
+    "ensemble_runs": {
+        "pages_done", "pages_failed", "status", "stop_requested_at", "error_code", "attempts", "started_at",
+        "finished_at",
+    },
+    "ensemble_readings": {"decision", "decided_by", "decided_at"},
+}  # fmt: skip
 # The catalogue (no customer): the app's refresh writes these columns only, never
 # verified_*, tokens_per_page_* (verify-models, the owner) or enabled_* (the operator).
 CATALOG_REFRESH = {
@@ -305,6 +323,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0021)
         | set(FROM_0023)
         | set(FROM_0026)
+        | set(FROM_0030)
     )
 
     with db.system() as conn:
@@ -352,7 +371,9 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
-    for table, expected in (FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021 | FROM_0023 | FROM_0026).items():
+    for table, expected in (
+        FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021 | FROM_0023 | FROM_0026 | FROM_0030
+    ).items():
         assert granted[table] == expected, table
 
 
@@ -401,6 +422,12 @@ def test_the_app_may_update_only_a_cached_reads_result_and_a_sections_vector(db:
     assert _updatable(db, "page_reads") == PAGE_READ_UPDATES
     assert _updatable(db, "document_sections") == SECTION_UPDATES
     assert _updatable(db, "document_topics") == set()
+
+
+def test_the_app_may_update_only_the_undo_and_progress_columns_of_word_review(db: Database) -> None:
+    """0030: never a change's word, texts, who or when, so the history can't be rewritten;
+    never a run's scope, pages or models, nor a reading's outcome or readings."""
+    assert {table: _updatable(db, table) for table in UPDATES_0030} == UPDATES_0030
 
 
 def test_the_app_writes_only_the_refresh_columns_of_the_model_catalogue(db: Database) -> None:
@@ -471,7 +498,9 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         keys = [tuple(row) for row in conn.execute(_FOREIGN_KEYS)]
     between = [key for key in keys if key[1] in tables and key[2] in tables]
 
-    assert {key[1] for key in between} >= set(FROM_0004) | set(FROM_0021) | {"pages", "model_usage"}
+    assert {key[1] for key in between} >= (
+        set(FROM_0004) | set(FROM_0021) | set(FROM_0030) | {"pages", "model_usage"}
+    )
     for name, _table, _parent, columns, parent_columns in between:
         assert ("customer_id", "customer_id") in zip(columns, parent_columns, strict=True), name
 

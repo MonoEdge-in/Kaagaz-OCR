@@ -176,7 +176,7 @@ export interface TimeLeft {
   items_left: number; // pages still to draw (preparing) or read; 0 once reading has ended
   item_seconds: number; // expected seconds a page
   after_seconds: number; // expected seconds from the end of this step's pages until ready
-  confidence: "low" | "high"; // low: not enough of this customer's history; shown as a rough guess
+  confidence: "low" | "high"; // low: not enough of this customer's history; shown as "About ..." like any estimate
   elapsed_seconds: number; // since this run started: the percentage is elapsed / (elapsed + left)
   done_fraction: number; // 0 to 1, the server's, the same on every load: a refreshed bar starts from it
 }

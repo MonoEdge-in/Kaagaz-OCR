@@ -7,8 +7,10 @@
 // lib/regions.ts, so they land on the same spot at any size.
 //
 // The full page fits the width of its container (measured with a
-// ResizeObserver), or with fit="page" the whole page inside the container
-// (the document screen's sticky column), and zooms from there. Beside its
+// ResizeObserver) and zooms from there. With `fill` (the document screen's sticky
+// column) the viewer fills its parent's height, and a toggle fits the whole page
+// in it instead (UI audit DD5, 16 Oct 2026). Ctrl or Cmd with the wheel zooms; the
+// plain wheel scrolls the page, on into <main>, never trapped (DD1). Beside its
 // number a blank page says so. Zoomed in, a PDF page is drawn twice: the whole
 // page, softer, and on top of it a sharp drawing of only the part on screen,
 // redrawn 150ms after scrolling stops (visibleRect). The user's own words
@@ -17,14 +19,15 @@
 // once it comes near the screen (IntersectionObserver); until then a skeleton
 // holds its space. Reading problems (PRD 5 U3, readingMarks.ts) are a second
 // layer of marks on the full page, each a button with its own pattern, with a
-// legend and a "Show reading problems" checkbox, on at first for an uncertain or
-// unreadable page. A highlighted spot is zoomed to readable size (focusZoom)
+// "Show reading problems" toggle in the toolbar (its legend in a tooltip, DD9), on at
+// first for an uncertain or unreadable page. A highlighted spot is zoomed to readable size (focusZoom)
 // and scrolled to the middle of the frame, then into view, with a short pulse.
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { markerId } from "@/components/words/ViewerWords";
 import { markerRect } from "@/components/words/spots";
@@ -37,7 +40,7 @@ import { MARK_WORDS, legend, markName, markRect, marksOnPage, showByDefault } fr
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
 import type { ViewRect } from "./canvasPlan";
-import { ZOOM_STEPS, centerScroll, fitPageSize, focusZoom, pageMode, stepZoom, visibleRect } from "./viewer";
+import { ZOOM_STEPS, centerScroll, fitPageSize, focusZoom, pageMode, stepZoom, visibleRect, wheelZoom } from "./viewer";
 import styles from "./PageViewer.module.css";
 
 // PDF.js needs the browser, so its component never renders on the server.
@@ -70,13 +73,16 @@ export interface PageViewerProps {
   /** My words on this page (ViewerWords.tsx) and the one its list marked. */
   marks?: Marker[];
   activeMark?: string | null;
-  /** "page": fill the parent's height and fit the whole page in it; "width" (default): fit the width. */
-  fit?: "page" | "width";
+  /** Fill the parent's height (the sticky column): fit width at first, with a Fit page toggle. */
+  fill?: boolean;
   /** PRD 5 U3: the page's reading problems, and what a mark does when pressed (with its name). */
   readingMarks?: ReadingMark[];
   onMark?: (mark: ReadingMark, name: string) => void;
   /** Said under the page while a box is highlighted ("Highlighted: Grand total"); else how many boxes mark spots. */
   highlightNote?: string;
+  /** DD7: the reading problem pointed at (its index on the page), here or in its list. */
+  hotMark?: number | null;
+  onHotMark?: (index: number | null) => void;
 }
 
 export function PageViewer({
@@ -90,10 +96,12 @@ export function PageViewer({
   belowToolbar,
   marks = [],
   activeMark = null,
-  fit = "width",
+  fill = false,
   readingMarks,
   onMark,
   highlightNote,
+  hotMark = null,
+  onHotMark,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -123,6 +131,9 @@ export function PageViewer({
     [measureRef],
   );
   const onPdfFailed = useCallback(() => setPdfFailedFor(pageKey), [pageKey]);
+  const [fitChoice, setFitChoice] = useState<"width" | "page">("width");
+  const fit = fill ? fitChoice : "width";
+  const legendId = useId();
   // "Show reading problems", chosen on this page; until then, on for a page with problems.
   const [problemsChoice, setProblemsChoice] = useState<{ key: string; on: boolean } | null>(null);
 
@@ -148,7 +159,7 @@ export function PageViewer({
   let spotZoom = 1;
   if (spot && box && (mode === "pdf" || mode === "image")) {
     const fitted = fitPageSize(box.width, aspect, 1, fit === "page" ? box.height : undefined);
-    const frame = { width: box.width, height: fit === "page" ? box.height : Infinity };
+    const frame = { width: box.width, height: fill ? box.height : Infinity };
     spotZoom = focusZoom(boxToPixels(spot.box, fitted.width, fitted.height), frame);
   }
   const zoom = zoomChoice && zoomChoice.key === spotKey ? zoomChoice.zoom : spotZoom;
@@ -178,14 +189,32 @@ export function PageViewer({
     );
     if (shownSpot.current === spotKey) return;
     shownSpot.current = spotKey;
-    marked.scrollIntoView({ block: fit === "page" ? "nearest" : "center", inline: "nearest" });
-  }, [spotKey, zoom, box, fit]);
+    marked.scrollIntoView({ block: fill ? "nearest" : "center", inline: "nearest" });
+  }, [spotKey, zoom, box, fill]);
 
   // A new page with no spot to show starts at its top-left, even zoomed in.
   const toPageStart = useEffectEvent(() => {
     if (!spotKey) frameRef.current?.scrollTo(0, 0);
   });
   useLayoutEffect(() => toPageStart(), [pageKey]);
+
+  // Ctrl or Cmd with the wheel zooms the page, not the browser; any other wheel is left
+  // alone (no preventDefault), so it scrolls the page and then <main> (DD1). Not passive,
+  // or the browser's own zoom could not be held back.
+  const onWheel = useEffectEvent((event: WheelEvent) => {
+    const direction = wheelZoom(event);
+    if (direction === null) return;
+    event.preventDefault();
+    setZoom(stepZoom(zoom, direction));
+  });
+  const wheelZooms = !isCrop && (mode === "pdf" || mode === "image");
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!wheelZooms || !frame) return;
+    const listener = (event: WheelEvent) => onWheel(event);
+    frame.addEventListener("wheel", listener, { passive: false });
+    return () => frame.removeEventListener("wheel", listener);
+  }, [wheelZooms, pageKey]);
 
   const size = box ? fitPageSize(box.width, aspect, zoom, fit === "page" ? box.height : undefined) : null;
   // Zoomed in on a PDF page: measure what shows 150ms after the last scroll or
@@ -336,10 +365,13 @@ export function PageViewer({
                 type="button"
                 className={styles.problem}
                 data-quality={mark.quality}
+                data-hot={hotMark === index ? "true" : undefined}
                 aria-label={name}
                 title={name}
                 style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
                 onClick={() => onMark?.(mark, name)}
+                onPointerEnter={() => onHotMark?.(index)}
+                onPointerLeave={() => onHotMark?.(null)}
               />
             );
           })}
@@ -442,9 +474,10 @@ export function PageViewer({
   const showPages = onPageChange !== undefined && numbers.length > 0;
   // On a phone only "Fit" shows; the whole name is still read out.
   const fitName = <>Fit<span className="narrow-hide">{fit === "page" ? " page" : " width"}</span></>;
+  const otherFit = fit === "page" ? "width" : "page";
 
   return (
-    <div className={fit === "page" ? `${styles.viewer} ${styles.fitPage}` : styles.viewer}>
+    <div className={fill ? `${styles.viewer} ${styles.fitPage}` : styles.viewer}>
       {showPages || canZoom || tools ? (
         <div className={styles.toolbar}>
           {showPages ? (
@@ -499,34 +532,49 @@ export function PageViewer({
               >
                 {fitName}
               </button>
+              {fill ? (
+                <button
+                  type="button"
+                  className="btn btn-quiet"
+                  onClick={() => {
+                    setFitChoice(otherFit);
+                    setZoom(1);
+                  }}
+                >
+                  Fit {otherFit}
+                </button>
+              ) : null}
             </div>
+          ) : null}
+          {problems.length > 0 && canZoom ? (
+            <span className={styles.problemTool}>
+              <button
+                type="button"
+                className="btn btn-quiet"
+                aria-pressed={showProblems}
+                aria-label="Show reading problems"
+                aria-describedby={legendId}
+                onClick={() => setProblemsChoice({ key: marksKey, on: !showProblems })}
+              >
+                <Icon name="eye-alert" />
+                <span className="narrow-hide">Reading problems</span>
+              </button>
+              <span id={legendId} role="tooltip" className={styles.legendTip}>
+                <ul className={styles.legend} aria-label="What the marks mean">
+                  {legend(problems).map((quality) => (
+                    <li key={quality}>
+                      <span className={styles.swatch} data-quality={quality} aria-hidden="true" />
+                      {MARK_WORDS[quality].legend}
+                    </li>
+                  ))}
+                </ul>
+              </span>
+            </span>
           ) : null}
           {tools}
         </div>
       ) : null}
       {belowToolbar}
-      {problems.length > 0 && canZoom ? (
-        <div className={styles.problemBar}>
-          <label className={styles.problemToggle}>
-            <input
-              type="checkbox"
-              checked={showProblems}
-              onChange={() => setProblemsChoice({ key: marksKey, on: !showProblems })}
-            />
-            Show reading problems
-          </label>
-          {showProblems ? (
-            <ul className={styles.legend} aria-label="What the marks mean">
-              {legend(problems).map((quality) => (
-                <li key={quality}>
-                  <span className={styles.swatch} data-quality={quality} aria-hidden="true" />
-                  {MARK_WORDS[quality].legend}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
-      ) : null}
       {body}
     </div>
   );

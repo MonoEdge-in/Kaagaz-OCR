@@ -151,7 +151,10 @@ describe("the MonoEdge design system on the documents screens", () => {
     expect(read("components/documents/FolderActions.tsx")).toContain("`btn btn-danger ${styles.apart}`");
     expect(read("components/documents/DocumentsTable.tsx")).toContain("`btn btn-danger ${styles.apart}`");
     // One primary per view: Upload on the list, Ask on a document.
-    expect(read("components/documents/DocumentsView.tsx").match(/btn btn-primary/g)).toHaveLength(1);
+    // Changed on purpose (UI audit, 16 Oct 2026): G5 puts the list's one primary Upload in the app
+    // header (it opens #upload-input), so the screen's own Upload files is a secondary button.
+    expect(read("components/documents/DocumentsView.tsx")).not.toContain("btn btn-primary");
+    expect(read("components/documents/DocumentsView.tsx")).toContain('id="upload-input"');
     expect(read("app/(app)/documents/[id]/DocumentView.tsx").match(/btn btn-primary/g)).toHaveLength(1);
   });
 
@@ -159,13 +162,20 @@ describe("the MonoEdge design system on the documents screens", () => {
     const viewer = read("components/viewer/PageViewer.tsx");
     expect(viewer).toContain("className={zoom === 1 ? `btn btn-quiet ${styles.unseen}` : \"btn btn-quiet\"}");
     expect(viewer).toContain("style={{ minWidth: `${9 + 2 * String(numbers.length).length}ch` }}");
-    expect(viewer).not.toMatch(/addEventListener\("wheel"/); // zoom never follows the wheel
+    // Changed on purpose (UI audit, 16 Oct 2026): DD1, the wheel zooms only with Ctrl or Cmd held
+    // (wheelZoom); every other wheel is left to scroll the page and then <main>.
+    expect(viewer).toContain('frame.addEventListener("wheel", listener, { passive: false })');
+    expect(viewer).toMatch(/const direction = wheelZoom\(event\);\s*if \(direction === null\) return;\s*event\.preventDefault\(\);/);
   });
 
   it("lets only the page's pan areas and the tables' wrappers keep their scroll; the scanned lines never scroll on their own", () => {
     const scanned = css("components/viewer/ScannedText.module.css");
     expect(scanned).not.toMatch(/overflow(-y)?:\s*(auto|scroll)/);
     expect(scanned).toMatch(/\.line \{[^}]*content-visibility:\s*auto;[^}]*contain-intrinsic-size:\s*auto 44px;/);
-    expect(css("components/viewer/PageViewer.module.css")).toMatch(/\.fitPage \.frame \{\s*overscroll-behavior:\s*contain;/);
+    // Changed on purpose (UI audit, 16 Oct 2026): DD1, no scroll trap. The page's and the sheet's
+    // frames hold only a sideways swipe (never Back); a wheel up or down runs on into <main>.
+    const viewer = css("components/viewer/PageViewer.module.css");
+    expect(viewer).not.toMatch(/overscroll-behavior(-y)?:/);
+    expect(viewer.match(/overscroll-behavior-x:\s*contain/g)).toHaveLength(2);
   });
 });

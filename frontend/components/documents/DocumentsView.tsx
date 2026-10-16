@@ -2,10 +2,14 @@
 
 // The documents screen: the page header with "Upload files"; the folder tree
 // (beside the list from 1024 px, in a drawer below that); where you are, with
-// New folder, Rename, Move and Delete; the dropzone, which uploads into the
-// folder being viewed; uploads in progress; search and the filter chips; the
-// list and its pages. Search looks inside the documents (the default) or at
-// their names (PRD 3 Q3, insideSearch.ts). The folder and the filters live in
+// New folder, Rename, Move and Delete; search and the filter chips; the list and
+// its pages. UI audit (16 Oct 2026): "Read with" has its room kept from the first
+// paint, a skeleton until the limits come (D1); with documents listed, the whole
+// screen is the drop target, an overlay saying so while files are dragged over it
+// (D10); an empty list keeps its big dropzone. Files go into the folder being viewed.
+// Uploads in progress are in the status bar, with the tray in a panel above it
+// (UploadStatus), opened as files are added, so nothing pushes the list down.
+// Search looks inside the documents (the default) or at their names (PRD 3 Q3, insideSearch.ts). The folder and the filters live in
 // the page address (libraryQuery.ts), so a reload keeps them and Back returns to the folder
 // before. While any document is still being checked or read, the list is
 // asked for again (lib/poll.ts: every 3 s, then every 5 s, never while the
@@ -21,7 +25,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { UploadWords } from "@/components/words/UploadWords";
-import { ApiError, listDocuments, listFolders, listTags, searchDocuments } from "@/lib/api";
+import { ApiError, listDocuments, listFolders, listTags, searchDocuments, updateDocument } from "@/lib/api";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
 import { useSession } from "@/lib/session";
@@ -41,7 +45,7 @@ import {
   searchParams,
 } from "./insideSearch";
 import type { SearchMode } from "./insideSearch";
-import { noMatchTitle } from "./library";
+import { libraryErrorText, noMatchTitle } from "./library";
 import { mergeList } from "./listMerge";
 import { LibraryFilters } from "./LibraryFilters";
 import { includeSubfoldersHref, isFiltered, libraryHref, listParams } from "./libraryQuery";
@@ -56,7 +60,8 @@ import {
   uploadsFinishedText,
 } from "./logic";
 import { foreverNeeds } from "./trash";
-import { BatchTray, Dropzone, ReaderSelect, useUploads } from "./UploadArea";
+import { Dropzone, ReaderSelect, UploadStatus, useUploads } from "./UploadArea";
+import { isBusy } from "./uploadQueue";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
 
@@ -79,7 +84,7 @@ const DRAWER_ID = "documents-folders";
 const errorText = (caught: unknown) =>
   caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.";
 
-export function DocumentsView({ library }: { library: LibraryState }) {
+export function DocumentsView({ library, startQ = "" }: { library: LibraryState; startQ?: string }) {
   const { me } = useSession();
   const inputRef = useRef<HTMLInputElement>(null);
   // "Upload new version": its own file input, and the document it is for.
@@ -90,7 +95,13 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   // The search box keeps what is typed itself: a key press never re-renders the list.
   const searchRef = useRef<HTMLInputElement>(null);
   // The page belongs to the view it was turned in: a new folder or filter starts at page 1.
-  const [search, setSearch] = useState({ view: viewKey, q: "", offset: 0 });
+  const [search, setSearch] = useState({ view: viewKey, q: startQ, offset: 0 });
+  // The header's search (G5) sends ?q=…: a new one starts that search here, its words in the box.
+  const [heardQ, setHeardQ] = useState(startQ);
+  if (startQ !== heardQ) {
+    setHeardQ(startQ);
+    if (startQ !== "") setSearch({ view: viewKey, q: startQ, offset: 0 });
+  }
   const q = search.q;
   const offset = search.view === viewKey ? search.offset : 0;
   const [modeChoice, setModeChoice] = useState<SearchMode>(DEFAULT_SEARCH_MODE);
@@ -112,7 +123,10 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const [tagsError, setTagsError] = useState<string | null>(null);
   const [tagsVersion, setTagsVersion] = useState(0);
   const [foldersOpen, setFoldersOpen] = useState(false);
+  const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: "+ New folder" in the folder column
+  const [dropError, setDropError] = useState<string | null>(null);
   const uploads = useUploads(() => setReload((n) => n + 1));
+  const [trayOpen, setTrayOpen] = useState(false);
   const filtered = isFiltered(library);
 
   // Each batch of uploads is said once, when it settles; nothing is cleared.
@@ -235,7 +249,10 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const uploadInto = library.folderId ?? undefined;
 
   const openPicker = () => inputRef.current?.click();
-  const addFiles = (files: File[]) => void uploads.addFiles(files, uploadInto);
+  const addFiles = (files: File[]) => {
+    setTrayOpen(true);
+    void uploads.addFiles(files, uploadInto);
+  };
 
   function onChoose(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
@@ -256,7 +273,10 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     const [file] = Array.from(event.target.files ?? []);
     event.target.value = "";
     const of = versionOf.current;
-    if (file && of) void uploads.addVersion(file, of);
+    if (file && of) {
+      setTrayOpen(true);
+      void uploads.addVersion(file, of);
+    }
   }
 
   function show(next: LibraryState) {
@@ -305,6 +325,16 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     }
   }
 
+  // D12: a document's name dropped on a folder in the tree moves it there.
+  function dropDocument(documentId: string, folderId: string | null, placeName: string) {
+    const name = shown?.list.items.find((item) => item.id === documentId)?.display_name ?? "The document";
+    setDropError(null);
+    updateDocument(documentId, { folder_id: folderId }).then(
+      () => afterSave(`Moved ${name} to ${placeName}.`),
+      (caught: unknown) => setDropError(libraryErrorText(caught, "document")),
+    );
+  }
+
   function navigated(placeName: string) {
     setFoldersOpen(false);
     setAnnouncement(`Showing ${placeName}.`);
@@ -331,17 +361,20 @@ export function DocumentsView({ library }: { library: LibraryState }) {
       error={foldersError}
       onRetry={() => setFoldersVersion((n) => n + 1)}
       onNavigate={navigated}
+      onDropDocument={canUpload ? dropDocument : undefined}
     />
   );
 
-  // An empty list shows this button in its empty state, and the header leaves it out.
+  // An empty list shows this button in its empty state, and the header leaves it out. Secondary:
+  // the app header's Upload is the screen's one primary (G5), and opens #upload-input too.
   const uploadButton = (
-    <button type="button" className="btn btn-primary" onClick={openPicker}>
+    <button type="button" className="btn" onClick={openPicker}>
       <Icon name="upload" />
       Upload<span className="narrow-hide"> files</span>
     </button>
   );
-  const readerSelect = (
+  // D1: until the limits come, a skeleton the select's size holds its place.
+  const readerSelect = uploads.limitsLoaded ? (
     <ReaderSelect
       readers={uploads.limits.readers}
       picked={uploads.reader}
@@ -350,10 +383,18 @@ export function DocumentsView({ library }: { library: LibraryState }) {
       agents={uploads.agents}
       onAgents={uploads.chooseAgents}
     />
+  ) : (
+    <span className={`skeleton ${styles.readerSkeleton}`} aria-hidden="true" />
   );
 
   return (
-    <div className={`page ${libraryStyles.libraryPage}`}>
+    <Dropzone
+      variant="page"
+      limits={uploads.limits}
+      onFiles={addFiles}
+      enabled={canUpload && view !== "empty"}
+      className={`page ${libraryStyles.libraryPage}`}
+    >
       <header className="page-header">
         <div>
           <h1>Documents</h1>
@@ -399,9 +440,14 @@ export function DocumentsView({ library }: { library: LibraryState }) {
 
       <div className={libraryStyles.library}>
         <nav className={libraryStyles.treePane} aria-labelledby="folders-heading">
-          <h2 id="folders-heading" className={libraryStyles.paneHeading}>
-            Folders
-          </h2>
+          <div className={libraryStyles.paneHead}>
+            <h2 id="folders-heading" className={libraryStyles.paneHeading}>
+              Folders
+            </h2>
+            {folders !== null && canUpload && (
+              <IconButton icon="plus" label="New folder" onClick={() => setNewFolderAsk((n) => n + 1)} />
+            )}
+          </div>
           {nav}
         </nav>
 
@@ -477,6 +523,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 tree={tree}
                 current={current}
                 onChanged={afterFolderChange}
+                askNew={newFolderAsk}
               />
             )}
           </div>
@@ -511,7 +558,6 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   variant="full"
                   limits={uploads.limits}
                   onFiles={addFiles}
-                  onChoose={openPicker}
                 >
                   <EmptyState
                     icon="file"
@@ -529,31 +575,12 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     }
                   >
                     {current
-                      ? "Upload files here, or move documents in with their Actions button."
+                      ? "Upload files here, or move documents in from their menu."
                       : "Upload invoices, registers or bank statements, as PDF, photo or spreadsheet."}
                   </EmptyState>
                 </Dropzone>
-              ) : (
-                <Dropzone
-                  variant="slim"
-                  limits={uploads.limits}
-                  onFiles={addFiles}
-                  onChoose={openPicker}
-                />
-              )}
+              ) : null}
 
-              <BatchTray
-                entries={uploads.entries}
-                views={uploads.views}
-                stored={uploads.stored}
-                tooMany={uploads.tooMany}
-                onClearFinished={uploads.clearFinished}
-                onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
-                onRetry={(key) => void uploads.retry(key)}
-                tree={tree}
-                onUndone={() => setReload((n) => n + 1)}
-                canReread={canReview(me.user.role)}
-              />
               {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
 
               {view !== "empty" && (
@@ -575,17 +602,17 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                             maxLength={MAX_SEARCH_LENGTH}
                             placeholder="e.g. Sharma Industries invoice"
                             ref={searchRef}
+                            key={heardQ}
                             defaultValue={q}
                           />
+                          {/* D6: clearing is an x inside the box; the box and Search share one height. */}
+                          {q !== "" && (
+                            <IconButton icon="close" label="Clear search" className={styles.searchClear} onClick={clearSearch} />
+                          )}
                         </div>
                         <button type="submit" className="btn">
                           Search
                         </button>
-                        {q !== "" && (
-                          <button type="button" className="btn btn-quiet" onClick={clearSearch}>
-                            Clear search
-                          </button>
-                        )}
                         {!library.trash && (
                           <fieldset className={styles.searchMode}>
                             <legend className="visually-hidden">Search in</legend>
@@ -615,6 +642,12 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                       showSubfolders={current !== null && current.children.length > 0}
                       onChange={show}
                     />
+                  )}
+
+                  {dropError && (
+                    <p className="error-text" role="alert">
+                      {dropError}
+                    </p>
                   )}
 
                   {error && shown && (
@@ -747,6 +780,28 @@ export function DocumentsView({ library }: { library: LibraryState }) {
       <Drawer id={DRAWER_ID} title="Folders" open={foldersOpen} onClose={() => setFoldersOpen(false)}>
         {nav}
       </Drawer>
-    </div>
+
+      <UploadStatus
+        open={trayOpen}
+        onOpenChange={setTrayOpen}
+        entries={uploads.entries}
+        views={uploads.views}
+        stored={uploads.stored}
+        tooMany={uploads.tooMany}
+        onClearFinished={() => {
+          uploads.clearFinished();
+          // Nothing left: the panel and its button go, so focus goes to the list's heading.
+          if (!uploads.entries.some(isBusy)) {
+            setTrayOpen(false);
+            headingRef.current?.focus();
+          }
+        }}
+        onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
+        onRetry={(key) => void uploads.retry(key)}
+        tree={tree}
+        onUndone={() => setReload((n) => n + 1)}
+        canReread={canReview(me.user.role)}
+      />
+    </Dropzone>
   );
 }

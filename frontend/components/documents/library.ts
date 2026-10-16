@@ -22,7 +22,7 @@ export function downloadHref(document: Pick<DocumentSummary, "id" | "status">): 
 }
 
 export type EditAction = "rename" | "move" | "tags";
-export type RowAction = EditAction | "version" | "trash" | "restore" | "forever";
+export type RowAction = EditAction | "version" | "trash" | "restore" | "forever" | "read";
 
 export type MenuEntry =
   | { kind: "action"; action: RowAction; words: string; danger: boolean }
@@ -34,10 +34,15 @@ export type MenuEntry =
  * renamed, moved, tagged or given a new version (the server says 409
  * in_trash): it offers Restore when can_delete, and Delete forever in an
  * admin session (canForever). Out of Trash, Move to Trash needs can_delete.
+ * On the document screen (UI audit DD2, 16 Oct 2026) the menu starts with Read again
+ * (`readAgain`: canReprocess) and leaves out Download original (a button beside it) and
+ * Upload new version (the reading problems' Upload a better scan).
  */
 export function menuEntries(
   item: Pick<DocumentSummary, "id" | "status" | "deleted_at" | "can_delete">,
   canForever: boolean,
+  place: "list" | "document" = "list",
+  readAgain = false,
 ): MenuEntry[] {
   const act = (action: RowAction, words: string, danger = false): MenuEntry => ({
     kind: "action",
@@ -56,12 +61,48 @@ export function menuEntries(
         act("tags", "Tags"),
         act("version", "Upload new version"),
       ];
+  if (place === "document") {
+    const kept = entries.filter((entry) => entry.kind === "action" && entry.action !== "version");
+    if (readAgain && !trashed) kept.unshift(act("read", "Read again"));
+    if (!trashed && item.can_delete) kept.push(act("trash", "Move to Trash", true));
+    return kept;
+  }
   // Trash means deleted: a document there can only be restored or deleted forever.
   const download = trashed ? null : downloadHref(item);
   if (download) entries.push({ kind: "download", href: download });
   if (trashed && canForever) entries.push(act("forever", "Delete forever", true));
   if (!trashed && item.can_delete) entries.push(act("trash", "Move to Trash", true));
   return entries;
+}
+
+/**
+ * Where an open menu goes (D5): under its button, or above it when there is not room
+ * below and more above; its end edge lined up with the button's, kept 8px inside the
+ * window. Fixed coordinates (the menu is in a portal, so <main> never cuts it).
+ */
+export function menuPlace(
+  button: { top: number; bottom: number; right: number },
+  menu: { width: number; height: number },
+  view: { width: number; height: number },
+): { top: number; left: number; up: boolean } {
+  const gap = 4;
+  const edge = 8;
+  const below = view.height - button.bottom - gap - edge;
+  const above = button.top - gap - edge;
+  const up = menu.height > below && above > below;
+  const top = up ? Math.max(edge, button.top - gap - menu.height) : button.bottom + gap;
+  const left = Math.min(Math.max(edge, button.right - menu.width), Math.max(edge, view.width - menu.width - edge));
+  return { top, left, up };
+}
+
+/** The menu item focused after a key (Up/Down wrap, Home/End the ends); null for other keys. */
+export function menuItemAfterKey(index: number, key: string, count: number): number | null {
+  if (count === 0) return null;
+  if (key === "ArrowDown") return (index + 1) % count;
+  if (key === "ArrowUp") return (index - 1 + count) % count;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  return null;
 }
 
 /** The folders from the top down to the document's own, whether or not `path` already ends with it. */

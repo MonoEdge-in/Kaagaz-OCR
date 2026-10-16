@@ -301,7 +301,8 @@ describe("sessionChangedMessage", () => {
 describe("uploadStateText", () => {
   it("has words for every state and leaves the percentage to the bar", () => {
     expect(uploadStateText({ kind: "waiting" })).toBe("Waiting to upload");
-    expect(uploadStateText({ kind: "sending", fraction: 0.42 })).toBe("Sending");
+    // Changed on purpose (scan states, 16 Oct 2026): the brief's words, Uploading then Scanning.
+    expect(uploadStateText({ kind: "sending", fraction: 0.42 })).toBe("Uploading");
     expect(uploadStateText({ kind: "done", documentId: "d" })).toBe("Uploaded");
     expect(
       uploadStateText({ kind: "duplicate", documentId: "d", existingName: "x.pdf", inTrash: false }),

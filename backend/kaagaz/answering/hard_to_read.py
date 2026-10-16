@@ -67,6 +67,8 @@ _FLAGGED_PAGES = text(
 # (council 16 Oct 2026) one mark over the whole of each page graded unreadable or read by
 # the local reader: its text is the backup reader's (a timeout, a refusal, an outage), so a
 # citation of it is always hard to read. O(s + p) in the cited documents' spans and pages.
+# Word review (0030): a mark a person confirmed or edited, still in force, is no longer hard
+# to read (matched on its page, spot and text as read, the parts of its word key).
 _WORD_MARKS = text(
     """
     SELECT r.document_id::text AS document_id, mark -> 'region' AS region
@@ -74,6 +76,10 @@ _WORD_MARKS = text(
     WHERE r.customer_id = :customer_id AND r.document_id = ANY(CAST(:documents AS uuid[]))
       AND r.role = 'first' AND mark ->> 'origin' = 'ocr' AND mark ->> 'kind' IS NULL
       AND mark ->> 'quality' IN ('unsure', 'illegible')
+      AND NOT EXISTS (SELECT 1 FROM word_changes w WHERE w.customer_id = r.customer_id
+        AND w.document_id = r.document_id AND w.kind = 'mark' AND w.undone_at IS NULL
+        AND w.action IN ('confirm', 'edit') AND w.page_no = CAST(mark -> 'region' ->> 'page' AS integer)
+        AND w.region = mark -> 'region' AND w.as_read = mark ->> 'text')
     UNION ALL
     SELECT p.document_id::text,
            jsonb_build_object('kind', 'box', 'page', p.page_no, 'box', jsonb_build_array(0, 0, 1, 1))

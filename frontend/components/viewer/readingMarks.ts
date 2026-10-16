@@ -34,6 +34,11 @@ export function markName(mark: ReadingMark, index: number, total: number): strin
   return `${text ? `${words} '${text}'` : words}, mark ${index + 1} of ${total}`;
 }
 
+/** The Needs attention tab's short chip (UI audit DD7): the word as read, else what the mark is. */
+export function markChipText(mark: ReadingMark): string {
+  return visibleText(mark.text).trim() || MARK_WORDS[mark.quality].name;
+}
+
 /** The legend: one entry for each kind of mark the page has, in a fixed order. */
 export function legend(marks: readonly ReadingMark[]): MarkQuality[] {
   return ORDER.filter((quality) => marks.some((mark) => mark.quality === quality));

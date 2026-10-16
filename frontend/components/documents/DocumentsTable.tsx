@@ -1,10 +1,14 @@
 "use client";
 
-// The list of this customer's documents: one table, reflowed into cards when
-// the list is narrower than 48rem (Documents.module.css). Names, tags and
-// status messages are shown as plain text. Each row has an Actions button
-// (DocumentActions.tsx). Move to Trash, and Delete forever in Trash, ask
-// first; focus goes to Cancel, and back to Actions if it is cancelled. Restore
+// The list of this customer's documents: one table, reflowed into cards only when
+// the list is narrower than 36rem (Documents.module.css; UI audit D3, 16 Oct 2026).
+// Names, tags and status messages are shown as plain text. The whole row opens the
+// document (its name is a stretched link, D11); each row has a menu button
+// (DocumentActions.tsx). The select-all box heads the select column (D9); the bar
+// with the selection's actions shows only while rows are ticked, stuck to the bottom
+// of the list's view, so it never pushes a row (on cards it also holds Select all).
+// Move to Trash, and Delete forever in Trash, ask
+// first; focus goes to Cancel, and back to the menu button if it is cancelled. Restore
 // needs no question: nothing is lost. Ticked rows can be moved to Trash
 // together; in Trash they can be restored together, or deleted forever together
 // by whoever may (canDeleteForever, asked first; a granted member or reviewer
@@ -16,15 +20,21 @@
 // or "Unknown" without the AI model's card: PRD 2, D6). Names wrap in full at
 // their _ . - and @ marks (WrapName.tsx). The By cell says "Uploaded by" in
 // words; the full table hides those words under its By header. A document with
-// reading problems gets chips in its status ("2 pages unreadable", PRD 5 U2), and
-// a reviewer or an admin can have ticked documents read again, one at a time,
-// after an inline question.
+// reading problems says so in its status ("Scan complete" then "12 flagged for
+// review · Open to review"), and a reviewer or an admin can have ticked documents
+// read again, one at a time, after an inline question.
+// Scan states (16 Oct 2026): the status cell is two fixed lines while a document
+// is queued, being read, or read, so a scan finishing never changes its row's height;
+// a row keeps its place (the list is newest first, which a state never changes), and
+// while the pointer is on the list a row not shown yet waits until it leaves
+// (rowsInPlace), so nothing is put in above the pointer.
 
 import Link from "next/link";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RefCallback } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
-import { canReprocess } from "@/components/viewer/reprocess";
+import { beingRead, canReprocess } from "@/components/viewer/reprocess";
 import { newerVersionText } from "@/components/viewer/versions";
 import {
   ApiError,
@@ -38,11 +48,12 @@ import { useSession } from "@/lib/session";
 import { docTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { EditDialog, RowMenu } from "./DocumentActions";
+import { DOCUMENT_DRAG } from "./FolderNav";
 import type { FolderTree } from "./folderTree";
 import { BusyLabel } from "./BusyLabel";
-import { attentionWords } from "./library";
 import type { EditAction, RowAction } from "./library";
-import { deletedMessage, formatProgressPercent } from "./logic";
+import { rowsInPlace } from "./listMerge";
+import { deletedMessage, flaggedText, formatProgressPercent, scanWords, toReview } from "./logic";
 import { StatusChip } from "./StatusChip";
 import { TimeLeft } from "./TimeLeft";
 import { WrapName } from "./WrapName";
@@ -88,8 +99,11 @@ interface Props extends RowEvents {
   tags: Tag[] | null;
 }
 
-export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events }: Props) {
+export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ...events }: Props) {
   const { onRemoved } = events;
+  // The rows shown when the pointer came onto the list; null while it is elsewhere.
+  const [pinned, setPinned] = useState<ReadonlySet<string> | null>(null);
+  const items = useMemo(() => rowsInPlace(listed, pinned), [listed, pinned]);
   const { refresh } = useSession();
   const canForever = canDeleteForever(me);
   const askPassword = foreverNeedsPassword(me);
@@ -110,7 +124,8 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
   const [busyAction, setBusyAction] = useState<BulkAction | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const selectAll = useRef<HTMLInputElement | null>(null);
+  // Two select-all boxes: the table's header, and the bar's on cards; one shows at a time.
+  const selectAll = useRef<HTMLInputElement[]>([]);
   const visibleIds = useMemo(() => new Set(items.map((item) => item.id)), [items]);
   const visibleSelectedIds = useMemo(
     () => new Set([...selectedIds].filter((id) => visibleIds.has(id))),
@@ -205,9 +220,27 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
       if (action === "read") events.onSaved(bulkDoneMessage(action, result.done.length));
       else onRemoved(bulkDoneMessage(action, result.done.length));
     }
-    // The buttons pressed are gone now: keep keyboard focus on the selection bar.
-    selectAll.current?.focus();
+    // The buttons pressed are gone now: keep keyboard focus on the select-all box shown.
+    selectAll.current.find((input) => input.isConnected && input.offsetParent !== null)?.focus();
   }
+
+  const allRef: RefCallback<HTMLInputElement> = (input) => {
+    if (!input) return;
+    input.indeterminate = partiallySelected;
+    if (!selectAll.current.includes(input)) selectAll.current = [...selectAll.current.filter((i) => i.isConnected), input];
+  };
+  const allBox = (label?: string) => (
+    <input
+      type="checkbox"
+      checked={allSelected}
+      aria-checked={partiallySelected ? "mixed" : allSelected}
+      aria-label={label}
+      title={label}
+      onChange={toggleAll}
+      ref={allRef}
+    />
+  );
+  const idle = selectedCount === 0 && !confirming && !busy && !error;
 
   const nowButton = confirming && (
     <button
@@ -223,19 +256,63 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
 
   return (
     <>
-      {deletableItems.length > 0 && (
-        <div className={styles.selectionBar} role="toolbar" aria-label="Document selection actions">
-          <label className={styles.selectAll}>
-            <input
-              type="checkbox"
-              checked={allSelected}
-              aria-checked={partiallySelected ? "mixed" : allSelected}
-              onChange={toggleAll}
-              ref={(input) => {
-                selectAll.current = input;
-                if (input) input.indeterminate = partiallySelected;
-              }}
+      <table
+        className={`table ${styles.docs}`}
+        role="table"
+        onPointerEnter={() => setPinned(new Set(listed.map((item) => item.id)))}
+        onPointerLeave={() => setPinned(null)}
+      >
+        <caption className="visually-hidden">{inTrash ? "Documents in Trash" : "Your documents"}</caption>
+        <thead role="rowgroup">
+          <tr role="row">
+            <th scope="col" role="columnheader" className={styles.selectColumn}>
+              {deletableItems.length > 0 ? (
+                <label className={styles.selectHit}>{allBox("Select all visible documents")}</label>
+              ) : (
+                <span className="visually-hidden">Select</span>
+              )}
+            </th>
+            <th scope="col" role="columnheader" className={styles.nameColumn}>Name</th>
+            <th scope="col" role="columnheader" className={styles.statusColumn}>Status</th>
+            <th scope="col" role="columnheader" className={styles.typeColumn}>Type</th>
+            <th scope="col" role="columnheader" className={styles.sizeColumn}>Size</th>
+            <th scope="col" role="columnheader" className={styles.uploadedColumn}>
+              {inTrash ? "Trashed" : "Uploaded"}
+            </th>
+            <th scope="col" role="columnheader" className={styles.byColumn}>By</th>
+            <th scope="col" role="columnheader" className={styles.actionsColumn}>
+              <span className="visually-hidden">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody role="rowgroup">
+          {items.map((document) => (
+            <DocumentRow
+              key={document.id}
+              document={document}
+              whenText={whenText(document, inTrash, now)}
+              inTrash={inTrash}
+              deletable={selectable(document, inTrash, canForever) || readable(document)}
+              canForever={canForever}
+              askPassword={askPassword}
+              selected={selectedIds.has(document.id)}
+              onToggle={toggle}
+              tree={tree}
+              tags={tags}
+              events={rowEvents}
             />
+          ))}
+        </tbody>
+      </table>
+      {deletableItems.length > 0 && (
+        <div
+          className={styles.selectionBar}
+          role="toolbar"
+          aria-label="Document selection actions"
+          data-idle={idle ? "true" : undefined}
+        >
+          <label className={styles.selectAll}>
+            {allBox()}
             <span>
               {allSelected
                 ? "All visible documents selected"
@@ -340,45 +417,6 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
           {error && <p className={`error-text ${styles.selectionError}`} role="alert">{error}</p>}
         </div>
       )}
-      <table className={`table ${styles.docs}`} role="table">
-        <caption className="visually-hidden">{inTrash ? "Documents in Trash" : "Your documents"}</caption>
-        <thead role="rowgroup">
-          <tr role="row">
-            <th scope="col" role="columnheader" className={styles.selectColumn}>
-              <span className="visually-hidden">Select</span>
-            </th>
-            <th scope="col" role="columnheader" className={styles.nameColumn}>Name</th>
-            <th scope="col" role="columnheader" className={styles.statusColumn}>Status</th>
-            <th scope="col" role="columnheader" className={styles.typeColumn}>Type</th>
-            <th scope="col" role="columnheader" className={styles.sizeColumn}>Size</th>
-            <th scope="col" role="columnheader" className={styles.uploadedColumn}>
-              {inTrash ? "Trashed" : "Uploaded"}
-            </th>
-            <th scope="col" role="columnheader" className={styles.byColumn}>By</th>
-            <th scope="col" role="columnheader" className={styles.actionsColumn}>
-              <span className="visually-hidden">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody role="rowgroup">
-          {items.map((document) => (
-            <DocumentRow
-              key={document.id}
-              document={document}
-              whenText={whenText(document, inTrash, now)}
-              inTrash={inTrash}
-              deletable={selectable(document, inTrash, canForever) || readable(document)}
-              canForever={canForever}
-              askPassword={askPassword}
-              selected={selectedIds.has(document.id)}
-              onToggle={toggle}
-              tree={tree}
-              tags={tags}
-              events={rowEvents}
-            />
-          ))}
-        </tbody>
-      </table>
     </>
   );
 }
@@ -508,6 +546,7 @@ const DocumentRow = memo(function DocumentRow({
       void act(restoreDocument, restoredMessage(document.display_name), "Could not restore this document.");
       return;
     }
+    if (action === "read") return; // only the document screen's menu offers it
     afterEdit.current = "actions";
     setEditing(action);
   }
@@ -597,9 +636,21 @@ const DocumentRow = memo(function DocumentRow({
           className={styles.name}
           title={document.display_name}
           onClick={rememberListScroll}
+          onDragStart={(event) => {
+            if (inTrash) return;
+            event.dataTransfer.setData(DOCUMENT_DRAG, document.id);
+            event.dataTransfer.effectAllowed = "copyMove";
+          }}
         >
-          <WrapName name={document.display_name} />
+          <Icon name="file" className={styles.fileIcon} />
+          <span className="mono">
+            <WrapName name={document.display_name} />
+          </span>
         </Link>
+        <span className={styles.bandType}>
+          {typeLabel(document.detected_type)} · {docTypeLabel(document.doc_type)} ·{" "}
+          <span className="mono">{formatBytes(document.size_bytes)}</span>
+        </span>
         {document.tags.length > 0 && (
           <ul className={`${library.tags} ${library.rowTags}`} aria-label="Tags">
             {document.tags.map((tag) => (
@@ -616,31 +667,20 @@ const DocumentRow = memo(function DocumentRow({
         )}
       </td>
       <td role="cell" className={styles.statusCell}>
-        <span className={styles.statusContent}>
-          <StatusChip status={document.status} />
-          <span className={styles.statusMessage}>{document.status_message}</span>
-          <TimeLeft document={document} />
-          {!inTrash &&
-            attentionWords(document).map((words) => (
-              <span key={words} className={styles.attentionChip}>
-                <Icon name="eye-alert" size={16} />
-                {words}
-              </span>
-            ))}
-        </span>
+        <StatusCell document={document} inTrash={inTrash} />
       </td>
-      <td role="cell" className={styles.meta}>
+      <td role="cell" className={`${styles.meta} ${styles.typeCell}`}>
         {typeLabel(document.detected_type)}
         <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>
         <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>
       </td>
-      <td role="cell" className={`${styles.meta} ${styles.sizeCell} tabular`}>
+      <td role="cell" className={`${styles.meta} ${styles.sizeCell} tabular mono`}>
         {formatBytes(document.size_bytes)}
       </td>
       <td role="cell" className={styles.meta}>
         {inTrash && <span className="visually-hidden">Trashed </span>}
         {/* The exact date too: a touch screen never shows the hover title. */}
-        <time dateTime={when} title={formatDateTime(when)}>
+        <time dateTime={when} title={formatDateTime(when)} className="mono">
           {whenText}
         </time>
         {by && (
@@ -734,3 +774,61 @@ const DocumentRow = memo(function DocumentRow({
     </tr>
   );
 });
+
+/**
+ * The status cell. Queued, being read, and read: two lines of fixed height (the chip and
+ * its words, then the bar and the time left, or what was flagged), keyed by phase so the
+ * new lines fade in (opacity only) and nothing else moves. Any other state: the chip and
+ * the server's words, which may wrap.
+ */
+export function StatusCell({ document, inTrash }: { document: DocumentSummary; inTrash: boolean }) {
+  if (beingRead(document.status) && document.deleted_at === null) {
+    const words = scanWords(document);
+    const detail = words ? words.detail : document.status_message;
+    return (
+      <span className={styles.statusContent} key="scanning">
+        <span className={styles.statusLine}>
+          <StatusChip status={document.status} text={words ? words.chip : "Queued"} />
+          <span className={styles.statusText} title={detail}>
+            {detail}
+          </span>
+        </span>
+        <span className={styles.statusLine}>
+          <TimeLeft document={document} />
+        </span>
+      </span>
+    );
+  }
+  if (document.status === "ready") {
+    const flagged = flaggedText(document);
+    // UI audit D4 (16 Oct 2026): a clean read is its badge alone; the second line stays laid out.
+    const clean = !toReview(document);
+    return (
+      <span className={styles.statusContent} key="done">
+        <span className={styles.statusLine}>
+          <StatusChip status="ready" text="Scan complete" />
+        </span>
+        <span className={styles.statusLine}>
+          {!clean && (
+            <span className={`${styles.statusText} mono`} title={flagged}>
+              {flagged}
+            </span>
+          )}
+          {!inTrash && toReview(document) && (
+            <Link href={`/documents/${document.id}`} className={styles.statusAction} onClick={rememberListScroll}>
+              Open to review<span className="visually-hidden">{` ${document.display_name}`}</span>
+            </Link>
+          )}
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className={styles.statusContent}>
+      <span className={styles.statusLine}>
+        <StatusChip status={document.status} />
+      </span>
+      <span className={styles.statusMessage}>{document.status_message}</span>
+    </span>
+  );
+}

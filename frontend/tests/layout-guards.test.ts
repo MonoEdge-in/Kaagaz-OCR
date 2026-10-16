@@ -184,8 +184,15 @@ describe("layout guards", () => {
 
   it("leaves Name and Status room at each width the documents table starts at", () => {
     const found = budgets(DOCS_CSS, "docs-list", NAME_AND_STATUS_REM);
-    expect(found.map((b) => b.start)).toEqual([48, 64]);
+    // Changed on purpose (UI audit, 16 Oct 2026): D3, a table from 36rem (a laptop's list with the
+    // side nav and the folder tree), Type back at 48rem, every column from 64rem.
+    expect(found.map((b) => b.start)).toEqual([36, 64]);
     for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
+    const css = read(DOCS_CSS);
+    expect(columnsAt(css, "docs-list", 36).has("typeColumn")).toBe(false);
+    expect(columnsAt(css, "docs-list", 48).has("typeColumn")).toBe(true);
+    const at48 = [...columnsAt(css, "docs-list", 48).values()].reduce((sum, rem) => sum + rem, NAME_AND_STATUS_REM);
+    expect(at48).toBeLessThanOrEqual(48);
   });
 
   it("lets a badge wrap, so a long label never pushes the page sideways", () => {
@@ -330,18 +337,22 @@ describe("layout guards", () => {
       "components/chat/Chat.module.css: .menu: overscroll-behavior",
       "components/shell/Shell.module.css: .sidebar: overscroll-behavior",
       "components/shell/Shell.module.css: .main: overscroll-behavior",
+      // Changed on purpose (UI audit G6, 16 Oct 2026): the account menu scrolls in itself on a short screen.
+      "components/shell/Shell.module.css: .account: overscroll-behavior",
       "app/globals.css: html: overscroll-behavior-y",
       "app/globals.css: html:has(.app-shell), html:has(.app-shell) body: overscroll-behavior",
       "app/globals.css: .tabs: overscroll-behavior-x",
       "components/documents/Library.module.css: .treePane: overscroll-behavior",
       // Sideways only: a wide page scrolls without a swipe going back a screen.
       "components/viewer/PageViewer.module.css: .frame: overscroll-behavior-x",
-      // Changed on purpose (MonoEdge design system, 16 Oct 2026): the page's and the sheet's pan
-      // areas keep their scroll both ways, and the tables' sideways wrappers keep theirs.
-      "components/viewer/PageViewer.module.css: .fitPage .frame: overscroll-behavior",
-      "components/viewer/PageViewer.module.css: .sheetFrame: overscroll-behavior",
+      // Changed on purpose (UI audit, 16 Oct 2026): DD1, the sheet's pan area holds only a sideways
+      // swipe, like the page's frame (a wheel up or down runs on into <main>); the tables'
+      // sideways wrappers keep theirs.
+      "components/viewer/PageViewer.module.css: .sheetFrame: overscroll-behavior-x",
       "components/documents/Table.module.css: .reflowWrap: overscroll-behavior-x",
       "app/(app)/documents/[id]/DocumentView.module.css: .valuesWrap: overscroll-behavior-x",
+      // Changed on purpose (scan states, 16 Oct 2026): the uploads panel above the status bar.
+      "components/documents/Documents.module.css: .trayPanel: overscroll-behavior",
       // Changed on purpose (MonoEdge design system, 16 Oct 2026): sideways only, the tabs, the
       // tables and the usage chart scroll in their own box and never hand the swipe to the page.
       "components/admin/Admin.module.css: .tabs: overscroll-behavior-x",
@@ -573,27 +584,33 @@ describe("layout guards", () => {
     const declarations = (body = "") => body.split(";").map((part) => part.trim()).filter(Boolean);
     expect(declarations(narrow[0]?.body)).toEqual(declarations(hidden));
     const view = read("app/(app)/documents/[id]/DocumentView.tsx");
-    expect(view).toContain('<Icon name="download" />\n              <span className="narrow-hide">Download original</span>');
-    // Changed on purpose (board 6, 16 Oct 2026): a phone shows "Text"; the name is still "Scanned text".
-    expect(view).toContain('<span className="narrow-hide">Scanned </span>\n                    <span className={styles.textWord}>text</span>');
+    expect(view).toMatch(/<Icon name="download" \/>\s*<span className="narrow-hide">Download original<\/span>/);
+    // Changed on purpose (UI audit, 16 Oct 2026): DD6, Scanned text is a tab beside the page, so
+    // the viewer's toolbar has no Scanned text button (nor its phone-only "Text") any more.
+    expect(view).not.toContain("styles.textWord");
     expect(read("components/viewer/PageViewer.tsx")).toContain('Fit<span className="narrow-hide">{fit === "page" ? " page" : " width"}</span>');
     const phone = rules(read("app/(app)/documents/[id]/DocumentView.module.css")).filter((rule) => rule.at === "@media (max-width: 639.98px)");
     expect(phone.find((rule) => rule.selector === ".download")?.body).toMatch(/margin-inline-start:\s*0;/);
     expect(phone.find((rule) => rule.selector === ".ask")?.body).toMatch(/flex:\s*1 1 auto;/);
-    expect(phone.find((rule) => rule.selector === ".textWord")?.body).toMatch(/text-transform:\s*capitalize;/);
   });
 
-  it("puts the document's status, folder, tags and versions on one meta line under the title (board 12 P4)", () => {
+  // Changed on purpose (UI audit, 16 Oct 2026): DD2, a breadcrumb, then one row (the title and
+  // its status, then Download, Ask and the menu with Read again), then one meta line.
+  it("puts the document's place in a breadcrumb, its title row in one line, and the rest on one meta line", () => {
     const view = read("app/(app)/documents/[id]/DocumentView.tsx");
     const between = (from: string, to: string) => view.slice(view.indexOf(from), view.indexOf(to, view.indexOf(from)));
-    // The title row: the title, then Download original and Ask about this document, the one primary.
+    const crumbs = between('<nav aria-label="Breadcrumb"', "</nav>");
+    expect(crumbs).toContain("trail.map((folder)");
+    expect(crumbs).toContain('aria-current="page"');
     const title = between("<div className={styles.titleRow}>", "<div className={styles.status}>");
-    expect(title).toContain("<h1 className={styles.title}>");
-    expect(title).toContain("Download original");
-    expect(title).toMatch(/btn btn-primary \$\{styles\.ask\}[\s\S]*Ask about this document/);
+    const row = ["<h1 className={styles.title}>", "<StatusChip", "Download original", "btn btn-primary ${styles.ask}", "<DocumentMenu"];
+    const inRow = row.map((part) => title.indexOf(part));
+    expect(inRow.every((i) => i >= 0)).toBe(true);
+    expect([...inRow].sort((a, b) => a - b)).toEqual(inRow);
+    expect(title).not.toContain("<ReadAgain"); // the whole document's Read again is in the menu (DD3)
     // The meta line holds everything else, in reading order; no second "place" row.
     const meta = between("<div className={styles.status}>", "{note && ");
-    const order = ["<StatusChip", "pagesText", "<ReadAgain", 'aria-label="Folder"', 'id="document-tags-label"', 'aria-label="Versions"'];
+    const order = ["pagesText", "<AutofileNote", 'id="document-tags-label"', 'aria-label="Versions"', "<ReadAgain"];
     const at = order.map((part) => meta.indexOf(part));
     expect(at.every((i) => i >= 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
@@ -658,24 +675,32 @@ const VIEW = "app/(app)/documents/[id]/DocumentView.tsx";
 const VIEW_CSS = "app/(app)/documents/[id]/DocumentView.module.css";
 
 describe("the document screen (boards 2, 3 and 6)", () => {
-  it("puts the panels in two groups, side by side from 90rem, beside a page column capped at 40%", () => {
-    const wide = rules(read(VIEW_CSS)).filter((rule) => rule.at === "@media (min-width: 90rem) and (min-height: 36rem)");
-    const layout = wide.find((rule) => rule.selector === ".layout")?.body ?? "";
-    expect(layout).toMatch(/min\(calc\(\(var\(--main-h\) - 3\.5rem\) \* 0\.8\), 40%\)/); // changed on purpose: <main>'s height
-    expect(wide.find((rule) => rule.selector === ".panels")?.body).toMatch(
-      /display:\s*grid;\s*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\);/,
+  // Changed on purpose (UI audit, 16 Oct 2026): DD5 and DD6. No 90rem three columns: beside the
+  // sticky page, a handle sets the split (--split), and the panels are four tabs, always in the
+  // same order (DD8), each panel the same least height.
+  it("splits the page and the tabbed panels with a handle, the tabs always in the same order", () => {
+    expect(rules(read(VIEW_CSS)).filter((rule) => rule.at.includes("90rem"))).toEqual([]);
+    const sticky = rules(read(VIEW_CSS)).filter((rule) => rule.at === `@media ${STICKY_VIEWER_QUERY}`);
+    expect(sticky.find((rule) => rule.selector === ".layout")?.body).toMatch(
+      /grid-template-columns:\s*minmax\(0, var\(--split, 60%\)\) var\(--space-6\) minmax\(0, 1fr\);/,
     );
-    // Narrower, both groups stack as one column with the same gap as before.
-    const column = rules(read(VIEW_CSS)).find((rule) => rule.at === "" && selectors(rule).includes(".panelsSide") && /flex/.test(rule.body));
-    expect(column && selectors(column)).toEqual([".panels", ".panelsMain", ".panelsSide"]);
-    expect(column?.body).toMatch(/flex-direction:\s*column;\s*gap:\s*var\(--space-4\);/);
+    expect(sticky.find((rule) => rule.selector === ".handle")?.body).toMatch(/cursor:\s*col-resize;[\s\S]*touch-action:\s*none;/);
+    expect(rulesFor(VIEW_CSS, ".tabPanel")[0]?.body).toMatch(/min-height:\s*24rem;/);
     const view = read(VIEW);
-    const main = view.slice(view.indexOf("<div className={styles.panelsMain}>"), view.indexOf("<div className={styles.panelsSide}>"));
-    const side = view.slice(view.indexOf("<div className={styles.panelsSide}>"), view.indexOf("{adding && ("));
-    for (const part of ["problemsBanner", "scannedPanel", "<PageWordsList", "<AttentionPanel", 'id="values-heading"']) {
-      expect(main).toContain(part);
-    }
-    for (const part of ["<CardPanel", "<RelatedPanel", "<InvoicePanel", "<StoryPanel"]) expect(side).toContain(part);
+    expect(view).toContain('role="separator"');
+    expect(view).toMatch(/Math\.abs\(event\.clientX - press\.x\) < DRAG_THRESHOLD_PX/);
+    const tabs = view.slice(view.indexOf("const tabs: TabItem[] = ["), view.indexOf("];", view.indexOf("const tabs: TabItem[] = [")));
+    const order = ['"overview"', '"attention"', '"scanned"', '"words"'].map((id) => tabs.indexOf(id));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    const panels = view.slice(view.indexOf("<PanelTabs"), view.indexOf("</PanelTabs>"));
+    const overview = panels.slice(panels.indexOf('shownTab === "overview"'), panels.indexOf('shownTab === "attention"'));
+    for (const part of ["<CardPanel", "{values}", "<InvoicePanel", "<RelatedPanel", "<StoryPanel"]) expect(overview).toContain(part);
+    const attention = panels.slice(panels.indexOf('shownTab === "attention"'), panels.indexOf('shownTab === "scanned"'));
+    for (const part of ["<PageProblems", "<AttentionPanel"]) expect(attention).toContain(part);
+    expect(panels).toContain("<ScannedTextPanel");
+    expect(panels).toContain("<PageWordsList");
+    expect(view).toContain('id="values-heading"');
   });
 
   it("shows the values in three columns, the reason under its badge, and only the badge on one line", () => {

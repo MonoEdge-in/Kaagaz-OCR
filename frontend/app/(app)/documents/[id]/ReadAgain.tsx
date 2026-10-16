@@ -1,12 +1,13 @@
 "use client";
 
-// "Read again" at the end of the viewer header's status line (PRD 2, X1), for
-// a reviewer or an admin. It asks first, inside the page, never in a browser
+// "Read again" for the whole document (PRD 2, X1), for a reviewer or an admin, picked
+// from the document's menu (UI audit DD2/DD3, 16 Oct 2026; the screen mounts this once
+// it is picked). It asks first, inside the page, never in a browser
 // dialog: which reviewer fixes come back, and that the document is out of
-// search meanwhile. Focus goes to Cancel, and back to Read again when it is
+// search meanwhile. Focus goes to Cancel, and back to the menu (onClosed) when it is
 // cancelled or fails. Once the server has queued the document, the screen
 // takes its reply (onStarted) and follows the reading, and a line says so
-// until it settles; then the button is back. The steps and the words are
+// until it settles. The steps and the words are
 // components/viewer/reprocess.ts; the server checks the role again.
 // When the organisation has two or more models (model choice MS4), the
 // question also has "Read with", set to the model the document asked for
@@ -17,7 +18,7 @@
 // no choice. Dynamic and "More than one reader…" (features 26, 27) are offered
 // here as at upload; picking nothing keeps the document's own reading.
 
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 import {
   offersChoice,
   pickedReader,
@@ -27,7 +28,6 @@ import {
 } from "@/components/documents/readers";
 import { BusyLabel } from "@/components/documents/BusyLabel";
 import { ReaderSelect } from "@/components/documents/UploadArea";
-import { Icon } from "@/components/ui/Icon";
 import {
   canSend,
   reprocessConfirmText,
@@ -43,13 +43,13 @@ export interface ReadAgainProps {
   fixes: number; // the detail's reviewer_fixes
   pages: number | null; // the detail's page_count
   readModel: string | null; // the detail's read_model: the select starts on it
-  offered: boolean; // canReprocess(role, detail)
   reading: boolean; // beingRead(detail.status)
   onStarted(reply: DocumentSummary): void;
+  onClosed(): void; // cancelled or refused: focus goes back to the menu
 }
 
-export function ReadAgain({ documentId, fixes, pages, readModel, offered, reading, onStarted }: ReadAgainProps) {
-  const [state, dispatch] = useReducer(reprocessReducer, { step: "idle" });
+export function ReadAgain({ documentId, fixes, pages, readModel, reading, onStarted, onClosed }: ReadAgainProps) {
+  const [state, dispatch] = useReducer(reprocessReducer, { step: "confirming" });
   const [readers, setReaders] = useState<UploadReader[]>([]);
   const [ensemble, setEnsemble] = useState<EnsembleOffer | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
@@ -59,7 +59,6 @@ export function ReadAgain({ documentId, fixes, pages, readModel, offered, readin
   const shown = pickedReader(readers, picked ?? readModel); // what the select shows
 
   useEffect(() => {
-    if (!offered) return;
     let cancelled = false;
     // Not loaded: no "Read with", and the server reads with the organisation's own model.
     getUploadLimits().then(
@@ -73,27 +72,12 @@ export function ReadAgain({ documentId, fixes, pages, readModel, offered, readin
     return () => {
       cancelled = true;
     };
-  }, [offered]);
-  const refocusButton = useRef(false);
-  const lineShown = useRef(false);
+  }, []);
   if (state.step === "done" && !reading) dispatch({ type: "settled" });
 
-  // Stable callback refs, so each runs once when its element appears.
+  // A stable callback ref, so it runs once when its element appears.
   const focusOnMount = useCallback((element: HTMLElement | null) => {
     element?.focus();
-  }, []);
-  const showLine = useCallback((element: HTMLElement | null) => {
-    if (!element) return;
-    lineShown.current = true;
-    element.focus();
-  }, []);
-  // Back from the line once reading settles: focus follows, unless it moved on.
-  const holdButton = useCallback((element: HTMLButtonElement | null) => {
-    if (!element) return;
-    const settled = lineShown.current && document.activeElement === document.body;
-    if (refocusButton.current || settled) element.focus();
-    refocusButton.current = false;
-    lineShown.current = false;
   }, []);
 
   function send() {
@@ -105,20 +89,20 @@ export function ReadAgain({ documentId, fixes, pages, readModel, offered, readin
         onStarted(reply);
       },
       (caught: unknown) => {
-        refocusButton.current = true;
         dispatch({ type: "failed", message: reprocessErrorText(caught) });
+        onClosed();
       },
     );
   }
 
   function cancel() {
-    refocusButton.current = true;
     dispatch({ type: "cancel" });
+    onClosed();
   }
 
   if (state.step === "done") {
     return (
-      <p ref={showLine} tabIndex={-1} role="status" className={styles.readAgainLine}>
+      <p ref={focusOnMount} tabIndex={-1} role="status" className={styles.readAgainLine}>
         Reading it again. This page updates as it goes.
       </p>
     );
@@ -160,23 +144,9 @@ export function ReadAgain({ documentId, fixes, pages, readModel, offered, readin
     );
   }
 
-  if (!offered) return null;
-  return (
-    <>
-      <button
-        ref={holdButton}
-        type="button"
-        className="btn"
-        onClick={() => dispatch({ type: "open" })}
-      >
-        <Icon name="refresh" />
-        Read again
-      </button>
-      {state.step === "error" && (
-        <p className={`error-text ${styles.readAgainLine}`} role="alert">
-          {state.message}
-        </p>
-      )}
-    </>
-  );
+  return state.step === "error" ? (
+    <p className={`error-text ${styles.readAgainLine}`} role="alert">
+      {state.message}
+    </p>
+  ) : null;
 }

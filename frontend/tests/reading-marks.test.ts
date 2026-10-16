@@ -137,7 +137,10 @@ describe("the marks layer (PageViewer)", () => {
       }),
     );
     expect(html).toContain("Show reading problems");
-    expect(html).toContain('type="checkbox" checked=""');
+    // Changed on purpose (UI audit, 16 Oct 2026): DD9, a toolbar toggle (on at first for this
+    // uncertain page), its legend a tooltip tied to it.
+    expect(html).toMatch(/<button [^>]*aria-pressed="true" aria-label="Show reading problems" aria-describedby="([^"]+)"/);
+    expect(html).toMatch(/<span id="[^"]+" role="tooltip"[^>]*><ul [^>]*aria-label="What the marks mean"/);
     expect(html).toContain("Unsure word (dashed)");
     // Each mark is drawn on the page as a button, named for what it marks, with its pattern.
     const buttons = html.match(/<button [^>]*data-quality="[a-z]+"[^>]*><\/button>/g) ?? [];

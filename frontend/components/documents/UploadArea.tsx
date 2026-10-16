@@ -7,9 +7,10 @@
 // "Waiting" meanwhile), then it is sent, 3 at a time (PRD 5 Q2), with its own
 // progress bar, into the folder that was being viewed when they were added.
 // Each drop is one batch (Q1): the browser makes its id, and the batch tray
-// (U1, batchTray.ts) shows one line and one bar for it, then its files worst
-// first. Each file's bar moves through Sending, Saving and Reading and stays
-// under 100% until its document is ready (U10, uploadStages.ts): a stored file
+// (U1, batchTray.ts) shows one line and one bar for it, then its files in the
+// order they were dropped. The tray opens from the status bar (UploadStatus), in
+// a fixed corner, so it never pushes the list. Each file's bar moves through
+// Uploading, Saving and Scanning and stays under 100% until its document is ready (U10, uploadStages.ts): a stored file
 // is followed through GET /api/batches/{id} (lib/poll.ts back-off) while it is
 // read. After a reload the tray comes back for the drops of the last 24 hours.
 // A new version of a document ("Upload new version") goes through the same
@@ -31,6 +32,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
+import { InStatusBar } from "@/components/shell/StatusBar";
 import { Icon } from "@/components/ui/Icon";
 import { beingRead } from "@/components/viewer/reprocess";
 import { storyHref, storyTarget } from "@/components/viewer/story";
@@ -56,7 +58,6 @@ import {
   NOT_FILED_TEXT,
   TOO_MANY_FILES,
   UNDONE_TEXT,
-  announcement,
   batchFraction,
   batchStore,
   filedText,
@@ -64,24 +65,26 @@ import {
   newBatchId,
   readStored,
   rowKind,
+  statusBarText,
   summaryText,
   trayCounts,
   undoErrorText,
   unreadableWords,
   verifiedWords,
-  worstFirst,
   writeStored,
 } from "./batchTray";
 import type { StoredBatch } from "./batchTray";
 import { BusyLabel } from "./BusyLabel";
 import { pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
-import { attentionWords } from "./library";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
   FALLBACK_UPLOAD_LIMITS,
   estimateIngestSeconds,
+  flaggedText,
+  scanPhrase,
   sessionChangedMessage,
+  toReview,
   uploadErrorText,
   uploadKind,
   uploadLimitsHint,
@@ -107,7 +110,7 @@ import {
 } from "./readers";
 import { EMPTY_QUEUE, UPLOADS_AT_ONCE, followed, isBusy, queueReducer, runLimited } from "./uploadQueue";
 import type { UploadEntry } from "./uploadQueue";
-import { NO_TIMES, jobFraction, nextShown, stageOf, stageText, valueText } from "./uploadStages";
+import { NO_TIMES, jobFraction, nextShown, stageOf, valueText } from "./uploadStages";
 import type { Shown, Stage, StageTimes } from "./uploadStages";
 import { WrapName } from "./WrapName";
 import styles from "./Documents.module.css";
@@ -138,6 +141,7 @@ export function useUploads(onUploaded: () => void) {
   const stopped = useRef<string | null>(null);
   const [queue, dispatch] = useReducer(queueReducer, EMPTY_QUEUE);
   const [limits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
+  const [limitsLoaded, setLimitsLoaded] = useState(false); // D1: "Read with" holds its room until then
   const [reader, setReader] = useState<string | null>(sessionReader);
   const [ticked, setTicked] = useState<string[] | null>(sessionAgents);
   const agents = ticked ?? startAgents(limits.ensemble);
@@ -166,9 +170,13 @@ export function useUploads(onUploaded: () => void) {
     let cancelled = false;
     getUploadLimits().then(
       (loaded) => {
-        if (!cancelled) setLimits(loaded);
+        if (cancelled) return;
+        setLimits(loaded);
+        setLimitsLoaded(true);
       },
-      () => undefined,
+      () => {
+        if (!cancelled) setLimitsLoaded(true);
+      },
     );
     return () => {
       cancelled = true;
@@ -376,6 +384,7 @@ export function useUploads(onUploaded: () => void) {
     finished,
     settled,
     limits,
+    limitsLoaded,
     reader,
     views,
     stored,
@@ -507,7 +516,7 @@ export function ReaderSelect({
           </option>
         ))}
       </select>
-      <p id={`${id}-hint`} className={styles.readerHint}>
+      <p id={`${id}-hint`} className={styles.readerHint} title={several ? ENSEMBLE_HINT : current?.hint}>
         {several ? ENSEMBLE_HINT : current?.hint}
       </p>
       {several && (
@@ -543,42 +552,47 @@ export function ReaderSelect({
 
 /**
  * Where files can be dropped. With no documents yet it is a full dashed card
- * holding the empty state; once there are documents it is a slim strip.
+ * holding the empty state. Once there are documents (UI audit D10, 16 Oct 2026) it
+ * is the whole screen (`variant="page"`, while `enabled`): nothing is drawn until
+ * files are dragged over it, then an overlay says to drop them, with the limits.
+ * Only a drag carrying files counts, never a dragged link or text.
  */
 export function Dropzone({
   variant,
   limits,
   onFiles,
-  onChoose,
+  enabled = true,
+  className,
   children,
 }: {
-  variant: "full" | "slim";
+  variant: "full" | "page";
   limits: UploadLimits;
   onFiles: (files: File[]) => void;
-  onChoose: () => void;
+  enabled?: boolean;
+  className?: string;
   children?: ReactNode;
 }) {
   const [dragging, setDragging] = useState(false);
+  const takes = (event: DragEvent<HTMLDivElement>) => enabled && event.dataTransfer.types.includes("Files");
 
   function onDrop(event: DragEvent<HTMLDivElement>) {
+    if (!takes(event)) return;
     event.preventDefault();
     setDragging(false);
     const files = Array.from(event.dataTransfer.files);
     if (files.length > 0) onFiles(files);
   }
 
-  const classes = [
-    styles.drop,
-    variant === "slim" ? styles.dropSlim : styles.dropFull,
-    dragging ? styles.dropActive : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const classes =
+    variant === "page"
+      ? className
+      : [styles.drop, styles.dropFull, dragging ? styles.dropActive : "", className].filter(Boolean).join(" ");
 
   return (
     <div
       className={classes}
       onDragOver={(event) => {
+        if (!takes(event)) return;
         event.preventDefault();
         setDragging(true);
       }}
@@ -590,22 +604,14 @@ export function Dropzone({
       }}
       onDrop={onDrop}
     >
-      {variant === "full" ? (
-        <>
-          {children}
-          <p className={styles.dropHint}>Or drag files here. {uploadLimitsHint(limits)}</p>
-        </>
-      ) : (
-        <>
-          <Icon name="upload" className={styles.dropIcon} />
-          <p className={styles.dropText}>
-            {dragging ? "Drop the files to upload them." : "Drag files here to upload, or"}
-          </p>
-          <button type="button" className="btn" onClick={onChoose}>
-            Choose files
-          </button>
+      {children}
+      {variant === "full" && <p className={styles.dropHint}>Or drag files here. {uploadLimitsHint(limits)}</p>}
+      {variant === "page" && dragging && enabled && (
+        <div className={styles.dropOverlay} aria-hidden="true">
+          <Icon name="upload" size={20} className={styles.dropIcon} />
+          <p className={styles.dropText}>Drop the files to upload them.</p>
           <p className={styles.dropHint}>{uploadLimitsHint(limits)}</p>
-        </>
+        </div>
       )}
     </div>
   );
@@ -613,11 +619,11 @@ export function Dropzone({
 
 /**
  * The batch tray (PRD 5 U1): for each drop, newest first, one line, the time left, one
- * bar (pages read over all pages), then its files worst first. A new version, which has
- * no batch, is listed after them. One live region for the whole tray (role=status, kept
- * while the tray is shown) says the ready, attention and failed totals, so it speaks
- * only when one of them changes, never as files change stage or by percent (WCAG 4.1.3).
- * "Up to 100 files at a time" is said as an alert.
+ * bar (pages read over all pages), then its files in the order they were dropped, so a
+ * file never moves as it changes state. A new version, which has no batch, is listed after
+ * them. No live region of its own: the status bar's line speaks for the uploads
+ * (UploadStatus). "Up to 100 files at a time" is said as an alert. ``onHide``: the Hide
+ * button of the status bar's panel.
  */
 export function BatchTray({
   entries,
@@ -630,6 +636,7 @@ export function BatchTray({
   tree,
   onUndone,
   canReread,
+  onHide,
 }: {
   entries: UploadEntry[];
   views: Record<string, BatchView>;
@@ -641,6 +648,7 @@ export function BatchTray({
   tree: FolderTree; // for "Filed into Invoices" (feature 28)
   onUndone: () => void;
   canReread: boolean; // a reviewer or an admin: may read a document again
+  onHide?: () => void;
 }) {
   if (entries.length === 0 && !tooMany) return null;
   const settled = entries.some((entry) => !isBusy(entry));
@@ -668,15 +676,20 @@ export function BatchTray({
         <h2 id="uploads-heading" className={styles.smallHeading}>
           Uploads
         </h2>
-        {settled && (
-          <button type="button" className="btn btn-quiet" onClick={onClearFinished}>
-            Clear finished
-          </button>
-        )}
+        <span className={styles.uploadsActions}>
+          {settled && (
+            <button type="button" className="btn btn-quiet" onClick={onClearFinished}>
+              Clear finished
+            </button>
+          )}
+          {onHide && (
+            <button type="button" className="btn btn-quiet" onClick={onHide}>
+              <Icon name="close" />
+              Hide
+            </button>
+          )}
+        </span>
       </div>
-      <p className="visually-hidden" role="status">
-        {announcement([...batches.values(), loose])}
-      </p>
       {tooMany && (
         <p className={`error-text ${styles.small}`} role="alert">
           {TOO_MANY_FILES}
@@ -695,7 +708,7 @@ export function BatchTray({
               {left && <span className={`muted ${styles.small} ${styles.timeLeft}`}>{left}</span>}
             </div>
             {busy && <BatchBar view={view} rows={rows} />}
-            <ul className={styles.uploads}>{worstFirst(rows).map(row)}</ul>
+            <ul className={styles.uploads}>{rows.map(row)}</ul>
           </div>
         );
       })}
@@ -722,16 +735,14 @@ function BatchBar({ view, rows }: { view: BatchView | null; rows: UploadEntry[] 
         aria-label="Pages read in this batch"
         aria-valuetext={`${next.percent}% of pages read`}
       />
-      <span className={`muted tabular ${styles.small} ${styles.barText}`} aria-hidden="true">
-        {next.percent}%
-      </span>
     </div>
   );
 }
 
 /**
- * A file's bar through Sending, Saving (no number: the server gives none) and Reading,
- * over the whole job (uploadStages.ts). It moves on the shared tick, one step at most.
+ * A file's bar through Uploading, Saving (indeterminate: the server gives no number) and
+ * Scanning, over the whole job (uploadStages.ts). It moves on the shared tick, one step at
+ * most. No percent beside it: the row's badge says the stage.
  */
 function RowBar({ entry, stage }: { entry: UploadEntry; stage: Stage }) {
   const now = useTick();
@@ -751,9 +762,6 @@ function RowBar({ entry, stage }: { entry: UploadEntry; stage: Stage }) {
         aria-label={`Upload of ${entry.name}`}
         aria-valuetext={valueText(stage, next.percent)}
       />
-      <span className={`muted tabular ${styles.small} ${styles.barText}`} aria-hidden="true">
-        {saving ? stageText(stage) : `${next.percent}%`}
-      </span>
     </div>
   );
 }
@@ -783,7 +791,7 @@ function UploadRow({
   const stage = stageOf(state);
   const story = storyTarget(state); // a finished file offers its story section, never a dialog
   const document = state.kind === "done" ? state.document : undefined;
-  const problems = document?.status === "ready" ? attentionWords(document) : [];
+  const ready = document?.status === "ready" ? document : undefined;
   const unreadable = document?.status === "ready" ? unreadableWords(document, canReread) : null; // U1
   const verified = document ? verifiedWords(document) : null; // U1: only with values
   let icon: "alert" | "eye-alert" | "check-seal" | "file" = "file";
@@ -810,16 +818,9 @@ function UploadRow({
           <p className={`muted ${styles.small}`}>New version of “{entry.versionOf}”</p>
         )}
         {stage !== null && <RowBar entry={entry} stage={stage} />}
-        {state.kind === "reading" && <p className={`muted ${styles.small}`}>{state.document.status_message}</p>}
+        {state.kind === "reading" && <p className={`muted ${styles.small}`}>{scanPhrase(state.document)}</p>}
         {unreadable?.detail && <p className={styles.small}>{unreadable.detail}</p>}
-        {document && problems.length > 0 && (
-          <p className={styles.small}>
-            {problems.join(" · ")}.{" "}
-            <Link href={`/documents/${document.id}`}>
-              Check them<span className="visually-hidden">{` in ${entry.name}`}</span>
-            </Link>
-          </p>
-        )}
+        {ready && <p className={styles.small}>{`Scan complete · ${flaggedText(ready)}`}</p>}
         {verified && <p className={`muted ${styles.small}`}>{verified}</p>}
         {document?.status === "ready" && (
           <AutofileNote
@@ -835,7 +836,7 @@ function UploadRow({
         )}
         {state.kind === "done" && (
           <Link href={`/documents/${state.documentId}`} className={styles.inlineAction}>
-            Open
+            {ready && toReview(ready) ? "Open to review" : "Open"}
             <span className="visually-hidden">{` ${entry.name}`}</span>
           </Link>
         )}
@@ -894,5 +895,61 @@ function UploadRow({
         )}
       </div>
     </li>
+  );
+}
+
+/**
+ * The uploads in the shell's status bar (scan states, 16 Oct 2026; brief C: progress there,
+ * never a modal): one line, "Scanning 2 documents · page 3 of 14 · About 1 min left"
+ * (statusBarText), in a polite live region, and an Uploads button that opens the tray as
+ * a panel in a fixed corner above the bar (a bottom sheet below 768 px), so it never pushes
+ * the list under the pointer. Not a modal: no backdrop; Hide, Escape or the button again
+ * close it, and focus goes back to the button. The line is always there on this screen, so
+ * a live region exists before it first speaks.
+ */
+export function UploadStatus({
+  open,
+  onOpenChange,
+  ...tray
+}: Omit<Parameters<typeof BatchTray>[0], "onHide"> & { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const now = useTick();
+  const id = useId();
+  const toggle = useRef<HTMLButtonElement>(null);
+  const text = statusBarText(tray.entries, tray.views, now);
+  const shown = tray.entries.length > 0 || tray.tooMany;
+  function hide() {
+    onOpenChange(false);
+    toggle.current?.focus();
+  }
+  return (
+    <InStatusBar>
+      <p className={styles.barLine} aria-live="polite" title={text || undefined}>
+        {text}
+      </p>
+      {shown && (
+        <button
+          ref={toggle}
+          type="button"
+          className={styles.barToggle}
+          aria-expanded={open}
+          aria-controls={`${id}-uploads`}
+          onClick={() => onOpenChange(!open)}
+        >
+          Uploads
+        </button>
+      )}
+      {shown && (
+        <div
+          id={`${id}-uploads`}
+          className={styles.trayPanel}
+          hidden={!open}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") hide();
+          }}
+        >
+          <BatchTray {...tray} onHide={hide} />
+        </div>
+      )}
+    </InStatusBar>
   );
 }

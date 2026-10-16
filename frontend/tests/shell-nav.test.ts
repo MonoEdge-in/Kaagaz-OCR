@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ICON_NAMES } from "@/components/ui/icons";
 import {
   appGate,
@@ -17,9 +17,6 @@ import {
 import { currentPageName, isCurrent, navLinks, roleName } from "@/components/shell/nav";
 import { ShellMenu } from "@/components/shell/ShellMenu";
 import type { Me, Role, SessionScope } from "@/lib/types";
-
-// The menu's theme switch needs the page's ThemeProvider; it is not what these tests check.
-vi.mock("@/components/ui/ThemeToggle", () => ({ ThemeToggle: () => null }));
 
 describe("navLinks", () => {
   const labels = (role: Role, scope: SessionScope) => navLinks(role, scope).map((l) => l.label);
@@ -152,8 +149,9 @@ describe("where to sign in", () => {
     // Put away for the back button: blank, so it never shows before the reload.
     expect(session).toMatch(/if \(event\.persisted\) document\.documentElement\.style\.visibility = "hidden"/);
     // Admins sign out to the admin sign-in.
+    // Changed on purpose (UI audit G6, 16 Oct 2026): the sign-outs moved to the account menu.
     for (const file of [
-      ["components", "shell", "AppShell.tsx"],
+      ["components", "shell", "AccountMenu.tsx"],
       ["components", "shell", "SetPasswordScreen.tsx"],
     ]) {
       const text = readFileSync(join(__dirname, "..", ...file), "utf8");
@@ -248,15 +246,20 @@ describe("one nav list for the sidebar and the drawer", () => {
     expect(shell).toContain("navLinks(me.user.role, sessionScope(me))");
   });
 
-  // PRD 7: "Sign out everywhere" in the account menu. It sits in ShellMenu, so
-  // the sidebar and the drawer both have it.
-  it("offers Sign out everywhere in the one menu, next to Sign out", () => {
+  // PRD 7: "Sign out everywhere" in the account menu.
+  // Changed on purpose (UI audit G6, 16 Oct 2026): it moved from ShellMenu (the sidebar) to the
+  // header's account menu, under Sign out in its own row, styled destructive, and asks first in a
+  // dialog instead of window.confirm.
+  it("offers Sign out everywhere in the account menu, under Sign out, destructive and asked first", () => {
+    const account = sources.find((s) => s.name === "AccountMenu.tsx")?.text ?? "";
     const menu = sources.find((s) => s.name === "ShellMenu.tsx")?.text ?? "";
-    expect(menu).toContain("Sign out everywhere");
-    expect(menu).toContain("onClick={onSignOutEverywhere}");
-    expect(menu.indexOf("Sign out everywhere")).toBeGreaterThan(menu.indexOf("onClick={onSignOut}"));
-    expect(shell).toContain("logoutEverywhere()");
-    expect(shell).toContain("onSignOutEverywhere={signOutEverywhere}");
+    expect(menu).not.toMatch(/Sign out|ThemeToggle/);
+    expect(account.indexOf("<span>Sign out everywhere</span>")).toBeGreaterThan(account.indexOf('endSession("here")'));
+    expect(account).toMatch(/className=\{`btn btn-destructive btn-block \$\{styles\.signOut\}`\}\s*onClick=\{\(\) => setConfirming\(true\)\}/);
+    expect(account).toMatch(/<ConfirmDialog[\s\S]*open=\{confirming\}[\s\S]*onConfirm=\{\(\) => void endSession\("everywhere"\)\}/);
+    expect(account).toContain("logoutEverywhere()");
+    expect(account).not.toContain("window.confirm");
+    expect(shell).toContain("<AccountMenu me={me} />");
   });
 });
 
@@ -278,16 +281,7 @@ describe("the Review link's count", () => {
   };
   const menu = (role: Role, toCheck: number) =>
     renderToStaticMarkup(
-      createElement(ShellMenu, {
-        links: navLinks(role, "admin"),
-        pathname: "/documents",
-        me,
-        toCheck,
-        signingOut: null,
-        signOutError: null,
-        onSignOut: () => undefined,
-        onSignOutEverywhere: () => undefined,
-      }),
+      createElement(ShellMenu, { links: navLinks(role, me.session.scope), pathname: "/documents", toCheck }),
     );
   /** A link's words, as a screen reader names it (tags dropped). */
   const linkText = (html: string, href: string) =>
