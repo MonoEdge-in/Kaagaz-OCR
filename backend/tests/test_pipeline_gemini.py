@@ -42,6 +42,7 @@ from kaagaz.pipeline import (
 from kaagaz.preparing.pages import prepare_pages
 from kaagaz.reading.ocr import DocumentPages, MeteredOcrEngine, OcrLine, PageRead
 from kaagaz.reading.rapid_pool import RapidOcrPool, shared_pool
+from kaagaz.reading.spans import ReadError
 from kaagaz.reading.wiring import GEMINI_OCR_MODULE, build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from kaagaz.settings import Settings
@@ -354,9 +355,9 @@ class PageCacheTest(unittest.TestCase):
         self.assertEqual(system.read_again.pages_to_read_again(CUSTOMER, job.document_id), (1,))
 
     def test_f5_a_document_that_fails_for_good_clears_its_marks(self) -> None:
-        reader = ScriptedReader(
-            {1: page_read(issues=("no_text",)), 2: page_read(TOTAL, issues=("reader_refused",))}
-        )
+        # Changed on purpose (never failed, 16 Oct 2026): unreadable pages no longer fail a
+        # document, so a damaged file is the failure for good here.
+        reader = ScriptedReader({1: page_read(TOTAL), 2: ReadError("corrupt_file")})
         system = rig(reader, checker=FakeChecker())
         job = system.job(make_pdf([SCANNED, SCANNED]))
         system.read_again.marks[(CUSTOMER, job.document_id)] = {1}
@@ -368,7 +369,7 @@ class PageCacheTest(unittest.TestCase):
         """FY2: the marks are cleared with the failure, in one step (``set_failed``), so a
         request that comes once the document shows failed (the API then accepts it) is
         never wiped by the run that failed."""
-        reader = ScriptedReader({1: page_read(issues=("no_text",))})
+        reader = ScriptedReader({1: ReadError("corrupt_file")})  # a failure for good (see above)
         system = rig(reader, checker=FakeChecker())
         job = system.job(make_pdf([SCANNED]))
         system.read_again.marks[(CUSTOMER, job.document_id)] = {1}
@@ -479,19 +480,20 @@ class PageResultTest(unittest.TestCase):
         job = system.run(make_pdf([SHARP, SHARP]))
         self.assertEqual([page.read_quality for page in system.pages(job)], ["unreadable", "good"])
 
-    def test_f4_a_document_whose_every_page_is_unreadable_fails_unreadable(self) -> None:
+    def test_f4_a_document_whose_every_page_is_unreadable_is_ready_with_its_pages_flagged(self) -> None:
+        """Never failed (Tushar, 16 Oct 2026): ready, each page flagged unreadable, and nothing
+        on those pages verified (never a guess)."""
         refused = page_read(TOTAL, read_by="rapidocr", quality=None, issues=("reader_refused",))
         system = rig(ScriptedReader({1: refused, 3: refused}), checker=FakeChecker())
-        job = system.job(make_pdf([SCANNED, WHITE, SCANNED]))
-        with self.assertRaises(JobFailed) as failed:
-            system.processor(job, beat)
-        self.assertEqual((failed.exception.code, failed.exception.retryable), ("unreadable", False))
-        self.assertIs(system.status(job), DocumentStatus.FAILED)
+        job = system.run(make_pdf([SCANNED, WHITE, SCANNED]))
+        self.assertIs(system.status(job), DocumentStatus.READY)
+        pages = system.pages(job)
+        self.assertEqual([pages[0].read_quality, pages[2].read_quality], ["unreadable", "unreadable"])
         totals = system.totals(job)
-        self.assertEqual(
-            (totals.status, totals.error_code, totals.pages_unreadable), ("failed", "unreadable", 2)
-        )
-        self.assertEqual(system.checker.crops if system.checker else None, [])  # nothing checked or called
+        self.assertEqual((totals.status, totals.error_code, totals.pages_unreadable), ("ready", None, 2))
+        values = system.store.values_for(CUSTOMER, job.document_id)
+        self.assertTrue(values)
+        self.assertNotIn("verified", {value.label for value in values})
 
     def test_f4_a_readable_text_page_keeps_the_document_ready(self) -> None:
         refused = page_read(TOTAL, read_by="rapidocr", quality=None, issues=("reader_refused",))
