@@ -3,7 +3,10 @@
 * ``POST /auth/login`` {email, password}: an app session (``scope: "app"``).
 * ``POST /auth/admin/login`` {email, password, code?}: admins only, an admin
   session (ADMIN_SESSION_MINUTES). Each admin chooses two-step sign-in: while
-  it is off the password alone is enough; once on, the right code too.
+  it is off the password alone is enough; once on, the right code too, asked for
+  by 401 ``code_required`` (counted like a failure). Until the operator allows
+  two-step sign-in for the organisation (0029), the password alone: any code is
+  ignored, a stored one kept.
 * ``POST /auth/admin/2fa/start`` {password} (admin session): with the current
   password, ``{enrol_token, secret, otpauth_uri}`` for turning it on. Asking
   for the password means a stolen admin cookie alone cannot put its own key
@@ -15,15 +18,18 @@
 * ``POST /auth/password`` {current_password, new_password}: a new password;
   every other browser is signed out, this one is re-signed.
 * ``POST /auth/confirm-password`` {password}: only for a member or reviewer an
-  admin allowed to delete forever; the password, counted like a sign-in, then a
+  admin allowed to delete forever, or an admin (admin session) without the two-step
+  grant; the password, counted like a sign-in, then a
   5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
+* ``/2fa/start`` and ``/enrol`` without the grant: 403 ``two_step_not_allowed``.
 * ``POST /auth/logout``, ``POST /auth/logout-everywhere``, ``GET /auth/me``.
 
 Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 
 * **One reply for every failure.** A wrong password, an unknown e-mail, a
   locked or disabled account, a non-admin on the admin screen and a wrong or
-  reused code all get the same 401 ``bad_credentials`` text, and every path
+  reused code all get the same 401 ``bad_credentials`` text (``code_required``
+  only ever follows a right password), and every path
   spends exactly one scrypt hash, so neither the reply nor its time says
   which accounts exist or which part was wrong.
 * **The attempt is counted before the password is checked**
@@ -93,6 +99,7 @@ router = APIRouter()
 Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_CODE = 16  # 6 digits, plus room for the spaces people type
+NOT_ALLOWED = "Two-step sign-in is not turned on for your organisation."
 
 
 class LoginBody(BaseModel):
@@ -142,11 +149,15 @@ def admin_login(body: AdminLoginBody, context: Context) -> JSONResponse:
         # The password was right; the screen sends them to /login to change it first.
         _succeeded(context, attempt)
         raise ApiError(403, "password_change_required")
-    if attempt.totp_enabled_at is None:
-        # This admin has not turned two-step sign-in on: the password is enough.
+    if attempt.totp_enabled_at is None or not attempt.two_step_granted:
+        # Two-step sign-in is off for this admin, or not allowed for the organisation
+        # (any code sent is ignored): the password is enough.
         return _start_session(
             context, attempt, scope="admin", action="auth.admin_login", details={"second_factor": False}
         )
+    if not _digits(body.code):
+        _failed(context, attempt, "code_required")  # counted: a wrong code next can't reset it
+        raise ApiError(401, "code_required", "Enter the 6-digit code from your authenticator app.")
 
     try:  # a missing secret ("") does not open either
         secret = _box(context.settings.totp_encryption_key).open(
@@ -194,6 +205,9 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     ):
         _failed(context, attempt, "enrol_refused")
         raise ApiError(401, "not_signed_in")
+    if not attempt.two_step_granted:  # stopped since the key was shown
+        _failed(context, attempt, "enrol_refused")
+        raise ApiError(403, "two_step_not_allowed", NOT_ALLOWED)
     try:
         secret = _box(context.settings.totp_encryption_key).open(claims.sealed_secret, aad=user_id)
     except SecretBoxError:
@@ -224,6 +238,8 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
 
 @router.post("/auth/admin/2fa/start")
 def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Context) -> dict[str, str]:
+    if not user.two_step_allowed:
+        raise ApiError(403, "two_step_not_allowed", NOT_ALLOWED)  # nothing is counted
     if user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already on.")
     now = context.clock()
@@ -277,7 +293,12 @@ def change_password(
 
 @router.post("/auth/confirm-password", status_code=204)
 def confirm_password(body: CurrentPasswordBody, user: User, context: Context) -> Response:
-    if user.role == "admin" or not user.delete_forever_allowed:
+    if user.role == "admin":
+        # Only in place of two-step sign-in, which this admin's organisation does not have (0029).
+        allowed = user.scope == "admin" and not user.two_step_allowed
+    else:
+        allowed = user.delete_forever_allowed
+    if not allowed:
         raise ApiError(403, "forbidden")  # nothing is counted
     now = context.clock()
     _check_current_password(context, user, body.password, now)

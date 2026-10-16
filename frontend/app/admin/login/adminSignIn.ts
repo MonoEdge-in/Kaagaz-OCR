@@ -32,7 +32,7 @@ export function codeError(value: string): string | null {
   return CODE_SHAPE.test(code) ? null : CODE_INVALID;
 }
 
-// --- The first screen: e-mail, password and (once set up) the code ------------
+// --- The sign-in: e-mail and password, then the code if the server asks ------
 
 export type AdminSignInField = "email" | "password" | "code";
 
@@ -42,24 +42,26 @@ export interface AdminSignInErrors {
   code: string | null;
 }
 
-/**
- * The code may be left empty: an admin who has not turned on two-step sign-in
- * signs in with the password alone. A typed code is checked.
- */
-export function optionalCodeError(value: string): string | null {
-  return normalizeCode(value) === "" ? null : codeError(value);
-}
-
+/** code is null until the server asks for it (the second step); then it is needed. */
 export function validateAdminSignIn(
   email: string,
   password: string,
-  code: string,
+  code: string | null,
 ): AdminSignInErrors {
   return {
     email: emailError(email),
     password: passwordError(password),
-    code: optionalCodeError(code),
+    code: code === null ? null : codeError(code),
   };
+}
+
+/**
+ * The server asks for the code (401 code_required) only after the password was
+ * right, for an admin who turned on two-step sign-in where the super admin
+ * allows it. The screen then shows the code step; nothing else means this.
+ */
+export function codeNeeded(caught: unknown): boolean {
+  return caught instanceof ApiError && caught.status === 401 && caught.code === "code_required";
 }
 
 /** The first field, in form order, that needs fixing; focus goes there. */

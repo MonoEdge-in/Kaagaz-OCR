@@ -22,7 +22,7 @@ import type { Organisation } from "@/lib/types";
 import { AdminsDialog } from "./AdminsDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
-import { autofileConfirm, orgConfirm, orgFocusId } from "./confirms";
+import { autofileConfirm, orgConfirm, orgFocusId, twoStepConfirm } from "./confirms";
 import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
@@ -185,6 +185,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                       onModels={() => setModelsOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
                       onAutofile={() => setChanging(autofileConfirm(org, !org.autofile_granted))}
+                      onTwoStep={() => setChanging(twoStepConfirm(org, !org.two_step_granted))}
                     />
                   ))}
                 </tbody>
@@ -237,8 +238,9 @@ function OrgRow(props: {
   onModels(): void;
   onChange(change: OrgChange): void;
   onAutofile(): void;
+  onTwoStep(): void;
 }) {
-  const { org, now, onAdmins, onModels, onChange, onAutofile } = props;
+  const { org, now, onAdmins, onModels, onChange, onAutofile, onTwoStep } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
@@ -257,6 +259,7 @@ function OrgRow(props: {
         {org.autofile_granted && (
           <span className={styles.statusNote}>{org.autofile_on ? "Auto-filing on" : "Auto-filing allowed, off"}</span>
         )}
+        {org.two_step_granted && <span className={styles.statusNote}>Two-step sign-in allowed</span>}
         {countdown && <span className={styles.statusNote}>{countdown}</span>}
       </td>
       <td role="cell" data-label="Users">
@@ -305,6 +308,16 @@ function OrgRow(props: {
               aria-label={`${org.autofile_granted ? "Stop" : "Allow"} auto-filing for ${org.name}`}
             >
               {org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing"}
+            </button>
+          )}
+          {org.status !== "deleting" && (
+            <button
+              type="button"
+              className="btn"
+              onClick={onTwoStep}
+              aria-label={`${org.two_step_granted ? "Stop" : "Allow"} two-step sign-in for ${org.name}`}
+            >
+              {org.two_step_granted ? "Stop two-step" : "Allow two-step"}
             </button>
           )}
           {CHANGES[org.status].map(({ change, label, danger }) => (

@@ -19,7 +19,8 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   ``b"enrol\\x00" + body``, 10 minutes. The purposes have different MAC
   inputs and different fields, so neither token ever reads as the other.
 * **The confirm token** (council 4 Oct 2026, PROVISIONAL): a granted member or
-  reviewer's re-typed password for Delete forever. ``{"uid","cid","ver","exp"}``,
+  reviewer's re-typed password for Delete forever, and an admin's while the operator
+  has not allowed two-step sign-in for the customer (0029). ``{"uid","cid","ver","exp"}``,
   MAC over ``b"confirm\\x00" + body``, 5 minutes, an HttpOnly SameSite=Strict
   cookie for /api/documents only.
 * **Strict claims**: a token with a missing, extra or wrongly typed field is
@@ -453,6 +454,7 @@ class CurrentUser:
     must_change_password: bool
     totp_enabled: bool  # two-step sign-in is on (each admin chooses)
     delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
+    two_step_allowed: bool  # the operator's grant (0029); while false, totp_enabled is ignored
 
 
 def set_confirm_cookie(response: Response, user: CurrentUser, settings: Settings, *, now: int) -> None:
@@ -524,6 +526,7 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         must_change_password=bool(row["must_change_password"]),
         totp_enabled=bool(row["totp_enabled"]),
         delete_forever_allowed=bool(row["delete_forever_allowed"]),
+        two_step_allowed=bool(row["two_step_granted"]),
     )
 
 
@@ -546,8 +549,10 @@ def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
     """For what can't be undone (deleting a document forever, deleting a tag): an
     admin session whose admin has two-step sign-in on, else 403
     ``two_step_required``. Two-step sign-in is each admin's choice, so an admin
-    session alone may rest on a password; these actions must not."""
-    if not user.totp_enabled:
+    session alone may rest on a password; these actions must not. Until the
+    operator allows two-step sign-in for the customer (0029) there is no code to
+    ask for, and the admin session is enough."""
+    if user.two_step_allowed and not user.totp_enabled:
         raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Admin, Settings to do this.")
     return user
 
@@ -559,13 +564,17 @@ def require_delete_forever(request: Request, user: User) -> CurrentUser:
     """For deleting a document forever (council 4 Oct 2026). An admin needs what
     they always did: an admin session with two-step sign-in on; a grant never
     counts for an admin, so a password-only admin can't route round two-step.
+    Until the operator allows two-step sign-in for the customer (0029), an admin
+    session and a confirm token (below) instead.
     Anyone else needs an admin's grant (403 ``forbidden``) and a confirm token
     from typing their password in the last CONFIRM_SECONDS, for this user and
     session version (403 ``password_confirm_required``). The grant is read
     again on every request, so stopping it works at once."""
     if user.role == "admin":
-        return require_admin_with_two_step(require_admin_session(user))
-    if not user.delete_forever_allowed:
+        require_admin_session(user)
+        if user.two_step_allowed:
+            return require_admin_with_two_step(user)
+    elif not user.delete_forever_allowed:
         raise ApiError(403, "forbidden")
     context = get_context(request)
     token = request.cookies.get(CONFIRM_COOKIE) or ""

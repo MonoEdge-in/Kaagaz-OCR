@@ -74,6 +74,7 @@ describe("the session gate", () => {
       must_change_password,
       totp_enabled: false,
       can_delete_forever: false,
+      two_step_allowed: true,
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },

@@ -8,8 +8,8 @@ A write returns an ``Outcome``: ``done`` (changed and audited), ``unchanged``,
 ``missing``, ``deleting``, ``step_up`` (the fresh code's step was not accepted) or
 ``signed_out``; scheduling a deletion also ``not_disabled`` or ``name_mismatch``
 (audited), cancelling one ``not_deleting`` or ``purging`` (its grace period is over).
-The organisation list returns counts only, and each one's auto-filing grant and switch
-(0025); the admin list, one customer's admins only.
+The organisation list returns counts only, each one's auto-filing grant and switch
+(0025) and its two-step sign-in grant (0029); the admin list, one customer's admins only.
 
 Time: each write is O(log n) on primary keys, except disabling or enabling a customer,
 O(u) for its u users. ``list_customers`` is O(all users, documents and audit rows):
@@ -67,6 +67,16 @@ def set_org_autofile(conn: Connection, operator_id: str, customer_id: str, *, gr
     return _write(
         conn,
         text("SELECT outcome, result_id FROM kaagaz_op_set_org_autofile(:o, :c, :granted)"),
+        {"o": operator_id, "c": customer_id, "granted": granted},
+    )
+
+
+def set_org_two_step(conn: Connection, operator_id: str, customer_id: str, *, granted: bool) -> Outcome:
+    """Allow or stop two-step sign-in for one customer's admins (0029); an admin's stored
+    code is kept. Audited in both logs when it changes."""
+    return _write(
+        conn,
+        text("SELECT outcome, result_id FROM kaagaz_op_set_org_two_step(:o, :c, :granted)"),
         {"o": operator_id, "c": customer_id, "granted": granted},
     )
 

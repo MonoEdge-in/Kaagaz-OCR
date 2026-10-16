@@ -12,6 +12,7 @@ import {
   ENROL_STEPS,
   adminSignInError,
   codeError,
+  codeNeeded,
   enrolDetails,
   enrolErrorMessage,
   firstInvalidAdmin,
@@ -80,16 +81,25 @@ describe("the 6-digit code", () => {
 });
 
 describe("validateAdminSignIn and firstInvalidAdmin", () => {
-  it("lets the code be empty (an admin who has not turned on two-step sign-in)", () => {
-    expect(validateAdminSignIn("asha@sharma.in", "a long password", "")).toEqual({
+  it("asks for no code until the server asks for it", () => {
+    expect(validateAdminSignIn("asha@sharma.in", "a long password", null)).toEqual({
       email: null,
       password: null,
       code: null,
     });
   });
 
-  it("checks a code once one is typed", () => {
+  it("needs the code in the second step, and checks it", () => {
+    expect(validateAdminSignIn("asha@sharma.in", "pw", "").code).toBe(CODE_MISSING);
     expect(validateAdminSignIn("asha@sharma.in", "pw", "१२३४५६").code).toBe(CODE_INVALID);
+    expect(validateAdminSignIn("asha@sharma.in", "pw", "123 456").code).toBeNull();
+  });
+
+  it("goes to the code step only when the server says code_required", () => {
+    expect(codeNeeded(new ApiError(401, "code_required", "Enter the code."))).toBe(true);
+    expect(codeNeeded(new ApiError(401, "bad_credentials", "E-mail or password is wrong."))).toBe(false);
+    expect(codeNeeded(new ApiError(403, "code_required", "x"))).toBe(false);
+    expect(codeNeeded(new TypeError("Failed to fetch"))).toBe(false);
   });
 
   it("sends focus to the first field that needs fixing, in form order", () => {
@@ -280,9 +290,14 @@ describe("admin sign-in markup", () => {
     }
   });
 
-  it("has no forced set-up step at sign-in, and the code is optional", () => {
+  it("has no forced set-up step, and asks for the code only in a second step", () => {
     expect(form).not.toContain("EnrolStep");
-    expect(form).toContain('label="6-digit code, if you turned on two-step sign-in"');
+    expect(form.match(/<CodeField\b/g)).toHaveLength(1);
+    expect(form).toMatch(/\{askCode && \(\s*<CodeField/); // never shown with the password
+    expect(form).toMatch(/\{!askCode && \(\s*<>\s*<div className="field">/);
+    expect(form).toContain("if (!askCode && codeNeeded(caught))");
+    expect(form).toContain("askCode ? normalizeCode(code) : undefined");
+    expect(form).toContain("Back to e-mail and password");
   });
 
   it("shows the set-up link as a QR code above the typed key, never as text", () => {

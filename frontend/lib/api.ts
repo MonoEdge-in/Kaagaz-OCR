@@ -499,6 +499,9 @@ export const enableOrg = (id: string) => request<unknown>("POST", `/operator/org
 /** Feature 28: allow or stop auto-filing; stopping it also switches it off. */
 export const setOrgAutofile = (id: string, granted: boolean) =>
   request<unknown>("PUT", `/operator/orgs/${id}/autofile`, { granted });
+/** Allow or stop two-step sign-in for its admins; stopping it keeps each admin's code. */
+export const setOrgTwoStep = (id: string, granted: boolean) =>
+  request<unknown>("PUT", `/operator/orgs/${id}/two-step`, { granted });
 /** A disabled organisation, its name typed exactly (step-up); deleted after the grace period. */
 export const scheduleDelete = (id: string, name: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/schedule-delete`, { name, code });

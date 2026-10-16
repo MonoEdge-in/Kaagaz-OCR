@@ -690,6 +690,7 @@ def me_json(user: CurrentUser) -> dict[str, Any]:
             "must_change_password": user.must_change_password,
             "totp_enabled": user.totp_enabled,
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
+            "two_step_allowed": user.two_step_allowed,  # the operator's grant (0029)
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},
