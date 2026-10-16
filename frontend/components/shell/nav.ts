@@ -52,3 +52,16 @@ const ROLE_NAMES: Record<Role, string> = {
 export function roleName(role: Role): string {
   return ROLE_NAMES[role];
 }
+
+type ShortcutKeys = Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">;
+
+/** Ctrl+K, or Cmd+K on a Mac: focus the header's search. */
+export function isSearchShortcut(event: ShortcutKeys): boolean {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k";
+}
+
+/** The avatar's letters: the first letter of the name's first two words ("Asha Patil" is "AP"). */
+export function initials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean).slice(0, 2);
+  return words.map((word) => Array.from(word)[0] ?? "").join("").toUpperCase() || "?";
+}

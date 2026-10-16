@@ -64,7 +64,9 @@ describe("guards", () => {
       "app/login/SignInForm.tsx",
       "app/admin/login/AdminSignInForm.tsx",
       "app/signup/SignUpForm.tsx",
+      // Changed on purpose (UI audit G6, 16 Oct 2026): signing out moved from AppShell to AccountMenu.
       "components/shell/AppShell.tsx",
+      "components/shell/AccountMenu.tsx",
       "components/shell/SetPasswordScreen.tsx",
       "components/admin/AdminView.tsx",
     ];

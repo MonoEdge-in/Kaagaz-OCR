@@ -62,14 +62,17 @@ describe("MonoEdge design system", () => {
 
   const LIGHT = {
     "--bg-page": "#fafbfc", "--bg-surface": "#ffffff", "--bg-subdued": "#f4f5f7", "--bg-hover": "#f4f5f7",
-    "--bg-selected": "#f4f7fd", "--text-primary": "#101114", "--text-secondary": "#4e545c", "--text-muted": "#697079",
+    // Changed on purpose (UI audit, 16 Oct 2026): --text-muted a step darker (#697079 in the MonoEdge
+    // file), so muted text stays 4.5:1 on a selected row's tint too.
+    "--bg-selected": "#f4f7fd", "--text-primary": "#101114", "--text-secondary": "#4e545c", "--text-muted": "#646b74",
     "--text-onaccent": "#ffffff", "--accent": "#204494", "--accent-hover": "#264e9f", "--accent-subtle": "#e9f0fa",
     "--border": "#e8eaed", "--border-strong": "#d5d8dd", "--focus": "#204494",
     "--success": "#1e7a3c", "--warning": "#b7791f", "--critical": "#b3261e",
   };
   const DARK = {
     "--bg-page": "#08090a", "--bg-surface": "#101114", "--bg-subdued": "#1a1c1f", "--bg-hover": "#24272b",
-    "--bg-selected": "#172f65", "--text-primary": "#ffffff", "--text-secondary": "#b3b8c0", "--text-muted": "#8a9099",
+    // Changed on purpose (UI audit, 16 Oct 2026): a step lighter than #8a9099, 4.5:1 on --bg-selected.
+    "--bg-selected": "#172f65", "--text-primary": "#ffffff", "--text-secondary": "#b3b8c0", "--text-muted": "#9aa0a8",
     "--text-onaccent": "#000000", "--accent": "#85a9dd", "--accent-hover": "#a3bee7", "--accent-subtle": "#172f65",
     "--border": "#24272b", "--border-strong": "#33383e", "--focus": "#85a9dd",
     "--success": "#4fb570", "--warning": "#e0a93a", "--critical": "#ef6e63",
@@ -94,7 +97,6 @@ describe("MonoEdge design system", () => {
       "--verified-solid": "var(--success)",
       "--review-solid": "var(--warning)",
       "--danger-fg": "var(--critical)",
-      "--font-sans": "var(--font-mono)",
     });
   });
 
@@ -115,6 +117,30 @@ describe("MonoEdge design system", () => {
       expect(ratio(t, `--${label}-fg`, `--${label}-bg`), label).toBeGreaterThanOrEqual(4.5);
     }
     expect(ratio(t, "--review-solid", "--surface")).toBeGreaterThanOrEqual(3);
+  });
+
+  // UI audit, 16 Oct 2026 (section 8): muted text was near 3:1 on tinted rows in dark.
+  it.each([
+    ["light", light],
+    ["dark", dark],
+  ])("keeps muted text at 4.5:1 on hovered, selected and tinted rows too in %s", (_, t) => {
+    for (const ground of ["--bg-hover", "--bg-selected", "--accent-subtle"]) {
+      for (const text of ["--fg", "--fg-muted", "--text-muted"]) {
+        expect(ratio(t, text, ground), `${text} on ${ground}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  // UI audit G8 and G9, 16 Oct 2026: the current nav link's bar and the Review count.
+  it.each([
+    ["light", light],
+    ["dark", dark],
+  ])("shows the current nav link's bar and the filled Review count clearly in %s", (_, t) => {
+    for (const ground of ["--accent-subtle", "--surface-2"]) {
+      expect(ratio(t, "--accent", ground), `bar on ${ground}`).toBeGreaterThanOrEqual(3);
+    }
+    expect(ratio(t, "--fg", "--accent-subtle")).toBeGreaterThanOrEqual(4.5);
+    expect(ratio(t, "--review-on-solid", "--review-solid")).toBeGreaterThanOrEqual(4.5);
   });
 
   it("uses the 4px spacing scale, three control heights and one 2px radius", () => {
@@ -164,18 +190,34 @@ describe("MonoEdge design system", () => {
     expect(chat).toMatch(/\.answerCard\[data-label="needs_review"\] \{\s*border-style: dashed;/);
   });
 
-  it("loads JetBrains Mono only, and uses the display fallback stack, with Devanagari faces after them", () => {
+  // Changed on purpose (UI audit G3/G4, 16 Oct 2026): the owner's decision over "mono everywhere".
+  // Inter for text and UI, JetBrains Mono for data only, Archivo (loaded) for headings; no Monument
+  // Extended (no licence here) and no Poppins.
+  it("loads Inter, JetBrains Mono and Archivo, each first in its stack, with Devanagari faces after them", () => {
     const layout = read("app/layout.tsx");
-    expect(layout).toContain('import { JetBrains_Mono } from "next/font/google";');
-    expect(layout).not.toMatch(/\bInter\b|Archivo/);
-    expect(layout).toContain('variable: "--font-jetbrains-mono"');
-    expect(layout).toContain('display: "swap"');
+    expect(layout).toContain('import { Archivo, Inter, JetBrains_Mono } from "next/font/google";');
+    for (const variable of ["--font-inter", "--font-jetbrains-mono", "--font-archivo"]) {
+      expect(layout).toContain(`variable: "${variable}"`);
+    }
+    expect(layout.match(/display: "swap"/g)).toHaveLength(3);
+    expect(layout).toContain("className={`${inter.variable} ${jetbrainsMono.variable} ${archivo.variable}`}");
+    expect(light["--font-sans"]?.startsWith('var(--font-inter, "Inter"),')).toBe(true);
     expect(light["--font-mono"]?.startsWith('var(--font-jetbrains-mono, "JetBrains Mono"),')).toBe(true);
-    expect(light["--font-display"]?.startsWith('"Monument Extended", "Arial Narrow", "Helvetica Neue", Arial,')).toBe(true);
-    for (const token of ["--font-mono", "--font-display"]) {
+    expect(light["--font-display"]?.startsWith('var(--font-archivo, "Archivo"),')).toBe(true);
+    for (const token of ["--font-sans", "--font-mono", "--font-display"]) {
       expect(light[token], token).toMatch(/"Noto Sans Devanagari",\s*"Nirmala UI"/);
     }
-    expect(css).not.toMatch(/--font-inter|--font-archivo/);
+    for (const file of ["app/layout.tsx", "app/globals.css", "components/shell/Wordmark.module.css"]) {
+      expect(read(file), file).not.toMatch(/Monument|Poppins/);
+    }
+  });
+
+  it("sets text in Inter and headings in Archivo, and keeps mono for data through .mono", () => {
+    expect(css).toMatch(/body \{[^}]*font-family: var\(--font-sans\);/);
+    expect(css).toMatch(/h1,\s*h2,\s*h3 \{\s*font-family: var\(--font-display\);/);
+    expect(css).toMatch(/\.mono,\s*td\.num \{\s*font-family: var\(--font-mono\);/);
+    expect(css).toMatch(/\.readText \{\s*font-family: var\(--font-mono\);/);
+    expect(read("components/shell/Wordmark.module.css")).not.toMatch(/--font-mono/);
   });
 
   it("signs Kaagaz by MonoEdge on the wordmark and the sign-in frame", () => {

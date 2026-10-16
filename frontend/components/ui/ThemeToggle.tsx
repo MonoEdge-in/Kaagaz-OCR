@@ -2,7 +2,9 @@
 
 // Light, Dark or System, as a segmented group of native radio buttons (so the
 // arrow keys move between them and screen readers say "1 of 3"). The choice is
-// applied at once and saved in the theme cookie (lib/theme.ts).
+// applied at once and saved in the theme cookie (lib/theme.ts). No line under
+// it repeating the choice (UI audit G7): System says what it does in its
+// tooltip, "Follows your system".
 
 import { useId } from "react";
 import { THEME_CHOICES, THEME_LABELS } from "@/lib/theme";
@@ -18,12 +20,6 @@ const THEME_ICONS: Record<ThemeChoice, IconName> = {
   system: "monitor",
 };
 
-const THEME_DESCRIPTIONS: Record<ThemeChoice, string> = {
-  light: "Light mode is fixed.",
-  dark: "Dark mode is fixed.",
-  system: "System mode follows your device setting.",
-};
-
 export function ThemeToggle({ compact = false }: { compact?: boolean }) {
   const { choice, setChoice } = useTheme();
   // Each toggle on the page is its own radio group.
@@ -36,7 +32,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
           <label
             key={option}
             className={styles.option}
-            title={compact ? THEME_LABELS[option] : undefined}
+            title={option === "system" ? "Follows your system" : compact ? THEME_LABELS[option] : undefined}
           >
             <input
               type="radio"
@@ -51,7 +47,6 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
           </label>
         ))}
       </div>
-      {!compact && <p className={styles.hint}>{THEME_DESCRIPTIONS[choice]}</p>}
     </fieldset>
   );
 }
