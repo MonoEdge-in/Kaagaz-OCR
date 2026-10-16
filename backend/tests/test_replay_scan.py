@@ -213,6 +213,10 @@ class ReplayTest(unittest.TestCase):
         self.check("cut_off", [200], None)
 
     def test_an_ensemble_document_with_one_model_failing(self) -> None:
+        # Changed on purpose (Ensemble after the scan, 16 Oct 2026): the snapshot was recorded
+        # again with the same replies and calls; the values carry no vote now, and the total
+        # the vote had made Verified stays Needs review (unsure_text). No scan asks for this
+        # reading any more (db.models.resolve_scan).
         reading = Reading(
             "ensemble",
             Agent(LEAD, VERTEX, "Standard"),

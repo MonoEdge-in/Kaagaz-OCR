@@ -79,7 +79,9 @@
 
 /* D1: the room "Read with" and its one-line hint need is kept from the first paint
    (min-height), and a skeleton holds the select's place until the limits come, so the
-   header never grows under the pointer. */
+   header never grows under the pointer. Two rows, as the title beside it (Tushar, 16 Oct
+   2026): "Read with" and the select on the h1's row, the hint on the subtitle's row,
+   starting under the select. */
 .uploadControls {
   display: flex;
   flex-wrap: wrap;
@@ -90,6 +92,13 @@
   min-height: calc(var(--h-md) + var(--space-1) + 1.5em);
 }
 
+@media (max-width: 639.98px) {
+  .uploadControls {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+  }
+}
+
 .readerSkeleton {
   display: block;
   width: 18rem;
@@ -97,17 +106,30 @@
   height: var(--h-md);
 }
 
-/* In the header the hint is one line, its full words in its title. */
+.uploadControls .reader {
+  display: grid;
+  grid-template-columns: auto minmax(0, auto);
+  align-items: center;
+  flex: 0 1 auto;
+}
+
+/* In the header the hint is one line, its full words in its title, under the select and as
+   wide as it (width 0: the hint never widens its column). */
 .uploadControls .readerHint {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 1;
   line-clamp: 1;
   overflow: hidden;
+  grid-column: 2;
+  width: 0;
+  min-width: 100%;
 }
 
-.uploadControls .reader {
-  flex: 0 1 26rem;
+/* select.input is width 100%; here it is as wide as its longest choice, at least 14rem. */
+.uploadControls .readerSelect {
+  width: auto;
+  min-width: min(14rem, 100%);
 }
 
 .reader {
@@ -134,30 +156,6 @@
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   overflow-wrap: break-word;
-}
-
-/* "More than one reader…" (feature 27): the readers by name, one per row, 44 px to tap. */
-.readerAgents {
-  flex: 1 1 100%;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.readerAgent {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--h-lg);
-  overflow-wrap: anywhere;
-}
-
-.readerMain {
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  font-weight: 600;
 }
 
 /* --- Uploads ------------------------------------------------------------------ */

@@ -414,21 +414,12 @@ export interface UploadLimits {
   sheet_bytes: number;
   max_pages: number; // for a PDF's pages and a TIFF's frames
   readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
-  ensemble?: EnsembleOffer | null; // "More than one reader…" (feature 27); null: not allowed here
 }
 
-/** What an upload or a whole document's Read again asks for (features 26, 27); nothing: the default. */
+/** What an upload or a whole document's Read again asks for (feature 26); nothing: the default. */
 export interface UploadReading {
-  read_mode?: "dynamic" | "ensemble";
+  read_mode?: "dynamic";
   read_model?: string;
-  read_agents?: string[];
-}
-
-/** The models an upload may read with together (feature 27), by name; main is the main reader. */
-export interface EnsembleOffer {
-  readers: { id: string; name: string }[];
-  max: number;
-  main: string;
 }
 
 /** One scan reader the server offers (PRD 4 #17): reason says why it can't be used here. */
@@ -1091,7 +1082,7 @@ export interface InsightsReply {
   ai_enabled: boolean; // false: keyless mode, no model is called
   month: { from: string; today: string; days_in_month: number };
   organisations: OrgInsight[];
-  daily: InsightDay[]; // previous_from to to
+  daily: InsightDay[]; // previous_from (or month.from, when earlier) to to
 }
 
 /** F3: reading, answers and review of one organisation, or the platform (organisation_id null). */

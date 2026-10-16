@@ -65,9 +65,10 @@ read. Without a document (``read``, ``cli measure``) there is no cache.
 * ``timeout``: the page's one budget ran out. Every call for the page (the whole page,
   its halves, a repair) ends by OCR_TIMEOUT_SECONDS from the page's start (stuck reading,
   16 Oct 2026). The page is read locally as ``reader_refused``, so its values need
-  review: a dense page never makes its document wait and try again for hours. Timeouts
-  still count on the model's breaker, so a model that is really down opens it and its
-  pages wait as ``circuit_open`` (below).
+  review: a dense page never makes its document wait and try again for hours. Our own
+  deadline running out is not the model failing: ``ai/openrouter.py`` releases the probe
+  and records no failure on the model's breaker. A model that is really down still opens
+  it through its other failures, and its pages wait as ``circuit_open`` (below).
 * Any other ``ModelUnavailable`` (rate_limited or server_error after the client's
   retries, unreachable, circuit_open, and ``http_error``, a status nothing
   else names, ...): the model's own outage clock (one per model) starts at the
@@ -111,8 +112,8 @@ DYNAMIC_MAX_PAGES pages is read once, each page's Careful read on its own thread
 (``_inline_careful``, fast scan, council 16 Oct
 2026). Ensemble's other models read each page numbered up to ENSEMBLE_MAX_PAGES at the
 same time as the main model (``_ensemble``), and their reads ride on the page
-(``PageRead.others``) for the vote on the values that need review
-(``kaagaz.extraction.labels.settle_votes``).
+(``PageRead.others``); since Ensemble runs only after the scan (16 Oct 2026), no scan asks
+for it (``db.models.resolve_scan``) and the vote that used them is gone.
 
 **Threads** (G8): ``read_page`` is called from OCR_PAGE_CONCURRENCY page threads at
 once. The client and the pool are thread-safe; the outage clock and the local
@@ -224,9 +225,9 @@ BLOCKED = "blocked"
 # The client's code when the page's one budget (OCR_TIMEOUT_SECONDS) ran out (16 Oct 2026).
 PAGE_TIMEOUT = "timeout"
 LOW_THINKING = "low"  # a timed-out page's second read (never failed, 16 Oct 2026)
-# Tushar's reading budget (16 Oct 2026): a document gets OCR_SECONDS_PER_PAGE x its pages, but
-# never less than one full read, its low read again and a local read (DOCUMENT_FLOOR), so a
-# healthy high read is never cut short. A model call never starts with less than MIN_CALL left.
+# Tushar's reading budget (16 Oct 2026): a document gets max(OCR_SECONDS_PER_PAGE x its pages,
+# OCR_TIMEOUT_SECONDS), so even a one-page document has one page's whole read. A model call
+# never starts with less than MIN_CALL_SECONDS left.
 LOCAL_READ_SECONDS = 15.0
 MIN_CALL_SECONDS = 20.0
 # Tushar (16 Oct 2026): a page's read is at most OCR_TIMEOUT_SECONDS (60) in all. A read above

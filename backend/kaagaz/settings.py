@@ -347,7 +347,7 @@ class Settings:
     chat_questions_per_minute: int  # chat questions a user may ask a minute (security, 15 Oct 2026)
     log_level: str
     # Tushar (16 Oct 2026): a document's reading budget is this many seconds per page (1 page =
-    # 1 min, 30 pages = 30 min), never less than 2 x OCR_TIMEOUT_SECONDS + 15 s (gemini_ocr).
+    # 1 min, 30 pages = 30 min), never less than OCR_TIMEOUT_SECONDS (gemini_ocr).
     ocr_seconds_per_page: int = 60
 
     @classmethod

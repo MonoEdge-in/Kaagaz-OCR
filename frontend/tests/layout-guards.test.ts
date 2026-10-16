@@ -557,7 +557,9 @@ describe("layout guards", () => {
 
   it("keeps the chat's loading line in a page, one Upload button on an empty list, and old answers still", () => {
     expect(read("app/(app)/chat/page.tsx")).toMatch(/fallback=\{\s*<div className="page">/);
-    expect(read("components/documents/DocumentsView.tsx")).toContain('{view !== "empty" && uploadButton}');
+    // Changed on purpose (Tushar, 16 Oct 2026): the page header has no Upload files at all, so the
+    // empty state's is still the only one on an empty list (the app header's Upload aside).
+    expect(read("components/documents/DocumentsView.tsx").match(/\{uploadButton\}/g)).toHaveLength(1);
     expect(read("components/chat/AnswerView.tsx")).toContain("export const AnswerView = memo(function AnswerView(");
   });
 

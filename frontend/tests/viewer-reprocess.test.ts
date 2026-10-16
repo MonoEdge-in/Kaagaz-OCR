@@ -170,15 +170,12 @@ describe("reprocessDocument", () => {
       return new Response(JSON.stringify({ id: "d1", status: "received" }), { status: 200 });
     });
     await reprocessDocument("d1");
-    // Changed on purpose (features 25-27, 15 Oct 2026): the reading is sent whole (a model,
-    // Dynamic, or more than one reader), as the body.
+    // Changed on purpose (features 25-27, 15 Oct 2026): the reading is sent whole (a model
+    // or Dynamic), as the body. Changed on purpose (Ensemble after the scan, 16 Oct 2026):
+    // never more than one reader.
     await reprocessDocument("d1", { read_model: "anthropic/claude-sonnet-5.5" });
-    await reprocessDocument("d1", { read_mode: "ensemble", read_agents: ["google/a", "google/b"] });
-    expect(bodies).toEqual([
-      undefined,
-      { read_model: "anthropic/claude-sonnet-5.5" },
-      { read_mode: "ensemble", read_agents: ["google/a", "google/b"] },
-    ]);
+    await reprocessDocument("d1", { read_mode: "dynamic" });
+    expect(bodies).toEqual([undefined, { read_model: "anthropic/claude-sonnet-5.5" }, { read_mode: "dynamic" }]);
   });
 });
 

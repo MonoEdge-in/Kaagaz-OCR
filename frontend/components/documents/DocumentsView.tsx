@@ -1,6 +1,7 @@
 "use client";
 
-// The documents screen: the page header with "Upload files"; the folder tree
+// The documents screen: the page header with "Read with" (the app header's Upload is the
+// one upload action, 16 Oct 2026; an empty list's empty state has "Upload files"); the folder tree
 // (beside the list from 1024 px, in a drawer below that); where you are, with
 // New folder, Rename, Move and Delete; search and the filter chips; the list and
 // its pages. UI audit (16 Oct 2026): "Read with" has its room kept from the first
@@ -365,8 +366,9 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     />
   );
 
-  // An empty list shows this button in its empty state, and the header leaves it out. Secondary:
-  // the app header's Upload is the screen's one primary (G5), and opens #upload-input too.
+  // Only an empty list shows this button, in its empty state; the page header never does
+  // (Tushar, 16 Oct 2026: two upload buttons): the app header's Upload is the screen's one
+  // primary (G5), and opens #upload-input too.
   const uploadButton = (
     <button type="button" className="btn" onClick={openPicker}>
       <Icon name="upload" />
@@ -379,9 +381,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
       readers={uploads.limits.readers}
       picked={uploads.reader}
       onPick={uploads.chooseReader}
-      ensemble={uploads.limits.ensemble ?? null}
-      agents={uploads.agents}
-      onAgents={uploads.chooseAgents}
     />
   ) : (
     <span className={`skeleton ${styles.readerSkeleton}`} aria-hidden="true" />
@@ -401,10 +400,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
           <p>Upload documents, file them in folders, then ask about them.</p>
         </div>
         {canUpload && (
-          <div className={styles.uploadControls}>
-            {readerSelect}
-            {view !== "empty" && uploadButton}
-          </div>
+          <div className={styles.uploadControls}>{readerSelect}</div>
         )}
       </header>
 

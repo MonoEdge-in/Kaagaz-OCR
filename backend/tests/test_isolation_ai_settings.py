@@ -458,15 +458,17 @@ def test_a_mode_revoked_after_upload_reads_single_and_a_junk_reader_is_never_use
     assert set_org(db, operator, customer, ops.AiChoice([lead, other], lead), ensemble=True).code == "done"
     document = _document(db, customer, read_model=lead, read_mode="ensemble", read_also=[other, outsider])
     reading = _scan(db, customer, document)
-    assert (reading.mode, reading.lead.model, [one.model for one in reading.others], reading.notes) == (
-        "ensemble",
+    # Changed on purpose (Ensemble after the scan, 16 Oct 2026): an old Ensemble document is
+    # read by its lead alone, so neither other nor outsider is ever read.
+    assert (reading.mode, reading.lead.model, reading.others, reading.notes) == (
+        "single",
         lead,
-        [other],
-        ("agent_unusable",),  # outsider is not the organisation's: never read
+        (),
+        ("ensemble_after_scan",),
     )
     assert set_org(db, operator, customer, ops.AiChoice([lead, other], lead), ensemble=False).code == "done"
     revoked = _scan(db, customer, document)
-    assert (revoked.mode, revoked.others, revoked.notes) == ("single", (), ("agent_unusable", "mode_revoked"))
+    assert (revoked.mode, revoked.others, revoked.notes) == ("single", (), ("ensemble_after_scan",))
 
 
 def test_a_vendor_outside_the_allow_list_is_unusable_even_when_enabled_and_verified(db: Database) -> None:

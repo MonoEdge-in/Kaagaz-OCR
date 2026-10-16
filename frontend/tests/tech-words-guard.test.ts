@@ -17,14 +17,7 @@ import {
   kpiTiles,
 } from "@/components/admin/logic";
 import { UsageReportView } from "@/components/admin/UsagePanel";
-import {
-  DUPLICATE_READER_NOTE,
-  ENSEMBLE_HINT,
-  READERS_CAP,
-  agentsHint,
-  readAgainWarning,
-  readerOptions,
-} from "@/components/documents/readers";
+import { DUPLICATE_READER_NOTE, readAgainWarning, readerOptions } from "@/components/documents/readers";
 import { REASON_FILTERS } from "@/components/review/review";
 import { REASON_FILTER_TEXT, reasonText, voteText } from "@/components/viewer/labels";
 import { lowResolutionText, noCardText } from "@/components/viewer/panels";
@@ -153,19 +146,14 @@ function shownTexts(): string[] {
       texts.push(heading.title, heading.notSureCount);
     }
   }
-  // Features 25-27 (15 Oct 2026): Dynamic, more than one reader and a value's vote. The
-  // readers' names come from the server, only into the upload reader picker (below).
-  const ensemble = { readers: [{ id: "google/a", name: "A" }], max: 3, main: "google/a" };
-  const options = readerOptions(
-    [
-      { id: "dynamic", title: "Dynamic", hint: "", available: true, reason: null, default: true },
-      { id: "google/gemini-3.1-pro-preview", title: "Standard", hint: "", available: true, reason: null },
-      { id: "anthropic/claude-sonnet-5.5", title: "Careful", hint: "", available: true, reason: null },
-    ],
-    ensemble,
-  );
-  texts.push(...options.map((option) => option.label), ENSEMBLE_HINT, READERS_CAP);
-  texts.push(agentsHint(ensemble, []), agentsHint(ensemble, ["google/a", "google/b"]));
+  // Features 25-27 (15 Oct 2026): Dynamic and a value's vote. Changed on purpose (Ensemble
+  // after the scan, 16 Oct 2026): the upload picker has no "More than one reader…" now.
+  const options = readerOptions([
+    { id: "dynamic", title: "Dynamic", hint: "", available: true, reason: null, default: true },
+    { id: "google/gemini-3.1-pro-preview", title: "Standard", hint: "", available: true, reason: null },
+    { id: "anthropic/claude-sonnet-5.5", title: "Careful", hint: "", available: true, reason: null },
+  ]);
+  texts.push(...options.map((option) => option.label));
   const reads = [
     { main: true, text: "1,130.00" },
     { main: false, text: "1,180.00" },
