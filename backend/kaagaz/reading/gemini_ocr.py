@@ -62,8 +62,14 @@ read. Without a document (``read``, ``cli measure``) there is no cache.
   fix is a person's (review FX5). But a ``model_not_found`` for a document's chosen model
   that is not OCR_MODEL (OpenRouter withdrew it) is read locally as ``reader_refused`` and
   logged at error: one withdrawn model never pauses every document.
+* ``timeout``: the page's one budget ran out. Every call for the page (the whole page,
+  its halves, a repair) ends by OCR_TIMEOUT_SECONDS from the page's start (stuck reading,
+  16 Oct 2026). The page is read locally as ``reader_refused``, so its values need
+  review: a dense page never makes its document wait and try again for hours. Timeouts
+  still count on the model's breaker, so a model that is really down opens it and its
+  pages wait as ``circuit_open`` (below).
 * Any other ``ModelUnavailable`` (rate_limited or server_error after the client's
-  retries, timeout, unreachable, circuit_open, and ``http_error``, a status nothing
+  retries, unreachable, circuit_open, and ``http_error``, a status nothing
   else names, ...): the model's own outage clock (one per model) starts at the
   first such page since the last page the model read. Until it has run
   READER_OUTAGE_FALLBACK_MINUTES, ``BackendUnavailable("gemini")``: the document
@@ -202,6 +208,8 @@ PROVIDER_NOT_ALLOWED = "provider_not_allowed"
 TRUNCATED = "output_truncated"
 # G6: the client's code for a reply the model declined to give.
 BLOCKED = "blocked"
+# The client's code when the page's one budget (OCR_TIMEOUT_SECONDS) ran out (16 Oct 2026).
+PAGE_TIMEOUT = "timeout"
 # G3: the kinds the model may give a line (all in spans.BLOCK_KINDS).
 LINE_KINDS: tuple[str, ...] = (
     "title",
@@ -573,7 +581,10 @@ class GeminiEngine:
         of every call made for the page before it, its own included (G9). ``thinking`` is
         the normal level (C4); a page read again is read harder."""
         resolution, thinking = self._harder if harder else (self._normal[0], thinking)
-        ask = functools.partial(self._call, model=model, provider=provider)
+        # One budget for the page (stuck reading, 16 Oct 2026): the whole page, its halves and
+        # any repair all end by OCR_TIMEOUT_SECONDS from now, never three times that.
+        deadline = self._client.now() + self._timeout
+        ask = functools.partial(self._call, model=model, provider=provider, deadline=deadline)
         try:
             whole = ask(image, resolution, thinking)
         except ModelOutputError as error:
@@ -606,7 +617,14 @@ class GeminiEngine:
         return joined, as_result(joined), tokens_in, tokens_out
 
     def _call(
-        self, image: Image.Image, resolution: str, thinking: str, *, model: str, provider: str | None
+        self,
+        image: Image.Image,
+        resolution: str,
+        thinking: str,
+        *,
+        model: str,
+        provider: str | None,
+        deadline: float,
     ) -> PageReply:
         return self._client.read_page(
             png=png_of(image),
@@ -614,7 +632,7 @@ class GeminiEngine:
             schema=PAGE_SCHEMA,
             media_resolution=resolution,
             thinking_level=thinking,
-            deadline=self._client.now() + self._timeout,
+            deadline=deadline,
             model=model,
             provider=provider,
             validate=repair_problem,
@@ -676,6 +694,11 @@ class GeminiEngine:
             return self._read_locally(image, page_no, READER_REFUSED, code, tokens=tokens)
         if code in KEY_CODES:
             raise BackendUnavailable(KEY_BACKEND) from None
+        if code == PAGE_TIMEOUT:
+            # The page's budget ran out (a dense page, a slow model): read locally and flagged,
+            # so its values need review, rather than the document waiting and trying again for
+            # hours. A real outage still waits: the breaker opens and its code is circuit_open.
+            return self._read_locally(image, page_no, READER_REFUSED, code, tokens=tokens)
         with self._lock:
             now = self._client.now()
             last = self._last_failure.get(model)

@@ -341,6 +341,87 @@ def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bo
     return True
 
 
+# --- the stuck-document sweep (stuck reading, 16 Oct 2026, kaagaz/jobs/revive.py) ---------
+
+# In progress, out of Trash, and nothing written on it for :stale seconds, on the database's
+# clock (the touch trigger sets updated_at at every change: each try, each progress step).
+# Each statement below repeats it, so a change is made in all three.
+_STUCK_FIND = (
+    "SELECT id, attempts FROM documents"
+    " WHERE customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
+    " AND updated_at < now() - make_interval(secs => :stale)"
+    " ORDER BY updated_at, id LIMIT :n"
+)
+_STUCK_REQUEUE = (
+    "UPDATE documents SET attempts = attempts + 1, max_attempts = :max, progress = NULL"
+    " WHERE id = :d AND customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
+    " AND updated_at < now() - make_interval(secs => :stale)"
+    " AND attempts < :max RETURNING attempts"
+)
+_STUCK_FAIL = (
+    "UPDATE documents SET status = 'failed', failure_code = :code"
+    " WHERE id = :d AND customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
+    " AND updated_at < now() - make_interval(secs => :stale)"
+    " AND attempts >= :max RETURNING id"
+)
+STUCK_NO_JOB = "stuck_no_job"
+
+
+def stuck_documents(
+    conn: Connection, customer_id: str, *, stale_seconds: int, limit: int
+) -> list[tuple[str, int]]:
+    """This customer's stuck documents (``_STUCK_FIND``) as (id, tries so far), longest stuck first,
+    at most ``limit``. ``conn`` comes from ``Database.customer(customer_id)``. One statement."""
+    rows = conn.execute(
+        text(_STUCK_FIND),
+        {"c": customer_id, "stale": stale_seconds, "n": limit},
+    )
+    return [(str(row[0]), int(row[1])) for row in rows]
+
+
+def requeue_stuck(
+    conn: Connection, customer_id: str, document_id: str, *, stale_seconds: int, max_attempts: int
+) -> int | None:
+    """Count one more try on a stuck document with a try left, and clear its stale progress
+    ("Waiting to try again" then shows); that try's number, or None when it is no longer
+    stuck or has no try left, and then nothing changes. The caller queues its job, carrying
+    the tries before this one, in the same transaction. One conditional statement."""
+    row = conn.execute(
+        text(_STUCK_REQUEUE),
+        {"c": customer_id, "d": document_id, "stale": stale_seconds, "max": max_attempts},
+    ).first()
+    return None if row is None else int(row[0])
+
+
+def fail_stuck(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    *,
+    stale_seconds: int,
+    max_attempts: int,
+    now: datetime,
+) -> bool:
+    """Mark a stuck document with no try left failed with ``stuck_no_job``, ending its runs
+    still running and clearing its read-again marks, as ``mark_exhausted`` does; False when it
+    is no longer stuck or has a try left, and then nothing changes. 1 to 3 statements."""
+    marked = conn.execute(
+        text(_STUCK_FAIL),
+        {
+            "c": customer_id,
+            "d": document_id,
+            "stale": stale_seconds,
+            "max": max_attempts,
+            "code": STUCK_NO_JOB,
+        },
+    ).first()
+    if marked is None:
+        return False
+    close_running(conn, customer_id, document_id, status="failed", error_code=STUCK_NO_JOB, now=now)
+    conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})
+    return True
+
+
 # --- read one page again, and Keep as is (PRD 5 F5) ----------------------------
 
 # Only a page of a document out of Trash is marked or accepted.

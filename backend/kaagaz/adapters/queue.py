@@ -206,10 +206,14 @@ class SqsQueue:
 
     # --- JobQueue ----------------------------------------------------------
 
-    def enqueue(self, job: Job, *, express: bool = False) -> None:
+    def enqueue(self, job: Job, *, express: bool = False, tries: int = 0) -> None:
+        """``tries``: the attempts the job used before (the stuck-document sweep's job carries
+        them, as a deferred one does), 0 to MAX_TRIES."""
+        if not 0 <= tries <= MAX_TRIES:
+            raise ValueError(f"tries must be 0 to {MAX_TRIES}")
         url = self._express_url if express and self._express_url is not None else self._url
         try:
-            self._send_client.send_message(QueueUrl=url, MessageBody=_body(job))
+            self._send_client.send_message(QueueUrl=url, MessageBody=_body(job, tries))
         except _ANY_ERROR as error:
             raise BackendUnavailable("queue") from error
 

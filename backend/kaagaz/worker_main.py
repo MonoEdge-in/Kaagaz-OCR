@@ -52,6 +52,11 @@ until it is told to stop:
 * With OCR_ENGINE=gemini, the model catalogue (model choice, council 11 Oct 2026, MC1)
   is refreshed from OpenRouter's lists once a day, between jobs (``RefreshCatalog``,
   kaagaz/jobs/catalog.py), under the sweep lock. Keyless mode never runs it.
+* Documents still in progress that no job is working on (nothing written on them for
+  QUEUE_LEASE_SECONDS x JOB_MAX_ATTEMPTS, and no slot of their customer held) are queued
+  again with one more try counted, or failed as ``stuck_no_job`` with no try left, at most
+  20 every 10 minutes, under the sweep lock (``ReviveStuck``, kaagaz/jobs/revive.py,
+  stuck reading, 16 Oct 2026).
 * Before a job runs, ``admission`` (PRD 5 Q5) hands it back to the queue, with no
   attempt counted: for KEY_PROBLEM_DEFER_SECONDS (300) while the reader's gate
   has a key problem, and for 30 s when its customer already has
@@ -99,6 +104,7 @@ from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, last_refreshed, refre
 from kaagaz.jobs.fair_share import FairShare, SweepLock, first_free_lock, no_lock, sweep_lock
 from kaagaz.jobs.ports import QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import CustomerStorage, purge_deleted_customers, purge_expired, sweep_purged_customers
+from kaagaz.jobs.revive import ReviveStuck, revive_stuck
 from kaagaz.jobs.upgrade import UpgradeLocalReads, upgrade_oldest
 from kaagaz.jobs.worker import (
     KEY_PROBLEM_DEFER_SECONDS,
@@ -615,13 +621,22 @@ def _serve(settings: Settings) -> None:
     upgrades = UpgradeLocalReads(
         vectors, upgrade, lambda: gate.status()[0], _utc_now, copies=settings.worker_replicas, lock=lock
     )
-    worker = RefreshCatalog(
+    catalog = RefreshCatalog(
         upgrades,
         catalog_refresh(settings, db),
         _utc_now,
         lock=lock,
         last_refreshed=lambda: last_refreshed(db),
     )
+    revive = functools.partial(
+        revive_stuck,
+        db,
+        lambda job, tries: queue.enqueue(job, tries=tries),
+        fair_share.busy,
+        stale_seconds=settings.queue_lease_seconds * settings.job_max_attempts,
+        max_attempts=settings.job_max_attempts,
+    )
+    worker = ReviveStuck(catalog, revive, lambda: gate.status()[0], _utc_now, lock=lock)
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
     reports.join(READER_REPORT_SECONDS)  # stop is set: at most the report in flight is left
     db.engine.dispose()

@@ -586,6 +586,28 @@ def _error_codes(error: urllib.error.HTTPError) -> _ErrorCodes:
     )
 
 
+# The most one read of a reply body asks for.
+_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _read_until(response: Any, ends: float, limit: int) -> bytes | None:
+    """The body, at most ``limit`` bytes, or None once ``ends`` (on time.monotonic) has passed.
+    The socket timeout only bounds each read, so a reply that keeps trickling in (whitespace
+    sent while a model thinks) would otherwise outlast the deadline without end (stuck
+    reading, 16 Oct 2026). O(body)."""
+    chunks: list[bytes] = []
+    size = 0
+    while size < limit:
+        if time.monotonic() >= ends:
+            return None
+        chunk = response.read1(min(_READ_CHUNK_BYTES, limit - size))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    return b"".join(chunks)
+
+
 @dataclass(slots=True)
 class _Reply:
     """One HTTP exchange: status 0 means no reply (``failure`` says why)."""
@@ -1115,9 +1137,12 @@ class OpenRouterClient:
             request = urllib.request.Request(f"http://{self._host_path}{path}", data, headers, method=method)
         if send_key:
             request.add_unredirected_header(API_KEY_HEADER, "Bearer " + self._key)
+        ends = time.monotonic() + timeout
         try:
             with self._opener.open(request, timeout=timeout) as response:
-                raw = response.read(replies.MAX_RESPONSE_BYTES + 1)
+                raw = _read_until(response, ends, replies.MAX_RESPONSE_BYTES + 1)
+                if raw is None:
+                    return _Reply(0, None, None, "timeout")
                 status, reply_headers = response.status, response.headers
         except urllib.error.HTTPError as error:
             return _Reply(error.code, error.headers, None, codes=_error_codes(error))

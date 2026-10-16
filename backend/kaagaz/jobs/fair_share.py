@@ -111,8 +111,20 @@ class FairShare:
 
     @contextmanager
     def slot(self, job: Job) -> Iterator[None]:
-        keys = [f"kaagaz.fair:{job.customer_id}:{slot}" for slot in range(self._max_active)]
-        with self._locks(keys) as held:
+        with self._locks(self._keys(job.customer_id)) as held:
             if held is None:
                 raise Deferred(FAIR_SHARE_DEFER_SECONDS, CUSTOMER_BUSY)
             yield
+
+    def busy(self, customer_id: str) -> bool:
+        """Is any of the customer's slots held now, so a job of theirs is being read (the
+        stuck-document sweep, kaagaz/jobs/revive.py)? Each slot is tried and let go at once.
+        O(max_active) locks."""
+        for key in self._keys(customer_id):
+            with self._locks([key]) as held:
+                if held is None:
+                    return True
+        return False
+
+    def _keys(self, customer_id: str) -> list[str]:
+        return [f"kaagaz.fair:{customer_id}:{slot}" for slot in range(self._max_active)]
