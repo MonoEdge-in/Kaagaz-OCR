@@ -1,6 +1,6 @@
-// "Kaagaz" in the display face, beside the red margin rule of a ledger page.
-// A link home inside the app; plain text on the sign-in page. The sign-in
-// brand panel draws its own full-height rule, so there it goes without one.
+// The lockup: "Kaagaz" in the display face with "by MonoEdge" under it in
+// small mono capitals, beside the brand rule. A link home inside the app;
+// plain text on the set-password screen.
 
 import Link from "next/link";
 import styles from "./Wordmark.module.css";
@@ -15,7 +15,8 @@ export function Wordmark({
   const className = `${styles.wordmark} ${styles.rule}`;
   const content = (
     <>
-      Kaagaz
+      <span className={styles.name}>Kaagaz</span>{" "}
+      <span className={styles.by}>by MonoEdge</span>
       {reader && (
         <span className={styles.reader} aria-hidden="true">
           <span className={styles.robotHead}>

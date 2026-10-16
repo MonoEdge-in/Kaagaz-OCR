@@ -1,4 +1,4 @@
-// Each screen's browser tab names its section (WCAG 2.4.2), "Documents · Kaagaz",
+// Each screen's browser tab names its section (WCAG 2.4.2), "Documents · Kaagaz · MonoEdge",
 // and never a document or customer name: browser history syncs off the device
 // (UI touch-up council, 15 Oct 2026).
 
@@ -22,8 +22,11 @@ const TITLES: Record<string, string> = {
 };
 
 describe("page titles", () => {
-  it("adds the section's name to Kaagaz in the root layout", () => {
-    expect(read("app/layout.tsx")).toContain('title: { default: "Kaagaz", template: "%s · Kaagaz" }');
+  it("adds the section's name to Kaagaz · MonoEdge in the root layout", () => {
+    // Changed on purpose (MonoEdge theme, 16 Oct 2026): the tab names MonoEdge too.
+    expect(read("app/layout.tsx")).toContain(
+      'title: { default: "Kaagaz · MonoEdge", template: "%s · Kaagaz · MonoEdge" }',
+    );
   });
 
   it.each(Object.entries(TITLES))("gives %s the fixed title %s, from a server file", (file, title) => {
