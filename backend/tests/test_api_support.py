@@ -34,6 +34,7 @@ from sqlalchemy import RowMapping, text
 
 from kaagaz.ai.client import ModelClient
 from kaagaz.answering.memory import Memory
+from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
@@ -147,6 +148,7 @@ class FakeAnswers:
     remembered: Memory | None = None  # what ``remember`` gives back
     summarised: list[tuple[list[Turn], Memory, list[str]]] = field(default_factory=list)
     choices: list[ChatChoice | None] = field(default_factory=list)  # features 25-27: who drafts each
+    pins: list[list[Pin]] = field(default_factory=list)  # the Most relevant picks each question got
 
     def answer(
         self,
@@ -158,8 +160,10 @@ class FakeAnswers:
         user_id: str,
         memory: Memory,
         choice: ChatChoice | None = None,
+        pins: Sequence[Pin] = (),
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
+        self.pins.append(list(pins))
         self.choices.append(choice)
         self.scopes.append(scope)
         self.memories.append(memory)

@@ -1037,7 +1037,7 @@ def test_each_answer_logs_one_timing_line_of_codes_and_numbers(caplog: pytest.Lo
     ]
     assert len(lines) == len(expected)
     for line, start in zip(lines, expected, strict=True):
-        assert re.fullmatch(f"answer timing {start} whole=0 aspects=0{stages}", line), line
+        assert re.fullmatch(f"answer timing {start} whole=0 aspects=0 pinned=0{stages}", line), line
         assert "INV-1042" not in line
 
 
