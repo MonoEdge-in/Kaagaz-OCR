@@ -538,7 +538,7 @@ describe("uploadDocument into a folder", () => {
 
   // Model choice MS4, FINAL DECISIONS 6: read_model, never ocr_choice (accepted and ignored).
   // Changed on purpose (features 25-27, 15 Oct 2026): the reading chosen is sent whole
-  // (read_mode, read_model, read_agents once per reader), not a model alone.
+  // (read_mode or read_model), not a model alone.
   it("sends the model chosen as read_model on both routes, and nothing for the default", () => {
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
     const model = "anthropic/claude-sonnet-5.5";
@@ -555,14 +555,15 @@ describe("uploadDocument into a folder", () => {
     expect(lastForm().has("read_model")).toBe(false);
   });
 
-  it("sends Dynamic and more than one reader as read_mode with read_agents once each", () => {
+  // Changed on purpose (Ensemble after the scan, 16 Oct 2026): no read_agents is ever sent.
+  it("sends Dynamic as read_mode on both routes, and never read_agents", () => {
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
     void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, undefined, { read_mode: "dynamic" });
     expect(lastForm().get("read_mode")).toBe("dynamic");
-    const reading = { read_mode: "ensemble" as const, read_agents: ["google/a", "google/b"] };
-    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, reading);
-    expect(lastForm().get("read_mode")).toBe("ensemble");
-    expect(lastForm().getAll("read_agents")).toEqual(["google/a", "google/b"]);
+    expect(lastForm().has("read_agents")).toBe(false);
+    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, { read_mode: "dynamic" });
+    expect(lastForm().get("read_mode")).toBe("dynamic");
+    expect(lastForm().has("read_agents")).toBe(false);
     expect(lastForm().has("read_model")).toBe(false);
   });
 
@@ -701,6 +702,11 @@ describe("the documents header and search on a phone", () => {
   // what the box is for, and the placeholder is an example.
   it("labels the search box in words you can see, with an example inside it", () => {
     expect(view).toContain('<label htmlFor="documents-q" className={styles.searchLabel}>');
-    expect(view).toMatch(/id="documents-q"[\s\S]{0,400}placeholder="e\.g\. Sharma Industries invoice"/);
+    // Changed on purpose (Tushar, 16 Oct 2026): the example follows the mode, words inside the
+    // documents or a name.
+    expect(view).toMatch(
+      /id="documents-q"[\s\S]{0,400}placeholder=\{mode === "inside" \? "e\.g\. rent paid in September" : "e\.g\. Sharma Industries invoice"\}/,
+    );
+    expect(view).toContain('{mode === "inside" ? "Search inside documents" : "Search documents by name"}');
   });
 });

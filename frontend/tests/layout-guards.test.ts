@@ -320,7 +320,9 @@ describe("layout guards", () => {
     const base = btn.find((rule) => rule.at === "")?.body ?? "";
     expect(base).toMatch(/white-space:\s*nowrap/);
     expect(base).toMatch(/max-width:\s*100%/);
-    expect(base).toMatch(/height:\s*var\(--h-md\)/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height / centred icons): --control-h,
+    // the height fields share (36px, 44px on touch).
+    expect(base).toMatch(/height:\s*var\(--control-h\)/);
     const narrow = btn.find((rule) => rule.at === "@media (max-width: 479.98px)")?.body ?? "";
     expect(narrow).toMatch(/height:\s*auto;[\s\S]*white-space:\s*normal/);
     const nowrap = everyRule(NOWRAP).filter(({ file, rule }) => file !== "app/globals.css" && /\.btn\b/.test(rule.selector));
@@ -453,7 +455,9 @@ describe("layout guards", () => {
   it("gives the chat's small links a 44px tap area on touch, without moving the text", () => {
     const coarse = rules(read("components/chat/Chat.module.css")).filter((rule) => rule.at === "@media (pointer: coarse)");
     const body = (selector: string) => coarse.find((rule) => selectors(rule).includes(selector))?.body ?? "";
-    expect(body(".docChip")).toMatch(/min-height:\s*44px/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height / centred icons): a document chip
+    // is one control tall, --control-h, which is 44px on touch by itself.
+    expect(rulesFor("components/chat/Chat.module.css", ".docChip")[0]?.body).toMatch(/min-height:\s*var\(--control-h\)/);
     expect(body(".cite")).toMatch(/position:\s*relative/);
     expect(body(".cite::after")).toMatch(/inset:\s*-9px/); // the 26px chip plus 9px each side
   });
@@ -560,7 +564,9 @@ describe("layout guards", () => {
 
   it("keeps the chat's loading line in a page, one Upload button on an empty list, and old answers still", () => {
     expect(read("app/(app)/chat/page.tsx")).toMatch(/fallback=\{\s*<div className="page">/);
-    expect(read("components/documents/DocumentsView.tsx")).toContain('{view !== "empty" && uploadButton}');
+    // Changed on purpose (Tushar, 16 Oct 2026): the page header has no Upload files at all, so the
+    // empty state's is still the only one on an empty list (the app header's Upload aside).
+    expect(read("components/documents/DocumentsView.tsx").match(/\{uploadButton\}/g)).toHaveLength(1);
     expect(read("components/chat/AnswerView.tsx")).toContain("export const AnswerView = memo(function AnswerView(");
   });
 
@@ -690,7 +696,8 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     expect(rules(read(VIEW_CSS)).filter((rule) => rule.at.includes("90rem"))).toEqual([]);
     const sticky = rules(read(VIEW_CSS)).filter((rule) => rule.at === `@media ${STICKY_VIEWER_QUERY}`);
     expect(sticky.find((rule) => rule.selector === ".layout")?.body).toMatch(
-      /grid-template-columns:\s*minmax\(0, var\(--split, 60%\)\) var\(--space-6\) minmax\(0, 1fr\);/,
+      // Changed on purpose (Tushar, 16 Oct 2026): the split starts at 55%.
+      /grid-template-columns:\s*minmax\(0, var\(--split, 55%\)\) var\(--space-6\) minmax\(0, 1fr\);/,
     );
     expect(sticky.find((rule) => rule.selector === ".handle")?.body).toMatch(/cursor:\s*col-resize;[\s\S]*touch-action:\s*none;/);
     expect(rulesFor(VIEW_CSS, ".tabPanel")[0]?.body).toMatch(/min-height:\s*24rem;/);
@@ -716,7 +723,10 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     const head = view.slice(view.indexOf("<thead"), view.indexOf("</thead>"));
     expect(head.match(/role="columnheader"/g)).toHaveLength(3);
     expect(head).toContain("Label and reason");
-    expect(view).toMatch(/<td role="cell" className=\{styles\.labelCell\}>\s*<LabelBadge label=\{value\.label\} \/>\s*<div className=\{styles\.reason\}>/);
+    // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify): the badge gets the value's confidence for its tooltip.
+    expect(view).toMatch(
+      /<td role="cell" className=\{styles\.labelCell\}>\s*<LabelBadge label=\{value\.label\} confidence=\{value\.confidence \?\? null\} \/>\s*<div className=\{styles\.reason\}>/,
+    );
     const nowrap = rules(read(VIEW_CSS)).filter((rule) => NOWRAP.test(rule.body) && /label|reason/i.test(rule.selector));
     expect(nowrap.map((rule) => rule.selector)).toEqual([".labelCell :global(.badge)"]);
   });

@@ -79,8 +79,7 @@
   font-weight: 600;
 }
 
-/* A 44 px target. */
+/* One control tall, like every button (44 px on touch, from --control-h). */
 .open {
-  min-height: 44px;
-  min-width: 44px;
+  min-width: var(--control-h);
 }

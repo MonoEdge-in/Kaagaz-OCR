@@ -28,6 +28,7 @@
   gap: var(--space-1);
   min-width: 0;
   flex: 1 1 20rem;
+  margin: 0; /* it may be a <p>: no paragraph margin under it, so it centres in the bar */
 }
 
 .text > p {
@@ -80,7 +81,7 @@
 }
 
 .info {
-  inline-size: var(--h-md);
+  inline-size: var(--control-h);
   padding-inline: 0;
   font-weight: 700;
 }

@@ -55,6 +55,7 @@ class FakeModel:
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         raise AssertionError("indexing never chats")
 

@@ -20,8 +20,8 @@ The steps (docs/architecture.md):
    from the query's result (numbers written the Indian way). Citations are
    the values used. No rows: not found.
    **Unchecked**: no plan because no checked value holds the figure, but an
-   unchecked card value does: no number, a request to confirm it in Review, and
-   the documents where it appears (status ``unchecked``, answering/unchecked.py).
+   unchecked card value does: no number, a calm line saying it is in these
+   documents, and the documents where it appears (status ``unchecked``, answering/unchecked.py).
 5. **Search route**: embed the question (skipped without a model), retrieve,
    the evidence gate on the hits, then the hits' neighbours (Q4) after them,
    then a draft (the model, or quoting without one), then ``verify`` drops
@@ -77,9 +77,22 @@ The steps (docs/architecture.md):
     verified only when today's rules say so and every other model's checked sentences
     hold the lead's numbers from the same sources (``agreement``). Agreement only ever
     adds Needs review.
+13. Every document (Tushar, 16 Oct 2026, kaagaz/answering/exhaustive.py): a question that
+    asks how many or which documents hold a word or phrase is answered before the fixed
+    route from every document in scope, never the top hits: the exact count, the documents
+    by name with their pages, each citing its first matching piece (route ``fixed_query``,
+    no model). The count sentence cites nothing: it sums up the cited lines after it, so no
+    sentence carries more than one number. No document holds it: the steps above answer as
+    before.
+14. Steady answers (16 Oct 2026): the evidence, the prompt, the schema and verify are the
+    same whichever model drafts. The rewrite and aspects (which steer the search) and the
+    translation are asked for at REWRITE_TEMPERATURE (rewrite.py), so what is searched does
+    not change from one run to the next; the draft stays at the model's default (Google's
+    guidance for Gemini 3).
 
 No source, no answer: an answered result always has at least one sentence,
-every sentence cites at least one source, and every source has a region.
+every sentence cites at least one source (but step 13's count, which sums up its cited
+lines), and every source has a region.
 
 Nothing here logs the question or any document text: a model error is logged
 as its code, and each model answer as the model's tag and ANSWER_PROMPT_HASH.
@@ -153,8 +166,19 @@ from kaagaz.answering.evidence import (
     looks_like_instructions,
     number_evidence,
     numbers_asked,
+    related_documents,
     valid_regions,
     word_text,
+)
+from kaagaz.answering.exhaustive import (
+    MAX_LISTED,
+    Exhaustive,
+    PgExhaustive,
+    count_sentence,
+    document_sentence,
+    exhaustive_term,
+    more_text,
+    pages_with,
 )
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion, PgWords, WordSource, expand
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
@@ -219,6 +243,9 @@ class Citation:
     label_page_no: int | None  # H4: where a value's label is, when it was located
     label_regions: list[dict[str, Any]]
     hard_to_read: bool = False  # PRD 5 F6: the cited text holds an unsure or illegible word
+    # Ranked sources (Tushar, 16 Oct 2026): the hit's place in the search's fused order (1 is
+    # the most relevant); None where there is no such order (values, a whole document).
+    rank: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -237,6 +264,7 @@ class Citation:
             "label_page_no": self.label_page_no,
             "label_regions": [dict(region) for region in self.label_regions],
             "hard_to_read": self.hard_to_read,
+            "rank": self.rank,
         }
 
 
@@ -277,6 +305,9 @@ class Answer:
     unreadable_pages: tuple[FlaggedPage, ...] = ()
     unreadable_page_count: int = 0
     team: Team | None = None  # features 25-27: who drafted it, when the asker's choice did
+    # "Also in" (Tushar, 16 Oct 2026): documents the search found but the answer does not
+    # cite (evidence.related_documents).
+    related_documents: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -308,6 +339,7 @@ class Answer:
             "reading_note": self.reading_note,
             "unreadable_pages": [page.to_json() for page in self.unreadable_pages],
             "unreadable_page_count": self.unreadable_page_count,
+            "related_documents": [dict(doc) for doc in self.related_documents],
             **team,
         }
 
@@ -395,6 +427,7 @@ class AnswerService:
         translated_search: TranslatedSearch | None = None,
         reading: ReadingQuality | None = None,
         context: Context | None = None,
+        exhaustive: Exhaustive | None = None,
     ) -> None:
         self._model = model
         self._translator = translator if settings.answer_translate_question else None
@@ -425,6 +458,7 @@ class AnswerService:
         self._words = words if words is not None else PgWords(db)
         self._reading: ReadingQuality | None = PgReadingQuality(db) if retriever is None else reading
         self._context: Context | None = pg if retriever is None else context
+        self._exhaustive: Exhaustive | None = PgExhaustive(db) if retriever is None else exhaustive
 
     @_timed
     def answer(
@@ -537,6 +571,11 @@ class AnswerService:
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
+        term = exhaustive_term(question)
+        if term is not None and self._exhaustive is not None:
+            counted = self._exhaustive_answer(self._exhaustive, customer_id, term, shown, scope)
+            if counted is not None:
+                return counted
         found_range = date_range(normalised, self._today())
         fixed = self._fixed.scoped(scope)
         fields = partial(fixed.available_fields, customer_id)  # asked for only if a plan could follow
@@ -562,7 +601,7 @@ class AnswerService:
         self, customer_id: str, normalised: NormalisedQuestion, shown: str, scope: Scope
     ) -> Answer | None:
         """A figure asked for that no checked value holds but a card does: no number,
-        the documents where it appears, and a request to confirm it in Review first
+        the documents where it appears, and a calm line to open them
         (decided 30 Sep 2026). None when no card holds it either."""
         asked = metric_asked(normalised)
         if asked is None:
@@ -583,6 +622,50 @@ class AnswerService:
         )
 
     # --- fixed route --------------------------------------------------------
+
+    def _exhaustive_answer(
+        self, source: Exhaustive, customer_id: str, term: str, shown: str, scope: Scope
+    ) -> Answer | None:
+        """How many documents in ``scope`` hold ``term``, and which (kaagaz/answering/
+        exhaustive.py): the exact count first, then each listed document with its pages,
+        citing its first matching piece; past MAX_LISTED, how many more. None when no
+        document holds it: the search route answers as before. Two statements, and one for
+        the word marks (F6)."""
+        total, documents = source.documents_with(customer_id, term, scope, MAX_LISTED)
+        said = clean_text(term)
+        citations: list[Citation] = []
+        lines: dict[int, list[dict[str, Any]]] = {}
+        listed: list[AnswerSentence] = []
+        for hits in documents:
+            usable = number_evidence(hits)
+            if not usable:
+                continue  # counted, never shown without a place to open
+            n = len(citations) + 1
+            first = replace(usable[0], n=n)
+            citations.append(_piece_citation(n, first, [said]))
+            lines[n] = first.regions
+            name = clean_text(first.hit.document_name)[:_MAX_NAME].strip()
+            listed.append(AnswerSentence(document_sentence(name, pages_with(hits, term)), [n]))
+        if not total or not citations or not said:
+            return None
+        citations = self._marked(customer_id, citations, lines)
+        hard = any(c.hard_to_read for c in citations)
+        head = count_sentence(said, total)
+        if total > len(citations):
+            head += " " + more_text(len(citations), total - len(citations))
+        return Answer(
+            status="answered",
+            label="verified"
+            if all(c.label == "verified" for c in citations) and not hard
+            else "needs_review",
+            sentences=[AnswerSentence(head, []), *listed],  # the count sums up the lines below
+            citations=citations,
+            closest_documents=[],
+            route="fixed_query",
+            normalized_question=shown,
+            model_used=False,
+            reading_note=HARD_TO_READ_NOTE if hard else None,
+        )
 
     def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
         rows = self._run_plan(fixed, customer_id, plan)
@@ -694,6 +777,7 @@ class AnswerService:
                 first = enough_evidence(own, normalised.keywords, min_score, numbers, expansion)
                 hits = translated.hits
             evidence = number_evidence(hits)
+        hits_only = list(evidence)  # the search's own hits, before widening adds to the list
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
@@ -740,8 +824,12 @@ class AnswerService:
             for n in sentence.evidence:
                 renumber.setdefault(n, len(renumber) + 1)
         by_n = {item.n: item for item in evidence}
+        # Ranked sources: a hit's evidence number is its place in the fused search order.
         citations = [
-            _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence])
+            replace(
+                _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence]),
+                rank=None if whole is not None else old,
+            )
             for old, new in renumber.items()
         ]
         # F6: the cited text is the whole piece, every line of it.
@@ -788,6 +876,13 @@ class AnswerService:
             model_used=model_used,
             reading_note=HARD_TO_READ_NOTE if hard else None,
             team=team,
+            related_documents=(
+                []
+                if whole is not None
+                else related_documents(
+                    hits_only, {c.document_id for c in citations}, normalised.keywords, min_score, numbers
+                )
+            ),
         )
 
     def _translated_search(

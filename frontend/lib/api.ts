@@ -59,6 +59,7 @@ import type {
   Role,
   ScopeBody,
   SheetCells,
+  SourcePin,
   Stats,
   Tag,
   TwoStepSetup,
@@ -208,8 +209,8 @@ export const restoreDocument = (id: string) =>
  * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
  * for a ready, failed or unreadable document out of Trash (403 forbidden or
  * 409 not_reprocessable otherwise). The reply has its new status, received.
- * reading: the reading asked for (a model, Dynamic, or Ensemble's readers; one the
- * organisation may not use is 403); none keeps the document's own.
+ * reading: the reading asked for (a model or Dynamic; one the organisation may not
+ * use is 403); none keeps the document's own.
  */
 export const reprocessDocument = (id: string, reading?: UploadReading) =>
   request<DocumentSummary>("POST", `/documents/${id}/reprocess`, reading);
@@ -271,8 +272,8 @@ export const deleteMyStory = (id: string, userId: string) =>
  * into a folder when one is given, else at the top level. userId is who was
  * signed in when the file was chosen: the server refuses the file (409
  * session_changed) if someone else has signed in since, in another tab.
- * reading is what was chosen in "Read with" (readers.ts), sent as read_mode, read_model
- * and read_agents (one field each); none means the organisation's default.
+ * reading is what was chosen in "Read with" (readers.ts), sent as read_mode or
+ * read_model; none means the organisation's default.
  * batchId is the drop it came in (PRD 5 Q1, a UUID the browser made; 409 batch_full
  * past MAX_FILES_PER_BATCH). onSent: the last byte has gone, so Saving starts (U10).
  */
@@ -314,11 +315,10 @@ export function uploadVersion(
   return sendForm(`/api/documents/${documentId}/versions`, form, onProgress, onSent);
 }
 
-/** The reading's form fields (features 26, 27): read_agents once per reader. */
+/** The reading's form fields (feature 26). */
 function appendReading(form: FormData, reading: UploadReading | undefined): void {
   if (reading?.read_mode) form.append("read_mode", reading.read_mode);
   if (reading?.read_model) form.append("read_model", reading.read_model);
-  for (const agent of reading?.read_agents ?? []) form.append("read_agents", agent);
 }
 
 /**
@@ -412,6 +412,9 @@ export const getConversation = (id: string) =>
 export const renameConversation = (id: string, title: string) =>
   request<ConversationSummary>("PATCH", `/conversations/${id}`, { title });
 export const deleteConversation = (id: string) => request<void>("DELETE", `/conversations/${id}`);
+/** "Most relevant" (ranked sources, 16 Oct 2026): this source on top of the answer, kept as relevance feedback. */
+export const pinSource = (messageId: string, pin: SourcePin, previousRank: number) =>
+  request<void>("POST", `/messages/${messageId}/pin`, { ...pin, previous_rank: previousRank });
 export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: string) =>
   request<void>("POST", `/messages/${messageId}/feedback`, {
     rating,

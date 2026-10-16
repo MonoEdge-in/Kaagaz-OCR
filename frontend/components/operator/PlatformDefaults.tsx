@@ -2,7 +2,7 @@
 
 // Platform defaults, in the Models tab (features 25-27, council 15 Oct 2026, C10, C12): what
 // every organisation that has not been given its own settings uses, per area (scanning:
-// models, default, thinking level, Dynamic; answering: models, default, levels people may
+// models, default, thinking level, Cost saving; answering: models, default, levels people may
 // choose, default level), with how many organisations follow each area now. "Change
 // platform defaults" opens the same fields as an organisation's (AiFields), without
 // Ensemble and budget; before saving it says which organisations the change reaches, and
@@ -18,7 +18,7 @@ import { getAiDefaults, putAiDefaults } from "@/lib/api";
 import type { AiDefaults, OperatorModel } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
-import { KEEP_OWN, aiBody, aiErrors, defaultsImpact, draftOf, inheritedText } from "./models";
+import { COST_SAVING, KEEP_OWN, aiBody, aiErrors, defaultsImpact, draftOf, inheritedText } from "./models";
 import type { AiDraft, AiErrors } from "./models";
 import { AiFields, CODE_ID, fieldId, firstProblem, refusalOf } from "./OrgAiSettings";
 import admin from "@/components/admin/Admin.module.css";
@@ -89,7 +89,7 @@ export function DefaultsSummary({ reply, catalogue }: { reply: AiDefaults; catal
   const rows: { label: string; value: string; count: number }[] = [
     { label: "Scanning models", value: inheritedText("scan_models", defaults, env, catalogue), count: counts.scan_models },
     { label: "Scanning thinking level", value: inheritedText("scan_thinking", defaults, env, catalogue), count: counts.scan_thinking },
-    { label: "Dynamic", value: inheritedText("dynamic", defaults, env, catalogue), count: counts.dynamic },
+    { label: COST_SAVING, value: inheritedText("dynamic", defaults, env, catalogue), count: counts.dynamic },
     { label: "Answering models", value: inheritedText("chat_models", defaults, env, catalogue), count: counts.chat_models },
     { label: "Answering levels", value: inheritedText("chat_levels", defaults, env, catalogue), count: counts.chat_levels },
   ];

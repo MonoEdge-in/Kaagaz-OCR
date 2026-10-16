@@ -1,11 +1,13 @@
-"""Dynamic and Ensemble at upload (features 26 and 27, council 15 Oct 2026, C10, S8; Tushar:
-the mode is called Dynamic): what ``/upload-limits`` offers, how an upload, a version or a
-Read again asks for a reading (``read_mode``, ``read_model``, ``read_agents``), every 400
-and 403 before anything is stored, the default (Dynamic when the organisation may use it),
-the audit row's details, and a value's vote as members see it (no model names).
+"""Dynamic at upload (feature 26, council 15 Oct 2026, C10, S8; Tushar: the mode is called
+Dynamic): what ``/upload-limits`` offers, how an upload, a version or a Read again asks for
+a reading (``read_mode``, ``read_model``), every 400 and 403 before anything is stored, the
+default (Dynamic when the organisation may use it), the audit row's details, and a value's
+vote as members see it (no model names). Ensemble is offered only after the scan (Tushar,
+16 Oct 2026): an upload that still asks for it (``read_mode`` ensemble, ``read_agents``)
+is read as by default, never refused.
 
 Without a database: ``kaagaz.api.readers`` with ``db.models`` swapped. Against a real
-database (marker ``db``): an upload stores the reading, and a refused one stores nothing."""
+database (marker ``db``): an Ensemble upload is read normally, and a refused one stores nothing."""
 
 import uuid
 from collections.abc import Sequence
@@ -78,11 +80,13 @@ def _refused(call: Any) -> tuple[int, str]:
 def test_dynamic_comes_first_and_is_the_default_when_allowed_with_a_careful_tier() -> None:
     offered = readers.readers(ROWS, GEMINI, dynamic=True)
     assert [(reader["id"], reader["title"], reader["default"]) for reader in offered] == [
-        ("dynamic", "Dynamic", True),
+        ("dynamic", "Automatic", True),
         (DEFAULT, "Standard", False),
         (DEARER, "Careful", False),
     ]
-    assert offered[0]["hint"] == "Picks the right reading for each page."
+    # Changed on purpose (Cost saving, 16 Oct 2026): "Cost saving" is the super admin's name for
+    # it; an organisation sees "Automatic", with no cost words.
+    assert offered[0]["hint"] == "Reads clear pages quickly and takes extra care with hard-to-read words."
 
 
 def test_no_dynamic_without_the_switch_but_dynamic_first_without_a_careful_tier() -> None:
@@ -95,49 +99,27 @@ def test_no_dynamic_without_the_switch_but_dynamic_first_without_a_careful_tier(
     assert readers.readers([], GEMINI, dynamic=True) == ocr_choices(GEMINI)
 
 
-def test_ensemble_names_the_usable_models_only_with_the_switch_and_two_of_them() -> None:
-    assert readers.ensemble(ROWS, True) == {
-        "readers": [{"id": row["id"], "name": row["name"]} for row in ROWS],
-        "max": 3,
-        "main": DEFAULT,
-    }
-    assert readers.ensemble(ROWS, False) is None
-    assert readers.ensemble(ROWS[:1], True) is None
-
-
 def test_upload_limits_carry_no_price_or_cost_words(allowed: dict[str, Any]) -> None:
-    offered, ensemble = readers.offer(_conn(), str(uuid.uuid4()), GEMINI)
-    words = str([offered, ensemble]).lower()
-    for banned in ("usd", "price", "cost", "budget", "spend", "$", "₹"):
+    # Changed on purpose (Ensemble after the scan, 16 Oct 2026): offer gives the readers alone.
+    # Cost saving (16 Oct 2026): the refusals an upload may get are checked too, and "saving".
+    words = str(readers.offer(_conn(), str(uuid.uuid4()), GEMINI)).lower()
+    words += " ".join(readers._REFUSED.values()).lower() + readers.NOT_ALLOWED.lower()
+    for banned in ("usd", "price", "cost", "budget", "spend", "saving", "$", "₹"):
         assert banned not in words
 
 
 def test_keyless_mode_offers_auto_alone_and_asks_nothing() -> None:
-    assert readers.offer(_conn(), str(uuid.uuid4()), KEYLESS) == (ocr_choices(KEYLESS), None)
+    assert readers.offer(_conn(), str(uuid.uuid4()), KEYLESS) == ocr_choices(KEYLESS)
 
 
 # 400 before any query (S8).
 
 
-@pytest.mark.parametrize(
-    ("mode", "model", "agents"),
-    [
-        ("automatic", None, ()),  # not a mode
-        ("single", None, (DEFAULT,)),  # readers without Ensemble
-        (None, None, (DEFAULT, DEARER)),
-        ("ensemble", None, (DEFAULT,)),  # one reader
-        ("ensemble", None, (DEFAULT, DEARER, OTHER, "google/fourth")),  # four
-        ("ensemble", None, (DEFAULT, DEFAULT)),  # twice the same
-        ("ensemble", None, (DEFAULT, "Not a model")),
-        ("ensemble", None, (DEFAULT, "google/" + "x" * 300)),  # too long
-        ("ensemble", DEFAULT, (DEARER, OTHER)),  # Ensemble's main reader is not named apart
-    ],
-)
-def test_s8_a_malformed_choice_is_400_before_any_query(
-    mode: str | None, model: str | None, agents: tuple[str, ...]
-) -> None:
+def test_s8_a_mode_that_is_not_one_is_400_before_any_query() -> None:
+    # Changed on purpose (Ensemble after the scan, 16 Oct 2026): readers named are ignored,
+    # so the only malformed choice left is the mode.
     def check() -> None:
-        readers.check_reading(_conn(), str(uuid.uuid4()), GEMINI, mode=mode, model=model, agents=agents)
+        readers.check_reading(_conn(), str(uuid.uuid4()), GEMINI, mode="automatic")
 
     assert _refused(check) == (400, "bad_request")
 
@@ -179,52 +161,42 @@ def test_dynamic_not_allowed_is_403(allowed: dict[str, Any]) -> None:
     )
 
 
-def test_ensemble_without_the_switch_or_with_a_model_it_cant_use_is_403(allowed: dict[str, Any]) -> None:
-    customer = str(uuid.uuid4())
-    unusable = (DEFAULT, "google/not-allowed")
-    assert _refused(
-        lambda: readers.check_reading(_conn(), customer, GEMINI, mode="ensemble", agents=unusable)
-    ) == (
-        403,
-        "model_not_allowed",
+def test_ensemble_asked_for_is_read_as_by_default_and_noted(allowed: dict[str, Any]) -> None:
+    """Changed on purpose (Ensemble after the scan, 16 Oct 2026): Ensemble at upload or Read
+    again is never refused, with or without the switch; it is read as with no mode (a Read
+    again too, never kept) and the audit row says ensemble_after_scan."""
+    customer, noted = str(uuid.uuid4()), readers.ENSEMBLE_AFTER_SCAN
+    asked = readers.check_reading(_conn(), customer, GEMINI, mode="ensemble")
+    assert asked == readers.ReadingChoice("dynamic", note=noted)
+    again = readers.check_reading(_conn(), customer, GEMINI, mode="ensemble", keep=True)
+    assert again == readers.ReadingChoice("dynamic", note=noted)
+    allowed["ensemble"], allowed["dynamic"] = False, False
+    with_model = readers.check_reading(_conn(), customer, GEMINI, mode="ensemble", model=DEARER)
+    assert with_model == readers.ReadingChoice("single", DEARER, note=noted)
+    assert readers.check_reading(_conn(), customer, KEYLESS, mode="ensemble") == readers.ReadingChoice(
+        "single", note=noted
     )
-    allowed["ensemble"] = False
-    usable = (DEFAULT, DEARER)
-    assert _refused(
-        lambda: readers.check_reading(_conn(), customer, GEMINI, mode="ensemble", agents=usable)
-    ) == (
-        403,
-        "ensemble_not_allowed",
-    )
-
-
-def test_p10_ensembles_main_reader_is_the_default_when_ticked_else_the_first(allowed: dict[str, Any]) -> None:
-    customer = str(uuid.uuid4())
-    ticked = readers.check_reading(
-        _conn(), customer, GEMINI, mode="ensemble", agents=(OTHER, DEFAULT, DEARER)
-    )
-    assert ticked == readers.ReadingChoice("ensemble", DEFAULT, (OTHER, DEARER))
-    first = readers.check_reading(_conn(), customer, GEMINI, mode="ensemble", agents=(OTHER, DEARER))
-    assert first == readers.ReadingChoice("ensemble", OTHER, (DEARER,))
+    assert readers.ReadingChoice("single", note=noted).details() == {"read_note": noted}
 
 
 def test_c9_the_audit_row_names_the_reading_but_not_todays_default() -> None:
     assert readers.ReadingChoice("single").details() == {}
     assert readers.ReadingChoice(None).details() == {}
     assert readers.ReadingChoice("dynamic").details() == {"read_mode": "dynamic"}
-    assert readers.ReadingChoice("ensemble", DEFAULT, (DEARER, OTHER)).details() == {
-        "read_mode": "ensemble",
+    assert readers.ReadingChoice("single", DEFAULT).details() == {
+        "read_mode": "single",
         "read_model": DEFAULT,
-        "read_also": f"{DEARER},{OTHER}",
     }
 
 
 def test_the_upload_forms_reading_fields() -> None:
+    # Changed on purpose (Ensemble after the scan, 16 Oct 2026): read_agents is not read.
     form = FormData([("read_mode", "ensemble"), ("read_agents", DEFAULT), ("read_agents", DEARER)])
-    assert _form_reading(form) == _Asked("ensemble", None, (DEFAULT, DEARER))
+    assert _form_reading(form) == _Asked("ensemble", None)
     assert _form_reading(FormData([("read_mode", "")])) == _Asked()
+    assert _form_reading(FormData([("read_agents", DEFAULT)])) == _Asked()
     with pytest.raises(ApiError) as refused:
-        _form_reading(FormData([("read_agents", DEFAULT)]))
+        _form_reading(FormData([("read_mode", "automatic")]))
     assert refused.value.status == 400
 
 
@@ -280,22 +252,24 @@ def _ensemble_org(api: Api, customer_id: str) -> tuple[str, str]:
 
 
 @pytest.mark.db
-def test_an_ensemble_upload_stores_its_main_reader_and_the_others(db: Database) -> None:
+def test_an_ensemble_upload_is_read_normally(db: Database) -> None:
+    """Changed on purpose (Ensemble after the scan, 16 Oct 2026): /upload-limits offers no
+    Ensemble, and an upload that still asks for it is read with the default reading."""
     api = Api(db, settings=GEMINI)
     member = api.new_signed("member")
     default, other = _ensemble_org(api, member.customer_id)
 
-    offered = member.client.get("/api/upload-limits").json()["ensemble"]
+    limits = member.client.get("/api/upload-limits").json()
     reply = _upload(member, {"read_mode": "ensemble", "read_agents": [other, default]})
 
-    assert offered["main"] == default
+    assert "ensemble" not in limits
     assert reply.status_code == 201, reply.text
     document = reply.json()["document"]["id"]
     with db.customer(member.customer_id) as conn:
         row = conn.execute(
             text("SELECT read_mode, read_model, read_also FROM documents WHERE id = :d"), {"d": document}
         ).one()
-    assert tuple(row) == ("ensemble", default, [other])
+    assert tuple(row) == ("dynamic", None, [])
 
 
 @pytest.mark.db
@@ -304,12 +278,19 @@ def test_a_refused_reading_is_403_and_nothing_is_stored(db: Database) -> None:
     member = api.new_signed("member")
     default = add_model(api.db, name="Gemini 3.8 Flash")
     other = add_model(api.db, name="Sonnet 5.5", tokens=(500, 100))
-    allow(api.db, member.customer_id, [default, other], default=default)  # no Ensemble switch
+    allow(api.db, member.customer_id, [default, other], default=default)
+    with api.db.engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO customer_ai_settings (customer_id, dynamic) VALUES (:c, false)"),
+            {"c": member.customer_id},
+        )
 
-    refused = _upload(member, {"read_mode": "ensemble", "read_agents": [other, default]})
+    # Changed on purpose (Ensemble after the scan, 16 Oct 2026): Ensemble is no longer
+    # refused; Dynamic turned off still is, and a model the organisation can't use.
     dynamic = _upload(member, {"read_mode": "dynamic"})
+    unusable = _upload(member, {"read_model": "google/not-allowed"})
 
-    assert (refused.status_code, refused.json()["code"]) == (403, "ensemble_not_allowed")
     assert (dynamic.status_code, dynamic.json()["code"]) == (403, "dynamic_not_allowed")
+    assert (unusable.status_code, unusable.json()["code"]) == (403, "model_not_allowed")
     assert documents_of(db, member.customer_id) == 0
     assert api.queue.jobs == []

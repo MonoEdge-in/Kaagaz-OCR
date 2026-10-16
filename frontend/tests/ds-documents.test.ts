@@ -55,7 +55,9 @@ describe("the MonoEdge design system on the documents screens", () => {
   });
 
   it("uses the MonoEdge token names, never the old ones", () => {
-    const old = /var\(--(fg|fg-muted|bg|surface|surface-2|accent-soft|accent-fg|danger-fg|danger-bg|review-[a-z]+|verified-[a-z]+|r-[a-z]+|e-\d|control-h|space-5|space-7|font-sans|paper-frame)\)/;
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height / centred icons): --control-h is
+    // now THE control height (36px, 44px on touch), not an old alias, so screens use it.
+    const old = /var\(--(fg|fg-muted|bg|surface|surface-2|accent-soft|accent-fg|danger-fg|danger-bg|review-[a-z]+|verified-[a-z]+|r-[a-z]+|e-\d|space-5|space-7|font-sans|paper-frame)\)/;
     expect(MODULES.filter((file) => old.test(css(file)))).toEqual([]);
   });
 
@@ -113,14 +115,15 @@ describe("the MonoEdge design system on the documents screens", () => {
     expect(read("components/documents/Documents.module.css")).toContain("No overflow wrapper (the MonoEdge rule for tables)");
   });
 
-  it("tells Verified and Needs review apart by icon and word, not colour alone", () => {
+  // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify).
+  it("tells Verified and Ready to verify apart by icon and word, not colour alone", () => {
     const verified = renderToStaticMarkup(createElement(LabelBadge, { label: "verified" }));
     const review = renderToStaticMarkup(createElement(LabelBadge, { label: "needs_review" }));
     expect(verified).toContain("Verified");
-    expect(review).toContain("Needs review");
+    expect(review).toContain("Ready to verify");
     expect(verified).toContain("<svg");
     expect(review).toContain("<svg");
-    expect(verified).not.toEqual(review.replace("Needs review", "Verified"));
+    expect(verified).not.toEqual(review.replace("Ready to verify", "Verified"));
   });
 
   it("keeps a button's width while it works: both labels stay laid out, one hidden", () => {
@@ -160,7 +163,10 @@ describe("the MonoEdge design system on the documents screens", () => {
 
   it("never shifts the viewer's toolbar: Fit stays laid out, the page readout keeps its width", () => {
     const viewer = read("components/viewer/PageViewer.tsx");
-    expect(viewer).toContain("className={zoom === 1 ? `btn btn-quiet ${styles.unseen}` : \"btn btn-quiet\"}");
+    // Changed on purpose (Tushar, 16 Oct 2026): the zoom readout is the way back to the fit,
+    // so no hidden button holds room in the row; its least width keeps the row still.
+    expect(viewer).toContain("className={`btn btn-quiet tabular ${styles.readout}`}");
+    expect(viewer).not.toContain("styles.unseen");
     expect(viewer).toContain("style={{ minWidth: `${9 + 2 * String(numbers.length).length}ch` }}");
     // Changed on purpose (UI audit, 16 Oct 2026): DD1, the wheel zooms only with Ctrl or Cmd held
     // (wheelZoom); every other wheel is left to scroll the page and then <main>.

@@ -50,11 +50,13 @@
 .full .option {
   flex: 1 1 0;
   flex-direction: column;
-  min-height: 48px;
+  min-height: calc(var(--h-lg) + var(--space-1));
   padding: var(--space-1) var(--space-1);
 }
 
-/* Compact: icons only (the words stay for screen readers), square targets. */
+/* Compact: icons only (the words stay for screen readers), square targets;
+   the track (2px padding and a 1px edge each side) is one control tall. On
+   touch each segment is a full 44px target instead, so the track is taller. */
 .compact .option {
   width: calc(var(--control-h) - 6px);
   height: calc(var(--control-h) - 6px);
@@ -62,8 +64,8 @@
 
 @media (pointer: coarse) {
   .compact .option {
-    width: 44px;
-    height: 44px;
+    width: var(--h-lg);
+    height: var(--h-lg);
   }
 }
 

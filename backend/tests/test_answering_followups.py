@@ -34,6 +34,7 @@ class RoutingModel(FakeModel):
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         if system == rewrite.SYSTEM_PROMPT:
             self.calls.append(("rewrite", user))

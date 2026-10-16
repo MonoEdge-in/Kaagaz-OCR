@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { menuEntries, menuItemAfterKey, menuPlace } from "@/components/documents/library";
 import { LibraryFilters } from "@/components/documents/LibraryFilters";
 import { ALL_DOCUMENTS } from "@/components/documents/libraryQuery";
+import { flaggedShort, shortWhen } from "@/components/documents/logic";
 import { markChipText } from "@/components/viewer/readingMarks";
 import { SPLIT, splitAfterDrag, splitAfterKey, wheelZoom } from "@/components/viewer/viewer";
 import type { ReadingMark } from "@/lib/types";
@@ -164,12 +165,19 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
 
   it("D1: keeps Read with's room from the first paint, a skeleton until the limits come", () => {
     expect(view).toMatch(/const readerSelect = uploads\.limitsLoaded \? \([\s\S]*?\) : \(\s*<span className=\{`skeleton \$\{styles\.readerSkeleton\}`\}/);
-    expect(docs).toMatch(/\.uploadControls \{[^}]*min-height:\s*calc\(var\(--h-md\)/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height): --control-h, 44px on touch.
+    expect(docs).toMatch(/\.uploadControls \{[^}]*min-height:\s*calc\(var\(--control-h\)/);
+    expect(docs).toMatch(/@media \(pointer: coarse\) \{\s*\.uploadControls \{\s*min-height:\s*calc\(var\(--h-lg\)/);
   });
 
   it("D2: gives the tick box its own column and the name's first-line height, 12px before the name", () => {
     expect(docs).toMatch(/\.selectHit \{[^}]*height:\s*var\(--row-line\);/);
-    expect(docs).toMatch(/\.name \{[^}]*line-height:\s*var\(--row-line\);/);
+    // Changed on purpose (Tushar, 16 Oct 2026, Documents table sans): every first line is the
+    // control height, the ⋯ button's own; a long name's first line is centred in it by padding.
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height): --control-h, 44px on touch.
+    expect(docs).toMatch(/table\.docs \{\s*--row-line:\s*var\(--control-h\);/);
+    expect(docs).toMatch(/@media \(pointer: coarse\) \{\s*table\.docs \{\s*--row-line:\s*var\(--h-lg\);/);
+    expect(docs).toMatch(/\.name \{[^}]*padding-block:\s*calc\(\(var\(--row-line\) - var\(--name-line\)\) \/ 2\);/);
     expect(docs).toMatch(/table\.docs \.selectCell \{\s*flex: 0 0 auto;\s*padding-inline-end:\s*var\(--space-3\);/);
   });
 
@@ -179,7 +187,8 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
   });
 
   it("D6: the search box and Search share a height; clearing is an x inside the box", () => {
-    expect(docs).toMatch(/\.searchInput \{[^}]*height:\s*var\(--h-md\);/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height): --control-h, 44px on touch.
+    expect(docs).toMatch(/\.searchInput \{[^}]*height:\s*var\(--control-h\);/);
     expect(view).toContain('<IconButton icon="close" label="Clear search" className={styles.searchClear}');
   });
 
@@ -207,8 +216,72 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
 
   it("D12: puts New folder in the folder column's header and moves a document dropped on a folder", () => {
     expect(view).toContain('<IconButton icon="plus" label="New folder" onClick={() => setNewFolderAsk((n) => n + 1)} />');
+    // Tushar, 16 Oct 2026: one way to make a folder, the column's "+" (named "New folder", its
+    // tooltip too); the place's own "+ New folder" button is gone, and the column shows at every
+    // width (stacked above the list below 1024px, no drawer), so the "+" is always there.
+    const actions = read("components/documents/FolderActions.tsx");
+    expect(actions).not.toMatch(/>\s*New folder\s*</);
+    expect(actions).not.toContain('<Icon name="plus" />');
+    expect(view).not.toContain("<Drawer");
+    expect(css("components/documents/Library.module.css")).toMatch(/^\.treePane \{\s*display: flex;/m);
     expect(view).toContain("updateDocument(documentId, { folder_id: folderId })");
     expect(table).toContain("event.dataTransfer.setData(DOCUMENT_DRAG, document.id);");
+  });
+
+  // Tushar's fix list, 16 Oct 2026.
+  it("puts Read with in the list's head row, at its right edge, not in the page header", () => {
+    const header = view.slice(view.indexOf('<header className="page-header">'), view.indexOf("</header>"));
+    expect(header).not.toContain("readerSelect");
+    const place = view.slice(view.indexOf("className={libraryStyles.placeHead}"), view.indexOf("{folderGone ?"));
+    expect(place).toContain("<div className={styles.uploadControls}>{readerSelect}</div>");
+  });
+
+  it("writes Upload files with one space: its words are one span, not two flex items", () => {
+    expect(view).toMatch(/<Icon name="upload" \/>\s*<span>\s*Upload<span className="narrow-hide"> files<\/span>\s*<\/span>/);
+  });
+
+  it("makes the search row as wide as the list, and the header's words a name search", () => {
+    expect(docs).toMatch(/\.search \{[^}]*flex: 1 1 100%;/);
+    expect(view).toContain('useState<SearchMode>(startQ === "" ? DEFAULT_SEARCH_MODE : "names")');
+    expect(view).toMatch(/if \(startQ !== ""\) \{\s*setSearch\(\{ view: viewKey, q: startQ, offset: 0 \}\);\s*setModeChoice\("names"\);/);
+  });
+
+  it("shows Uploaded as one short line, the exact date in its title and read out", () => {
+    const now = Date.parse("2026-10-16T12:00:00Z");
+    const before = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+    expect(shortWhen(before(0), now)).toBe("now");
+    expect(shortWhen(before(5), now)).toBe("5m ago");
+    expect(shortWhen(before(120), now)).toBe("2h ago");
+    expect(shortWhen(before(60 * 26), now)).toBe("1d ago");
+    expect(shortWhen(before(60 * 24 * 9), now)).toBe("7 Oct 2026");
+    expect(shortWhen("not a date", now)).toBe("");
+    expect(table).toContain(
+      '<time dateTime={when} title={formatDateTime(when)} className={styles.when} aria-hidden="true">',
+    );
+    expect(table).toContain('<span className="visually-hidden">{whenSpoken}</span>');
+    expect(table).toContain('<span className={styles.bandBy} title={by}>');
+  });
+
+  it("says 7 flagged in full, and names its Review link with what and where", () => {
+    const counts = { pages_unreadable: 0, pages_uncertain: 0, words_unsure: 0, values_to_review: 7 };
+    expect(flaggedShort(counts)).toEqual({ shown: "7 flagged", spoken: "7 flagged words" });
+    expect(flaggedShort({ ...counts, values_to_review: 1 }).spoken).toBe("1 flagged word");
+    expect(flaggedShort({ ...counts, pages_unreadable: 2 })).toEqual({
+      shown: "7 flagged · 2 pages to check",
+      spoken: "7 flagged words and 2 pages to check",
+    });
+    expect(flaggedShort({ ...counts, values_to_review: 0, pages_unreadable: 1 })).toEqual({
+      shown: "1 page to check",
+      spoken: "1 page to check",
+    });
+  });
+
+  it("sets the whole table row in the UI's sans with tabular figures", () => {
+    // Changed on purpose (Tushar, 16 Oct 2026, Documents table sans): the name, size, flagged
+    // count and date were mono beside sans words. Values elsewhere stay mono (.mono).
+    expect(table).not.toMatch(/className=\{?[`"][^`"]*\bmono\b/);
+    expect(docs).toMatch(/table\.docs \{[^}]*font-variant-numeric: tabular-nums;/); // the body's sans, inherited
+    expect(docs).toMatch(/\.bandBy,\s*\.byName \{[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis;/);
   });
 });
 

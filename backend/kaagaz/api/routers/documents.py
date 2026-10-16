@@ -64,15 +64,15 @@ Why some choices:
   document before its job is queued (``_ReadingQueue``), so the worker never reads it
   without them. The old ``ocr_choice`` field is still accepted and ignored (RT3), so old
   browsers don't break.
-* **Dynamic and Ensemble** (features 26 and 27, council 15 Oct 2026): ``/upload-limits``
-  also offers Dynamic, the default when the organisation may use it, and ``ensemble``,
-  the models by name for "More than one reader…". An upload, a version or a Read again
-  may send ``read_mode`` (single, dynamic or ensemble) and, for Ensemble, 2 or 3
-  ``read_agents`` (repeated form fields; a list in a Read again's body), checked by
-  ``readers.check_reading`` before anything is stored (400 or 403), then written with the
-  model as ``documents.read_mode``, ``read_model`` (Ensemble's main reader) and
-  ``read_also``, and named in the audit row. With no mode an upload is read with Dynamic
-  when it may be; a Read again that names nothing keeps the document's reading.
+* **Dynamic** (feature 26, council 15 Oct 2026): ``/upload-limits`` also offers Dynamic,
+  the default when the organisation may use it. An upload, a version or a Read again may
+  send ``read_mode`` (single or dynamic), checked by ``readers.check_reading`` before
+  anything is stored (400 or 403), then written with the model as ``documents.read_mode``
+  and ``read_model``, and named in the audit row. With no mode an upload is read with
+  Dynamic when it may be; a Read again that names nothing keeps the document's reading.
+  Ensemble is offered only after the scan (Tushar, 16 Oct 2026; ``routers/ensemble.py``):
+  ``read_mode`` ensemble and ``read_agents`` (older browsers) are accepted and ignored,
+  read as with no mode, the audit row noting ``ensemble_after_scan``.
 * **Read one page again** (PRD 5 F5) is for a reviewer or an admin, and is a read
   again of its document (above) in every rule: the same states (409
   ``not_reprocessable`` while the document is being read, until the run ends), one
@@ -318,19 +318,17 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
     """``UploadLimits``: the limits this user's uploads are checked against, each
     already lowered by the customer's own limit, so the browser can refuse a file
     before sending it (PRD 1 U2) and count a PDF's pages first (``max_pages``).
-    ``readers`` is the readings an upload may ask for, the default first, or Auto alone, and
-    ``ensemble`` the models by name for more than one reader, or null
+    ``readers`` is the readings an upload may ask for, the default first, or Auto alone
     (``kaagaz/api/readers.py``). The server still checks everything itself. Three queries."""
     policy = _upload_policy(context, user)
     with context.db.customer(user.customer_id) as conn:
-        readers, ensemble = offer(conn, user.customer_id, context.settings)
+        readers = offer(conn, user.customer_id, context.settings)
     return {
         "pdf_bytes": policy.limit_for(sniff.PDF),
         "image_bytes": policy.limit_for(sniff.PNG),
         "sheet_bytes": policy.limit_for(sniff.ZIP),
         "max_pages": context.settings.max_pages,
         "readers": readers,
-        "ensemble": ensemble,
     }
 
 
@@ -379,30 +377,23 @@ def _form_model(value: str | UploadFile | None) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class _Asked:
-    """The reading an upload's form asks for (``read_mode``, ``read_model``, ``read_agents``),
-    not checked yet beyond its shape (``readers.check_shape``)."""
+    """The reading an upload's form asks for (``read_mode``, ``read_model``), not checked
+    yet beyond its shape (``readers.check_shape``)."""
 
     mode: str | None = None
     model: str | None = None
-    agents: tuple[str, ...] = ()
 
 
 def _form_reading(form: FormData) -> _Asked:
-    """The optional reading form fields; 400 for one that is not text or can't be a choice."""
-    agents = form.getlist("read_agents")
-    if not all(isinstance(agent, str) for agent in agents):
-        raise ApiError(400, "bad_request")
-    asked = _Asked(
-        _form_model(form.get("read_mode")), _form_model(form.get("read_model")), tuple(map(str, agents))
-    )
-    check_shape(asked.mode, asked.model, asked.agents)
+    """The optional reading form fields; 400 for one that is not text or can't be a choice.
+    ``read_agents`` (upload-time Ensemble, removed 16 Oct 2026) is not read."""
+    asked = _Asked(_form_model(form.get("read_mode")), _form_model(form.get("read_model")))
+    check_shape(asked.mode)
     return asked
 
 
 def _checked_reading(conn: Connection, user: CurrentUser, settings: Settings, asked: _Asked) -> ReadingChoice:
-    return check_reading(
-        conn, user.customer_id, settings, mode=asked.mode, model=asked.model, agents=asked.agents
-    )
+    return check_reading(conn, user.customer_id, settings, mode=asked.mode, model=asked.model)
 
 
 class _ReadingQueue:
@@ -674,7 +665,7 @@ class ReadAgainBody(BaseModel):
     read_model: str | None = None  # left out or null: the document keeps its model
     # Features 26 and 27: left out or null, the document keeps its reading (readers.check_reading).
     read_mode: str | None = None
-    read_agents: list[str] | None = None
+    read_agents: list[str] | None = None  # ignored: Ensemble runs only after the scan (16 Oct 2026)
 
 
 @router.post("/documents/{document_id}/reprocess")
@@ -695,7 +686,6 @@ def reprocess_document(
             context.settings,
             mode=body.read_mode,
             model=read_model,
-            agents=body.read_agents or (),
             keep=True,
         )
         try:

@@ -258,53 +258,19 @@ describe("one nav list for the sidebar and the drawer", () => {
 });
 
 // UI mockups board 5 (16 Oct 2026): the Review link counts the values waiting to be checked.
-describe("the Review link's count", () => {
-  const me: Me = {
-    user: {
-      id: "u1",
-      email: "asha@sharma.in",
-      display_name: "Asha",
-      role: "admin",
-      must_change_password: false,
-      totp_enabled: false,
-      can_delete_forever: false,
-    },
-    customer: { id: "c1", name: "Sharma Traders" },
-    session: { scope: "admin" },
-  };
-  const menu = (role: Role, toCheck: number) =>
-    renderToStaticMarkup(
-      createElement(ShellMenu, { links: navLinks(role, me.session.scope), pathname: "/documents", toCheck }),
-    );
-  /** A link's words, as a screen reader names it (tags dropped). */
-  const linkText = (html: string, href: string) =>
-    (html.match(new RegExp(`<a[^>]*href="${href}"[^>]*>([\\s\\S]*?)</a>`))?.[1] ?? "").replace(/<[^>]+>/g, "");
+// Changed on purpose (Tushar, 16 Oct 2026): the Review link carries no count; a big
+// number there made people uneasy. The Review page itself has the list.
+describe("the Review link", () => {
+  const menu = (role: Role) =>
+    renderToStaticMarkup(createElement(ShellMenu, { links: navLinks(role, "admin"), pathname: "/documents" }));
 
-  it("is on the Review link only, for reviewers and admins", () => {
-    expect(navLinks("admin", "admin").filter((link) => link.toCheck).map((link) => link.label)).toEqual(["Review"]);
-    expect(navLinks("reviewer", "app").filter((link) => link.toCheck).map((link) => link.label)).toEqual(["Review"]);
-    expect(navLinks("member", "app").some((link) => link.toCheck)).toBe(false);
-  });
-
-  it("is read out as Review, N to check, and shown as the number", () => {
-    const html = menu("admin", 6);
-    expect(linkText(html, "/review")).toBe("Review, 6 to check");
-    expect(html).toMatch(/<span class="[^"]*badge[^"]*"><span class="visually-hidden">, <\/span>6<span class="visually-hidden"> to check<\/span><\/span>/);
-    expect(linkText(html, "/documents")).toBe("Documents");
-  });
-
-  it("is hidden when nothing waits", () => {
-    const html = menu("admin", 0);
-    expect(linkText(html, "/review")).toBe("Review");
+  it("shows no count, and the shell never asks the server for one", () => {
+    const html = menu("admin");
+    expect(html).toContain('href="/review"');
     expect(html).not.toContain("to check");
-  });
-
-  it("is asked for in AppShell, one row, on each page change, and only when the link is shown", () => {
     const shell = readFileSync(join(__dirname, "..", "components", "shell", "AppShell.tsx"), "utf8");
-    expect(shell).toContain("const showsToCheck = links.some((link) => link.toCheck);");
-    expect(shell).toMatch(/if \(!showsToCheck\) return;[\s\S]*listReview\(\{ limit: 1 \}\)[\s\S]*setToCheck\(list\.total\)[\s\S]*\}, \[showsToCheck, pathname\]\);/);
-    expect(shell).toContain("toCheck={showsToCheck ? toCheck : 0}");
-    expect(shell).not.toMatch(/setInterval|setTimeout/);
+    expect(shell).not.toContain("listReview");
+    expect(readFileSync(join(__dirname, "..", "components", "shell", "Shell.module.css"), "utf8")).not.toMatch(/^\.badge \{/m);
   });
 });
 

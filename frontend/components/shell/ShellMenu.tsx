@@ -3,7 +3,9 @@
 // What the sidebar (1024 px and up) and the menu drawer (below) both hold: the
 // links for this person's role and session. One component, so the two places
 // always show the same links. Who is signed in, the theme switch and the two
-// sign-outs are in the header's account menu (AccountMenu, UI audit G6).
+// sign-outs are in the header's account menu (AccountMenu, UI audit G6). The Review
+// link carries no count (Tushar, 16 Oct 2026: a big number there makes people uneasy;
+// the Review page itself has the list).
 
 import Link from "next/link";
 import { Icon } from "@/components/ui/Icon";
@@ -14,13 +16,11 @@ import styles from "./Shell.module.css";
 export interface ShellMenuProps {
   links: readonly NavLink[];
   pathname: string;
-  /** Values waiting to be checked, on the Review link; 0 shows nothing. */
-  toCheck: number;
   /** Called when a link is followed, so the drawer also closes on its own page's link. */
   onLinkClick?(): void;
 }
 
-export function ShellMenu({ links, pathname, toCheck, onLinkClick }: ShellMenuProps) {
+export function ShellMenu({ links, pathname, onLinkClick }: ShellMenuProps) {
   return (
     <div className={styles.menu}>
       <nav aria-label="Main">
@@ -37,13 +37,6 @@ export function ShellMenu({ links, pathname, toCheck, onLinkClick }: ShellMenuPr
                 >
                   <Icon name={link.icon} />
                   <span>{link.label}</span>
-                  {link.toCheck && toCheck > 0 && (
-                    <span className={styles.badge}>
-                      <span className="visually-hidden">, </span>
-                      {toCheck}
-                      <span className="visually-hidden"> to check</span>
-                    </span>
-                  )}
                 </Link>
               </li>
             );

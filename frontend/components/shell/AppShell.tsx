@@ -21,7 +21,6 @@ import { MAX_SEARCH_LENGTH } from "@/components/documents/insideSearch";
 import { Drawer } from "@/components/ui/Drawer";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { listReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { AccountMenu } from "./AccountMenu";
 import { sessionScope } from "./gate";
@@ -42,27 +41,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const links = navLinks(me.user.role, sessionScope(me));
   const pageName = currentPageName(links, pathname);
-  const showsToCheck = links.some((link) => link.toCheck);
-  const [toCheck, setToCheck] = useState(0);
   const [statusBar, setStatusBar] = useState<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-
-  // The Review link's count, asked again on every page change (one row, so it is
-  // cheap; no timer of its own). A failed ask keeps the last count: it is a hint,
-  // the Review page itself has the real list.
-  useEffect(() => {
-    if (!showsToCheck) return;
-    let cancelled = false;
-    listReview({ limit: 1 }).then(
-      (list) => {
-        if (!cancelled) setToCheck(list.total);
-      },
-      () => undefined,
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [showsToCheck, pathname]);
 
   // Ctrl+K (Cmd+K on a Mac) anywhere: to the header's search.
   useEffect(() => {
@@ -89,7 +69,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     <ShellMenu
       links={links}
       pathname={pathname}
-      toCheck={showsToCheck ? toCheck : 0}
       onLinkClick={() => setMenuOpen(false)}
     />
   );
@@ -121,7 +100,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className={styles.headerEnd}>
             <Form action="/documents" role="search" className={styles.search}>
               <label htmlFor="app-search" className="visually-hidden">
-                Search documents
+                Find a document
               </label>
               <Icon name="search" className={styles.searchIcon} />
               <input
@@ -133,12 +112,12 @@ export function AppShell({ children }: { children: ReactNode }) {
                 enterKeyHint="search"
                 autoComplete="off"
                 maxLength={MAX_SEARCH_LENGTH}
-                placeholder="Search documents"
+                placeholder="Find a document"
                 aria-keyshortcuts="Control+K Meta+K"
-                title="Search documents (Ctrl+K, or Cmd+K on a Mac)"
+                title="Find a document by name (Ctrl+K, or Cmd+K on a Mac)"
               />
             </Form>
-            <Link href="/documents" className="btn btn-primary" onClick={upload}>
+            <Link href="/documents" className={`btn btn-primary ${styles.upload}`} onClick={upload}>
               <Icon name="upload" />
               <span className="narrow-hide">Upload</span>
             </Link>

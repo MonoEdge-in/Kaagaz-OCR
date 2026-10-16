@@ -183,8 +183,10 @@ def test_a_mode_no_longer_allowed_reads_single_with_a_note() -> None:
     """S2: the worker checks the upload's mode again; exactly one model reads each page."""
     rows = [row(PRO, default=True, tokens=(4000, 2000)), row(FLASH)]
     ensemble = document(PRO, "ensemble", [FLASH])
+    # Changed on purpose (Ensemble after the scan, 16 Oct 2026): an old Ensemble document is
+    # read single, with or without the switch, noted ensemble_after_scan.
     assert scan(FakeConn(scan=rows, document=ensemble)) == models.Reading(
-        "single", agent(PRO), thinking="low", notes=("mode_revoked",)
+        "single", agent(PRO), thinking="low", notes=("ensemble_after_scan",)
     )
     dynamic = FakeConn(
         scan=[row(FLASH, default=True), row(PRO, tokens=(4000, 2000))], document=document(None, "dynamic")
@@ -192,28 +194,22 @@ def test_a_mode_no_longer_allowed_reads_single_with_a_note() -> None:
     assert scan(dynamic) == models.Reading("single", agent(FLASH), thinking="low", notes=("mode_revoked",))
 
 
-def test_an_allowed_ensemble_reads_with_the_usable_others_only() -> None:
-    """A junk or unusable read_also id is never read, and is noted."""
+def test_an_old_ensemble_document_is_read_by_its_lead_alone() -> None:
+    """Changed on purpose (Ensemble after the scan, 16 Oct 2026): with the switch on, an
+    Ensemble document of before is read single by its lead; its read_also is never read."""
     rows = [row(PRO, default=True), row(FLASH), row(SONNET)]
     allowed = {"ensemble": True}
     reading = scan(
         FakeConn(scan=rows, settings=allowed, document=document(PRO, "ensemble", [FLASH, "google/junk"]))
     )
-    assert (reading.mode, reading.lead, reading.others, reading.notes) == (
-        "ensemble",
-        agent(PRO),
-        (agent(FLASH),),
-        ("agent_unusable",),
-    )
-    alone = scan(FakeConn(scan=rows, settings=allowed, document=document(PRO, "ensemble", ["google/junk"])))
-    assert (alone.mode, alone.others, alone.notes) == ("single", (), ("agent_unusable",))
+    assert reading == models.Reading("single", agent(PRO), thinking="low", notes=("ensemble_after_scan",))
     assert reading.config() == {
-        "mode": "ensemble",
+        "mode": "single",
         "lead": {"model": PRO, "provider": "google-vertex"},
-        "others": [{"model": FLASH, "provider": "google-vertex"}],
+        "others": [],
         "careful": None,
         "thinking": "low",
-        "notes": ["agent_unusable"],
+        "notes": ["ensemble_after_scan"],
     }
 
 

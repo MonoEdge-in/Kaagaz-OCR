@@ -37,11 +37,9 @@ agrees); a line no found box confirmed is ``box_unanchored`` (G5), in that order
 card value (``model_chosen``) keeps its reason. The checker's reading stays as the
 second reading, so the review card shows both.
 
-Ensemble (F27, Tushar 15 Oct 2026, ``settle_votes``): when more than one model read a
-scan, each value read by OCR that needs review is decided by the readers' majority (2 of
-3), and what each read is saved with it (``votes``) so the user sees why. The majority's
-text is then labelled by the rules above: Verified still needs the checker to agree. With
-no majority the value stays Needs review.
+Ensemble runs only after the scan (Tushar, 16 Oct 2026; ``kaagaz/jobs/ensemble.py``): the
+readers' majority (``majority``, 2 of 3) proposes a reading and a person keeps or reverts
+it; a scan never replaces a value's text by a vote. ``vote`` is the same rule on one value.
 
 The second reading of a line box is the second reader's line on the same page
 that overlaps it most, if their intersection over union is at least 0.5 (or,
@@ -372,8 +370,6 @@ def label_reading_marks(
     values: Iterable[ExtractedValue],
     lines: Mapping[BoxLocation, LineMarks],
     local_pages: Collection[int],
-    *,
-    voted: bool = False,
 ) -> list[ExtractedValue]:
     """PRD 5's reasons for values read by OCR (the module notes), after ``label_values``
     and ``label_quoted``: ``local_reader`` on a page in ``local_pages`` (Q7: the pages
@@ -381,9 +377,7 @@ def label_reading_marks(
     ``unsure_text`` when the value has ``[?]`` or a word of its line's unsure words (V4),
     then ``box_unanchored`` when its line is unpinned (G5). ``lines`` are the marks by the
     line's box, the value's own location. A card value and every value with none of these
-    keep their label. ``voted``: the readers' majority settled the main reader's unsure
-    words (``settle_votes``), so they are no reason; ``[?]`` still is. O(v x u) for v
-    values and u unsure words of a line."""
+    keep their label. O(v x u) for v values and u unsure words of a line."""
     labelled = []
     for value in values:
         box = value.location
@@ -394,7 +388,7 @@ def label_reading_marks(
         reason: str | None = None
         if box.page in local_pages:
             reason = LOCAL_READER
-        elif _has_unsure_word(value.value_text, () if voted else marks.unsure):
+        elif _has_unsure_word(value.value_text, marks.unsure):
             reason = UNSURE_TEXT
         elif marks.unpinned:
             reason = BOX_UNANCHORED
@@ -470,51 +464,6 @@ def majority(reads: Sequence[tuple[str, str | None]]) -> dict[str, Any]:
         "readers": len(reads),
         "reads": [{"model": model, "text": text} for model, text in reads],
     }
-
-
-def settle_votes(
-    values: Iterable[ExtractedValue],
-    pages: Mapping[int, PageVotes],
-    readings: Mapping[Location, str] | None,
-    *,
-    checked: Collection[Location],
-    lines: Mapping[BoxLocation, LineMarks],
-    local_pages: Collection[int],
-) -> list[ExtractedValue]:
-    """Ensemble's rule (Tushar, 15 Oct 2026), after ``label_reading_marks``: each value read
-    by OCR that needs review, on a page the other readers read (``pages``), is decided by
-    the readers' majority (``vote``), and the vote is kept with it (``votes``). A card
-    value or a quote whose spot is unsure (``model_chosen``) and a value of a page the
-    local reader read are not voted on. With a majority the value is the majority's text
-    and is labelled again by today's rules (``_label_ocr``: Verified only when the checker
-    read its box and agrees with that text; ``readings`` and ``checked`` are the
-    checker's), then by the reading marks, but the main reader's unsure words: the vote
-    settled them. With none it keeps its label: Needs review, never a guess. The raw text
-    stays the main reader's. O(v x s) for v values and s spans of a page."""
-    values = list(values)
-    shared = _shared_boxes(values)
-    settled = []
-    for value in values:
-        box = value.location
-        page = pages.get(box.page) if isinstance(box, BoxLocation) else None
-        if (
-            page is None
-            or not isinstance(box, BoxLocation)
-            or value.label != NEEDS_REVIEW
-            or not _is_ocr(value)
-            or value.label_reason in ("model_chosen", LOCAL_READER)
-        ):
-            settled.append(value)
-            continue
-        votes = vote(value, box, page)
-        if votes["value"] is None:
-            settled.append(replace(value, votes=votes))
-            continue
-        relabelled = _label_ocr(
-            replace(value, value_text=votes["value"], votes=votes), box, shared, readings, checked
-        )
-        settled.extend(label_reading_marks([relabelled], lines, local_pages, voted=True))
-    return settled
 
 
 def inside(line: BoxLocation, box: BoxLocation) -> float:

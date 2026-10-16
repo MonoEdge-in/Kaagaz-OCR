@@ -70,10 +70,19 @@
 
 .headActions {
   display: flex;
+  flex: none;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   margin-inline-start: auto;
+}
+
+/* One row from 768px (Tushar, 16 Oct 2026): a long title wraps inside its own room
+   and the actions stay beside it, never on a row of their own. */
+@media (min-width: 768px) {
+  .titleRow {
+    flex-wrap: nowrap;
+  }
 }
 
 /* One meta line (board 12 P4): status, type and pages, Read again, the folder
@@ -166,8 +175,11 @@
     flex-basis: 100%;
   }
 
+  /* Its icon alone: a square, like the menu button at the row's end. */
   .download {
+    width: var(--control-h);
     margin-inline-start: 0;
+    padding-inline: 0;
   }
 
   .ask {
@@ -189,8 +201,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: var(--h-md);
-  min-height: var(--h-md);
+  min-width: var(--control-h);
+  height: var(--control-h);
   padding: 0 var(--space-2);
   border: 1px solid var(--border-strong);
   border-radius: 2px;
@@ -263,7 +275,7 @@
    line, the whole gap its target; hover and focus change its colour only. */
 @media (min-width: 1024px) and (min-height: 36rem) {
   .layout {
-    grid-template-columns: minmax(0, var(--split, 60%)) var(--space-6) minmax(0, 1fr);
+    grid-template-columns: minmax(0, var(--split, 55%)) var(--space-6) minmax(0, 1fr);
     gap: 0;
   }
 
@@ -337,13 +349,15 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.75rem;
+  min-width: var(--badge-h);
+  height: var(--badge-h);
   padding: 0 var(--space-2);
   border-radius: 2px;
   background: var(--bg-subdued);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   font-weight: 600;
+  line-height: 1;
 }
 
 /* The values table: a table while its column is wide enough, cards when not.
@@ -396,9 +410,12 @@
   align-self: flex-start;
 }
 
+/* A value is a word in a line, beside its Add meaning button: both sit on the
+   line's middle (vertical-align), not the value's baseline. */
 .valueButton {
   display: inline-block;
   min-height: 24px;
+  vertical-align: middle;
   margin-inline-end: var(--space-2);
   padding: 0;
   border: none;
@@ -426,8 +443,7 @@
     min-height: var(--h-lg);
   }
 
-  .back,
-  .versionLink {
+  .back {
     min-height: var(--h-lg);
   }
 }
@@ -440,7 +456,15 @@
 }
 
 .tabs {
+  gap: var(--space-3);
   margin-block-end: var(--space-4);
+  font-size: var(--fs-sm);
+}
+
+/* The status keeps its words on one line beside a long title. */
+.titleRow > :global(.status-chip) {
+  flex: none;
+  white-space: nowrap;
 }
 
 .tabCount[data-zero] {
@@ -719,6 +743,9 @@
   border-radius: 2px;
 }
 
+/* Icon, words and Try again: the icon and the first line of words sit on the
+   button's middle line (each moved down by half of what the button is taller
+   than a line), and a longer message runs on below it. */
 .errorBanner {
   display: flex;
   flex-wrap: wrap;
@@ -737,6 +764,11 @@
   height: 1lh;
 }
 
+.errorIcon,
+.errorBody {
+  margin-block-start: max(0px, (var(--control-h) - 1lh) / 2);
+}
+
 .errorBody {
   flex: 1 1 14rem;
   min-width: 0;
@@ -750,11 +782,11 @@
   font-weight: 600;
 }
 
-/* Your story about this document (StoryPanel.tsx): every button is at least
-   44 px (the touch size); the story is the user's text, wrapped anywhere. */
+/* Your story about this document (StoryPanel.tsx): every button is one
+   control tall and at least as wide (44 px on touch, from --control-h); the
+   story is the user's text, wrapped anywhere. */
 .storyTarget {
-  min-height: var(--h-lg);
-  min-width: var(--h-lg);
+  min-width: var(--control-h);
 }
 
 .storyBox {

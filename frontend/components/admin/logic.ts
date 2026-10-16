@@ -271,7 +271,13 @@ export interface Tile {
   label: string;
   value: string;
   note?: string;
+  tip?: string; // a tooltip on the label, shown on hover and focus
 }
+
+/** The Ready to verify tile's tooltip. Which values are labelled so is many rules
+ *  (backend/kaagaz/extraction/labels.py), not one number, so it names none. */
+export const TO_VERIFY_TIP =
+  "Values a second reading did not confirm, such as a word that was hard to read or two readings that differ. Open Review to verify them.";
 
 const STATUS_ORDER: readonly DocumentStatus[] = [
   "ready",
@@ -292,7 +298,12 @@ export function kpiTiles(stats: Stats): Tile[] {
   return [
     { label: "Total documents", value: formatNumber(documents) },
     { label: "Ready", value: formatNumber(by.ready ?? 0) },
-    { label: "Needs review", value: formatNumber(stats.open_review_items), note: "Values to check in Review" },
+    {
+      label: "Ready to verify",
+      value: formatNumber(stats.open_review_items),
+      note: "Values to verify in Review",
+      tip: TO_VERIFY_TIP,
+    },
     { label: "Failed", value: formatNumber(by.failed ?? 0) },
   ];
 }
@@ -340,7 +351,7 @@ export function breakdowns(stats: Stats): Breakdown[] {
         ["Answered", stats.answered],
         ["Not found in the documents", stats.not_found],
         ["Answers labelled Verified", stats.verified_answers],
-        ["Answers labelled Needs review", stats.needs_review_answers],
+        ["Answers labelled Ready to verify", stats.needs_review_answers],
         ["Thumbs up", stats.feedback_up],
         ["Thumbs down", stats.feedback_down],
       ]),

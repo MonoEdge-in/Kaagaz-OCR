@@ -19,6 +19,7 @@ import {
   focusProgress,
   reasonTag,
 } from "@/components/review/review";
+import { WORDS_HINT, lone } from "@/components/words/UploadWords";
 import { draftFilled, wordsCsv } from "@/components/words/words";
 import { MODE_TEXTS } from "@/lib/chatMode";
 import type { DocumentSummary, Message, ReviewItem, ReviewList } from "@/lib/types";
@@ -26,13 +27,17 @@ import type { DocumentSummary, Message, ReviewItem, ReviewList } from "@/lib/typ
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
 describe("Review (R2 to R6)", () => {
-  it("R2: says why a value needs review instead of repeating Needs review", () => {
+  // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify): the words, and the badge is a Tip
+  // with the value's confidence.
+  it("R2: says why a value is ready to verify instead of repeating Ready to verify", () => {
     expect(reasonTag("readers_disagree")).toBe("Readers disagree");
     expect(reasonTag("low_confidence")).toBe("Low confidence");
-    expect(reasonTag("direct_cell")).toBe("Needs review"); // a reason with no short words
+    expect(reasonTag("direct_cell")).toBe("Ready to verify"); // a reason with no short words
     const card = read("components/review/ReviewCard.tsx");
     expect(card).not.toContain("<LabelBadge");
-    expect(card).toMatch(/className="badge badge-review">\s*<Icon name="eye-alert"[^>]*\/>\s*<span className="visually-hidden">Needs review: <\/span>\s*\{reasonTag\(value\.label_reason\)\}/);
+    expect(card).toMatch(
+      /<Tip className="badge badge-review" text=\{confidenceTip\(value\.confidence \?\? null\)\}>\s*<Icon name="eye-alert"[^>]*\/>\s*<span className="visually-hidden">Ready to verify: <\/span>\s*\{reasonTag\(value\.label_reason\)\}/,
+    );
   });
 
   it("R3: maps the keys 1, 2, E, S and Enter, never while typing or with a modifier", () => {
@@ -206,12 +211,36 @@ describe("Words in these files (D8)", () => {
   it("shows it opens: a chevron that turns, a one-line hint, a 44px summary", () => {
     const view = read("components/words/UploadWords.tsx");
     expect(view).toMatch(/<summary>\s*<Icon name="chevron-right" size=\{16\} className=\{styles\.chevron\} \/>/);
-    expect(view).toContain("Add names or terms from these files, so chat reads them correctly.");
+    // Changed on purpose (Tushar, 16 Oct 2026): the hint and the paragraph under it said the
+    // same twice; now one short line, in the summary.
+    expect(view).toContain("<span className={styles.summaryHint}>{WORDS_HINT}</span>");
+    expect(WORDS_HINT).toBe("Add their meaning in English (malak → owner), so chat reads them right. Only you see them.");
+    expect(view).not.toContain('<p className="hint">');
     const css = read("components/words/Words.module.css");
     expect(css).toMatch(/\.uploadWords\[open\] > summary \.chevron \{\s*transform: rotate\(90deg\);/);
     expect(css).toMatch(/\.chevron \{[^}]*transition: transform 160ms/);
     expect(css).toMatch(/prefers-reduced-motion: reduce\) \{\s*\.chevron \{\s*transition: none;/);
     expect(css).toMatch(/\.uploadWords > summary,[^{]*\{\s*min-height: 44px;/);
+  });
+
+  // Tushar's fix list, 16 Oct 2026.
+  it("starts collapsed, every line of it under the summary's words", () => {
+    const view = read("components/words/UploadWords.tsx");
+    expect(view).toMatch(/<details className=\{`card \$\{styles\.uploadWords\}`\}>/); // no open attribute
+    const css = read("components/words/Words.module.css");
+    expect(css).toMatch(/\.uploadWords > summary \+ \* \{[^}]*padding-inline-start: calc\(16px \+ var\(--space-2\)\);/);
+  });
+
+  it("shows Remove only when there is something to remove, and Add another word at normal width", () => {
+    const pair = (word: string, meaning = "") => ({ key: word || "k", word, meaning, state: { kind: "draft" as const } });
+    expect(lone([pair("")])).toBe(true);
+    expect(lone([pair("malak")])).toBe(false);
+    expect(lone([pair("", "owner")])).toBe(false);
+    expect(lone([pair(""), pair("")])).toBe(false);
+    const view = read("components/words/UploadWords.tsx");
+    expect(view).toMatch(/\{!lone\(pairs\) && \(\s*<button[\s\S]{0,200}?\}>\s*Remove</);
+    expect(view).toContain("className={`btn ${styles.target} ${styles.addWord}`}");
+    expect(read("components/words/Words.module.css")).toMatch(/\.addWord \{\s*align-self: flex-start;/);
   });
 });
 

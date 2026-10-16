@@ -9,7 +9,7 @@ column's default), as it was the morning 0029 went in. No table is rewritten eit
 (dropping a column and adding one with a constant default are catalogue changes).
 
 Revision ID: 0035
-Revises: 0034 (word review)
+Revises: 0034 (Overview real figures)
 """
 
 from alembic import op

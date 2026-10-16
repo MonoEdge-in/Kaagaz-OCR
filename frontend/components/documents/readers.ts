@@ -8,18 +8,14 @@
 // 2026). Standard is the organisation's default, marked (default), picked at
 // first and never sent, since the server reads with it anyway. When the default
 // can't be used now, no reader is marked, and the one shown is sent (MS4, R14).
-// Features 26 and 27 (15 Oct 2026): the server may put "Dynamic" first, the default
-// (it picks the right reading for each page), and offer "More than one reader…"
-// (ensemble): the models by name, 2 or 3 ticked, the main reader tagged. What is
-// sent is a Reading: read_mode, read_model, read_agents.
+// Feature 26 (15 Oct 2026): the server may put Dynamic first (id "dynamic", titled
+// "Automatic" since 16 Oct 2026), the default (it reads clear pages quickly and takes
+// extra care with hard-to-read words). What is sent is a Reading: read_mode or
+// read_model. Ensemble is offered only after the scan (Tushar, 16 Oct 2026).
 
-import type { EnsembleOffer, UploadReader, UploadReading as Reading } from "@/lib/types";
+import type { UploadReader, UploadReading as Reading } from "@/lib/types";
 
 export const DYNAMIC = "dynamic"; // the server's id for Dynamic in readers
-export const ENSEMBLE = "ensemble"; // the select's own option for more than one reader
-export const ENSEMBLE_LABEL = "More than one reader…";
-export const ENSEMBLE_HINT = "Each value that needs a check is decided by what most readers read.";
-export const READERS_CAP = "Up to 3 readers.";
 
 /** One <option> of the select (not lib/types ReaderOption, which is what the server sends). */
 export interface ReaderChoice {
@@ -43,71 +39,29 @@ function isDefault(reader: UploadReader, index: number): boolean {
  * The select's options, in the server's order, by their titles; one this
  * server can't use is disabled, saying why.
  */
-export function readerOptions(readers: readonly UploadReader[], ensemble?: EnsembleOffer | null): ReaderChoice[] {
-  const options = readers.map((reader) => ({
+export function readerOptions(readers: readonly UploadReader[]): ReaderChoice[] {
+  return readers.map((reader) => ({
     id: reader.id,
     label: reader.available ? reader.title : `${reader.title} (${reader.reason ?? "not available"})`,
     disabled: !reader.available,
   }));
-  return ensemble ? [...options, { id: ENSEMBLE, label: ENSEMBLE_LABEL, disabled: false }] : options;
 }
 
 /** Only a real choice is shown: at least two readings this organisation can use. */
-export function offersChoice(readers: readonly UploadReader[], ensemble?: EnsembleOffer | null): boolean {
-  return readers.filter((reader) => reader.available).length + (ensemble ? 1 : 0) >= 2;
-}
-
-/** The readers ticked at first: the main reader alone (one more is needed). */
-export function startAgents(ensemble: EnsembleOffer | null | undefined): string[] {
-  return ensemble ? [ensemble.main] : [];
-}
-
-/** Tick or untick one reader, keeping the server's order; never more than ensemble.max. */
-export function toggleAgent(ensemble: EnsembleOffer, ticked: readonly string[], id: string): string[] {
-  const next = ticked.includes(id) ? ticked.filter((one) => one !== id) : [...ticked, id];
-  if (next.length > ensemble.max) return [...ticked];
-  return ensemble.readers.map((reader) => reader.id).filter((one) => next.includes(one));
-}
-
-/** A reader that can't be ticked now: the most are ticked already (its reason: READERS_CAP). */
-export function agentDisabled(ensemble: EnsembleOffer, ticked: readonly string[], id: string): boolean {
-  return !ticked.includes(id) && ticked.length >= ensemble.max;
-}
-
-/** The main reader, as the server picks it: the organisation's when ticked, else the first ticked. */
-export function mainReader(ensemble: EnsembleOffer, ticked: readonly string[]): string | null {
-  return ticked.includes(ensemble.main) ? ensemble.main : (ticked[0] ?? null);
-}
-
-/** Said under the readers: how many to tick. */
-export function agentsHint(ensemble: EnsembleOffer, ticked: readonly string[]): string {
-  if (ticked.length < 2) return `Tick 2 to ${ensemble.max} readers.`;
-  return `${ticked.length} readers will read each page.`;
+export function offersChoice(readers: readonly UploadReader[]): boolean {
+  return readers.filter((reader) => reader.available).length >= 2;
 }
 
 /**
- * What an upload sends: Ensemble's readers (only once 2 are ticked; until then
- * the organisation's default reading), Dynamic, or the model shown (readerToSend);
- * undefined for the organisation's default.
+ * What an upload sends: Dynamic, or the model shown (readerToSend); undefined
+ * for the organisation's default.
  */
-export function readingToSend(
-  readers: readonly UploadReader[],
-  ensemble: EnsembleOffer | null | undefined,
-  picked: string | null,
-  agents: readonly string[],
-): Reading | undefined {
-  if (picked === ENSEMBLE && ensemble) return agents.length >= 2 ? { read_mode: ENSEMBLE, read_agents: [...agents] } : undefined;
+export function readingToSend(readers: readonly UploadReader[], picked: string | null): Reading | undefined {
   return asReading(readerToSend(readers, picked));
 }
 
 /** The whole document's Read again: as readingToSend, but only what the user picked (readAgainModel). */
-export function readAgainReading(
-  readers: readonly UploadReader[],
-  ensemble: EnsembleOffer | null | undefined,
-  picked: string | null,
-  agents: readonly string[],
-): Reading | undefined {
-  if (picked === ENSEMBLE && ensemble) return agents.length >= 2 ? { read_mode: ENSEMBLE, read_agents: [...agents] } : undefined;
+export function readAgainReading(readers: readonly UploadReader[], picked: string | null): Reading | undefined {
   return asReading(readAgainModel(readers, picked));
 }
 

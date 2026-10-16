@@ -113,6 +113,6 @@ export function settledText(
   const review = document.values.filter((value) => value.label === "needs_review").length;
   return (
     `${again ? "Read again" : "Reading finished"}. ` +
-    `${found} ${found === 1 ? "value" : "values"} found, ${review} ${review === 1 ? "needs" : "need"} review.`
+    `${found} ${found === 1 ? "value" : "values"} found, ${review} ready to verify.`
   );
 }

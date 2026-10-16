@@ -5,14 +5,24 @@
 import type { Label, LabelReason, ValueVotes } from "@/lib/types";
 
 export function labelText(label: Label): string {
-  return label === "verified" ? "Verified" : "Needs review";
+  return label === "verified" ? "Verified" : "Ready to verify";
+}
+
+/**
+ * A label's tooltip (Tushar, 16 Oct 2026): "Confidence 72%" from the reader's 0 to 1 score,
+ * rounded; "Confidence not measured" when no score was measured. Never shown by default.
+ */
+export function confidenceTip(score: number | null | undefined): string {
+  return typeof score === "number" && Number.isFinite(score)
+    ? `Confidence ${Math.round(Math.min(1, Math.max(0, score)) * 100)}%`
+    : "Confidence not measured";
 }
 
 export function labelBadgeClass(label: Label): string {
   return label === "verified" ? "badge badge-verified" : "badge badge-review";
 }
 
-/** The icon beside each label: a check seal for Verified, an eye for Needs review. */
+/** The icon beside each label: a check seal for Verified, an eye for Ready to verify. */
 export function labelIcon(label: Label): "check-seal" | "eye-alert" {
   return label === "verified" ? "check-seal" : "eye-alert";
 }

@@ -91,9 +91,14 @@ const reply = (changes: Partial<InsightsReply> = {}): InsightsReply => ({
   previous_from: "2026-08-13",
   ai_enabled: true,
   month: { from: "2026-10-01", today: "2026-10-11", days_in_month: 31 },
-  // Bharat Steel has spent past its budget: "Act now" in Needs attention.
+  // Bharat Steel has spent past its budget: "Act now" in Needs attention. Changed on purpose
+  // (real figures, Tushar 16 Oct 2026): the month's spend is the daily rows' real cost.
   organisations: [health("o1"), health("o2", { ai_budget_usd: 10, month_cost_usd: 12 })],
-  daily: [day("o1", "2026-08-20"), day("o1", "2026-10-10"), day("o2", "2026-10-11", { uploads: 9 })],
+  daily: [
+    day("o1", "2026-08-20"),
+    day("o1", "2026-10-10", { cost_real_usd: 31.2 }),
+    day("o2", "2026-10-11", { uploads: 9, cost_real_usd: 12 }),
+  ],
   ...changes,
 });
 
@@ -252,10 +257,31 @@ describe("Overview", () => {
   });
 
   it("shows no budget meter when the month's spend is not known, only the words", () => {
-    const unknown = reply({ organisations: [health("o1", { month_cost_usd: null })] });
+    // Changed on purpose (real figures, Tushar 16 Oct 2026): not known means no real cost this
+    // month, whatever the estimate; the calls of unknown cost are counted, never guessed.
+    const unknown = reply({
+      organisations: [health("o1", { month_cost_usd: 31.2, month_cost_estimated: true })],
+      daily: [day("o1", "2026-10-10", { cost_real_usd: null, cost_usd: 31.2, cost_estimated: true, cost_unknown_calls: 2 })],
+    });
     const html = overview(ready(data({ reply: unknown })));
     expect(html).not.toContain("<meter");
     expect(html).toContain("Not known of $50.00");
+    expect(html).toContain("cost not known for 2 calls");
+    expect(html).not.toContain("$31.20");
+  });
+
+  it("says an organisation's real spend and forecasts its month only from 7 days of real figures", () => {
+    const days = (count: number) =>
+      Array.from({ length: count }, (_, i) =>
+        day("o1", `2026-10-0${i + 1}`, { cost_real_usd: 1, cost_usd: 9, cost_estimated: true }),
+      );
+    const short = overview(ready(data({ reply: reply({ organisations: [health("o1")], daily: days(6) }) })));
+    expect(short).toContain("$6.00 of $50.00");
+    expect(short).not.toMatch(/Forecast|Month-end forecast|≈|\(estimated\)/);
+    const week = overview(ready(data({ reply: reply({ organisations: [health("o1")], daily: days(7) }) })));
+    expect(week).toContain("$7.00 of $50.00");
+    expect(week.match(/Forecast for this month: \$19\.73/g)).toHaveLength(2); // the tile and the row: $7 over 11 days, times 31
+    expect(week).not.toMatch(/Month-end forecast|≈|\(estimated\)/);
   });
 
   // Changed on purpose (Tushar, 16 Oct 2026): only the cost OpenRouter reported, no estimate words.
@@ -328,6 +354,7 @@ describe("Overview", () => {
     const many = Array.from({ length: 7 }, (_, index) => org(`o${index}`, `Org ${index}`));
     const over = reply({
       organisations: many.map((item) => health(item.id, { ai_budget_usd: 10, month_cost_usd: 20 })),
+      daily: many.map((item) => day(item.id, "2026-10-02", { cost_real_usd: 20 })), // real figures (16 Oct 2026)
     });
     const html = overview(ready(data({ orgs: many, reply: over })));
     expect(html.match(/aria-label="Open Org \d in Organisations"/g)).toHaveLength(5);

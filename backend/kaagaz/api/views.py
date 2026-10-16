@@ -609,8 +609,10 @@ def failed_document(row: RowMapping, *, max_pages: int) -> dict[str, Any]:
     }
 
 
-def message(row: RowMapping, feedback: str | None = None) -> dict[str, Any]:
-    """``Message``."""
+def message(
+    row: RowMapping, feedback: str | None = None, pin: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """``Message``. ``pin``: the source this user put on top of the answer (``SourcePin``)."""
     return {
         "id": str(row["id"]),
         "role": row["role"],
@@ -619,6 +621,13 @@ def message(row: RowMapping, feedback: str | None = None) -> dict[str, Any]:
         "answer": row["answer"],
         "scope": row["scope"],  # a question's ScopeBody (PRD 3 H2), None when it had none
         "feedback": feedback,
+        "pin": None
+        if pin is None
+        else {
+            "document_id": str(pin["document_id"]),
+            "page_no": int(pin["page_no"]),
+            "ref_id": pin.get("ref_id"),
+        },
     }
 
 
@@ -628,12 +637,15 @@ _GONE = ("in_trash", "deleted")
 
 
 def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
-    """Every document a saved answer points at: its citations and closest documents, and
-    the documents of the pages that couldn't be read it names (PRD 5 F6)."""
+    """Every document a saved answer points at: its citations, closest and related
+    documents, and the documents of the pages that couldn't be read it names (PRD 5 F6)."""
     if not answer:
         return []
     ids = [str(each["document_id"]) for each in answer.get("citations", []) if each.get("document_id")]
     ids += [str(each["id"]) for each in answer.get("closest_documents", []) if each.get("id")]
+    ids += [
+        str(each["document_id"]) for each in answer.get("related_documents", []) if each.get("document_id")
+    ]
     ids += [
         str(each["document_id"]) for each in answer.get("unreadable_pages", []) if each.get("document_id")
     ]
@@ -648,7 +660,7 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
       deleted loses its snippet and its highlight regions: Trash means deleted,
       so its words and its place on the page must not show any more.
     * A sentence whose every citation is gone is replaced by ``GONE_SENTENCE``.
-    * Closest documents that are gone are left out.
+    * Closest and related documents that are gone are left out.
     * PRD 5 F6: a page that couldn't be read, of a document that is gone, is left out
       of ``unreadable_pages``, its count and the note, so a deleted document's name
       never shows again (the note is written again from the pages left).
@@ -677,7 +689,14 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
         for each in answer.get("closest_documents", [])
         if states.get(str(each.get("id"))) not in (None, *_GONE)
     ]
+    related = [
+        each
+        for each in answer.get("related_documents", [])
+        if states.get(str(each.get("document_id"))) not in (None, *_GONE)
+    ]
     shown = {**answer, "citations": citations, "sentences": sentences, "closest_documents": closest}
+    if "related_documents" in answer:
+        shown["related_documents"] = related
     pages = answer.get("unreadable_pages") or []
     kept = [page for page in pages if states.get(str(page.get("document_id"))) not in (None, *_GONE)]
     if len(kept) != len(pages):

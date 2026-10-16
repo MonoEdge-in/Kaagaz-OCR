@@ -179,11 +179,9 @@ at job time, S2). The checker and the counters look at every model of it (``run.
 * Dynamic: after the first reading, the pages worth a careful read (``careful_pages``) are
   read with Careful in a second reading through the readers (``_read_carefully``); the
   other pages come back from the engine's memo with no call.
-* Ensemble: the other models read each page in its page thread (the engine), and each
-  value read by OCR that needs review is decided by the readers' majority, its vote saved
-  with it (``settle_votes``). Verified still needs the checker.
-* ``run_config.reading``: the reading, the escalated pages and cap hits, and the pages an
-  Ensemble model could not read (``_reading_config``).
+* Ensemble runs only after the scan (Tushar, 16 Oct 2026; ``kaagaz/jobs/ensemble.py``):
+  a scan never changes a value by a vote.
+* ``run_config.reading``: the reading, the escalated pages and cap hits (``_reading_config``).
 
 Memory: the file's bytes, its spans and one decoded page picture at a time
 (the checker). Time is linear in the spans apart from the
@@ -241,11 +239,9 @@ from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import (
     LineMarks,
-    PageVotes,
     label_quoted,
     label_reading_marks,
     label_values,
-    settle_votes,
     spot_unsure,
 )
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
@@ -268,7 +264,6 @@ from kaagaz.jobs.worker import Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.reading.ocr import (
     DYNAMIC_MAX_PAGES,
-    ENSEMBLE_MAX_PAGES,
     LOCAL_READ_BY,
     DocumentPages,
     PageCache,
@@ -1174,11 +1169,6 @@ class DocumentProcessor:
         )
         local = {page_no for page_no, page_read in run.page_reads.items() if _handed_on(page_read)}
         values = label_reading_marks(values, read.marks, local)  # V4, G5, Q7
-        votes = _page_votes(run.page_reads)
-        if votes:  # Ensemble (F27): the readers' majority decides each value that needs review
-            values = settle_votes(
-                values, votes, readings, checked=checked, lines=read.marks, local_pages=local
-            )
         pages = _with_results(read.pages, run.page_reads, disputed)
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
@@ -1601,7 +1591,7 @@ class DocumentProcessor:
                 **run.version_marks,
                 **_step_seconds(run, ended),
                 **({"read_model": run.model} if run.model is not None else {}),
-                **({"reading": _reading_config(run, page_reads)} if run.reading is not None else {}),
+                **({"reading": _reading_config(run)} if run.reading is not None else {}),
             },
             **counters,
             pages_unreadable=run.pages_unreadable,
@@ -1882,35 +1872,13 @@ def _handed_on(read: PageRead) -> bool:
     return not HANDED_ON.isdisjoint(read.issues)
 
 
-def _page_votes(page_reads: Mapping[int, PageRead]) -> dict[int, PageVotes]:
-    """Ensemble (F27): each page the other models read too, as ``settle_votes`` takes it:
-    (the model that read the page, [(each other model, its spans or None)]). O(pages)."""
-    return {
-        page_no: (read.read_by, [(other.model, other.spans) for other in read.others])
-        for page_no, read in page_reads.items()
-        if read.others
-    }
-
-
-def _reading_config(run: _Run, page_reads: Mapping[int, PageRead]) -> dict[str, Any]:
-    """``processing_runs.config.reading`` (S5a, C5, C6, M7): the document's ``Reading`` (ids,
-    providers, mode, thinking, notes), what the run found (Dynamic's escalated pages with
-    their reasons and cap_hit), and for Ensemble the pages another model could not read
-    (``pages_short``) and the pages past ENSEMBLE_MAX_PAGES read by one model only
-    (``pages_single``). O(pages)."""
+def _reading_config(run: _Run) -> dict[str, Any]:
+    """``processing_runs.config.reading`` (S5a, C5, M7): the document's ``Reading`` (ids,
+    providers, mode, thinking, notes) and what the run found (Dynamic's escalated pages
+    with their reasons and cap_hit)."""
     reading = run.reading
     config = {} if reading is None else reading.config()
     config.update(run.reading_notes)
-    if reading is not None and reading.mode == "ensemble":
-        config["pages_short"] = sorted(
-            page_no
-            for page_no, read in page_reads.items()
-            if any(other.spans is None for other in read.others)
-        )
-        config["pages_single"] = sum(
-            page_no > ENSEMBLE_MAX_PAGES and read.read_by in run.models
-            for page_no, read in page_reads.items()
-        )
     return config
 
 

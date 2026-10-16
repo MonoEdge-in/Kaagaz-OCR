@@ -13,7 +13,7 @@ import table from "@/components/documents/Table.module.css";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { getHealth, getOperatorInsights, getOperatorQuality, listOrgs } from "@/lib/api";
-import { formatCost, formatDateTime, formatNumber, formatUsd } from "@/lib/format";
+import { formatDateTime, formatNumber, formatUsd } from "@/lib/format";
 import type { InsightsReply, OrgInsight, Organisation, PlatformHealth, QualityReply } from "@/lib/types";
 import { Sparkline } from "./Charts";
 import {
@@ -25,15 +25,15 @@ import {
   changeLine,
   csvOf,
   dayList,
-  monthForecast,
   orgFlags,
   periodTotals,
   realMonthForecast,
+  realMonthSpend,
   riskOrder,
   sparkOf,
   unknownText,
 } from "./insights";
-import type { AttentionItem, ChangeKind, Flag, InsightPeriod, MonthForecast, PeriodTotals, Severity } from "./insights";
+import type { AttentionItem, ChangeKind, Flag, InsightPeriod, MonthSpend, PeriodTotals, Severity } from "./insights";
 import { LoadFailed } from "./LoadFailed";
 import { countText, operatorErrorMessage } from "./logic";
 import { usd } from "./models";
@@ -409,12 +409,13 @@ function unitTile(
 }
 
 // --- Organisations at a glance ------------------------------------------------------
+// Money as on the tiles (Tushar, 16 Oct 2026): this month's real spend (realMonthSpend).
 
 interface OrgLine {
   org: OrgInsight;
   name: string;
   flags: Flag[];
-  forecast: MonthForecast;
+  month: MonthSpend;
 }
 
 const UNKNOWN_ORG = "Unknown organisation";
@@ -425,7 +426,7 @@ function orgLines(data: OverviewData, names: ReadonlyMap<string, string>): OrgLi
     org,
     name: names.get(org.organisation_id) ?? UNKNOWN_ORG,
     flags: riskOrder(orgFlags(org, data.reply, at)),
-    forecast: monthForecast(org.month_cost_usd, org.ai_budget_usd, data.reply.month),
+    month: realMonthSpend(data.reply, org.ai_budget_usd, org.organisation_id),
   }));
 }
 
@@ -443,7 +444,7 @@ const SORTS: Sort[] = [
   RISK_SORT,
   { id: "name", label: "Name, A to Z", column: "name", dir: "ascending", compare: () => 0 },
   { id: "activity", label: "Least active first", column: "activity", dir: "ascending", compare: (a, b) => a.org.active_users_30d - b.org.active_users_30d },
-  { id: "spend", label: "Most AI spend first", column: "spend", dir: "descending", compare: (a, b) => (b.org.month_cost_usd ?? -1) - (a.org.month_cost_usd ?? -1) },
+  { id: "spend", label: "Most AI spend first", column: "spend", dir: "descending", compare: (a, b) => (b.month.usd ?? -1) - (a.month.usd ?? -1) },
   { id: "review", label: "Most waiting for review first", column: "review", dir: "descending", compare: (a, b) => b.org.open_review - a.org.open_review },
 ];
 
@@ -518,10 +519,11 @@ function OrgTable({ data, names, announce }: { data: OverviewData; names: Readon
 }
 
 function OrgGlance({ line, aiOn, at }: { line: OrgLine; aiOn: boolean; at: number }) {
-  const { org, name, flags, forecast } = line;
-  const cost = { cost_usd: org.month_cost_usd, cost_estimated: org.month_cost_estimated, cost_part_unknown: org.month_cost_part_unknown };
+  const { org, name, flags, month } = line;
+  const { forecast } = month;
   const budget = org.ai_budget_usd;
-  const spent = org.month_cost_usd ?? 0;
+  const spent = month.usd ?? 0;
+  const unknown = unknownText(month.unknownCalls);
   const oldest = org.oldest_open_review_at ? Date.parse(org.oldest_open_review_at) : NaN;
   return (
     <tr role="row">
@@ -537,12 +539,12 @@ function OrgGlance({ line, aiOn, at }: { line: OrgLine; aiOn: boolean; at: numbe
           AI_OFF
         ) : budget === null ? (
           <>
-            {formatCost(cost)}
+            {usd(month.usd)}
             <span className={styles.statusNote}>No budget</span>
           </>
         ) : (
           <span className={css.budget}>
-            {org.month_cost_usd !== null && (
+            {month.usd !== null && (
               <meter
                 min={0}
                 max={Math.max(budget, spent)}
@@ -554,11 +556,14 @@ function OrgGlance({ line, aiOn, at }: { line: OrgLine; aiOn: boolean; at: numbe
               />
             )}
             <span>
-              {formatCost(cost)} of {formatUsd(budget)}
+              {usd(month.usd)} of {formatUsd(budget)}
             </span>
           </span>
         )}
-        {aiOn && <span className={styles.statusNote}>Month-end forecast {usd(forecast.usd, org.month_cost_estimated)}</span>}
+        {aiOn && unknown !== null && <span className={styles.statusNote}>{unknown}</span>}
+        {aiOn && forecast.usd !== null && (
+          <span className={styles.statusNote}>Forecast for this month: {usd(forecast.usd)}</span>
+        )}
         {aiOn && forecast.passDay !== null && (
           <span className={styles.statusNote}>Passes the budget around day {forecast.passDay}</span>
         )}
@@ -592,13 +597,13 @@ export function overviewCsv(data: OverviewData): string {
   return csvOf([
     [
       "Organisation", "Active users 7 days", "Active users 30 days", "Answers 30 days", "Not found 30 days",
-      "Waiting for review", "AI spend this month (USD)", "Cost estimated", "Cost part not known", "Budget (USD)",
-      "Month-end forecast (USD)", "Flags",
+      "Waiting for review", "AI spend this month (USD)", "Calls with cost not known", "Budget (USD)",
+      "Forecast for this month (USD)", "Flags",
     ],
-    ...lines.map(({ org, name, flags, forecast }) => [
+    ...lines.map(({ org, name, flags, month }) => [
       name, org.active_users_7d, org.active_users_30d, org.answers_30d, org.not_found_30d, org.open_review,
-      org.month_cost_usd, org.month_cost_estimated ? "yes" : "no", org.month_cost_part_unknown ? "yes" : "no",
-      org.ai_budget_usd, forecast.usd, flags.map((flag) => `${flag.severity === "act" ? "Act now" : "Check"}: ${flag.text}`).join("; "),
+      month.usd, month.unknownCalls, org.ai_budget_usd, month.forecast.usd,
+      flags.map((flag) => `${flag.severity === "act" ? "Act now" : "Check"}: ${flag.text}`).join("; "),
     ]),
   ]);
 }

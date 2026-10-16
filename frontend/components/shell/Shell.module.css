@@ -116,8 +116,16 @@
 }
 
 .avatarButton {
-  min-width: var(--control-h);
+  width: var(--control-h);
   padding: 0;
+}
+
+/* Upload: on a phone only its icon shows, so it is a square like the others. */
+@media (max-width: 639.98px) {
+  .upload {
+    width: var(--control-h);
+    padding-inline: 0;
+  }
 }
 
 /* Square, like everything else: the initials in a neutral box. */
@@ -125,8 +133,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: var(--h-sm);
+  height: var(--h-sm);
   border: 1px solid var(--border-strong);
   border-radius: 2px;
   background: var(--surface-2);
@@ -212,13 +220,16 @@
   padding: 0;
 }
 
+/* Every nav item one height (--h-lg, 44px), one 16px icon column and one
+   left padding; its words centred by a fixed line-height. */
 .link {
   position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: var(--control-h);
-  padding: var(--space-2) var(--space-3);
+  min-height: var(--h-lg);
+  padding: var(--space-1) var(--space-3);
+  line-height: 1.25;
   border-radius: var(--r-sm);
   color: var(--fg);
   font-weight: 500;
@@ -261,28 +272,12 @@
   background: var(--accent);
 }
 
-/* The Review link's count of values to check, at the end of the row: a solid,
-   filled square, never a pill and never dashed (UI audit G9). */
-.badge {
-  margin-inline-start: auto;
-  min-width: 1.5rem;
-  padding: 0 var(--space-1);
-  border-radius: 2px;
-  background: var(--review-solid);
-  color: var(--review-on-solid);
-  font-size: var(--fs-sm);
-  font-weight: 700;
-  line-height: 1.5rem;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
 /* --- In the account menu: who is signed in, then the sign-outs --------------- */
 
 .user {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -378,9 +373,10 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: var(--space-1);
   min-width: 0;
   height: var(--bottombar-h);
+  line-height: 1.25;
   color: var(--fg-muted);
   font-size: var(--fs-label);
   font-weight: 700;
@@ -482,7 +478,6 @@
 }
 
 .gateSubmit {
-  min-height: var(--h-lg);
   font-size: var(--fs-base);
 }
 

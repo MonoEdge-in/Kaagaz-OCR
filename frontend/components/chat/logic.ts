@@ -190,30 +190,12 @@ export function pageJumps(citation: Citation): PageJump[] {
   return jumps;
 }
 
-export interface SourceAction {
-  text: string; // the link text
-  check: boolean; // true: shown as an outlined button asking the person to check
-  reason: string | null; // why to check, for Needs review
-}
-
 /**
- * The link at the foot of a source card. Verified opens the page; Needs review
- * asks the person to check it, and says why.
+ * The link at the foot of a source card: "Open page 3", the same for every source.
+ * No Needs review in Ask (Tushar, 16 Oct 2026): checking values is the Review screen's.
  */
-export function sourceAction(
-  citation: Pick<Citation, "label" | "kind" | "detected_type" | "page_no">,
-): SourceAction {
-  const word = placeWord(citation).toLowerCase();
-  const place = `${word} ${citation.page_no}`;
-  if (citation.label === "verified") {
-    return { text: `Open ${place}`, check: false, reason: null };
-  }
-  const what = citation.kind === "value" ? "This value" : "This text";
-  return {
-    text: `Check ${place}`,
-    check: true,
-    reason: `${what} was not fully checked when the document was read. Look at the ${word} before you rely on it.`,
-  };
+export function openText(citation: Pick<Citation, "detected_type" | "page_no">): string {
+  return `Open ${placeWord(citation).toLowerCase()} ${citation.page_no}`;
 }
 
 // --- Sending a question ---------------------------------------------------------
@@ -291,40 +273,16 @@ export function hasChoices(options: ChatOptions | null): options is ChatOptions 
   return options !== null && (options.agents.length > 1 || options.levels.length > 1);
 }
 
-/** The levels this pick may use: High with one model only (the server refuses more). */
-export function allowedLevels(options: ChatOptions, pick: AnswerPick): ThinkingLevel[] {
-  return options.levels.filter((level) => level !== "high" || pick.agents.length <= 1);
+/** One model answers in Ask (Tushar, 16 Oct 2026): picking one replaces the last; every
+ * level stays open to it. */
+export function chooseAgent(pick: AnswerPick, id: string): AnswerPick {
+  return { ...pick, agents: [id] };
 }
 
-/** `pick` with its level moved to an allowed one when it no longer is. */
-function keepLevel(options: ChatOptions, pick: AnswerPick): AnswerPick {
-  const levels = allowedLevels(options, pick);
-  if (levels.includes(pick.level)) return pick;
-  const level = levels.includes(options.default_level) ? options.default_level : levels[levels.length - 1];
-  return level ? { ...pick, level } : pick;
-}
-
-/** One model (no Ensemble): that one. */
-export function chooseAgent(options: ChatOptions, pick: AnswerPick, id: string): AnswerPick {
-  return keepLevel(options, { ...pick, agents: [id] });
-}
-
-/** Ensemble: tick or untick a model; at most `max_agents`, never none. */
-export function toggleAgent(options: ChatOptions, pick: AnswerPick, id: string): AnswerPick {
-  if (pick.agents.includes(id)) {
-    return pick.agents.length > 1 ? { ...pick, agents: pick.agents.filter((agent) => agent !== id) } : pick;
-  }
-  if (pick.agents.length >= options.max_agents) return pick;
-  return keepLevel(options, { ...pick, agents: [...pick.agents, id] });
-}
-
-/** The chip: the models by name and the level, "Gemini 3.8 Flash · Medium". */
+/** The chip: the model by name and the level, "Gemini 3.8 Flash · Medium". */
 export function pickSummary(options: ChatOptions, pick: AnswerPick): string {
-  const names = pick.agents
-    .map((id) => options.agents.find((agent) => agent.id === id)?.name)
-    .filter((name): name is string => Boolean(name))
-    .map(modelName);
-  return [names.join(" + "), LEVEL_NAMES[pick.level]].filter(Boolean).join(" · ");
+  const name = options.agents.find((agent) => agent.id === pick.agents[0])?.name;
+  return [name ? modelName(name) : "", LEVEL_NAMES[pick.level]].filter(Boolean).join(" · ");
 }
 
 /** What POST /chat sends: nothing when the pick is the organisation's default. */
@@ -332,7 +290,7 @@ export function choiceBody(options: ChatOptions | null, pick: AnswerPick | null)
   if (options === null || pick === null) return undefined;
   const usual = defaultPick(options);
   if (pick.level === usual.level && pick.agents.join(",") === usual.agents.join(",")) return undefined;
-  return { ...(pick.agents.length > 0 ? { agents: pick.agents } : {}), thinking: pick.level };
+  return { ...(pick.agents.length > 0 ? { agents: pick.agents.slice(0, 1) } : {}), thinking: pick.level };
 }
 
 // --- UI audit, 16 Oct 2026 (A1, A5) ---------------------------------------------

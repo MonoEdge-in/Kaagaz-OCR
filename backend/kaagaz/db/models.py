@@ -104,7 +104,7 @@ _SETTINGS = text(
     " LEFT JOIN customer_ai_settings s ON s.customer_id = :customer"
 )
 _DOCUMENT = text(
-    "SELECT read_model, read_mode, read_also FROM documents WHERE customer_id = :customer AND id = :document"
+    "SELECT read_model, read_mode FROM documents WHERE customer_id = :customer AND id = :document"
 )
 
 
@@ -124,7 +124,7 @@ class Reading:
     dynamic or ensemble (after the permission check); ``lead`` reads every page;
     ``others`` (ensemble only, at most two) read them again for the vote; ``careful``
     (dynamic only) re-reads the unclear pages; ``thinking`` the level sent; ``notes``
-    why something fell back (``mode_revoked``, ``agent_unusable``,
+    why something fell back (``mode_revoked``, ``ensemble_after_scan``,
     ``thinking_fallback``)."""
 
     mode: str
@@ -258,9 +258,9 @@ def _thinking(level: str | None, lead: RowMapping | None, settings: Settings) ->
 def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settings: Settings) -> Reading:
     """The ``Reading`` of ``document_id`` (C3), on a ``Database.customer()`` connection of
     ``customer_id``. Lead: its ``read_model`` when usable, else the area's default, else
-    OCR_MODEL on DEFAULT_PROVIDER (as before model choice). Mode: ensemble needs the
-    organisation's Ensemble switch and one usable ``read_also`` model other than the lead
-    (unusable ones are dropped, ``agent_unusable``); dynamic needs the effective Dynamic
+    OCR_MODEL on DEFAULT_PROVIDER (as before model choice). Mode: ensemble (an old
+    upload's) is single, ``ensemble_after_scan`` (Ensemble runs only after the scan,
+    Tushar, 16 Oct 2026: ``resolve_ensemble``); dynamic needs the effective Dynamic
     switch, and reads first at DYNAMIC_FIRST_THINKING when the lead takes it (else at its
     level, ``thinking_fallback``), with the Careful tier, else the lead, as Careful; a mode
     no longer allowed is single (``mode_revoked``). A document the connection cannot see (another
@@ -268,10 +268,8 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
     document = conn.execute(_DOCUMENT, {"customer": customer_id, "document": document_id}).mappings().first()
     rows = [] if document is None else usable_models(conn, customer_id, settings=settings)
     by_id = {row["id"]: row for row in rows}
-    read_model, mode, also = (
-        (document["read_model"], document["read_mode"], list(document["read_also"]))
-        if document is not None
-        else (None, "single", [])
+    read_model, mode = (
+        (document["read_model"], document["read_mode"]) if document is not None else (None, "single")
     )
     lead_row = by_id.get(read_model) or next((row for row in rows if row["is_default_scan"]), None)
     lead = (
@@ -283,15 +281,7 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
     thinking, notes = _thinking(allowed["scan_thinking"], lead_row, settings)
 
     if mode == "ensemble":
-        others = tuple(_agent(by_id[model], settings) for model in dict.fromkeys(also) if model in by_id)
-        others = tuple(other for other in others if other.model != lead.model)[: MAX_AGENTS - 1]
-        if len(others) < len(also):
-            notes += ("agent_unusable",)
-        if not allowed["ensemble"]:
-            return Reading("single", lead, thinking=thinking, notes=(*notes, "mode_revoked"))
-        if others:
-            return Reading("ensemble", lead, others, thinking=thinking, notes=notes)
-        return Reading("single", lead, thinking=thinking, notes=notes)
+        return Reading("single", lead, thinking=thinking, notes=(*notes, "ensemble_after_scan"))
     if mode == "dynamic":
         if not allowed["dynamic"]:
             return Reading("single", lead, thinking=thinking, notes=(*notes, "mode_revoked"))

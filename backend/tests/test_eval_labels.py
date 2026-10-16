@@ -224,6 +224,7 @@ class ObeyingChat(QuotingChat):
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         reply = super().chat_json(system=system, user=user, schema=schema, max_tokens=max_tokens)
         order = _ORDER.search(window_text(user)) if system == INVOICE_SYSTEM_PROMPT else None
@@ -295,6 +296,7 @@ class AnswerModel:
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         self.users.append(user)
         blocks = evidence_blocks(user)

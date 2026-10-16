@@ -163,18 +163,27 @@ export const sparkOf = (values: readonly number[]) =>
 export const unknownText = (calls: number) =>
   calls > 0 ? `cost not known for ${formatNumber(calls)} ${calls === 1 ? "call" : "calls"}` : null;
 
+/** This month's AI spend: real cost, the calls whose cost is not known, and the forecast. */
+export interface MonthSpend { usd: number | null; unknownCalls: number; forecast: MonthForecast }
+
 /**
- * This month's real spend (the cost OpenRouter reported) to a straight-line month end, from
- * the daily rows; null unless they cover the whole month so far and at least
- * FORECAST_MIN_DAYS days of it have figures.
+ * This month's spend of one organisation, or the platform's without one (Tushar, 16 Oct
+ * 2026: every number real): only the cost OpenRouter reported, from the daily rows (the
+ * server sends them from the month's first day); the calls whose cost is not known are
+ * counted, never guessed. The forecast (a straight line to the month end, and the day it
+ * passes `budget`) only when at least FORECAST_MIN_DAYS days of this month have figures.
  */
-export function realMonthForecast(reply: InsightsReply): number | null {
+export function realMonthSpend(reply: InsightsReply, budget: number | null = null, organisationId?: string): MonthSpend {
   const { month } = reply;
-  if (reply.previous_from > month.from) return null;
-  const rows = reply.daily.filter((row) => row.day >= month.from && row.day <= month.today && row.cost_real_usd !== null);
-  if (new Set(rows.map((row) => row.day)).size < FORECAST_MIN_DAYS) return null;
-  return monthForecast(sum(rows.map((row) => row.cost_real_usd ?? 0)), null, month).usd;
+  const daily = organisationId === undefined ? reply.daily : reply.daily.filter((row) => row.organisation_id === organisationId);
+  const totals = periodTotals(daily, month.from, month.today);
+  const days = new Set(daily.filter((row) => row.day >= month.from && row.day <= month.today && row.cost_real_usd !== null).map((row) => row.day));
+  const forecast = days.size >= FORECAST_MIN_DAYS ? monthForecast(totals.costRealUsd, budget, month) : { usd: null, passDay: null };
+  return { usd: totals.costRealUsd, unknownCalls: totals.unknownCalls, forecast };
 }
+
+/** The platform's forecast for this month (realMonthSpend); null under FORECAST_MIN_DAYS days of figures. */
+export const realMonthForecast = (reply: InsightsReply) => realMonthSpend(reply).forecast.usd;
 
 /** "12.5%" of the whole; "Too few to rate (n)" when the server suppressed it; a dash for nothing. */
 export function rateText(part: number | null, whole: number): string {
@@ -222,8 +231,9 @@ function median(values: readonly number[]): number {
 
 /**
  * One organisation's "Needs attention" flags (decisions, PROVISIONAL thresholds), from F2
- * and F1. One budget flag at most: passed (act), else near 80% (check), else the forecast
- * passes it this month (check). Quiet: 14 days or more from the last active day (F2's
+ * and F1. Money is this month's real spend (realMonthSpend). One budget flag at most:
+ * passed (act), else near 80% (check), else the forecast passes it this month (check, with
+ * FORECAST_MIN_DAYS days of figures). Quiet: 14 days or more from the last active day (F2's
  * last_active_day, any time before) to the reply's last day; never active is not quiet;
  * quiet hides "activity down". Spend spike: today over 2 x the median of the 7 days before and
  * over $1. Review: the oldest open item more than 7 days old at `now`.
@@ -233,10 +243,11 @@ export function orgFlags(org: OrgInsight, reply: InsightsReply, now: Date): Flag
   const id = org.organisation_id;
   const daily = reply.daily.filter((row) => row.organisation_id === id);
   const budget = org.ai_budget_usd;
-  const spent = org.month_cost_usd;
+  const month = realMonthSpend(reply, budget, id);
+  const spent = month.usd;
   if (budget !== null && spent !== null) {
-    const line = budgetLine({ ai_budget_usd: budget, spent_this_month_usd: spent, spent_part_unknown: org.month_cost_part_unknown });
-    const forecast = monthForecast(spent, budget, reply.month);
+    const line = budgetLine({ ai_budget_usd: budget, spent_this_month_usd: spent, spent_part_unknown: month.unknownCalls > 0 });
+    const { forecast } = month;
     if (spent > 0 && spent >= budget * ATTENTION.budgetAct) {
       flags.push({ code: "budget_passed", severity: "act", text: `AI spend has reached its budget (${line}).` });
     } else if (spent > 0 && spent >= budget * ATTENTION.budgetCheck) {
@@ -286,7 +297,7 @@ export function orgFlags(org: OrgInsight, reply: InsightsReply, now: Date): Flag
   }
 
   const today = dayNumber(reply.to);
-  const costs = series(daily, dayList(dayText(today - 7), reply.to), "cost_usd");
+  const costs = series(daily, dayList(dayText(today - 7), reply.to), "cost_real_usd");
   const spike = costs.pop() ?? 0;
   const usual = median(costs);
   if (spike > ATTENTION.spikeFloorUsd && spike > usual * ATTENTION.spikeTimesMedian) {

@@ -2,7 +2,7 @@
 // unit tested in node (tests/review-*.test.ts): whether a choice can be sent,
 // how the queue changes after a value is resolved, where focus goes then, and its reason filter.
 
-import { REASON_FILTER_TEXT, fieldText } from "@/components/viewer/labels";
+import { REASON_FILTER_TEXT, fieldText, labelText } from "@/components/viewer/labels";
 import { checkReasonText } from "@/components/viewer/panels";
 import type { LabelReason, ReviewChoice, ReviewItem, ReviewList, ReviewReason, Role } from "@/lib/types";
 
@@ -136,7 +136,7 @@ export function checkReasonsText(item: Pick<ReviewItem, "check_reasons">): strin
 
 // --- UI audit, 16 Oct 2026 (R2, R3, R6) ---------------------------------------------
 
-/** R2: every card here needs review, so its badge says why, in a few words. */
+/** R2: every card here is ready to verify, so its badge says why, in a few words. */
 const REASON_TAGS: Partial<Record<LabelReason, string>> = {
   readers_disagree: "Readers disagree",
   low_confidence: "Low confidence",
@@ -150,7 +150,7 @@ const REASON_TAGS: Partial<Record<LabelReason, string>> = {
 };
 
 export function reasonTag(reason: LabelReason): string {
-  return REASON_TAGS[reason] ?? "Needs review";
+  return REASON_TAGS[reason] ?? labelText("needs_review");
 }
 
 /** R6: how the queue is shown. "focus" (R3) is one value at a time. */

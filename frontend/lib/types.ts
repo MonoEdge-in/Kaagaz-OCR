@@ -414,21 +414,12 @@ export interface UploadLimits {
   sheet_bytes: number;
   max_pages: number; // for a PDF's pages and a TIFF's frames
   readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
-  ensemble?: EnsembleOffer | null; // "More than one reader…" (feature 27); null: not allowed here
 }
 
-/** What an upload or a whole document's Read again asks for (features 26, 27); nothing: the default. */
+/** What an upload or a whole document's Read again asks for (feature 26); nothing: the default. */
 export interface UploadReading {
-  read_mode?: "dynamic" | "ensemble";
+  read_mode?: "dynamic";
   read_model?: string;
-  read_agents?: string[];
-}
-
-/** The models an upload may read with together (feature 27), by name; main is the main reader. */
-export interface EnsembleOffer {
-  readers: { id: string; name: string }[];
-  max: number;
-  main: string;
 }
 
 /** One scan reader the server offers (PRD 4 #17): reason says why it can't be used here. */
@@ -497,6 +488,26 @@ export interface Citation {
   label_page_no?: number | null; // where a value's label is, when it was found
   label_regions?: Region[]; // [] for a piece, and once the document is in Trash or deleted
   hard_to_read?: boolean; // PRD 5 F6: the cited text holds an unsure or illegible word; missing before it
+  // Ranked sources (Tushar, 16 Oct 2026): the place in the search's order, 1 the most
+  // relevant; null (or missing, before it) where there is no such order.
+  rank?: number | null;
+}
+
+/** "Also in" (Tushar, 16 Oct 2026): a document the search found that the answer does not cite. */
+export interface RelatedDocument {
+  document_id: string;
+  document_name: string;
+  detected_type: DetectedType;
+  page_no: number; // its best hit's page
+  regions: Region[]; // that hit's spot on the page
+  snippet: string; // plain text, never markup
+}
+
+/** The source a person put on top of an answer ("Most relevant"). */
+export interface SourcePin {
+  document_id: string;
+  page_no: number;
+  ref_id?: string | null; // the cited source's, so one of two on the same page; none for Also in
 }
 
 /** A page a not-found answer names as not read well (PRD 5 F6), for its link. */
@@ -514,7 +525,7 @@ export interface AnswerSentence {
 
 export interface Answer {
   // "unchecked": the figure asked for is only in unchecked card values, so no
-  // number is given; one sentence asks for Review and closest_documents says where.
+  // number is given; closest_documents says where.
   status: "answered" | "not_found" | "unchecked";
   label: Label | null; // null when not found
   sentences: AnswerSentence[];
@@ -531,6 +542,7 @@ export interface Answer {
   reading_note?: string | null;
   unreadable_pages?: UnreadablePage[];
   unreadable_page_count?: number;
+  related_documents?: RelatedDocument[]; // "Also in"; missing before 16 Oct 2026
   // Features 25-27 (C7), only on an answer drafted with the asker's answer settings: the
   // names (and ids) of the models that replied, the one used first; how many were asked;
   // whether the others confirmed it (null with one model); the thinking level.
@@ -626,6 +638,7 @@ export interface Message {
   answer: Answer | null; // set for assistant messages only
   scope?: ScopeBody | null; // the scope a question used (PRD 3 H2); null when it had none
   feedback: "up" | "down" | null;
+  pin?: SourcePin | null; // the source this person put on top of the answer; missing on a new reply
 }
 
 export interface ChatResponse {
@@ -1091,7 +1104,7 @@ export interface InsightsReply {
   ai_enabled: boolean; // false: keyless mode, no model is called
   month: { from: string; today: string; days_in_month: number };
   organisations: OrgInsight[];
-  daily: InsightDay[]; // previous_from to to
+  daily: InsightDay[]; // previous_from (or month.from, when earlier) to to
 }
 
 /** F3: reading, answers and review of one organisation, or the platform (organisation_id null). */
