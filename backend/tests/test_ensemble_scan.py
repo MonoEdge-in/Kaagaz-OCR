@@ -263,7 +263,7 @@ def ensemble_pages(cache: FakeCache | None = None) -> DocumentPages:
 
 
 class EngineTest(unittest.TestCase):
-    def test_c6_the_other_models_read_the_page_after_the_main_one_billed_as_ensemble_scan(self) -> None:
+    def test_c6_the_other_models_read_the_page_with_the_main_one_billed_as_ensemble_scan(self) -> None:
         client = ModelClient(
             {
                 MAIN: reply(value(line("Total 1,180.00"))),
@@ -274,7 +274,8 @@ class EngineTest(unittest.TestCase):
         reader = engine(client)
         with ledger() as kept, reader.document(ensemble_pages()):
             read = reader.read_page(page(), page_no=1)
-        self.assertEqual([model for model, _level in client.calls], [MAIN, SECOND, THIRD])
+        # Changed on purpose (fast scan, council 16 Oct 2026): the three read at the same time.
+        self.assertEqual(sorted(model for model, _level in client.calls), sorted([MAIN, SECOND, THIRD]))
         self.assertEqual(read.read_by, MAIN)
         self.assertEqual(
             [(other.model, [item.text for item in other.spans or ()]) for other in read.others],

@@ -190,9 +190,17 @@ class ModelOnTest(unittest.TestCase):
             ("ready", None, "chat-tag", 1),
         )
         self.assertEqual((totals.quotes_returned, totals.dropped_quotes), (5, 1))  # "10" is made up
+        # Changed on purpose (fast scan, council 16 Oct 2026): the card's own seconds too.
         self.assertEqual(
             totals.config,
-            {**CONFIG, "loose_quotes": 0, "ambiguous_quotes": 0, "summary_dropped": 0, **NO_TIME},
+            {
+                **CONFIG,
+                "loose_quotes": 0,
+                "ambiguous_quotes": 0,
+                "summary_dropped": 0,
+                **NO_TIME,
+                "seconds_card": 0.0,
+            },
         )
         self.assertEqual((totals.values_verified, totals.values_needs_review), (3, 3))
 

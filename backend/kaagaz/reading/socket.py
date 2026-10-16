@@ -48,11 +48,12 @@ PROVISIONAL until the reader contract (#3) is written. PROVISIONAL (plan
 7.4): ``on_page`` is part of that contract, for Vrushit and PRD 2 to agree.
 """
 
+import contextlib
 import contextvars
 import math
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping
-from concurrent.futures import Executor, Future, ThreadPoolExecutor, wait
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from concurrent.futures import FIRST_COMPLETED, Executor, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Protocol, Self
@@ -75,6 +76,22 @@ from kaagaz.reading.spans import (
 
 # After each page: how it was read (its route and why), or None when it was not read.
 OnPage = Callable[[RouteDecision | None], None]
+# Fast scan (council 16 Oct 2026): how often a read waiting on a page being read calls the
+# heartbeat given to ``waiting``.
+WAIT_BEAT_SECONDS = 15.0
+_ON_WAIT: contextvars.ContextVar[Callable[[], None] | None] = contextvars.ContextVar("on_wait", default=None)
+
+
+@contextlib.contextmanager
+def waiting(on_wait: Callable[[], None]) -> Iterator[None]:
+    """Inside the block, a read waiting on a page being read calls ``on_wait`` (the
+    worker's heartbeat) every WAIT_BEAT_SECONDS (``PagesInOrder``), with the ``Reader``
+    protocol unchanged."""
+    token = _ON_WAIT.set(on_wait)
+    try:
+        yield
+    finally:
+        _ON_WAIT.reset(token)
 
 
 class Reader(Protocol):
@@ -185,15 +202,19 @@ class PagesInOrder:
     is passed on: not its read, not its error. Waiting keeps a dropped page's reading
     inside this document's read, so it can never land in the next document's (one
     worker reads another customer's document next). The first failure in page order is
-    the one raised. O(1) per page beyond the engine's time; at most ``pool.size``
-    pictures waiting or being read at once.
+    the one raised. O(pool.size) per page beyond the engine's time; at most ``pool.size``
+    pictures being read at once (a page read is closed at once), and at most 2 x
+    ``pool.size`` pages in the window. While it waits on a page being read, it calls the
+    ``waiting`` heartbeat every WAIT_BEAT_SECONDS on this thread (fast scan, council 16 Oct
+    2026): a page that makes several slow calls in a row (Careful after its first read)
+    keeps the job's lease, so the settings' lease check no longer bounds one page; this does.
     """
 
     def __init__(self, engine: PageEngine | None, pool: PagePool | None) -> None:
         self._engine = engine
         self._pool = pool
         self._window: deque[_Page] = deque()
-        self._reading = 0  # pages in the window still with a future
+        self._on_wait = _ON_WAIT.get()  # the read's heartbeat while it waits (``waiting``)
 
     def __enter__(self) -> Self:
         return self
@@ -215,8 +236,9 @@ class PagesInOrder:
         """Read ``image`` as page ``page_no`` with the engine, then call ``on_read`` with
         what was read, on this thread, after every page added before it. ``image`` is
         the window's: closed once read. ``release`` is called on this thread after
-        ``on_read``, or when the page is dropped. Waits for the oldest page while the
-        pool's size of pages are being read."""
+        ``on_read``, or when the page is dropped. While the pool's size of pages are being
+        read, or twice that many wait to be finished, waits for ANY page being read to end
+        (fast scan, council 16 Oct 2026: one slow page no longer holds the others back)."""
         engine = self._engine
         if engine is None:
             raise ValueError("a read with no engine has no page to read")
@@ -228,8 +250,8 @@ class PagesInOrder:
             return
         added = False
         try:
-            while self._reading >= self._pool.size:
-                self._finish_oldest()
+            while len(self._running()) >= self._pool.size or len(self._window) >= 2 * self._pool.size:
+                self._wait_any()
             # A copy of this thread's context: the page thread bills its calls to the same
             # usage scope (kaagaz.ai.usage, SP1).
             context = contextvars.copy_context()
@@ -239,7 +261,6 @@ class PagesInOrder:
             if not added:  # an older page failed first: this one is never read
                 image.close()
                 release()
-        self._reading += 1
         self._window.append(_Page(future, image, on_read, None, release))
         self._finish_ready()
 
@@ -263,11 +284,25 @@ class PagesInOrder:
         while self._window and (self._window[0].future is None or self._window[0].future.done()):
             self._finish_oldest()
 
+    def _running(self) -> "list[Future[PageRead]]":
+        return [page.future for page in self._window if page.future is not None and not page.future.done()]
+
+    def _wait_any(self) -> None:
+        """Until a page being read ends, beating ``on_wait`` every WAIT_BEAT_SECONDS; then
+        finish the oldest pages that are ready."""
+        running = self._running()
+        if running and not wait(running, WAIT_BEAT_SECONDS, FIRST_COMPLETED).done and self._on_wait:
+            self._on_wait()
+        self._finish_ready()
+
     def _finish_oldest(self) -> None:
+        oldest = self._window[0].future
+        while oldest is not None and not wait([oldest], WAIT_BEAT_SECONDS).done:
+            if self._on_wait is not None:
+                self._on_wait()  # still in the window: dropped (and waited for) if this raises
         page = self._window.popleft()
         try:
             if page.future is not None:
-                self._reading -= 1
                 read = page.future.result()  # the page's own error, raised in page order
                 if page.on_read is not None:
                     page.on_read(read)
@@ -290,7 +325,6 @@ class PagesInOrder:
                 page.release()
             else:
                 running.append(page)
-        self._reading = 0
         try:
             wait(page.future for page in running if page.future is not None)
         finally:

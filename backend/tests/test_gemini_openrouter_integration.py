@@ -1,8 +1,11 @@
 """The Gemini reader over the real OpenRouter client against the loopback fake only."""
 
+import base64
+import io
 from collections.abc import Iterator
 
 import pytest
+from PIL import Image
 
 from kaagaz.ai.openrouter import ModelGate, OpenRouterClient
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -12,6 +15,7 @@ from kaagaz.reading.page_quality import READER_REFUSED
 from tests.openrouter_fake import (
     KEY,
     OpenRouterFake,
+    Recorded,
     Reply,
     chat_reply,
     error_reply,
@@ -75,13 +79,21 @@ def test_g6_openrouter_refusal_or_bad_request_is_read_locally_and_flagged(
 
 
 def test_g6_openrouter_truncation_reads_halves_and_joins_them(fake: OpenRouterFake) -> None:
-    fake.script(
-        "completions",
-        chat_reply("cut off", finish="length", native="MAX_TOKENS", counts=usage(10, 20, 0)),
-        json_reply(value(line("top half"))),
-        json_reply(value(line("bottom half"))),
-    )
-    read = engine(fake).read_page(page(), page_no=1)
+    # Changed on purpose (fast scan, council 16 Oct 2026): the halves are asked at the same
+    # time, so each is answered by what it shows (the page's top rows are black), not by turn.
+    cut = chat_reply("cut off", finish="length", native="MAX_TOKENS", counts=usage(10, 20, 0))
+    fake.script("completions", cut)
+
+    def by_half(request: Recorded) -> Reply:
+        url = request.body["messages"][0]["content"][1]["image_url"]["url"]
+        with Image.open(io.BytesIO(base64.b64decode(url.partition(",")[2]))) as half:
+            top = half.convert("L").getpixel((0, 0)) == 0
+        return json_reply(value(line("top half" if top else "bottom half")))
+
+    fake.responder = by_half
+    picture = page()
+    picture.paste((0, 0, 0), (0, 0, picture.width, 100))
+    read = engine(fake).read_page(picture, page_no=1)
     assert [item.text for item in read.lines] == ["top half", "bottom half"]
     assert len(fake.requests) == 3
     assert read.read_by == MODEL

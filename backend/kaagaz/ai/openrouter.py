@@ -102,8 +102,8 @@ while a caller holds a one-item list in it, every limiter sleep adds its seconds
 (threads started with ``copy_context`` add to the same list); it changes nothing else.
 
 Cost: one ``read_page`` is one request (two with a repair), plus retries inside its
-deadline; ``embed`` makes ceil(n / 32) requests for n texts. Checking a reply is O(its
-size).
+deadline; ``embed`` makes n requests for n texts, EMBED_FAN_OUT at once through the one
+limiter (fast scan, council 16 Oct 2026). Checking a reply is O(its size).
 """
 
 import base64
@@ -121,6 +121,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import Message
@@ -172,6 +173,9 @@ EMBED_PROVIDER: Mapping[str, Any] = {**PROVIDER, "require_parameters": False}
 # ponytail: one call per piece; raise MODEL_RPM for indexing speed, or batch again if Vertex
 # ever serves batches.
 EMBED_TEXTS_PER_REQUEST = 1
+# Fast scan (council 16 Oct 2026): at most this many embedding requests at once, through the
+# one limiter (never a gate of its own: OpenRouter's limit is the key's).
+EMBED_FAN_OUT = 8
 
 # Structured output (G3): response_format json_schema with strict set to this. Whether
 # Google honours strict through OpenRouter is checked by verify-models (strict_schema).
@@ -851,22 +855,33 @@ class OpenRouterClient:
         halfvec(1024) does not change). /embeddings, ``EMBED_TEXTS_PER_REQUEST`` texts a
         request."""
         self._check_provider(DEFAULT_PROVIDER)
-        vectors: list[list[float]] = []
-        for start in range(0, len(texts), EMBED_TEXTS_PER_REQUEST):
-            batch = texts[start : start + EMBED_TEXTS_PER_REQUEST]
-            body = {
-                "model": self.embed_model,
-                "input": batch,
-                "dimensions": self._dim,
-                "encoding_format": "float",
-                "provider": provider(embeddings=True),
-            }
-            reply = self._call(EMBEDDINGS_PATH, body, self.now() + self._timeout)
-            data = reply.get("data")
-            if not isinstance(data, list):
-                raise ModelUnavailable("bad_response")
-            vectors.extend(self._in_order(data, len(batch)))
-        return vectors
+        step = EMBED_TEXTS_PER_REQUEST
+        batches = [texts[start : start + step] for start in range(0, len(texts), step)]
+        if not batches:
+            return []
+        # Fast scan (council 16 Oct 2026): the requests at the same time, EMBED_FAN_OUT at
+        # most, each through the one gate (its limiter still spaces their starts) in its own
+        # copy of the context (billing, SP1); the vectors stay in the texts' order, and the
+        # first failure in that order is raised.
+        with ThreadPoolExecutor(min(EMBED_FAN_OUT, len(batches))) as pool:
+            futures = [
+                pool.submit(contextvars.copy_context().run, self._embed_batch, batch) for batch in batches
+            ]
+        return [vector for future in futures for vector in future.result()]
+
+    def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+        body = {
+            "model": self.embed_model,
+            "input": batch,
+            "dimensions": self._dim,
+            "encoding_format": "float",
+            "provider": provider(embeddings=True),
+        }
+        reply = self._call(EMBEDDINGS_PATH, body, self.now() + self._timeout)
+        data = reply.get("data")
+        if not isinstance(data, list):
+            raise ModelUnavailable("bad_response")
+        return self._in_order(data, len(batch))
 
     def chat_json(
         self,

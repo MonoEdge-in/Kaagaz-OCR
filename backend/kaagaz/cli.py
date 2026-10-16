@@ -80,6 +80,11 @@
   is current. A customer that is not active is skipped and named.
   Each customer's calls are billed to it as "embed", with no user (SP1). Prints ids
   and counts only.
+* ``scan-times [--customer-id ID] [--last N]``: the last N ready runs (5), one line each,
+  ids and seconds only: upload to Ready, queued, the run to Ready, and its steps (preparing,
+  reading, Careful, card, map, checker, from the run's config), then how long after Ready
+  its vectors were made (the ``embed`` ledger row; fast scan, council 16 Oct 2026). Each
+  customer is read in its own ``db.customer()``.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -101,9 +106,9 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
-from sqlalchemy import Connection
+from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz import verify_models
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
@@ -230,6 +235,10 @@ def _parser() -> argparse.ArgumentParser:
     reembed = commands.add_parser("reembed", help="embed pieces again after a model or recipe change")
     reembed.add_argument("--customer-id", help="one customer only (default: every customer)")
     reembed.add_argument("--all", action="store_true", help="embed every piece again, not only stale ones")
+
+    times = commands.add_parser("scan-times", help="how long the last documents took, step by step")
+    times.add_argument("--customer-id", help="one customer only (default: every customer)")
+    times.add_argument("--last", type=int, default=5, help="the last N ready runs (default 5)")
     return parser
 
 
@@ -507,6 +516,67 @@ def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: b
             f"customer {customer}: {len(documents)} documents, {cleared} cleared, {written} embedded,"
             f" {stories} stories\n"
         )
+
+
+def _scan_times(db: Database, customer_id: str | None, last: int, out: TextIO) -> None:
+    """The last ``last`` ready runs, newest first, each customer's read in its own
+    ``db.customer()`` (one query a customer), one line each (``scan_times_line``)."""
+    if last < 1:
+        raise CliError("--last must be at least 1")
+    if customer_id is None:
+        with db.system() as conn:
+            customers = indexing.customer_ids(conn)
+    else:
+        try:
+            uuid.UUID(customer_id)
+        except ValueError:
+            raise CliError("the customer id is not valid") from None
+        customers = [customer_id]
+    rows: list[RowMapping] = []
+    for customer in customers:
+        with db.customer(customer) as conn:
+            rows += conn.execute(_SCAN_TIMES, {"c": customer, "n": last}).mappings().all()
+    rows.sort(key=lambda row: row["finished_at"], reverse=True)
+    for row in rows[:last]:
+        out.write(scan_times_line(row) + "\n")
+
+
+# scan-times: a ready run's times; indexed_at is when its embeddings' ledger row was saved
+# (the embed usage scope ends when the last vector is written, after Ready).
+_SCAN_TIMES = text(
+    "SELECT r.document_id, d.created_at AS uploaded_at, r.started_at, r.finished_at, r.pages_ocr,"
+    " r.config, (SELECT max(u.created_at) FROM model_usage u WHERE u.customer_id = r.customer_id"
+    " AND u.document_id = r.document_id AND u.kind = 'embed' AND u.created_at >= r.finished_at)"
+    " AS indexed_at"
+    " FROM processing_runs r JOIN documents d ON d.customer_id = r.customer_id AND d.id = r.document_id"
+    " WHERE r.customer_id = :c AND r.status = 'ready' ORDER BY r.finished_at DESC LIMIT :n"
+)
+
+
+def scan_times_line(row: Mapping[Any, Any]) -> str:
+    """One run's line: ids and seconds only (fast scan, council 16 Oct 2026). Upload to
+    Ready counts from the upload (a read-again run from its first upload); careful is "inline"
+    when Careful read inside reading (the pages it read). O(1)."""
+    config = row["config"] or {}
+
+    def seconds(key: str) -> str:
+        value = config.get(key)
+        return "-" if not isinstance(value, int | float) else f"{value:.1f}"
+
+    def between(start: datetime | None, end: datetime | None) -> str:
+        return "-" if start is None or end is None else f"{(end - start).total_seconds():.1f}"
+
+    escalated = (config.get("reading") or {}).get("escalated") or []
+    careful = seconds("seconds_careful") if "seconds_careful" in config else f"inline({len(escalated)} pages)"
+    return (
+        f"document {row['document_id']} ocr_pages {row['pages_ocr']}"
+        f" upload_to_ready {between(row['uploaded_at'], row['finished_at'])}"
+        f" queued {between(row['uploaded_at'], row['started_at'])}"
+        f" run_to_ready {between(row['started_at'], row['finished_at'])}"
+        f" preparing {seconds('seconds_preparing')} reading {seconds('seconds_reading')} careful {careful}"
+        f" card {seconds('seconds_card')} map {seconds('seconds_map')} checker {seconds('seconds_checker')}"
+        f" index_after_ready {between(row['finished_at'], row['indexed_at'])}"
+    )
 
 
 def _reembed_stories(db: Database, model: ModelClient, customer: str) -> int:
@@ -832,6 +902,8 @@ def main(
             if model is None:
                 raise CliError("reembed needs the model: set MODEL_ENABLED=true")
             _reembed(db, model, args.customer_id, args.all, stdout)
+        elif args.command == "scan-times":
+            _scan_times(db, args.customer_id, args.last, stdout)
         elif args.command in CUSTOMER_STATUS:
             line = _set_customer_status(db, args.command, args.customer_id, datetime.now(UTC))
             stdout.write(line + "\n")

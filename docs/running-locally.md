@@ -204,7 +204,8 @@ docs/runbooks/prd5-cpu-server-switch.md.
    ```
 
    Write the numbers into docs/architecture.md, Decisions (the t3.xlarge
-   row).
+   row). A real document's steps, upload to Ready and the indexing after it,
+   for the last 5 documents read: `dc exec -T worker python -m kaagaz.cli scan-times --last 5`.
 
 **RapidOCR, the fallback.** If Gemini misbehaves, set `OCR_ENGINE=rapidocr` in
 `.env` and restart both: `dc up -d api worker`. Change it back the same way.

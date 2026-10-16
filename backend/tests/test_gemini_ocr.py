@@ -743,9 +743,12 @@ class G6HalvesTest(Approx):
     def test_a_page_over_its_budget_is_read_locally_for_review_without_waiting(self) -> None:
         """Stuck reading (16 Oct 2026): the budget ran out on a half (timeout): the page is
         read locally as reader_refused, with the tokens spent, and the document never waits."""
+        # Changed on purpose (fast scan, council 16 Oct 2026): both halves are asked at once, so
+        # the other half is asked too (here its budget ran out as well, with no tokens).
         built = build(
             ModelOutputError("output_truncated", input_tokens=50, output_tokens=500),
             ModelUnavailable("timeout", input_tokens=7, output_tokens=9),
+            ModelUnavailable("timeout"),
             reader_outage_fallback_minutes=15,
         )
         read = built.engine.read_page(page(), page_no=1)

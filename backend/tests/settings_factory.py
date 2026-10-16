@@ -57,6 +57,7 @@ _BASE: dict[str, Any] = {
     "ocr_retry_media_resolution": "high",  # the "detail" shape sends low or high only
     "ocr_retry_thinking_level": "high",
     "ocr_page_concurrency": 6,
+    "careful_early_max_pages": 2,
     "cpu_workers": 2,
     "max_check_crops": 200,
     "model_rpm": 60,

@@ -215,6 +215,8 @@ class Settings:
     # (G8). At most max_check_crops values of a document are read again by the CPU checker
     # (V1). model_rpm is the key's calls a minute, shared by the workers (G9). Pages are
     # read locally once the reader has been down for reader_outage_fallback_minutes (Q7).
+    # Fast scan (council 16 Oct 2026): a Dynamic document of at most careful_early_max_pages
+    # pages starts each page's Careful read with its first read (0: never); optional, 2.
     ocr_model: str
     openrouter_api_key: str | None = field(repr=False)
     openrouter_base_url: str
@@ -232,6 +234,7 @@ class Settings:
     ocr_retry_media_resolution: str
     ocr_retry_thinking_level: str
     ocr_page_concurrency: int
+    careful_early_max_pages: int
     cpu_workers: int
     max_check_crops: int
     model_rpm: int
@@ -530,6 +533,7 @@ class Settings:
             ocr_retry_media_resolution=env.media_resolution("OCR_RETRY_MEDIA_RESOLUTION"),
             ocr_retry_thinking_level=env.choice("OCR_RETRY_THINKING_LEVEL", set(THINKING_LEVELS)),
             ocr_page_concurrency=env.positive("OCR_PAGE_CONCURRENCY"),
+            careful_early_max_pages=env.at_least("CAREFUL_EARLY_MAX_PAGES", 0, default=2),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
             model_rpm=env.positive("MODEL_RPM"),

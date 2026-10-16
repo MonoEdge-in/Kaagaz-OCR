@@ -104,25 +104,33 @@ illegible_words, unpinned and no_text to the model's own.
 A page is read at the document's thinking level, and cached under
 ``cache_prompt_version`` (C4). Dynamic reads a document twice through the readers: the
 second time each page's first read comes back from ``memo`` with no call, and the
-pages in ``escalate`` are read with Careful (``_dynamic``). Ensemble's other models read
-each page numbered up to ENSEMBLE_MAX_PAGES after the main model (``_ensemble``), and
-their reads ride on the page (``PageRead.others``) for the vote on the values that need
-review (``kaagaz.extraction.labels.settle_votes``).
+pages in ``escalate`` are read with Careful (``_dynamic``), at OCR_RETRY_THINKING_LEVEL
+(Tushar, 16 Oct 2026). A document of at most DYNAMIC_MAX_PAGES pages is read once, each
+page's Careful read on its own thread (``_inline_careful``, fast scan, council 16 Oct
+2026). Ensemble's other models read each page numbered up to ENSEMBLE_MAX_PAGES at the
+same time as the main model (``_ensemble``), and their reads ride on the page
+(``PageRead.others``) for the vote on the values that need review
+(``kaagaz.extraction.labels.settle_votes``).
 
 **Threads** (G8): ``read_page`` is called from OCR_PAGE_CONCURRENCY page threads at
 once. The client and the pool are thread-safe; the outage clock and the local
 reader are kept under a lock; the document is set before the pages are read and
-only read by them. RapidOCR's box finding is held to CPU_WORKERS by the pool.
+only read by them. RapidOCR's box finding is held to CPU_WORKERS by the pool. Inside a
+page (fast scan): its boxes are found on a thread of their own while the model reads it,
+and Ensemble's models, a cut-off page's halves and an early Careful read each run on a
+small pool of their own (never the page pool: a page thread waiting on it could wait for
+itself), each call in its own copy of the context, so it is billed to the same scope.
 
 Nothing here logs page text: warnings carry a code only. The page is data: the
 instruction tells the model to copy any instruction written on it, never follow it.
 
-Cost: one model call a page (three when cut off), one box finding, and O(L x F) to
+Cost: one model call a page (three when cut off, two of them at once), one box finding, and O(L x F) to
 pin L lines to F found boxes; hashing the pixels is O(pixels).
 """
 
 import bisect
 import contextlib
+import contextvars
 import dataclasses
 import functools
 import hashlib
@@ -132,6 +140,7 @@ import math
 import re
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -157,6 +166,7 @@ from kaagaz.reading.ocr import (
     RapidOcrEngine,
     as_page_engine,
     cache_prompt_version,
+    careful_reasons,
     ocr_spans,
 )
 from kaagaz.reading.page_quality import (
@@ -388,6 +398,7 @@ class GeminiEngine:
         self._timeout = settings.ocr_timeout_seconds
         self._normal = (settings.ocr_media_resolution, settings.ocr_thinking_level)
         self._harder = (settings.ocr_retry_media_resolution, settings.ocr_retry_thinking_level)
+        self._early_max = settings.careful_early_max_pages
         self._fallback_after = 60.0 * settings.reader_outage_fallback_minutes
         # Q7: a failure longer than this after the last one starts a new outage (module notes).
         self._outage_gap = max(
@@ -440,71 +451,143 @@ class GeminiEngine:
 
     def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
         """Page ``page_no`` (from 1) of the open document, or of none (see the module notes),
-        read as the document's ``DocumentPages`` says: Dynamic's two readings (``memo``) or
-        Ensemble's other models (``others``), else the one model."""
+        read as the document's ``DocumentPages`` says: Dynamic's readings (``memo``) or
+        Ensemble's other models (``others``), else the one model. With a document, the page's
+        boxes are found once, alongside its model calls, for every read of it (G5), and its
+        pixels hashed once (G7; fast scan, council 16 Oct 2026)."""
         pages = self._pages
         if pages is None:
             return self._read(image, page_no=page_no, pages=None)
-        if pages.memo is not None:
-            return self._dynamic(image, page_no, pages, pages.memo)
-        read = self._read(image, page_no=page_no, pages=pages)
-        if pages.others and page_no <= ENSEMBLE_MAX_PAGES:
-            return self._ensemble(image, page_no, pages, read)
-        return read
+        sha = pixels_sha256(image)
+        first = None if pages.memo is None or pages.inline_careful else pages.memo.get((page_no, sha))
+        if first is not None and (page_no not in pages.escalate or pages.careful is None):
+            return first  # Dynamic's second reading: no call, so no boxes to find
+        with ThreadPoolExecutor(1) as finder:
+            boxes = finder.submit(self._pool.find_boxes, image)
+            page = functools.partial(self._read, image, page_no=page_no, sha=sha, boxes=boxes)
+            if pages.memo is not None:
+                return self._dynamic(page, page_no, pages, pages.memo, sha)
+            if pages.others and page_no <= ENSEMBLE_MAX_PAGES:
+                return self._ensemble(image, page, page_no, pages)
+            return page(pages=pages)
 
     # Dynamic and Ensemble (features 26 and 27, council 15 Oct 2026).
 
     def _dynamic(
-        self, image: Image.Image, page_no: int, pages: DocumentPages, memo: dict[tuple[int, str], PageRead]
+        self,
+        page: Callable[..., PageRead],
+        page_no: int,
+        pages: DocumentPages,
+        memo: dict[tuple[int, str], PageRead],
+        sha: str,
     ) -> PageRead:
         """Dynamic (C5). The document's first reading keeps each page's read in ``memo``. Its
         second reading hands that read back with no call, except a page in ``escalate``,
-        which is read with Careful (the normal pair, cached under Careful's model), billed
-        as careful: Careful's read replaces the page's, with the tokens of both. A Careful
-        read that fails (an outage, a refusal, the local reader) leaves the first read.
-        A page is never read with Careful twice."""
-        key = (page_no, pixels_sha256(image))
+        which is read with Careful (``_careful``). A page is never read with Careful twice.
+        With ``inline_careful`` there is no second reading (``_inline_careful``)."""
+        key = (page_no, sha)
         first = memo.get(key)
+        if first is None and pages.inline_careful:
+            return self._inline_careful(page, page_no, pages, memo, key)
         if first is None:
-            memo[key] = read = self._read(image, page_no=page_no, pages=pages)
+            memo[key] = read = page(pages=pages)
             return read
         if page_no not in pages.escalate or pages.careful is None:
             return first
-        model, provider = pages.careful
+        return _kept(first, self._careful(page, pages, pages.careful), pages.careful[0])
+
+    def _inline_careful(
+        self,
+        page: Callable[..., PageRead],
+        page_no: int,
+        pages: DocumentPages,
+        memo: dict[tuple[int, str], PageRead],
+        key: tuple[int, str],
+    ) -> PageRead:
+        """Fast scan (council 16 Oct 2026): the page's first read, then, on this thread, its
+        Careful read when ``careful_reasons`` gives it a reason (kept in ``escalated``): the
+        same pages and the same read as the second reading would. A document of at most
+        CAREFUL_EARLY_MAX_PAGES pages starts the Careful read with the first one; it is used
+        only when the reasons say so, else dropped (still billed as careful, its tokens on
+        the page): it never becomes the page's read."""
+        lead, agent = pages.model or self._model, pages.careful
+        again = page_no in pages.read_again
+        with ThreadPoolExecutor(1) as early:
+            started = None
+            if agent is not None and not again and 0 < pages.page_count <= self._early_max:
+                started = early.submit(contextvars.copy_context().run, self._careful, page, pages, agent)
+            memo[key] = first = page(pages=pages)
+            careful = None if started is None else started.result()
+        reasons = careful_reasons(first, lead=lead, again=again)
+        if not reasons or agent is None:
+            if careful is None:
+                return first
+            return dataclasses.replace(
+                first,
+                input_tokens=first.input_tokens + careful.input_tokens,
+                output_tokens=first.output_tokens + careful.output_tokens,
+            )
+        if pages.escalated is not None:
+            pages.escalated[page_no] = reasons
+        if started is None:
+            careful = self._careful(page, pages, agent)
+        return _kept(first, careful, agent[0])
+
+    def _careful(
+        self, page: Callable[..., PageRead], pages: DocumentPages, agent: tuple[str, str]
+    ) -> PageRead | None:
+        """Careful's read of the page (C5): the normal resolution at OCR_RETRY_THINKING_LEVEL
+        (Tushar, 16 Oct 2026: the first read is at the document's level, Careful always
+        harder), cached under Careful's model, billed as careful; None when it fails (an
+        outage: the first read stays)."""
+        model, provider = agent
         careful_pages = dataclasses.replace(
-            pages, model=model, provider=provider, read_again=frozenset(), escalate=frozenset(), memo=None
+            pages,
+            model=model,
+            provider=provider,
+            thinking=self._harder[1],
+            read_again=frozenset(),
+            escalate=frozenset(),
+            memo=None,
+            inline_careful=False,
         )
         try:
             with billed_as("careful"):
-                careful = self._read(image, page_no=page_no, pages=careful_pages)
+                return page(pages=careful_pages)
         except BackendUnavailable:
-            return first
-        kept = careful if careful.read_by == model else first
-        return dataclasses.replace(
-            kept,
-            input_tokens=first.input_tokens + careful.input_tokens,
-            output_tokens=first.output_tokens + careful.output_tokens,
-        )
+            return None
 
-    def _ensemble(self, image: Image.Image, page_no: int, pages: DocumentPages, read: PageRead) -> PageRead:
-        """Ensemble (C6): each other chosen model reads the page after the main one, in this
-        page thread (no pool of its own: the limiter is the bottleneck), billed as
+    def _ensemble(
+        self, image: Image.Image, page: Callable[..., PageRead], page_no: int, pages: DocumentPages
+    ) -> PageRead:
+        """Ensemble (C6): each other chosen model reads the page at the same time as the main
+        one, each on its own thread (fast scan, council 16 Oct 2026), billed as
         ensemble_scan, with the tokens of every read on the page. One that fails on the
         page (an outage, a refusal, the local reader) is left out of its vote. When the
         main model did not read the page (its local reader did) and another model did,
         that read is the page's (M5), and the main model is the one left out."""
         lead = pages.model or self._model
-        reads: list[tuple[str, PageRead | None]] = []
-        tokens_in, tokens_out = read.input_tokens, read.output_tokens
-        for model, provider in pages.others:
+
+        def read_other(model: str, provider: str) -> PageRead | None:
             other_pages = dataclasses.replace(
                 pages, model=model, provider=provider, others=(), read_again=frozenset()
             )
             try:
                 with billed_as("ensemble_scan"):
-                    other: PageRead | None = self._read(image, page_no=page_no, pages=other_pages)
+                    return page(pages=other_pages)
             except BackendUnavailable:
-                other = None
+                return None
+
+        with ThreadPoolExecutor(len(pages.others)) as pool:
+            futures = [
+                pool.submit(contextvars.copy_context().run, read_other, model, provider)
+                for model, provider in pages.others
+            ]
+            read = page(pages=pages)
+        reads: list[tuple[str, PageRead | None]] = []
+        tokens_in, tokens_out = read.input_tokens, read.output_tokens
+        for (model, _provider), future in zip(pages.others, futures, strict=True):
+            other = future.result()
             if other is not None:
                 tokens_in, tokens_out = tokens_in + other.input_tokens, tokens_out + other.output_tokens
             reads.append((model, other if other is not None and other.read_by == model else None))
@@ -521,19 +604,30 @@ class GeminiEngine:
 
     # Reading one page.
 
-    def _read(self, image: Image.Image, *, page_no: int, pages: DocumentPages | None) -> PageRead:
+    def _read(
+        self,
+        image: Image.Image,
+        *,
+        page_no: int,
+        pages: DocumentPages | None,
+        sha: str | None = None,
+        boxes: "Future[list[PixelBox]] | None" = None,
+    ) -> PageRead:
+        """``sha``: the page's pixels' hash, ``boxes``: its found boxes (``read_page``)."""
         # Model choice: the document's model and provider, else OCR_MODEL (no document: cli measure).
         model = self._model if pages is None or pages.model is None else pages.model
         provider = None if pages is None else pages.provider
         # C4: the document's scan level, else OCR_THINKING_LEVEL.
         thinking = self._normal[1] if pages is None or pages.thinking is None else pages.thinking
         again = pages is not None and page_no in pages.read_again
-        key = None if pages is None else self._key(pages, image, page_no, model, thinking)
+        key = None
+        if pages is not None:
+            key = self._key(pages, sha or pixels_sha256(image), page_no, model, thinking)
         if pages is not None and key is not None and not again:
             reply = _cached(pages.cache.get(key))
             if reply is not None:
                 record_call(model, None, 0, 0, 0, 0.0, cached=True)  # SP1: a cached page costs 0
-                return self._page(reply, image, page_no, model, cached=True)
+                return self._page(reply, image, page_no, model, cached=True, boxes=boxes)
         started = self._client.now()
         try:
             reply, result, input_tokens, output_tokens = self._ask(
@@ -558,16 +652,14 @@ class GeminiEngine:
             self._last_failure.pop(model, None)
         if pages is not None and key is not None:
             pages.cache.put(key, result, input_tokens, output_tokens)
-        return self._page(reply, image, page_no, model, tokens=(input_tokens, output_tokens))
+        return self._page(reply, image, page_no, model, tokens=(input_tokens, output_tokens), boxes=boxes)
 
-    def _key(
-        self, pages: DocumentPages, image: Image.Image, page_no: int, model: str, thinking: str
-    ) -> PageKey:
+    def _key(self, pages: DocumentPages, sha: str, page_no: int, model: str, thinking: str) -> PageKey:
         return PageKey(
             pages.customer_id,
             pages.document_id,
             page_no,
-            pixels_sha256(image),
+            sha,
             model,
             cache_prompt_version(thinking, self._normal[1]),
         )
@@ -597,14 +689,34 @@ class GeminiEngine:
             except ModelOutputError as error:
                 raise billed(error, whole.input_tokens, whole.output_tokens) from None
         top_end, bottom_start = half_rows(image.height)
+        # Both halves at the same time (fast scan, council 16 Oct 2026), each with its own copy
+        # of the context (billing, SP1); the first failure, top before bottom, is raised with
+        # the tokens of every call that was made.
+        with (
+            image.crop((0, 0, image.width, top_end)) as top_image,
+            image.crop((0, bottom_start, image.width, image.height)) as bottom_image,
+            ThreadPoolExecutor(2) as pool,
+        ):
+            halves = [
+                pool.submit(contextvars.copy_context().run, ask, half, resolution, thinking)
+                for half in (top_image, bottom_image)
+            ]
+        parts: list[PageReply] = []
+        failed: list[ModelUnavailable | ModelOutputError] = []
+        for half in halves:
+            try:
+                part = half.result()
+            except (ModelUnavailable, ModelOutputError) as error:
+                failed.append(error)
+            else:
+                parts.append(part)
+                tokens_in, tokens_out = tokens_in + part.input_tokens, tokens_out + part.output_tokens
+        for other in failed[1:]:
+            tokens_in, tokens_out = tokens_in + other.input_tokens, tokens_out + other.output_tokens
         try:
-            with image.crop((0, 0, image.width, top_end)) as top_image:
-                top = ask(top_image, resolution, thinking)
-            tokens_in, tokens_out = tokens_in + top.input_tokens, tokens_out + top.output_tokens
-            with image.crop((0, bottom_start, image.width, image.height)) as bottom_image:
-                bottom = ask(bottom_image, resolution, thinking)
-            tokens_in, tokens_out = tokens_in + bottom.input_tokens, tokens_out + bottom.output_tokens
-            top_reply, bottom_reply = checked(top.value), checked(bottom.value)
+            if failed:
+                raise failed[0]
+            top_reply, bottom_reply = checked(parts[0].value), checked(parts[1].value)
         except ModelUnavailable as error:
             raise ModelUnavailable(
                 error.code,
@@ -647,9 +759,11 @@ class GeminiEngine:
         *,
         cached: bool = False,
         tokens: tuple[int, int] = (0, 0),
+        boxes: "Future[list[PixelBox]] | None" = None,
     ) -> PageRead:
-        """The reply as a ``PageRead``, its lines pinned to the found boxes (G5, F1)."""
-        found = self._pool.find_boxes(image) if reply.lines else []
+        """The reply as a ``PageRead``, its lines pinned to the found boxes (G5, F1):
+        ``boxes``, found already, or found now."""
+        found = (self._pool.find_boxes(image) if boxes is None else boxes.result()) if reply.lines else []
         lines = tuple(pinned(reply.lines, found, image.width, image.height))
         extra = []
         if any(ILLEGIBLE_MARK in line.text for line in lines):
@@ -736,6 +850,19 @@ class GeminiEngine:
 def _rapidocr_pages() -> PageEngine:
     """The local reader (Q7): RapidOCR's full read, as pages read by "rapidocr"."""
     return as_page_engine(RapidOcrEngine())
+
+
+def _kept(first: PageRead, careful: PageRead | None, model: str) -> PageRead:
+    """Careful's read in place of ``first`` when ``model`` read it, with the tokens of both;
+    else ``first`` (a Careful read that failed: an outage, a refusal, the local reader)."""
+    if careful is None:
+        return first
+    kept = careful if careful.read_by == model else first
+    return dataclasses.replace(
+        kept,
+        input_tokens=first.input_tokens + careful.input_tokens,
+        output_tokens=first.output_tokens + careful.output_tokens,
+    )
 
 
 def _spans(read: PageRead, image: Image.Image, page_no: int) -> tuple[Span, ...]:
