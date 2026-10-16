@@ -220,6 +220,11 @@ describe("shouldPoll", () => {
     expect(shouldPoll([withNewer("failed")])).toBe(false);
     expect(shouldPoll([{ status: "ready", newer_version: null }])).toBe(false);
   });
+
+  it("keeps polling while a ready document is still being understood (Ready first)", () => {
+    expect(shouldPoll([{ status: "ready", understanding: true }])).toBe(true);
+    expect(shouldPoll([{ status: "ready", understanding: false }])).toBe(false);
+  });
 });
 
 describe("menuEntries", () => {

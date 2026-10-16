@@ -113,19 +113,32 @@ _OTHERS_NOT_CURRENT = (
     " WHERE customer_id = :c AND family_id = :f AND id <> :d AND is_current"
 )
 
+# Ready first (16 Oct 2026): the progress is kept while the run goes on understanding the
+# ready document (``open_run``), else cleared: a ready document shows none.
 _READY = (
-    "UPDATE documents SET status = 'ready', failure_code = NULL, page_count = :pages, is_current = :current"
+    "UPDATE documents SET status = 'ready', failure_code = NULL, page_count = :pages, is_current = :current,"
+    " progress = CASE WHEN CAST(:keep AS boolean) THEN progress ELSE NULL END"
     " WHERE customer_id = :c AND id = :d"
 )
 
 
 def mark_ready(
-    conn: Connection, customer_id: str, document_id: str, page_count: int, *, run: "FinishedRun | None" = None
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    page_count: int,
+    *,
+    run: "FinishedRun | None" = None,
+    open_run: str | None = None,
 ) -> None:
     """The document is read: set it ready with its page count and, unless a newer
     version of its family is ready already, make it the family's one current version.
     With ``run``, finish that run in the same transaction, so a ready document and
-    its finished run commit together.
+    its finished run commit together. With ``open_run`` instead (Ready first, 16 Oct
+    2026), the run fence on that run id, which stays open while the run goes on
+    understanding the ready document, and the progress it wrote last is kept; otherwise
+    the progress is cleared. A document set to be read again meanwhile (``received``)
+    raises Superseded with either, so a run never takes a read again back to ready.
 
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock
     (``trash.lock_family``) comes before any write, so two versions finishing at
@@ -142,10 +155,13 @@ def mark_ready(
             closed = dataclasses.replace(run.totals, status="failed", error_code="document_missing")
             finish_run(conn, customer_id, dataclasses.replace(run, totals=closed))
         return
-    if run is not None and not is_run_open(conn, customer_id, document_id, run.run_id):
-        raise Superseded(run.run_id)
+    fence = run.run_id if run is not None else open_run
+    if fence is not None and not is_run_open(conn, customer_id, document_id, fence):
+        raise Superseded(fence)
     params = {"c": customer_id, "d": document_id, "f": family_id}
     state = conn.execute(text(_READY_STATE), params).one()
+    if fence is not None and state.status == DocumentStatus.RECEIVED.value:
+        raise Superseded(fence)
     if state.status == DocumentStatus.REJECTED.value:
         if run is not None:
             closed = dataclasses.replace(run.totals, status="rejected")
@@ -154,7 +170,9 @@ def mark_ready(
     current = not state.newer_ready
     if current:
         conn.execute(text(_OTHERS_NOT_CURRENT), params)
-    conn.execute(text(_READY), {**params, "pages": page_count, "current": current})
+    conn.execute(
+        text(_READY), {**params, "pages": page_count, "current": current, "keep": open_run is not None}
+    )
     if run is not None:
         finish_run(conn, customer_id, run)
 
@@ -753,13 +771,20 @@ class PgDocuments:
             conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})
 
     def mark_ready(
-        self, customer_id: str, document_id: str, page_count: int, *, run: "FinishedRun | None" = None
+        self,
+        customer_id: str,
+        document_id: str,
+        page_count: int,
+        *,
+        run: "FinishedRun | None" = None,
+        open_run: str | None = None,
     ) -> None:
-        """``mark_ready`` in its own transaction: the pipeline's last step."""
+        """``mark_ready`` in its own transaction: the pipeline's last step (Ready first: also
+        the one before the document is understood, with ``open_run``)."""
 
         def transaction() -> None:
             with self._db.customer(customer_id) as conn:
-                mark_ready(conn, customer_id, document_id, page_count, run=run)
+                mark_ready(conn, customer_id, document_id, page_count, run=run, open_run=open_run)
 
         with unavailable():
             retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)

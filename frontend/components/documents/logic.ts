@@ -130,20 +130,29 @@ const SETTLING: readonly DocumentStatus[] = ["received", "clean"];
 
 interface Polled {
   status: DocumentStatus;
+  understanding?: boolean;
   newer_version?: { status: DocumentStatus } | null;
 }
 
 /**
  * Keep asking the server only while something is still being checked or read,
  * a newer version included, so the status_message the server writes as it
- * goes ("Reading page 3 of 40…", PRD 2 X3) keeps moving.
+ * goes ("Reading page 3 of 40…", PRD 2 X3) keeps moving; and while a ready
+ * document is still being understood (Ready first), so its type shows when it comes.
  */
 export function shouldPoll(items: readonly Polled[]): boolean {
   return items.some((item) => {
     const newer = item.newer_version?.status;
-    return SETTLING.includes(item.status) || (newer !== undefined && SETTLING.includes(newer));
+    return (
+      SETTLING.includes(item.status) ||
+      item.understanding === true ||
+      (newer !== undefined && SETTLING.includes(newer))
+    );
   });
 }
+
+/** Said beside a ready document while its card and map are still coming (Ready first). */
+export const UNDERSTANDING_TEXT = "Understanding the document…";
 
 export interface PageInfo {
   from: number; // 1-based first row shown, 0 when there are none

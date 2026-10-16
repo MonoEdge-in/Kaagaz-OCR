@@ -28,7 +28,8 @@ Lock order (plan 4.3), the same in ``save`` and ``clear``:
    row each way, sorted, ON CONFLICT DO NOTHING.
 
 The run fence: with ``run_id``, a save goes ahead only if that run is still
-open (``runs.is_run_open``, read under the family lock);
+open (``runs.is_run_open``, read under the family lock) and the document is not set to
+be read again (``received``: Ready first saves again after Ready, 16 Oct 2026);
 otherwise it raises Superseded and writes nothing. A deadlock that PostgreSQL
 breaks (40P01) runs the whole transaction again (AR7).
 
@@ -59,7 +60,8 @@ carries it forward from the page row it replaces, by page number, unless that pa
 was read again: a page whose ``read_again_requested_at`` is set loses it, and the
 save clears the request, since this run read the page again (the council
 architect's finding). A read again of one page is refused while the document is
-being read (F5), so no request can arrive between a run's start and its save. The
+being read (F5), so no request can arrive between a run's start and its first save
+(one that arrives before the second save of Ready first refuses that save). The
 page cache (``page_reads``, kaagaz.db.page_reads) is written outside this save, page
 by page, so a crash keeps it; the save never touches it. Sections and topics
 (``document_sections``, ``document_topics``, PRD 5 CX2 to CX4) are deleted with the
@@ -121,6 +123,9 @@ _UPDATE_FACTS = text(
     " summary = :summary, document_date = :document_date, card = CAST(:card AS jsonb)"
     " WHERE customer_id = :c AND id = :d"
 )
+# Ready first (16 Oct 2026): a run's second save comes after Ready, when a read again may
+# have set the document back to received (its job not started yet): that save is refused.
+_READ_AGAIN_SET = text("SELECT status = 'received' FROM documents WHERE customer_id = :c AND id = :d")
 # PRD 5 F5: the pages' "Keep as is" to carry forward, from the rows the save replaces; a
 # page asked to be read again is left out, so it loses its acceptance.
 _ACCEPTED = text(
@@ -335,7 +340,10 @@ class PgPipelineStore:
             # a deadlock retry runs this again and builds them again (C-architect 5).
             with self._db.customer(customer_id) as conn:
                 family_id = lock_family(conn, customer_id, document_id)
-                if run_id is not None and not is_run_open(conn, customer_id, document_id, run_id):
+                if run_id is not None and (
+                    not is_run_open(conn, customer_id, document_id, run_id)
+                    or conn.execute(_READ_AGAIN_SET, ids).scalar()
+                ):
                     raise Superseded(run_id)
                 accepted = _accepted(conn, ids)  # read before the delete below
                 _replace_facts_and_delete(conn, ids, content.facts)

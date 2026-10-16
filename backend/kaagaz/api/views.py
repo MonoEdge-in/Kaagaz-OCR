@@ -6,7 +6,7 @@ named after the type it builds, so a reviewer can hold the two side by side.
 
 import re
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -143,6 +143,24 @@ def in_progress(status: str, progress: Mapping[str, Any] | None) -> dict[str, An
     return {"step": progress["step"], "done": int(progress["done"]), "total": int(progress["total"])}
 
 
+# Ready first (16 Oct 2026): a ready document is still being understood (its card, map and
+# filing) while the worker's last progress before Ready, with its ``ready_at``, is on it; the
+# run's end clears it. One left by a worker that died is stale after this long.
+UNDERSTANDING_STALE = timedelta(minutes=15)
+
+
+def understanding(row: Mapping[Any, Any], *, now: datetime) -> bool:
+    """Ready, and its understanding still going on (``UNDERSTANDING_STALE``). O(1)."""
+    progress = row["progress"]
+    if row["status"] != "ready" or not isinstance(progress, Mapping):
+        return False
+    try:
+        ready_at = datetime.fromisoformat(str(progress["ready_at"]))
+    except (KeyError, ValueError):
+        return False
+    return ready_at.tzinfo is not None and now - ready_at < UNDERSTANDING_STALE
+
+
 def document_time_left(row: Mapping[Any, Any], *, now: datetime) -> dict[str, Any] | None:
     """``TimeLeft`` (PRD 4 #13): how long until ready, while the document is being read
     or understood and is out of Trash; else None. Never on a newer version. O(1)."""
@@ -213,6 +231,7 @@ def document_summary(
         ),
         "progress": in_progress(row["status"], row["progress"]),
         "time_left": document_time_left(row, now=now),
+        "understanding": understanding(row, now=now),  # ready, its card and map still coming
         "doc_type": row["doc_type"],  # PRD 2 D3: from the document card; null without one
         "languages": list(row["languages"] or []),
         "attempts": int(row["attempts"]),

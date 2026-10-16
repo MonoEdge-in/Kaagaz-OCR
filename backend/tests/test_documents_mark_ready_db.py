@@ -7,14 +7,20 @@ stays not current. ``mark_ready`` takes the family lock first, so two versions
 finishing at the same moment queue, and a family never has 0 or 2 current rows.
 """
 
+import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import Connection, text
 
 from kaagaz.db.documents import PgDocuments, mark_ready
 from kaagaz.db.engine import Database
+from kaagaz.db.pipeline_store import PgPipelineStore
+from kaagaz.db.runs import PgRuns, is_run_open
+from kaagaz.jobs.worker import Superseded
+from kaagaz.pipeline import DocumentContent
 from tests.db_support import insert_document, name_session, new_customer, wait_until_blocked
 
 pytestmark = pytest.mark.db
@@ -153,3 +159,57 @@ def test_two_versions_finishing_at_once_leave_exactly_one_current(db: Database, 
         ("ready", False, 1),
         ("ready", True, 1),
     ]
+
+
+def test_ready_first_keeps_its_run_open_and_progress_and_a_read_again_refuses_its_writes(
+    db: Database,
+) -> None:
+    """Ready first (16 Oct 2026): ready with the run still open (its understanding goes on) and
+    the progress kept; a plain ready clears it; once a read again set the document back to
+    received, the run's second save and its ready are refused (Superseded), changing nothing."""
+    customer, _ = new_customer(db)
+    marker = {"step": "understanding", "done": 0, "total": 2, "ready_at": "2026-10-16T10:00:00+00:00"}
+    with db.customer(customer) as conn:
+        document = insert_document(conn, customer, status="clean")
+        conn.execute(
+            text("UPDATE documents SET progress = CAST(:p AS jsonb) WHERE customer_id = :c AND id = :d"),
+            {"p": json.dumps(marker), "c": customer, "d": document},
+        )
+    run_id = PgRuns(db).start(customer, document, now=datetime(2026, 10, 16, 10, 0, tzinfo=UTC))
+    documents = PgDocuments(db)
+
+    documents.mark_ready(customer, document, 1, open_run=run_id)
+
+    def state() -> tuple[str, object, bool]:
+        with db.customer(customer) as conn:
+            status, progress = conn.execute(
+                text("SELECT status, progress FROM documents WHERE customer_id = :c AND id = :d"),
+                {"c": customer, "d": document},
+            ).one()
+            return str(status), progress, is_run_open(conn, customer, document, run_id)
+
+    assert state() == ("ready", marker, True)
+    with db.customer(customer) as conn:  # a read again, as mark_for_reprocess leaves it
+        conn.execute(
+            text(
+                "UPDATE documents SET status = 'received', progress = NULL WHERE customer_id = :c AND id = :d"
+            ),
+            {"c": customer, "d": document},
+        )
+    with pytest.raises(Superseded):
+        PgPipelineStore(db).save(
+            DocumentContent(customer, document, [], [], [], [], reader=""), run_id=run_id
+        )
+    with pytest.raises(Superseded):
+        documents.mark_ready(customer, document, 1, open_run=run_id)
+    assert state() == ("received", None, True)
+    with db.customer(customer) as conn:
+        conn.execute(
+            text(
+                "UPDATE documents SET status = 'clean', progress = CAST(:p AS jsonb)"
+                " WHERE customer_id = :c AND id = :d"
+            ),
+            {"p": json.dumps(marker), "c": customer, "d": document},
+        )
+    documents.mark_ready(customer, document, 1)  # no run: ready, and the progress cleared
+    assert state() == ("ready", None, True)

@@ -7,6 +7,7 @@ counts a model's pages read at once. tests/test_replay_scan.py proves the saved 
 unchanged."""
 
 import io
+import itertools
 import threading
 import time
 import unittest
@@ -18,6 +19,7 @@ from PIL import Image
 from sqlalchemy.exc import OperationalError
 
 from kaagaz import cli
+from kaagaz.ai import openrouter
 from kaagaz.ai.replies import ModelOutputError
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -316,19 +318,39 @@ class ReadyBeforeIndexTest(unittest.TestCase):
                 self.assertIn(code, {"model_down", "OperationalError", "BackendUnavailable"})
                 self.assertNotIn("gone", code)
 
-    def test_embeddings_go_at_once_through_the_one_client_in_order(self) -> None:
-        client = _client("http://127.0.0.1:9/api/v1")
+    def test_embeddings_go_16_at_once_through_the_one_gate_in_order(self) -> None:
+        """EMBED_FAN_OUT 16 (16 Oct 2026): 16 requests in flight, their starts still spaced by
+        the limiter (MODEL_RPM), the vectors in the texts' order."""
+        client = _client("http://127.0.0.1:9/api/v1", model_rpm=3000)  # one start every 0.02 s
+        lock, slots, flying = threading.Lock(), [], [0, 0]  # flying: now, most at once
+        take_slot = client.gate.take_slot
 
-        def call(path: str, body: dict[str, Any], deadline: float) -> dict[str, Any]:
-            time.sleep(0.3)
+        def booked(deadline: float, model: str) -> float:
+            start = take_slot(deadline, model)
+            slots.append(start)  # the limiter's own start times, under its lock
+            return start
+
+        def send(path: str, body: dict[str, Any], timeout: float, **_options: Any) -> Any:
+            with lock:
+                flying[0] += 1
+                flying[1] = max(flying)
+            time.sleep(0.4)
+            with lock:
+                flying[0] -= 1
             number = float(body["input"][0].split()[-1])
-            return {"data": [{"embedding": [number, 0.5, 0.25, 1.0], "index": 0}]}
+            reply = {"data": [{"embedding": [number, 0.5, 0.25, 1.0], "index": 0}]}
+            return openrouter._Reply(200, None, reply)
 
-        with mock.patch.object(client, "_call", call):
+        with mock.patch.object(client, "_send", send), mock.patch.object(client.gate, "take_slot", booked):
             started = time.perf_counter()
-            vectors = client.embed([f"piece {n}" for n in range(8)])
-        self.assertLess(time.perf_counter() - started, 1.2)  # one after another: 2.4 s
-        self.assertEqual([vector[0] for vector in vectors], [float(n) for n in range(8)])
+            vectors = client.embed([f"piece {n}" for n in range(16)])
+        self.assertEqual(openrouter.EMBED_FAN_OUT, 16)
+        self.assertLess(time.perf_counter() - started, 0.95)  # 8 at once: two rounds, over 0.8 s
+        self.assertEqual(flying[1], 16)
+        slots.sort()
+        gaps = [later - earlier for earlier, later in itertools.pairwise(slots)]
+        self.assertGreaterEqual(min(gaps), client.gate.interval - 1e-9)  # MODEL_RPM still holds
+        self.assertEqual([vector[0] for vector in vectors], [float(n) for n in range(16)])
 
 
 class PicturesAtOnceTest(unittest.TestCase):
@@ -357,10 +379,20 @@ class SettingsAndCliTest(unittest.TestCase):
         with self.assertRaisesRegex(SettingsError, "CAREFUL_EARLY_MAX_PAGES"):
             Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES="-1"))
 
+    def test_the_servers_12_pages_at_once_is_a_valid_setting(self) -> None:
+        """Ready first (16 Oct 2026): OCR_PAGE_CONCURRENCY=12 reads 10 pages in one round."""
+        self.assertEqual(Settings.from_env(shipped(OCR_PAGE_CONCURRENCY="12")).ocr_page_concurrency, 12)
+
     def test_scan_times_prints_each_step_in_seconds_and_ids_only(self) -> None:
         from datetime import UTC, datetime, timedelta
 
         t0 = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
+        config = {
+            "seconds_preparing": 1.2,
+            "seconds_reading": 5.0,
+            "seconds_card": 1.5,
+            "reading": {"escalated": [{"page": 2, "reasons": ["handwritten"]}]},
+        }
         row = {
             "document_id": "d-1",
             "pages_ocr": 7,
@@ -368,15 +400,19 @@ class SettingsAndCliTest(unittest.TestCase):
             "started_at": t0 + timedelta(seconds=1),
             "finished_at": t0 + timedelta(seconds=9.5),
             "indexed_at": t0 + timedelta(seconds=14),
-            "config": {
-                "seconds_preparing": 1.2,
-                "seconds_reading": 5.0,
-                "seconds_card": 1.5,
-                "reading": {"escalated": [{"page": 2, "reasons": ["handwritten"]}]},
-            },
+            "config": config,
         }
         self.assertEqual(
             cli.scan_times_line(row),
             "document d-1 ocr_pages 7 upload_to_ready 9.5 queued 1.0 run_to_ready 8.5 preparing 1.2"
-            " reading 5.0 careful inline(1 pages) card 1.5 map - checker - index_after_ready 4.5",
+            " reading 5.0 careful inline(1 pages) card 1.5 map - checker - understood_after_ready -"
+            " index_after_ready 4.5",
+        )
+        # Ready first: ready 4 s into the run, understood 4.5 s more, the run's end after that.
+        ready_first = {**row, "config": {**config, "seconds_to_ready": 4.0, "seconds_after_ready": 4.5}}
+        self.assertEqual(
+            cli.scan_times_line(ready_first),
+            "document d-1 ocr_pages 7 upload_to_ready 5.0 queued 1.0 run_to_ready 4.0 preparing 1.2"
+            " reading 5.0 careful inline(1 pages) card 1.5 map - checker - understood_after_ready 4.5"
+            " index_after_ready 9.0",
         )

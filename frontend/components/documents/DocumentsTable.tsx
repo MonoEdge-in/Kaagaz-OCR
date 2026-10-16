@@ -53,7 +53,7 @@ import type { FolderTree } from "./folderTree";
 import { BusyLabel } from "./BusyLabel";
 import type { EditAction, RowAction } from "./library";
 import { rowsInPlace } from "./listMerge";
-import { deletedMessage, flaggedText, formatProgressPercent, scanWords, toReview } from "./logic";
+import { UNDERSTANDING_TEXT, deletedMessage, flaggedText, formatProgressPercent, scanWords, toReview } from "./logic";
 import { StatusChip } from "./StatusChip";
 import { TimeLeft } from "./TimeLeft";
 import { WrapName } from "./WrapName";
@@ -809,10 +809,16 @@ export function StatusCell({ document, inTrash }: { document: DocumentSummary; i
           <StatusChip status="ready" text="Scan complete" />
         </span>
         <span className={styles.statusLine}>
-          {!clean && (
-            <span className={`${styles.statusText} mono`} title={flagged}>
-              {flagged}
+          {document.understanding === true ? (
+            <span className={styles.statusText} title={UNDERSTANDING_TEXT}>
+              {UNDERSTANDING_TEXT}
             </span>
+          ) : (
+            !clean && (
+              <span className={`${styles.statusText} mono`} title={flagged}>
+                {flagged}
+              </span>
+            )
           )}
           {!inTrash && toReview(document) && (
             <Link href={`/documents/${document.id}`} className={styles.statusAction} onClick={rememberListScroll}>

@@ -101,12 +101,14 @@ off or invalid reply, and a whole page cut off before its halves, are paid for t
 illegible_words, unpinned and no_text to the model's own.
 
 **Dynamic and Ensemble** (features 26 and 27, council 15 Oct 2026, ``DocumentPages``).
-A page is read at the document's thinking level, and cached under
-``cache_prompt_version`` (C4). Dynamic reads a document twice through the readers: the
-second time each page's first read comes back from ``memo`` with no call, and the
-pages in ``escalate`` are read with Careful (``_dynamic``), at OCR_RETRY_THINKING_LEVEL
-(Tushar, 16 Oct 2026). A document of at most DYNAMIC_MAX_PAGES pages is read once, each
-page's Careful read on its own thread (``_inline_careful``, fast scan, council 16 Oct
+A page is read at the document's thinking level (Dynamic's: low, ``db.models.resolve_scan``),
+and cached under ``cache_prompt_version`` (C4). Dynamic reads a document twice through the
+readers: the second time each page's first read comes back from ``memo`` with no call, and
+the pages in ``escalate`` are read with Careful (``_dynamic``), at OCR_RETRY_THINKING_LEVEL
+(Tushar, 16 Oct 2026); Careful may be the lead model itself (one allowed model): its low
+first read and high Careful read are two different calls. A document of at most
+DYNAMIC_MAX_PAGES pages is read once, each page's Careful read on its own thread
+(``_inline_careful``, fast scan, council 16 Oct
 2026). Ensemble's other models read each page numbered up to ENSEMBLE_MAX_PAGES at the
 same time as the main model (``_ensemble``), and their reads ride on the page
 (``PageRead.others``) for the vote on the values that need review
@@ -563,9 +565,10 @@ class GeminiEngine:
         self, page: Callable[..., PageRead], pages: DocumentPages, agent: tuple[str, str]
     ) -> PageRead | None:
         """Careful's read of the page (C5): the normal resolution at OCR_RETRY_THINKING_LEVEL
-        (Tushar, 16 Oct 2026: the first read is at the document's level, Careful always
-        harder), cached under Careful's model, billed as careful; None when it fails (an
-        outage: the first read stays)."""
+        (Tushar, 16 Oct 2026: the first read is at the document's level, low under Dynamic,
+        Careful always harder; with no Careful tier, the lead model itself), cached under
+        Careful's model and level, billed as careful; None when it fails (an outage: the
+        first read stays)."""
         model, provider = agent
         careful_pages = dataclasses.replace(
             pages,

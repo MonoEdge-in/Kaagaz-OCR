@@ -37,6 +37,7 @@ import { downloadHref, folderTrail } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
 import { FILED_HERE_TEXT } from "@/components/documents/batchTray";
+import { UNDERSTANDING_TEXT } from "@/components/documents/logic";
 import { StatusChip } from "@/components/documents/StatusChip";
 import { TimeLeft } from "@/components/documents/TimeLeft";
 import { AutofileNote } from "@/components/documents/UploadArea";
@@ -139,6 +140,8 @@ export function DocumentView({
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
   const settling = useRef<"read" | "again" | null>(null);
   const readingAgain = useRef(false);
+  // Ready first: the detail shown came while the document was still being understood.
+  const loadedUnderstanding = useRef(false);
   // "Add meaning": what it is for, and the button that opened it (focus goes back there).
   const [adding, setAdding] = useState<{ text: string; region: Region } | null>(null);
   const opener = useRef<HTMLElement | null>(null);
@@ -160,12 +163,16 @@ export function DocumentView({
     onResult: (summary) => {
       merge(summary);
       if (beingRead(summary.status)) return;
-      settling.current = readingAgain.current ? "again" : "read";
-      readingAgain.current = false;
+      // Ready first: the detail once ready (said aloud), and again once understood (its card).
+      if (summary.understanding === true && loadedUnderstanding.current) return;
+      if (!loadedUnderstanding.current) {
+        settling.current = readingAgain.current ? "again" : "read";
+        readingAgain.current = false;
+      }
       setReloads((n) => n + 1);
     },
     onFailure: () => undefined, // it keeps trying; the page shows what it has
-    again: (summary) => beingRead(summary.status),
+    again: (summary) => beingRead(summary.status) || summary.understanding === true,
     signature: (summary) => progressSignature([summary]),
   });
 
@@ -175,8 +182,11 @@ export function DocumentView({
       .then((detail) => {
         if (cancelled) return;
         setLoaded({ attempt, detail });
-        if (beingRead(detail.status)) poll.later();
-        else if (settling.current) setAnnouncement(settledText(detail, settling.current === "again"));
+        loadedUnderstanding.current = detail.understanding === true;
+        if (beingRead(detail.status) || loadedUnderstanding.current) poll.later();
+        if (!beingRead(detail.status) && settling.current) {
+          setAnnouncement(settledText(detail, settling.current === "again"));
+        }
         settling.current = null;
       })
       .catch((error: unknown) => {
@@ -477,6 +487,7 @@ export function DocumentView({
         <div className={styles.status}>
           {/* D4 / DD2: a ready document is its badge alone; other states keep the server's words. */}
           {detail.status !== "ready" && <span>{detail.status_message}</span>}
+          {detail.status === "ready" && detail.understanding === true && <span>{UNDERSTANDING_TEXT}</span>}
           <TimeLeft document={detail} />
           <span className={styles.meta}>
             {typeLabel(detail.detected_type)}
