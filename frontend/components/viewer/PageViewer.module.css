@@ -423,3 +423,73 @@
 .legend .swatch:not([data-quality="illegible"]) {
   background-color: var(--paper);
 }
+
+/* Words flagged for review (scan review UX rules, section 2): Check a dotted underline and
+   "?", Review a solid underline and "!". The page is paper white in both themes, so the
+   paper-fixed amber and red are used. Drawn over the page: nothing on it moves. */
+.flag {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.flag::before {
+  content: "";
+  position: absolute;
+  top: min(0px, calc(50% - 12px));
+  bottom: min(0px, calc(50% - 12px));
+  left: min(0px, calc(50% - 12px));
+  right: min(0px, calc(50% - 12px));
+}
+
+.flag[data-band="check"] {
+  border-bottom: 2px dotted var(--hl-border);
+}
+
+.flag[data-band="review"] {
+  border-bottom: 2px solid var(--illegible-on-paper);
+}
+
+.flag::after {
+  position: absolute;
+  inset-block-start: -8px;
+  inset-inline-end: -8px;
+  display: grid;
+  place-items: center;
+  inline-size: 14px;
+  block-size: 14px;
+  border-radius: 2px;
+  background: var(--paper);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.flag[data-band="check"]::after {
+  content: "?";
+  content: "?" / "";
+  color: var(--hl-border);
+  border: 1px dotted var(--hl-border);
+}
+
+.flag[data-band="review"]::after {
+  content: "!";
+  content: "!" / "";
+  color: var(--illegible-on-paper);
+  border: 1px solid var(--illegible-on-paper);
+}
+
+/* In Ensemble now: a hairline dashed outline, subtle; the word stays pressable. */
+.flag[data-state="in_ensemble"] {
+  outline: 1px dashed var(--mine-on-paper);
+  outline-offset: 1px;
+}
+
+.flag[aria-current="true"],
+.flag:focus-visible {
+  outline: 2px solid var(--mine-on-paper);
+  outline-offset: 2px;
+}

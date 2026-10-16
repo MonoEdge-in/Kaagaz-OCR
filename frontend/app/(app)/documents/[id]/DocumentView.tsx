@@ -26,6 +26,11 @@
 // says so above it (Y4). A mark pressed on the page shows its spot and opens Scanned
 // text, with both readings; pointing at a mark or its chip lights the other (DD7).
 // A family Kaagaz filed by its type says "Filed here by Kaagaz · Undo" (feature 28).
+// Word-level review (scan review UX rules, 16 Oct 2026): the summary bar above the page
+// (WordReview.tsx), the header's trust signals (words, flagged, reviewed, last change),
+// flagged words marked on the page and in Scanned text, and review mode: the Needs
+// attention tab becomes the review panel (ReviewPanel.tsx); leaving it puts focus back
+// on the word on the page.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -74,20 +79,31 @@ import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/
 import { selectSpot, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { canReview } from "@/components/review/review";
+import { flagDomId, trustText } from "@/components/review/wordReview";
 import { getDocument, getDocumentSummary, getPageReadings } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
 import { decodeRegion } from "@/lib/regions";
 import { useSession } from "@/lib/session";
-import type { DocumentDetail, DocumentSummary, ExtractedValue, PageSummary, ReadingMark, Region } from "@/lib/types";
+import type {
+  DocumentDetail,
+  DocumentSummary,
+  ExtractedValue,
+  PageSummary,
+  ReadingMark,
+  Region,
+  WordFlag,
+} from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import { AttentionPanel, CardPanel, InvoicePanel, RelatedPanel, attentionCount } from "./DocumentPanels";
 import { DocumentMenu } from "./DocumentMenu";
 import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
+import { ReviewPanel } from "./ReviewPanel";
 import { StoryPanel } from "./StoryPanel";
 import styles from "./DocumentView.module.css";
+import { ExportDialog, SummaryBar, useEnsembleStart, useWordReview } from "./WordReview";
 
 export interface DocumentViewProps {
   documentId: string;
@@ -147,6 +163,14 @@ export function DocumentView({
   const [adding, setAdding] = useState<{ text: string; region: Region } | null>(null);
   const opener = useRef<HTMLElement | null>(null);
   const [allValues, setAllValues] = useState(false); // "Show all N" pressed
+  // Word-level review: on or off, the word being reviewed, the export dialog.
+  const [reviewing, setReviewing] = useState(false);
+  const [currentFlag, setCurrentFlag] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const reviewButton = useRef<HTMLButtonElement | null>(null);
+  const reviewHeading = useRef<HTMLHeadingElement | null>(null);
+  const review = useWordReview(documentId, reloads);
+  const ensemble = useEnsembleStart(documentId, review, setAnnouncement);
 
   // While it is read: merge each summary; once it settles, ask for the detail once.
   const merge = (summary: DocumentSummary) =>
@@ -308,6 +332,30 @@ export function DocumentView({
     if (mark.region.kind === "box" && hasScannedText) setTab("scanned");
   };
   const lowResolution = page ? lowResolutionText(page) : null;
+  // The words still to settle are marked on the page and in Scanned text (High: no mark).
+  const openFlags = review.flags.filter((flag) => flag.state !== "reviewed" && flag.state !== "resolved");
+  const pageFlags = page ? openFlags.filter((flag) => flag.page_no === page.page_no) : [];
+  const toWord = (key: string) => {
+    setCurrentFlag(key);
+    const flag = review.flags.find((each) => each.word_key === key);
+    if (!flag) return;
+    choose(selectSpot(flag.region, null));
+    bringPage(flag.region);
+  };
+  const startReview = (flag?: WordFlag) => {
+    const first = flag ?? openFlags[0] ?? review.flags[0];
+    if (reviewing && tab === "attention" && !flag) reviewHeading.current?.focus();
+    setReviewing(true);
+    setTab("attention");
+    if (first) toWord(first.word_key);
+  };
+  const exitReview = () => {
+    setReviewing(false);
+    const word = currentFlag;
+    requestAnimationFrame(() => {
+      (document.getElementById(flagDomId(word ?? "")) ?? reviewButton.current)?.focus();
+    });
+  };
   const panel = { detail, active: selection?.region ?? null, onShow: showSpot };
 
   const pagesText =
@@ -494,6 +542,7 @@ export function DocumentView({
             {typeLabel(detail.detected_type)}
             <span className="mono">{pagesText}</span>
           </span>
+          {review.status?.summary && <span className={`${styles.meta} tabular`}>{trustText(review.status)}</span>}
           {trail.length === 0 && <span className={styles.meta}>Not in a folder</span>}
           <AutofileNote
             document={detail}
@@ -575,6 +624,20 @@ export function DocumentView({
           </p>
         )}
       </header>
+      <SummaryBar
+        documentId={detail.id}
+        review={review}
+        scanning={detail.status_message}
+        reviewing={reviewing}
+        reviewRef={reviewButton}
+        onReview={() => startReview()}
+        onEnsemble={(scope) => void ensemble.ask(scope)}
+        ensembleBusy={ensemble.busy}
+        ensembleError={ensemble.error}
+        onExport={() => setExporting(true)}
+        download={download}
+        say={setAnnouncement}
+      />
       <p className="visually-hidden" aria-live="polite">
         {announcement}
       </p>
@@ -601,6 +664,9 @@ export function DocumentView({
               onMark={showMark}
               hotMark={hotMark}
               onHotMark={setHotMark}
+              flags={pageFlags}
+              activeFlag={reviewing ? currentFlag : null}
+              onFlag={startReview}
             />
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
@@ -618,6 +684,18 @@ export function DocumentView({
                   <RelatedPanel detail={detail} />
                   <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
                 </>
+              ) : shownTab === "attention" && reviewing && review.status ? (
+                <ReviewPanel
+                  detail={detail}
+                  review={review}
+                  current={currentFlag}
+                  onCurrent={toWord}
+                  onExit={exitReview}
+                  ensembleAllowed={review.status.ensemble.allowed && review.status.can_review}
+                  onEnsemble={(scope, keys) => void ensemble.ask(scope, keys)}
+                  say={setAnnouncement}
+                  headingRef={reviewHeading}
+                />
               ) : shownTab === "attention" ? (
                 <>
                   {page && (
@@ -658,6 +736,7 @@ export function DocumentView({
                     onShow={showLine}
                     onClose={() => document.getElementById(tabId("scanned"))?.focus()}
                     onAddMeaning={addMeaning}
+                    flags={pageFlags}
                   />
                 )
               ) : (
@@ -667,6 +746,18 @@ export function DocumentView({
           </PanelTabs>
         </div>
       </div>
+      {ensemble.sheet}
+      {exporting && review.status && (
+        <ExportDialog
+          status={review.status}
+          download={download}
+          onReview={() => {
+            setExporting(false);
+            startReview();
+          }}
+          onClose={() => setExporting(false)}
+        />
+      )}
       {adding && (
         <AddMeaningDialog
           documentId={detail.id}

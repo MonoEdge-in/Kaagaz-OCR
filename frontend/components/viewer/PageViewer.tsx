@@ -21,7 +21,9 @@
 // layer of marks on the full page, each a button with its own pattern, with a
 // "Show reading problems" toggle in the toolbar (its legend in a tooltip, DD9), on at
 // first for an uncertain or unreadable page. A highlighted spot is zoomed to readable size (focusZoom)
-// and scrolled to the middle of the frame, then into view, with a short pulse.
+// and scrolled to the middle of the frame, then into view, with a short pulse. Words
+// flagged for review (scan review UX rules, section 2) are a third layer: each a button
+// with its band's underline and glyph ("?" Check, "!" Review) and its words as its name.
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
@@ -32,11 +34,12 @@ import { IconButton } from "@/components/ui/IconButton";
 import { markerId } from "@/components/words/ViewerWords";
 import { markerRect } from "@/components/words/spots";
 import type { Marker } from "@/components/words/spots";
+import { flagDomId, flagLabel, IN_ENSEMBLE } from "@/components/review/wordReview";
 import { pageImageUrl } from "@/lib/api";
 import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
 import { boxToPixels, cropRect, framedCropView, pageAspect, regionsOnPage } from "@/lib/regions";
 import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
-import type { DocumentSummary, PageSummary, ReadingMark, Region } from "@/lib/types";
+import type { DocumentSummary, PageSummary, ReadingMark, Region, WordFlag } from "@/lib/types";
 import { MARK_WORDS, legend, markName, markRect, marksOnPage, showByDefault } from "./readingMarks";
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
@@ -87,6 +90,12 @@ export interface PageViewerProps {
   /** DD7: the reading problem pointed at (its index on the page), here or in its list. */
   hotMark?: number | null;
   onHotMark?: (index: number | null) => void;
+  /** Words still flagged for review on this page, the one being reviewed, and what a press does. */
+  flags?: WordFlag[];
+  activeFlag?: string | null;
+  onFlag?: (flag: WordFlag) => void;
+  /** A crop's tallest size (the review panel zooms its crop with it). */
+  cropMaxHeight?: number;
 }
 
 export function PageViewer({
@@ -106,6 +115,10 @@ export function PageViewer({
   highlightNote,
   hotMark = null,
   onHotMark,
+  flags = [],
+  activeFlag = null,
+  onFlag,
+  cropMaxHeight = CROP_MAX_HEIGHT,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -371,6 +384,28 @@ export function PageViewer({
               </div>
             );
           })}
+      {crop
+        ? null
+        : flags.map((flag) => {
+            if (flag.region.kind !== "box" || flag.page_no !== page.page_no) return null;
+            const px = markerRect(flag.region.box, width, height);
+            const name = `${flagLabel(flag)}${flag.state === "in_ensemble" ? `, ${IN_ENSEMBLE}` : ""}`;
+            return (
+              <button
+                key={flag.word_key}
+                id={flagDomId(flag.word_key)}
+                type="button"
+                className={styles.flag}
+                data-band={flag.band}
+                data-state={flag.state}
+                aria-current={flag.word_key === activeFlag ? "true" : undefined}
+                aria-label={name}
+                title={name}
+                style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
+                onClick={() => onFlag?.(flag)}
+              />
+            );
+          })}
       {crop || !showProblems
         ? null
         : problems.map((mark, index) => {
@@ -419,7 +454,7 @@ export function PageViewer({
       // The frame's size comes from the page's size and the spot alone, so it holds
       // its place before the page is drawn (or near the screen): nothing jumps.
       const rect = (cropHere ? cropRect(cropHere, page) : null) ?? WHOLE_PAGE;
-      const view = framedCropView(rect, aspect, box.width, CROP_MAX_HEIGHT, MAX_CROP_PAGE_WIDTH, CROP_MARGIN);
+      const view = framedCropView(rect, aspect, box.width, cropMaxHeight, MAX_CROP_PAGE_WIDTH, CROP_MARGIN);
       preview = (
         <>
           <div
