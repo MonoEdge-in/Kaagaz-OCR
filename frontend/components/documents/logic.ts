@@ -2,6 +2,7 @@
 // they are unit tested in node (tests/shell-documents.test.ts).
 
 import { ApiError } from "@/lib/api";
+import { formatDate } from "@/lib/format";
 import type { DocumentStatus, DocumentSummary, UploadLimits } from "@/lib/types";
 
 /** File name endings the backend can take. The server checks the bytes again. */
@@ -404,12 +405,44 @@ export function pagesToCheck(document: Finished): number {
   return document.pages_unreadable + ((document.words_unsure ?? 0) === 0 ? document.pages_uncertain : 0);
 }
 
-/** Something to look at once it is read: the row then ends with "Open to review". */
+/** Something to look at once it is read: the list row then ends with "Review", the tray with "Open to review". */
 export const toReview = (document: Finished) => flaggedCount(document) > 0 || pagesToCheck(document) > 0;
 
 /** After "Scan complete": "12 flagged for review · 2 pages to check", or "Nothing flagged". */
 export function flaggedText(document: Finished): string {
   return flaggedWords(flaggedCount(document), pagesToCheck(document));
+}
+
+/**
+ * The list's status line (Tushar, 16 Oct 2026: "7 flagged…" was cut short): "7 flagged",
+ * "7 flagged · 2 pages to check"; and the words its Review link is read out with,
+ * "7 flagged words", "7 flagged words and 2 pages to check".
+ */
+export function flaggedShort(document: Finished): { shown: string; spoken: string } {
+  const flagged = flaggedCount(document);
+  const pages = pagesToCheck(document);
+  const check = pages > 0 ? `${counted(pages, "page")} to check` : "";
+  const words = flagged > 0 ? `${flagged} flagged` : "";
+  const spokenWords = flagged > 0 ? `${words} ${flagged === 1 ? "word" : "words"}` : "";
+  return {
+    shown: [words, check].filter(Boolean).join(" · "),
+    spoken: [spokenWords, check].filter(Boolean).join(" and "),
+  };
+}
+
+/**
+ * The list's Uploaded time, short so it stays on one line: "now", "5m ago", "2h ago",
+ * "3d ago", then the date ("9 Oct 2026"). The exact time goes in its title and is read out.
+ */
+export function shortWhen(iso: string, now: number): string {
+  const at = new Date(iso).getTime();
+  if (Number.isNaN(at)) return "";
+  const minutes = Math.round((now - at) / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 24 * 60) return `${Math.round(minutes / 60)}h ago`;
+  if (minutes < 7 * 24 * 60) return `${Math.round(minutes / (24 * 60))}d ago`;
+  return formatDate(iso);
 }
 
 /** flaggedText for counts, summed over several documents (the status bar). */
