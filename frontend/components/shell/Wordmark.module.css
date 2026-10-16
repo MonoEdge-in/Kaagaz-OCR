@@ -36,13 +36,7 @@ a.wordmark:hover {
   color: var(--fg);
 }
 
-/* The link's target: 24 px, 44 px for touch. */
+/* The link's target: one control tall (32 px, 44 px for touch). */
 a.wordmark {
-  min-height: 24px;
-}
-
-@media (pointer: coarse) {
-  a.wordmark {
-    min-height: 44px;
-  }
+  min-height: var(--control-min);
 }

@@ -121,7 +121,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className={styles.headerEnd}>
             <Form action="/documents" role="search" className={styles.search}>
               <label htmlFor="app-search" className="visually-hidden">
-                Search documents
+                Find a document
               </label>
               <Icon name="search" className={styles.searchIcon} />
               <input
@@ -133,12 +133,12 @@ export function AppShell({ children }: { children: ReactNode }) {
                 enterKeyHint="search"
                 autoComplete="off"
                 maxLength={MAX_SEARCH_LENGTH}
-                placeholder="Search documents"
+                placeholder="Find a document"
                 aria-keyshortcuts="Control+K Meta+K"
-                title="Search documents (Ctrl+K, or Cmd+K on a Mac)"
+                title="Find a document by name (Ctrl+K, or Cmd+K on a Mac)"
               />
             </Form>
-            <Link href="/documents" className="btn btn-primary" onClick={upload}>
+            <Link href="/documents" className={`btn btn-primary ${styles.upload}`} onClick={upload}>
               <Icon name="upload" />
               <span className="narrow-hide">Upload</span>
             </Link>

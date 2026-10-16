@@ -343,8 +343,9 @@
   flex-direction: column;
   align-items: flex-start;
   width: 100%;
-  min-height: var(--h-md);
-  padding: var(--space-2) var(--space-3);
+  min-height: var(--control-h);
+  justify-content: center;
+  padding: var(--space-1) var(--space-3);
   border: 0;
   border-radius: 2px;
   background: transparent;
@@ -375,12 +376,6 @@
   border-top: 1px solid var(--border);
   border-radius: 0;
   color: var(--critical);
-}
-
-@media (pointer: coarse) {
-  .rowMenuItem {
-    min-height: var(--h-lg);
-  }
 }
 
 /* The Users table's short columns (Table.module.css switches at 48rem); the
@@ -430,6 +425,7 @@
 .formButtons {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
 }
@@ -672,7 +668,7 @@
 
 @media (min-width: 768px) {
   .skeletonRow {
-    height: 48px;
+    height: var(--space-12); /* a table row's height */
     border-radius: 2px;
   }
 }
@@ -694,10 +690,17 @@
   color: var(--text-primary);
 }
 
+/* Icon, words and Try again: the icon and the first line of words sit on the
+   button's middle line; a longer message runs on below it. */
 .errorIcon {
   flex: none;
-  margin-top: 3px;
+  height: 1lh;
   color: var(--critical);
+}
+
+.errorIcon,
+.errorBody {
+  margin-block-start: max(0px, (var(--control-h) - 1lh) / 2);
 }
 
 .errorBody {

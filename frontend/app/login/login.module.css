@@ -453,9 +453,10 @@
   align-items: flex-start;
 }
 
+/* As tall as the first line of words, so the icon sits on its middle. */
 .banner svg {
   flex: none;
-  margin-top: 1px;
+  height: 1lh;
 }
 
 /* After signing out (SignedOutNotice): calm, not an error. One line high
@@ -469,8 +470,8 @@
   background: var(--surface-2);
 }
 
+/* One control tall, like the fields above it (one control height, 16 Oct 2026). */
 .submit {
-  min-height: var(--h-lg);
   font-size: var(--fs-base);
 }
 
@@ -500,7 +501,7 @@
 .switch a {
   display: inline-flex;
   align-items: center;
-  min-height: 44px;
+  min-height: var(--h-lg);
   font-weight: 600;
 }
 

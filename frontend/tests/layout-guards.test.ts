@@ -320,7 +320,9 @@ describe("layout guards", () => {
     const base = btn.find((rule) => rule.at === "")?.body ?? "";
     expect(base).toMatch(/white-space:\s*nowrap/);
     expect(base).toMatch(/max-width:\s*100%/);
-    expect(base).toMatch(/height:\s*var\(--h-md\)/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height / centred icons): --control-h,
+    // the height fields share (36px, 44px on touch).
+    expect(base).toMatch(/height:\s*var\(--control-h\)/);
     const narrow = btn.find((rule) => rule.at === "@media (max-width: 479.98px)")?.body ?? "";
     expect(narrow).toMatch(/height:\s*auto;[\s\S]*white-space:\s*normal/);
     const nowrap = everyRule(NOWRAP).filter(({ file, rule }) => file !== "app/globals.css" && /\.btn\b/.test(rule.selector));
@@ -453,7 +455,9 @@ describe("layout guards", () => {
   it("gives the chat's small links a 44px tap area on touch, without moving the text", () => {
     const coarse = rules(read("components/chat/Chat.module.css")).filter((rule) => rule.at === "@media (pointer: coarse)");
     const body = (selector: string) => coarse.find((rule) => selectors(rule).includes(selector))?.body ?? "";
-    expect(body(".docChip")).toMatch(/min-height:\s*44px/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height / centred icons): a document chip
+    // is one control tall, --control-h, which is 44px on touch by itself.
+    expect(rulesFor("components/chat/Chat.module.css", ".docChip")[0]?.body).toMatch(/min-height:\s*var\(--control-h\)/);
     expect(body(".cite")).toMatch(/position:\s*relative/);
     expect(body(".cite::after")).toMatch(/inset:\s*-9px/); // the 26px chip plus 9px each side
   });

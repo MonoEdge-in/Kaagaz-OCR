@@ -32,7 +32,10 @@ describe("one Manage menu per organisation", () => {
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('id="org-ai-1"'); // AI settings gives focus back here
     expect(html.match(/<button/g)).toHaveLength(1); // the menu itself is drawn only when open
-    expect(rule(".manage")).toContain("min-height: 32px;");
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height / centred icons): Manage is a
+    // plain .btn, one control tall like the rest of the row, no 32px rule of its own.
+    expect(html).toContain('class="btn"');
+    expect(rule(".manage")).toBe("");
   });
 
   it("lists Admins, AI settings and auto-filing, then the status changes after a separator", () => {

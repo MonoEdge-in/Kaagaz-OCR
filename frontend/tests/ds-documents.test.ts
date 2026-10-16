@@ -55,7 +55,9 @@ describe("the MonoEdge design system on the documents screens", () => {
   });
 
   it("uses the MonoEdge token names, never the old ones", () => {
-    const old = /var\(--(fg|fg-muted|bg|surface|surface-2|accent-soft|accent-fg|danger-fg|danger-bg|review-[a-z]+|verified-[a-z]+|r-[a-z]+|e-\d|control-h|space-5|space-7|font-sans|paper-frame)\)/;
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height / centred icons): --control-h is
+    // now THE control height (36px, 44px on touch), not an old alias, so screens use it.
+    const old = /var\(--(fg|fg-muted|bg|surface|surface-2|accent-soft|accent-fg|danger-fg|danger-bg|review-[a-z]+|verified-[a-z]+|r-[a-z]+|e-\d|space-5|space-7|font-sans|paper-frame)\)/;
     expect(MODULES.filter((file) => old.test(css(file)))).toEqual([]);
   });
 
