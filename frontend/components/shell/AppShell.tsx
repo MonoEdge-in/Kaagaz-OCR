@@ -7,12 +7,12 @@
 // <main id="main"> has no padding; screens use .page (the chat fills it).
 
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { clearStored } from "@/components/documents/batchTray";
 import { Drawer } from "@/components/ui/Drawer";
 import { IconButton } from "@/components/ui/IconButton";
-import { ApiError, logout, logoutEverywhere } from "@/lib/api";
+import { ApiError, listReview, logout, logoutEverywhere } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
 import { sessionScope, signedOutPath } from "./gate";
@@ -32,6 +32,25 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const links = navLinks(me.user.role, sessionScope(me));
   const pageName = currentPageName(links, pathname);
+  const showsToCheck = links.some((link) => link.toCheck);
+  const [toCheck, setToCheck] = useState(0);
+
+  // The Review link's count, asked again on every page change (one row, so it is
+  // cheap; no timer of its own). A failed ask keeps the last count: it is a hint,
+  // the Review page itself has the real list.
+  useEffect(() => {
+    if (!showsToCheck) return;
+    let cancelled = false;
+    listReview({ limit: 1 }).then(
+      (list) => {
+        if (!cancelled) setToCheck(list.total);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [showsToCheck, pathname]);
 
   // "everywhere" raises the account's session version on the server, which
   // ends this browser's session too, so both end on the sign-in page. It is a
@@ -72,6 +91,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       links={links}
       pathname={pathname}
       me={me}
+      toCheck={showsToCheck ? toCheck : 0}
       signingOut={signingOut}
       signOutError={signOutError}
       onSignOut={signOut}

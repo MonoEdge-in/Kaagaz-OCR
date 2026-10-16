@@ -16,7 +16,15 @@ import {
   usageState,
 } from "@/components/admin/logic";
 import type { UsageState } from "@/components/admin/logic";
-import { UsagePanel, UsageReportView, usageTokens } from "@/components/admin/UsagePanel";
+import {
+  UsagePanel,
+  UsageReportView,
+  compactNumber,
+  periodDays,
+  periodText,
+  shareText,
+  usageTokens,
+} from "@/components/admin/UsagePanel";
 import type { UsageBudget, UsageReport, UsageTotals } from "@/lib/types";
 
 const totals = (changes: Partial<UsageTotals> = {}): UsageTotals => ({
@@ -65,6 +73,10 @@ const REPORT: UsageReport = {
 
 const view = (state: UsageState, onRetry: () => void = () => undefined) =>
   renderToStaticMarkup(createElement(UsageReportView, { state, onRetry }));
+
+/** The dates under the daily bars. */
+const ticks = (html: string) =>
+  Array.from(html.matchAll(/<span class="[^"]*tick_[^"]*"[^>]*>([^<]*)<\/span>/g), (match) => match[1]);
 
 /** The first <button> in a React element tree. */
 function findButton(node: ReactNode): ReactElement | null {
@@ -123,10 +135,11 @@ describe("the Usage tab's states", () => {
     expect(retried).toBe(1);
   });
 
-  it("starts loading, with labelled period and user selects, This month picked", () => {
+  // Changed on purpose (UI mockups board 7, 16 Oct 2026): the filter is "Person", not "User".
+  it("starts loading, with labelled period and person selects, This month picked", () => {
     const html = renderToStaticMarkup(createElement(UsagePanel));
     expect(html).toMatch(/<label[^>]*for="([^"]+)-period"[^>]*>Period<\/label><select id="\1-period"/);
-    expect(html).toMatch(/<label[^>]*for="([^"]+)-user"[^>]*>User<\/label><select id="\1-user"/);
+    expect(html).toMatch(/<label[^>]*for="([^"]+)-user"[^>]*>Person<\/label><select id="\1-user"/);
     expect(html).toContain('<option value="month" selected="">This month</option>');
     expect(html).toContain('<option value="custom">Custom</option>');
     expect(html).toContain("Everyone");
@@ -147,9 +160,14 @@ describe("the report", () => {
 
   // Changed on purpose (UI quality council, 15 Oct 2026): Tushar's decisions (17:40, 18:38), org
   // admins see AI use in tokens only: no money, no spend, no budget.
-  it("has one tile for the tokens used, and no money or budget", () => {
-    expect(html).toContain("Tokens in this period</dt>");
-    expect(html).toContain(">1,50,000</dd>"); // input + output (output counts the thinking)
+  // Changed on purpose (UI mockups board 7, 16 Oct 2026): a short number with its unit, the
+  // period and a day's average; the exact number stays on hover.
+  it("has one tile for the tokens used, with the period and a day's average, and no money or budget", () => {
+    expect(html).toContain("<span>Tokens in this period</span>");
+    expect(html).toContain("1–11 Oct 2026</span></dt>");
+    // input + output (output counts the thinking): 1,50,000 over the 11 days of the period.
+    expect(html).toMatch(/title="1,50,000">150K <span[^>]*>tokens<\/span><\/dd>/);
+    expect(html).toContain(">About 13.6K a day</dd>");
     expect(html).not.toMatch(/spen[dt]|cost|budget|[$₹]|\bRs\b|\bUSD\b/i);
     expect(html).not.toContain("Budget used");
   });
@@ -158,13 +176,15 @@ describe("the report", () => {
     expect(usageTokens(totals())).toBe(150000);
   });
 
+  // Changed on purpose (UI mockups board 7, 16 Oct 2026): By kind of work has a Share column.
   it("has a captioned table each by day, user, kind and document, every header scope=col", () => {
     for (const caption of ["Tokens by day", "By user", "By kind of work", "Top documents"]) {
       expect(html).toMatch(new RegExp(`<caption[^>]*>${caption}</caption>`));
     }
     expect(html).not.toContain("By model");
-    expect(html.match(/<th scope="col"/g)).toHaveLength(3 * 2 + 2);
-    expect(html.match(/<th[ >]/g)).toHaveLength(3 * 2 + 2);
+    expect(html.match(/<th scope="col"/g)).toHaveLength(3 * 2 + 2 + 1);
+    expect(html.match(/<th[ >]/g)).toHaveLength(3 * 2 + 2 + 1);
+    expect(html).toMatch(/<th[^>]*>Person<\/th>/);
   });
 
   it("shows the tokens with tabular figures, the most first", () => {
@@ -184,13 +204,41 @@ describe("the report", () => {
     expect(html).not.toContain('href="/documents/null"');
   });
 
-  it("draws each day's bar with CSS, hidden from screen readers, the number in the cell", () => {
-    const bars = html.match(/<span[^>]*aria-hidden="true"[^>]*style="width:[^"]*"/g) ?? [];
-    expect(bars).toHaveLength(2);
-    expect(bars[0]).toContain("width:100%");
-    expect(bars[1]).toContain("width:50%");
-    expect(html).toContain("<span>1,00,000</span>");
+  // Changed on purpose (UI mockups board 7, 16 Oct 2026): upright bars, one per day of the
+  // period, with the busiest day and a few dates; the table is kept for screen readers only.
+  it("draws an upright bar per day of the period with CSS, hidden from screen readers", () => {
+    const chart = html.slice(html.search(/<div class="[^"]*chart_[^"]*" aria-hidden="true">/), html.indexOf('<div class="visually-hidden">'));
+    expect(chart.length).toBeGreaterThan(0);
+    const bars = chart.match(/<span class="[^"]*dayBar[^"]*" style="height:[^"]*"/g) ?? [];
+    expect(bars).toHaveLength(11); // 1 to 11 Oct, days with no use included
+    expect(bars.slice(0, 9).every((bar) => bar.includes("height:0"))).toBe(true);
+    expect(bars[9]).toContain("height:max(2px, 100%)");
+    expect(bars[10]).toContain("height:max(2px, 50%)");
+    expect(chart).toMatch(/peak[^"]*" style="left:90%;transform:translateX\(-90%\)">100K · 10 Oct</);
+    expect(ticks(chart)).toEqual(["1 Oct", "11 Oct"]); // 8 Oct would crowd 11 Oct
     expect(html).not.toMatch(/<canvas|role="img"/);
+  });
+
+  it("puts a date under the first and last day and each week between", () => {
+    const month = { ...REPORT, from: "2026-10-01", to: "2026-10-31" };
+    expect(ticks(view({ kind: "ready", report: month }))).toEqual(["1 Oct", "8 Oct", "15 Oct", "22 Oct", "31 Oct"]);
+    const year = { ...REPORT, from: "2026-01-01", to: "2026-12-31" };
+    expect(ticks(view({ kind: "ready", report: year })).length).toBeLessThanOrEqual(7);
+  });
+
+  it("keeps the days' numbers in a table that only screen readers get", () => {
+    const hidden = html.slice(html.indexOf('<div class="visually-hidden">'));
+    expect(hidden).toMatch(/^<div class="visually-hidden"><table[^>]*><caption>Tokens by day<\/caption>/);
+    expect(hidden).toContain('class="num">1,00,000</td>');
+    expect(hidden).toContain('class="num">50,000</td>');
+  });
+
+  it("gives each kind of work its share of the tokens, in words and a bar", () => {
+    const kinds = html.slice(html.indexOf("By kind of work"), html.indexOf("Top documents"));
+    expect(kinds).toMatch(
+      /<td role="cell" data-label="Share"><span class="[^"]*barCell[^"]*"><span>50%<\/span><span class="[^"]*bar_[^"]*" aria-hidden="true" style="width:2.5rem"><\/span>/,
+    );
+    expect(html.match(/data-label="Share"/g)).toHaveLength(2); // the kinds only
   });
 
   // Changed on purpose (UI quality council, 15 Oct 2026): the CSV has cost and model columns, so it
@@ -248,6 +296,33 @@ describe("the period, in India time like the server", () => {
     expect(usageRange("custom", { from: "2026-09-01", to: "" }, NOW)).toBeNull();
     expect(usageRange("custom", { from: "2026-09-30", to: "2026-09-01" }, NOW)).toBeNull();
     expect(usageRange("custom", { from: "2026-09-30", to: "2026-09-30" }, NOW)).not.toBeNull();
+  });
+});
+
+describe("the Usage tab's numbers and dates", () => {
+  it("shortens big numbers", () => {
+    expect(compactNumber(4200000)).toBe("4.2M");
+    expect(compactNumber(280000)).toBe("280K");
+    expect(compactNumber(559123)).toBe("559K");
+    expect(compactNumber(950)).toBe("950");
+  });
+
+  it("names the period short, across months and years too", () => {
+    expect(periodText("2026-10-01", "2026-10-15")).toBe("1–15 Oct 2026");
+    expect(periodText("2026-10-15", "2026-10-15")).toBe("15 Oct 2026");
+    expect(periodText("2025-12-28", "2026-01-03")).toBe("28 Dec 2025\u2009–\u20093 Jan 2026");
+  });
+
+  it("counts every day of the period, both ends in, across a month's end", () => {
+    expect(periodDays("2026-09-29", "2026-10-02")).toEqual(["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02"]);
+    expect(periodDays("2026-10-11", "2026-10-11")).toEqual(["2026-10-11"]);
+  });
+
+  it("says a share in whole percent, a sliver as Under 1%", () => {
+    expect(shareText(67, 100)).toBe("67%");
+    expect(shareText(1, 1000)).toBe("Under 1%");
+    expect(shareText(0, 100)).toBe("0%");
+    expect(shareText(0, 0)).toBe("0%");
   });
 });
 

@@ -408,24 +408,133 @@
   gap: var(--space-5);
 }
 
-/* The daily table: the amount, then a bar (decoration: the amount says it). */
+/* The tokens tile: its label with the period on one line (wrapping on a phone),
+   the number with its unit, then a day's average. */
+.usageTile {
+  flex-direction: column;
+}
+
+.usageTileHead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.usageRange {
+  font-variant-numeric: tabular-nums;
+}
+
+.tileUnit {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+.tileNote {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+/* Tokens by day: one upright bar per day, drawn in a box of fixed height so a
+   new period never moves the page below it. */
+.chartCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.chartHead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+}
+
+.chartTitle {
+  font-weight: 600;
+}
+
+.chartNote {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.plot {
+  position: relative;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-template-rows: 100%;
+  align-items: end;
+  height: clamp(8rem, 18svh, 14rem);
+  padding-top: 1.75rem; /* room for the busiest day's label */
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.dayBar {
+  width: 70%;
+  margin-inline: auto;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+}
+
+.peak,
+.tick {
+  position: absolute;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.peak {
+  top: 0;
+  font-weight: 600;
+}
+
+.ticks {
+  position: relative;
+  height: 1.5rem;
+  margin-top: var(--space-1);
+  color: var(--fg-muted);
+}
+
+.tick {
+  top: 0;
+}
+
+/* A kind of work's share: the words, then a bar (decoration: the words say it). */
 .barCell {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .barCell > span:first-child {
   flex: none;
-  min-width: 6rem;
+  min-width: 4.5rem;
 }
 
 .bar {
   display: block;
-  height: 0.75rem;
-  min-width: 1px;
-  max-width: calc(100% - 7rem);
-  border-radius: var(--r-sm);
+  height: 0.5rem;
+  min-width: 2px;
+  border-radius: var(--r-full);
   background: var(--accent);
 }
 
+/* High contrast: the system's text colour, so the bars stay visible. */
+@media (forced-colors: active) {
+  .dayBar,
+  .bar {
+    background: CanvasText;
+  }
+}

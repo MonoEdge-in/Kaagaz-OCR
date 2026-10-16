@@ -338,7 +338,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const uploadButton = (
     <button type="button" className="btn btn-primary" onClick={openPicker}>
       <Icon name="upload" />
-      Upload files
+      Upload<span className="narrow-hide"> files</span>
     </button>
   );
   const readerSelect = (
@@ -573,6 +573,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                             enterKeyHint="search"
                             autoComplete="off"
                             maxLength={MAX_SEARCH_LENGTH}
+                            placeholder="Search documents"
                             ref={searchRef}
                             defaultValue={q}
                           />

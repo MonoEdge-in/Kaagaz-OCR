@@ -1,9 +1,10 @@
 "use client";
 
 // The organisation's AI use (model choice SP2, SP4): pick a period (Today,
-// Last 7 days, This month, or two dates) and, if wanted, one user; then the
-// tokens used, the tokens by day (bars drawn with CSS, the number in the cell; no
-// chart library), by user, kind of work and the top documents. Org admins and their
+// Last 7 days, This month, or two dates) and, if wanted, one person; then the
+// tokens used with the period and a day's average, the tokens by day (upright bars
+// drawn with CSS, no chart library; a hidden table reads the same numbers out), by
+// person, kind of work (with each kind's share) and the top documents. Org admins and their
 // users never see money, spend or the budget: those stay in the super admin's console
 // (Tushar, 15 Oct 2026). Models stay the operator's only.
 // Keyless mode says AI is off rather than "no use".
@@ -30,6 +31,39 @@ const SKELETON_TILES = [0];
 // A by-user row with no user: work no user asked for (the sweeps), or a removed user's.
 export const REMOVED_OR_SYSTEM = "Removed user or system work";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+// The report's days are dates without a time, so they are read and shown in UTC.
+const compactFormat = new Intl.NumberFormat("en-US", { notation: "compact", maximumSignificantDigits: 3 });
+const rangeFormat = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+const tickFormat = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "UTC" });
+const dayDate = (day: string) => new Date(`${day}T00:00:00Z`);
+
+/** 4200000 -> "4.2M", 280000 -> "280K", 950 -> "950". */
+export function compactNumber(value: number): string {
+  return compactFormat.format(value);
+}
+
+/** "1–15 Oct 2026"; "28 Sept – 15 Oct 2026" across months; one date for one day. */
+export function periodText(from: string, to: string): string {
+  return rangeFormat.formatRange(dayDate(from), dayDate(to));
+}
+
+/** Every day from `from` to `to`, both counted, as YYYY-MM-DD. */
+export function periodDays(from: string, to: string): string[] {
+  const days: string[] = [];
+  for (let time = dayDate(from).getTime(); time <= dayDate(to).getTime(); time += DAY_MS) {
+    days.push(new Date(time).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+/** A row's share of all the tokens, in words: "67%", "Under 1%" for a sliver. */
+export function shareText(part: number, all: number): string {
+  if (all <= 0 || part <= 0) return "0%";
+  const percent = Math.round((part / all) * 100);
+  return percent === 0 ? "Under 1%" : `${percent}%`;
+}
+
 /** All tokens of some calls: output_tokens already counts the thinking (reasoning_tokens). */
 export function usageTokens(totals: UsageTokens): number {
   return totals.input_tokens + totals.output_tokens;
@@ -45,8 +79,20 @@ interface Row {
  * One table of rows: a name, then the tokens, the most first (the server sorts by
  * cost). The shared reflow (Table.module.css): cards below 48rem.
  */
-function UsageTable({ caption, first, rows }: { caption: string; first: string; rows: Row[] }) {
+function UsageTable({
+  caption,
+  first,
+  rows,
+  share = false,
+}: {
+  caption: string;
+  first: string;
+  rows: Row[];
+  /** Adds a Share column: each row's part of the table's tokens, in words and a bar. */
+  share?: boolean;
+}) {
   const sorted = [...rows].sort((a, b) => usageTokens(b.totals) - usageTokens(a.totals));
+  const all = rows.reduce((sum, row) => sum + usageTokens(row.totals), 0);
   return (
     <div className={table.reflowWrap}>
       <table className={`table ${table.reflow}`} role="table">
@@ -59,6 +105,11 @@ function UsageTable({ caption, first, rows }: { caption: string; first: string; 
             <th scope="col" role="columnheader" className="num">
               Tokens
             </th>
+            {share && (
+              <th scope="col" role="columnheader">
+                Share
+              </th>
+            )}
           </tr>
         </thead>
         <tbody role="rowgroup">
@@ -70,6 +121,19 @@ function UsageTable({ caption, first, rows }: { caption: string; first: string; 
               <td role="cell" data-label="Tokens" className="num">
                 {formatNumber(usageTokens(row.totals))}
               </td>
+              {share && (
+                <td role="cell" data-label="Share">
+                  <span className={styles.barCell}>
+                    <span>{shareText(usageTokens(row.totals), all)}</span>
+                    {/* All of the tokens would be a 5rem bar. */}
+                    <span
+                      className={styles.bar}
+                      aria-hidden="true"
+                      style={{ width: `${all > 0 ? (usageTokens(row.totals) / all) * 5 : 0}rem` }}
+                    />
+                  </span>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -78,42 +142,91 @@ function UsageTable({ caption, first, rows }: { caption: string; first: string; 
   );
 }
 
-/** Each day's tokens: the number in the cell, and a bar as wide as its share of the heaviest day. */
-function DailyTable({ report }: { report: UsageReport }) {
-  const most = Math.max(0, ...report.by_day.map(usageTokens));
+/**
+ * Each day's tokens as upright bars, one per day of the period (days with no use
+ * stay empty), the busiest day named over its bar and a few dates under them. The
+ * drawing is hidden from screen readers; the table under it (visually hidden) reads
+ * the same numbers out.
+ */
+function DailyChart({ report }: { report: UsageReport }) {
+  const used = new Map(report.by_day.map((day) => [day.day, usageTokens(day)]));
+  const days = periodDays(report.from, report.to).map((day) => ({ day, tokens: used.get(day) ?? 0 }));
+  const most = Math.max(0, ...days.map((day) => day.tokens));
+  const peak = days.find((day) => day.tokens === most);
+  const last = days.length - 1;
+  // A date under the first and the last bar, and every week between (every few weeks
+  // for a long period, so about six fit a phone), leaving out one that would crowd the last.
+  const step = 7 * Math.ceil(days.length / 42);
+  const ticks = days.filter(
+    (_, index) => index === 0 || index === last || (index % step === 0 && last - index >= step / 2),
+  );
+  // left: x% with translateX(-x%) keeps a label inside the box at both ends.
+  const at = (day: string) => {
+    const x = last > 0 ? (days.findIndex((d) => d.day === day) / last) * 100 : 50;
+    return { left: `${x}%`, transform: `translateX(-${x}%)` };
+  };
   return (
-    <div className={table.reflowWrap}>
-      <table className={`table ${table.reflow}`} role="table">
-        <caption className={styles.caption}>Tokens by day</caption>
-        <thead role="rowgroup">
-          <tr role="row">
-            <th scope="col" role="columnheader">
-              Day
-            </th>
-            <th scope="col" role="columnheader" className="num">
-              Tokens
-            </th>
-          </tr>
-        </thead>
-        <tbody role="rowgroup">
-          {report.by_day.map((day) => (
-            <tr key={day.day} role="row">
-              <td role="cell" data-label="Day">
-                {formatDate(`${day.day}T12:00:00+05:30`)}
-              </td>
-              <td role="cell" data-label="Tokens" className={`num ${styles.barCell}`}>
-                <span>{formatNumber(usageTokens(day))}</span>
-                <span
-                  className={styles.bar}
-                  aria-hidden="true"
-                  style={{ width: `${most > 0 ? (usageTokens(day) / most) * 100 : 0}%` }}
-                />
-              </td>
-            </tr>
+    <div className={styles.chartCard}>
+      <div className={styles.chartHead} aria-hidden="true">
+        <span className={styles.chartTitle}>Tokens by day</span>
+        <span className={styles.chartNote}>Each bar is one day</span>
+      </div>
+      <div className={styles.chart} aria-hidden="true">
+        <div className={styles.plot}>
+          {most > 0 && peak && (
+            <span className={styles.peak} style={at(peak.day)}>
+              {compactNumber(most)} · {tickFormat.format(dayDate(peak.day))}
+            </span>
+          )}
+          {days.map(({ day, tokens }) => (
+            <span
+              key={day}
+              className={styles.dayBar}
+              style={{ height: tokens > 0 ? `max(2px, ${(tokens / most) * 100}%)` : 0 }}
+            />
           ))}
-        </tbody>
-      </table>
+        </div>
+        <div className={styles.ticks}>
+          {ticks.map(({ day }) => (
+            <span key={day} className={styles.tick} style={at(day)}>
+              {tickFormat.format(dayDate(day))}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="visually-hidden">
+        <DailyTable report={report} />
+      </div>
     </div>
+  );
+}
+
+/** Each day's tokens, for screen readers (DailyChart draws them). */
+function DailyTable({ report }: { report: UsageReport }) {
+  return (
+    <table className="table" role="table">
+      <caption>Tokens by day</caption>
+      <thead role="rowgroup">
+        <tr role="row">
+          <th scope="col" role="columnheader">
+            Day
+          </th>
+          <th scope="col" role="columnheader" className="num">
+            Tokens
+          </th>
+        </tr>
+      </thead>
+      <tbody role="rowgroup">
+        {report.by_day.map((day) => (
+          <tr key={day.day} role="row">
+            <td role="cell">{formatDate(`${day.day}T12:00:00+05:30`)}</td>
+            <td role="cell" data-label="Tokens" className="num">
+              {formatNumber(usageTokens(day))}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -153,19 +266,28 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
   if (state.kind === "empty") return <p className={styles.emptyLine}>No AI use in this period.</p>;
 
   const { report } = state;
+  const total = usageTokens(report.totals);
+  const days = periodDays(report.from, report.to).length;
   return (
     <>
       <dl className={styles.tiles}>
-        <div className={styles.tile}>
-          <dt className={styles.tileLabel}>Tokens in this period</dt>
-          <dd className={`${styles.tileValue} tabular`}>{formatNumber(usageTokens(report.totals))}</dd>
+        <div className={`${styles.tile} ${styles.usageTile}`}>
+          <dt className={styles.usageTileHead}>
+            <span>Tokens in this period</span>
+            <span className="visually-hidden">, </span>
+            <span className={styles.usageRange}>{periodText(report.from, report.to)}</span>
+          </dt>
+          <dd className={`${styles.tileValue} tabular`} title={formatNumber(total)}>
+            {compactNumber(total)} <span className={styles.tileUnit}>tokens</span>
+          </dd>
+          {days > 1 && <dd className={styles.tileNote}>About {compactNumber(Math.round(total / days))} a day</dd>}
         </div>
       </dl>
       <div className={styles.usageTables}>
-        <DailyTable report={report} />
+        <DailyChart report={report} />
         <UsageTable
           caption="By user"
-          first="User"
+          first="Person"
           rows={report.by_user.map((row) => ({
             key: row.user_id ?? "none",
             name: row.user_name ?? REMOVED_OR_SYSTEM,
@@ -176,6 +298,7 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
           caption="By kind of work"
           first="Kind"
           rows={report.by_kind.map((row) => ({ key: row.kind, name: usageKindText(row.kind), totals: row }))}
+          share
         />
         <UsageTable
           caption="Top documents"
@@ -301,7 +424,7 @@ export function UsagePanel() {
         )}
         <div className="field">
           <label className="label" htmlFor={`${id}-user`}>
-            User
+            Person
           </label>
           <select id={`${id}-user`} className="input" value={userId} onChange={(event) => setUserId(event.target.value)}>
             <option value="">Everyone</option>

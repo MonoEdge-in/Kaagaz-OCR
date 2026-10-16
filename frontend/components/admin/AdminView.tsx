@@ -57,7 +57,13 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
 
   return (
     <div className="page">
-      <h1>Admin</h1>
+      {/* No people count: it would need its own ask for the users list on every tab. */}
+      <header className="page-header">
+        <div>
+          <h1>Admin</h1>
+          <p>{me.customer.name}</p>
+        </div>
+      </header>
       <div role="tablist" aria-label="Admin sections" className={styles.tabs}>
         {TABS.map((tab, index) => {
           const selected = tab.id === active;
