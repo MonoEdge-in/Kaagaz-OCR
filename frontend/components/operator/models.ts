@@ -129,7 +129,10 @@ export const VENDOR_NOT_ALLOWED = "Never used: its maker is not on the allowed l
 
 export const LEVELS: AiLevel[] = ["low", "medium", "high"];
 export const LEVEL_WORDS: Record<AiLevel, string> = { low: "Low", medium: "Medium", high: "High" };
-export const DYNAMIC_HINT = "Picks the right reading for each page.";
+// Cost saving (Tushar, 16 Oct 2026): the super admin's name for Dynamic (its id and the
+// `dynamic` field stay). Organisations never see it: their "Read with" calls it "Automatic".
+export const COST_SAVING = "Cost saving";
+export const DYNAMIC_HINT = "Reads clear pages quickly and spends extra effort only on hard-to-read words.";
 
 export type Area = "scan" | "chat";
 
@@ -347,7 +350,7 @@ const DEFAULT_AREAS: {
   },
   {
     area: "dynamic",
-    label: "Dynamic",
+    label: COST_SAVING,
     changed: (a, b) => a.dynamic !== b.dynamic,
     now: (v) => (v.dynamic === null ? "platform default" : v.dynamic ? "On" : "Off"),
   },

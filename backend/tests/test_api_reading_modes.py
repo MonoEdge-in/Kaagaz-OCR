@@ -80,11 +80,13 @@ def _refused(call: Any) -> tuple[int, str]:
 def test_dynamic_comes_first_and_is_the_default_when_allowed_with_a_careful_tier() -> None:
     offered = readers.readers(ROWS, GEMINI, dynamic=True)
     assert [(reader["id"], reader["title"], reader["default"]) for reader in offered] == [
-        ("dynamic", "Dynamic", True),
+        ("dynamic", "Automatic", True),
         (DEFAULT, "Standard", False),
         (DEARER, "Careful", False),
     ]
-    assert offered[0]["hint"] == "Picks the right reading for each page."
+    # Changed on purpose (Cost saving, 16 Oct 2026): "Cost saving" is the super admin's name for
+    # it; an organisation sees "Automatic", with no cost words.
+    assert offered[0]["hint"] == "Reads clear pages quickly and takes extra care with hard-to-read words."
 
 
 def test_no_dynamic_without_the_switch_but_dynamic_first_without_a_careful_tier() -> None:
@@ -99,8 +101,10 @@ def test_no_dynamic_without_the_switch_but_dynamic_first_without_a_careful_tier(
 
 def test_upload_limits_carry_no_price_or_cost_words(allowed: dict[str, Any]) -> None:
     # Changed on purpose (Ensemble after the scan, 16 Oct 2026): offer gives the readers alone.
+    # Cost saving (16 Oct 2026): the refusals an upload may get are checked too, and "saving".
     words = str(readers.offer(_conn(), str(uuid.uuid4()), GEMINI)).lower()
-    for banned in ("usd", "price", "cost", "budget", "spend", "$", "₹"):
+    words += " ".join(readers._REFUSED.values()).lower() + readers.NOT_ALLOWED.lower()
+    for banned in ("usd", "price", "cost", "budget", "spend", "saving", "$", "₹"):
         assert banned not in words
 
 

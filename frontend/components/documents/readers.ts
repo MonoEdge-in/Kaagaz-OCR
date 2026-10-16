@@ -8,8 +8,9 @@
 // 2026). Standard is the organisation's default, marked (default), picked at
 // first and never sent, since the server reads with it anyway. When the default
 // can't be used now, no reader is marked, and the one shown is sent (MS4, R14).
-// Feature 26 (15 Oct 2026): the server may put "Dynamic" first, the default (it
-// picks the right reading for each page). What is sent is a Reading: read_mode or
+// Feature 26 (15 Oct 2026): the server may put Dynamic first (id "dynamic", titled
+// "Automatic" since 16 Oct 2026), the default (it reads clear pages quickly and takes
+// extra care with hard-to-read words). What is sent is a Reading: read_mode or
 // read_model. Ensemble is offered only after the scan (Tushar, 16 Oct 2026).
 
 import type { UploadReader, UploadReading as Reading } from "@/lib/types";

@@ -9,6 +9,7 @@ No network and no database: the Gemini reader with a scripted client that answer
 model (tests/test_gemini_ocr.py's fakes), behind the real meter and readers in the
 pipeline rig of tests/test_pipeline_gemini.py."""
 
+import dataclasses
 import io
 import threading
 import unittest
@@ -30,6 +31,7 @@ from kaagaz.reading.gemini_ocr import GeminiEngine
 from kaagaz.reading.ocr import (
     CROWDED_LINES,
     DYNAMIC_MAX_PAGES,
+    PATH_PAGE,
     READER_PROMPT_VERSION,
     DocumentPages,
     OcrLine,
@@ -38,6 +40,7 @@ from kaagaz.reading.ocr import (
     cache_prompt_version,
     careful_pages,
 )
+from kaagaz.reading.page_quality import ILLEGIBLE_MARK
 from kaagaz.reading.rapid_pool import PixelBox
 from tests.pdf_builder import make_pdf
 from tests.settings_factory import make_settings
@@ -181,6 +184,13 @@ def ledger() -> Iterator[_Ledger]:
 
 class CarefulPagesTest(unittest.TestCase):
     def test_c5_each_trigger_chooses_the_page_with_its_reason(self) -> None:
+        # Changed on purpose (Cost saving, 16 Oct 2026): the reasons end with how the page is
+        # read again (here the whole page: one line, so its hard line is all of it), and
+        # a fair grade and a crowded page need a hard line too (the next test). Handwriting
+        # stays page wide (Tushar's accuracy first, 16 Oct 2026).
+        illegible = dataclasses.replace(
+            read(issues=("illegible_words",)), lines=(OcrLine(f"Total {ILLEGIBLE_MARK}", 0, 0, 10, 1, None),)
+        )
         cases = {
             "blurry": read(issues=("blurry",)),
             "faint": read(issues=("faint",)),
@@ -189,18 +199,30 @@ class CarefulPagesTest(unittest.TestCase):
             "stamp_over_text": read(issues=("stamp_over_text",)),
             "overwritten": read(issues=("overwritten",)),
             "handwriting_hard": read(issues=("handwriting_hard",)),
-            "illegible_words": read(issues=("illegible_words",)),
+            "illegible_words": illegible,
             "no_text": read(issues=("no_text",), lines=0),
             "handwritten": read(handwritten=True),
-            "quality_fair": read(quality="fair"),
             "quality_poor": read(quality="poor"),
             "unsure_words": read(unsure=1),
-            "crowded": read(lines=CROWDED_LINES),
         }
         for reason, page_read in cases.items():
             with self.subTest(reason):
                 chosen, cap_hit = careful_pages({3: page_read}, lead=STANDARD)
-                self.assertEqual((chosen, cap_hit), ([{"page": 3, "reasons": [reason]}], 0))
+                self.assertEqual((chosen, cap_hit), ([{"page": 3, "reasons": [reason, PATH_PAGE]}], 0))
+
+    def test_cost_saving_a_fair_grade_or_crowding_alone_keeps_the_first_read(self) -> None:
+        """Cost saving (16 Oct 2026): every word sure and no page-wide problem is a clear page."""
+        for reason, page_read in {
+            "quality_fair": read(quality="fair"),
+            "crowded": read(lines=CROWDED_LINES),
+        }.items():
+            with self.subTest(reason):
+                self.assertEqual(careful_pages({3: page_read}, lead=STANDARD), ([], 0))
+        with_a_hard_word = read(handwritten=True, quality="fair", unsure=1)
+        self.assertEqual(
+            careful_pages({3: with_a_hard_word}, lead=STANDARD),
+            ([{"page": 3, "reasons": ["handwritten", "quality_fair", "unsure_words", PATH_PAGE]}], 0),
+        )
 
     def test_c5_never_for_cut_off_low_resolution_tilted_or_a_clean_page(self) -> None:
         for issues in (("cut_off",), ("low_resolution",), ("tilted",), ()):
@@ -214,9 +236,11 @@ class CarefulPagesTest(unittest.TestCase):
         self.assertEqual(careful_pages({2: read(quality="poor")}, lead=STANDARD, read_again={2}), ([], 0))
 
     def test_c5_worst_first_capped_and_the_same_whatever_order_the_pages_were_read_in(self) -> None:
-        reads = {n: read(quality="fair") for n in range(1, DYNAMIC_MAX_PAGES + 6)}
-        reads[30] = read(quality="poor", handwritten=True, issues=("blurry",))  # three reasons: first
-        reads[17] = read(quality="fair", unsure=2)  # two reasons: next
+        # Changed on purpose (Cost saving, 16 Oct 2026): a fair grade alone keeps the first read,
+        # so each page has an unsure word too, and every page one reason more (its path).
+        reads = {n: read(quality="fair", unsure=1) for n in range(1, DYNAMIC_MAX_PAGES + 6)}
+        reads[30] = read(quality="poor", handwritten=True, issues=("blurry",), unsure=1)  # four: first
+        reads[17] = read(quality="fair", handwritten=True, unsure=2)  # three reasons: next
         chosen, cap_hit = careful_pages(reads, lead=STANDARD)
         self.assertEqual([page["page"] for page in chosen[:2]], [30, 17])
         self.assertEqual(len(chosen), DYNAMIC_MAX_PAGES)
@@ -356,7 +380,10 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(len(system.checker.crops), 1)
         config = system.totals(job).config["reading"]
         self.assertEqual(config["mode"], "dynamic")
-        self.assertEqual(config["escalated"], [{"page": 1, "reasons": ["quality_fair", "unsure_words"]}])
+        # Changed on purpose (Cost saving, 16 Oct 2026): the reasons end with the path taken.
+        self.assertEqual(
+            config["escalated"], [{"page": 1, "reasons": ["quality_fair", "unsure_words", PATH_PAGE]}]
+        )
         self.assertEqual(config["cap_hit"], 0)
 
     def test_careful_reads_inside_the_reading_step_and_ready_follows_understanding(self) -> None:

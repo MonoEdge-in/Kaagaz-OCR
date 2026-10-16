@@ -6,10 +6,11 @@ enabled, verified for the reader's prompt, inside both ceilings) come from
 ``db.models.usable_models``, which knows the reader's prompt version itself: the api never
 imports a reader module (the reader plug socket). ``GET /api/upload-limits`` offers:
 
-* ``readers``: "Dynamic" first, the default, when the organisation may use it (its switch
-  is on unless the organisation or the platform turned it off; Tushar, 16 Oct 2026): it
-  picks the right reading for each page, with the Careful tier or, with none, the default
-  model thinking harder (``db.models.resolve_scan``). Then "Standard" (the default
+* ``readers``: "Automatic" (Dynamic, id ``dynamic``; "Cost saving" in the super admin
+  console, never here: Tushar, 16 Oct 2026) first, the default, when the organisation may use
+  it (its switch is on unless the organisation or the platform turned it off): it reads
+  clear pages quickly and takes extra care with hard-to-read words, with the Careful tier
+  or, with none, the default model thinking harder (``db.models.resolve_scan``). Then "Standard" (the default
   without Dynamic) and, when a usable model costs measurably more a page, "Careful", the
   tiers of ``db.models.pick_tiers``. Never a model's name, a price or cost words (Tushar,
   15 Oct 2026: org admins and members never see cost). Auto alone in keyless mode and for
@@ -43,16 +44,18 @@ STANDARD = "Standard"
 STANDARD_HINT = "Right for most documents."
 CAREFUL = "Careful"
 CAREFUL_HINT = "Takes more care with faint, handwritten or crowded pages."
-# Feature 26 (Tushar, 15 Oct 2026): the mode is called Dynamic everywhere.
+# Feature 26 (Tushar, 15 Oct 2026), its id "dynamic". Cost saving (Tushar, 16 Oct 2026): the
+# super admin console calls it "Cost saving"; organisations never see cost words, so here it
+# is "Automatic".
 DYNAMIC = "dynamic"
-DYNAMIC_TITLE = "Dynamic"
-DYNAMIC_HINT = "Picks the right reading for each page."
+DYNAMIC_TITLE = "Automatic"
+DYNAMIC_HINT = "Reads clear pages quickly and takes extra care with hard-to-read words."
 SINGLE, ENSEMBLE = "single", "ensemble"
 # Ensemble after the scan (Tushar, 16 Oct 2026): the audit note of an upload that still asked for it.
 ENSEMBLE_AFTER_SCAN = "ensemble_after_scan"
 _REFUSED = {
     "model_not_allowed": NOT_ALLOWED,
-    "dynamic_not_allowed": "Dynamic reading is no longer available. Choose again from the list.",
+    "dynamic_not_allowed": "Automatic reading is no longer available. Choose again from the list.",
 }
 
 
@@ -95,7 +98,7 @@ def usable(conn: Connection, customer_id: str, settings: Settings) -> list[RowMa
 
 def readers(rows: Sequence[RowMapping], settings: Settings, *, dynamic: bool = False) -> list[dict[str, Any]]:
     """``UploadLimits.readers`` (``ReaderOption``, with ``reason`` null as ``UploadReader``
-    has it): Auto alone when there are no usable models; else "Dynamic" (``dynamic``: the
+    has it): Auto alone when there are no usable models; else "Automatic" (``dynamic``: the
     organisation may use it), marked the default; "Standard",
     the organisation's default (the cheapest a page when its default is not usable now,
     then ``default`` is false, R14; never marked under Dynamic); and "Careful", only when

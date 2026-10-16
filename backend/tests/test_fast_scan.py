@@ -373,8 +373,10 @@ class PicturesAtOnceTest(unittest.TestCase):
 
 
 class SettingsAndCliTest(unittest.TestCase):
-    def test_careful_early_max_pages_is_2_unless_set_and_never_below_0(self) -> None:
-        self.assertEqual(Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES=None)).careful_early_max_pages, 2)
+    def test_careful_early_max_pages_is_0_unless_set_and_never_below_0(self) -> None:
+        # Changed on purpose (Cost saving, 16 Oct 2026): 0 when unset, was 2.
+        self.assertEqual(Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES=None)).careful_early_max_pages, 0)
+        self.assertEqual(Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES="2")).careful_early_max_pages, 2)
         self.assertEqual(Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES="0")).careful_early_max_pages, 0)
         with self.assertRaisesRegex(SettingsError, "CAREFUL_EARLY_MAX_PAGES"):
             Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES="-1"))
@@ -402,17 +404,24 @@ class SettingsAndCliTest(unittest.TestCase):
             "indexed_at": t0 + timedelta(seconds=14),
             "config": config,
         }
+        # Changed on purpose (Cost saving, 16 Oct 2026): careful_words follows careful.
         self.assertEqual(
             cli.scan_times_line(row),
             "document d-1 ocr_pages 7 upload_to_ready 9.5 queued 1.0 run_to_ready 8.5 preparing 1.2"
-            " reading 5.0 careful inline(1 pages) card 1.5 map - checker - understood_after_ready -"
-            " index_after_ready 4.5",
+            " reading 5.0 careful inline(1 pages) careful_words 0 card 1.5 map - checker -"
+            " understood_after_ready - index_after_ready 4.5",
         )
         # Ready first: ready 4 s into the run, understood 4.5 s more, the run's end after that.
         ready_first = {**row, "config": {**config, "seconds_to_ready": 4.0, "seconds_after_ready": 4.5}}
         self.assertEqual(
             cli.scan_times_line(ready_first),
             "document d-1 ocr_pages 7 upload_to_ready 5.0 queued 1.0 run_to_ready 4.0 preparing 1.2"
-            " reading 5.0 careful inline(1 pages) card 1.5 map - checker - understood_after_ready 4.5"
-            " index_after_ready 9.0",
+            " reading 5.0 careful inline(1 pages) careful_words 0 card 1.5 map - checker -"
+            " understood_after_ready 4.5 index_after_ready 9.0",
         )
+        words = [
+            {"page": 1, "reasons": ["unsure_words", "path_words"]},
+            {"page": 2, "reasons": ["blurry", "path_page"]},
+        ]
+        two = {**row, "config": {**config, "reading": {"escalated": words}}}
+        self.assertIn(" careful inline(2 pages) careful_words 1 card", cli.scan_times_line(two))

@@ -149,7 +149,7 @@ function shownTexts(): string[] {
   // Features 25-27 (15 Oct 2026): Dynamic and a value's vote. Changed on purpose (Ensemble
   // after the scan, 16 Oct 2026): the upload picker has no "More than one reader…" now.
   const options = readerOptions([
-    { id: "dynamic", title: "Dynamic", hint: "", available: true, reason: null, default: true },
+    { id: "dynamic", title: "Automatic", hint: "", available: true, reason: null, default: true },
     { id: "google/gemini-3.1-pro-preview", title: "Standard", hint: "", available: true, reason: null },
     { id: "anthropic/claude-sonnet-5.5", title: "Careful", hint: "", available: true, reason: null },
   ]);
@@ -229,6 +229,24 @@ describe("technical words on user and admin screens", () => {
         fields.test(readFileSync(join(app, file), "utf8")),
     );
     expect(readers).toEqual([]);
+  });
+
+  // Cost saving (Tushar, 16 Oct 2026): the super admin's name for Dynamic stays in the
+  // operator console; members and org admins see "Automatic" (from the server).
+  it("never name Cost saving outside the super admin console", () => {
+    const app = join(__dirname, "..");
+    const files = ["app", "components", "lib"].flatMap((dir) =>
+      readdirSync(join(app, dir), { recursive: true, encoding: "utf8" })
+        .filter((file) => /\.tsx?$/.test(file))
+        .map((file) => join(dir, file).replace(/\\/g, "/")),
+    );
+    const naming = files.filter(
+      (file) =>
+        !file.startsWith("components/operator/") &&
+        !file.startsWith("app/operator/") &&
+        /cost saving|\bCOST_SAVING\b|\bDYNAMIC_HINT\b/i.test(readFileSync(join(app, file), "utf8")),
+    );
+    expect(naming).toEqual([]);
   });
 });
 

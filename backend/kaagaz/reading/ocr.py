@@ -127,6 +127,19 @@ CAREFUL_ISSUES = frozenset(
         NO_TEXT,
     }
 )
+# Cost saving (Tushar, 16 Oct 2026: the super admin's name for Dynamic, whose ids stay
+# "dynamic"; "Automatic" to organisations). A page worth more care is read again in one of
+# two ways, named last in its reasons (``careful_plan``): PATH_WORDS, only its hard lines (an
+# unsure or [?] word), cut out and read in one call, when they are at most HARD_LINES_MAX and
+# at most HARD_SHARE of its lines and every one of them is pinned to a found box; else
+# PATH_PAGE, the whole page, as before. PAGE_WIDE are the reasons that always read the whole
+# page: the picture itself is hard to see, or no text was found to cut out.
+HARD_LINES_MAX = 12  # ponytail: fixed thresholds, tune on the golden set
+HARD_SHARE = 0.4
+PATH_WORDS, PATH_PAGE = "path_words", "path_page"
+# Handwriting stays page wide (Tushar's accuracy first, 16 Oct 2026): a quick read of a
+# handwritten page can be sure of every word and still be wrong (7/12 extracts).
+PAGE_WIDE = frozenset({*(CAREFUL_ISSUES - {ILLEGIBLE_WORDS}), "quality_poor", "handwritten"})
 
 _log = logging.getLogger(__name__)
 
@@ -256,24 +269,49 @@ def careful_pages(
     reads: Mapping[int, PageRead], *, lead: str, read_again: Collection[int] = ()
 ) -> tuple[list[dict[str, Any]], int]:
     """Dynamic (F26, C5): ([{"page", "reasons"}] to read again with Careful, how many more
-    were left out by the cap). A page counts when ``lead`` read it (not the local reader),
-    it was not asked to be read again (F5 reads it harder already), and it has a reason:
-    an issue in CAREFUL_ISSUES, handwriting, a fair or poor grade, unsure words, or at least
-    CROWDED_LINES lines. Worst first (most reasons, then page order), at most
+    were left out by the cap). A page counts when ``careful_plan`` gives it reasons, the
+    last of them how it is read again. Worst first (most reasons, then page order), at most
     DYNAMIC_MAX_PAGES: the same reads give the same pages, whatever order the threads
-    read them in. O(p log p + lines)."""
+    read them in. O(p log p + text)."""
     found = {
         page_no: reasons
         for page_no, read in reads.items()
-        if (reasons := careful_reasons(read, lead=lead, again=page_no in read_again))
+        if (reasons := careful_plan(read, lead=lead, again=page_no in read_again))
     }
     return worst_first(found)
 
 
+def careful_plan(read: PageRead, *, lead: str, again: bool = False) -> list[str]:
+    """Cost saving (16 Oct 2026): ``careful_reasons`` with how the page is read again last,
+    PATH_WORDS or PATH_PAGE (see HARD_LINES_MAX); none when it keeps its first read: no
+    reason, or only reasons that are not PAGE_WIDE (a fair grade, crowded) on a
+    page whose every word the reader was sure of. O(issues + the page's text)."""
+    reasons = careful_reasons(read, lead=lead, again=again)
+    if not reasons:
+        return []
+    if not PAGE_WIDE.isdisjoint(reasons):
+        return [*reasons, PATH_PAGE]
+    hard = hard_lines(read)
+    if not hard:
+        return []
+    few = len(hard) <= HARD_LINES_MAX and len(hard) <= HARD_SHARE * len(read.lines)
+    pinned = all(read.lines[index].box_source == "found" for index in hard)
+    return [*reasons, PATH_WORDS if few and pinned else PATH_PAGE]
+
+
+def hard_lines(read: PageRead) -> list[int]:
+    """The indexes of the page's hard lines, in page order: a word the reader was unsure of,
+    or a part it could not read (ILLEGIBLE_MARK). The checker's disagreement comes after the
+    reading, so it is not known here. O(the page's text)."""
+    return [index for index, line in enumerate(read.lines) if line.unsure or ILLEGIBLE_MARK in line.text]
+
+
 def careful_reasons(read: PageRead, *, lead: str, again: bool = False) -> list[str]:
-    """Why one page is worth a careful read (``careful_pages``' rule, also used page by page
-    while a Dynamic document is read, fast scan, council 16 Oct 2026); none when ``lead`` did
-    not read it or it was asked to be read again (``again``). O(issues)."""
+    """Why one page may be worth a careful read (``careful_plan`` decides, for ``careful_pages``
+    and page by page while a Dynamic document is read, fast scan, council 16 Oct 2026): an
+    issue in CAREFUL_ISSUES, handwriting, a fair or poor grade, unsure words, or at least
+    CROWDED_LINES lines; none when ``lead`` did not read it or it was asked to be read again
+    (``again``: F5 reads it harder already). O(issues)."""
     if read.read_by != lead or again:
         return []
     reasons = sorted(CAREFUL_ISSUES.intersection(read.issues))
