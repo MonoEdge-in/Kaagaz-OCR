@@ -53,6 +53,7 @@ import {
 import { ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { valueAt } from "@/components/viewer/scanned";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
+import { useTabMotion } from "@/lib/motion";
 import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
 import wordStyles from "@/components/words/Words.module.css";
 import {
@@ -704,9 +705,11 @@ function PanelTabs({
     onChange(to.id);
     document.getElementById(tabId(to.id))?.focus();
   }
+  const list = useRef<HTMLDivElement>(null);
+  useTabMotion(list, active);
   return (
     <>
-      <div role="tablist" aria-label="About this document" className={`tabs ${styles.tabs}`}>
+      <div ref={list} role="tablist" aria-label="About this document" className={`tabs ${styles.tabs}`}>
         {tabs.map((item, index) => (
           <button
             key={item.id}

@@ -144,11 +144,12 @@
   --e-1: none;
   --e-2: none;
 
-  /* Motion: transform and opacity only, 120 to 200ms. */
+  /* Motion: transform and opacity only, 120 to 200ms (220ms for a drawer or sheet). */
   --ease: cubic-bezier(0.2, 0, 0.2, 1);
   --t-fast: 120ms;
   --t-med: 160ms;
   --t-slow: 200ms;
+  --t-drawer: 220ms;
 
   /* Layers: this scale only. */
   --z-base: 0;
@@ -421,6 +422,12 @@ input[type="radio"] {
   accent-color: var(--accent);
   width: 18px;
   height: 18px;
+}
+
+/* A tick or a chosen radio settles in (scale only: some radios are see-through). */
+input[type="checkbox"]:checked,
+input[type="radio"]:checked {
+  animation: check-in var(--t-fast) var(--ease);
 }
 
 /* A checkbox or radio is clicked through its label (UI audit G10): the label
@@ -839,6 +846,7 @@ td.num {
   bottom: -1px;
   height: 2px;
   background: var(--accent);
+  transform-origin: left; /* it slides from the tab chosen before (lib/motion.ts, useTabMotion) */
 }
 
 .tab [data-label] {
@@ -1056,6 +1064,15 @@ td.num {
   border-radius: 2px;
   background: var(--surface);
   color: var(--fg);
+  /* In from its corner, out with a fade (components/ui/Toast.tsx keeps it while it goes). */
+  --motion-y: 8px;
+  animation: motion-in var(--t-med) var(--ease);
+  transition: opacity var(--t-fast) var(--ease);
+}
+
+.toast[data-leaving] {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .toast > p {
@@ -1089,6 +1106,85 @@ td.num {
 /* Shown only after a short wait, so a quick load never flickers. */
 .delayed {
   animation: appear 0s linear 300ms both;
+}
+
+/* --- Motion (motion pass, 16 Oct 2026) ------------------------------------------
+   Motion answers an action or shows a state change; nothing idles and nothing moves on
+   scroll. Transform and opacity only, the --ease curve, time-based (so a 120Hz screen is
+   not faster). The JS side is lib/motion.ts. Reduced motion: the rule at the end of this
+   file makes every one of these instant. */
+
+/* Menus, popovers, dropdowns: in from the edge they open from (-4px under their button;
+   one that opens above it sets --pop-y: 4px), and out quicker. */
+.motion-pop {
+  --motion-y: var(--pop-y, -4px);
+  animation: motion-in var(--t-med) var(--ease);
+}
+
+/* A native popover also fades out: the browser keeps it shown (display, overlay) until
+   its 120ms fade has run. */
+.motion-pop[popover] {
+  transition:
+    opacity var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease),
+    display var(--t-fast) allow-discrete,
+    overlay var(--t-fast) allow-discrete;
+}
+
+.motion-pop[popover]:not(:popover-open) {
+  opacity: 0;
+  transform: translateY(var(--motion-y));
+}
+
+/* New content in place (a tab's panel, a filter panel): a fade, nothing moves. */
+.motion-fade {
+  animation: fade-in var(--t-med) var(--ease);
+}
+
+/* A new answer, the next card: up (or in from the side) a few pixels, with a fade. */
+.motion-rise {
+  --motion-y: 4px;
+  animation: motion-in var(--t-slow) var(--ease);
+}
+
+.motion-next {
+  animation: next-in var(--t-slow) var(--ease);
+}
+
+/* Dialogs: the page behind fades; a centred dialog rises 4px (drawers slide, in their own CSS). */
+dialog[open] {
+  --motion-y: 4px;
+  animation: motion-in var(--t-med) var(--ease);
+}
+
+dialog[open]::backdrop {
+  animation: fade-in var(--t-slow) var(--ease);
+}
+
+@keyframes motion-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-y, 4px));
+  }
+}
+
+@keyframes next-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes check-in {
+  from {
+    transform: scale(0.8);
+  }
 }
 
 @keyframes spin {
@@ -1148,7 +1244,8 @@ td.num {
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
-  *::after {
+  *::after,
+  ::backdrop {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;

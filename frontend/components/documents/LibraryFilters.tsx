@@ -135,7 +135,7 @@ export function LibraryFilters({
       </div>
 
       {open === "tags" && (
-        <div id={panelId} className={styles.filterPanel}>
+        <div id={panelId} className={`motion-fade ${styles.filterPanel}`}>
           <fieldset>
             <legend>Show documents with all of these tags</legend>
             {tags === null && tagsError !== null ? (
@@ -174,7 +174,7 @@ export function LibraryFilters({
       )}
 
       {open === "type" && (
-        <div id={panelId} className={styles.filterPanel}>
+        <div id={panelId} className={`motion-fade ${styles.filterPanel}`}>
           <fieldset>
             <legend>Show documents of this type</legend>
             <ul className={styles.choices}>
@@ -208,7 +208,7 @@ export function LibraryFilters({
       )}
 
       {open === "date" && (
-        <div id={panelId} className={styles.filterPanel}>
+        <div id={panelId} className={`motion-fade ${styles.filterPanel}`}>
           <DateRange library={library} onChange={onChange} />
         </div>
       )}

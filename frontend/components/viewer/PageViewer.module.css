@@ -78,6 +78,7 @@
   position: relative;
   background: var(--paper);
   outline: 1px solid var(--border);
+  transform-origin: 50% 0; /* a zoom grows from the top middle (lib/motion.ts) */
 }
 
 /* The highlight: amber, then a paper ring and an ink ring, so it stands out
@@ -91,20 +92,17 @@
   pointer-events: none;
 }
 
-/* On the full page, a new spot pulses twice: an amber ring closing in on it.
+/* On the full page, a new spot settles onto its value: a fade and a slight shrink, once
+   (motion pass, 16 Oct 2026: transform and opacity only, no ring).
    The global prefers-reduced-motion rule (globals.css) cuts it to nothing. */
 .pulse {
-  animation: spotPulse 0.7s ease-out 2;
+  animation: spotIn var(--t-slow) var(--ease);
 }
 
-@keyframes spotPulse {
+@keyframes spotIn {
   from {
-    outline: 2px solid var(--hl-border);
-    outline-offset: 10px;
-  }
-  to {
-    outline: 2px solid transparent;
-    outline-offset: 2px;
+    opacity: 0;
+    transform: scale(1.15);
   }
 }
 

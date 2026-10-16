@@ -78,6 +78,18 @@
   outline-offset: -1px;
 }
 
+/* The chosen segment's icon settles in (motion pass, 16 Oct 2026); reduced motion: still. */
+.option:has(.radio:checked) svg {
+  animation: chosen var(--t-fast) var(--ease);
+}
+
+@keyframes chosen {
+  from {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+
 .option:has(.radio:focus-visible) {
   outline: 2px solid var(--focus);
   outline-offset: 1px;

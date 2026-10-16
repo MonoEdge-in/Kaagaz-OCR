@@ -63,7 +63,7 @@ export const AnswerView = memo(function AnswerView({
 
   if (!answer) {
     return (
-      <div className={styles.answerCard}>
+      <div className={`motion-rise ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
         <p className={styles.plain}>{message.text}</p>
       </div>
@@ -132,7 +132,7 @@ export const AnswerView = memo(function AnswerView({
 
   if (answer.status === "not_found") {
     return (
-      <div className={styles.answerCard}>
+      <div className={`motion-rise ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
         <div className={styles.notFound}>
           <span className={styles.notFoundIcon}>
@@ -172,7 +172,7 @@ export const AnswerView = memo(function AnswerView({
   // in Review first, and the documents to open and read (decided 30 Sep 2026).
   if (answer.status === "unchecked") {
     return (
-      <div className={styles.answerCard} data-label="needs_review">
+      <div className={`motion-rise ${styles.answerCard}`} data-label="needs_review">
         <span className="visually-hidden">Answer: </span>
         <div className={styles.notFound}>
           <span className={styles.notFoundIcon}>
@@ -196,7 +196,7 @@ export const AnswerView = memo(function AnswerView({
   const team = teamLine(answer);
 
   return (
-    <div className={styles.answerCard} data-label={label ?? undefined}>
+    <div className={`motion-rise ${styles.answerCard}`} data-label={label ?? undefined}>
       <span className="visually-hidden">Answer: </span>
       {label ? (
         <div className={styles.labelLine}>

@@ -5,12 +5,14 @@
 // app/globals.css), so it never pushes the page under the pointer. The polite
 // live region is always in the page, so the words are read out when they
 // arrive. It goes after 8 seconds, but never while the pointer or the focus is
-// on it, so there is time to reach Undo.
+// on it, so there is time to reach Undo. Closed, it fades out (120ms, .toast[data-leaving]
+// in app/globals.css) before it leaves the page; it takes no clicks while it goes.
 
 import { useEffect, useEffectEvent, useState } from "react";
 import { IconButton } from "./IconButton";
 
 export const TOAST_MS = 8000;
+const LEAVE_MS = 120; // --t-fast
 
 export interface ToastProps {
   /** null shows nothing. */
@@ -22,6 +24,16 @@ export interface ToastProps {
 export function Toast({ message, onUndo, onClose }: ToastProps) {
   const [held, setHeld] = useState(false);
   const close = useEffectEvent(onClose);
+  // The words last shown, kept while the toast fades out after `message` goes null.
+  const [shown, setShown] = useState(message);
+  if (message !== null && message !== shown) setShown(message);
+  const leaving = message === null && shown !== null;
+
+  useEffect(() => {
+    if (!leaving) return;
+    const timer = setTimeout(() => setShown(null), LEAVE_MS);
+    return () => clearTimeout(timer);
+  }, [leaving]);
 
   useEffect(() => {
     if (message === null || held) return;
@@ -31,15 +43,16 @@ export function Toast({ message, onUndo, onClose }: ToastProps) {
 
   return (
     <div role="status" aria-live="polite">
-      {message !== null && (
+      {shown !== null && (
         <div
           className="toast"
+          data-leaving={leaving || undefined}
           onPointerEnter={() => setHeld(true)}
           onPointerLeave={() => setHeld(false)}
           onFocus={() => setHeld(true)}
           onBlur={() => setHeld(false)}
         >
-          <p>{message}</p>
+          <p>{shown}</p>
           {onUndo && (
             <button
               type="button"
