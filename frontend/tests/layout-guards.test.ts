@@ -330,6 +330,8 @@ describe("layout guards", () => {
       "components/chat/Chat.module.css: .menu: overscroll-behavior",
       "components/shell/Shell.module.css: .sidebar: overscroll-behavior",
       "components/shell/Shell.module.css: .main: overscroll-behavior",
+      // Changed on purpose (UI audit G6, 16 Oct 2026): the account menu scrolls in itself on a short screen.
+      "components/shell/Shell.module.css: .account: overscroll-behavior",
       "app/globals.css: html: overscroll-behavior-y",
       "app/globals.css: html:has(.app-shell), html:has(.app-shell) body: overscroll-behavior",
       "app/globals.css: .tabs: overscroll-behavior-x",

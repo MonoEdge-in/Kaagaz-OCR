@@ -438,8 +438,9 @@ describe("remembered in this browser", () => {
     expect(() => clearStored(throwing)).not.toThrow();
   });
 
-  it("is forgotten when signing out (AppShell)", () => {
-    const shell = readFileSync(join(process.cwd(), "components/shell/AppShell.tsx"), "utf8");
+  // Changed on purpose (UI audit G6, 16 Oct 2026): the sign-outs moved to the header's account menu.
+  it("is forgotten when signing out (AccountMenu)", () => {
+    const shell = readFileSync(join(process.cwd(), "components/shell/AccountMenu.tsx"), "utf8");
     expect(shell).toMatch(/clearStored\(\)/);
   });
 });

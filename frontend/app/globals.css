@@ -1,8 +1,9 @@
 /* Kaagaz in the MonoEdge design system (16 Oct 2026, the owner's rules file
    monoedge-design-system-rules.md). Flat, square, hairline: radius 2px, 1px
-   borders, no shadows, glows or gradients. JetBrains Mono for text and UI,
-   the display face for headings 24px and up. Blue is punctuation: one primary
-   action per view.
+   borders, no shadows, glows or gradients. Inter for text and UI, JetBrains
+   Mono for data only (.mono), Archivo for headings (UI audit G4, 16 Oct 2026:
+   the owner's decision over "mono everywhere"). Blue is punctuation: one
+   primary action per view.
 
    Every colour is a token. Light is the default; dark comes from the system
    (prefers-color-scheme) unless the person picked Light or Dark, which the
@@ -14,8 +15,12 @@
    WCAG 2.2 AA contrast, measured (light / dark), on page, surface, subdued:
      --text-primary (--fg)                  18.2 18.9 17.3 / 19.9 18.9 17.1
      --text-secondary (--fg-muted)           7.4  7.7  7.0 / 10.0  9.5  8.6
-     --text-muted (--control-edge)           4.8  5.0  4.6 /  6.2  5.9  5.3
+     --text-muted (--control-edge)           5.2  5.4  4.9 /  7.6  7.2  6.5
      --accent (links)                        8.8  9.1  8.3 /  8.3  7.8  7.1
+   --text-muted is a step darker (light) and lighter (dark) than the MonoEdge
+   file (UI audit, 16 Oct 2026), so muted text stays 4.5:1 on a hovered or
+   selected row too: 4.7 (light, on --accent-subtle) and 4.9 (dark, on
+   --bg-selected).
    Pairs:
      --accent on --accent-subtle             7.9 / 5.3
      --text-onaccent on --accent             9.1 / 8.7
@@ -24,6 +29,7 @@
      --danger-fg on --danger-bg              5.7 / 5.7
      --text-onaccent on --critical           6.5 / 7.1 (a destructive button, pressed or hovered)
      --review-solid (dashed edge) on surface 3.6 / 8.9
+     --review-on-solid on --review-solid     5.2 / 9.4 (the Review link's count)
    Body text needs 4.5:1; large text, control edges and the focus ring 3:1.
    --warning (#B7791F) is 3.6:1 on white: enough for an edge, not for text, so
    light Needs review text is a darker amber (#8a5a12). --border-strong
@@ -38,7 +44,7 @@
   --bg-selected: #f4f7fd;
   --text-primary: #101114;
   --text-secondary: #4e545c;
-  --text-muted: #697079;
+  --text-muted: #646b74;
   --text-onaccent: #ffffff;
   --accent: #204494;
   --accent-hover: #264e9f;
@@ -58,6 +64,7 @@
   --review-bg: #fbf3e6;
   --review-fg: #8a5a12;
   --review-solid: var(--warning);
+  --review-on-solid: var(--text-primary); /* text on a filled amber count */
   --danger-bg: #fbeceb;
   --danger-fg: var(--critical);
 
@@ -87,24 +94,27 @@
   --illegible-on-paper: #9e2219; /* PRD 5 U3 (V8): "couldn't read" marks, the same in dark */
 
   /* The select's caret in --text-muted (an image cannot read a token). */
-  --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%23697079' stroke-width='1.5'/%3E%3C/svg%3E");
+  --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%23646B74' stroke-width='1.5'/%3E%3C/svg%3E");
 
-  /* Type. JetBrains Mono (next/font in app/layout.tsx sets
-     --font-jetbrains-mono) for text and UI. Monument Extended has no web
-     licence here, so headings 24px and up use its fallback stack. JetBrains
-     Mono has no Devanagari: Hindi and Marathi fall back to the system faces. */
+  /* Type (UI audit G3/G4, 16 Oct 2026). next/font in app/layout.tsx sets
+     --font-inter, --font-jetbrains-mono and --font-archivo, each with its
+     size-adjusted fallback. Inter for text and UI; JetBrains Mono for data
+     only (values, IDs, numbers, scanned text: .mono, .readText); Archivo for
+     headings. None of them has Devanagari: Hindi and Marathi fall back to the
+     system faces after them. */
+  --font-sans: var(--font-inter, "Inter"), system-ui, -apple-system, "Segoe UI", Roboto, Arial,
+    "Noto Sans Devanagari", "Nirmala UI", sans-serif;
   --font-mono: var(--font-jetbrains-mono, "JetBrains Mono"), ui-monospace, "SF Mono", Menlo, Consolas,
     "Noto Sans Devanagari", "Nirmala UI", monospace;
-  --font-display: "Monument Extended", "Arial Narrow", "Helvetica Neue", Arial, "Noto Sans Devanagari",
+  --font-display: var(--font-archivo, "Archivo"), "Helvetica Neue", Arial, "Noto Sans Devanagari",
     "Nirmala UI", sans-serif;
-  --font-sans: var(--font-mono);
   /* rem plus vw, so text still grows at 200% zoom. */
   --fs-label: 0.6875rem; /* 11px: bold capitals */
   --fs-sm: clamp(0.875rem, 0.85rem + 0.1vw, 0.9375rem);
   --fs-base: clamp(1rem, 0.96rem + 0.2vw, 1.0625rem);
   --fs-lg: clamp(1.125rem, 1.06rem + 0.3vw, 1.25rem);
   --fs-xl: clamp(1.25rem, 1.15rem + 0.5vw, 1.5625rem);
-  --fs-2xl: clamp(1.5rem, 1.3rem + 1vw, 1.9375rem); /* 24px and up: the display face */
+  --fs-2xl: clamp(1.5rem, 1.3rem + 1vw, 1.9375rem);
 
   /* Spacing: 4, 8, 12, 16, 24, 32, 48, 64 only. --space-5 and --space-7 are
      the old names for 24 and 48. */
@@ -124,6 +134,8 @@
   --h-md: 36px;
   --h-lg: 44px;
   --control-h: var(--h-md);
+  /* The least any control may be (UI audit G10): 32px, 44px on touch. */
+  --control-min: 32px;
 
   /* Square and flat: one radius, no elevation. */
   --r-sm: 2px;
@@ -188,7 +200,7 @@
     --bg-selected: #172f65;
     --text-primary: #ffffff;
     --text-secondary: #b3b8c0;
-    --text-muted: #8a9099;
+    --text-muted: #9aa0a8;
     --text-onaccent: #000000;
     --accent: #85a9dd;
     --accent-hover: #a3bee7;
@@ -202,9 +214,10 @@
     --verified-bg: #12241a;
     --review-bg: #2a2112;
     --review-fg: var(--warning);
+    --review-on-solid: var(--bg-page);
     --danger-bg: #2e1715;
     --paper-frame: var(--bg-page);
-    --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%238A9099' stroke-width='1.5'/%3E%3C/svg%3E");
+    --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%239AA0A8' stroke-width='1.5'/%3E%3C/svg%3E");
     color-scheme: dark;
   }
 }
@@ -217,7 +230,7 @@
   --bg-selected: #172f65;
   --text-primary: #ffffff;
   --text-secondary: #b3b8c0;
-  --text-muted: #8a9099;
+  --text-muted: #9aa0a8;
   --text-onaccent: #000000;
   --accent: #85a9dd;
   --accent-hover: #a3bee7;
@@ -231,15 +244,17 @@
   --verified-bg: #12241a;
   --review-bg: #2a2112;
   --review-fg: var(--warning);
+  --review-on-solid: var(--bg-page);
   --danger-bg: #2e1715;
   --paper-frame: var(--bg-page);
-  --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%238A9099' stroke-width='1.5'/%3E%3C/svg%3E");
+  --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%239AA0A8' stroke-width='1.5'/%3E%3C/svg%3E");
   color-scheme: dark;
 }
 
 @media (pointer: coarse) {
   :root {
     --control-h: var(--h-lg);
+    --control-min: var(--h-lg);
   }
 }
 
@@ -270,8 +285,8 @@ html {
   /* A focused element scrolled into view stays 8px clear of the top edge (the
      app's header is a row above its scroller, WCAG 2.4.11). */
   scroll-padding-top: calc(var(--topbar-space) + var(--space-2));
-  /* The scrollbar's space is kept, so locking the page under a dialog doesn't shift it. */
-  scrollbar-gutter: stable;
+  /* No scrollbar-gutter here (UI audit G2): in the app shell the page never
+     scrolls, so a kept gutter was a dead 15px strip on the right. */
   overflow-anchor: auto;
 }
 
@@ -282,6 +297,13 @@ html:has(.app-shell) body {
   height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+/* The status bar takes its 32px row only while a screen has a line in it
+   (UI audit G1): with nothing in it the row, and the height <main> loses to
+   it, are 0. Its live region stays in the page, so a line arriving is read. */
+:root:has(.app-shell):not(:has(.app-statusbar > :not(:empty))) {
+  --statusbar-h: 0px;
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -305,7 +327,7 @@ body {
   /* No background of its own: <html> paints the page colour, so a sign-in
      page's band colour behind it (login.module.css) can show when pulled. */
   color: var(--fg);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--fs-base);
   line-height: 1.55;
   font-variant-numeric: tabular-nums;
@@ -365,18 +387,17 @@ a:hover {
   opacity: 1;
 }
 
-/* Headings 24px and up use the display face; smaller ones stay mono. */
+/* Headings use the loaded display face, Archivo (UI audit G3). */
 h1,
 h2,
 h3 {
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
   line-height: 1.2;
   margin: 0 0 var(--space-2);
   color: var(--fg);
 }
 
 h1 {
-  font-family: var(--font-display);
   font-size: var(--fs-2xl);
   font-weight: 700;
 }
@@ -400,6 +421,17 @@ input[type="radio"] {
   accent-color: var(--accent);
   width: 18px;
   height: 18px;
+}
+
+/* A checkbox or radio is clicked through its label (UI audit G10): the label
+   is at least one control tall (32px, 44px on touch), the box and its words
+   one target. :where() keeps it weaker than any screen's own layout. */
+:where(label:has(> input[type="checkbox"], > input[type="radio"])) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-min);
+  cursor: pointer;
 }
 
 /* Browser autofill must not turn fields bright yellow or white in dark mode:
@@ -466,6 +498,13 @@ input:-webkit-autofill:focus {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+/* Data in JetBrains Mono (UI audit G4): values, IDs, numbers and scanned text.
+   Any screen puts it on the element that holds the value. */
+.mono,
+td.num {
+  font-family: var(--font-mono);
 }
 
 /* Text as a reader read it: Devanagari-capable mono, spaces kept, direction isolated. */
@@ -610,6 +649,8 @@ input:-webkit-autofill:focus {
   justify-content: center;
   gap: var(--space-2);
   height: var(--h-md);
+  /* A screen's smaller button still never goes under 32px (44px on touch). */
+  min-height: var(--control-min);
   max-width: 100%;
   min-width: 0;
   padding-inline: var(--space-4);
@@ -996,12 +1037,15 @@ td.num {
   background: var(--danger-fg);
 }
 
-/* --- Toasts: a fixed corner, so news never pushes the page under the pointer. */
+/* --- Toasts: a fixed corner, so news never pushes the page under the pointer
+   (components/ui/Toast.tsx). It sits above the status and bottom bars. */
 
 .toast {
   position: fixed;
   z-index: var(--z-toast);
-  inset-block-end: max(var(--space-4), env(safe-area-inset-bottom));
+  inset-block-end: calc(
+    var(--statusbar-h) + var(--bottombar-h) + max(var(--space-4), env(safe-area-inset-bottom))
+  );
   inset-inline-end: max(var(--space-4), env(safe-area-inset-right));
   display: flex;
   align-items: center;
@@ -1012,6 +1056,12 @@ td.num {
   border-radius: 2px;
   background: var(--surface);
   color: var(--fg);
+}
+
+.toast > p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
 }
 
 /* --- Loading ----------------------------------------------------------------- */

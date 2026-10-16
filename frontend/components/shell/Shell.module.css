@@ -1,6 +1,7 @@
 /* The app shell (brief C): fixed zones on one grid, and the page never
    scrolls. Rows: header (56 px, 48 px below 768 px), the content, the status
-   bar (32 px) and, below 768 px, the bottom bar (56 px). From 1024 px the side
+   bar (32 px, 0 while empty: UI audit G1) and, below 768 px, the bottom bar
+   (56 px). From 1024 px the side
    nav (240 px) sits beside <main>. Only <main> and the side nav scroll, each
    held in (overscroll-behavior: contain). The header, status and bottom bars
    are grid rows, never position: fixed. */
@@ -58,14 +59,113 @@
 
 .pageName {
   min-width: 0;
-  margin-inline-start: auto;
-  padding-inline-end: var(--space-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-muted);
   font-size: var(--fs-sm);
   font-weight: 700;
+}
+
+/* Content scrolled under the header: its bottom edge darkens, a 1px line and
+   no shadow (UI audit G11). AppShell sets data-scrolled on <main>. */
+.app:has(> .main[data-scrolled]) > .header {
+  border-bottom-color: var(--border-strong);
+}
+
+/* The header's end (UI audit G5): search, Upload, the account menu. */
+.headerEnd {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-inline-start: auto;
+}
+
+/* The search box shows from 768 px; a phone searches on the documents screen. */
+.search {
+  position: relative;
+  display: none;
+  flex: 0 1 20rem;
+  min-width: 0;
+}
+
+@media (min-width: 768px) {
+  .search {
+    display: block;
+  }
+}
+
+.searchIcon {
+  position: absolute;
+  inset-inline-start: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+/* One height with the buttons beside it. */
+.searchInput {
+  height: var(--control-h);
+  padding-block: 0;
+  padding-inline-start: calc(var(--space-3) + 16px + var(--space-2));
+  font-size: var(--fs-sm);
+}
+
+.avatarButton {
+  min-width: var(--control-h);
+  padding: 0;
+}
+
+/* Square, like everything else: the initials in a neutral box. */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* The account menu: a native popover in the top layer, under the avatar at the
+   header's end. It shows only while open (display is set only then, so the
+   browser's own hiding still works). */
+.account {
+  position: fixed;
+  inset: auto;
+  top: calc(var(--header-h) + env(safe-area-inset-top) + var(--space-1));
+  inset-inline-end: max(var(--space-2), env(safe-area-inset-right));
+  width: min(18rem, calc(100% - 2 * var(--space-2)));
+  max-height: calc(100% - var(--header-h) - env(safe-area-inset-top) - var(--space-4));
+  margin: 0;
+  padding: var(--space-4);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--fg);
+}
+
+.account:popover-open {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+@media (min-width: 1024px) {
+  .account {
+    inset-inline-end: max(var(--margin), env(safe-area-inset-right));
+  }
 }
 
 /* --- Side nav (1024 px and up) ------------------------------------------------- */
@@ -139,9 +239,11 @@
   color: var(--fg);
 }
 
+/* The current page, one style in both themes (UI audit G8): an accent tint,
+   bold words and a 3 px accent bar (3:1 and more on the tint and the sidebar). */
 .current,
 .current:hover {
-  background: var(--bg-selected);
+  background: var(--accent-subtle);
   color: var(--fg);
   font-weight: 700;
 }
@@ -150,25 +252,24 @@
   color: var(--accent);
 }
 
-/* The current page's 2 px accent bar on the inline-start edge. */
 .current::before {
   content: "";
   position: absolute;
-  inset-block: var(--space-2);
+  inset-block: 0;
   inset-inline-start: 0;
-  width: 2px;
+  width: 3px;
   background: var(--accent);
 }
 
-/* The Review link's count of values to check, at the end of the row. */
+/* The Review link's count of values to check, at the end of the row: a solid,
+   filled square, never a pill and never dashed (UI audit G9). */
 .badge {
   margin-inline-start: auto;
   min-width: 1.5rem;
-  padding: 0 var(--space-2);
-  border: 1px dashed var(--review-solid);
+  padding: 0 var(--space-1);
   border-radius: 2px;
-  background: var(--review-bg);
-  color: var(--review-fg);
+  background: var(--review-solid);
+  color: var(--review-on-solid);
   font-size: var(--fs-sm);
   font-weight: 700;
   line-height: 1.5rem;
@@ -176,16 +277,12 @@
   font-variant-numeric: tabular-nums;
 }
 
-.spacer {
-  flex: 1;
-}
+/* --- In the account menu: who is signed in, then the sign-outs --------------- */
 
 .user {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: var(--space-3) var(--space-2) 0;
-  border-top: 1px solid var(--border);
   min-width: 0;
 }
 
@@ -203,11 +300,13 @@
   font-size: var(--fs-sm);
 }
 
-/* Sign out and Sign out everywhere: a separate row each, 16 px apart. */
+/* Sign out and Sign out everywhere: a separate row each, 16 px apart, under a hairline. */
 .signOuts {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
 }
 
 .signOut {
@@ -247,6 +346,11 @@
   color: var(--fg-muted);
   font-size: var(--fs-label);
   white-space: nowrap;
+}
+
+/* Nothing in it: no row and no edge (--statusbar-h is 0 then, app/globals.css). */
+.statusbar:not(:has(> :not(:empty))) {
+  border-top: 0;
 }
 
 /* --- Bottom bar (phones): the links at the thumb ------------------------------ */
