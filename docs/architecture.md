@@ -49,7 +49,7 @@ One `Scope` (`search/scope.py`) narrows all three lists before ranking: a folder
 5b. **The document card** (model on). One call to `MODEL_CHAT` with the first two pages, every heading and the last page, fenced as untrusted data and cut to `CARD_MAX_CHARS` and the tokens `MODEL_CONTEXT_TOKENS` leaves. The model only quotes: each party, identifier, date and key fact is found in the reader's text, and the text at that spot is what is stored (`record_key = 'card'`, always needs review, never counted by a fixed query); a quote it can't find is dropped and counted. The card gives the document's type, languages, English summary and date, which also go in each piece's context header, and links it to this customer's other documents that share an invoice, PO, challan, survey, khata, account or reference number (never a GSTIN or PAN). With the model off or down there is no card: the document is saved exactly as without a model, and the run keeps the error code. If the card works but an invoice window then fails, the card is kept and the invoice falls back to its model-off row (step 5c).
 5c. **The invoice as a typed row** (PRD 2 E1 to E5, K1 to K3). When the card says `invoice`, the reader's text is read in windows (`EXTRACT_WINDOW_CHARS` 1700 with `EXTRACT_WINDOW_OVERLAP` 400, at most `EXTRACT_MAX_WINDOWS` 10; PROVISIONAL starting values, each window's reply within 2048 tokens), one call each. The model only quotes the invoice number, date, seller and buyer with their GSTINs, subtotal, tax total and total, and each line item; each quote is found in the reader's text inside its window, and those values replace the labelled fields they cover (never both, so no total counts twice). The row (`invoices`) and its lines (`invoice_lines`) are typed from those values in the same save. With the model off (or no invoice values), the row comes from the labelled fields, with no lines. Every row is checked: the lines add up to the subtotal, subtotal plus tax (the stated tax total, else CGST + SGST + UTGST + IGST + cess) is the total, each within 1.00; the number and total are there; the date is from 2000 to tomorrow in `TIMEZONE`; each GSTIN has the right mod-36 check character. A failed check puts the values involved in review (`check_failed`). A value the model located is verified only when two readers agree, the label rules find the same value at the same spot (when they find that field at all), and the check passed; otherwise it is needs review (`model_chosen`). A reviewer's remembered fix stays verified, but only when the check passed. On an invoice the model read, a failed check leaves none of its header values verified. If an invoice window fails, every window's values are dropped and the row comes from the labelled fields, as with the model off. Line items are never used by the fixed queries. The rows are copies: a reviewer's fix changes the value, and the row follows on the next read.
 6. **Save** in one transaction that replaces any earlier run, so a job delivered twice is safe. The document must still be clean at this point.
-7. **Index, after Ready** (fast scan, 16 Oct 2026). The document is marked `ready` (and auto-filed, which reads the card's type, never a vector) as soon as the save is done, so `processing_runs.finished_at` is Ready and the embeddings' tokens are in the usage ledger only; then the vectors are made, up to `EMBED_FAN_OUT` (16) requests at once through the one `MODEL_RPM` limiter (the server sets `MODEL_RPM=1200`). Ready first (16 Oct 2026): with a model on, the document is ready with its checked rule values before the card, the invoice windows and the map are asked; the list says "Understanding the document…" while they run, then a second save under the same open run (refused if a newer run or a read again came meanwhile; word changes written again) adds the card, its values, links and context headers, and the run ends with `seconds_to_ready` and `seconds_after_ready`. Dynamic is the default reading unless the organisation or the platform turns it off (the super admin console calls it "Cost saving", an organisation's "Read with" calls it "Automatic"; 16 Oct 2026): the first read of each page thinks low, and Careful, at `OCR_RETRY_THINKING_LEVEL`, with the Careful tier or, with one allowed model, that model itself, reads again only what needs it (`ocr.careful_plan`): a page with a page-wide problem (blurry, faint, a poor grade, no text...) or many hard lines (more than 12, or more than 40% of its lines, a hard line being one with an unsure or `[?]` word) is read whole; a page with a few hard lines has only those lines cut out, stacked into one picture and read in one call, and only they take the new reading (their boxes kept; a failed call keeps the first read); a page whose every word was sure keeps its first read. `run_config.reading.escalated` ends each page's reasons with `path_words` or `path_page`, and `scan-times` prints `careful_words`. A "read again" during it stops it within a batch; any failure leaves the document ready for the worker's missing-vector pass. A Dynamic document of at most 25 pages is read once: each unclear page's Careful read (always at `OCR_RETRY_THINKING_LEVEL`) runs on the page's own thread, started with the first read when the document has at most `CAREFUL_EARLY_MAX_PAGES` (0 by default since Cost saving: that early read is a whole careful read paid for every page) pages; Ensemble's models and a cut-off page's halves are read at the same time; `python -m kaagaz.cli scan-times` prints each run's steps in seconds. With a model on, `MODEL_EMBED` makes each piece's meaning vector from its reduced header (only the Type, Date and Section parts of its context header: never "Before:", the name or the pages), a blank line, then its text, with no instruction (`search/indexing.py`). Each vector is tagged `MODEL_EMBED#gem1` in `embedding_model`, and meaning search uses only the current tag, so after a model or recipe change the old vectors are left out until `reembed` replaces them. A rename keeps the vectors (the name is never embedded). With the model down, the pieces are saved without vectors and words and typos still find them. The document is then `ready`, and the worker gives those pieces their vectors later, at most 64 every 10 minutes (waiting up to an hour while the model stays down), customer by customer under row level security.
+7. **Index, after Ready** (fast scan, 16 Oct 2026). The document is marked `ready` (and auto-filed, which reads the card's type, never a vector) as soon as the save is done, so `processing_runs.finished_at` is Ready and the embeddings' tokens are in the usage ledger only; then the vectors are made, up to `EMBED_FAN_OUT` (16) requests at once through the one `MODEL_RPM` limiter (the server sets `MODEL_RPM=1200`). Ready first (16 Oct 2026): with a model on, the document is ready with its checked rule values before the card, the invoice windows and the map are asked; the list says "Understanding the document…" while they run, then a second save under the same open run (refused if a newer run or a read again came meanwhile; word changes written again) adds the card, its values, links and context headers, and the run ends with `seconds_to_ready` and `seconds_after_ready`. Dynamic is the default reading unless the organisation or the platform turns it off (the super admin console calls it "Cost saving", an organisation's "Read with" calls it "Automatic"; 16 Oct 2026): the first read of each page thinks low, and Careful, at `OCR_RETRY_THINKING_LEVEL`, with the Careful tier or, with one allowed model, that model itself, reads again only what needs it (`ocr.careful_plan`): a page with a page-wide problem (blurry, faint, a poor grade, no text...) or many hard lines (more than `COST_SAVING_HARD_LINES_MAX`, 12, or more than `COST_SAVING_HARD_SHARE`, 40%, of its lines, a hard line being one with an unsure or `[?]` word) is read whole; a page with a few hard lines has only those lines cut out, stacked into one picture and read in one call, and only they take the new reading (their boxes kept; a failed call keeps the first read); a page whose every word was sure keeps its first read. `run_config.reading.escalated` ends each page's reasons with `path_words` or `path_page`, with the page's first-read and Careful tokens, `kept_quick` lists the pages the old rule would have read whole, and `scan-times` prints `careful_words` (see Measure and tune Cost saving below). A "read again" during it stops it within a batch; any failure leaves the document ready for the worker's missing-vector pass. A Dynamic document of at most 25 pages is read once: each unclear page's Careful read (always at `OCR_RETRY_THINKING_LEVEL`) runs on the page's own thread, started with the first read when the document has at most `CAREFUL_EARLY_MAX_PAGES` (0 by default since Cost saving: that early read is a whole careful read paid for every page) pages; Ensemble's models and a cut-off page's halves are read at the same time; `python -m kaagaz.cli scan-times` prints each run's steps in seconds. With a model on, `MODEL_EMBED` makes each piece's meaning vector from its reduced header (only the Type, Date and Section parts of its context header: never "Before:", the name or the pages), a blank line, then its text, with no instruction (`search/indexing.py`). Each vector is tagged `MODEL_EMBED#gem1` in `embedding_model`, and meaning search uses only the current tag, so after a model or recipe change the old vectors are left out until `reembed` replaces them. A rename keeps the vectors (the name is never embedded). With the model down, the pieces are saved without vectors and words and typos still find them. The document is then `ready`, and the worker gives those pieces their vectors later, at most 64 every 10 minutes (waiting up to an hour while the model stays down), customer by customer under row level security.
 
 Document states: `received`, `clean`, `ready`, plus `rejected` (for good), `needs_reader` and `failed`, each failure with a short code. While a document is read it shows how far it has got ("Reading page 3 of 40…") and, from preparing on, a progress bar with a percentage and about how long until it is ready ("Ready in about 40 s", or "About 3 min (rough guess)" with little history; PROVISIONAL): the worker estimates it from this customer's own last 20 ready runs only (`kaagaz/eta.py`; each run keeps `seconds_preparing`, `seconds_reading` and `seconds_after_reading` in its config), and the API gives it as `time_left` with `elapsed_seconds` since the run started; the percentage is elapsed / (elapsed + left), never going back and at most 99% until ready. Each delivery of a job is one `processing_runs` row with its routes, counts, seconds and set-up; only the open run may save or mark the document ready or failed (the run fence), so a stale delivery ends quietly. A reviewer or admin can "Read again" a ready, failed or unreadable document (20 an hour per customer, once in 10 minutes per document, PROVISIONAL): remembered fixes come back, other fixes are lost. The worker tries a job `JOB_MAX_ATTEMPTS` (5) times and writes each try on the document, so the list says "Try 2 of 5". The delivery after the last try marks the document `failed | retries_exhausted` ("We tried 5 times…") and buries the job; if the database is down just then, a later delivery marks it. So the queue's own `maxReceiveCount` must be above `JOB_MAX_ATTEMPTS + 1` (10 on the laptop), and the worker refuses to start otherwise, logging `queue_redrive_too_low` or `queue_has_no_failure_bin`. The hourly trash purge can't stop or crash the worker: a database error there is logged and the jobs go on. One bad file never blocks the ones behind it.
 
@@ -140,6 +140,68 @@ The `isolation` tests prove both on every pull request.
 - Document text and server messages are shown as plain text, never as HTML.
 - Hiding a button is only a hint: the server checks the role on every request.
 - Colours come only from the tokens in `app/globals.css`.
+
+## Measure and tune Cost saving on the server
+
+Real scans and the OpenRouter key are only on the EC2 server, so Cost saving is measured and
+tuned there (16 Oct 2026). Run every command as `ubuntu` in `~/kaagaz`, with `dc` as in
+docs/running-locally.md:
+
+```
+alias dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml'
+setenv(){ if grep -qE "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi; }
+```
+
+**Measure** what the last documents did (reads the run config only; no model call):
+
+```
+dc exec -T worker python -m kaagaz.cli cost-saving --last 50
+dc exec -T worker python -m kaagaz.cli cost-saving --last 50 --customer <customer id>
+```
+
+Lines that start `measured` are counts from the runs: pages read, pages that kept the quick
+read, pages read through the words path, pages read whole again, and the Careful tokens spent.
+Lines that start `estimated` are the tokens saved: for each words-path page, and each kept page
+the old rule would have read whole, a whole-page Careful read's tokens (the document's own
+whole-page reads' average, else the page's first read times the Careful/first ratio of the run
+set) less what the page spent. Per-page tokens are recorded only for documents read after this
+change (16 Oct 2026); older ones count in the page lines, not the token lines, and the first
+line says how many of each. `limits seen` names the limits each run was read with.
+
+**Tune** on a folder of real scans (it calls the models: a few calls a page, paid). The image
+has no `scripts/`, so mount it from the checkout, with the scans:
+
+```
+SCANS=~/golden-scans   # the folder of real scans on the server
+dc run --rm --no-deps -T -v "$PWD/backend/scripts:/app/scripts:ro" -v "$SCANS:/scans:ro" \
+  worker python -m scripts.tune_cost_saving /scans
+```
+
+Each scanned page is read once at low, once whole at `OCR_RETRY_THINKING_LEVEL` (the reference),
+and its hard lines once as crops; then every setting of the grid (`--lines-max 6,12,20`,
+`--shares 0.25,0.4,0.6` by default) is scored against the reference: calls, tokens, word
+agreement and the values (words with a digit) that differ. It recommends the cheapest setting
+with no differing value (`--tolerance N` allows N), and exits 1 when none is within it. To try
+another crop padding, add `-e COST_SAVING_CROP_PAD=0.8` after `-T`. It refuses to start without
+`OPENROUTER_API_KEY` and never prints it.
+
+**What to look for.** A page that kept its quick read is the same under every setting, so the
+`old rule` row's differing values are the floor no setting can go below: when nothing is within
+0, run again with `--tolerance` set to that row's count. Then pick the cheapest setting within
+it; when two cost about the same, take the one with the higher `agreement`.
+
+**Apply** the setting (no code change), then measure again once about 50 new documents are read:
+
+```
+setenv COST_SAVING_HARD_LINES_MAX 12
+setenv COST_SAVING_HARD_SHARE 0.4
+dc up -d worker
+```
+
+The limits are checked at start-up (`COST_SAVING_HARD_LINES_MAX` 1 to 60, `COST_SAVING_HARD_SHARE`
+0.05 to 1.0, `COST_SAVING_CROP_PAD` 0.1 to 2.0); a value out of range stops the worker by name.
+After the change, `cost-saving` shows the new limits under `limits seen`. Unset is the default
+(12, 0.4, 0.5).
 
 ## Decisions
 

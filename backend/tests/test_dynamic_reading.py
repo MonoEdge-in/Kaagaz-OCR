@@ -380,10 +380,11 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(len(system.checker.crops), 1)
         config = system.totals(job).config["reading"]
         self.assertEqual(config["mode"], "dynamic")
-        # Changed on purpose (Cost saving, 16 Oct 2026): the reasons end with the path taken.
-        self.assertEqual(
-            config["escalated"], [{"page": 1, "reasons": ["quality_fair", "unsure_words", PATH_PAGE]}]
-        )
+        # Changed on purpose (Cost saving, 16 Oct 2026): the reasons end with the path taken;
+        # (Cost saving tuning, 16 Oct 2026) with the first read's and Careful's tokens.
+        reasons = ["quality_fair", "unsure_words", PATH_PAGE]
+        tokens = {"first_in": 1700, "first_out": 4000, "tokens_in": 1700, "tokens_out": 4000}
+        self.assertEqual(config["escalated"], [{"page": 1, "reasons": reasons, **tokens}])
         self.assertEqual(config["cap_hit"], 0)
 
     def test_careful_reads_inside_the_reading_step_and_ready_follows_understanding(self) -> None:
