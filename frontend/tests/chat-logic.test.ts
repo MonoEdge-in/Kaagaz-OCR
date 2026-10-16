@@ -11,7 +11,7 @@ import {
   labelPlace,
   NEAR_BOTTOM_PX,
   pageJumps,
-  sourceAction,
+  openText,
   sourceMeta,
   sourcePlace,
   STILL_LOOKING_AFTER_MS,
@@ -132,16 +132,12 @@ describe("source cards", () => {
     expect(sourceMeta(citation({ detected_type: "zip", page_no: 2 }))).toBe("Sheet 2 · Spreadsheet");
   });
 
-  it("opens a verified page, and asks to check one that needs review, saying why", () => {
-    expect(sourceAction(citation())).toEqual({ text: "Open page 3", check: false, reason: null });
-    const review = sourceAction(citation({ label: "needs_review", kind: "value" }));
-    expect(review.text).toBe("Check page 3");
-    expect(review.check).toBe(true);
-    expect(review.reason).toMatch(/^This value was not fully checked/);
-    expect(review.reason).toMatch(/Look at the page before you rely on it\.$/);
-    const sheet = sourceAction(citation({ label: "needs_review", detected_type: "zip" }));
-    expect(sheet.text).toBe("Check sheet 3");
-    expect(sheet.reason).toMatch(/^This text was not fully checked.*Look at the sheet/);
+  // Changed on purpose (Tushar, 16 Oct 2026: no Needs review in Ask): every source
+  // opens its page the same way; no "Check page 3" and no reason to check.
+  it("opens the page of every source the same way, whatever its label", () => {
+    expect(openText(citation())).toBe("Open page 3");
+    expect(openText(citation({ label: "needs_review", kind: "value" }))).toBe("Open page 3");
+    expect(openText(citation({ label: "needs_review", detected_type: "zip" }))).toBe("Open sheet 3");
   });
 
   it("names the pages a source covers", () => {

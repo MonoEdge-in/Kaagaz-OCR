@@ -1,17 +1,21 @@
 "use client";
 
-// One answer card. In order: the label with a line saying what it means, what
-// a follow-up was searched for ("Searching for: …", PRD 3 H1) and how the
-// question was understood (only when that differs), the sentences with
-// citation chips (each moves to its source card), the source cards, and
-// "Was this helpful?". The card's inline-start edge carries the margin rule:
-// solid for Verified, hatched for Needs review. "Not found" is a real answer:
-// a neutral card that says so and lists the closest documents. "Unchecked" says
-// a figure is only in values nobody has checked yet, and where. F6's note
-// (PRD 5 U7) goes under the answer, with a link to each page that couldn't be
-// read. An answer more than one model was asked to draft (features 25-27) says who
-// answered and whether they agreed, under its label. All text is plain text; answers
-// are built from document text, which is untrusted.
+// One answer card. In order: what a follow-up was searched for ("Searching for: …",
+// PRD 3 H1) and how the question was understood (only when that differs), the
+// sentences with citation chips (each moves to its source card), the source cards,
+// and "Was this helpful?". No Verified or Needs review label, badge or edge in Ask
+// (Tushar, 16 Oct 2026): checking values is the Review screen's, kept apart.
+// "Not found" is a real answer: a neutral card that says so and lists the closest
+// documents. "Unchecked" (a figure only in values not confirmed yet) gives no number,
+// only where it appears (UNCHECKED_TEXT). F6's note (PRD 5 U7) goes under the answer,
+// with a link to each page that couldn't be read. All text is plain text; answers are
+// built from document text, which is untrusted.
+// Compact, ranked sources (Tushar, 16 Oct 2026; SourceCard.tsx): the Sources bar lists
+// the cited sources most relevant first (the search's rank; the numbers in the text stay
+// as written), then "Also in", the documents the search found but the answer does not
+// cite. "Most relevant" on a row puts it on top at once, and it is kept for this answer
+// (pinSource; the server's newest pick comes back in message.pin). One model answers
+// in Ask (Tushar, 16 Oct 2026): no line on who answered or whether models agreed.
 // UI audit A4 (16 Oct 2026): "not found" ends with calm next steps, never a dead end:
 // search all documents (the newest answer only, when it searched fewer: onAskAll),
 // ask with the words the document uses, teach chat a word, or upload the document.
@@ -20,22 +24,26 @@ import Link from "next/link";
 import { memo, useState } from "react";
 import type React from "react";
 import { Icon } from "@/components/ui/Icon";
-import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { understoodNotes } from "@/components/words/words";
-import type { Message } from "@/lib/types";
+import { pinSource } from "@/lib/api";
+import type { Message, SourcePin } from "@/lib/types";
 import {
-  answerLabelText,
   cardId,
   citationMap,
+  isPinned,
+  matchTerms,
   NOT_FOUND_TEXT,
   questionReading,
+  rankedRelated,
+  rankedSources,
   readingNote,
   sentenceCitations,
-  teamLine,
+  sourcesCount,
+  UNCHECKED_TEXT,
 } from "./answer";
 import { FeedbackControls } from "./FeedbackControls";
 import { scrollBehavior } from "./hooks";
-import { SourceCard } from "./SourceCard";
+import { DocumentRow, RelatedRow, SourceCard } from "./SourceCard";
 import styles from "./Chat.module.css";
 
 /** Bring the source card into view (only as far as needed) and move focus to it,
@@ -51,8 +59,8 @@ function goToSource(id: string) {
 
 /**
  * One collapsible bar holding an answer's sources (Tushar, 16 Oct 2026): closed at
- * first, its summary saying what is inside ("Sources · 4", "Sources · 20 pages to
- * check · 3 documents"). A citation number opens it (goToSource).
+ * first, its summary saying what is inside ("Sources · 4 · Also in 3 documents",
+ * "Sources · 20 pages to check · 3 documents"). A citation number opens it (goToSource).
  */
 function SourcesBar({ count, children }: { count: string; children: React.ReactNode }) {
   return (
@@ -82,7 +90,19 @@ export const AnswerView = memo(function AnswerView({
 }) {
   // The source a chip is pointed at or focused: its card lights up (UI quality council, 15 Oct 2026).
   const [hot, setHot] = useState<number | null>(null);
+  // The source put on top: the saved pick, then this person's, at once (the server keeps it).
+  const [pin, setPin] = useState<SourcePin | null>(message.pin ?? null);
+  const [pinFailed, setPinFailed] = useState(false);
   const answer = message.answer;
+  const putOnTop = (target: SourcePin, previousRank: number) => {
+    const before = pin;
+    setPin(target);
+    setPinFailed(false);
+    pinSource(message.id, target, previousRank).catch(() => {
+      setPin(before);
+      setPinFailed(true);
+    });
+  };
 
   if (!answer) {
     return (
@@ -137,17 +157,14 @@ export const AnswerView = memo(function AnswerView({
     </div>
   );
 
-  const documentChips = (heading: string) =>
+  const documentRows = (heading: string) =>
     answer.closest_documents.length > 0 ? (
       <div>
         <h3 className={styles.subheading}>{heading}</h3>
-        <ul className={styles.docChips}>
+        <ul className={styles.sources}>
           {answer.closest_documents.map((doc) => (
             <li key={doc.id}>
-              <Link className={styles.docChip} href={`/documents/${encodeURIComponent(doc.id)}`}>
-                <Icon name="file" size={16} />
-                <span className={styles.docChipName}>{doc.display_name}</span>
-              </Link>
+              <DocumentRow id={doc.id} name={doc.display_name} />
             </li>
           ))}
         </ul>
@@ -178,7 +195,7 @@ export const AnswerView = memo(function AnswerView({
               .join(" · ")}
           >
             {notePages}
-            {documentChips("Closest documents")}
+            {documentRows("Closest documents")}
           </SourcesBar>
         ) : null}
         <div>
@@ -206,43 +223,39 @@ export const AnswerView = memo(function AnswerView({
     );
   }
 
-  // The figure is only in unchecked card values: no number, a request to check it
-  // in Review first, and the documents to open and read (decided 30 Sep 2026).
+  // The figure is only in card values not confirmed yet: no number, only the
+  // documents to open and read (decided 30 Sep 2026). One calm line, also for answers
+  // saved before 16 Oct 2026, whose sentence asked for Review.
   if (answer.status === "unchecked") {
     return (
-      <div className={`motion-rise ${styles.answerCard}`} data-label="needs_review">
+      <div className={`motion-rise ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
         <div className={styles.notFound}>
           <span className={styles.notFoundIcon}>
-            <Icon name="eye-alert" size={20} />
+            <Icon name="file" size={20} />
           </span>
-          {answer.sentences.map((sentence, index) => (
-            <p key={index} className={styles.plain}>
-              {sentence.text}
-            </p>
-          ))}
+          <p className={styles.plain}>{UNCHECKED_TEXT}</p>
         </div>
         {understood}
-        {documentChips("Where it appears")}
+        {documentRows("Where it appears")}
         {feedback}
       </div>
     );
   }
 
   const cards = citationMap(answer);
-  const label = answer.label;
-  const team = teamLine(answer);
+  const terms = matchTerms(question, reading.searchingFor, answer.normalized_question);
+  const sources = rankedSources(answer.citations, pin);
+  // The source put on top is the first, when it is one of them (rankedSources).
+  const pinnedFirst = sources[0] && isPinned(pin, sources[0].document_id, sources[0].page_no, sources[0].ref_id);
+  const related = rankedRelated(answer.related_documents ?? [], pin);
+  // A row just put on top is drawn again, so it rises into place (motion-rise: transform
+  // and opacity only; none with reduced motion).
+  const rowKey = (base: string, top: boolean) => (top ? `${base}-top` : base);
 
   return (
-    <div className={`motion-rise ${styles.answerCard}`} data-label={label ?? undefined}>
+    <div className={`motion-rise ${styles.answerCard}`}>
       <span className="visually-hidden">Answer: </span>
-      {label ? (
-        <div className={styles.labelLine}>
-          <LabelBadge label={label} />
-          <span className={styles.labelExplanation}>{answerLabelText(label, answer).explanation}</span>
-        </div>
-      ) : null}
-      {team ? <p className={styles.understood}>{team}</p> : null}
       {understood}
       <p className={styles.answerText}>
         {answer.sentences.map((sentence, index) => (
@@ -268,21 +281,53 @@ export const AnswerView = memo(function AnswerView({
         ))}
       </p>
       {noteText}
-      {answer.citations.length > 0 || notePages ? (
-        <SourcesBar
-          count={[
-            answer.citations.length > 0 ? String(answer.citations.length) : "",
-            pageCount > 0 ? counted(pageCount, "page to check", "pages to check") : "",
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        >
-          {answer.citations.length > 0 ? (
-            <div className={styles.sources}>
-              {answer.citations.map((citation) => (
-                <SourceCard key={citation.n} citation={citation} messageId={message.id} hot={hot === citation.n} />
-              ))}
+      {sources.length > 0 || related.length > 0 || notePages ? (
+        <SourcesBar count={sourcesCount(sources.length, related.length, pageCount)}>
+          {sources.length > 0 ? (
+            <ul className={styles.sources} aria-label="Sources, most relevant first">
+              {sources.map((citation, index) => {
+                const top = index === 0 && Boolean(pinnedFirst);
+                const target = { document_id: citation.document_id, page_no: citation.page_no, ref_id: citation.ref_id };
+                return (
+                  <li key={rowKey(String(citation.n), top)} className={top ? "motion-rise" : undefined}>
+                    <SourceCard
+                      citation={citation}
+                      messageId={message.id}
+                      hot={hot === citation.n}
+                      terms={terms}
+                      pinned={top}
+                      onPin={() => putOnTop(target, index + 1)}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+          {related.length > 0 ? (
+            <div>
+              <h3 className={styles.subheading}>Also in</h3>
+              <ul className={styles.sources} aria-label="Also in">
+                {related.map((doc, index) => {
+                  const top = isPinned(pin, doc.document_id, doc.page_no);
+                  const target = { document_id: doc.document_id, page_no: doc.page_no };
+                  return (
+                    <li key={rowKey(doc.document_id, top)} className={top ? "motion-rise" : undefined}>
+                      <RelatedRow
+                        doc={doc}
+                        terms={terms}
+                        pinned={top}
+                        onPin={() => putOnTop(target, sources.length + index + 1)}
+                      />
+                    </li>
+                  );
+                })}
+              </ul>
             </div>
+          ) : null}
+          {pinFailed ? (
+            <p className={styles.sourceMeta} role="status">
+              Not saved. Check your connection, then try again.
+            </p>
           ) : null}
           {notePages}
         </SourcesBar>

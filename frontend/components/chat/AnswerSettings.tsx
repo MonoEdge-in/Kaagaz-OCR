@@ -4,14 +4,15 @@
 // Send: a quiet button naming the pick ("Gemini 3.8 Flash · High") that opens a
 // small panel (ComposerMenu.tsx) with which model answers, by name, and how hard
 // it thinks (High, Medium, Low), from what the organisation allows. Hidden when
-// there is only one choice. With Ensemble allowed, up to three models are ticked
-// and answer together; High then works with one model only. No price or cost here.
+// there is only one choice. One model answers (Tushar, 16 Oct 2026, one model in
+// Ask): "Answered by" is one choice of radio buttons, so every level is open to it.
+// No price or cost here.
 
 import { useId } from "react";
 import type { ChatOptions, ThinkingLevel } from "@/lib/types";
 import { modelName } from "./answer";
 import { ComposerMenu } from "./ComposerMenu";
-import { allowedLevels, chooseAgent, LEVEL_NAMES, pickSummary, toggleAgent } from "./logic";
+import { chooseAgent, LEVEL_NAMES, pickSummary } from "./logic";
 import type { AnswerPick } from "./logic";
 import styles from "./Chat.module.css";
 
@@ -36,50 +37,26 @@ export function AnswerSettings({
   onPick: (pick: AnswerPick) => void;
 }) {
   const id = useId();
-  const levels = allowedLevels(options, pick);
-  const full = pick.agents.length >= options.max_agents;
-  const highDropped = levels.length < options.levels.length;
-  const shown = LEVEL_ORDER.filter((level) => levels.includes(level));
+  const shown = LEVEL_ORDER.filter((level) => options.levels.includes(level));
 
   return (
     <ComposerMenu label={pickSummary(options, pick)} name="Answer settings" title="Answer settings" end>
       <fieldset className={styles.menuGroup} disabled={locked}>
         <legend className="visually-hidden">Answer settings</legend>
         {options.agents.length > 1 ? (
-          <fieldset
-            className={styles.menuGroup}
-            aria-describedby={options.ensemble ? `${id}-most` : undefined}
-          >
+          <fieldset className={styles.menuGroup}>
             <legend>Answered by</legend>
-            {options.agents.map((agent) => {
-              const ticked = pick.agents.includes(agent.id);
-              return (
-                <label key={agent.id} className={styles.menuOption}>
-                  {options.ensemble ? (
-                    <input
-                      type="checkbox"
-                      checked={ticked}
-                      disabled={!ticked && full}
-                      aria-describedby={!ticked && full ? `${id}-most` : undefined}
-                      onChange={() => onPick(toggleAgent(options, pick, agent.id))}
-                    />
-                  ) : (
-                    <input
-                      type="radio"
-                      name={`${id}-model`}
-                      checked={ticked}
-                      onChange={() => onPick(chooseAgent(options, pick, agent.id))}
-                    />
-                  )}
-                  {modelName(agent.name)}
-                </label>
-              );
-            })}
-            {options.ensemble ? (
-              <p id={`${id}-most`} className={styles.menuHint}>
-                Up to {options.max_agents} answer together; the answer says if they agree.
-              </p>
-            ) : null}
+            {options.agents.map((agent) => (
+              <label key={agent.id} className={styles.menuOption}>
+                <input
+                  type="radio"
+                  name={`${id}-model`}
+                  checked={pick.agents[0] === agent.id}
+                  onChange={() => onPick(chooseAgent(pick, agent.id))}
+                />
+                {modelName(agent.name)}
+              </label>
+            ))}
           </fieldset>
         ) : null}
         {options.levels.length > 1 ? (
@@ -105,7 +82,6 @@ export function AnswerSettings({
                 {LEVEL_HINTS[level]}
               </p>
             ))}
-            {highDropped ? <p className={styles.menuHint}>High works only when one answers alone.</p> : null}
           </fieldset>
         ) : null}
       </fieldset>

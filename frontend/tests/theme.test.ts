@@ -186,8 +186,8 @@ describe("MonoEdge design system", () => {
   it("tells Verified from Needs review by a solid or dashed edge, never a pill", () => {
     expect(css).toMatch(/\.badge-verified \{[^}]*border: 1px solid var\(--verified-solid\);/);
     expect(css).toMatch(/\.badge-review \{[^}]*border: 1px dashed var\(--review-solid\);/);
-    const chat = read("components/chat/Chat.module.css");
-    expect(chat).toMatch(/\.answerCard\[data-label="needs_review"\] \{\s*border-style: dashed;/);
+    // Changed on purpose (Tushar, 16 Oct 2026: no Needs review in Ask): no edge on an answer card.
+    expect(read("components/chat/Chat.module.css")).not.toContain("data-label");
   });
 
   // Changed on purpose (UI audit G3/G4, 16 Oct 2026): the owner's decision over "mono everywhere".
