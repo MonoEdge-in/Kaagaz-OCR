@@ -80,6 +80,10 @@ def reader_config(settings: Settings) -> dict[str, Any]:
         "blank_dark_pixels": page_checks.BLANK_DARK_PIXELS,
         "blank_sample_width": page_checks.BLANK_SAMPLE_WIDTH,
         "low_res_dpi": settings.low_res_dpi,
+        # Cost saving's limits, so ``cli cost-saving`` can tell runs read at other limits apart.
+        "cost_saving_hard_lines_max": settings.cost_saving_hard_lines_max,
+        "cost_saving_hard_share": settings.cost_saving_hard_share,
+        "cost_saving_crop_pad": settings.cost_saving_crop_pad,
     }
 
 

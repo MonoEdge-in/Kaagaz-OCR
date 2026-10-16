@@ -231,6 +231,8 @@ class ReplayTest(unittest.TestCase):
         # Changed on purpose (Cost saving, 16 Oct 2026; recorded again): the reasons end with
         # the path taken. Page 1 (1 hard line of 2, over HARD_SHARE) and page 3 (handwritten,
         # page wide) are still read whole, so the calls and values are the same.
+        # Changed on purpose (Cost saving tuning, 16 Oct 2026; recorded again, same replies and
+        # calls): each escalated page carries its first-read and Careful tokens, and kept_quick.
         reading = Reading(
             "dynamic",
             Agent(LEAD, VERTEX, "Standard"),

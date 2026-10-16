@@ -48,6 +48,25 @@ def test_every_document_with_the_word_counts_once_in_any_case_and_no_other(db: D
     assert count(db, customer, "Nagpur") == (0, [])
 
 
+def test_a_devanagari_word_counts_its_script_and_its_latin_spelling(db: Database) -> None:
+    # 16 Oct 2026: जालना also matches its stored Latin spelling, "jalana" (text_latin's
+    # recipe keeps the middle vowels). "Jalna" is another spelling: each counts its own
+    # documents, as the exact word index holds them (exhaustive.py's module docstring).
+    customer, _ = new_customer(db)
+    add(db, customer, "satbara.pdf", "गाव जालना, तालुका अंबड")
+    add(db, customer, "typed.pdf", "Village jalana, taluka Ambad")
+    add(db, customer, "lease.pdf", "Shop on Jalna road")
+    add(db, customer, "sweets.pdf", "जालनावाला मिठाई")  # another word
+
+    assert count(db, customer, "जालना") == (2, ["satbara.pdf", "typed.pdf"])
+    assert count(db, customer, "Jalna") == (1, ["lease.pdf"])
+    service = AnswerService(
+        db=db, model=None, settings=make_settings(answer_max_evidence=5), clock=lambda: NOW
+    )
+    answer = service.answer(customer, "कितने दस्तावेज़ों में जालना है?")
+    assert answer.sentences[0].text == '2 documents mention "जालना".'
+
+
 def test_trash_older_versions_and_unread_documents_are_never_counted(db: Database) -> None:
     customer, _ = new_customer(db)
     add(db, customer, "live.pdf", "Jalna")

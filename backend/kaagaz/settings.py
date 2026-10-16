@@ -350,6 +350,13 @@ class Settings:
     # Tushar (16 Oct 2026): a document's reading budget is this many seconds per page (1 page =
     # 1 min, 30 pages = 30 min), never less than OCR_TIMEOUT_SECONDS (gemini_ocr).
     ocr_seconds_per_page: int = 60
+    # Cost saving (16 Oct 2026, ``ocr.careful_plan``): a page is read again through its hard
+    # lines only when they are at most cost_saving_hard_lines_max (1-60) and at most
+    # cost_saving_hard_share (0.05-1.0) of its lines; each crop reaches cost_saving_crop_pad
+    # (0.1-2.0) of the line's height past its sides (``gemini_ocr.crop_boxes``). Optional.
+    cost_saving_hard_lines_max: int = 12
+    cost_saving_hard_share: float = 0.4
+    cost_saving_crop_pad: float = 0.5
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -545,6 +552,9 @@ class Settings:
             ocr_page_concurrency=env.positive("OCR_PAGE_CONCURRENCY"),
             careful_early_max_pages=env.at_least("CAREFUL_EARLY_MAX_PAGES", 0, default=0),
             ocr_seconds_per_page=env.positive_or("OCR_SECONDS_PER_PAGE", 60),
+            cost_saving_hard_lines_max=env.between_or("COST_SAVING_HARD_LINES_MAX", 1, 60, default=12),
+            cost_saving_hard_share=env.number_in("COST_SAVING_HARD_SHARE", 0.05, 1.0, default=0.4),
+            cost_saving_crop_pad=env.number_in("COST_SAVING_CROP_PAD", 0.1, 2.0, default=0.5),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
             model_rpm=env.positive("MODEL_RPM"),
@@ -652,6 +662,19 @@ class _Env:
         if not low <= number <= high:
             raise SettingsError(f"{name} must be between {low} and {high}")
         return number
+
+    def between_or(self, name: str, low: int, high: int, *, default: int) -> int:
+        """``between``, or ``default`` when unset or empty."""
+        return default if self.optional(name) is None else self.between(name, low, high)
+
+    def number_in(self, name: str, low: float, high: float, *, default: float) -> float:
+        """An optional number from ``low`` to ``high``: ``default`` when unset or empty."""
+        if self.optional(name) is None:
+            return default
+        value = self.number(name)
+        if not (math.isfinite(value) and low <= value <= high):
+            raise SettingsError(f"{name} must be a number from {low} to {high}")
+        return value
 
     def optional_integer(self, name: str) -> int | None:
         return None if self.optional(name) is None else self.integer(name)
