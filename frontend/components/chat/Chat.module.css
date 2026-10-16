@@ -233,13 +233,13 @@
   scroll-padding-bottom: var(--composer-h, 0px);
 }
 
+/* Full width of the main area (Tushar, 16 Oct 2026, Ask full width; was a 46rem column). */
 .threadInner {
   display: flex;
   flex-direction: column;
   width: 100%;
+  min-width: 0;
   min-height: 100%;
-  max-width: 46rem;
-  margin-inline: auto;
   padding-top: var(--space-6);
   padding-inline: max(var(--space-4), env(safe-area-inset-left))
     max(var(--space-4), env(safe-area-inset-right));
@@ -341,29 +341,6 @@
   }
 }
 
-/* The edge: solid for Verified, dashed for Needs review, beside the label's
-   icon and word (never colour or shape alone). */
-.answerCard[data-label] {
-  border-color: var(--verified-solid);
-}
-
-.answerCard[data-label="needs_review"] {
-  border-style: dashed;
-  border-color: var(--review-solid);
-}
-
-.labelLine {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-}
-
-.labelExplanation {
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-}
-
 .understood {
   margin: 0;
   font-size: var(--fs-sm);
@@ -373,7 +350,6 @@
 
 .answerText {
   margin: 0;
-  max-width: 68ch;
   line-height: 1.8;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -420,8 +396,7 @@
     inset: -9px -2px;
   }
 
-  .openLink,
-  .reviewLink {
+  .openLink {
     min-height: var(--h-lg);
     align-items: center;
   }
@@ -433,10 +408,14 @@
   font-weight: 600;
 }
 
+/* Compact sources (Tushar, 16 Oct 2026): one row each, a list, most relevant first. */
 .sources {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
-  gap: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .answerFooter {
@@ -533,9 +512,11 @@
 
 /* --- Source card ------------------------------------------------------------ */
 
+/* The number, the source, and "Most relevant" at the end; no page image. */
 .source {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
   gap: var(--space-3);
   min-width: 0;
   padding: var(--space-3);
@@ -558,29 +539,63 @@
   outline-offset: 2px;
 }
 
-.sourceHeader {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: var(--space-3);
+/* A row with no number (Also in) starts at the source itself. */
+.source > .sourceBody:first-child {
+  grid-column: 1 / 3;
 }
 
 /* Its title's first line (1.35em) sits on the middle of the number badge beside it. */
-.sourceHeading {
+.sourceBody {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
   gap: var(--space-1);
   min-width: 0;
   padding-block-start: max(0px, (var(--badge-h) - 1.35em) / 2);
 }
 
+/* One line: the file icon and the name, cut with "…" (the whole name in its title). */
 .sourceTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
   margin: 0;
   font-size: var(--fs-base);
   font-weight: 600;
   line-height: 1.35;
-  overflow-wrap: anywhere;
+}
+
+.sourceTitle svg {
+  flex: none;
+}
+
+.sourceName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Not found's closest documents: the same row, the name only, all of it a link. */
+.documentRow {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  color: inherit;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.documentRow:hover {
+  background: var(--bg-hover);
+}
+
+/* "Most relevant": quiet, its pressed state the accent edge on the selected tint. */
+.pin[aria-pressed="true"],
+.pin[aria-pressed="true"]:hover {
+  border-color: var(--accent);
+  background: var(--bg-selected);
+  color: var(--accent);
 }
 
 .sourceMeta {
@@ -589,52 +604,40 @@
   color: var(--fg-muted);
 }
 
-.reviewLink {
-  display: inline-flex;
-  border-radius: var(--r-sm);
-  text-decoration: none;
-}
-
-.reviewLink:hover {
-  text-decoration: underline;
-}
-
-.preview {
-  min-width: 0;
-}
-
-.previewSkeleton {
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  max-height: 11rem;
-}
-
-.previewNote {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-}
-
+/* Four lines at most of the cited text (two under Also in). */
 .snippet {
-  margin: 0;
-  padding: var(--space-1) 0 var(--space-1) var(--space-3);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+  margin: var(--space-1) 0 0;
+  padding-inline-start: var(--space-3);
   border-inline-start: 2px solid var(--border-strong);
-  white-space: pre-wrap;
+  white-space: pre-line;
   overflow-wrap: anywhere;
 }
 
-.sourceAction {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
+.snippetShort {
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
-.sourceReason {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
+/* The question's words: a calm tint and bold, so never colour alone. */
+.snippet mark {
+  padding: 0 1px;
+  border-radius: var(--r-sm);
+  background: var(--bg-selected);
+  color: inherit;
+  font-weight: 600;
+}
+
+.sourceAction {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  margin-top: var(--space-1);
 }
 
 .openLink {
@@ -645,8 +648,7 @@
   font-weight: 600;
 }
 
-.openLink svg,
-.checkLink svg {
+.openLink svg {
   flex: none;
 }
 
@@ -1000,6 +1002,7 @@
   /* The track (2px padding and a 1px edge each side) is one control tall. */
   height: calc(var(--control-h) - 6px);
   padding: 0 var(--space-3);
+  white-space: nowrap; /* "Medium" on one line in the narrower one-model panel */
   border-radius: 1px;
   color: var(--fg-muted);
   font-size: var(--fs-sm);

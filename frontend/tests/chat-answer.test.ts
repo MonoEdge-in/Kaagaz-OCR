@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 import { AnswerView } from "@/components/chat/AnswerView";
 import { SourceCard } from "@/components/chat/SourceCard";
 import {
-  answerLabelText,
   answerStatusText,
   cardId,
   citationHighlights,
@@ -26,6 +25,7 @@ import {
   sendsOnKey,
   sentenceCitations,
   understoodAs,
+  UNCHECKED_TEXT,
 } from "@/components/chat/answer";
 import { decodeRegion } from "@/lib/regions";
 import type { Answer, Citation, Message, Region } from "@/lib/types";
@@ -114,14 +114,9 @@ describe("what a source card still shows of its document", () => {
   });
 });
 
-describe("answer label text", () => {
-  it("says Verified or Needs review in words, with a line of explanation", () => {
-    expect(answerLabelText("verified").title).toBe("Verified");
-    const review = answerLabelText("needs_review");
-    expect(review.title).toBe("Needs review");
-    expect(review.explanation.length).toBeGreaterThan(10);
-  });
-
+describe("answer texts", () => {
+  // Changed on purpose (Tushar, 16 Oct 2026: no Needs review in Ask): answerLabelText,
+  // the Verified / Needs review line over an answer, is gone.
   it("uses the agreed not found sentence", () => {
     // Changed on purpose (UI audit, 16 Oct 2026): A4, calm words, no "couldn't".
     expect(NOT_FOUND_TEXT).toBe("Not found in the documents searched.");
@@ -260,18 +255,15 @@ describe("what the chat status line says", () => {
     ...overrides,
   });
 
-  it("gives the label and the first sentence only", () => {
-    expect(answerStatusText(answer())).toBe("Answer ready. Verified. The total is 1,234.");
-    expect(answerStatusText(answer({ label: "needs_review" }))).toBe(
-      "Answer ready. Needs review. The total is 1,234.",
-    );
+  // Changed on purpose (Tushar, 16 Oct 2026: no Needs review in Ask): no label words.
+  it("gives the first sentence only, the same for every label", () => {
+    expect(answerStatusText(answer())).toBe("Answer ready. The total is 1,234.");
+    expect(answerStatusText(answer({ label: "needs_review" }))).toBe("Answer ready. The total is 1,234.");
+    expect(answerStatusText(answer({ label: null }))).toBe("Answer ready. The total is 1,234.");
   });
 
-  it("never says Verified for an unchecked answer or a missing label", () => {
-    expect(answerStatusText(answer({ status: "unchecked" }))).toMatch(
-      /^Answer ready\. Needs review\. /,
-    );
-    expect(answerStatusText(answer({ label: null }))).toMatch(/^Answer ready\. Needs review\. /);
+  it("says an unchecked answer in the calm line, never its saved sentence", () => {
+    expect(answerStatusText(answer({ status: "unchecked" }))).toBe(`Answer ready. ${UNCHECKED_TEXT}`);
   });
 
   it("says plainly when nothing was found", () => {
@@ -394,5 +386,64 @@ describe("a chip lights its source card", () => {
     const css = readFileSync(join(__dirname, "../components/chat/Chat.module.css"), "utf8");
     // Changed on purpose (MonoEdge design system, 16 Oct 2026): no shadows; the accent edge on the selected tint.
     expect(css).toMatch(/\.source\[data-hot\] \{\s*border-color: var\(--accent\);\s*background: var\(--bg-selected\);\s*\}/);
+  });
+});
+
+// Tushar, 16 Oct 2026: "In Ask I don't want to show Needs review in the response."
+// Review is its own feature; Ask shows no label, badge, dashed edge or Review link.
+describe("no Needs review in Ask", () => {
+  const LABEL_WORDS = /needs review|verified|review|not fully checked|Check page/i;
+  // The words a person sees or hears (class names such as "previewSkeleton" left out),
+  // and no badge or label edge in the markup.
+  const noLabel = (html: string) => {
+    expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(LABEL_WORDS);
+    expect(html).not.toMatch(/data-label|class="badge|aria-label="[^"]*review/i);
+  };
+  const answered = (label: Answer["label"], status: Answer["status"] = "answered"): Message => ({
+    id: "a1",
+    role: "assistant",
+    text: "",
+    created_at: "2026-10-16T10:00:00Z",
+    answer: {
+      status,
+      label,
+      sentences: [{ text: "The total is 1,234.", citations: [1] }],
+      citations: [citation(1, { label: label ?? "needs_review" })],
+      closest_documents: [{ id: "d1", display_name: "Invoice.pdf" }],
+      route: "fixed_query",
+      normalized_question: "total",
+      model_used: false,
+    },
+    feedback: null,
+  });
+
+  it("renders no label for a needs-review, a verified or an unchecked answer", () => {
+    for (const message of [answered("needs_review"), answered("verified"), answered("needs_review", "unchecked")]) {
+      noLabel(renderToStaticMarkup(createElement(AnswerView, { message, question: "total?" })));
+    }
+    const unchecked = renderToStaticMarkup(
+      createElement(AnswerView, { message: answered("needs_review", "unchecked"), question: "profit?" }),
+    );
+    expect(unchecked).toContain(UNCHECKED_TEXT);
+    expect(unchecked).toContain('href="/documents/d1"');
+  });
+
+  it("renders no label on a source card, live or deleted", () => {
+    for (const source of [citation(1, { label: "needs_review" }), citation(1, { label: "needs_review", source_state: "deleted" })]) {
+      const html = renderToStaticMarkup(createElement(SourceCard, { citation: source, messageId: "a1" }));
+      noLabel(html);
+      expect(html).not.toContain("/review");
+    }
+  });
+
+  it("chat components never use LabelBadge or say Needs review", () => {
+    const dir = join(__dirname, "../components/chat");
+    for (const name of readdirSync(dir).filter((file) => /\.tsx?$/.test(file))) {
+      const code = readFileSync(join(dir, name), "utf8").replace(/^\s*(\/\/|\*|\/\*).*$/gm, "");
+      expect(code, name).not.toContain("LabelBadge");
+      expect(code, name).not.toMatch(/["'`][^"'`]*needs review[^"'`]*["'`]/i);
+      expect(code, name).not.toContain("/review");
+    }
+    expect(readFileSync(join(dir, "Chat.module.css"), "utf8")).not.toContain("data-label");
   });
 });

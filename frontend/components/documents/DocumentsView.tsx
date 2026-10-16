@@ -18,6 +18,8 @@
 // asked for again (lib/poll.ts: every 3 s, then every 5 s, never while the
 // tab is hidden); once all have settled, it stops. Each finished upload asks
 // for it at once; the screen is never reloaded.
+// A move to a folder (a row's menu, the selection bar or a drop on a folder) says so in a toast, with Undo; the New
+// folder forms offer names from the kinds of documents listed (folderNameSuggestions).
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -26,6 +28,7 @@ import { canReview } from "@/components/review/review";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { Toast } from "@/components/ui/Toast";
 import { UploadWords } from "@/components/words/UploadWords";
 import { ApiError, listDocuments, listFolders, listTags, searchDocuments, updateDocument } from "@/lib/api";
 import { progressSignature } from "@/lib/poll";
@@ -47,7 +50,7 @@ import {
   searchParams,
 } from "./insideSearch";
 import type { SearchMode } from "./insideSearch";
-import { libraryErrorText, noMatchTitle } from "./library";
+import { folderNameSuggestions, libraryErrorText, noMatchTitle } from "./library";
 import { mergeList } from "./listMerge";
 import { LibraryFilters } from "./LibraryFilters";
 import { includeSubfoldersHref, isFiltered, libraryHref, listParams } from "./libraryQuery";
@@ -129,6 +132,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [tagsVersion, setTagsVersion] = useState(0);
   const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: the folder column's "+", the one New folder
   const [dropError, setDropError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; undo: () => Promise<void> } | null>(null);
   const uploads = useUploads(() => setReload((n) => n + 1));
   const [trayOpen, setTrayOpen] = useState(false);
   const filtered = isFiltered(library);
@@ -247,6 +251,11 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   }, [shown]);
 
   const tree = useMemo(() => buildTree(folders ?? []), [folders]);
+  const shownItems = shown?.list.items;
+  const nameSuggestions = useMemo(
+    () => folderNameSuggestions(shownItems ?? [], folders ?? []),
+    [shownItems, folders],
+  );
   const current = library.folderId === null ? null : (tree.byId.get(library.folderId) ?? null);
   const folderGone = folders !== null && library.folderId !== null && current === null;
   // The folder in the address, even before the folder list has loaded.
@@ -315,9 +324,22 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     else setReload((n) => n + 1);
   }
 
-  function afterSave(message: string) {
-    setAnnouncement(message);
+  // A move shows in the toast (its own live region), with Undo; anything else is announced.
+  function afterSave(message: string, undo?: () => Promise<void>) {
+    if (undo) setToast({ message, undo });
+    else setAnnouncement(message);
     setReload((n) => n + 1);
+  }
+
+  function undoMove(undo: () => Promise<void>) {
+    setDropError(null);
+    undo().then(
+      () => afterSave("Moved back."),
+      (caught: unknown) => {
+        setDropError(libraryErrorText(caught, "document"));
+        setReload((n) => n + 1);
+      },
+    );
   }
 
   function afterFolderChange(message: string, goTo?: { folderId: string | null }) {
@@ -330,11 +352,22 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   }
 
   // D12: a document's name dropped on a folder in the tree moves it there.
+  // Said in the toast, with Undo, like the Move dialog: in All documents the row stays where it
+  // is, so a message only for screen readers looked like nothing happened (16 Oct 2026).
   function dropDocument(documentId: string, folderId: string | null, placeName: string) {
-    const name = shown?.list.items.find((item) => item.id === documentId)?.display_name ?? "The document";
+    const item = shown?.list.items.find((each) => each.id === documentId);
+    const name = item?.display_name ?? "The document";
     setDropError(null);
     updateDocument(documentId, { folder_id: folderId }).then(
-      () => afterSave(`Moved ${name} to ${placeName}.`),
+      () =>
+        afterSave(
+          `Moved ${name} to ${placeName}.`,
+          item
+            ? async () => {
+                await updateDocument(documentId, { folder_id: item.folder_id });
+              }
+            : undefined,
+        ),
       (caught: unknown) => setDropError(libraryErrorText(caught, "document")),
     );
   }
@@ -511,6 +544,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 current={current}
                 onChanged={afterFolderChange}
                 askNew={newFolderAsk}
+                suggestions={nameSuggestions}
               />
             )}
           </div>
@@ -720,6 +754,9 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                       tree={tree}
                       tags={tags}
                       inTrash={library.trash}
+                      suggestions={nameSuggestions}
+                      movedLeaves={library.folderId !== null}
+                      onFolderCreated={() => setFoldersVersion((n) => n + 1)}
                       onRemoved={afterRemoved}
                       onSaved={afterSave}
                       onFocusList={() => headingRef.current?.focus()}
@@ -784,6 +821,11 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
         tree={tree}
         onUndone={() => setReload((n) => n + 1)}
         canReread={canReview(me.user.role)}
+      />
+      <Toast
+        message={toast?.message ?? null}
+        onUndo={toast ? () => undoMove(toast.undo) : undefined}
+        onClose={() => setToast(null)}
       />
     </Dropzone>
   );

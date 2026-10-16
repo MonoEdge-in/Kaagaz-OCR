@@ -421,6 +421,30 @@
   padding: 0;
 }
 
+/* The Move dialog's places, one per line; a folder is indented by its depth (inline style). The
+   dialog's body is the one scroller. */
+.folderChoices {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+}
+
+/* A disabled place (where the documents are now) is not a target. */
+.folderChoices .check:has(input:disabled) {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+/* Suggested folder names: square chips (.chip) after their label, wrapping. */
+.nameChips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 /* A checkbox or radio with its words: the whole line is the target. */
 .check {
   display: inline-flex;

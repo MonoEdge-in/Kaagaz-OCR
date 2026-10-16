@@ -34,6 +34,7 @@ export function QuestionBox({
   pending,
   error,
   onAsk,
+  draft,
   inputRef,
   texts,
   tools,
@@ -46,9 +47,16 @@ export function QuestionBox({
   /** Why the last question could not be sent, or null. */
   error: string | null;
   onAsk: (question: string) => Promise<boolean>;
+  /** A question that failed while Ask was left (askStore.ts): back into the box, as after any failure. */
+  draft?: string;
   inputRef: RefObject<HTMLTextAreaElement | null>;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(draft ?? "");
+  const [shownDraft, setShownDraft] = useState(draft);
+  if (draft !== shownDraft) {
+    setShownDraft(draft);
+    if (draft) setText((current) => restoreAfterFailure(current, draft));
+  }
   const [emptyTried, setEmptyTried] = useState(false);
   const coarse = useMediaQuery("(pointer: coarse)");
   // Set from the moment a question is accepted, so a quick second Enter or

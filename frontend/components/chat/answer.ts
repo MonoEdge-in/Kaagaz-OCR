@@ -1,14 +1,17 @@
 // The chat screen's small decisions, kept out of the components so they are
 // unit tested in node (tests/chat-*.test.ts): which source card a citation
-// number points at, the words for an answer's label, when to show how the
+// number points at, when to show how the
 // question was understood, what a source card may still show of its
 // document, and what the question box sends or gets back.
 
 import { pageLink } from "@/lib/regions";
-import type { Answer, AnswerSentence, Citation, Label, Message, Region } from "@/lib/types";
+import type { Answer, AnswerSentence, Citation, Message, Region, RelatedDocument, SourcePin } from "@/lib/types";
 
 // Calm, no "couldn't" (UI audit A4, 16 Oct 2026); the card's next steps follow it.
 export const NOT_FOUND_TEXT = "Not found in the documents searched.";
+// An "unchecked" answer (a figure only in values not confirmed yet): no number, no
+// Review wording (Tushar, 16 Oct 2026); the documents follow it.
+export const UNCHECKED_TEXT = "This figure is in these documents. Open them to see it.";
 export const MAX_QUESTION_LENGTH = 1000;
 
 // The chat's one status line for screen readers; the log itself stays quiet.
@@ -40,72 +43,19 @@ export function cardId(messageId: string, n: number): string {
   return `source-${messageId}-${n}`;
 }
 
-export interface AnswerLabelText {
-  title: string;
-  explanation: string;
-}
-
-export const NOT_AGREED_TEXT = "The answers did not agree on every point. Open the page before you rely on it.";
-
-/**
- * The answer's label in words, with one line saying what it means. An answer that
- * needs review only because the other models did not confirm it (every source
- * checked) says that instead (features 25-27).
- */
-export function answerLabelText(
-  label: Label,
-  answer?: Pick<Answer, "agreement" | "citations">,
-): AnswerLabelText {
-  if (label === "verified") {
-    return {
-      title: "Verified",
-      explanation: "Every source behind this answer was checked when the document was read.",
-    };
-  }
-  const checked = answer !== undefined && answer.citations.every((citation) => citation.label === "verified");
-  if (checked && answer?.agreement === "not_confirmed") {
-    return { title: "Needs review", explanation: NOT_AGREED_TEXT };
-  }
-  return {
-    title: "Needs review",
-    explanation: "At least one source was not fully checked. Open the page before you rely on it.",
-  };
-}
-
 /** A catalogue name without its maker's prefix: "Google: Gemini 3.8 Flash" is "Gemini 3.8 Flash". */
 export function modelName(name: string): string {
   return name.replace(/^[^:]{1,40}:\s+/, "") || name;
 }
 
-/** "A", "A and B", "A, B and C". */
-function joinNames(names: readonly string[]): string {
-  return names.length < 2 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-}
-
 /**
- * The line under an answer more than one model was asked to draft (features 25-27):
- * who answered and whether they agreed. null for one model, and for answers from before.
- */
-export function teamLine(answer: Pick<Answer, "agents" | "agents_asked" | "agreement">): string | null {
-  const names = (answer.agents ?? []).map(modelName);
-  if ((answer.agents_asked ?? 0) <= 1 || names.length === 0) return null;
-  const who =
-    names.length < (answer.agents_asked ?? 0)
-      ? `Only ${joinNames(names)} answered.`
-      : `Answered by ${joinNames(names)}.`;
-  if (names.length === 1) return who;
-  return `${who} ${answer.agreement === "agreed" ? "They agreed." : NOT_AGREED_TEXT}`;
-}
-
-/**
- * What the status line says when an answer arrives: its label and first
- * sentence only. Verified only when the answer itself is verified.
+ * What the status line says when an answer arrives: its first sentence only.
+ * No label (Tushar, 16 Oct 2026: no Needs review in Ask).
  */
 export function answerStatusText(answer: Answer | null): string {
   if (!answer || answer.status === "not_found") return NO_ANSWER_STATUS;
-  const verified = answer.status === "answered" && answer.label === "verified";
-  const first = answer.sentences[0]?.text.trim();
-  return [`Answer ready. ${verified ? "Verified" : "Needs review"}.`, first].filter(Boolean).join(" ");
+  const first = answer.status === "unchecked" ? UNCHECKED_TEXT : answer.sentences[0]?.text.trim();
+  return ["Answer ready.", first].filter(Boolean).join(" ");
 }
 
 const loose = (text: string) =>
@@ -281,4 +231,112 @@ export function readingNote(
 export function shortNote(note: string): string {
   const head = /^(.*?\bpages? to check):\s/s.exec(note);
   return head ? `${head[1]}.` : note;
+}
+
+// --- Compact, ranked sources (Tushar, 16 Oct 2026) -------------------------------
+// No page image in Ask: each source is a row with its name, page and a few lines of
+// its text, the question's words marked. The most relevant first (the search's rank),
+// and a person may put one on top ("Most relevant"), kept for that answer.
+
+// Words too common to mark (English and the Romanised Hindi or Marathi fillers).
+const UNMARKED = new Set(
+  (
+    "the and for are was were what which who whom whose when where why how many much this that these those" +
+    " with from into have has had did does our your their there here any all can show tell give find list" +
+    " kya hai hain tha the kitna kitne kitni kaun kahan kab kis kiska kiski kiske aur mein main ahe kiti"
+  ).split(" "),
+);
+
+/** The words to mark in a source's text: the question's and how it was read, three
+ * letters or more (or digits), each once, longest first. O(n). */
+export function matchTerms(...texts: (string | null | undefined)[]): string[] {
+  const words = new Set<string>();
+  for (const text of texts) {
+    for (const word of (text ?? "").normalize("NFKC").toLowerCase().split(/[^\p{L}\p{M}\p{N}-]+/u)) {
+      const bare = word.replace(/^-+|-+$/g, "");
+      if (bare.length >= 3 && !UNMARKED.has(bare)) words.add(bare);
+    }
+  }
+  return [...words].sort((a, b) => b.length - a.length);
+}
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// Whole words only: "total" marks "Total:", never the "total" inside "Subtotal".
+const termPattern = (terms: readonly string[]) =>
+  terms.length > 0
+    ? new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])(?:${terms.map(escapeRegExp).join("|")})(?![\\p{L}\\p{M}\\p{N}])`, "giu")
+    : null;
+
+export interface TextPart {
+  text: string;
+  mark: boolean;
+}
+
+/** `text` in plain and marked parts (any case); plain text only, never markup. O(n * t). */
+export function markParts(text: string, terms: readonly string[]): TextPart[] {
+  const pattern = termPattern(terms);
+  if (!pattern || !text) return text ? [{ text, mark: false }] : [];
+  const parts: TextPart[] = [];
+  let at = 0;
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    if (start > at) parts.push({ text: text.slice(at, start), mark: false });
+    parts.push({ text: match[0], mark: true });
+    at = start + match[0].length;
+  }
+  if (at < text.length) parts.push({ text: text.slice(at), mark: false });
+  return parts;
+}
+
+/** About `max` characters of a source's text around its first matched word, from the
+ * start of that line (or a word just before it), "…" where it was cut. The card shows
+ * at most four lines of it (Chat.module.css). O(n). */
+export function snippetAround(snippet: string, terms: readonly string[], max = 320): string {
+  const first = termPattern(terms)?.exec(snippet)?.index ?? 0;
+  let start = 0;
+  if (first > max / 2) {
+    const line = snippet.lastIndexOf("\n", first) + 1;
+    start = first - line <= 80 ? line : snippet.lastIndexOf(" ", first - 40) + 1;
+  }
+  const cut = snippet.slice(start, start + max).trim();
+  return `${start > 0 ? "…" : ""}${cut}${start + max < snippet.length ? "…" : ""}`;
+}
+
+/** Is this the source put on top? A cited one by its ref when the pick names one. */
+export function isPinned(
+  pin: SourcePin | null | undefined,
+  documentId: string,
+  pageNo: number,
+  refId?: string,
+): boolean {
+  if (!pin || pin.document_id !== documentId || pin.page_no !== pageNo) return false;
+  return !pin.ref_id || refId === undefined || pin.ref_id === refId;
+}
+
+/** The cited sources in the Sources bar's order: by the search's rank (1 first; none
+ * after), then as the answer numbers them; the one put on top first. Two sources on the
+ * same page (a pick names a page): only the first of them moves. Numbers in the answer's
+ * text never change. O(c log c). */
+export function rankedSources(citations: readonly Citation[], pin?: SourcePin | null): Citation[] {
+  const rank = (c: Citation) => c.rank ?? Infinity;
+  const sorted = [...citations].sort((a, b) => rank(a) - rank(b) || a.n - b.n);
+  const at = sorted.findIndex((c) => isPinned(pin, c.document_id, c.page_no, c.ref_id));
+  return at > 0 ? [sorted[at]!, ...sorted.slice(0, at), ...sorted.slice(at + 1)] : sorted;
+}
+
+/** "Also in", the one put on top first, else in the search's order. */
+export function rankedRelated(related: readonly RelatedDocument[], pin?: SourcePin | null): RelatedDocument[] {
+  const pinned = related.filter((doc) => isPinned(pin, doc.document_id, doc.page_no));
+  return [...pinned, ...related.filter((doc) => !pinned.includes(doc))];
+}
+
+/** The Sources bar's summary after "Sources": "4 · Also in 3 documents · 2 pages to check". */
+export function sourcesCount(cited: number, related: number, pagesToCheck = 0): string {
+  return [
+    cited > 0 ? String(cited) : "",
+    related > 0 ? `Also in ${related} ${related === 1 ? "document" : "documents"}` : "",
+    pagesToCheck > 0 ? `${pagesToCheck} ${pagesToCheck === 1 ? "page" : "pages"} to check` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }

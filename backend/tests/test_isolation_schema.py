@@ -25,6 +25,8 @@ writes, and the operator's AI functions in place of 0023's organisation models o
 Word review (0030, NEEDS VRUSHIT'S APPROVAL): word changes the app adds and only marks undone
 or writes again (applied), Ensemble runs whose progress columns alone change, readings whose
 decision alone is set; none is ever deleted by the app (they go with their document).
+
+Ranked sources (0036): a source a person put on top of an answer, added only.
 """
 
 import re
@@ -89,6 +91,8 @@ FROM_0030 = {
     "ensemble_runs": (True, True, False, False),
     "ensemble_readings": (True, True, False, False),
 }
+# Ranked sources (0036): a pick is added, never changed or deleted by the app.
+FROM_0036 = {"source_pins": (True, True, False, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -331,6 +335,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0023)
         | set(FROM_0026)
         | set(FROM_0030)
+        | set(FROM_0036)
     )
 
     with db.system() as conn:
@@ -379,7 +384,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
     for table, expected in (
-        FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021 | FROM_0023 | FROM_0026 | FROM_0030
+        FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021 | FROM_0023 | FROM_0026 | FROM_0030 | FROM_0036
     ).items():
         assert granted[table] == expected, table
 
@@ -506,7 +511,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
     between = [key for key in keys if key[1] in tables and key[2] in tables]
 
     assert {key[1] for key in between} >= (
-        set(FROM_0004) | set(FROM_0021) | set(FROM_0030) | {"pages", "model_usage"}
+        set(FROM_0004) | set(FROM_0021) | set(FROM_0030) | set(FROM_0036) | {"pages", "model_usage"}
     )
     for name, _table, _parent, columns, parent_columns in between:
         assert ("customer_id", "customer_id") in zip(columns, parent_columns, strict=True), name

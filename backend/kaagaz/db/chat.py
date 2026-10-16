@@ -183,14 +183,20 @@ def add_message(
 def messages_with_feedback(
     conn: Connection, customer_id: str, conversation_id: str, user_id: str
 ) -> Sequence[RowMapping]:
-    """Messages oldest first, each with this user's rating. One query (no N+1)."""
+    """Messages oldest first, each with this user's rating and newest source pick
+    (``pin_document_id``, ``pin_page_no``; 0036). One query (no N+1): the pick is one
+    index lookup per message (source_pins_message)."""
     return (
         conn.execute(
             text(
-                "SELECT m.id, m.role, m.text, m.answer, m.scope, m.created_at, f.rating AS feedback"
+                "SELECT m.id, m.role, m.text, m.answer, m.scope, m.created_at, f.rating AS feedback,"
+                " p.document_id AS pin_document_id, p.page_no AS pin_page_no, p.source_ref AS pin_ref_id"
                 " FROM messages m"
                 " LEFT JOIN feedback f ON f.customer_id = m.customer_id AND f.message_id = m.id"
                 " AND f.user_id = :u"
+                " LEFT JOIN LATERAL (SELECT s.document_id, s.page_no, s.source_ref FROM source_pins s"
+                " WHERE s.customer_id = m.customer_id AND s.message_id = m.id AND s.user_id = :u"
+                " ORDER BY s.created_at DESC, s.id LIMIT 1) p ON true"
                 " WHERE m.customer_id = :c AND m.conversation_id = :conv"
                 " ORDER BY m.created_at, m.role DESC, m.id"
             ),
@@ -254,6 +260,44 @@ def live_document_names(conn: Connection, customer_id: str, document_ids: Sequen
         {"c": customer_id, "ids": sorted(set(document_ids))},
     ).all()
     return {str(row.id): str(row.display_name) for row in rows}
+
+
+def add_pin(
+    conn: Connection,
+    customer_id: str,
+    message_id: str,
+    user_id: str,
+    *,
+    document_id: str,
+    page_no: int,
+    previous_rank: int,
+    ref_id: str | None = None,
+) -> bool:
+    """Put one source on top of an answer in one of this user's conversations (0036). Every
+    pick is kept as relevance feedback; the newest is the order shown. The document must be
+    this customer's. False if there is no such answer or document for this user."""
+    stored = conn.execute(
+        text(
+            "INSERT INTO source_pins"
+            " (customer_id, message_id, user_id, document_id, page_no, source_ref, previous_rank)"
+            " SELECT m.customer_id, m.id, :u, d.id, :page, :ref, :rank"
+            " FROM messages m JOIN conversations cv"
+            " ON cv.customer_id = m.customer_id AND cv.id = m.conversation_id"
+            " JOIN documents d ON d.customer_id = m.customer_id AND d.id = :d"
+            " WHERE m.customer_id = :c AND m.id = :m AND m.role = 'assistant' AND cv.user_id = :u"
+            " RETURNING id"
+        ),
+        {
+            "c": customer_id,
+            "m": message_id,
+            "u": user_id,
+            "d": document_id,
+            "page": page_no,
+            "ref": ref_id,
+            "rank": previous_rank,
+        },
+    ).first()
+    return stored is not None
 
 
 def upsert_feedback(

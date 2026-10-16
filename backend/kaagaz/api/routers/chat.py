@@ -143,6 +143,19 @@ def short_title(question: str) -> str:
     return (cut[:at] if at > SHORT_TITLE // 2 else cut).rstrip(" ,.;:") + "…"
 
 
+class PinBody(BaseModel):
+    """A source put on top of an answer (ranked sources, Tushar, 16 Oct 2026): where it is,
+    and where it was in the list before (1 is the top)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: uuid.UUID
+    page_no: int = Field(ge=1, le=100000)
+    # The cited source's ref_id, so one of two sources on one page; None for Also in.
+    ref_id: str | None = Field(default=None, min_length=1, max_length=100)
+    previous_rank: int = Field(ge=1, le=1000)
+
+
 class FeedbackBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -187,9 +200,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             else resolve(conn, user.customer_id, chosen, timezone=context.settings.timezone)
         )
         try:
-            choice = resolve_chat(
-                conn, user.customer_id, body.agents, body.thinking, settings=context.settings
-            )
+            agents = _first_allowed(conn, user.customer_id, body.agents, context)
+            choice = resolve_chat(conn, user.customer_id, agents, body.thinking, settings=context.settings)
         except AiNotAllowed as refused:
             raise ApiError(403, refused.code, NOT_ALLOWED[refused.code]) from None
     saved = None if chosen is None else chosen.model_dump(mode="json")
@@ -287,6 +299,18 @@ def chat_options(user: User, context: Context) -> dict[str, Any]:
         "ensemble": bool(allowed["ensemble"]) and len(rows) >= 2,
         "max_agents": MAX_AGENTS,
     }
+
+
+def _first_allowed(
+    conn: Connection, customer_id: str, agents: list[str] | None, context: AppContext
+) -> list[str] | None:
+    """One model answers in Ask (Tushar, 16 Oct 2026): a request naming several (an older
+    screen) gets the first one this organisation allows, never a refusal for naming more;
+    none allowed, the first, which ``resolve_chat`` refuses as before. One query, only then."""
+    if agents is None or len(agents) <= 1:
+        return agents
+    usable = {row["id"] for row in usable_chat_models(conn, customer_id, settings=context.settings)}
+    return [next((agent for agent in agents if agent in usable), agents[0])]
 
 
 def _live_memory(conn: Connection, customer_id: str, state: RowMapping) -> Memory:
@@ -407,7 +431,16 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
         states = chat_sql.document_states(conn, user.customer_id, cited)
     messages = []
     for row in rows:
-        shown = message(row, row["feedback"])
+        pin = (
+            None
+            if row["pin_document_id"] is None
+            else {
+                "document_id": row["pin_document_id"],
+                "page_no": row["pin_page_no"],
+                "ref_id": row["pin_ref_id"],
+            }
+        )
+        shown = message(row, row["feedback"], pin)
         if shown["answer"]:
             # Sources moved to Trash, deleted or replaced since: see views.answer_with_source_states.
             shown["answer"] = answer_with_source_states(shown["answer"], states)
@@ -468,6 +501,27 @@ def send_feedback(message_id: uuid.UUID, body: FeedbackBody, user: User, context
             user.user_id,
             rating=body.rating,
             reason=reason,
+        )
+    if not stored:
+        raise ApiError(404, "not_found")
+    return Response(status_code=204)
+
+
+@router.post("/messages/{message_id}/pin", status_code=204)
+def pin_source(message_id: uuid.UUID, body: PinBody, user: User, context: Context) -> Response:
+    """ "Most relevant": the asker puts one source of an answer on top (0036). Kept as
+    relevance feedback; the answer's text never changes. 404 for anyone else's answer or a
+    document that is not this customer's."""
+    with context.db.customer(user.customer_id) as conn:
+        stored = chat_sql.add_pin(
+            conn,
+            user.customer_id,
+            str(message_id),
+            user.user_id,
+            document_id=str(body.document_id),
+            page_no=body.page_no,
+            previous_rank=body.previous_rank,
+            ref_id=body.ref_id,
         )
     if not stored:
         raise ApiError(404, "not_found")

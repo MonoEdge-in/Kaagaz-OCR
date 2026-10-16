@@ -20,8 +20,8 @@ The steps (docs/architecture.md):
    from the query's result (numbers written the Indian way). Citations are
    the values used. No rows: not found.
    **Unchecked**: no plan because no checked value holds the figure, but an
-   unchecked card value does: no number, a request to confirm it in Review, and
-   the documents where it appears (status ``unchecked``, answering/unchecked.py).
+   unchecked card value does: no number, a calm line saying it is in these
+   documents, and the documents where it appears (status ``unchecked``, answering/unchecked.py).
 5. **Search route**: embed the question (skipped without a model), retrieve,
    the evidence gate on the hits, then the hits' neighbours (Q4) after them,
    then a draft (the model, or quoting without one), then ``verify`` drops
@@ -166,6 +166,7 @@ from kaagaz.answering.evidence import (
     looks_like_instructions,
     number_evidence,
     numbers_asked,
+    related_documents,
     valid_regions,
     word_text,
 )
@@ -242,6 +243,9 @@ class Citation:
     label_page_no: int | None  # H4: where a value's label is, when it was located
     label_regions: list[dict[str, Any]]
     hard_to_read: bool = False  # PRD 5 F6: the cited text holds an unsure or illegible word
+    # Ranked sources (Tushar, 16 Oct 2026): the hit's place in the search's fused order (1 is
+    # the most relevant); None where there is no such order (values, a whole document).
+    rank: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -260,6 +264,7 @@ class Citation:
             "label_page_no": self.label_page_no,
             "label_regions": [dict(region) for region in self.label_regions],
             "hard_to_read": self.hard_to_read,
+            "rank": self.rank,
         }
 
 
@@ -300,6 +305,9 @@ class Answer:
     unreadable_pages: tuple[FlaggedPage, ...] = ()
     unreadable_page_count: int = 0
     team: Team | None = None  # features 25-27: who drafted it, when the asker's choice did
+    # "Also in" (Tushar, 16 Oct 2026): documents the search found but the answer does not
+    # cite (evidence.related_documents).
+    related_documents: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -331,6 +339,7 @@ class Answer:
             "reading_note": self.reading_note,
             "unreadable_pages": [page.to_json() for page in self.unreadable_pages],
             "unreadable_page_count": self.unreadable_page_count,
+            "related_documents": [dict(doc) for doc in self.related_documents],
             **team,
         }
 
@@ -592,7 +601,7 @@ class AnswerService:
         self, customer_id: str, normalised: NormalisedQuestion, shown: str, scope: Scope
     ) -> Answer | None:
         """A figure asked for that no checked value holds but a card does: no number,
-        the documents where it appears, and a request to confirm it in Review first
+        the documents where it appears, and a calm line to open them
         (decided 30 Sep 2026). None when no card holds it either."""
         asked = metric_asked(normalised)
         if asked is None:
@@ -768,6 +777,7 @@ class AnswerService:
                 first = enough_evidence(own, normalised.keywords, min_score, numbers, expansion)
                 hits = translated.hits
             evidence = number_evidence(hits)
+        hits_only = list(evidence)  # the search's own hits, before widening adds to the list
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
@@ -814,8 +824,12 @@ class AnswerService:
             for n in sentence.evidence:
                 renumber.setdefault(n, len(renumber) + 1)
         by_n = {item.n: item for item in evidence}
+        # Ranked sources: a hit's evidence number is its place in the fused search order.
         citations = [
-            _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence])
+            replace(
+                _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence]),
+                rank=None if whole is not None else old,
+            )
             for old, new in renumber.items()
         ]
         # F6: the cited text is the whole piece, every line of it.
@@ -862,6 +876,13 @@ class AnswerService:
             model_used=model_used,
             reading_note=HARD_TO_READ_NOTE if hard else None,
             team=team,
+            related_documents=(
+                []
+                if whole is not None
+                else related_documents(
+                    hits_only, {c.document_id for c in citations}, normalised.keywords, min_score, numbers
+                )
+            ),
         )
 
     def _translated_search(

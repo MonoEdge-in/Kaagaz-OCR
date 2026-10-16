@@ -5,7 +5,7 @@ describe("icons", () => {
   it("draws every name in the contract, and nothing else", () => {
     expect(Object.keys(ICONS).sort()).toEqual([...ICON_NAMES].sort());
     // Changed on purpose (UI quality council, 15 Oct 2026): "download" for Download original on phones.
-    expect(ICON_NAMES).toHaveLength(32); // 29 + "scan-text" + "words" + "download"
+    expect(ICON_NAMES).toHaveLength(33); // 29 + "scan-text" + "words" + "download" + "to-top" (16 Oct 2026)
   });
 
   it("gives every icon at least one shape, inside the 24 x 24 grid", () => {
