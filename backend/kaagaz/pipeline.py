@@ -116,9 +116,9 @@ The Gemini reader (PRD 5), when the processor is given its parts:
   and keeps ``continues_on_next_page`` (G3, CX1) on the page record for the pieces.
   Word marks (F3, ``is_word_mark``) are kept in the stored reader output for the
   viewer and left out of pieces and values here, at one point (``usable``).
-* F4: a document whose every page that is not blank was read unreadable fails with
-  ``unreadable``, before any model call; any other document reaches ready with its
-  readable pages.
+* F4 (changed 16 Oct 2026, never failed): a document whose every page that is not blank
+  was read unreadable reaches ready too, each such page flagged for review; it no longer
+  fails with ``unreadable``.
 * The checker (V1): on a page the reading model read (``read_by`` is the job's model,
   ``run.model``),
   each value's box, grown by ``CHECK_MARGIN`` of its own size on each side, is read
@@ -978,7 +978,7 @@ class DocumentProcessor:
             pages = [PageRecord(info, False) for info in self._sheet_pages(cells)] if cells else []
         pages = _with_routes(pages, reads, prepared.checks)
         run.routes = Counter(page.route for page in pages if page.route is not None)
-        self._fail_unreadable(run, _with_results(pages, run.page_reads, Counter()))  # F4, before any call
+        self._count_unreadable(run, _with_results(pages, run.page_reads, Counter()))
 
         self._progress(job, run, "understanding", 0, 2)  # read: the time left is now until ready
         second = self._read_second(job, record.detected_type, data)
@@ -1389,13 +1389,12 @@ class DocumentProcessor:
         run.page_reads = {**run.page_reads, **meter.take_page_reads()}
         return spans
 
-    def _fail_unreadable(self, run: _Run, pages: Sequence[PageRecord]) -> None:
-        """F4: ``JobFailed("unreadable")`` when every page that is not blank was read and
-        graded unreadable; the run keeps how many were. O(pages)."""
+    def _count_unreadable(self, run: _Run, pages: Sequence[PageRecord]) -> None:
+        """The pages graded unreadable, on the run. Never failed (Tushar, 16 Oct 2026): a
+        document whose every page is unreadable is ready all the same, each such page
+        flagged for review with its fix ("Read it again, or upload a better scan"), in
+        place of F4's ``unreadable`` failure. O(pages)."""
         run.pages_unreadable = sum(page.read_quality == "unreadable" for page in pages)
-        read = [page for page in pages if page.route is not None and page.route != "blank"]
-        if read and all(page.read_quality == "unreadable" for page in read):
-            raise JobFailed("unreadable", retryable=False)
 
     @contextlib.contextmanager
     def _timed(self, run: _Run, step: str, *, when: bool = True) -> Iterator[None]:

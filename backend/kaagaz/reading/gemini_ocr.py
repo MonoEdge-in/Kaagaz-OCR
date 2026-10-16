@@ -220,6 +220,8 @@ TRUNCATED = "output_truncated"
 BLOCKED = "blocked"
 # The client's code when the page's one budget (OCR_TIMEOUT_SECONDS) ran out (16 Oct 2026).
 PAGE_TIMEOUT = "timeout"
+LOW_THINKING = "low"  # a timed-out page's second read (never failed, 16 Oct 2026)
+QUICKEST_THINKING = frozenset({"minimal", LOW_THINKING})  # a timeout here is not read again
 # G3: the kinds the model may give a line (all in spans.BLOCK_KINDS).
 LINE_KINDS: tuple[str, ...] = (
     "title",
@@ -550,6 +552,7 @@ class GeminiEngine:
             escalate=frozenset(),
             memo=None,
             inline_careful=False,
+            careful_read=True,
         )
         try:
             with billed_as("careful"):
@@ -629,10 +632,25 @@ class GeminiEngine:
                 record_call(model, None, 0, 0, 0, 0.0, cached=True)  # SP1: a cached page costs 0
                 return self._page(reply, image, page_no, model, cached=True, boxes=boxes)
         started = self._client.now()
+        spent = (0, 0)  # a timed-out read's tokens, before it was read again at low
         try:
-            reply, result, input_tokens, output_tokens = self._ask(
-                image, model, provider, harder=again, thinking=thinking
-            )
+            try:
+                reply, result, input_tokens, output_tokens = self._ask(
+                    image, model, provider, harder=again, thinking=thinking
+                )
+            except ModelUnavailable as error:
+                # Never failed (16 Oct 2026): a dense page can outlast its budget at a high level;
+                # it is read once more at low, with a budget of its own, before the local reader.
+                quickest = not again and thinking in QUICKEST_THINKING
+                if error.code != PAGE_TIMEOUT or quickest or (pages is not None and pages.careful_read):
+                    raise
+                spent, thinking, again = (error.input_tokens, error.output_tokens), LOW_THINKING, False
+                _log.warning("page read again at low thinking", extra={"code": PAGE_TIMEOUT})
+                if pages is not None:
+                    key = self._key(pages, sha or pixels_sha256(image), page_no, model, thinking)
+                reply, result, input_tokens, output_tokens = self._ask(
+                    image, model, provider, harder=False, thinking=thinking
+                )
         except ModelUnavailable as error:
             return self._outage(
                 image,
@@ -640,11 +658,11 @@ class GeminiEngine:
                 model,
                 error.code,
                 started,
-                tokens=(error.input_tokens, error.output_tokens),
+                tokens=(spent[0] + error.input_tokens, spent[1] + error.output_tokens),
             )
         except ModelOutputError as error:
-            spent = (error.input_tokens, error.output_tokens)
-            return self._read_locally(image, page_no, READER_REFUSED, error.code, tokens=spent)
+            tokens = (spent[0] + error.input_tokens, spent[1] + error.output_tokens)
+            return self._read_locally(image, page_no, READER_REFUSED, error.code, tokens=tokens)
         except ProviderNotAllowed:
             return self._read_locally(image, page_no, READER_REFUSED, PROVIDER_NOT_ALLOWED)
         with self._lock:
@@ -652,7 +670,8 @@ class GeminiEngine:
             self._last_failure.pop(model, None)
         if pages is not None and key is not None:
             pages.cache.put(key, result, input_tokens, output_tokens)
-        return self._page(reply, image, page_no, model, tokens=(input_tokens, output_tokens), boxes=boxes)
+        tokens = (spent[0] + input_tokens, spent[1] + output_tokens)
+        return self._page(reply, image, page_no, model, tokens=tokens, boxes=boxes)
 
     def _key(self, pages: DocumentPages, sha: str, page_no: int, model: str, thinking: str) -> PageKey:
         return PageKey(

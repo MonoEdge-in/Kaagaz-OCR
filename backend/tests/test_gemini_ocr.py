@@ -11,6 +11,7 @@ pixels as written and y pixels twice what is written.
 """
 
 import copy
+import dataclasses
 import io
 import itertools
 import threading
@@ -48,6 +49,7 @@ from kaagaz.reading.ocr import (
     PageEngine,
     PageRead,
     as_page_engine,
+    cache_prompt_version,
     is_word_mark,
     ocr_spans,
     reading_document,
@@ -672,14 +674,22 @@ class G6HalvesTest(Approx):
             scripts=("devanagari",),
             issues=("glare", "faint"),
         )
-        built = build(
-            ModelOutputError("output_truncated", input_tokens=50, output_tokens=500),
-            reply(top, 100, 1000),
-            reply(bottom, 200, 2000),
+        # Both halves are asked at the same time (fast scan), so each is answered by what it
+        # shows, not by the order of the calls: only the top half holds the page's first row.
+        marked = page()
+        marked.putpixel((0, 0), (0, 0, 0))
+
+        def answer(image: Image.Image) -> Outcome:
+            return reply(top, 100, 1000) if image.getpixel((0, 0)) == (0, 0, 0) else reply(bottom, 200, 2000)
+
+        built = Built(
+            FakeClient(
+                ModelOutputError("output_truncated", input_tokens=50, output_tokens=500), respond=answer
+            )
         )
         cache = FakeCache()
         with built.engine.document(pages(cache)):
-            read = built.engine.read_page(page(), page_no=4)
+            read = built.engine.read_page(marked, page_no=4)
 
         self.assertEqual([call.image.size for call in built.client.calls], [(W, H), (W, 1050), (W, 1050)])
         self.assertEqual(
@@ -754,6 +764,56 @@ class G6HalvesTest(Approx):
         read = built.engine.read_page(page(), page_no=1)
         self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
         self.assertEqual((read.input_tokens, read.output_tokens), (57, 509))
+
+
+class NeverFailedTest(unittest.TestCase):
+    """Never failed (Tushar, 16 Oct 2026): a page whose read runs out of time above low
+    thinking is read once more at low, with a budget of its own, before the local reader."""
+
+    def test_a_high_read_that_runs_out_of_time_is_read_again_at_low(self) -> None:
+        built = build(
+            ModelUnavailable("timeout", input_tokens=7, output_tokens=9),
+            reply(value(line("Survey No 72")), 100, 1000),
+            ocr_timeout_seconds=120.0,
+        )
+        cache = FakeCache()
+        with (
+            built.engine.document(dataclasses.replace(pages(cache), thinking="high")),
+            mock.patch.object(built.client, "now", side_effect=itertools.count(1000.0, 10.0)),
+        ):
+            read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual([call.thinking_level for call in built.client.calls], ["high", "low"])
+        first, second = (call.deadline for call in built.client.calls)
+        self.assertGreater(second, first)  # a budget of its own
+        self.assertNotEqual(read.read_by, "rapidocr")
+        self.assertNotIn(READER_REFUSED, read.issues)
+        self.assertEqual([item.text for item in read.lines], ["Survey No 72"])
+        self.assertEqual((read.input_tokens, read.output_tokens), (107, 1009))
+        (put,) = cache.puts  # kept as a low read (OCR_THINKING_LEVEL is low here), never as high
+        self.assertEqual(put.prompt_version, cache_prompt_version("low", "low"))
+
+    def test_a_low_read_again_that_runs_out_of_time_is_read_locally_for_review(self) -> None:
+        built = build(
+            ModelUnavailable("timeout", input_tokens=7, output_tokens=9),
+            ModelUnavailable("timeout", input_tokens=1, output_tokens=2),
+        )
+        with built.engine.document(dataclasses.replace(pages(FakeCache()), thinking="high")):
+            read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual(len(built.client.calls), 2)
+        self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
+        self.assertEqual((read.input_tokens, read.output_tokens), (8, 11))
+
+    def test_a_low_read_or_a_careful_read_that_runs_out_of_time_is_not_read_again(self) -> None:
+        for document in (
+            dataclasses.replace(pages(FakeCache()), thinking="low"),
+            dataclasses.replace(pages(FakeCache()), thinking="high", careful_read=True),
+        ):
+            with self.subTest(thinking=document.thinking, careful=document.careful_read):
+                built = build(ModelUnavailable("timeout"))
+                with built.engine.document(document):
+                    read = built.engine.read_page(page(), page_no=1)
+                self.assertEqual(len(built.client.calls), 1)
+                self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
 
 
 # G6, Q7: the fallback ladder.

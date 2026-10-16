@@ -164,8 +164,12 @@ services:
     # back, and the job returns to the queue.
     restart: unless-stopped
     # SIGTERM lets the job in hand finish first. After this, Docker kills it
-    # and the job is handed out again when its lease runs out.
-    stop_grace_period: 60s
+    # and the job is handed out again when its lease runs out (up to 20 minutes
+    # of "Reading"). 10 minutes covers a slow page at high thinking and its low
+    # read again (2 x OCR_TIMEOUT_SECONDS, up to 240 s each) plus the rest of the
+    # document, so a deploy waits for the document instead of cutting it
+    # (16 Oct 2026). An idle worker still stops at once.
+    stop_grace_period: 600s
     depends_on:
       migrate:
         condition: service_completed_successfully
