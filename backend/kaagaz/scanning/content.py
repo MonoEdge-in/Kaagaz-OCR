@@ -11,7 +11,9 @@ may contain, and refuses the rest, whether or not any signature matches:
   through it, every object header in the whole file is parsed as well, the way
   a viewer rebuilds a broken index, so damage cannot hide active content from
   the check while a viewer still runs it (council 17 Oct 2026). A damaged
-  encrypted PDF is ``unscannable``.
+  encrypted PDF is ``unscannable``. pdfium (Chrome's engine) opens the file too, and
+  document JavaScript, an attached file or an XFA form it finds is refused as well:
+  either reader finding active content blocks the file.
 * **Office files (zip):** no macros (vbaProject), no ActiveX, no embedded OLE
   objects, no external templates or links in the package relationships, no
   executables or nested archives inside, and no path traversal (``../``,
@@ -37,6 +39,9 @@ Time and memory are bounded for a PDF (security review, 17 Oct 2026):
   _MAX_GRANT_BYTES granted per object in all, never reset;
 * one deadline for the whole check, _DEADLINE_SECONDS.
 Past any bound a PDF is ``unscannable``.
+
+Production runs this check in a child process with OS memory and CPU limits
+(kaagaz/scanning/isolated.py): a crash, a hang or a blown limit there is ``unscannable``.
 """
 
 import io
@@ -49,13 +54,16 @@ import zlib
 from collections.abc import Callable
 from enum import Enum
 from typing import Any
+from xml.etree import ElementTree
 
+import pypdfium2 as pdfium
+import pypdfium2.raw as pdfium_c
 from pdfminer import pdftypes
 from pdfminer.lzw import LZWDecoder
 from pdfminer.pdfdocument import LITERAL_OBJSTM, PDFDocument, PDFXRefFallback
 from pdfminer.pdfparser import PDFParser, PDFStreamParser
 from pdfminer.pdftypes import PDFObjRef, PDFStream
-from pdfminer.psexceptions import PSException
+from pdfminer.psexceptions import PSEOF, PSException
 from pdfminer.psparser import PSKeyword, PSLiteral
 
 from kaagaz.ingestion.sniff import JPEG, PDF, PNG, TEXT, TIFF, ZIP, detect_type
@@ -323,14 +331,19 @@ def _bounded_pdf_finding(data: bytes, bounds: _Bounds) -> Finding | None:
             for object_id in xref.get_objids():
                 most_ids -= 1
                 if most_ids < 0:
-                    break  # more ids than the file can hold objects: the repair walk looks
+                    # More ids than the file can hold objects: the repair walk looks, and
+                    # an encrypted file (no repair walk) was not wholly read: unscannable.
+                    damaged = True
+                    break
                 bounds.grant(_READ_PER_OBJECT)
                 try:
                     obj = document.getobj(object_id)
                 except _DAMAGED:
                     damaged = True  # one unreadable object: the repair walk below looks again
                     continue
-                if _is_active(obj, 0):
+                # The same check as the repair walk's (incl. inside an object stream): an
+                # encrypted file gets only this walk.
+                if _holds_active(obj, document):
                     return Finding.BLOCKED
     except _DAMAGED:
         damaged = True  # the index itself broke part way
@@ -388,8 +401,10 @@ def _loose_names_active(parser: PDFParser, start: int) -> bool:
     while True:
         try:
             _, token = parser.nexttoken()
-        except _DAMAGED:
-            return False
+        except PSEOF:
+            return False  # the end of the file
+        except _DAMAGED as error:
+            raise _ReadBudgetSpent from error  # the rest was not read: not called safe
         if isinstance(token, PSKeyword) and token.name in _ENDS_A_DICTIONARY_PART:
             return False
         if isinstance(token, PSLiteral) and token.name in _ACTIVE_NAMES:
@@ -422,8 +437,10 @@ def _object_stream_active(stream: PDFStream, document: PDFDocument) -> bool:
     while True:
         try:
             _, obj = parser.nextobject()
-        except _DAMAGED:  # PSEOF at the end
+        except PSEOF:  # the end of the stream
             return any(_holds_active(value, document) for value in _leftovers(parser))
+        except _DAMAGED as error:
+            raise _ReadBudgetSpent from error  # the rest was not read: not called safe
         if _holds_active(obj, document):
             return True
 
@@ -453,6 +470,39 @@ def _is_active(obj: object, depth: int) -> bool:
     return False
 
 
+_XFA_FORMS = frozenset({pdfium_c.FORMTYPE_XFA_FULL, pdfium_c.FORMTYPE_XFA_FOREGROUND})
+
+
+def _pdfium_sees_active(data: bytes) -> bool:
+    """Whether pdfium (Chrome's engine, which repairs a damaged file as a viewer does)
+    finds document JavaScript, an attached file or an XFA form: a second reader, so a
+    file read one way by pdfminer and another by a viewer is still caught.
+
+    A file pdfium cannot open (damaged past its repair, or a password needed) is left to
+    pdfminer's verdict: Chrome runs nothing in it, and every object pdfminer could find
+    was already walked; the readers (pdfium again) then judge whether it can be read.
+    An owner-password-only file opens here with no password, so its catalog is seen
+    even though pdfminer's repair walk cannot run on it.
+
+    ponytail: pdfium is not thread-safe; production runs this check in its own process
+    (isolated.py), one at a time. The document's OpenAction and pages' /AA are not
+    exposed by pdfium's raw API without loading every page; pdfminer's walk checks them.
+    """
+    try:
+        document = pdfium.PdfDocument(data)
+    except pdfium.PdfiumError:
+        return False
+    try:
+        raw = document.raw
+        return (
+            pdfium_c.FPDFDoc_GetJavaScriptActionCount(raw) != 0  # -1 (an error): not called safe
+            or pdfium_c.FPDFDoc_GetAttachmentCount(raw) != 0
+            or pdfium_c.FPDF_GetFormType(raw) in _XFA_FORMS
+        )
+    finally:
+        document.close()
+
+
 # --- Office packages (zip) ---------------------------------------------------------
 
 _RISKY_PARTS = re.compile(
@@ -464,11 +514,21 @@ _RISKY_EXTENSIONS = re.compile(
     r"iso|img|vhd|zip|rar|7z|gz|tar|cab|docm|xlsm|pptm|dotm|xltm|xlam|ppam)$",
     re.IGNORECASE,
 )
-# A relationship that loads something from outside the file (remote templates,
-# external links): TargetMode="External" on anything that is not a hyperlink.
-_EXTERNAL_TARGET = re.compile(rb'<Relationship\b[^>]*TargetMode="External"[^>]*>', re.IGNORECASE)
-_HYPERLINK_TYPE = re.compile(rb'Type="[^"]*/hyperlink"', re.IGNORECASE)
 _MAX_RELS_BYTES = 1_000_000
+
+
+def _loads_from_outside(rels: bytes) -> bool:
+    """A relationship that loads something from outside the file (remote templates,
+    external links): TargetMode External on anything that is not a hyperlink. Parsed as
+    XML, as Office reads it, so quotes, spacing and character references cannot hide it
+    (the caller refuses a DTD first). Raises ParseError."""
+    for element in ElementTree.fromstring(rels).iter():  # noqa: S314 (no DTD, as xlsx_reader)
+        if not element.tag.endswith("Relationship"):
+            continue
+        mode, kind = element.get("TargetMode", ""), element.get("Type", "")
+        if mode.strip().lower() == "external" and not kind.strip().lower().endswith("/hyperlink"):
+            return True
+    return False
 
 
 def _zip_finding(data: bytes) -> Finding | None:
@@ -484,11 +544,18 @@ def _zip_finding(data: bytes) -> Finding | None:
                 if _RISKY_PARTS.search(name) or _RISKY_EXTENSIONS.search(name):
                     return Finding.BLOCKED
             for info in infos:
-                if info.filename.endswith(".rels") and info.file_size <= _MAX_RELS_BYTES:
-                    for match in _EXTERNAL_TARGET.finditer(archive.read(info)):
-                        if not _HYPERLINK_TYPE.search(match.group(0)):
-                            return Finding.BLOCKED  # a remote template or external link
+                if not info.filename.lower().endswith(".rels"):
+                    continue
+                # Read to the bound, never trusting the declared size: a part can
+                # decompress past what its header says.
+                with archive.open(info) as part:
+                    rels = part.read(_MAX_RELS_BYTES + 1)
+                if len(rels) > _MAX_RELS_BYTES or b"<!doctype" in rels.lower():
+                    return Finding.UNSCANNABLE  # no Office part has a DTD (no entity tricks)
+                if _loads_from_outside(rels):
+                    return Finding.BLOCKED  # a remote template or external link
     except (
+        ElementTree.ParseError,
         zipfile.BadZipFile,
         zipfile.LargeZipFile,
         NotImplementedError,
@@ -548,12 +615,16 @@ def inspect(data: bytes) -> Finding | None:
         return Finding.BLOCKED  # not a type we accept at all
     if _hides_a_program(data):
         return Finding.BLOCKED
-    if kind in (PDF, PNG, JPEG, TIFF) and _has_zip_inside(data):
-        return Finding.BLOCKED  # a polyglot: an archive glued onto a document or image
+    if kind != ZIP and _has_zip_inside(data):
+        return Finding.BLOCKED  # a polyglot: an archive glued onto a document, image or text
+    if kind != PDF and b"%PDF-" in data[:1024]:
+        return Finding.BLOCKED  # a polyglot: viewers find a PDF header anywhere in 1 KiB
     if kind == PDF:
-        return _pdf_finding(data)
+        finding = _pdf_finding(data)
+        # Either reader finding active content blocks the file.
+        return Finding.BLOCKED if finding is not Finding.BLOCKED and _pdfium_sees_active(data) else finding
     if kind == ZIP:
         return _zip_finding(data)
     if kind == TEXT:
         return _text_finding(data)
-    return None
+    return None if kind in (PNG, JPEG, TIFF) else Finding.BLOCKED  # deny by default (old OLE2)

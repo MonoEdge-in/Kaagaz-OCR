@@ -23,6 +23,7 @@ import warnings
 import zlib
 from collections.abc import Callable
 from functools import cache
+from unittest import mock
 
 from PIL import Image, ImageDraw
 
@@ -325,12 +326,19 @@ def prepare(kind: str, data: bytes) -> object:
     return prepared
 
 
+def layered_in_process(data: bytes) -> object:
+    """LayeredScanner with its content check in this process: a child per mutant would take
+    minutes, and the child's own failures are tested in test_isolated_scan."""
+    with mock.patch("kaagaz.adapters.scanner.inspect_isolated", inspect):
+        return LayeredScanner(CleanScanner()).scan(data)
+
+
 # (name, the types it is called for (None: every file), what it may raise, the call)
 EntryPoint = tuple[str, set[str] | None, tuple[type[BaseException], ...], Callable[[str, bytes], object]]
 ENTRY_POINTS: tuple[EntryPoint, ...] = (
     ("detect_type", None, NOTHING, lambda kind, data: sniff.detect_type(data[:4096])),
     ("content.inspect", None, NOTHING, lambda kind, data: inspect(data)),
-    ("LayeredScanner.scan", None, NOTHING, lambda kind, data: LayeredScanner(CleanScanner()).scan(data)),
+    ("LayeredScanner.scan", None, NOTHING, lambda kind, data: layered_in_process(data)),
     ("count_pages", None, NOTHING, lambda kind, data: count_pages(io.BytesIO(data), kind)),
     ("prepare_pages", PDF_TYPES | IMAGE_TYPES, READ_ERRORS, prepare),
     (
