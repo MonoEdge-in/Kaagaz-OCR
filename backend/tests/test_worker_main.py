@@ -23,7 +23,7 @@ from sqlalchemy.exc import ProgrammingError
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import QueueSetupError
-from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
+from kaagaz.jobs.worker import RETRY_MOST_SECONDS, Handler, Heartbeat, JobFailed, Worker
 from kaagaz.search.indexing import MissingPass
 from kaagaz.settings import Settings, SettingsError
 from kaagaz.worker_main import (
@@ -203,7 +203,7 @@ class MarkExhaustedTest(unittest.TestCase):
         with self.assertLogs("kaagaz.worker", "WARNING"):
             for _ in range(MAX_ATTEMPTS + 1):
                 worker.run_once()
-                clock.advance(30.0)
+                clock.advance(RETRY_MOST_SECONDS)  # changed on purpose (council 16 Oct): retry_delay
         self.assertEqual(marked, [(FIRST.customer_id, FIRST.document_id)])
         self.assertEqual([failed.code for failed in queue.failed.values()], ["retries_exhausted"])
 
@@ -344,6 +344,16 @@ class EmbedMissingTest(unittest.TestCase):
             self._turns(worker, clock, range(0, 21, 10))
         self.assertEqual(embed.cursors, [None, CURSOR, None])
         self.assertEqual(EMBED_PASS_PIECES, 64)  # what main binds as the pass's limit
+
+    def test_a_full_pass_runs_again_on_the_next_turn_until_the_backlog_is_done(self) -> None:
+        """Council 16 Oct 2026: a pass that wrote EMBED_PASS_PIECES has more waiting (Ready
+        comes before vectors), so it runs again at once, then back to every 10 minutes."""
+        clock = _Clock()
+        embed = _Embed(clock, MissingPass(64, CURSOR), MissingPass(64, CURSOR), MissingPass(5, None))
+        worker = EmbedMissing(_Jobs(), embed, clock)
+        with self.assertLogs("kaagaz.worker", "INFO"):
+            self._turns(worker, clock, range(4))
+        self.assertEqual(embed.minutes, [0, 1, 2])
 
     def test_a_model_that_is_down_waits_twice_as_long_each_time_up_to_an_hour(self) -> None:
         clock = _Clock()

@@ -124,6 +124,29 @@ def test_f6_word_marks_are_the_first_readers_unsure_and_illegible_words(db: Data
     assert PgReadingQuality(db).word_marks(c, []) == []
 
 
+def test_a_page_read_by_the_local_reader_is_one_mark_over_the_whole_page(db: Database) -> None:
+    """Council 16 Oct 2026: a page graded unreadable, or read locally (a timeout, a refusal),
+    has the backup reader's text, so every citation on it is hard to read. Another
+    customer's flagged page never shows."""
+    api = Api(db)
+    c = api.new_signed().customer_id
+    timed_out = _scan(api, c, "7-12.jpg")
+    read_page(api, c, timed_out, 1, read_quality="unreadable", read_issues=["reader_refused"])
+    backup = _scan(api, c, "Bill.jpg")
+    read_page(api, c, backup, 2, read_quality="uncertain", read_issues=["read_locally"])
+    fine = _scan(api, c, "Clear.jpg")
+    read_page(api, c, fine, 1, read_quality="uncertain", read_issues=["unpinned"])
+    other = api.new_signed().customer_id
+    theirs = _scan(api, other, "Theirs.jpg")
+    read_page(api, other, theirs, 1, read_quality="unreadable", read_issues=["reader_refused"])
+
+    marks = PgReadingQuality(db).word_marks(c, [timed_out, backup, fine, theirs])
+
+    assert sorted((mark.document_id, mark.location) for mark in marks) == sorted(
+        [(timed_out, BoxLocation(1, 0.0, 0.0, 1.0, 1.0)), (backup, BoxLocation(2, 0.0, 0.0, 1.0, 1.0))]
+    )
+
+
 def test_f6_the_exit_tests_blurred_page_is_named_when_the_value_is_not_found(db: Database) -> None:
     """Exit test, Chat: a value printed only on the blurred page is "not found in the
     readable text", naming that page. The real service and database, no model."""

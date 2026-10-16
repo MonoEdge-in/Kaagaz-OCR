@@ -186,7 +186,10 @@ SCHEMA_NAME = "page"
 # Q8 (cost guard): an initial page read's output ceiling, thinking included. The PR 1
 # measurement may set a tighter value; it is sent as max_completion_tokens. A reply that
 # reaches it ends "length" (output_truncated), and the reader reads the page in two halves.
-PAGE_MAX_OUTPUT_TOKENS = 32768
+# 65536 (scan reliability, 16 Oct 2026): Gemini 3.8 Flash's own ceiling on every Google
+# endpoint; at high thinking a dense handwritten page passed 32768, and its halves then ran
+# out of the page's time. Only the tokens generated are billed.
+PAGE_MAX_OUTPUT_TOKENS = 65536
 # chat_json thinks at this effort: the card, the invoice windows, answers
 # and the follow-up rewrite want a short exact reply. gemini-3.1-pro-preview has no
 # "minimal" level (Google's thinking page), so "low" is the least it accepts. An answer's
@@ -716,13 +719,13 @@ class ModelGate:
 
     def take_slot(self, deadline: float, model: str) -> float:
         """When this request may start under the limiter; the slot is booked only when it
-        starts before ``deadline`` (``ModelUnavailable("rate_limited")`` if not, and
-        ``model``'s probe, if this was it, is released)."""
+        starts before ``deadline`` (``ModelUnavailable("timeout")`` if not: the caller's time
+        ran out, the model is not refusing; and ``model``'s probe, if this was it, is released)."""
         with self._lock:
             start = max(self.clock(), self._next_start)
             if start >= deadline:
                 self._breakers.setdefault(model, _Breaker()).probing = False
-                raise ModelUnavailable("rate_limited")
+                raise ModelUnavailable("timeout")
             self._next_start = start + self.interval
             return start
 
@@ -1108,9 +1111,13 @@ class OpenRouterClient:
                 if 300 <= reply.status < 400:
                     raise ModelUnavailable("redirect_refused")
                 raise ModelUnavailable("http_error")
-            gate.record(model, failed=True)
             if reply.status == 0 and code == "timeout":
+                # Our own deadline ran out (a slow page at high thinking), not the model failing:
+                # never counted on the breaker, so slow pages cannot open it and make every other
+                # page of the document wait for its lease (scan reliability, 16 Oct 2026).
+                gate.release_probe(model)
                 raise ModelUnavailable("timeout")
+            gate.record(model, failed=True)
             wait = gate.random() * min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2**attempt)
             asked = _retry_after(reply.headers, gate.wall_clock())
             if asked is not None:

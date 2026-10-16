@@ -3,7 +3,15 @@ import unittest
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import LeaseLost
-from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
+from kaagaz.jobs.worker import (
+    RETRY_FIRST_SECONDS,
+    RETRY_MOST_SECONDS,
+    Handler,
+    Heartbeat,
+    JobFailed,
+    Worker,
+    retry_delay,
+)
 from tests.lease_queue import FakeClock, LeaseQueue
 
 LEASE = 30.0
@@ -127,7 +135,7 @@ class WorkerTest(unittest.TestCase):
         worker = Worker(queue, handler, max_attempts=MAX_ATTEMPTS, on_exhausted=on_exhausted)
         for _ in range(MAX_ATTEMPTS + 1):
             self.assertTrue(worker.run_once())
-            clock.advance(LEASE)
+            clock.advance(RETRY_MOST_SECONDS)  # changed on purpose (council 16 Oct)
         self.assertFalse(worker.run_once())  # buried, nothing left
 
         self.assertEqual(len(calls), MAX_ATTEMPTS)  # every attempt ran; the next delivery only marks
@@ -136,6 +144,25 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(
             (failed.job, failed.attempts, failed.code), (POISON, MAX_ATTEMPTS + 1, "retries_exhausted")
         )
+
+    def test_a_retryable_failure_comes_back_after_a_minute_counted_not_after_the_lease(self) -> None:
+        """Council 16 Oct 2026: 1, 2, 4, 8, then 15 minutes, each try counted."""
+        clock, queue = make_queue()
+        queue.enqueue(POISON)
+        calls: list[Job] = []
+
+        def handler(job: Job, beat: Heartbeat) -> None:
+            calls.append(job)
+            raise JobFailed("scanner_unavailable", retryable=True)
+
+        worker = Worker(queue, handler, max_attempts=MAX_ATTEMPTS, on_exhausted=lambda job: None)
+        self.assertTrue(worker.run_once())
+        clock.advance(RETRY_FIRST_SECONDS - 0.001)
+        self.assertFalse(worker.run_once())  # not yet
+        clock.advance(0.001)
+        self.assertTrue(worker.run_once())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([retry_delay(n) for n in range(1, 7)], [60, 120, 240, 480, 900, 900])
 
     def test_each_attempt_is_recorded_before_the_handler_runs(self) -> None:
         clock, queue = make_queue()
@@ -155,7 +182,7 @@ class WorkerTest(unittest.TestCase):
         )
         for _ in range(MAX_ATTEMPTS + 1):
             worker.run_once()
-            clock.advance(LEASE)
+            clock.advance(RETRY_MOST_SECONDS)  # changed on purpose (council 16 Oct)
         self.assertEqual(
             events,
             [
@@ -224,7 +251,7 @@ class WorkerTest(unittest.TestCase):
 
         worker = make_worker(queue, handler, marked)
         worker.run_once()
-        clock.advance(LEASE)
+        clock.advance(RETRY_FIRST_SECONDS)  # changed on purpose (council 16 Oct): back after a minute
         worker.run_once()  # attempt 2 of 3 succeeds
         self.assertEqual(queue.failed, {})
         self.assertEqual(queue.pending(), 0)
@@ -289,7 +316,7 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(done, [GOOD])
 
         for _ in range(MAX_ATTEMPTS):
-            clock.advance(LEASE)
+            clock.advance(RETRY_MOST_SECONDS)  # changed on purpose (council 16 Oct)
             worker.run_once()
         self.assertEqual([f.job for f in queue.failed.values()], [POISON])
 

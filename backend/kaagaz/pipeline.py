@@ -873,6 +873,8 @@ class DocumentProcessor:
             if not failure.retryable and not self._record_failure(job, failure.code, run):
                 self._close_run(job, run, "superseded", None)
                 return  # a newer run has started: this stale delivery fails nothing
+            if failure.retryable:  # tried again soon: the row says so, not a frozen step
+                self._clear_progress(job, run, failure.code)
             status = "rejected" if failure.code in REJECTION_CODES else "failed"
             self._close_run(job, run, status, failure.code)
             raise
@@ -978,7 +980,7 @@ class DocumentProcessor:
             pages = [PageRecord(info, False) for info in self._sheet_pages(cells)] if cells else []
         pages = _with_routes(pages, reads, prepared.checks)
         run.routes = Counter(page.route for page in pages if page.route is not None)
-        self._count_unreadable(run, _with_results(pages, run.page_reads, Counter()))
+        unreadable = self._count_unreadable(run, _with_results(pages, run.page_reads, Counter()))
 
         self._progress(job, run, "understanding", 0, 2)  # read: the time left is now until ready
         second = self._read_second(job, record.detected_type, data)
@@ -996,11 +998,16 @@ class DocumentProcessor:
         pieces += pieces_from_lines(customer_id, document_id, usable, continues=continued)
         # Fast scan: the map reads only the pieces' text, sections and pages, never the card's
         # context header, so its call runs while the card is asked; the same map either way.
+        # Council 16 Oct 2026: the card (type, date, summary, links) is asked only on readable
+        # pages, never on a local reader's text of an unreadable one; with none, no card or map.
+        readable = [span for span in usable if getattr(span.location, "page", None) not in unreadable]
         with ThreadPoolExecutor(1) as mapper:
-            mapping = mapper.submit(contextvars.copy_context().run, self._map, job, run, pieces)
+            mapping = mapper.submit(
+                contextvars.copy_context().run, self._map, job, run, pieces, ask=bool(readable)
+            )
             with self._timed(run, "card", when=self._chat is not None):
                 understanding = self._understand(
-                    job, run, heartbeat, usable, values_from_cells(usable) + values_from_lines(usable)
+                    job, run, heartbeat, readable, values_from_cells(usable) + values_from_lines(usable)
                 )
             document_map = mapping.result()
         # After the card, which sets the run's calls and error: the map adds to them.
@@ -1168,14 +1175,15 @@ class DocumentProcessor:
             }
         return understanding
 
-    def _map(self, job: Job, run: _Run, pieces: list[Piece]) -> DocumentMap:
+    def _map(self, job: Job, run: _Run, pieces: list[Piece], *, ask: bool = True) -> DocumentMap:
         """CX2, CX3: the document's sections (``sections_from_pieces``), with their summaries
         and the topics from the one map call when the processor has a chat model and its
         ``map_budget``. A call that failed leaves the sections from the headings and no
         topics, and its code, like the card's; the caller counts both on the run. The call
-        is billed as map (SP1). It runs on its own thread, alongside the card."""
+        is billed as map (SP1). It runs on its own thread, alongside the card. No call unless
+        ``ask`` (a document with no readable page keeps its sections, with no summaries)."""
         sections = sections_from_pieces(pieces)
-        if self._map_budget is None:
+        if self._map_budget is None or not ask:
             return DocumentMap(sections, (), 0, None)
         with self._timed(run, "map"), self._billed(job, run, "map"):
             return map_document(self._chat, pieces, sections, self._map_budget)
@@ -1389,12 +1397,14 @@ class DocumentProcessor:
         run.page_reads = {**run.page_reads, **meter.take_page_reads()}
         return spans
 
-    def _count_unreadable(self, run: _Run, pages: Sequence[PageRecord]) -> None:
-        """The pages graded unreadable, on the run. Never failed (Tushar, 16 Oct 2026): a
-        document whose every page is unreadable is ready all the same, each such page
+    def _count_unreadable(self, run: _Run, pages: Sequence[PageRecord]) -> frozenset[int]:
+        """The pages graded unreadable, counted on the run. Never failed (Tushar, 16 Oct 2026):
+        a document whose every page is unreadable is ready all the same, each such page
         flagged for review with its fix ("Read it again, or upload a better scan"), in
         place of F4's ``unreadable`` failure. O(pages)."""
-        run.pages_unreadable = sum(page.read_quality == "unreadable" for page in pages)
+        unreadable = frozenset(page.info.page for page in pages if page.read_quality == "unreadable")
+        run.pages_unreadable = len(unreadable)
+        return unreadable
 
     @contextlib.contextmanager
     def _timed(self, run: _Run, step: str, *, when: bool = True) -> Iterator[None]:

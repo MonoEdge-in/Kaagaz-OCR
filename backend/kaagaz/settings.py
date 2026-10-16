@@ -343,6 +343,9 @@ class Settings:
     rate_limit_per_minute: int
     chat_questions_per_minute: int  # chat questions a user may ask a minute (security, 15 Oct 2026)
     log_level: str
+    # Tushar (16 Oct 2026): a document's reading budget is this many seconds per page (1 page =
+    # 1 min, 30 pages = 30 min), never less than 2 x OCR_TIMEOUT_SECONDS + 15 s (gemini_ocr).
+    ocr_seconds_per_page: int = 60
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -529,11 +532,15 @@ class Settings:
             openrouter_providers=providers,
             openrouter_model_vendors=vendors,
             ocr_media_resolution=env.media_resolution("OCR_MEDIA_RESOLUTION"),
-            ocr_thinking_level=env.choice("OCR_THINKING_LEVEL", set(THINKING_LEVELS)),
+            # Tushar (16 Oct 2026): the built-in scan default is Gemini 3.8 Flash at high.
+            ocr_thinking_level=env.choice("OCR_THINKING_LEVEL", set(THINKING_LEVELS))
+            if env.optional("OCR_THINKING_LEVEL")
+            else "high",
             ocr_retry_media_resolution=env.media_resolution("OCR_RETRY_MEDIA_RESOLUTION"),
             ocr_retry_thinking_level=env.choice("OCR_RETRY_THINKING_LEVEL", set(THINKING_LEVELS)),
             ocr_page_concurrency=env.positive("OCR_PAGE_CONCURRENCY"),
             careful_early_max_pages=env.at_least("CAREFUL_EARLY_MAX_PAGES", 0, default=2),
+            ocr_seconds_per_page=env.positive_or("OCR_SECONDS_PER_PAGE", 60),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
             model_rpm=env.positive("MODEL_RPM"),

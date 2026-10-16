@@ -63,7 +63,10 @@ _FLAGGED_PAGES = text(
 )
 
 # The word marks (F3) of the cited documents: spans read by OCR with no kind and a
-# quality of unsure or illegible (kaagaz.reading.ocr.is_word_mark), with their spot.
+# quality of unsure or illegible (kaagaz.reading.ocr.is_word_mark), with their spot. And
+# (council 16 Oct 2026) one mark over the whole of each page graded unreadable or read by
+# the local reader: its text is the backup reader's (a timeout, a refusal, an outage), so a
+# citation of it is always hard to read. O(s + p) in the cited documents' spans and pages.
 _WORD_MARKS = text(
     """
     SELECT r.document_id::text AS document_id, mark -> 'region' AS region
@@ -71,6 +74,13 @@ _WORD_MARKS = text(
     WHERE r.customer_id = :customer_id AND r.document_id = ANY(CAST(:documents AS uuid[]))
       AND r.role = 'first' AND mark ->> 'origin' = 'ocr' AND mark ->> 'kind' IS NULL
       AND mark ->> 'quality' IN ('unsure', 'illegible')
+    UNION ALL
+    SELECT p.document_id::text,
+           jsonb_build_object('kind', 'box', 'page', p.page_no, 'box', jsonb_build_array(0, 0, 1, 1))
+    FROM pages p
+    WHERE p.customer_id = :customer_id AND p.document_id = ANY(CAST(:documents AS uuid[]))
+      AND (p.read_quality = 'unreadable'
+        OR p.read_issues && CAST(ARRAY['read_locally', 'reader_refused'] AS text[]))
     """
 )
 

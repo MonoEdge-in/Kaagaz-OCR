@@ -803,17 +803,65 @@ class NeverFailedTest(unittest.TestCase):
         self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
         self.assertEqual((read.input_tokens, read.output_tokens), (8, 11))
 
-    def test_a_low_read_or_a_careful_read_that_runs_out_of_time_is_not_read_again(self) -> None:
-        for document in (
-            dataclasses.replace(pages(FakeCache()), thinking="low"),
-            dataclasses.replace(pages(FakeCache()), thinking="high", careful_read=True),
-        ):
-            with self.subTest(thinking=document.thinking, careful=document.careful_read):
-                built = build(ModelUnavailable("timeout"))
+    def test_a_low_read_that_runs_out_of_time_is_not_read_again(self) -> None:
+        built = build(ModelUnavailable("timeout"))
+        with built.engine.document(dataclasses.replace(pages(FakeCache()), thinking="low")):
+            read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual(len(built.client.calls), 1)
+        self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
+
+    def test_a_careful_read_that_runs_out_of_time_is_dropped_with_no_local_read(self) -> None:
+        """Council 16 Oct 2026: Careful's timeout is not read again at low nor read locally (that
+        read would be thrown away); ``_careful`` drops it and the first read stays."""
+        built = build(ModelUnavailable("timeout"))
+        careful = dataclasses.replace(pages(FakeCache()), thinking="high", careful_read=True)
+        with built.engine.document(careful), self.assertRaises(BackendUnavailable):
+            built.engine.read_page(page(), page_no=1)
+        self.assertEqual((len(built.client.calls), built.local_builds), (1, 0))
+
+
+class DocumentBudgetTest(unittest.TestCase):
+    """Tushar's reading budget (16 Oct 2026): OCR_SECONDS_PER_PAGE x pages, never less than
+    2 x OCR_TIMEOUT_SECONDS + 15 s, so a healthy read is never cut short."""
+
+    def test_each_call_ends_by_its_own_budget_or_the_documents_whichever_is_first(self) -> None:
+        for count, per_page, want in ((1, 60, 120.0), (10, 60, 120.0), (3, 1, 120.0)):
+            with self.subTest(pages=count, per_page=per_page):
+                built = build(
+                    reply(value(line("ok"))), ocr_timeout_seconds=120.0, ocr_seconds_per_page=per_page
+                )
+                document = dataclasses.replace(pages(FakeCache()), page_count=count)
                 with built.engine.document(document):
-                    read = built.engine.read_page(page(), page_no=1)
-                self.assertEqual(len(built.client.calls), 1)
-                self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
+                    built.engine.read_page(page(), page_no=1)
+                self.assertEqual(built.client.calls[0].deadline - built.client.clock, want)
+
+    def test_a_page_started_after_the_budget_ran_out_is_read_locally_with_no_call(self) -> None:
+        built = build(ocr_timeout_seconds=120.0, ocr_seconds_per_page=60)
+        with built.engine.document(dataclasses.replace(pages(FakeCache()), page_count=1)):
+            built.client.clock += 2 * 120 + 15 - 10  # 10 s left: less than one call needs
+            read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual(built.client.calls, [])
+        self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
+
+    def test_a_timeout_is_not_read_again_at_low_without_time_for_it(self) -> None:
+        built = build(ModelUnavailable("timeout"), ocr_timeout_seconds=120.0, ocr_seconds_per_page=60)
+        document = dataclasses.replace(pages(FakeCache()), page_count=1, thinking="high")
+
+        def late(*args: Any, **kwargs: Any) -> Any:
+            built.client.clock += 250  # the high read used the budget up
+            raise ModelUnavailable("timeout")
+
+        with built.engine.document(document), mock.patch.object(built.client, "read_page", late):
+            read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
+
+    def test_the_budget_ends_with_the_document(self) -> None:
+        built = build(reply(value(line("ok"))), ocr_timeout_seconds=120.0)
+        with built.engine.document(dataclasses.replace(pages(FakeCache()), page_count=1)):
+            pass
+        built.client.clock += 10_000
+        built.engine.read_page(page(), page_no=1)  # no document open: its own budget only
+        self.assertEqual(built.client.calls[0].deadline - built.client.clock, 120.0)
 
 
 # G6, Q7: the fallback ladder.

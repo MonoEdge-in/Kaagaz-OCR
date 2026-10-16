@@ -5,9 +5,9 @@
 * the handler returns: the job is acked (done).
 * the handler raises JobFailed(retryable=False): the job is buried in the
   failure bin with its code, and never retried.
-* the handler raises JobFailed(retryable=True): nothing is called; the lease
-  runs out and the queue hands the job out again later. The lease length acts
-  as a fixed back-off.
+* the handler raises JobFailed(retryable=True): the job is handed back (``defer``,
+  counted as an attempt) to come out again after ``retry_delay``: 1, 2, 4, 8, then
+  15 minutes (council 16 Oct 2026; it used to wait out the whole lease).
 * the lease is lost (LeaseLost from a heartbeat, ack or bury): the job has
   already been handed to another delivery, so this worker leaves it alone.
   That is normal, not an error.
@@ -80,6 +80,16 @@ class RunsJobs(Protocol):
     """A Worker, or a sweep wrapped around one (kaagaz/worker_main.py)."""
 
     def run_once(self) -> bool: ...
+
+
+RETRY_FIRST_SECONDS = 60
+RETRY_MOST_SECONDS = 900
+
+
+def retry_delay(attempt: int) -> int:
+    """Seconds before a retryable failure's next try: 60 doubling each attempt, at most 900
+    (SQS's longest delay). O(1)."""
+    return min(RETRY_FIRST_SECONDS * 2 ** max(0, attempt - 1), RETRY_MOST_SECONDS)
 
 
 class JobFailed(Exception):
@@ -172,6 +182,10 @@ class Worker:
                     except JobFailed as failure:
                         if not failure.retryable:
                             self._queue.bury(delivery.receipt, failure.code)
+                        else:
+                            # Council 16 Oct 2026: back soon (1, 2, 4, 8, then 15 minutes), each
+                            # counted, rather than after the whole lease with the row frozen.
+                            self._queue.defer(delivery.receipt, retry_delay(delivery.attempt), counted=True)
                         return True
                     self._queue.ack(delivery.receipt)
             except Deferred as deferred:
