@@ -44,6 +44,7 @@ from kaagaz.api.routers import (
     search,
     stories,
     tags,
+    word_review,
     words,
 )
 from kaagaz.db.engine import Database, OperatorDatabase, make_engine
@@ -111,6 +112,7 @@ def create_app(
         words.router,
         stories.router,
         words.router,
+        word_review.router,
         operator.router,
         operator.signed_in,
         operator_orgs.router,
